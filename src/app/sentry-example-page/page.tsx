@@ -7,8 +7,7 @@ export default function SentryExamplePage() {
     <div className="flex min-h-screen flex-col items-center justify-center gap-4">
       <h1 className="text-2xl font-bold">Sentry Example Page</h1>
       <p className="text-muted-foreground">
-        Click the button below to throw a test error and verify Sentry is
-        working.
+        Click the button below to throw a test error and verify Sentry is working.
       </p>
       <button
         type="button"
@@ -23,15 +22,12 @@ export default function SentryExamplePage() {
         type="button"
         className="rounded bg-orange-600 px-4 py-2 text-white hover:bg-orange-700"
         onClick={async () => {
-          await Sentry.startSpan(
-            { name: "Example Frontend Span", op: "test" },
-            async () => {
-              const response = await fetch("/api/sentry-example-api");
-              if (!response.ok) {
-                throw new Error("Sentry Example API Route Error");
-              }
-            },
-          );
+          await Sentry.startSpan({ name: "Example Frontend Span", op: "test" }, async () => {
+            const response = await fetch("/api/sentry-example-api");
+            if (!response.ok) {
+              throw new Error("Sentry Example API Route Error");
+            }
+          });
         }}
       >
         Throw API Error
