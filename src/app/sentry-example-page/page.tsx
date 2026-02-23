@@ -22,12 +22,16 @@ export default function SentryExamplePage() {
         type="button"
         className="rounded bg-orange-600 px-4 py-2 text-white hover:bg-orange-700"
         onClick={async () => {
-          await Sentry.startSpan({ name: "Example Frontend Span", op: "test" }, async () => {
-            const response = await fetch("/api/sentry-example-api");
-            if (!response.ok) {
-              throw new Error("Sentry Example API Route Error");
-            }
-          });
+          try {
+            await Sentry.startSpan({ name: "Example Frontend Span", op: "test" }, async () => {
+              const response = await fetch("/api/sentry-example-api");
+              if (!response.ok) {
+                throw new Error("Sentry Example API Response Error");
+              }
+            });
+          } catch (err) {
+            Sentry.captureException(err);
+          }
         }}
       >
         Throw API Error
