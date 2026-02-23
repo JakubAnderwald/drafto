@@ -1,0 +1,15 @@
+language: en
+reviews:
+  profile: assertive
+  path_instructions:
+    - path: "src/**"
+      instructions: |
+        Enforce SOLID principles:
+        - Single Responsibility: Each module/function should have one reason to change
+        - Open/Closed: Prefer composition over modification
+        - Liskov Substitution: Subtypes must be substitutable for base types
+        - Interface Segregation: Prefer small, focused interfaces
+        - Dependency Inversion: Depend on abstractions, not concretions
+  auto_title_instructions: |
+    Use conventional commit format: type(scope): description
+    Types: feat, fix, docs, style, refactor, test, chore
