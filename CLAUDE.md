@@ -57,6 +57,7 @@ Run tests: `pnpm test` (unit+integration), `pnpm test:e2e` (Playwright)
 - Conventional commits enforced by commitlint (e.g., `feat: add login page`)
 - Squash-merge PRs to keep main history clean
 - Pre-commit hooks run lint-staged (ESLint + Prettier)
+- **All pushes must use the `/push` command** — this ensures commits are pushed, CI/CD checks are polled until green, review comments are addressed, and failures are fixed automatically
 
 ## Environment Variables
 
