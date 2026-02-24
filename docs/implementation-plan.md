@@ -22,13 +22,13 @@ Check off each item as it is completed. Update this section at the end of every 
 
 ### Phase 1: Authentication
 
-- [ ] 1.1a — Signup page + tests
-- [ ] 1.1b — Login page + tests
-- [ ] 1.2 — Waiting for approval screen + tests
-- [ ] 1.3 — Password reset (forgot + reset pages, auth callback) + tests
-- [ ] 1.4 — Admin approval page + API + tests
-- [ ] 1.5 — Default notebook creation on first login + tests
-- [ ] 1-CP — **Checkpoint**: full suite green, signup→approve→login flow verified
+- [x] 1.1a — Signup page + tests
+- [x] 1.1b — Login page + tests
+- [x] 1.2 — Waiting for approval screen + tests
+- [x] 1.3 — Password reset (forgot + reset pages, auth callback) + tests
+- [x] 1.4 — Admin approval page + API + tests
+- [x] 1.5 — Default notebook creation on first login + tests
+- [x] 1-CP — **Checkpoint**: full suite green, signup→approve→login flow verified
 
 ### Phase 2: App Shell & Notebooks
 
