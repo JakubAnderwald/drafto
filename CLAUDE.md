@@ -10,6 +10,7 @@ Note-taking web app at drafto.eu. Built with Next.js 16 (App Router, Turbopack),
 - `__tests__/unit/` — Unit tests (vitest)
 - `__tests__/integration/` — Integration tests (vitest + testing-library)
 - `e2e/` — End-to-end tests (Playwright)
+- `docs/adr/` — Architecture Decision Records (see [ADR README](./docs/adr/README.md))
 - `middleware.ts` — Next.js middleware (Supabase session refresh)
 
 ## SOLID Principles (Enforced)
@@ -58,6 +59,22 @@ Run tests: `pnpm test` (unit+integration), `pnpm test:e2e` (Playwright)
 - Squash-merge PRs to keep main history clean
 - Pre-commit hooks run lint-staged (ESLint + Prettier)
 - **All pushes must use the `/push` command** — this ensures commits are pushed, CI/CD checks are polled until green, review comments are addressed, and failures are fixed automatically
+
+## Architecture Decision Records (ADR)
+
+Every significant architectural decision must be recorded in `docs/adr/`.
+
+**When to create an ADR**: introducing or replacing a technology/library/service, changing project structure or module boundaries, defining a new pattern or convention, changing data flow/storage/API design, or making any decision with trade-offs that future contributors should understand.
+
+**Workflow**:
+
+1. Copy `docs/adr/0000-adr-template.md` to a new file with the next sequential number (e.g., `0001-short-title.md`)
+2. Fill in all sections — Context, Decision, Consequences, and Alternatives Considered
+3. Set the status to `Accepted` and the date to today
+4. Add the new entry to the index table in `docs/adr/README.md`
+5. Include the ADR file in the same PR as the code change it documents
+
+**Important**: ADRs are append-only. Never delete a past ADR. If a decision is reversed, create a new ADR that supersedes it and update the old ADR's status to `Superseded by [NNNN](./NNNN-title.md)`.
 
 ## Environment Variables
 
