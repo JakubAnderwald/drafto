@@ -1,6 +1,6 @@
 # Drafto
 
-Note-taking web app at drafto.eu. Built with Next.js 15 (App Router), TypeScript, Tailwind CSS, Supabase.
+Note-taking web app at drafto.eu. Built with Next.js 16 (App Router, Turbopack), TypeScript, Tailwind CSS, Supabase.
 
 ## Directory Structure
 
@@ -68,7 +68,8 @@ Run tests: `pnpm test` (unit+integration), `pnpm test:e2e` (Playwright)
 ## Error Handling
 
 - Errors flow through Sentry automatically (`@sentry/nextjs`)
-- Client, server, and edge configs in root `sentry.*.config.ts` files
+- Client config: `instrumentation-client.ts` (NOT `sentry.client.config.ts` — Turbopack ignores the old webpack convention)
+- Server/edge configs: `sentry.server.config.ts`, `sentry.edge.config.ts` (loaded via `instrumentation.ts`)
 - Do not swallow errors silently — let them propagate to Sentry
 
 ## Useful Commands
