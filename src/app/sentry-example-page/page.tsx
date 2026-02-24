@@ -13,7 +13,9 @@ export default function SentryExamplePage() {
         type="button"
         className="rounded bg-red-600 px-4 py-2 text-white hover:bg-red-700"
         onClick={() => {
-          throw new Error("Sentry Example Frontend Error");
+          const error = new Error("Sentry Example Frontend Error");
+          Sentry.captureException(error);
+          throw error;
         }}
       >
         Throw Client Error
@@ -22,16 +24,14 @@ export default function SentryExamplePage() {
         type="button"
         className="rounded bg-orange-600 px-4 py-2 text-white hover:bg-orange-700"
         onClick={async () => {
-          try {
-            await Sentry.startSpan({ name: "Example Frontend Span", op: "test" }, async () => {
-              const response = await fetch("/api/sentry-example-api");
-              if (!response.ok) {
-                throw new Error("Sentry Example API Response Error");
-              }
-            });
-          } catch (err) {
-            Sentry.captureException(err);
-          }
+          await Sentry.startSpan({ name: "Example Frontend Span", op: "test" }, async () => {
+            const response = await fetch("/api/sentry-example-api");
+            if (!response.ok) {
+              const error = new Error("Sentry Example API Response Error");
+              Sentry.captureException(error);
+              throw error;
+            }
+          });
         }}
       >
         Throw API Error
