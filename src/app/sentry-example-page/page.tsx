@@ -27,7 +27,9 @@ export default function SentryExamplePage() {
           await Sentry.startSpan({ name: "Example Frontend Span", op: "test" }, async () => {
             const response = await fetch("/api/sentry-example-api");
             if (!response.ok) {
-              throw new Error("Sentry Example API Response Error");
+              const error = new Error("Sentry Example API Response Error");
+              Sentry.captureException(error);
+              throw error;
             }
           });
         }}
