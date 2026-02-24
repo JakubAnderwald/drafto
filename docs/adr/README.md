@@ -30,6 +30,6 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 
 ## Index
 
-| # | Title | Status | Date |
-|---|-------|--------|------|
-| [0000](./0000-adr-template.md) | ADR Template | N/A | 2026-02-24 |
+| #                              | Title        | Status | Date       |
+| ------------------------------ | ------------ | ------ | ---------- |
+| [0000](./0000-adr-template.md) | ADR Template | N/A    | 2026-02-24 |
