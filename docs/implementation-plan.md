@@ -11,15 +11,17 @@
 Check off each item as it is completed. Update this section at the end of every work session.
 
 ### Phase 0: Foundation & Infrastructure
-- [ ] 0.1 — Tighten environment validation (required vars, skipValidation for CI)
-- [ ] 0.2 — Supabase schema & migrations (profiles, notebooks, notes, attachments, RLS, trigger)
-- [ ] 0.3 — Auth middleware guard (redirect unauthenticated/unapproved users)
-- [ ] 0.4 — API route conventions (auth helper, error format, ADR)
-- [ ] 0.5a — CI: add `pnpm audit` step
-- [ ] 0.5b — CI: add mobile viewports to Playwright config
-- [ ] 0-CP — **Checkpoint**: full suite green
+
+- [x] 0.1 — Tighten environment validation (required vars, skipValidation for CI)
+- [x] 0.2 — Supabase schema & migrations (profiles, notebooks, notes, attachments, RLS, trigger)
+- [x] 0.3 — Auth middleware guard (redirect unauthenticated/unapproved users)
+- [x] 0.4 — API route conventions (auth helper, error format, ADR)
+- [x] 0.5a — CI: add `pnpm audit` step
+- [x] 0.5b — CI: add mobile viewports to Playwright config
+- [x] 0-CP — **Checkpoint**: full suite green
 
 ### Phase 1: Authentication
+
 - [ ] 1.1a — Signup page + tests
 - [ ] 1.1b — Login page + tests
 - [ ] 1.2 — Waiting for approval screen + tests
@@ -29,6 +31,7 @@ Check off each item as it is completed. Update this section at the end of every 
 - [ ] 1-CP — **Checkpoint**: full suite green, signup→approve→login flow verified
 
 ### Phase 2: App Shell & Notebooks
+
 - [ ] 2.1 — Three-panel layout shell + tests
 - [ ] 2.2a — Notebook API routes (CRUD) + unit tests
 - [ ] 2.2b — Notebooks sidebar UI + integration tests
@@ -36,6 +39,7 @@ Check off each item as it is completed. Update this section at the end of every 
 - [ ] 2-CP — **Checkpoint**: full suite green
 
 ### Phase 3: Notes — Editor & Auto-save
+
 - [ ] 3.1 — Install & configure BlockNote + wrapper component + tests + ADR
 - [ ] 3.2 — Notes API routes (list, create, get, update, soft-delete) + unit tests
 - [ ] 3.3 — Note list component + integration tests
@@ -45,12 +49,14 @@ Check off each item as it is completed. Update this section at the end of every 
 - [ ] 3-CP — **Checkpoint**: full suite green
 
 ### Phase 4: Notes — Organization & Trash
+
 - [ ] 4.1 — Move notes between notebooks + tests
 - [ ] 4.2 — Trash: soft delete, restore, permanent delete + tests
 - [ ] 4.3 — Trash auto-cleanup (30-day cron) + tests
 - [ ] 4-CP — **Checkpoint**: full suite green
 
 ### Phase 5: File Attachments
+
 - [ ] 5.1 — Supabase Storage bucket + policies
 - [ ] 5.2a — Upload API route (25MB limit, auth) + unit tests
 - [ ] 5.2b — Editor file integration (inline images, download links) + tests
@@ -58,6 +64,7 @@ Check off each item as it is completed. Update this section at the end of every 
 - [ ] 5-CP — **Checkpoint**: full suite green
 
 ### Phase 6: Responsive Design
+
 - [ ] 6.1 — Desktop layout refinement
 - [ ] 6.2 — Tablet layout (collapsible sidebar) + tests
 - [ ] 6.3 — Mobile layout (single-panel navigation) + tests
@@ -65,6 +72,7 @@ Check off each item as it is completed. Update this section at the end of every 
 - [ ] 6-CP — **Checkpoint**: full suite green (including mobile E2E)
 
 ### Phase 7: Polish & Hardening
+
 - [ ] 7.1 — Security audit (RLS, uploads, unapproved users) + tests
 - [ ] 7.2 — Edge cases (empty states, long titles, session expiry, etc.)
 - [ ] 7.3 — PRD compliance checklist — all items verified
@@ -494,13 +502,13 @@ Run complete suite: `pnpm lint && pnpm format:check && pnpm exec tsc --noEmit &&
 
 ## Parallelization Summary
 
-| Phase | Parallelizable Tasks | Why |
-|---|---|---|
-| 0 | 0.5a (pnpm audit) + 0.5b (Playwright mobile) | Independent CI config changes |
-| 1 | 1.1a (signup page) + 1.1b (login page) | Independent UI components, same auth patterns |
-| 2 | 2.2a (notebook API) + 2.2b (notebook sidebar UI) | API and UI are independent; UI can mock initially |
-| 3 | 3.1 (BlockNote setup) + 3.2 (notes API routes) | Editor config and API are independent |
-| 5 | 5.2a (upload API) + 5.2b (editor file integration) | API and UI are independent |
+| Phase | Parallelizable Tasks                               | Why                                               |
+| ----- | -------------------------------------------------- | ------------------------------------------------- |
+| 0     | 0.5a (pnpm audit) + 0.5b (Playwright mobile)       | Independent CI config changes                     |
+| 1     | 1.1a (signup page) + 1.1b (login page)             | Independent UI components, same auth patterns     |
+| 2     | 2.2a (notebook API) + 2.2b (notebook sidebar UI)   | API and UI are independent; UI can mock initially |
+| 3     | 3.1 (BlockNote setup) + 3.2 (notes API routes)     | Editor config and API are independent             |
+| 5     | 5.2a (upload API) + 5.2b (editor file integration) | API and UI are independent                        |
 
 All other tasks within each phase are sequential (they depend on earlier steps in the same phase).
 
@@ -508,8 +516,8 @@ All other tasks within each phase are sequential (they depend on earlier steps i
 
 ## ADRs to Create
 
-| Phase | ADR Topic |
-|---|---|
-| 0 | Data model, RLS strategy, and user approval mechanism |
-| 0 | API route pattern and data-fetching conventions |
-| 3 | BlockNote editor configuration and content storage format |
+| Phase | ADR Topic                                                 |
+| ----- | --------------------------------------------------------- |
+| 0     | Data model, RLS strategy, and user approval mechanism     |
+| 0     | API route pattern and data-fetching conventions           |
+| 3     | BlockNote editor configuration and content storage format |

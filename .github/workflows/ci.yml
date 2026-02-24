@@ -10,6 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  SKIP_ENV_VALIDATION: "true"
+
 jobs:
   lint-and-typecheck:
     name: Lint & Typecheck
@@ -25,6 +28,8 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm exec tsc --noEmit
+      - run: pnpm audit --audit-level=high
+        continue-on-error: true
 
   unit-and-integration-tests:
     name: Unit & Integration Tests
@@ -54,7 +59,7 @@ jobs:
           node-version-file: ".nvmrc"
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright install --with-deps chromium webkit
       - run: pnpm build
         env:
           SENTRY_AUTH_TOKEN: ""
