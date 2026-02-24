@@ -6,5 +6,5 @@ Sentry.init({
   replaysSessionSampleRate: 0.1,
   replaysOnErrorSampleRate: 1.0,
   integrations: [Sentry.replayIntegration()],
-  debug: false,
+  debug: process.env.NODE_ENV === "development",
 });
