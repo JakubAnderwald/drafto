@@ -252,7 +252,7 @@ describe("AppShell", () => {
     // Verify the POST was made to the notes endpoint
     await waitFor(() => {
       const postCalls = mockFetch.mock.calls.filter(
-        ([, opts]: [string, { method?: string }?]) => opts?.method === "POST",
+        (args) => (args[1] as { method?: string } | undefined)?.method === "POST",
       );
       expect(postCalls.length).toBeGreaterThan(0);
     });

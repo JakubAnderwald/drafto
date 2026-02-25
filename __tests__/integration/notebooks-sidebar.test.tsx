@@ -309,7 +309,7 @@ describe("NotebooksSidebar", () => {
     });
 
     // Focus and press Enter on the "Work" notebook button
-    const workButton = screen.getByText("Work").closest("[role='button']")!;
+    const workButton = screen.getByText("Work").closest("[role='button']") as HTMLElement;
     workButton.focus();
     await user.keyboard("{Enter}");
 
