@@ -48,6 +48,7 @@ cp .env.local.example .env.local
 ```
 
 Required variables:
+
 - `NEXT_PUBLIC_SUPABASE_URL` — your Supabase project URL
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY` — your Supabase anon key
 
@@ -68,18 +69,18 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Scripts
 
-| Command | Description |
-|---|---|
-| `pnpm dev` | Start dev server (Turbopack) |
-| `pnpm build` | Production build |
-| `pnpm lint` | ESLint |
-| `pnpm format:check` | Prettier check |
-| `pnpm test` | Unit + integration tests |
-| `pnpm test:unit` | Unit tests only |
-| `pnpm test:integration` | Integration tests only |
-| `pnpm test:coverage` | Tests with coverage report |
-| `pnpm test:e2e` | Playwright E2E tests |
-| `pnpm exec tsc --noEmit` | Type check |
+| Command                  | Description                  |
+| ------------------------ | ---------------------------- |
+| `pnpm dev`               | Start dev server (Turbopack) |
+| `pnpm build`             | Production build             |
+| `pnpm lint`              | ESLint                       |
+| `pnpm format:check`      | Prettier check               |
+| `pnpm test`              | Unit + integration tests     |
+| `pnpm test:unit`         | Unit tests only              |
+| `pnpm test:integration`  | Integration tests only       |
+| `pnpm test:coverage`     | Tests with coverage report   |
+| `pnpm test:e2e`          | Playwright E2E tests         |
+| `pnpm exec tsc --noEmit` | Type check                   |
 
 ## Project Structure
 
