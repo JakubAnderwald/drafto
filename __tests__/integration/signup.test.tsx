@@ -84,6 +84,9 @@ describe("Signup page", () => {
     expect(mockSignUp).toHaveBeenCalledWith({
       email: "new@example.com",
       password: "securepass",
+      options: {
+        emailRedirectTo: `${window.location.origin}/auth/callback`,
+      },
     });
     expect(mockPush).toHaveBeenCalledWith("/waiting-for-approval");
   });
