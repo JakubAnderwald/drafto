@@ -34,7 +34,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     error: authError,
   } = await supabase.auth.getUser();
 
-  if (authError) {
+  // AuthSessionMissingError is expected when there's no session — redirect, don't throw.
+  // Only throw for non-auth infrastructure errors (e.g. network failures).
+  if (authError && !("__isAuthError" in authError)) {
     throw authError;
   }
 

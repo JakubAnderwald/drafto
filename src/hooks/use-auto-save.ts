@@ -35,7 +35,7 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
 
   const debouncedSave = useCallback(
     (data: Record<string, unknown>) => {
-      pendingData.current = data;
+      pendingData.current = { ...pendingData.current, ...data };
 
       if (timerRef.current) {
         clearTimeout(timerRef.current);

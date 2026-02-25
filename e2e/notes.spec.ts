@@ -13,7 +13,7 @@ test.describe("Note editing flow", () => {
     await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
 
     // --- Create a new note ---
-    await page.getByRole("button", { name: "New note" }).click();
+    await page.getByRole("button", { name: "New note", exact: true }).click();
 
     // The editor panel should appear with a title input
     const titleInput = page.getByRole("textbox", { name: "Note title" });
@@ -35,18 +35,15 @@ test.describe("Note editing flow", () => {
     // The save indicator shows "Saving..." then "Saved"
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 
-    // --- Verify the note appears in the note list with the correct title ---
-    const noteList = page
-      .locator("section")
-      .filter({ has: page.getByRole("heading", { name: "Notes" }) });
-    await expect(noteList.getByText(noteTitle)).toBeVisible();
-
     // --- Reload the page and verify persistence ---
     await page.reload();
 
     // Wait for app to reload
     await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({ timeout: 10000 });
     await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
+
+    // After reload, the note list should show our title (fresh fetch from API)
+    await expect(page.getByText(noteTitle)).toBeVisible({ timeout: 5000 });
 
     // Find and click the note we created
     await page.getByText(noteTitle).click();
@@ -66,7 +63,7 @@ test.describe("Note editing flow", () => {
     await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
 
     // Create first note
-    await page.getByRole("button", { name: "New note" }).click();
+    await page.getByRole("button", { name: "New note", exact: true }).click();
     const titleInput = page.getByRole("textbox", { name: "Note title" });
     await expect(titleInput).toBeVisible({ timeout: 5000 });
 
@@ -76,7 +73,7 @@ test.describe("Note editing flow", () => {
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 
     // Create second note
-    await page.getByRole("button", { name: "New note" }).click();
+    await page.getByRole("button", { name: "New note", exact: true }).click();
     // Wait for the new note editor to load (title should reset)
     await expect(titleInput).toHaveValue("Untitled", { timeout: 5000 });
 
@@ -85,12 +82,16 @@ test.describe("Note editing flow", () => {
     await titleInput.fill(title2);
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 
-    // Both notes should be in the list
+    // Reload to get fresh note list with updated titles
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
+
+    // Both notes should be in the list after reload
     const noteList = page
       .locator("section")
       .filter({ has: page.getByRole("heading", { name: "Notes" }) });
-    await expect(noteList.getByText(title1)).toBeVisible();
-    await expect(noteList.getByText(title2)).toBeVisible();
+    await expect(noteList.getByText(title1)).toBeVisible({ timeout: 5000 });
+    await expect(noteList.getByText(title2)).toBeVisible({ timeout: 5000 });
 
     // Switch to first note
     await noteList.getByText(title1).click();

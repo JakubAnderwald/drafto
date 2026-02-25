@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { Suspense, useCallback, useState } from "react";
 import { NotebooksSidebar } from "@/components/notebooks/notebooks-sidebar";
 import { NoteList } from "@/components/notes/note-list";
 import { NoteEditorPanel } from "@/components/notes/note-editor-panel";
@@ -49,13 +49,17 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       {/* Middle panel — note list */}
       <section className="flex w-72 shrink-0 flex-col border-r">
         {selectedNotebookId ? (
-          <NoteList
-            notebookId={selectedNotebookId}
-            selectedNoteId={selectedNoteId}
-            onSelectNote={setSelectedNoteId}
-            onCreateNote={handleCreateNote}
-            refreshTrigger={refreshTrigger}
-          />
+          <Suspense
+            fallback={<div className="p-4 text-center text-sm text-gray-400">Loading notes...</div>}
+          >
+            <NoteList
+              notebookId={selectedNotebookId}
+              selectedNoteId={selectedNoteId}
+              onSelectNote={setSelectedNoteId}
+              onCreateNote={handleCreateNote}
+              refreshTrigger={refreshTrigger}
+            />
+          </Suspense>
         ) : (
           <div className="flex flex-1 items-center justify-center text-gray-400">
             Select a notebook
@@ -66,7 +70,15 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       {/* Main panel — editor */}
       <main className="flex flex-1 flex-col">
         {selectedNoteId ? (
-          <NoteEditorPanel key={selectedNoteId} noteId={selectedNoteId} />
+          <Suspense
+            fallback={
+              <div className="flex flex-1 items-center justify-center text-gray-400">
+                Loading...
+              </div>
+            }
+          >
+            <NoteEditorPanel key={selectedNoteId} noteId={selectedNoteId} />
+          </Suspense>
         ) : (
           <div className="flex flex-1 items-center justify-center text-gray-400">Select a note</div>
         )}

@@ -24,11 +24,11 @@ test.describe("Notebook management lifecycle", () => {
     // --- Rename the notebook ---
     const renamedName = `Renamed ${Date.now()}`;
 
-    // Double-click to enter edit mode
-    const notebookListItem = page.locator("li").filter({ hasText: newNotebookName });
-    await notebookListItem.dblclick();
+    // Double-click the notebook name text to enter edit mode
+    await page.getByText(newNotebookName).dblclick();
 
-    const editInput = notebookListItem.locator("input[type='text']");
+    const editInput = page.locator("li").locator("input[type='text']");
+    await expect(editInput).toBeVisible({ timeout: 5000 });
     await editInput.clear();
     await editInput.fill(renamedName);
     await editInput.press("Enter");
@@ -42,7 +42,7 @@ test.describe("Notebook management lifecycle", () => {
     const notebookItem = page.getByText(renamedName);
     await notebookItem.hover();
 
-    await page.getByRole("button", { name: `Delete ${renamedName}` }).click();
+    await page.getByRole("button", { name: `Delete ${renamedName}`, exact: true }).click();
 
     // The notebook should be gone
     await expect(page.getByText(renamedName)).not.toBeVisible();
