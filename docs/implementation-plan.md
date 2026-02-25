@@ -32,11 +32,11 @@ Check off each item as it is completed. Update this section at the end of every 
 
 ### Phase 2: App Shell & Notebooks
 
-- [ ] 2.1 — Three-panel layout shell + tests
-- [ ] 2.2a — Notebook API routes (CRUD) + unit tests
-- [ ] 2.2b — Notebooks sidebar UI + integration tests
+- [x] 2.1 — Three-panel layout shell + tests
+- [x] 2.2a — Notebook API routes (CRUD) + unit tests
+- [x] 2.2b — Notebooks sidebar UI + integration tests
 - [ ] 2.3 — E2E: notebook management lifecycle
-- [ ] 2-CP — **Checkpoint**: full suite green
+- [x] 2-CP — **Checkpoint**: full suite green
 
 ### Phase 3: Notes — Editor & Auto-save
 

@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
+import { AppShell } from "@/components/layout/app-shell";
 
 async function ensureDefaultNotebook(userId: string) {
   const supabase = await createClient();
@@ -30,5 +31,5 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   await ensureDefaultNotebook(user.id);
 
-  return <>{children}</>;
+  return <AppShell>{children}</AppShell>;
 }
