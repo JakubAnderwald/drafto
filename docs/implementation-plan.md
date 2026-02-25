@@ -35,7 +35,7 @@ Check off each item as it is completed. Update this section at the end of every 
 - [x] 2.1 — Three-panel layout shell + tests
 - [x] 2.2a — Notebook API routes (CRUD) + unit tests
 - [x] 2.2b — Notebooks sidebar UI + integration tests
-- [ ] 2.3 — E2E: notebook management lifecycle
+- [x] 2.3 — E2E: notebook management lifecycle
 - [x] 2-CP — **Checkpoint**: full suite green
 
 ### Phase 3: Notes — Editor & Auto-save
@@ -45,7 +45,7 @@ Check off each item as it is completed. Update this section at the end of every 
 - [x] 3.3 — Note list component + integration tests
 - [x] 3.4 — Auto-save (debounced) + save indicator + tests
 - [x] 3.5 — Note title handling + tests
-- [ ] 3.6 — E2E: note editing flow (create, edit, save, reload)
+- [x] 3.6 — E2E: note editing flow (create, edit, save, reload)
 - [x] 3-CP — **Checkpoint**: full suite green
 
 ### Phase 4: Notes — Organization & Trash
