@@ -154,6 +154,13 @@ This means:
 
 ```text
 users (managed by Supabase Auth)
+├── profiles
+│   ├── id (uuid, fk → auth.users)
+│   ├── is_approved (boolean)
+│   ├── is_admin (boolean)
+│   ├── display_name (text)
+│   ├── created_at (timestamptz)
+│   └── updated_at (timestamptz)
 ├── notebooks
 │   ├── id (uuid)
 │   ├── user_id (fk → auth.users)
@@ -288,7 +295,7 @@ Ideas surfaced during PRD creation that didn't make v1 but should be considered 
 | Dark mode (system-aware)         | Mobile users at night, user preference. Small lift with Tailwind.                                                                     | Medium                                       |
 | Keyboard shortcuts               | Power users (especially ex-Evernote) expect Ctrl+B, Ctrl+K, etc. BlockNote provides some by default.                                  | Medium                                       |
 | Note pinning                     | Pin frequently accessed notes to the top of a notebook.                                                                               | Low                                          |
-| Notebook sorting                 | Sort notes by title, created date, or modified date.                                                                                  | Low                                          |
+| Note sorting                     | Sort notes by title, created date, or modified date.                                                                                  | Low                                          |
 | Drag-and-drop                    | Reorder notes, drag notes between notebooks.                                                                                          | Low                                          |
 | Evernote import (.enex)          | Critical for migration but can be done manually for a small group initially.                                                          | Medium (when expanding beyond initial group) |
 | Notebook sharing                 | Share a notebook with other Drafto users (read-only or read-write). Enables couples/teams to collaborate on shared lists, plans, etc. | Medium                                       |

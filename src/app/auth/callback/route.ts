@@ -16,13 +16,17 @@ export async function GET(request: NextRequest) {
 
   if (code) {
     const supabase = await createClient();
-    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    try {
+      const { error } = await supabase.auth.exchangeCodeForSession(code);
 
-    if (!error) {
-      return NextResponse.redirect(new URL(next, request.url));
+      if (!error) {
+        return NextResponse.redirect(new URL(next, request.url));
+      }
+
+      console.error("[auth/callback] exchangeCodeForSession failed:", error.message);
+    } catch (err) {
+      console.error("[auth/callback] exchangeCodeForSession threw unexpectedly:", err);
     }
-
-    console.error("[auth/callback] exchangeCodeForSession failed:", error.message);
   }
 
   return NextResponse.redirect(new URL("/login?error=auth-callback-error", request.url));

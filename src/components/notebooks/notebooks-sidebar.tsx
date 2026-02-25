@@ -189,7 +189,7 @@ export function NotebooksSidebar({ selectedNotebookId, onSelectNotebook }: Noteb
                       e.stopPropagation();
                       handleDelete(notebook.id);
                     }}
-                    className="hidden rounded p-0.5 text-gray-400 group-hover:block hover:text-red-500"
+                    className="hidden rounded p-0.5 text-gray-400 group-focus-within:block group-hover:block hover:text-red-500"
                     aria-label={`Delete ${notebook.name}`}
                   >
                     <svg
