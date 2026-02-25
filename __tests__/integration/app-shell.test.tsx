@@ -202,6 +202,105 @@ describe("AppShell", () => {
     expect(container.querySelector("main")).toBeInTheDocument();
   });
 
+  it("creates a note when 'New note' button is clicked", async () => {
+    const user = userEvent.setup();
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+
+    // Wait for notes to load (notebook auto-selected → NoteList renders)
+    await waitFor(() => {
+      expect(screen.getByText("My First Note")).toBeInTheDocument();
+    });
+
+    // Mock the POST response for creating a note
+    const createdNote = { id: "note-new", title: "Untitled", content: null };
+    mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+      if (options?.method === "POST" && typeof url === "string" && url.includes("/notes")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(createdNote),
+        });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notes\//)) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(createdNote),
+        });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([...mockNotes, createdNote]),
+        });
+      }
+      if (url === "/api/notebooks") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(mockNotebooks),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    // Click the "New note" button
+    await act(async () => {
+      await user.click(screen.getByLabelText("New note"));
+    });
+
+    // Verify the POST was made to the notes endpoint
+    await waitFor(() => {
+      const postCalls = mockFetch.mock.calls.filter(
+        ([, opts]: [string, { method?: string }?]) => opts?.method === "POST",
+      );
+      expect(postCalls.length).toBeGreaterThan(0);
+    });
+  });
+
+  it("handles failed note creation gracefully", async () => {
+    const user = userEvent.setup();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("My First Note")).toBeInTheDocument();
+    });
+
+    // Mock a failed POST
+    mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+      if (options?.method === "POST") {
+        return Promise.resolve({ ok: false, status: 500 });
+      }
+      if (url === "/api/notebooks") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(mockNotebooks),
+        });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(mockNotes),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await act(async () => {
+      await user.click(screen.getByLabelText("New note"));
+    });
+
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith("Failed to create note:", 500);
+    });
+
+    consoleSpy.mockRestore();
+  });
+
   it("shows notebook loading state in the sidebar", async () => {
     mockFetch.mockImplementation((url: string) => {
       if (url === "/api/notebooks") {

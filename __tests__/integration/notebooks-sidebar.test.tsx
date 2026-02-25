@@ -248,6 +248,119 @@ describe("NotebooksSidebar", () => {
     });
   });
 
+  it("enters edit mode on double-click and renames on Enter", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const renamedNotebook = {
+      id: "nb-2",
+      name: "Renamed",
+      created_at: "2026-01-02",
+      updated_at: "2026-02-25",
+    };
+
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(mockNotebooks),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(renamedNotebook),
+      });
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId="nb-1" onSelectNotebook={onSelect} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Work")).toBeInTheDocument();
+    });
+
+    // Double-click to enter edit mode
+    await user.dblClick(screen.getByText("Work"));
+
+    // An input should appear with the current name
+    const input = screen.getByDisplayValue("Work");
+    expect(input).toBeInTheDocument();
+
+    // Clear and type new name, then press Enter
+    await user.clear(input);
+    await user.type(input, "Renamed{Enter}");
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith("/api/notebooks/nb-2", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Renamed" }),
+      });
+    });
+  });
+
+  it("selects notebook on keyboard Enter/Space", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={onSelect} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Work")).toBeInTheDocument();
+    });
+
+    // Focus and press Enter on the "Work" notebook button
+    const workButton = screen.getByText("Work").closest("[role='button']")!;
+    workButton.focus();
+    await user.keyboard("{Enter}");
+
+    expect(onSelect).toHaveBeenCalledWith("nb-2");
+  });
+
+  it("cancels create on Escape", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId="nb-1" onSelectNotebook={onSelect} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("New notebook")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByLabelText("New notebook"));
+    expect(screen.getByPlaceholderText("Notebook name")).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByPlaceholderText("Notebook name")).not.toBeInTheDocument();
+  });
+
+  it("cancels create on blur with empty name", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId="nb-1" onSelectNotebook={onSelect} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("New notebook")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByLabelText("New notebook"));
+    const input = screen.getByPlaceholderText("Notebook name");
+
+    // Blur with empty input — should cancel creation
+    await act(async () => {
+      input.blur();
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByPlaceholderText("Notebook name")).not.toBeInTheDocument();
+    });
+  });
+
   it("fetches from /api/notebooks on mount", async () => {
     const onSelect = vi.fn();
 

@@ -250,6 +250,93 @@ describe("NoteList", () => {
     expect(screen.getByText("Loading...")).toBeInTheDocument();
   });
 
+  it("displays relative time for notes updated hours ago", async () => {
+    const trigger = nextTrigger();
+    const hoursAgo = new Date(Date.now() - 3 * 3600000).toISOString();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve([{ id: "note-h", title: "Hours Ago", updated_at: hoursAgo }]),
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteList
+            notebookId="nb-1"
+            selectedNoteId={null}
+            onSelectNote={vi.fn()}
+            onCreateNote={vi.fn()}
+            refreshTrigger={trigger}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("3h ago")).toBeInTheDocument();
+    });
+  });
+
+  it("displays relative time for notes updated days ago", async () => {
+    const trigger = nextTrigger();
+    const daysAgo = new Date(Date.now() - 5 * 86400000).toISOString();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve([{ id: "note-d", title: "Days Ago", updated_at: daysAgo }]),
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteList
+            notebookId="nb-1"
+            selectedNoteId={null}
+            onSelectNote={vi.fn()}
+            onCreateNote={vi.fn()}
+            refreshTrigger={trigger}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("5d ago")).toBeInTheDocument();
+    });
+  });
+
+  it("displays date string for notes updated over 30 days ago", async () => {
+    const trigger = nextTrigger();
+    const oldDate = new Date(Date.now() - 60 * 86400000).toISOString();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve([{ id: "note-old", title: "Old Note", updated_at: oldDate }]),
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteList
+            notebookId="nb-1"
+            selectedNoteId={null}
+            onSelectNote={vi.fn()}
+            onCreateNote={vi.fn()}
+            refreshTrigger={trigger}
+          />
+        </Suspense>,
+      );
+    });
+
+    // Should show a date string (locale-dependent), not "Xd ago"
+    await waitFor(() => {
+      expect(screen.getByText("Old Note")).toBeInTheDocument();
+      const timeText = screen
+        .getByText("Old Note")
+        .closest("button")
+        ?.querySelector("p:last-child");
+      expect(timeText?.textContent).not.toMatch(/d ago/);
+    });
+  });
+
   it("fetches notes for the given notebook ID", async () => {
     const trigger = nextTrigger();
     const onSelect = vi.fn();
