@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { act } from "react";
 
 vi.mock("@/env", () => ({
@@ -14,19 +15,38 @@ const mockNotebooks = [
   { id: "nb-2", name: "Work", created_at: "2026-01-02", updated_at: "2026-01-02" },
 ];
 
-// Mock fetch
 const mockFetch = vi.fn();
 globalThis.fetch = mockFetch;
 
-const { NotebooksSidebar } = await import("@/components/notebooks/notebooks-sidebar");
+// Re-import the module before each test to reset the internal `hasFetched` ref.
+// The component guards fetching with `if (hasFetched.current) return;` so a
+// single import shares that ref across all tests.
+let NotebooksSidebar: typeof import("@/components/notebooks/notebooks-sidebar").NotebooksSidebar;
+
+beforeEach(async () => {
+  vi.clearAllMocks();
+  vi.resetModules();
+
+  mockFetch.mockResolvedValue({
+    ok: true,
+    json: () => Promise.resolve(mockNotebooks),
+  });
+
+  // Re-import to get a fresh module with a new hasFetched ref
+  const mod = await import("@/components/notebooks/notebooks-sidebar");
+  NotebooksSidebar = mod.NotebooksSidebar;
+});
 
 describe("NotebooksSidebar", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve(mockNotebooks),
+  it("shows loading state initially", async () => {
+    // Make fetch hang forever so we can see the loading state
+    mockFetch.mockReturnValue(new Promise(() => {}));
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={vi.fn()} />);
     });
+
+    expect(screen.getByText("Loading...")).toBeInTheDocument();
   });
 
   it("renders notebooks after loading", async () => {
@@ -42,14 +62,16 @@ describe("NotebooksSidebar", () => {
     });
   });
 
-  it("shows Notebooks heading", async () => {
+  it("shows the Notebooks heading", async () => {
     const onSelect = vi.fn();
 
     await act(async () => {
       render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={onSelect} />);
     });
 
-    expect(screen.getByText("Notebooks")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("Notebooks")).toBeInTheDocument();
+    });
   });
 
   it("has a new notebook button", async () => {
@@ -59,7 +81,9 @@ describe("NotebooksSidebar", () => {
       render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={onSelect} />);
     });
 
-    expect(screen.getByLabelText("New notebook")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByLabelText("New notebook")).toBeInTheDocument();
+    });
   });
 
   it("selects first notebook on load when none selected", async () => {
@@ -71,6 +95,168 @@ describe("NotebooksSidebar", () => {
 
     await waitFor(() => {
       expect(onSelect).toHaveBeenCalledWith("nb-1");
+    });
+  });
+
+  it("does not auto-select when a notebook is already selected", async () => {
+    const onSelect = vi.fn();
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId="nb-2" onSelectNotebook={onSelect} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Notes")).toBeInTheDocument();
+    });
+
+    // onSelectNotebook should not have been called since a notebook was already selected
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("highlights the selected notebook", async () => {
+    const onSelect = vi.fn();
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId="nb-1" onSelectNotebook={onSelect} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Notes")).toBeInTheDocument();
+    });
+
+    const selectedItem = screen.getByText("Notes").closest("[role='button']");
+    expect(selectedItem).toHaveClass("bg-blue-100");
+  });
+
+  it("calls onSelectNotebook when a notebook is clicked", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId="nb-1" onSelectNotebook={onSelect} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Work")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText("Work"));
+
+    expect(onSelect).toHaveBeenCalledWith("nb-2");
+  });
+
+  it("shows create input when new notebook button is clicked", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId="nb-1" onSelectNotebook={onSelect} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("New notebook")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByLabelText("New notebook"));
+
+    expect(screen.getByPlaceholderText("Notebook name")).toBeInTheDocument();
+  });
+
+  it("creates a notebook when name is typed and Enter is pressed", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const newNotebook = {
+      id: "nb-3",
+      name: "New Notebook",
+      created_at: "2026-02-25",
+      updated_at: "2026-02-25",
+    };
+
+    // First call: initial load. Second call: POST to create.
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(mockNotebooks),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(newNotebook),
+      });
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId="nb-1" onSelectNotebook={onSelect} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("New notebook")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByLabelText("New notebook"));
+    const input = screen.getByPlaceholderText("Notebook name");
+    await user.type(input, "New Notebook{Enter}");
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith("/api/notebooks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "New Notebook" }),
+      });
+    });
+  });
+
+  it("has a delete button for each notebook", async () => {
+    const onSelect = vi.fn();
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={onSelect} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Delete Notes")).toBeInTheDocument();
+      expect(screen.getByLabelText("Delete Work")).toBeInTheDocument();
+    });
+  });
+
+  it("deletes a notebook when the delete button is clicked", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(mockNotebooks),
+      })
+      .mockResolvedValueOnce({ ok: true });
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId="nb-1" onSelectNotebook={onSelect} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Notes")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByLabelText("Delete Notes"));
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith("/api/notebooks/nb-1", { method: "DELETE" });
+    });
+
+    // After deleting the selected notebook, onSelectNotebook(null) should be called
+    await waitFor(() => {
+      expect(onSelect).toHaveBeenCalledWith(null);
+    });
+  });
+
+  it("fetches from /api/notebooks on mount", async () => {
+    const onSelect = vi.fn();
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={onSelect} />);
+    });
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith("/api/notebooks");
     });
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { act } from "react";
 
 const mockPush = vi.fn();
@@ -43,5 +44,52 @@ describe("Waiting for approval page", () => {
     });
 
     expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
+  });
+
+  it("calls signOut and navigates to login on logout", async () => {
+    mockSignOut.mockResolvedValueOnce({ error: null });
+    const user = userEvent.setup();
+
+    await act(async () => {
+      render(<WaitingPage />);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Log out" }));
+
+    expect(mockSignOut).toHaveBeenCalled();
+    expect(mockPush).toHaveBeenCalledWith("/login");
+  });
+
+  it("navigates to login even when signOut returns an error", async () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mockSignOut.mockResolvedValueOnce({
+      error: { message: "Sign out failed" },
+    });
+    const user = userEvent.setup();
+
+    await act(async () => {
+      render(<WaitingPage />);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Log out" }));
+
+    expect(mockSignOut).toHaveBeenCalled();
+    expect(consoleSpy).toHaveBeenCalledWith(
+      "Failed to sign out:",
+      expect.objectContaining({ message: "Sign out failed" }),
+    );
+    expect(mockPush).toHaveBeenCalledWith("/login");
+
+    consoleSpy.mockRestore();
+  });
+
+  it("displays the expected approval information text", async () => {
+    await act(async () => {
+      render(<WaitingPage />);
+    });
+
+    expect(
+      screen.getByText(/You'll be able to access Drafto once an admin approves your account/),
+    ).toBeInTheDocument();
   });
 });
