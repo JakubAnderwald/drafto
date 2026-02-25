@@ -40,13 +40,13 @@ Check off each item as it is completed. Update this section at the end of every 
 
 ### Phase 3: Notes — Editor & Auto-save
 
-- [ ] 3.1 — Install & configure BlockNote + wrapper component + tests + ADR
-- [ ] 3.2 — Notes API routes (list, create, get, update, soft-delete) + unit tests
-- [ ] 3.3 — Note list component + integration tests
-- [ ] 3.4 — Auto-save (debounced) + save indicator + tests
-- [ ] 3.5 — Note title handling + tests
+- [x] 3.1 — Install & configure BlockNote + wrapper component + tests + ADR
+- [x] 3.2 — Notes API routes (list, create, get, update, soft-delete) + unit tests
+- [x] 3.3 — Note list component + integration tests
+- [x] 3.4 — Auto-save (debounced) + save indicator + tests
+- [x] 3.5 — Note title handling + tests
 - [ ] 3.6 — E2E: note editing flow (create, edit, save, reload)
-- [ ] 3-CP — **Checkpoint**: full suite green
+- [x] 3-CP — **Checkpoint**: full suite green
 
 ### Phase 4: Notes — Organization & Trash
 
