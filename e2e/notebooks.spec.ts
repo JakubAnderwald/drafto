@@ -55,10 +55,6 @@ test.describe("Notebook management lifecycle", () => {
 
     // There should be at least one notebook in the sidebar
     const sidebar = page.locator("aside");
-    await expect(sidebar.locator("nav li"))
-      .toHaveCount(1, { timeout: 5000 })
-      .catch(() => {
-        // At least one notebook exists (could be more from other tests)
-      });
+    await expect(sidebar.locator("nav li").first()).toBeVisible({ timeout: 5000 });
   });
 });

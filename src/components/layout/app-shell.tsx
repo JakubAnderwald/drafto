@@ -13,14 +13,21 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const handleCreateNote = useCallback(async () => {
     if (!selectedNotebookId) return;
 
-    const res = await fetch(`/api/notebooks/${selectedNotebookId}/notes`, {
-      method: "POST",
-    });
+    try {
+      const res = await fetch(`/api/notebooks/${selectedNotebookId}/notes`, {
+        method: "POST",
+      });
 
-    if (res.ok) {
-      const note = await res.json();
+      if (!res.ok) {
+        console.error("Failed to create note:", res.status);
+        return;
+      }
+
+      const note: { id: string } = await res.json();
       setSelectedNoteId(note.id);
       setRefreshTrigger((prev) => prev + 1);
+    } catch (err) {
+      console.error("Failed to create note:", err);
     }
   }, [selectedNotebookId]);
 
@@ -59,7 +66,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       {/* Main panel — editor */}
       <main className="flex flex-1 flex-col">
         {selectedNoteId ? (
-          <NoteEditorPanel noteId={selectedNoteId} />
+          <NoteEditorPanel key={selectedNoteId} noteId={selectedNoteId} />
         ) : (
           <div className="flex flex-1 items-center justify-center text-gray-400">Select a note</div>
         )}

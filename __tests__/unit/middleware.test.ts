@@ -34,7 +34,14 @@ describe("Auth middleware", () => {
   it("allows access to public routes without auth", async () => {
     mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
 
-    const publicRoutes = ["/login", "/signup", "/auth/callback", "/forgot-password", "/api/health"];
+    const publicRoutes = [
+      "/login",
+      "/signup",
+      "/auth/callback",
+      "/forgot-password",
+      "/reset-password",
+      "/api/health",
+    ];
 
     for (const route of publicRoutes) {
       const response = await updateSession(createRequest(route));

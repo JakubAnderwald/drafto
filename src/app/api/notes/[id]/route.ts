@@ -20,7 +20,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
     .single();
 
   if (error) {
-    return errorResponse(error.message, 404);
+    return errorResponse("Note not found", 404);
   }
 
   return successResponse(note);
@@ -33,7 +33,12 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   const { supabase, user } = auth;
   const { id } = await params;
 
-  const body = await request.json();
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json();
+  } catch {
+    return errorResponse("Invalid JSON body", 400);
+  }
   const updates: Record<string, unknown> = {};
 
   if (body.title !== undefined) updates.title = body.title;
@@ -53,7 +58,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     .single();
 
   if (error) {
-    return errorResponse(error.message, 404);
+    return errorResponse("Failed to update note", 404);
   }
 
   return successResponse(note);
@@ -73,7 +78,7 @@ export async function DELETE(_request: NextRequest, { params }: RouteParams) {
     .eq("user_id", user.id);
 
   if (error) {
-    return errorResponse(error.message, 500);
+    return errorResponse("Failed to delete note", 500);
   }
 
   return successResponse({ success: true });

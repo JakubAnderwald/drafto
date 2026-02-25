@@ -21,7 +21,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
     .order("updated_at", { ascending: false });
 
   if (error) {
-    return errorResponse(error.message, 500);
+    return errorResponse("Failed to fetch notes", 500);
   }
 
   return successResponse(notes);
@@ -45,7 +45,7 @@ export async function POST(_request: NextRequest, { params }: RouteParams) {
     .single();
 
   if (error) {
-    return errorResponse(error.message, 500);
+    return errorResponse("Failed to create note", 500);
   }
 
   return successResponse(note, 201);

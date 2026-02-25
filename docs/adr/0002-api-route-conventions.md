@@ -34,7 +34,7 @@ All data access flows through Next.js API routes under `/api/`. We establish the
 
 - RESTful routes under `/api/` (e.g., `/api/notebooks`, `/api/notes/[id]`)
 - Standard HTTP methods: GET (list/read), POST (create), PATCH (update), DELETE (delete)
-- No direct Supabase client usage in React components
+- No direct Supabase client usage in React components for domain-data CRUD operations (auth operations such as signUp, signIn, and signOut in auth UI pages use the Supabase client directly)
 
 ## Consequences
 

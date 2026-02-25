@@ -29,15 +29,18 @@ export function NotebooksSidebar({ selectedNotebookId, onSelectNotebook }: Noteb
     hasFetched.current = true;
 
     fetch("/api/notebooks")
-      .then((res) => res.json())
-      .then((data: Notebook[]) => {
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`Failed to load notebooks: ${res.status}`);
+        return (await res.json()) as Notebook[];
+      })
+      .then((data) => {
         setNotebooks(data);
-        setLoading(false);
         if (data.length > 0 && !selectedNotebookId) {
           onSelectNotebook(data[0].id);
         }
       })
-      .catch(() => setLoading(false));
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, [selectedNotebookId, onSelectNotebook]);
 
   useEffect(() => {
@@ -122,6 +125,7 @@ export function NotebooksSidebar({ selectedNotebookId, onSelectNotebook }: Noteb
       <div className="flex items-center justify-between border-b p-3">
         <h2 className="text-sm font-semibold text-gray-700">Notebooks</h2>
         <button
+          type="button"
           onClick={handleCreate}
           className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
           aria-label="New notebook"
@@ -159,7 +163,10 @@ export function NotebooksSidebar({ selectedNotebookId, onSelectNotebook }: Noteb
                     setEditingName(notebook.name);
                   }}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") onSelectNotebook(notebook.id);
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onSelectNotebook(notebook.id);
+                    }
                   }}
                   className={`group flex w-full cursor-pointer items-center justify-between rounded px-2 py-1.5 text-left text-sm ${
                     selectedNotebookId === notebook.id
@@ -169,6 +176,7 @@ export function NotebooksSidebar({ selectedNotebookId, onSelectNotebook }: Noteb
                 >
                   <span className="truncate">{notebook.name}</span>
                   <button
+                    type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       handleDelete(notebook.id);

@@ -50,7 +50,10 @@ describe("useAutoSave", () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(mockFetch).toHaveBeenCalledWith(
       "/api/notes/note-1",
-      expect.objectContaining({ method: "PATCH" }),
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ title: "ABC" }),
+      }),
     );
   });
 

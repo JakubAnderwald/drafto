@@ -30,8 +30,8 @@ We use BlockNote (`@blocknote/core`, `@blocknote/react`, `@blocknote/mantine`) w
 ## Consequences
 
 - **Positive**: BlockNote's JSON format maps directly to JSONB storage — no serialization layer needed.
-- **Positive**: Slash commands work out of the box with the default configuration.
-- **Positive**: Mantine theme provides polished UI without custom CSS.
+- **Convenient**: Slash commands work out of the box with the default configuration.
+- **Beneficial**: Mantine theme provides polished UI without custom CSS.
 - **Negative**: BlockNote adds ~200KB to the client bundle. Acceptable for a note-taking app.
 - **Negative**: Content is not human-readable in the database (JSON vs Markdown/HTML). We accept this for the structured editing benefits.
 - **Neutral**: Editor is client-only (`"use client"`) — server-side rendering of note content would require a separate renderer.

@@ -38,7 +38,10 @@ function fetchNotes(notebookId: string, cacheKey: string): Promise<NoteListItem[
   if (cached) return cached;
 
   const promise = fetch(`/api/notebooks/${notebookId}/notes`)
-    .then((res) => res.json())
+    .then((res) => {
+      if (!res.ok) throw new Error(`Failed to fetch notes: ${res.status}`);
+      return res.json();
+    })
     .then((data: NoteListItem[]) => data);
 
   notesCache.set(cacheKey, promise);
@@ -57,18 +60,21 @@ export function NoteList({
   const [notes, setNotes] = useState(initialNotes);
 
   // Update notes when cache key changes (new data loaded)
-  if (notes !== initialNotes && initialNotes.length > 0) {
+  if (notes !== initialNotes) {
     setNotes(initialNotes);
   }
 
   const handleDelete = useCallback(
     (noteId: string) => {
-      setNotes((prev) => prev.filter((n) => n.id !== noteId));
-      if (selectedNoteId === noteId) {
-        onSelectNote(notes[0]?.id ?? "");
-      }
+      setNotes((prev) => {
+        const filtered = prev.filter((n) => n.id !== noteId);
+        if (selectedNoteId === noteId) {
+          onSelectNote(filtered[0]?.id ?? "");
+        }
+        return filtered;
+      });
     },
-    [notes, selectedNoteId, onSelectNote],
+    [selectedNoteId, onSelectNote],
   );
 
   // Clear cache for this notebook on unmount-like scenarios
@@ -79,11 +85,18 @@ export function NoteList({
       <div className="flex items-center justify-between border-b p-3">
         <h2 className="text-sm font-semibold text-gray-700">Notes</h2>
         <button
+          type="button"
           onClick={onCreateNote}
           className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
           aria-label="New note"
         >
-          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg
+            aria-hidden="true"
+            className="h-4 w-4"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
         </button>

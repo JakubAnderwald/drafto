@@ -29,13 +29,15 @@ export async function updateSession(request: NextRequest) {
           return request.cookies.getAll();
         },
         setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
+          cookiesToSet.forEach(({ name, value }) => {
+            request.cookies.set(name, value);
+          });
           supabaseResponse = NextResponse.next({
             request,
           });
-          cookiesToSet.forEach(({ name, value, options }) =>
-            supabaseResponse.cookies.set(name, value, options),
-          );
+          cookiesToSet.forEach(({ name, value, options }) => {
+            supabaseResponse.cookies.set(name, value, options);
+          });
         },
       },
     },
@@ -60,11 +62,15 @@ export async function updateSession(request: NextRequest) {
   }
 
   // Check if user is approved
-  const { data: profile } = await supabase
+  const { data: profile, error: profileError } = await supabase
     .from("profiles")
     .select("is_approved")
     .eq("id", user.id)
     .single();
+
+  if (profileError) {
+    throw profileError;
+  }
 
   // Waiting-for-approval page: allow unapproved users to see it
   if (pathname === "/waiting-for-approval") {

@@ -7,27 +7,40 @@ export default async function AdminPage() {
 
   const {
     data: { user },
+    error: userError,
   } = await supabase.auth.getUser();
+
+  if (userError) {
+    throw userError;
+  }
 
   if (!user) {
     redirect("/login");
   }
 
-  const { data: profile } = await supabase
+  const { data: profile, error: profileError } = await supabase
     .from("profiles")
     .select("is_admin")
     .eq("id", user.id)
     .single();
 
+  if (profileError) {
+    throw profileError;
+  }
+
   if (!profile?.is_admin) {
     redirect("/");
   }
 
-  const { data: pendingUsers } = await supabase
+  const { data: pendingUsers, error: pendingUsersError } = await supabase
     .from("profiles")
     .select("id, display_name, created_at")
     .eq("is_approved", false)
     .order("created_at", { ascending: true });
+
+  if (pendingUsersError) {
+    throw pendingUsersError;
+  }
 
   return (
     <div className="mx-auto max-w-2xl p-8">

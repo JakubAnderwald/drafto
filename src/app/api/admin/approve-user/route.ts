@@ -9,30 +9,45 @@ export async function POST(request: NextRequest) {
   const { supabase, user } = auth;
 
   // Check if requester is an admin
-  const { data: profile } = await supabase
+  const { data: profile, error: profileError } = await supabase
     .from("profiles")
     .select("is_admin")
     .eq("id", user.id)
     .single();
 
+  if (profileError) {
+    return errorResponse("Failed to verify admin privileges", 500);
+  }
+
   if (!profile?.is_admin) {
     return errorResponse("Forbidden", 403);
   }
 
-  const body = await request.json();
-  const userId = body.userId;
+  let userId: unknown;
+  try {
+    const body = await request.json();
+    userId = body?.userId;
+  } catch {
+    return errorResponse("Invalid JSON body", 400);
+  }
 
   if (!userId || typeof userId !== "string") {
     return errorResponse("userId is required", 400);
   }
 
-  const { error: updateError } = await supabase
+  const { data: updatedProfile, error: updateError } = await supabase
     .from("profiles")
     .update({ is_approved: true })
-    .eq("id", userId);
+    .eq("id", userId)
+    .select("id")
+    .maybeSingle();
 
   if (updateError) {
-    return errorResponse(updateError.message, 500);
+    return errorResponse("Failed to approve user", 500);
+  }
+
+  if (!updatedProfile) {
+    return errorResponse("User not found", 404);
   }
 
   return NextResponse.json({ success: true });

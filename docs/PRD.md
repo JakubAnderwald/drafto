@@ -131,7 +131,7 @@ The app must be usable on mobile browsers from day one, even though a native app
 
 - **Note opening:** < 200ms from click to fully rendered content
 - **Auto-save:** < 500ms debounce, save completes within 1s
-- **Navigation:** No full page reloads — client-side transitions between notebooks/notes
+- **Navigation:** No full-page reloads — client-side transitions between notebooks/notes
 - **Initial load:** < 3s on 3G connection
 
 ### 5.2 Architecture Constraints
@@ -153,7 +153,7 @@ This means:
 
 ### 5.4 Data Model (High-Level)
 
-```
+```text
 users (managed by Supabase Auth)
 ├── notebooks
 │   ├── id (uuid)

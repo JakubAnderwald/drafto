@@ -15,17 +15,19 @@ export function AdminUserList({ initialUsers }: { initialUsers: PendingUser[] })
   async function handleApprove(userId: string) {
     setApprovingId(userId);
 
-    const response = await fetch("/api/admin/approve-user", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId }),
-    });
+    try {
+      const response = await fetch("/api/admin/approve-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId }),
+      });
 
-    if (response.ok) {
-      setPendingUsers((prev) => prev.filter((u) => u.id !== userId));
+      if (response.ok) {
+        setPendingUsers((prev) => prev.filter((u) => u.id !== userId));
+      }
+    } finally {
+      setApprovingId(null);
     }
-
-    setApprovingId(null);
   }
 
   if (pendingUsers.length === 0) {
@@ -43,6 +45,7 @@ export function AdminUserList({ initialUsers }: { initialUsers: PendingUser[] })
             </p>
           </div>
           <button
+            type="button"
             onClick={() => handleApprove(user.id)}
             disabled={approvingId === user.id}
             className="rounded-md bg-green-600 px-4 py-2 text-sm text-white hover:bg-green-700 disabled:opacity-50"

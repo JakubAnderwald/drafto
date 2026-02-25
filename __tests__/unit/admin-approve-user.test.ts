@@ -84,9 +84,10 @@ describe("POST /api/admin/approve-user", () => {
       error: null,
     });
 
-    const mockUpdate = vi.fn().mockReturnValue({
-      eq: () => Promise.resolve({ error: null }),
-    });
+    const mockMaybeSingle = vi.fn().mockResolvedValue({ data: { id: "user-2" }, error: null });
+    const mockSelect = vi.fn().mockReturnValue({ maybeSingle: mockMaybeSingle });
+    const mockEq = vi.fn().mockReturnValue({ select: mockSelect });
+    const mockUpdate = vi.fn().mockReturnValue({ eq: mockEq });
 
     let callCount = 0;
     mockFrom.mockImplementation(() => {
@@ -111,5 +112,7 @@ describe("POST /api/admin/approve-user", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.success).toBe(true);
+    expect(mockUpdate).toHaveBeenCalledWith({ is_approved: true });
+    expect(mockEq).toHaveBeenCalledWith("id", "user-2");
   });
 });

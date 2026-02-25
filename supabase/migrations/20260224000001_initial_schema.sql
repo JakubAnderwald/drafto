@@ -138,6 +138,10 @@ create policy "Users can insert own notes"
       select 1 from public.profiles p
       where p.id = auth.uid() and p.is_approved = true
     )
+    and exists (
+      select 1 from public.notebooks n
+      where n.id = notebook_id and n.user_id = auth.uid()
+    )
   );
 
 create policy "Users can update own notes"
@@ -147,6 +151,13 @@ create policy "Users can update own notes"
     and exists (
       select 1 from public.profiles p
       where p.id = auth.uid() and p.is_approved = true
+    )
+  )
+  with check (
+    notebook_id is null
+    or exists (
+      select 1 from public.notebooks n
+      where n.id = notebook_id and n.user_id = auth.uid()
     )
   );
 
@@ -193,6 +204,10 @@ create policy "Users can insert own attachments"
     and exists (
       select 1 from public.profiles p
       where p.id = auth.uid() and p.is_approved = true
+    )
+    and exists (
+      select 1 from public.notes n
+      where n.id = note_id and n.user_id = auth.uid()
     )
   );
 

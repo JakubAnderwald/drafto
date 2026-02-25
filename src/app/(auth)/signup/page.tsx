@@ -17,19 +17,22 @@ export default function SignupPage() {
     setError(null);
     setLoading(true);
 
-    const supabase = createClient();
-    const { error: signUpError } = await supabase.auth.signUp({
-      email,
-      password,
-    });
+    try {
+      const supabase = createClient();
+      const { error: signUpError } = await supabase.auth.signUp({
+        email,
+        password,
+      });
 
-    if (signUpError) {
-      setError(signUpError.message);
+      if (signUpError) {
+        setError(signUpError.message);
+        return;
+      }
+
+      router.push("/waiting-for-approval");
+    } finally {
       setLoading(false);
-      return;
     }
-
-    router.push("/waiting-for-approval");
   }
 
   return (

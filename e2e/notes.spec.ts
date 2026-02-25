@@ -36,7 +36,9 @@ test.describe("Note editing flow", () => {
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 
     // --- Verify the note appears in the note list with the correct title ---
-    const noteList = page.locator("section").nth(1);
+    const noteList = page
+      .locator("section")
+      .filter({ has: page.getByRole("heading", { name: "Notes" }) });
     await expect(noteList.getByText(noteTitle)).toBeVisible();
 
     // --- Reload the page and verify persistence ---
@@ -84,7 +86,9 @@ test.describe("Note editing flow", () => {
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 
     // Both notes should be in the list
-    const noteList = page.locator("section").nth(1);
+    const noteList = page
+      .locator("section")
+      .filter({ has: page.getByRole("heading", { name: "Notes" }) });
     await expect(noteList.getByText(title1)).toBeVisible();
     await expect(noteList.getByText(title2)).toBeVisible();
 

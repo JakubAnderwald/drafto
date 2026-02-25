@@ -34,9 +34,6 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   const [title, setTitle] = useState(note?.title ?? "");
   const { saveStatus, debouncedSave } = useAutoSave({ noteId });
 
-  // Invalidate cache when noteId changes for fresh data on next render
-  noteCache.delete(noteId);
-
   if (!note) {
     return (
       <div className="flex flex-1 items-center justify-center text-gray-400">Note not found</div>

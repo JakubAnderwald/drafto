@@ -12,7 +12,12 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   const { supabase, user } = auth;
   const { id } = await params;
 
-  const body = await request.json();
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json();
+  } catch {
+    return errorResponse("Invalid JSON body", 400);
+  }
   const name = body.name;
 
   if (!name || typeof name !== "string" || name.trim().length === 0) {
@@ -28,7 +33,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     .single();
 
   if (error) {
-    return errorResponse(error.message, 404);
+    return errorResponse("Failed to update notebook", 404);
   }
 
   return successResponse(notebook);
@@ -42,11 +47,15 @@ export async function DELETE(_request: NextRequest, { params }: RouteParams) {
   const { id } = await params;
 
   // Check if notebook has notes
-  const { count } = await supabase
+  const { count, error: countError } = await supabase
     .from("notes")
     .select("id", { count: "exact", head: true })
     .eq("notebook_id", id)
     .eq("user_id", user.id);
+
+  if (countError) {
+    return errorResponse("Failed to check notebook contents", 500);
+  }
 
   if (count && count > 0) {
     return errorResponse("Cannot delete notebook with notes. Move or delete notes first.", 409);
@@ -55,7 +64,7 @@ export async function DELETE(_request: NextRequest, { params }: RouteParams) {
   const { error } = await supabase.from("notebooks").delete().eq("id", id).eq("user_id", user.id);
 
   if (error) {
-    return errorResponse(error.message, 500);
+    return errorResponse("Failed to delete notebook", 500);
   }
 
   return successResponse({ success: true });

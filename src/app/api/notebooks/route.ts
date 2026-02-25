@@ -14,7 +14,7 @@ export async function GET() {
     .order("name");
 
   if (error) {
-    return errorResponse(error.message, 500);
+    return errorResponse("Failed to fetch notebooks", 500);
   }
 
   return successResponse(notebooks);
@@ -26,7 +26,12 @@ export async function POST(request: NextRequest) {
 
   const { supabase, user } = auth;
 
-  const body = await request.json();
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json();
+  } catch {
+    return errorResponse("Invalid JSON body", 400);
+  }
   const name = body.name;
 
   if (!name || typeof name !== "string" || name.trim().length === 0) {
@@ -40,7 +45,7 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (error) {
-    return errorResponse(error.message, 500);
+    return errorResponse("Failed to create notebook", 500);
   }
 
   return successResponse(notebook, 201);

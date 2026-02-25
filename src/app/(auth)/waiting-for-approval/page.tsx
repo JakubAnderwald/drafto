@@ -8,7 +8,10 @@ export default function WaitingForApprovalPage() {
 
   async function handleLogout() {
     const supabase = createClient();
-    await supabase.auth.signOut();
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      console.error("Failed to sign out:", error);
+    }
     router.push("/login");
   }
 
@@ -20,6 +23,7 @@ export default function WaitingForApprovalPage() {
         approves your account.
       </p>
       <button
+        type="button"
         onClick={handleLogout}
         className="rounded-md bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300 focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 focus:outline-none"
       >
