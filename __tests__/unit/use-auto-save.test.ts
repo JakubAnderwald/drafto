@@ -57,6 +57,32 @@ describe("useAutoSave", () => {
     );
   });
 
+  it("flushes pending save on unmount", async () => {
+    const { result, unmount } = renderHook(() =>
+      useAutoSave({ noteId: "note-1", debounceMs: 1000 }),
+    );
+
+    act(() => {
+      result.current.debouncedSave({ title: "Flush me" });
+    });
+
+    // Not saved yet (debounce hasn't fired)
+    expect(mockFetch).not.toHaveBeenCalled();
+
+    // Unmount before the timer fires
+    unmount();
+
+    // The flush-on-unmount path should have called fetch
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/notes/note-1",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ title: "Flush me" }),
+      }),
+    );
+  });
+
   it("does not save when noteId is null", async () => {
     const { result } = renderHook(() => useAutoSave({ noteId: null, debounceMs: 100 }));
 

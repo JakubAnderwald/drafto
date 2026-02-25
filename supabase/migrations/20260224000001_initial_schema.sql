@@ -154,8 +154,12 @@ create policy "Users can update own notes"
     )
   )
   with check (
-    notebook_id is null
-    or exists (
+    auth.uid() = user_id
+    and exists (
+      select 1 from public.profiles p
+      where p.id = auth.uid() and p.is_approved = true
+    )
+    and exists (
       select 1 from public.notebooks n
       where n.id = notebook_id and n.user_id = auth.uid()
     )

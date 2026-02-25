@@ -63,8 +63,7 @@ If the core experience is solid, Drafto could expand to a broader audience of us
 | Auth provider             | Supabase Auth (email + password)                                                                                                                         |
 | Session management        | Handled via middleware (already scaffolded)                                                                                                              |
 | Approval flow             | New users see a "Waiting for approval" screen after signup. Admin approves via a simple admin view. RLS blocks unapproved users from accessing any data. |
-
-| Password reset | "Forgot password" email flow via Supabase Auth |
+| Password reset            | "Forgot password" email flow via Supabase Auth                                                                                                           |
 
 **Out of scope for v1:** OAuth/social login, user roles/permissions beyond admin/user, public API.
 

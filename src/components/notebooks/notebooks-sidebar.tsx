@@ -67,19 +67,21 @@ export function NotebooksSidebar({ selectedNotebookId, onSelectNotebook }: Noteb
       return;
     }
 
-    const res = await fetch("/api/notebooks", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
+    try {
+      const res = await fetch("/api/notebooks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
 
-    if (res.ok) {
-      const notebook: Notebook = await res.json();
-      setNotebooks((prev) => [...prev, notebook].sort((a, b) => a.name.localeCompare(b.name)));
-      onSelectNotebook(notebook.id);
+      if (res.ok) {
+        const notebook: Notebook = await res.json();
+        setNotebooks((prev) => [...prev, notebook].sort((a, b) => a.name.localeCompare(b.name)));
+        onSelectNotebook(notebook.id);
+      }
+    } finally {
+      setCreatingName(null);
     }
-
-    setCreatingName(null);
   }
 
   async function handleRename(id: string) {
@@ -89,30 +91,36 @@ export function NotebooksSidebar({ selectedNotebookId, onSelectNotebook }: Noteb
       return;
     }
 
-    const res = await fetch(`/api/notebooks/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
+    try {
+      const res = await fetch(`/api/notebooks/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
 
-    if (res.ok) {
-      const updated: Notebook = await res.json();
-      setNotebooks((prev) =>
-        prev.map((n) => (n.id === id ? updated : n)).sort((a, b) => a.name.localeCompare(b.name)),
-      );
+      if (res.ok) {
+        const updated: Notebook = await res.json();
+        setNotebooks((prev) =>
+          prev.map((n) => (n.id === id ? updated : n)).sort((a, b) => a.name.localeCompare(b.name)),
+        );
+      }
+    } finally {
+      setEditingId(null);
     }
-
-    setEditingId(null);
   }
 
   async function handleDelete(id: string) {
-    const res = await fetch(`/api/notebooks/${id}`, { method: "DELETE" });
+    try {
+      const res = await fetch(`/api/notebooks/${id}`, { method: "DELETE" });
 
-    if (res.ok) {
-      setNotebooks((prev) => prev.filter((n) => n.id !== id));
-      if (selectedNotebookId === id) {
-        onSelectNotebook(null);
+      if (res.ok) {
+        setNotebooks((prev) => prev.filter((n) => n.id !== id));
+        if (selectedNotebookId === id) {
+          onSelectNotebook(null);
+        }
       }
+    } catch {
+      // Network error — UI state unchanged
     }
   }
 

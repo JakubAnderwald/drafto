@@ -113,6 +113,25 @@ describe("Auth middleware", () => {
     expect(response.status).toBe(200);
   });
 
+  it("redirects to /login when profile query fails", async () => {
+    mockGetUser.mockResolvedValue({
+      data: { user: { id: "user-1", email: "test@test.com" } },
+      error: null,
+    });
+    mockFrom.mockReturnValue({
+      select: () => ({
+        eq: () => ({
+          single: () => Promise.resolve({ data: null, error: { message: "DB error" } }),
+        }),
+      }),
+    });
+
+    const response = await updateSession(createRequest("/"));
+
+    expect(response.status).toBe(307);
+    expect(new URL(response.headers.get("location")!).pathname).toBe("/login");
+  });
+
   it("redirects approved users away from /waiting-for-approval", async () => {
     mockGetUser.mockResolvedValue({
       data: { user: { id: "user-1", email: "test@test.com" } },

@@ -23,7 +23,11 @@ function fetchNote(noteId: string): Promise<NoteData | null> {
 
   const promise = fetch(`/api/notes/${noteId}`)
     .then((res) => (res.ok ? res.json() : null))
-    .then((data: NoteData | null) => data);
+    .then((data: NoteData | null) => {
+      // Delete cache entry after resolve so subsequent navigations re-fetch fresh data
+      noteCache.delete(noteId);
+      return data;
+    });
 
   noteCache.set(noteId, promise);
   return promise;

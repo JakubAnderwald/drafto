@@ -25,9 +25,10 @@ test.describe("Notebook management lifecycle", () => {
     const renamedName = `Renamed ${Date.now()}`;
 
     // Double-click to enter edit mode
-    await page.getByText(newNotebookName).dblclick();
+    const notebookListItem = page.locator("li").filter({ hasText: newNotebookName });
+    await notebookListItem.dblclick();
 
-    const editInput = page.locator("input[type='text']").last();
+    const editInput = notebookListItem.locator("input[type='text']");
     await editInput.clear();
     await editInput.fill(renamedName);
     await editInput.press("Enter");
