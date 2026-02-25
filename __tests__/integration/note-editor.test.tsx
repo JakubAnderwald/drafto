@@ -45,7 +45,9 @@ describe("NoteEditor", () => {
     await act(async () => {
       render(
         <NoteEditor
-          initialContent={initialContent as Parameters<typeof NoteEditor>[0]["initialContent"]}
+          initialContent={
+            initialContent as unknown as Parameters<typeof NoteEditor>[0]["initialContent"]
+          }
         />,
       );
     });
