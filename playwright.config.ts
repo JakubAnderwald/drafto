@@ -12,9 +12,41 @@ export default defineConfig({
     trace: "on-first-retry",
   },
   projects: [
+    // Auth setup — runs first, saves storage state for other projects
+    {
+      name: "setup",
+      testMatch: /auth\.setup\.ts/,
+    },
+
+    // Desktop
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: {
+        ...devices["Desktop Chrome"],
+        storageState: "e2e/.auth/user.json",
+      },
+      dependencies: ["setup"],
+      testIgnore: /auth\.setup\.ts/,
+    },
+
+    // Mobile
+    {
+      name: "Mobile Chrome",
+      use: {
+        ...devices["Pixel 5"],
+        storageState: "e2e/.auth/user.json",
+      },
+      dependencies: ["setup"],
+      testIgnore: /auth\.setup\.ts/,
+    },
+    {
+      name: "Mobile Safari",
+      use: {
+        ...devices["iPhone 13"],
+        storageState: "e2e/.auth/user.json",
+      },
+      dependencies: ["setup"],
+      testIgnore: /auth\.setup\.ts/,
     },
   ],
   webServer: {

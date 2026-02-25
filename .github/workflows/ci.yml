@@ -10,6 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  SKIP_ENV_VALIDATION: "true"
+
 jobs:
   lint-and-typecheck:
     name: Lint & Typecheck
@@ -25,6 +28,8 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm exec tsc --noEmit
+      - run: pnpm audit --audit-level=high
+        continue-on-error: true
 
   unit-and-integration-tests:
     name: Unit & Integration Tests
@@ -47,22 +52,44 @@ jobs:
     name: E2E Tests
     runs-on: ubuntu-latest
     steps:
+      - name: Check for required secrets
+        id: check-secrets
+        run: |
+          if [ -z "${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}" ]; then
+            echo "has_secrets=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Supabase secrets not configured — skipping E2E tests"
+          else
+            echo "has_secrets=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.check-secrets.outputs.has_secrets == 'true'
       - uses: pnpm/action-setup@v4
+        if: steps.check-secrets.outputs.has_secrets == 'true'
       - uses: actions/setup-node@v4
+        if: steps.check-secrets.outputs.has_secrets == 'true'
         with:
           node-version-file: ".nvmrc"
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
+        if: steps.check-secrets.outputs.has_secrets == 'true'
+      - run: pnpm exec playwright install --with-deps chromium webkit
+        if: steps.check-secrets.outputs.has_secrets == 'true'
       - run: pnpm build
+        if: steps.check-secrets.outputs.has_secrets == 'true'
         env:
           SENTRY_AUTH_TOKEN: ""
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
       - run: pnpm test:e2e
+        if: steps.check-secrets.outputs.has_secrets == 'true'
         env:
           CI: true
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
+          E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: failure() && steps.check-secrets.outputs.has_secrets == 'true'
         with:
           name: playwright-report
           path: playwright-report/
@@ -81,5 +108,9 @@ jobs:
           name: coverage
           path: coverage
       - uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      - uses: SonarSource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

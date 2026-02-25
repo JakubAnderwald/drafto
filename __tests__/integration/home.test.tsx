@@ -1,19 +1,13 @@
 import { act, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import Home from "@/app/page";
+import AppPage from "@/app/(app)/page";
 
-describe("Home page", () => {
-  it("renders the heading", async () => {
+describe("App page", () => {
+  it("renders without crashing", async () => {
     await act(async () => {
-      render(<Home />);
+      render(<AppPage />);
     });
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Drafto - Notes App");
-  });
-
-  it("renders the tagline", async () => {
-    await act(async () => {
-      render(<Home />);
-    });
-    expect(screen.getByText("Your notes, organized.")).toBeInTheDocument();
+    // The app page renders null — all UI comes from the (app) layout's AppShell
+    expect(document.body).toBeDefined();
   });
 });

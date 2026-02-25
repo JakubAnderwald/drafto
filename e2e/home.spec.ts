@@ -1,8 +1,8 @@
 import { expect, test } from "@playwright/test";
 
-test("home page loads and shows heading", async ({ page }) => {
+test("authenticated user sees app shell with notebooks", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Drafto - Notes App" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({ timeout: 10000 });
 });
 
 test("health API returns ok", async ({ request }) => {
