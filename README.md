@@ -41,7 +41,7 @@ cd drafto
 pnpm install
 ```
 
-2. Copy the env file and fill in your Supabase credentials:
+1. Copy the env file and fill in your Supabase credentials:
 
 ```bash
 cp .env.local.example .env.local
@@ -52,14 +52,14 @@ Required variables:
 - `NEXT_PUBLIC_SUPABASE_URL` — your Supabase project URL
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY` — your Supabase anon key
 
-3. Push the database schema to your Supabase project:
+1. Push the database schema to your Supabase project:
 
 ```bash
 supabase link --project-ref <your-project-ref>
 supabase db push
 ```
 
-4. Start the dev server:
+1. Start the dev server:
 
 ```bash
 pnpm dev
@@ -84,7 +84,7 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Project Structure
 
-```
+```text
 src/
   app/
     (app)/          # Authenticated app routes (notebooks, admin)
@@ -116,7 +116,7 @@ docs/
 
 The app uses a **three-panel layout**: notebooks sidebar, notes list, and editor. Data flows through Next.js API routes that use the Supabase server client, with Row Level Security enforcing access control at the database level.
 
-Auth is handled via Supabase Auth with email confirmation. New users must be approved by an admin (`profiles.is_approved`) before they can access the app. The middleware checks session validity and approval status on every request.
+Auth is handled via Supabase Auth with email confirmation. New users must be approved by an admin (`profiles.is_approved`) before they can access the app. Session refresh and approval checks run on every request via `middleware.ts` (the Next.js 16 `proxy.ts` convention is not yet adopted; the project retains `middleware.ts` for Edge runtime compatibility).
 
 See [`docs/adr/`](./docs/adr/) for Architecture Decision Records.
 
