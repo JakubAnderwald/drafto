@@ -2,7 +2,7 @@
 
 **Based on:** PRD v1.0 (2026-02-24)
 **Approach:** Vertical slicing — each phase delivers a working, testable feature end-to-end.
-**Rule:** After each phase, run the full test suite (`pnpm test`, `pnpm test:e2e`, `pnpm lint`, `tsc --noEmit`) and fix all failures before moving to the next phase.
+**Rule:** After each phase, run the full test suite (`pnpm test`, `pnpm test:e2e`, `pnpm lint`, `tsc --noEmit`) and fix all failures. Then push to the PR using the `/push` command (which pushes commits, polls CI until green, addresses review comments, and fixes any failures). Only move to the next phase after `/push` succeeds.
 
 ---
 
@@ -19,6 +19,7 @@ Check off each item as it is completed. Update this section at the end of every 
 - [x] 0.5a — CI: add `pnpm audit` step
 - [x] 0.5b — CI: add mobile viewports to Playwright config
 - [x] 0-CP — **Checkpoint**: full suite green
+- [x] 0-PUSH — **Push**: `/push` to PR — CI green before proceeding
 
 ### Phase 1: Authentication
 
@@ -29,6 +30,7 @@ Check off each item as it is completed. Update this section at the end of every 
 - [x] 1.4 — Admin approval page + API + tests
 - [x] 1.5 — Default notebook creation on first login + tests
 - [x] 1-CP — **Checkpoint**: full suite green, signup→approve→login flow verified
+- [x] 1-PUSH — **Push**: `/push` to PR — CI green before proceeding
 
 ### Phase 2: App Shell & Notebooks
 
@@ -37,6 +39,7 @@ Check off each item as it is completed. Update this section at the end of every 
 - [x] 2.2b — Notebooks sidebar UI + integration tests
 - [x] 2.3 — E2E: notebook management lifecycle
 - [x] 2-CP — **Checkpoint**: full suite green
+- [x] 2-PUSH — **Push**: `/push` to PR — CI green before proceeding
 
 ### Phase 3: Notes — Editor & Auto-save
 
@@ -47,6 +50,7 @@ Check off each item as it is completed. Update this section at the end of every 
 - [x] 3.5 — Note title handling + tests
 - [x] 3.6 — E2E: note editing flow (create, edit, save, reload)
 - [x] 3-CP — **Checkpoint**: full suite green
+- [x] 3-PUSH — **Push**: `/push` to PR — CI green before proceeding
 
 ### Phase 4: Notes — Organization & Trash
 
@@ -54,6 +58,7 @@ Check off each item as it is completed. Update this section at the end of every 
 - [ ] 4.2 — Trash: soft delete, restore, permanent delete + tests
 - [ ] 4.3 — Trash auto-cleanup (30-day cron) + tests
 - [ ] 4-CP — **Checkpoint**: full suite green
+- [ ] 4-PUSH — **Push**: `/push` to PR — CI green before proceeding
 
 ### Phase 5: File Attachments
 
@@ -62,6 +67,7 @@ Check off each item as it is completed. Update this section at the end of every 
 - [ ] 5.2b — Editor file integration (inline images, download links) + tests
 - [ ] 5.3 — Attachment management (list, delete, cascade) + tests
 - [ ] 5-CP — **Checkpoint**: full suite green
+- [ ] 5-PUSH — **Push**: `/push` to PR — CI green before proceeding
 
 ### Phase 6: Responsive Design
 
@@ -70,6 +76,7 @@ Check off each item as it is completed. Update this section at the end of every 
 - [ ] 6.3 — Mobile layout (single-panel navigation) + tests
 - [ ] 6.4 — E2E: responsive flows (mobile + tablet viewports)
 - [ ] 6-CP — **Checkpoint**: full suite green (including mobile E2E)
+- [ ] 6-PUSH — **Push**: `/push` to PR — CI green before proceeding
 
 ### Phase 7: Polish & Hardening
 
@@ -77,6 +84,7 @@ Check off each item as it is completed. Update this section at the end of every 
 - [ ] 7.2 — Edge cases (empty states, long titles, session expiry, etc.)
 - [ ] 7.3 — PRD compliance checklist — all items verified
 - [ ] 7-FIN — **Final checkpoint**: complete suite green, v1 ready
+- [ ] 7-PUSH — **Push**: `/push` to PR — CI green, v1 ready to merge
 
 ---
 
@@ -151,6 +159,10 @@ Check off each item as it is completed. Update this section at the end of every 
 
 Run full suite: `pnpm lint && pnpm exec tsc --noEmit && pnpm test && pnpm test:e2e`. Fix all failures.
 
+### Push
+
+Run `/push` to push all commits to the PR. Wait for CI to pass, address any review comments, and fix any failures. **Do not proceed to Phase 1 until `/push` succeeds.**
+
 ---
 
 ## Phase 1: Authentication
@@ -216,6 +228,10 @@ Run full suite: `pnpm lint && pnpm exec tsc --noEmit && pnpm test && pnpm test:e
 
 Run full suite. Fix all failures. Verify: signup → waiting → admin approves → login → sees app with default notebook.
 
+### Push
+
+Run `/push` to push all commits to the PR. Wait for CI to pass, address any review comments, and fix any failures. **Do not proceed to Phase 2 until `/push` succeeds.**
+
 ---
 
 ## Phase 2: App Shell & Notebooks
@@ -262,6 +278,10 @@ Run full suite. Fix all failures. Verify: signup → waiting → admin approves 
 ### Checkpoint
 
 Run full suite. Fix all failures.
+
+### Push
+
+Run `/push` to push all commits to the PR. Wait for CI to pass, address any review comments, and fix any failures. **Do not proceed to Phase 3 until `/push` succeeds.**
 
 ---
 
@@ -331,6 +351,10 @@ Run full suite. Fix all failures.
 
 Run full suite. Fix all failures.
 
+### Push
+
+Run `/push` to push all commits to the PR. Wait for CI to pass, address any review comments, and fix any failures. **Do not proceed to Phase 4 until `/push` succeeds.**
+
 ---
 
 ## Phase 4: Notes — Organization & Trash
@@ -364,6 +388,10 @@ Run full suite. Fix all failures.
 ### Checkpoint
 
 Run full suite. Fix all failures.
+
+### Push
+
+Run `/push` to push all commits to the PR. Wait for CI to pass, address any review comments, and fix any failures. **Do not proceed to Phase 5 until `/push` succeeds.**
 
 ---
 
@@ -407,6 +435,10 @@ Run full suite. Fix all failures.
 
 Run full suite. Fix all failures.
 
+### Push
+
+Run `/push` to push all commits to the PR. Wait for CI to pass, address any review comments, and fix any failures. **Do not proceed to Phase 6 until `/push` succeeds.**
+
 ---
 
 ## Phase 6: Responsive Design
@@ -445,6 +477,10 @@ Run full suite. Fix all failures.
 ### Checkpoint
 
 Run full suite (including mobile viewport E2E). Fix all failures.
+
+### Push
+
+Run `/push` to push all commits to the PR. Wait for CI to pass, address any review comments, and fix any failures. **Do not proceed to Phase 7 until `/push` succeeds.**
 
 ---
 
@@ -497,6 +533,10 @@ Walk through every row in PRD §4.1–4.5 and verify each requirement is impleme
 ### Final Checkpoint
 
 Run complete suite: `pnpm lint && pnpm format:check && pnpm exec tsc --noEmit && pnpm test:coverage && pnpm test:e2e`. All green.
+
+### Final Push
+
+Run `/push` to push all commits to the PR. Wait for CI to pass, address any review comments, and fix any failures. **v1 is ready to merge.**
 
 ---
 
