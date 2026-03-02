@@ -131,7 +131,7 @@ test.describe("tablet sidebar", () => {
     // Sidebar should be off-screen (translated left) — not visually accessible
     // The "Notebooks" heading exists but sidebar is translated off-screen
     const aside = page.locator("aside");
-    await expect(aside).toHaveCSS("transform", /matrix.*-240|translateX\(-/);
+    await expect(aside).toHaveCSS("transform", /(matrix.*-\d+(\.\d+)?)|translateX\(-/);
 
     // Click hamburger to open sidebar
     await page.getByLabel("Toggle sidebar").click();
@@ -140,7 +140,7 @@ test.describe("tablet sidebar", () => {
     await expect(page.getByTestId("sidebar-backdrop")).toBeVisible({ timeout: 3000 });
 
     // Sidebar should now be translated to 0 (visible)
-    await expect(aside).not.toHaveCSS("transform", /matrix.*-240|translateX\(-/);
+    await expect(aside).not.toHaveCSS("transform", /(matrix.*-\d+(\.\d+)?)|translateX\(-/);
   });
 
   test("clicking backdrop closes sidebar", async ({ page }) => {
