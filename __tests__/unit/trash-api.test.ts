@@ -10,11 +10,13 @@ vi.mock("@/env", () => ({
 
 const mockGetUser = vi.fn();
 const mockFrom = vi.fn();
+const mockStorageFrom = vi.fn();
 
 vi.mock("@/lib/supabase/server", () => ({
   createClient: () => ({
     auth: { getUser: mockGetUser },
     from: mockFrom,
+    storage: { from: mockStorageFrom },
   }),
 }));
 
@@ -103,18 +105,33 @@ describe("Trash API", () => {
 
     it("returns 404 when note not found or not trashed", async () => {
       authenticateAs("user-1");
-      mockFrom.mockReturnValue({
-        delete: () => ({
-          eq: () => ({
-            eq: () => ({
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "attachments") {
+          return {
+            select: () => ({
               eq: () => ({
-                select: () => ({
-                  single: () => Promise.resolve({ data: null, error: { message: "Not found" } }),
+                eq: () => Promise.resolve({ data: [], error: null }),
+              }),
+            }),
+          };
+        }
+        if (table === "notes") {
+          return {
+            delete: () => ({
+              eq: () => ({
+                eq: () => ({
+                  eq: () => ({
+                    select: () => ({
+                      single: () =>
+                        Promise.resolve({ data: null, error: { message: "Not found" } }),
+                    }),
+                  }),
                 }),
               }),
             }),
-          }),
-        }),
+          };
+        }
+        return {};
       });
 
       const { DELETE } = await import("@/app/api/notes/[id]/permanent/route");
@@ -125,20 +142,44 @@ describe("Trash API", () => {
       expect(response.status).toBe(404);
     });
 
-    it("permanently deletes a trashed note atomically", async () => {
+    it("permanently deletes a trashed note and cleans up storage", async () => {
       authenticateAs("user-1");
-      mockFrom.mockReturnValue({
-        delete: () => ({
-          eq: () => ({
-            eq: () => ({
+      const mockRemove = vi.fn().mockResolvedValue({ error: null });
+      mockStorageFrom.mockReturnValue({ remove: mockRemove });
+
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "attachments") {
+          return {
+            select: () => ({
               eq: () => ({
-                select: () => ({
-                  single: () => Promise.resolve({ data: { id: "note-1" }, error: null }),
+                eq: () =>
+                  Promise.resolve({
+                    data: [
+                      { file_path: "user-1/note-1/image.png" },
+                      { file_path: "user-1/note-1/doc.pdf" },
+                    ],
+                    error: null,
+                  }),
+              }),
+            }),
+          };
+        }
+        if (table === "notes") {
+          return {
+            delete: () => ({
+              eq: () => ({
+                eq: () => ({
+                  eq: () => ({
+                    select: () => ({
+                      single: () => Promise.resolve({ data: { id: "note-1" }, error: null }),
+                    }),
+                  }),
                 }),
               }),
             }),
-          }),
-        }),
+          };
+        }
+        return {};
       });
 
       const { DELETE } = await import("@/app/api/notes/[id]/permanent/route");
@@ -147,6 +188,49 @@ describe("Trash API", () => {
       });
       const response = await DELETE(request, { params });
       expect(response.status).toBe(200);
+      expect(mockRemove).toHaveBeenCalledWith(["user-1/note-1/image.png", "user-1/note-1/doc.pdf"]);
+    });
+
+    it("permanently deletes a trashed note with no attachments", async () => {
+      authenticateAs("user-1");
+      const mockRemove = vi.fn();
+      mockStorageFrom.mockReturnValue({ remove: mockRemove });
+
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "attachments") {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => Promise.resolve({ data: [], error: null }),
+              }),
+            }),
+          };
+        }
+        if (table === "notes") {
+          return {
+            delete: () => ({
+              eq: () => ({
+                eq: () => ({
+                  eq: () => ({
+                    select: () => ({
+                      single: () => Promise.resolve({ data: { id: "note-1" }, error: null }),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        return {};
+      });
+
+      const { DELETE } = await import("@/app/api/notes/[id]/permanent/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1/permanent", {
+        method: "DELETE",
+      });
+      const response = await DELETE(request, { params });
+      expect(response.status).toBe(200);
+      expect(mockRemove).not.toHaveBeenCalled();
     });
   });
 
