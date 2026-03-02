@@ -83,7 +83,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 - [x] 6.1 — Desktop layout refinement
 - [x] 6.2 — Tablet layout (collapsible sidebar) + tests
 - [x] 6.3 — Mobile layout (single-panel navigation) + tests
-- [ ] 6.4 — E2E: responsive flows (mobile + tablet viewports)
+- [x] 6.4 — E2E: responsive flows (mobile + tablet viewports)
 - [ ] 6-CP — **Checkpoint**: Run full suite locally. If green, check this off, commit, and exit.
 - [ ] 6-PUSH — **Push**: Run `/push` to PR. Address any review comments/failures automatically. Once `/push` succeeds, check this off and exit.
 
