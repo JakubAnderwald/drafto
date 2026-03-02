@@ -55,11 +55,11 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
           type="text"
           value={title}
           onChange={(e) => handleTitleChange(e.target.value)}
-          className="flex-1 text-lg font-semibold outline-none"
+          className="min-w-0 flex-1 text-lg font-semibold outline-none"
           placeholder="Untitled"
           aria-label="Note title"
         />
-        <span className="text-xs text-gray-400">
+        <span className="shrink-0 text-xs text-gray-400">
           {saveStatus === "saving" && "Saving..."}
           {saveStatus === "saved" && "Saved"}
           {saveStatus === "error" && "Error saving"}
