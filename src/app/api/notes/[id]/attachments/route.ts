@@ -81,5 +81,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     return errorResponse("Failed to save attachment record", 500);
   }
 
-  return successResponse(attachment, 201);
+  // Generate a signed URL for the uploaded file (1 year expiry)
+  const { data: urlData } = await supabase.storage
+    .from(BUCKET_NAME)
+    .createSignedUrl(filePath, 31536000);
+
+  return successResponse({ ...attachment, url: urlData?.signedUrl ?? null }, 201);
 }

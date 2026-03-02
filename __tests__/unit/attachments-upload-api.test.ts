@@ -111,6 +111,14 @@ function mockNoteNotFound() {
 function mockStorageUploadSuccess() {
   mockStorageFrom.mockReturnValue({
     upload: () => Promise.resolve({ data: { path: "user-1/note-1/test.png" }, error: null }),
+    createSignedUrl: () =>
+      Promise.resolve({
+        data: {
+          signedUrl:
+            "https://test.supabase.co/storage/v1/object/sign/attachments/user-1/note-1/test.png?token=abc",
+        },
+        error: null,
+      }),
     remove: vi.fn(),
   });
 }
@@ -232,6 +240,7 @@ describe("POST /api/notes/[id]/attachments", () => {
     expect(body.file_name).toBe("test.png");
     expect(body.mime_type).toBe("image/png");
     expect(body.note_id).toBe("note-1");
+    expect(body.url).toContain("token=abc");
   });
 
   it("cleans up storage when DB insert fails", async () => {

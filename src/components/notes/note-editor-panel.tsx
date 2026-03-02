@@ -69,6 +69,7 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
       {/* Editor */}
       <NoteEditor
         key={noteId}
+        noteId={noteId}
         initialContent={note.content as Block[] | undefined}
         onChange={handleContentChange}
       />
