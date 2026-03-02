@@ -1,14 +1,22 @@
-# Drafto — Implementation Plan
+# Drafto — Implementation Plan (Ralph Loop Edition)
 
 **Based on:** PRD v1.0 (2026-02-24)
-**Approach:** Vertical slicing — each phase delivers a working, testable feature end-to-end.
-**Rule:** After each phase, run the full test suite (`pnpm test`, `pnpm test:e2e`, `pnpm lint`, `tsc --noEmit`) and fix all failures. Then push to the PR using the `/push` command (which pushes commits, polls CI until green, addresses review comments, and fixes any failures). Only move to the next phase after `/push` succeeds.
+**Approach:** Autonomous Agent Loop (Ralph Technique). Vertical slicing — each phase delivers a working, testable feature end-to-end.
+
+**RALPH LOOP RULES (STRICT):**
+You are running in an autonomous, unattended loop. On every single execution, you MUST follow these exact steps in order:
+1. **Identify:** Scan the Progress Tracker below and find the *first* unchecked task `[ ]`.
+2. **Scope:** DO NOT attempt multiple tasks. Focus ONLY on that single task.
+3. **Implement:** Write the code to satisfy the task's requirements.
+4. **Test:** Run the full test suite (`pnpm test`, `pnpm test:e2e`, `pnpm lint`, `tsc --noEmit`). 
+5. **Fix:** If *any* test or check fails, you must debug, fix the code, and re-run the suite until it is 100% green. Do not proceed until all tests pass.
+6. **Record:** Check off the task in this file by changing `[ ]` to `[x]`. 
+7. **Commit:** Commit and push your changes to git with a descriptive message using the /push protocol.
+8. **Exit:** EXIT immediately so the loop can restart with a fresh context window. DO NOT start the next task.
 
 ---
 
 ## Progress Tracker
-
-Check off each item as it is completed. Update this section at the end of every work session.
 
 ### Phase 0: Foundation & Infrastructure
 
@@ -57,8 +65,8 @@ Check off each item as it is completed. Update this section at the end of every 
 - [ ] 4.1 — Move notes between notebooks + tests
 - [ ] 4.2 — Trash: soft delete, restore, permanent delete + tests
 - [ ] 4.3 — Trash auto-cleanup (30-day cron) + tests
-- [ ] 4-CP — **Checkpoint**: full suite green
-- [ ] 4-PUSH — **Push**: `/push` to PR — CI green before proceeding
+- [ ] 4-CP — **Checkpoint**: Run full suite locally. If green, check this off, commit, and exit.
+- [ ] 4-PUSH — **Push**: Run `/push` to PR. Address any review comments/failures automatically. Once `/push` succeeds, check this off and exit.
 
 ### Phase 5: File Attachments
 
@@ -66,8 +74,8 @@ Check off each item as it is completed. Update this section at the end of every 
 - [ ] 5.2a — Upload API route (25MB limit, auth) + unit tests
 - [ ] 5.2b — Editor file integration (inline images, download links) + tests
 - [ ] 5.3 — Attachment management (list, delete, cascade) + tests
-- [ ] 5-CP — **Checkpoint**: full suite green
-- [ ] 5-PUSH — **Push**: `/push` to PR — CI green before proceeding
+- [ ] 5-CP — **Checkpoint**: Run full suite locally. If green, check this off, commit, and exit.
+- [ ] 5-PUSH — **Push**: Run `/push` to PR. Address any review comments/failures automatically. Once `/push` succeeds, check this off and exit.
 
 ### Phase 6: Responsive Design
 
@@ -75,8 +83,8 @@ Check off each item as it is completed. Update this section at the end of every 
 - [ ] 6.2 — Tablet layout (collapsible sidebar) + tests
 - [ ] 6.3 — Mobile layout (single-panel navigation) + tests
 - [ ] 6.4 — E2E: responsive flows (mobile + tablet viewports)
-- [ ] 6-CP — **Checkpoint**: full suite green (including mobile E2E)
-- [ ] 6-PUSH — **Push**: `/push` to PR — CI green before proceeding
+- [ ] 6-CP — **Checkpoint**: Run full suite locally. If green, check this off, commit, and exit.
+- [ ] 6-PUSH — **Push**: Run `/push` to PR. Address any review comments/failures automatically. Once `/push` succeeds, check this off and exit.
 
 ### Phase 7: Polish & Hardening
 
@@ -84,7 +92,7 @@ Check off each item as it is completed. Update this section at the end of every 
 - [ ] 7.2 — Edge cases (empty states, long titles, session expiry, etc.)
 - [ ] 7.3 — PRD compliance checklist — all items verified
 - [ ] 7-FIN — **Final checkpoint**: complete suite green, v1 ready
-- [ ] 7-PUSH — **Push**: `/push` to PR — CI green, v1 ready to merge
+- [ ] 7-PUSH — **Push**: Run `/push` to PR. Once successful, check this off, commit, and output "PROJECT COMPLETE".
 
 ---
 
