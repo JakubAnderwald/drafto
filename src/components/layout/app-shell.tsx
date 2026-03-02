@@ -212,7 +212,13 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
             className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
             aria-label="Back to notebooks"
           >
-            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg
+              aria-hidden="true"
+              className="h-5 w-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
@@ -295,7 +301,13 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
               aria-label="Back to notes"
             >
-              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg
+                aria-hidden="true"
+                className="h-5 w-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
