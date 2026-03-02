@@ -177,7 +177,14 @@ export function NoteList({
                     className="absolute top-2 right-2 hidden rounded p-0.5 text-gray-400 group-focus-within:block group-hover:block hover:bg-gray-200 hover:text-gray-600"
                     aria-label={`Move ${note.title}`}
                   >
-                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg
+                      aria-hidden="true"
+                      focusable="false"
+                      className="h-4 w-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
                       <path
                         strokeLinecap="round"
                         strokeLinejoin="round"

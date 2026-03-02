@@ -45,7 +45,9 @@ export function NotebooksSidebar({
           onSelectNotebook(data[0].id);
         }
       })
-      .catch(() => {})
+      .catch((error) => {
+        console.error("Failed to load notebooks:", error);
+      })
       .finally(() => setLoading(false));
   }, [selectedNotebookId, onSelectNotebook]);
 
