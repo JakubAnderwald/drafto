@@ -53,6 +53,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
         if (!res.ok) {
           console.error("Failed to move note:", res.status);
+          setRefreshTrigger((prev) => prev + 1);
           return;
         }
 
@@ -63,6 +64,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         setRefreshTrigger((prev) => prev + 1);
       } catch (err) {
         console.error("Failed to move note:", err);
+        setRefreshTrigger((prev) => prev + 1);
       }
     },
     [selectedNoteId],

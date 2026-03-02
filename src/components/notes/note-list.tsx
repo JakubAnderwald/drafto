@@ -95,6 +95,7 @@ export function NoteList({
 
   const handleMove = useCallback(
     (noteId: string, targetNotebookId: string) => {
+      if (!onMoveNote) return;
       setNotes((prev) => {
         const filtered = prev.filter((n) => n.id !== noteId);
         if (selectedNoteId === noteId) {
@@ -103,7 +104,7 @@ export function NoteList({
         return filtered;
       });
       setMenuOpenForNote(null);
-      onMoveNote?.(noteId, targetNotebookId);
+      onMoveNote(noteId, targetNotebookId);
     },
     [selectedNoteId, onSelectNote, onMoveNote],
   );
@@ -167,7 +168,7 @@ export function NoteList({
                   <p className="text-xs text-gray-400">{formatRelativeTime(note.updated_at)}</p>
                 </button>
 
-                {otherNotebooks.length > 0 && (
+                {onMoveNote && otherNotebooks.length > 0 && (
                   <button
                     type="button"
                     onClick={(e) => {
