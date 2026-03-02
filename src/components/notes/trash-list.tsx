@@ -1,6 +1,7 @@
 "use client";
 
 import { use, useState, useCallback } from "react";
+import { formatRelativeTime } from "@/lib/format-utils";
 
 interface TrashedNote {
   id: string;
@@ -19,21 +20,6 @@ interface TrashListProps {
   onRestore: (noteId: string) => void;
   onPermanentDelete: (noteId: string) => void;
   refreshTrigger?: number;
-}
-
-function formatRelativeTime(dateString: string): string {
-  const now = new Date();
-  const date = new Date(dateString);
-  const diffMs = now.getTime() - date.getTime();
-  const diffMinutes = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-
-  if (diffMinutes < 1) return "just now";
-  if (diffMinutes < 60) return `${diffMinutes}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 30) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
 }
 
 const trashCache = new Map<string, Promise<TrashedNote[]>>();
