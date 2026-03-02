@@ -29,6 +29,9 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
       }
 
       const data = await response.json();
+      if (typeof data.url !== "string" || data.url.length === 0) {
+        throw new Error("Upload succeeded but no file URL was returned");
+      }
       return data.url;
     },
     [noteId],

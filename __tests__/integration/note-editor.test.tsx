@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { act } from "react";
 
@@ -24,11 +24,17 @@ vi.mock("@blocknote/mantine", () => ({
 vi.mock("@blocknote/mantine/style.css", () => ({}));
 
 const mockFetch = vi.fn();
-globalThis.fetch = mockFetch;
 
 const { NoteEditor } = await import("@/components/editor/note-editor");
 
 describe("NoteEditor", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
   it("renders without crashing", async () => {
     await act(async () => {
       render(<NoteEditor noteId="note-1" />);
@@ -120,5 +126,21 @@ describe("NoteEditor", () => {
 
     const file = new File(["test"], "large.bin", { type: "application/octet-stream" });
     await expect(capturedUploadFile!(file)).rejects.toThrow("File size exceeds 25MB limit");
+  });
+
+  it("throws when upload succeeds but URL is missing from response", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ id: "att-1", file_name: "test.png", url: null }),
+    });
+
+    await act(async () => {
+      render(<NoteEditor noteId="note-42" />);
+    });
+
+    const file = new File(["test"], "test.png", { type: "image/png" });
+    await expect(capturedUploadFile!(file)).rejects.toThrow(
+      "Upload succeeded but no file URL was returned",
+    );
   });
 });

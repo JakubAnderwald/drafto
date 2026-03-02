@@ -299,4 +299,80 @@ describe("POST /api/notes/[id]/attachments", () => {
     expect(body.error).toBe("Failed to save attachment record");
     expect(mockRemove).toHaveBeenCalledWith(["user-1/note-1/test.png"]);
   });
+
+  it("cleans up storage and DB record when signed URL generation fails", async () => {
+    authenticateAs("user-1");
+    const mockRemove = vi.fn().mockResolvedValue({ error: null });
+    const mockDelete = vi.fn();
+
+    mockStorageFrom.mockReturnValue({
+      upload: () =>
+        Promise.resolve({
+          data: { path: "user-1/note-1/test.png" },
+          error: null,
+        }),
+      createSignedUrl: () =>
+        Promise.resolve({
+          data: null,
+          error: { message: "Signing error" },
+        }),
+      remove: mockRemove,
+    });
+
+    mockFrom.mockImplementation((table: string) => {
+      if (table === "notes") {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: () =>
+                  Promise.resolve({
+                    data: { id: "note-1" },
+                    error: null,
+                  }),
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === "attachments") {
+        return {
+          insert: () => ({
+            select: () => ({
+              single: () =>
+                Promise.resolve({
+                  data: {
+                    id: "att-1",
+                    note_id: "note-1",
+                    user_id: "user-1",
+                    file_name: "test.png",
+                    file_path: "user-1/note-1/test.png",
+                    file_size: 1024,
+                    mime_type: "image/png",
+                    created_at: "2026-03-02T00:00:00Z",
+                  },
+                  error: null,
+                }),
+            }),
+          }),
+          delete: () => ({
+            eq: mockDelete,
+          }),
+        };
+      }
+      return {};
+    });
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/route");
+    const file = new File(["test content"], "test.png", {
+      type: "image/png",
+    });
+    const request = createFileRequest(file);
+    const response = await POST(request, { params });
+    expect(response.status).toBe(500);
+    const body = await response.json();
+    expect(body.error).toBe("Failed to generate file URL");
+    expect(mockRemove).toHaveBeenCalledWith(["user-1/note-1/test.png"]);
+    expect(mockDelete).toHaveBeenCalledWith("id", "att-1");
+  });
 });
