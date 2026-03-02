@@ -72,14 +72,26 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       file_size: file.size,
       mime_type: file.type || "application/octet-stream",
     })
-    .select()
+    .select("id, note_id, user_id, file_name, file_path, file_size, mime_type, created_at")
     .single();
 
-  if (dbError) {
+  if (dbError || !attachment) {
     // Clean up uploaded file if DB insert fails
     await supabase.storage.from(BUCKET_NAME).remove([filePath]);
     return errorResponse("Failed to save attachment record", 500);
   }
 
-  return successResponse(attachment, 201);
+  // Generate a signed URL for the uploaded file (1 year expiry)
+  const { data: urlData, error: urlError } = await supabase.storage
+    .from(BUCKET_NAME)
+    .createSignedUrl(filePath, 31536000);
+
+  if (urlError || !urlData?.signedUrl) {
+    // Clean up: remove uploaded file and DB record
+    await supabase.storage.from(BUCKET_NAME).remove([filePath]);
+    await supabase.from("attachments").delete().eq("id", attachment.id);
+    return errorResponse("Failed to generate file URL", 500);
+  }
+
+  return successResponse({ ...attachment, url: urlData.signedUrl }, 201);
 }
