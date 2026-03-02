@@ -442,4 +442,465 @@ describe("AppShell", () => {
 
     expect(screen.getByText("Loading...")).toBeInTheDocument();
   });
+
+  it("switches to trash view when trash button is clicked", async () => {
+    const user = userEvent.setup();
+    const mockTrashedNotes = [
+      {
+        id: "t-1",
+        title: "Trashed Note",
+        notebook_id: "nb-1",
+        trashed_at: new Date().toISOString(),
+      },
+    ];
+
+    mockFetch.mockImplementation((url: string) => {
+      if (url === "/api/notebooks") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotebooks) });
+      }
+      if (url === "/api/notes/trash") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockTrashedNotes) });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotes) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Trash/i })).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      await user.click(screen.getByRole("button", { name: /Trash/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Trashed Note")).toBeInTheDocument();
+    });
+  });
+
+  it("restores a note from trash via the trash view", async () => {
+    const user = userEvent.setup();
+    const mockTrashedNotes = [
+      {
+        id: "t-1",
+        title: "Trashed Note",
+        notebook_id: "nb-1",
+        trashed_at: new Date().toISOString(),
+      },
+    ];
+
+    mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+      if (options?.method === "PATCH") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+      }
+      if (url === "/api/notebooks") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotebooks) });
+      }
+      if (url === "/api/notes/trash") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockTrashedNotes) });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotes) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Trash/i })).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      await user.click(screen.getByRole("button", { name: /Trash/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Trashed Note")).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      await user.click(screen.getByText("Restore"));
+    });
+
+    // The PATCH request should have been made to restore the note
+    await waitFor(() => {
+      const patchCalls = mockFetch.mock.calls.filter(
+        (args) => (args[1] as { method?: string } | undefined)?.method === "PATCH",
+      );
+      expect(patchCalls.length).toBeGreaterThan(0);
+      expect(JSON.parse((patchCalls[0][1] as { body: string }).body)).toEqual({
+        is_trashed: false,
+      });
+    });
+  });
+
+  it("permanently deletes a note from trash", async () => {
+    const user = userEvent.setup();
+    const mockTrashedNotes = [
+      {
+        id: "t-1",
+        title: "Trashed Note",
+        notebook_id: "nb-1",
+        trashed_at: new Date().toISOString(),
+      },
+    ];
+
+    mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+      if (options?.method === "DELETE") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+      }
+      if (url === "/api/notebooks") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotebooks) });
+      }
+      if (url === "/api/notes/trash") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockTrashedNotes) });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotes) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Trash/i })).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      await user.click(screen.getByRole("button", { name: /Trash/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Trashed Note")).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      await user.click(screen.getByText("Delete forever"));
+    });
+
+    // The DELETE request should have been made for permanent deletion
+    await waitFor(() => {
+      const deleteCalls = mockFetch.mock.calls.filter(
+        (args) => (args[1] as { method?: string } | undefined)?.method === "DELETE",
+      );
+      expect(deleteCalls.length).toBeGreaterThan(0);
+      expect(deleteCalls[0][0]).toContain("/api/notes/t-1/permanent");
+    });
+  });
+
+  it("handles network error on restore gracefully", async () => {
+    const user = userEvent.setup();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const mockTrashedNotes = [
+      {
+        id: "t-1",
+        title: "Trashed Note",
+        notebook_id: "nb-1",
+        trashed_at: new Date().toISOString(),
+      },
+    ];
+
+    mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+      if (options?.method === "PATCH") {
+        return Promise.reject(new Error("Network error"));
+      }
+      if (url === "/api/notebooks") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotebooks) });
+      }
+      if (url === "/api/notes/trash") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockTrashedNotes) });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotes) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Trash/i })).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      await user.click(screen.getByRole("button", { name: /Trash/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Trashed Note")).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      await user.click(screen.getByText("Restore"));
+    });
+
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith("Failed to restore note:", expect.any(Error));
+    });
+
+    consoleSpy.mockRestore();
+  });
+
+  it("handles network error on permanent delete gracefully", async () => {
+    const user = userEvent.setup();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const mockTrashedNotes = [
+      {
+        id: "t-1",
+        title: "Trashed Note",
+        notebook_id: "nb-1",
+        trashed_at: new Date().toISOString(),
+      },
+    ];
+
+    mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+      if (options?.method === "DELETE") {
+        return Promise.reject(new Error("Network error"));
+      }
+      if (url === "/api/notebooks") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotebooks) });
+      }
+      if (url === "/api/notes/trash") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockTrashedNotes) });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotes) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Trash/i })).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      await user.click(screen.getByRole("button", { name: /Trash/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Trashed Note")).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      await user.click(screen.getByText("Delete forever"));
+    });
+
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith(
+        "Failed to permanently delete note:",
+        expect.any(Error),
+      );
+    });
+
+    consoleSpy.mockRestore();
+  });
+
+  it("handles network error on note move gracefully", async () => {
+    const user = userEvent.setup();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("My First Note")).toBeInTheDocument();
+    });
+
+    // Mock a network error on PATCH
+    mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+      if (options?.method === "PATCH") {
+        return Promise.reject(new Error("Network error"));
+      }
+      if (url === "/api/notebooks") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotebooks) });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotes) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    // Open move menu and click target
+    await act(async () => {
+      await user.click(screen.getByLabelText("Actions for My First Note"));
+    });
+    await act(async () => {
+      await user.click(screen.getByRole("menuitem", { name: "Work" }));
+    });
+
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith("Failed to move note:", expect.any(Error));
+    });
+
+    consoleSpy.mockRestore();
+  });
+
+  it("handles network error on note delete gracefully", async () => {
+    const user = userEvent.setup();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("My First Note")).toBeInTheDocument();
+    });
+
+    // Mock a network error on DELETE
+    mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+      if (options?.method === "DELETE") {
+        return Promise.reject(new Error("Network error"));
+      }
+      if (url === "/api/notebooks") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotebooks) });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotes) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await act(async () => {
+      await user.click(screen.getByLabelText("Actions for My First Note"));
+    });
+    await act(async () => {
+      await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    });
+
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith("Failed to delete note:", expect.any(Error));
+    });
+
+    consoleSpy.mockRestore();
+  });
+
+  it("handles failed restore (non-ok response) gracefully", async () => {
+    const user = userEvent.setup();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const mockTrashedNotes = [
+      {
+        id: "t-1",
+        title: "Trashed Note",
+        notebook_id: "nb-1",
+        trashed_at: new Date().toISOString(),
+      },
+    ];
+
+    mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+      if (options?.method === "PATCH") {
+        return Promise.resolve({ ok: false, status: 500 });
+      }
+      if (url === "/api/notebooks") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotebooks) });
+      }
+      if (url === "/api/notes/trash") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockTrashedNotes) });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotes) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Trash/i })).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      await user.click(screen.getByRole("button", { name: /Trash/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Trashed Note")).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      await user.click(screen.getByText("Restore"));
+    });
+
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith("Failed to restore note:", 500);
+    });
+
+    consoleSpy.mockRestore();
+  });
+
+  it("handles failed permanent delete (non-ok response) gracefully", async () => {
+    const user = userEvent.setup();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const mockTrashedNotes = [
+      {
+        id: "t-1",
+        title: "Trashed Note",
+        notebook_id: "nb-1",
+        trashed_at: new Date().toISOString(),
+      },
+    ];
+
+    mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+      if (options?.method === "DELETE") {
+        return Promise.resolve({ ok: false, status: 500 });
+      }
+      if (url === "/api/notebooks") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotebooks) });
+      }
+      if (url === "/api/notes/trash") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockTrashedNotes) });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotes) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Trash/i })).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      await user.click(screen.getByRole("button", { name: /Trash/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Trashed Note")).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      await user.click(screen.getByText("Delete forever"));
+    });
+
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith("Failed to permanently delete note:", 500);
+    });
+
+    consoleSpy.mockRestore();
+  });
 });
