@@ -315,7 +315,7 @@ describe("AppShell", () => {
 
     // Click the move button on the first note
     await act(async () => {
-      await user.click(screen.getByLabelText("Move My First Note"));
+      await user.click(screen.getByLabelText("Actions for My First Note"));
     });
 
     // Select the target notebook "Work"
@@ -371,7 +371,7 @@ describe("AppShell", () => {
 
     // Open move menu and click target
     await act(async () => {
-      await user.click(screen.getByLabelText("Move My First Note"));
+      await user.click(screen.getByLabelText("Actions for My First Note"));
     });
     await act(async () => {
       await user.click(screen.getByRole("menuitem", { name: "Work" }));
@@ -382,6 +382,50 @@ describe("AppShell", () => {
     });
 
     consoleSpy.mockRestore();
+  });
+
+  it("deletes a note via the action menu", async () => {
+    const user = userEvent.setup();
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("My First Note")).toBeInTheDocument();
+    });
+
+    // Click the actions button on the first note
+    await act(async () => {
+      await user.click(screen.getByLabelText("Actions for My First Note"));
+    });
+
+    // Click "Delete" in the menu
+    await act(async () => {
+      await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    });
+
+    // Verify the DELETE request was made
+    await waitFor(() => {
+      const deleteCalls = mockFetch.mock.calls.filter(
+        (args) => (args[1] as { method?: string } | undefined)?.method === "DELETE",
+      );
+      expect(deleteCalls.length).toBeGreaterThan(0);
+      expect(deleteCalls[0][0]).toContain("/api/notes/note-1");
+    });
+  });
+
+  it("shows trash button in sidebar", async () => {
+    await act(async () => {
+      render(<AppShell />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Notebooks")).toBeInTheDocument();
+    });
+
+    // Trash button should be visible
+    expect(screen.getByRole("button", { name: /Trash/i })).toBeInTheDocument();
   });
 
   it("shows notebook loading state in the sidebar", async () => {

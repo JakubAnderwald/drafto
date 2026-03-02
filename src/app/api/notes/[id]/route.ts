@@ -44,6 +44,10 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   if (body.title !== undefined) updates.title = body.title;
   if (body.content !== undefined) updates.content = body.content;
   if (body.notebook_id !== undefined) updates.notebook_id = body.notebook_id;
+  if (body.is_trashed !== undefined) {
+    updates.is_trashed = body.is_trashed;
+    updates.trashed_at = body.is_trashed ? new Date().toISOString() : null;
+  }
 
   if (Object.keys(updates).length === 0) {
     return errorResponse("No fields to update", 400);
