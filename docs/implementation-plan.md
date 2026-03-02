@@ -71,7 +71,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 
 ### Phase 5: File Attachments
 
-- [ ] 5.1 — Supabase Storage bucket + policies
+- [x] 5.1 — Supabase Storage bucket + policies
 - [ ] 5.2a — Upload API route (25MB limit, auth) + unit tests
 - [ ] 5.2b — Editor file integration (inline images, download links) + tests
 - [ ] 5.3 — Attachment management (list, delete, cascade) + tests
