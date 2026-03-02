@@ -76,7 +76,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 - [x] 5.2b — Editor file integration (inline images, download links) + tests
 - [x] 5.3 — Attachment management (list, delete, cascade) + tests
 - [x] 5-CP — **Checkpoint**: Run full suite locally. If green, check this off, commit, and exit.
-- [ ] 5-PUSH — **Push**: Run `/push` to PR. Address any review comments/failures automatically. Once `/push` succeeds, check this off and exit.
+- [x] 5-PUSH — **Push**: Run `/push` to PR. Address any review comments/failures automatically. Once `/push` succeeds, check this off and exit.
 
 ### Phase 6: Responsive Design
 
