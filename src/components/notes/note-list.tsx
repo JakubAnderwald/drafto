@@ -174,7 +174,7 @@ export function NoteList({
                       e.stopPropagation();
                       setMenuOpenForNote(menuOpenForNote === note.id ? null : note.id);
                     }}
-                    className="absolute right-2 top-2 hidden rounded p-0.5 text-gray-400 group-focus-within:block group-hover:block hover:bg-gray-200 hover:text-gray-600"
+                    className="absolute top-2 right-2 hidden rounded p-0.5 text-gray-400 group-focus-within:block group-hover:block hover:bg-gray-200 hover:text-gray-600"
                     aria-label={`Move ${note.title}`}
                   >
                     <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -191,7 +191,7 @@ export function NoteList({
                 {menuOpenForNote === note.id && (
                   <div
                     ref={menuRef}
-                    className="absolute right-0 top-8 z-10 w-48 rounded-md border bg-white py-1 shadow-lg"
+                    className="absolute top-8 right-0 z-10 w-48 rounded-md border bg-white py-1 shadow-lg"
                     role="menu"
                   >
                     <p className="px-3 py-1 text-xs font-medium text-gray-500">Move to...</p>

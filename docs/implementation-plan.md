@@ -5,12 +5,13 @@
 
 **RALPH LOOP RULES (STRICT):**
 You are running in an autonomous, unattended loop. On every single execution, you MUST follow these exact steps in order:
-1. **Identify:** Scan the Progress Tracker below and find the *first* unchecked task `[ ]`.
+
+1. **Identify:** Scan the Progress Tracker below and find the _first_ unchecked task `[ ]`.
 2. **Scope:** DO NOT attempt multiple tasks. Focus ONLY on that single task.
 3. **Implement:** Write the code to satisfy the task's requirements.
 4. Test: Run the full test suite strictly in CI mode to prevent interactive prompts or watch-mode hangs. Execute exactly this chain: CI=true pnpm test -- --run && CI=true pnpm test:e2e && pnpm lint && tsc --noEmit.
-5. **Fix:** If *any* test or check fails, you must debug, fix the code, and re-run the suite until it is 100% green. Do not proceed until all tests pass.
-6. **Record:** Check off the task in this file by changing `[ ]` to `[x]`. 
+5. **Fix:** If _any_ test or check fails, you must debug, fix the code, and re-run the suite until it is 100% green. Do not proceed until all tests pass.
+6. **Record:** Check off the task in this file by changing `[ ]` to `[x]`.
 7. **Commit:** Commit and push your changes to git with a descriptive message using the /push protocol.
 8. **Exit:** EXIT immediately so the loop can restart with a fresh context window. DO NOT start the next task.
 
