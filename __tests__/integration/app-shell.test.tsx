@@ -908,4 +908,187 @@ describe("AppShell", () => {
 
     vi.restoreAllMocks();
   });
+
+  describe("tablet layout — collapsible sidebar", () => {
+    it("renders a sidebar toggle button", async () => {
+      await act(async () => {
+        render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      expect(screen.getByLabelText("Toggle sidebar")).toBeInTheDocument();
+    });
+
+    it("shows backdrop when sidebar toggle is clicked", async () => {
+      const user = userEvent.setup();
+
+      const { container } = await act(async () => {
+        return render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      // Backdrop should not be visible initially
+      expect(container.querySelector("[data-testid='sidebar-backdrop']")).not.toBeInTheDocument();
+
+      // Click the toggle button to open sidebar
+      await act(async () => {
+        await user.click(screen.getByLabelText("Toggle sidebar"));
+      });
+
+      // Backdrop should now be visible
+      expect(screen.getByTestId("sidebar-backdrop")).toBeInTheDocument();
+    });
+
+    it("closes sidebar when backdrop is clicked", async () => {
+      const user = userEvent.setup();
+
+      await act(async () => {
+        render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      // Open sidebar
+      await act(async () => {
+        await user.click(screen.getByLabelText("Toggle sidebar"));
+      });
+
+      expect(screen.getByTestId("sidebar-backdrop")).toBeInTheDocument();
+
+      // Click backdrop to close
+      await act(async () => {
+        await user.click(screen.getByTestId("sidebar-backdrop"));
+      });
+
+      // Backdrop should disappear
+      expect(screen.queryByTestId("sidebar-backdrop")).not.toBeInTheDocument();
+    });
+
+    it("closes sidebar when a notebook is selected", async () => {
+      const user = userEvent.setup();
+
+      await act(async () => {
+        render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Personal")).toBeInTheDocument();
+      });
+
+      // Open sidebar
+      await act(async () => {
+        await user.click(screen.getByLabelText("Toggle sidebar"));
+      });
+
+      expect(screen.getByTestId("sidebar-backdrop")).toBeInTheDocument();
+
+      // Click a notebook — sidebar should close
+      await act(async () => {
+        await user.click(screen.getByText("Work"));
+      });
+
+      expect(screen.queryByTestId("sidebar-backdrop")).not.toBeInTheDocument();
+    });
+
+    it("closes sidebar when trash is selected", async () => {
+      const user = userEvent.setup();
+      const mockTrashedNotes = [
+        {
+          id: "t-1",
+          title: "Trashed Note",
+          notebook_id: "nb-1",
+          trashed_at: new Date().toISOString(),
+        },
+      ];
+
+      mockFetch.mockImplementation((url: string) => {
+        if (url === "/api/notebooks") {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotebooks) });
+        }
+        if (url === "/api/notes/trash") {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve(mockTrashedNotes) });
+        }
+        if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotes) });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+      });
+
+      await act(async () => {
+        render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /Trash/i })).toBeInTheDocument();
+      });
+
+      // Open sidebar
+      await act(async () => {
+        await user.click(screen.getByLabelText("Toggle sidebar"));
+      });
+
+      expect(screen.getByTestId("sidebar-backdrop")).toBeInTheDocument();
+
+      // Click Trash — sidebar should close
+      await act(async () => {
+        await user.click(screen.getByRole("button", { name: /Trash/i }));
+      });
+
+      expect(screen.queryByTestId("sidebar-backdrop")).not.toBeInTheDocument();
+    });
+
+    it("sidebar has responsive CSS classes for tablet overlay", async () => {
+      const { container } = await act(async () => {
+        return render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      const aside = container.querySelector("aside");
+      expect(aside).toBeInTheDocument();
+
+      // Sidebar should have fixed positioning (overlay on tablet) and lg:static (inline on desktop)
+      expect(aside?.className).toContain("fixed");
+      expect(aside?.className).toContain("lg:static");
+      expect(aside?.className).toContain("lg:translate-x-0");
+      expect(aside?.className).toContain("transition-transform");
+    });
+
+    it("toggles sidebar translate class when opened and closed", async () => {
+      const user = userEvent.setup();
+
+      const { container } = await act(async () => {
+        return render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      const aside = container.querySelector("aside");
+
+      // Initially closed — should have -translate-x-full
+      expect(aside?.className).toContain("-translate-x-full");
+      expect(aside?.className).not.toContain(" translate-x-0");
+
+      // Open sidebar
+      await act(async () => {
+        await user.click(screen.getByLabelText("Toggle sidebar"));
+      });
+
+      // Now open — should have translate-x-0 (not the -translate-x-full)
+      expect(aside?.className).toContain("translate-x-0");
+      expect(aside?.className).not.toContain("-translate-x-full");
+    });
+  });
 });
