@@ -301,6 +301,89 @@ describe("AppShell", () => {
     consoleSpy.mockRestore();
   });
 
+  it("moves a note via the move menu", async () => {
+    const user = userEvent.setup();
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+
+    // Wait for notebooks and notes to load
+    await waitFor(() => {
+      expect(screen.getByText("My First Note")).toBeInTheDocument();
+    });
+
+    // Click the move button on the first note
+    await act(async () => {
+      await user.click(screen.getByLabelText("Move My First Note"));
+    });
+
+    // Select the target notebook "Work"
+    await act(async () => {
+      await user.click(screen.getByRole("menuitem", { name: "Work" }));
+    });
+
+    // Verify the PATCH request was made with the notebook_id
+    await waitFor(() => {
+      const patchCalls = mockFetch.mock.calls.filter(
+        (args) => (args[1] as { method?: string } | undefined)?.method === "PATCH",
+      );
+      expect(patchCalls.length).toBeGreaterThan(0);
+      const [url, options] = patchCalls[0];
+      expect(url).toContain("/api/notes/note-1");
+      expect(JSON.parse((options as { body: string }).body)).toEqual({
+        notebook_id: "nb-2",
+      });
+    });
+  });
+
+  it("handles failed note move gracefully", async () => {
+    const user = userEvent.setup();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("My First Note")).toBeInTheDocument();
+    });
+
+    // Mock a failed PATCH
+    mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+      if (options?.method === "PATCH") {
+        return Promise.resolve({ ok: false, status: 500 });
+      }
+      if (url === "/api/notebooks") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(mockNotebooks),
+        });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(mockNotes),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    // Open move menu and click target
+    await act(async () => {
+      await user.click(screen.getByLabelText("Move My First Note"));
+    });
+    await act(async () => {
+      await user.click(screen.getByRole("menuitem", { name: "Work" }));
+    });
+
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith("Failed to move note:", 500);
+    });
+
+    consoleSpy.mockRestore();
+  });
+
   it("shows notebook loading state in the sidebar", async () => {
     mockFetch.mockImplementation((url: string) => {
       if (url === "/api/notebooks") {
