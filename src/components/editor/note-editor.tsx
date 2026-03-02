@@ -43,7 +43,7 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
   });
 
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div className="min-h-0 flex-1 overflow-y-auto">
       <BlockNoteView
         editor={editor}
         onChange={() => {

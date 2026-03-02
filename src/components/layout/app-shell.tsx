@@ -146,8 +146,8 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
   return (
     <div className="flex h-screen overflow-hidden">
-      {/* Sidebar — notebooks */}
-      <aside className="flex w-60 shrink-0 flex-col border-r bg-gray-50">
+      {/* Sidebar — notebooks (~240px fixed) */}
+      <aside className="flex w-60 shrink-0 flex-col overflow-hidden border-r bg-gray-50">
         <NotebooksSidebar
           selectedNotebookId={selectedNotebookId}
           onSelectNotebook={handleSelectNotebook}
@@ -157,8 +157,8 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         />
       </aside>
 
-      {/* Middle panel — note list or trash */}
-      <section className="flex w-72 shrink-0 flex-col border-r">
+      {/* Middle panel — note list or trash (~300px fixed) */}
+      <section className="flex w-[300px] shrink-0 flex-col overflow-hidden border-r">
         {viewingTrash ? (
           <Suspense
             fallback={<div className="p-4 text-center text-sm text-gray-400">Loading trash...</div>}
@@ -192,8 +192,8 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         )}
       </section>
 
-      {/* Main panel — editor */}
-      <main className="flex flex-1 flex-col">
+      {/* Main panel — editor (fills remaining space) */}
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {selectedNoteId ? (
           <Suspense
             fallback={
