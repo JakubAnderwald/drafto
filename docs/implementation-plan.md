@@ -72,7 +72,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 ### Phase 5: File Attachments
 
 - [x] 5.1 — Supabase Storage bucket + policies
-- [ ] 5.2a — Upload API route (25MB limit, auth) + unit tests
+- [x] 5.2a — Upload API route (25MB limit, auth) + unit tests
 - [ ] 5.2b — Editor file integration (inline images, download links) + tests
 - [ ] 5.3 — Attachment management (list, delete, cascade) + tests
 - [ ] 5-CP — **Checkpoint**: Run full suite locally. If green, check this off, commit, and exit.
