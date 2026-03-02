@@ -4,6 +4,7 @@ import { Suspense, useCallback, useState } from "react";
 import { NotebooksSidebar } from "@/components/notebooks/notebooks-sidebar";
 import { NoteList } from "@/components/notes/note-list";
 import { NoteEditorPanel } from "@/components/notes/note-editor-panel";
+import { TrashList } from "@/components/notes/trash-list";
 
 interface NotebookInfo {
   id: string;
@@ -15,6 +16,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [notebooks, setNotebooks] = useState<NotebookInfo[]>([]);
+  const [viewingTrash, setViewingTrash] = useState(false);
 
   const handleCreateNote = useCallback(async () => {
     if (!selectedNotebookId) return;
@@ -40,6 +42,78 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const handleSelectNotebook = useCallback((id: string | null) => {
     setSelectedNotebookId(id);
     setSelectedNoteId(null);
+    setViewingTrash(false);
+  }, []);
+
+  const handleSelectTrash = useCallback(() => {
+    setViewingTrash(true);
+    setSelectedNotebookId(null);
+    setSelectedNoteId(null);
+  }, []);
+
+  const handleDeleteNote = useCallback(
+    async (noteId: string) => {
+      try {
+        const res = await fetch(`/api/notes/${noteId}`, {
+          method: "DELETE",
+        });
+
+        if (!res.ok) {
+          const err = new Error(`Failed to delete note: ${res.status}`);
+          console.error(err);
+          setRefreshTrigger((prev) => prev + 1);
+          return;
+        }
+
+        if (selectedNoteId === noteId) {
+          setSelectedNoteId(null);
+        }
+      } catch (err) {
+        console.error("Failed to delete note:", err);
+        setRefreshTrigger((prev) => prev + 1);
+      }
+    },
+    [selectedNoteId],
+  );
+
+  const handleRestoreNote = useCallback(async (noteId: string) => {
+    try {
+      const res = await fetch(`/api/notes/${noteId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_trashed: false }),
+      });
+
+      if (!res.ok) {
+        const err = new Error(`Failed to restore note: ${res.status}`);
+        console.error(err);
+        setRefreshTrigger((prev) => prev + 1);
+        throw err;
+      }
+    } catch (err) {
+      console.error("Failed to restore note:", err);
+      setRefreshTrigger((prev) => prev + 1);
+      throw err;
+    }
+  }, []);
+
+  const handlePermanentDelete = useCallback(async (noteId: string) => {
+    try {
+      const res = await fetch(`/api/notes/${noteId}/permanent`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        const err = new Error(`Failed to permanently delete note: ${res.status}`);
+        console.error(err);
+        setRefreshTrigger((prev) => prev + 1);
+        throw err;
+      }
+    } catch (err) {
+      console.error("Failed to permanently delete note:", err);
+      setRefreshTrigger((prev) => prev + 1);
+      throw err;
+    }
   }, []);
 
   const handleMoveNote = useCallback(
@@ -78,12 +152,25 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           selectedNotebookId={selectedNotebookId}
           onSelectNotebook={handleSelectNotebook}
           onNotebooksChange={setNotebooks}
+          isTrashSelected={viewingTrash}
+          onSelectTrash={handleSelectTrash}
         />
       </aside>
 
-      {/* Middle panel — note list */}
+      {/* Middle panel — note list or trash */}
       <section className="flex w-72 shrink-0 flex-col border-r">
-        {selectedNotebookId ? (
+        {viewingTrash ? (
+          <Suspense
+            fallback={<div className="p-4 text-center text-sm text-gray-400">Loading trash...</div>}
+          >
+            <TrashList
+              notebooks={notebooks}
+              onRestore={handleRestoreNote}
+              onPermanentDelete={handlePermanentDelete}
+              refreshTrigger={refreshTrigger}
+            />
+          </Suspense>
+        ) : selectedNotebookId ? (
           <Suspense
             fallback={<div className="p-4 text-center text-sm text-gray-400">Loading notes...</div>}
           >
@@ -93,6 +180,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               onSelectNote={setSelectedNoteId}
               onCreateNote={handleCreateNote}
               onMoveNote={handleMoveNote}
+              onDeleteNote={handleDeleteNote}
               notebooks={notebooks}
               refreshTrigger={refreshTrigger}
             />

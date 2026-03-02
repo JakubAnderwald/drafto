@@ -1,6 +1,7 @@
 "use client";
 
 import { use, useState, useCallback, useRef, useEffect } from "react";
+import { formatRelativeTime } from "@/lib/format-utils";
 
 interface NoteListItem {
   id: string;
@@ -19,23 +20,9 @@ interface NoteListProps {
   onSelectNote: (id: string) => void;
   onCreateNote: () => void;
   onMoveNote?: (noteId: string, targetNotebookId: string) => void;
+  onDeleteNote?: (noteId: string) => void;
   notebooks?: NotebookOption[];
   refreshTrigger?: number;
-}
-
-function formatRelativeTime(dateString: string): string {
-  const now = new Date();
-  const date = new Date(dateString);
-  const diffMs = now.getTime() - date.getTime();
-  const diffMinutes = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-
-  if (diffMinutes < 1) return "just now";
-  if (diffMinutes < 60) return `${diffMinutes}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 30) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
 }
 
 const notesCache = new Map<string, Promise<NoteListItem[]>>();
@@ -61,6 +48,7 @@ export function NoteList({
   onSelectNote,
   onCreateNote,
   onMoveNote,
+  onDeleteNote,
   notebooks = [],
   refreshTrigger = 0,
 }: NoteListProps) {
@@ -87,11 +75,11 @@ export function NoteList({
         }
         return filtered;
       });
+      setMenuOpenForNote(null);
+      onDeleteNote?.(noteId);
     },
-    [selectedNoteId, onSelectNote],
+    [selectedNoteId, onSelectNote, onDeleteNote],
   );
-
-  void handleDelete; // used in Phase 4.2
 
   const handleMove = useCallback(
     (noteId: string, targetNotebookId: string) => {
@@ -168,7 +156,7 @@ export function NoteList({
                   <p className="text-xs text-gray-400">{formatRelativeTime(note.updated_at)}</p>
                 </button>
 
-                {onMoveNote && otherNotebooks.length > 0 && (
+                {(onDeleteNote || (onMoveNote && otherNotebooks.length > 0)) && (
                   <button
                     type="button"
                     onClick={(e) => {
@@ -176,7 +164,7 @@ export function NoteList({
                       setMenuOpenForNote(menuOpenForNote === note.id ? null : note.id);
                     }}
                     className="absolute top-2 right-2 hidden rounded p-0.5 text-gray-400 group-focus-within:block group-hover:block hover:bg-gray-200 hover:text-gray-600"
-                    aria-label={`Move ${note.title}`}
+                    aria-label={`Actions for ${note.title}`}
                   >
                     <svg
                       aria-hidden="true"
@@ -202,21 +190,38 @@ export function NoteList({
                     className="absolute top-8 right-0 z-10 w-48 rounded-md border bg-white py-1 shadow-lg"
                     role="menu"
                   >
-                    <p className="px-3 py-1 text-xs font-medium text-gray-500">Move to...</p>
-                    {otherNotebooks.map((nb) => (
+                    {onDeleteNote && (
                       <button
-                        key={nb.id}
                         type="button"
                         role="menuitem"
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleMove(note.id, nb.id);
+                          handleDelete(note.id);
                         }}
-                        className="w-full truncate px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
+                        className="w-full px-3 py-1.5 text-left text-sm text-red-600 hover:bg-red-50"
                       >
-                        {nb.name}
+                        Delete
                       </button>
-                    ))}
+                    )}
+                    {onMoveNote && otherNotebooks.length > 0 && (
+                      <>
+                        <p className="px-3 py-1 text-xs font-medium text-gray-500">Move to...</p>
+                        {otherNotebooks.map((nb) => (
+                          <button
+                            key={nb.id}
+                            type="button"
+                            role="menuitem"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleMove(note.id, nb.id);
+                            }}
+                            className="w-full truncate px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
+                          >
+                            {nb.name}
+                          </button>
+                        ))}
+                      </>
+                    )}
                   </div>
                 )}
               </li>

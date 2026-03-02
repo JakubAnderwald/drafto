@@ -369,8 +369,8 @@ describe("NoteList", () => {
     });
 
     // Move buttons should be rendered (hidden by CSS, but present in DOM)
-    expect(screen.getByLabelText("Move First Note")).toBeInTheDocument();
-    expect(screen.getByLabelText("Move Second Note")).toBeInTheDocument();
+    expect(screen.getByLabelText("Actions for First Note")).toBeInTheDocument();
+    expect(screen.getByLabelText("Actions for Second Note")).toBeInTheDocument();
   });
 
   it("opens move menu and shows other notebooks", async () => {
@@ -406,7 +406,7 @@ describe("NoteList", () => {
     });
 
     // Click the move button for the first note
-    await user.click(screen.getByLabelText("Move First Note"));
+    await user.click(screen.getByLabelText("Actions for First Note"));
 
     // Should show menu with other notebooks (not Current which is nb-1)
     expect(screen.getByText("Move to...")).toBeInTheDocument();
@@ -448,7 +448,7 @@ describe("NoteList", () => {
     });
 
     // Open move menu
-    await user.click(screen.getByLabelText("Move First Note"));
+    await user.click(screen.getByLabelText("Actions for First Note"));
 
     // Click the target notebook
     await user.click(screen.getByRole("menuitem", { name: "Work" }));
@@ -486,7 +486,7 @@ describe("NoteList", () => {
     });
 
     // No move buttons should exist when only one notebook
-    expect(screen.queryByLabelText("Move First Note")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Actions for First Note")).not.toBeInTheDocument();
   });
 
   it("fetches notes for the given notebook ID", async () => {
