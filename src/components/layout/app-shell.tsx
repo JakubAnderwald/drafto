@@ -19,6 +19,13 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const [viewingTrash, setViewingTrash] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  // Mobile single-panel navigation: determine which panel is active
+  const mobileView: "notebooks" | "notes" | "editor" = selectedNoteId
+    ? "editor"
+    : selectedNotebookId || viewingTrash
+      ? "notes"
+      : "notebooks";
+
   const handleCreateNote = useCallback(async () => {
     if (!selectedNotebookId) return;
 
@@ -52,6 +59,16 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     setSelectedNotebookId(null);
     setSelectedNoteId(null);
     setSidebarOpen(false);
+  }, []);
+
+  const handleMobileBackToNotebooks = useCallback(() => {
+    setSelectedNotebookId(null);
+    setSelectedNoteId(null);
+    setViewingTrash(false);
+  }, []);
+
+  const handleMobileBackToNotes = useCallback(() => {
+    setSelectedNoteId(null);
   }, []);
 
   const handleDeleteNote = useCallback(
@@ -152,17 +169,22 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       {/* Sidebar backdrop — visible on tablet when sidebar is open */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 z-20 bg-black/20 lg:hidden"
+          className="fixed inset-0 z-20 hidden bg-black/20 sm:block lg:hidden"
           onClick={() => setSidebarOpen(false)}
           aria-hidden="true"
           data-testid="sidebar-backdrop"
         />
       )}
 
-      {/* Sidebar — notebooks (~240px fixed) */}
+      {/* Sidebar — notebooks
+          Mobile: full-width panel, shown only in notebooks view
+          Tablet: fixed overlay, toggled via hamburger
+          Desktop: static, always visible */}
       <aside
-        className={`fixed inset-y-0 left-0 z-30 flex w-60 shrink-0 flex-col overflow-hidden border-r bg-gray-50 transition-transform duration-200 ease-in-out lg:static lg:translate-x-0 ${
-          sidebarOpen ? "translate-x-0" : "-translate-x-full"
+        className={`${
+          mobileView === "notebooks" ? "flex" : "hidden"
+        } w-full flex-col overflow-hidden bg-gray-50 sm:fixed sm:inset-y-0 sm:left-0 sm:z-30 sm:flex sm:w-60 sm:shrink-0 sm:border-r sm:transition-transform sm:duration-200 sm:ease-in-out lg:static lg:translate-x-0 ${
+          sidebarOpen ? "sm:translate-x-0" : "sm:-translate-x-full"
         }`}
       >
         <NotebooksSidebar
@@ -174,10 +196,44 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         />
       </aside>
 
-      {/* Middle panel — note list or trash (~300px fixed) */}
-      <section className="flex w-[300px] shrink-0 flex-col overflow-hidden border-r">
-        {/* Sidebar toggle — visible on tablet only */}
-        <div className="flex items-center border-b p-2 lg:hidden">
+      {/* Middle panel — note list or trash
+          Mobile: full-width panel, shown only in notes view
+          Tablet/Desktop: fixed 300px width */}
+      <section
+        className={`${
+          mobileView === "notes" ? "flex" : "hidden"
+        } w-full flex-col overflow-hidden sm:flex sm:w-[300px] sm:shrink-0 sm:border-r`}
+      >
+        {/* Mobile: back to notebooks */}
+        <div className="flex items-center border-b p-2 sm:hidden">
+          <button
+            type="button"
+            onClick={handleMobileBackToNotebooks}
+            className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
+            aria-label="Back to notebooks"
+          >
+            <svg
+              aria-hidden="true"
+              className="h-5 w-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M15 19l-7-7 7-7"
+              />
+            </svg>
+          </button>
+          <span className="ml-1 text-sm font-semibold text-gray-700">
+            {viewingTrash ? "Trash" : "Notes"}
+          </span>
+        </div>
+
+        {/* Tablet: sidebar toggle */}
+        <div className="hidden items-center border-b p-2 sm:flex lg:hidden">
           <button
             type="button"
             onClick={() => setSidebarOpen((prev) => !prev)}
@@ -228,8 +284,42 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         )}
       </section>
 
-      {/* Main panel — editor (fills remaining space) */}
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      {/* Main panel — editor
+          Mobile: full-width panel, shown only in editor view
+          Tablet/Desktop: fills remaining space */}
+      <main
+        className={`${
+          mobileView === "editor" ? "flex" : "hidden"
+        } min-w-0 flex-1 flex-col overflow-hidden sm:flex`}
+      >
+        {/* Mobile: back to notes */}
+        {selectedNoteId && (
+          <div className="flex items-center border-b p-2 sm:hidden">
+            <button
+              type="button"
+              onClick={handleMobileBackToNotes}
+              className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
+              aria-label="Back to notes"
+            >
+              <svg
+                aria-hidden="true"
+                className="h-5 w-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M15 19l-7-7 7-7"
+                />
+              </svg>
+            </button>
+            <span className="ml-1 text-sm font-semibold text-gray-700">Back</span>
+          </div>
+        )}
+
         {selectedNoteId ? (
           <Suspense
             fallback={
