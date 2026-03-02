@@ -1057,11 +1057,11 @@ describe("AppShell", () => {
       const aside = container.querySelector("aside");
       expect(aside).toBeInTheDocument();
 
-      // Sidebar should have fixed positioning (overlay on tablet) and lg:static (inline on desktop)
-      expect(aside?.className).toContain("fixed");
+      // Sidebar should have fixed positioning on tablet (sm:fixed) and lg:static on desktop
+      expect(aside?.className).toContain("sm:fixed");
       expect(aside?.className).toContain("lg:static");
       expect(aside?.className).toContain("lg:translate-x-0");
-      expect(aside?.className).toContain("transition-transform");
+      expect(aside?.className).toContain("sm:transition-transform");
     });
 
     it("toggles sidebar translate class when opened and closed", async () => {
@@ -1089,6 +1089,277 @@ describe("AppShell", () => {
       // Now open — should have translate-x-0 (not the -translate-x-full)
       expect(aside?.className).toContain("translate-x-0");
       expect(aside?.className).not.toContain("-translate-x-full");
+    });
+  });
+
+  describe("mobile layout — single-panel navigation", () => {
+    it("renders 'Back to notebooks' button in the note list panel", async () => {
+      await act(async () => {
+        render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      // After notebooks auto-select, the note list shows with a mobile back button
+      expect(screen.getByLabelText("Back to notebooks")).toBeInTheDocument();
+    });
+
+    it("renders 'Back to notes' button when editor is open", async () => {
+      const user = userEvent.setup();
+
+      await act(async () => {
+        render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("My First Note")).toBeInTheDocument();
+      });
+
+      // Click a note to open the editor
+      await act(async () => {
+        await user.click(screen.getByText("My First Note"));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId("blocknote-editor")).toBeInTheDocument();
+      });
+
+      expect(screen.getByLabelText("Back to notes")).toBeInTheDocument();
+    });
+
+    it("clicking 'Back to notebooks' clears notebook selection", async () => {
+      const user = userEvent.setup();
+
+      const { container } = await act(async () => {
+        return render(<AppShell />);
+      });
+
+      // Wait for notebooks to auto-select
+      await waitFor(() => {
+        expect(screen.getByText("My First Note")).toBeInTheDocument();
+      });
+
+      const aside = container.querySelector("aside");
+      const section = container.querySelector("section");
+
+      // After auto-select, mobileView is "notes":
+      // sidebar should be hidden, note list should be flex
+      expect(aside?.className).toContain("hidden");
+      expect(section?.className).toContain("flex");
+
+      // Click back to notebooks
+      await act(async () => {
+        await user.click(screen.getByLabelText("Back to notebooks"));
+      });
+
+      // After going back, mobileView is "notebooks":
+      // sidebar should be flex, note list should be hidden
+      expect(aside?.className).toMatch(/(?:^|\s)flex(?:\s|$)/);
+      expect(section?.className).toContain("hidden");
+    });
+
+    it("clicking 'Back to notes' clears note selection and returns to notes view", async () => {
+      const user = userEvent.setup();
+
+      const { container } = await act(async () => {
+        return render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("My First Note")).toBeInTheDocument();
+      });
+
+      // Click a note to go to editor
+      await act(async () => {
+        await user.click(screen.getByText("My First Note"));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId("blocknote-editor")).toBeInTheDocument();
+      });
+
+      const section = container.querySelector("section");
+      const main = container.querySelector("main");
+
+      // mobileView is "editor": note list hidden, editor visible
+      expect(section?.className).toContain("hidden");
+      expect(main?.className).toMatch(/(?:^|\s)flex(?:\s|$)/);
+
+      // Click back to notes
+      await act(async () => {
+        await user.click(screen.getByLabelText("Back to notes"));
+      });
+
+      // mobileView is "notes": note list visible, editor hidden
+      expect(section?.className).toMatch(/(?:^|\s)flex(?:\s|$)/);
+      expect(main?.className).toContain("hidden");
+    });
+
+    it("sidebar has mobile-responsive CSS (w-full on mobile, sm:w-60 on tablet)", async () => {
+      const { container } = await act(async () => {
+        return render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      const aside = container.querySelector("aside");
+      expect(aside?.className).toContain("w-full");
+      expect(aside?.className).toContain("sm:w-60");
+    });
+
+    it("note list section has mobile-responsive CSS (w-full on mobile, sm:w-[300px] on tablet)", async () => {
+      const { container } = await act(async () => {
+        return render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      const section = container.querySelector("section");
+      expect(section?.className).toContain("w-full");
+      expect(section?.className).toContain("sm:w-[300px]");
+    });
+
+    it("editor has mobile-responsive CSS (sm:flex for tablet+)", async () => {
+      const { container } = await act(async () => {
+        return render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      const main = container.querySelector("main");
+      expect(main?.className).toContain("sm:flex");
+    });
+
+    it("mobile back button shows 'Trash' label when viewing trash", async () => {
+      const user = userEvent.setup();
+      const mockTrashedNotes = [
+        {
+          id: "t-1",
+          title: "Trashed Note",
+          notebook_id: "nb-1",
+          trashed_at: new Date().toISOString(),
+        },
+      ];
+
+      mockFetch.mockImplementation((url: string) => {
+        if (url === "/api/notebooks") {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotebooks) });
+        }
+        if (url === "/api/notes/trash") {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve(mockTrashedNotes) });
+        }
+        if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotes) });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+      });
+
+      await act(async () => {
+        render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /Trash/i })).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        await user.click(screen.getByRole("button", { name: /Trash/i }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Trashed Note")).toBeInTheDocument();
+      });
+
+      // The mobile back button header should show "Trash" label
+      const backButton = screen.getByLabelText("Back to notebooks");
+      expect(backButton.parentElement?.textContent).toContain("Trash");
+    });
+
+    it("navigates full mobile stack: notebooks → notes → editor → back to notes → back to notebooks", async () => {
+      const user = userEvent.setup();
+
+      // Start with empty notebooks to prevent auto-selection
+      mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+        if (url === "/api/notebooks" && !options?.method) {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve(mockNotebooks),
+          });
+        }
+        if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve(mockNotes),
+          });
+        }
+        if (typeof url === "string" && url.match(/\/api\/notes\//)) {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve(mockNote),
+          });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+      });
+
+      const { container } = await act(async () => {
+        return render(<AppShell />);
+      });
+
+      // Wait for notebooks to load and auto-select
+      await waitFor(() => {
+        expect(screen.getByText("My First Note")).toBeInTheDocument();
+      });
+
+      // State: notes view (notebook auto-selected)
+      const aside = container.querySelector("aside");
+      const section = container.querySelector("section");
+      const main = container.querySelector("main");
+
+      expect(aside?.className).toContain("hidden");
+      expect(section?.className).toMatch(/(?:^|\s)flex(?:\s|$)/);
+      expect(main?.className).toContain("hidden");
+
+      // Navigate to editor by clicking a note
+      await act(async () => {
+        await user.click(screen.getByText("My First Note"));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId("blocknote-editor")).toBeInTheDocument();
+      });
+
+      // State: editor view
+      expect(aside?.className).toContain("hidden");
+      expect(section?.className).toContain("hidden");
+      expect(main?.className).toMatch(/(?:^|\s)flex(?:\s|$)/);
+
+      // Navigate back to notes
+      await act(async () => {
+        await user.click(screen.getByLabelText("Back to notes"));
+      });
+
+      // State: notes view
+      expect(aside?.className).toContain("hidden");
+      expect(section?.className).toMatch(/(?:^|\s)flex(?:\s|$)/);
+      expect(main?.className).toContain("hidden");
+
+      // Navigate back to notebooks
+      await act(async () => {
+        await user.click(screen.getByLabelText("Back to notebooks"));
+      });
+
+      // State: notebooks view
+      expect(aside?.className).toMatch(/(?:^|\s)flex(?:\s|$)/);
+      expect(section?.className).toContain("hidden");
+      expect(main?.className).toContain("hidden");
     });
   });
 });
