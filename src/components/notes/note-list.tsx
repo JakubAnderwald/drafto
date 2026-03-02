@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState, useCallback } from "react";
+import { use, useState, useCallback, useRef, useEffect } from "react";
 
 interface NoteListItem {
   id: string;
@@ -8,11 +8,18 @@ interface NoteListItem {
   updated_at: string;
 }
 
+interface NotebookOption {
+  id: string;
+  name: string;
+}
+
 interface NoteListProps {
   notebookId: string;
   selectedNoteId: string | null;
   onSelectNote: (id: string) => void;
   onCreateNote: () => void;
+  onMoveNote?: (noteId: string, targetNotebookId: string) => void;
+  notebooks?: NotebookOption[];
   refreshTrigger?: number;
 }
 
@@ -53,14 +60,21 @@ export function NoteList({
   selectedNoteId,
   onSelectNote,
   onCreateNote,
+  onMoveNote,
+  notebooks = [],
   refreshTrigger = 0,
 }: NoteListProps) {
   const cacheKey = `${notebookId}-${refreshTrigger}`;
   const initialNotes = use(fetchNotes(notebookId, cacheKey));
   const [notes, setNotes] = useState(initialNotes);
+  const [prevInitialNotes, setPrevInitialNotes] = useState(initialNotes);
+  const [menuOpenForNote, setMenuOpenForNote] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
-  // Update notes when cache key changes (new data loaded)
-  if (notes !== initialNotes) {
+  // Update notes when cache key changes (new data loaded via refreshTrigger)
+  // Track prevInitialNotes separately so optimistic updates aren't reverted
+  if (prevInitialNotes !== initialNotes) {
+    setPrevInitialNotes(initialNotes);
     setNotes(initialNotes);
   }
 
@@ -77,8 +91,38 @@ export function NoteList({
     [selectedNoteId, onSelectNote],
   );
 
-  // Clear cache for this notebook on unmount-like scenarios
-  void handleDelete; // suppress unused warning — used in future Phase 4
+  void handleDelete; // used in Phase 4.2
+
+  const handleMove = useCallback(
+    (noteId: string, targetNotebookId: string) => {
+      setNotes((prev) => {
+        const filtered = prev.filter((n) => n.id !== noteId);
+        if (selectedNoteId === noteId) {
+          onSelectNote(filtered[0]?.id ?? "");
+        }
+        return filtered;
+      });
+      setMenuOpenForNote(null);
+      onMoveNote?.(noteId, targetNotebookId);
+    },
+    [selectedNoteId, onSelectNote, onMoveNote],
+  );
+
+  // Close menu when clicking outside
+  useEffect(() => {
+    if (!menuOpenForNote) return;
+
+    function handleClickOutside(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpenForNote(null);
+      }
+    }
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [menuOpenForNote]);
+
+  const otherNotebooks = notebooks.filter((nb) => nb.id !== notebookId);
 
   return (
     <div className="flex flex-1 flex-col">
@@ -110,7 +154,7 @@ export function NoteList({
         <nav className="flex-1 overflow-y-auto">
           <ul className="space-y-0.5 p-2">
             {notes.map((note) => (
-              <li key={note.id}>
+              <li key={note.id} className="group relative">
                 <button
                   onClick={() => onSelectNote(note.id)}
                   className={`w-full rounded px-3 py-2 text-left ${
@@ -122,6 +166,51 @@ export function NoteList({
                   <p className="truncate text-sm font-medium">{note.title}</p>
                   <p className="text-xs text-gray-400">{formatRelativeTime(note.updated_at)}</p>
                 </button>
+
+                {otherNotebooks.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenuOpenForNote(menuOpenForNote === note.id ? null : note.id);
+                    }}
+                    className="absolute right-2 top-2 hidden rounded p-0.5 text-gray-400 group-focus-within:block group-hover:block hover:bg-gray-200 hover:text-gray-600"
+                    aria-label={`Move ${note.title}`}
+                  >
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M12 5v.01M12 12v.01M12 19v.01"
+                      />
+                    </svg>
+                  </button>
+                )}
+
+                {menuOpenForNote === note.id && (
+                  <div
+                    ref={menuRef}
+                    className="absolute right-0 top-8 z-10 w-48 rounded-md border bg-white py-1 shadow-lg"
+                    role="menu"
+                  >
+                    <p className="px-3 py-1 text-xs font-medium text-gray-500">Move to...</p>
+                    {otherNotebooks.map((nb) => (
+                      <button
+                        key={nb.id}
+                        type="button"
+                        role="menuitem"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleMove(note.id, nb.id);
+                        }}
+                        className="w-full truncate px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
+                      >
+                        {nb.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </li>
             ))}
           </ul>

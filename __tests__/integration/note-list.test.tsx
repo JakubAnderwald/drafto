@@ -337,6 +337,158 @@ describe("NoteList", () => {
     });
   });
 
+  it("shows move button on hover with other notebooks available", async () => {
+    const trigger = nextTrigger();
+    const onSelect = vi.fn();
+    const onCreate = vi.fn();
+    const onMove = vi.fn();
+    const notebooks = [
+      { id: "nb-1", name: "Current" },
+      { id: "nb-2", name: "Work" },
+      { id: "nb-3", name: "Personal" },
+    ];
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteList
+            notebookId="nb-1"
+            selectedNoteId={null}
+            onSelectNote={onSelect}
+            onCreateNote={onCreate}
+            onMoveNote={onMove}
+            notebooks={notebooks}
+            refreshTrigger={trigger}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("First Note")).toBeInTheDocument();
+    });
+
+    // Move buttons should be rendered (hidden by CSS, but present in DOM)
+    expect(screen.getByLabelText("Move First Note")).toBeInTheDocument();
+    expect(screen.getByLabelText("Move Second Note")).toBeInTheDocument();
+  });
+
+  it("opens move menu and shows other notebooks", async () => {
+    const trigger = nextTrigger();
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const onCreate = vi.fn();
+    const onMove = vi.fn();
+    const notebooks = [
+      { id: "nb-1", name: "Current" },
+      { id: "nb-2", name: "Work" },
+      { id: "nb-3", name: "Personal" },
+    ];
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteList
+            notebookId="nb-1"
+            selectedNoteId={null}
+            onSelectNote={onSelect}
+            onCreateNote={onCreate}
+            onMoveNote={onMove}
+            notebooks={notebooks}
+            refreshTrigger={trigger}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("First Note")).toBeInTheDocument();
+    });
+
+    // Click the move button for the first note
+    await user.click(screen.getByLabelText("Move First Note"));
+
+    // Should show menu with other notebooks (not Current which is nb-1)
+    expect(screen.getByText("Move to...")).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Work" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Personal" })).toBeInTheDocument();
+    // Should NOT show the current notebook
+    expect(screen.queryByRole("menuitem", { name: "Current" })).not.toBeInTheDocument();
+  });
+
+  it("calls onMoveNote when a target notebook is clicked", async () => {
+    const trigger = nextTrigger();
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const onCreate = vi.fn();
+    const onMove = vi.fn();
+    const notebooks = [
+      { id: "nb-1", name: "Current" },
+      { id: "nb-2", name: "Work" },
+    ];
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteList
+            notebookId="nb-1"
+            selectedNoteId={null}
+            onSelectNote={onSelect}
+            onCreateNote={onCreate}
+            onMoveNote={onMove}
+            notebooks={notebooks}
+            refreshTrigger={trigger}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("First Note")).toBeInTheDocument();
+    });
+
+    // Open move menu
+    await user.click(screen.getByLabelText("Move First Note"));
+
+    // Click the target notebook
+    await user.click(screen.getByRole("menuitem", { name: "Work" }));
+
+    // Should call onMoveNote with the note ID and target notebook ID
+    expect(onMove).toHaveBeenCalledWith("note-1", "nb-2");
+
+    // Note should be removed from the list
+    expect(screen.queryByText("First Note")).not.toBeInTheDocument();
+  });
+
+  it("does not show move button when no other notebooks exist", async () => {
+    const trigger = nextTrigger();
+    const onSelect = vi.fn();
+    const onCreate = vi.fn();
+    const notebooks = [{ id: "nb-1", name: "Current" }];
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteList
+            notebookId="nb-1"
+            selectedNoteId={null}
+            onSelectNote={onSelect}
+            onCreateNote={onCreate}
+            notebooks={notebooks}
+            refreshTrigger={trigger}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("First Note")).toBeInTheDocument();
+    });
+
+    // No move buttons should exist when only one notebook
+    expect(screen.queryByLabelText("Move First Note")).not.toBeInTheDocument();
+  });
+
   it("fetches notes for the given notebook ID", async () => {
     const trigger = nextTrigger();
     const onSelect = vi.fn();

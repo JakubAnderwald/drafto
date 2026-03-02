@@ -57,6 +57,56 @@ test.describe("Note editing flow", () => {
     await expect(page.getByText("Hello from E2E test")).toBeVisible({ timeout: 5000 });
   });
 
+  test("move a note between notebooks", async ({ page }) => {
+    await page.goto("/");
+
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
+
+    // Create a second notebook to move notes to
+    const targetNotebook = `Target ${Date.now()}`;
+    await page.getByRole("button", { name: "New notebook" }).click();
+    const createInput = page.getByPlaceholder("Notebook name");
+    await expect(createInput).toBeVisible();
+    await createInput.fill(targetNotebook);
+    await createInput.press("Enter");
+    await expect(page.getByText(targetNotebook)).toBeVisible();
+
+    // Switch back to the first notebook (auto-created "Notes" or whatever is first)
+    const sidebar = page.locator("aside");
+    const firstNotebook = sidebar.locator("nav li").first();
+    await firstNotebook.click();
+    await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 5000 });
+
+    // Create a note in the first notebook
+    await page.getByRole("button", { name: "New note", exact: true }).click();
+    const titleInput = page.getByRole("textbox", { name: "Note title" });
+    await expect(titleInput).toBeVisible({ timeout: 5000 });
+
+    const noteTitle = `Move Me ${Date.now()}`;
+    await titleInput.clear();
+    await titleInput.fill(noteTitle);
+    await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
+
+    // Now move the note: click the "..." menu on the note
+    const noteList = page
+      .locator("section")
+      .filter({ has: page.getByRole("heading", { name: "Notes" }) });
+    const noteItem = noteList.getByText(noteTitle).locator("..");
+    await noteItem.hover();
+    await page.getByLabel(`Move ${noteTitle}`).click();
+
+    // Click the target notebook in the move menu
+    await page.getByRole("menuitem", { name: targetNotebook }).click();
+
+    // The note should disappear from the current notebook's list
+    await expect(noteList.getByText(noteTitle)).not.toBeVisible({ timeout: 5000 });
+
+    // Switch to the target notebook — the note should be there
+    await page.getByText(targetNotebook).click();
+    await expect(noteList.getByText(noteTitle)).toBeVisible({ timeout: 10000 });
+  });
+
   test("create multiple notes and switch between them", async ({ page }) => {
     await page.goto("/");
 

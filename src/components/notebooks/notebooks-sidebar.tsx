@@ -12,9 +12,14 @@ interface Notebook {
 interface NotebooksSidebarProps {
   selectedNotebookId: string | null;
   onSelectNotebook: (id: string | null) => void;
+  onNotebooksChange?: (notebooks: { id: string; name: string }[]) => void;
 }
 
-export function NotebooksSidebar({ selectedNotebookId, onSelectNotebook }: NotebooksSidebarProps) {
+export function NotebooksSidebar({
+  selectedNotebookId,
+  onSelectNotebook,
+  onNotebooksChange,
+}: NotebooksSidebarProps) {
   const [notebooks, setNotebooks] = useState<Notebook[]>([]);
   const [loading, setLoading] = useState(true);
   const [creatingName, setCreatingName] = useState<string | null>(null);
@@ -35,6 +40,7 @@ export function NotebooksSidebar({ selectedNotebookId, onSelectNotebook }: Noteb
       })
       .then((data) => {
         setNotebooks(data);
+        onNotebooksChange?.(data.map((n) => ({ id: n.id, name: n.name })));
         if (data.length > 0 && !selectedNotebookId) {
           onSelectNotebook(data[0].id);
         }
@@ -76,7 +82,11 @@ export function NotebooksSidebar({ selectedNotebookId, onSelectNotebook }: Noteb
 
       if (res.ok) {
         const notebook: Notebook = await res.json();
-        setNotebooks((prev) => [...prev, notebook].sort((a, b) => a.name.localeCompare(b.name)));
+        setNotebooks((prev) => {
+          const updated = [...prev, notebook].sort((a, b) => a.name.localeCompare(b.name));
+          onNotebooksChange?.(updated.map((n) => ({ id: n.id, name: n.name })));
+          return updated;
+        });
         onSelectNotebook(notebook.id);
       }
     } finally {
@@ -100,9 +110,13 @@ export function NotebooksSidebar({ selectedNotebookId, onSelectNotebook }: Noteb
 
       if (res.ok) {
         const updated: Notebook = await res.json();
-        setNotebooks((prev) =>
-          prev.map((n) => (n.id === id ? updated : n)).sort((a, b) => a.name.localeCompare(b.name)),
-        );
+        setNotebooks((prev) => {
+          const newList = prev
+            .map((n) => (n.id === id ? updated : n))
+            .sort((a, b) => a.name.localeCompare(b.name));
+          onNotebooksChange?.(newList.map((n) => ({ id: n.id, name: n.name })));
+          return newList;
+        });
       }
     } finally {
       setEditingId(null);
@@ -114,7 +128,11 @@ export function NotebooksSidebar({ selectedNotebookId, onSelectNotebook }: Noteb
       const res = await fetch(`/api/notebooks/${id}`, { method: "DELETE" });
 
       if (res.ok) {
-        setNotebooks((prev) => prev.filter((n) => n.id !== id));
+        setNotebooks((prev) => {
+          const updated = prev.filter((n) => n.id !== id);
+          onNotebooksChange?.(updated.map((n) => ({ id: n.id, name: n.name })));
+          return updated;
+        });
         if (selectedNotebookId === id) {
           onSelectNotebook(null);
         }

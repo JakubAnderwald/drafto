@@ -5,10 +5,16 @@ import { NotebooksSidebar } from "@/components/notebooks/notebooks-sidebar";
 import { NoteList } from "@/components/notes/note-list";
 import { NoteEditorPanel } from "@/components/notes/note-editor-panel";
 
+interface NotebookInfo {
+  id: string;
+  name: string;
+}
+
 export function AppShell({ children }: { children?: React.ReactNode }) {
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [notebooks, setNotebooks] = useState<NotebookInfo[]>([]);
 
   const handleCreateNote = useCallback(async () => {
     if (!selectedNotebookId) return;
@@ -36,6 +42,32 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     setSelectedNoteId(null);
   }, []);
 
+  const handleMoveNote = useCallback(
+    async (noteId: string, targetNotebookId: string) => {
+      try {
+        const res = await fetch(`/api/notes/${noteId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ notebook_id: targetNotebookId }),
+        });
+
+        if (!res.ok) {
+          console.error("Failed to move note:", res.status);
+          return;
+        }
+
+        // Deselect if the moved note was selected
+        if (selectedNoteId === noteId) {
+          setSelectedNoteId(null);
+        }
+        setRefreshTrigger((prev) => prev + 1);
+      } catch (err) {
+        console.error("Failed to move note:", err);
+      }
+    },
+    [selectedNoteId],
+  );
+
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Sidebar — notebooks */}
@@ -43,6 +75,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         <NotebooksSidebar
           selectedNotebookId={selectedNotebookId}
           onSelectNotebook={handleSelectNotebook}
+          onNotebooksChange={setNotebooks}
         />
       </aside>
 
@@ -57,6 +90,8 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               selectedNoteId={selectedNoteId}
               onSelectNote={setSelectedNoteId}
               onCreateNote={handleCreateNote}
+              onMoveNote={handleMoveNote}
+              notebooks={notebooks}
               refreshTrigger={refreshTrigger}
             />
           </Suspense>

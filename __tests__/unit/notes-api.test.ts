@@ -97,6 +97,33 @@ describe("Notes API", () => {
       expect(response.status).toBe(200);
     });
 
+    it("updates note notebook_id (move between notebooks)", async () => {
+      authenticateAs("user-1");
+      const updated = { id: "note-1", title: "Test", notebook_id: "nb-2" };
+      mockFrom.mockReturnValue({
+        update: () => ({
+          eq: () => ({
+            eq: () => ({
+              select: () => ({
+                single: () => Promise.resolve({ data: updated, error: null }),
+              }),
+            }),
+          }),
+        }),
+      });
+
+      const { PATCH } = await import("@/app/api/notes/[id]/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1", {
+        method: "PATCH",
+        body: JSON.stringify({ notebook_id: "nb-2" }),
+        headers: { "Content-Type": "application/json" },
+      });
+      const response = await PATCH(request, { params });
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.notebook_id).toBe("nb-2");
+    });
+
     it("returns 400 when no fields provided", async () => {
       authenticateAs("user-1");
 

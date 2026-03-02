@@ -8,7 +8,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 1. **Identify:** Scan the Progress Tracker below and find the *first* unchecked task `[ ]`.
 2. **Scope:** DO NOT attempt multiple tasks. Focus ONLY on that single task.
 3. **Implement:** Write the code to satisfy the task's requirements.
-4. **Test:** Run the full test suite (`pnpm test`, `pnpm test:e2e`, `pnpm lint`, `tsc --noEmit`). 
+4. Test: Run the full test suite strictly in CI mode to prevent interactive prompts or watch-mode hangs. Execute exactly this chain: CI=true pnpm test -- --run && CI=true pnpm test:e2e && pnpm lint && tsc --noEmit.
 5. **Fix:** If *any* test or check fails, you must debug, fix the code, and re-run the suite until it is 100% green. Do not proceed until all tests pass.
 6. **Record:** Check off the task in this file by changing `[ ]` to `[x]`. 
 7. **Commit:** Commit and push your changes to git with a descriptive message using the /push protocol.
@@ -62,7 +62,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 
 ### Phase 4: Notes — Organization & Trash
 
-- [ ] 4.1 — Move notes between notebooks + tests
+- [x] 4.1 — Move notes between notebooks + tests
 - [ ] 4.2 — Trash: soft delete, restore, permanent delete + tests
 - [ ] 4.3 — Trash auto-cleanup (30-day cron) + tests
 - [ ] 4-CP — **Checkpoint**: Run full suite locally. If green, check this off, commit, and exit.
