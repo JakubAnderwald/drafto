@@ -17,6 +17,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [notebooks, setNotebooks] = useState<NotebookInfo[]>([]);
   const [viewingTrash, setViewingTrash] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const handleCreateNote = useCallback(async () => {
     if (!selectedNotebookId) return;
@@ -43,12 +44,14 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     setSelectedNotebookId(id);
     setSelectedNoteId(null);
     setViewingTrash(false);
+    setSidebarOpen(false);
   }, []);
 
   const handleSelectTrash = useCallback(() => {
     setViewingTrash(true);
     setSelectedNotebookId(null);
     setSelectedNoteId(null);
+    setSidebarOpen(false);
   }, []);
 
   const handleDeleteNote = useCallback(
@@ -146,8 +149,22 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
   return (
     <div className="flex h-screen overflow-hidden">
+      {/* Sidebar backdrop — visible on tablet when sidebar is open */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-20 bg-black/20 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+          data-testid="sidebar-backdrop"
+        />
+      )}
+
       {/* Sidebar — notebooks (~240px fixed) */}
-      <aside className="flex w-60 shrink-0 flex-col overflow-hidden border-r bg-gray-50">
+      <aside
+        className={`fixed inset-y-0 left-0 z-30 flex w-60 shrink-0 flex-col overflow-hidden border-r bg-gray-50 transition-transform duration-200 ease-in-out lg:static lg:translate-x-0 ${
+          sidebarOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
         <NotebooksSidebar
           selectedNotebookId={selectedNotebookId}
           onSelectNotebook={handleSelectNotebook}
@@ -159,6 +176,25 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
       {/* Middle panel — note list or trash (~300px fixed) */}
       <section className="flex w-[300px] shrink-0 flex-col overflow-hidden border-r">
+        {/* Sidebar toggle — visible on tablet only */}
+        <div className="flex items-center border-b p-2 lg:hidden">
+          <button
+            type="button"
+            onClick={() => setSidebarOpen((prev) => !prev)}
+            className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
+            aria-label="Toggle sidebar"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M4 6h16M4 12h16M4 18h16"
+              />
+            </svg>
+          </button>
+        </div>
+
         {viewingTrash ? (
           <Suspense
             fallback={<div className="p-4 text-center text-sm text-gray-400">Loading trash...</div>}
