@@ -101,13 +101,17 @@ describe("Trash API", () => {
       expect(response.status).toBe(401);
     });
 
-    it("returns 404 when note not found", async () => {
+    it("returns 404 when note not found or not trashed", async () => {
       authenticateAs("user-1");
       mockFrom.mockReturnValue({
-        select: () => ({
+        delete: () => ({
           eq: () => ({
             eq: () => ({
-              single: () => Promise.resolve({ data: null, error: { message: "Not found" } }),
+              eq: () => ({
+                select: () => ({
+                  single: () => Promise.resolve({ data: null, error: { message: "Not found" } }),
+                }),
+              }),
             }),
           }),
         }),
@@ -121,47 +125,18 @@ describe("Trash API", () => {
       expect(response.status).toBe(404);
     });
 
-    it("returns 400 when note is not trashed", async () => {
+    it("permanently deletes a trashed note atomically", async () => {
       authenticateAs("user-1");
       mockFrom.mockReturnValue({
-        select: () => ({
-          eq: () => ({
-            eq: () => ({
-              single: () =>
-                Promise.resolve({ data: { id: "note-1", is_trashed: false }, error: null }),
-            }),
-          }),
-        }),
-      });
-
-      const { DELETE } = await import("@/app/api/notes/[id]/permanent/route");
-      const request = new NextRequest("http://localhost:3000/api/notes/note-1/permanent", {
-        method: "DELETE",
-      });
-      const response = await DELETE(request, { params });
-      expect(response.status).toBe(400);
-      const body = await response.json();
-      expect(body.error).toContain("must be in trash");
-    });
-
-    it("permanently deletes a trashed note", async () => {
-      authenticateAs("user-1");
-      let callCount = 0;
-      mockFrom.mockReturnValue({
-        select: () => ({
-          eq: () => ({
-            eq: () => ({
-              single: () =>
-                Promise.resolve({ data: { id: "note-1", is_trashed: true }, error: null }),
-            }),
-          }),
-        }),
         delete: () => ({
           eq: () => ({
-            eq: () => {
-              callCount++;
-              return Promise.resolve({ error: null });
-            },
+            eq: () => ({
+              eq: () => ({
+                select: () => ({
+                  single: () => Promise.resolve({ data: { id: "note-1" }, error: null }),
+                }),
+              }),
+            }),
           }),
         }),
       });
@@ -172,11 +147,25 @@ describe("Trash API", () => {
       });
       const response = await DELETE(request, { params });
       expect(response.status).toBe(200);
-      expect(callCount).toBe(1);
     });
   });
 
   describe("PATCH /api/notes/[id] (restore)", () => {
+    it("returns 400 when is_trashed is not a boolean", async () => {
+      authenticateAs("user-1");
+
+      const { PATCH } = await import("@/app/api/notes/[id]/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1", {
+        method: "PATCH",
+        body: JSON.stringify({ is_trashed: "false" }),
+        headers: { "Content-Type": "application/json" },
+      });
+      const response = await PATCH(request, { params });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toContain("is_trashed must be a boolean");
+    });
+
     it("restores a trashed note", async () => {
       authenticateAs("user-1");
       const restored = { id: "note-1", title: "Test", is_trashed: false, trashed_at: null };

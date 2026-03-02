@@ -173,6 +173,70 @@ describe("TrashList", () => {
     expect(screen.queryByText("Deleted Note B")).not.toBeInTheDocument();
   });
 
+  it("rolls back optimistic remove when onRestore fails", async () => {
+    const onRestore = vi.fn().mockRejectedValue(new Error("Restore failed"));
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <TrashList
+            notebooks={mockNotebooks}
+            onRestore={onRestore}
+            onPermanentDelete={vi.fn()}
+            refreshTrigger={refreshCounter}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Deleted Note A")).toBeInTheDocument();
+    });
+
+    const user = userEvent.setup();
+    const restoreButtons = screen.getAllByText("Restore");
+    await act(async () => {
+      await user.click(restoreButtons[0]);
+    });
+
+    // Note should be rolled back into the list after failure
+    await waitFor(() => {
+      expect(screen.getByText("Deleted Note A")).toBeInTheDocument();
+    });
+  });
+
+  it("rolls back optimistic remove when onPermanentDelete fails", async () => {
+    const onPermanentDelete = vi.fn().mockRejectedValue(new Error("Delete failed"));
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <TrashList
+            notebooks={mockNotebooks}
+            onRestore={vi.fn()}
+            onPermanentDelete={onPermanentDelete}
+            refreshTrigger={refreshCounter}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Deleted Note B")).toBeInTheDocument();
+    });
+
+    const user = userEvent.setup();
+    const deleteButtons = screen.getAllByText("Delete forever");
+    await act(async () => {
+      await user.click(deleteButtons[1]);
+    });
+
+    // Note should be rolled back into the list after failure
+    await waitFor(() => {
+      expect(screen.getByText("Deleted Note B")).toBeInTheDocument();
+    });
+  });
+
   it("displays the Trash heading", async () => {
     await act(async () => {
       render(

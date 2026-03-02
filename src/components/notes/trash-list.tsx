@@ -17,8 +17,8 @@ interface NotebookOption {
 
 interface TrashListProps {
   notebooks: NotebookOption[];
-  onRestore: (noteId: string) => void;
-  onPermanentDelete: (noteId: string) => void;
+  onRestore: (noteId: string) => void | Promise<void>;
+  onPermanentDelete: (noteId: string) => void | Promise<void>;
   refreshTrigger?: number;
 }
 
@@ -33,7 +33,11 @@ function fetchTrashedNotes(cacheKey: string): Promise<TrashedNote[]> {
       if (!res.ok) throw new Error(`Failed to fetch trash: ${res.status}`);
       return res.json();
     })
-    .then((data: TrashedNote[]) => data);
+    .then((data: TrashedNote[]) => data)
+    .catch((error) => {
+      trashCache.delete(cacheKey);
+      throw error;
+    });
 
   trashCache.set(cacheKey, promise);
   return promise;
@@ -56,19 +60,33 @@ export function TrashList({
   }
 
   const handleRestore = useCallback(
-    (noteId: string) => {
+    async (noteId: string) => {
+      const noteToRestore = notes.find((n) => n.id === noteId);
       setNotes((prev) => prev.filter((n) => n.id !== noteId));
-      onRestore(noteId);
+      try {
+        await Promise.resolve(onRestore(noteId));
+      } catch {
+        if (noteToRestore) {
+          setNotes((prev) => [...prev, noteToRestore]);
+        }
+      }
     },
-    [onRestore],
+    [onRestore, notes],
   );
 
   const handlePermanentDelete = useCallback(
-    (noteId: string) => {
+    async (noteId: string) => {
+      const noteToDelete = notes.find((n) => n.id === noteId);
       setNotes((prev) => prev.filter((n) => n.id !== noteId));
-      onPermanentDelete(noteId);
+      try {
+        await Promise.resolve(onPermanentDelete(noteId));
+      } catch {
+        if (noteToDelete) {
+          setNotes((prev) => [...prev, noteToDelete]);
+        }
+      }
     },
-    [onPermanentDelete],
+    [onPermanentDelete, notes],
   );
 
   function getNotebookName(notebookId: string): string {

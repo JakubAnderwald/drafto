@@ -600,9 +600,10 @@ describe("AppShell", () => {
     });
   });
 
-  it("handles network error on restore gracefully", async () => {
+  it("handles network error on restore with rollback", async () => {
     const user = userEvent.setup();
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
     const mockTrashedNotes = [
       {
         id: "t-1",
@@ -648,16 +649,18 @@ describe("AppShell", () => {
       await user.click(screen.getByText("Restore"));
     });
 
+    // Note should be rolled back (reappear) after failed restore
     await waitFor(() => {
-      expect(consoleSpy).toHaveBeenCalledWith("Failed to restore note:", expect.any(Error));
+      expect(screen.getByText("Trashed Note")).toBeInTheDocument();
     });
 
-    consoleSpy.mockRestore();
+    vi.restoreAllMocks();
   });
 
-  it("handles network error on permanent delete gracefully", async () => {
+  it("handles network error on permanent delete with rollback", async () => {
     const user = userEvent.setup();
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
     const mockTrashedNotes = [
       {
         id: "t-1",
@@ -703,14 +706,12 @@ describe("AppShell", () => {
       await user.click(screen.getByText("Delete forever"));
     });
 
+    // Note should be rolled back (reappear) after failed permanent delete
     await waitFor(() => {
-      expect(consoleSpy).toHaveBeenCalledWith(
-        "Failed to permanently delete note:",
-        expect.any(Error),
-      );
+      expect(screen.getByText("Trashed Note")).toBeInTheDocument();
     });
 
-    consoleSpy.mockRestore();
+    vi.restoreAllMocks();
   });
 
   it("handles network error on note move gracefully", async () => {
@@ -794,9 +795,10 @@ describe("AppShell", () => {
     consoleSpy.mockRestore();
   });
 
-  it("handles failed restore (non-ok response) gracefully", async () => {
+  it("handles failed restore (non-ok response) with rollback", async () => {
     const user = userEvent.setup();
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
     const mockTrashedNotes = [
       {
         id: "t-1",
@@ -842,16 +844,18 @@ describe("AppShell", () => {
       await user.click(screen.getByText("Restore"));
     });
 
+    // Note should be rolled back (reappear) after failed restore
     await waitFor(() => {
-      expect(consoleSpy).toHaveBeenCalledWith("Failed to restore note:", 500);
+      expect(screen.getByText("Trashed Note")).toBeInTheDocument();
     });
 
-    consoleSpy.mockRestore();
+    vi.restoreAllMocks();
   });
 
-  it("handles failed permanent delete (non-ok response) gracefully", async () => {
+  it("handles failed permanent delete (non-ok response) with rollback", async () => {
     const user = userEvent.setup();
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
     const mockTrashedNotes = [
       {
         id: "t-1",
@@ -897,10 +901,11 @@ describe("AppShell", () => {
       await user.click(screen.getByText("Delete forever"));
     });
 
+    // Note should be rolled back (reappear) after failed permanent delete
     await waitFor(() => {
-      expect(consoleSpy).toHaveBeenCalledWith("Failed to permanently delete note:", 500);
+      expect(screen.getByText("Trashed Note")).toBeInTheDocument();
     });
 
-    consoleSpy.mockRestore();
+    vi.restoreAllMocks();
   });
 });

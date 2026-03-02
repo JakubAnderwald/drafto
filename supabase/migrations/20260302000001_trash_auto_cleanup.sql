@@ -30,6 +30,15 @@ $$;
 -- Enable pg_cron extension for scheduled jobs
 create extension if not exists pg_cron with schema pg_catalog;
 
+-- Remove existing job if present (idempotent re-apply)
+do $$
+begin
+  perform cron.unschedule('cleanup-trashed-notes');
+exception when others then
+  null; -- Job doesn't exist yet, that's fine
+end;
+$$;
+
 -- Schedule cleanup to run daily at 3:00 AM UTC
 select cron.schedule(
   'cleanup-trashed-notes',

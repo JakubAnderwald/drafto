@@ -59,7 +59,8 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         });
 
         if (!res.ok) {
-          console.error("Failed to delete note:", res.status);
+          const err = new Error(`Failed to delete note: ${res.status}`);
+          console.error(err);
           setRefreshTrigger((prev) => prev + 1);
           return;
         }
@@ -84,12 +85,15 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       });
 
       if (!res.ok) {
-        console.error("Failed to restore note:", res.status);
+        const err = new Error(`Failed to restore note: ${res.status}`);
+        console.error(err);
         setRefreshTrigger((prev) => prev + 1);
+        throw err;
       }
     } catch (err) {
       console.error("Failed to restore note:", err);
       setRefreshTrigger((prev) => prev + 1);
+      throw err;
     }
   }, []);
 
@@ -100,12 +104,15 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       });
 
       if (!res.ok) {
-        console.error("Failed to permanently delete note:", res.status);
+        const err = new Error(`Failed to permanently delete note: ${res.status}`);
+        console.error(err);
         setRefreshTrigger((prev) => prev + 1);
+        throw err;
       }
     } catch (err) {
       console.error("Failed to permanently delete note:", err);
       setRefreshTrigger((prev) => prev + 1);
+      throw err;
     }
   }, []);
 

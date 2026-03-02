@@ -45,6 +45,9 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   if (body.content !== undefined) updates.content = body.content;
   if (body.notebook_id !== undefined) updates.notebook_id = body.notebook_id;
   if (body.is_trashed !== undefined) {
+    if (typeof body.is_trashed !== "boolean") {
+      return errorResponse("is_trashed must be a boolean", 400);
+    }
     updates.is_trashed = body.is_trashed;
     updates.trashed_at = body.is_trashed ? new Date().toISOString() : null;
   }
