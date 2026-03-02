@@ -18,7 +18,7 @@ export default defineConfig({
       testMatch: /auth\.setup\.ts/,
     },
 
-    // Desktop
+    // Desktop — runs all tests except auth setup and responsive-only tests
     {
       name: "chromium",
       use: {
@@ -26,10 +26,10 @@ export default defineConfig({
         storageState: "e2e/.auth/user.json",
       },
       dependencies: ["setup"],
-      testIgnore: /auth\.setup\.ts/,
+      testIgnore: [/auth\.setup\.ts/, /responsive\.spec\.ts/],
     },
 
-    // Mobile
+    // Mobile — only runs responsive tests (desktop tests assume three-panel layout)
     {
       name: "Mobile Chrome",
       use: {
@@ -37,7 +37,7 @@ export default defineConfig({
         storageState: "e2e/.auth/user.json",
       },
       dependencies: ["setup"],
-      testIgnore: /auth\.setup\.ts/,
+      testMatch: /responsive\.spec\.ts/,
     },
     {
       name: "Mobile Safari",
@@ -46,7 +46,18 @@ export default defineConfig({
         storageState: "e2e/.auth/user.json",
       },
       dependencies: ["setup"],
-      testIgnore: /auth\.setup\.ts/,
+      testMatch: /responsive\.spec\.ts/,
+    },
+
+    // Tablet — only runs responsive tests
+    {
+      name: "Tablet",
+      use: {
+        ...devices["iPad (gen 7)"],
+        storageState: "e2e/.auth/user.json",
+      },
+      dependencies: ["setup"],
+      testMatch: /responsive\.spec\.ts/,
     },
   ],
   webServer: {
