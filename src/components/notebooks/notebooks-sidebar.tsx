@@ -261,7 +261,9 @@ export function NotebooksSidebar({
             type="button"
             onClick={onSelectTrash}
             className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${
-              isTrashSelected ? "bg-blue-100 text-blue-700" : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+              isTrashSelected
+                ? "bg-blue-100 text-blue-700"
+                : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
             }`}
           >
             <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

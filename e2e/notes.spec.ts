@@ -107,9 +107,7 @@ test.describe("Note editing flow", () => {
     await expect(noteList.getByText(noteTitle)).toBeVisible({ timeout: 10000 });
   });
 
-  test("delete note to trash, view in trash, restore, and permanently delete", async ({
-    page,
-  }) => {
+  test("delete note to trash, view in trash, restore, and permanently delete", async ({ page }) => {
     await page.goto("/");
 
     await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible();

@@ -53,7 +53,12 @@ function fetchTrashedNotes(cacheKey: string): Promise<TrashedNote[]> {
   return promise;
 }
 
-export function TrashList({ notebooks, onRestore, onPermanentDelete, refreshTrigger = 0 }: TrashListProps) {
+export function TrashList({
+  notebooks,
+  onRestore,
+  onPermanentDelete,
+  refreshTrigger = 0,
+}: TrashListProps) {
   const cacheKey = `trash-${refreshTrigger}`;
   const initialNotes = use(fetchTrashedNotes(cacheKey));
   const [notes, setNotes] = useState(initialNotes);

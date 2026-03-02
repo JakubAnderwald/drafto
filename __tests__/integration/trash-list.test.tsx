@@ -17,8 +17,18 @@ const mockNotebooks = [
 ];
 
 const mockTrashedNotes = [
-  { id: "note-1", title: "Deleted Note A", notebook_id: "nb-1", trashed_at: new Date().toISOString() },
-  { id: "note-2", title: "Deleted Note B", notebook_id: "nb-2", trashed_at: new Date().toISOString() },
+  {
+    id: "note-1",
+    title: "Deleted Note A",
+    notebook_id: "nb-1",
+    trashed_at: new Date().toISOString(),
+  },
+  {
+    id: "note-2",
+    title: "Deleted Note B",
+    notebook_id: "nb-2",
+    trashed_at: new Date().toISOString(),
+  },
 ];
 
 const mockFetch = vi.fn();
