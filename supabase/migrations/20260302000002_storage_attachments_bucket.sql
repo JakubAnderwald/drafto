@@ -6,11 +6,16 @@
 -- =============================================================================
 insert into storage.buckets (id, name, public, file_size_limit)
 values ('attachments', 'attachments', false, 26214400) -- 25MB = 25 * 1024 * 1024
-on conflict (id) do nothing;
+on conflict (id) do update
+set
+  name = excluded.name,
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit;
 
 -- =============================================================================
 -- STORAGE POLICIES
 -- Path convention: {user_id}/{note_id}/{filename}
+-- Enforced: folder depth = 2 (user_id + note_id), note ownership verified
 -- =============================================================================
 
 -- Users can upload files to their own folder
@@ -20,6 +25,12 @@ to authenticated
 with check (
   bucket_id = 'attachments'
   and (storage.foldername(name))[1] = auth.uid()::text
+  and array_length(storage.foldername(name), 1) = 2
+  and exists (
+    select 1 from public.notes n
+    where n.id::text = (storage.foldername(name))[2]
+      and n.user_id = auth.uid()
+  )
   and exists (
     select 1 from public.profiles p
     where p.id = auth.uid() and p.is_approved = true
@@ -33,6 +44,12 @@ to authenticated
 using (
   bucket_id = 'attachments'
   and (storage.foldername(name))[1] = auth.uid()::text
+  and array_length(storage.foldername(name), 1) = 2
+  and exists (
+    select 1 from public.notes n
+    where n.id::text = (storage.foldername(name))[2]
+      and n.user_id = auth.uid()
+  )
   and exists (
     select 1 from public.profiles p
     where p.id = auth.uid() and p.is_approved = true
@@ -46,6 +63,12 @@ to authenticated
 using (
   bucket_id = 'attachments'
   and (storage.foldername(name))[1] = auth.uid()::text
+  and array_length(storage.foldername(name), 1) = 2
+  and exists (
+    select 1 from public.notes n
+    where n.id::text = (storage.foldername(name))[2]
+      and n.user_id = auth.uid()
+  )
   and exists (
     select 1 from public.profiles p
     where p.id = auth.uid() and p.is_approved = true
@@ -59,6 +82,12 @@ to authenticated
 using (
   bucket_id = 'attachments'
   and (storage.foldername(name))[1] = auth.uid()::text
+  and array_length(storage.foldername(name), 1) = 2
+  and exists (
+    select 1 from public.notes n
+    where n.id::text = (storage.foldername(name))[2]
+      and n.user_id = auth.uid()
+  )
   and exists (
     select 1 from public.profiles p
     where p.id = auth.uid() and p.is_approved = true
