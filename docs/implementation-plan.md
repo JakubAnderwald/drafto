@@ -65,7 +65,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 
 - [x] 4.1 — Move notes between notebooks + tests
 - [x] 4.2 — Trash: soft delete, restore, permanent delete + tests
-- [ ] 4.3 — Trash auto-cleanup (30-day cron) + tests
+- [x] 4.3 — Trash auto-cleanup (30-day cron) + tests
 - [ ] 4-CP — **Checkpoint**: Run full suite locally. If green, check this off, commit, and exit.
 - [ ] 4-PUSH — **Push**: Run `/push` to PR. Address any review comments/failures automatically. Once `/push` succeeds, check this off and exit.
 
