@@ -41,7 +41,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 
 ### Phase 2: Reusable UI Primitives
 
-- [ ] 2.1 — cn() utility + Button component (variants: primary, secondary, ghost, danger; sizes: sm, md, lg; loading state)
+- [x] 2.1 — cn() utility + Button component (variants: primary, secondary, ghost, danger; sizes: sm, md, lg; loading state)
 - [ ] 2.2 — Input and Label components
 - [ ] 2.3 — Card component (with header/body/footer slots)
 - [ ] 2.4 — Badge, IconButton, and Skeleton components
