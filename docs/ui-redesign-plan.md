@@ -45,7 +45,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 - [x] 2.2 — Input and Label components
 - [x] 2.3 — Card component (with header/body/footer slots)
 - [x] 2.4 — Badge, IconButton, and Skeleton components
-- [ ] 2.5 — ConfirmDialog component
+- [x] 2.5 — ConfirmDialog component
 - [ ] 2.6 — DropdownMenu component
 - [ ] 2-CP — **Checkpoint**: full suite green
 - [ ] 2-PUSH — **Push**: `/push` to PR
