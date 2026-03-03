@@ -3,6 +3,9 @@
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import Link from "next/link";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
@@ -36,13 +39,13 @@ export default function ForgotPasswordPage() {
 
   if (success) {
     return (
-      <div className="rounded-lg bg-white p-8 text-center shadow">
-        <h1 className="mb-4 text-2xl font-bold">Check Your Email</h1>
-        <p className="mb-6 text-gray-600">
-          We&apos;ve sent a password reset link to <strong>{email}</strong>. Check your inbox and
-          follow the link to reset your password.
+      <div className="text-center">
+        <h1 className="text-fg mb-4 text-2xl font-bold">Check Your Email</h1>
+        <p className="text-fg-muted mb-6">
+          We&apos;ve sent a password reset link to <strong className="text-fg">{email}</strong>.
+          Check your inbox and follow the link to reset your password.
         </p>
-        <Link href="/login" className="text-blue-600 hover:underline">
+        <Link href="/login" className="text-primary-600 hover:underline">
           Back to login
         </Link>
       </div>
@@ -50,45 +53,39 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <div className="rounded-lg bg-white p-8 shadow">
-      <h1 className="mb-6 text-center text-2xl font-bold">Forgot Password</h1>
+    <>
+      <h1 className="text-fg mb-6 text-center text-2xl font-bold">Forgot Password</h1>
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
-          <label htmlFor="email" className="block text-sm font-medium text-gray-700">
-            Email
-          </label>
-          <input
+          <Label htmlFor="email">Email</Label>
+          <Input
             id="email"
             type="email"
             required
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
             placeholder="you@example.com"
+            className="mt-1"
           />
         </div>
 
         {error && (
-          <div role="alert" className="rounded-md bg-red-50 p-3 text-sm text-red-700">
+          <div role="alert" className="text-error bg-error-bg rounded-md p-3 text-sm">
             {error}
           </div>
         )}
 
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full rounded-md bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:outline-none disabled:opacity-50"
-        >
+        <Button type="submit" loading={loading} className="w-full">
           {loading ? "Sending..." : "Send reset link"}
-        </button>
+        </Button>
       </form>
 
-      <p className="mt-4 text-center text-sm text-gray-600">
-        <Link href="/login" className="text-blue-600 hover:underline">
+      <p className="text-fg-muted mt-4 text-center text-sm">
+        <Link href="/login" className="text-primary-600 hover:underline">
           Back to login
         </Link>
       </p>
-    </div>
+    </>
   );
 }
