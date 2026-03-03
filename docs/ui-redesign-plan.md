@@ -52,7 +52,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 
 ### Phase 3: Auth Pages Redesign
 
-- [ ] 3.1 — Auth layout (gradient background, branded Card container)
+- [x] 3.1 — Auth layout (gradient background, branded Card container)
 - [ ] 3.2 — Login page (use Button, Input, Label, Card primitives)
 - [ ] 3.3 — Signup, forgot-password, reset-password, waiting-for-approval pages
 - [ ] 3-CP — **Checkpoint**: full suite green
