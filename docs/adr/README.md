@@ -30,10 +30,10 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 
 ## Index
 
-| #                                                | Title                          | Status   | Date       |
-| ------------------------------------------------ | ------------------------------ | -------- | ---------- |
-| [0000](./0000-adr-template.md)                   | ADR Template                   | N/A      | 2026-02-24 |
-| [0001](./0001-data-model-and-rls-strategy.md)    | Data Model and RLS Strategy    | Accepted | 2026-02-24 |
-| [0002](./0002-api-route-conventions.md)          | API Route Conventions          | Accepted | 2026-02-24 |
-| [0003](./0003-blocknote-editor-configuration.md) | BlockNote Editor Configuration | Accepted | 2026-02-25 |
-| [0004](./0004-design-system-css-variables.md) | Design System with CSS Custom Properties | Accepted | 2026-03-03 |
+| #                                                | Title                                    | Status   | Date       |
+| ------------------------------------------------ | ---------------------------------------- | -------- | ---------- |
+| [0000](./0000-adr-template.md)                   | ADR Template                             | N/A      | 2026-02-24 |
+| [0001](./0001-data-model-and-rls-strategy.md)    | Data Model and RLS Strategy              | Accepted | 2026-02-24 |
+| [0002](./0002-api-route-conventions.md)          | API Route Conventions                    | Accepted | 2026-02-24 |
+| [0003](./0003-blocknote-editor-configuration.md) | BlockNote Editor Configuration           | Accepted | 2026-02-25 |
+| [0004](./0004-design-system-css-variables.md)    | Design System with CSS Custom Properties | Accepted | 2026-03-03 |
