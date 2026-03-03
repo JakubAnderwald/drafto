@@ -56,7 +56,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 - [x] 3.2 — Login page (use Button, Input, Label, Card primitives)
 - [x] 3.3 — Signup, forgot-password, reset-password, waiting-for-approval pages
 - [x] 3-CP — **Checkpoint**: full suite green
-- [ ] 3-PUSH — **Push**: `/push` to PR
+- [x] 3-PUSH — **Push**: `/push` to PR
 
 ### Phase 4: App Shell & Sidebar Redesign
 
