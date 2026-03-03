@@ -229,6 +229,9 @@ export function NotebooksSidebar({
                       onSelectNotebook(notebook.id);
                     }
                   }}
+                  {...(selectedNotebookId === notebook.id && {
+                    "data-testid": "notebook-item-active",
+                  })}
                   className={`group flex w-full cursor-pointer items-center justify-between rounded px-2 py-1.5 text-left text-sm ${
                     selectedNotebookId === notebook.id
                       ? "bg-blue-100 text-blue-700"

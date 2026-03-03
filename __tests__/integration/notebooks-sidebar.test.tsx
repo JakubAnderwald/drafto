@@ -126,7 +126,7 @@ describe("NotebooksSidebar", () => {
     });
 
     const selectedItem = screen.getByText("Notes").closest("[role='button']");
-    expect(selectedItem).toHaveClass("bg-blue-100");
+    expect(selectedItem).toHaveAttribute("data-testid", "notebook-item-active");
   });
 
   it("calls onSelectNotebook when a notebook is clicked", async () => {

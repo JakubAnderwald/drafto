@@ -193,7 +193,7 @@ describe("NoteList", () => {
     });
 
     const selectedButton = screen.getByText("First Note").closest("button");
-    expect(selectedButton).toHaveClass("bg-blue-100");
+    expect(selectedButton).toHaveAttribute("data-testid", "note-item-active");
   });
 
   it("shows empty state when there are no notes", async () => {
