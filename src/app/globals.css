@@ -17,11 +17,6 @@
   --sidebar-hover: #f5f5f4;
   --sidebar-active: #eef2ff;
   --sidebar-active-text: #4338ca;
-
-  /* Transition durations */
-  --transition-fast: 150ms;
-  --transition-normal: 200ms;
-  --transition-slow: 300ms;
 }
 
 @theme inline {
@@ -91,6 +86,11 @@
   --radius-lg: 0.5rem;
   --radius-xl: 0.75rem;
   --radius-full: 9999px;
+
+  /* Transition durations */
+  --transition-fast: 150ms;
+  --transition-normal: 200ms;
+  --transition-slow: 300ms;
 
   /* Fonts */
   --font-sans: var(--font-geist-sans);
