@@ -47,8 +47,8 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 - [x] 2.4 — Badge, IconButton, and Skeleton components
 - [x] 2.5 — ConfirmDialog component
 - [x] 2.6 — DropdownMenu component
-- [ ] 2-CP — **Checkpoint**: full suite green
-- [ ] 2-PUSH — **Push**: `/push` to PR
+- [x] 2-CP — **Checkpoint**: full suite green
+- [x] 2-PUSH — **Push**: `/push` to PR
 
 ### Phase 3: Auth Pages Redesign
 
