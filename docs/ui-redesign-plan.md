@@ -35,7 +35,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 ### Phase 1: Design System Foundation
 
 - [x] 1.1 — Define color palette, typography, spacing, shadow, and animation tokens in globals.css
-- [ ] 1.2 — Create ADR-0004 (design system with CSS variables)
+- [x] 1.2 — Create ADR-0004 (design system with CSS variables)
 - [ ] 1-CP — **Checkpoint**: full suite green, `pnpm build` passes
 - [ ] 1-PUSH — **Push**: `/push` to PR
 
