@@ -4,6 +4,7 @@ import { use, useState } from "react";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { useAutoSave } from "@/hooks/use-auto-save";
 import { handleAuthError } from "@/lib/handle-auth-error";
+import { formatRelativeTime } from "@/lib/format-utils";
 import type { Block } from "@blocknote/core";
 
 interface NoteEditorPanelProps {
@@ -16,6 +17,8 @@ interface NoteData {
   id: string;
   title: string;
   content: Block[] | null;
+  created_at: string;
+  updated_at: string;
 }
 
 const noteCache = new Map<string, Promise<NoteData | null>>();
@@ -55,22 +58,28 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* Title + save indicator */}
-      <div className="flex shrink-0 items-center gap-3 border-b px-6 py-3">
-        <input
-          type="text"
-          value={title}
-          onChange={(e) => handleTitleChange(e.target.value)}
-          maxLength={MAX_TITLE_LENGTH}
-          className="min-w-0 flex-1 text-lg font-semibold outline-none"
-          placeholder="Untitled"
-          aria-label="Note title"
-        />
-        <span className="shrink-0 text-xs text-gray-400">
-          {saveStatus === "saving" && "Saving..."}
-          {saveStatus === "saved" && "Saved"}
-          {saveStatus === "error" && "Error saving"}
-        </span>
+      {/* Title + timestamps + save indicator */}
+      <div className="shrink-0 border-b px-6 py-3">
+        <div className="flex items-center gap-3">
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => handleTitleChange(e.target.value)}
+            maxLength={MAX_TITLE_LENGTH}
+            className="min-w-0 flex-1 text-lg font-semibold outline-none"
+            placeholder="Untitled"
+            aria-label="Note title"
+          />
+          <span className="shrink-0 text-xs text-gray-400">
+            {saveStatus === "saving" && "Saving..."}
+            {saveStatus === "saved" && "Saved"}
+            {saveStatus === "error" && "Error saving"}
+          </span>
+        </div>
+        <div className="mt-1 flex gap-4 text-xs text-gray-400">
+          <span>Created {formatRelativeTime(note.created_at)}</span>
+          <span>Modified {formatRelativeTime(note.updated_at)}</span>
+        </div>
       </div>
 
       {/* Editor */}

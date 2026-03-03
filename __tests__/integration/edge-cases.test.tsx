@@ -225,6 +225,8 @@ describe("NoteEditorPanel — title maxLength", () => {
           id: noteId,
           title: "Test Title",
           content: null,
+          created_at: "2026-02-20T10:00:00Z",
+          updated_at: "2026-02-28T15:30:00Z",
         }),
     });
 

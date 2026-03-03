@@ -91,7 +91,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 
 - [x] 7.1 — Security audit (RLS, uploads, unapproved users) + tests
 - [x] 7.2 — Edge cases (empty states, long titles, session expiry, etc.)
-- [ ] 7.3 — PRD compliance checklist — all items verified
+- [x] 7.3 — PRD compliance checklist — all items verified
 - [ ] 7-FIN — **Final checkpoint**: complete suite green, v1 ready
 - [ ] 7-PUSH — **Push**: Run `/push` to PR. Once successful, check this off, commit, and output "PROJECT COMPLETE".
 
@@ -518,26 +518,26 @@ Run `/push` to push all commits to the PR. Wait for CI to pass, address any revi
 
 Walk through every row in PRD §4.1–4.5 and verify each requirement is implemented:
 
-- [ ] Multi-user with isolated data
-- [ ] Open signup with admin approval
-- [ ] Password reset flow
-- [ ] Flat notebook list with CRUD
-- [ ] Default "Notes" notebook
-- [ ] BlockNote editor with slash commands
-- [ ] Rich text: bold, italic, underline, strikethrough
-- [ ] Headings: H1, H2, H3
-- [ ] Lists: bullet, numbered
-- [ ] Checkboxes
-- [ ] Inline links
-- [ ] File attachments (25MB limit, images inline)
-- [ ] Auto-save (debounced)
-- [ ] Timestamps (created, modified)
-- [ ] Three-panel layout (desktop)
-- [ ] Collapsible sidebar (tablet)
-- [ ] Single-panel navigation (mobile)
-- [ ] Move notes between notebooks
-- [ ] Soft delete → trash → restore / permanent delete
-- [ ] Trash auto-cleanup (30 days)
+- [x] Multi-user with isolated data
+- [x] Open signup with admin approval
+- [x] Password reset flow
+- [x] Flat notebook list with CRUD
+- [x] Default "Notes" notebook
+- [x] BlockNote editor with slash commands
+- [x] Rich text: bold, italic, underline, strikethrough
+- [x] Headings: H1, H2, H3
+- [x] Lists: bullet, numbered
+- [x] Checkboxes
+- [x] Inline links
+- [x] File attachments (25MB limit, images inline)
+- [x] Auto-save (debounced)
+- [x] Timestamps (created, modified)
+- [x] Three-panel layout (desktop)
+- [x] Collapsible sidebar (tablet)
+- [x] Single-panel navigation (mobile)
+- [x] Move notes between notebooks
+- [x] Soft delete → trash → restore / permanent delete
+- [x] Trash auto-cleanup (30 days)
 
 ### Final Checkpoint
 
