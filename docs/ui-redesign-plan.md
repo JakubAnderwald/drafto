@@ -36,8 +36,8 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 
 - [x] 1.1 — Define color palette, typography, spacing, shadow, and animation tokens in globals.css
 - [x] 1.2 — Create ADR-0004 (design system with CSS variables)
-- [ ] 1-CP — **Checkpoint**: full suite green, `pnpm build` passes
-- [ ] 1-PUSH — **Push**: `/push` to PR
+- [x] 1-CP — **Checkpoint**: full suite green, `pnpm build` passes
+- [x] 1-PUSH — **Push**: `/push` to PR
 
 ### Phase 2: Reusable UI Primitives
 
