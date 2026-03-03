@@ -27,6 +27,14 @@ vi.mock("next/headers", () => ({
   }),
 }));
 
+const approvedProfile = {
+  select: () => ({
+    eq: () => ({
+      single: () => Promise.resolve({ data: { is_approved: true }, error: null }),
+    }),
+  }),
+};
+
 function authenticateAs(userId: string) {
   mockGetUser.mockResolvedValue({
     data: { user: { id: userId, email: "test@test.com" } },
@@ -44,13 +52,13 @@ function createFileRequest(file: File | null, noteId = "note-1"): NextRequest {
   if (file) {
     formData.append("file", file);
   }
-  // Mock formData() to avoid serialization issues in test environment
   vi.spyOn(request, "formData").mockResolvedValue(formData);
   return request;
 }
 
 function mockNoteExists(noteId = "note-1") {
   mockFrom.mockImplementation((table: string) => {
+    if (table === "profiles") return approvedProfile;
     if (table === "notes") {
       return {
         select: () => ({
@@ -93,18 +101,21 @@ function mockNoteExists(noteId = "note-1") {
 }
 
 function mockNoteNotFound() {
-  mockFrom.mockReturnValue({
-    select: () => ({
-      eq: () => ({
+  mockFrom.mockImplementation((table: string) => {
+    if (table === "profiles") return approvedProfile;
+    return {
+      select: () => ({
         eq: () => ({
-          single: () =>
-            Promise.resolve({
-              data: null,
-              error: { message: "Not found" },
-            }),
+          eq: () => ({
+            single: () =>
+              Promise.resolve({
+                data: null,
+                error: { message: "Not found" },
+              }),
+          }),
         }),
       }),
-    }),
+    };
   });
 }
 
@@ -195,7 +206,6 @@ describe("POST /api/notes/[id]/attachments", () => {
     mockNoteExists();
 
     const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-    // Create a file that exceeds 25MB (26214401 bytes)
     const largeContent = new ArrayBuffer(26214401);
     const file = new File([largeContent], "large.bin", {
       type: "application/octet-stream",
@@ -255,8 +265,8 @@ describe("POST /api/notes/[id]/attachments", () => {
       remove: mockRemove,
     });
 
-    // Mock notes table success, attachments table failure
     mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
       if (table === "notes") {
         return {
           select: () => ({
@@ -320,6 +330,7 @@ describe("POST /api/notes/[id]/attachments", () => {
     });
 
     mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
       if (table === "notes") {
         return {
           select: () => ({

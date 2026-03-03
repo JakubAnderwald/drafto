@@ -80,7 +80,13 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     return errorResponse("File size exceeds 25MB limit", 413);
   }
 
-  const fileName = file.name || "unnamed";
+  // Sanitize filename: strip path traversal and dangerous characters
+  const rawName = file.name || "unnamed";
+  const fileName = rawName
+    .replace(/[/\\]/g, "_") // no path separators
+    .replace(/\.\./g, "_") // no directory traversal
+    .replace(/[<>:"|?*\x00-\x1f]/g, "_") // no shell/HTML-special chars
+    .slice(0, 255); // cap length
   const filePath = `${user.id}/${noteId}/${fileName}`;
 
   // Upload to Supabase Storage
@@ -113,10 +119,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     return errorResponse("Failed to save attachment record", 500);
   }
 
-  // Generate a signed URL for the uploaded file (1 year expiry)
+  // Generate a signed URL for the uploaded file (7 day expiry)
   const { data: urlData, error: urlError } = await supabase.storage
     .from(BUCKET_NAME)
-    .createSignedUrl(filePath, 31536000);
+    .createSignedUrl(filePath, 604800);
 
   if (urlError || !urlData?.signedUrl) {
     // Clean up: remove uploaded file and DB record

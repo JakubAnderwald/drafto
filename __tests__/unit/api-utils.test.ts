@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { errorResponse, successResponse } from "@/lib/api/utils";
 
 // Mock Supabase server client for getAuthenticatedUser tests
@@ -14,6 +14,10 @@ vi.mock("@/env", () => ({
 }));
 
 describe("API utils", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
   describe("errorResponse", () => {
     it("returns a JSON error response with the given message and status", async () => {
       const response = errorResponse("Not Found", 404);
@@ -68,7 +72,54 @@ describe("API utils", () => {
       expect(result.error!.status).toBe(401);
     });
 
-    it("returns user and supabase client when authenticated", async () => {
+    it("returns 403 when user is not approved", async () => {
+      const mockFrom = vi.fn().mockImplementation((table: string) => {
+        if (table === "profiles") {
+          return {
+            select: () => ({
+              eq: () => ({
+                single: () => Promise.resolve({ data: { is_approved: false }, error: null }),
+              }),
+            }),
+          };
+        }
+        return {};
+      });
+
+      const { createClient } = await import("@/lib/supabase/server");
+      vi.mocked(createClient).mockResolvedValue({
+        auth: {
+          getUser: () =>
+            Promise.resolve({
+              data: { user: { id: "user-1", email: "test@test.com" } },
+              error: null,
+            }),
+        },
+        from: mockFrom,
+      } as unknown as ReturnType<typeof createClient> extends Promise<infer T> ? T : never);
+
+      const { getAuthenticatedUser } = await import("@/lib/api/utils");
+      const result = await getAuthenticatedUser();
+
+      expect(result.data).toBeNull();
+      expect(result.error).not.toBeNull();
+      expect(result.error!.status).toBe(403);
+    });
+
+    it("returns user and supabase client when authenticated and approved", async () => {
+      const mockFrom = vi.fn().mockImplementation((table: string) => {
+        if (table === "profiles") {
+          return {
+            select: () => ({
+              eq: () => ({
+                single: () => Promise.resolve({ data: { is_approved: true }, error: null }),
+              }),
+            }),
+          };
+        }
+        return {};
+      });
+
       const mockSupabase = {
         auth: {
           getUser: () =>
@@ -77,11 +128,14 @@ describe("API utils", () => {
               error: null,
             }),
         },
+        from: mockFrom,
       };
 
       const { createClient } = await import("@/lib/supabase/server");
       vi.mocked(createClient).mockResolvedValue(
-        mockSupabase as ReturnType<typeof createClient> extends Promise<infer T> ? T : never,
+        mockSupabase as unknown as ReturnType<typeof createClient> extends Promise<infer T>
+          ? T
+          : never,
       );
 
       const { getAuthenticatedUser } = await import("@/lib/api/utils");

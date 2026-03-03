@@ -25,6 +25,14 @@ vi.mock("next/headers", () => ({
   }),
 }));
 
+const approvedProfile = {
+  select: () => ({
+    eq: () => ({
+      single: () => Promise.resolve({ data: { is_approved: true }, error: null }),
+    }),
+  }),
+};
+
 function authenticateAs(userId: string) {
   mockGetUser.mockResolvedValue({
     data: { user: { id: userId, email: "test@test.com" } },
@@ -52,14 +60,17 @@ describe("Notes API", () => {
     it("returns note data", async () => {
       authenticateAs("user-1");
       const note = { id: "note-1", title: "Test", content: null };
-      mockFrom.mockReturnValue({
-        select: () => ({
-          eq: () => ({
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {
+          select: () => ({
             eq: () => ({
-              single: () => Promise.resolve({ data: note, error: null }),
+              eq: () => ({
+                single: () => Promise.resolve({ data: note, error: null }),
+              }),
             }),
           }),
-        }),
+        };
       });
 
       const { GET } = await import("@/app/api/notes/[id]/route");
@@ -75,16 +86,19 @@ describe("Notes API", () => {
     it("updates note title", async () => {
       authenticateAs("user-1");
       const updated = { id: "note-1", title: "Updated" };
-      mockFrom.mockReturnValue({
-        update: () => ({
-          eq: () => ({
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {
+          update: () => ({
             eq: () => ({
-              select: () => ({
-                single: () => Promise.resolve({ data: updated, error: null }),
+              eq: () => ({
+                select: () => ({
+                  single: () => Promise.resolve({ data: updated, error: null }),
+                }),
               }),
             }),
           }),
-        }),
+        };
       });
 
       const { PATCH } = await import("@/app/api/notes/[id]/route");
@@ -100,16 +114,19 @@ describe("Notes API", () => {
     it("updates note notebook_id (move between notebooks)", async () => {
       authenticateAs("user-1");
       const updated = { id: "note-1", title: "Test", notebook_id: "nb-2" };
-      mockFrom.mockReturnValue({
-        update: () => ({
-          eq: () => ({
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {
+          update: () => ({
             eq: () => ({
-              select: () => ({
-                single: () => Promise.resolve({ data: updated, error: null }),
+              eq: () => ({
+                select: () => ({
+                  single: () => Promise.resolve({ data: updated, error: null }),
+                }),
               }),
             }),
           }),
-        }),
+        };
       });
 
       const { PATCH } = await import("@/app/api/notes/[id]/route");
@@ -126,6 +143,10 @@ describe("Notes API", () => {
 
     it("returns 400 when no fields provided", async () => {
       authenticateAs("user-1");
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {};
+      });
 
       const { PATCH } = await import("@/app/api/notes/[id]/route");
       const request = new NextRequest("http://localhost:3000/api/notes/note-1", {
@@ -141,12 +162,15 @@ describe("Notes API", () => {
   describe("DELETE /api/notes/[id]", () => {
     it("soft deletes a note", async () => {
       authenticateAs("user-1");
-      mockFrom.mockReturnValue({
-        update: () => ({
-          eq: () => ({
-            eq: () => Promise.resolve({ error: null }),
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {
+          update: () => ({
+            eq: () => ({
+              eq: () => Promise.resolve({ error: null }),
+            }),
           }),
-        }),
+        };
       });
 
       const { DELETE } = await import("@/app/api/notes/[id]/route");

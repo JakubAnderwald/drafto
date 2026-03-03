@@ -27,6 +27,14 @@ vi.mock("next/headers", () => ({
   }),
 }));
 
+const approvedProfile = {
+  select: () => ({
+    eq: () => ({
+      single: () => Promise.resolve({ data: { is_approved: true }, error: null }),
+    }),
+  }),
+};
+
 function authenticateAs(userId: string) {
   mockGetUser.mockResolvedValue({
     data: { user: { id: userId, email: "test@test.com" } },
@@ -57,14 +65,17 @@ describe("DELETE /api/attachments/[id]", () => {
 
   it("returns 404 when attachment does not exist", async () => {
     authenticateAs("user-1");
-    mockFrom.mockReturnValue({
-      select: () => ({
-        eq: () => ({
+    mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
+      return {
+        select: () => ({
           eq: () => ({
-            single: () => Promise.resolve({ data: null, error: { message: "Not found" } }),
+            eq: () => ({
+              single: () => Promise.resolve({ data: null, error: { message: "Not found" } }),
+            }),
           }),
         }),
-      }),
+      };
     });
 
     const { DELETE } = await import("@/app/api/attachments/[id]/route");
@@ -83,6 +94,7 @@ describe("DELETE /api/attachments/[id]", () => {
     const mockDeleteEq = vi.fn().mockResolvedValue({ error: null });
 
     mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
       if (table === "attachments") {
         return {
           select: () => ({
@@ -123,18 +135,21 @@ describe("DELETE /api/attachments/[id]", () => {
   it("returns 500 when storage deletion fails", async () => {
     authenticateAs("user-1");
 
-    mockFrom.mockReturnValue({
-      select: () => ({
-        eq: () => ({
+    mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
+      return {
+        select: () => ({
           eq: () => ({
-            single: () =>
-              Promise.resolve({
-                data: { id: "att-1", file_path: "user-1/note-1/image.png" },
-                error: null,
-              }),
+            eq: () => ({
+              single: () =>
+                Promise.resolve({
+                  data: { id: "att-1", file_path: "user-1/note-1/image.png" },
+                  error: null,
+                }),
+            }),
           }),
         }),
-      }),
+      };
     });
 
     mockStorageFrom.mockReturnValue({
@@ -156,6 +171,7 @@ describe("DELETE /api/attachments/[id]", () => {
     const mockDeleteEq = vi.fn().mockResolvedValue({ error: { message: "DB error" } });
 
     mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
       if (table === "attachments") {
         return {
           select: () => ({

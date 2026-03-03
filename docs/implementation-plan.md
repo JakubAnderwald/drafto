@@ -89,7 +89,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 
 ### Phase 7: Polish & Hardening
 
-- [ ] 7.1 — Security audit (RLS, uploads, unapproved users) + tests
+- [x] 7.1 — Security audit (RLS, uploads, unapproved users) + tests
 - [ ] 7.2 — Edge cases (empty states, long titles, session expiry, etc.)
 - [ ] 7.3 — PRD compliance checklist — all items verified
 - [ ] 7-FIN — **Final checkpoint**: complete suite green, v1 ready

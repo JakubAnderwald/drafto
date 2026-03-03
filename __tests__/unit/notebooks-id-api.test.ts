@@ -27,6 +27,14 @@ vi.mock("next/headers", () => ({
 
 const { PATCH, DELETE } = await import("@/app/api/notebooks/[id]/route");
 
+const approvedProfile = {
+  select: () => ({
+    eq: () => ({
+      single: () => Promise.resolve({ data: { is_approved: true }, error: null }),
+    }),
+  }),
+};
+
 function authenticateAs(userId: string) {
   mockGetUser.mockResolvedValue({
     data: { user: { id: userId, email: "test@test.com" } },
@@ -55,6 +63,10 @@ describe("PATCH /api/notebooks/[id]", () => {
 
   it("returns 400 when name is missing", async () => {
     authenticateAs("user-1");
+    mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
+      return {};
+    });
 
     const request = new NextRequest("http://localhost:3000/api/notebooks/nb-1", {
       method: "PATCH",
@@ -69,16 +81,19 @@ describe("PATCH /api/notebooks/[id]", () => {
     authenticateAs("user-1");
 
     const updated = { id: "nb-1", name: "Renamed", user_id: "user-1" };
-    mockFrom.mockReturnValue({
-      update: () => ({
-        eq: () => ({
+    mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
+      return {
+        update: () => ({
           eq: () => ({
-            select: () => ({
-              single: () => Promise.resolve({ data: updated, error: null }),
+            eq: () => ({
+              select: () => ({
+                single: () => Promise.resolve({ data: updated, error: null }),
+              }),
             }),
           }),
         }),
-      }),
+      };
     });
 
     const request = new NextRequest("http://localhost:3000/api/notebooks/nb-1", {
@@ -111,20 +126,16 @@ describe("DELETE /api/notebooks/[id]", () => {
   it("returns 409 when notebook has notes", async () => {
     authenticateAs("user-1");
 
-    let callCount = 0;
-    mockFrom.mockImplementation(() => {
-      callCount++;
-      if (callCount === 1) {
-        // notes count check
-        return {
-          select: () => ({
-            eq: () => ({
-              eq: () => Promise.resolve({ count: 3, error: null }),
-            }),
+    mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
+      // notes count check
+      return {
+        select: () => ({
+          eq: () => ({
+            eq: () => Promise.resolve({ count: 3, error: null }),
           }),
-        };
-      }
-      return {};
+        }),
+      };
     });
 
     const request = new NextRequest("http://localhost:3000/api/notebooks/nb-1", {
@@ -138,7 +149,8 @@ describe("DELETE /api/notebooks/[id]", () => {
     authenticateAs("user-1");
 
     let callCount = 0;
-    mockFrom.mockImplementation(() => {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
       callCount++;
       if (callCount === 1) {
         // notes count check - empty

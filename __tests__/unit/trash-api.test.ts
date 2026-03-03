@@ -27,6 +27,14 @@ vi.mock("next/headers", () => ({
   }),
 }));
 
+const approvedProfile = {
+  select: () => ({
+    eq: () => ({
+      single: () => Promise.resolve({ data: { is_approved: true }, error: null }),
+    }),
+  }),
+};
+
 function authenticateAs(userId: string) {
   mockGetUser.mockResolvedValue({
     data: { user: { id: userId, email: "test@test.com" } },
@@ -55,14 +63,17 @@ describe("Trash API", () => {
       const trashedNotes = [
         { id: "note-1", title: "Trashed Note", notebook_id: "nb-1", trashed_at: "2026-01-01" },
       ];
-      mockFrom.mockReturnValue({
-        select: () => ({
-          eq: () => ({
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {
+          select: () => ({
             eq: () => ({
-              order: () => Promise.resolve({ data: trashedNotes, error: null }),
+              eq: () => ({
+                order: () => Promise.resolve({ data: trashedNotes, error: null }),
+              }),
             }),
           }),
-        }),
+        };
       });
 
       const { GET } = await import("@/app/api/notes/trash/route");
@@ -75,14 +86,17 @@ describe("Trash API", () => {
 
     it("returns 500 on database error", async () => {
       authenticateAs("user-1");
-      mockFrom.mockReturnValue({
-        select: () => ({
-          eq: () => ({
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {
+          select: () => ({
             eq: () => ({
-              order: () => Promise.resolve({ data: null, error: { message: "DB error" } }),
+              eq: () => ({
+                order: () => Promise.resolve({ data: null, error: { message: "DB error" } }),
+              }),
             }),
           }),
-        }),
+        };
       });
 
       const { GET } = await import("@/app/api/notes/trash/route");
@@ -106,6 +120,7 @@ describe("Trash API", () => {
     it("returns 404 when note not found or not trashed", async () => {
       authenticateAs("user-1");
       mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
         if (table === "attachments") {
           return {
             select: () => ({
@@ -148,6 +163,7 @@ describe("Trash API", () => {
       mockStorageFrom.mockReturnValue({ remove: mockRemove });
 
       mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
         if (table === "attachments") {
           return {
             select: () => ({
@@ -197,6 +213,7 @@ describe("Trash API", () => {
       mockStorageFrom.mockReturnValue({ remove: mockRemove });
 
       mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
         if (table === "attachments") {
           return {
             select: () => ({
@@ -237,6 +254,10 @@ describe("Trash API", () => {
   describe("PATCH /api/notes/[id] (restore)", () => {
     it("returns 400 when is_trashed is not a boolean", async () => {
       authenticateAs("user-1");
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {};
+      });
 
       const { PATCH } = await import("@/app/api/notes/[id]/route");
       const request = new NextRequest("http://localhost:3000/api/notes/note-1", {
@@ -253,16 +274,19 @@ describe("Trash API", () => {
     it("restores a trashed note", async () => {
       authenticateAs("user-1");
       const restored = { id: "note-1", title: "Test", is_trashed: false, trashed_at: null };
-      mockFrom.mockReturnValue({
-        update: () => ({
-          eq: () => ({
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {
+          update: () => ({
             eq: () => ({
-              select: () => ({
-                single: () => Promise.resolve({ data: restored, error: null }),
+              eq: () => ({
+                select: () => ({
+                  single: () => Promise.resolve({ data: restored, error: null }),
+                }),
               }),
             }),
           }),
-        }),
+        };
       });
 
       const { PATCH } = await import("@/app/api/notes/[id]/route");
