@@ -17,6 +17,8 @@ const eslintConfig = defineConfig([
     // Generated files:
     "playwright-report/**",
     "coverage/**",
+    // Claude worktrees:
+    ".claude/**",
   ]),
 ]);
 

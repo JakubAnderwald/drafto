@@ -56,3 +56,6 @@ e2e/.auth/
 
 # OS files
 Thumbs.db
+
+# claude code
+.claude/
