@@ -30,7 +30,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 
 - [x] 0.1 — Decouple integration tests from Tailwind class names (add data-testid, fix 3 assertions)
 - [x] 0-CP — **Checkpoint**: full suite green
-- [ ] 0-PUSH — **Push**: `/push` to PR
+- [x] 0-PUSH — **Push**: `/push` to PR
 
 ### Phase 1: Design System Foundation
 
