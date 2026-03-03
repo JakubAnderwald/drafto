@@ -27,6 +27,14 @@ vi.mock("next/headers", () => ({
 
 const { GET, POST } = await import("@/app/api/notebooks/route");
 
+const approvedProfile = {
+  select: () => ({
+    eq: () => ({
+      single: () => Promise.resolve({ data: { is_approved: true }, error: null }),
+    }),
+  }),
+};
+
 function authenticateAs(userId: string) {
   mockGetUser.mockResolvedValue({
     data: { user: { id: userId, email: "test@test.com" } },
@@ -59,12 +67,15 @@ describe("GET /api/notebooks", () => {
       },
     ];
 
-    mockFrom.mockReturnValue({
-      select: () => ({
-        eq: () => ({
-          order: () => Promise.resolve({ data: notebooks, error: null }),
+    mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
+      return {
+        select: () => ({
+          eq: () => ({
+            order: () => Promise.resolve({ data: notebooks, error: null }),
+          }),
         }),
-      }),
+      };
     });
 
     const response = await GET();
@@ -94,6 +105,10 @@ describe("POST /api/notebooks", () => {
 
   it("returns 400 when name is missing", async () => {
     authenticateAs("user-1");
+    mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
+      return {};
+    });
 
     const request = new NextRequest("http://localhost:3000/api/notebooks", {
       method: "POST",
@@ -108,12 +123,15 @@ describe("POST /api/notebooks", () => {
     authenticateAs("user-1");
 
     const notebook = { id: "nb-2", name: "Work", user_id: "user-1" };
-    mockFrom.mockReturnValue({
-      insert: () => ({
-        select: () => ({
-          single: () => Promise.resolve({ data: notebook, error: null }),
+    mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
+      return {
+        insert: () => ({
+          select: () => ({
+            single: () => Promise.resolve({ data: notebook, error: null }),
+          }),
         }),
-      }),
+      };
     });
 
     const request = new NextRequest("http://localhost:3000/api/notebooks", {

@@ -48,10 +48,12 @@ describe("POST /api/admin/approve-user", () => {
       data: { user: { id: "user-1", email: "test@test.com" } },
       error: null,
     });
+    // Return both is_approved (for auth check) and is_admin (for admin check)
     mockFrom.mockReturnValue({
       select: () => ({
         eq: () => ({
-          single: () => Promise.resolve({ data: { is_admin: false }, error: null }),
+          single: () =>
+            Promise.resolve({ data: { is_approved: true, is_admin: false }, error: null }),
         }),
       }),
       update: vi.fn(),
@@ -69,7 +71,8 @@ describe("POST /api/admin/approve-user", () => {
     mockFrom.mockReturnValue({
       select: () => ({
         eq: () => ({
-          single: () => Promise.resolve({ data: { is_admin: true }, error: null }),
+          single: () =>
+            Promise.resolve({ data: { is_approved: true, is_admin: true }, error: null }),
         }),
       }),
     });
@@ -92,17 +95,18 @@ describe("POST /api/admin/approve-user", () => {
     let callCount = 0;
     mockFrom.mockImplementation(() => {
       callCount++;
-      if (callCount === 1) {
-        // First call: check is_admin
+      if (callCount <= 2) {
+        // Calls 1-2: approval check + admin check
         return {
           select: () => ({
             eq: () => ({
-              single: () => Promise.resolve({ data: { is_admin: true }, error: null }),
+              single: () =>
+                Promise.resolve({ data: { is_approved: true, is_admin: true }, error: null }),
             }),
           }),
         };
       }
-      // Second call: update profile
+      // Call 3: update profile
       return {
         update: mockUpdate,
       };

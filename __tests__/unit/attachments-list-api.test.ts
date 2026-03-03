@@ -25,6 +25,14 @@ vi.mock("next/headers", () => ({
   }),
 }));
 
+const approvedProfile = {
+  select: () => ({
+    eq: () => ({
+      single: () => Promise.resolve({ data: { is_approved: true }, error: null }),
+    }),
+  }),
+};
+
 function authenticateAs(userId: string) {
   mockGetUser.mockResolvedValue({
     data: { user: { id: userId, email: "test@test.com" } },
@@ -53,14 +61,17 @@ describe("GET /api/notes/[id]/attachments", () => {
 
   it("returns 404 when note does not exist", async () => {
     authenticateAs("user-1");
-    mockFrom.mockReturnValue({
-      select: () => ({
-        eq: () => ({
+    mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
+      return {
+        select: () => ({
           eq: () => ({
-            single: () => Promise.resolve({ data: null, error: { message: "Not found" } }),
+            eq: () => ({
+              single: () => Promise.resolve({ data: null, error: { message: "Not found" } }),
+            }),
           }),
         }),
-      }),
+      };
     });
 
     const { GET } = await import("@/app/api/notes/[id]/attachments/route");
@@ -97,6 +108,7 @@ describe("GET /api/notes/[id]/attachments", () => {
     ];
 
     mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
       if (table === "notes") {
         return {
           select: () => ({
@@ -133,6 +145,7 @@ describe("GET /api/notes/[id]/attachments", () => {
   it("returns empty array when note has no attachments", async () => {
     authenticateAs("user-1");
     mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
       if (table === "notes") {
         return {
           select: () => ({
@@ -167,6 +180,7 @@ describe("GET /api/notes/[id]/attachments", () => {
   it("returns 500 on database error", async () => {
     authenticateAs("user-1");
     mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
       if (table === "notes") {
         return {
           select: () => ({

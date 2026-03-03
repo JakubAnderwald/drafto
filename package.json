@@ -50,7 +50,11 @@
     "onlyBuiltDependencies": [
       "@sentry/cli",
       "esbuild"
-    ]
+    ],
+    "overrides": {
+      "minimatch": ">=10.2.3",
+      "serialize-javascript": ">=7.0.3"
+    }
   },
   "devDependencies": {
     "@commitlint/cli": "^20.4.2",

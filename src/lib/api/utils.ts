@@ -24,6 +24,20 @@ export async function getAuthenticatedUser(): Promise<
     };
   }
 
+  // Check approval status — unapproved users must not access API routes
+  const { data: profile, error: profileError } = await supabase
+    .from("profiles")
+    .select("is_approved")
+    .eq("id", user.id)
+    .single();
+
+  if (profileError || !profile?.is_approved) {
+    return {
+      data: null,
+      error: NextResponse.json({ error: "Forbidden", status: 403 }, { status: 403 }),
+    };
+  }
+
   return {
     data: {
       user: { id: user.id, email: user.email ?? "" },

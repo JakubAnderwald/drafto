@@ -1,9 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { NextRequest } from "next/server";
 
 vi.mock("@/env", () => ({
   env: {
     NEXT_PUBLIC_SUPABASE_URL: "https://test.supabase.co",
     NEXT_PUBLIC_SUPABASE_ANON_KEY: "test-key",
+    CRON_SECRET: undefined, // No cron secret configured by default
   },
 }));
 
@@ -37,9 +39,17 @@ function mockAdminCheck(isAdmin: boolean) {
   mockFrom.mockReturnValue({
     select: () => ({
       eq: () => ({
-        single: () => Promise.resolve({ data: { is_admin: isAdmin }, error: null }),
+        single: () =>
+          Promise.resolve({ data: { is_approved: true, is_admin: isAdmin }, error: null }),
       }),
     }),
+  });
+}
+
+function createRequest(headers?: Record<string, string>): NextRequest {
+  return new NextRequest("http://localhost:3000/api/cron/cleanup-trash", {
+    method: "POST",
+    headers,
   });
 }
 
@@ -56,7 +66,7 @@ describe("POST /api/cron/cleanup-trash", () => {
       error: { message: "Not authenticated" },
     });
 
-    const response = await POST();
+    const response = await POST(createRequest());
     expect(response.status).toBe(401);
   });
 
@@ -64,7 +74,7 @@ describe("POST /api/cron/cleanup-trash", () => {
     authenticateAs("user-1");
     mockAdminCheck(false);
 
-    const response = await POST();
+    const response = await POST(createRequest());
     expect(response.status).toBe(403);
     const body = await response.json();
     expect(body.error).toBe("Forbidden");
@@ -75,7 +85,7 @@ describe("POST /api/cron/cleanup-trash", () => {
     mockAdminCheck(true);
     mockRpc.mockResolvedValue({ data: 5, error: null });
 
-    const response = await POST();
+    const response = await POST(createRequest());
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.deleted).toBe(5);
@@ -87,7 +97,7 @@ describe("POST /api/cron/cleanup-trash", () => {
     mockAdminCheck(true);
     mockRpc.mockResolvedValue({ data: 0, error: null });
 
-    const response = await POST();
+    const response = await POST(createRequest());
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.deleted).toBe(0);
@@ -98,13 +108,13 @@ describe("POST /api/cron/cleanup-trash", () => {
     mockAdminCheck(true);
     mockRpc.mockResolvedValue({ data: null, error: { message: "DB error" } });
 
-    const response = await POST();
+    const response = await POST(createRequest());
     expect(response.status).toBe(500);
     const body = await response.json();
     expect(body.error).toBe("Failed to cleanup trashed notes");
   });
 
-  it("returns 500 when admin check fails", async () => {
+  it("returns 403 when profile query fails", async () => {
     authenticateAs("admin-1");
     mockFrom.mockReturnValue({
       select: () => ({
@@ -114,9 +124,9 @@ describe("POST /api/cron/cleanup-trash", () => {
       }),
     });
 
-    const response = await POST();
-    expect(response.status).toBe(500);
+    const response = await POST(createRequest());
+    expect(response.status).toBe(403);
     const body = await response.json();
-    expect(body.error).toBe("Failed to verify admin privileges");
+    expect(body.error).toBe("Forbidden");
   });
 });
