@@ -440,7 +440,7 @@ describe("AppShell", () => {
       render(<AppShell />);
     });
 
-    expect(screen.getByText("Loading...")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-skeleton")).toBeInTheDocument();
   });
 
   it("switches to trash view when trash button is clicked", async () => {
