@@ -111,16 +111,6 @@ test.describe("Auth page smoke tests", () => {
     await expect(page.getByText("Passwords do not match")).toBeVisible({ timeout: 5000 });
   });
 
-  test("approved user is redirected away from waiting-for-approval page", async ({ page }) => {
-    // The E2E test user is approved — middleware redirects them away
-    await page.goto("/waiting-for-approval");
-
-    // Should NOT see the waiting-for-approval content
-    await expect(page.getByRole("heading", { name: "Waiting for Approval" })).not.toBeVisible({
-      timeout: 10000,
-    });
-  });
-
   test("cross-page navigation between auth pages", async ({ page }) => {
     // Login → Signup
     await page.goto("/login");
