@@ -92,7 +92,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 - [x] 7.1 — Security audit (RLS, uploads, unapproved users) + tests
 - [x] 7.2 — Edge cases (empty states, long titles, session expiry, etc.)
 - [x] 7.3 — PRD compliance checklist — all items verified
-- [ ] 7-FIN — **Final checkpoint**: complete suite green, v1 ready
+- [x] 7-FIN — **Final checkpoint**: complete suite green, v1 ready
 - [ ] 7-PUSH — **Push**: Run `/push` to PR. Once successful, check this off, commit, and output "PROJECT COMPLETE".
 
 ---

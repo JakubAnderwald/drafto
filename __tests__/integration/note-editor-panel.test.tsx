@@ -162,7 +162,14 @@ describe("NoteEditorPanel", () => {
 
     mockFetch.mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ id: noteId, title: "", content: null }),
+      json: () =>
+        Promise.resolve({
+          id: noteId,
+          title: "",
+          content: null,
+          created_at: "2026-02-20T10:00:00Z",
+          updated_at: "2026-02-28T15:30:00Z",
+        }),
     });
 
     await act(async () => {
