@@ -148,6 +148,7 @@ export function NoteList({
               <li key={note.id} className="group relative">
                 <button
                   onClick={() => onSelectNote(note.id)}
+                  {...(selectedNoteId === note.id ? { "data-testid": "note-item-active" } : {})}
                   className={`w-full rounded px-3 py-2 text-left ${
                     selectedNoteId === note.id
                       ? "bg-blue-100 text-blue-700"
