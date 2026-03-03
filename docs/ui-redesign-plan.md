@@ -60,7 +60,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 
 ### Phase 4: App Shell & Sidebar Redesign
 
-- [ ] 4.1 — Notebooks sidebar (tokens, Skeleton loading, ConfirmDialog, styled empty state)
+- [x] 4.1 — Notebooks sidebar (tokens, Skeleton loading, ConfirmDialog, styled empty state)
 - [ ] 4.2 — App shell layout (tokens, backdrop blur, Skeleton fallbacks, styled empty states)
 - [ ] 4-CP — **Checkpoint**: full suite green (including E2E responsive tests)
 - [ ] 4-PUSH — **Push**: `/push` to PR

@@ -2,6 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { handleAuthError } from "@/lib/handle-auth-error";
+import { IconButton } from "@/components/ui/icon-button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Skeleton } from "@/components/ui/skeleton";
 
 interface Notebook {
   id: string;
@@ -172,29 +175,44 @@ export function NotebooksSidebar({
   }
 
   if (loading) {
-    return <div className="p-4 text-sm text-gray-400">Loading...</div>;
+    return (
+      <div className="space-y-3 p-4" data-testid="sidebar-skeleton">
+        <Skeleton height="12px" width="80px" rounded="sm" />
+        <Skeleton height="28px" rounded="md" />
+        <Skeleton height="28px" rounded="md" />
+        <Skeleton height="28px" rounded="md" />
+      </div>
+    );
   }
 
   return (
-    <div className="flex flex-1 flex-col">
-      <div className="flex items-center justify-between border-b p-3">
-        <h2 className="text-sm font-semibold text-gray-700">Notebooks</h2>
-        <button
-          type="button"
-          onClick={handleCreate}
-          className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
-          aria-label="New notebook"
-        >
+    <div className="bg-sidebar-bg flex flex-1 flex-col">
+      <div className="border-border flex items-center justify-between border-b p-3">
+        <h2 className="text-fg-muted text-xs font-semibold tracking-wide uppercase">Notebooks</h2>
+        <IconButton size="sm" variant="ghost" onClick={handleCreate} aria-label="New notebook">
           <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
-        </button>
+        </IconButton>
       </div>
 
       <nav className="flex-1 overflow-y-auto">
         {notebooks.length === 0 && creatingName === null && (
-          <div className="p-4 text-center text-sm text-gray-400">
-            No notebooks yet. Create one to get started.
+          <div className="flex flex-col items-center gap-2 p-6 text-center">
+            <svg
+              className="text-fg-subtle h-8 w-8"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.5}
+                d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"
+              />
+            </svg>
+            <p className="text-fg-subtle text-sm">No notebooks yet. Create one to get started.</p>
           </div>
         )}
         <ul className="space-y-0.5 p-2">
@@ -212,7 +230,7 @@ export function NotebooksSidebar({
                     if (e.key === "Escape") setEditingId(null);
                   }}
                   maxLength={MAX_NOTEBOOK_NAME_LENGTH}
-                  className="w-full rounded px-2 py-1.5 text-sm"
+                  className="border-border text-fg focus:ring-ring w-full rounded-md border bg-transparent px-2 py-1.5 text-sm focus:ring-1 focus:outline-none"
                 />
               ) : (
                 <div
@@ -232,10 +250,10 @@ export function NotebooksSidebar({
                   {...(selectedNotebookId === notebook.id && {
                     "data-testid": "notebook-item-active",
                   })}
-                  className={`group flex w-full cursor-pointer items-center justify-between rounded px-2 py-1.5 text-left text-sm ${
+                  className={`group flex w-full cursor-pointer items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors duration-[var(--transition-fast)] ${
                     selectedNotebookId === notebook.id
-                      ? "bg-blue-100 text-blue-700"
-                      : "text-gray-700 hover:bg-gray-100"
+                      ? "bg-sidebar-active text-sidebar-active-text border-primary-500 border-l-3"
+                      : "text-fg hover:bg-sidebar-hover"
                   }`}
                 >
                   <span className="truncate">{notebook.name}</span>
@@ -245,7 +263,7 @@ export function NotebooksSidebar({
                       e.stopPropagation();
                       requestDelete(notebook.id);
                     }}
-                    className="hidden rounded p-0.5 text-gray-400 group-focus-within:block group-hover:block hover:text-red-500"
+                    className="text-fg-subtle hover:text-error hidden rounded p-0.5 group-focus-within:block group-hover:block"
                     aria-label={`Delete ${notebook.name}`}
                   >
                     <svg
@@ -281,52 +299,34 @@ export function NotebooksSidebar({
                 }}
                 maxLength={MAX_NOTEBOOK_NAME_LENGTH}
                 placeholder="Notebook name"
-                className="w-full rounded px-2 py-1.5 text-sm"
+                className="border-border text-fg focus:ring-ring w-full rounded-md border bg-transparent px-2 py-1.5 text-sm focus:ring-1 focus:outline-none"
               />
             </li>
           )}
         </ul>
       </nav>
 
-      {/* Delete confirmation dialog */}
       {confirmingDeleteId && (
-        <div className="border-t bg-yellow-50 p-3" role="alertdialog" aria-label="Confirm delete">
-          <p className="mb-2 text-xs text-gray-700">
-            Delete &quot;{notebooks.find((n) => n.id === confirmingDeleteId)?.name}&quot;?
-          </p>
-          {deleteError && (
-            <p className="mb-2 text-xs text-red-600" role="alert">
-              {deleteError}
-            </p>
-          )}
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => confirmDelete(confirmingDeleteId)}
-              className="rounded bg-red-500 px-2 py-1 text-xs text-white hover:bg-red-600"
-            >
-              Delete
-            </button>
-            <button
-              type="button"
-              onClick={cancelDelete}
-              className="rounded bg-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-300"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
+        <ConfirmDialog
+          title={`Delete "${notebooks.find((n) => n.id === confirmingDeleteId)?.name}"?`}
+          confirmLabel="Delete"
+          cancelLabel="Cancel"
+          onConfirm={() => confirmDelete(confirmingDeleteId)}
+          onCancel={cancelDelete}
+          variant="danger"
+          error={deleteError}
+        />
       )}
 
       {onSelectTrash && (
-        <div className="border-t p-2">
+        <div className="border-border border-t p-2">
           <button
             type="button"
             onClick={onSelectTrash}
-            className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${
+            className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors duration-[var(--transition-fast)] ${
               isTrashSelected
-                ? "bg-blue-100 text-blue-700"
-                : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                ? "bg-sidebar-active text-sidebar-active-text"
+                : "text-fg-muted hover:bg-sidebar-hover hover:text-fg"
             }`}
           >
             <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

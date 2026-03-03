@@ -47,7 +47,7 @@ describe("NotebooksSidebar", () => {
       render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={vi.fn()} />);
     });
 
-    expect(screen.getByText("Loading...")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-skeleton")).toBeInTheDocument();
   });
 
   it("renders notebooks after loading", async () => {
