@@ -29,7 +29,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 ### Phase 0: Test Resilience
 
 - [x] 0.1 — Decouple integration tests from Tailwind class names (add data-testid, fix 3 assertions)
-- [ ] 0-CP — **Checkpoint**: full suite green
+- [x] 0-CP — **Checkpoint**: full suite green
 - [ ] 0-PUSH — **Push**: `/push` to PR
 
 ### Phase 1: Design System Foundation
