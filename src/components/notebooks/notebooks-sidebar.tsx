@@ -150,6 +150,7 @@ export function NotebooksSidebar({
     try {
       const res = await fetch(`/api/notebooks/${id}`, { method: "DELETE" });
 
+      if (handleAuthError(res)) return;
       if (res.ok) {
         setConfirmingDeleteId(null);
         setNotebooks((prev) => {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
 
@@ -244,7 +244,8 @@ describe("NotebooksSidebar", () => {
     expect(screen.getByRole("alertdialog")).toBeInTheDocument();
 
     // Confirm the delete
-    await user.click(screen.getByRole("alertdialog").querySelector("button")!);
+    const dialog = screen.getByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: /delete/i }));
 
     await waitFor(() => {
       expect(mockFetch).toHaveBeenCalledWith("/api/notebooks/nb-1", { method: "DELETE" });
