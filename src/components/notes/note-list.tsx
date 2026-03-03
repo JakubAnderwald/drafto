@@ -2,6 +2,7 @@
 
 import { use, useState, useCallback, useRef, useEffect } from "react";
 import { formatRelativeTime } from "@/lib/format-utils";
+import { handleAuthError } from "@/lib/handle-auth-error";
 
 interface NoteListItem {
   id: string;
@@ -33,6 +34,7 @@ function fetchNotes(notebookId: string, cacheKey: string): Promise<NoteListItem[
 
   const promise = fetch(`/api/notebooks/${notebookId}/notes`)
     .then((res) => {
+      if (handleAuthError(res)) return [] as NoteListItem[];
       if (!res.ok) throw new Error(`Failed to fetch notes: ${res.status}`);
       return res.json();
     })

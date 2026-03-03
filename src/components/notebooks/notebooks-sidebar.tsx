@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { handleAuthError } from "@/lib/handle-auth-error";
 
 interface Notebook {
   id: string;
@@ -17,6 +18,8 @@ interface NotebooksSidebarProps {
   onSelectTrash?: () => void;
 }
 
+const MAX_NOTEBOOK_NAME_LENGTH = 100;
+
 export function NotebooksSidebar({
   selectedNotebookId,
   onSelectNotebook,
@@ -29,6 +32,8 @@ export function NotebooksSidebar({
   const [creatingName, setCreatingName] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const createInputRef = useRef<HTMLInputElement>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
   const hasFetched = useRef(false);
@@ -39,6 +44,7 @@ export function NotebooksSidebar({
 
     fetch("/api/notebooks")
       .then(async (res) => {
+        if (handleAuthError(res)) return [] as Notebook[];
         if (!res.ok) throw new Error(`Failed to load notebooks: ${res.status}`);
         return (await res.json()) as Notebook[];
       })
@@ -129,11 +135,23 @@ export function NotebooksSidebar({
     }
   }
 
-  async function handleDelete(id: string) {
+  function requestDelete(id: string) {
+    setDeleteError(null);
+    setConfirmingDeleteId(id);
+  }
+
+  function cancelDelete() {
+    setConfirmingDeleteId(null);
+    setDeleteError(null);
+  }
+
+  async function confirmDelete(id: string) {
+    setDeleteError(null);
     try {
       const res = await fetch(`/api/notebooks/${id}`, { method: "DELETE" });
 
       if (res.ok) {
+        setConfirmingDeleteId(null);
         setNotebooks((prev) => {
           const updated = prev.filter((n) => n.id !== id);
           onNotebooksChange?.(updated.map((n) => ({ id: n.id, name: n.name })));
@@ -142,9 +160,13 @@ export function NotebooksSidebar({
         if (selectedNotebookId === id) {
           onSelectNotebook(null);
         }
+      } else {
+        const body = await res.json().catch(() => null);
+        const message = body?.error || "Failed to delete notebook";
+        setDeleteError(message);
       }
     } catch {
-      // Network error — UI state unchanged
+      setDeleteError("Network error. Please try again.");
     }
   }
 
@@ -169,6 +191,11 @@ export function NotebooksSidebar({
       </div>
 
       <nav className="flex-1 overflow-y-auto">
+        {notebooks.length === 0 && creatingName === null && (
+          <div className="p-4 text-center text-sm text-gray-400">
+            No notebooks yet. Create one to get started.
+          </div>
+        )}
         <ul className="space-y-0.5 p-2">
           {notebooks.map((notebook) => (
             <li key={notebook.id}>
@@ -183,6 +210,7 @@ export function NotebooksSidebar({
                     if (e.key === "Enter") handleRename(notebook.id);
                     if (e.key === "Escape") setEditingId(null);
                   }}
+                  maxLength={MAX_NOTEBOOK_NAME_LENGTH}
                   className="w-full rounded px-2 py-1.5 text-sm"
                 />
               ) : (
@@ -211,7 +239,7 @@ export function NotebooksSidebar({
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleDelete(notebook.id);
+                      requestDelete(notebook.id);
                     }}
                     className="hidden rounded p-0.5 text-gray-400 group-focus-within:block group-hover:block hover:text-red-500"
                     aria-label={`Delete ${notebook.name}`}
@@ -247,6 +275,7 @@ export function NotebooksSidebar({
                   if (e.key === "Enter") handleCreate();
                   if (e.key === "Escape") setCreatingName(null);
                 }}
+                maxLength={MAX_NOTEBOOK_NAME_LENGTH}
                 placeholder="Notebook name"
                 className="w-full rounded px-2 py-1.5 text-sm"
               />
@@ -254,6 +283,36 @@ export function NotebooksSidebar({
           )}
         </ul>
       </nav>
+
+      {/* Delete confirmation dialog */}
+      {confirmingDeleteId && (
+        <div className="border-t bg-yellow-50 p-3" role="alertdialog" aria-label="Confirm delete">
+          <p className="mb-2 text-xs text-gray-700">
+            Delete &quot;{notebooks.find((n) => n.id === confirmingDeleteId)?.name}&quot;?
+          </p>
+          {deleteError && (
+            <p className="mb-2 text-xs text-red-600" role="alert">
+              {deleteError}
+            </p>
+          )}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => confirmDelete(confirmingDeleteId)}
+              className="rounded bg-red-500 px-2 py-1 text-xs text-white hover:bg-red-600"
+            >
+              Delete
+            </button>
+            <button
+              type="button"
+              onClick={cancelDelete}
+              className="rounded bg-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-300"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {onSelectTrash && (
         <div className="border-t p-2">

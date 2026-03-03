@@ -3,11 +3,14 @@
 import { use, useState } from "react";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { useAutoSave } from "@/hooks/use-auto-save";
+import { handleAuthError } from "@/lib/handle-auth-error";
 import type { Block } from "@blocknote/core";
 
 interface NoteEditorPanelProps {
   noteId: string;
 }
+
+const MAX_TITLE_LENGTH = 255;
 
 interface NoteData {
   id: string;
@@ -21,7 +24,10 @@ function fetchNote(noteId: string): Promise<NoteData | null> {
   const cached = noteCache.get(noteId);
   if (cached) return cached;
 
-  const promise = fetch(`/api/notes/${noteId}`).then((res) => (res.ok ? res.json() : null));
+  const promise = fetch(`/api/notes/${noteId}`).then((res) => {
+    if (handleAuthError(res)) return null;
+    return res.ok ? res.json() : null;
+  });
 
   noteCache.set(noteId, promise);
   return promise;
@@ -55,6 +61,7 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
           type="text"
           value={title}
           onChange={(e) => handleTitleChange(e.target.value)}
+          maxLength={MAX_TITLE_LENGTH}
           className="min-w-0 flex-1 text-lg font-semibold outline-none"
           placeholder="Untitled"
           aria-label="Note title"
