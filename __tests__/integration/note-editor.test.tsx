@@ -85,7 +85,7 @@ describe("NoteEditor", () => {
     });
 
     const container = screen.getByTestId("blocknote-editor").parentElement;
-    expect(container).toHaveClass("flex-1", "overflow-y-auto");
+    expect(container).toHaveAttribute("data-testid", "editor-scroll-container");
   });
 
   it("provides uploadFile handler to BlockNote that uploads to the attachments API", async () => {
