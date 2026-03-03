@@ -119,4 +119,30 @@ describe("IconButton", () => {
     expect(button.className).toMatch(/h-\d+/);
     expect(button.className).toMatch(/w-\d+/);
   });
+
+  it("defaults to type=button to prevent form submission", () => {
+    render(<IconButton aria-label="close">X</IconButton>);
+    expect(screen.getByRole("button")).toHaveAttribute("type", "button");
+  });
+
+  it("does not submit a form when clicked", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn((e: React.FormEvent) => e.preventDefault());
+    render(
+      <form onSubmit={onSubmit}>
+        <IconButton aria-label="close">X</IconButton>
+      </form>,
+    );
+    await user.click(screen.getByRole("button"));
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("allows overriding type to submit", () => {
+    render(
+      <IconButton type="submit" aria-label="submit form">
+        X
+      </IconButton>,
+    );
+    expect(screen.getByRole("button")).toHaveAttribute("type", "submit");
+  });
 });

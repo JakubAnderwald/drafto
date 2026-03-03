@@ -6,10 +6,13 @@ import { cn } from "@/lib/cn";
 export type IconButtonVariant = "ghost" | "danger";
 export type IconButtonSize = "sm" | "md" | "lg";
 
-export interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: IconButtonVariant;
-  size?: IconButtonSize;
-}
+type AccessibleName = { "aria-label": string } | { "aria-labelledby": string };
+
+export type IconButtonProps = ButtonHTMLAttributes<HTMLButtonElement> &
+  AccessibleName & {
+    variant?: IconButtonVariant;
+    size?: IconButtonSize;
+  };
 
 const variantStyles: Record<IconButtonVariant, string> = {
   ghost: "text-neutral-600 hover:bg-neutral-100 focus-visible:ring-neutral-400",
@@ -29,6 +32,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
   return (
     <button
       ref={ref}
+      type="button"
       disabled={disabled}
       className={cn(
         "inline-flex items-center justify-center transition-colors duration-[var(--transition-fast)] focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none",
