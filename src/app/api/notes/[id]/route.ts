@@ -41,7 +41,12 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   }
   const updates: Record<string, unknown> = {};
 
-  if (body.title !== undefined) updates.title = body.title;
+  if (body.title !== undefined) {
+    if (typeof body.title !== "string" || body.title.length > 255) {
+      return errorResponse("Title must be a string of at most 255 characters", 400);
+    }
+    updates.title = body.title;
+  }
   if (body.content !== undefined) updates.content = body.content;
   if (body.notebook_id !== undefined) updates.notebook_id = body.notebook_id;
   if (body.is_trashed !== undefined) {

@@ -2,6 +2,7 @@
 
 import { use, useState, useCallback } from "react";
 import { formatRelativeTime } from "@/lib/format-utils";
+import { handleAuthError } from "@/lib/handle-auth-error";
 
 interface TrashedNote {
   id: string;
@@ -30,6 +31,7 @@ function fetchTrashedNotes(cacheKey: string): Promise<TrashedNote[]> {
 
   const promise = fetch("/api/notes/trash")
     .then((res) => {
+      if (handleAuthError(res)) return [] as TrashedNote[];
       if (!res.ok) throw new Error(`Failed to fetch trash: ${res.status}`);
       return res.json();
     })

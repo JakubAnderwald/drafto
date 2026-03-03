@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
 
@@ -25,6 +25,7 @@ let NotebooksSidebar: typeof import("@/components/notebooks/notebooks-sidebar").
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  mockFetch.mockReset();
   vi.resetModules();
 
   mockFetch.mockResolvedValue({
@@ -217,7 +218,7 @@ describe("NotebooksSidebar", () => {
     });
   });
 
-  it("deletes a notebook when the delete button is clicked", async () => {
+  it("deletes a notebook after confirmation", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
 
@@ -236,7 +237,15 @@ describe("NotebooksSidebar", () => {
       expect(screen.getByText("Notes")).toBeInTheDocument();
     });
 
+    // Click delete — shows confirmation dialog
     await user.click(screen.getByLabelText("Delete Notes"));
+
+    // Confirmation dialog should appear
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+
+    // Confirm the delete
+    const dialog = screen.getByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: /delete/i }));
 
     await waitFor(() => {
       expect(mockFetch).toHaveBeenCalledWith("/api/notebooks/nb-1", { method: "DELETE" });
