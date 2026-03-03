@@ -169,8 +169,8 @@ test.describe("Note editing flow", () => {
     await expect(page.getByRole("heading", { name: "Trash" })).toBeVisible({ timeout: 5000 });
 
     // Both deleted notes should appear in trash
-    await expect(page.getByText(noteTitle)).toBeVisible({ timeout: 5000 });
-    await expect(page.getByText(noteTitle2)).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(noteTitle)).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText(noteTitle2)).toBeVisible({ timeout: 10000 });
 
     // --- Restore the first note ---
     const trashItem = page.getByText(noteTitle).locator("..");

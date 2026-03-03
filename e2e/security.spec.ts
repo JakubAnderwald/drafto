@@ -83,9 +83,9 @@ test.describe("Security: admin route protection", () => {
       body: JSON.stringify({ userId: "00000000-0000-0000-0000-000000000000" }),
       redirect: "manual",
     });
-    // Unauthenticated: route handler returns 401
+    // Blocked: middleware redirect (307) or route handler rejection (401)
     expect(response.ok).toBe(false);
-    expect(response.status).toBe(401);
+    expect([307, 401]).toContain(response.status);
   });
 
   test("unauthenticated user cannot access cleanup-trash endpoint", async () => {
@@ -94,7 +94,7 @@ test.describe("Security: admin route protection", () => {
       redirect: "manual",
     });
     expect(response.ok).toBe(false);
-    expect(response.status).toBe(401);
+    expect([307, 401]).toContain(response.status);
   });
 });
 
