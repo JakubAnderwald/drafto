@@ -19,7 +19,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 4. **Test**: Run the full test suite strictly in CI mode to prevent interactive prompts or watch-mode hangs. Execute exactly this chain: CI=true pnpm test -- --run && CI=true pnpm test:e2e && pnpm lint && pnpm exec tsc --noEmit.
 5. **Fix:** If _any_ test or check fails, you must debug, fix the code, and re-run the suite until it is 100% green. Do not proceed until all tests pass.
 6. **Record:** Check off the task in this file by changing `[ ]` to `[x]`.
-7. **Commit:** Commit and push your changes to git with a descriptive message using the /push protocol.
+7. **Commit:** Commit and push your changes to git with a descriptive message using the /push protocol. Merge changes to main if CI checks are all resolved and comments replied to.
 8. **Exit:** EXIT immediately so the loop can restart with a fresh context window. DO NOT start the next task.
 
 ---
@@ -30,7 +30,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 
 - [x] 0.1 — Decouple integration tests from Tailwind class names (add data-testid, fix 3 assertions)
 - [x] 0-CP — **Checkpoint**: full suite green
-- [ ] 0-PUSH — **Push**: `/push` to PR
+- [x] 0-PUSH — **Push**: `/push` to PR
 
 ### Phase 1: Design System Foundation
 
