@@ -39,13 +39,18 @@ test.describe("Notebook management lifecycle", () => {
 
     // --- Delete the notebook ---
     // The delete button is revealed on hover
-    const notebookItem = page.getByText(renamedName);
+    const notebookItem = page.locator("nav li").filter({ hasText: renamedName });
     await notebookItem.hover();
 
     await page.getByRole("button", { name: `Delete ${renamedName}`, exact: true }).click();
 
+    // Confirm the deletion in the dialog
+    const dialog = page.getByRole("alertdialog");
+    await expect(dialog).toBeVisible({ timeout: 3000 });
+    await dialog.getByRole("button", { name: "Delete" }).click();
+
     // The notebook should be gone
-    await expect(page.getByText(renamedName)).not.toBeVisible();
+    await expect(notebookItem).not.toBeVisible();
   });
 
   test("default notebook exists on first visit", async ({ page }) => {

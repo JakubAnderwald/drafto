@@ -88,6 +88,11 @@ test.describe("Note editing flow", () => {
     await titleInput.fill(noteTitle);
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 
+    // Reload to get fresh note list with updated title
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
+
     // Now move the note: click the "..." menu on the note
     const noteList = page
       .locator("section")
