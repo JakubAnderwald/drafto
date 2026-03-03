@@ -8,7 +8,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
           <h2 className="text-primary-600 text-3xl font-bold tracking-tight">Drafto</h2>
           <p className="text-fg-muted mt-1 text-sm">Your notes, beautifully organized</p>
         </div>
-        <Card shadow="lg" className="rounded-xl">
+        <Card shadow="lg">
           <CardBody className="px-8 py-6">{children}</CardBody>
         </Card>
       </div>
