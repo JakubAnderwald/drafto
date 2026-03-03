@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useState } from "react";
 import { NotebooksSidebar } from "@/components/notebooks/notebooks-sidebar";
 import { NoteList } from "@/components/notes/note-list";
+import { handleAuthError } from "@/lib/handle-auth-error";
 import { NoteEditorPanel } from "@/components/notes/note-editor-panel";
 import { TrashList } from "@/components/notes/trash-list";
 
@@ -34,6 +35,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         method: "POST",
       });
 
+      if (handleAuthError(res)) return;
       if (!res.ok) {
         console.error("Failed to create note:", res.status);
         return;
@@ -78,6 +80,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           method: "DELETE",
         });
 
+        if (handleAuthError(res)) return;
         if (!res.ok) {
           const err = new Error(`Failed to delete note: ${res.status}`);
           console.error(err);
@@ -104,6 +107,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         body: JSON.stringify({ is_trashed: false }),
       });
 
+      if (handleAuthError(res)) return;
       if (!res.ok) {
         const err = new Error(`Failed to restore note: ${res.status}`);
         console.error(err);
@@ -123,6 +127,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         method: "DELETE",
       });
 
+      if (handleAuthError(res)) return;
       if (!res.ok) {
         const err = new Error(`Failed to permanently delete note: ${res.status}`);
         console.error(err);
@@ -145,6 +150,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           body: JSON.stringify({ notebook_id: targetNotebookId }),
         });
 
+        if (handleAuthError(res)) return;
         if (!res.ok) {
           console.error("Failed to move note:", res.status);
           setRefreshTrigger((prev) => prev + 1);

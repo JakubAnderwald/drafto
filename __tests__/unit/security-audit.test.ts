@@ -156,6 +156,91 @@ describe("Security Audit", () => {
       const response = await DELETE(request, { params: Promise.resolve({ id: "att-1" }) });
       expect(response.status).toBe(403);
     });
+
+    it("PATCH /api/notebooks/[id] returns 403 for unapproved users", async () => {
+      const { PATCH } = await import("@/app/api/notebooks/[id]/route");
+      const request = new NextRequest("http://localhost:3000/api/notebooks/nb-1", {
+        method: "PATCH",
+        body: JSON.stringify({ name: "Hack" }),
+        headers: { "content-type": "application/json" },
+      });
+      const response = await PATCH(request, { params: Promise.resolve({ id: "nb-1" }) });
+      expect(response.status).toBe(403);
+    });
+
+    it("DELETE /api/notebooks/[id] returns 403 for unapproved users", async () => {
+      const { DELETE } = await import("@/app/api/notebooks/[id]/route");
+      const request = new NextRequest("http://localhost:3000/api/notebooks/nb-1", {
+        method: "DELETE",
+      });
+      const response = await DELETE(request, { params: Promise.resolve({ id: "nb-1" }) });
+      expect(response.status).toBe(403);
+    });
+
+    it("GET /api/notebooks/[id]/notes returns 403 for unapproved users", async () => {
+      const { GET } = await import("@/app/api/notebooks/[id]/notes/route");
+      const request = new NextRequest("http://localhost:3000/api/notebooks/nb-1/notes");
+      const response = await GET(request, { params: Promise.resolve({ id: "nb-1" }) });
+      expect(response.status).toBe(403);
+    });
+
+    it("POST /api/notebooks/[id]/notes returns 403 for unapproved users", async () => {
+      const { POST } = await import("@/app/api/notebooks/[id]/notes/route");
+      const request = new NextRequest("http://localhost:3000/api/notebooks/nb-1/notes", {
+        method: "POST",
+      });
+      const response = await POST(request, { params: Promise.resolve({ id: "nb-1" }) });
+      expect(response.status).toBe(403);
+    });
+
+    it("GET /api/notes/[id] returns 403 for unapproved users", async () => {
+      const { GET } = await import("@/app/api/notes/[id]/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1");
+      const response = await GET(request, { params: Promise.resolve({ id: "note-1" }) });
+      expect(response.status).toBe(403);
+    });
+
+    it("PATCH /api/notes/[id] returns 403 for unapproved users", async () => {
+      const { PATCH } = await import("@/app/api/notes/[id]/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1", {
+        method: "PATCH",
+        body: JSON.stringify({ title: "Hack" }),
+        headers: { "content-type": "application/json" },
+      });
+      const response = await PATCH(request, { params: Promise.resolve({ id: "note-1" }) });
+      expect(response.status).toBe(403);
+    });
+
+    it("DELETE /api/notes/[id] returns 403 for unapproved users", async () => {
+      const { DELETE } = await import("@/app/api/notes/[id]/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1", {
+        method: "DELETE",
+      });
+      const response = await DELETE(request, { params: Promise.resolve({ id: "note-1" }) });
+      expect(response.status).toBe(403);
+    });
+
+    it("GET /api/notes/trash returns 403 for unapproved users", async () => {
+      const { GET } = await import("@/app/api/notes/trash/route");
+      const response = await GET();
+      expect(response.status).toBe(403);
+    });
+
+    it("DELETE /api/notes/[id]/permanent returns 403 for unapproved users", async () => {
+      const { DELETE } = await import("@/app/api/notes/[id]/permanent/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1/permanent", {
+        method: "DELETE",
+      });
+      const response = await DELETE(request, { params: Promise.resolve({ id: "note-1" }) });
+      expect(response.status).toBe(403);
+    });
+
+    it("GET /api/notes/[id]/attachments returns 403 for unapproved users", async () => {
+      const { GET } = await import("@/app/api/notes/[id]/attachments/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1/attachments");
+      const response = await GET(request, { params: Promise.resolve({ id: "note-1" }) });
+      expect(response.status).toBe(403);
+    });
   });
 
   // -----------------------------------------------------------
@@ -262,6 +347,161 @@ describe("Security Audit", () => {
       const request = new NextRequest("http://localhost:3000/api/notes/note-1");
       const response = await GET(request, { params: Promise.resolve({ id: "note-1" }) });
       expect(response.status).toBe(404);
+    });
+
+    it("user cannot update another user's note", async () => {
+      authenticateAs("user-2");
+
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") {
+          return {
+            select: () => ({
+              eq: () => ({
+                single: () =>
+                  Promise.resolve({
+                    data: { is_approved: true },
+                    error: null,
+                  }),
+              }),
+            }),
+          };
+        }
+        if (table === "notes") {
+          // RLS + eq(user_id) blocks update: user-2 cannot modify user-1's note
+          return {
+            update: () => ({
+              eq: () => ({
+                eq: () => ({
+                  select: () => ({
+                    single: () =>
+                      Promise.resolve({
+                        data: null,
+                        error: { code: "PGRST116", message: "Not found" },
+                      }),
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        return {};
+      });
+
+      const { PATCH } = await import("@/app/api/notes/[id]/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1", {
+        method: "PATCH",
+        body: JSON.stringify({ title: "Stolen" }),
+        headers: { "content-type": "application/json" },
+      });
+      const response = await PATCH(request, { params: Promise.resolve({ id: "note-1" }) });
+      expect(response.status).toBe(404);
+    });
+
+    it("user cannot permanently delete another user's trashed note", async () => {
+      authenticateAs("user-2");
+
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") {
+          return {
+            select: () => ({
+              eq: () => ({
+                single: () =>
+                  Promise.resolve({
+                    data: { is_approved: true },
+                    error: null,
+                  }),
+              }),
+            }),
+          };
+        }
+        if (table === "attachments") {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => Promise.resolve({ data: [], error: null }),
+              }),
+            }),
+          };
+        }
+        if (table === "notes") {
+          // RLS blocks: user-2 cannot delete user-1's note
+          return {
+            delete: () => ({
+              eq: () => ({
+                eq: () => ({
+                  eq: () => ({
+                    select: () => ({
+                      single: () =>
+                        Promise.resolve({
+                          data: null,
+                          error: { code: "PGRST116", message: "Not found" },
+                        }),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        return {};
+      });
+
+      const { DELETE } = await import("@/app/api/notes/[id]/permanent/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1/permanent", {
+        method: "DELETE",
+      });
+      const response = await DELETE(request, { params: Promise.resolve({ id: "note-1" }) });
+      expect(response.status).toBe(404);
+    });
+
+    it("user cannot upload to another user's note", async () => {
+      authenticateAs("user-2");
+
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") {
+          return {
+            select: () => ({
+              eq: () => ({
+                single: () =>
+                  Promise.resolve({
+                    data: { is_approved: true },
+                    error: null,
+                  }),
+              }),
+            }),
+          };
+        }
+        if (table === "notes") {
+          // RLS: note belongs to user-1, user-2 can't see it
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  single: () =>
+                    Promise.resolve({
+                      data: null,
+                      error: { code: "PGRST116", message: "Not found" },
+                    }),
+                }),
+              }),
+            }),
+          };
+        }
+        return {};
+      });
+
+      const { POST } = await import("@/app/api/notes/[id]/attachments/route");
+      const file = new File(["exploit"], "malicious.bin", { type: "application/octet-stream" });
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1/attachments", {
+        method: "POST",
+      });
+      const formData = new FormData();
+      formData.append("file", file);
+      vi.spyOn(request, "formData").mockResolvedValue(formData);
+      const response = await POST(request, { params: Promise.resolve({ id: "note-1" }) });
+      expect(response.status).toBe(404);
+      const body = await response.json();
+      expect(body.error).toBe("Note not found");
     });
 
     it("user cannot delete another user's attachment", async () => {
@@ -438,6 +678,25 @@ describe("Security Audit", () => {
       expect(filenameInPath).not.toContain('"');
     });
 
+    it("accepts file at exact 25MB boundary", async () => {
+      mockApprovedWithNotes();
+
+      const { POST } = await import("@/app/api/notes/[id]/attachments/route");
+      const content = new ArrayBuffer(26214400); // exactly 25MB
+      const file = new File([content], "exact25mb.bin", {
+        type: "application/octet-stream",
+      });
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1/attachments", {
+        method: "POST",
+      });
+      const formData = new FormData();
+      formData.append("file", file);
+      vi.spyOn(request, "formData").mockResolvedValue(formData);
+
+      const response = await POST(request, { params: Promise.resolve({ id: "note-1" }) });
+      expect(response.status).toBe(201);
+    });
+
     it("rejects files exceeding 25MB limit", async () => {
       mockApprovedWithNotes();
 
@@ -574,7 +833,64 @@ describe("Security Audit", () => {
   });
 
   // -----------------------------------------------------------
-  // 5. getAuthenticatedUser approval check
+  // 5. Admin privilege escalation prevention
+  // -----------------------------------------------------------
+  describe("Admin privilege escalation prevention", () => {
+    it("non-admin cannot approve users via admin API", async () => {
+      authenticateAs("regular-user");
+      mockFrom.mockReturnValue({
+        select: () => ({
+          eq: () => ({
+            single: () =>
+              Promise.resolve({
+                data: { is_approved: true, is_admin: false },
+                error: null,
+              }),
+          }),
+        }),
+        update: vi.fn(),
+      });
+
+      const { POST } = await import("@/app/api/admin/approve-user/route");
+      const request = new NextRequest("http://localhost:3000/api/admin/approve-user", {
+        method: "POST",
+        body: JSON.stringify({ userId: "victim-user" }),
+        headers: { "content-type": "application/json" },
+      });
+      const response = await POST(request);
+      expect(response.status).toBe(403);
+      const body = await response.json();
+      expect(body.error).toBe("Forbidden");
+    });
+
+    it("unapproved user cannot approve themselves", async () => {
+      authenticateAs("sneaky-user");
+      mockFrom.mockReturnValue({
+        select: () => ({
+          eq: () => ({
+            single: () =>
+              Promise.resolve({
+                data: { is_approved: false, is_admin: false },
+                error: null,
+              }),
+          }),
+        }),
+      });
+
+      const { POST } = await import("@/app/api/admin/approve-user/route");
+      const request = new NextRequest("http://localhost:3000/api/admin/approve-user", {
+        method: "POST",
+        body: JSON.stringify({ userId: "sneaky-user" }),
+        headers: { "content-type": "application/json" },
+      });
+      const response = await POST(request);
+      // Blocked by getAuthenticatedUser() approval check
+      expect(response.status).toBe(403);
+    });
+  });
+
+  // -----------------------------------------------------------
+  // 6. getAuthenticatedUser approval check
   // -----------------------------------------------------------
   describe("getAuthenticatedUser approval enforcement", () => {
     it("returns 403 when user exists but is not approved", async () => {
