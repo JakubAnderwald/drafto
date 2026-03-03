@@ -5,8 +5,8 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  minimatch: '>=10.2.3'
-  serialize-javascript: '>=7.0.3'
+  minimatch: 10.2.4
+  serialize-javascript: 7.0.4
 
 importers:
 

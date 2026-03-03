@@ -14,6 +14,7 @@ export async function POST(request: NextRequest) {
     const { data, error } = await supabase.rpc("cleanup_trashed_notes");
 
     if (error) {
+      console.error("[cleanup-trash] RPC failed:", error.message);
       return errorResponse("Failed to cleanup trashed notes", 500);
     }
 
@@ -45,6 +46,7 @@ export async function POST(request: NextRequest) {
   const { data, error } = await supabase.rpc("cleanup_trashed_notes");
 
   if (error) {
+    console.error("[cleanup-trash] RPC failed:", error.message);
     return errorResponse("Failed to cleanup trashed notes", 500);
   }
 
