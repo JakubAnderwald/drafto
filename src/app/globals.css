@@ -58,6 +58,7 @@
   --color-warning: #f59e0b;
   --color-error: #ef4444;
   --color-info: #3b82f6;
+  --color-error-bg: #fef2f2;
 
   /* Semantic surface tokens (dark-mode-ready via CSS vars) */
   --color-bg: var(--bg);
