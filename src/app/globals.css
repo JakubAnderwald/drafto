@@ -103,3 +103,25 @@ body {
   color: var(--fg);
   font-family: var(--font-sans, Arial, Helvetica, sans-serif);
 }
+
+/* ── BlockNote Theme Synchronization ─────────────────────── */
+
+.bn-container {
+  --bn-colors-editor-text: var(--fg);
+  --bn-colors-editor-background: var(--bg);
+  --bn-colors-menu-text: var(--fg);
+  --bn-colors-menu-background: var(--bg);
+  --bn-colors-tooltip-text: var(--fg);
+  --bn-colors-tooltip-background: var(--bg-muted);
+  --bn-colors-hovered-text: var(--fg);
+  --bn-colors-hovered-background: var(--bg-muted);
+  --bn-colors-selected-text: #ffffff;
+  --bn-colors-selected-background: var(--ring);
+  --bn-colors-disabled-text: var(--fg-subtle);
+  --bn-colors-disabled-background: var(--bg-muted);
+  --bn-colors-shadow: var(--border);
+  --bn-colors-border: var(--border);
+  --bn-colors-side-menu: var(--fg-subtle);
+  --bn-font-family: var(--font-sans, Arial, Helvetica, sans-serif);
+  --bn-border-radius: 6px;
+}
