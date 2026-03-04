@@ -39,7 +39,7 @@ function fetchNote(noteId: string): Promise<NoteData | null> {
 }
 
 const saveStatusConfig: Record<string, { label: string; variant: BadgeVariant }> = {
-  saving: { label: "Saving...", variant: "warning" },
+  saving: { label: "Saving", variant: "warning" },
   saved: { label: "Saved", variant: "success" },
   error: { label: "Error", variant: "error" },
 };
@@ -117,7 +117,13 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
             aria-label="Note title"
           />
           {statusConfig && (
-            <Badge variant={statusConfig.variant} data-testid="save-status-badge">
+            <Badge
+              variant={statusConfig.variant}
+              data-testid="save-status-badge"
+              role={statusConfig.variant === "error" ? "alert" : "status"}
+              aria-live={statusConfig.variant === "error" ? "assertive" : "polite"}
+              aria-atomic="true"
+            >
               {statusConfig.label}
             </Badge>
           )}
