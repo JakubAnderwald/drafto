@@ -75,7 +75,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 
 ### Phase 6: Trash & Admin Redesign
 
-- [ ] 6.1 — Trash list (tokens, Button primitives, styled empty state)
+- [x] 6.1 — Trash list (tokens, Button primitives, styled empty state)
 - [ ] 6.2 — Admin page (Card, Button primitives, styled list)
 - [ ] 6-CP — **Checkpoint**: full suite green
 - [ ] 6-PUSH — **Push**: `/push` to PR
