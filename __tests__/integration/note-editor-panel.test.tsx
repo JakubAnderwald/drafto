@@ -30,9 +30,10 @@ vi.mock("@blocknote/mantine/style.css", () => ({}));
 
 // Mock useAutoSave to avoid real fetch calls from the hook
 const mockDebouncedSave = vi.fn();
+let mockSaveStatus = "idle";
 vi.mock("@/hooks/use-auto-save", () => ({
   useAutoSave: () => ({
-    saveStatus: "idle" as const,
+    saveStatus: mockSaveStatus,
     debouncedSave: mockDebouncedSave,
   }),
 }));
@@ -61,6 +62,7 @@ function nextNoteId() {
 describe("NoteEditorPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSaveStatus = "idle";
     mockFetch.mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({ ...mockNote, id: "dynamic" }),
@@ -203,6 +205,121 @@ describe("NoteEditorPanel", () => {
 
     await waitFor(() => {
       expect(mockFetch).toHaveBeenCalledWith(`/api/notes/${noteId}`);
+    });
+  });
+
+  it("shows 'Saving' badge when save status is saving", async () => {
+    mockSaveStatus = "saving";
+    const noteId = nextNoteId();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ ...mockNote, id: noteId }),
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteEditorPanel noteId={noteId} />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      const badge = screen.getByTestId("save-status-badge");
+      expect(badge).toHaveTextContent("Saving");
+      expect(badge).toHaveAttribute("role", "status");
+      expect(badge).toHaveAttribute("aria-live", "polite");
+    });
+  });
+
+  it("shows 'Saved' badge when save status is saved", async () => {
+    mockSaveStatus = "saved";
+    const noteId = nextNoteId();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ ...mockNote, id: noteId }),
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteEditorPanel noteId={noteId} />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      const badge = screen.getByTestId("save-status-badge");
+      expect(badge).toHaveTextContent("Saved");
+      expect(badge).toHaveAttribute("role", "status");
+    });
+  });
+
+  it("shows 'Error' badge with alert role when save status is error", async () => {
+    mockSaveStatus = "error";
+    const noteId = nextNoteId();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ ...mockNote, id: noteId }),
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteEditorPanel noteId={noteId} />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      const badge = screen.getByTestId("save-status-badge");
+      expect(badge).toHaveTextContent("Error");
+      expect(badge).toHaveAttribute("role", "alert");
+      expect(badge).toHaveAttribute("aria-live", "assertive");
+    });
+  });
+
+  it("does not show save badge when save status is idle", async () => {
+    mockSaveStatus = "idle";
+    const noteId = nextNoteId();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ ...mockNote, id: noteId }),
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteEditorPanel noteId={noteId} />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Note title")).toBeInTheDocument();
+    });
+
+    expect(screen.queryByTestId("save-status-badge")).not.toBeInTheDocument();
+  });
+
+  it("renders timestamp icons for created and modified dates", async () => {
+    const noteId = nextNoteId();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ ...mockNote, id: noteId }),
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteEditorPanel noteId={noteId} />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Created/)).toBeInTheDocument();
+      expect(screen.getByText(/Modified/)).toBeInTheDocument();
     });
   });
 });
