@@ -252,7 +252,7 @@ export function NotebooksSidebar({
                   })}
                   className={`group flex w-full cursor-pointer items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors duration-[var(--transition-fast)] ${
                     selectedNotebookId === notebook.id
-                      ? "bg-sidebar-active text-sidebar-active-text border-primary-500 border-l-3"
+                      ? "bg-sidebar-active text-sidebar-active-text border-primary-500 border-l-[3px] font-medium"
                       : "text-fg hover:bg-sidebar-hover"
                   }`}
                 >
@@ -263,7 +263,7 @@ export function NotebooksSidebar({
                       e.stopPropagation();
                       requestDelete(notebook.id);
                     }}
-                    className="text-fg-subtle hover:text-error hidden rounded p-0.5 group-focus-within:block group-hover:block"
+                    className="text-fg-subtle hover:text-error hidden rounded p-0.5 transition-colors group-focus-within:block group-hover:block"
                     aria-label={`Delete ${notebook.name}`}
                   >
                     <svg
@@ -325,7 +325,7 @@ export function NotebooksSidebar({
             onClick={onSelectTrash}
             className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors duration-[var(--transition-fast)] ${
               isTrashSelected
-                ? "bg-sidebar-active text-sidebar-active-text"
+                ? "bg-sidebar-active text-sidebar-active-text font-medium"
                 : "text-fg-muted hover:bg-sidebar-hover hover:text-fg"
             }`}
           >
