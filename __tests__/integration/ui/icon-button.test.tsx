@@ -17,8 +17,8 @@ describe("IconButton", () => {
   it("applies default ghost variant styles", () => {
     render(<IconButton aria-label="close">X</IconButton>);
     const button = screen.getByRole("button");
-    expect(button.className).toContain("text-neutral-600");
-    expect(button.className).toContain("hover:bg-neutral-100");
+    expect(button.className).toContain("text-fg-muted");
+    expect(button.className).toContain("hover:bg-bg-muted");
   });
 
   it("applies danger variant styles", () => {
@@ -29,7 +29,7 @@ describe("IconButton", () => {
     );
     const button = screen.getByRole("button");
     expect(button.className).toContain("text-error");
-    expect(button.className).toContain("hover:bg-red-50");
+    expect(button.className).toContain("hover:bg-error-bg");
   });
 
   it("applies default md size", () => {

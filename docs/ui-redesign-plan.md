@@ -100,7 +100,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 
 ### Phase 9: Polish & Verification
 
-- [ ] 9.1 — Consistency audit (all raw gray/blue classes replaced, all borders/rings use tokens)
+- [x] 9.1 — Consistency audit (all raw gray/blue classes replaced, all borders/rings use tokens)
 - [ ] 9.2 — Update README.md with design system docs
 - [ ] 9.3 — Full test sweep and fix any failures
 - [ ] 9.4 — Design compliance checklist
