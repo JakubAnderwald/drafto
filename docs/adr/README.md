@@ -39,3 +39,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0004](./0004-design-system-css-variables.md)     | Design System with CSS Custom Properties | Accepted | 2026-03-03 |
 | [0005](./0005-dark-mode-implementation.md)        | Dark Mode Implementation                 | Accepted | 2026-03-04 |
 | [0006](./0006-dev-prod-environment-separation.md) | Dev/Prod Environment Separation          | Accepted | 2026-03-04 |
+| [0007](./0007-evernote-import.md)                 | Evernote Import                          | Accepted | 2026-03-04 |

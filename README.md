@@ -22,6 +22,8 @@ A note-taking web app with notebooks, rich text editing, and auto-save. Built wi
 - **Dark mode** — system-preference-aware theme toggle with localStorage persistence
 - **Authentication** — email/password signup with email confirmation, password reset
 - **User approval** — new accounts require admin approval before access
+- **Evernote import** — import notes from Evernote `.enex` files with full content and attachment support
+- **App menu** — dropdown menu with import, theme toggle, and logout
 - **Row Level Security** — all data access enforced at the database level
 
 ## Environments
