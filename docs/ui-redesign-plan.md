@@ -62,7 +62,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 
 - [x] 4.1 — Notebooks sidebar (tokens, Skeleton loading, ConfirmDialog, styled empty state)
 - [x] 4.2 — App shell layout (tokens, backdrop blur, Skeleton fallbacks, styled empty states)
-- [ ] 4-CP — **Checkpoint**: full suite green (including E2E responsive tests)
+- [x] 4-CP — **Checkpoint**: full suite green (including E2E responsive tests)
 - [ ] 4-PUSH — **Push**: `/push` to PR
 
 ### Phase 5: Note List & Editor Panel Redesign
