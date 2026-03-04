@@ -3,6 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Suspense } from "react";
 import { act } from "react";
+import { Skeleton } from "@/components/ui/skeleton";
 
 vi.mock("@/env", () => ({
   env: {
@@ -61,7 +62,7 @@ describe("TrashList", () => {
   it("renders trashed notes with notebook names and trashed dates", async () => {
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2.5rem" />}>
           <TrashList
             notebooks={mockNotebooks}
             onRestore={vi.fn()}
@@ -95,7 +96,7 @@ describe("TrashList", () => {
 
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2.5rem" />}>
           <TrashList
             notebooks={mockNotebooks}
             onRestore={vi.fn()}
@@ -116,7 +117,7 @@ describe("TrashList", () => {
 
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2.5rem" />}>
           <TrashList
             notebooks={mockNotebooks}
             onRestore={onRestore}
@@ -147,7 +148,7 @@ describe("TrashList", () => {
 
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2.5rem" />}>
           <TrashList
             notebooks={mockNotebooks}
             onRestore={vi.fn()}
@@ -178,7 +179,7 @@ describe("TrashList", () => {
 
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2.5rem" />}>
           <TrashList
             notebooks={mockNotebooks}
             onRestore={onRestore}
@@ -210,7 +211,7 @@ describe("TrashList", () => {
 
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2.5rem" />}>
           <TrashList
             notebooks={mockNotebooks}
             onRestore={vi.fn()}
@@ -240,7 +241,7 @@ describe("TrashList", () => {
   it("displays the Trash heading", async () => {
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2.5rem" />}>
           <TrashList
             notebooks={mockNotebooks}
             onRestore={vi.fn()}
