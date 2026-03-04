@@ -15,6 +15,9 @@ export function getPostHogClient() {
       person_profiles: "identified_only",
       capture_pageview: false, // We capture manually in the provider
     });
+    posthog.register({
+      environment: process.env.NODE_ENV === "production" ? "production" : "development",
+    });
   }
 
   return posthog;

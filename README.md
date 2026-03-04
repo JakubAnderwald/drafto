@@ -24,6 +24,27 @@ A note-taking web app with notebooks, rich text editing, and auto-save. Built wi
 - **User approval** — new accounts require admin approval before access
 - **Row Level Security** — all data access enforced at the database level
 
+## Environments
+
+| Environment     | Supabase Project | Supabase Ref           | Used By                              |
+| --------------- | ---------------- | ---------------------- | ------------------------------------ |
+| **Production**  | drafto.eu        | `tbmjbxxseonkciqovnpl` | Vercel production deploy (drafto.eu) |
+| **Development** | drafto-dev       | `huhzactreblzcogqkbsd` | Local dev, Vercel previews, CI/E2E   |
+
+Sentry and PostHog use a single project each with environment tagging to distinguish data.
+
+### Migration Workflow
+
+Apply migrations to dev first, verify, then apply to production:
+
+```bash
+pnpm supabase:link:dev   # Link CLI to dev project
+pnpm supabase:push       # Apply migrations to dev
+# Verify everything works
+pnpm supabase:link:prod  # Link CLI to prod project
+pnpm supabase:push       # Apply migrations to prod
+```
+
 ## Getting Started
 
 ### Prerequisites
