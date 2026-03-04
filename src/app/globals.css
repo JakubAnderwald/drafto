@@ -124,6 +124,9 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-sans, Arial, Helvetica, sans-serif);
+  transition:
+    background-color var(--transition-slow),
+    color var(--transition-slow);
 }
 
 /* ── Micro-interaction Animations ────────────────────────── */

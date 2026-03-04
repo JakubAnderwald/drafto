@@ -300,7 +300,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       <aside
         className={`${
           mobileView === "notebooks" ? "flex" : "hidden"
-        } bg-sidebar-bg sm:border-border w-full flex-col overflow-hidden sm:fixed sm:inset-y-0 sm:left-0 sm:z-30 sm:flex sm:w-60 sm:shrink-0 sm:border-r sm:transition-transform sm:duration-200 sm:ease-in-out lg:static lg:translate-x-0 ${
+        } bg-sidebar-bg sm:border-border w-full flex-col overflow-hidden sm:fixed sm:inset-y-0 sm:left-0 sm:z-30 sm:flex sm:w-60 sm:shrink-0 sm:border-r sm:transition-transform sm:duration-[var(--transition-normal)] sm:ease-in-out lg:static lg:translate-x-0 ${
           sidebarOpen ? "sm:translate-x-0" : "sm:-translate-x-full"
         }`}
       >

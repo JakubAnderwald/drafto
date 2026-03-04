@@ -96,7 +96,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 - [x] 8.2 — Loading skeletons in component Suspense fallbacks (replace "Loading..." text)
 - [x] 8.3 — Improved empty states with SVG icons and descriptive text
 - [x] 8-CP — **Checkpoint**: full suite green
-- [ ] 8-PUSH — **Push**: `/push` to PR
+- [x] 8-PUSH — **Push**: `/push` to PR
 
 ### Phase 9: Polish & Verification
 
