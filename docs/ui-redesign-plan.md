@@ -102,7 +102,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 
 - [x] 9.1 — Consistency audit (all raw gray/blue classes replaced, all borders/rings use tokens)
 - [x] 9.2 — Update README.md with design system docs
-- [ ] 9.3 — Full test sweep and fix any failures
+- [x] 9.3 — Full test sweep and fix any failures
 - [ ] 9.4 — Design compliance checklist
 - [ ] 9-PUSH — **Push**: `/push` to PR — UI REDESIGN COMPLETE
 
