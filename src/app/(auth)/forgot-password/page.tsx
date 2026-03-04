@@ -45,7 +45,10 @@ export default function ForgotPasswordPage() {
           We&apos;ve sent a password reset link to <strong className="text-fg">{email}</strong>.
           Check your inbox and follow the link to reset your password.
         </p>
-        <Link href="/login" className="text-primary-600 hover:underline">
+        <Link
+          href="/login"
+          className="text-primary-600 transition-colors duration-[var(--transition-fast)] hover:underline"
+        >
           Back to login
         </Link>
       </div>
@@ -82,7 +85,10 @@ export default function ForgotPasswordPage() {
       </form>
 
       <p className="text-fg-muted mt-4 text-center text-sm">
-        <Link href="/login" className="text-primary-600 hover:underline">
+        <Link
+          href="/login"
+          className="text-primary-600 transition-colors duration-[var(--transition-fast)] hover:underline"
+        >
           Back to login
         </Link>
       </p>

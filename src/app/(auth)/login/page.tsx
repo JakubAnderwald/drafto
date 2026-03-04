@@ -79,12 +79,18 @@ export default function LoginPage() {
       <div className="text-fg-muted mt-4 text-center text-sm">
         <p>
           Don&apos;t have an account?{" "}
-          <Link href="/signup" className="text-primary-600 hover:underline">
+          <Link
+            href="/signup"
+            className="text-primary-600 transition-colors duration-[var(--transition-fast)] hover:underline"
+          >
             Sign up
           </Link>
         </p>
         <p className="mt-2">
-          <Link href="/forgot-password" className="text-primary-600 hover:underline">
+          <Link
+            href="/forgot-password"
+            className="text-primary-600 transition-colors duration-[var(--transition-fast)] hover:underline"
+          >
             Forgot your password?
           </Link>
         </p>
