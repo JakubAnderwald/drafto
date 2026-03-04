@@ -8,7 +8,7 @@ A note-taking web app with notebooks, rich text editing, and auto-save. Built wi
 
 - **Framework:** Next.js 16 (App Router, Turbopack)
 - **Language:** TypeScript (strict mode)
-- **Styling:** Tailwind CSS
+- **Styling:** Tailwind CSS v4 + custom design system (CSS variables)
 - **Database & Auth:** Supabase (PostgreSQL + Row Level Security)
 - **Editor:** BlockNote (block-based rich text)
 - **Monitoring:** Sentry (errors), PostHog (analytics)
@@ -19,6 +19,7 @@ A note-taking web app with notebooks, rich text editing, and auto-save. Built wi
 - **Notebooks** — create, rename, delete notebooks to organize notes
 - **Notes** — create and edit notes within notebooks, with relative timestamps
 - **Rich text editor** — BlockNote-powered block editor with auto-save
+- **Dark mode** — system-preference-aware theme toggle with localStorage persistence
 - **Authentication** — email/password signup with email confirmation, password reset
 - **User approval** — new accounts require admin approval before access
 - **Row Level Security** — all data access enforced at the database level
@@ -96,7 +97,8 @@ src/
     layout/         # App shell (three-panel layout)
     notebooks/      # Notebooks sidebar
     notes/          # Note list, note editor panel
-  hooks/            # Custom hooks (auto-save)
+    ui/             # Design system primitives (Button, Input, Card, etc.)
+  hooks/            # Custom hooks (auto-save, theme)
   lib/
     api/            # API utilities
     supabase/       # Supabase client/server helpers, types
@@ -119,6 +121,61 @@ The app uses a **three-panel layout**: notebooks sidebar, notes list, and editor
 Auth is handled via Supabase Auth with email confirmation. New users must be approved by an admin (`profiles.is_approved`) before they can access the app. Session refresh and approval checks run on every request via `middleware.ts` (the Next.js 16 `proxy.ts` convention is not yet adopted; the project retains `middleware.ts` for Edge runtime compatibility).
 
 See [`docs/adr/`](./docs/adr/) for Architecture Decision Records.
+
+## Design System
+
+The app uses a custom design system built on CSS custom properties, defined in [`src/app/globals.css`](./src/app/globals.css) and exposed to Tailwind via `@theme inline`.
+
+### Color Palette
+
+| Role                 | Scale  | Usage                                                              |
+| -------------------- | ------ | ------------------------------------------------------------------ |
+| **Primary** (Indigo) | 50–900 | Buttons, links, focus rings, active states                         |
+| **Accent** (Amber)   | 50–600 | Highlights, interactive accents                                    |
+| **Neutral** (Stone)  | 50–900 | Backgrounds, text, borders                                         |
+| **Semantic**         | —      | `success` (green), `warning` (amber), `error` (red), `info` (blue) |
+
+### Surface Tokens
+
+Semantic tokens that automatically switch between light and dark mode:
+
+- `--bg`, `--bg-subtle`, `--bg-muted` — background surfaces
+- `--fg`, `--fg-muted`, `--fg-subtle` — foreground/text colors
+- `--border`, `--border-strong`, `--ring` — borders and focus rings
+- `--sidebar-bg`, `--sidebar-hover`, `--sidebar-active` — sidebar-specific
+
+Use them in Tailwind as `bg-bg`, `text-fg-muted`, `border-border`, etc.
+
+### UI Primitives
+
+Reusable components in `src/components/ui/`:
+
+| Component       | File                 | Variants / Props                                            |
+| --------------- | -------------------- | ----------------------------------------------------------- |
+| `Button`        | `button.tsx`         | `primary`, `secondary`, `ghost`, `danger` + `loading` state |
+| `Input`         | `input.tsx`          | `sm`, `md`, `lg` sizes + `error` state                      |
+| `Label`         | `label.tsx`          | Standard form label                                         |
+| `Card`          | `card.tsx`           | `CardHeader`, `CardBody`, `CardFooter` slots                |
+| `Badge`         | `badge.tsx`          | `default`, `success`, `warning`, `error`                    |
+| `IconButton`    | `icon-button.tsx`    | `ghost`, `danger` variants                                  |
+| `Skeleton`      | `skeleton.tsx`       | Configurable `height`, `width`, `rounded`                   |
+| `ConfirmDialog` | `confirm-dialog.tsx` | Inline confirmation with confirm/cancel actions             |
+| `DropdownMenu`  | `dropdown-menu.tsx`  | Positioned menu with items + destructive variant            |
+| `ThemeToggle`   | `theme-toggle.tsx`   | Sun/moon toggle for dark mode                               |
+
+### Dark Mode
+
+Dark mode is toggled via a `.dark` class on `<html>`. The `useTheme` hook (`src/hooks/use-theme.ts`) manages the theme:
+
+- Respects `prefers-color-scheme` on first visit
+- Persists choice to `localStorage("theme")`
+- A `<script>` in `<head>` prevents flash of wrong theme on load
+
+### Adding New Tokens
+
+1. Add the CSS variable to `:root` (light value) and `.dark` (dark value) in `globals.css`
+2. Wire it into Tailwind under the `@theme inline` block as `--color-<name>: var(--your-var)`
+3. Use in components as `bg-<name>`, `text-<name>`, etc.
 
 ## License
 
