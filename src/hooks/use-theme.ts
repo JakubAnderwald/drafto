@@ -19,7 +19,7 @@ function getStoredTheme(): Theme {
 }
 
 function getSystemTheme(): ResolvedTheme {
-  if (typeof window === "undefined") return "light";
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return "light";
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
@@ -71,6 +71,7 @@ export function useTheme() {
 
   // Listen for system preference changes when theme is "system"
   useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const handler = () => {
       if (currentTheme === "system") {
