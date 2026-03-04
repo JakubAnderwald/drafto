@@ -17,6 +17,7 @@
   --sidebar-hover: #f5f5f4;
   --sidebar-active: #eef2ff;
   --sidebar-active-text: #4338ca;
+  --fg-on-primary: #ffffff;
 }
 
 @theme inline {
@@ -115,7 +116,7 @@ body {
   --bn-colors-tooltip-background: var(--bg-muted);
   --bn-colors-hovered-text: var(--fg);
   --bn-colors-hovered-background: var(--bg-muted);
-  --bn-colors-selected-text: #ffffff;
+  --bn-colors-selected-text: var(--fg-on-primary);
   --bn-colors-selected-background: var(--ring);
   --bn-colors-disabled-text: var(--fg-subtle);
   --bn-colors-disabled-background: var(--bg-muted);

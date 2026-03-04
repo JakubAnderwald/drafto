@@ -13,7 +13,7 @@ const draftoTheme: Theme = {
     menu: { text: "var(--fg)", background: "var(--bg)" },
     tooltip: { text: "var(--fg)", background: "var(--bg-muted)" },
     hovered: { text: "var(--fg)", background: "var(--bg-muted)" },
-    selected: { text: "#ffffff", background: "var(--ring)" },
+    selected: { text: "var(--fg-on-primary)", background: "var(--ring)" },
     disabled: { text: "var(--fg-subtle)", background: "var(--bg-muted)" },
     shadow: "var(--border)",
     border: "var(--border)",
