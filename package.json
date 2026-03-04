@@ -43,6 +43,7 @@
     "@supabase/supabase-js": "^2.98.0",
     "@t3-oss/env-nextjs": "^0.13.10",
     "clsx": "^2.1.1",
+    "linkedom": "^0.18.12",
     "next": "16.1.6",
     "posthog-js": "^1.357.1",
     "posthog-node": "^5.26.2",

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE en-export SYSTEM "http://xml.evernote.com/pub/evernote-export4.dtd">
+<en-export export-date="20230415T120000Z" application="Evernote" version="10.0">
+  <note>
+    <title>Welcome to Drafto</title>
+    <content><![CDATA[<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE en-note SYSTEM "http://xml.evernote.com/pub/enml2.dtd">
+<en-note>
+  <h1>Welcome</h1>
+  <p>This is a <b>test note</b> imported from Evernote.</p>
+  <ul>
+    <li>Item one</li>
+    <li>Item two</li>
+  </ul>
+  <p>Visit <a href="https://drafto.eu">Drafto</a> for more.</p>
+</en-note>]]></content>
+    <created>20230415T120000Z</created>
+    <updated>20230416T140000Z</updated>
+  </note>
+  <note>
+    <title>Second Note</title>
+    <content><![CDATA[<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE en-note SYSTEM "http://xml.evernote.com/pub/enml2.dtd">
+<en-note>
+  <p>A second note with <i>italic</i> and <u>underline</u> text.</p>
+  <en-todo checked="false"/>Buy groceries
+  <en-todo checked="true"/>Clean house
+</en-note>]]></content>
+    <created>20230415T130000Z</created>
+    <updated>20230415T150000Z</updated>
+  </note>
+</en-export>

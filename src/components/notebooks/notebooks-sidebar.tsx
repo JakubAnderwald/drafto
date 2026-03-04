@@ -19,6 +19,7 @@ interface NotebooksSidebarProps {
   onNotebooksChange?: (notebooks: { id: string; name: string }[]) => void;
   isTrashSelected?: boolean;
   onSelectTrash?: () => void;
+  refreshTrigger?: number;
 }
 
 const MAX_NOTEBOOK_NAME_LENGTH = 100;
@@ -29,6 +30,7 @@ export function NotebooksSidebar({
   onNotebooksChange,
   isTrashSelected = false,
   onSelectTrash,
+  refreshTrigger = 0,
 }: NotebooksSidebarProps) {
   const [notebooks, setNotebooks] = useState<Notebook[]>([]);
   const [loading, setLoading] = useState(true);
@@ -63,6 +65,24 @@ export function NotebooksSidebar({
       })
       .finally(() => setLoading(false));
   }, [selectedNotebookId, onSelectNotebook]);
+
+  useEffect(() => {
+    if (refreshTrigger === 0) return;
+
+    fetch("/api/notebooks")
+      .then(async (res) => {
+        if (handleAuthError(res)) return [] as Notebook[];
+        if (!res.ok) throw new Error(`Failed to load notebooks: ${res.status}`);
+        return (await res.json()) as Notebook[];
+      })
+      .then((data) => {
+        setNotebooks(data);
+        onNotebooksChange?.(data.map((n) => ({ id: n.id, name: n.name })));
+      })
+      .catch((error) => {
+        console.error("Failed to refresh notebooks:", error);
+      });
+  }, [refreshTrigger]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (creatingName !== null) {

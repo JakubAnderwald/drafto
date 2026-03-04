@@ -8,7 +8,8 @@ import { NoteEditorPanel } from "@/components/notes/note-editor-panel";
 import { TrashList } from "@/components/notes/trash-list";
 import { IconButton } from "@/components/ui/icon-button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ThemeToggle } from "@/components/ui/theme-toggle";
+import { AppMenu } from "@/components/layout/app-menu";
+import { ImportEvernoteDialog } from "@/components/import/import-evernote-dialog";
 
 interface NotebookInfo {
   id: string;
@@ -130,6 +131,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const [notebooks, setNotebooks] = useState<NotebookInfo[]>([]);
   const [viewingTrash, setViewingTrash] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showImportDialog, setShowImportDialog] = useState(false);
 
   // Mobile single-panel navigation: determine which panel is active
   const mobileView: "notebooks" | "notes" | "editor" = selectedNoteId
@@ -310,9 +312,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           onNotebooksChange={setNotebooks}
           isTrashSelected={viewingTrash}
           onSelectTrash={handleSelectTrash}
+          refreshTrigger={refreshTrigger}
         />
         <div className="border-border flex items-center justify-end border-t p-2">
-          <ThemeToggle />
+          <AppMenu onImportEvernote={() => setShowImportDialog(true)} />
         </div>
       </aside>
 
@@ -402,6 +405,19 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           <EmptyState icon={<DocumentIcon />} message="Select a note" />
         )}
       </main>
+
+      {showImportDialog && (
+        <ImportEvernoteDialog
+          onClose={() => setShowImportDialog(false)}
+          onComplete={(notebookId) => {
+            setShowImportDialog(false);
+            setRefreshTrigger((prev) => prev + 1);
+            setSelectedNotebookId(notebookId);
+            setSelectedNoteId(null);
+            setViewingTrash(false);
+          }}
+        />
+      )}
 
       {children}
     </div>
