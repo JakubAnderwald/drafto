@@ -4,24 +4,8 @@ import { useCallback } from "react";
 import { useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
 import type { Block } from "@blocknote/core";
-import type { Theme } from "@blocknote/mantine";
 import "@blocknote/mantine/style.css";
-
-const draftoTheme: Theme = {
-  colors: {
-    editor: { text: "var(--fg)", background: "var(--bg)" },
-    menu: { text: "var(--fg)", background: "var(--bg)" },
-    tooltip: { text: "var(--fg)", background: "var(--bg-muted)" },
-    hovered: { text: "var(--fg)", background: "var(--bg-muted)" },
-    selected: { text: "var(--fg-on-primary)", background: "var(--ring)" },
-    disabled: { text: "var(--fg-subtle)", background: "var(--bg-muted)" },
-    shadow: "var(--border)",
-    border: "var(--border)",
-    sideMenu: "var(--fg-subtle)",
-  },
-  borderRadius: 6,
-  fontFamily: "var(--font-sans, Arial, Helvetica, sans-serif)",
-};
+import { useTheme } from "@/hooks/use-theme";
 
 interface NoteEditorProps {
   noteId: string;
@@ -30,6 +14,7 @@ interface NoteEditorProps {
 }
 
 export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps) {
+  const { resolvedTheme } = useTheme();
   const uploadFile = useCallback(
     async (file: File): Promise<string> => {
       const formData = new FormData();
@@ -66,7 +51,7 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
         onChange={() => {
           onChange?.(editor.document);
         }}
-        theme={draftoTheme}
+        theme={resolvedTheme}
       />
     </div>
   );
