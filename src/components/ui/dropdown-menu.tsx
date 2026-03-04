@@ -84,8 +84,8 @@ export interface DropdownMenuItemProps extends ButtonHTMLAttributes<HTMLButtonEl
 }
 
 const itemVariantStyles: Record<DropdownMenuItemVariant, string> = {
-  default: "text-fg hover:bg-neutral-100",
-  danger: "text-error hover:bg-red-50",
+  default: "text-fg hover:bg-bg-muted",
+  danger: "text-error hover:bg-error-bg",
 };
 
 export const DropdownMenuItem = forwardRef<HTMLButtonElement, DropdownMenuItemProps>(

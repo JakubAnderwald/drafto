@@ -25,7 +25,7 @@ describe("Skeleton", () => {
 
   it("applies neutral background", () => {
     render(<Skeleton data-testid="skeleton" />);
-    expect(screen.getByTestId("skeleton").className).toContain("bg-neutral-200");
+    expect(screen.getByTestId("skeleton").className).toContain("bg-bg-muted");
   });
 
   it("applies default md rounded", () => {

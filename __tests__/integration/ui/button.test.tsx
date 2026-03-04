@@ -18,7 +18,7 @@ describe("Button", () => {
   it("applies secondary variant styles", () => {
     render(<Button variant="secondary">Secondary</Button>);
     const button = screen.getByRole("button");
-    expect(button.className).toContain("bg-neutral-100");
+    expect(button.className).toContain("bg-bg-muted");
   });
 
   it("applies ghost variant styles", () => {
