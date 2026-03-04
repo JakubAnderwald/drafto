@@ -1,8 +1,10 @@
 "use client";
 
-import { use, useState, useCallback, useRef, useEffect } from "react";
+import { use, useState, useCallback } from "react";
 import { formatRelativeTime } from "@/lib/format-utils";
 import { handleAuthError } from "@/lib/handle-auth-error";
+import { IconButton } from "@/components/ui/icon-button";
+import { DropdownMenu, DropdownMenuItem, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
 
 interface NoteListItem {
   id: string;
@@ -59,7 +61,6 @@ export function NoteList({
   const [notes, setNotes] = useState(initialNotes);
   const [prevInitialNotes, setPrevInitialNotes] = useState(initialNotes);
   const [menuOpenForNote, setMenuOpenForNote] = useState<string | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
 
   // Update notes when cache key changes (new data loaded via refreshTrigger)
   // Track prevInitialNotes separately so optimistic updates aren't reverted
@@ -99,32 +100,13 @@ export function NoteList({
     [selectedNoteId, onSelectNote, onMoveNote],
   );
 
-  // Close menu when clicking outside
-  useEffect(() => {
-    if (!menuOpenForNote) return;
-
-    function handleClickOutside(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpenForNote(null);
-      }
-    }
-
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [menuOpenForNote]);
-
   const otherNotebooks = notebooks.filter((nb) => nb.id !== notebookId);
 
   return (
     <div className="flex flex-1 flex-col">
-      <div className="flex items-center justify-between border-b p-3">
-        <h2 className="text-sm font-semibold text-gray-700">Notes</h2>
-        <button
-          type="button"
-          onClick={onCreateNote}
-          className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
-          aria-label="New note"
-        >
+      <div className="border-border flex items-center justify-between border-b p-3">
+        <h2 className="text-fg-muted text-xs font-semibold tracking-wide uppercase">Notes</h2>
+        <IconButton size="sm" variant="ghost" onClick={onCreateNote} aria-label="New note">
           <svg
             aria-hidden="true"
             className="h-4 w-4"
@@ -134,12 +116,25 @@ export function NoteList({
           >
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
-        </button>
+        </IconButton>
       </div>
 
       {notes.length === 0 ? (
-        <div className="p-4 text-center text-sm text-gray-400">
-          No notes yet. Create one to get started.
+        <div className="flex flex-col items-center gap-2 p-6 text-center">
+          <svg
+            className="text-fg-subtle h-8 w-8"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={1.5}
+              d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V9a2 2 0 012-2h2a2 2 0 012 2v9a2 2 0 01-2 2h-2z"
+            />
+          </svg>
+          <p className="text-fg-subtle text-sm">No notes yet. Create one to get started.</p>
         </div>
       ) : (
         <nav className="flex-1 overflow-y-auto">
@@ -149,24 +144,41 @@ export function NoteList({
                 <button
                   onClick={() => onSelectNote(note.id)}
                   {...(selectedNoteId === note.id && { "data-testid": "note-item-active" })}
-                  className={`w-full rounded px-3 py-2 text-left ${
+                  className={`w-full rounded-md px-3 py-2 text-left transition-colors duration-[var(--transition-fast)] ${
                     selectedNoteId === note.id
-                      ? "bg-blue-100 text-blue-700"
-                      : "text-gray-700 hover:bg-gray-100"
+                      ? "bg-sidebar-active text-sidebar-active-text border-primary-500 border-l-[3px] font-medium"
+                      : "text-fg hover:bg-bg-muted"
                   }`}
                 >
                   <p className="truncate text-sm font-medium">{note.title}</p>
-                  <p className="text-xs text-gray-400">{formatRelativeTime(note.updated_at)}</p>
+                  <p className="text-fg-subtle mt-0.5 flex items-center gap-1 text-xs">
+                    <svg
+                      aria-hidden="true"
+                      className="h-3 w-3"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                      />
+                    </svg>
+                    {formatRelativeTime(note.updated_at)}
+                  </p>
                 </button>
 
                 {(onDeleteNote || (onMoveNote && otherNotebooks.length > 0)) && (
-                  <button
-                    type="button"
+                  <IconButton
+                    size="sm"
+                    variant="ghost"
                     onClick={(e) => {
                       e.stopPropagation();
                       setMenuOpenForNote(menuOpenForNote === note.id ? null : note.id);
                     }}
-                    className="absolute top-2 right-2 hidden rounded p-0.5 text-gray-400 group-focus-within:block group-hover:block hover:bg-gray-200 hover:text-gray-600"
+                    className="absolute top-2 right-2 hidden group-focus-within:block group-hover:block"
                     aria-label={`Actions for ${note.title}`}
                   >
                     <svg
@@ -184,49 +196,43 @@ export function NoteList({
                         d="M12 5v.01M12 12v.01M12 19v.01"
                       />
                     </svg>
-                  </button>
+                  </IconButton>
                 )}
 
-                {menuOpenForNote === note.id && (
-                  <div
-                    ref={menuRef}
-                    className="absolute top-8 right-0 z-10 w-48 rounded-md border bg-white py-1 shadow-lg"
-                    role="menu"
-                  >
-                    {onDeleteNote && (
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDelete(note.id);
-                        }}
-                        className="w-full px-3 py-1.5 text-left text-sm text-red-600 hover:bg-red-50"
-                      >
-                        Delete
-                      </button>
-                    )}
-                    {onMoveNote && otherNotebooks.length > 0 && (
-                      <>
-                        <p className="px-3 py-1 text-xs font-medium text-gray-500">Move to...</p>
-                        {otherNotebooks.map((nb) => (
-                          <button
-                            key={nb.id}
-                            type="button"
-                            role="menuitem"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleMove(note.id, nb.id);
-                            }}
-                            className="w-full truncate px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
-                          >
-                            {nb.name}
-                          </button>
-                        ))}
-                      </>
-                    )}
-                  </div>
-                )}
+                <DropdownMenu
+                  open={menuOpenForNote === note.id}
+                  onClose={() => setMenuOpenForNote(null)}
+                  align="right"
+                  className="top-8"
+                >
+                  {onDeleteNote && (
+                    <DropdownMenuItem
+                      variant="danger"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDelete(note.id);
+                      }}
+                    >
+                      Delete
+                    </DropdownMenuItem>
+                  )}
+                  {onMoveNote && otherNotebooks.length > 0 && (
+                    <>
+                      <DropdownMenuLabel>Move to...</DropdownMenuLabel>
+                      {otherNotebooks.map((nb) => (
+                        <DropdownMenuItem
+                          key={nb.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleMove(note.id, nb.id);
+                          }}
+                        >
+                          {nb.name}
+                        </DropdownMenuItem>
+                      ))}
+                    </>
+                  )}
+                </DropdownMenu>
               </li>
             ))}
           </ul>
