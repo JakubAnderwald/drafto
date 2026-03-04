@@ -8,10 +8,10 @@ export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
 }
 
 const variantStyles: Record<BadgeVariant, string> = {
-  default: "bg-neutral-100 text-neutral-700",
-  success: "bg-green-50 text-green-700",
-  warning: "bg-amber-50 text-amber-700",
-  error: "bg-red-50 text-red-700",
+  default: "bg-bg-muted text-fg-muted",
+  success: "bg-success-bg text-success-text",
+  warning: "bg-warning-bg text-warning-text",
+  error: "bg-error-bg text-error-text",
 };
 
 export function Badge({ variant = "default", className, children, ...props }: BadgeProps) {

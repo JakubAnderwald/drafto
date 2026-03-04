@@ -71,7 +71,7 @@ export function AdminUserList({ initialUsers }: { initialUsers: PendingUser[] })
                 size="sm"
                 loading={approvingId === user.id}
                 onClick={() => handleApprove(user.id)}
-                className="bg-success hover:bg-green-600 focus-visible:ring-green-500"
+                className="bg-success hover:bg-success-hover focus-visible:ring-success"
               >
                 {approvingId === user.id ? "Approving..." : "Approve"}
               </Button>

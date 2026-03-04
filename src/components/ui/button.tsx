@@ -14,9 +14,9 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const variantStyles: Record<ButtonVariant, string> = {
   primary: "bg-primary-600 text-white hover:bg-primary-700 focus-visible:ring-primary-500",
-  secondary: "bg-neutral-100 text-neutral-800 hover:bg-neutral-200 focus-visible:ring-neutral-400",
-  ghost: "bg-transparent text-neutral-700 hover:bg-neutral-100 focus-visible:ring-neutral-400",
-  danger: "bg-error text-white hover:bg-red-600 focus-visible:ring-red-500",
+  secondary: "bg-bg-muted text-fg hover:bg-bg-muted-hover focus-visible:ring-neutral-400",
+  ghost: "bg-transparent text-fg-muted hover:bg-bg-muted focus-visible:ring-neutral-400",
+  danger: "bg-error text-white hover:bg-error-hover focus-visible:ring-error",
 };
 
 const sizeStyles: Record<ButtonSize, string> = {

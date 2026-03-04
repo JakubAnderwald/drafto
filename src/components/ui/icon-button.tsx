@@ -15,8 +15,8 @@ export type IconButtonProps = ButtonHTMLAttributes<HTMLButtonElement> &
   };
 
 const variantStyles: Record<IconButtonVariant, string> = {
-  ghost: "text-neutral-600 hover:bg-neutral-100 focus-visible:ring-neutral-400",
-  danger: "text-error hover:bg-red-50 focus-visible:ring-red-500",
+  ghost: "text-fg-muted hover:bg-bg-muted focus-visible:ring-neutral-400",
+  danger: "text-error hover:bg-error-bg focus-visible:ring-error",
 };
 
 const sizeStyles: Record<IconButtonSize, string> = {

@@ -19,6 +19,14 @@
   --sidebar-active-text: #4338ca;
   --fg-on-primary: #ffffff;
   --error-bg: #fef2f2;
+  --error-text: #b91c1c;
+  --error-hover: #dc2626;
+  --success-bg: #f0fdf4;
+  --success-text: #15803d;
+  --success-hover: #16a34a;
+  --warning-bg: #fffbeb;
+  --warning-text: #92400e;
+  --bg-muted-hover: #e7e5e4;
 }
 
 /* ── Dark Mode Token Overrides ───────────────────────────── */
@@ -39,6 +47,14 @@
   --sidebar-active-text: #a5b4fc;
   --fg-on-primary: #ffffff;
   --error-bg: #2d1414;
+  --error-text: #fca5a5;
+  --error-hover: #dc2626;
+  --success-bg: #142d1a;
+  --success-text: #4ade80;
+  --success-hover: #16a34a;
+  --warning-bg: #2d2414;
+  --warning-text: #fbbf24;
+  --bg-muted-hover: #262626;
 }
 
 @theme inline {
@@ -81,6 +97,14 @@
   --color-error: #ef4444;
   --color-info: #3b82f6;
   --color-error-bg: var(--error-bg);
+  --color-error-text: var(--error-text);
+  --color-error-hover: var(--error-hover);
+  --color-success-bg: var(--success-bg);
+  --color-success-text: var(--success-text);
+  --color-success-hover: var(--success-hover);
+  --color-warning-bg: var(--warning-bg);
+  --color-warning-text: var(--warning-text);
+  --color-bg-muted-hover: var(--bg-muted-hover);
 
   /* Semantic surface tokens (dark-mode-ready via CSS vars) */
   --color-bg: var(--bg);

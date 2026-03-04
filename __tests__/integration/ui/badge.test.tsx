@@ -17,8 +17,8 @@ describe("Badge", () => {
   it("applies default variant styles", () => {
     render(<Badge data-testid="badge">Tag</Badge>);
     const badge = screen.getByTestId("badge");
-    expect(badge.className).toContain("bg-neutral-100");
-    expect(badge.className).toContain("text-neutral-700");
+    expect(badge.className).toContain("bg-bg-muted");
+    expect(badge.className).toContain("text-fg-muted");
   });
 
   it("applies success variant styles", () => {
@@ -28,8 +28,8 @@ describe("Badge", () => {
       </Badge>,
     );
     const badge = screen.getByTestId("badge");
-    expect(badge.className).toContain("bg-green-50");
-    expect(badge.className).toContain("text-green-700");
+    expect(badge.className).toContain("bg-success-bg");
+    expect(badge.className).toContain("text-success-text");
   });
 
   it("applies warning variant styles", () => {
@@ -39,8 +39,8 @@ describe("Badge", () => {
       </Badge>,
     );
     const badge = screen.getByTestId("badge");
-    expect(badge.className).toContain("bg-amber-50");
-    expect(badge.className).toContain("text-amber-700");
+    expect(badge.className).toContain("bg-warning-bg");
+    expect(badge.className).toContain("text-warning-text");
   });
 
   it("applies error variant styles", () => {
@@ -50,8 +50,8 @@ describe("Badge", () => {
       </Badge>,
     );
     const badge = screen.getByTestId("badge");
-    expect(badge.className).toContain("bg-red-50");
-    expect(badge.className).toContain("text-red-700");
+    expect(badge.className).toContain("bg-error-bg");
+    expect(badge.className).toContain("text-error-text");
   });
 
   it("applies pill shape", () => {
