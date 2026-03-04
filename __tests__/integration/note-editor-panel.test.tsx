@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act, Suspense } from "react";
+import { Skeleton } from "@/components/ui/skeleton";
 
 vi.mock("@/env", () => ({
   env: {
@@ -78,7 +79,7 @@ describe("NoteEditorPanel", () => {
 
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2rem" />}>
           <NoteEditorPanel noteId={noteId} />
         </Suspense>,
       );
@@ -102,7 +103,7 @@ describe("NoteEditorPanel", () => {
 
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2rem" />}>
           <NoteEditorPanel noteId={noteId} />
         </Suspense>,
       );
@@ -119,13 +120,13 @@ describe("NoteEditorPanel", () => {
 
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2rem" />}>
           <NoteEditorPanel noteId={noteId} />
         </Suspense>,
       );
     });
 
-    expect(screen.getByText("Loading...")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toBeInTheDocument();
   });
 
   it("calls debouncedSave when title is changed", async () => {
@@ -139,7 +140,7 @@ describe("NoteEditorPanel", () => {
 
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2rem" />}>
           <NoteEditorPanel noteId={noteId} />
         </Suspense>,
       );
@@ -176,7 +177,7 @@ describe("NoteEditorPanel", () => {
 
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2rem" />}>
           <NoteEditorPanel noteId={noteId} />
         </Suspense>,
       );
@@ -197,7 +198,7 @@ describe("NoteEditorPanel", () => {
 
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2rem" />}>
           <NoteEditorPanel noteId={noteId} />
         </Suspense>,
       );
@@ -218,7 +219,7 @@ describe("NoteEditorPanel", () => {
 
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2rem" />}>
           <NoteEditorPanel noteId={noteId} />
         </Suspense>,
       );
@@ -242,7 +243,7 @@ describe("NoteEditorPanel", () => {
 
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2rem" />}>
           <NoteEditorPanel noteId={noteId} />
         </Suspense>,
       );
@@ -265,7 +266,7 @@ describe("NoteEditorPanel", () => {
 
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2rem" />}>
           <NoteEditorPanel noteId={noteId} />
         </Suspense>,
       );
@@ -289,7 +290,7 @@ describe("NoteEditorPanel", () => {
 
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2rem" />}>
           <NoteEditorPanel noteId={noteId} />
         </Suspense>,
       );
@@ -311,7 +312,7 @@ describe("NoteEditorPanel", () => {
 
     await act(async () => {
       render(
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<Skeleton height="2rem" />}>
           <NoteEditorPanel noteId={noteId} />
         </Suspense>,
       );
