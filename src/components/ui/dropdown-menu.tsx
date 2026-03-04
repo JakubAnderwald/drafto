@@ -62,7 +62,7 @@ export const DropdownMenu = forwardRef<HTMLDivElement, DropdownMenuProps>(functi
       ref={menuRef}
       role="menu"
       className={cn(
-        "border-border bg-bg absolute z-10 min-w-[12rem] animate-[dropdown-in_var(--transition-fast)_ease-out] rounded-lg border py-1 shadow-lg",
+        "border-border bg-bg absolute z-10 min-w-[12rem] animate-[dropdown-in_var(--transition-fast)_ease-out] rounded-lg border py-1 shadow-lg motion-reduce:animate-none",
         align === "right" ? "right-0" : "left-0",
         className,
       )}

@@ -286,7 +286,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       {/* Sidebar backdrop — visible on tablet when sidebar is open */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 z-20 hidden animate-[fade-in_var(--transition-normal)_ease-out] bg-black/30 backdrop-blur-sm sm:block lg:hidden"
+          className="fixed inset-0 z-20 hidden animate-[fade-in_var(--transition-normal)_ease-out] bg-black/30 backdrop-blur-sm motion-reduce:animate-none sm:block lg:hidden"
           onClick={() => setSidebarOpen(false)}
           aria-hidden="true"
           data-testid="sidebar-backdrop"
