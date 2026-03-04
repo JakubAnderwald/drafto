@@ -6,10 +6,120 @@ import { NoteList } from "@/components/notes/note-list";
 import { handleAuthError } from "@/lib/handle-auth-error";
 import { NoteEditorPanel } from "@/components/notes/note-editor-panel";
 import { TrashList } from "@/components/notes/trash-list";
+import { IconButton } from "@/components/ui/icon-button";
+import { Skeleton } from "@/components/ui/skeleton";
 
 interface NotebookInfo {
   id: string;
   name: string;
+}
+
+function ChevronLeftIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+    </svg>
+  );
+}
+
+function HamburgerIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M4 6h16M4 12h16M4 18h16"
+      />
+    </svg>
+  );
+}
+
+function ListLoadingSkeleton({ label }: { label: string }) {
+  return (
+    <div className="space-y-3 p-4" role="status" aria-label={label} data-testid="list-skeleton">
+      <Skeleton height="2.5rem" className="w-full" />
+      <Skeleton height="2.5rem" className="w-full" />
+      <Skeleton height="2.5rem" className="w-3/4" />
+    </div>
+  );
+}
+
+function EditorLoadingSkeleton() {
+  return (
+    <div
+      className="flex flex-1 flex-col gap-4 p-6"
+      role="status"
+      aria-label="Loading editor"
+      data-testid="editor-skeleton"
+    >
+      <Skeleton height="2rem" className="w-1/3" />
+      <Skeleton height="1rem" className="w-1/4" />
+      <Skeleton height="1rem" className="w-full" />
+      <Skeleton height="1rem" className="w-full" />
+      <Skeleton height="1rem" className="w-2/3" />
+    </div>
+  );
+}
+
+function EmptyState({ icon, message }: { icon: React.ReactNode; message: string }) {
+  return (
+    <div
+      className="text-fg-subtle flex flex-1 flex-col items-center justify-center gap-3"
+      data-testid="empty-state"
+    >
+      {icon}
+      <p className="text-sm">{message}</p>
+    </div>
+  );
+}
+
+function NotebookIcon() {
+  return (
+    <svg
+      className="h-10 w-10"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"
+      />
+    </svg>
+  );
+}
+
+function DocumentIcon() {
+  return (
+    <svg
+      className="h-10 w-10"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"
+      />
+    </svg>
+  );
 }
 
 export function AppShell({ children }: { children?: React.ReactNode }) {
@@ -171,11 +281,11 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   );
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="bg-bg flex h-screen overflow-hidden">
       {/* Sidebar backdrop — visible on tablet when sidebar is open */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 z-20 hidden bg-black/20 sm:block lg:hidden"
+          className="fixed inset-0 z-20 hidden bg-black/30 backdrop-blur-sm sm:block lg:hidden"
           onClick={() => setSidebarOpen(false)}
           aria-hidden="true"
           data-testid="sidebar-backdrop"
@@ -189,7 +299,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       <aside
         className={`${
           mobileView === "notebooks" ? "flex" : "hidden"
-        } w-full flex-col overflow-hidden bg-gray-50 sm:fixed sm:inset-y-0 sm:left-0 sm:z-30 sm:flex sm:w-60 sm:shrink-0 sm:border-r sm:transition-transform sm:duration-200 sm:ease-in-out lg:static lg:translate-x-0 ${
+        } bg-sidebar-bg sm:border-border w-full flex-col overflow-hidden sm:fixed sm:inset-y-0 sm:left-0 sm:z-30 sm:flex sm:w-60 sm:shrink-0 sm:border-r sm:transition-transform sm:duration-200 sm:ease-in-out lg:static lg:translate-x-0 ${
           sidebarOpen ? "sm:translate-x-0" : "sm:-translate-x-full"
         }`}
       >
@@ -208,59 +318,35 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       <section
         className={`${
           mobileView === "notes" ? "flex" : "hidden"
-        } w-full flex-col overflow-hidden sm:flex sm:w-[300px] sm:shrink-0 sm:border-r`}
+        } bg-bg sm:border-border w-full flex-col overflow-hidden sm:flex sm:w-[300px] sm:shrink-0 sm:border-r`}
       >
         {/* Mobile: back to notebooks */}
-        <div className="flex items-center border-b p-2 sm:hidden">
-          <button
-            type="button"
+        <div className="border-border bg-bg-subtle flex items-center border-b p-2 sm:hidden">
+          <IconButton
+            size="sm"
             onClick={handleMobileBackToNotebooks}
-            className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
             aria-label="Back to notebooks"
           >
-            <svg
-              aria-hidden="true"
-              className="h-5 w-5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M15 19l-7-7 7-7"
-              />
-            </svg>
-          </button>
-          <span className="ml-1 text-sm font-semibold text-gray-700">
+            <ChevronLeftIcon />
+          </IconButton>
+          <span className="text-fg ml-1 text-sm font-semibold">
             {viewingTrash ? "Trash" : "Notes"}
           </span>
         </div>
 
         {/* Tablet: sidebar toggle */}
-        <div className="hidden items-center border-b p-2 sm:flex lg:hidden">
-          <button
-            type="button"
+        <div className="border-border bg-bg-subtle hidden items-center border-b p-2 sm:flex lg:hidden">
+          <IconButton
+            size="sm"
             onClick={() => setSidebarOpen((prev) => !prev)}
-            className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
             aria-label="Toggle sidebar"
           >
-            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M4 6h16M4 12h16M4 18h16"
-              />
-            </svg>
-          </button>
+            <HamburgerIcon />
+          </IconButton>
         </div>
 
         {viewingTrash ? (
-          <Suspense
-            fallback={<div className="p-4 text-center text-sm text-gray-400">Loading trash...</div>}
-          >
+          <Suspense fallback={<ListLoadingSkeleton label="Loading trash" />}>
             <TrashList
               notebooks={notebooks}
               onRestore={handleRestoreNote}
@@ -269,9 +355,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
             />
           </Suspense>
         ) : selectedNotebookId ? (
-          <Suspense
-            fallback={<div className="p-4 text-center text-sm text-gray-400">Loading notes...</div>}
-          >
+          <Suspense fallback={<ListLoadingSkeleton label="Loading notes" />}>
             <NoteList
               notebookId={selectedNotebookId}
               selectedNoteId={selectedNoteId}
@@ -284,9 +368,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
             />
           </Suspense>
         ) : (
-          <div className="flex flex-1 items-center justify-center text-gray-400">
-            Select a notebook
-          </div>
+          <EmptyState icon={<NotebookIcon />} message="Select a notebook" />
         )}
       </section>
 
@@ -296,48 +378,24 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       <main
         className={`${
           mobileView === "editor" ? "flex" : "hidden"
-        } min-w-0 flex-1 flex-col overflow-hidden sm:flex`}
+        } bg-bg min-w-0 flex-1 flex-col overflow-hidden sm:flex`}
       >
         {/* Mobile: back to notes */}
         {selectedNoteId && (
-          <div className="flex items-center border-b p-2 sm:hidden">
-            <button
-              type="button"
-              onClick={handleMobileBackToNotes}
-              className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
-              aria-label="Back to notes"
-            >
-              <svg
-                aria-hidden="true"
-                className="h-5 w-5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M15 19l-7-7 7-7"
-                />
-              </svg>
-            </button>
-            <span className="ml-1 text-sm font-semibold text-gray-700">Back</span>
+          <div className="border-border bg-bg-subtle flex items-center border-b p-2 sm:hidden">
+            <IconButton size="sm" onClick={handleMobileBackToNotes} aria-label="Back to notes">
+              <ChevronLeftIcon />
+            </IconButton>
+            <span className="text-fg ml-1 text-sm font-semibold">Back</span>
           </div>
         )}
 
         {selectedNoteId ? (
-          <Suspense
-            fallback={
-              <div className="flex flex-1 items-center justify-center text-gray-400">
-                Loading...
-              </div>
-            }
-          >
+          <Suspense fallback={<EditorLoadingSkeleton />}>
             <NoteEditorPanel key={selectedNoteId} noteId={selectedNoteId} />
           </Suspense>
         ) : (
-          <div className="flex flex-1 items-center justify-center text-gray-400">Select a note</div>
+          <EmptyState icon={<DocumentIcon />} message="Select a note" />
         )}
       </main>
 
