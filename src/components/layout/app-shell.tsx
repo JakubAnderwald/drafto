@@ -8,6 +8,7 @@ import { NoteEditorPanel } from "@/components/notes/note-editor-panel";
 import { TrashList } from "@/components/notes/trash-list";
 import { IconButton } from "@/components/ui/icon-button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
 
 interface NotebookInfo {
   id: string;
@@ -310,6 +311,9 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           isTrashSelected={viewingTrash}
           onSelectTrash={handleSelectTrash}
         />
+        <div className="border-border flex items-center justify-end border-t p-2">
+          <ThemeToggle />
+        </div>
       </aside>
 
       {/* Middle panel — note list or trash

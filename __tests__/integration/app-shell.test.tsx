@@ -36,6 +36,15 @@ vi.mock("@/hooks/use-auto-save", () => ({
   }),
 }));
 
+// Mock useTheme to avoid localStorage/matchMedia issues in jsdom
+vi.mock("@/hooks/use-theme", () => ({
+  useTheme: () => ({
+    theme: "system" as const,
+    resolvedTheme: "light" as const,
+    setTheme: vi.fn(),
+  }),
+}));
+
 const mockNotebooks = [
   { id: "nb-1", name: "Personal", created_at: "2026-01-01", updated_at: "2026-01-01" },
   { id: "nb-2", name: "Work", created_at: "2026-01-02", updated_at: "2026-01-02" },

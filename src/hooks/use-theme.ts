@@ -9,8 +9,12 @@ const STORAGE_KEY = "theme";
 
 function getStoredTheme(): Theme {
   if (typeof window === "undefined") return "system";
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored === "light" || stored === "dark" || stored === "system") return stored;
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored === "light" || stored === "dark" || stored === "system") return stored;
+  } catch {
+    // localStorage may not be available in some environments
+  }
   return "system";
 }
 
@@ -51,8 +55,12 @@ function setThemeInternal(theme: Theme) {
   currentTheme = theme;
   const resolved = resolveTheme(theme);
   applyTheme(resolved);
-  if (typeof window !== "undefined") {
-    localStorage.setItem(STORAGE_KEY, theme);
+  try {
+    if (typeof window !== "undefined") {
+      localStorage.setItem(STORAGE_KEY, theme);
+    }
+  } catch {
+    // localStorage may not be available in some environments
   }
   listeners.forEach((l) => l());
 }
