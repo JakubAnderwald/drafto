@@ -489,6 +489,48 @@ describe("NoteList", () => {
     expect(screen.queryByLabelText("Actions for First Note")).not.toBeInTheDocument();
   });
 
+  it("closes the actions menu when clicking outside", async () => {
+    const trigger = nextTrigger();
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const onCreate = vi.fn();
+    const onMove = vi.fn();
+    const notebooks = [
+      { id: "nb-1", name: "Current" },
+      { id: "nb-2", name: "Work" },
+    ];
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteList
+            notebookId="nb-1"
+            selectedNoteId={null}
+            onSelectNote={onSelect}
+            onCreateNote={onCreate}
+            onMoveNote={onMove}
+            notebooks={notebooks}
+            refreshTrigger={trigger}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("First Note")).toBeInTheDocument();
+    });
+
+    // Open menu
+    await user.click(screen.getByLabelText("Actions for First Note"));
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+
+    // Click outside to close
+    await user.click(document.body);
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    });
+  });
+
   it("fetches notes for the given notebook ID", async () => {
     const trigger = nextTrigger();
     const onSelect = vi.fn();
