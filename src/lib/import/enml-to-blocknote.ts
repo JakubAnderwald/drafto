@@ -1,0 +1,296 @@
+import { parseHTML } from "linkedom";
+
+interface InlineContent {
+  type: "text" | "link";
+  text: string;
+  styles?: Record<string, boolean>;
+  href?: string;
+}
+
+interface Block {
+  type: string;
+  content?: InlineContent[] | TableContent;
+  props?: Record<string, unknown>;
+  children?: Block[];
+}
+
+interface TableContent {
+  type: "tableContent";
+  rows: { cells: InlineContent[][] }[];
+}
+
+/**
+ * Convert ENML (Evernote Markup Language) to BlockNote blocks.
+ * Uses linkedom for server-side DOM parsing.
+ */
+export function convertEnmlToBlocks(enml: string, attachmentUrlMap: Map<string, string>): Block[] {
+  if (!enml.trim()) {
+    return [createParagraph([])];
+  }
+
+  // Strip XML declaration and DOCTYPE
+  const cleaned = enml
+    .replace(/<\?xml[^>]*\?>/g, "")
+    .replace(/<!DOCTYPE[^>]*>/g, "")
+    .trim();
+
+  const { document } = parseHTML(`<body>${cleaned}</body>`);
+  const root = document.querySelector("en-note") || document.body;
+
+  const blocks = processChildren(root, attachmentUrlMap);
+
+  return blocks.length > 0 ? blocks : [createParagraph([])];
+}
+
+function processChildren(parent: Element, attachmentUrlMap: Map<string, string>): Block[] {
+  const blocks: Block[] = [];
+
+  for (const node of Array.from(parent.childNodes)) {
+    if (node.nodeType === 3) {
+      // Text node
+      const text = (node as Text).textContent?.trim() || "";
+      if (text) {
+        blocks.push(createParagraph([{ type: "text", text, styles: {} }]));
+      }
+    } else if (node.nodeType === 1) {
+      const el = node as Element;
+      const tag = el.tagName.toLowerCase();
+
+      const converted = convertElement(el, tag, attachmentUrlMap);
+      if (converted) {
+        if (Array.isArray(converted)) {
+          blocks.push(...converted);
+        } else {
+          blocks.push(converted);
+        }
+      }
+    }
+  }
+
+  return blocks;
+}
+
+function convertElement(
+  el: Element,
+  tag: string,
+  attachmentUrlMap: Map<string, string>,
+): Block | Block[] | null {
+  switch (tag) {
+    case "div":
+    case "p":
+    case "span": {
+      const inline = extractInlineContent(el);
+      if (inline.length === 0) {
+        // Check for child block elements
+        const childBlocks = processChildren(el, attachmentUrlMap);
+        return childBlocks.length > 0 ? childBlocks : null;
+      }
+      return createParagraph(inline);
+    }
+
+    case "h1":
+      return createHeading(extractInlineContent(el), 1);
+    case "h2":
+      return createHeading(extractInlineContent(el), 2);
+    case "h3":
+      return createHeading(extractInlineContent(el), 3);
+
+    case "ul":
+      return convertList(el, "bulletListItem", attachmentUrlMap);
+    case "ol":
+      return convertList(el, "numberedListItem", attachmentUrlMap);
+
+    case "en-todo": {
+      const checked = el.getAttribute("checked") === "true";
+      // The text content follows the en-todo tag in the parent
+      return {
+        type: "checkListItem",
+        props: { checked },
+        content: [],
+      };
+    }
+
+    case "en-media":
+      return convertEnMedia(el, attachmentUrlMap);
+
+    case "table":
+      return convertTable(el);
+
+    case "br":
+      return null;
+
+    case "hr":
+      return createParagraph([{ type: "text", text: "---", styles: {} }]);
+
+    case "blockquote": {
+      const inline = extractInlineContent(el);
+      return createParagraph(inline);
+    }
+
+    default: {
+      // For unknown elements, try to extract inline content
+      const inline = extractInlineContent(el);
+      if (inline.length > 0) {
+        return createParagraph(inline);
+      }
+      return processChildren(el, attachmentUrlMap);
+    }
+  }
+}
+
+function convertList(
+  listEl: Element,
+  blockType: string,
+  attachmentUrlMap: Map<string, string>,
+): Block[] {
+  const items: Block[] = [];
+
+  for (const child of Array.from(listEl.children)) {
+    if (child.tagName.toLowerCase() === "li") {
+      const inline = extractInlineContent(child);
+      const nestedBlocks = processNestedLists(child, attachmentUrlMap);
+
+      items.push({
+        type: blockType,
+        content: inline.length > 0 ? inline : [{ type: "text", text: "", styles: {} }],
+        children: nestedBlocks.length > 0 ? nestedBlocks : undefined,
+      });
+    }
+  }
+
+  return items;
+}
+
+function processNestedLists(li: Element, attachmentUrlMap: Map<string, string>): Block[] {
+  const nested: Block[] = [];
+  for (const child of Array.from(li.children)) {
+    const tag = child.tagName.toLowerCase();
+    if (tag === "ul" || tag === "ol") {
+      const type = tag === "ul" ? "bulletListItem" : "numberedListItem";
+      nested.push(...convertList(child, type, attachmentUrlMap));
+    }
+  }
+  return nested;
+}
+
+function convertEnMedia(el: Element, attachmentUrlMap: Map<string, string>): Block | null {
+  const hash = el.getAttribute("hash") || "";
+  const type = el.getAttribute("type") || "";
+  const url = attachmentUrlMap.get(hash);
+
+  if (!url) {
+    return createParagraph([
+      { type: "text", text: `[Attachment: ${type || "unknown"}]`, styles: {} },
+    ]);
+  }
+
+  if (type.startsWith("image/")) {
+    return {
+      type: "image",
+      props: {
+        url,
+        caption: "",
+        width: parseInt(el.getAttribute("width") || "0", 10) || undefined,
+      },
+    };
+  }
+
+  // Non-image attachment — render as text link
+  return createParagraph([
+    {
+      type: "link",
+      text: `[Attachment: ${type}]`,
+      href: url,
+      styles: {},
+    },
+  ]);
+}
+
+function convertTable(tableEl: Element): Block {
+  const rows: { cells: InlineContent[][] }[] = [];
+
+  const trElements = tableEl.querySelectorAll("tr");
+  for (const tr of trElements) {
+    const cells: InlineContent[][] = [];
+    const cellElements = tr.querySelectorAll("td, th");
+    for (const cell of cellElements) {
+      cells.push(extractInlineContent(cell));
+    }
+    if (cells.length > 0) {
+      rows.push({ cells });
+    }
+  }
+
+  return {
+    type: "table",
+    content: { type: "tableContent", rows },
+  };
+}
+
+function extractInlineContent(el: Element): InlineContent[] {
+  const result: InlineContent[] = [];
+
+  for (const node of Array.from(el.childNodes)) {
+    if (node.nodeType === 3) {
+      // Text node
+      const text = (node as Text).textContent || "";
+      if (text) {
+        result.push({ type: "text", text, styles: {} });
+      }
+    } else if (node.nodeType === 1) {
+      const childEl = node as Element;
+      const tag = childEl.tagName.toLowerCase();
+
+      // Skip block-level elements in inline extraction
+      if (["ul", "ol", "div", "table", "en-media"].includes(tag)) {
+        continue;
+      }
+
+      const styles = getInlineStyles(childEl);
+      const innerContent = extractInlineContent(childEl);
+
+      if (tag === "a") {
+        const href = childEl.getAttribute("href") || "";
+        const text = childEl.textContent || "";
+        result.push({ type: "link", text, href, styles });
+      } else if (tag === "br") {
+        result.push({ type: "text", text: "\n", styles: {} });
+      } else {
+        // Merge styles into inner content
+        for (const item of innerContent) {
+          result.push({
+            ...item,
+            styles: { ...item.styles, ...styles },
+          });
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+function getInlineStyles(el: Element): Record<string, boolean> {
+  const tag = el.tagName.toLowerCase();
+  const styles: Record<string, boolean> = {};
+
+  if (tag === "b" || tag === "strong") styles.bold = true;
+  if (tag === "i" || tag === "em") styles.italic = true;
+  if (tag === "u") styles.underline = true;
+  if (tag === "s" || tag === "strike" || tag === "del") styles.strike = true;
+  if (tag === "code") styles.code = true;
+
+  return styles;
+}
+
+function createParagraph(content: InlineContent[]): Block {
+  return { type: "paragraph", content };
+}
+
+function createHeading(content: InlineContent[], level: number): Block {
+  return {
+    type: "heading",
+    props: { level },
+    content,
+  };
+}
