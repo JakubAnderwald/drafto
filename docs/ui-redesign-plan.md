@@ -68,7 +68,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 ### Phase 5: Note List & Editor Panel Redesign
 
 - [x] 5.1 — Note list (tokens, DropdownMenu, styled selection/hover, empty state)
-- [ ] 5.2 — Note editor panel (title styling, Badge save status, timestamp icons)
+- [x] 5.2 — Note editor panel (title styling, Badge save status, timestamp icons)
 - [ ] 5.3 — BlockNote editor theme synchronization
 - [ ] 5-CP — **Checkpoint**: full suite green
 - [ ] 5-PUSH — **Push**: `/push` to PR
