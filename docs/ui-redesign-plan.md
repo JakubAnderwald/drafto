@@ -78,7 +78,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 - [x] 6.1 — Trash list (tokens, Button primitives, styled empty state)
 - [x] 6.2 — Admin page (Card, Button primitives, styled list)
 - [x] 6-CP — **Checkpoint**: full suite green
-- [ ] 6-PUSH — **Push**: `/push` to PR
+- [x] 6-PUSH — **Push**: `/push` to PR
 
 ### Phase 7: Dark Mode
 
