@@ -88,6 +88,8 @@ describe("NoteEditor", () => {
       render(<NoteEditor noteId="note-1" />);
     });
 
+    expect(mockBlockNoteView).toHaveBeenCalled();
+
     const props = mockBlockNoteView.mock.calls[0]?.[0] as Record<string, unknown>;
     const theme = props?.theme as {
       colors: Record<string, unknown>;
@@ -97,10 +99,17 @@ describe("NoteEditor", () => {
 
     expect(theme.colors.editor).toEqual({ text: "var(--fg)", background: "var(--bg)" });
     expect(theme.colors.menu).toEqual({ text: "var(--fg)", background: "var(--bg)" });
+    expect(theme.colors.tooltip).toEqual({ text: "var(--fg)", background: "var(--bg-muted)" });
+    expect(theme.colors.hovered).toEqual({ text: "var(--fg)", background: "var(--bg-muted)" });
     expect(theme.colors.selected).toEqual({
       text: "var(--fg-on-primary)",
       background: "var(--ring)",
     });
+    expect(theme.colors.disabled).toEqual({
+      text: "var(--fg-subtle)",
+      background: "var(--bg-muted)",
+    });
+    expect(theme.colors.shadow).toBe("var(--border)");
     expect(theme.colors.border).toBe("var(--border)");
     expect(theme.colors.sideMenu).toBe("var(--fg-subtle)");
     expect(theme.borderRadius).toBe(6);
