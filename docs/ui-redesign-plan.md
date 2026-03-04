@@ -82,7 +82,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 
 ### Phase 7: Dark Mode
 
-- [ ] 7.1 — Dark mode token overrides in globals.css (.dark class)
+- [x] 7.1 — Dark mode token overrides in globals.css (.dark class)
 - [ ] 7.2 — useTheme hook + ThemeToggle component + flash-prevention script
 - [ ] 7.3 — Integrate toggle into app shell sidebar and auth layout
 - [ ] 7.4 — BlockNote dynamic theme prop (light/dark)
