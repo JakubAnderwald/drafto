@@ -176,16 +176,11 @@ export function NotebooksSidebar({
 
   if (loading) {
     return (
-      <div className="bg-sidebar-bg p-4" data-testid="sidebar-skeleton">
-        <div className="mb-4 flex items-center justify-between">
-          <Skeleton width="5rem" height="0.75rem" />
-          <Skeleton width="1.75rem" height="1.75rem" rounded="md" />
-        </div>
-        <div className="space-y-2">
-          <Skeleton width="100%" height="2rem" />
-          <Skeleton width="100%" height="2rem" />
-          <Skeleton width="80%" height="2rem" />
-        </div>
+      <div className="space-y-3 p-4" data-testid="sidebar-skeleton">
+        <Skeleton height="12px" width="80px" rounded="sm" />
+        <Skeleton height="28px" rounded="md" />
+        <Skeleton height="28px" rounded="md" />
+        <Skeleton height="28px" rounded="md" />
       </div>
     );
   }
@@ -194,7 +189,7 @@ export function NotebooksSidebar({
     <div className="bg-sidebar-bg flex flex-1 flex-col">
       <div className="border-border flex items-center justify-between border-b p-3">
         <h2 className="text-fg-muted text-xs font-semibold tracking-wide uppercase">Notebooks</h2>
-        <IconButton aria-label="New notebook" variant="ghost" size="sm" onClick={handleCreate}>
+        <IconButton size="sm" variant="ghost" onClick={handleCreate} aria-label="New notebook">
           <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
@@ -214,7 +209,7 @@ export function NotebooksSidebar({
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 strokeWidth={1.5}
-                d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"
+                d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"
               />
             </svg>
             <p className="text-fg-subtle text-sm">No notebooks yet. Create one to get started.</p>
@@ -235,7 +230,7 @@ export function NotebooksSidebar({
                     if (e.key === "Escape") setEditingId(null);
                   }}
                   maxLength={MAX_NOTEBOOK_NAME_LENGTH}
-                  className="border-border focus:ring-ring w-full rounded-md border px-2 py-1.5 text-sm focus:ring-1 focus:outline-none"
+                  className="border-border text-fg focus:ring-ring w-full rounded-md border bg-transparent px-2 py-1.5 text-sm focus:ring-1 focus:outline-none"
                 />
               ) : (
                 <div
@@ -258,7 +253,7 @@ export function NotebooksSidebar({
                   className={`group flex w-full cursor-pointer items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors duration-[var(--transition-fast)] ${
                     selectedNotebookId === notebook.id
                       ? "bg-sidebar-active text-sidebar-active-text border-primary-500 border-l-3 font-medium"
-                      : "text-fg-muted hover:bg-sidebar-hover hover:text-fg"
+                      : "text-fg hover:bg-sidebar-hover"
                   }`}
                 >
                   <span className="truncate">{notebook.name}</span>
@@ -304,23 +299,22 @@ export function NotebooksSidebar({
                 }}
                 maxLength={MAX_NOTEBOOK_NAME_LENGTH}
                 placeholder="Notebook name"
-                className="border-border focus:ring-ring w-full rounded-md border px-2 py-1.5 text-sm focus:ring-1 focus:outline-none"
+                className="border-border text-fg focus:ring-ring w-full rounded-md border bg-transparent px-2 py-1.5 text-sm focus:ring-1 focus:outline-none"
               />
             </li>
           )}
         </ul>
       </nav>
 
-      {/* Delete confirmation dialog */}
       {confirmingDeleteId && (
         <ConfirmDialog
           title={`Delete "${notebooks.find((n) => n.id === confirmingDeleteId)?.name}"?`}
           confirmLabel="Delete"
           cancelLabel="Cancel"
-          variant="danger"
-          error={deleteError}
           onConfirm={() => confirmDelete(confirmingDeleteId)}
           onCancel={cancelDelete}
+          variant="danger"
+          error={deleteError}
         />
       )}
 
