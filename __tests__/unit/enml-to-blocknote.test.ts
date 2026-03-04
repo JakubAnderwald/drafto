@@ -124,4 +124,133 @@ describe("convertEnmlToBlocks", () => {
     expect(content[0].styles.bold).toBe(true);
     expect(content[0].styles.italic).toBe(true);
   });
+
+  it("converts non-image attachment as link when URL exists", () => {
+    const urlMap = new Map([["def456", "https://storage.example.com/doc.pdf"]]);
+    const enml = '<en-note><en-media type="application/pdf" hash="def456"/></en-note>';
+    const blocks = convertEnmlToBlocks(enml, urlMap);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe("paragraph");
+    const content = blocks[0].content as Array<{ type: string; text: string; href?: string }>;
+    expect(content[0].type).toBe("link");
+    expect(content[0].href).toBe("https://storage.example.com/doc.pdf");
+    expect(content[0].text).toContain("application/pdf");
+  });
+
+  it("converts hr to paragraph with ---", () => {
+    const enml = "<en-note><hr/></en-note>";
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe("paragraph");
+    const content = blocks[0].content as Array<{ text: string }>;
+    expect(content[0].text).toBe("---");
+  });
+
+  it("converts blockquote to paragraph", () => {
+    const enml = "<en-note><blockquote>Quoted text</blockquote></en-note>";
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe("paragraph");
+    const content = blocks[0].content as Array<{ text: string }>;
+    expect(content[0].text).toBe("Quoted text");
+  });
+
+  it("handles br tags in inline content", () => {
+    const enml = "<en-note><p>Line one<br/>Line two</p></en-note>";
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    const content = blocks[0].content as Array<{ text: string }>;
+    expect(content.some((c) => c.text === "\n")).toBe(true);
+  });
+
+  it("skips block-level elements inside inline extraction", () => {
+    const enml = "<en-note><p>Text<ul><li>item</li></ul></p></en-note>";
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    // The paragraph should have just "Text", the ul is skipped in inline extraction
+    const content = blocks[0].content as Array<{ text: string }>;
+    expect(content).toHaveLength(1);
+    expect(content[0].text).toBe("Text");
+  });
+
+  it("handles code inline style", () => {
+    const enml = "<en-note><p><code>const x = 1</code></p></en-note>";
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    const content = blocks[0].content as Array<{ text: string; styles: Record<string, boolean> }>;
+    expect(content[0].styles.code).toBe(true);
+  });
+
+  it("handles XML declaration and DOCTYPE stripping", () => {
+    const enml =
+      '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE en-note SYSTEM "http://xml.evernote.com/pub/enml2.dtd"><en-note><p>Content</p></en-note>';
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe("paragraph");
+  });
+
+  it("handles div with child block elements", () => {
+    const enml = "<en-note><div><p>Inside div</p></div></en-note>";
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe("paragraph");
+  });
+
+  it("handles en-media without type attribute", () => {
+    const enml = '<en-note><en-media hash="notype"/></en-note>';
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    expect(blocks).toHaveLength(1);
+    const content = blocks[0].content as Array<{ text: string }>;
+    expect(content[0].text).toContain("unknown");
+  });
+
+  it("handles nested lists", () => {
+    const enml = "<en-note><ul><li>Parent<ul><li>Nested</li></ul></li></ul></en-note>";
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe("bulletListItem");
+    expect(blocks[0].children).toBeDefined();
+    expect(blocks[0].children).toHaveLength(1);
+    expect(blocks[0].children![0].type).toBe("bulletListItem");
+  });
+
+  it("handles unknown elements with inline content", () => {
+    const enml = "<en-note><custom-tag>Some text</custom-tag></en-note>";
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe("paragraph");
+  });
+
+  it("handles image with width attribute", () => {
+    const urlMap = new Map([["img123", "https://storage.example.com/photo.jpg"]]);
+    const enml = '<en-note><en-media type="image/jpeg" hash="img123" width="400"/></en-note>';
+    const blocks = convertEnmlToBlocks(enml, urlMap);
+
+    const image = blocks.find((b) => b.type === "image");
+    expect(image?.props?.width).toBe(400);
+  });
+
+  it("handles del and strike tags for strikethrough", () => {
+    const enml = "<en-note><p><del>deleted</del> <strike>struck</strike></p></en-note>";
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+    const content = blocks[0].content as Array<{ text: string; styles: Record<string, boolean> }>;
+    expect(content.find((c) => c.text === "deleted")?.styles.strike).toBe(true);
+    expect(content.find((c) => c.text === "struck")?.styles.strike).toBe(true);
+  });
+
+  it("handles strong and em tags", () => {
+    const enml = "<en-note><p><strong>bold</strong> <em>italic</em></p></en-note>";
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+    const content = blocks[0].content as Array<{ text: string; styles: Record<string, boolean> }>;
+    expect(content.find((c) => c.text === "bold")?.styles.bold).toBe(true);
+    expect(content.find((c) => c.text === "italic")?.styles.italic).toBe(true);
+  });
 });
