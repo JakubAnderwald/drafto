@@ -125,7 +125,7 @@ describe("DesignSystemPage", () => {
     expect(screen.getByText("Delete")).toBeInTheDocument();
   });
 
-  it("shows confirm dialog on click", async () => {
+  it("shows confirm dialog and dismisses on cancel", async () => {
     const user = userEvent.setup();
     render(<DesignSystemPage />);
 
@@ -134,6 +134,33 @@ describe("DesignSystemPage", () => {
 
     expect(screen.getByRole("alertdialog")).toBeInTheDocument();
     expect(screen.getByText("Delete this item?")).toBeInTheDocument();
+
+    const cancelButton = screen.getByRole("button", { name: "Cancel" });
+    await user.click(cancelButton);
+
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("shows confirm dialog and dismisses on confirm", async () => {
+    const user = userEvent.setup();
+    render(<DesignSystemPage />);
+
+    await user.click(screen.getByRole("button", { name: "Show confirm dialog" }));
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("closes dropdown menu items on click", async () => {
+    const user = userEvent.setup();
+    render(<DesignSystemPage />);
+
+    await user.click(screen.getByRole("button", { name: "Open menu" }));
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+
+    await user.click(screen.getByText("Edit"));
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
   it("renders typography samples", () => {
