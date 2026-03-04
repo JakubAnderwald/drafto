@@ -252,7 +252,7 @@ export function NotebooksSidebar({
                   })}
                   className={`group flex w-full cursor-pointer items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors duration-[var(--transition-fast)] ${
                     selectedNotebookId === notebook.id
-                      ? "bg-sidebar-active text-sidebar-active-text border-primary-500 border-l-3 font-medium"
+                      ? "bg-sidebar-active text-sidebar-active-text border-primary-500 border-l-[3px] font-medium"
                       : "text-fg hover:bg-sidebar-hover"
                   }`}
                 >
