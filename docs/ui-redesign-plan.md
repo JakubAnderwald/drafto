@@ -103,7 +103,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 - [x] 9.1 — Consistency audit (all raw gray/blue classes replaced, all borders/rings use tokens)
 - [x] 9.2 — Update README.md with design system docs
 - [x] 9.3 — Full test sweep and fix any failures
-- [ ] 9.4 — Design compliance checklist
+- [x] 9.4 — Design compliance checklist
 - [ ] 9-PUSH — **Push**: `/push` to PR — UI REDESIGN COMPLETE
 
 ---
@@ -448,16 +448,16 @@ Run: `pnpm lint && pnpm format:check && pnpm exec tsc --noEmit && pnpm test && p
 
 #### 9.4 — Design compliance checklist
 
-- [ ] Indigo/amber palette applied across all surfaces
-- [ ] All components use design tokens (no raw Tailwind color classes)
-- [ ] Dark mode toggles correctly, persists, respects system preference
-- [ ] Loading states use Skeleton components
-- [ ] Empty states have icons and descriptive text
-- [ ] Transitions on all interactive elements
-- [ ] Accessibility: focus rings visible, ARIA patterns maintained
-- [ ] BlockNote editor matches app theme in both modes
-- [ ] Responsive layout unchanged (mobile/tablet/desktop)
-- [ ] All tests green
+- [x] Indigo/amber palette applied across all surfaces
+- [x] All components use design tokens (no raw Tailwind color classes)
+- [x] Dark mode toggles correctly, persists, respects system preference
+- [x] Loading states use Skeleton components
+- [x] Empty states have icons and descriptive text
+- [x] Transitions on all interactive elements
+- [x] Accessibility: focus rings visible, ARIA patterns maintained
+- [x] BlockNote editor matches app theme in both modes
+- [x] Responsive layout unchanged (mobile/tablet/desktop)
+- [x] All tests green
 
 ---
 
