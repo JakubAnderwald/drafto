@@ -85,8 +85,8 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 - [x] 7.1 — Dark mode token overrides in globals.css (.dark class)
 - [x] 7.2 — useTheme hook + ThemeToggle component + flash-prevention script
 - [x] 7.3 — Integrate toggle into app shell sidebar and auth layout
-- [ ] 7.4 — BlockNote dynamic theme prop (light/dark)
-- [ ] 7.5 — Create ADR-0005 (dark mode implementation)
+- [x] 7.4 — BlockNote dynamic theme prop (light/dark)
+- [x] 7.5 — Create ADR-0005 (dark mode implementation)
 - [ ] 7-CP — **Checkpoint**: full suite green, `pnpm build` passes
 - [ ] 7-PUSH — **Push**: `/push` to PR
 
