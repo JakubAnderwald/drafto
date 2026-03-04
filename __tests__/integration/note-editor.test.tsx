@@ -79,6 +79,34 @@ describe("NoteEditor", () => {
     expect(screen.getByTestId("blocknote-editor")).toBeInTheDocument();
   });
 
+  it("passes custom theme with CSS variable colors to BlockNoteView", async () => {
+    const { BlockNoteView } = await import("@blocknote/mantine");
+    const mockBlockNoteView = vi.mocked(BlockNoteView);
+    mockBlockNoteView.mockClear();
+
+    await act(async () => {
+      render(<NoteEditor noteId="note-1" />);
+    });
+
+    const props = mockBlockNoteView.mock.calls[0]?.[0] as Record<string, unknown>;
+    const theme = props?.theme as {
+      colors: Record<string, unknown>;
+      borderRadius: number;
+      fontFamily: string;
+    };
+
+    expect(theme.colors.editor).toEqual({ text: "var(--fg)", background: "var(--bg)" });
+    expect(theme.colors.menu).toEqual({ text: "var(--fg)", background: "var(--bg)" });
+    expect(theme.colors.selected).toEqual({
+      text: "var(--fg-on-primary)",
+      background: "var(--ring)",
+    });
+    expect(theme.colors.border).toBe("var(--border)");
+    expect(theme.colors.sideMenu).toBe("var(--fg-subtle)");
+    expect(theme.borderRadius).toBe(6);
+    expect(theme.fontFamily).toBe("var(--font-sans, Arial, Helvetica, sans-serif)");
+  });
+
   it("wraps the editor in a scrollable container", async () => {
     await act(async () => {
       render(<NoteEditor noteId="note-1" />);
