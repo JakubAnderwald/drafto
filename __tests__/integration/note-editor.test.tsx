@@ -23,6 +23,15 @@ vi.mock("@blocknote/mantine", () => ({
 
 vi.mock("@blocknote/mantine/style.css", () => ({}));
 
+const mockSetTheme = vi.fn();
+vi.mock("@/hooks/use-theme", () => ({
+  useTheme: () => ({
+    theme: "light" as const,
+    resolvedTheme: "light" as const,
+    setTheme: mockSetTheme,
+  }),
+}));
+
 const mockFetch = vi.fn();
 
 const { NoteEditor } = await import("@/components/editor/note-editor");
@@ -79,7 +88,7 @@ describe("NoteEditor", () => {
     expect(screen.getByTestId("blocknote-editor")).toBeInTheDocument();
   });
 
-  it("passes custom theme with CSS variable colors to BlockNoteView", async () => {
+  it("passes resolved theme to BlockNoteView for dynamic light/dark mode", async () => {
     const { BlockNoteView } = await import("@blocknote/mantine");
     const mockBlockNoteView = vi.mocked(BlockNoteView);
     mockBlockNoteView.mockClear();
@@ -91,29 +100,7 @@ describe("NoteEditor", () => {
     expect(mockBlockNoteView).toHaveBeenCalled();
 
     const props = mockBlockNoteView.mock.calls[0]?.[0] as Record<string, unknown>;
-    const theme = props?.theme as {
-      colors: Record<string, unknown>;
-      borderRadius: number;
-      fontFamily: string;
-    };
-
-    expect(theme.colors.editor).toEqual({ text: "var(--fg)", background: "var(--bg)" });
-    expect(theme.colors.menu).toEqual({ text: "var(--fg)", background: "var(--bg)" });
-    expect(theme.colors.tooltip).toEqual({ text: "var(--fg)", background: "var(--bg-muted)" });
-    expect(theme.colors.hovered).toEqual({ text: "var(--fg)", background: "var(--bg-muted)" });
-    expect(theme.colors.selected).toEqual({
-      text: "var(--fg-on-primary)",
-      background: "var(--ring)",
-    });
-    expect(theme.colors.disabled).toEqual({
-      text: "var(--fg-subtle)",
-      background: "var(--bg-muted)",
-    });
-    expect(theme.colors.shadow).toBe("var(--border)");
-    expect(theme.colors.border).toBe("var(--border)");
-    expect(theme.colors.sideMenu).toBe("var(--fg-subtle)");
-    expect(theme.borderRadius).toBe(6);
-    expect(theme.fontFamily).toBe("var(--font-sans, Arial, Helvetica, sans-serif)");
+    expect(props?.theme).toBe("light");
   });
 
   it("wraps the editor in a scrollable container", async () => {
