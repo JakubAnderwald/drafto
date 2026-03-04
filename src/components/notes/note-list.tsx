@@ -122,6 +122,7 @@ export function NoteList({
       {notes.length === 0 ? (
         <div className="flex flex-col items-center gap-2 p-6 text-center">
           <svg
+            aria-hidden="true"
             className="text-fg-subtle h-8 w-8"
             fill="none"
             stroke="currentColor"
