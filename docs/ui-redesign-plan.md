@@ -87,7 +87,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 - [x] 7.3 — Integrate toggle into app shell sidebar and auth layout
 - [x] 7.4 — BlockNote dynamic theme prop (light/dark)
 - [x] 7.5 — Create ADR-0005 (dark mode implementation)
-- [ ] 7-CP — **Checkpoint**: full suite green, `pnpm build` passes
+- [x] 7-CP — **Checkpoint**: full suite green, `pnpm build` passes
 - [ ] 7-PUSH — **Push**: `/push` to PR
 
 ### Phase 8: Animations & Micro-interactions
