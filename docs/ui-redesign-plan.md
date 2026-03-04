@@ -71,7 +71,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 - [x] 5.2 — Note editor panel (title styling, Badge save status, timestamp icons)
 - [x] 5.3 — BlockNote editor theme synchronization
 - [x] 5-CP — **Checkpoint**: full suite green
-- [ ] 5-PUSH — **Push**: `/push` to PR
+- [x] 5-PUSH — **Push**: `/push` to PR
 
 ### Phase 6: Trash & Admin Redesign
 
