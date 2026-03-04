@@ -17,9 +17,102 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 
-/* ── Section wrapper ──────────────────────────────────────── */
+/* ── Prop interfaces ──────────────────────────────────────── */
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+interface SectionProps {
+  title: string;
+  children: React.ReactNode;
+}
+
+interface SwatchProps {
+  name: string;
+  cssVar: string;
+  hex?: string;
+}
+
+interface ColorScaleShade {
+  shade: string;
+  hex: string;
+}
+
+interface ColorScaleProps {
+  label: string;
+  prefix: string;
+  shades: readonly ColorScaleShade[];
+}
+
+/* ── Token data ───────────────────────────────────────────── */
+
+const PRIMARY_SHADES: readonly ColorScaleShade[] = [
+  { shade: "50", hex: "#eef2ff" },
+  { shade: "100", hex: "#e0e7ff" },
+  { shade: "200", hex: "#c7d2fe" },
+  { shade: "300", hex: "#a5b4fc" },
+  { shade: "400", hex: "#818cf8" },
+  { shade: "500", hex: "#6366f1" },
+  { shade: "600", hex: "#4f46e5" },
+  { shade: "700", hex: "#4338ca" },
+  { shade: "800", hex: "#3730a3" },
+  { shade: "900", hex: "#312e81" },
+];
+
+const ACCENT_SHADES: readonly ColorScaleShade[] = [
+  { shade: "50", hex: "#fffbeb" },
+  { shade: "100", hex: "#fef3c7" },
+  { shade: "200", hex: "#fde68a" },
+  { shade: "300", hex: "#fcd34d" },
+  { shade: "400", hex: "#fbbf24" },
+  { shade: "500", hex: "#f59e0b" },
+  { shade: "600", hex: "#d97706" },
+];
+
+const NEUTRAL_SHADES: readonly ColorScaleShade[] = [
+  { shade: "50", hex: "#fafaf9" },
+  { shade: "100", hex: "#f5f5f4" },
+  { shade: "200", hex: "#e7e5e4" },
+  { shade: "300", hex: "#d6d3d1" },
+  { shade: "400", hex: "#a8a29e" },
+  { shade: "500", hex: "#78716c" },
+  { shade: "600", hex: "#57534e" },
+  { shade: "700", hex: "#44403c" },
+  { shade: "800", hex: "#292524" },
+  { shade: "900", hex: "#1c1917" },
+];
+
+const SEMANTIC_SWATCHES = [
+  { name: "Background", cssVar: "--bg" },
+  { name: "Background Subtle", cssVar: "--bg-subtle" },
+  { name: "Background Muted", cssVar: "--bg-muted" },
+  { name: "Foreground", cssVar: "--fg" },
+  { name: "Foreground Muted", cssVar: "--fg-muted" },
+  { name: "Foreground Subtle", cssVar: "--fg-subtle" },
+  { name: "Border", cssVar: "--border" },
+  { name: "Border Strong", cssVar: "--border-strong" },
+  { name: "Ring / Focus", cssVar: "--ring" },
+  { name: "Sidebar BG", cssVar: "--sidebar-bg" },
+  { name: "Sidebar Hover", cssVar: "--sidebar-hover" },
+  { name: "Sidebar Active", cssVar: "--sidebar-active" },
+] as const;
+
+const STATUS_TOKENS = [
+  { name: "Success", bg: "--success-bg", text: "--success-text" },
+  { name: "Warning", bg: "--warning-bg", text: "--warning-text" },
+  { name: "Error", bg: "--error-bg", text: "--error-text" },
+] as const;
+
+const SHADOW_SIZES = ["xs", "sm", "md", "lg"] as const;
+
+const RADIUS_TOKENS = [
+  { token: "sm", value: "0.25rem" },
+  { token: "md", value: "0.375rem" },
+  { token: "lg", value: "0.5rem" },
+  { token: "xl", value: "0.75rem" },
+  { token: "full", value: "9999px" },
+] as const;
+
+/* ── Helper components ────────────────────────────────────── */
+
+function Section({ title, children }: SectionProps) {
   return (
     <section className="mb-16">
       <h2 className="border-border mb-6 border-b pb-2 text-xl font-semibold">{title}</h2>
@@ -28,7 +121,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function Swatch({ name, cssVar, hex }: { name: string; cssVar: string; hex?: string }) {
+function Swatch({ name, cssVar, hex }: SwatchProps) {
   return (
     <div className="flex items-center gap-3">
       <div
@@ -46,15 +139,7 @@ function Swatch({ name, cssVar, hex }: { name: string; cssVar: string; hex?: str
   );
 }
 
-function ColorScale({
-  label,
-  prefix,
-  shades,
-}: {
-  label: string;
-  prefix: string;
-  shades: { shade: string; hex: string }[];
-}) {
+function ColorScale({ label, prefix, shades }: ColorScaleProps) {
   return (
     <div>
       <p className="mb-2 text-sm font-medium">{label}</p>
@@ -92,80 +177,23 @@ export default function DesignSystemPage() {
       {/* ── Color Tokens ─────────────────────────────────── */}
       <Section title="Color Scales">
         <div className="space-y-6">
-          <ColorScale
-            label="Primary (Indigo)"
-            prefix="primary"
-            shades={[
-              { shade: "50", hex: "#eef2ff" },
-              { shade: "100", hex: "#e0e7ff" },
-              { shade: "200", hex: "#c7d2fe" },
-              { shade: "300", hex: "#a5b4fc" },
-              { shade: "400", hex: "#818cf8" },
-              { shade: "500", hex: "#6366f1" },
-              { shade: "600", hex: "#4f46e5" },
-              { shade: "700", hex: "#4338ca" },
-              { shade: "800", hex: "#3730a3" },
-              { shade: "900", hex: "#312e81" },
-            ]}
-          />
-          <ColorScale
-            label="Accent (Amber)"
-            prefix="accent"
-            shades={[
-              { shade: "50", hex: "#fffbeb" },
-              { shade: "100", hex: "#fef3c7" },
-              { shade: "200", hex: "#fde68a" },
-              { shade: "300", hex: "#fcd34d" },
-              { shade: "400", hex: "#fbbf24" },
-              { shade: "500", hex: "#f59e0b" },
-              { shade: "600", hex: "#d97706" },
-            ]}
-          />
-          <ColorScale
-            label="Neutral (Stone)"
-            prefix="neutral"
-            shades={[
-              { shade: "50", hex: "#fafaf9" },
-              { shade: "100", hex: "#f5f5f4" },
-              { shade: "200", hex: "#e7e5e4" },
-              { shade: "300", hex: "#d6d3d1" },
-              { shade: "400", hex: "#a8a29e" },
-              { shade: "500", hex: "#78716c" },
-              { shade: "600", hex: "#57534e" },
-              { shade: "700", hex: "#44403c" },
-              { shade: "800", hex: "#292524" },
-              { shade: "900", hex: "#1c1917" },
-            ]}
-          />
+          <ColorScale label="Primary (Indigo)" prefix="primary" shades={PRIMARY_SHADES} />
+          <ColorScale label="Accent (Amber)" prefix="accent" shades={ACCENT_SHADES} />
+          <ColorScale label="Neutral (Stone)" prefix="neutral" shades={NEUTRAL_SHADES} />
         </div>
       </Section>
 
       <Section title="Semantic Surfaces">
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-          <Swatch name="Background" cssVar="--bg" />
-          <Swatch name="Background Subtle" cssVar="--bg-subtle" />
-          <Swatch name="Background Muted" cssVar="--bg-muted" />
-          <Swatch name="Foreground" cssVar="--fg" />
-          <Swatch name="Foreground Muted" cssVar="--fg-muted" />
-          <Swatch name="Foreground Subtle" cssVar="--fg-subtle" />
-          <Swatch name="Border" cssVar="--border" />
-          <Swatch name="Border Strong" cssVar="--border-strong" />
-          <Swatch name="Ring / Focus" cssVar="--ring" />
-          <Swatch name="Sidebar BG" cssVar="--sidebar-bg" />
-          <Swatch name="Sidebar Hover" cssVar="--sidebar-hover" />
-          <Swatch name="Sidebar Active" cssVar="--sidebar-active" />
+          {SEMANTIC_SWATCHES.map((swatch) => (
+            <Swatch key={swatch.cssVar} name={swatch.name} cssVar={swatch.cssVar} />
+          ))}
         </div>
       </Section>
 
       <Section title="Status Colors">
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          {(
-            [
-              { name: "Success", bg: "--success-bg", text: "--success-text" },
-              { name: "Warning", bg: "--warning-bg", text: "--warning-text" },
-              { name: "Error", bg: "--error-bg", text: "--error-text" },
-            ] as const
-          ).map((s) => (
+          {STATUS_TOKENS.map((s) => (
             <div
               key={s.name}
               className="border-border flex items-center gap-3 rounded-lg border p-3"
@@ -206,7 +234,7 @@ export default function DesignSystemPage() {
       {/* ── Shadows ──────────────────────────────────────── */}
       <Section title="Shadows">
         <div className="flex flex-wrap gap-6">
-          {(["xs", "sm", "md", "lg"] as const).map((s) => (
+          {SHADOW_SIZES.map((s) => (
             <div
               key={s}
               className="border-border bg-bg flex h-20 w-32 items-center justify-center rounded-lg border"
@@ -221,15 +249,7 @@ export default function DesignSystemPage() {
       {/* ── Radius ───────────────────────────────────────── */}
       <Section title="Border Radius">
         <div className="flex flex-wrap gap-6">
-          {(
-            [
-              { token: "sm", value: "0.25rem" },
-              { token: "md", value: "0.375rem" },
-              { token: "lg", value: "0.5rem" },
-              { token: "xl", value: "0.75rem" },
-              { token: "full", value: "9999px" },
-            ] as const
-          ).map((r) => (
+          {RADIUS_TOKENS.map((r) => (
             <div key={r.token} className="text-center">
               <div
                 className="border-primary-500 bg-primary-100 mx-auto h-16 w-16 border-2"
