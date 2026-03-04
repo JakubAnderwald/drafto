@@ -223,4 +223,288 @@ describe("POST /api/import/evernote", () => {
     await POST(req);
     expect(mockErrorResponse).toHaveBeenCalledWith("Invalid JSON body", 400);
   });
+
+  it("uses existing notebookId when provided", async () => {
+    // Note insert
+    mockSingle.mockResolvedValueOnce({
+      data: { id: "note-1" },
+      error: null,
+    });
+
+    const body: ImportBatchRequest = {
+      notebookId: "existing-nb",
+      notes: [
+        {
+          title: "Note 1",
+          content: "<en-note><p>Hello</p></en-note>",
+          created: "2023-01-01T00:00:00.000Z",
+          updated: "2023-01-01T00:00:00.000Z",
+          resources: [],
+        },
+      ],
+    };
+
+    const req = new Request("http://localhost/api/import/evernote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    await POST(req);
+
+    expect(mockSuccessResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ notebookId: "existing-nb", notesImported: 1 }),
+      200,
+    );
+  });
+
+  it("returns 500 when notebook creation fails", async () => {
+    mockSingle.mockResolvedValueOnce({
+      data: null,
+      error: { message: "DB error" },
+    });
+
+    const body: ImportBatchRequest = {
+      notebookName: "Fail Notebook",
+      notes: [
+        {
+          title: "Note",
+          content: "<en-note></en-note>",
+          created: "2023-01-01T00:00:00.000Z",
+          updated: "2023-01-01T00:00:00.000Z",
+          resources: [],
+        },
+      ],
+    };
+
+    const req = new Request("http://localhost/api/import/evernote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    await POST(req);
+    expect(mockErrorResponse).toHaveBeenCalledWith("Failed to create notebook", 500);
+  });
+
+  it("uploads attachments and maps them for ENML conversion", async () => {
+    // Notebook creation
+    mockSingle.mockResolvedValueOnce({
+      data: { id: "nb-1" },
+      error: null,
+    });
+    // Note insert
+    mockSingle.mockResolvedValueOnce({
+      data: { id: "note-1" },
+      error: null,
+    });
+    // Attachment DB insert
+    mockSingle.mockResolvedValueOnce({
+      data: { id: "att-1" },
+      error: null,
+    });
+
+    mockUpload.mockResolvedValue({ error: null });
+    mockCreateSignedUrl.mockResolvedValue({
+      data: { signedUrl: "https://storage.example.com/file.png" },
+      error: null,
+    });
+
+    const body: ImportBatchRequest = {
+      notebookName: "Import",
+      notes: [
+        {
+          title: "Note with attachment",
+          content: '<en-note><en-media type="image/png" hash="abc123"/></en-note>',
+          created: "2023-01-01T00:00:00.000Z",
+          updated: "2023-01-01T00:00:00.000Z",
+          resources: [
+            {
+              data: "aGVsbG8=", // base64 "hello"
+              mime: "image/png",
+              hash: "abc123",
+              fileName: "photo.png",
+            },
+          ],
+        },
+      ],
+    };
+
+    const req = new Request("http://localhost/api/import/evernote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    await POST(req);
+
+    expect(mockUpload).toHaveBeenCalled();
+    expect(mockCreateSignedUrl).toHaveBeenCalled();
+    expect(mockConvertEnmlToBlocks).toHaveBeenCalledWith(expect.any(String), expect.any(Map));
+    expect(mockSuccessResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ notesImported: 1 }),
+      200,
+    );
+  });
+
+  it("continues import when attachment upload fails", async () => {
+    // Notebook creation
+    mockSingle.mockResolvedValueOnce({
+      data: { id: "nb-1" },
+      error: null,
+    });
+    // Note insert
+    mockSingle.mockResolvedValueOnce({
+      data: { id: "note-1" },
+      error: null,
+    });
+
+    mockUpload.mockResolvedValue({ error: { message: "Upload failed" } });
+
+    const body: ImportBatchRequest = {
+      notebookName: "Import",
+      notes: [
+        {
+          title: "Note with bad attachment",
+          content: "<en-note><p>Hello</p></en-note>",
+          created: "2023-01-01T00:00:00.000Z",
+          updated: "2023-01-01T00:00:00.000Z",
+          resources: [
+            {
+              data: "aGVsbG8=",
+              mime: "image/png",
+              hash: "abc",
+              fileName: "bad.png",
+            },
+          ],
+        },
+      ],
+    };
+
+    const req = new Request("http://localhost/api/import/evernote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    await POST(req);
+
+    // Note should still be imported even if attachment fails
+    expect(mockSuccessResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ notesImported: 1 }),
+      200,
+    );
+  });
+
+  it("cleans up storage when attachment DB insert fails", async () => {
+    // Notebook creation
+    mockSingle.mockResolvedValueOnce({
+      data: { id: "nb-1" },
+      error: null,
+    });
+    // Note insert
+    mockSingle.mockResolvedValueOnce({
+      data: { id: "note-1" },
+      error: null,
+    });
+    // Attachment DB insert fails
+    mockSingle.mockResolvedValueOnce({
+      data: null,
+      error: { message: "DB insert failed" },
+    });
+
+    mockUpload.mockResolvedValue({ error: null });
+    mockRemove.mockResolvedValue({ error: null });
+
+    const body: ImportBatchRequest = {
+      notebookName: "Import",
+      notes: [
+        {
+          title: "Note",
+          content: "<en-note><p>Hello</p></en-note>",
+          created: "2023-01-01T00:00:00.000Z",
+          updated: "2023-01-01T00:00:00.000Z",
+          resources: [
+            {
+              data: "aGVsbG8=",
+              mime: "image/png",
+              hash: "abc",
+              fileName: "file.png",
+            },
+          ],
+        },
+      ],
+    };
+
+    const req = new Request("http://localhost/api/import/evernote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    await POST(req);
+
+    // Should clean up the uploaded file when DB insert fails
+    expect(mockRemove).toHaveBeenCalled();
+    expect(mockSuccessResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ notesImported: 1 }),
+      200,
+    );
+  });
+
+  it("handles content update failure", async () => {
+    // Notebook creation
+    mockSingle.mockResolvedValueOnce({
+      data: { id: "nb-1" },
+      error: null,
+    });
+    // Note insert
+    mockSingle.mockResolvedValueOnce({
+      data: { id: "note-1" },
+      error: null,
+    });
+
+    // Make update fail
+    mockEq.mockReturnValueOnce({ error: { message: "Update failed" } });
+
+    const body: ImportBatchRequest = {
+      notebookName: "Import",
+      notes: [
+        {
+          title: "Update Fail Note",
+          content: "<en-note><p>Hello</p></en-note>",
+          created: "2023-01-01T00:00:00.000Z",
+          updated: "2023-01-01T00:00:00.000Z",
+          resources: [],
+        },
+      ],
+    };
+
+    const req = new Request("http://localhost/api/import/evernote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    await POST(req);
+
+    expect(mockSuccessResponse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notesFailed: 1,
+        errors: expect.arrayContaining([expect.stringContaining("Update Fail Note")]),
+      }),
+      200,
+    );
+  });
+
+  it("returns 400 when notes is not an array", async () => {
+    const req = new Request("http://localhost/api/import/evernote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notes: "not-array" }),
+    });
+
+    await POST(req);
+    expect(mockErrorResponse).toHaveBeenCalledWith("No notes provided", 400);
+  });
 });
