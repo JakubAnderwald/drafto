@@ -263,7 +263,7 @@ export function NotebooksSidebar({
                       e.stopPropagation();
                       requestDelete(notebook.id);
                     }}
-                    className="text-fg-subtle hover:text-error hidden rounded p-0.5 transition-colors duration-[var(--transition-fast)] group-focus-within:block group-hover:block"
+                    className="text-fg-subtle hover:text-error rounded p-0.5 opacity-0 transition-all duration-[var(--transition-fast)] group-focus-within:opacity-100 group-hover:opacity-100"
                     aria-label={`Delete ${notebook.name}`}
                   >
                     <svg
