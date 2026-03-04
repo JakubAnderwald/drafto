@@ -179,7 +179,7 @@ export function NoteList({
                       e.stopPropagation();
                       setMenuOpenForNote(menuOpenForNote === note.id ? null : note.id);
                     }}
-                    className="absolute top-2 right-2 hidden group-focus-within:block group-hover:block"
+                    className="absolute top-2 right-2 opacity-0 transition-opacity duration-[var(--transition-fast)] group-focus-within:opacity-100 group-hover:opacity-100"
                     aria-label={`Actions for ${note.title}`}
                   >
                     <svg
