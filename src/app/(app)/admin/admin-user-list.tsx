@@ -67,11 +67,10 @@ export function AdminUserList({ initialUsers }: { initialUsers: PendingUser[] })
                 </p>
               </div>
               <Button
-                variant="primary"
+                variant="success"
                 size="sm"
                 loading={approvingId === user.id}
                 onClick={() => handleApprove(user.id)}
-                className="bg-success hover:bg-success-hover focus-visible:ring-success"
               >
                 {approvingId === user.id ? "Approving..." : "Approve"}
               </Button>
