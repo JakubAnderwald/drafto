@@ -93,7 +93,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 ### Phase 8: Animations & Micro-interactions
 
 - [x] 8.1 — CSS transitions on interactive elements (buttons, inputs, sidebar items, note items)
-- [ ] 8.2 — Loading skeletons in component Suspense fallbacks (replace "Loading..." text)
+- [x] 8.2 — Loading skeletons in component Suspense fallbacks (replace "Loading..." text)
 - [ ] 8.3 — Improved empty states with SVG icons and descriptive text
 - [ ] 8-CP — **Checkpoint**: full suite green
 - [ ] 8-PUSH — **Push**: `/push` to PR
