@@ -76,6 +76,19 @@ Every significant architectural decision must be recorded in `docs/adr/`.
 
 **Important**: ADRs are append-only. Never delete a past ADR. If a decision is reversed, create a new ADR that supersedes it and update the old ADR's status to `Superseded by [NNNN](./NNNN-title.md)`.
 
+## Environments
+
+Two Supabase projects provide full data isolation:
+
+| Environment     | Project    | Ref                    | Used By                            |
+| --------------- | ---------- | ---------------------- | ---------------------------------- |
+| **Production**  | drafto.eu  | `tbmjbxxseonkciqovnpl` | Vercel production (drafto.eu)      |
+| **Development** | drafto-dev | `huhzactreblzcogqkbsd` | Local dev, Vercel previews, CI/E2E |
+
+**Migration workflow:** Apply to dev first (`pnpm supabase:link:dev && pnpm supabase:push`), verify, then apply to prod (`pnpm supabase:link:prod && pnpm supabase:push`).
+
+Sentry and PostHog use environment tagging (not separate projects). The `NEXT_PUBLIC_SENTRY_ENVIRONMENT` env var is set per Vercel environment.
+
 ## Environment Variables
 
 - Declare all env vars in `src/env.ts` using zod schemas
