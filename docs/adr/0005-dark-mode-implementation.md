@@ -44,9 +44,9 @@ The `NoteEditor` component reads `resolvedTheme` from `useTheme` and passes it a
 
 - **Positive**: Single mechanism for all dark mode styling — override CSS variables under `.dark`, no per-component changes.
 - **Positive**: No flash of wrong theme on page load thanks to the synchronous inline script.
-- **Positive**: System preference is respected by default and updates in real time via `matchMedia` listener.
-- **Positive**: Zero new dependencies — uses native browser APIs (`localStorage`, `matchMedia`, `classList`).
-- **Positive**: BlockNote editor theme stays in sync automatically via the `theme` prop.
+- **Positive**: Respects system preference by default with real-time updates via `matchMedia` listener.
+- **Benefit**: Zero new dependencies — relies entirely on native browser APIs (`localStorage`, `matchMedia`, `classList`).
+- **Positive**: BlockNote editor theme remains in sync automatically via the `theme` prop.
 - **Negative**: The inline `<script>` in `layout.tsx` uses `dangerouslySetInnerHTML`, which requires care during maintenance. However, the script is minimal and stable.
 - **Negative**: `suppressHydrationWarning` on `<html>` suppresses all hydration warnings on that element, not just theme-related ones. This is an accepted trade-off given Next.js's recommendation for this pattern.
 - **Neutral**: The three-state cycle (light → dark → system) is slightly less discoverable than a simple toggle, but provides more user control.
