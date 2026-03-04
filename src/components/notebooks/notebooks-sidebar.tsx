@@ -230,7 +230,7 @@ export function NotebooksSidebar({
                     if (e.key === "Escape") setEditingId(null);
                   }}
                   maxLength={MAX_NOTEBOOK_NAME_LENGTH}
-                  className="border-border text-fg focus:ring-ring w-full rounded-md border bg-transparent px-2 py-1.5 text-sm focus:ring-1 focus:outline-none"
+                  className="border-border text-fg focus:ring-ring w-full rounded-md border bg-transparent px-2 py-1.5 text-sm transition-colors duration-[var(--transition-fast)] focus:ring-1 focus:outline-none"
                 />
               ) : (
                 <div
@@ -263,7 +263,7 @@ export function NotebooksSidebar({
                       e.stopPropagation();
                       requestDelete(notebook.id);
                     }}
-                    className="text-fg-subtle hover:text-error hidden rounded p-0.5 transition-colors group-focus-within:block group-hover:block"
+                    className="text-fg-subtle hover:text-error hidden rounded p-0.5 transition-colors duration-[var(--transition-fast)] group-focus-within:block group-hover:block"
                     aria-label={`Delete ${notebook.name}`}
                   >
                     <svg
@@ -299,7 +299,7 @@ export function NotebooksSidebar({
                 }}
                 maxLength={MAX_NOTEBOOK_NAME_LENGTH}
                 placeholder="Notebook name"
-                className="border-border text-fg focus:ring-ring w-full rounded-md border bg-transparent px-2 py-1.5 text-sm focus:ring-1 focus:outline-none"
+                className="border-border text-fg focus:ring-ring w-full rounded-md border bg-transparent px-2 py-1.5 text-sm transition-colors duration-[var(--transition-fast)] focus:ring-1 focus:outline-none"
               />
             </li>
           )}
