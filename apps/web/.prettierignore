@@ -1,0 +1,5 @@
+pnpm-lock.yaml
+.next
+coverage
+node_modules
+e2e/.auth
