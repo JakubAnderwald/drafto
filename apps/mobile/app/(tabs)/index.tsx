@@ -18,6 +18,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useNotebooks } from "@/hooks/use-notebooks";
+import { useHaptics } from "@/hooks/use-haptics";
 import { generateId } from "@/lib/generate-id";
 import { SwipeableRow } from "@/components/swipeable-row";
 import { ListSkeleton } from "@/components/ui/skeleton";
@@ -33,6 +34,7 @@ export default function NotebooksScreen() {
   const router = useRouter();
   const { notebooks, loading } = useNotebooks();
   const { semantic } = useTheme();
+  const haptics = useHaptics();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
 
   const [creating, setCreating] = useState(false);
@@ -56,6 +58,7 @@ export default function NotebooksScreen() {
           record.name = trimmed;
         });
       });
+      haptics.success();
       setNewName("");
       setCreating(false);
       sync();
@@ -130,6 +133,7 @@ export default function NotebooksScreen() {
   );
 
   const startEditing = (notebook: Notebook) => {
+    haptics.medium();
     setEditingId(notebook.id);
     setEditName(notebook.name);
   };
@@ -247,7 +251,10 @@ export default function NotebooksScreen() {
       {!creating && (
         <Pressable
           style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}
-          onPress={() => setCreating(true)}
+          onPress={() => {
+            haptics.light();
+            setCreating(true);
+          }}
         >
           <Ionicons name="add" size={28} color={semantic.onPrimary} />
         </Pressable>

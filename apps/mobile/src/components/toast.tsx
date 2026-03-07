@@ -1,6 +1,7 @@
 import { createContext, useContext, useCallback, useState, useRef, useEffect } from "react";
 import { View, Text, StyleSheet, Animated } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useTheme } from "@/providers/theme-provider";
@@ -108,6 +109,12 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const insets = useSafeAreaInsets();
 
   const showToast = useCallback((text: string, type: ToastType = "info") => {
+    const HAPTIC_MAP: Record<ToastType, Haptics.NotificationFeedbackType> = {
+      info: Haptics.NotificationFeedbackType.Success,
+      warning: Haptics.NotificationFeedbackType.Warning,
+      success: Haptics.NotificationFeedbackType.Success,
+    };
+    Haptics.notificationAsync(HAPTIC_MAP[type]);
     const id = nextId.current++;
     setToasts((prev) => [...prev, { id, text, type }]);
   }, []);

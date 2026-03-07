@@ -10,6 +10,7 @@ import {
   type ViewStyle,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import type { ComponentProps } from "react";
 
 const ACTION_WIDTH = 72;
@@ -49,6 +50,7 @@ export function SwipeableRow({
     (toValue: number) => {
       isOpen.current = true;
       currentOffset.current = toValue;
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       Animated.spring(translateX, {
         toValue,
         useNativeDriver: true,
@@ -135,6 +137,7 @@ export function SwipeableRow({
 
   const handleActionPress = useCallback(
     (action: SwipeAction) => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       snapClosed();
       action.onPress();
     },

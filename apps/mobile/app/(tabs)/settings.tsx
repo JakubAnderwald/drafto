@@ -5,6 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { SyncStatus } from "@/components/sync-status";
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme, type ThemePreference } from "@/providers/theme-provider";
+import { useHaptics } from "@/hooks/use-haptics";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 
@@ -21,6 +22,7 @@ const THEME_OPTIONS: {
 export default function SettingsScreen() {
   const { signOut } = useAuth();
   const { semantic, theme, setTheme } = useTheme();
+  const haptics = useHaptics();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
 
   return (
@@ -31,7 +33,10 @@ export default function SettingsScreen() {
           <Pressable
             key={option.value}
             style={[styles.themeOption, theme === option.value && styles.themeOptionActive]}
-            onPress={() => setTheme(option.value)}
+            onPress={() => {
+              haptics.selection();
+              setTheme(option.value);
+            }}
             accessibilityRole="radio"
             accessibilityState={{ selected: theme === option.value }}
             accessibilityLabel={`${option.label} theme`}
