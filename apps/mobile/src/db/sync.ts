@@ -64,6 +64,8 @@ function mapAttachmentRow(row: AttachmentRow): SyncRecord {
     file_size: row.file_size,
     mime_type: row.mime_type,
     created_at: toTimestamp(row.created_at),
+    local_uri: null,
+    upload_status: "uploaded",
   };
 }
 
@@ -182,17 +184,22 @@ async function pushNoteChanges(changes: SyncTableChanges) {
 
 async function pushAttachmentChanges(changes: SyncTableChanges) {
   if (changes.created.length > 0) {
-    const rows = changes.created.map((r) => ({
-      id: r.remote_id as string,
-      note_id: r.note_id as string,
-      user_id: r.user_id as string,
-      file_name: r.file_name as string,
-      file_path: r.file_path as string,
-      file_size: r.file_size as number,
-      mime_type: r.mime_type as string,
-    }));
-    const { error } = await supabase.from("attachments").upsert(rows);
-    if (error) throw new Error(`Push attachments (create) failed: ${error.message}`);
+    // Only push attachments that have been uploaded (not pending)
+    const uploadedRows = changes.created
+      .filter((r) => r.upload_status === "uploaded")
+      .map((r) => ({
+        id: r.remote_id as string,
+        note_id: r.note_id as string,
+        user_id: r.user_id as string,
+        file_name: r.file_name as string,
+        file_path: r.file_path as string,
+        file_size: r.file_size as number,
+        mime_type: r.mime_type as string,
+      }));
+    if (uploadedRows.length > 0) {
+      const { error } = await supabase.from("attachments").upsert(uploadedRows);
+      if (error) throw new Error(`Push attachments (create) failed: ${error.message}`);
+    }
   }
 
   // Attachments are immutable — no updates needed

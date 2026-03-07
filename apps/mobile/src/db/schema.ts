@@ -37,10 +37,12 @@ export const attachmentsTable = tableSchema({
     { name: "file_size", type: "number" },
     { name: "mime_type", type: "string" },
     { name: "created_at", type: "number" },
+    { name: "local_uri", type: "string", isOptional: true },
+    { name: "upload_status", type: "string" },
   ],
 });
 
 export const schema = appSchema({
-  version: 1,
+  version: 2,
   tables: [notebooksTable, notesTable, attachmentsTable],
 });

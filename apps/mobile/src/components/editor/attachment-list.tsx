@@ -41,8 +41,14 @@ function AttachmentItem({ attachment, onDelete }: AttachmentItemProps) {
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [imageError, setImageError] = useState(false);
   const isImage = isImageMimeType(attachment.mimeType);
+  const isPending = attachment.isPendingUpload;
+
+  // Use local URI for pending attachments, fetch signed URL for uploaded ones
+  const displayUri = isPending ? attachment.localUri : signedUrl;
 
   useEffect(() => {
+    if (isPending) return; // No need to fetch URL for pending attachments
+
     let cancelled = false;
 
     async function fetchUrl() {
@@ -61,16 +67,25 @@ function AttachmentItem({ attachment, onDelete }: AttachmentItemProps) {
     return () => {
       cancelled = true;
     };
-  }, [attachment.filePath]);
+  }, [attachment.filePath, isPending]);
 
   const handlePress = useCallback(async () => {
+    if (isPending && attachment.localUri) {
+      // Open local file for pending attachments
+      try {
+        await Linking.openURL(attachment.localUri);
+      } catch {
+        // Failed to open local file
+      }
+      return;
+    }
     if (!signedUrl) return;
     try {
       await Linking.openURL(signedUrl);
     } catch {
       // Failed to open URL
     }
-  }, [signedUrl]);
+  }, [signedUrl, isPending, attachment.localUri]);
 
   const handleDelete = useCallback(() => {
     onDelete(attachment);
@@ -79,14 +94,14 @@ function AttachmentItem({ attachment, onDelete }: AttachmentItemProps) {
   if (isImage) {
     return (
       <View style={styles.imageItem}>
-        {loadingUrl ? (
+        {!isPending && loadingUrl ? (
           <View style={styles.imagePlaceholder}>
             <ActivityIndicator size="small" color="#4f46e5" />
           </View>
-        ) : signedUrl && !imageError ? (
+        ) : displayUri && !imageError ? (
           <Pressable onPress={handlePress} accessibilityLabel={`Open ${attachment.fileName}`}>
             <Image
-              source={{ uri: signedUrl }}
+              source={{ uri: displayUri }}
               style={styles.imagePreview}
               resizeMode="cover"
               onError={() => setImageError(true)}
@@ -99,9 +114,12 @@ function AttachmentItem({ attachment, onDelete }: AttachmentItemProps) {
           </View>
         )}
         <View style={styles.imageFooter}>
-          <Text style={styles.imageFileName} numberOfLines={1}>
-            {attachment.fileName}
-          </Text>
+          <View style={styles.fileNameRow}>
+            {isPending && <PendingBadge />}
+            <Text style={styles.imageFileName} numberOfLines={1}>
+              {attachment.fileName}
+            </Text>
+          </View>
           <Pressable
             onPress={handleDelete}
             hitSlop={8}
@@ -119,15 +137,18 @@ function AttachmentItem({ attachment, onDelete }: AttachmentItemProps) {
     <Pressable
       style={styles.fileItem}
       onPress={handlePress}
-      disabled={!signedUrl}
+      disabled={!isPending && !signedUrl}
       accessibilityLabel={`Open ${attachment.fileName}`}
       accessibilityRole="link"
     >
       <Ionicons name="document-outline" size={24} color="#4f46e5" />
       <View style={styles.fileInfo}>
-        <Text style={styles.fileFileName} numberOfLines={1}>
-          {attachment.fileName}
-        </Text>
+        <View style={styles.fileNameRow}>
+          {isPending && <PendingBadge />}
+          <Text style={styles.fileFileName} numberOfLines={1}>
+            {attachment.fileName}
+          </Text>
+        </View>
         <Text style={styles.fileMeta}>{formatFileSize(attachment.fileSize)}</Text>
       </View>
       <Pressable
@@ -139,6 +160,15 @@ function AttachmentItem({ attachment, onDelete }: AttachmentItemProps) {
         <Ionicons name="trash-outline" size={16} color="#9ca3af" />
       </Pressable>
     </Pressable>
+  );
+}
+
+function PendingBadge() {
+  return (
+    <View style={styles.pendingBadge}>
+      <Ionicons name="cloud-upload-outline" size={10} color="#f59e0b" />
+      <Text style={styles.pendingText}>Pending</Text>
+    </View>
   );
 }
 
@@ -155,7 +185,10 @@ export function AttachmentList({ attachments }: AttachmentListProps) {
           style: "destructive",
           onPress: async () => {
             try {
-              await deleteAttachmentApi(attachment.remoteId, attachment.filePath);
+              // Only delete from Supabase if already uploaded
+              if (!attachment.isPendingUpload) {
+                await deleteAttachmentApi(attachment.remoteId, attachment.filePath);
+              }
               await database.write(async () => {
                 await attachment.markAsDeleted();
               });
@@ -255,10 +288,30 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "500",
     color: "#111827",
+    flex: 1,
   },
   fileMeta: {
     fontSize: 12,
     color: "#9ca3af",
     marginTop: 2,
+  },
+  fileNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  pendingBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    backgroundColor: "#fffbeb",
+    borderRadius: 4,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+  },
+  pendingText: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: "#f59e0b",
   },
 });

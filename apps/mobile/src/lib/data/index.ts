@@ -18,3 +18,5 @@ export {
   deleteAttachment,
   getSignedUrl,
 } from "./attachments";
+
+export { queueAttachment, processPendingUploads, cleanupOrphanedFiles } from "./attachment-queue";

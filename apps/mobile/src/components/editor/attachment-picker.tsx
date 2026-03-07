@@ -2,9 +2,10 @@ import { useState } from "react";
 import { View, Text, Pressable, StyleSheet, ActivityIndicator, Alert } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-import { pickImage, pickDocument, uploadAttachment } from "@/lib/data";
+import { pickImage, pickDocument, queueAttachment } from "@/lib/data";
 import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
+import { useNetworkStatus } from "@/hooks/use-network-status";
 import { useToast } from "@/components/toast";
 
 interface AttachmentPickerProps {
@@ -15,6 +16,7 @@ interface AttachmentPickerProps {
 export function AttachmentPicker({ noteId, onUploadComplete }: AttachmentPickerProps) {
   const { user } = useAuth();
   const { sync } = useDatabase();
+  const { isConnected } = useNetworkStatus();
   const { showToast } = useToast();
   const [uploading, setUploading] = useState(false);
 
@@ -26,12 +28,21 @@ export function AttachmentPicker({ noteId, onUploadComplete }: AttachmentPickerP
       if (!file) return;
 
       setUploading(true);
-      await uploadAttachment(user.id, noteId, file);
-      await sync();
-      showToast("Attachment uploaded", "success");
+
+      // Always save locally first, then try uploading
+      await queueAttachment(user.id, noteId, file);
+
+      if (isConnected) {
+        // Trigger sync to upload immediately
+        await sync();
+        showToast("Attachment uploaded", "success");
+      } else {
+        showToast("Attachment saved — will upload when online", "info");
+      }
+
       onUploadComplete?.();
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Upload failed";
+      const message = err instanceof Error ? err.message : "Failed to attach file";
       if (message.includes("Permission")) {
         Alert.alert("Permission Required", message);
       } else {
@@ -46,7 +57,7 @@ export function AttachmentPicker({ noteId, onUploadComplete }: AttachmentPickerP
     return (
       <View style={styles.container}>
         <ActivityIndicator size="small" color="#4f46e5" />
-        <Text style={styles.uploadingText}>Uploading...</Text>
+        <Text style={styles.uploadingText}>Saving...</Text>
       </View>
     );
   }
