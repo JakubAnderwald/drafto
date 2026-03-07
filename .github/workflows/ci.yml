@@ -74,7 +74,7 @@ jobs:
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
         if: steps.check-secrets.outputs.has_secrets == 'true'
-      - run: pnpm exec playwright install --with-deps chromium webkit
+      - run: cd apps/web && pnpm exec playwright install --with-deps chromium webkit
         if: steps.check-secrets.outputs.has_secrets == 'true'
       - run: cd apps/web && pnpm build
         if: steps.check-secrets.outputs.has_secrets == 'true'
