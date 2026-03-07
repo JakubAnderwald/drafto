@@ -12,11 +12,13 @@ import {
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
+import { Q } from "@nozbe/watermelondb";
+
 import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
 import { useNotebooks } from "@/hooks/use-notebooks";
 import { generateId } from "@/lib/generate-id";
-import type { Notebook } from "@/db";
+import type { Notebook, Note, Attachment } from "@/db";
 
 export default function NotebooksScreen() {
   const { user } = useAuth();
@@ -86,7 +88,21 @@ export default function NotebooksScreen() {
         onPress: async () => {
           try {
             const notebook = await database.get<Notebook>("notebooks").find(id);
+            const notes = await database
+              .get<Note>("notes")
+              .query(Q.where("notebook_id", id))
+              .fetch();
             await database.write(async () => {
+              for (const note of notes) {
+                const attachments = await database
+                  .get<Attachment>("attachments")
+                  .query(Q.where("note_id", note.id))
+                  .fetch();
+                for (const attachment of attachments) {
+                  await attachment.markAsDeleted();
+                }
+                await note.markAsDeleted();
+              }
               await notebook.markAsDeleted();
             });
             sync();
