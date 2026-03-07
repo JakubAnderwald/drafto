@@ -214,11 +214,44 @@ async function pushChanges({ changes }: { changes: Record<string, SyncTableChang
   await pushAttachmentChanges(attachmentChanges);
 }
 
+export class SyncNetworkError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : "Network error during sync");
+    this.name = "SyncNetworkError";
+    this.cause = cause;
+  }
+}
+
+function isNetworkError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const msg = error.message.toLowerCase();
+  return (
+    msg.includes("network request failed") ||
+    msg.includes("network error") ||
+    msg.includes("failed to fetch") ||
+    msg.includes("no internet") ||
+    msg.includes("internet connection") ||
+    msg.includes("network offline") ||
+    msg.includes("request timeout") ||
+    msg.includes("connection timeout") ||
+    msg.includes("econnrefused") ||
+    msg.includes("enotfound") ||
+    msg.includes("etimedout")
+  );
+}
+
 export async function syncDatabase(db: WMDatabase): Promise<void> {
-  await synchronize({
-    database: db,
-    pullChanges,
-    pushChanges,
-    migrationsEnabledAtVersion: 1,
-  });
+  try {
+    await synchronize({
+      database: db,
+      pullChanges,
+      pushChanges,
+      migrationsEnabledAtVersion: 1,
+    });
+  } catch (error) {
+    if (isNetworkError(error)) {
+      throw new SyncNetworkError(error);
+    }
+    throw error;
+  }
 }
