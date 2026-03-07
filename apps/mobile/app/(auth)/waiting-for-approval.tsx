@@ -1,12 +1,106 @@
-import { Text, View, StyleSheet } from "react-native";
+import { useState } from "react";
+import { Text, View, Pressable, StyleSheet, ActivityIndicator } from "react-native";
+import { router } from "expo-router";
+
+import { supabase } from "@/lib/supabase";
 
 export default function WaitingForApprovalScreen() {
+  const [checking, setChecking] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleCheckApproval = async () => {
+    setError(null);
+    setChecking(true);
+
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) {
+        router.replace("/(auth)/login");
+        return;
+      }
+
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("is_approved")
+        .eq("id", user.id)
+        .single();
+
+      if (profileError) {
+        setError("Could not check approval status. Please try again.");
+        return;
+      }
+
+      if (profile?.is_approved) {
+        router.replace("/(tabs)");
+      } else {
+        setError("Your account is still pending approval.");
+      }
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    setSigningOut(true);
+
+    try {
+      await supabase.auth.signOut();
+      router.replace("/(auth)/login");
+    } finally {
+      setSigningOut(false);
+    }
+  };
+
   return (
     <View style={styles.container}>
+      <Text style={styles.icon}>&#9203;</Text>
       <Text style={styles.title}>Awaiting Approval</Text>
       <Text style={styles.subtitle}>
-        Your account is pending approval. You will be notified once an admin approves your access.
+        Your account has been created and is pending admin approval. You will be able to access
+        Drafto once an admin approves your account.
       </Text>
+
+      {error && (
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>{error}</Text>
+        </View>
+      )}
+
+      <Pressable
+        style={({ pressed }) => [
+          styles.button,
+          pressed && styles.buttonPressed,
+          checking && styles.buttonDisabled,
+        ]}
+        onPress={handleCheckApproval}
+        disabled={checking || signingOut}
+      >
+        {checking ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={styles.buttonText}>Check approval status</Text>
+        )}
+      </Pressable>
+
+      <Pressable
+        style={({ pressed }) => [
+          styles.signOutButton,
+          pressed && styles.signOutButtonPressed,
+          signingOut && styles.buttonDisabled,
+        ]}
+        onPress={handleSignOut}
+        disabled={checking || signingOut}
+      >
+        {signingOut ? (
+          <ActivityIndicator color="#4f46e5" />
+        ) : (
+          <Text style={styles.signOutButtonText}>Sign out</Text>
+        )}
+      </Pressable>
     </View>
   );
 }
@@ -18,6 +112,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     padding: 24,
   },
+  icon: {
+    fontSize: 48,
+    marginBottom: 16,
+  },
   title: {
     fontSize: 28,
     fontWeight: "bold",
@@ -28,5 +126,55 @@ const styles = StyleSheet.create({
     color: "#666",
     textAlign: "center",
     lineHeight: 24,
+    marginBottom: 32,
+  },
+  errorContainer: {
+    backgroundColor: "#fef2f2",
+    borderWidth: 1,
+    borderColor: "#fecaca",
+    borderRadius: 8,
+    padding: 12,
+    width: "100%",
+    marginBottom: 16,
+  },
+  errorText: {
+    color: "#dc2626",
+    fontSize: 14,
+    textAlign: "center",
+  },
+  button: {
+    backgroundColor: "#4f46e5",
+    borderRadius: 8,
+    padding: 14,
+    alignItems: "center",
+    width: "100%",
+    marginBottom: 12,
+  },
+  buttonPressed: {
+    backgroundColor: "#4338ca",
+  },
+  buttonDisabled: {
+    opacity: 0.7,
+  },
+  buttonText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  signOutButton: {
+    borderWidth: 1,
+    borderColor: "#d1d5db",
+    borderRadius: 8,
+    padding: 14,
+    alignItems: "center",
+    width: "100%",
+  },
+  signOutButtonPressed: {
+    backgroundColor: "#f3f4f6",
+  },
+  signOutButtonText: {
+    color: "#4f46e5",
+    fontSize: 16,
+    fontWeight: "600",
   },
 });
