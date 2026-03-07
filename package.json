@@ -19,6 +19,7 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
     "test:watch": "vitest watch",
+    "typecheck": "tsc --noEmit",
     "supabase:link:dev": "supabase link --project-ref huhzactreblzcogqkbsd",
     "supabase:link:prod": "supabase link --project-ref tbmjbxxseonkciqovnpl",
     "supabase:push": "supabase db push",
@@ -85,6 +86,7 @@
     "prettier": "^3.8.1",
     "prettier-plugin-tailwindcss": "^0.7.2",
     "tailwindcss": "^4",
+    "turbo": "^2.8.14",
     "typescript": "^5",
     "vite-tsconfig-paths": "^6.1.1",
     "vitest": "^4.0.18"
