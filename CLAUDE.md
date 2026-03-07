@@ -45,6 +45,8 @@ Every feature needs:
 
 Run tests: `pnpm test` (unit+integration), `pnpm test:e2e` (Playwright)
 
+**Important**: When asked to "run tests" or verify the test suite, always run **both** `pnpm test` and `pnpm test:e2e`. Never report tests as passing unless all test suites have been executed. E2E tests require `E2E_TEST_EMAIL` and `E2E_TEST_PASSWORD` in `.env.local` and Playwright loads env vars from `.env.local` only when sourced explicitly (e.g., `set -a && source .env.local && set +a && pnpm test:e2e`).
+
 ## Supabase Patterns
 
 - Browser client: `import { createClient } from "@/lib/supabase/client"`
@@ -102,6 +104,16 @@ Sentry and PostHog use environment tagging (not separate projects). The `NEXT_PU
 - Server/edge configs: `sentry.server.config.ts`, `sentry.edge.config.ts` (loaded via `instrumentation.ts`)
 - Do not swallow errors silently — let them propagate to Sentry
 
+## Local Dev Setup
+
+After cloning and running `pnpm install`, ensure these CLI tools are also installed:
+
+1. **Playwright browsers**: `pnpm exec playwright install` — required for E2E tests
+2. **Vercel CLI**: `npm install -g vercel` — used to pull env vars (`vercel env pull`)
+3. **Supabase CLI**: `brew install supabase/tap/supabase` — used for migrations and DB management
+
+Without these, E2E tests will fail and environment/database workflows won't work.
+
 ## Useful Commands
 
 ```bash
@@ -111,6 +123,6 @@ pnpm lint             # ESLint
 pnpm format:check     # Prettier check
 pnpm test             # Unit + integration tests
 pnpm test:coverage    # Tests with coverage
-pnpm test:e2e         # Playwright E2E tests
+pnpm test:e2e         # Playwright E2E tests (source .env.local first)
 pnpm exec tsc --noEmit  # Type check
 ```
