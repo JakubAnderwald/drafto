@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Text,
   View,
@@ -11,40 +11,24 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import type { NotebookRow } from "@drafto/shared";
 
 import { useAuth } from "@/providers/auth-provider";
-import { getNotebooks, createNotebook, updateNotebook, deleteNotebook } from "@/lib/data";
+import { useDatabase } from "@/providers/database-provider";
+import { useNotebooks } from "@/hooks/use-notebooks";
+import { generateId } from "@/lib/generate-id";
+import type { Notebook } from "@/db";
 
 export default function NotebooksScreen() {
   const { user } = useAuth();
+  const { database, sync } = useDatabase();
   const router = useRouter();
+  const { notebooks, loading } = useNotebooks();
 
-  const [notebooks, setNotebooks] = useState<NotebookRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [submitting, setSubmitting] = useState(false);
-
-  const fetchNotebooks = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const data = await getNotebooks();
-      setNotebooks(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load notebooks");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchNotebooks();
-  }, [fetchNotebooks]);
 
   const handleCreate = async () => {
     const trimmed = newName.trim();
@@ -52,10 +36,18 @@ export default function NotebooksScreen() {
 
     try {
       setSubmitting(true);
-      const notebook = await createNotebook(user.id, trimmed);
-      setNotebooks((prev) => [notebook, ...prev]);
+      const id = generateId();
+      await database.write(async () => {
+        await database.get<Notebook>("notebooks").create((record) => {
+          record._raw.id = id;
+          record.remoteId = id;
+          record.userId = user.id;
+          record.name = trimmed;
+        });
+      });
       setNewName("");
       setCreating(false);
+      sync();
     } catch (err) {
       Alert.alert("Error", err instanceof Error ? err.message : "Failed to create notebook");
     } finally {
@@ -69,10 +61,15 @@ export default function NotebooksScreen() {
 
     try {
       setSubmitting(true);
-      const updated = await updateNotebook(id, trimmed);
-      setNotebooks((prev) => prev.map((n) => (n.id === id ? updated : n)));
+      const notebook = await database.get<Notebook>("notebooks").find(id);
+      await database.write(async () => {
+        await notebook.update((record) => {
+          record.name = trimmed;
+        });
+      });
       setEditingId(null);
       setEditName("");
+      sync();
     } catch (err) {
       Alert.alert("Error", err instanceof Error ? err.message : "Failed to rename notebook");
     } finally {
@@ -88,8 +85,11 @@ export default function NotebooksScreen() {
         style: "destructive",
         onPress: async () => {
           try {
-            await deleteNotebook(id);
-            setNotebooks((prev) => prev.filter((n) => n.id !== id));
+            const notebook = await database.get<Notebook>("notebooks").find(id);
+            await database.write(async () => {
+              await notebook.markAsDeleted();
+            });
+            sync();
           } catch (err) {
             Alert.alert("Error", err instanceof Error ? err.message : "Failed to delete notebook");
           }
@@ -98,12 +98,12 @@ export default function NotebooksScreen() {
     ]);
   };
 
-  const startEditing = (notebook: NotebookRow) => {
+  const startEditing = (notebook: Notebook) => {
     setEditingId(notebook.id);
     setEditName(notebook.name);
   };
 
-  const renderNotebook = ({ item }: { item: NotebookRow }) => {
+  const renderNotebook = ({ item }: { item: Notebook }) => {
     if (editingId === item.id) {
       return (
         <View style={styles.row}>
@@ -156,17 +156,6 @@ export default function NotebooksScreen() {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color="#4f46e5" />
-      </View>
-    );
-  }
-
-  if (error) {
-    return (
-      <View style={styles.centered}>
-        <Text style={styles.errorText}>{error}</Text>
-        <Pressable style={styles.retryButton} onPress={fetchNotebooks}>
-          <Text style={styles.retryText}>Retry</Text>
-        </Pressable>
       </View>
     );
   }
@@ -319,22 +308,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#9ca3af",
     marginTop: 4,
-  },
-  errorText: {
-    fontSize: 16,
-    color: "#dc2626",
-    textAlign: "center",
-    marginBottom: 16,
-  },
-  retryButton: {
-    backgroundColor: "#4f46e5",
-    borderRadius: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-  },
-  retryText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "600",
   },
 });

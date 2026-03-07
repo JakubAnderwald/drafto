@@ -11,18 +11,19 @@ import {
 } from "react-native";
 import { useLocalSearchParams, Stack } from "expo-router";
 import { useEditorBridge, TenTapStartKit } from "@10play/tentap-editor";
-import type { Json, NoteRow } from "@drafto/shared";
 
-import { getNote, updateNote } from "@/lib/data";
+import { useDatabase } from "@/providers/database-provider";
+import { useNote } from "@/hooks/use-note";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { useAutoSave } from "@/hooks/use-auto-save";
+import type { Note } from "@/db";
 
 export default function EditorScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const [note, setNote] = useState<NoteRow | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { database, sync } = useDatabase();
+  const { note, loading, error } = useNote(id);
   const [title, setTitle] = useState("");
+  const [editorReady, setEditorReady] = useState(false);
   const noteIdRef = useRef(id);
 
   const titleSave = useAutoSave<string>({
@@ -31,9 +32,15 @@ export default function EditorScreen() {
         if (!id) return;
         const trimmed = text.trim();
         if (!trimmed) return;
-        await updateNote(id, { title: trimmed });
+        await database.write(async () => {
+          const record = await database.get<Note>("notes").find(id);
+          await record.update((r) => {
+            r.title = trimmed;
+          });
+        });
+        sync();
       },
-      [id],
+      [id, database, sync],
     ),
   });
 
@@ -41,9 +48,15 @@ export default function EditorScreen() {
     onSave: useCallback(async () => {
       if (!id || noteIdRef.current !== id) return;
       const json = await editor.getJSON();
-      await updateNote(id, { content: json as Json });
+      await database.write(async () => {
+        const record = await database.get<Note>("notes").find(id);
+        await record.update((r) => {
+          r.content = JSON.stringify(json);
+        });
+      });
+      sync();
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [id]),
+    }, [id, database, sync]),
   });
 
   const editor = useEditorBridge({
@@ -58,40 +71,26 @@ export default function EditorScreen() {
   useEffect(() => {
     contentSave.cancel();
     noteIdRef.current = id;
+    setEditorReady(false);
   }, [id, contentSave]);
 
   useEffect(() => {
-    if (!id) return;
+    if (!note || editorReady) return;
 
-    let cancelled = false;
-
-    async function loadNote() {
+    setTitle(note.title);
+    if (note.content) {
       try {
-        setLoading(true);
-        setError(null);
-        const data = await getNote(id!);
-        if (cancelled) return;
-        setNote(data);
-        setTitle(data.title);
-        if (data.content) {
-          editor.setContent(data.content as object);
-        } else {
-          editor.setContent({ type: "doc", content: [] });
-        }
-      } catch (err) {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Failed to load note");
-      } finally {
-        if (!cancelled) setLoading(false);
+        const parsed = JSON.parse(note.content);
+        editor.setContent(parsed as object);
+      } catch {
+        editor.setContent({ type: "doc", content: [] });
       }
+    } else {
+      editor.setContent({ type: "doc", content: [] });
     }
-
-    loadNote();
-    return () => {
-      cancelled = true;
-    };
+    setEditorReady(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [note]);
 
   const handleTitleChange = (text: string) => {
     setTitle(text);
@@ -119,27 +118,7 @@ export default function EditorScreen() {
     return (
       <View style={styles.centered}>
         <Text style={styles.errorText}>{error ?? "Note not found"}</Text>
-        <Pressable
-          style={styles.retryButton}
-          onPress={() => {
-            setLoading(true);
-            setError(null);
-            getNote(id!)
-              .then((data) => {
-                setNote(data);
-                setTitle(data.title);
-                if (data.content) {
-                  editor.setContent(data.content as object);
-                } else {
-                  editor.setContent({ type: "doc", content: [] });
-                }
-              })
-              .catch((err) => {
-                setError(err instanceof Error ? err.message : "Failed to load note");
-              })
-              .finally(() => setLoading(false));
-          }}
-        >
+        <Pressable style={styles.retryButton} onPress={() => sync()}>
           <Text style={styles.retryText}>Retry</Text>
         </Pressable>
       </View>
