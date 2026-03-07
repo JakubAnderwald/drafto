@@ -1,0 +1,14 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appIDs": ["REPLACE_WITH_TEAM_ID.eu.drafto.mobile"],
+        "components": [
+          { "/": "/notebooks/*", "comment": "Open notebook in app" },
+          { "/": "/notes/*", "comment": "Open note in app" }
+        ]
+      }
+    ]
+  }
+}

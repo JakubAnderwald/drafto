@@ -24,6 +24,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ios: {
     supportsTablet: true,
     bundleIdentifier: "eu.drafto.mobile",
+    associatedDomains: ["applinks:drafto.eu", "applinks:www.drafto.eu"],
   },
   android: {
     adaptiveIcon: {
@@ -33,6 +34,23 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       monochromeImage: "./assets/android-icon-monochrome.png",
     },
     package: "eu.drafto.mobile",
+    intentFilters: [
+      {
+        action: "VIEW",
+        autoVerify: true,
+        data: [
+          { scheme: "https", host: "drafto.eu", pathPrefix: "/notebooks" },
+          { scheme: "https", host: "drafto.eu", pathPrefix: "/notes" },
+          {
+            scheme: "https",
+            host: "www.drafto.eu",
+            pathPrefix: "/notebooks",
+          },
+          { scheme: "https", host: "www.drafto.eu", pathPrefix: "/notes" },
+        ],
+        category: ["BROWSABLE", "DEFAULT"],
+      },
+    ],
   },
   web: {
     favicon: "./assets/favicon.png",
