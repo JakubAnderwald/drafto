@@ -100,8 +100,8 @@ Maestro is a YAML-based mobile E2E framework. Tests run locally on iOS Simulator
 - [x] 3.4 — Note editor screen with 10tap-editor
 - [x] 3.5 — BlockNote <-> TipTap format converter (in `packages/shared`)
 - [x] 3.6 — Auto-save with debounce
-- [ ] 3-CP — **Checkpoint**: full CRUD works online, content round-trips with web app
-- [ ] 3-PUSH — **Push**: `/push` to PR
+- [x] 3-CP — **Checkpoint**: full CRUD works online, content round-trips with web app
+- [x] 3-PUSH — **Push**: `/push` to PR
 
 ### Phase 4: Offline Storage with WatermelonDB
 
