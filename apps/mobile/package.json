@@ -21,13 +21,14 @@
     "@expo/vector-icons": "^15.1.1",
     "@nozbe/watermelondb": "^0.28.0",
     "@nozbe/with-observables": "^1.6.0",
-    "@react-native-community/netinfo": "^12.0.1",
+    "@react-native-community/netinfo": "^11.5.2",
     "@supabase/supabase-js": "^2.98.0",
     "expo": "~55.0.5",
     "expo-constants": "~55.0.7",
     "expo-crypto": "^55.0.9",
     "expo-document-picker": "^55.0.8",
     "expo-file-system": "~55.0.10",
+    "expo-font": "~55.0.4",
     "expo-haptics": "~55.0.8",
     "expo-image-picker": "^55.0.11",
     "expo-linking": "~55.0.7",
@@ -36,9 +37,9 @@
     "expo-status-bar": "~55.0.4",
     "react": "19.2.0",
     "react-native": "0.83.2",
-    "react-native-safe-area-context": "~5.7.0",
-    "react-native-screens": "~4.24.0",
-    "react-native-webview": "^13.16.1"
+    "react-native-safe-area-context": "~5.6.2",
+    "react-native-screens": "~4.23.0",
+    "react-native-webview": "^13.16.0"
   },
   "devDependencies": {
     "@babel/plugin-proposal-decorators": "^7.29.0",
@@ -50,5 +51,16 @@
     "eslint-config-prettier": "^10.1.8",
     "typescript": "~5.9.2"
   },
-  "private": true
+  "private": true,
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "exclude": [
+          "@nozbe/watermelondb",
+          "@nozbe/with-observables"
+        ],
+        "listUnknownPackages": false
+      }
+    }
+  }
 }

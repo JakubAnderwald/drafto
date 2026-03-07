@@ -62,5 +62,5 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       projectId: process.env.EAS_PROJECT_ID,
     },
   },
-  plugins: ["expo-router", "expo-secure-store"],
+  plugins: ["expo-router", "expo-secure-store", "expo-font"],
 });
