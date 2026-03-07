@@ -14,10 +14,11 @@ export default function WaitingForApprovalScreen() {
     setChecking(true);
 
     try {
-      await refreshApprovalStatus();
-      // Navigation is handled by the protected route guard (task 2.5).
-      // For now, show a message if still not approved.
-      setError("Your account is still pending approval.");
+      const approved = await refreshApprovalStatus();
+      // If approved, the route guard will redirect automatically.
+      if (!approved) {
+        setError("Your account is still pending approval.");
+      }
     } finally {
       setChecking(false);
     }
