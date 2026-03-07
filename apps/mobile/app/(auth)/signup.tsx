@@ -1,10 +1,10 @@
 import { Text, View, StyleSheet } from "react-native";
 
-export default function HomeScreen() {
+export default function SignupScreen() {
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Drafto</Text>
-      <Text style={styles.subtitle}>Your notes, everywhere.</Text>
+      <Text style={styles.title}>Sign Up</Text>
+      <Text style={styles.subtitle}>Create your Drafto account</Text>
     </View>
   );
 }
@@ -12,12 +12,12 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#fff",
     alignItems: "center",
     justifyContent: "center",
+    padding: 24,
   },
   title: {
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: "bold",
     marginBottom: 8,
   },
