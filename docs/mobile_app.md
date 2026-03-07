@@ -96,7 +96,7 @@ Maestro is a YAML-based mobile E2E framework. Tests run locally on iOS Simulator
 
 - [x] 3.1 — Supabase data layer (typed query functions for notebooks, notes, trash)
 - [x] 3.2 — Notebooks list screen (fetch, create, rename, delete)
-- [ ] 3.3 — Notes list screen (fetch, create, select, trash)
+- [x] 3.3 — Notes list screen (fetch, create, select, trash)
 - [ ] 3.4 — Note editor screen with 10tap-editor
 - [ ] 3.5 — BlockNote <-> TipTap format converter (in `packages/shared`)
 - [ ] 3.6 — Auto-save with debounce
