@@ -1,21 +1,56 @@
-import { Text, View, StyleSheet } from "react-native";
+import { Text, StyleSheet, ScrollView, Pressable } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+
+import { SyncStatus } from "@/components/sync-status";
+import { useAuth } from "@/providers/auth-provider";
 
 export default function SettingsScreen() {
+  const { signOut } = useAuth();
+
   return (
-    <View style={styles.container}>
-      <Text style={styles.text}>Settings</Text>
-    </View>
+    <ScrollView style={styles.scroll} contentContainerStyle={styles.container}>
+      <Text style={styles.sectionTitle}>Sync</Text>
+      <SyncStatus />
+
+      <Text style={styles.sectionTitle}>Account</Text>
+      <Pressable style={styles.signOutButton} onPress={signOut}>
+        <Ionicons name="log-out-outline" size={20} color="#ef4444" />
+        <Text style={styles.signOutText}>Sign Out</Text>
+      </Pressable>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  scroll: {
     flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
+    backgroundColor: "#f5f5f4",
   },
-  text: {
-    fontSize: 18,
-    color: "#666",
+  container: {
+    padding: 16,
+    gap: 8,
+  },
+  sectionTitle: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#78716c",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginTop: 8,
+    marginBottom: 4,
+    marginLeft: 4,
+  },
+  signOutButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 16,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    gap: 12,
+  },
+  signOutText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#ef4444",
   },
 });

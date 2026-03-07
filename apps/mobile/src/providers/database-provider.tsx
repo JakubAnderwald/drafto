@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useCallback, useState } from "react";
 import { AppState } from "react-native";
 import type { Database } from "@nozbe/watermelondb";
+import { Q } from "@nozbe/watermelondb";
 import { hasUnsyncedChanges } from "@nozbe/watermelondb/sync";
 import NetInfo from "@react-native-community/netinfo";
 
@@ -15,6 +16,9 @@ interface DatabaseContextValue {
   database: Database;
   sync: () => Promise<void>;
   hasPendingChanges: boolean;
+  pendingChangesCount: number;
+  lastSyncedAt: Date | null;
+  isSyncing: boolean;
 }
 
 const DatabaseContext = createContext<DatabaseContextValue | null>(null);
@@ -26,11 +30,29 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const periodicTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [hasPendingChanges, setHasPendingChanges] = useState(false);
+  const [pendingChangesCount, setPendingChangesCount] = useState(0);
+  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   const checkPendingChanges = useCallback(async () => {
     try {
       const pending = await hasUnsyncedChanges({ database });
       setHasPendingChanges(pending);
+
+      if (pending) {
+        const tables = ["notebooks", "notes", "attachments"] as const;
+        let count = 0;
+        for (const table of tables) {
+          const dirtyRecords = await database
+            .get(table)
+            .query(Q.where("_status", Q.notEq("synced")))
+            .fetchCount();
+          count += dirtyRecords;
+        }
+        setPendingChangesCount(count);
+      } else {
+        setPendingChangesCount(0);
+      }
     } catch {
       // Ignore errors checking pending state
     }
@@ -39,9 +61,11 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   const sync = useCallback(async () => {
     if (syncingRef.current) return;
     syncingRef.current = true;
+    setIsSyncing(true);
     try {
       await syncDatabase(database);
       retryCountRef.current = 0;
+      setLastSyncedAt(new Date());
       await checkPendingChanges();
     } catch (err) {
       if (err instanceof SyncNetworkError) {
@@ -61,6 +85,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       await checkPendingChanges();
     } finally {
       syncingRef.current = false;
+      setIsSyncing(false);
     }
   }, [checkPendingChanges]);
 
@@ -123,7 +148,9 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   }, [sync, user]);
 
   return (
-    <DatabaseContext.Provider value={{ database, sync, hasPendingChanges }}>
+    <DatabaseContext.Provider
+      value={{ database, sync, hasPendingChanges, pendingChangesCount, lastSyncedAt, isSyncing }}
+    >
       {children}
     </DatabaseContext.Provider>
   );
