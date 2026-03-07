@@ -78,7 +78,7 @@ Maestro is a YAML-based mobile E2E framework. Tests run locally on iOS Simulator
 - [x] 1.1 — Initialize Expo project in `apps/mobile/` with TypeScript
 - [x] 1.2 — Configure ESLint, Prettier (matching web conventions)
 - [x] 1.3 — Set up Expo Router with tab navigation skeleton (Notebooks, Trash, Settings)
-- [ ] 1.4 — Create ADR-0009 (mobile app technology choices)
+- [x] 1.4 — Create ADR-0009 (mobile app technology choices)
 - [ ] 1-CP — **Checkpoint**: `apps/mobile` builds for iOS simulator and Android emulator
 - [ ] 1-PUSH — **Push**: `/push` to PR
 
