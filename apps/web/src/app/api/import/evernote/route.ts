@@ -8,8 +8,7 @@ import type {
 } from "@/lib/import/types";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/supabase/database.types";
-
-const BUCKET_NAME = "attachments";
+import { BUCKET_NAME, SIGNED_URL_EXPIRY_SECONDS } from "@drafto/shared";
 
 export async function POST(request: Request) {
   const { data: auth, error: authError } = await getAuthenticatedUser();
@@ -175,7 +174,7 @@ async function uploadResource(
   // Generate signed URL
   const { data: urlData, error: urlError } = await supabase.storage
     .from(BUCKET_NAME)
-    .createSignedUrl(filePath, 604800);
+    .createSignedUrl(filePath, SIGNED_URL_EXPIRY_SECONDS);
 
   if (urlError || !urlData?.signedUrl) {
     return null;

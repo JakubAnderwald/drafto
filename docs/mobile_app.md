@@ -68,7 +68,7 @@ Maestro is a YAML-based mobile E2E framework. Tests run locally on iOS Simulator
 
 - [x] 0.1 — Set up pnpm workspaces and Turborepo config
 - [x] 0.2 — Move web app to `apps/web/` (update all paths, tsconfig, CI, Vercel)
-- [ ] 0.3 — Extract shared package (`packages/shared/` — types, constants)
+- [x] 0.3 — Extract shared package (`packages/shared/` — types, constants)
 - [ ] 0.4 — Update CI/CD workflows for monorepo
 - [ ] 0-CP — **Checkpoint**: full web test suite green, `turbo build` passes
 - [ ] 0-PUSH — **Push**: `/push` to PR
