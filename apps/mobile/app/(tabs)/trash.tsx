@@ -12,6 +12,7 @@ import { Q } from "@nozbe/watermelondb";
 
 import { useDatabase } from "@/providers/database-provider";
 import { useTrashedNotes } from "@/hooks/use-trashed-notes";
+import { colors, semantic } from "@/theme/tokens";
 import type { Note, Attachment } from "@/db";
 
 export default function TrashScreen() {
@@ -78,7 +79,12 @@ export default function TrashScreen() {
 
     return (
       <View style={styles.row}>
-        <Ionicons name="document-text-outline" size={20} color="#9ca3af" style={styles.rowIcon} />
+        <Ionicons
+          name="document-text-outline"
+          size={20}
+          color={semantic.fgSubtle}
+          style={styles.rowIcon}
+        />
         <View style={styles.rowContent}>
           <Text style={styles.rowText} numberOfLines={1}>
             {item.title}
@@ -94,14 +100,14 @@ export default function TrashScreen() {
           style={styles.iconButton}
           hitSlop={8}
         >
-          <Ionicons name="arrow-undo-outline" size={18} color="#4f46e5" />
+          <Ionicons name="arrow-undo-outline" size={18} color={colors.primary[600]} />
         </Pressable>
         <Pressable
           onPress={() => handleDeletePermanent(item.id, item.title)}
           style={styles.iconButton}
           hitSlop={8}
         >
-          <Ionicons name="trash-outline" size={18} color="#ef4444" />
+          <Ionicons name="trash-outline" size={18} color={colors.error} />
         </Pressable>
       </View>
     );
@@ -110,7 +116,7 @@ export default function TrashScreen() {
   if (loading) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#4f46e5" />
+        <ActivityIndicator size="large" color={colors.primary[600]} />
       </View>
     );
   }
@@ -119,7 +125,7 @@ export default function TrashScreen() {
     <View style={styles.container}>
       {notes.length === 0 ? (
         <View style={styles.centered}>
-          <Ionicons name="trash-outline" size={48} color="#d1d5db" />
+          <Ionicons name="trash-outline" size={48} color={semantic.borderStrong} />
           <Text style={styles.emptyText}>Trash is empty</Text>
           <Text style={styles.emptySubtext}>Deleted notes will appear here</Text>
         </View>
@@ -138,14 +144,14 @@ export default function TrashScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#fafaf9",
+    backgroundColor: semantic.bgSubtle,
   },
   centered: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
     padding: 24,
-    backgroundColor: "#fafaf9",
+    backgroundColor: semantic.bgSubtle,
   },
   list: {
     paddingVertical: 8,
@@ -155,9 +161,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 14,
     paddingHorizontal: 16,
-    backgroundColor: "#fff",
+    backgroundColor: semantic.bg,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#e5e7eb",
+    borderBottomColor: semantic.border,
   },
   rowIcon: {
     marginRight: 12,
@@ -167,11 +173,11 @@ const styles = StyleSheet.create({
   },
   rowText: {
     fontSize: 16,
-    color: "#111827",
+    color: semantic.fg,
   },
   rowDate: {
     fontSize: 12,
-    color: "#9ca3af",
+    color: semantic.fgSubtle,
     marginTop: 2,
   },
   iconButton: {
@@ -179,12 +185,12 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 18,
-    color: "#6b7280",
+    color: semantic.fgMuted,
     marginTop: 12,
   },
   emptySubtext: {
     fontSize: 14,
-    color: "#9ca3af",
+    color: semantic.fgSubtle,
     marginTop: 4,
   },
 });

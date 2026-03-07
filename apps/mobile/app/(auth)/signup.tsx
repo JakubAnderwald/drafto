@@ -13,6 +13,7 @@ import {
 import { Link, router } from "expo-router";
 
 import { supabase } from "@/lib/supabase";
+import { colors, semantic } from "@/theme/tokens";
 
 export default function SignupScreen() {
   const [email, setEmail] = useState("");
@@ -71,7 +72,7 @@ export default function SignupScreen() {
           <TextInput
             style={styles.input}
             placeholder="you@example.com"
-            placeholderTextColor="#9ca3af"
+            placeholderTextColor={semantic.fgSubtle}
             value={email}
             onChangeText={setEmail}
             autoCapitalize="none"
@@ -85,7 +86,7 @@ export default function SignupScreen() {
           <TextInput
             style={styles.input}
             placeholder="Min. 6 characters"
-            placeholderTextColor="#9ca3af"
+            placeholderTextColor={semantic.fgSubtle}
             value={password}
             onChangeText={setPassword}
             secureTextEntry
@@ -107,7 +108,7 @@ export default function SignupScreen() {
             disabled={loading}
           >
             {loading ? (
-              <ActivityIndicator color="#fff" />
+              <ActivityIndicator color={semantic.onPrimary} />
             ) : (
               <Text style={styles.buttonText}>Sign up</Text>
             )}
@@ -144,20 +145,20 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: 16,
-    color: "#666",
+    color: semantic.fgMuted,
     marginBottom: 24,
   },
   errorContainer: {
-    backgroundColor: "#fef2f2",
+    backgroundColor: semantic.errorBg,
     borderWidth: 1,
-    borderColor: "#fecaca",
+    borderColor: semantic.errorBorder,
     borderRadius: 8,
     padding: 12,
     width: "100%",
     marginBottom: 16,
   },
   errorText: {
-    color: "#dc2626",
+    color: semantic.errorText,
     fontSize: 14,
     textAlign: "center",
   },
@@ -168,33 +169,33 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
     marginBottom: 6,
-    color: "#374151",
+    color: colors.neutral[700],
   },
   input: {
     borderWidth: 1,
-    borderColor: "#d1d5db",
+    borderColor: semantic.borderStrong,
     borderRadius: 8,
     padding: 12,
     fontSize: 16,
     marginBottom: 16,
-    backgroundColor: "#fff",
-    color: "#111827",
+    backgroundColor: semantic.bg,
+    color: semantic.fg,
   },
   button: {
-    backgroundColor: "#4f46e5",
+    backgroundColor: colors.primary[600],
     borderRadius: 8,
     padding: 14,
     alignItems: "center",
     marginTop: 8,
   },
   buttonPressed: {
-    backgroundColor: "#4338ca",
+    backgroundColor: colors.primary[700],
   },
   buttonDisabled: {
     opacity: 0.7,
   },
   buttonText: {
-    color: "#fff",
+    color: semantic.onPrimary,
     fontSize: 16,
     fontWeight: "600",
   },
@@ -203,10 +204,10 @@ const styles = StyleSheet.create({
   },
   footerText: {
     fontSize: 14,
-    color: "#666",
+    color: semantic.fgMuted,
   },
   link: {
-    color: "#4f46e5",
+    color: colors.primary[600],
     fontWeight: "600",
   },
 });

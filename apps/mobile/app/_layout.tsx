@@ -7,6 +7,7 @@ import { AuthProvider, useAuth } from "@/providers/auth-provider";
 import { DatabaseProvider } from "@/providers/database-provider";
 import { OfflineBanner } from "@/components/offline-banner";
 import { ToastProvider } from "@/components/toast";
+import { colors } from "@/theme/tokens";
 
 const PUBLIC_AUTH_SCREENS = new Set(["login", "signup"]);
 
@@ -40,7 +41,7 @@ function RouteGuard({ children }: { children: React.ReactNode }) {
   if (isLoading || isCheckingApproval) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#4f46e5" />
+        <ActivityIndicator size="large" color={colors.primary[600]} />
       </View>
     );
   }

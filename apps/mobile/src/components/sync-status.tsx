@@ -3,6 +3,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { useDatabase } from "@/providers/database-provider";
 import { useNetworkStatus } from "@/hooks/use-network-status";
+import { colors, semantic } from "@/theme/tokens";
 
 function formatLastSynced(date: Date | null): string {
   if (!date) return "Never";
@@ -35,7 +36,11 @@ export function SyncStatus() {
         ? "cloud-upload-outline"
         : "cloud-done-outline";
 
-  const statusColor = !isConnected ? "#ef4444" : hasPendingChanges ? "#f59e0b" : "#22c55e";
+  const statusColor = !isConnected
+    ? colors.error
+    : hasPendingChanges
+      ? colors.warning
+      : colors.success;
 
   const statusText = isSyncing
     ? "Syncing..."
@@ -59,10 +64,14 @@ export function SyncStatus() {
     >
       <View style={[styles.indicator, { backgroundColor: statusColor }]}>
         {isSyncing ? (
-          <ActivityIndicator size="small" color="#fff" />
+          <ActivityIndicator size="small" color={semantic.onPrimary} />
         ) : (
           statusIcon && (
-            <Ionicons name={statusIcon as keyof typeof Ionicons.glyphMap} size={20} color="#fff" />
+            <Ionicons
+              name={statusIcon as keyof typeof Ionicons.glyphMap}
+              size={20}
+              color={semantic.onPrimary}
+            />
           )
         )}
       </View>
@@ -70,7 +79,9 @@ export function SyncStatus() {
         <Text style={styles.statusText}>{statusText}</Text>
         <Text style={styles.lastSynced}>Last synced: {formatLastSynced(lastSyncedAt)}</Text>
       </View>
-      {isConnected && !isSyncing && <Ionicons name="refresh-outline" size={18} color="#999" />}
+      {isConnected && !isSyncing && (
+        <Ionicons name="refresh-outline" size={18} color={colors.neutral[400]} />
+      )}
     </Pressable>
   );
 }
@@ -80,7 +91,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     padding: 16,
-    backgroundColor: "#fff",
+    backgroundColor: semantic.bg,
     borderRadius: 12,
     gap: 12,
   },
@@ -98,10 +109,10 @@ const styles = StyleSheet.create({
   statusText: {
     fontSize: 15,
     fontWeight: "600",
-    color: "#1c1917",
+    color: semantic.fg,
   },
   lastSynced: {
     fontSize: 13,
-    color: "#78716c",
+    color: colors.neutral[500],
   },
 });

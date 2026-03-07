@@ -19,6 +19,7 @@ import { NoteEditor } from "@/components/editor/note-editor";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { AttachmentList } from "@/components/editor/attachment-list";
 import { useAutoSave } from "@/hooks/use-auto-save";
+import { colors, semantic } from "@/theme/tokens";
 import type { Note } from "@/db";
 
 export default function EditorScreen() {
@@ -113,7 +114,7 @@ export default function EditorScreen() {
   if (loading) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#4f46e5" />
+        <ActivityIndicator size="large" color={colors.primary[600]} />
       </View>
     );
   }
@@ -142,7 +143,7 @@ export default function EditorScreen() {
             value={title}
             onChangeText={handleTitleChange}
             placeholder="Untitled"
-            placeholderTextColor="#9ca3af"
+            placeholderTextColor={semantic.fgSubtle}
             returnKeyType="next"
           />
           {saveStatus === "saving" && <Text style={styles.statusText}>Saving...</Text>}
@@ -162,43 +163,43 @@ export default function EditorScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#fafaf9",
+    backgroundColor: semantic.bgSubtle,
   },
   centered: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
     padding: 24,
-    backgroundColor: "#fafaf9",
+    backgroundColor: semantic.bgSubtle,
   },
   titleRow: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#fff",
+    backgroundColor: semantic.bg,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#e5e7eb",
+    borderBottomColor: semantic.border,
   },
   titleInput: {
     flex: 1,
     fontSize: 22,
     fontWeight: "700",
-    color: "#111827",
+    color: semantic.fg,
     paddingHorizontal: 16,
     paddingVertical: 12,
   },
   statusText: {
     fontSize: 12,
-    color: "#9ca3af",
+    color: semantic.fgSubtle,
     paddingRight: 16,
   },
   statusTextSaved: {
     fontSize: 12,
-    color: "#16a34a",
+    color: semantic.successText,
     paddingRight: 16,
   },
   statusTextError: {
     fontSize: 12,
-    color: "#dc2626",
+    color: semantic.errorText,
     paddingRight: 16,
   },
   editorContainer: {
@@ -206,18 +207,18 @@ const styles = StyleSheet.create({
   },
   errorText: {
     fontSize: 16,
-    color: "#dc2626",
+    color: semantic.errorText,
     textAlign: "center",
     marginBottom: 16,
   },
   retryButton: {
-    backgroundColor: "#4f46e5",
+    backgroundColor: colors.primary[600],
     borderRadius: 8,
     paddingVertical: 10,
     paddingHorizontal: 20,
   },
   retryText: {
-    color: "#fff",
+    color: semantic.onPrimary,
     fontSize: 16,
     fontWeight: "600",
   },

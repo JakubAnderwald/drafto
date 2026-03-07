@@ -4,6 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useNetworkStatus } from "@/hooks/use-network-status";
+import { colors, semantic } from "@/theme/tokens";
 
 export function OfflineBanner() {
   const { isConnected } = useNetworkStatus();
@@ -55,7 +56,11 @@ export function OfflineBanner() {
       ]}
     >
       <View style={styles.content}>
-        <Ionicons name={isReconnected ? "wifi" : "cloud-offline-outline"} size={16} color="#fff" />
+        <Ionicons
+          name={isReconnected ? "wifi" : "cloud-offline-outline"}
+          size={16}
+          color={semantic.onPrimary}
+        />
         <Text style={styles.text}>
           {isReconnected ? "Back online — syncing..." : "You are offline"}
         </Text>
@@ -74,10 +79,10 @@ const styles = StyleSheet.create({
     paddingBottom: 6,
   },
   offline: {
-    backgroundColor: "#ef4444",
+    backgroundColor: colors.error,
   },
   reconnected: {
-    backgroundColor: "#22c55e",
+    backgroundColor: colors.success,
   },
   content: {
     flexDirection: "row",
@@ -86,7 +91,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   text: {
-    color: "#fff",
+    color: semantic.onPrimary,
     fontSize: 13,
     fontWeight: "600",
   },

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Text, View, Pressable, StyleSheet, ActivityIndicator } from "react-native";
 
 import { useAuth } from "@/providers/auth-provider";
+import { colors, semantic } from "@/theme/tokens";
 
 export default function WaitingForApprovalScreen() {
   const { signOut, refreshApprovalStatus } = useAuth();
@@ -60,7 +61,7 @@ export default function WaitingForApprovalScreen() {
         disabled={checking || signingOut}
       >
         {checking ? (
-          <ActivityIndicator color="#fff" />
+          <ActivityIndicator color={semantic.onPrimary} />
         ) : (
           <Text style={styles.buttonText}>Check approval status</Text>
         )}
@@ -76,7 +77,7 @@ export default function WaitingForApprovalScreen() {
         disabled={checking || signingOut}
       >
         {signingOut ? (
-          <ActivityIndicator color="#4f46e5" />
+          <ActivityIndicator color={colors.primary[600]} />
         ) : (
           <Text style={styles.signOutButtonText}>Sign out</Text>
         )}
@@ -103,27 +104,27 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: 16,
-    color: "#666",
+    color: semantic.fgMuted,
     textAlign: "center",
     lineHeight: 24,
     marginBottom: 32,
   },
   errorContainer: {
-    backgroundColor: "#fef2f2",
+    backgroundColor: semantic.errorBg,
     borderWidth: 1,
-    borderColor: "#fecaca",
+    borderColor: semantic.errorBorder,
     borderRadius: 8,
     padding: 12,
     width: "100%",
     marginBottom: 16,
   },
   errorText: {
-    color: "#dc2626",
+    color: semantic.errorText,
     fontSize: 14,
     textAlign: "center",
   },
   button: {
-    backgroundColor: "#4f46e5",
+    backgroundColor: colors.primary[600],
     borderRadius: 8,
     padding: 14,
     alignItems: "center",
@@ -131,29 +132,29 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   buttonPressed: {
-    backgroundColor: "#4338ca",
+    backgroundColor: colors.primary[700],
   },
   buttonDisabled: {
     opacity: 0.7,
   },
   buttonText: {
-    color: "#fff",
+    color: semantic.onPrimary,
     fontSize: 16,
     fontWeight: "600",
   },
   signOutButton: {
     borderWidth: 1,
-    borderColor: "#d1d5db",
+    borderColor: semantic.borderStrong,
     borderRadius: 8,
     padding: 14,
     alignItems: "center",
     width: "100%",
   },
   signOutButtonPressed: {
-    backgroundColor: "#f3f4f6",
+    backgroundColor: semantic.bgMuted,
   },
   signOutButtonText: {
-    color: "#4f46e5",
+    color: colors.primary[600],
     fontSize: 16,
     fontWeight: "600",
   },

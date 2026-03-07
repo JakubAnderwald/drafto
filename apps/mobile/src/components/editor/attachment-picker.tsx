@@ -7,6 +7,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { useToast } from "@/components/toast";
+import { colors, semantic } from "@/theme/tokens";
 
 interface AttachmentPickerProps {
   noteId: string;
@@ -56,7 +57,7 @@ export function AttachmentPicker({ noteId, onUploadComplete }: AttachmentPickerP
   if (uploading) {
     return (
       <View style={styles.container}>
-        <ActivityIndicator size="small" color="#4f46e5" />
+        <ActivityIndicator size="small" color={colors.primary[600]} />
         <Text style={styles.uploadingText}>Saving...</Text>
       </View>
     );
@@ -70,7 +71,7 @@ export function AttachmentPicker({ noteId, onUploadComplete }: AttachmentPickerP
         accessibilityLabel="Attach image"
         accessibilityRole="button"
       >
-        <Ionicons name="image-outline" size={20} color="#4f46e5" />
+        <Ionicons name="image-outline" size={20} color={colors.primary[600]} />
         <Text style={styles.buttonText}>Image</Text>
       </Pressable>
       <Pressable
@@ -79,7 +80,7 @@ export function AttachmentPicker({ noteId, onUploadComplete }: AttachmentPickerP
         accessibilityLabel="Attach file"
         accessibilityRole="button"
       >
-        <Ionicons name="document-outline" size={20} color="#4f46e5" />
+        <Ionicons name="document-outline" size={20} color={colors.primary[600]} />
         <Text style={styles.buttonText}>File</Text>
       </Pressable>
     </View>
@@ -94,8 +95,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#e5e7eb",
-    backgroundColor: "#fff",
+    borderTopColor: semantic.border,
+    backgroundColor: semantic.bg,
   },
   button: {
     flexDirection: "row",
@@ -104,16 +105,16 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 12,
     borderRadius: 8,
-    backgroundColor: "#eef2ff",
+    backgroundColor: colors.primary[50],
   },
   buttonText: {
     fontSize: 14,
     fontWeight: "500",
-    color: "#4f46e5",
+    color: colors.primary[600],
   },
   uploadingText: {
     fontSize: 14,
-    color: "#6b7280",
+    color: semantic.fgMuted,
     marginLeft: 8,
   },
 });

@@ -16,6 +16,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
 import { useNotes } from "@/hooks/use-notes";
 import { generateId } from "@/lib/generate-id";
+import { colors, semantic } from "@/theme/tokens";
 import type { Note } from "@/db";
 
 export default function NotesListScreen() {
@@ -122,7 +123,7 @@ export default function NotesListScreen() {
             returnKeyType="done"
           />
           <Pressable onPress={() => handleRename(item.id)} style={styles.iconButton}>
-            <Ionicons name="checkmark" size={22} color="#4f46e5" />
+            <Ionicons name="checkmark" size={22} color={colors.primary[600]} />
           </Pressable>
           <Pressable
             onPress={() => {
@@ -131,7 +132,7 @@ export default function NotesListScreen() {
             }}
             style={styles.iconButton}
           >
-            <Ionicons name="close" size={22} color="#6b7280" />
+            <Ionicons name="close" size={22} color={semantic.fgMuted} />
           </Pressable>
         </View>
       );
@@ -143,7 +144,12 @@ export default function NotesListScreen() {
         onPress={() => router.push(`/notes/${item.id}`)}
         onLongPress={() => startEditing(item)}
       >
-        <Ionicons name="document-text-outline" size={20} color="#4f46e5" style={styles.rowIcon} />
+        <Ionicons
+          name="document-text-outline"
+          size={20}
+          color={colors.primary[600]}
+          style={styles.rowIcon}
+        />
         <View style={styles.rowContent}>
           <Text style={styles.rowText} numberOfLines={1}>
             {item.title}
@@ -157,7 +163,7 @@ export default function NotesListScreen() {
           style={styles.iconButton}
           hitSlop={8}
         >
-          <Ionicons name="trash-outline" size={18} color="#9ca3af" />
+          <Ionicons name="trash-outline" size={18} color={semantic.fgSubtle} />
         </Pressable>
       </Pressable>
     );
@@ -166,7 +172,7 @@ export default function NotesListScreen() {
   if (loading) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#4f46e5" />
+        <ActivityIndicator size="large" color={colors.primary[600]} />
       </View>
     );
   }
@@ -178,7 +184,7 @@ export default function NotesListScreen() {
           <TextInput
             style={[styles.input, styles.createInput]}
             placeholder="Note title (optional)"
-            placeholderTextColor="#9ca3af"
+            placeholderTextColor={semantic.fgSubtle}
             value={newTitle}
             onChangeText={setNewTitle}
             autoFocus
@@ -186,7 +192,7 @@ export default function NotesListScreen() {
             returnKeyType="done"
           />
           <Pressable onPress={handleCreate} style={styles.iconButton}>
-            <Ionicons name="checkmark" size={22} color="#4f46e5" />
+            <Ionicons name="checkmark" size={22} color={colors.primary[600]} />
           </Pressable>
           <Pressable
             onPress={() => {
@@ -195,14 +201,14 @@ export default function NotesListScreen() {
             }}
             style={styles.iconButton}
           >
-            <Ionicons name="close" size={22} color="#6b7280" />
+            <Ionicons name="close" size={22} color={semantic.fgMuted} />
           </Pressable>
         </View>
       )}
 
       {notes.length === 0 && !creating ? (
         <View style={styles.centered}>
-          <Ionicons name="document-text-outline" size={48} color="#d1d5db" />
+          <Ionicons name="document-text-outline" size={48} color={semantic.borderStrong} />
           <Text style={styles.emptyText}>No notes yet</Text>
           <Text style={styles.emptySubtext}>Tap + to create one</Text>
         </View>
@@ -220,7 +226,7 @@ export default function NotesListScreen() {
           style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}
           onPress={() => setCreating(true)}
         >
-          <Ionicons name="add" size={28} color="#fff" />
+          <Ionicons name="add" size={28} color={semantic.onPrimary} />
         </Pressable>
       )}
     </View>
@@ -230,14 +236,14 @@ export default function NotesListScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#fafaf9",
+    backgroundColor: semantic.bgSubtle,
   },
   centered: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
     padding: 24,
-    backgroundColor: "#fafaf9",
+    backgroundColor: semantic.bgSubtle,
   },
   list: {
     paddingVertical: 8,
@@ -247,12 +253,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 14,
     paddingHorizontal: 16,
-    backgroundColor: "#fff",
+    backgroundColor: semantic.bg,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#e5e7eb",
+    borderBottomColor: semantic.border,
   },
   rowPressed: {
-    backgroundColor: "#f3f4f6",
+    backgroundColor: semantic.bgMuted,
   },
   rowIcon: {
     marginRight: 12,
@@ -262,11 +268,11 @@ const styles = StyleSheet.create({
   },
   rowText: {
     fontSize: 16,
-    color: "#111827",
+    color: semantic.fg,
   },
   rowDate: {
     fontSize: 12,
-    color: "#9ca3af",
+    color: semantic.fgSubtle,
     marginTop: 2,
   },
   iconButton: {
@@ -274,21 +280,21 @@ const styles = StyleSheet.create({
   },
   input: {
     borderWidth: 1,
-    borderColor: "#d1d5db",
+    borderColor: semantic.borderStrong,
     borderRadius: 8,
     padding: 10,
     fontSize: 16,
-    backgroundColor: "#fff",
-    color: "#111827",
+    backgroundColor: semantic.bg,
+    color: semantic.fg,
   },
   createBar: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 16,
     paddingVertical: 10,
-    backgroundColor: "#fff",
+    backgroundColor: semantic.bg,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#e5e7eb",
+    borderBottomColor: semantic.border,
   },
   createInput: {
     flex: 1,
@@ -305,26 +311,26 @@ const styles = StyleSheet.create({
     width: 56,
     height: 56,
     borderRadius: 28,
-    backgroundColor: "#4f46e5",
+    backgroundColor: colors.primary[600],
     alignItems: "center",
     justifyContent: "center",
     elevation: 4,
-    shadowColor: "#000",
+    shadowColor: colors.black,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 4,
   },
   fabPressed: {
-    backgroundColor: "#4338ca",
+    backgroundColor: colors.primary[700],
   },
   emptyText: {
     fontSize: 18,
-    color: "#6b7280",
+    color: semantic.fgMuted,
     marginTop: 12,
   },
   emptySubtext: {
     fontSize: 14,
-    color: "#9ca3af",
+    color: semantic.fgSubtle,
     marginTop: 4,
   },
 });

@@ -3,6 +3,8 @@ import { View, Text, StyleSheet, Animated } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { colors, semantic } from "@/theme/tokens";
+
 type ToastType = "info" | "warning" | "success";
 
 interface ToastMessage {
@@ -26,9 +28,9 @@ const ICON_MAP: Record<ToastType, keyof typeof Ionicons.glyphMap> = {
 };
 
 const COLOR_MAP: Record<ToastType, string> = {
-  info: "#3b82f6",
-  warning: "#f59e0b",
-  success: "#22c55e",
+  info: colors.info,
+  warning: colors.warning,
+  success: colors.success,
 };
 
 function Toast({ message, onDismiss }: { message: ToastMessage; onDismiss: () => void }) {
@@ -130,12 +132,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    backgroundColor: "#fff",
+    backgroundColor: semantic.bg,
     paddingVertical: 12,
     paddingHorizontal: 16,
     borderRadius: 10,
     borderLeftWidth: 4,
-    shadowColor: "#000",
+    shadowColor: colors.black,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.15,
     shadowRadius: 6,
@@ -145,6 +147,6 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
     fontWeight: "500",
-    color: "#1c1917",
+    color: semantic.fg,
   },
 });

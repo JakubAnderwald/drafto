@@ -3,6 +3,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { SyncStatus } from "@/components/sync-status";
 import { useAuth } from "@/providers/auth-provider";
+import { colors, semantic } from "@/theme/tokens";
 
 export default function SettingsScreen() {
   const { signOut } = useAuth();
@@ -14,7 +15,7 @@ export default function SettingsScreen() {
 
       <Text style={styles.sectionTitle}>Account</Text>
       <Pressable style={styles.signOutButton} onPress={signOut}>
-        <Ionicons name="log-out-outline" size={20} color="#ef4444" />
+        <Ionicons name="log-out-outline" size={20} color={colors.error} />
         <Text style={styles.signOutText}>Sign Out</Text>
       </Pressable>
     </ScrollView>
@@ -24,7 +25,7 @@ export default function SettingsScreen() {
 const styles = StyleSheet.create({
   scroll: {
     flex: 1,
-    backgroundColor: "#f5f5f4",
+    backgroundColor: semantic.bgMuted,
   },
   container: {
     padding: 16,
@@ -33,7 +34,7 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 13,
     fontWeight: "600",
-    color: "#78716c",
+    color: colors.neutral[500],
     textTransform: "uppercase",
     letterSpacing: 0.5,
     marginTop: 8,
@@ -44,13 +45,13 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     padding: 16,
-    backgroundColor: "#fff",
+    backgroundColor: semantic.bg,
     borderRadius: 12,
     gap: 12,
   },
   signOutText: {
     fontSize: 15,
     fontWeight: "600",
-    color: "#ef4444",
+    color: colors.error,
   },
 });

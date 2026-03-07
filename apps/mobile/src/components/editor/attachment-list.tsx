@@ -15,6 +15,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { getSignedUrl, deleteAttachment as deleteAttachmentApi } from "@/lib/data";
 import { useDatabase } from "@/providers/database-provider";
 import { useToast } from "@/components/toast";
+import { colors, semantic } from "@/theme/tokens";
 import type { Attachment } from "@/db";
 
 interface AttachmentListProps {
@@ -96,7 +97,7 @@ function AttachmentItem({ attachment, onDelete }: AttachmentItemProps) {
       <View style={styles.imageItem}>
         {!isPending && loadingUrl ? (
           <View style={styles.imagePlaceholder}>
-            <ActivityIndicator size="small" color="#4f46e5" />
+            <ActivityIndicator size="small" color={colors.primary[600]} />
           </View>
         ) : displayUri && !imageError ? (
           <Pressable onPress={handlePress} accessibilityLabel={`Open ${attachment.fileName}`}>
@@ -110,7 +111,7 @@ function AttachmentItem({ attachment, onDelete }: AttachmentItemProps) {
           </Pressable>
         ) : (
           <View style={styles.imagePlaceholder}>
-            <Ionicons name="image-outline" size={24} color="#9ca3af" />
+            <Ionicons name="image-outline" size={24} color={colors.neutral[400]} />
           </View>
         )}
         <View style={styles.imageFooter}>
@@ -126,7 +127,7 @@ function AttachmentItem({ attachment, onDelete }: AttachmentItemProps) {
             accessibilityLabel={`Delete ${attachment.fileName}`}
             accessibilityRole="button"
           >
-            <Ionicons name="trash-outline" size={16} color="#9ca3af" />
+            <Ionicons name="trash-outline" size={16} color={colors.neutral[400]} />
           </Pressable>
         </View>
       </View>
@@ -141,7 +142,7 @@ function AttachmentItem({ attachment, onDelete }: AttachmentItemProps) {
       accessibilityLabel={`Open ${attachment.fileName}`}
       accessibilityRole="link"
     >
-      <Ionicons name="document-outline" size={24} color="#4f46e5" />
+      <Ionicons name="document-outline" size={24} color={colors.primary[600]} />
       <View style={styles.fileInfo}>
         <View style={styles.fileNameRow}>
           {isPending && <PendingBadge />}
@@ -157,7 +158,7 @@ function AttachmentItem({ attachment, onDelete }: AttachmentItemProps) {
         accessibilityLabel={`Delete ${attachment.fileName}`}
         accessibilityRole="button"
       >
-        <Ionicons name="trash-outline" size={16} color="#9ca3af" />
+        <Ionicons name="trash-outline" size={16} color={colors.neutral[400]} />
       </Pressable>
     </Pressable>
   );
@@ -166,7 +167,7 @@ function AttachmentItem({ attachment, onDelete }: AttachmentItemProps) {
 function PendingBadge() {
   return (
     <View style={styles.pendingBadge}>
-      <Ionicons name="cloud-upload-outline" size={10} color="#f59e0b" />
+      <Ionicons name="cloud-upload-outline" size={10} color={colors.warning} />
       <Text style={styles.pendingText}>Pending</Text>
     </View>
   );
@@ -226,14 +227,14 @@ export function AttachmentList({ attachments }: AttachmentListProps) {
 const styles = StyleSheet.create({
   container: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#e5e7eb",
-    backgroundColor: "#fff",
+    borderTopColor: semantic.border,
+    backgroundColor: semantic.bg,
     paddingVertical: 8,
   },
   sectionTitle: {
     fontSize: 13,
     fontWeight: "600",
-    color: "#6b7280",
+    color: semantic.fgMuted,
     textTransform: "uppercase",
     letterSpacing: 0.5,
     paddingHorizontal: 16,
@@ -244,13 +245,13 @@ const styles = StyleSheet.create({
     marginVertical: 4,
     borderRadius: 8,
     overflow: "hidden",
-    backgroundColor: "#f3f4f6",
+    backgroundColor: semantic.bgMuted,
   },
   imagePlaceholder: {
     height: 160,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#f3f4f6",
+    backgroundColor: semantic.bgMuted,
   },
   imagePreview: {
     width: "100%",
@@ -267,7 +268,7 @@ const styles = StyleSheet.create({
   imageFileName: {
     flex: 1,
     fontSize: 12,
-    color: "#6b7280",
+    color: semantic.fgMuted,
     marginRight: 8,
   },
   fileItem: {
@@ -279,7 +280,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 12,
     borderRadius: 8,
-    backgroundColor: "#f3f4f6",
+    backgroundColor: semantic.bgMuted,
   },
   fileInfo: {
     flex: 1,
@@ -287,12 +288,12 @@ const styles = StyleSheet.create({
   fileFileName: {
     fontSize: 14,
     fontWeight: "500",
-    color: "#111827",
+    color: semantic.fg,
     flex: 1,
   },
   fileMeta: {
     fontSize: 12,
-    color: "#9ca3af",
+    color: semantic.fgSubtle,
     marginTop: 2,
   },
   fileNameRow: {
@@ -304,7 +305,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 2,
-    backgroundColor: "#fffbeb",
+    backgroundColor: colors.accent[50],
     borderRadius: 4,
     paddingHorizontal: 4,
     paddingVertical: 1,
@@ -312,6 +313,6 @@ const styles = StyleSheet.create({
   pendingText: {
     fontSize: 10,
     fontWeight: "600",
-    color: "#f59e0b",
+    color: colors.warning,
   },
 });
