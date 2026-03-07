@@ -27,9 +27,11 @@ export default function NotebooksScreen() {
   const [newName, setNewName] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   const fetchNotebooks = useCallback(async () => {
     try {
+      setLoading(true);
       setError(null);
       const data = await getNotebooks();
       setNotebooks(data);
@@ -46,29 +48,35 @@ export default function NotebooksScreen() {
 
   const handleCreate = async () => {
     const trimmed = newName.trim();
-    if (!trimmed || !user) return;
+    if (!trimmed || !user || submitting) return;
 
     try {
+      setSubmitting(true);
       const notebook = await createNotebook(user.id, trimmed);
       setNotebooks((prev) => [notebook, ...prev]);
       setNewName("");
       setCreating(false);
     } catch (err) {
       Alert.alert("Error", err instanceof Error ? err.message : "Failed to create notebook");
+    } finally {
+      setSubmitting(false);
     }
   };
 
   const handleRename = async (id: string) => {
     const trimmed = editName.trim();
-    if (!trimmed) return;
+    if (!trimmed || submitting) return;
 
     try {
+      setSubmitting(true);
       const updated = await updateNotebook(id, trimmed);
       setNotebooks((prev) => prev.map((n) => (n.id === id ? updated : n)));
       setEditingId(null);
       setEditName("");
     } catch (err) {
       Alert.alert("Error", err instanceof Error ? err.message : "Failed to rename notebook");
+    } finally {
+      setSubmitting(false);
     }
   };
 
