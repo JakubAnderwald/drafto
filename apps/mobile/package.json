@@ -6,7 +6,7 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "lint": "echo \"ESLint will be configured in task 1.2\"",
+    "lint": "expo lint",
     "typecheck": "tsc --noEmit",
     "test": "echo \"No tests yet\""
   },
@@ -24,6 +24,11 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "@typescript-eslint/eslint-plugin": "^8.56.1",
+    "@typescript-eslint/parser": "^8.56.1",
+    "eslint": "^9.39.3",
+    "eslint-config-expo": "^55.0.0",
+    "eslint-config-prettier": "^10.1.8",
     "typescript": "~5.9.2"
   },
   "private": true
