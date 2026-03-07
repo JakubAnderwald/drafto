@@ -1,5 +1,7 @@
-import { Model } from "@nozbe/watermelondb";
+import { Model, Relation } from "@nozbe/watermelondb";
 import { field, date, readonly, relation } from "@nozbe/watermelondb/decorators";
+
+import type { Note } from "./note";
 
 export class Attachment extends Model {
   static table = "attachments";
@@ -17,5 +19,5 @@ export class Attachment extends Model {
   @field("mime_type") mimeType!: string;
   @readonly @date("created_at") createdAt!: Date;
 
-  @relation("notes", "note_id") note!: unknown;
+  @relation("notes", "note_id") note!: Relation<Note>;
 }
