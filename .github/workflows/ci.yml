@@ -28,6 +28,8 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm exec tsc --noEmit
+      - name: Check migration safety
+        run: pnpm migration:check
       - run: pnpm audit --audit-level=high
         continue-on-error: true
 
