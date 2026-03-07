@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Text,
   View,
@@ -11,42 +11,25 @@ import {
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import type { NoteRow } from "@drafto/shared";
 
 import { useAuth } from "@/providers/auth-provider";
-import { getNotes, createNote, updateNote, trashNote } from "@/lib/data";
+import { useDatabase } from "@/providers/database-provider";
+import { useNotes } from "@/hooks/use-notes";
+import { generateId } from "@/lib/generate-id";
+import type { Note } from "@/db";
 
 export default function NotesListScreen() {
   const { id: notebookId } = useLocalSearchParams<{ id: string }>();
   const { user } = useAuth();
+  const { database, sync } = useDatabase();
   const router = useRouter();
+  const { notes, loading } = useNotes(notebookId);
 
-  const [notes, setNotes] = useState<NoteRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [submitting, setSubmitting] = useState(false);
-
-  const fetchNotes = useCallback(async () => {
-    if (!notebookId) return;
-    try {
-      setLoading(true);
-      setError(null);
-      const data = await getNotes(notebookId);
-      setNotes(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load notes");
-    } finally {
-      setLoading(false);
-    }
-  }, [notebookId]);
-
-  useEffect(() => {
-    fetchNotes();
-  }, [fetchNotes]);
 
   const handleCreate = async () => {
     const trimmed = newTitle.trim();
@@ -54,10 +37,20 @@ export default function NotesListScreen() {
 
     try {
       setSubmitting(true);
-      const note = await createNote(user.id, notebookId, trimmed || undefined);
-      setNotes((prev) => [note, ...prev]);
+      const id = generateId();
+      await database.write(async () => {
+        await database.get<Note>("notes").create((record) => {
+          record._raw.id = id;
+          record.remoteId = id;
+          record.notebookId = notebookId;
+          record.userId = user.id;
+          record.title = trimmed || "Untitled";
+          record.isTrashed = false;
+        });
+      });
       setNewTitle("");
       setCreating(false);
+      sync();
     } catch (err) {
       Alert.alert("Error", err instanceof Error ? err.message : "Failed to create note");
     } finally {
@@ -71,10 +64,15 @@ export default function NotesListScreen() {
 
     try {
       setSubmitting(true);
-      const updated = await updateNote(id, { title: trimmed });
-      setNotes((prev) => prev.map((n) => (n.id === id ? updated : n)));
+      const note = await database.get<Note>("notes").find(id);
+      await database.write(async () => {
+        await note.update((record) => {
+          record.title = trimmed;
+        });
+      });
       setEditingId(null);
       setEditTitle("");
+      sync();
     } catch (err) {
       Alert.alert("Error", err instanceof Error ? err.message : "Failed to rename note");
     } finally {
@@ -90,8 +88,14 @@ export default function NotesListScreen() {
         style: "destructive",
         onPress: async () => {
           try {
-            await trashNote(id);
-            setNotes((prev) => prev.filter((n) => n.id !== id));
+            const note = await database.get<Note>("notes").find(id);
+            await database.write(async () => {
+              await note.update((record) => {
+                record.isTrashed = true;
+                record.trashedAt = new Date();
+              });
+            });
+            sync();
           } catch (err) {
             Alert.alert("Error", err instanceof Error ? err.message : "Failed to trash note");
           }
@@ -100,12 +104,12 @@ export default function NotesListScreen() {
     ]);
   };
 
-  const startEditing = (note: NoteRow) => {
+  const startEditing = (note: Note) => {
     setEditingId(note.id);
     setEditTitle(note.title);
   };
 
-  const renderNote = ({ item }: { item: NoteRow }) => {
+  const renderNote = ({ item }: { item: Note }) => {
     if (editingId === item.id) {
       return (
         <View style={styles.row}>
@@ -145,7 +149,7 @@ export default function NotesListScreen() {
             {item.title}
           </Text>
           <Text style={styles.rowDate} numberOfLines={1}>
-            {new Date(item.updated_at).toLocaleDateString()}
+            {item.updatedAt.toLocaleDateString()}
           </Text>
         </View>
         <Pressable
@@ -163,17 +167,6 @@ export default function NotesListScreen() {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color="#4f46e5" />
-      </View>
-    );
-  }
-
-  if (error) {
-    return (
-      <View style={styles.centered}>
-        <Text style={styles.errorText}>{error}</Text>
-        <Pressable style={styles.retryButton} onPress={fetchNotes}>
-          <Text style={styles.retryText}>Retry</Text>
-        </Pressable>
       </View>
     );
   }
@@ -333,22 +326,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#9ca3af",
     marginTop: 4,
-  },
-  errorText: {
-    fontSize: 16,
-    color: "#dc2626",
-    textAlign: "center",
-    marginBottom: 16,
-  },
-  retryButton: {
-    backgroundColor: "#4f46e5",
-    borderRadius: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-  },
-  retryText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "600",
   },
 });
