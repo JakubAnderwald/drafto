@@ -1,46 +1,48 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Animated } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useNetworkStatus } from "@/hooks/use-network-status";
 
 export function OfflineBanner() {
   const { isConnected } = useNetworkStatus();
-  const slideAnim = useRef(new Animated.Value(-50)).current;
+  const insets = useSafeAreaInsets();
+  const slideAnim = useRef(new Animated.Value(-100)).current;
   const wasOfflineRef = useRef(false);
-  const showReconnected = useRef(false);
+  const [showReconnected, setShowReconnected] = useState(false);
 
   useEffect(() => {
     if (!isConnected) {
       wasOfflineRef.current = true;
-      showReconnected.current = false;
+      setShowReconnected(false);
       Animated.timing(slideAnim, {
         toValue: 0,
         duration: 300,
         useNativeDriver: true,
       }).start();
     } else if (wasOfflineRef.current) {
-      showReconnected.current = true;
+      setShowReconnected(true);
       wasOfflineRef.current = false;
       // Keep visible briefly to show "Back online", then hide
       const timer = setTimeout(() => {
         Animated.timing(slideAnim, {
-          toValue: -50,
+          toValue: -100,
           duration: 300,
           useNativeDriver: true,
         }).start(() => {
-          showReconnected.current = false;
+          setShowReconnected(false);
         });
       }, 2000);
       return () => clearTimeout(timer);
     } else {
       // Initially connected, hide
-      slideAnim.setValue(-50);
+      slideAnim.setValue(-100);
     }
   }, [isConnected, slideAnim]);
 
   const isOffline = !isConnected;
-  const isReconnected = showReconnected.current && isConnected;
+  const isReconnected = showReconnected && isConnected;
 
   if (!isOffline && !isReconnected) return null;
 
@@ -49,7 +51,7 @@ export function OfflineBanner() {
       style={[
         styles.container,
         isReconnected ? styles.reconnected : styles.offline,
-        { transform: [{ translateY: slideAnim }] },
+        { paddingTop: insets.top + 4, transform: [{ translateY: slideAnim }] },
       ]}
     >
       <View style={styles.content}>
@@ -69,7 +71,6 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     zIndex: 100,
-    paddingTop: 4,
     paddingBottom: 6,
   },
   offline: {

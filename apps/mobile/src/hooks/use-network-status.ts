@@ -20,6 +20,7 @@ export function useNetworkStatus(): NetworkStatus {
   }, []);
 
   useEffect(() => {
+    NetInfo.fetch().then(handleStateChange);
     const unsubscribe = NetInfo.addEventListener(handleStateChange);
     return () => unsubscribe();
   }, [handleStateChange]);
