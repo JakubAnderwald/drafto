@@ -111,7 +111,7 @@ Maestro is a YAML-based mobile E2E framework. Tests run locally on iOS Simulator
 - [x] 4.4 — Migrate screens from direct Supabase queries to WatermelonDB observables
 - [x] 4.5 — Create ADR-0010 (offline sync strategy with WatermelonDB)
 - [x] 4-CP — **Checkpoint**: app works offline (read + write), syncs when online
-- [ ] 4-PUSH — **Push**: `/push` to PR
+- [x] 4-PUSH — **Push**: `/push` to PR
 
 ### Phase 5: Offline Write Support & Sync UX
 
