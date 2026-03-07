@@ -5,6 +5,7 @@ import { StatusBar } from "expo-status-bar";
 
 import { AuthProvider, useAuth } from "@/providers/auth-provider";
 import { DatabaseProvider } from "@/providers/database-provider";
+import { OfflineBanner } from "@/components/offline-banner";
 
 const PUBLIC_AUTH_SCREENS = new Set(["login", "signup"]);
 
@@ -51,17 +52,23 @@ export default function RootLayout() {
     <AuthProvider>
       <DatabaseProvider>
         <RouteGuard>
-          <Stack>
-            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-            <Stack.Screen name="(auth)/login" options={{ title: "Log In" }} />
-            <Stack.Screen name="(auth)/signup" options={{ title: "Sign Up" }} />
-            <Stack.Screen
-              name="(auth)/waiting-for-approval"
-              options={{ title: "Awaiting Approval", headerBackVisible: false }}
-            />
-            <Stack.Screen name="notebooks/[id]" options={{ title: "Notes" }} />
-            <Stack.Screen name="notes/[id]" options={{ title: "Editor" }} />
-          </Stack>
+          <View style={styles.rootContainer}>
+            <OfflineBanner />
+            <Stack>
+              <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+              <Stack.Screen name="(auth)/login" options={{ title: "Log In" }} />
+              <Stack.Screen name="(auth)/signup" options={{ title: "Sign Up" }} />
+              <Stack.Screen
+                name="(auth)/waiting-for-approval"
+                options={{
+                  title: "Awaiting Approval",
+                  headerBackVisible: false,
+                }}
+              />
+              <Stack.Screen name="notebooks/[id]" options={{ title: "Notes" }} />
+              <Stack.Screen name="notes/[id]" options={{ title: "Editor" }} />
+            </Stack>
+          </View>
         </RouteGuard>
       </DatabaseProvider>
       <StatusBar style="auto" />
@@ -70,6 +77,9 @@ export default function RootLayout() {
 }
 
 const styles = StyleSheet.create({
+  rootContainer: {
+    flex: 1,
+  },
   loadingContainer: {
     flex: 1,
     alignItems: "center",

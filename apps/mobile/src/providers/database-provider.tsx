@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useRef, useCallback, useState } f
 import { AppState } from "react-native";
 import type { Database } from "@nozbe/watermelondb";
 import { hasUnsyncedChanges } from "@nozbe/watermelondb/sync";
+import NetInfo from "@react-native-community/netinfo";
 
 import { database } from "@/db";
 import { syncDatabase, SyncNetworkError } from "@/db/sync";
@@ -103,6 +104,22 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       }
     });
     return () => subscription.remove();
+  }, [sync, user]);
+
+  // Sync when network reconnects
+  useEffect(() => {
+    let wasDisconnected = false;
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      const isConnected = state.isConnected ?? false;
+      if (!isConnected) {
+        wasDisconnected = true;
+      } else if (wasDisconnected && user) {
+        wasDisconnected = false;
+        retryCountRef.current = 0;
+        sync();
+      }
+    });
+    return () => unsubscribe();
   }, [sync, user]);
 
   return (
