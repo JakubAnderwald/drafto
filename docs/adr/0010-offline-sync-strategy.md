@@ -32,7 +32,7 @@ A custom sync adapter (`apps/mobile/src/db/sync.ts`) implements `pullChanges` an
 - Query each Supabase table for rows where `updated_at > lastPulledAt` (or `created_at` for immutable attachments)
 - On first sync (`lastPulledAt` is undefined), fetch all rows and treat them as `created`
 - On incremental sync, all returned rows are treated as `updated` — WatermelonDB automatically creates records that don't exist locally when receiving "updated" records
-- The pull timestamp is captured as `Date.now()` at the start of the pull to avoid missing records modified during the sync window
+- The pull timestamp is currently captured as `Date.now()` (client-derived) at the start of the pull. This means `lastPulledAt` depends on the device clock being reasonably accurate. A future improvement could use a server-issued timestamp from the Supabase response to eliminate clock-skew risk, but for now client-derived timestamps are acceptable given that minor clock drift (seconds) is unlikely to cause data loss in a single-user app
 
 ### Push Strategy
 
@@ -44,12 +44,12 @@ A custom sync adapter (`apps/mobile/src/db/sync.ts`) implements `pullChanges` an
 
 ### Conflict Resolution: Server Wins (Last-Write-Wins)
 
-We adopt a **server-wins** strategy:
+We adopt a **server-wins** strategy as our intended conflict resolution policy:
 
-- During pull, if the server has a newer `updated_at` than the local record, the server version overwrites the local one
-- This is WatermelonDB's default behavior — pulled changes always overwrite local state
+- WatermelonDB's `synchronize()` applies pulled changes to the local database. By default, it does **not** automatically discard dirty local records on conflict — conflicts between pulled server data and unsynchronized local changes must be handled by the adapter
+- Our sync adapter enforces server-wins by design: the pull phase runs first and overwrites local records with server data. Local dirty records that conflict are resolved by the push phase — if a push fails (e.g., due to a constraint violation or RLS denial), the next pull will overwrite the local record with the server's version
 - If local changes were pushed before the pull, they are already on the server and will round-trip back
-- If a conflict occurs (both local and remote modified the same record since last sync), the server version wins during pull, and the local dirty record is discarded
+- The `synchronize()` function's `conflictResolver` option can be used to customize per-field merge logic if needed in the future, but for now we accept full-record overwrite
 - A toast notification informs the user: "Note updated from another device"
 
 This strategy is simple, predictable, and sufficient for a single-user note-taking app where conflicts are rare (typically the same user on different devices, not concurrent collaborative editing).
@@ -101,7 +101,7 @@ UI components observe WatermelonDB queries reactively — any local or synced ch
 - **Positive**: Push ordering (notebooks -> notes -> attachments) respects foreign key dependencies
 - **Negative**: Server-wins conflict resolution can silently discard local edits if two devices edit the same note simultaneously. Mitigated by toast notification and the fact that Drafto is single-user (conflicts are rare)
 - **Negative**: No delta/field-level merge — the entire record is overwritten on conflict. Acceptable for note content (which is a single JSON blob) but means a title change can overwrite a concurrent content change
-- **Negative**: Pull queries use `updated_at > lastPulledAt` which requires accurate client clocks. Mitigated by using server-relative timestamps where possible
+- **Negative**: Pull queries use `updated_at > lastPulledAt` with a client-derived timestamp (`Date.now()`), which requires reasonably accurate device clocks. A future improvement could use server-issued timestamps to eliminate this dependency
 - **Neutral**: Attachments are sync'd as metadata only — the actual file blobs are stored in Supabase Storage and downloaded on demand, not cached locally (offline attachment caching is a separate concern in Phase 6)
 
 ## Alternatives Considered
