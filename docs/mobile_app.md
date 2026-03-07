@@ -125,7 +125,7 @@ Maestro is a YAML-based mobile E2E framework. Tests run locally on iOS Simulator
 
 ### Phase 6: Trash & Attachments
 
-- [ ] 6.1 — Trash screen (list trashed notes, restore, permanent delete)
+- [x] 6.1 — Trash screen (list trashed notes, restore, permanent delete)
 - [ ] 6.2 — Attachment upload (image picker + document picker -> Supabase Storage)
 - [ ] 6.3 — Attachment display in editor (inline images, file links)
 - [ ] 6.4 — Offline attachment queuing (save locally, upload when back online)
