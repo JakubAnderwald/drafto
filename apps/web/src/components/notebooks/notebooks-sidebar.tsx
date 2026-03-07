@@ -5,6 +5,7 @@ import { handleAuthError } from "@/lib/handle-auth-error";
 import { IconButton } from "@/components/ui/icon-button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { MAX_NOTEBOOK_NAME_LENGTH } from "@drafto/shared";
 
 interface Notebook {
   id: string;
@@ -21,8 +22,6 @@ interface NotebooksSidebarProps {
   onSelectTrash?: () => void;
   refreshTrigger?: number;
 }
-
-const MAX_NOTEBOOK_NAME_LENGTH = 100;
 
 export function NotebooksSidebar({
   selectedNotebookId,

@@ -1,11 +1,10 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedUser, errorResponse, successResponse } from "@/lib/api/utils";
+import { BUCKET_NAME } from "@drafto/shared";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
 }
-
-const BUCKET_NAME = "attachments";
 
 export async function DELETE(_request: NextRequest, { params }: RouteParams) {
   const { data: auth, error: authError } = await getAuthenticatedUser();
