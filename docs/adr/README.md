@@ -41,3 +41,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0006](./0006-dev-prod-environment-separation.md)   | Dev/Prod Environment Separation          | Accepted | 2026-03-04 |
 | [0007](./0007-evernote-import.md)                   | Evernote Import                          | Accepted | 2026-03-04 |
 | [0008](./0008-production-data-safety-guardrails.md) | Production Data Safety Guardrails        | Accepted | 2026-03-07 |
+| [0009](./0009-mobile-app-technology-choices.md)     | Mobile App Technology Choices            | Accepted | 2026-03-07 |
