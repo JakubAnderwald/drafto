@@ -6,7 +6,6 @@ import {
   Pressable,
   TextInput,
   Alert,
-  ActivityIndicator,
   RefreshControl,
   StyleSheet,
 } from "react-native";
@@ -21,6 +20,8 @@ import { useTheme } from "@/providers/theme-provider";
 import { useNotebooks } from "@/hooks/use-notebooks";
 import { generateId } from "@/lib/generate-id";
 import { SwipeableRow } from "@/components/swipeable-row";
+import { ListSkeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Notebook, Note, Attachment } from "@/db";
@@ -192,11 +193,7 @@ export default function NotebooksScreen() {
   };
 
   if (loading) {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={colors.primary[600]} />
-      </View>
-    );
+    return <ListSkeleton variant="notebook" />;
   }
 
   return (
@@ -229,11 +226,7 @@ export default function NotebooksScreen() {
       )}
 
       {notebooks.length === 0 && !creating ? (
-        <View style={styles.centered}>
-          <Ionicons name="book-outline" size={48} color={semantic.borderStrong} />
-          <Text style={styles.emptyText}>No notebooks yet</Text>
-          <Text style={styles.emptySubtext}>Tap + to create one</Text>
-        </View>
+        <EmptyState icon="book-outline" title="No notebooks yet" subtitle="Tap + to create one" />
       ) : (
         <FlatList
           data={notebooks}
@@ -267,13 +260,6 @@ const createStyles = (semantic: SemanticColors) =>
   StyleSheet.create({
     container: {
       flex: 1,
-      backgroundColor: semantic.bgSubtle,
-    },
-    centered: {
-      flex: 1,
-      alignItems: "center",
-      justifyContent: "center",
-      padding: 24,
       backgroundColor: semantic.bgSubtle,
     },
     list: {
@@ -346,15 +332,5 @@ const createStyles = (semantic: SemanticColors) =>
     },
     fabPressed: {
       backgroundColor: colors.primary[700],
-    },
-    emptyText: {
-      fontSize: 18,
-      color: semantic.fgMuted,
-      marginTop: 12,
-    },
-    emptySubtext: {
-      fontSize: 14,
-      color: semantic.fgSubtle,
-      marginTop: 4,
     },
   });

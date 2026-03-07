@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import {
   View,
   TextInput,
-  ActivityIndicator,
   Text,
   Pressable,
   StyleSheet,
@@ -19,6 +18,7 @@ import { useAttachments } from "@/hooks/use-attachments";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { AttachmentList } from "@/components/editor/attachment-list";
+import { EditorSkeleton } from "@/components/ui/skeleton";
 import { useAutoSave } from "@/hooks/use-auto-save";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
@@ -116,11 +116,7 @@ export default function EditorScreen() {
           : "idle";
 
   if (loading) {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={colors.primary[600]} />
-      </View>
-    );
+    return <EditorSkeleton />;
   }
 
   if (error || !note) {

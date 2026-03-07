@@ -1,13 +1,5 @@
 import { useMemo, useCallback } from "react";
-import {
-  Text,
-  View,
-  FlatList,
-  Alert,
-  ActivityIndicator,
-  RefreshControl,
-  StyleSheet,
-} from "react-native";
+import { Text, View, FlatList, Alert, RefreshControl, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Q } from "@nozbe/watermelondb";
 
@@ -15,6 +7,8 @@ import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useTrashedNotes } from "@/hooks/use-trashed-notes";
 import { SwipeableRow } from "@/components/swipeable-row";
+import { ListSkeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Note, Attachment } from "@/db";
@@ -133,21 +127,17 @@ export default function TrashScreen() {
   };
 
   if (loading) {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={colors.primary[600]} />
-      </View>
-    );
+    return <ListSkeleton variant="trash" />;
   }
 
   return (
     <View style={styles.container}>
       {notes.length === 0 ? (
-        <View style={styles.centered}>
-          <Ionicons name="trash-outline" size={48} color={semantic.borderStrong} />
-          <Text style={styles.emptyText}>Trash is empty</Text>
-          <Text style={styles.emptySubtext}>Deleted notes will appear here</Text>
-        </View>
+        <EmptyState
+          icon="trash-outline"
+          title="Trash is empty"
+          subtitle="Deleted notes will appear here"
+        />
       ) : (
         <FlatList
           data={notes}
@@ -172,13 +162,6 @@ const createStyles = (semantic: SemanticColors) =>
   StyleSheet.create({
     container: {
       flex: 1,
-      backgroundColor: semantic.bgSubtle,
-    },
-    centered: {
-      flex: 1,
-      alignItems: "center",
-      justifyContent: "center",
-      padding: 24,
       backgroundColor: semantic.bgSubtle,
     },
     list: {
@@ -207,15 +190,5 @@ const createStyles = (semantic: SemanticColors) =>
       fontSize: 12,
       color: semantic.fgSubtle,
       marginTop: 2,
-    },
-    emptyText: {
-      fontSize: 18,
-      color: semantic.fgMuted,
-      marginTop: 12,
-    },
-    emptySubtext: {
-      fontSize: 14,
-      color: semantic.fgSubtle,
-      marginTop: 4,
     },
   });
