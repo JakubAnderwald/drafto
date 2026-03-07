@@ -107,7 +107,7 @@ Maestro is a YAML-based mobile E2E framework. Tests run locally on iOS Simulator
 
 - [x] 4.1 — Install and configure WatermelonDB with schema (notebooks, notes, attachments)
 - [x] 4.2 — WatermelonDB model classes with field decorators
-- [ ] 4.3 — Supabase sync adapter (pullChanges + pushChanges)
+- [x] 4.3 — Supabase sync adapter (pullChanges + pushChanges)
 - [ ] 4.4 — Migrate screens from direct Supabase queries to WatermelonDB observables
 - [ ] 4.5 — Create ADR-0010 (offline sync strategy with WatermelonDB)
 - [ ] 4-CP — **Checkpoint**: app works offline (read + write), syncs when online
