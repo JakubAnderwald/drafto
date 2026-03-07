@@ -345,7 +345,7 @@ WatermelonDB schema mirrors Supabase tables. `content` stored as `string` (JSON-
 
 #### 4.3 — Supabase sync adapter
 
-```
+```text
 apps/mobile/src/db/sync.ts
 ```
 
