@@ -12,6 +12,7 @@ concurrency:
 
 env:
   SKIP_ENV_VALIDATION: "true"
+  TURBO_TELEMETRY_DISABLED: 1
 
 jobs:
   lint-and-typecheck:
@@ -44,7 +45,10 @@ jobs:
           node-version-file: ".nvmrc"
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
-      - run: cd apps/web && pnpm test:coverage
+      - name: Run shared package tests
+        run: cd packages/shared && pnpm test
+      - name: Run web unit & integration tests with coverage
+        run: cd apps/web && pnpm test:coverage
       - uses: actions/upload-artifact@v4
         with:
           name: coverage

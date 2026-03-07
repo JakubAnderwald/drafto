@@ -1,17 +1,20 @@
 # Drafto
 
-Note-taking web app at drafto.eu. Built with Next.js 16 (App Router, Turbopack), TypeScript, Tailwind CSS, Supabase.
+Note-taking web app at drafto.eu. Monorepo with pnpm workspaces + Turborepo. Built with Next.js 16 (App Router, Turbopack), TypeScript, Tailwind CSS, Supabase.
 
 ## Directory Structure
 
-- `src/app/` — Next.js App Router pages and API routes
-- `src/lib/` — Shared libraries (supabase, posthog)
-- `src/env.ts` — Environment variable validation (t3-env + zod)
-- `__tests__/unit/` — Unit tests (vitest)
-- `__tests__/integration/` — Integration tests (vitest + testing-library)
-- `e2e/` — End-to-end tests (Playwright)
+- `apps/web/` — Next.js web app
+  - `src/app/` — App Router pages and API routes
+  - `src/lib/` — Shared libraries (supabase, posthog)
+  - `src/env.ts` — Environment variable validation (t3-env + zod)
+  - `__tests__/unit/` — Unit tests (vitest)
+  - `__tests__/integration/` — Integration tests (vitest + testing-library)
+  - `e2e/` — End-to-end tests (Playwright)
+  - `middleware.ts` — Next.js middleware (Supabase session refresh)
+- `packages/shared/` — Shared types (`Database`, API types) and constants (`@drafto/shared`)
 - `docs/adr/` — Architecture Decision Records (see [ADR README](./docs/adr/README.md))
-- `middleware.ts` — Next.js middleware (Supabase session refresh)
+- `supabase/` — Supabase migrations and config
 
 ## SOLID Principles (Enforced)
 
@@ -43,9 +46,9 @@ Every feature needs:
 2. **Integration tests** in `__tests__/integration/` — test component rendering with testing-library
 3. **E2E tests** in `e2e/` — test user flows in Playwright
 
-Run tests: `pnpm test` (unit+integration), `pnpm test:e2e` (Playwright)
+Run tests: `cd apps/web && pnpm test` (unit+integration), `cd apps/web && pnpm test:e2e` (Playwright)
 
-**Important**: When asked to "run tests" or verify the test suite, always run **both** `pnpm test` and `pnpm test:e2e`. Never report tests as passing unless all test suites have been executed. E2E tests require `E2E_TEST_EMAIL` and `E2E_TEST_PASSWORD` in `process.env`. Playwright does not load `.env.local` — the shell must export these vars before running Playwright (e.g., `set -a && source .env.local && set +a && pnpm test:e2e`).
+**Important**: When asked to "run tests" or verify the test suite, always run **both** `cd apps/web && pnpm test` and `cd apps/web && pnpm test:e2e`. Also run `cd packages/shared && pnpm test` for shared package tests. Never report tests as passing unless all test suites have been executed. E2E tests require `E2E_TEST_EMAIL` and `E2E_TEST_PASSWORD` in `process.env`. Playwright does not load `.env.local` — the shell must export these vars before running Playwright (e.g., `set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e`).
 
 ## Supabase Patterns
 
@@ -146,13 +149,22 @@ Without these, E2E tests will fail and environment/database workflows won't work
 ## Useful Commands
 
 ```bash
-pnpm dev              # Start dev server
-pnpm build            # Production build
-pnpm lint             # ESLint
+# Root (Turborepo orchestrates all packages)
+pnpm dev              # Start dev server (all apps)
+pnpm build            # Production build (all packages)
+pnpm lint             # ESLint (all packages)
 pnpm format:check     # Prettier check
-pnpm test             # Unit + integration tests
-pnpm test:coverage    # Tests with coverage
-pnpm test:e2e         # Playwright E2E tests (source .env.local first)
-pnpm migration:check   # Check migrations for destructive SQL
-pnpm exec tsc --noEmit  # Type check
+pnpm test             # Unit + integration tests (all packages)
+pnpm typecheck        # TypeScript check (all packages)
+pnpm migration:check  # Check migrations for destructive SQL
+
+# Web app (apps/web/)
+cd apps/web && pnpm test           # Web unit + integration tests
+cd apps/web && pnpm test:coverage  # Web tests with coverage
+cd apps/web && pnpm test:e2e       # Playwright E2E tests (source .env.local first)
+cd apps/web && pnpm exec tsc --noEmit  # Web type check
+
+# Shared package (packages/shared/)
+cd packages/shared && pnpm test           # Shared package tests
+cd packages/shared && pnpm exec tsc --noEmit  # Shared type check
 ```
