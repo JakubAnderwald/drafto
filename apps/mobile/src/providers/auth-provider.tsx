@@ -8,8 +8,9 @@ interface AuthContextValue {
   session: Session | null;
   isApproved: boolean;
   isLoading: boolean;
+  isCheckingApproval: boolean;
   signOut: () => Promise<void>;
-  refreshApprovalStatus: () => Promise<void>;
+  refreshApprovalStatus: () => Promise<boolean>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -18,21 +19,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [isApproved, setIsApproved] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isCheckingApproval, setIsCheckingApproval] = useState(false);
 
-  const checkApproval = useCallback(async (userId: string) => {
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("is_approved")
-      .eq("id", userId)
-      .single();
+  const checkApproval = useCallback(async (userId: string): Promise<boolean> => {
+    setIsCheckingApproval(true);
+    try {
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("is_approved")
+        .eq("id", userId)
+        .single();
 
-    setIsApproved(profile?.is_approved === true);
+      const approved = profile?.is_approved === true;
+      setIsApproved(approved);
+      return approved;
+    } finally {
+      setIsCheckingApproval(false);
+    }
   }, []);
 
-  const refreshApprovalStatus = useCallback(async () => {
+  const refreshApprovalStatus = useCallback(async (): Promise<boolean> => {
     if (session?.user) {
-      await checkApproval(session.user.id);
+      return checkApproval(session.user.id);
     }
+    return false;
   }, [session?.user, checkApproval]);
 
   const signOut = useCallback(async () => {
@@ -76,6 +86,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         session,
         isApproved,
         isLoading,
+        isCheckingApproval,
         signOut,
         refreshApprovalStatus,
       }}

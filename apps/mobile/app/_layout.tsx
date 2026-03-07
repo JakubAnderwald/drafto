@@ -5,20 +5,23 @@ import { StatusBar } from "expo-status-bar";
 
 import { AuthProvider, useAuth } from "@/providers/auth-provider";
 
+const PUBLIC_AUTH_SCREENS = new Set(["login", "signup"]);
+
 function RouteGuard({ children }: { children: React.ReactNode }) {
-  const { user, isApproved, isLoading } = useAuth();
+  const { user, isApproved, isLoading, isCheckingApproval } = useAuth();
   const segments = useSegments();
   const router = useRouter();
 
   useEffect(() => {
-    if (isLoading) return;
+    if (isLoading || isCheckingApproval) return;
 
     const segmentArray = segments as string[];
     const inAuthGroup = segmentArray[0] === "(auth)";
+    const isPublicAuthScreen = inAuthGroup && PUBLIC_AUTH_SCREENS.has(segmentArray[1]);
 
     if (!user) {
-      // Not authenticated -> go to login (unless already in auth group)
-      if (!inAuthGroup) {
+      // Not authenticated -> only allow public auth screens
+      if (!isPublicAuthScreen) {
         router.replace("/(auth)/login");
       }
     } else if (!isApproved) {
@@ -32,9 +35,9 @@ function RouteGuard({ children }: { children: React.ReactNode }) {
         router.replace("/(tabs)");
       }
     }
-  }, [user, isApproved, isLoading, segments, router]);
+  }, [user, isApproved, isLoading, isCheckingApproval, segments, router]);
 
-  if (isLoading) {
+  if (isLoading || isCheckingApproval) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#4f46e5" />
