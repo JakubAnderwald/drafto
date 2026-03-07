@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import {
   View,
   TextInput,
@@ -13,18 +13,22 @@ import { useLocalSearchParams, Stack } from "expo-router";
 import { useEditorBridge, TenTapStartKit } from "@10play/tentap-editor";
 
 import { useDatabase } from "@/providers/database-provider";
+import { useTheme } from "@/providers/theme-provider";
 import { useNote } from "@/hooks/use-note";
 import { useAttachments } from "@/hooks/use-attachments";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { AttachmentList } from "@/components/editor/attachment-list";
 import { useAutoSave } from "@/hooks/use-auto-save";
-import { colors, semantic } from "@/theme/tokens";
+import { colors } from "@/theme/tokens";
+import type { SemanticColors } from "@/theme/tokens";
 import type { Note } from "@/db";
 
 export default function EditorScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { database, sync } = useDatabase();
+  const { semantic } = useTheme();
+  const styles = useMemo(() => createStyles(semantic), [semantic]);
   const { note, loading, error } = useNote(id);
   const { attachments } = useAttachments(id);
   const [title, setTitle] = useState("");
@@ -160,66 +164,67 @@ export default function EditorScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: semantic.bgSubtle,
-  },
-  centered: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 24,
-    backgroundColor: semantic.bgSubtle,
-  },
-  titleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: semantic.bg,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: semantic.border,
-  },
-  titleInput: {
-    flex: 1,
-    fontSize: 22,
-    fontWeight: "700",
-    color: semantic.fg,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  statusText: {
-    fontSize: 12,
-    color: semantic.fgSubtle,
-    paddingRight: 16,
-  },
-  statusTextSaved: {
-    fontSize: 12,
-    color: semantic.successText,
-    paddingRight: 16,
-  },
-  statusTextError: {
-    fontSize: 12,
-    color: semantic.errorText,
-    paddingRight: 16,
-  },
-  editorContainer: {
-    flex: 1,
-  },
-  errorText: {
-    fontSize: 16,
-    color: semantic.errorText,
-    textAlign: "center",
-    marginBottom: 16,
-  },
-  retryButton: {
-    backgroundColor: colors.primary[600],
-    borderRadius: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-  },
-  retryText: {
-    color: semantic.onPrimary,
-    fontSize: 16,
-    fontWeight: "600",
-  },
-});
+const createStyles = (semantic: SemanticColors) =>
+  StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: semantic.bgSubtle,
+    },
+    centered: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 24,
+      backgroundColor: semantic.bgSubtle,
+    },
+    titleRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: semantic.bg,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: semantic.border,
+    },
+    titleInput: {
+      flex: 1,
+      fontSize: 22,
+      fontWeight: "700",
+      color: semantic.fg,
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+    },
+    statusText: {
+      fontSize: 12,
+      color: semantic.fgSubtle,
+      paddingRight: 16,
+    },
+    statusTextSaved: {
+      fontSize: 12,
+      color: semantic.successText,
+      paddingRight: 16,
+    },
+    statusTextError: {
+      fontSize: 12,
+      color: semantic.errorText,
+      paddingRight: 16,
+    },
+    editorContainer: {
+      flex: 1,
+    },
+    errorText: {
+      fontSize: 16,
+      color: semantic.errorText,
+      textAlign: "center",
+      marginBottom: 16,
+    },
+    retryButton: {
+      backgroundColor: colors.primary[600],
+      borderRadius: 8,
+      paddingVertical: 10,
+      paddingHorizontal: 20,
+    },
+    retryText: {
+      color: semantic.onPrimary,
+      fontSize: 16,
+      fontWeight: "600",
+    },
+  });

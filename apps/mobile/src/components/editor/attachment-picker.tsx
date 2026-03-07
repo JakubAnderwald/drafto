@@ -1,13 +1,15 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { View, Text, Pressable, StyleSheet, ActivityIndicator, Alert } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
 import { pickImage, pickDocument, queueAttachment } from "@/lib/data";
 import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
+import { useTheme } from "@/providers/theme-provider";
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { useToast } from "@/components/toast";
-import { colors, semantic } from "@/theme/tokens";
+import { colors } from "@/theme/tokens";
+import type { SemanticColors } from "@/theme/tokens";
 
 interface AttachmentPickerProps {
   noteId: string;
@@ -19,6 +21,8 @@ export function AttachmentPicker({ noteId, onUploadComplete }: AttachmentPickerP
   const { sync } = useDatabase();
   const { isConnected } = useNetworkStatus();
   const { showToast } = useToast();
+  const { semantic } = useTheme();
+  const styles = useMemo(() => createStyles(semantic), [semantic]);
   const [uploading, setUploading] = useState(false);
 
   const handlePick = async (picker: typeof pickImage | typeof pickDocument) => {
@@ -87,34 +91,35 @@ export function AttachmentPicker({ noteId, onUploadComplete }: AttachmentPickerP
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: semantic.border,
-    backgroundColor: semantic.bg,
-  },
-  button: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: colors.primary[50],
-  },
-  buttonText: {
-    fontSize: 14,
-    fontWeight: "500",
-    color: colors.primary[600],
-  },
-  uploadingText: {
-    fontSize: 14,
-    color: semantic.fgMuted,
-    marginLeft: 8,
-  },
-});
+const createStyles = (semantic: SemanticColors) =>
+  StyleSheet.create({
+    container: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      paddingHorizontal: 16,
+      paddingVertical: 8,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: semantic.border,
+      backgroundColor: semantic.bg,
+    },
+    button: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      paddingVertical: 6,
+      paddingHorizontal: 12,
+      borderRadius: 8,
+      backgroundColor: colors.primary[50],
+    },
+    buttonText: {
+      fontSize: 14,
+      fontWeight: "500",
+      color: colors.primary[600],
+    },
+    uploadingText: {
+      fontSize: 14,
+      color: semantic.fgMuted,
+      marginLeft: 8,
+    },
+  });

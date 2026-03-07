@@ -3,7 +3,9 @@ import { View, Text, StyleSheet, Animated } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { colors, semantic } from "@/theme/tokens";
+import { useTheme } from "@/providers/theme-provider";
+import { colors } from "@/theme/tokens";
+import type { SemanticColors } from "@/theme/tokens";
 
 type ToastType = "info" | "warning" | "success";
 
@@ -33,7 +35,15 @@ const COLOR_MAP: Record<ToastType, string> = {
   success: colors.success,
 };
 
-function Toast({ message, onDismiss }: { message: ToastMessage; onDismiss: () => void }) {
+function Toast({
+  message,
+  onDismiss,
+  semantic,
+}: {
+  message: ToastMessage;
+  onDismiss: () => void;
+  semantic: SemanticColors;
+}) {
   const slideAnim = useRef(new Animated.Value(100)).current;
   const opacityAnim = useRef(new Animated.Value(0)).current;
 
@@ -75,18 +85,24 @@ function Toast({ message, onDismiss }: { message: ToastMessage; onDismiss: () =>
     <Animated.View
       style={[
         styles.toast,
-        { borderLeftColor: color, transform: [{ translateY: slideAnim }], opacity: opacityAnim },
+        {
+          backgroundColor: semantic.bg,
+          borderLeftColor: color,
+          transform: [{ translateY: slideAnim }],
+          opacity: opacityAnim,
+        },
       ]}
       accessibilityRole="alert"
       accessibilityLiveRegion="polite"
     >
       <Ionicons name={ICON_MAP[message.type]} size={20} color={color} />
-      <Text style={styles.toastText}>{message.text}</Text>
+      <Text style={[styles.toastText, { color: semantic.fg }]}>{message.text}</Text>
     </Animated.View>
   );
 }
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
+  const { semantic } = useTheme();
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const nextId = useRef(0);
   const insets = useSafeAreaInsets();
@@ -105,7 +121,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       {children}
       <View style={[styles.container, { bottom: insets.bottom + 16 }]} pointerEvents="none">
         {toasts.map((t) => (
-          <Toast key={t.id} message={t} onDismiss={() => dismissToast(t.id)} />
+          <Toast key={t.id} message={t} semantic={semantic} onDismiss={() => dismissToast(t.id)} />
         ))}
       </View>
     </ToastContext.Provider>
@@ -132,7 +148,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    backgroundColor: semantic.bg,
     paddingVertical: 12,
     paddingHorizontal: 16,
     borderRadius: 10,
@@ -147,6 +162,5 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
     fontWeight: "500",
-    color: semantic.fg,
   },
 });

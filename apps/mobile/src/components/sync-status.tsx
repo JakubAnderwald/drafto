@@ -1,9 +1,12 @@
+import { useMemo } from "react";
 import { View, Text, StyleSheet, Pressable, ActivityIndicator } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
 import { useDatabase } from "@/providers/database-provider";
+import { useTheme } from "@/providers/theme-provider";
 import { useNetworkStatus } from "@/hooks/use-network-status";
-import { colors, semantic } from "@/theme/tokens";
+import { colors } from "@/theme/tokens";
+import type { SemanticColors } from "@/theme/tokens";
 
 function formatLastSynced(date: Date | null): string {
   if (!date) return "Never";
@@ -27,6 +30,8 @@ function formatLastSynced(date: Date | null): string {
 export function SyncStatus() {
   const { sync, isSyncing, lastSyncedAt, pendingChangesCount, hasPendingChanges } = useDatabase();
   const { isConnected } = useNetworkStatus();
+  const { semantic } = useTheme();
+  const styles = useMemo(() => createStyles(semantic), [semantic]);
 
   const statusIcon = isSyncing
     ? null
@@ -80,39 +85,40 @@ export function SyncStatus() {
         <Text style={styles.lastSynced}>Last synced: {formatLastSynced(lastSyncedAt)}</Text>
       </View>
       {isConnected && !isSyncing && (
-        <Ionicons name="refresh-outline" size={18} color={colors.neutral[400]} />
+        <Ionicons name="refresh-outline" size={18} color={semantic.fgSubtle} />
       )}
     </Pressable>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flexDirection: "row",
-    alignItems: "center",
-    padding: 16,
-    backgroundColor: semantic.bg,
-    borderRadius: 12,
-    gap: 12,
-  },
-  indicator: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  details: {
-    flex: 1,
-    gap: 2,
-  },
-  statusText: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: semantic.fg,
-  },
-  lastSynced: {
-    fontSize: 13,
-    color: colors.neutral[500],
-  },
-});
+const createStyles = (semantic: SemanticColors) =>
+  StyleSheet.create({
+    container: {
+      flexDirection: "row",
+      alignItems: "center",
+      padding: 16,
+      backgroundColor: semantic.bg,
+      borderRadius: 12,
+      gap: 12,
+    },
+    indicator: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    details: {
+      flex: 1,
+      gap: 2,
+    },
+    statusText: {
+      fontSize: 15,
+      fontWeight: "600",
+      color: semantic.fg,
+    },
+    lastSynced: {
+      fontSize: 13,
+      color: semantic.fgMuted,
+    },
+  });

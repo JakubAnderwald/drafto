@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -14,8 +14,10 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { getSignedUrl, deleteAttachment as deleteAttachmentApi } from "@/lib/data";
 import { useDatabase } from "@/providers/database-provider";
+import { useTheme } from "@/providers/theme-provider";
 import { useToast } from "@/components/toast";
-import { colors, semantic } from "@/theme/tokens";
+import { colors } from "@/theme/tokens";
+import type { SemanticColors } from "@/theme/tokens";
 import type { Attachment } from "@/db";
 
 interface AttachmentListProps {
@@ -35,9 +37,10 @@ function formatFileSize(bytes: number): string {
 interface AttachmentItemProps {
   attachment: Attachment;
   onDelete: (attachment: Attachment) => void;
+  styles: ReturnType<typeof createStyles>;
 }
 
-function AttachmentItem({ attachment, onDelete }: AttachmentItemProps) {
+function AttachmentItem({ attachment, onDelete, styles }: AttachmentItemProps) {
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [imageError, setImageError] = useState(false);
@@ -166,9 +169,9 @@ function AttachmentItem({ attachment, onDelete }: AttachmentItemProps) {
 
 function PendingBadge() {
   return (
-    <View style={styles.pendingBadge}>
+    <View style={pendingStyles.pendingBadge}>
       <Ionicons name="cloud-upload-outline" size={10} color={colors.warning} />
-      <Text style={styles.pendingText}>Pending</Text>
+      <Text style={pendingStyles.pendingText}>Pending</Text>
     </View>
   );
 }
@@ -176,6 +179,8 @@ function PendingBadge() {
 export function AttachmentList({ attachments }: AttachmentListProps) {
   const { database, sync } = useDatabase();
   const { showToast } = useToast();
+  const { semantic } = useTheme();
+  const styles = useMemo(() => createStyles(semantic), [semantic]);
 
   const handleDelete = useCallback(
     (attachment: Attachment) => {
@@ -218,89 +223,15 @@ export function AttachmentList({ attachments }: AttachmentListProps) {
         keyExtractor={(item) => item.id}
         horizontal={false}
         scrollEnabled={false}
-        renderItem={({ item }) => <AttachmentItem attachment={item} onDelete={handleDelete} />}
+        renderItem={({ item }) => (
+          <AttachmentItem attachment={item} onDelete={handleDelete} styles={styles} />
+        )}
       />
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: semantic.border,
-    backgroundColor: semantic.bg,
-    paddingVertical: 8,
-  },
-  sectionTitle: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: semantic.fgMuted,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    paddingHorizontal: 16,
-    paddingVertical: 4,
-  },
-  imageItem: {
-    marginHorizontal: 16,
-    marginVertical: 4,
-    borderRadius: 8,
-    overflow: "hidden",
-    backgroundColor: semantic.bgMuted,
-  },
-  imagePlaceholder: {
-    height: 160,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: semantic.bgMuted,
-  },
-  imagePreview: {
-    width: "100%",
-    height: 160,
-    borderRadius: 8,
-  },
-  imageFooter: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-  },
-  imageFileName: {
-    flex: 1,
-    fontSize: 12,
-    color: semantic.fgMuted,
-    marginRight: 8,
-  },
-  fileItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    marginHorizontal: 16,
-    marginVertical: 4,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: semantic.bgMuted,
-  },
-  fileInfo: {
-    flex: 1,
-  },
-  fileFileName: {
-    fontSize: 14,
-    fontWeight: "500",
-    color: semantic.fg,
-    flex: 1,
-  },
-  fileMeta: {
-    fontSize: 12,
-    color: semantic.fgSubtle,
-    marginTop: 2,
-  },
-  fileNameRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
+const pendingStyles = StyleSheet.create({
   pendingBadge: {
     flexDirection: "row",
     alignItems: "center",
@@ -316,3 +247,83 @@ const styles = StyleSheet.create({
     color: colors.warning,
   },
 });
+
+const createStyles = (semantic: SemanticColors) =>
+  StyleSheet.create({
+    container: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: semantic.border,
+      backgroundColor: semantic.bg,
+      paddingVertical: 8,
+    },
+    sectionTitle: {
+      fontSize: 13,
+      fontWeight: "600",
+      color: semantic.fgMuted,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+      paddingHorizontal: 16,
+      paddingVertical: 4,
+    },
+    imageItem: {
+      marginHorizontal: 16,
+      marginVertical: 4,
+      borderRadius: 8,
+      overflow: "hidden",
+      backgroundColor: semantic.bgMuted,
+    },
+    imagePlaceholder: {
+      height: 160,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: semantic.bgMuted,
+    },
+    imagePreview: {
+      width: "100%",
+      height: 160,
+      borderRadius: 8,
+    },
+    imageFooter: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+    },
+    imageFileName: {
+      flex: 1,
+      fontSize: 12,
+      color: semantic.fgMuted,
+      marginRight: 8,
+    },
+    fileItem: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      marginHorizontal: 16,
+      marginVertical: 4,
+      paddingVertical: 10,
+      paddingHorizontal: 12,
+      borderRadius: 8,
+      backgroundColor: semantic.bgMuted,
+    },
+    fileInfo: {
+      flex: 1,
+    },
+    fileFileName: {
+      fontSize: 14,
+      fontWeight: "500",
+      color: semantic.fg,
+      flex: 1,
+    },
+    fileMeta: {
+      fontSize: 12,
+      color: semantic.fgSubtle,
+      marginTop: 2,
+    },
+    fileNameRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+    },
+  });

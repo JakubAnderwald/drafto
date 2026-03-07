@@ -55,8 +55,8 @@ export const colors = {
   black: "#000000",
 } as const;
 
-export const semantic = {
-  // Surface tokens (light mode)
+export const semanticLight = {
+  // Surface tokens
   bg: colors.white,
   bgSubtle: colors.neutral[50],
   bgMuted: colors.neutral[100],
@@ -78,6 +78,51 @@ export const semantic = {
   // On-primary (text on primary-colored backgrounds)
   onPrimary: colors.white,
 } as const;
+
+export const semanticDark = {
+  // Surface tokens (matches web app dark mode from globals.css)
+  bg: "#0f0f0f",
+  bgSubtle: "#141414",
+  bgMuted: "#1c1c1c",
+  fg: "#ededed",
+  fgMuted: "#a1a1a1",
+  fgSubtle: "#6b6b6b",
+  border: "#2a2a2a",
+  borderStrong: "#3a3a3a",
+  ring: colors.primary[400],
+
+  // Error surfaces (dark variants)
+  errorBg: "#2d1515",
+  errorText: "#f87171",
+  errorBorder: "#7f1d1d",
+
+  // Success surfaces
+  successText: "#4ade80",
+
+  // On-primary (text on primary-colored backgrounds)
+  onPrimary: colors.white,
+} as const;
+
+export type SemanticColors = {
+  readonly bg: string;
+  readonly bgSubtle: string;
+  readonly bgMuted: string;
+  readonly fg: string;
+  readonly fgMuted: string;
+  readonly fgSubtle: string;
+  readonly border: string;
+  readonly borderStrong: string;
+  readonly ring: string;
+  readonly errorBg: string;
+  readonly errorText: string;
+  readonly errorBorder: string;
+  readonly successText: string;
+  readonly onPrimary: string;
+};
+
+export function getSemanticColors(isDark: boolean): SemanticColors {
+  return isDark ? semanticDark : semanticLight;
+}
 
 export const spacing = {
   xs: 4,

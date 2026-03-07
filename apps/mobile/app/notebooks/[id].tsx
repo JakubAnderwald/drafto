@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   Text,
   View,
@@ -14,9 +14,11 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
+import { useTheme } from "@/providers/theme-provider";
 import { useNotes } from "@/hooks/use-notes";
 import { generateId } from "@/lib/generate-id";
-import { colors, semantic } from "@/theme/tokens";
+import { colors } from "@/theme/tokens";
+import type { SemanticColors } from "@/theme/tokens";
 import type { Note } from "@/db";
 
 export default function NotesListScreen() {
@@ -25,6 +27,8 @@ export default function NotesListScreen() {
   const { database, sync } = useDatabase();
   const router = useRouter();
   const { notes, loading } = useNotes(notebookId);
+  const { semantic } = useTheme();
+  const styles = useMemo(() => createStyles(semantic), [semantic]);
 
   const [creating, setCreating] = useState(false);
   const [newTitle, setNewTitle] = useState("");
@@ -233,104 +237,105 @@ export default function NotesListScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: semantic.bgSubtle,
-  },
-  centered: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 24,
-    backgroundColor: semantic.bgSubtle,
-  },
-  list: {
-    paddingVertical: 8,
-  },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    backgroundColor: semantic.bg,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: semantic.border,
-  },
-  rowPressed: {
-    backgroundColor: semantic.bgMuted,
-  },
-  rowIcon: {
-    marginRight: 12,
-  },
-  rowContent: {
-    flex: 1,
-  },
-  rowText: {
-    fontSize: 16,
-    color: semantic.fg,
-  },
-  rowDate: {
-    fontSize: 12,
-    color: semantic.fgSubtle,
-    marginTop: 2,
-  },
-  iconButton: {
-    padding: 6,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: semantic.borderStrong,
-    borderRadius: 8,
-    padding: 10,
-    fontSize: 16,
-    backgroundColor: semantic.bg,
-    color: semantic.fg,
-  },
-  createBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: semantic.bg,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: semantic.border,
-  },
-  createInput: {
-    flex: 1,
-    marginRight: 8,
-  },
-  editInput: {
-    flex: 1,
-    marginRight: 8,
-  },
-  fab: {
-    position: "absolute",
-    right: 20,
-    bottom: 20,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: colors.primary[600],
-    alignItems: "center",
-    justifyContent: "center",
-    elevation: 4,
-    shadowColor: colors.black,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-  },
-  fabPressed: {
-    backgroundColor: colors.primary[700],
-  },
-  emptyText: {
-    fontSize: 18,
-    color: semantic.fgMuted,
-    marginTop: 12,
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: semantic.fgSubtle,
-    marginTop: 4,
-  },
-});
+const createStyles = (semantic: SemanticColors) =>
+  StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: semantic.bgSubtle,
+    },
+    centered: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 24,
+      backgroundColor: semantic.bgSubtle,
+    },
+    list: {
+      paddingVertical: 8,
+    },
+    row: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingVertical: 14,
+      paddingHorizontal: 16,
+      backgroundColor: semantic.bg,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: semantic.border,
+    },
+    rowPressed: {
+      backgroundColor: semantic.bgMuted,
+    },
+    rowIcon: {
+      marginRight: 12,
+    },
+    rowContent: {
+      flex: 1,
+    },
+    rowText: {
+      fontSize: 16,
+      color: semantic.fg,
+    },
+    rowDate: {
+      fontSize: 12,
+      color: semantic.fgSubtle,
+      marginTop: 2,
+    },
+    iconButton: {
+      padding: 6,
+    },
+    input: {
+      borderWidth: 1,
+      borderColor: semantic.borderStrong,
+      borderRadius: 8,
+      padding: 10,
+      fontSize: 16,
+      backgroundColor: semantic.bg,
+      color: semantic.fg,
+    },
+    createBar: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: 16,
+      paddingVertical: 10,
+      backgroundColor: semantic.bg,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: semantic.border,
+    },
+    createInput: {
+      flex: 1,
+      marginRight: 8,
+    },
+    editInput: {
+      flex: 1,
+      marginRight: 8,
+    },
+    fab: {
+      position: "absolute",
+      right: 20,
+      bottom: 20,
+      width: 56,
+      height: 56,
+      borderRadius: 28,
+      backgroundColor: colors.primary[600],
+      alignItems: "center",
+      justifyContent: "center",
+      elevation: 4,
+      shadowColor: colors.black,
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.25,
+      shadowRadius: 4,
+    },
+    fabPressed: {
+      backgroundColor: colors.primary[700],
+    },
+    emptyText: {
+      fontSize: 18,
+      color: semantic.fgMuted,
+      marginTop: 12,
+    },
+    emptySubtext: {
+      fontSize: 14,
+      color: semantic.fgSubtle,
+      marginTop: 4,
+    },
+  });

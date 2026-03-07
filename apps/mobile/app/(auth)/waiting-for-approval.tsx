@@ -1,11 +1,15 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Text, View, Pressable, StyleSheet, ActivityIndicator } from "react-native";
 
 import { useAuth } from "@/providers/auth-provider";
-import { colors, semantic } from "@/theme/tokens";
+import { useTheme } from "@/providers/theme-provider";
+import { colors } from "@/theme/tokens";
+import type { SemanticColors } from "@/theme/tokens";
 
 export default function WaitingForApprovalScreen() {
   const { signOut, refreshApprovalStatus } = useAuth();
+  const { semantic } = useTheme();
+  const styles = useMemo(() => createStyles(semantic), [semantic]);
   const [checking, setChecking] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -86,76 +90,78 @@ export default function WaitingForApprovalScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 24,
-  },
-  icon: {
-    fontSize: 48,
-    marginBottom: 16,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: "bold",
-    marginBottom: 12,
-  },
-  subtitle: {
-    fontSize: 16,
-    color: semantic.fgMuted,
-    textAlign: "center",
-    lineHeight: 24,
-    marginBottom: 32,
-  },
-  errorContainer: {
-    backgroundColor: semantic.errorBg,
-    borderWidth: 1,
-    borderColor: semantic.errorBorder,
-    borderRadius: 8,
-    padding: 12,
-    width: "100%",
-    marginBottom: 16,
-  },
-  errorText: {
-    color: semantic.errorText,
-    fontSize: 14,
-    textAlign: "center",
-  },
-  button: {
-    backgroundColor: colors.primary[600],
-    borderRadius: 8,
-    padding: 14,
-    alignItems: "center",
-    width: "100%",
-    marginBottom: 12,
-  },
-  buttonPressed: {
-    backgroundColor: colors.primary[700],
-  },
-  buttonDisabled: {
-    opacity: 0.7,
-  },
-  buttonText: {
-    color: semantic.onPrimary,
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  signOutButton: {
-    borderWidth: 1,
-    borderColor: semantic.borderStrong,
-    borderRadius: 8,
-    padding: 14,
-    alignItems: "center",
-    width: "100%",
-  },
-  signOutButtonPressed: {
-    backgroundColor: semantic.bgMuted,
-  },
-  signOutButtonText: {
-    color: colors.primary[600],
-    fontSize: 16,
-    fontWeight: "600",
-  },
-});
+const createStyles = (semantic: SemanticColors) =>
+  StyleSheet.create({
+    container: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 24,
+    },
+    icon: {
+      fontSize: 48,
+      marginBottom: 16,
+    },
+    title: {
+      fontSize: 28,
+      fontWeight: "bold",
+      marginBottom: 12,
+      color: semantic.fg,
+    },
+    subtitle: {
+      fontSize: 16,
+      color: semantic.fgMuted,
+      textAlign: "center",
+      lineHeight: 24,
+      marginBottom: 32,
+    },
+    errorContainer: {
+      backgroundColor: semantic.errorBg,
+      borderWidth: 1,
+      borderColor: semantic.errorBorder,
+      borderRadius: 8,
+      padding: 12,
+      width: "100%",
+      marginBottom: 16,
+    },
+    errorText: {
+      color: semantic.errorText,
+      fontSize: 14,
+      textAlign: "center",
+    },
+    button: {
+      backgroundColor: colors.primary[600],
+      borderRadius: 8,
+      padding: 14,
+      alignItems: "center",
+      width: "100%",
+      marginBottom: 12,
+    },
+    buttonPressed: {
+      backgroundColor: colors.primary[700],
+    },
+    buttonDisabled: {
+      opacity: 0.7,
+    },
+    buttonText: {
+      color: semantic.onPrimary,
+      fontSize: 16,
+      fontWeight: "600",
+    },
+    signOutButton: {
+      borderWidth: 1,
+      borderColor: semantic.borderStrong,
+      borderRadius: 8,
+      padding: 14,
+      alignItems: "center",
+      width: "100%",
+    },
+    signOutButtonPressed: {
+      backgroundColor: semantic.bgMuted,
+    },
+    signOutButtonText: {
+      color: colors.primary[600],
+      fontSize: 16,
+      fontWeight: "600",
+    },
+  });

@@ -4,10 +4,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useNetworkStatus } from "@/hooks/use-network-status";
-import { colors, semantic } from "@/theme/tokens";
+import { useTheme } from "@/providers/theme-provider";
+import { colors } from "@/theme/tokens";
 
 export function OfflineBanner() {
   const { isConnected } = useNetworkStatus();
+  const { semantic } = useTheme();
   const insets = useSafeAreaInsets();
   const slideAnim = useRef(new Animated.Value(-100)).current;
   const wasOfflineRef = useRef(false);
@@ -91,7 +93,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   text: {
-    color: semantic.onPrimary,
+    color: colors.white,
     fontSize: 13,
     fontWeight: "600",
   },
