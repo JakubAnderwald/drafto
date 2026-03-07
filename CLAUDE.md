@@ -91,6 +91,35 @@ Two Supabase projects provide full data isolation:
 
 Sentry and PostHog use environment tagging (not separate projects). The `NEXT_PUBLIC_SENTRY_ENVIRONMENT` env var is set per Vercel environment.
 
+Supabase provides daily automatic backups. The Pro plan enables Point-in-Time Recovery (PITR) for granular restore.
+
+## Production Data Safety
+
+**Destructive SQL prevention:**
+
+- Never run `DROP TABLE`, `TRUNCATE`, or `DELETE FROM` without `WHERE` against production
+- Never run `supabase db reset` against production — it drops and recreates the entire database
+- Always run `pnpm migration:check` before pushing migrations — it scans for destructive patterns
+
+**Supabase project verification:**
+
+- Before `supabase db push`, always verify the linked project ref with `supabase projects list`
+- Production ref: `tbmjbxxseonkciqovnpl` — Development ref: `huhzactreblzcogqkbsd`
+- When in doubt, re-link explicitly: `pnpm supabase:link:dev` or `pnpm supabase:link:prod`
+
+**Confirmation requirements:**
+
+- Require explicit user "yes" before any production database operation
+- State the target project, operation, and affected data before asking for confirmation
+- Never batch production operations — one operation at a time with confirmation
+
+**Migration safety workflow:**
+
+1. Write migration and run `pnpm migration:check`
+2. Apply to dev first (`pnpm supabase:link:dev && pnpm supabase:push`)
+3. Verify on dev environment
+4. Apply to prod with confirmation (`pnpm supabase:link:prod && pnpm supabase:push`)
+
 ## Environment Variables
 
 - Declare all env vars in `src/env.ts` using zod schemas
@@ -124,5 +153,6 @@ pnpm format:check     # Prettier check
 pnpm test             # Unit + integration tests
 pnpm test:coverage    # Tests with coverage
 pnpm test:e2e         # Playwright E2E tests (source .env.local first)
+pnpm migration:check   # Check migrations for destructive SQL
 pnpm exec tsc --noEmit  # Type check
 ```
