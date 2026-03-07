@@ -218,6 +218,7 @@ export class SyncNetworkError extends Error {
   constructor(cause: unknown) {
     super(cause instanceof Error ? cause.message : "Network error during sync");
     this.name = "SyncNetworkError";
+    this.cause = cause;
   }
 }
 
@@ -228,11 +229,14 @@ function isNetworkError(error: unknown): boolean {
     msg.includes("network request failed") ||
     msg.includes("network error") ||
     msg.includes("failed to fetch") ||
-    msg.includes("internet") ||
-    msg.includes("offline") ||
-    msg.includes("timeout") ||
+    msg.includes("no internet") ||
+    msg.includes("internet connection") ||
+    msg.includes("network offline") ||
+    msg.includes("request timeout") ||
+    msg.includes("connection timeout") ||
     msg.includes("econnrefused") ||
-    msg.includes("enotfound")
+    msg.includes("enotfound") ||
+    msg.includes("etimedout")
   );
 }
 

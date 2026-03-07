@@ -66,6 +66,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   // Initial sync when user logs in
   useEffect(() => {
     if (user) {
+      retryCountRef.current = 0;
       sync();
     }
     return () => {
@@ -79,6 +80,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   // Periodic sync for pending changes
   useEffect(() => {
     periodicTimerRef.current = setInterval(async () => {
+      if (!user) return;
       const pending = await hasUnsyncedChanges({ database }).catch(() => false);
       if (pending) {
         sync();
@@ -91,7 +93,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
         periodicTimerRef.current = null;
       }
     };
-  }, [sync]);
+  }, [sync, user]);
 
   // Sync when app comes to foreground
   useEffect(() => {
