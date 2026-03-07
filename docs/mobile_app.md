@@ -117,7 +117,7 @@ Maestro is a YAML-based mobile E2E framework. Tests run locally on iOS Simulator
 
 - [x] 5.1 — Offline note creation and editing (writes to local SQLite, syncs later)
 - [x] 5.2 — Offline notebook creation
-- [ ] 5.3 — Network status detection + online/offline indicator
+- [x] 5.3 — Network status detection + online/offline indicator
 - [ ] 5.4 — Sync status visualization (pending changes count, last synced time)
 - [ ] 5.5 — Conflict resolution handling (server-wins with user notification toast)
 - [ ] 5-CP — **Checkpoint**: full CRUD works offline, syncs correctly when reconnected
