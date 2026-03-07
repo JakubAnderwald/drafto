@@ -20,10 +20,10 @@ Key requirements:
 
 We adopt the following technology stack for the mobile app:
 
-1. **React Native with Expo (SDK 53+)** as the mobile framework
+1. **React Native with Expo (SDK 55)** as the mobile framework
 2. **Expo Router** for file-based navigation (mirrors Next.js App Router conventions)
 3. **WatermelonDB** for offline-first local SQLite storage with sync
-4. **10tap-editor** for rich text editing (ProseMirror-based, compatible with BlockNote)
+4. **`@10play/tentap-editor`** for rich text editing (ProseMirror/TipTap-based — shares the same TipTap/ProseMirror foundation as BlockNote but does not integrate directly; a custom format converter and WebView bridge are required)
 5. **pnpm workspaces + Turborepo** for monorepo orchestration
 6. **`@supabase/supabase-js`** with `expo-secure-store` for auth and direct database access
 7. **Maestro** for local-only E2E testing (no CI E2E — too expensive for mobile emulators)
@@ -38,12 +38,12 @@ The repo structure becomes:
 
 ## Consequences
 
-- **Positive**: Maximum code reuse — shared TypeScript types, constants, and eventually a format converter between BlockNote and TipTap. React Native skills transfer directly from existing React/TypeScript expertise.
+- **Positive**: Maximum code reuse — shared TypeScript types, constants, and eventually a format converter between BlockNote and TipTap/ProseMirror JSON. React Native skills transfer directly from existing React/TypeScript expertise.
 - **Positive**: Expo simplifies builds (EAS Build), OTA updates, and app store submission. No need to maintain native Xcode/Android Studio build configurations manually.
 - **Positive**: WatermelonDB provides a mature, free, offline-first solution with a well-documented sync protocol. No vendor lock-in or recurring costs for offline storage.
 - **Positive**: Monorepo with Turborepo enables shared tooling, single CI pipeline, and atomic changes across web and mobile.
 - **Negative**: WatermelonDB's sync adapter requires a custom implementation for Supabase (pull changes by `updated_at`, push dirty rows). This adds complexity but is well-scoped.
-- **Negative**: 10tap-editor requires a format converter between BlockNote blocks and TipTap JSON. Format fidelity must be validated with round-trip tests.
+- **Negative**: `@10play/tentap-editor` does not integrate with BlockNote directly — both share TipTap/ProseMirror foundations but require a custom format converter between BlockNote blocks and TipTap JSON. Format fidelity must be validated with round-trip tests.
 - **Negative**: No CI E2E tests for mobile — Maestro runs locally only. This trades CI coverage for cost savings (macOS runners for iOS simulation are expensive).
 - **Neutral**: The mobile app uses direct Supabase calls instead of the web's API routes. This is more efficient for mobile but means some business logic may diverge if not kept in shared packages.
 
