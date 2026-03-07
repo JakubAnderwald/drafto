@@ -89,8 +89,8 @@ Maestro is a YAML-based mobile E2E framework. Tests run locally on iOS Simulator
 - [x] 2.3 — Signup screen + waiting-for-approval screen
 - [x] 2.4 — Auth provider (session persistence, auto-refresh, approval check)
 - [x] 2.5 — Protected route guard (redirect unauthenticated/unapproved users)
-- [ ] 2-CP — **Checkpoint**: login/signup works on simulator, tokens persist across app restarts
-- [ ] 2-PUSH — **Push**: `/push` to PR
+- [x] 2-CP — **Checkpoint**: login/signup works on simulator, tokens persist across app restarts
+- [x] 2-PUSH — **Push**: `/push` to PR
 
 ### Phase 3: Online-Only Core Features
 
