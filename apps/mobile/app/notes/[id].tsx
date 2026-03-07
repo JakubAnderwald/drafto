@@ -15,6 +15,7 @@ import type { Json, NoteRow } from "@drafto/shared";
 
 import { getNote, updateNote } from "@/lib/data";
 import { NoteEditor } from "@/components/editor/note-editor";
+import { useAutoSave } from "@/hooks/use-auto-save";
 
 export default function EditorScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -22,42 +23,42 @@ export default function EditorScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [title, setTitle] = useState("");
-  const titleSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const contentSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const noteIdRef = useRef(id);
+
+  const titleSave = useAutoSave<string>({
+    onSave: useCallback(
+      async (text: string) => {
+        if (!id) return;
+        const trimmed = text.trim();
+        if (!trimmed) return;
+        await updateNote(id, { title: trimmed });
+      },
+      [id],
+    ),
+  });
+
+  const contentSave = useAutoSave<void>({
+    onSave: useCallback(async () => {
+      if (!id || noteIdRef.current !== id) return;
+      const json = await editor.getJSON();
+      await updateNote(id, { content: json as Json });
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [id]),
+  });
 
   const editor = useEditorBridge({
     bridgeExtensions: TenTapStartKit,
     autofocus: false,
     avoidIosKeyboard: true,
     onChange: () => {
-      scheduleContentSave();
+      contentSave.trigger();
     },
   });
 
-  const scheduleContentSave = useCallback(() => {
-    if (!id) return;
-    if (contentSaveTimerRef.current) {
-      clearTimeout(contentSaveTimerRef.current);
-    }
-    const saveNoteId = id;
-    contentSaveTimerRef.current = setTimeout(async () => {
-      if (noteIdRef.current !== saveNoteId) return;
-      try {
-        const json = await editor.getJSON();
-        await updateNote(saveNoteId, { content: json as Json });
-      } catch (err) {
-        console.error("[auto-save] content save failed:", err);
-      }
-    }, 500);
-  }, [editor, id]);
-
   useEffect(() => {
-    if (contentSaveTimerRef.current) {
-      clearTimeout(contentSaveTimerRef.current);
-    }
+    contentSave.cancel();
     noteIdRef.current = id;
-  }, [id]);
+  }, [id, contentSave]);
 
   useEffect(() => {
     if (!id) return;
@@ -92,29 +93,19 @@ export default function EditorScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  useEffect(() => {
-    return () => {
-      if (titleSaveTimerRef.current) clearTimeout(titleSaveTimerRef.current);
-      if (contentSaveTimerRef.current) clearTimeout(contentSaveTimerRef.current);
-    };
-  }, []);
-
   const handleTitleChange = (text: string) => {
     setTitle(text);
-    if (titleSaveTimerRef.current) {
-      clearTimeout(titleSaveTimerRef.current);
-    }
-    titleSaveTimerRef.current = setTimeout(async () => {
-      if (!id) return;
-      const trimmed = text.trim();
-      if (!trimmed) return;
-      try {
-        await updateNote(id, { title: trimmed });
-      } catch (err) {
-        console.error("[auto-save] title save failed:", err);
-      }
-    }, 500);
+    titleSave.trigger(text);
   };
+
+  const saveStatus =
+    titleSave.status === "saving" || contentSave.status === "saving"
+      ? "saving"
+      : titleSave.status === "error" || contentSave.status === "error"
+        ? "error"
+        : titleSave.status === "saved" || contentSave.status === "saved"
+          ? "saved"
+          : "idle";
 
   if (loading) {
     return (
@@ -162,14 +153,19 @@ export default function EditorScreen() {
         style={styles.container}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <TextInput
-          style={styles.titleInput}
-          value={title}
-          onChangeText={handleTitleChange}
-          placeholder="Untitled"
-          placeholderTextColor="#9ca3af"
-          returnKeyType="next"
-        />
+        <View style={styles.titleRow}>
+          <TextInput
+            style={styles.titleInput}
+            value={title}
+            onChangeText={handleTitleChange}
+            placeholder="Untitled"
+            placeholderTextColor="#9ca3af"
+            returnKeyType="next"
+          />
+          {saveStatus === "saving" && <Text style={styles.statusText}>Saving...</Text>}
+          {saveStatus === "saved" && <Text style={styles.statusTextSaved}>Saved</Text>}
+          {saveStatus === "error" && <Text style={styles.statusTextError}>Save failed</Text>}
+        </View>
         <View style={styles.editorContainer}>
           <NoteEditor editor={editor} />
         </View>
@@ -190,15 +186,35 @@ const styles = StyleSheet.create({
     padding: 24,
     backgroundColor: "#fafaf9",
   },
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#fff",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#e5e7eb",
+  },
   titleInput: {
+    flex: 1,
     fontSize: 22,
     fontWeight: "700",
     color: "#111827",
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: "#fff",
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#e5e7eb",
+  },
+  statusText: {
+    fontSize: 12,
+    color: "#9ca3af",
+    paddingRight: 16,
+  },
+  statusTextSaved: {
+    fontSize: 12,
+    color: "#16a34a",
+    paddingRight: 16,
+  },
+  statusTextError: {
+    fontSize: 12,
+    color: "#dc2626",
+    paddingRight: 16,
   },
   editorContainer: {
     flex: 1,
