@@ -40,7 +40,7 @@ You are running in an autonomous, unattended loop. On every single execution, yo
 ### Phase 1: Environment Tagging (Sentry + PostHog)
 
 - [x] 1.1 — Add `NEXT_PUBLIC_SENTRY_ENVIRONMENT` to env schema + all Sentry init files
-- [ ] 1.2 — Add PostHog environment super property
+- [x] 1.2 — Add PostHog environment super property
 - [ ] 1-CP — **Checkpoint**: full suite green
 - [ ] 1-PUSH — **Push**: `/push` to PR
 
