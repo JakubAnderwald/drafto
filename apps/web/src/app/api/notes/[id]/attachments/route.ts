@@ -1,12 +1,10 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedUser, errorResponse, successResponse } from "@/lib/api/utils";
+import { MAX_FILE_SIZE, BUCKET_NAME, SIGNED_URL_EXPIRY_SECONDS } from "@drafto/shared";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
 }
-
-const MAX_FILE_SIZE = 26214400; // 25MB in bytes
-const BUCKET_NAME = "attachments";
 
 export async function GET(_request: NextRequest, { params }: RouteParams) {
   const { data: auth, error: authError } = await getAuthenticatedUser();
@@ -122,7 +120,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   // Generate a signed URL for the uploaded file (7 day expiry)
   const { data: urlData, error: urlError } = await supabase.storage
     .from(BUCKET_NAME)
-    .createSignedUrl(filePath, 604800);
+    .createSignedUrl(filePath, SIGNED_URL_EXPIRY_SECONDS);
 
   if (urlError || !urlData?.signedUrl) {
     // Clean up: remove uploaded file and DB record

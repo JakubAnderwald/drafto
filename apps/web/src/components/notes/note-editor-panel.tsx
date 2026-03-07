@@ -8,12 +8,11 @@ import { handleAuthError } from "@/lib/handle-auth-error";
 import { formatRelativeTime } from "@/lib/format-utils";
 import type { Block } from "@blocknote/core";
 import type { BadgeVariant } from "@/components/ui/badge";
+import { MAX_TITLE_LENGTH } from "@drafto/shared";
 
 interface NoteEditorPanelProps {
   noteId: string;
 }
-
-const MAX_TITLE_LENGTH = 255;
 
 interface NoteData {
   id: string;
