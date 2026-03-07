@@ -85,7 +85,7 @@ Maestro is a YAML-based mobile E2E framework. Tests run locally on iOS Simulator
 ### Phase 2: Authentication
 
 - [x] 2.1 — Supabase client for React Native with `expo-secure-store` token storage
-- [ ] 2.2 — Login screen (email/password)
+- [x] 2.2 — Login screen (email/password)
 - [ ] 2.3 — Signup screen + waiting-for-approval screen
 - [ ] 2.4 — Auth provider (session persistence, auto-refresh, approval check)
 - [ ] 2.5 — Protected route guard (redirect unauthenticated/unapproved users)
