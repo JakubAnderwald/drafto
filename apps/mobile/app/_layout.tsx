@@ -6,6 +6,7 @@ import { StatusBar } from "expo-status-bar";
 import { AuthProvider, useAuth } from "@/providers/auth-provider";
 import { DatabaseProvider } from "@/providers/database-provider";
 import { OfflineBanner } from "@/components/offline-banner";
+import { ToastProvider } from "@/components/toast";
 
 const PUBLIC_AUTH_SCREENS = new Set(["login", "signup"]);
 
@@ -50,27 +51,29 @@ function RouteGuard({ children }: { children: React.ReactNode }) {
 export default function RootLayout() {
   return (
     <AuthProvider>
-      <DatabaseProvider>
-        <RouteGuard>
-          <View style={styles.rootContainer}>
-            <OfflineBanner />
-            <Stack>
-              <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-              <Stack.Screen name="(auth)/login" options={{ title: "Log In" }} />
-              <Stack.Screen name="(auth)/signup" options={{ title: "Sign Up" }} />
-              <Stack.Screen
-                name="(auth)/waiting-for-approval"
-                options={{
-                  title: "Awaiting Approval",
-                  headerBackVisible: false,
-                }}
-              />
-              <Stack.Screen name="notebooks/[id]" options={{ title: "Notes" }} />
-              <Stack.Screen name="notes/[id]" options={{ title: "Editor" }} />
-            </Stack>
-          </View>
-        </RouteGuard>
-      </DatabaseProvider>
+      <ToastProvider>
+        <DatabaseProvider>
+          <RouteGuard>
+            <View style={styles.rootContainer}>
+              <OfflineBanner />
+              <Stack>
+                <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+                <Stack.Screen name="(auth)/login" options={{ title: "Log In" }} />
+                <Stack.Screen name="(auth)/signup" options={{ title: "Sign Up" }} />
+                <Stack.Screen
+                  name="(auth)/waiting-for-approval"
+                  options={{
+                    title: "Awaiting Approval",
+                    headerBackVisible: false,
+                  }}
+                />
+                <Stack.Screen name="notebooks/[id]" options={{ title: "Notes" }} />
+                <Stack.Screen name="notes/[id]" options={{ title: "Editor" }} />
+              </Stack>
+            </View>
+          </RouteGuard>
+        </DatabaseProvider>
+      </ToastProvider>
       <StatusBar style="auto" />
     </AuthProvider>
   );

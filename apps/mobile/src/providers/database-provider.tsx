@@ -8,6 +8,7 @@ import NetInfo from "@react-native-community/netinfo";
 import { database } from "@/db";
 import { syncDatabase, SyncNetworkError } from "@/db/sync";
 import { useAuth } from "@/providers/auth-provider";
+import { useToast } from "@/components/toast";
 
 const RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000] as const;
 const PERIODIC_SYNC_MS = 30_000;
@@ -25,6 +26,7 @@ const DatabaseContext = createContext<DatabaseContextValue | null>(null);
 
 export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
+  const { showToast } = useToast();
   const syncingRef = useRef(false);
   const retryCountRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -63,10 +65,18 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
     syncingRef.current = true;
     setIsSyncing(true);
     try {
-      await syncDatabase(database);
+      const result = await syncDatabase(database);
       retryCountRef.current = 0;
       setLastSyncedAt(new Date());
       await checkPendingChanges();
+
+      if (result.conflictCount > 0) {
+        const msg =
+          result.conflictCount === 1
+            ? "A note was updated from another device"
+            : `${result.conflictCount} items were updated from another device`;
+        showToast(msg, "warning");
+      }
     } catch (err) {
       if (err instanceof SyncNetworkError) {
         // Network error — schedule retry with backoff
@@ -87,7 +97,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       syncingRef.current = false;
       setIsSyncing(false);
     }
-  }, [checkPendingChanges]);
+  }, [checkPendingChanges, showToast]);
 
   // Initial sync when user logs in
   useEffect(() => {

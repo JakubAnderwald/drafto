@@ -240,13 +240,25 @@ function isNetworkError(error: unknown): boolean {
   );
 }
 
-export async function syncDatabase(db: WMDatabase): Promise<void> {
+export interface SyncResult {
+  conflictCount: number;
+}
+
+export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
+  let conflictCount = 0;
+
   try {
     await synchronize({
       database: db,
       pullChanges,
       pushChanges,
       migrationsEnabledAtVersion: 1,
+      conflictResolver: (_table, _local, remote, resolved) => {
+        // Server-wins: use the resolved record (which already prefers remote)
+        // but count the conflict so we can notify the user
+        conflictCount += 1;
+        return resolved;
+      },
     });
   } catch (error) {
     if (isNetworkError(error)) {
@@ -254,4 +266,6 @@ export async function syncDatabase(db: WMDatabase): Promise<void> {
     }
     throw error;
   }
+
+  return { conflictCount };
 }
