@@ -1,6 +1,7 @@
 export { getNotebooks, createNotebook, updateNotebook, deleteNotebook } from "./notebooks";
 
 export {
+  getNote,
   getNotes,
   createNote,
   updateNote,
