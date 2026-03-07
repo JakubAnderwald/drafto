@@ -700,6 +700,325 @@ describe("round-trip fidelity", () => {
     expect(roundTripped).toEqual(original);
   });
 
+  it("table round-trips", () => {
+    const original: BlockNoteBlock[] = [
+      {
+        type: "table",
+        content: {
+          type: "tableContent",
+          rows: [
+            {
+              cells: [
+                [{ type: "text", text: "A", styles: {} }],
+                [{ type: "text", text: "B", styles: {} }],
+              ],
+            },
+            {
+              cells: [
+                [{ type: "text", text: "C", styles: {} }],
+                [{ type: "text", text: "D", styles: {} }],
+              ],
+            },
+          ],
+        },
+        children: [],
+      },
+    ];
+
+    const roundTripped = tiptapToBlocknote(blocknoteToTiptap(original));
+    expect(roundTripped).toEqual(original);
+  });
+
+  it("link round-trips", () => {
+    const original: BlockNoteBlock[] = [
+      {
+        type: "paragraph",
+        content: [
+          { type: "text", text: "Visit ", styles: {} },
+          {
+            type: "link",
+            text: "Drafto",
+            href: "https://drafto.eu",
+            content: [{ type: "text", text: "Drafto", styles: {} }],
+          },
+          { type: "text", text: " for notes.", styles: {} },
+        ],
+        children: [],
+      },
+    ];
+
+    const roundTripped = tiptapToBlocknote(blocknoteToTiptap(original));
+    expect(roundTripped).toEqual(original);
+  });
+
+  it("numbered list round-trips", () => {
+    const original: BlockNoteBlock[] = [
+      {
+        type: "numberedListItem",
+        content: [{ type: "text", text: "First", styles: {} }],
+        children: [],
+      },
+      {
+        type: "numberedListItem",
+        content: [{ type: "text", text: "Second", styles: {} }],
+        children: [],
+      },
+      {
+        type: "numberedListItem",
+        content: [{ type: "text", text: "Third", styles: {} }],
+        children: [],
+      },
+    ];
+
+    const roundTripped = tiptapToBlocknote(blocknoteToTiptap(original));
+    expect(roundTripped).toEqual(original);
+  });
+
+  it("multiple styles round-trip (bold + italic + underline)", () => {
+    const original: BlockNoteBlock[] = [
+      {
+        type: "paragraph",
+        content: [
+          {
+            type: "text",
+            text: "all styles",
+            styles: { bold: true, italic: true, underline: true },
+          },
+        ],
+        children: [],
+      },
+    ];
+
+    const roundTripped = tiptapToBlocknote(blocknoteToTiptap(original));
+    expect(roundTripped).toEqual(original);
+  });
+
+  it("strike and code styles round-trip", () => {
+    const original: BlockNoteBlock[] = [
+      {
+        type: "paragraph",
+        content: [
+          { type: "text", text: "deleted", styles: { strike: true } },
+          { type: "text", text: " and ", styles: {} },
+          { type: "text", text: "inline code", styles: { code: true } },
+        ],
+        children: [],
+      },
+    ];
+
+    const roundTripped = tiptapToBlocknote(blocknoteToTiptap(original));
+    expect(roundTripped).toEqual(original);
+  });
+
+  it("link with bold style round-trips", () => {
+    const original: BlockNoteBlock[] = [
+      {
+        type: "paragraph",
+        content: [
+          {
+            type: "link",
+            text: "bold link",
+            href: "https://example.com",
+            content: [{ type: "text", text: "bold link", styles: { bold: true } }],
+          },
+        ],
+        children: [],
+      },
+    ];
+
+    const roundTripped = tiptapToBlocknote(blocknoteToTiptap(original));
+    expect(roundTripped).toEqual(original);
+  });
+
+  it("deeply nested bullet list round-trips (3 levels)", () => {
+    const original: BlockNoteBlock[] = [
+      {
+        type: "bulletListItem",
+        content: [{ type: "text", text: "Level 1", styles: {} }],
+        children: [
+          {
+            type: "bulletListItem",
+            content: [{ type: "text", text: "Level 2", styles: {} }],
+            children: [
+              {
+                type: "bulletListItem",
+                content: [{ type: "text", text: "Level 3", styles: {} }],
+                children: [],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    const roundTripped = tiptapToBlocknote(blocknoteToTiptap(original));
+    expect(roundTripped).toEqual(original);
+  });
+
+  it("empty paragraph round-trips", () => {
+    const original: BlockNoteBlock[] = [{ type: "paragraph", content: [], children: [] }];
+
+    const roundTripped = tiptapToBlocknote(blocknoteToTiptap(original));
+    expect(roundTripped).toEqual(original);
+  });
+
+  it("image without optional props round-trips", () => {
+    const original: BlockNoteBlock[] = [
+      {
+        type: "image",
+        props: { url: "https://example.com/photo.jpg" },
+        children: [],
+      },
+    ];
+
+    const roundTripped = tiptapToBlocknote(blocknoteToTiptap(original));
+    expect(roundTripped).toEqual(original);
+  });
+
+  it("code block without language round-trips", () => {
+    const original: BlockNoteBlock[] = [
+      {
+        type: "codeBlock",
+        props: { language: "" },
+        content: [{ type: "text", text: "plain code", styles: {} }],
+        children: [],
+      },
+    ];
+
+    const roundTripped = tiptapToBlocknote(blocknoteToTiptap(original));
+    expect(roundTripped).toEqual(original);
+  });
+
+  it("heading levels 1-3 round-trip", () => {
+    const original: BlockNoteBlock[] = [
+      {
+        type: "heading",
+        props: { level: 1 },
+        content: [{ type: "text", text: "H1", styles: {} }],
+        children: [],
+      },
+      {
+        type: "heading",
+        props: { level: 2 },
+        content: [{ type: "text", text: "H2", styles: {} }],
+        children: [],
+      },
+      {
+        type: "heading",
+        props: { level: 3 },
+        content: [{ type: "text", text: "H3", styles: {} }],
+        children: [],
+      },
+    ];
+
+    const roundTripped = tiptapToBlocknote(blocknoteToTiptap(original));
+    expect(roundTripped).toEqual(original);
+  });
+
+  it("realistic note content round-trips without data loss", () => {
+    const original: BlockNoteBlock[] = [
+      {
+        type: "heading",
+        props: { level: 1 },
+        content: [{ type: "text", text: "Meeting Notes", styles: {} }],
+        children: [],
+      },
+      {
+        type: "paragraph",
+        content: [
+          { type: "text", text: "Discussed the ", styles: {} },
+          { type: "text", text: "Q4 roadmap", styles: { bold: true } },
+          { type: "text", text: " with the team. See ", styles: {} },
+          {
+            type: "link",
+            text: "project board",
+            href: "https://example.com/board",
+            content: [{ type: "text", text: "project board", styles: {} }],
+          },
+          { type: "text", text: " for details.", styles: {} },
+        ],
+        children: [],
+      },
+      {
+        type: "heading",
+        props: { level: 2 },
+        content: [{ type: "text", text: "Action Items", styles: {} }],
+        children: [],
+      },
+      {
+        type: "checkListItem",
+        props: { checked: true },
+        content: [{ type: "text", text: "Review PR #42", styles: {} }],
+        children: [],
+      },
+      {
+        type: "checkListItem",
+        props: { checked: false },
+        content: [{ type: "text", text: "Write unit tests", styles: {} }],
+        children: [],
+      },
+      {
+        type: "numberedListItem",
+        content: [{ type: "text", text: "Deploy to staging", styles: {} }],
+        children: [],
+      },
+      {
+        type: "numberedListItem",
+        content: [{ type: "text", text: "Run smoke tests", styles: {} }],
+        children: [],
+      },
+      {
+        type: "codeBlock",
+        props: { language: "bash" },
+        content: [{ type: "text", text: "pnpm test && pnpm build", styles: {} }],
+        children: [],
+      },
+      {
+        type: "paragraph",
+        content: [],
+        children: [],
+      },
+      {
+        type: "image",
+        props: { url: "https://example.com/architecture.png", caption: "System diagram" },
+        children: [],
+      },
+    ];
+
+    const tiptap = blocknoteToTiptap(original);
+    const roundTripped = tiptapToBlocknote(tiptap);
+    expect(roundTripped).toEqual(original);
+  });
+
+  it("table with styled content round-trips", () => {
+    const original: BlockNoteBlock[] = [
+      {
+        type: "table",
+        content: {
+          type: "tableContent",
+          rows: [
+            {
+              cells: [
+                [{ type: "text", text: "Name", styles: { bold: true } }],
+                [{ type: "text", text: "Status", styles: { bold: true } }],
+              ],
+            },
+            {
+              cells: [
+                [{ type: "text", text: "Feature A", styles: {} }],
+                [{ type: "text", text: "Done", styles: { italic: true } }],
+              ],
+            },
+          ],
+        },
+        children: [],
+      },
+    ];
+
+    const roundTripped = tiptapToBlocknote(blocknoteToTiptap(original));
+    expect(roundTripped).toEqual(original);
+  });
+
   it("TipTap -> BlockNote -> TipTap round-trips a paragraph", () => {
     const original: TipTapDoc = {
       type: "doc",
