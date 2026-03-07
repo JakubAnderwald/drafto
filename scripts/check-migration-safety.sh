@@ -43,6 +43,11 @@ check_file() {
       continue
     fi
 
+    # Skip SQL comment-only lines
+    if echo "$line" | grep -qE '^\s*--'; then
+      continue
+    fi
+
     # Normalize to uppercase for matching
     upper=$(echo "$line" | tr '[:lower:]' '[:upper:]')
 
