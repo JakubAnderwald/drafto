@@ -36,21 +36,26 @@ export default function EditorScreen() {
   });
 
   const scheduleContentSave = useCallback(() => {
+    if (!id) return;
     if (contentSaveTimerRef.current) {
       clearTimeout(contentSaveTimerRef.current);
     }
+    const saveNoteId = id;
     contentSaveTimerRef.current = setTimeout(async () => {
-      if (!noteIdRef.current) return;
+      if (noteIdRef.current !== saveNoteId) return;
       try {
         const json = await editor.getJSON();
-        await updateNote(noteIdRef.current, { content: json as Json });
-      } catch {
-        // Silently fail for now — will be improved with offline sync
+        await updateNote(saveNoteId, { content: json as Json });
+      } catch (err) {
+        console.error("[auto-save] content save failed:", err);
       }
     }, 500);
-  }, [editor]);
+  }, [editor, id]);
 
   useEffect(() => {
+    if (contentSaveTimerRef.current) {
+      clearTimeout(contentSaveTimerRef.current);
+    }
     noteIdRef.current = id;
   }, [id]);
 
@@ -69,6 +74,8 @@ export default function EditorScreen() {
         setTitle(data.title);
         if (data.content) {
           editor.setContent(data.content as object);
+        } else {
+          editor.setContent({ type: "doc", content: [] });
         }
       } catch (err) {
         if (cancelled) return;
@@ -103,8 +110,8 @@ export default function EditorScreen() {
       if (!trimmed) return;
       try {
         await updateNote(id, { title: trimmed });
-      } catch {
-        // Silently fail for now
+      } catch (err) {
+        console.error("[auto-save] title save failed:", err);
       }
     }, 500);
   };
@@ -132,6 +139,8 @@ export default function EditorScreen() {
                 setTitle(data.title);
                 if (data.content) {
                   editor.setContent(data.content as object);
+                } else {
+                  editor.setContent({ type: "doc", content: [] });
                 }
               })
               .catch((err) => {
