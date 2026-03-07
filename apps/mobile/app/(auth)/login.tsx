@@ -12,7 +12,7 @@ import {
 } from "react-native";
 import { Link, router } from "expo-router";
 
-import { supabase } from "../../src/lib/supabase";
+import { supabase } from "@/lib/supabase";
 
 export default function LoginScreen() {
   const [email, setEmail] = useState("");
@@ -29,19 +29,21 @@ export default function LoginScreen() {
     setError(null);
     setLoading(true);
 
-    const { error: signInError } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
+    try {
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
 
-    setLoading(false);
+      if (signInError) {
+        setError(signInError.message);
+        return;
+      }
 
-    if (signInError) {
-      setError(signInError.message);
-      return;
+      router.replace("/(tabs)");
+    } finally {
+      setLoading(false);
     }
-
-    router.replace("/(tabs)");
   };
 
   return (
@@ -82,6 +84,8 @@ export default function LoginScreen() {
             value={password}
             onChangeText={setPassword}
             secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
             autoComplete="password"
             textContentType="password"
             editable={!loading}
