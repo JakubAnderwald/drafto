@@ -7,6 +7,7 @@ import {
   TextInput,
   Alert,
   ActivityIndicator,
+  RefreshControl,
   StyleSheet,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -24,7 +25,7 @@ import type { Note } from "@/db";
 export default function NotesListScreen() {
   const { id: notebookId } = useLocalSearchParams<{ id: string }>();
   const { user } = useAuth();
-  const { database, sync } = useDatabase();
+  const { database, sync, isSyncing } = useDatabase();
   const router = useRouter();
   const { notes, loading } = useNotes(notebookId);
   const { semantic } = useTheme();
@@ -222,6 +223,14 @@ export default function NotesListScreen() {
           keyExtractor={(item) => item.id}
           renderItem={renderNote}
           contentContainerStyle={styles.list}
+          refreshControl={
+            <RefreshControl
+              refreshing={isSyncing}
+              onRefresh={sync}
+              tintColor={colors.primary[600]}
+              colors={[colors.primary[600]]}
+            />
+          }
         />
       )}
 

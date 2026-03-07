@@ -6,6 +6,7 @@ import {
   Pressable,
   Alert,
   ActivityIndicator,
+  RefreshControl,
   StyleSheet,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -19,7 +20,7 @@ import type { SemanticColors } from "@/theme/tokens";
 import type { Note, Attachment } from "@/db";
 
 export default function TrashScreen() {
-  const { database, sync } = useDatabase();
+  const { database, sync, isSyncing } = useDatabase();
   const { notes, loading } = useTrashedNotes();
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
@@ -140,6 +141,14 @@ export default function TrashScreen() {
           keyExtractor={(item) => item.id}
           renderItem={renderNote}
           contentContainerStyle={styles.list}
+          refreshControl={
+            <RefreshControl
+              refreshing={isSyncing}
+              onRefresh={sync}
+              tintColor={colors.primary[600]}
+              colors={[colors.primary[600]]}
+            />
+          }
         />
       )}
     </View>

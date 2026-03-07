@@ -7,6 +7,7 @@ import {
   TextInput,
   Alert,
   ActivityIndicator,
+  RefreshControl,
   StyleSheet,
 } from "react-native";
 import { useRouter } from "expo-router";
@@ -25,7 +26,7 @@ import type { Notebook, Note, Attachment } from "@/db";
 
 export default function NotebooksScreen() {
   const { user } = useAuth();
-  const { database, sync } = useDatabase();
+  const { database, sync, isSyncing } = useDatabase();
   const router = useRouter();
   const { notebooks, loading } = useNotebooks();
   const { semantic } = useTheme();
@@ -227,6 +228,14 @@ export default function NotebooksScreen() {
           keyExtractor={(item) => item.id}
           renderItem={renderNotebook}
           contentContainerStyle={styles.list}
+          refreshControl={
+            <RefreshControl
+              refreshing={isSyncing}
+              onRefresh={sync}
+              tintColor={colors.primary[600]}
+              colors={[colors.primary[600]]}
+            />
+          }
         />
       )}
 

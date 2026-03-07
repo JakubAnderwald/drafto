@@ -136,7 +136,7 @@ Maestro is a YAML-based mobile E2E framework. Tests run locally on iOS Simulator
 
 - [x] 7.1 — Design system adaptation (map indigo/amber CSS tokens to RN styles)
 - [x] 7.2 — Dark mode (system preference + manual toggle, persisted)
-- [ ] 7.3 — Pull-to-refresh on list screens (triggers sync)
+- [x] 7.3 — Pull-to-refresh on list screens (triggers sync)
 - [ ] 7.4 — Swipe gestures (swipe to trash/restore)
 - [ ] 7.5 — Loading skeletons and styled empty states
 - [ ] 7.6 — Haptic feedback on key interactions
