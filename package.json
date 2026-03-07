@@ -22,6 +22,7 @@
     "supabase:link:dev": "supabase link --project-ref huhzactreblzcogqkbsd",
     "supabase:link:prod": "supabase link --project-ref tbmjbxxseonkciqovnpl",
     "supabase:push": "supabase db push",
+    "migration:check": "bash scripts/check-migration-safety.sh",
     "prepare": "husky"
   },
   "lint-staged": {
