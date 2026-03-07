@@ -15,6 +15,7 @@ import { useEditorBridge, TenTapStartKit } from "@10play/tentap-editor";
 import { useDatabase } from "@/providers/database-provider";
 import { useNote } from "@/hooks/use-note";
 import { NoteEditor } from "@/components/editor/note-editor";
+import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { useAutoSave } from "@/hooks/use-auto-save";
 import type { Note } from "@/db";
 
@@ -148,6 +149,7 @@ export default function EditorScreen() {
         <View style={styles.editorContainer}>
           <NoteEditor editor={editor} />
         </View>
+        <AttachmentPicker noteId={id} />
       </KeyboardAvoidingView>
     </>
   );
