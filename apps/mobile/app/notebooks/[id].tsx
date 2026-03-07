@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import {
   Text,
   View,
@@ -18,9 +18,11 @@ import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useNotes } from "@/hooks/use-notes";
 import { generateId } from "@/lib/generate-id";
+import { SwipeableRow } from "@/components/swipeable-row";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Note } from "@/db";
+import type { SwipeAction } from "@/components/swipeable-row";
 
 export default function NotesListScreen() {
   const { id: notebookId } = useLocalSearchParams<{ id: string }>();
@@ -86,29 +88,32 @@ export default function NotesListScreen() {
     }
   };
 
-  const handleTrash = (id: string, title: string) => {
-    Alert.alert("Move to Trash", `Are you sure you want to trash "${title}"?`, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Trash",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            const note = await database.get<Note>("notes").find(id);
-            await database.write(async () => {
-              await note.update((record) => {
-                record.isTrashed = true;
-                record.trashedAt = new Date();
+  const handleTrash = useCallback(
+    (id: string, title: string) => {
+      Alert.alert("Move to Trash", `Are you sure you want to trash "${title}"?`, [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Trash",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const note = await database.get<Note>("notes").find(id);
+              await database.write(async () => {
+                await note.update((record) => {
+                  record.isTrashed = true;
+                  record.trashedAt = new Date();
+                });
               });
-            });
-            sync();
-          } catch (err) {
-            Alert.alert("Error", err instanceof Error ? err.message : "Failed to trash note");
-          }
+              sync();
+            } catch (err) {
+              Alert.alert("Error", err instanceof Error ? err.message : "Failed to trash note");
+            }
+          },
         },
-      },
-    ]);
-  };
+      ]);
+    },
+    [database, sync],
+  );
 
   const startEditing = (note: Note) => {
     setEditingId(note.id);
@@ -143,34 +148,38 @@ export default function NotesListScreen() {
       );
     }
 
+    const rightActions: SwipeAction[] = [
+      {
+        icon: "trash-outline",
+        color: colors.white,
+        backgroundColor: colors.error,
+        onPress: () => handleTrash(item.id, item.title),
+      },
+    ];
+
     return (
-      <Pressable
-        style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-        onPress={() => router.push(`/notes/${item.id}`)}
-        onLongPress={() => startEditing(item)}
-      >
-        <Ionicons
-          name="document-text-outline"
-          size={20}
-          color={colors.primary[600]}
-          style={styles.rowIcon}
-        />
-        <View style={styles.rowContent}>
-          <Text style={styles.rowText} numberOfLines={1}>
-            {item.title}
-          </Text>
-          <Text style={styles.rowDate} numberOfLines={1}>
-            {item.updatedAt.toLocaleDateString()}
-          </Text>
-        </View>
+      <SwipeableRow rightActions={rightActions}>
         <Pressable
-          onPress={() => handleTrash(item.id, item.title)}
-          style={styles.iconButton}
-          hitSlop={8}
+          style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+          onPress={() => router.push(`/notes/${item.id}`)}
+          onLongPress={() => startEditing(item)}
         >
-          <Ionicons name="trash-outline" size={18} color={semantic.fgSubtle} />
+          <Ionicons
+            name="document-text-outline"
+            size={20}
+            color={colors.primary[600]}
+            style={styles.rowIcon}
+          />
+          <View style={styles.rowContent}>
+            <Text style={styles.rowText} numberOfLines={1}>
+              {item.title}
+            </Text>
+            <Text style={styles.rowDate} numberOfLines={1}>
+              {item.updatedAt.toLocaleDateString()}
+            </Text>
+          </View>
         </Pressable>
-      </Pressable>
+      </SwipeableRow>
     );
   };
 

@@ -1,9 +1,8 @@
-import { useMemo } from "react";
+import { useMemo, useCallback } from "react";
 import {
   Text,
   View,
   FlatList,
-  Pressable,
   Alert,
   ActivityIndicator,
   RefreshControl,
@@ -15,9 +14,11 @@ import { Q } from "@nozbe/watermelondb";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useTrashedNotes } from "@/hooks/use-trashed-notes";
+import { SwipeableRow } from "@/components/swipeable-row";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Note, Attachment } from "@/db";
+import type { SwipeAction } from "@/components/swipeable-row";
 
 export default function TrashScreen() {
   const { database, sync, isSyncing } = useDatabase();
@@ -25,97 +26,109 @@ export default function TrashScreen() {
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
 
-  const handleRestore = (id: string, title: string) => {
-    Alert.alert("Restore Note", `Restore "${title}" from trash?`, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Restore",
-        onPress: async () => {
-          try {
-            const note = await database.get<Note>("notes").find(id);
-            await database.write(async () => {
-              await note.update((record) => {
-                record.isTrashed = false;
-                record.trashedAt = null;
-              });
-            });
-            sync();
-          } catch (err) {
-            Alert.alert("Error", err instanceof Error ? err.message : "Failed to restore note");
-          }
-        },
-      },
-    ]);
-  };
-
-  const handleDeletePermanent = (id: string, title: string) => {
-    Alert.alert(
-      "Delete Permanently",
-      `Are you sure you want to permanently delete "${title}"? This cannot be undone.`,
-      [
+  const handleRestore = useCallback(
+    (id: string, title: string) => {
+      Alert.alert("Restore Note", `Restore "${title}" from trash?`, [
         { text: "Cancel", style: "cancel" },
         {
-          text: "Delete",
-          style: "destructive",
+          text: "Restore",
           onPress: async () => {
             try {
               const note = await database.get<Note>("notes").find(id);
-              const attachments = await database
-                .get<Attachment>("attachments")
-                .query(Q.where("note_id", id))
-                .fetch();
               await database.write(async () => {
-                for (const attachment of attachments) {
-                  await attachment.markAsDeleted();
-                }
-                await note.markAsDeleted();
+                await note.update((record) => {
+                  record.isTrashed = false;
+                  record.trashedAt = null;
+                });
               });
               sync();
             } catch (err) {
-              Alert.alert("Error", err instanceof Error ? err.message : "Failed to delete note");
+              Alert.alert("Error", err instanceof Error ? err.message : "Failed to restore note");
             }
           },
         },
-      ],
-    );
-  };
+      ]);
+    },
+    [database, sync],
+  );
+
+  const handleDeletePermanent = useCallback(
+    (id: string, title: string) => {
+      Alert.alert(
+        "Delete Permanently",
+        `Are you sure you want to permanently delete "${title}"? This cannot be undone.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Delete",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                const note = await database.get<Note>("notes").find(id);
+                const attachments = await database
+                  .get<Attachment>("attachments")
+                  .query(Q.where("note_id", id))
+                  .fetch();
+                await database.write(async () => {
+                  for (const attachment of attachments) {
+                    await attachment.markAsDeleted();
+                  }
+                  await note.markAsDeleted();
+                });
+                sync();
+              } catch (err) {
+                Alert.alert("Error", err instanceof Error ? err.message : "Failed to delete note");
+              }
+            },
+          },
+        ],
+      );
+    },
+    [database, sync],
+  );
 
   const renderNote = ({ item }: { item: Note }) => {
     const trashedDate = item.trashedAt ? item.trashedAt.toLocaleDateString() : "";
 
+    const leftActions: SwipeAction[] = [
+      {
+        icon: "arrow-undo-outline",
+        color: colors.white,
+        backgroundColor: colors.success,
+        onPress: () => handleRestore(item.id, item.title),
+      },
+    ];
+
+    const rightActions: SwipeAction[] = [
+      {
+        icon: "trash-outline",
+        color: colors.white,
+        backgroundColor: colors.error,
+        onPress: () => handleDeletePermanent(item.id, item.title),
+      },
+    ];
+
     return (
-      <View style={styles.row}>
-        <Ionicons
-          name="document-text-outline"
-          size={20}
-          color={semantic.fgSubtle}
-          style={styles.rowIcon}
-        />
-        <View style={styles.rowContent}>
-          <Text style={styles.rowText} numberOfLines={1}>
-            {item.title}
-          </Text>
-          {trashedDate ? (
-            <Text style={styles.rowDate} numberOfLines={1}>
-              Trashed {trashedDate}
+      <SwipeableRow leftActions={leftActions} rightActions={rightActions}>
+        <View style={styles.row}>
+          <Ionicons
+            name="document-text-outline"
+            size={20}
+            color={semantic.fgSubtle}
+            style={styles.rowIcon}
+          />
+          <View style={styles.rowContent}>
+            <Text style={styles.rowText} numberOfLines={1}>
+              {item.title}
             </Text>
-          ) : null}
+            {trashedDate ? (
+              <Text style={styles.rowDate} numberOfLines={1}>
+                Trashed {trashedDate}
+              </Text>
+            ) : null}
+          </View>
         </View>
-        <Pressable
-          onPress={() => handleRestore(item.id, item.title)}
-          style={styles.iconButton}
-          hitSlop={8}
-        >
-          <Ionicons name="arrow-undo-outline" size={18} color={colors.primary[600]} />
-        </Pressable>
-        <Pressable
-          onPress={() => handleDeletePermanent(item.id, item.title)}
-          style={styles.iconButton}
-          hitSlop={8}
-        >
-          <Ionicons name="trash-outline" size={18} color={colors.error} />
-        </Pressable>
-      </View>
+      </SwipeableRow>
     );
   };
 
@@ -194,9 +207,6 @@ const createStyles = (semantic: SemanticColors) =>
       fontSize: 12,
       color: semantic.fgSubtle,
       marginTop: 2,
-    },
-    iconButton: {
-      padding: 6,
     },
     emptyText: {
       fontSize: 18,

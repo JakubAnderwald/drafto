@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import {
   Text,
   View,
@@ -20,9 +20,11 @@ import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useNotebooks } from "@/hooks/use-notebooks";
 import { generateId } from "@/lib/generate-id";
+import { SwipeableRow } from "@/components/swipeable-row";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Notebook, Note, Attachment } from "@/db";
+import type { SwipeAction } from "@/components/swipeable-row";
 
 export default function NotebooksScreen() {
   const { user } = useAuth();
@@ -85,40 +87,46 @@ export default function NotebooksScreen() {
     }
   };
 
-  const handleDelete = (id: string, name: string) => {
-    Alert.alert("Delete Notebook", `Are you sure you want to delete "${name}"?`, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            const notebook = await database.get<Notebook>("notebooks").find(id);
-            const notes = await database
-              .get<Note>("notes")
-              .query(Q.where("notebook_id", id))
-              .fetch();
-            await database.write(async () => {
-              for (const note of notes) {
-                const attachments = await database
-                  .get<Attachment>("attachments")
-                  .query(Q.where("note_id", note.id))
-                  .fetch();
-                for (const attachment of attachments) {
-                  await attachment.markAsDeleted();
+  const handleDelete = useCallback(
+    (id: string, name: string) => {
+      Alert.alert("Delete Notebook", `Are you sure you want to delete "${name}"?`, [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const notebook = await database.get<Notebook>("notebooks").find(id);
+              const notes = await database
+                .get<Note>("notes")
+                .query(Q.where("notebook_id", id))
+                .fetch();
+              await database.write(async () => {
+                for (const note of notes) {
+                  const attachments = await database
+                    .get<Attachment>("attachments")
+                    .query(Q.where("note_id", note.id))
+                    .fetch();
+                  for (const attachment of attachments) {
+                    await attachment.markAsDeleted();
+                  }
+                  await note.markAsDeleted();
                 }
-                await note.markAsDeleted();
-              }
-              await notebook.markAsDeleted();
-            });
-            sync();
-          } catch (err) {
-            Alert.alert("Error", err instanceof Error ? err.message : "Failed to delete notebook");
-          }
+                await notebook.markAsDeleted();
+              });
+              sync();
+            } catch (err) {
+              Alert.alert(
+                "Error",
+                err instanceof Error ? err.message : "Failed to delete notebook",
+              );
+            }
+          },
         },
-      },
-    ]);
-  };
+      ]);
+    },
+    [database, sync],
+  );
 
   const startEditing = (notebook: Notebook) => {
     setEditingId(notebook.id);
@@ -153,29 +161,33 @@ export default function NotebooksScreen() {
       );
     }
 
+    const rightActions: SwipeAction[] = [
+      {
+        icon: "trash-outline",
+        color: colors.white,
+        backgroundColor: colors.error,
+        onPress: () => handleDelete(item.id, item.name),
+      },
+    ];
+
     return (
-      <Pressable
-        style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-        onPress={() => router.push(`/notebooks/${item.id}`)}
-        onLongPress={() => startEditing(item)}
-      >
-        <Ionicons
-          name="book-outline"
-          size={20}
-          color={colors.primary[600]}
-          style={styles.rowIcon}
-        />
-        <Text style={styles.rowText} numberOfLines={1}>
-          {item.name}
-        </Text>
+      <SwipeableRow rightActions={rightActions}>
         <Pressable
-          onPress={() => handleDelete(item.id, item.name)}
-          style={styles.iconButton}
-          hitSlop={8}
+          style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+          onPress={() => router.push(`/notebooks/${item.id}`)}
+          onLongPress={() => startEditing(item)}
         >
-          <Ionicons name="trash-outline" size={18} color={semantic.fgSubtle} />
+          <Ionicons
+            name="book-outline"
+            size={20}
+            color={colors.primary[600]}
+            style={styles.rowIcon}
+          />
+          <Text style={styles.rowText} numberOfLines={1}>
+            {item.name}
+          </Text>
         </Pressable>
-      </Pressable>
+      </SwipeableRow>
     );
   };
 
