@@ -6,6 +6,7 @@ import { database, Note } from "@/db";
 export function useNotes(notebookId: string | undefined) {
   const [notes, setNotes] = useState<Note[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!notebookId) {
@@ -14,6 +15,7 @@ export function useNotes(notebookId: string | undefined) {
       return;
     }
 
+    setError(null);
     const subscription = database
       .get<Note>("notes")
       .query(
@@ -22,13 +24,19 @@ export function useNotes(notebookId: string | undefined) {
         Q.sortBy("updated_at", Q.desc),
       )
       .observe()
-      .subscribe((records) => {
-        setNotes(records);
-        setLoading(false);
+      .subscribe({
+        next: (records) => {
+          setNotes(records);
+          setLoading(false);
+        },
+        error: (err) => {
+          setError(err instanceof Error ? err.message : "Failed to load notes");
+          setLoading(false);
+        },
       });
 
     return () => subscription.unsubscribe();
   }, [notebookId]);
 
-  return { notes, loading };
+  return { notes, loading, error };
 }

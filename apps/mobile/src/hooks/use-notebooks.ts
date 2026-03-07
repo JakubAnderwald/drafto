@@ -6,19 +6,26 @@ import { database, Notebook } from "@/db";
 export function useNotebooks() {
   const [notebooks, setNotebooks] = useState<Notebook[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const subscription = database
       .get<Notebook>("notebooks")
       .query(Q.sortBy("updated_at", Q.desc))
       .observe()
-      .subscribe((records) => {
-        setNotebooks(records);
-        setLoading(false);
+      .subscribe({
+        next: (records) => {
+          setNotebooks(records);
+          setLoading(false);
+        },
+        error: (err) => {
+          setError(err instanceof Error ? err.message : "Failed to load notebooks");
+          setLoading(false);
+        },
       });
 
     return () => subscription.unsubscribe();
   }, []);
 
-  return { notebooks, loading };
+  return { notebooks, loading, error };
 }

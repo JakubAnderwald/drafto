@@ -32,8 +32,8 @@ export default function EditorScreen() {
         if (!id) return;
         const trimmed = text.trim();
         if (!trimmed) return;
-        const record = await database.get<Note>("notes").find(id);
         await database.write(async () => {
+          const record = await database.get<Note>("notes").find(id);
           await record.update((r) => {
             r.title = trimmed;
           });
@@ -48,8 +48,8 @@ export default function EditorScreen() {
     onSave: useCallback(async () => {
       if (!id || noteIdRef.current !== id) return;
       const json = await editor.getJSON();
-      const record = await database.get<Note>("notes").find(id);
       await database.write(async () => {
+        const record = await database.get<Note>("notes").find(id);
         await record.update((r) => {
           r.content = JSON.stringify(json);
         });
