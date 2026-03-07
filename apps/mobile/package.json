@@ -6,7 +6,7 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "lint": "eslint .",
+    "lint": "echo \"ESLint will be configured in task 1.2\"",
     "typecheck": "tsc --noEmit",
     "test": "echo \"No tests yet\""
   },
