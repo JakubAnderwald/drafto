@@ -15,8 +15,8 @@ export default function WaitingForApprovalScreen() {
 
     try {
       await refreshApprovalStatus();
-      // Navigation is handled by the protected route guard (task 2.5).
-      // For now, show a message if still not approved.
+      // If still not approved after refresh, inform the user.
+      // If approved, the route guard will redirect automatically.
       setError("Your account is still pending approval.");
     } finally {
       setChecking(false);
