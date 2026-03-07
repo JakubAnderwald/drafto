@@ -19,6 +19,7 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
     "test:watch": "vitest watch",
+    "typecheck": "tsc --noEmit",
     "supabase:link:dev": "supabase link --project-ref huhzactreblzcogqkbsd",
     "supabase:link:prod": "supabase link --project-ref tbmjbxxseonkciqovnpl",
     "supabase:push": "supabase db push",

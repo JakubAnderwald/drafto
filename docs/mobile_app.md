@@ -215,7 +215,7 @@ Maestro is a YAML-based mobile E2E framework. Tests run locally on iOS Simulator
 
 #### 1.3 — Expo Router navigation skeleton
 
-```
+```text
 apps/mobile/app/
   _layout.tsx              (root Stack)
   (auth)/
@@ -331,7 +331,7 @@ Install: `@nozbe/watermelondb`, `@nozbe/with-observables`
 
 #### 4.2 — Model classes
 
-```
+```text
 apps/mobile/src/db/
   schema.ts        (table definitions)
   models/
@@ -574,7 +574,7 @@ Mock Supabase and WatermelonDB in tests (no network, no SQLite).
 
 ## Estimated File Structure
 
-```
+```text
 drafto/
   apps/
     web/                          (existing Next.js app, moved from root)
