@@ -1,5 +1,7 @@
-import { Model } from "@nozbe/watermelondb";
+import { Model, Query } from "@nozbe/watermelondb";
 import { field, date, readonly, children } from "@nozbe/watermelondb/decorators";
+
+import type { Note } from "./note";
 
 export class Notebook extends Model {
   static table = "notebooks";
@@ -14,5 +16,5 @@ export class Notebook extends Model {
   @readonly @date("created_at") createdAt!: Date;
   @date("updated_at") updatedAt!: Date;
 
-  @children("notes") notes!: unknown;
+  @children("notes") notes!: Query<Note>;
 }
