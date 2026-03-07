@@ -10,7 +10,7 @@ import {
   Platform,
   ScrollView,
 } from "react-native";
-import { Link, router } from "expo-router";
+import { Link } from "expo-router";
 
 import { supabase } from "@/lib/supabase";
 
@@ -37,10 +37,8 @@ export default function LoginScreen() {
 
       if (signInError) {
         setError(signInError.message);
-        return;
       }
-
-      router.replace("/(tabs)");
+      // Navigation is handled by the auth provider via onAuthStateChange
     } finally {
       setLoading(false);
     }

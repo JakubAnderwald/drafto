@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { Text, View, Pressable, StyleSheet, ActivityIndicator } from "react-native";
-import { router } from "expo-router";
 
-import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/providers/auth-provider";
 
 export default function WaitingForApprovalScreen() {
+  const { signOut, refreshApprovalStatus } = useAuth();
   const [checking, setChecking] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -14,31 +14,10 @@ export default function WaitingForApprovalScreen() {
     setChecking(true);
 
     try {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (!user) {
-        router.replace("/(auth)/login");
-        return;
-      }
-
-      const { data: profile, error: profileError } = await supabase
-        .from("profiles")
-        .select("is_approved")
-        .eq("id", user.id)
-        .single();
-
-      if (profileError) {
-        setError("Could not check approval status. Please try again.");
-        return;
-      }
-
-      if (profile?.is_approved) {
-        router.replace("/(tabs)");
-      } else {
-        setError("Your account is still pending approval.");
-      }
+      await refreshApprovalStatus();
+      // Navigation is handled by the protected route guard (task 2.5).
+      // For now, show a message if still not approved.
+      setError("Your account is still pending approval.");
     } finally {
       setChecking(false);
     }
@@ -48,8 +27,8 @@ export default function WaitingForApprovalScreen() {
     setSigningOut(true);
 
     try {
-      await supabase.auth.signOut();
-      router.replace("/(auth)/login");
+      await signOut();
+      // Navigation is handled by the auth provider via onAuthStateChange
     } finally {
       setSigningOut(false);
     }
