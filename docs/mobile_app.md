@@ -145,7 +145,7 @@ Maestro is a YAML-based mobile E2E framework. Tests run locally on iOS Simulator
 
 ### Phase 8: App Store Preparation
 
-- [ ] 8.1 — App icon and splash screen (Expo config, Drafto branding)
+- [x] 8.1 — App icon and splash screen (Expo config, Drafto branding)
 - [ ] 8.2 — EAS Build configuration (dev, preview, production profiles)
 - [ ] 8.3 — Deep linking (`drafto://` scheme + universal links for drafto.eu)
 - [ ] 8.4 — App Store metadata (screenshots, description, privacy policy)
