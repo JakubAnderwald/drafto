@@ -1,7 +1,7 @@
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 
-import { MAX_FILE_SIZE, BUCKET_NAME } from "@drafto/shared";
+import { MAX_FILE_SIZE, BUCKET_NAME, SIGNED_URL_EXPIRY_SECONDS } from "@drafto/shared";
 
 import { supabase } from "@/lib/supabase";
 
@@ -126,6 +126,18 @@ export async function uploadAttachment(
     fileSize: attachment.file_size,
     mimeType: attachment.mime_type,
   };
+}
+
+export async function getSignedUrl(filePath: string): Promise<string> {
+  const { data, error } = await supabase.storage
+    .from(BUCKET_NAME)
+    .createSignedUrl(filePath, SIGNED_URL_EXPIRY_SECONDS);
+
+  if (error || !data?.signedUrl) {
+    throw new Error(`Failed to get signed URL: ${error?.message ?? "Unknown error"}`);
+  }
+
+  return data.signedUrl;
 }
 
 export async function deleteAttachment(attachmentId: string, filePath: string): Promise<void> {

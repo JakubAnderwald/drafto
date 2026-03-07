@@ -11,4 +11,10 @@ export {
   deleteNotePermanent,
 } from "./notes";
 
-export { pickImage, pickDocument, uploadAttachment, deleteAttachment } from "./attachments";
+export {
+  pickImage,
+  pickDocument,
+  uploadAttachment,
+  deleteAttachment,
+  getSignedUrl,
+} from "./attachments";

@@ -14,8 +14,10 @@ import { useEditorBridge, TenTapStartKit } from "@10play/tentap-editor";
 
 import { useDatabase } from "@/providers/database-provider";
 import { useNote } from "@/hooks/use-note";
+import { useAttachments } from "@/hooks/use-attachments";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
+import { AttachmentList } from "@/components/editor/attachment-list";
 import { useAutoSave } from "@/hooks/use-auto-save";
 import type { Note } from "@/db";
 
@@ -23,6 +25,7 @@ export default function EditorScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { database, sync } = useDatabase();
   const { note, loading, error } = useNote(id);
+  const { attachments } = useAttachments(id);
   const [title, setTitle] = useState("");
   const [editorReady, setEditorReady] = useState(false);
   const noteIdRef = useRef(id);
@@ -149,6 +152,7 @@ export default function EditorScreen() {
         <View style={styles.editorContainer}>
           <NoteEditor editor={editor} />
         </View>
+        <AttachmentList attachments={attachments} />
         <AttachmentPicker noteId={id} />
       </KeyboardAvoidingView>
     </>
