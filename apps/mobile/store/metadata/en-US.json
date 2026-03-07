@@ -1,0 +1,11 @@
+{
+  "name": "Drafto",
+  "subtitle": "Notes, offline & synced",
+  "description": "Drafto is a fast, offline-first note-taking app that syncs seamlessly across all your devices.\n\nOrganize your thoughts in notebooks, write with a rich text editor, and never lose a word — even without an internet connection. Changes sync automatically when you're back online.\n\nKey features:\n- Rich text editor with formatting, headings, lists, and code blocks\n- Organize notes into notebooks\n- Offline-first: read, write, and edit without internet\n- Automatic background sync across devices\n- Dark mode (system or manual toggle)\n- Trash with restore — nothing is lost by accident\n- Attach images and files to your notes\n- Deep linking to open notes directly\n- Fast and lightweight\n\nDrafto is also available as a web app at drafto.eu. Your notes stay in sync between mobile and web.",
+  "keywords": "notes,notebook,offline,sync,editor,writing,markdown,organizer,productivity,drafto",
+  "primaryCategory": "Productivity",
+  "secondaryCategory": "Utilities",
+  "privacyUrl": "https://drafto.eu/privacy",
+  "supportUrl": "https://drafto.eu/support",
+  "marketingUrl": "https://drafto.eu"
+}
