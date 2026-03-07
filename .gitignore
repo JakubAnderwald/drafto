@@ -59,4 +59,3 @@ Thumbs.db
 
 # claude code
 .claude/
-.env*.local
