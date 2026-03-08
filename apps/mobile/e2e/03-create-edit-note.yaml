@@ -1,0 +1,51 @@
+appId: eu.drafto.mobile
+---
+- launchApp
+
+# Navigate to the test notebook
+- assertVisible:
+    text: "Notebooks"
+    timeout: 10000
+- tapOn: "E2E Test Notebook"
+
+# Verify notes list screen
+- assertVisible:
+    text: "No notes yet"
+    timeout: 5000
+    optional: true
+
+# Tap the FAB (+) to create a note
+- tapOn:
+    id: "add"
+
+# Type a note title
+- tapOn: "Note title (optional)"
+- inputText: "E2E Test Note"
+
+# Confirm creation
+- tapOn:
+    id: "checkmark"
+
+# Verify the note appears
+- assertVisible: "E2E Test Note"
+
+# Open the note in the editor
+- tapOn: "E2E Test Note"
+
+# Verify the editor screen loads
+- assertVisible:
+    text: "E2E Test Note"
+    timeout: 5000
+
+# Edit the title
+- tapOn: "E2E Test Note"
+- clearText
+- inputText: "Renamed E2E Note"
+
+# Wait for auto-save
+- assertVisible:
+    text: "Saved"
+    timeout: 5000
+
+# Go back
+- pressKey: back

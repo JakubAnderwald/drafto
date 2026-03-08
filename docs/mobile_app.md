@@ -157,7 +157,7 @@ Maestro is a YAML-based mobile E2E framework. Tests run locally on iOS Simulator
 
 - [x] 9.1 — Unit tests for shared package (format converter round-trip tests)
 - [x] 9.2 — Integration tests for mobile screens (React Native Testing Library)
-- [ ] 9.3 — Install Maestro CLI and write E2E test flows (YAML)
+- [x] 9.3 — Install Maestro CLI and write E2E test flows (YAML)
 - [ ] 9.4 — Maestro E2E flows: login, create notebook, create/edit note, trash/restore
 - [ ] 9.5 — Maestro E2E flows: offline mode (airplane mode toggle, verify local data persists)
 - [ ] 9.6 — Performance profiling (startup < 2s, sync perf with 1000 notes)

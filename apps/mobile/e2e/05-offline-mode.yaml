@@ -1,0 +1,56 @@
+appId: eu.drafto.mobile
+---
+- launchApp
+
+# Navigate to the test notebook
+- assertVisible:
+    text: "Notebooks"
+    timeout: 10000
+- tapOn: "E2E Test Notebook"
+
+# Verify existing note is visible
+- assertVisible:
+    text: "Renamed E2E Note"
+    timeout: 5000
+
+# Enable airplane mode (go offline)
+- toggleAirplaneMode
+
+# Wait for offline indicator to appear
+- assertVisible:
+    text: "Offline"
+    timeout: 5000
+
+# Create a note while offline
+- tapOn:
+    id: "add"
+- tapOn: "Note title (optional)"
+- inputText: "Offline Note"
+- tapOn:
+    id: "checkmark"
+
+# Verify the offline note appears locally
+- assertVisible: "Offline Note"
+
+# Open and edit the offline note
+- tapOn: "Offline Note"
+- assertVisible:
+    text: "Offline Note"
+    timeout: 5000
+
+# Go back to the notes list
+- pressKey: back
+
+# Disable airplane mode (go back online)
+- toggleAirplaneMode
+
+# Wait for sync to complete
+- assertVisible:
+    text: "Syncing"
+    timeout: 10000
+    optional: true
+
+# Verify note persists after sync
+- assertVisible:
+    text: "Offline Note"
+    timeout: 10000

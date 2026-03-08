@@ -1,0 +1,22 @@
+appId: eu.drafto.mobile
+---
+- launchApp:
+    clearState: true
+
+# Verify login screen is shown
+- assertVisible: "Log In"
+- assertVisible: "Sign in to your Drafto account"
+
+# Enter credentials
+- tapOn: "Email"
+- inputText: ${E2E_TEST_EMAIL}
+- tapOn: "Password"
+- inputText: ${E2E_TEST_PASSWORD}
+
+# Submit login
+- tapOn: "Log in"
+
+# Verify we land on the Notebooks tab
+- assertVisible:
+    text: "Notebooks"
+    timeout: 10000

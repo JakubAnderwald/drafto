@@ -1,0 +1,58 @@
+appId: eu.drafto.mobile
+---
+- launchApp
+
+# Navigate to the test notebook
+- assertVisible:
+    text: "Notebooks"
+    timeout: 10000
+- tapOn: "E2E Test Notebook"
+
+# Verify our renamed note is there
+- assertVisible:
+    text: "Renamed E2E Note"
+    timeout: 5000
+
+# Swipe left to reveal trash action
+- swipe:
+    from:
+      text: "Renamed E2E Note"
+    direction: LEFT
+
+# Tap the trash action (alert will appear)
+- assertVisible: "Move to Trash"
+- tapOn: "Trash"
+
+# Verify note is gone from list
+- assertNotVisible: "Renamed E2E Note"
+
+# Go back to tabs
+- pressKey: back
+
+# Navigate to Trash tab
+- tapOn: "Trash"
+
+# Verify the trashed note appears in trash
+- assertVisible:
+    text: "Renamed E2E Note"
+    timeout: 5000
+
+# Swipe right to reveal restore action
+- swipe:
+    from:
+      text: "Renamed E2E Note"
+    direction: RIGHT
+
+# Tap restore (alert will appear)
+- assertVisible: "Restore Note"
+- tapOn: "Restore"
+
+# Verify note is gone from trash
+- assertNotVisible: "Renamed E2E Note"
+
+# Go back to Notebooks tab and verify restoration
+- tapOn: "Notebooks"
+- tapOn: "E2E Test Notebook"
+- assertVisible:
+    text: "Renamed E2E Note"
+    timeout: 5000

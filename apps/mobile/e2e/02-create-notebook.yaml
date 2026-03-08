@@ -1,0 +1,23 @@
+appId: eu.drafto.mobile
+---
+- launchApp
+
+# Should be on Notebooks tab (already logged in from 01-login)
+- assertVisible:
+    text: "Notebooks"
+    timeout: 10000
+
+# Tap the FAB (+) to create a notebook
+- tapOn:
+    id: "add"
+
+# Wait for the create bar to appear and type the name
+- tapOn: "Notebook name"
+- inputText: "E2E Test Notebook"
+
+# Confirm creation by tapping checkmark
+- tapOn:
+    id: "checkmark"
+
+# Verify the notebook appears in the list
+- assertVisible: "E2E Test Notebook"
