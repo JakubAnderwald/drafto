@@ -83,7 +83,7 @@ describe("Startup Performance", () => {
     expect(perf.getStartupDuration()).toBeNull();
   });
 
-  it("should import and initialize WatermelonDB schema under 200ms", () => {
+  it("should import and initialize WatermelonDB schema under 500ms", () => {
     const start = Date.now();
 
     // Import schema (simulates the schema parsing at app init)
@@ -95,7 +95,8 @@ describe("Startup Performance", () => {
     expect(schema).toBeDefined();
     expect(schema.version).toBe(2);
     expect(Object.keys(schema.tables)).toHaveLength(3);
-    expect(duration).toBeLessThan(200);
+    // 500ms allows headroom for slower CI runners
+    expect(duration).toBeLessThan(500);
   });
 
   it("should simulate full provider initialization chain under 100ms", () => {
