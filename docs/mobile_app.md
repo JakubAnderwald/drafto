@@ -163,7 +163,7 @@ Maestro is a YAML-based mobile E2E framework. Tests run locally on iOS Simulator
 - [x] 9.6 — Performance profiling (startup < 2s, sync perf with 1000 notes)
 - [x] 9.7 — Beta testing (TestFlight + Google Play Internal Testing)
 - [x] 9.8 — Final compliance checklist
-- [ ] 9-PUSH — **Push**: `/push` to PR — MOBILE APP v1 COMPLETE
+- [x] 9-PUSH — **Push**: `/push` to PR — MOBILE APP v1 COMPLETE
 
 ---
 
