@@ -162,7 +162,7 @@ Maestro is a YAML-based mobile E2E framework. Tests run locally on iOS Simulator
 - [x] 9.5 — Maestro E2E flows: offline mode (airplane mode toggle, verify local data persists)
 - [x] 9.6 — Performance profiling (startup < 2s, sync perf with 1000 notes)
 - [x] 9.7 — Beta testing (TestFlight + Google Play Internal Testing)
-- [ ] 9.8 — Final compliance checklist
+- [x] 9.8 — Final compliance checklist
 - [ ] 9-PUSH — **Push**: `/push` to PR — MOBILE APP v1 COMPLETE
 
 ---
@@ -655,18 +655,18 @@ drafto/
 
 ## Final Compliance Checklist (Phase 9.8)
 
-- [ ] Login/signup works on both iOS and Android
-- [ ] Notebooks CRUD works online and offline
-- [ ] Notes CRUD works online and offline
-- [ ] Rich text editor produces BlockNote-compatible content
-- [ ] Content syncs correctly between web and mobile
-- [ ] Attachments upload and display correctly
-- [ ] Trash works (soft delete, restore, permanent delete)
-- [ ] Dark mode works (system preference + manual toggle)
-- [ ] App works fully offline (read + write)
-- [ ] Sync resumes correctly after offline period
-- [ ] Conflict resolution works (server-wins)
-- [ ] Deep links work
-- [ ] Performance targets met (< 2s cold start)
-- [ ] All tests green (unit, integration, E2E)
-- [ ] App store requirements met (icon, splash, metadata, privacy policy)
+- [x] Login/signup works on both iOS and Android
+- [x] Notebooks CRUD works online and offline
+- [x] Notes CRUD works online and offline
+- [x] Rich text editor produces BlockNote-compatible content
+- [x] Content syncs correctly between web and mobile
+- [x] Attachments upload and display correctly
+- [x] Trash works (soft delete, restore, permanent delete)
+- [x] Dark mode works (system preference + manual toggle)
+- [x] App works fully offline (read + write)
+- [x] Sync resumes correctly after offline period
+- [x] Conflict resolution works (server-wins)
+- [x] Deep links work
+- [x] Performance targets met (< 2s cold start)
+- [x] All tests green (unit, integration, E2E)
+- [x] App store requirements met (icon, splash, metadata, privacy policy)
