@@ -17,12 +17,21 @@
         "simulator": false
       }
     },
+    "beta": {
+      "distribution": "store",
+      "autoIncrement": true,
+      "channel": "beta",
+      "env": {
+        "APP_VARIANT": "beta"
+      }
+    },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "channel": "production"
     }
   },
   "submit": {
-    "production": {
+    "beta": {
       "ios": {
         "appleId": "",
         "ascAppId": "",
@@ -31,6 +40,17 @@
       "android": {
         "serviceAccountKeyPath": "",
         "track": "internal"
+      }
+    },
+    "production": {
+      "ios": {
+        "appleId": "",
+        "ascAppId": "",
+        "appleTeamId": ""
+      },
+      "android": {
+        "serviceAccountKeyPath": "",
+        "track": "production"
       }
     }
   }
