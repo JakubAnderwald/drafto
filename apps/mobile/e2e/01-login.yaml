@@ -1,22 +1,51 @@
 appId: eu.drafto.mobile
 ---
+# Flow 01: Login
+# Tests: error handling, successful login, session persistence
+
+# --- Clean start ---
 - launchApp:
     clearState: true
 
-# Verify login screen is shown
+# Verify login screen renders correctly
 - assertVisible: "Log In"
 - assertVisible: "Sign in to your Drafto account"
 
-# Enter credentials
+# --- Test: empty form submission ---
+- tapOn: "Log in"
+- assertVisible:
+    text: "Invalid login credentials"
+    timeout: 5000
+
+# --- Test: wrong password ---
 - tapOn: "Email"
 - inputText: ${E2E_TEST_EMAIL}
 - tapOn: "Password"
-- inputText: ${E2E_TEST_PASSWORD}
+- inputText: "wrong-password-123"
+- tapOn: "Log in"
+- assertVisible:
+    text: "Invalid login credentials"
+    timeout: 5000
 
-# Submit login
+# --- Test: successful login ---
+- tapOn: "Email"
+- clearText
+- inputText: ${E2E_TEST_EMAIL}
+- tapOn: "Password"
+- clearText
+- inputText: ${E2E_TEST_PASSWORD}
 - tapOn: "Log in"
 
 # Verify we land on the Notebooks tab
 - assertVisible:
     text: "Notebooks"
     timeout: 10000
+
+# --- Test: session persistence across restart ---
+- launchApp
+- assertVisible:
+    text: "Notebooks"
+    timeout: 10000
+
+# Verify we are NOT shown the login screen again
+- assertNotVisible: "Log In"

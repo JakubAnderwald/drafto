@@ -1,5 +1,8 @@
 appId: eu.drafto.mobile
 ---
+# Flow 03: Create, edit, and rename notes
+# Depends on: 02-create-notebook (E2E Test Notebook exists)
+
 - launchApp
 
 # Navigate to the test notebook
@@ -8,36 +11,50 @@ appId: eu.drafto.mobile
     timeout: 10000
 - tapOn: "E2E Test Notebook"
 
-# Verify notes list screen
+# --- Test: empty state ---
 - assertVisible:
     text: "No notes yet"
     timeout: 5000
     optional: true
 
-# Tap the FAB (+) to create a note
+# --- Test: create a note with title ---
 - tapOn:
     id: "add"
-
-# Type a note title
-- tapOn: "Note title (optional)"
+- assertVisible: "Note title (optional)"
 - inputText: "E2E Test Note"
-
-# Confirm creation
 - tapOn:
     id: "checkmark"
 
-# Verify the note appears
+# Verify the note appears in the list
 - assertVisible: "E2E Test Note"
 
-# Open the note in the editor
+# --- Test: create a note without title ---
+- tapOn:
+    id: "add"
+- assertVisible: "Note title (optional)"
+- tapOn:
+    id: "checkmark"
+
+# An untitled note should appear (shown as "Untitled" in the editor)
+
+# --- Test: cancel note creation ---
+- tapOn:
+    id: "add"
+- assertVisible: "Note title (optional)"
+- inputText: "Cancelled Note"
+- tapOn:
+    id: "close"
+- assertNotVisible: "Cancelled Note"
+
+# --- Test: open note in editor ---
 - tapOn: "E2E Test Note"
 
-# Verify the editor screen loads
+# Verify editor screen loads with note title
 - assertVisible:
     text: "E2E Test Note"
     timeout: 5000
 
-# Edit the title
+# --- Test: edit the note title ---
 - tapOn: "E2E Test Note"
 - clearText
 - inputText: "Renamed E2E Note"
@@ -47,5 +64,22 @@ appId: eu.drafto.mobile
     text: "Saved"
     timeout: 5000
 
-# Go back
+# --- Test: rename via long press on notes list ---
 - pressKey: back
+
+# Verify the renamed title shows in the list
+- assertVisible:
+    text: "Renamed E2E Note"
+    timeout: 5000
+
+# Long press to enter inline edit mode
+- longPressOn: "Renamed E2E Note"
+- clearText
+- inputText: "E2E Final Note"
+- tapOn:
+    id: "checkmark"
+- assertVisible: "E2E Final Note"
+
+# --- Test: pull to refresh ---
+- scroll:
+    direction: DOWN

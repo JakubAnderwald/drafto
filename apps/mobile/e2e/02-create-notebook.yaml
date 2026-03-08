@@ -1,23 +1,73 @@
 appId: eu.drafto.mobile
 ---
+# Flow 02: Create, rename, and delete notebooks
+# Depends on: 01-login (user is logged in)
+
 - launchApp
 
-# Should be on Notebooks tab (already logged in from 01-login)
+# Should be on Notebooks tab (logged in from 01-login)
 - assertVisible:
     text: "Notebooks"
     timeout: 10000
 
-# Tap the FAB (+) to create a notebook
+# --- Test: create a notebook ---
 - tapOn:
     id: "add"
 
-# Wait for the create bar to appear and type the name
-- tapOn: "Notebook name"
+# Verify the create input appears
+- assertVisible: "Notebook name"
 - inputText: "E2E Test Notebook"
 
-# Confirm creation by tapping checkmark
+# Confirm creation
 - tapOn:
     id: "checkmark"
 
-# Verify the notebook appears in the list
+# Verify notebook appears in the list
+- assertVisible: "E2E Test Notebook"
+
+# --- Test: cancel creating a notebook ---
+- tapOn:
+    id: "add"
+- assertVisible: "Notebook name"
+- inputText: "Should Not Exist"
+- tapOn:
+    id: "close"
+
+# Verify the cancelled notebook does NOT appear
+- assertNotVisible: "Should Not Exist"
+
+# --- Test: create a second notebook ---
+- tapOn:
+    id: "add"
+- tapOn: "Notebook name"
+- inputText: "E2E Temp Notebook"
+- tapOn:
+    id: "checkmark"
+- assertVisible: "E2E Temp Notebook"
+
+# --- Test: rename a notebook via long press ---
+- longPressOn: "E2E Temp Notebook"
+
+# Edit mode should show input with current name
+- clearText
+- inputText: "E2E Renamed Notebook"
+- tapOn:
+    id: "checkmark"
+
+# Verify renamed notebook appears
+- assertVisible: "E2E Renamed Notebook"
+- assertNotVisible: "E2E Temp Notebook"
+
+# --- Test: delete a notebook via swipe ---
+- swipe:
+    from:
+      text: "E2E Renamed Notebook"
+    direction: LEFT
+
+# Verify the notebook is removed from the list
+- assertNotVisible:
+    text: "E2E Renamed Notebook"
+    timeout: 5000
+
+# Original notebook should still be there
 - assertVisible: "E2E Test Notebook"

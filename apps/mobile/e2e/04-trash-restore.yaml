@@ -1,5 +1,8 @@
 appId: eu.drafto.mobile
 ---
+# Flow 04: Trash, restore, and permanent delete
+# Depends on: 03-create-edit-note (E2E Final Note exists in E2E Test Notebook)
+
 - launchApp
 
 # Navigate to the test notebook
@@ -8,51 +11,92 @@ appId: eu.drafto.mobile
     timeout: 10000
 - tapOn: "E2E Test Notebook"
 
-# Verify our renamed note is there
+# Verify our note is there
 - assertVisible:
-    text: "Renamed E2E Note"
+    text: "E2E Final Note"
     timeout: 5000
 
-# Swipe left to reveal trash action
+# --- Test: swipe to trash a note ---
 - swipe:
     from:
-      text: "Renamed E2E Note"
+      text: "E2E Final Note"
     direction: LEFT
 
-# Tap the trash action (alert will appear)
+# Confirm the trash alert
 - assertVisible: "Move to Trash"
 - tapOn: "Trash"
 
-# Verify note is gone from list
-- assertNotVisible: "Renamed E2E Note"
+# Verify note is removed from the list
+- assertNotVisible: "E2E Final Note"
 
-# Go back to tabs
+# --- Test: verify trashed note in Trash tab ---
 - pressKey: back
-
-# Navigate to Trash tab
 - tapOn: "Trash"
 
-# Verify the trashed note appears in trash
+# Verify the trashed note appears in the Trash screen
 - assertVisible:
-    text: "Renamed E2E Note"
+    text: "E2E Final Note"
     timeout: 5000
 
-# Swipe right to reveal restore action
+# --- Test: restore a note from trash ---
 - swipe:
     from:
-      text: "Renamed E2E Note"
+      text: "E2E Final Note"
     direction: RIGHT
 
-# Tap restore (alert will appear)
+# Confirm restore alert
 - assertVisible: "Restore Note"
 - tapOn: "Restore"
 
-# Verify note is gone from trash
-- assertNotVisible: "Renamed E2E Note"
+# Verify note is removed from trash
+- assertNotVisible: "E2E Final Note"
 
-# Go back to Notebooks tab and verify restoration
+# --- Test: verify restored note is back in notebook ---
 - tapOn: "Notebooks"
 - tapOn: "E2E Test Notebook"
 - assertVisible:
-    text: "Renamed E2E Note"
+    text: "E2E Final Note"
     timeout: 5000
+
+# --- Test: trash again for permanent delete test ---
+- swipe:
+    from:
+      text: "E2E Final Note"
+    direction: LEFT
+- assertVisible: "Move to Trash"
+- tapOn: "Trash"
+- assertNotVisible: "E2E Final Note"
+
+# --- Test: permanent delete from trash ---
+- pressKey: back
+- tapOn: "Trash"
+- assertVisible:
+    text: "E2E Final Note"
+    timeout: 5000
+
+# Swipe left to reveal permanent delete action
+- swipe:
+    from:
+      text: "E2E Final Note"
+    direction: LEFT
+
+# Confirm permanent delete
+- assertVisible: "Delete Permanently"
+- tapOn: "Delete"
+
+# Verify permanently deleted
+- assertNotVisible: "E2E Final Note"
+
+# --- Test: empty trash state ---
+# If no other trashed notes exist, verify empty state
+- assertVisible:
+    text: "Trash is empty"
+    timeout: 5000
+    optional: true
+
+# --- Cleanup: go back to Notebooks and delete the test notebook ---
+- tapOn: "Notebooks"
+- swipe:
+    from:
+      text: "E2E Test Notebook"
+    direction: LEFT
