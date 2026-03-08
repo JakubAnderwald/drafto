@@ -9,6 +9,9 @@ import { ThemeProvider, useTheme } from "@/providers/theme-provider";
 import { OfflineBanner } from "@/components/offline-banner";
 import { ToastProvider } from "@/components/toast";
 import { colors } from "@/theme/tokens";
+import { markStartupBegin, markStartupEnd } from "@/lib/performance";
+
+markStartupBegin();
 
 const PUBLIC_AUTH_SCREENS = new Set(["login", "signup"]);
 
@@ -38,6 +41,12 @@ function RouteGuard({ children }: { children: React.ReactNode }) {
       }
     }
   }, [user, isApproved, isLoading, isCheckingApproval, segments, router]);
+
+  useEffect(() => {
+    if (!isLoading && !isCheckingApproval) {
+      markStartupEnd();
+    }
+  }, [isLoading, isCheckingApproval]);
 
   if (isLoading || isCheckingApproval) {
     return (

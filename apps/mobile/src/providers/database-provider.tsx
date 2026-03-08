@@ -8,6 +8,7 @@ import NetInfo from "@react-native-community/netinfo";
 import { database } from "@/db";
 import { syncDatabase, SyncNetworkError } from "@/db/sync";
 import { processPendingUploads } from "@/lib/data/attachment-queue";
+import { measureAsync } from "@/lib/performance";
 import { useAuth } from "@/providers/auth-provider";
 import { useToast } from "@/components/toast";
 
@@ -69,7 +70,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       // Upload any queued attachments before syncing metadata
       await processPendingUploads();
 
-      const result = await syncDatabase(database);
+      const result = await measureAsync("sync", () => syncDatabase(database));
       retryCountRef.current = 0;
       setLastSyncedAt(new Date());
       await checkPendingChanges();
