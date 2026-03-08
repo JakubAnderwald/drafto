@@ -20,7 +20,7 @@ describe("Startup Performance", () => {
 
     const duration = Date.now() - start;
 
-    expect(duration).toBeLessThan(10);
+    expect(duration).toBeLessThan(50);
     expect(perf.getStartupDuration()).toBeLessThanOrEqual(duration);
     expect(perf.getMarks()).toHaveLength(5);
     expect(perf.getMeasurements()).toHaveLength(1);

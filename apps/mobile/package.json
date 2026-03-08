@@ -11,9 +11,13 @@
     "test": "jest --passWithNoTests",
     "build:dev": "eas build --profile development",
     "build:preview": "eas build --profile preview",
+    "build:beta": "eas build --profile beta",
     "build:prod": "eas build --profile production",
     "submit:ios": "eas submit --platform ios",
-    "submit:android": "eas submit --platform android"
+    "submit:android": "eas submit --platform android",
+    "beta:ios": "eas build --profile beta --platform ios --auto-submit",
+    "beta:android": "eas build --profile beta --platform android --auto-submit",
+    "beta:all": "eas build --profile beta --auto-submit"
   },
   "dependencies": {
     "@10play/tentap-editor": "^1.0.1",

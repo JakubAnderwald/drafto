@@ -101,6 +101,24 @@ jobs:
           path: apps/web/playwright-report/
           retention-days: 7
 
+  mobile-checks:
+    name: Mobile Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - name: Lint mobile
+        run: cd apps/mobile && pnpm lint
+      - name: Typecheck mobile
+        run: cd apps/mobile && pnpm typecheck
+      - name: Run mobile tests
+        run: cd apps/mobile && pnpm test
+
   sonarcloud:
     name: SonarCloud
     runs-on: ubuntu-latest
