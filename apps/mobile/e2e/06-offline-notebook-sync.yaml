@@ -1,0 +1,86 @@
+appId: eu.drafto.mobile
+---
+# Flow 06: Offline notebook creation and multi-operation sync
+# Depends on: 01-login (user is logged in)
+# Tests: create notebook offline, create note inside it offline,
+#         all queued operations sync correctly on reconnect
+
+- launchApp
+
+- assertVisible:
+    text: "Notebooks"
+    timeout: 10000
+
+# --- Test 1: Go offline and create a notebook ---
+- toggleAirplaneMode
+
+- assertVisible:
+    text: "Offline"
+    timeout: 5000
+
+- tapOn:
+    id: "add"
+- assertVisible: "Notebook name"
+- inputText: "Offline Notebook"
+- tapOn:
+    id: "checkmark"
+
+# Verify notebook appears in local list
+- assertVisible: "Offline Notebook"
+
+# --- Test 2: Create a note inside the offline notebook ---
+- tapOn: "Offline Notebook"
+
+- tapOn:
+    id: "add"
+- tapOn: "Note title (optional)"
+- inputText: "Offline Nested Note"
+- tapOn:
+    id: "checkmark"
+
+- assertVisible: "Offline Nested Note"
+
+# Go back to notebooks list
+- pressKey: back
+
+# --- Test 3: Verify pending changes indicator ---
+- assertVisible:
+    text: "Offline"
+    timeout: 5000
+
+# --- Test 4: Reconnect and verify all operations sync ---
+- toggleAirplaneMode
+
+# Wait for sync
+- assertVisible:
+    text: "Syncing"
+    timeout: 10000
+    optional: true
+
+# Verify the offline notebook still exists after sync
+- assertVisible:
+    text: "Offline Notebook"
+    timeout: 10000
+
+# Verify the note inside it survived sync
+- tapOn: "Offline Notebook"
+- assertVisible:
+    text: "Offline Nested Note"
+    timeout: 5000
+
+# --- Cleanup: delete the note and notebook ---
+- swipe:
+    from:
+      text: "Offline Nested Note"
+    direction: LEFT
+- assertVisible: "Move to Trash"
+- tapOn: "Trash"
+- pressKey: back
+
+- swipe:
+    from:
+      text: "Offline Notebook"
+    direction: LEFT
+- assertNotVisible:
+    text: "Offline Notebook"
+    timeout: 5000

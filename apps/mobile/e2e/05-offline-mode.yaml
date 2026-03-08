@@ -1,5 +1,10 @@
 appId: eu.drafto.mobile
 ---
+# Flow 05: Offline mode — airplane mode toggle, verify local data persists
+# Depends on: 03-create-edit-note (E2E Final Note / Renamed E2E Note exists)
+# Tests: offline indicator, offline note creation, offline editing,
+#         data persistence across app restart while offline, sync on reconnect
+
 - launchApp
 
 # Navigate to the test notebook
@@ -8,20 +13,19 @@ appId: eu.drafto.mobile
     timeout: 10000
 - tapOn: "E2E Test Notebook"
 
-# Verify existing note is visible
+# Verify existing note is visible before going offline
 - assertVisible:
     text: "Renamed E2E Note"
     timeout: 5000
 
-# Enable airplane mode (go offline)
+# --- Test 1: Enable airplane mode and verify offline indicator ---
 - toggleAirplaneMode
 
-# Wait for offline indicator to appear
 - assertVisible:
     text: "Offline"
     timeout: 5000
 
-# Create a note while offline
+# --- Test 2: Create a note while offline ---
 - tapOn:
     id: "add"
 - tapOn: "Note title (optional)"
@@ -29,28 +33,68 @@ appId: eu.drafto.mobile
 - tapOn:
     id: "checkmark"
 
-# Verify the offline note appears locally
+# Verify the offline note appears in the local list
 - assertVisible: "Offline Note"
 
-# Open and edit the offline note
-- tapOn: "Offline Note"
+# --- Test 3: Edit an existing note while offline ---
+- tapOn: "Renamed E2E Note"
+- assertVisible:
+    text: "Renamed E2E Note"
+    timeout: 5000
+
+# Verify auto-save indicator works offline (saved locally)
+- assertVisible:
+    text: "Saved"
+    timeout: 5000
+    optional: true
+
+# Go back to notes list
+- pressKey: back
+
+# --- Test 4: Verify data persists across app restart while offline ---
+# (airplane mode still on — app should show local data from SQLite)
+- launchApp
+
+- assertVisible:
+    text: "Notebooks"
+    timeout: 10000
+- tapOn: "E2E Test Notebook"
+
+# Both the pre-existing note and the offline-created note must survive restart
+- assertVisible:
+    text: "Renamed E2E Note"
+    timeout: 5000
 - assertVisible:
     text: "Offline Note"
     timeout: 5000
 
-# Go back to the notes list
-- pressKey: back
+# Offline indicator should still be visible
+- assertVisible:
+    text: "Offline"
+    timeout: 5000
 
-# Disable airplane mode (go back online)
+# --- Test 5: Go back online and verify sync ---
 - toggleAirplaneMode
 
-# Wait for sync to complete
+# Wait for sync to kick in
 - assertVisible:
     text: "Syncing"
     timeout: 10000
     optional: true
 
-# Verify note persists after sync
+# Verify both notes persist after sync completes
 - assertVisible:
     text: "Offline Note"
     timeout: 10000
+- assertVisible:
+    text: "Renamed E2E Note"
+    timeout: 5000
+
+# --- Cleanup: delete the offline-created note ---
+- swipe:
+    from:
+      text: "Offline Note"
+    direction: LEFT
+- assertVisible: "Move to Trash"
+- tapOn: "Trash"
+- assertNotVisible: "Offline Note"
