@@ -20,6 +20,7 @@ import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { AttachmentList } from "@/components/editor/attachment-list";
 import { EditorSkeleton } from "@/components/ui/skeleton";
 import { useAutoSave } from "@/hooks/use-auto-save";
+import { contentToTiptap, contentToBlocknote } from "@drafto/shared";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Note } from "@/db";
@@ -60,7 +61,7 @@ export default function EditorScreen() {
       await database.write(async () => {
         const record = await database.get<Note>("notes").find(id);
         await record.update((r) => {
-          r.content = JSON.stringify(json);
+          r.content = JSON.stringify(contentToBlocknote(json));
         });
       });
       sync();
@@ -90,7 +91,7 @@ export default function EditorScreen() {
     if (note.content) {
       try {
         const parsed = JSON.parse(note.content);
-        editor.setContent(parsed as object);
+        editor.setContent(contentToTiptap(parsed));
       } catch {
         editor.setContent({ type: "doc", content: [] });
       }

@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedUser, errorResponse, successResponse } from "@/lib/api/utils";
+import { contentToBlocknote } from "@drafto/shared";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -21,6 +22,24 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 
   if (error) {
     return errorResponse("Note not found", 404);
+  }
+
+  // Defensive conversion: if content was saved in TipTap format by mobile,
+  // convert it to BlockNote format so the web editor can render it correctly.
+  if (note.content) {
+    try {
+      const parsed = JSON.parse(note.content);
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        !Array.isArray(parsed) &&
+        parsed.type === "doc"
+      ) {
+        note.content = JSON.stringify(contentToBlocknote(parsed));
+      }
+    } catch {
+      // Content is not valid JSON — leave as-is
+    }
   }
 
   return successResponse(note);
