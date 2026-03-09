@@ -34,7 +34,15 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
     !Array.isArray(content) &&
     (content as Record<string, unknown>).type === "doc"
   ) {
-    noteRecord.content = contentToBlocknote(content);
+    const converted = contentToBlocknote(content);
+    noteRecord.content = converted;
+
+    // Persist the repaired content so future reads don't need conversion
+    void supabase
+      .from("notes")
+      .update({ content: converted as unknown as string })
+      .eq("id", id)
+      .eq("user_id", user.id);
   }
 
   return successResponse(noteRecord);

@@ -1,11 +1,6 @@
 import { describe, it, expect } from "vitest";
-import {
-  blocknoteToTiptap,
-  tiptapToBlocknote,
-  contentToTiptap,
-  contentToBlocknote,
-} from "../src/editor/format-converter";
-import type { BlockNoteBlock, TipTapDoc } from "../src/editor/types";
+import { blocknoteToTiptap, tiptapToBlocknote, contentToTiptap, contentToBlocknote } from "../src";
+import type { BlockNoteBlock, TipTapDoc } from "../src";
 
 describe("blocknoteToTiptap", () => {
   it("converts a simple paragraph", () => {
