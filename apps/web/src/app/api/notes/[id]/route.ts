@@ -32,7 +32,8 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
     typeof content === "object" &&
     content !== null &&
     !Array.isArray(content) &&
-    (content as Record<string, unknown>).type === "doc"
+    (content as Record<string, unknown>).type === "doc" &&
+    Array.isArray((content as Record<string, unknown>).content)
   ) {
     const converted = contentToBlocknote(content);
     noteRecord.content = converted;

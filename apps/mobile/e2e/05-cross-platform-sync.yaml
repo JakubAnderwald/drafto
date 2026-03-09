@@ -46,7 +46,6 @@ appId: eu.drafto.mobile
 # The contentToBlocknote converter should normalize this on save
 - tapOn:
     id: "editor-webview"
-    optional: true
 - inputText: "Hello from mobile editor"
 
 # Wait a moment for auto-save to trigger
