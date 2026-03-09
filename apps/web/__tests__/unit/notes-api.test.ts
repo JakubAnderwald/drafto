@@ -80,6 +80,42 @@ describe("Notes API", () => {
       const body = await response.json();
       expect(body.title).toBe("Test");
     });
+
+    it("converts TipTap content to BlockNote format on read", async () => {
+      authenticateAs("user-1");
+      const tiptapContent = {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "Hello" }] }],
+      };
+      const note = { id: "note-1", title: "Test", content: tiptapContent };
+      const mockUpdate = vi.fn().mockReturnValue({
+        eq: () => ({ eq: () => Promise.resolve({ error: null }) }),
+      });
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: () => Promise.resolve({ data: note, error: null }),
+              }),
+            }),
+          }),
+          update: mockUpdate,
+        };
+      });
+
+      const { GET } = await import("@/app/api/notes/[id]/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1");
+      const response = await GET(request, { params });
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      // Should be converted to BlockNote array format
+      expect(Array.isArray(body.content)).toBe(true);
+      expect(body.content[0].type).toBe("paragraph");
+      // Should persist the conversion back to DB
+      expect(mockUpdate).toHaveBeenCalled();
+    });
   });
 
   describe("PATCH /api/notes/[id]", () => {
