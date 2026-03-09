@@ -11,6 +11,7 @@ const E2E_NOTE_PATTERNS = [
   /^Trash Perm \d+$/,
   /^First Note \d+$/,
   /^Second Note \d+$/,
+  /^XPlat .+ \d+$/,
 ];
 
 const E2E_NOTEBOOK_PATTERNS = [/^Target \d+$/, /^Test Notebook \d+$/, /^Renamed \d+$/];

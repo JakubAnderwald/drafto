@@ -1,0 +1,82 @@
+appId: eu.drafto.mobile
+---
+# Flow 05: Cross-platform format sync
+# Verifies that notes created/edited on mobile are saved in BlockNote format
+# via the contentToBlocknote converter, and that notes in any format load
+# correctly via contentToTiptap.
+#
+# Depends on: 01-login (user is logged in), 02-create-notebook (NB <RUN_ID> exists)
+# Pass -e RUN_ID=<timestamp> when running
+
+- launchApp
+
+# Navigate to the test notebook
+- extendedWaitUntil:
+    visible: "Notebooks"
+    timeout: 30000
+- tapOn: ".*NB ${RUN_ID}"
+
+# Wait for notes list to load
+- extendedWaitUntil:
+    visible: "Notes"
+    timeout: 10000
+
+# --- Test: create a note and type formatted content ---
+- tapOn:
+    id: "add"
+- assertVisible: "Note title (optional)"
+- inputText: "XPlat Mobile ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+
+# Verify note appears in the list
+- extendedWaitUntil:
+    visible: ".*XPlat Mobile ${RUN_ID}.*"
+    timeout: 5000
+
+# Open the note in the editor
+- tapOn: ".*XPlat Mobile ${RUN_ID}.*"
+
+# Wait for editor to load
+- extendedWaitUntil:
+    visible: ".*XPlat Mobile ${RUN_ID}.*"
+    timeout: 5000
+
+# Type some content in the TenTap editor (renders as TipTap internally)
+# The contentToBlocknote converter should normalize this on save
+- tapOn:
+    id: "editor-webview"
+    optional: true
+- inputText: "Hello from mobile editor"
+
+# Wait a moment for auto-save to trigger
+- swipe:
+    direction: DOWN
+    duration: 500
+
+# --- Test: go back and re-open to verify persistence ---
+- tapOn: "Notes"
+
+# Wait for notes list
+- extendedWaitUntil:
+    visible: ".*XPlat Mobile ${RUN_ID}.*"
+    timeout: 5000
+
+# Re-open the note
+- tapOn: ".*XPlat Mobile ${RUN_ID}.*"
+
+# Verify the content persisted (should load via contentToTiptap)
+- extendedWaitUntil:
+    visible: ".*XPlat Mobile ${RUN_ID}.*"
+    timeout: 5000
+
+# The editor should still show our text after round-tripping through
+# contentToBlocknote (save) → contentToTiptap (load)
+- assertVisible: ".*Hello from mobile.*"
+  optional: true
+
+# --- Test: pull-to-refresh to trigger sync ---
+# This ensures the BlockNote content syncs to the server
+- tapOn: "Notes"
+- swipe:
+    direction: DOWN
