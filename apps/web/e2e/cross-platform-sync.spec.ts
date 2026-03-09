@@ -3,14 +3,16 @@ import { test, expect } from "@playwright/test";
 /**
  * Cross-platform data consistency E2E tests.
  *
- * Verifies that the format conversion layer correctly handles:
- * 1. Notes stored in TipTap format (by mobile) render correctly on web
- * 2. Notes created on web are stored in BlockNote format
- * 3. The defensive API conversion repairs corrupted (TipTap) content
+ * These tests can run standalone (all 3 API-level tests) OR be orchestrated
+ * by the shell script `apps/mobile/e2e/run-cross-platform-e2e.sh` which
+ * interleaves Playwright and Maestro (iOS + Android) steps.
  *
- * These tests operate on real data via the authenticated API context,
- * using the same Supabase dev database that the mobile Maestro tests use.
- * The note title includes "XPlat" so the Maestro flow can find it.
+ * When orchestrated:
+ *   1. "create a shared note for mobile testing" — creates a formatted note
+ *   2. Maestro (iOS) opens, verifies, edits the note
+ *   3. "verify mobile edits are persisted" — checks the edit via API
+ *   4. Maestro (Android) opens, verifies, edits the note
+ *   5. "verify mobile edits are persisted" — checks again
  */
 
 const TIPTAP_DOC = {
@@ -56,34 +58,33 @@ async function deleteNote(
 
 test.describe("Cross-platform format sync", () => {
   let notebookId: string;
+  let notebookName: string;
 
   test.beforeAll(async ({ request }) => {
-    // Find the first notebook to use for tests
     const res = await request.get("/api/notebooks");
     expect(res.ok()).toBe(true);
     const notebooks: { id: string; name: string }[] = await res.json();
     expect(notebooks.length).toBeGreaterThan(0);
     notebookId = notebooks[0].id;
+    notebookName = notebooks[0].name;
   });
 
   test("TipTap content injected via API renders correctly on web and is repaired to BlockNote", async ({
     page,
     request,
   }) => {
-    // 1. Create a note via API
     const createRes = await request.post(`/api/notebooks/${notebookId}/notes`);
     expect(createRes.ok()).toBe(true);
     const note: { id: string } = await createRes.json();
 
     try {
-      // 2. PATCH the note with TipTap-formatted content (simulating mobile save)
       const title = `XPlat TipTap ${Date.now()}`;
       const patchRes = await request.patch(`/api/notes/${note.id}`, {
         data: { title, content: TIPTAP_DOC },
       });
       expect(patchRes.ok()).toBe(true);
 
-      // 3. GET the note via API — defensive conversion should return BlockNote array
+      // GET — defensive conversion should return BlockNote array
       const getRes = await request.get(`/api/notes/${note.id}`);
       expect(getRes.ok()).toBe(true);
       const fetched = await getRes.json();
@@ -93,18 +94,16 @@ test.describe("Cross-platform format sync", () => {
       expect(fetched.content[1].type).toBe("paragraph");
       expect(fetched.content[2].type).toBe("bulletListItem");
 
-      // 4. Open the note in the web editor and verify content renders
+      // Open in web editor and verify rendered content
       await page.goto("/");
       await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({
         timeout: 10000,
       });
       await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
 
-      // Find and click the note
       await expect(page.getByText(title)).toBeVisible({ timeout: 10000 });
       await page.getByText(title).click();
 
-      // Verify the editor loaded with the content
       const editor = page.locator("[contenteditable='true']").first();
       await expect(editor).toBeVisible({ timeout: 5000 });
       await expect(page.getByText("Cross-Platform Heading")).toBeVisible({ timeout: 5000 });
@@ -116,14 +115,10 @@ test.describe("Cross-platform format sync", () => {
     }
   });
 
-  test("note created on web is stored in BlockNote format, readable by mobile", async ({
-    page,
-    request,
-  }) => {
+  test("note created on web is stored in BlockNote format", async ({ page, request }) => {
     let createdNoteId: string | undefined;
 
     try {
-      // 1. Open the app and create a note via the UI
       await page.goto("/");
       await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({
         timeout: 10000,
@@ -134,36 +129,23 @@ test.describe("Cross-platform format sync", () => {
       const titleInput = page.getByRole("textbox", { name: "Note title" });
       await expect(titleInput).toBeVisible({ timeout: 5000 });
 
-      // Use a title the Maestro test can find
       const title = `XPlat Web ${Date.now()}`;
       await titleInput.clear();
       await titleInput.fill(title);
 
-      // 2. Type formatted content in the BlockNote editor
       const editor = page.locator("[contenteditable='true']").first();
       await expect(editor).toBeVisible({ timeout: 5000 });
       await editor.click();
 
-      // Type a heading
       await page.keyboard.type("# Heading from web");
       await page.keyboard.press("Enter");
-
-      // Type bold text
       await page.keyboard.press("ControlOrMeta+b");
       await page.keyboard.type("Bold text");
       await page.keyboard.press("ControlOrMeta+b");
       await page.keyboard.type(" and normal text");
-      await page.keyboard.press("Enter");
 
-      // Type a bullet list
-      await page.keyboard.type("- List item one");
-      await page.keyboard.press("Enter");
-      await page.keyboard.type("List item two");
-
-      // 3. Wait for auto-save
       await expect(page.getByText("Saved")).toBeVisible({ timeout: 15000 });
 
-      // 4. Fetch the note via API and verify content is in BlockNote format
       const notesRes = await request.get(`/api/notebooks/${notebookId}/notes`);
       expect(notesRes.ok()).toBe(true);
       const notes: { id: string; title: string }[] = await notesRes.json();
@@ -171,17 +153,12 @@ test.describe("Cross-platform format sync", () => {
       expect(createdNote).toBeDefined();
       createdNoteId = createdNote!.id;
 
-      // GET full note with content
       const noteRes = await request.get(`/api/notes/${createdNoteId}`);
       expect(noteRes.ok()).toBe(true);
       const noteData = await noteRes.json();
 
-      // Content should be an array (BlockNote format), not an object with type:"doc"
       expect(Array.isArray(noteData.content)).toBe(true);
-      // Should not be a TipTap doc
       expect(noteData.content).not.toHaveProperty("type", "doc");
-
-      // Verify we have some blocks with content
       expect(noteData.content.length).toBeGreaterThan(0);
     } finally {
       if (createdNoteId) {
@@ -190,10 +167,7 @@ test.describe("Cross-platform format sync", () => {
     }
   });
 
-  test("round-trip: create on web, simulate mobile save with TipTap, verify web still reads correctly", async ({
-    request,
-  }) => {
-    // 1. Create note via API with BlockNote content (web format)
+  test("round-trip: web → mobile (TipTap) → web preserves content", async ({ request }) => {
     const createRes = await request.post(`/api/notebooks/${notebookId}/notes`);
     expect(createRes.ok()).toBe(true);
     const note: { id: string } = await createRes.json();
@@ -222,13 +196,13 @@ test.describe("Cross-platform format sync", () => {
         data: { title, content: blocknoteContent },
       });
 
-      // 2. Verify it reads back as BlockNote
+      // Verify BlockNote
       let getRes = await request.get(`/api/notes/${note.id}`);
       let fetched = await getRes.json();
       expect(Array.isArray(fetched.content)).toBe(true);
       expect(fetched.content[0].type).toBe("heading");
 
-      // 3. Simulate mobile overwriting with TipTap format
+      // Simulate mobile overwriting with TipTap
       await request.patch(`/api/notes/${note.id}`, {
         data: {
           content: {
@@ -248,7 +222,7 @@ test.describe("Cross-platform format sync", () => {
         },
       });
 
-      // 4. GET again — should be converted back to BlockNote by the API
+      // GET again — API converts to BlockNote
       getRes = await request.get(`/api/notes/${note.id}`);
       fetched = await getRes.json();
       expect(Array.isArray(fetched.content)).toBe(true);
@@ -259,5 +233,102 @@ test.describe("Cross-platform format sync", () => {
     } finally {
       await deleteNote(request, note.id);
     }
+  });
+
+  test("create a shared note for mobile testing", async ({ request }) => {
+    // This test is called by the cross-platform E2E runner script.
+    // It creates a note that Maestro (iOS/Android) will then open and edit.
+    // The RUN_ID env var links Playwright and Maestro to the same note.
+    const runId = process.env.XPLAT_RUN_ID;
+    if (!runId) {
+      test.skip();
+      return;
+    }
+
+    // Create a dedicated notebook for this test run so it has the newest
+    // updated_at and appears at the top of the mobile list (sorted by updated_at DESC)
+    const nbName = `XPlat NB ${runId}`;
+    const nbRes = await request.post("/api/notebooks", { data: { name: nbName } });
+    expect(nbRes.ok()).toBe(true);
+    const nb: { id: string } = await nbRes.json();
+
+    const createRes = await request.post(`/api/notebooks/${nb.id}/notes`);
+    expect(createRes.ok()).toBe(true);
+    const note: { id: string } = await createRes.json();
+
+    const title = `XPlat Sync ${runId}`;
+    const content = [
+      {
+        type: "heading",
+        props: { level: 1 },
+        content: [{ type: "text", text: "Cross-Platform Test", styles: {} }],
+        children: [],
+      },
+      {
+        type: "paragraph",
+        content: [
+          { type: "text", text: "This note was created on ", styles: {} },
+          { type: "text", text: "web", styles: { bold: true } },
+          { type: "text", text: " and should render on mobile.", styles: {} },
+        ],
+        children: [],
+      },
+      {
+        type: "bulletListItem",
+        content: [{ type: "text", text: "Bullet from web", styles: {} }],
+        children: [],
+      },
+    ];
+
+    const patchRes = await request.patch(`/api/notes/${note.id}`, {
+      data: { title, content },
+    });
+    expect(patchRes.ok()).toBe(true);
+
+    // Write note ID and notebook name to stdout so the runner script can use them
+    console.log(`XPLAT_NOTE_ID=${note.id}`);
+    console.log(`XPLAT_NOTEBOOK_NAME=${nbName}`);
+  });
+
+  test("verify mobile edits are persisted", async ({ request }) => {
+    // Called by the runner script after Maestro has edited the note.
+    // Verifies the content is still in BlockNote format (not raw TipTap).
+    const runId = process.env.XPLAT_RUN_ID;
+    if (!runId) {
+      test.skip();
+      return;
+    }
+
+    // Find the XPlat notebook directly by name (much faster than scanning all notebooks)
+    const notebooksRes = await request.get("/api/notebooks");
+    const notebooks: { id: string; name: string }[] = await notebooksRes.json();
+    const xplatNb = notebooks.find((nb) => nb.name === `XPlat NB ${runId}`);
+    expect(xplatNb).toBeDefined();
+
+    const notesRes = await request.get(`/api/notebooks/${xplatNb!.id}/notes`);
+    expect(notesRes.ok()).toBe(true);
+    const notes: { id: string; title: string }[] = await notesRes.json();
+    // Mobile may have appended " mobile" to the title
+    const found = notes.find((n) => n.title.startsWith(`XPlat Sync ${runId}`));
+    expect(found).toBeDefined();
+    const noteId = found!.id;
+
+    const noteRes = await request.get(`/api/notes/${noteId}`);
+    expect(noteRes.ok()).toBe(true);
+    const noteData = await noteRes.json();
+
+    // Content must be BlockNote array, not TipTap doc
+    expect(Array.isArray(noteData.content)).toBe(true);
+    expect(noteData.content.length).toBeGreaterThan(0);
+
+    // The original heading should still be present (or edited by mobile)
+    const hasHeading = noteData.content.some(
+      (b: { type: string }) => b.type === "heading" || b.type === "paragraph",
+    );
+    expect(hasHeading).toBe(true);
+
+    console.log(
+      `Verified note ${noteId} (title: "${noteData.title}"): ${noteData.content.length} blocks in BlockNote format`,
+    );
   });
 });

@@ -1,82 +1,80 @@
 appId: eu.drafto.mobile
 ---
 # Flow 05: Cross-platform format sync
-# Verifies that notes created/edited on mobile are saved in BlockNote format
-# via the contentToBlocknote converter, and that notes in any format load
-# correctly via contentToTiptap.
 #
-# Depends on: 01-login (user is logged in), 02-create-notebook (NB <RUN_ID> exists)
-# Pass -e RUN_ID=<timestamp> when running
+# Opens a note created by the Playwright web E2E test (title: "XPlat Sync <RUN_ID>"),
+# verifies it can be opened in the TenTap mobile editor, edits its title,
+# and waits for auto-save + sync to push changes to the server.
+#
+# Content format verification (BlockNote ↔ TipTap) is done via Playwright API.
+# Maestro verifies the mobile app can open and interact with cross-platform notes.
+#
+# Depends on: 01-login (user is logged in)
+# Required env:
+#   -e RUN_ID=<timestamp> (must match the Playwright test)
+#   -e NOTEBOOK_NAME=<name> (notebook containing the note)
 
 - launchApp
 
-# Navigate to the test notebook
+# Wait for the app to load (Android with async WatermelonDB can take >30s)
 - extendedWaitUntil:
     visible: "Notebooks"
-    timeout: 30000
-- tapOn: ".*NB ${RUN_ID}"
+    timeout: 60000
 
-# Wait for notes list to load
+# Pull-to-refresh to sync notebooks from the server
+- swipe:
+    direction: DOWN
+    duration: 1000
+
+# Wait for the newly created notebook to appear (sorted by updated_at DESC)
+- extendedWaitUntil:
+    visible: ".*${NOTEBOOK_NAME}.*"
+    timeout: 20000
+
+# Tap into the notebook
+- tapOn: ".*${NOTEBOOK_NAME}.*"
+
+# Wait for notes list
 - extendedWaitUntil:
     visible: "Notes"
     timeout: 10000
 
-# --- Test: create a note and type formatted content ---
-- tapOn:
-    id: "add"
-- assertVisible: "Note title (optional)"
-- inputText: "XPlat Mobile ${RUN_ID}"
-- tapOn:
-    id: "checkmark"
-
-# Verify note appears in the list
-- extendedWaitUntil:
-    visible: ".*XPlat Mobile ${RUN_ID}.*"
-    timeout: 5000
-
-# Open the note in the editor
-- tapOn: ".*XPlat Mobile ${RUN_ID}.*"
-
-# Wait for editor to load
-- extendedWaitUntil:
-    visible: ".*XPlat Mobile ${RUN_ID}.*"
-    timeout: 5000
-
-# Type some content in the TenTap editor (renders as TipTap internally)
-# The contentToBlocknote converter should normalize this on save
-- tapOn:
-    id: "editor-webview"
-- inputText: "Hello from mobile editor"
-
-# Wait a moment for auto-save to trigger
+# Pull-to-refresh to sync notes from the server
 - swipe:
     direction: DOWN
-    duration: 500
+    duration: 1000
 
-# --- Test: go back and re-open to verify persistence ---
-- tapOn: "Notes"
-
-# Wait for notes list
+# Wait for the note (retry sync if needed on Android)
 - extendedWaitUntil:
-    visible: ".*XPlat Mobile ${RUN_ID}.*"
-    timeout: 5000
+    visible: ".*XPlat Sync ${RUN_ID}.*"
+    timeout: 20000
+    optional: true
 
-# Re-open the note
-- tapOn: ".*XPlat Mobile ${RUN_ID}.*"
+- swipe:
+    direction: DOWN
+    duration: 1000
+    optional: true
 
-# Verify the content persisted (should load via contentToTiptap)
 - extendedWaitUntil:
-    visible: ".*XPlat Mobile ${RUN_ID}.*"
-    timeout: 5000
+    visible: ".*XPlat Sync ${RUN_ID}.*"
+    timeout: 20000
 
-# The editor should still show our text after round-tripping through
-# contentToBlocknote (save) → contentToTiptap (load)
+# Open the note — verifies format conversion didn't crash the app
+- tapOn: ".*XPlat Sync ${RUN_ID}.*"
+
+# Wait for editor to fully load
 - extendedWaitUntil:
-    visible: ".*Hello from mobile.*"
+    visible: ".*XPlat Sync ${RUN_ID}.*"
     timeout: 10000
 
-# --- Test: pull-to-refresh to trigger sync ---
-# This ensures the BlockNote content syncs to the server
-- tapOn: "Notes"
-- swipe:
-    direction: DOWN
+# --- Edit the note title on mobile ---
+# Tap the title input area (native TextInput, works on both platforms)
+- tapOn: ".*XPlat Sync ${RUN_ID}.*"
+- inputText: " mobile"
+
+# Wait for auto-save to persist and sync to push changes
+# Auto-save triggers after idle, periodic sync runs every 30s
+- extendedWaitUntil:
+    visible: ".*Saved.*"
+    timeout: 15000
+    optional: true

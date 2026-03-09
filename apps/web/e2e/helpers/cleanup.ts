@@ -14,7 +14,12 @@ const E2E_NOTE_PATTERNS = [
   /^XPlat .+ \d+$/,
 ];
 
-const E2E_NOTEBOOK_PATTERNS = [/^Target \d+$/, /^Test Notebook \d+$/, /^Renamed \d+$/];
+const E2E_NOTEBOOK_PATTERNS = [
+  /^Target \d+$/,
+  /^Test Notebook \d+$/,
+  /^Renamed \d+$/,
+  /^XPlat NB \d+$/,
+];
 
 function isE2ENote(title: string): boolean {
   return E2E_NOTE_PATTERNS.some((pattern) => pattern.test(title));
