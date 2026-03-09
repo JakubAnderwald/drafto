@@ -38,11 +38,16 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
     noteRecord.content = converted;
 
     // Persist the repaired content so future reads don't need conversion
-    void supabase
+    supabase
       .from("notes")
       .update({ content: converted as unknown as string })
       .eq("id", id)
-      .eq("user_id", user.id);
+      .eq("user_id", user.id)
+      .then(({ error: updateError }) => {
+        if (updateError) {
+          console.error("[notes] Failed to persist converted content:", updateError);
+        }
+      });
   }
 
   return successResponse(noteRecord);

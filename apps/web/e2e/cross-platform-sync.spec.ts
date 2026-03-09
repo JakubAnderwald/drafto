@@ -133,9 +133,9 @@ test.describe("Cross-platform format sync", () => {
     await page.keyboard.press("Enter");
 
     // Type bold text
-    await page.keyboard.press("Control+b");
+    await page.keyboard.press("ControlOrMeta+b");
     await page.keyboard.type("Bold text");
-    await page.keyboard.press("Control+b");
+    await page.keyboard.press("ControlOrMeta+b");
     await page.keyboard.type(" and normal text");
     await page.keyboard.press("Enter");
 

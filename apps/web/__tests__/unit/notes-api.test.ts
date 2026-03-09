@@ -113,8 +113,10 @@ describe("Notes API", () => {
       // Should be converted to BlockNote array format
       expect(Array.isArray(body.content)).toBe(true);
       expect(body.content[0].type).toBe("paragraph");
-      // Should persist the conversion back to DB
-      expect(mockUpdate).toHaveBeenCalled();
+      // Should persist the conversion back to DB with BlockNote content
+      expect(mockUpdate).toHaveBeenCalledWith({
+        content: expect.arrayContaining([expect.objectContaining({ type: "paragraph" })]),
+      });
     });
   });
 

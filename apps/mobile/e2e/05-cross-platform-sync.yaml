@@ -72,8 +72,9 @@ appId: eu.drafto.mobile
 
 # The editor should still show our text after round-tripping through
 # contentToBlocknote (save) → contentToTiptap (load)
-- assertVisible: ".*Hello from mobile.*"
-  optional: true
+- extendedWaitUntil:
+    visible: ".*Hello from mobile.*"
+    timeout: 10000
 
 # --- Test: pull-to-refresh to trigger sync ---
 # This ensures the BlockNote content syncs to the server
