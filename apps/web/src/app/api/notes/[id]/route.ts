@@ -26,20 +26,14 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 
   // Defensive conversion: if content was saved in TipTap format by mobile,
   // convert it to BlockNote format so the web editor can render it correctly.
-  if (note.content) {
-    try {
-      const parsed = JSON.parse(note.content);
-      if (
-        typeof parsed === "object" &&
-        parsed !== null &&
-        !Array.isArray(parsed) &&
-        parsed.type === "doc"
-      ) {
-        note.content = JSON.stringify(contentToBlocknote(parsed));
-      }
-    } catch {
-      // Content is not valid JSON — leave as-is
-    }
+  const content = note.content as unknown;
+  if (
+    typeof content === "object" &&
+    content !== null &&
+    !Array.isArray(content) &&
+    (content as Record<string, unknown>).type === "doc"
+  ) {
+    (note as Record<string, unknown>).content = contentToBlocknote(content);
   }
 
   return successResponse(note);
