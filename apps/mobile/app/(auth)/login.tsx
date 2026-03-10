@@ -103,6 +103,9 @@ export default function LoginScreen() {
             ]}
             onPress={handleLogin}
             disabled={loading}
+            accessibilityRole="button"
+            accessibilityLabel="Log in"
+            testID="login-button"
           >
             {loading ? (
               <ActivityIndicator color={semantic.onPrimary} />

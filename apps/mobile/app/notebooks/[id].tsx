@@ -131,16 +131,23 @@ export default function NotesListScreen() {
         <View style={styles.row}>
           <TextInput
             style={[styles.input, styles.editInput]}
-            value={editTitle}
+            defaultValue={editTitle}
             onChangeText={setEditTitle}
             autoFocus
+            autoCorrect={false}
+            autoComplete="off"
             onSubmitEditing={() => handleRename(item.id)}
             returnKeyType="done"
           />
-          <Pressable onPress={() => handleRename(item.id)} style={styles.iconButton}>
+          <Pressable
+            testID="checkmark"
+            onPress={() => handleRename(item.id)}
+            style={styles.iconButton}
+          >
             <Ionicons name="checkmark" size={22} color={colors.primary[600]} />
           </Pressable>
           <Pressable
+            testID="close"
             onPress={() => {
               setEditingId(null);
               setEditTitle("");
@@ -203,13 +210,16 @@ export default function NotesListScreen() {
             value={newTitle}
             onChangeText={setNewTitle}
             autoFocus
+            autoCorrect={false}
+            autoComplete="off"
             onSubmitEditing={handleCreate}
             returnKeyType="done"
           />
-          <Pressable onPress={handleCreate} style={styles.iconButton}>
+          <Pressable testID="checkmark" onPress={handleCreate} style={styles.iconButton}>
             <Ionicons name="checkmark" size={22} color={colors.primary[600]} />
           </Pressable>
           <Pressable
+            testID="close"
             onPress={() => {
               setCreating(false);
               setNewTitle("");
@@ -246,6 +256,7 @@ export default function NotesListScreen() {
 
       {!creating && (
         <Pressable
+          testID="add"
           style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}
           onPress={() => {
             haptics.light();

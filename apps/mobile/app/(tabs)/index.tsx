@@ -144,16 +144,23 @@ export default function NotebooksScreen() {
         <View style={styles.row}>
           <TextInput
             style={[styles.input, styles.editInput]}
-            value={editName}
+            defaultValue={editName}
             onChangeText={setEditName}
             autoFocus
+            autoCorrect={false}
+            autoComplete="off"
             onSubmitEditing={() => handleRename(item.id)}
             returnKeyType="done"
           />
-          <Pressable onPress={() => handleRename(item.id)} style={styles.iconButton}>
+          <Pressable
+            testID="checkmark"
+            onPress={() => handleRename(item.id)}
+            style={styles.iconButton}
+          >
             <Ionicons name="checkmark" size={22} color={colors.primary[600]} />
           </Pressable>
           <Pressable
+            testID="close"
             onPress={() => {
               setEditingId(null);
               setEditName("");
@@ -205,19 +212,23 @@ export default function NotebooksScreen() {
       {creating && (
         <View style={styles.createBar}>
           <TextInput
+            testID="notebook-name-input"
             style={[styles.input, styles.createInput]}
             placeholder="Notebook name"
             placeholderTextColor={semantic.fgSubtle}
             value={newName}
             onChangeText={setNewName}
             autoFocus
+            autoCorrect={false}
+            autoComplete="off"
             onSubmitEditing={handleCreate}
             returnKeyType="done"
           />
-          <Pressable onPress={handleCreate} style={styles.iconButton}>
+          <Pressable testID="checkmark" onPress={handleCreate} style={styles.iconButton}>
             <Ionicons name="checkmark" size={22} color={colors.primary[600]} />
           </Pressable>
           <Pressable
+            testID="close"
             onPress={() => {
               setCreating(false);
               setNewName("");
@@ -250,6 +261,7 @@ export default function NotebooksScreen() {
 
       {!creating && (
         <Pressable
+          testID="add"
           style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}
           onPress={() => {
             haptics.light();
