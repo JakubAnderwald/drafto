@@ -20,100 +20,28 @@ import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { AttachmentList } from "@/components/editor/attachment-list";
 import { EditorSkeleton } from "@/components/ui/skeleton";
 import { useAutoSave } from "@/hooks/use-auto-save";
+import { contentToTiptap, contentToBlocknote } from "@drafto/shared";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Note } from "@/db";
 
+function parseInitialContent(note: Note): object {
+  if (note.content) {
+    try {
+      return contentToTiptap(JSON.parse(note.content));
+    } catch {
+      return { type: "doc", content: [] };
+    }
+  }
+  return { type: "doc", content: [] };
+}
+
 export default function EditorScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { database, sync } = useDatabase();
+  const { note, loading, error } = useNote(id);
+  const { sync } = useDatabase();
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
-  const { note, loading, error } = useNote(id);
-  const { attachments } = useAttachments(id);
-  const [title, setTitle] = useState("");
-  const [editorReady, setEditorReady] = useState(false);
-  const noteIdRef = useRef(id);
-
-  const titleSave = useAutoSave<string>({
-    onSave: useCallback(
-      async (text: string) => {
-        if (!id) return;
-        const trimmed = text.trim();
-        if (!trimmed) return;
-        await database.write(async () => {
-          const record = await database.get<Note>("notes").find(id);
-          await record.update((r) => {
-            r.title = trimmed;
-          });
-        });
-        sync();
-      },
-      [id, database, sync],
-    ),
-  });
-
-  const contentSave = useAutoSave<void>({
-    onSave: useCallback(async () => {
-      if (!id || noteIdRef.current !== id) return;
-      const json = await editor.getJSON();
-      await database.write(async () => {
-        const record = await database.get<Note>("notes").find(id);
-        await record.update((r) => {
-          r.content = JSON.stringify(json);
-        });
-      });
-      sync();
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [id, database, sync]),
-  });
-
-  const editor = useEditorBridge({
-    bridgeExtensions: TenTapStartKit,
-    autofocus: false,
-    avoidIosKeyboard: true,
-    onChange: () => {
-      contentSave.trigger();
-    },
-  });
-
-  useEffect(() => {
-    contentSave.cancel();
-    noteIdRef.current = id;
-    setEditorReady(false);
-  }, [id, contentSave]);
-
-  useEffect(() => {
-    if (!note || editorReady) return;
-
-    setTitle(note.title);
-    if (note.content) {
-      try {
-        const parsed = JSON.parse(note.content);
-        editor.setContent(parsed as object);
-      } catch {
-        editor.setContent({ type: "doc", content: [] });
-      }
-    } else {
-      editor.setContent({ type: "doc", content: [] });
-    }
-    setEditorReady(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [note]);
-
-  const handleTitleChange = (text: string) => {
-    setTitle(text);
-    titleSave.trigger(text);
-  };
-
-  const saveStatus =
-    titleSave.status === "saving" || contentSave.status === "saving"
-      ? "saving"
-      : titleSave.status === "error" || contentSave.status === "error"
-        ? "error"
-        : titleSave.status === "saved" || contentSave.status === "saved"
-          ? "saved"
-          : "idle";
 
   if (loading) {
     return <EditorSkeleton />;
@@ -129,6 +57,89 @@ export default function EditorScreen() {
       </View>
     );
   }
+
+  // Render the editor only once the note is loaded so we can pass
+  // initialContent to useEditorBridge — this avoids the race condition
+  // where setContent is called before the TenTap WebView finishes initializing.
+  return <NoteEditorView key={id} noteId={id} initialNote={note} />;
+}
+
+interface NoteEditorViewProps {
+  noteId: string;
+  initialNote: Note;
+}
+
+function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
+  const { database, sync } = useDatabase();
+  const { semantic } = useTheme();
+  const styles = useMemo(() => createStyles(semantic), [semantic]);
+  const { attachments } = useAttachments(noteId);
+  const [title, setTitle] = useState(initialNote.title);
+  const noteIdRef = useRef(noteId);
+
+  const titleSave = useAutoSave<string>({
+    onSave: useCallback(
+      async (text: string) => {
+        if (!noteId) return;
+        const trimmed = text.trim();
+        if (!trimmed) return;
+        await database.write(async () => {
+          const record = await database.get<Note>("notes").find(noteId);
+          await record.update((r) => {
+            r.title = trimmed;
+          });
+        });
+        sync();
+      },
+      [noteId, database, sync],
+    ),
+  });
+
+  const contentSave = useAutoSave<void>({
+    onSave: useCallback(async () => {
+      if (!noteId || noteIdRef.current !== noteId) return;
+      const json = await editor.getJSON();
+      await database.write(async () => {
+        const record = await database.get<Note>("notes").find(noteId);
+        await record.update((r) => {
+          r.content = JSON.stringify(contentToBlocknote(json));
+        });
+      });
+      sync();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [noteId, database, sync]),
+  });
+
+  // Pass initialContent so TipTap has the content when it first initializes
+  // inside the WebView — no race condition with setContent.
+  const editor = useEditorBridge({
+    bridgeExtensions: TenTapStartKit,
+    autofocus: false,
+    avoidIosKeyboard: true,
+    initialContent: parseInitialContent(initialNote),
+    onChange: () => {
+      contentSave.trigger();
+    },
+  });
+
+  useEffect(() => {
+    contentSave.cancel();
+    noteIdRef.current = noteId;
+  }, [noteId, contentSave]);
+
+  const handleTitleChange = (text: string) => {
+    setTitle(text);
+    titleSave.trigger(text);
+  };
+
+  const saveStatus =
+    titleSave.status === "saving" || contentSave.status === "saving"
+      ? "saving"
+      : titleSave.status === "error" || contentSave.status === "error"
+        ? "error"
+        : titleSave.status === "saved" || contentSave.status === "saved"
+          ? "saved"
+          : "idle";
 
   return (
     <>
@@ -154,7 +165,7 @@ export default function EditorScreen() {
           <NoteEditor editor={editor} />
         </View>
         <AttachmentList attachments={attachments} />
-        <AttachmentPicker noteId={id} />
+        <AttachmentPicker noteId={noteId} />
       </KeyboardAvoidingView>
     </>
   );

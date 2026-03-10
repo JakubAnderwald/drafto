@@ -12,6 +12,11 @@ Note-taking web app at drafto.eu. Monorepo with pnpm workspaces + Turborepo. Bui
   - `__tests__/integration/` — Integration tests (vitest + testing-library)
   - `e2e/` — End-to-end tests (Playwright)
   - `middleware.ts` — Next.js middleware (Supabase session refresh)
+- `apps/mobile/` — Expo + React Native mobile app
+  - `.env` — Development Supabase credentials (dev backend)
+  - `.env.production` — Production Supabase credentials (prod backend)
+  - `android/` — Native Android project (Gradle build)
+  - `e2e/` — Maestro E2E tests
 - `packages/shared/` — Shared types (`Database`, API types) and constants (`@drafto/shared`)
 - `docs/adr/` — Architecture Decision Records (see [ADR README](./docs/adr/README.md))
 - `supabase/` — Supabase migrations and config
@@ -167,4 +172,25 @@ cd apps/web && pnpm exec tsc --noEmit  # Web type check
 # Shared package (packages/shared/)
 cd packages/shared && pnpm test           # Shared package tests
 cd packages/shared && pnpm exec tsc --noEmit  # Shared type check
+
+# Mobile app (apps/mobile/)
+cd apps/mobile && pnpm android            # Debug build + run on device/emulator (dev backend)
+cd apps/mobile && pnpm android:release    # Release APK (prod backend) → android/app/build/outputs/apk/release/app-release.apk
 ```
+
+## Mobile Build Environment Mapping
+
+The mobile app uses different Supabase backends depending on the build type:
+
+| Build Type  | Env File          | Backend     | Supabase Ref           | Command                             |
+| ----------- | ----------------- | ----------- | ---------------------- | ----------------------------------- |
+| **Debug**   | `.env`            | Development | `huhzactreblzcogqkbsd` | `pnpm android` / `expo run:android` |
+| **Release** | `.env.production` | Production  | `tbmjbxxseonkciqovnpl` | `pnpm android:release`              |
+
+**When asked to build a mobile APK**: always confirm which environment (dev or production) the user wants. Use `pnpm android:release` for production builds and `pnpm android` for dev builds. The release APK is output to `apps/mobile/android/app/build/outputs/apk/release/app-release.apk`.
+
+**Local build prerequisites**:
+
+- `android/local.properties` must have `sdk.dir` pointing to the Android SDK (e.g., `/Users/jakub/Library/Android/sdk`)
+- JDK 25+ requires `_JAVA_OPTIONS='--enable-native-access=ALL-UNNAMED'` (already set in the `android:release` script)
+- The release build is signed with the debug keystore — for Play Store distribution, use EAS build (`pnpm build:prod`)

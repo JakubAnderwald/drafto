@@ -1,0 +1,152 @@
+appId: eu.drafto.mobile
+---
+# Combined Android E2E flow - all tests in a single run
+# Pass -e RUN_ID=<timestamp> -e E2E_TEST_EMAIL=... -e E2E_TEST_PASSWORD=...
+
+# ===== FLOW 01: Login =====
+- clearKeychain
+- launchApp:
+    clearState: true
+
+- extendedWaitUntil:
+    visible: "Log In"
+    timeout: 60000
+- assertVisible: "Sign in to your Drafto account"
+
+- tapOn: "you@example.com"
+- inputText: ${E2E_TEST_EMAIL}
+- tapOn: "Sign in to your Drafto account"
+- tapOn: "Your password"
+- inputText: ${E2E_TEST_PASSWORD}
+- tapOn: "Sign in to your Drafto account"
+- tapOn:
+    id: "login-button"
+
+- extendedWaitUntil:
+    visible: "Notebooks"
+    timeout: 30000
+
+# Wait for sync to settle before interacting
+- waitForAnimationToEnd
+
+# ===== FLOW 02: Create notebooks =====
+
+# --- Create a notebook ---
+- tapOn:
+    id: "add"
+- extendedWaitUntil:
+    visible: "Notebook name"
+    timeout: 5000
+- inputText: "NB ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*NB ${RUN_ID}"
+    timeout: 5000
+
+# --- Create a second notebook ---
+- tapOn:
+    id: "add"
+- extendedWaitUntil:
+    visible: "Notebook name"
+    timeout: 5000
+- tapOn:
+    id: "notebook-name-input"
+- inputText: "SECOND ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*SECOND ${RUN_ID}"
+    timeout: 15000
+
+# --- Cancel creating a notebook ---
+- tapOn:
+    id: "add"
+- assertVisible: "Notebook name"
+- inputText: "Should Not Exist"
+- tapOn:
+    id: "close"
+- assertNotVisible: "Should Not Exist"
+
+# --- Rename via long press ---
+- longPressOn: ".*SECOND ${RUN_ID}"
+- eraseText
+- inputText: "RENAMED ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*RENAMED ${RUN_ID}"
+    timeout: 5000
+- assertNotVisible: ".*SECOND ${RUN_ID}"
+- assertVisible: ".*NB ${RUN_ID}"
+
+# ===== FLOW 03: Create and edit notes =====
+
+# Navigate to the test notebook
+- tapOn: ".*NB ${RUN_ID}"
+
+- extendedWaitUntil:
+    visible: "No notes yet"
+    timeout: 5000
+    optional: true
+
+# --- Create a note with title ---
+- tapOn:
+    id: "add"
+- assertVisible: "Note title (optional)"
+- inputText: "Note ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*Note ${RUN_ID}.*"
+    timeout: 5000
+
+# --- Create a note without title ---
+- tapOn:
+    id: "add"
+- assertVisible: "Note title (optional)"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*Untitled.*"
+    timeout: 5000
+
+# --- Cancel note creation ---
+- tapOn:
+    id: "add"
+- assertVisible: "Note title (optional)"
+- inputText: "Cancelled Note"
+- tapOn:
+    id: "close"
+- assertNotVisible: ".*Cancelled Note"
+
+# --- Open note in editor ---
+- tapOn: ".*Note ${RUN_ID}.*"
+- extendedWaitUntil:
+    visible: ".*Note ${RUN_ID}.*"
+    timeout: 5000
+
+# --- Go back and rename via long press ---
+- pressKey: back
+- extendedWaitUntil:
+    visible: ".*Note ${RUN_ID}.*"
+    timeout: 5000
+- longPressOn: ".*Note ${RUN_ID}.*"
+- eraseText
+- inputText: "NoteF ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*NoteF ${RUN_ID}.*"
+    timeout: 5000
+
+# ===== FLOW 04: Navigate back to Notebooks =====
+
+# Go back to Notebooks tab
+- pressKey: back
+- extendedWaitUntil:
+    visible: "Notebooks"
+    timeout: 10000
+- extendedWaitUntil:
+    visible: ".*NB ${RUN_ID}.*"
+    timeout: 10000

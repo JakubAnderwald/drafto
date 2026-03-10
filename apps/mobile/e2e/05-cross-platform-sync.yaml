@@ -1,0 +1,80 @@
+appId: eu.drafto.mobile
+---
+# Flow 05: Cross-platform format sync
+#
+# Opens a note created by the Playwright web E2E test (title: "XPlat Sync <RUN_ID>"),
+# verifies it can be opened in the TenTap mobile editor, edits its title,
+# and waits for auto-save + sync to push changes to the server.
+#
+# Content format verification (BlockNote ↔ TipTap) is done via Playwright API.
+# Maestro verifies the mobile app can open and interact with cross-platform notes.
+#
+# Depends on: 01-login (user is logged in)
+# Required env:
+#   -e RUN_ID=<timestamp> (must match the Playwright test)
+#   -e NOTEBOOK_NAME=<name> (notebook containing the note)
+
+- launchApp
+
+# Wait for the app to load (Android with async WatermelonDB can take >30s)
+- extendedWaitUntil:
+    visible: "Notebooks"
+    timeout: 60000
+
+# Pull-to-refresh to sync notebooks from the server
+- swipe:
+    direction: DOWN
+    duration: 1000
+
+# Wait for the newly created notebook to appear (sorted by updated_at DESC)
+- extendedWaitUntil:
+    visible: ".*${NOTEBOOK_NAME}.*"
+    timeout: 20000
+
+# Tap into the notebook
+- tapOn: ".*${NOTEBOOK_NAME}.*"
+
+# Wait for notes list
+- extendedWaitUntil:
+    visible: "Notes"
+    timeout: 10000
+
+# Pull-to-refresh to sync notes from the server
+- swipe:
+    direction: DOWN
+    duration: 1000
+
+# Wait for the note (retry sync if needed on Android)
+- extendedWaitUntil:
+    visible: ".*XPlat Sync ${RUN_ID}.*"
+    timeout: 20000
+    optional: true
+
+- swipe:
+    direction: DOWN
+    duration: 1000
+    optional: true
+
+- extendedWaitUntil:
+    visible: ".*XPlat Sync ${RUN_ID}.*"
+    timeout: 20000
+
+# Open the note — verifies format conversion didn't crash the app
+- tapOn: ".*XPlat Sync ${RUN_ID}.*"
+
+# Wait for editor to fully load
+- extendedWaitUntil:
+    visible: ".*XPlat Sync ${RUN_ID}.*"
+    timeout: 10000
+
+# --- Edit the note title on mobile ---
+# Tap the title input area (native TextInput, works on both platforms)
+- tapOn: ".*XPlat Sync ${RUN_ID}.*"
+- inputText: " mobile"
+
+# Wait for auto-save to persist and sync to push changes
+# Auto-save triggers after idle, periodic sync runs every 30s
+- extendedWaitUntil:
+    visible: ".*Saved.*"
+    timeout: 15000
+    optional: true

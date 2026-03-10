@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedUser, errorResponse, successResponse } from "@/lib/api/utils";
+import { contentToBlocknote } from "@drafto/shared";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -23,7 +24,34 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
     return errorResponse("Note not found", 404);
   }
 
-  return successResponse(note);
+  // Defensive conversion: if content was saved in TipTap format by mobile,
+  // convert it to BlockNote format so the web editor can render it correctly.
+  const noteRecord = note as Record<string, unknown>;
+  const content = noteRecord.content;
+  if (
+    typeof content === "object" &&
+    content !== null &&
+    !Array.isArray(content) &&
+    (content as Record<string, unknown>).type === "doc" &&
+    Array.isArray((content as Record<string, unknown>).content)
+  ) {
+    const converted = contentToBlocknote(content);
+    noteRecord.content = converted;
+
+    // Persist the repaired content so future reads don't need conversion
+    supabase
+      .from("notes")
+      .update({ content: converted as unknown as string })
+      .eq("id", id)
+      .eq("user_id", user.id)
+      .then(({ error: updateError }) => {
+        if (updateError) {
+          console.error("[notes] Failed to persist converted content:", updateError);
+        }
+      });
+  }
+
+  return successResponse(noteRecord);
 }
 
 export async function PATCH(request: NextRequest, { params }: RouteParams) {

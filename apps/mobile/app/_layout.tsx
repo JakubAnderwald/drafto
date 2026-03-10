@@ -1,6 +1,8 @@
 import { useEffect } from "react";
-import { ActivityIndicator, View, StyleSheet } from "react-native";
+import { ActivityIndicator, LogBox, View, StyleSheet } from "react-native";
 import { Stack, useSegments, useRouter } from "expo-router";
+
+LogBox.ignoreAllLogs();
 import { StatusBar } from "expo-status-bar";
 
 import { AuthProvider, useAuth } from "@/providers/auth-provider";

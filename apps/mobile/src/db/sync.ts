@@ -94,14 +94,26 @@ function splitChanges(records: SyncRecord[], isFirstSync: boolean): SyncTableCha
   return { created: [], updated: records, deleted: [] };
 }
 
+async function getServerTimestamp(): Promise<number> {
+  // Use Supabase server time to avoid clock skew between client and server.
+  // Client Date.now() can be ahead of the server, causing sync to miss records
+  // whose updated_at is between server-now and client-now.
+  const { data, error } = await supabase.rpc("get_server_time");
+  if (!error && data) {
+    return new Date(data as string).getTime();
+  }
+  // Fallback: use client time with a safety margin to reduce clock skew risk
+  return Date.now() - 5000;
+}
+
 async function pullChanges({ lastPulledAt }: { lastPulledAt?: number }): Promise<SyncPullResult> {
   const isFirstSync = lastPulledAt === undefined;
-  const serverTimestamp = Date.now();
 
-  const [notebooks, notes, attachments] = await Promise.all([
+  const [notebooks, notes, attachments, serverTimestamp] = await Promise.all([
     fetchTable<NotebookRow>("notebooks", "updated_at", lastPulledAt, mapNotebookRow),
     fetchTable<NoteRow>("notes", "updated_at", lastPulledAt, mapNoteRow),
     fetchTable<AttachmentRow>("attachments", "created_at", lastPulledAt, mapAttachmentRow),
+    getServerTimestamp(),
   ]);
 
   return {

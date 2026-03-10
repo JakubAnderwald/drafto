@@ -430,3 +430,52 @@ export function tiptapToBlocknote(doc: TipTapDoc): BlockNoteBlock[] {
   }
   return blocks;
 }
+
+// --- Smart format-detecting wrappers ---
+
+function isTipTapDoc(value: unknown): value is TipTapDoc {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<string, unknown>).type === "doc" &&
+    Array.isArray((value as Record<string, unknown>).content)
+  );
+}
+
+function isBlockNoteArray(value: unknown): value is BlockNoteBlock[] {
+  if (!Array.isArray(value)) return false;
+  if (value.length === 0) return true;
+  const first = value[0] as Record<string, unknown>;
+  return (
+    typeof first === "object" &&
+    first !== null &&
+    typeof first.type === "string" &&
+    first.type !== "doc"
+  );
+}
+
+const EMPTY_DOC: TipTapDoc = { type: "doc", content: [] };
+
+/**
+ * Convert any stored content to TipTap format for the mobile editor.
+ * - TipTap doc → passthrough
+ * - BlockNote array → convert
+ * - Anything else → empty doc
+ */
+export function contentToTiptap(content: unknown): TipTapDoc {
+  if (isTipTapDoc(content)) return content;
+  if (isBlockNoteArray(content)) return blocknoteToTiptap(content);
+  return EMPTY_DOC;
+}
+
+/**
+ * Convert any stored content to BlockNote format for the web editor.
+ * - BlockNote array → passthrough
+ * - TipTap doc → convert
+ * - Anything else → empty array
+ */
+export function contentToBlocknote(content: unknown): BlockNoteBlock[] {
+  if (isBlockNoteArray(content)) return content;
+  if (isTipTapDoc(content)) return tiptapToBlocknote(content);
+  return [];
+}

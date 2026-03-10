@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { blocknoteToTiptap, tiptapToBlocknote } from "../src/editor/format-converter";
-import type { BlockNoteBlock, TipTapDoc } from "../src/editor/types";
+import { blocknoteToTiptap, tiptapToBlocknote, contentToTiptap, contentToBlocknote } from "../src";
+import type { BlockNoteBlock, TipTapDoc } from "../src";
 
 describe("blocknoteToTiptap", () => {
   it("converts a simple paragraph", () => {
@@ -1034,6 +1034,159 @@ describe("round-trip fidelity", () => {
     };
 
     const roundTripped = blocknoteToTiptap(tiptapToBlocknote(original));
+    expect(roundTripped).toEqual(original);
+  });
+});
+
+describe("contentToTiptap", () => {
+  it("converts BlockNote array to TipTap doc", () => {
+    const blocks: BlockNoteBlock[] = [
+      {
+        type: "paragraph",
+        content: [{ type: "text", text: "Hello", styles: {} }],
+        children: [],
+      },
+    ];
+
+    const result = contentToTiptap(blocks);
+
+    expect(result.type).toBe("doc");
+    expect(result.content[0].type).toBe("paragraph");
+    expect(result.content[0].content![0].text).toBe("Hello");
+  });
+
+  it("passes through TipTap doc as-is", () => {
+    const doc: TipTapDoc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "Already TipTap" }],
+        },
+      ],
+    };
+
+    const result = contentToTiptap(doc);
+
+    expect(result).toBe(doc);
+  });
+
+  it("returns empty doc for null", () => {
+    const result = contentToTiptap(null);
+    expect(result).toEqual({ type: "doc", content: [] });
+  });
+
+  it("returns empty doc for undefined", () => {
+    const result = contentToTiptap(undefined);
+    expect(result).toEqual({ type: "doc", content: [] });
+  });
+
+  it("returns empty doc for a string", () => {
+    const result = contentToTiptap("not json");
+    expect(result).toEqual({ type: "doc", content: [] });
+  });
+
+  it("returns empty doc for empty array (treated as empty BlockNote)", () => {
+    const result = contentToTiptap([]);
+    expect(result).toEqual({ type: "doc", content: [] });
+  });
+});
+
+describe("contentToBlocknote", () => {
+  it("converts TipTap doc to BlockNote array", () => {
+    const doc: TipTapDoc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "Hello" }],
+        },
+      ],
+    };
+
+    const result = contentToBlocknote(doc);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe("paragraph");
+  });
+
+  it("passes through BlockNote array as-is", () => {
+    const blocks: BlockNoteBlock[] = [
+      {
+        type: "paragraph",
+        content: [{ type: "text", text: "Already BlockNote", styles: {} }],
+        children: [],
+      },
+    ];
+
+    const result = contentToBlocknote(blocks);
+
+    expect(result).toBe(blocks);
+  });
+
+  it("returns empty array for null", () => {
+    const result = contentToBlocknote(null);
+    expect(result).toEqual([]);
+  });
+
+  it("returns empty array for undefined", () => {
+    const result = contentToBlocknote(undefined);
+    expect(result).toEqual([]);
+  });
+
+  it("returns empty array for a number", () => {
+    const result = contentToBlocknote(42);
+    expect(result).toEqual([]);
+  });
+
+  it("returns empty array for empty array (treated as empty BlockNote)", () => {
+    const result = contentToBlocknote([]);
+    expect(result).toEqual([]);
+  });
+});
+
+describe("contentToTiptap / contentToBlocknote round-trip", () => {
+  it("BlockNote -> contentToTiptap -> contentToBlocknote preserves content", () => {
+    const original: BlockNoteBlock[] = [
+      {
+        type: "heading",
+        props: { level: 1 },
+        content: [{ type: "text", text: "Title", styles: {} }],
+        children: [],
+      },
+      {
+        type: "paragraph",
+        content: [
+          { type: "text", text: "Some ", styles: {} },
+          { type: "text", text: "bold", styles: { bold: true } },
+        ],
+        children: [],
+      },
+    ];
+
+    const tiptap = contentToTiptap(original);
+    const roundTripped = contentToBlocknote(tiptap);
+
+    expect(roundTripped).toEqual(original);
+  });
+
+  it("TipTap -> contentToBlocknote -> contentToTiptap preserves content", () => {
+    const original: TipTapDoc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "Hello" },
+            { type: "text", text: " world", marks: [{ type: "italic" }] },
+          ],
+        },
+      ],
+    };
+
+    const blocks = contentToBlocknote(original);
+    const roundTripped = contentToTiptap(blocks);
+
     expect(roundTripped).toEqual(original);
   });
 });

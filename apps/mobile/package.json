@@ -4,8 +4,9 @@
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "android": "expo run:android",
+    "android:release": "set -a && source .env.production && set +a && export _JAVA_OPTIONS='--enable-native-access=ALL-UNNAMED' && cd android && ./gradlew assembleRelease && echo '\nAPK: android/app/build/outputs/apk/release/app-release.apk'",
+    "ios": "expo run:ios",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
     "test": "jest --passWithNoTests",

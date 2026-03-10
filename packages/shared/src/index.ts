@@ -19,7 +19,12 @@ export {
   BUCKET_NAME,
   SIGNED_URL_EXPIRY_SECONDS,
 } from "./constants";
-export { blocknoteToTiptap, tiptapToBlocknote } from "./editor/format-converter";
+export {
+  blocknoteToTiptap,
+  tiptapToBlocknote,
+  contentToTiptap,
+  contentToBlocknote,
+} from "./editor/format-converter";
 export type {
   BlockNoteBlock,
   BlockNoteInlineContent,

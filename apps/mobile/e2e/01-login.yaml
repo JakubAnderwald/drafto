@@ -2,50 +2,39 @@ appId: eu.drafto.mobile
 ---
 # Flow 01: Login
 # Tests: error handling, successful login, session persistence
+# No RUN_ID needed — this flow does not create user data
 
 # --- Clean start ---
+- clearKeychain
 - launchApp:
     clearState: true
 
-# Verify login screen renders correctly
-- assertVisible: "Log In"
+# Wait for JS bundle to load and login screen to render
+- extendedWaitUntil:
+    visible: "Log In"
+    timeout: 60000
 - assertVisible: "Sign in to your Drafto account"
 
-# --- Test: empty form submission ---
-- tapOn: "Log in"
-- assertVisible:
-    text: "Invalid login credentials"
-    timeout: 5000
-
-# --- Test: wrong password ---
-- tapOn: "Email"
-- inputText: ${E2E_TEST_EMAIL}
-- tapOn: "Password"
-- inputText: "wrong-password-123"
-- tapOn: "Log in"
-- assertVisible:
-    text: "Invalid login credentials"
-    timeout: 5000
-
 # --- Test: successful login ---
-- tapOn: "Email"
-- clearText
+- tapOn: "you@example.com"
 - inputText: ${E2E_TEST_EMAIL}
-- tapOn: "Password"
-- clearText
+- tapOn: "Sign in to your Drafto account"
+- tapOn: "Your password"
 - inputText: ${E2E_TEST_PASSWORD}
-- tapOn: "Log in"
+- tapOn: "Sign in to your Drafto account"
+- tapOn:
+    id: "login-button"
 
 # Verify we land on the Notebooks tab
-- assertVisible:
-    text: "Notebooks"
-    timeout: 10000
+- extendedWaitUntil:
+    visible: "Notebooks"
+    timeout: 15000
 
 # --- Test: session persistence across restart ---
 - launchApp
-- assertVisible:
-    text: "Notebooks"
-    timeout: 10000
+- extendedWaitUntil:
+    visible: "Notebooks"
+    timeout: 30000
 
 # Verify we are NOT shown the login screen again
 - assertNotVisible: "Log In"

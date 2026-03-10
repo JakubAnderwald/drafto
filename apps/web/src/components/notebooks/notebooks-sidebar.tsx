@@ -205,7 +205,7 @@ export function NotebooksSidebar({
   }
 
   return (
-    <div className="bg-sidebar-bg flex flex-1 flex-col">
+    <div className="bg-sidebar-bg flex min-h-0 flex-1 flex-col">
       <div className="border-border flex items-center justify-between border-b p-3">
         <h2 className="text-fg-muted text-xs font-semibold tracking-wide uppercase">Notebooks</h2>
         <IconButton size="sm" variant="ghost" onClick={handleCreate} aria-label="New notebook">

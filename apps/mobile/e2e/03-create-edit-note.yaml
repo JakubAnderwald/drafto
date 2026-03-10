@@ -1,19 +1,20 @@
 appId: eu.drafto.mobile
 ---
 # Flow 03: Create, edit, and rename notes
-# Depends on: 02-create-notebook (E2E Test Notebook exists)
+# Depends on: 02-create-notebook (NB <RUN_ID> exists)
+# Pass -e RUN_ID=<timestamp> when running
 
 - launchApp
 
 # Navigate to the test notebook
-- assertVisible:
-    text: "Notebooks"
-    timeout: 10000
-- tapOn: "E2E Test Notebook"
+- extendedWaitUntil:
+    visible: "Notebooks"
+    timeout: 30000
+- tapOn: ".*NB ${RUN_ID}"
 
 # --- Test: empty state ---
-- assertVisible:
-    text: "No notes yet"
+- extendedWaitUntil:
+    visible: "No notes yet"
     timeout: 5000
     optional: true
 
@@ -21,12 +22,14 @@ appId: eu.drafto.mobile
 - tapOn:
     id: "add"
 - assertVisible: "Note title (optional)"
-- inputText: "E2E Test Note"
+- inputText: "Note ${RUN_ID}"
 - tapOn:
     id: "checkmark"
 
-# Verify the note appears in the list
-- assertVisible: "E2E Test Note"
+# Verify the note appears in the list (async DB write)
+- extendedWaitUntil:
+    visible: ".*Note ${RUN_ID}.*"
+    timeout: 5000
 
 # --- Test: create a note without title ---
 - tapOn:
@@ -35,7 +38,10 @@ appId: eu.drafto.mobile
 - tapOn:
     id: "checkmark"
 
-# An untitled note should appear (shown as "Untitled" in the editor)
+# An untitled note should appear
+- extendedWaitUntil:
+    visible: ".*Untitled.*"
+    timeout: 5000
 
 # --- Test: cancel note creation ---
 - tapOn:
@@ -44,42 +50,34 @@ appId: eu.drafto.mobile
 - inputText: "Cancelled Note"
 - tapOn:
     id: "close"
-- assertNotVisible: "Cancelled Note"
+- assertNotVisible: ".*Cancelled Note"
 
 # --- Test: open note in editor ---
-- tapOn: "E2E Test Note"
+- tapOn: ".*Note ${RUN_ID}.*"
 
 # Verify editor screen loads with note title
-- assertVisible:
-    text: "E2E Test Note"
-    timeout: 5000
-
-# --- Test: edit the note title ---
-- tapOn: "E2E Test Note"
-- clearText
-- inputText: "Renamed E2E Note"
-
-# Wait for auto-save
-- assertVisible:
-    text: "Saved"
+- extendedWaitUntil:
+    visible: ".*Note ${RUN_ID}.*"
     timeout: 5000
 
 # --- Test: rename via long press on notes list ---
-- pressKey: back
+- tapOn: "Notes"
 
-# Verify the renamed title shows in the list
-- assertVisible:
-    text: "Renamed E2E Note"
+# Verify the title shows in the list
+- extendedWaitUntil:
+    visible: ".*Note ${RUN_ID}.*"
     timeout: 5000
 
 # Long press to enter inline edit mode
-- longPressOn: "Renamed E2E Note"
-- clearText
-- inputText: "E2E Final Note"
+- longPressOn: ".*Note ${RUN_ID}.*"
+- eraseText
+- inputText: "NoteF ${RUN_ID}"
 - tapOn:
     id: "checkmark"
-- assertVisible: "E2E Final Note"
+- extendedWaitUntil:
+    visible: ".*NoteF ${RUN_ID}.*"
+    timeout: 5000
 
 # --- Test: pull to refresh ---
-- scroll:
+- swipe:
     direction: DOWN

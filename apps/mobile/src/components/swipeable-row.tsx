@@ -152,6 +152,8 @@ export function SwipeableRow({
           {leftActions.map((action, index) => (
             <Pressable
               key={index}
+              testID={`action-${action.icon.replace("-outline", "")}`}
+              accessibilityLabel={action.icon.replace("-outline", "")}
               style={[styles.actionButton, { backgroundColor: action.backgroundColor }]}
               onPress={() => handleActionPress(action)}
             >
@@ -167,6 +169,8 @@ export function SwipeableRow({
           {rightActions.map((action, index) => (
             <Pressable
               key={index}
+              testID={`action-${action.icon.replace("-outline", "")}`}
+              accessibilityLabel={action.icon.replace("-outline", "")}
               style={[styles.actionButton, { backgroundColor: action.backgroundColor }]}
               onPress={() => handleActionPress(action)}
             >
