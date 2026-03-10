@@ -7,6 +7,7 @@
 jest.mock("@/lib/supabase", () => ({
   supabase: {
     from: jest.fn(),
+    rpc: jest.fn().mockResolvedValue({ data: new Date().toISOString(), error: null }),
   },
 }));
 
