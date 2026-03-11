@@ -58,11 +58,14 @@ jest.mock("@10play/tentap-editor", () => ({
   useEditorBridge: () => ({
     getJSON: mockGetJSON,
     setContent: mockSetContent,
+    injectCSS: jest.fn(),
   }),
+  useBridgeState: () => ({ isReady: true }),
   TenTapStartKit: [],
   RichText: () => null,
   Toolbar: () => null,
   DEFAULT_TOOLBAR_ITEMS: [],
+  darkEditorTheme: { toolbar: {}, webview: {}, webviewContainer: {} },
 }));
 
 jest.mock("@/components/editor/note-editor", () => ({

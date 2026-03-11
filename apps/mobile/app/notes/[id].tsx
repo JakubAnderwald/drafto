@@ -9,7 +9,12 @@ import {
   Platform,
 } from "react-native";
 import { useLocalSearchParams, Stack } from "expo-router";
-import { useEditorBridge, TenTapStartKit } from "@10play/tentap-editor";
+import {
+  useEditorBridge,
+  useBridgeState,
+  TenTapStartKit,
+  darkEditorTheme,
+} from "@10play/tentap-editor";
 
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
@@ -71,7 +76,7 @@ interface NoteEditorViewProps {
 
 function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   const { database, sync } = useDatabase();
-  const { semantic } = useTheme();
+  const { semantic, isDark } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
   const { attachments } = useAttachments(noteId);
   const [title, setTitle] = useState(initialNote.title);
@@ -117,10 +122,30 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     autofocus: false,
     avoidIosKeyboard: true,
     initialContent: parseInitialContent(initialNote),
+    theme: isDark
+      ? {
+          ...darkEditorTheme,
+          webview: { backgroundColor: semantic.bg },
+        }
+      : undefined,
     onChange: () => {
       contentSave.trigger();
     },
   });
+
+  const { isReady } = useBridgeState(editor);
+
+  useEffect(() => {
+    if (!isReady) return;
+    const css = isDark
+      ? `
+        * { background-color: ${semantic.bg}; color: ${semantic.fg}; }
+        blockquote { border-left: 3px solid ${semantic.borderStrong}; padding-left: 1rem; }
+        .highlight-background { background-color: ${semantic.bgMuted}; }
+      `
+      : `* { background-color: ${semantic.bg}; color: ${semantic.fg}; }`;
+    editor.injectCSS(css, "dark-mode");
+  }, [isDark, semantic, editor, isReady]);
 
   useEffect(() => {
     contentSave.cancel();
