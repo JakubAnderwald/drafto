@@ -9,7 +9,12 @@ import {
   Platform,
 } from "react-native";
 import { useLocalSearchParams, Stack } from "expo-router";
-import { useEditorBridge, TenTapStartKit, darkEditorTheme } from "@10play/tentap-editor";
+import {
+  useEditorBridge,
+  useBridgeState,
+  TenTapStartKit,
+  darkEditorTheme,
+} from "@10play/tentap-editor";
 
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
@@ -128,7 +133,10 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     },
   });
 
+  const { isReady } = useBridgeState(editor);
+
   useEffect(() => {
+    if (!isReady) return;
     const css = isDark
       ? `
         * { background-color: ${semantic.bg}; color: ${semantic.fg}; }
@@ -137,7 +145,7 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
       `
       : `* { background-color: ${semantic.bg}; color: ${semantic.fg}; }`;
     editor.injectCSS(css, "dark-mode");
-  }, [isDark, semantic, editor]);
+  }, [isDark, semantic, editor, isReady]);
 
   useEffect(() => {
     contentSave.cancel();

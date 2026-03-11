@@ -60,6 +60,7 @@ jest.mock("@10play/tentap-editor", () => ({
     setContent: mockSetContent,
     injectCSS: jest.fn(),
   }),
+  useBridgeState: () => ({ isReady: true }),
   TenTapStartKit: [],
   RichText: () => null,
   Toolbar: () => null,
