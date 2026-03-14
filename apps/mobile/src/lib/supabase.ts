@@ -11,7 +11,9 @@ const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey as string;
 
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error(
-    "Missing Supabase configuration. Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY in your environment.",
+    "Missing Supabase configuration. " +
+      "Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY in your environment. " +
+      "For EAS builds, set these via `eas env:create` (see CLAUDE.md for details).",
   );
 }
 
