@@ -54,7 +54,7 @@ export default function SearchScreen() {
         returnKeyType="search"
       />
       {loading && trimmedQuery ? (
-        <ListSkeleton variant="notes" />
+        <ListSkeleton variant="note" />
       ) : results.length === 0 && trimmedQuery ? (
         <EmptyState
           icon="search-outline"
