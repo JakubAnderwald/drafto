@@ -1,6 +1,13 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedUser, errorResponse, successResponse } from "@/lib/api/utils";
-import { contentToBlocknote } from "@drafto/shared";
+import {
+  contentToBlocknote,
+  resolveBlockNoteImageUrls,
+  migrateSignedUrlsToAttachmentUrls,
+  BUCKET_NAME,
+  SIGNED_URL_EXPIRY_SECONDS,
+} from "@drafto/shared";
+import type { BlockNoteBlock } from "@drafto/shared";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -51,6 +58,17 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
       });
   }
 
+  // Resolve attachment:// URLs to fresh signed URLs
+  if (Array.isArray(noteRecord.content)) {
+    const blocks = noteRecord.content as BlockNoteBlock[];
+    noteRecord.content = await resolveBlockNoteImageUrls(blocks, async (filePath) => {
+      const { data } = await supabase.storage
+        .from(BUCKET_NAME)
+        .createSignedUrl(filePath, SIGNED_URL_EXPIRY_SECONDS);
+      return data?.signedUrl ?? "";
+    });
+  }
+
   return successResponse(noteRecord);
 }
 
@@ -75,7 +93,14 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     }
     updates.title = body.title;
   }
-  if (body.content !== undefined) updates.content = body.content;
+  if (body.content !== undefined) {
+    // Migrate any legacy signed Supabase URLs to attachment:// scheme
+    if (Array.isArray(body.content)) {
+      updates.content = migrateSignedUrlsToAttachmentUrls(body.content as BlockNoteBlock[]);
+    } else {
+      updates.content = body.content;
+    }
+  }
   if (body.notebook_id !== undefined) updates.notebook_id = body.notebook_id;
   if (body.is_trashed !== undefined) {
     if (typeof body.is_trashed !== "boolean") {

@@ -10,11 +10,19 @@ vi.mock("@/env", () => ({
 
 const mockGetUser = vi.fn();
 const mockFrom = vi.fn();
+const mockCreateSignedUrls = vi.fn().mockResolvedValue({ data: [], error: null });
 
 vi.mock("@/lib/supabase/server", () => ({
   createClient: () => ({
     auth: { getUser: mockGetUser },
     from: mockFrom,
+    storage: {
+      from: () => ({
+        createSignedUrl: () =>
+          Promise.resolve({ data: { signedUrl: "https://signed.test/url" }, error: null }),
+        createSignedUrls: mockCreateSignedUrls,
+      }),
+    },
   }),
 }));
 
@@ -118,6 +126,37 @@ describe("Notes API", () => {
         content: expect.arrayContaining([expect.objectContaining({ type: "paragraph" })]),
       });
     });
+
+    it("resolves attachment:// URLs in content to signed URLs", async () => {
+      authenticateAs("user-1");
+      const content = [
+        {
+          type: "image",
+          props: { url: "attachment://user-1/note-1/img.jpg" },
+          children: [],
+        },
+      ];
+      const note = { id: "note-1", title: "Test", content };
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: () => Promise.resolve({ data: note, error: null }),
+              }),
+            }),
+          }),
+        };
+      });
+
+      const { GET } = await import("@/app/api/notes/[id]/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1");
+      const response = await GET(request, { params });
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.content[0].props.url).toBe("https://signed.test/url");
+    });
   });
 
   describe("PATCH /api/notes/[id]", () => {
@@ -177,6 +216,49 @@ describe("Notes API", () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.notebook_id).toBe("nb-2");
+    });
+
+    it("migrates signed Supabase URLs to attachment:// on content save", async () => {
+      authenticateAs("user-1");
+      const content = [
+        {
+          type: "image",
+          props: {
+            url: "https://abc.supabase.co/storage/v1/object/sign/attachments/user-1/note-1/img.jpg?token=xyz",
+          },
+          children: [],
+        },
+      ];
+      const mockUpdate = vi.fn().mockReturnValue({
+        eq: () => ({
+          eq: () => ({
+            select: () => ({
+              single: () =>
+                Promise.resolve({
+                  data: { id: "note-1", content },
+                  error: null,
+                }),
+            }),
+          }),
+        }),
+      });
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return { update: mockUpdate };
+      });
+
+      const { PATCH } = await import("@/app/api/notes/[id]/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1", {
+        method: "PATCH",
+        body: JSON.stringify({ content }),
+        headers: { "Content-Type": "application/json" },
+      });
+      const response = await PATCH(request, { params });
+      expect(response.status).toBe(200);
+
+      // The content saved should have the migrated attachment:// URL
+      const savedContent = mockUpdate.mock.calls[0][0].content;
+      expect(savedContent[0].props.url).toBe("attachment://user-1/note-1/img.jpg");
     });
 
     it("returns 400 when no fields provided", async () => {

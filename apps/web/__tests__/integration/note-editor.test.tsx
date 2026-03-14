@@ -119,6 +119,7 @@ describe("NoteEditor", () => {
         Promise.resolve({
           id: "att-1",
           file_name: "image.png",
+          file_path: "user-1/note-42/image.png",
           url: "https://example.com/signed-url",
         }),
     });
@@ -131,7 +132,7 @@ describe("NoteEditor", () => {
     const file = new File(["test"], "image.png", { type: "image/png" });
     const url = await capturedUploadFile!(file);
 
-    expect(url).toBe("https://example.com/signed-url");
+    expect(url).toBe("attachment://user-1/note-42/image.png");
     expect(mockFetch).toHaveBeenCalledWith("/api/notes/note-42/attachments", {
       method: "POST",
       body: expect.any(FormData),
@@ -152,10 +153,10 @@ describe("NoteEditor", () => {
     await expect(capturedUploadFile!(file)).rejects.toThrow("File size exceeds 25MB limit");
   });
 
-  it("throws when upload succeeds but URL is missing from response", async () => {
+  it("throws when upload succeeds but file_path is missing from response", async () => {
     mockFetch.mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ id: "att-1", file_name: "test.png", url: null }),
+      json: () => Promise.resolve({ id: "att-1", file_name: "test.png", file_path: null }),
     });
 
     await act(async () => {
@@ -164,7 +165,7 @@ describe("NoteEditor", () => {
 
     const file = new File(["test"], "test.png", { type: "image/png" });
     await expect(capturedUploadFile!(file)).rejects.toThrow(
-      "Upload succeeded but no file URL was returned",
+      "Upload succeeded but no file path was returned",
     );
   });
 });

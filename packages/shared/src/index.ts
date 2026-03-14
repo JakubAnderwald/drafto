@@ -18,6 +18,7 @@ export {
   DEBOUNCE_MS,
   BUCKET_NAME,
   SIGNED_URL_EXPIRY_SECONDS,
+  ATTACHMENT_URL_PREFIX,
 } from "./constants";
 export {
   blocknoteToTiptap,
@@ -26,6 +27,18 @@ export {
   contentToBlocknote,
 } from "./editor/format-converter";
 export { extractTextFromContent } from "./editor/extract-text";
+export {
+  toAttachmentUrl,
+  isAttachmentUrl,
+  extractFilePath,
+  isSignedStorageUrl,
+  extractFilePathFromSignedUrl,
+} from "./editor/attachment-url";
+export {
+  resolveBlockNoteImageUrls,
+  resolveTipTapImageUrls,
+  migrateSignedUrlsToAttachmentUrls,
+} from "./editor/resolve-urls";
 export type {
   BlockNoteBlock,
   BlockNoteInlineContent,

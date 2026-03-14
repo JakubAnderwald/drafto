@@ -25,20 +25,29 @@ import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { AttachmentList } from "@/components/editor/attachment-list";
 import { EditorSkeleton } from "@/components/ui/skeleton";
 import { useAutoSave } from "@/hooks/use-auto-save";
-import { contentToTiptap, contentToBlocknote } from "@drafto/shared";
+import {
+  contentToTiptap,
+  contentToBlocknote,
+  migrateSignedUrlsToAttachmentUrls,
+  resolveTipTapImageUrls,
+} from "@drafto/shared";
+import type { TipTapDoc } from "@drafto/shared";
+import { getSignedUrl } from "@/lib/data/attachments";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Note } from "@/db";
 
-function parseInitialContent(note: Note): object {
+const EMPTY_DOC: TipTapDoc = { type: "doc", content: [] };
+
+function parseInitialContent(note: Note): TipTapDoc {
   if (note.content) {
     try {
       return contentToTiptap(JSON.parse(note.content));
     } catch {
-      return { type: "doc", content: [] };
+      return EMPTY_DOC;
     }
   }
-  return { type: "doc", content: [] };
+  return EMPTY_DOC;
 }
 
 export default function EditorScreen() {
@@ -74,6 +83,34 @@ interface NoteEditorViewProps {
   initialNote: Note;
 }
 
+function useResolvedContent(note: Note): { content: TipTapDoc | null; resolving: boolean } {
+  const [content, setContent] = useState<TipTapDoc | null>(null);
+  const [resolving, setResolving] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const parsed = parseInitialContent(note);
+    resolveTipTapImageUrls(parsed, getSignedUrl)
+      .then((resolved) => {
+        if (!cancelled) {
+          setContent(resolved);
+          setResolving(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setContent(parsed);
+          setResolving(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [note]);
+
+  return { content, resolving };
+}
+
 function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   const { database, sync } = useDatabase();
   const { semantic, isDark } = useTheme();
@@ -81,6 +118,7 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   const { attachments } = useAttachments(noteId);
   const [title, setTitle] = useState(initialNote.title);
   const noteIdRef = useRef(noteId);
+  const { content: resolvedContent, resolving } = useResolvedContent(initialNote);
 
   const titleSave = useAutoSave<string>({
     onSave: useCallback(
@@ -104,10 +142,12 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     onSave: useCallback(async () => {
       if (!noteId || noteIdRef.current !== noteId) return;
       const json = await editor.getJSON();
+      const blocks = contentToBlocknote(json);
+      const migrated = migrateSignedUrlsToAttachmentUrls(blocks);
       await database.write(async () => {
         const record = await database.get<Note>("notes").find(noteId);
         await record.update((r) => {
-          r.content = JSON.stringify(contentToBlocknote(json));
+          r.content = JSON.stringify(migrated);
         });
       });
       sync();
@@ -121,7 +161,7 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     bridgeExtensions: TenTapStartKit,
     autofocus: false,
     avoidIosKeyboard: true,
-    initialContent: parseInitialContent(initialNote),
+    initialContent: resolvedContent ?? EMPTY_DOC,
     theme: isDark
       ? {
           ...darkEditorTheme,
@@ -165,6 +205,10 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
         : titleSave.status === "saved" || contentSave.status === "saved"
           ? "saved"
           : "idle";
+
+  if (resolving) {
+    return <EditorSkeleton />;
+  }
 
   return (
     <>

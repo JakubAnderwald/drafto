@@ -6,6 +6,7 @@ import { BlockNoteView } from "@blocknote/mantine";
 import type { Block } from "@blocknote/core";
 import "@blocknote/mantine/style.css";
 import { useTheme } from "@/hooks/use-theme";
+import { toAttachmentUrl } from "@drafto/shared";
 
 interface NoteEditorProps {
   noteId: string;
@@ -31,10 +32,10 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
       }
 
       const data = await response.json();
-      if (typeof data.url !== "string" || data.url.length === 0) {
-        throw new Error("Upload succeeded but no file URL was returned");
+      if (typeof data.file_path !== "string" || data.file_path.length === 0) {
+        throw new Error("Upload succeeded but no file path was returned");
       }
-      return data.url;
+      return toAttachmentUrl(data.file_path);
     },
     [noteId],
   );
