@@ -43,6 +43,26 @@ Never work directly on `main`. Always use the `/worktree` command to create an i
 - Kebab-case file names (e.g., `user-profile.tsx`, not `UserProfile.tsx`)
 - Use `@/` import alias for all `src/` imports
 
+## Design System (Enforced)
+
+All UI code must use the design system defined in `apps/web/src/app/globals.css`. See the live showcase at `/design-system`.
+
+**Token usage:**
+
+- Use semantic token classes (`bg-bg`, `text-fg-muted`, `border-border`) for surfaces — never raw Tailwind colors (`bg-gray-100`, `text-slate-500`)
+- Use scale token classes (`bg-primary-500`, `text-accent-400`, `text-neutral-600`) from the defined palette — never arbitrary color values (`bg-[#4f46e5]`)
+- Use design system shadows (`shadow-sm`, `shadow-md`), radii (`rounded-md`, `rounded-lg`), and transitions (`transition-fast`, `transition-normal`) — never hardcoded values
+
+**Component reuse:**
+
+- Check `apps/web/src/components/ui/` before building any new button, input, card, badge, dialog, dropdown, or skeleton — a primitive likely already exists
+- When a new reusable UI pattern emerges, extract it to `apps/web/src/components/ui/` following existing conventions (variant props, `cn()` utility, design tokens)
+
+**Keeping the system current:**
+
+- When adding a new token to `globals.css`, add a corresponding example to the showcase page (`apps/web/src/app/design-system/page.tsx`)
+- When adding a new UI primitive, add it to the showcase page with all variants demonstrated
+
 ## Testing Requirements
 
 Every feature needs:
