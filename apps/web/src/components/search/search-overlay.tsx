@@ -56,6 +56,8 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
   }, [open]);
 
   useEffect(() => {
+    const controller = new AbortController();
+
     if (timerRef.current) {
       clearTimeout(timerRef.current);
     }
@@ -71,7 +73,9 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
 
     timerRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/notes/search?q=${encodeURIComponent(trimmed)}`);
+        const res = await fetch(`/api/notes/search?q=${encodeURIComponent(trimmed)}`, {
+          signal: controller.signal,
+        });
         if (handleAuthError(res)) return;
         if (!res.ok) {
           console.error("Search failed:", res.status);
@@ -82,10 +86,13 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
         setResults(data);
         setHighlightedIndex(0);
       } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
         console.error("Search failed:", err);
         setResults([]);
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
       }
     }, 300);
 
@@ -93,6 +100,7 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
       if (timerRef.current) {
         clearTimeout(timerRef.current);
       }
+      controller.abort();
     };
   }, [query]);
 

@@ -157,6 +157,14 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        const target = e.target as HTMLElement;
+        if (
+          target.isContentEditable ||
+          target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA"
+        ) {
+          return;
+        }
         e.preventDefault();
         setSearchOpen((prev) => !prev);
       }

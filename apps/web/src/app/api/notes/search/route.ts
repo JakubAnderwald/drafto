@@ -36,7 +36,8 @@ export async function GET(request: NextRequest) {
   )) as { data: SearchNoteResult[] | null; error: { message: string } | null };
 
   if (error) {
-    return errorResponse(error.message, 500);
+    console.error("search_notes RPC failed", error);
+    return errorResponse("Failed to search notes", 500);
   }
 
   return successResponse(data);
