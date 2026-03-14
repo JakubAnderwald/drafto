@@ -56,5 +56,13 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       projectId: "6cf2a8f0-c2a6-410c-89dc-3e49aa4119a5",
     },
   },
-  plugins: ["expo-router", "expo-secure-store", "expo-font"],
+  updates: {
+    enabled: false,
+  },
+  plugins: [
+    "expo-router",
+    "expo-secure-store",
+    "expo-font",
+    "./plugins/with-android-optimizations",
+  ],
 });

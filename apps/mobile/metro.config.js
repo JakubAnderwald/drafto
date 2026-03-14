@@ -6,8 +6,11 @@ const monorepoRoot = path.resolve(projectRoot, "../..");
 
 const config = getDefaultConfig(projectRoot);
 
-// Watch all files in the monorepo
-config.watchFolders = [monorepoRoot];
+// Watch only the packages Metro needs to resolve (not the entire monorepo)
+config.watchFolders = [
+  path.resolve(monorepoRoot, "packages", "shared"),
+  path.resolve(monorepoRoot, "node_modules"),
+];
 
 // Resolve modules from both the project and monorepo node_modules
 config.resolver.nodeModulesPaths = [

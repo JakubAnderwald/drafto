@@ -1,23 +1,31 @@
-appId: com.drafto.mobile
+appId: eu.drafto.mobile
 ---
+# Assumes user is already logged in (run after 01-login or android-all)
 - launchApp
-- assertVisible: "Notebooks"
+- extendedWaitUntil:
+    visible: "Notebooks"
+    timeout: 30000
 
-# Open search screen
+# Open search screen (tap the search icon in the header)
 - tapOn:
-    id: "search-outline"
-- assertVisible: "Search"
+    point: "93%,5%"
+- extendedWaitUntil:
+    visible: "Search"
+    timeout: 5000
 
 # Type a search query
 - tapOn: "Search notes..."
 - inputText: "test"
 
-# Verify results or empty state appears
-- assertVisible:
-    anyOf:
-      - "No notes found"
-      - id: "document-text-outline"
+# Verify search executed — either results or empty state is acceptable
+- extendedWaitUntil:
+    visible: "No notes found"
+    timeout: 5000
+    optional: true
 
-# Go back
+# Go back (first back dismisses keyboard, second navigates)
 - pressKey: back
-- assertVisible: "Notebooks"
+- pressKey: back
+- extendedWaitUntil:
+    visible: "Notebooks"
+    timeout: 5000

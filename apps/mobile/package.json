@@ -5,7 +5,9 @@
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
-    "android:release": "set -a && source .env.production && set +a && export _JAVA_OPTIONS='--enable-native-access=ALL-UNNAMED' && cd android && ./gradlew assembleRelease && echo '\nAPK: android/app/build/outputs/apk/release/app-release.apk'",
+    "android:arm64": "ORG_GRADLE_PROJECT_reactNativeArchitectures=arm64-v8a expo run:android",
+    "android:x86_64": "ORG_GRADLE_PROJECT_reactNativeArchitectures=x86_64 expo run:android",
+    "android:release-local": "set -a && source .env.production && set +a && export _JAVA_OPTIONS='--enable-native-access=ALL-UNNAMED' && cd android && ./gradlew assembleRelease && echo '\nAPK: android/app/build/outputs/apk/release/app-release.apk'",
     "ios": "expo run:ios",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
