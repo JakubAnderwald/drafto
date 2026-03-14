@@ -80,6 +80,10 @@ jest.mock("@/components/editor/attachment-list", () => ({
   AttachmentList: () => null,
 }));
 
+jest.mock("@/lib/data/attachments", () => ({
+  getSignedUrl: jest.fn().mockResolvedValue("https://signed.test/url"),
+}));
+
 jest.mock("@/hooks/use-auto-save", () => ({
   useAutoSave: () => ({
     trigger: jest.fn(),
