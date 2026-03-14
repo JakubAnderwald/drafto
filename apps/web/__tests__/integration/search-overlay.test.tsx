@@ -217,6 +217,88 @@ describe("SearchOverlay", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("handles fetch error gracefully", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+    mockFetch.mockRejectedValue(new Error("Network error"));
+
+    render(
+      <SearchOverlay
+        open={true}
+        onClose={vi.fn()}
+        onSelectNote={vi.fn()}
+        notebooks={mockNotebooks}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText("Search notes..."), "test");
+    vi.advanceTimersByTime(300);
+
+    await waitFor(() => {
+      expect(screen.getByText("No notes found")).toBeInTheDocument();
+    });
+
+    vi.useRealTimers();
+  });
+
+  it("handles non-ok response gracefully", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 500,
+    });
+
+    render(
+      <SearchOverlay
+        open={true}
+        onClose={vi.fn()}
+        onSelectNote={vi.fn()}
+        notebooks={mockNotebooks}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText("Search notes..."), "test");
+    vi.advanceTimersByTime(300);
+
+    await waitFor(() => {
+      expect(screen.getByText("No notes found")).toBeInTheDocument();
+    });
+
+    vi.useRealTimers();
+  });
+
+  it("selects second result with ArrowDown + Enter", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const onSelectNote = vi.fn();
+
+    render(
+      <SearchOverlay
+        open={true}
+        onClose={vi.fn()}
+        onSelectNote={onSelectNote}
+        notebooks={mockNotebooks}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText("Search notes..."), "meeting");
+    vi.advanceTimersByTime(300);
+
+    await waitFor(() => {
+      expect(screen.getByText("Meeting Notes")).toBeInTheDocument();
+    });
+
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{Enter}");
+
+    expect(onSelectNote).toHaveBeenCalledWith("note-2", "nb-2", true);
+
+    vi.useRealTimers();
+  });
+
   it("closes overlay when clicking backdrop", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
