@@ -21,14 +21,18 @@
     "beta": {
       "distribution": "store",
       "autoIncrement": true,
-      "channel": "beta",
+      "android": {
+        "buildType": "app-bundle"
+      },
       "env": {
         "APP_VARIANT": "beta"
       }
     },
     "production": {
       "autoIncrement": true,
-      "channel": "production"
+      "android": {
+        "buildType": "app-bundle"
+      }
     }
   },
   "submit": {

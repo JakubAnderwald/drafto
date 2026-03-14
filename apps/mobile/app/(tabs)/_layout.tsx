@@ -30,7 +30,13 @@ export default function TabsLayout() {
             <Ionicons name="book-outline" size={size} color={color} />
           ),
           headerRight: () => (
-            <Pressable onPress={() => router.push("/search")} style={{ marginRight: 16 }}>
+            <Pressable
+              testID="search-button"
+              accessibilityLabel="Search"
+              accessibilityRole="button"
+              onPress={() => router.push("/search")}
+              style={{ marginRight: 16 }}
+            >
               <Ionicons name="search-outline" size={22} color={semantic.fg} />
             </Pressable>
           ),
