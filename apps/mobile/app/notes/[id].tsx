@@ -32,7 +32,6 @@ import {
   resolveTipTapImageUrls,
 } from "@drafto/shared";
 import type { TipTapDoc } from "@drafto/shared";
-import { getSignedUrl } from "@/lib/data/attachments";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Note } from "@/db";
@@ -90,6 +89,10 @@ function useResolvedContent(note: Note): { content: TipTapDoc | null; resolving:
   useEffect(() => {
     let cancelled = false;
     const parsed = parseInitialContent(note);
+    // Lazy import to avoid loading Supabase client at module level (breaks tests)
+    const { getSignedUrl } = require("@/lib/data/attachments") as {
+      getSignedUrl: (filePath: string) => Promise<string>;
+    };
     resolveTipTapImageUrls(parsed, getSignedUrl)
       .then((resolved) => {
         if (!cancelled) {
