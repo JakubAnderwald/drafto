@@ -41,6 +41,28 @@ jobs:
       - name: Run shared package tests
         run: cd packages/shared && pnpm test
 
+  tag:
+    name: Tag Mobile Release
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Read mobile version and create tag
+        run: |
+          VERSION=$(node -p "require('./apps/mobile/package.json').version")
+          TAG="mobile@${VERSION}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping"
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+            echo "Created tag $TAG"
+          fi
+
   build-ios:
     name: Build & Submit iOS (TestFlight)
     needs: checks

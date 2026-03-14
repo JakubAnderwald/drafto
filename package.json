@@ -18,7 +18,8 @@
     "supabase:link:prod": "supabase link --project-ref tbmjbxxseonkciqovnpl",
     "supabase:push": "supabase db push",
     "migration:check": "bash scripts/check-migration-safety.sh",
-    "prepare": "husky"
+    "prepare": "husky",
+    "version:mobile": "cd apps/mobile && npm version"
   },
   "lint-staged": {
     "*.{js,jsx,ts,tsx,mjs,mts}": [

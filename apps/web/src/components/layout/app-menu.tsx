@@ -76,6 +76,13 @@ export function AppMenu({ onImportEvernote }: AppMenuProps) {
         <DropdownMenuItem variant="danger" onClick={handleLogout} data-testid="logout-button">
           Log out
         </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <span className="text-fg-muted block px-3 py-1.5 text-xs" data-testid="app-version">
+          v.
+          {process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA
+            ? process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA.slice(0, 7)
+            : "dev"}
+        </span>
       </DropdownMenu>
     </div>
   );
