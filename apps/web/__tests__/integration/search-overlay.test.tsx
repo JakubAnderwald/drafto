@@ -299,6 +299,109 @@ describe("SearchOverlay", () => {
     vi.useRealTimers();
   });
 
+  it("shows 'Untitled' for notes without title and 'Unknown' for missing notebooks", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve([
+          {
+            id: "note-x",
+            title: "",
+            notebook_id: "nb-unknown",
+            is_trashed: false,
+            trashed_at: null,
+            updated_at: "2026-03-14T00:00:00Z",
+            content_snippet: "",
+          },
+        ]),
+    });
+
+    render(
+      <SearchOverlay
+        open={true}
+        onClose={vi.fn()}
+        onSelectNote={vi.fn()}
+        notebooks={mockNotebooks}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText("Search notes..."), "test");
+    vi.advanceTimersByTime(300);
+
+    await waitFor(() => {
+      expect(screen.getByText("Untitled")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Unknown")).toBeInTheDocument();
+
+    vi.useRealTimers();
+  });
+
+  it("does not go below index 0 on ArrowUp at first result", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const onSelectNote = vi.fn();
+
+    render(
+      <SearchOverlay
+        open={true}
+        onClose={vi.fn()}
+        onSelectNote={onSelectNote}
+        notebooks={mockNotebooks}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText("Search notes..."), "meeting");
+    vi.advanceTimersByTime(300);
+
+    await waitFor(() => {
+      expect(screen.getByText("Meeting Notes")).toBeInTheDocument();
+    });
+
+    // ArrowUp at index 0 should stay at 0
+    await user.keyboard("{ArrowUp}");
+    await user.keyboard("{Enter}");
+
+    expect(onSelectNote).toHaveBeenCalledWith("note-1", "nb-1", false);
+
+    vi.useRealTimers();
+  });
+
+  it("does not go beyond last index on ArrowDown at last result", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const onSelectNote = vi.fn();
+
+    render(
+      <SearchOverlay
+        open={true}
+        onClose={vi.fn()}
+        onSelectNote={onSelectNote}
+        notebooks={mockNotebooks}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText("Search notes..."), "meeting");
+    vi.advanceTimersByTime(300);
+
+    await waitFor(() => {
+      expect(screen.getByText("Meeting Notes")).toBeInTheDocument();
+    });
+
+    // Move to last result
+    await user.keyboard("{ArrowDown}");
+    // ArrowDown again should stay at last
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{Enter}");
+
+    // Should select the second (last) result
+    expect(onSelectNote).toHaveBeenCalledWith("note-2", "nb-2", true);
+
+    vi.useRealTimers();
+  });
+
   it("closes overlay when clicking backdrop", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
