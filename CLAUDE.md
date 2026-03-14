@@ -214,3 +214,23 @@ The mobile app uses different Supabase backends depending on the build type:
 - `android/local.properties` must have `sdk.dir` pointing to the Android SDK (e.g., `/Users/jakub/Library/Android/sdk`)
 - JDK 25+ requires `_JAVA_OPTIONS='--enable-native-access=ALL-UNNAMED'` (already set in the `android:release` script)
 - The release build is signed with the debug keystore — for Play Store distribution, use EAS build (`pnpm build:prod`)
+
+## Google Play Deployment (EAS Build + Submit)
+
+Single command to build and deploy to Google Play internal testing:
+
+```bash
+cd apps/mobile && npx eas-cli build --profile beta --platform android --auto-submit --non-interactive
+```
+
+**Setup details:**
+
+- EAS project: `@jakubanderwald/drafto` (ID: `6cf2a8f0-c2a6-410c-89dc-3e49aa4119a5`)
+- Google Play service account key: `apps/mobile/google-play-service-account.json` (gitignored)
+- Submit track: `internal` (configured in `eas.json` submit.beta.android)
+- `.npmrc` with `node-linker=hoisted` is required at repo root for EAS Build to work with pnpm monorepo
+- `expo-updates` is NOT installed — `runtimeVersion` and `updates` config must not be in `app.config.ts`
+- App owner in Expo: `jakubanderwald` (set in `app.config.ts`)
+- App package: `eu.drafto.mobile`
+
+**CI automated deploy:** The `beta-release.yml` workflow writes the service account key from `GOOGLE_PLAY_SERVICE_ACCOUNT_KEY` GitHub secret before building. Ensure this secret is set in repo settings.

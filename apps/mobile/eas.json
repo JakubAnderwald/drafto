@@ -1,7 +1,8 @@
 {
   "cli": {
     "version": ">= 16.0.0",
-    "appVersionSource": "remote"
+    "appVersionSource": "remote",
+    "requireCommit": false
   },
   "build": {
     "development": {
@@ -32,24 +33,14 @@
   },
   "submit": {
     "beta": {
-      "ios": {
-        "appleId": "",
-        "ascAppId": "",
-        "appleTeamId": ""
-      },
       "android": {
-        "serviceAccountKeyPath": "",
+        "serviceAccountKeyPath": "./google-play-service-account.json",
         "track": "internal"
       }
     },
     "production": {
-      "ios": {
-        "appleId": "",
-        "ascAppId": "",
-        "appleTeamId": ""
-      },
       "android": {
-        "serviceAccountKeyPath": "",
+        "serviceAccountKeyPath": "./google-play-service-account.json",
         "track": "production"
       }
     }

@@ -83,6 +83,9 @@ jobs:
         with:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
+      - name: Write Google Play service account key
+        working-directory: apps/mobile
+        run: echo '${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_KEY }}' > google-play-service-account.json
       - name: Build and submit to Google Play Internal Testing
         working-directory: apps/mobile
         run: eas build --profile beta --platform android --auto-submit --non-interactive
