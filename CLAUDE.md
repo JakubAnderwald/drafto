@@ -41,6 +41,21 @@ Never work directly on `main`. For every new task (feature, fix, chore, docs):
 
 **Only exception:** The user explicitly asks to work on or push to `main` directly. Without that explicit request, always use a branch + PR.
 
+**Worktree setup for mobile development:**
+
+Git worktrees do not copy gitignored files. When working on mobile code in a worktree, copy these files from the main repo before building or running tests:
+
+```bash
+# Required for mobile builds and Maestro E2E tests
+cp /Users/jakub/code/drafto/apps/mobile/.env apps/mobile/.env
+cp /Users/jakub/code/drafto/apps/mobile/.env.production apps/mobile/.env.production
+
+# Required after expo prebuild (regenerates android/ without local.properties)
+echo "sdk.dir=/Users/jakub/Library/Android/sdk" > apps/mobile/android/local.properties
+```
+
+**Metro port conflicts:** The main repo may have Metro running on port 8081. In a worktree, start Metro on a different port (`pnpm start --port 8082`) and use `adb reverse tcp:8081 tcp:8082` to redirect the app. Alternatively, stop the main repo's Metro first.
+
 ## Code Style
 
 - Strict TypeScript — no `any`, no `@ts-ignore`
@@ -79,17 +94,25 @@ Every feature needs:
 
 Run tests: `cd apps/web && pnpm test` (unit+integration), `cd apps/web && pnpm test:e2e` (Playwright)
 
-**Important**: When asked to "run tests" or verify the test suite, always run **both** `cd apps/web && pnpm test` and `cd apps/web && pnpm test:e2e`. Also run `cd packages/shared && pnpm test` for shared package tests. Never report tests as passing unless all test suites have been executed. E2E tests require `E2E_TEST_EMAIL` and `E2E_TEST_PASSWORD` in `process.env`. Playwright does not load `.env.local` — the shell must export these vars before running Playwright (e.g., `set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e`).
+**Important**: When asked to "run tests" or verify the test suite, always run **all** of the following. Never report tests as passing unless every suite has been executed:
+
+1. `cd apps/web && pnpm test` — web unit + integration
+2. `set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e` — web Playwright E2E (requires `E2E_TEST_EMAIL` and `E2E_TEST_PASSWORD` in env; Playwright does not load `.env.local` automatically)
+3. `cd packages/shared && pnpm test` — shared package tests
+4. `cd apps/mobile && pnpm test` — mobile unit tests
+5. `maestro test apps/mobile/e2e/ --platform android` — mobile Maestro E2E on Android emulator (requires a running emulator and the dev client started with `cd apps/mobile && npx expo start --dev-client`; also requires `E2E_TEST_EMAIL` and `E2E_TEST_PASSWORD` in env)
 
 **Pre-push verification (required before every push):**
 
 Before pushing any changes, run these checks locally to avoid CI failures:
 
-1. **Unit & integration tests**: `cd apps/web && pnpm test`
-2. **Coverage check**: `cd apps/web && pnpm test:coverage` — verify new code has adequate coverage (SonarCloud enforces ~80% on new code). Check the coverage report for any files you changed.
-3. **E2E tests**: `set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e`
+1. **Web unit & integration tests**: `cd apps/web && pnpm test`
+2. **Web coverage check**: `cd apps/web && pnpm test:coverage` — verify new code has adequate coverage (SonarCloud enforces ~80% on new code). Check the coverage report for any files you changed.
+3. **Web E2E tests**: `set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e`
 4. **Shared package tests**: `cd packages/shared && pnpm test`
-5. **Lint & typecheck**: `pnpm lint && pnpm typecheck`
+5. **Mobile unit tests**: `cd apps/mobile && pnpm test`
+6. **Mobile E2E tests**: `maestro test apps/mobile/e2e/ --platform android` (requires running Android emulator + dev client)
+7. **Lint & typecheck**: `pnpm lint && pnpm typecheck`
 
 Never push code that fails any of these checks. Common CI failure patterns to watch for:
 
@@ -217,7 +240,7 @@ cd packages/shared && pnpm exec tsc --noEmit  # Shared type check
 
 # Mobile app (apps/mobile/)
 cd apps/mobile && pnpm android            # Debug build + run on device/emulator (dev backend)
-cd apps/mobile && pnpm android:release    # Release APK (prod backend) → android/app/build/outputs/apk/release/app-release.apk
+cd apps/mobile && pnpm android:release-local    # Release APK (prod backend) → android/app/build/outputs/apk/release/app-release.apk
 ```
 
 ## Mobile Build Environment Mapping
@@ -227,9 +250,9 @@ The mobile app uses different Supabase backends depending on the build type:
 | Build Type  | Env File          | Backend     | Supabase Ref           | Command                             |
 | ----------- | ----------------- | ----------- | ---------------------- | ----------------------------------- |
 | **Debug**   | `.env`            | Development | `huhzactreblzcogqkbsd` | `pnpm android` / `expo run:android` |
-| **Release** | `.env.production` | Production  | `tbmjbxxseonkciqovnpl` | `pnpm android:release`              |
+| **Release** | `.env.production` | Production  | `tbmjbxxseonkciqovnpl` | `pnpm android:release-local`        |
 
-**When asked to build a mobile APK**: always confirm which environment (dev or production) the user wants. Use `pnpm android:release` for production builds and `pnpm android` for dev builds. The release APK is output to `apps/mobile/android/app/build/outputs/apk/release/app-release.apk`.
+**When asked to build a mobile APK**: always confirm which environment (dev or production) the user wants. Use `pnpm android:release-local` for production builds and `pnpm android` for dev builds. The release APK is output to `apps/mobile/android/app/build/outputs/apk/release/app-release.apk`.
 
 **Local build prerequisites**:
 

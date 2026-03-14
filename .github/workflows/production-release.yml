@@ -1,0 +1,95 @@
+name: Production Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Platform to build and submit"
+        required: true
+        type: choice
+        options:
+          - all
+          - ios
+          - android
+
+concurrency:
+  group: production-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SKIP_ENV_VALIDATION: "true"
+  TURBO_TELEMETRY_DISABLED: 1
+
+jobs:
+  checks:
+    name: Pre-release Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - name: Lint mobile
+        run: cd apps/mobile && pnpm lint
+      - name: Typecheck mobile
+        run: cd apps/mobile && pnpm typecheck
+      - name: Run mobile tests
+        run: cd apps/mobile && pnpm test
+      - name: Run shared package tests
+        run: cd packages/shared && pnpm test
+
+  build-ios:
+    name: Build & Submit iOS (App Store)
+    needs: checks
+    if: ${{ github.event.inputs.platform == 'all' || github.event.inputs.platform == 'ios' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+      - name: Build and submit to App Store
+        working-directory: apps/mobile
+        run: eas build --profile production --platform ios --auto-submit --non-interactive
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+          EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
+
+  build-android:
+    name: Build & Submit Android (Production)
+    needs: checks
+    if: ${{ github.event.inputs.platform == 'all' || github.event.inputs.platform == 'android' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+      - name: Write Google Play service account key
+        working-directory: apps/mobile
+        run: echo '${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_KEY }}' > google-play-service-account.json
+      - name: Build and submit to Google Play Production
+        working-directory: apps/mobile
+        run: eas build --profile production --platform android --auto-submit --non-interactive
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+          EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
