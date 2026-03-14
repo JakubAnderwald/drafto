@@ -44,3 +44,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0009](./0009-mobile-app-technology-choices.md)     | Mobile App Technology Choices            | Accepted | 2026-03-07 |
 | [0010](./0010-offline-sync-strategy.md)             | Offline Sync Strategy with WatermelonDB  | Accepted | 2026-03-07 |
 | [0011](./0011-app-store-deployment-strategy.md)     | App Store Deployment Strategy            | Accepted | 2026-03-08 |
+| [0012](./0012-search-implementation.md)             | Search Implementation                    | Accepted | 2026-03-14 |

@@ -1,0 +1,23 @@
+appId: com.drafto.mobile
+---
+- launchApp
+- assertVisible: "Notebooks"
+
+# Open search screen
+- tapOn:
+    id: "search-outline"
+- assertVisible: "Search"
+
+# Type a search query
+- tapOn: "Search notes..."
+- inputText: "test"
+
+# Verify results or empty state appears
+- assertVisible:
+    anyOf:
+      - "No notes found"
+      - id: "document-text-outline"
+
+# Go back
+- pressKey: back
+- assertVisible: "Notebooks"

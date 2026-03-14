@@ -87,6 +87,7 @@ function ThemedStack() {
           />
           <Stack.Screen name="notebooks/[id]" options={{ title: "Notes" }} />
           <Stack.Screen name="notes/[id]" options={{ title: "Editor" }} />
+          <Stack.Screen name="search" options={{ title: "Search", presentation: "modal" }} />
         </Stack>
       </View>
       <StatusBar style={isDark ? "light" : "dark"} />

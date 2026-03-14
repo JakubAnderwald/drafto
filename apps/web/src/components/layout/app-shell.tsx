@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { NotebooksSidebar } from "@/components/notebooks/notebooks-sidebar";
 import { NoteList } from "@/components/notes/note-list";
 import { handleAuthError } from "@/lib/handle-auth-error";
@@ -10,6 +10,7 @@ import { IconButton } from "@/components/ui/icon-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AppMenu } from "@/components/layout/app-menu";
 import { ImportEvernoteDialog } from "@/components/import/import-evernote-dialog";
+import { SearchOverlay } from "@/components/search/search-overlay";
 
 interface NotebookInfo {
   id: string;
@@ -106,6 +107,25 @@ function NotebookIcon() {
   );
 }
 
+function SearchIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+      />
+    </svg>
+  );
+}
+
 function DocumentIcon() {
   return (
     <svg
@@ -132,6 +152,34 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const [viewingTrash, setViewingTrash] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setSearchOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  const handleSearchSelect = useCallback(
+    (noteId: string, notebookId: string, isTrashed: boolean) => {
+      setSearchOpen(false);
+      if (isTrashed) {
+        setViewingTrash(true);
+        setSelectedNotebookId(null);
+        setSelectedNoteId(null);
+      } else {
+        setViewingTrash(false);
+        setSelectedNotebookId(notebookId);
+        setSelectedNoteId(noteId);
+      }
+    },
+    [],
+  );
 
   // Mobile single-panel navigation: determine which panel is active
   const mobileView: "notebooks" | "notes" | "editor" = selectedNoteId
@@ -306,6 +354,12 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           sidebarOpen ? "sm:translate-x-0" : "sm:-translate-x-full"
         }`}
       >
+        <div className="border-border flex items-center justify-between border-b p-2">
+          <span className="text-fg ml-1 text-sm font-semibold">Drafto</span>
+          <IconButton size="sm" onClick={() => setSearchOpen(true)} aria-label="Search notes">
+            <SearchIcon />
+          </IconButton>
+        </div>
         <NotebooksSidebar
           selectedNotebookId={selectedNotebookId}
           onSelectNotebook={handleSelectNotebook}
@@ -416,6 +470,15 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
             setSelectedNoteId(null);
             setViewingTrash(false);
           }}
+        />
+      )}
+
+      {searchOpen && (
+        <SearchOverlay
+          open={searchOpen}
+          onClose={() => setSearchOpen(false)}
+          onSelectNote={handleSearchSelect}
+          notebooks={notebooks}
         />
       )}
 
