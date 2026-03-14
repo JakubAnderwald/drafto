@@ -26,26 +26,31 @@ language sql
 security invoker
 stable
 as $$
+  with note_text as (
+    select
+      n.*,
+      extract_text_from_jsonb(n.content) as extracted_text
+    from notes n
+    where n.user_id = auth.uid()
+  )
   select
-    n.id,
-    n.title,
-    n.notebook_id,
-    n.is_trashed,
-    n.trashed_at,
-    n.updated_at,
+    nt.id,
+    nt.title,
+    nt.notebook_id,
+    nt.is_trashed,
+    nt.trashed_at,
+    nt.updated_at,
     substring(
-      extract_text_from_jsonb(n.content::jsonb),
-      greatest(1, position(lower(search_query) in lower(extract_text_from_jsonb(n.content::jsonb))) - 40),
+      nt.extracted_text,
+      greatest(1, position(lower(search_query) in lower(nt.extracted_text)) - 40),
       100
     ) as content_snippet
-  from notes n
-  where n.user_id = auth.uid()
-    and (
-      n.title ilike '%' || search_query || '%'
-      or extract_text_from_jsonb(n.content::jsonb) ilike '%' || search_query || '%'
-    )
+  from note_text nt
+  where
+    nt.title ilike '%' || search_query || '%'
+    or nt.extracted_text ilike '%' || search_query || '%'
   order by
-    case when n.title ilike '%' || search_query || '%' then 0 else 1 end,
-    n.updated_at desc
+    case when nt.title ilike '%' || search_query || '%' then 0 else 1 end,
+    nt.updated_at desc
   limit 50
 $$;

@@ -87,7 +87,6 @@ Before pushing any changes, run these checks locally to avoid CI failures:
 
 Never push code that fails any of these checks. Common CI failure patterns to watch for:
 
-- **Dual React copies**: Never add `node-linker=hoisted` to the root `.npmrc` — it breaks React hook resolution in the web app tests. Use EAS-specific mechanisms for mobile builds.
 - **Missing test coverage**: When adding new code, write tests concurrently. Check coverage locally before pushing rather than iterating via CI.
 - **E2E assumptions**: E2E tests depend on database state (migrations applied, seed data). If adding features that require new migrations, ensure the migration is applied to dev before running E2E tests.
 

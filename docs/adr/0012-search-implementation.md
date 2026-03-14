@@ -25,13 +25,13 @@ Use PostgreSQL `ILIKE` with a `jsonb_path_query`-based text extraction function 
 
 **Web:** Server-side search via API route calling the Supabase RPC function. Search UI is a Cmd+K overlay with debounced input.
 
-**Mobile:** Local search via WatermelonDB `Q.like()` on title and raw JSON content column (catches text values without parsing). Works offline.
+**Mobile:** Local search via WatermelonDB `Q.like()` on title and raw JSON content column. This is best-effort — substring matching on raw JSON may also match JSON keys/metadata and miss edge cases from serialization/escaping, but is adequate for typical word queries. Works offline.
 
 ## Consequences
 
 - **Positive**: Simple implementation with no additional infrastructure. No search index to maintain. Works offline on mobile via local DB queries. Consistent text extraction logic between PG and TypeScript.
 - **Negative**: `ILIKE` performs a sequential scan — not suitable for millions of rows. Content extraction is computed on each query, not precomputed. No ranking by relevance beyond title-match priority.
-- **Neutral**: If search performance becomes an issue at scale, we can migrate to `tsvector`/`tsquery` with a generated column, requiring a new migration but no API changes.
+- **Neutral**: If search performance becomes an issue at scale, we can migrate to `tsvector`/`tsquery` with a generated column, requiring a new migration but no API changes. Migration triggers to consider: p95 search latency exceeding 500ms, individual users accumulating >10k notes, or sequential scan costs becoming visible in `pg_stat_user_tables`.
 
 ## Alternatives Considered
 
