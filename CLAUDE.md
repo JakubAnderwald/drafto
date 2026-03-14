@@ -33,7 +33,13 @@ Every module must follow SOLID:
 
 ## Worktree Workflow (Required)
 
-Never work directly on `main`. Always use the `/worktree` command to create an isolated branch, then open a PR.
+Never work directly on `main`. For every new task (feature, fix, chore, docs):
+
+1. Use the `/worktree` command to create an isolated branch and worktree
+2. Do all work (commits, edits, tests) in that worktree
+3. Open a PR to merge into `main` — never push directly to `main`
+
+**Only exception:** The user explicitly asks to work on or push to `main` directly. Without that explicit request, always use a branch + PR.
 
 ## Code Style
 
@@ -103,6 +109,7 @@ Never push code that fails any of these checks. Common CI failure patterns to wa
 - Conventional commits enforced by commitlint (e.g., `feat: add login page`)
 - Squash-merge PRs to keep main history clean
 - Pre-commit hooks run lint-staged (ESLint + Prettier)
+- **Never commit or push directly to `main`** unless the user explicitly requests it. All work goes through feature branches and PRs.
 - **All pushes must use the `/push` command** — this ensures commits are pushed, CI/CD checks are polled until green, review comments are addressed, and failures are fixed automatically
 
 ## Architecture Decision Records (ADR)
