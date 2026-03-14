@@ -22,16 +22,16 @@
     "@blocknote/core": "^0.47.1",
     "@blocknote/mantine": "^0.47.1",
     "@blocknote/react": "^0.47.1",
-    "@mantine/core": "^8.3.15",
-    "@sentry/nextjs": "^10.41.0",
+    "@mantine/core": "^8.3.17",
+    "@sentry/nextjs": "^10.43.0",
     "@supabase/ssr": "^0.9.0",
-    "@supabase/supabase-js": "^2.98.0",
+    "@supabase/supabase-js": "^2.99.1",
     "@t3-oss/env-nextjs": "^0.13.10",
     "clsx": "^2.1.1",
     "linkedom": "^0.18.12",
     "next": "16.1.6",
-    "posthog-js": "^1.357.1",
-    "posthog-node": "^5.26.2",
+    "posthog-js": "^1.360.2",
+    "posthog-node": "^5.28.2",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "zod": "^4.3.6"
@@ -47,7 +47,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^5.1.4",
-    "@vitest/coverage-v8": "^4.0.18",
+    "@vitest/coverage-v8": "^4.1.0",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "eslint-config-prettier": "^10.1.8",
@@ -57,6 +57,6 @@
     "tailwindcss": "^4",
     "typescript": "^5",
     "vite-tsconfig-paths": "^6.1.1",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.0"
   }
 }
