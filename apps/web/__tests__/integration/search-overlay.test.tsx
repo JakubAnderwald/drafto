@@ -166,4 +166,73 @@ describe("SearchOverlay", () => {
 
     vi.useRealTimers();
   });
+
+  it("navigates results with keyboard arrows and selects with Enter", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const onSelectNote = vi.fn();
+
+    render(
+      <SearchOverlay
+        open={true}
+        onClose={vi.fn()}
+        onSelectNote={onSelectNote}
+        notebooks={mockNotebooks}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText("Search notes..."), "meeting");
+    vi.advanceTimersByTime(300);
+
+    await waitFor(() => {
+      expect(screen.getByText("Meeting Notes")).toBeInTheDocument();
+    });
+
+    // Arrow down to second result
+    await user.keyboard("{ArrowDown}");
+    // Arrow up back to first
+    await user.keyboard("{ArrowUp}");
+    // Select with Enter
+    await user.keyboard("{Enter}");
+
+    expect(onSelectNote).toHaveBeenCalledWith("note-1", "nb-1", false);
+
+    vi.useRealTimers();
+  });
+
+  it("closes overlay on Escape key", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+
+    render(
+      <SearchOverlay
+        open={true}
+        onClose={onClose}
+        onSelectNote={vi.fn()}
+        notebooks={mockNotebooks}
+      />,
+    );
+
+    await user.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("closes overlay when clicking backdrop", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+
+    const { container } = render(
+      <SearchOverlay
+        open={true}
+        onClose={onClose}
+        onSelectNote={vi.fn()}
+        notebooks={mockNotebooks}
+      />,
+    );
+
+    // Click the backdrop (aria-hidden div)
+    const backdrop = container.querySelector("[aria-hidden='true']");
+    if (backdrop) await user.click(backdrop);
+    expect(onClose).toHaveBeenCalled();
+  });
 });
