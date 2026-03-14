@@ -36,8 +36,9 @@ Every module must follow SOLID:
 Never work directly on `main`. For every new task (feature, fix, chore, docs):
 
 1. Use the `/worktree` command to create an isolated branch and worktree
-2. Do all work (commits, edits, tests) in that worktree
-3. Open a PR to merge into `main` — never push directly to `main`
+2. **Immediately run `pnpm install`** in the new worktree — worktrees do not share `node_modules`, so all tooling (`turbo`, `tsc`, etc.) will fail without this step
+3. Do all work (commits, edits, tests) in that worktree
+4. Open a PR to merge into `main` — never push directly to `main`
 
 **Only exception:** The user explicitly asks to work on or push to `main` directly. Without that explicit request, always use a branch + PR.
 
@@ -55,6 +56,12 @@ echo "sdk.dir=/Users/jakub/Library/Android/sdk" > apps/mobile/android/local.prop
 ```
 
 **Metro port conflicts:** The main repo may have Metro running on port 8081. In a worktree, start Metro on a different port (`pnpm start --port 8082`) and use `adb reverse tcp:8081 tcp:8082` to redirect the app. Alternatively, stop the main repo's Metro first.
+
+**Worktree git gotchas:**
+
+- **Cannot checkout `main`**: In a worktree, `main` is already checked out by the original repo. To create a new branch from latest main, use: `git fetch origin main && git checkout -b <branch> origin/main`
+- **Cannot merge PRs with `--delete-branch`**: `gh pr merge --delete-branch` fails because it tries to switch to `main` locally. Instead use the GitHub API: `gh api repos/{owner}/{repo}/pulls/{number}/merge -f merge_method=squash`
+- **EAS builds from worktrees**: The `--auto-submit` flag for `eas-cli build` requires `google-play-service-account.json` locally (it's gitignored). If the file is missing, the build will still be submitted to EAS but auto-submit will fail. Either copy the file to the worktree or submit manually after the build completes: `npx eas-cli submit --profile beta --platform android --latest`
 
 ## Code Style
 
