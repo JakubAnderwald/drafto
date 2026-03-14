@@ -1,4 +1,5 @@
-import { Tabs } from "expo-router";
+import { Tabs, useRouter } from "expo-router";
+import { Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
 import { useTheme } from "@/providers/theme-provider";
@@ -6,6 +7,7 @@ import { colors } from "@/theme/tokens";
 
 export default function TabsLayout() {
   const { semantic } = useTheme();
+  const router = useRouter();
 
   return (
     <Tabs
@@ -26,6 +28,11 @@ export default function TabsLayout() {
           title: "Notebooks",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="book-outline" size={size} color={color} />
+          ),
+          headerRight: () => (
+            <Pressable onPress={() => router.push("/search")} style={{ marginRight: 16 }}>
+              <Ionicons name="search-outline" size={22} color={semantic.fg} />
+            </Pressable>
           ),
         }}
       />

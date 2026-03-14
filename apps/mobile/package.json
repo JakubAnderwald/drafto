@@ -18,7 +18,8 @@
     "submit:android": "eas submit --platform android",
     "beta:ios": "eas build --profile beta --platform ios --auto-submit",
     "beta:android": "eas build --profile beta --platform android --auto-submit",
-    "beta:all": "eas build --profile beta --platform all --auto-submit"
+    "beta:all": "eas build --profile beta --platform all --auto-submit",
+    "eas-build-pre-install": "echo 'node-linker=hoisted' > ../../.npmrc"
   },
   "dependencies": {
     "@10play/tentap-editor": "^1.0.1",

@@ -4,18 +4,12 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: "Drafto",
   slug: "drafto",
-  owner: "drafto",
+  owner: "jakubanderwald",
   version: "1.0.0",
   orientation: "portrait",
   icon: "./assets/icon.png",
   userInterfaceStyle: "automatic",
   scheme: "drafto",
-  runtimeVersion: {
-    policy: "appVersion",
-  },
-  updates: {
-    url: "https://u.expo.dev/drafto",
-  },
   splash: {
     image: "./assets/splash-icon.png",
     resizeMode: "contain",
@@ -59,7 +53,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL,
     supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
     eas: {
-      projectId: process.env.EAS_PROJECT_ID,
+      projectId: "6cf2a8f0-c2a6-410c-89dc-3e49aa4119a5",
     },
   },
   plugins: ["expo-router", "expo-secure-store", "expo-font"],

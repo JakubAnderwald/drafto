@@ -75,6 +75,21 @@ Run tests: `cd apps/web && pnpm test` (unit+integration), `cd apps/web && pnpm t
 
 **Important**: When asked to "run tests" or verify the test suite, always run **both** `cd apps/web && pnpm test` and `cd apps/web && pnpm test:e2e`. Also run `cd packages/shared && pnpm test` for shared package tests. Never report tests as passing unless all test suites have been executed. E2E tests require `E2E_TEST_EMAIL` and `E2E_TEST_PASSWORD` in `process.env`. Playwright does not load `.env.local` — the shell must export these vars before running Playwright (e.g., `set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e`).
 
+**Pre-push verification (required before every push):**
+
+Before pushing any changes, run these checks locally to avoid CI failures:
+
+1. **Unit & integration tests**: `cd apps/web && pnpm test`
+2. **Coverage check**: `cd apps/web && pnpm test:coverage` — verify new code has adequate coverage (SonarCloud enforces ~80% on new code). Check the coverage report for any files you changed.
+3. **E2E tests**: `set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e`
+4. **Shared package tests**: `cd packages/shared && pnpm test`
+5. **Lint & typecheck**: `pnpm lint && pnpm typecheck`
+
+Never push code that fails any of these checks. Common CI failure patterns to watch for:
+
+- **Missing test coverage**: When adding new code, write tests concurrently. Check coverage locally before pushing rather than iterating via CI.
+- **E2E assumptions**: E2E tests depend on database state (migrations applied, seed data). If adding features that require new migrations, ensure the migration is applied to dev before running E2E tests.
+
 ## Supabase Patterns
 
 - Browser client: `import { createClient } from "@/lib/supabase/client"`
@@ -214,3 +229,23 @@ The mobile app uses different Supabase backends depending on the build type:
 - `android/local.properties` must have `sdk.dir` pointing to the Android SDK (e.g., `/Users/jakub/Library/Android/sdk`)
 - JDK 25+ requires `_JAVA_OPTIONS='--enable-native-access=ALL-UNNAMED'` (already set in the `android:release` script)
 - The release build is signed with the debug keystore — for Play Store distribution, use EAS build (`pnpm build:prod`)
+
+## Google Play Deployment (EAS Build + Submit)
+
+Single command to build and deploy to Google Play internal testing:
+
+```bash
+cd apps/mobile && npx eas-cli build --profile beta --platform android --auto-submit --non-interactive
+```
+
+**Setup details:**
+
+- EAS project: `@jakubanderwald/drafto` (ID: `6cf2a8f0-c2a6-410c-89dc-3e49aa4119a5`)
+- Google Play service account key: `apps/mobile/google-play-service-account.json` (gitignored)
+- Submit track: `internal` (configured in `eas.json` submit.beta.android)
+- `node-linker=hoisted` is required for EAS Build — set via `eas-build-pre-install` script in `apps/mobile/package.json` (not a repo-level `.npmrc`, which breaks web CI tests)
+- `expo-updates` is NOT installed — `runtimeVersion` and `updates` config must not be in `app.config.ts`
+- App owner in Expo: `jakubanderwald` (set in `app.config.ts`)
+- App package: `eu.drafto.mobile`
+
+**CI automated deploy:** The `beta-release.yml` workflow writes the service account key from `GOOGLE_PLAY_SERVICE_ACCOUNT_KEY` GitHub secret before building. Ensure this secret is set in repo settings.

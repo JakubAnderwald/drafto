@@ -25,6 +25,7 @@ export {
   contentToTiptap,
   contentToBlocknote,
 } from "./editor/format-converter";
+export { extractTextFromContent } from "./editor/extract-text";
 export type {
   BlockNoteBlock,
   BlockNoteInlineContent,
