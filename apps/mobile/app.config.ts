@@ -1,11 +1,12 @@
 import { ExpoConfig, ConfigContext } from "expo/config";
+import pkg from "./package.json";
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: "Drafto",
   slug: "drafto",
   owner: "jakubanderwald",
-  version: "1.0.0",
+  version: pkg.version,
   orientation: "portrait",
   icon: "./assets/icon.png",
   userInterfaceStyle: "automatic",
