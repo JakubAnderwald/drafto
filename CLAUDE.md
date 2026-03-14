@@ -228,7 +228,7 @@ cd apps/mobile && npx eas-cli build --profile beta --platform android --auto-sub
 - EAS project: `@jakubanderwald/drafto` (ID: `6cf2a8f0-c2a6-410c-89dc-3e49aa4119a5`)
 - Google Play service account key: `apps/mobile/google-play-service-account.json` (gitignored)
 - Submit track: `internal` (configured in `eas.json` submit.beta.android)
-- `.npmrc` with `node-linker=hoisted` is required at repo root for EAS Build to work with pnpm monorepo
+- `node-linker=hoisted` is required for EAS Build — set via `eas-build-pre-install` script in `apps/mobile/package.json` (not a repo-level `.npmrc`, which breaks web CI tests)
 - `expo-updates` is NOT installed — `runtimeVersion` and `updates` config must not be in `app.config.ts`
 - App owner in Expo: `jakubanderwald` (set in `app.config.ts`)
 - App package: `eu.drafto.mobile`
