@@ -30,8 +30,9 @@ import {
   contentToBlocknote,
   migrateSignedUrlsToAttachmentUrls,
   resolveTipTapImageUrls,
+  isAttachmentUrl,
 } from "@drafto/shared";
-import type { TipTapDoc } from "@drafto/shared";
+import type { TipTapDoc, TipTapNode } from "@drafto/shared";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Note } from "@/db";
@@ -82,13 +83,32 @@ interface NoteEditorViewProps {
   initialNote: Note;
 }
 
-function useResolvedContent(note: Note): { content: TipTapDoc | null; resolving: boolean } {
-  const [content, setContent] = useState<TipTapDoc | null>(null);
-  const [resolving, setResolving] = useState(true);
+function hasAttachmentUrls(nodes: TipTapNode[]): boolean {
+  for (const node of nodes) {
+    if (
+      node.type === "image" &&
+      typeof node.attrs?.src === "string" &&
+      isAttachmentUrl(node.attrs.src)
+    ) {
+      return true;
+    }
+    if (node.content && hasAttachmentUrls(node.content)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function useResolvedContent(note: Note): { content: TipTapDoc; resolving: boolean } {
+  const parsed = useMemo(() => parseInitialContent(note), [note]);
+  const needsResolving = useMemo(() => hasAttachmentUrls(parsed.content), [parsed]);
+
+  const [content, setContent] = useState<TipTapDoc>(parsed);
+  const [resolving, setResolving] = useState(needsResolving);
 
   useEffect(() => {
+    if (!needsResolving) return;
     let cancelled = false;
-    const parsed = parseInitialContent(note);
     // Lazy import to avoid loading Supabase client at module level (breaks tests)
     const { getSignedUrl } = require("@/lib/data/attachments") as {
       getSignedUrl: (filePath: string) => Promise<string>;
@@ -109,7 +129,7 @@ function useResolvedContent(note: Note): { content: TipTapDoc | null; resolving:
     return () => {
       cancelled = true;
     };
-  }, [note]);
+  }, [parsed, needsResolving]);
 
   return { content, resolving };
 }
@@ -164,7 +184,7 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     bridgeExtensions: TenTapStartKit,
     autofocus: false,
     avoidIosKeyboard: true,
-    initialContent: resolvedContent ?? EMPTY_DOC,
+    initialContent: resolvedContent,
     theme: isDark
       ? {
           ...darkEditorTheme,
