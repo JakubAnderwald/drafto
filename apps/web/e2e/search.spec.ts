@@ -49,8 +49,8 @@ test.describe("Search functionality", () => {
     // Wait for auto-save
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 
-    // Open search and look for the note
-    await page.keyboard.press("Meta+k");
+    // Open search via icon (Cmd+K is blocked while focus is in the title input)
+    await page.getByLabel("Search notes").click();
     const searchInput = page.getByPlaceholder("Search notes...");
     await expect(searchInput).toBeVisible({ timeout: 5000 });
 
