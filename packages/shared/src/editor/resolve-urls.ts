@@ -54,7 +54,7 @@ export async function resolveBlockNoteImageUrls(
   if (attachmentUrls.length === 0) return blocks;
 
   const uniqueUrls = [...new Set(attachmentUrls)];
-  const resolved = await Promise.all(
+  const settled = await Promise.allSettled(
     uniqueUrls.map(async (url) => {
       const filePath = extractFilePath(url);
       const signedUrl = await resolver(filePath);
@@ -62,7 +62,9 @@ export async function resolveBlockNoteImageUrls(
     }),
   );
 
-  const urlMap = new Map(resolved);
+  const urlMap = new Map(
+    settled.flatMap((result) => (result.status === "fulfilled" ? [result.value] : [])),
+  );
   return applyResolvedUrls(blocks, urlMap);
 }
 
@@ -107,7 +109,7 @@ export async function resolveTipTapImageUrls(
   if (attachmentUrls.length === 0) return doc;
 
   const uniqueUrls = [...new Set(attachmentUrls)];
-  const resolved = await Promise.all(
+  const settled = await Promise.allSettled(
     uniqueUrls.map(async (url) => {
       const filePath = extractFilePath(url);
       const signedUrl = await resolver(filePath);
@@ -115,7 +117,9 @@ export async function resolveTipTapImageUrls(
     }),
   );
 
-  const urlMap = new Map(resolved);
+  const urlMap = new Map(
+    settled.flatMap((result) => (result.status === "fulfilled" ? [result.value] : [])),
+  );
   return { ...doc, content: applyResolvedTipTapUrls(doc.content, urlMap) };
 }
 

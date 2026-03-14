@@ -62,10 +62,14 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
   if (Array.isArray(noteRecord.content)) {
     const blocks = noteRecord.content as BlockNoteBlock[];
     noteRecord.content = await resolveBlockNoteImageUrls(blocks, async (filePath) => {
-      const { data } = await supabase.storage
+      const { data, error } = await supabase.storage
         .from(BUCKET_NAME)
         .createSignedUrl(filePath, SIGNED_URL_EXPIRY_SECONDS);
-      return data?.signedUrl ?? "";
+      if (error || !data?.signedUrl) {
+        console.error("[notes] Failed to sign URL for:", filePath, error);
+        return `attachment://${filePath}`;
+      }
+      return data.signedUrl;
     });
   }
 

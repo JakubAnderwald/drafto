@@ -109,11 +109,9 @@ function useResolvedContent(note: Note): { content: TipTapDoc; resolving: boolea
   useEffect(() => {
     if (!needsResolving) return;
     let cancelled = false;
-    // Lazy import to avoid loading Supabase client at module level (breaks tests)
-    const { getSignedUrl } = require("@/lib/data/attachments") as {
-      getSignedUrl: (filePath: string) => Promise<string>;
-    };
-    resolveTipTapImageUrls(parsed, getSignedUrl)
+    // Dynamic import to avoid loading Supabase client at module level (breaks tests)
+    import("@/lib/data/attachments")
+      .then(({ getSignedUrl }) => resolveTipTapImageUrls(parsed, getSignedUrl))
       .then((resolved) => {
         if (!cancelled) {
           setContent(resolved);

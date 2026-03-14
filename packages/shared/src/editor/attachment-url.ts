@@ -26,5 +26,9 @@ export function isSignedStorageUrl(url: string): boolean {
 export function extractFilePathFromSignedUrl(url: string): string | null {
   const match = url.match(SIGNED_URL_PATTERN);
   if (!match) return null;
-  return decodeURIComponent(match[1]);
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
 }
