@@ -209,7 +209,7 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   }, [isDark, semantic, editor, isReady]);
 
   useEffect(() => {
-    contentSave.cancel();
+    contentSave.flush();
     noteIdRef.current = noteId;
   }, [noteId, contentSave]);
 

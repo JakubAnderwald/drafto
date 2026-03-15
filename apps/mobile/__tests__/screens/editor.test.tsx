@@ -88,6 +88,7 @@ jest.mock("@/hooks/use-auto-save", () => ({
   useAutoSave: () => ({
     trigger: jest.fn(),
     cancel: jest.fn(),
+    flush: jest.fn(),
     status: "idle" as const,
   }),
 }));

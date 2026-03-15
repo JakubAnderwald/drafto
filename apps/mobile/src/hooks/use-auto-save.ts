@@ -12,37 +12,55 @@ export function useAutoSave<T>({ onSave, delayMs = DEBOUNCE_MS }: UseAutoSaveOpt
   const [status, setStatus] = useState<SaveStatus>("idle");
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onSaveRef = useRef(onSave);
+  const pendingValueRef = useRef<{ value: T } | null>(null);
 
   useEffect(() => {
     onSaveRef.current = onSave;
   }, [onSave]);
+
+  const executeSave = useCallback(async (value: T) => {
+    setStatus("saving");
+    try {
+      await onSaveRef.current(value);
+      setStatus("saved");
+    } catch {
+      setStatus("error");
+    }
+  }, []);
 
   const cancel = useCallback(() => {
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
+    pendingValueRef.current = null;
   }, []);
+
+  const flush = useCallback(() => {
+    const pending = pendingValueRef.current;
+    if (timerRef.current && pending) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+      pendingValueRef.current = null;
+      executeSave(pending.value);
+    }
+  }, [executeSave]);
 
   const trigger = useCallback(
     (value: T) => {
       cancel();
+      pendingValueRef.current = { value };
       timerRef.current = setTimeout(async () => {
-        setStatus("saving");
-        try {
-          await onSaveRef.current(value);
-          setStatus("saved");
-        } catch {
-          setStatus("error");
-        }
+        pendingValueRef.current = null;
+        await executeSave(value);
       }, delayMs);
     },
-    [cancel, delayMs],
+    [cancel, delayMs, executeSave],
   );
 
   useEffect(() => {
-    return cancel;
-  }, [cancel]);
+    return flush;
+  }, [flush]);
 
-  return { trigger, cancel, status };
+  return { trigger, cancel, flush, status };
 }
