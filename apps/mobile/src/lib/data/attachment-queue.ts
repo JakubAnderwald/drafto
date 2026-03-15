@@ -83,8 +83,10 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
     throw new Error("Local file not found");
   }
 
-  // Read file as blob for upload
-  const blob = localFile as unknown as Blob;
+  // Read file as a proper Blob via fetch — expo-file-system's File class
+  // is NOT a web Blob, so casting it directly fails on iOS.
+  const fetchResponse = await fetch(localUri);
+  const blob = await fetchResponse.blob();
 
   // Upload to Supabase Storage
   const { error: uploadError } = await supabase.storage
