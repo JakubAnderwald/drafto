@@ -208,10 +208,12 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     editor.injectCSS(css, "dark-mode");
   }, [isDark, semantic, editor, isReady]);
 
+  const { flush: flushContent } = contentSave;
+
   useEffect(() => {
-    contentSave.flush();
+    flushContent();
     noteIdRef.current = noteId;
-  }, [noteId, contentSave]);
+  }, [noteId, flushContent]);
 
   const handleTitleChange = (text: string) => {
     setTitle(text);
