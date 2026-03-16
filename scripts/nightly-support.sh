@@ -31,7 +31,7 @@ For each open Dependabot PR:
 2. Check CI: gh pr checks {number}
 3. Decision:
    - CI passes + minor/patch → squash merge via gh api, comment "Auto-merged: CI passed, minor/patch update."
-   - CI fails → close with comment explaining which checks failed.
+   - CI fails + minor/patch → checkout the PR branch and use /push to fix failures and iterate until CI is green, then squash merge.
    - Major version bump → add label "needs-review", comment "Major version bump requires manual review", leave PR open.
    - CI pending → skip (process next night).
 
@@ -54,7 +54,11 @@ For each open issue labeled "support" (max 3 per run):
    - cd apps/mobile && pnpm test (mobile unit tests)
    - pnpm lint && pnpm typecheck
 8. Use /push to commit, push, create PR referencing "Closes #N", wait for CI.
-9. Comment on issue: "Addressed in PR #M."
+9. After CI is green, squash-merge the PR via gh api (Vercel auto-deploys drafto.eu on merge to main).
+10. After merge, trigger mobile builds from main so all platforms ship the same version:
+   - cd apps/mobile && npx eas-cli build --profile beta --platform android --auto-submit --non-interactive
+   - cd apps/mobile && npx eas-cli build --profile beta --platform ios --auto-submit --non-interactive
+11. Comment on issue: "Addressed in PR #M (merged). Deployed to drafto.eu, mobile builds submitted to TestFlight and Play Store internal track."
 
 ## Constraints
 - Never push directly to main. Always branches + PRs.
