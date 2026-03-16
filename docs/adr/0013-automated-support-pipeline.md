@@ -16,7 +16,7 @@ Implement a two-stage nightly pipeline:
 
 1. **Stage 1 — Email to Issues (23:00 daily)**: A Google Apps Script watches support@drafto.eu, extracts email content, and creates GitHub issues with the `support` label via the GitHub API.
 
-2. **Stage 2 — Issue & PR Processing (00:03 daily)**: A macOS launchd job runs `scripts/nightly-support.sh`, which invokes Claude Code with `--dangerously-skip-permissions` to:
+2. **Stage 2 — Issue & PR Processing (00:03 daily)**: A macOS launchd job runs `scripts/nightly-support.sh`, which invokes Claude Code with `--dangerously-skip-permissions` to (see [Scheduler Runbook](#scheduler-runbook) below):
    - **Dependabot PRs**: Auto-merge minor/patch updates with passing CI, close failing PRs with explanations, flag major version bumps with `needs-review` label.
    - **Support issues**: Validate sender (allowlist: jakub@anderwald.info, joanna@anderwald.info), create worktree branches, implement fixes/features following CLAUDE.md guidelines, run lint/typecheck/tests, open PRs referencing the issue, and comment back.
 
@@ -33,7 +33,75 @@ Safety constraints:
 
 - **Positive**: Support requests get automated PR responses overnight. Dependabot PRs are triaged automatically, reducing maintenance burden. Sender allowlist prevents unauthorized access. Safety constraints prevent production incidents.
 - **Negative**: `--dangerously-skip-permissions` grants broad access to the Claude Code agent — the allowlist and constraints mitigate but don't eliminate risk. The pipeline can only handle issues within Claude Code's capability; complex architectural changes will still need manual intervention.
-- **Neutral**: Logs are written to `~/code/drafto/logs/` (gitignored). The launchd job runs at 00:03, giving the Apps Script stage (23:00) time to create issues before processing begins.
+- **Neutral**: Logs are written to `$REPO_ROOT/logs/` (gitignored). The launchd job runs at 00:03, giving the Apps Script stage (23:00) time to create issues before processing begins.
+
+## Scheduler Runbook
+
+The Stage 2 launchd job is defined as code below. To set up or recover the scheduler on a new machine:
+
+### Plist Template
+
+Install to `~/Library/LaunchAgents/eu.drafto.nightly-support.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>eu.drafto.nightly-support</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/jakub/code/drafto/scripts/nightly-support.sh</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>0</integer>
+        <key>Minute</key>
+        <integer>3</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/drafto-nightly-support.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/drafto-nightly-support.stderr.log</string>
+</dict>
+</plist>
+```
+
+### Bootstrap / Reload Commands
+
+```bash
+# Install (first time)
+cp eu.drafto.nightly-support.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/eu.drafto.nightly-support.plist
+
+# Reload after changes
+launchctl unload ~/Library/LaunchAgents/eu.drafto.nightly-support.plist
+launchctl load ~/Library/LaunchAgents/eu.drafto.nightly-support.plist
+
+# Verify it's registered
+launchctl list | grep eu.drafto.nightly-support
+
+# Manual trigger for testing
+launchctl start eu.drafto.nightly-support
+```
+
+### File Ownership & Permissions
+
+```bash
+chmod 644 ~/Library/LaunchAgents/eu.drafto.nightly-support.plist
+chmod 755 scripts/nightly-support.sh
+# The plist and script must be owned by the current user (not root)
+```
+
+### Monitoring
+
+- Check stdout/stderr logs at `/tmp/drafto-nightly-support.{stdout,stderr}.log`
+- Application logs at `$REPO_ROOT/logs/nightly-YYYY-MM-DD.log`
+- If the job fails to run, check `launchctl list | grep eu.drafto.nightly-support` for exit status
+- Owner: Jakub Anderwald (jakub@anderwald.info)
 
 ## Alternatives Considered
 

@@ -1,11 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-LOG_DIR="$HOME/code/drafto/logs"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+LOG_DIR="$REPO_ROOT/logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/nightly-$(date +%Y-%m-%d).log"
 
-cd "$HOME/code/drafto"
+cd "$REPO_ROOT"
 
 claude -p "$(cat <<'PROMPT'
 You are an automated nightly job. Process open GitHub issues and Dependabot PRs for JakubAnderwald/drafto.
@@ -25,20 +27,27 @@ For each open Dependabot PR:
 3. Decision:
    - CI passes + minor/patch → squash merge via gh api, comment "Auto-merged: CI passed, minor/patch update."
    - CI fails → close with comment explaining which checks failed.
-   - Major version bump → close with comment "Major version bump requires manual review", add label "needs-review".
+   - Major version bump → add label "needs-review", comment "Major version bump requires manual review", leave PR open.
    - CI pending → skip (process next night).
 
 ## Step 3: Process support issues
 
 For each open issue labeled "support" (max 3 per run):
-1. Check the "From:" field in the body.
-2. Only process issues from jakub@anderwald.info or joanna@anderwald.info.
+1. Verify the issue was created by the trusted bot account (github-actions[bot] or the configured Apps Script service account) to ensure it originated from Stage 1.
+2. Check the "From:" field in the body. Only process issues from jakub@anderwald.info or joanna@anderwald.info.
+   - Issue not created by the trusted bot → comment "Issue creator not recognized as trusted pipeline bot, needs manual triage", add label "needs-triage", skip.
    - Other senders → comment "Sender not recognized, needs manual triage", add label "needs-triage", skip.
 3. Analyze: feature request or bug report?
 4. Create a worktree branch for the work.
 5. Implement following CLAUDE.md guidelines (SOLID, strict TS, named exports, kebab-case, design system tokens).
 6. Add unit + integration tests.
-7. Run: pnpm lint && pnpm typecheck && pnpm test
+7. Run full pre-push verification (per CLAUDE.md):
+   - cd apps/web && pnpm test (unit + integration)
+   - cd apps/web && pnpm test:coverage (verify adequate coverage)
+   - set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e (Playwright E2E)
+   - cd packages/shared && pnpm test (shared package tests)
+   - cd apps/mobile && pnpm test (mobile unit tests)
+   - pnpm lint && pnpm typecheck
 8. Use /push to commit, push, create PR referencing "Closes #N", wait for CI.
 9. Comment on issue: "Addressed in PR #M."
 
