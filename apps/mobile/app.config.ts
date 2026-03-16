@@ -20,6 +20,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     supportsTablet: true,
     bundleIdentifier: "eu.drafto.mobile",
     associatedDomains: ["applinks:drafto.eu", "applinks:www.drafto.eu"],
+    infoPlist: {
+      ITSAppUsesNonExemptEncryption: false,
+    },
   },
   android: {
     adaptiveIcon: {

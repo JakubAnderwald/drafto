@@ -286,3 +286,27 @@ cd apps/mobile && npx eas-cli build --profile beta --platform android --auto-sub
 - App package: `eu.drafto.mobile`
 
 **CI automated deploy:** The `beta-release.yml` workflow writes the service account key from `GOOGLE_PLAY_SERVICE_ACCOUNT_KEY` GitHub secret before building. Ensure this secret is set in repo settings.
+
+## App Store Deployment (EAS Build + Submit)
+
+Single command to build and deploy to TestFlight:
+
+```bash
+cd apps/mobile && npx eas-cli build --profile beta --platform ios --auto-submit --non-interactive
+```
+
+**Setup details:**
+
+- App Store Connect App ID: `6760675784`
+- Apple Developer Team ID: `4J2USPSG2U`
+- Submit destination: TestFlight (configured in `eas.json` submit.beta.ios)
+- Signing credentials: Managed by EAS (no local certificates or provisioning profiles needed)
+- EAS handles Apple authentication via `EXPO_TOKEN` — no separate Apple ID secrets required
+
+**First-time setup:** Run `cd apps/mobile && npx eas-cli credentials --platform ios` to configure signing credentials. This prompts for Apple ID login and stores certificates in EAS.
+
+**TestFlight notes:**
+
+- First build requires Apple review (~24-48h), subsequent builds are usually available instantly
+- Internal testers are invited via App Store Connect → TestFlight → Internal Testing
+- Testers install via the TestFlight app on their iOS device
