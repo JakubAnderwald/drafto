@@ -54,11 +54,14 @@ For each open issue labeled "support" (max 3 per run):
    - cd apps/mobile && pnpm test (mobile unit tests)
    - pnpm lint && pnpm typecheck
 8. Use /push to commit, push, create PR referencing "Closes #N", wait for CI.
-9. After CI is green, squash-merge the PR via gh api (Vercel auto-deploys drafto.eu on merge to main).
-10. After merge, trigger mobile builds from main so all platforms ship the same version:
+9. After CI is green, squash-merge the PR via gh api and capture the merge commit SHA from the response.
+10. Fetch main, checkout the merge commit SHA, and poll gh api repos/{owner}/{repo}/commits/{sha}/check-runs until all checks on that commit pass (Vercel auto-deploys drafto.eu on merge to main).
+11. Once main CI is green on the merge commit, trigger mobile builds from that exact commit:
    - cd apps/mobile && npx eas-cli build --profile beta --platform android --auto-submit --non-interactive
    - cd apps/mobile && npx eas-cli build --profile beta --platform ios --auto-submit --non-interactive
-11. Comment on issue: "Addressed in PR #M (merged). Deployed to drafto.eu, mobile builds submitted to TestFlight and Play Store internal track."
+12. Comment on issue with per-platform status:
+   - If both builds submitted successfully: "Addressed in PR #M (merged). Deployed to drafto.eu, mobile builds submitted to TestFlight and Play Store internal track."
+   - If any build/submit fails: report which platform failed, add label "needs-manual-intervention".
 
 ## Constraints
 - Never push directly to main. Always branches + PRs.
