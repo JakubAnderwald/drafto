@@ -62,3 +62,6 @@ Thumbs.db
 
 # claude code
 .claude/
+
+# nightly support logs
+logs/
