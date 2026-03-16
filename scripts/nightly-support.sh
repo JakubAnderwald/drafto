@@ -55,7 +55,10 @@ For each open issue labeled "support" (max 3 per run):
    - pnpm lint && pnpm typecheck
 8. Use /push to commit, push, create PR referencing "Closes #N", wait for CI.
 9. After CI is green, squash-merge the PR via gh api and capture the merge commit SHA from the response.
-10. Fetch main, checkout the merge commit SHA, and poll gh api repos/{owner}/{repo}/commits/{sha}/check-runs until all checks on that commit pass (Vercel auto-deploys drafto.eu on merge to main).
+10. Fetch main, checkout the merge commit SHA, and poll gh api repos/{owner}/{repo}/commits/{sha}/check-runs every 30s for up to 45 minutes.
+    - Gate only on required CI checks: "Lint & Typecheck", "Unit & Integration Tests", "E2E Tests", "Mobile Checks", "SonarCloud".
+    - If any required check fails or timeout is reached: comment on the issue, add label "needs-manual-intervention", and skip mobile deploy.
+    - Vercel auto-deploys drafto.eu on merge to main.
 11. Once main CI is green on the merge commit, trigger mobile builds from that exact commit:
    - cd apps/mobile && npx eas-cli build --profile beta --platform android --auto-submit --non-interactive
    - cd apps/mobile && npx eas-cli build --profile beta --platform ios --auto-submit --non-interactive
