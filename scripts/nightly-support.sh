@@ -3,9 +3,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+umask 077
 LOG_DIR="$REPO_ROOT/logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/nightly-$(date +%Y-%m-%d).log"
+touch "$LOG_FILE"
+chmod 600 "$LOG_FILE"
+# Retain only recent logs to reduce sensitive-data exposure
+find "$LOG_DIR" -type f -name 'nightly-*.log' -mtime +30 -delete 2>/dev/null || true
 
 cd "$REPO_ROOT"
 

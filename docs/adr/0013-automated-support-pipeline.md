@@ -33,7 +33,7 @@ Safety constraints:
 
 - **Positive**: Support requests get automated PR responses overnight. Dependabot PRs are triaged automatically, reducing maintenance burden. Sender allowlist prevents unauthorized access. Safety constraints prevent production incidents.
 - **Negative**: `--dangerously-skip-permissions` grants broad access to the Claude Code agent — the allowlist and constraints mitigate but don't eliminate risk. The pipeline can only handle issues within Claude Code's capability; complex architectural changes will still need manual intervention.
-- **Neutral**: Logs are written to `$REPO_ROOT/logs/` (gitignored). The launchd job runs at 00:03, giving the Apps Script stage (23:00) time to create issues before processing begins.
+- **Neutral**: Logs are written to `$REPO_ROOT/logs/` (git-ignored). The launchd job runs at 00:03, giving the Apps Script stage (23:00) time to create issues before processing begins.
 
 ## Scheduler Runbook
 
@@ -53,7 +53,7 @@ Install to `~/Library/LaunchAgents/eu.drafto.nightly-support.plist`:
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/jakub/code/drafto/scripts/nightly-support.sh</string>
+        <string>/ABSOLUTE/PATH/TO/drafto/scripts/nightly-support.sh</string>
     </array>
     <key>StartCalendarInterval</key>
     <dict>
@@ -69,6 +69,8 @@ Install to `~/Library/LaunchAgents/eu.drafto.nightly-support.plist`:
 </dict>
 </plist>
 ```
+
+> Replace `/ABSOLUTE/PATH/TO/drafto` with your local absolute repo path.
 
 ### Bootstrap / Reload Commands
 
