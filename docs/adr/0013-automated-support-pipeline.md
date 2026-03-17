@@ -66,6 +66,14 @@ Install to `~/Library/LaunchAgents/eu.drafto.nightly-support.plist`:
     <string>/tmp/drafto-nightly-support.stdout.log</string>
     <key>StandardErrorPath</key>
     <string>/tmp/drafto-nightly-support.stderr.log</string>
+    <!-- EnvironmentVariables: launchd has a minimal PATH; $HOME/.local/bin is needed for Claude CLI -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+        <key>HOME</key>
+        <string>$HOME</string>
+    </dict>
 </dict>
 </plist>
 ```
