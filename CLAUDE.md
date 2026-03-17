@@ -267,6 +267,26 @@ The mobile app uses different Supabase backends depending on the build type:
 - JDK 25+ requires `_JAVA_OPTIONS='--enable-native-access=ALL-UNNAMED'` (already set in the `android:release` script)
 - The release build is signed with the debug keystore — for Play Store distribution, use EAS build (`pnpm build:prod`)
 
+## Mobile Versioning
+
+The mobile app version (`apps/mobile/package.json` → `version`) follows semver. Build numbers are auto-managed by EAS — only the user-facing version needs manual bumps.
+
+**When to bump (agents must follow these rules automatically):**
+
+- **Patch** (`pnpm version:mobile patch`): Bug fixes, performance improvements, or dependency updates that don't change user-visible behavior. Bump in the same PR as the fix.
+- **Minor** (`pnpm version:mobile minor`): New features, new screens, or meaningful UX changes visible to users. Bump in the same PR as the feature.
+- **Major** (`pnpm version:mobile major`): Breaking changes to local data (e.g., WatermelonDB schema migration that requires a fresh install), or a fundamental redesign of the app. Requires explicit user confirmation before bumping.
+
+**How to bump:** Run `pnpm version:mobile [patch|minor|major] --no-git-tag-version` from the repo root, then commit the changed `package.json` as part of the feature/fix PR. The CI `beta-release.yml` workflow handles git tagging (`mobile@X.Y.Z`) on deploy.
+
+**When NOT to bump:**
+
+- Chore/docs/CI-only changes that don't touch mobile app code
+- Changes only in `apps/web/` or `packages/shared/` (unless the shared change affects mobile behavior — then bump mobile too)
+- Refactors with no user-visible effect
+
+**Current version lives in:** `apps/mobile/package.json` (single source of truth, read by `app.config.ts`)
+
 ## Google Play Deployment (EAS Build + Submit)
 
 Single command to build and deploy to Google Play internal testing:
