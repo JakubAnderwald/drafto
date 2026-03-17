@@ -62,9 +62,23 @@ OTA updates **cannot** be used when native modules change (e.g., WatermelonDB ve
 
 ### Version strategy
 
-- `version` in `app.config.ts` represents the user-facing version (semver, e.g., `1.0.0`)
+- `version` in `app.config.ts` represents the user-facing version (semver, e.g., `1.0.0`), read from `apps/mobile/package.json`
 - Build numbers (iOS `buildNumber`, Android `versionCode`) are auto-incremented by EAS via `appVersionSource: "remote"`
-- Bump `version` for feature releases; build numbers increment automatically per submission
+- Version bumps use `pnpm version:mobile [patch|minor|major]` from the repo root (the script includes `--no-git-tag-version` — CI handles tagging)
+
+**When to bump:**
+
+- **Patch**: Bug fixes, performance improvements, or dependency updates with no user-visible behavior change
+- **Minor**: New features, new screens, or meaningful UX changes visible to users
+- **Major**: Breaking changes to local data (e.g., WatermelonDB schema migration requiring fresh install) or fundamental app redesign — requires explicit user confirmation
+
+**When NOT to bump:**
+
+- Chore/docs/CI-only changes that don't touch mobile app code
+- Changes only in `apps/web/` or `packages/shared/` (unless the shared change affects mobile behavior)
+- Refactors with no user-visible effect
+
+Version bumps are committed as part of the feature/fix PR. The CI `beta-release.yml` workflow handles git tagging (`mobile@X.Y.Z`) on deploy.
 
 ### CI pipeline (no CI builds)
 
