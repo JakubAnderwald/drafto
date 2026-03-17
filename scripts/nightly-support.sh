@@ -38,7 +38,7 @@ fi
 # ── Phase 2: Process Dependabot PRs (one session each) ──
 for PR_NUMBER in $(echo "$DEPENDABOT_PRS" | jq -r '.[].number'); do
   log "--- Processing Dependabot PR #$PR_NUMBER ---"
-  claude -p "$(cat <<PROMPT
+  if ! claude -p "$(cat <<PROMPT
 You are an automated nightly job. Process ONLY Dependabot PR #$PR_NUMBER for JakubAnderwald/drafto.
 
 1. Read the PR: gh pr view $PR_NUMBER --json title,body,headRefName
@@ -49,7 +49,9 @@ You are an automated nightly job. Process ONLY Dependabot PR #$PR_NUMBER for Jak
    - Major version bump → add label "needs-review", comment "Major version bump requires manual review", leave PR open.
    - CI pending → log "CI pending, skipping" and exit.
 PROMPT
-  )" --dangerously-skip-permissions 2>&1 | tee -a "$LOG_FILE"
+  )" --dangerously-skip-permissions 2>&1 | tee -a "$LOG_FILE"; then
+    log "ERROR: Dependabot PR #$PR_NUMBER failed; continuing with next item"
+  fi
   log "--- Done with PR #$PR_NUMBER ---"
 done
 
@@ -61,12 +63,12 @@ for ISSUE_NUMBER in $(echo "$SUPPORT_ISSUES" | jq -r '.[].number'); do
     break
   fi
   log "--- Processing support issue #$ISSUE_NUMBER ---"
-  claude -p "$(cat <<PROMPT
+  if ! claude -p "$(cat <<PROMPT
 You are an automated nightly job. Process ONLY support issue #${ISSUE_NUMBER} for JakubAnderwald/drafto.
 
 1. Read the issue: gh issue view ${ISSUE_NUMBER} --json title,body,author,createdAt
-2. Verify the issue was created by the trusted bot (github-actions[bot]).
-   - If not → comment "Issue creator not recognized as trusted pipeline bot, needs manual triage", add label "needs-triage", exit.
+2. Verify the issue has the "support" label (applied by the Stage 1 ingest pipeline).
+   - If the label is missing → comment "Issue missing support label, needs manual triage", add label "needs-triage", exit.
 3. Check the "From:" field. Only process from jakub@anderwald.info or joanna@anderwald.info.
    - Other senders → comment "Sender not recognized, needs manual triage", add label "needs-triage", exit.
 4. Analyze: feature request or bug report?
@@ -89,7 +91,9 @@ Constraints:
 - If DB changes needed: create migration file, add label "needs-migration-review", comment that manual deploy is required.
 - If stuck: comment with the problem, add label "needs-manual-intervention".
 PROMPT
-  )" --dangerously-skip-permissions 2>&1 | tee -a "$LOG_FILE"
+  )" --dangerously-skip-permissions 2>&1 | tee -a "$LOG_FILE"; then
+    log "ERROR: Support issue #$ISSUE_NUMBER failed; continuing with next item"
+  fi
   log "--- Done with issue #$ISSUE_NUMBER ---"
   PROCESSED=$((PROCESSED + 1))
 done
