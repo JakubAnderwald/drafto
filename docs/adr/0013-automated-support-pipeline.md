@@ -66,6 +66,15 @@ Install to `~/Library/LaunchAgents/eu.drafto.nightly-support.plist`:
     <string>/tmp/drafto-nightly-support.stdout.log</string>
     <key>StandardErrorPath</key>
     <string>/tmp/drafto-nightly-support.stderr.log</string>
+    <!-- launchd does NOT expand $HOME — replace /Users/YOUR_USERNAME with your actual home directory -->
+    <!-- The script also exports PATH="$HOME/.local/bin:$PATH" as a belt-and-suspenders measure -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/YOUR_USERNAME/.local/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+        <key>HOME</key>
+        <string>/Users/YOUR_USERNAME</string>
+    </dict>
 </dict>
 </plist>
 ```
