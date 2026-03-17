@@ -22,11 +22,11 @@ log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 # ── Phase 1: Gather items ──
 log "=== Nightly support run started ==="
 
-DEPENDABOT_PRS=$(gh pr list --repo JakubAnderwald/drafto --author "app/dependabot" --state open --json number,title --limit 50 2>&1) || true
-SUPPORT_ISSUES=$(gh issue list --repo JakubAnderwald/drafto --label support --state open --json number,title --limit 50 2>&1) || true
+DEPENDABOT_PRS=$(gh pr list --repo JakubAnderwald/drafto --author "app/dependabot" --state open --json number,title --limit 50 2>/dev/null) || DEPENDABOT_PRS="[]"
+SUPPORT_ISSUES=$(gh issue list --repo JakubAnderwald/drafto --label support --state open --json number,title --limit 50 2>/dev/null) || SUPPORT_ISSUES="[]"
 
-DEPENDABOT_COUNT=$(echo "$DEPENDABOT_PRS" | jq 'length // 0')
-SUPPORT_COUNT=$(echo "$SUPPORT_ISSUES" | jq 'length // 0')
+DEPENDABOT_COUNT=$(echo "$DEPENDABOT_PRS" | jq -e 'length' 2>/dev/null) || { log "ERROR: Failed to fetch Dependabot PRs"; DEPENDABOT_COUNT=0; }
+SUPPORT_COUNT=$(echo "$SUPPORT_ISSUES" | jq -e 'length' 2>/dev/null) || { log "ERROR: Failed to fetch support issues"; SUPPORT_COUNT=0; }
 
 log "Found $DEPENDABOT_COUNT Dependabot PRs, $SUPPORT_COUNT support issues"
 
