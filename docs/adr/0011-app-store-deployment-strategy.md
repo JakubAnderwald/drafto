@@ -64,7 +64,7 @@ OTA updates **cannot** be used when native modules change (e.g., WatermelonDB ve
 
 - `version` in `app.config.ts` represents the user-facing version (semver, e.g., `1.0.0`), read from `apps/mobile/package.json`
 - Build numbers (iOS `buildNumber`, Android `versionCode`) are auto-incremented by EAS via `appVersionSource: "remote"`
-- Version bumps use `pnpm version:mobile [patch|minor|major] --no-git-tag-version` from the repo root
+- Version bumps use `pnpm version:mobile [patch|minor|major]` from the repo root (the script includes `--no-git-tag-version` — CI handles tagging)
 
 **When to bump:**
 
