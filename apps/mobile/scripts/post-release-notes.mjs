@@ -32,6 +32,12 @@ if (!notes) {
   process.exit(1);
 }
 
+const validPlatforms = ["android", "ios", "all"];
+if (!validPlatforms.includes(platform)) {
+  console.error(`Error: --platform must be one of: ${validPlatforms.join(", ")}`);
+  process.exit(1);
+}
+
 // --- Google Play ---
 
 function base64url(data) {
@@ -155,7 +161,11 @@ function generateAscJwt(keyId, issuerId, privateKeyP8) {
 
   const signer = createSign("SHA256");
   signer.update(`${header}.${payload}`);
-  const signature = signer.sign({ key: privateKeyP8, dsaEncoding: "ieee-p1363" }, "base64url");
+  const signature = signer
+    .sign({ key: privateKeyP8, dsaEncoding: "ieee-p1363" }, "base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=/g, "");
 
   return `${header}.${payload}.${signature}`;
 }

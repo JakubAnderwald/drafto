@@ -7,13 +7,26 @@
 
 set -euo pipefail
 
-MAX_CHARS="${1:-500}"
-if [[ "$1" == "--max-chars" ]]; then
-  MAX_CHARS="${2:-500}"
-fi
+MAX_CHARS=500
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --max-chars) MAX_CHARS="${2:-500}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
 
-# Find the latest mobile release tag
+# Find the latest mobile release tag.
+# If the latest tag points to HEAD (just created by the tag job), use the
+# previous tag so the range covers the actual changes in this release.
 LAST_TAG=$(git tag --list 'mobile@*' --sort=-v:refname | head -1)
+
+if [[ -n "$LAST_TAG" ]]; then
+  TAG_COMMIT=$(git rev-parse "$LAST_TAG" 2>/dev/null || true)
+  HEAD_COMMIT=$(git rev-parse HEAD)
+  if [[ "$TAG_COMMIT" == "$HEAD_COMMIT" ]]; then
+    LAST_TAG=$(git tag --list 'mobile@*' --sort=-v:refname | sed -n '2p')
+  fi
+fi
 
 if [[ -z "$LAST_TAG" ]]; then
   RANGE="HEAD"
