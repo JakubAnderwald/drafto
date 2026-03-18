@@ -70,6 +70,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -81,12 +83,23 @@ jobs:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
       - name: Build and submit to TestFlight
+        id: build-ios
         working-directory: apps/mobile
         run: eas build --profile beta --platform ios --auto-submit --non-interactive
         env:
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
           EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
+      - name: Post release notes to TestFlight
+        if: ${{ steps.build-ios.outcome == 'success' }}
+        working-directory: apps/mobile
+        run: |
+          NOTES=$(bash scripts/generate-release-notes.sh --max-chars 4000)
+          node scripts/post-release-notes.mjs --platform ios --notes "$NOTES"
+        env:
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
 
   build-android:
     name: Build & Submit Android (Internal Testing)
@@ -95,6 +108,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -109,9 +124,19 @@ jobs:
         working-directory: apps/mobile
         run: echo '${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_KEY }}' > google-play-service-account.json
       - name: Build and submit to Google Play Internal Testing
+        id: build-android
         working-directory: apps/mobile
         run: eas build --profile beta --platform android --auto-submit --non-interactive
         env:
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
           EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
+      - name: Post release notes to Google Play
+        if: ${{ steps.build-android.outcome == 'success' }}
+        working-directory: apps/mobile
+        run: |
+          NOTES=$(bash scripts/generate-release-notes.sh --max-chars 500)
+          node scripts/post-release-notes.mjs --platform android --notes "$NOTES"
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_KEY }}
+          GOOGLE_PLAY_TRACK: internal

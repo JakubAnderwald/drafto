@@ -330,3 +330,33 @@ cd apps/mobile && npx eas-cli build --profile beta --platform ios --auto-submit 
 - First build requires Apple review (~24-48h), subsequent builds are usually available instantly
 - Internal testers are invited via App Store Connect → TestFlight → Internal Testing
 - Testers install via the TestFlight app on their iOS device
+
+## Automated Release Notes
+
+Release notes are auto-generated from conventional commits and posted to both stores after each build submission.
+
+**How it works:**
+
+1. `apps/mobile/scripts/generate-release-notes.sh` extracts `feat:` and `fix:` commits since the last `mobile@*` git tag
+2. `apps/mobile/scripts/post-release-notes.mjs` posts notes to Google Play (via Publisher API) and TestFlight (via App Store Connect API)
+3. CI workflows call both scripts after successful build+submit
+
+**Character limits:** Google Play: 500 chars, TestFlight "What to Test": 4000 chars.
+
+**Required GitHub Secrets for release notes:**
+
+| Secret              | Purpose                                 |
+| ------------------- | --------------------------------------- |
+| `ASC_API_KEY_ID`    | App Store Connect API Key ID            |
+| `ASC_API_ISSUER_ID` | App Store Connect Issuer ID             |
+| `ASC_API_KEY_P8`    | App Store Connect API private key (.p8) |
+
+Google Play uses the existing `GOOGLE_PLAY_SERVICE_ACCOUNT_KEY` secret.
+
+**Local usage (after building locally):**
+
+```bash
+cd apps/mobile
+NOTES=$(bash scripts/generate-release-notes.sh --max-chars 500)
+node scripts/post-release-notes.mjs --platform android --notes "$NOTES"
+```
