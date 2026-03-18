@@ -102,7 +102,7 @@ cd drafto
 pnpm install
 ```
 
-2. Copy the env file and fill in your Supabase credentials:
+1. Copy the env file and fill in your Supabase credentials:
 
 ```bash
 cp apps/web/.env.local.example apps/web/.env.local
@@ -113,14 +113,14 @@ Required variables:
 - `NEXT_PUBLIC_SUPABASE_URL` — your Supabase project URL
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY` — your Supabase anon key
 
-3. Push the database schema to your Supabase project:
+1. Push the database schema to your Supabase project:
 
 ```bash
 supabase link --project-ref <your-project-ref>
 supabase db push
 ```
 
-4. Start the dev server:
+1. Start the dev server:
 
 ```bash
 pnpm dev
@@ -144,14 +144,14 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ### Web (`apps/web/`)
 
-| Command                  | Description              |
-| ------------------------ | ------------------------ |
-| `pnpm test`              | Unit + integration tests |
-| `pnpm test:unit`         | Unit tests only          |
-| `pnpm test:integration`  | Integration tests only   |
-| `pnpm test:coverage`     | Tests with coverage      |
-| `pnpm test:e2e`          | Playwright E2E tests     |
-| `pnpm exec tsc --noEmit` | Type check               |
+| Command                 | Description              |
+| ----------------------- | ------------------------ |
+| `pnpm test`             | Unit + integration tests |
+| `pnpm test:unit`        | Unit tests only          |
+| `pnpm test:integration` | Integration tests only   |
+| `pnpm test:coverage`    | Tests with coverage      |
+| `pnpm test:e2e`         | Playwright E2E tests     |
+| `pnpm typecheck`        | Type check               |
 
 ### Mobile (`apps/mobile/`)
 
@@ -190,8 +190,14 @@ apps/
     e2e/                # E2E tests (Playwright)
   mobile/
     app/                # Expo Router screens
-    components/         # Mobile components
-    lib/                # Mobile libraries (supabase, watermelondb)
+    src/
+      components/       # Mobile components
+      db/               # WatermelonDB schema, models, sync
+      hooks/            # Custom hooks
+      lib/              # Mobile libraries (supabase)
+      providers/        # Context providers
+      theme/            # Theme definitions
+    store/              # State management
     e2e/                # Maestro E2E tests
 packages/
   shared/              # Shared types and constants (@drafto/shared)
