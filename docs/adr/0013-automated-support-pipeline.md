@@ -120,13 +120,13 @@ GitHub does not expose repository secrets to `pull_request` events triggered by 
 
 **Fix:** Mirror the required secrets as [Dependabot secrets](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/configuring-access-to-private-registries-for-dependabot#storing-credentials-for-dependabot-to-use) (Settings → Secrets and variables → Dependabot):
 
-| Secret | Source |
-|--------|--------|
-| `NEXT_PUBLIC_SUPABASE_URL` | `apps/web/.env.local` |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `apps/web/.env.local` |
-| `E2E_TEST_EMAIL` | `apps/web/.env.local` |
-| `E2E_TEST_PASSWORD` | `apps/web/.env.local` |
-| `SONAR_TOKEN` | SonarCloud dashboard (My Account → Security → Tokens) |
+| Secret                          | Source                                                |
+| ------------------------------- | ----------------------------------------------------- |
+| `NEXT_PUBLIC_SUPABASE_URL`      | `apps/web/.env.local`                                 |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `apps/web/.env.local`                                 |
+| `E2E_TEST_EMAIL`                | `apps/web/.env.local`                                 |
+| `E2E_TEST_PASSWORD`             | `apps/web/.env.local`                                 |
+| `SONAR_TOKEN`                   | SonarCloud dashboard (My Account → Security → Tokens) |
 
 These must be kept in sync with the corresponding repository secrets. If a secret is rotated, update both the repo secret and the Dependabot secret.
 
