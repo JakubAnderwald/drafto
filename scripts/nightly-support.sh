@@ -24,8 +24,9 @@ cleanup() {
   local exit_code=$?
   if [[ $exit_code -ne 0 ]]; then
     log "ERROR: Script exiting with code $exit_code"
-    local log_tail
-    log_tail=$(tail -30 "$LOG_FILE" 2>/dev/null || echo "No log available")
+    # Extract only timestamped log lines (script's own output), stripping Claude/support content
+    local sanitized_log
+    sanitized_log=$(grep -E '^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]' "$LOG_FILE" 2>/dev/null | tail -20 || echo "No log available")
     if command -v gh &>/dev/null; then
       gh issue create \
         --repo JakubAnderwald/drafto \
@@ -34,13 +35,13 @@ cleanup() {
         --body "$(cat <<EOF
 The nightly script exited with code \`$exit_code\` on $(date '+%Y-%m-%d at %H:%M:%S').
 
-### Last 30 lines of log
+### Script log (timestamped entries only)
 
 \`\`\`
-$log_tail
+$sanitized_log
 \`\`\`
 
-Check the full log at \`logs/nightly-$(date +%Y-%m-%d).log\`.
+Full log (may contain sensitive content) is at \`logs/nightly-$(date +%Y-%m-%d).log\` on the local machine.
 EOF
         )" 2>/dev/null || log "WARNING: Failed to create GitHub issue"
     else
@@ -66,9 +67,16 @@ if [[ "$DEPENDABOT_COUNT" -eq 0 && "$SUPPORT_COUNT" -eq 0 ]]; then
   exit 0
 fi
 
-# ── Phase 2: Process Dependabot PRs (one session each) ──
+# ── Phase 2: Process Dependabot PRs (one session each, 2h cap) ──
+PHASE2_DEADLINE=$(( $(date +%s) + 7200 ))  # 2 hours max for all Dependabot PRs
 for PR_NUMBER in $(echo "$DEPENDABOT_PRS" | jq -r '.[].number'); do
-  log "--- Processing Dependabot PR #$PR_NUMBER ---"
+  REMAINING=$(( PHASE2_DEADLINE - $(date +%s) ))
+  if [[ "$REMAINING" -le 0 ]]; then
+    log "Phase 2 deadline reached, skipping remaining Dependabot PRs to process support queue."
+    break
+  fi
+  POLL_TIMEOUT=$(( REMAINING < 900 ? REMAINING : 900 ))  # min(remaining, 15min) in seconds
+  log "--- Processing Dependabot PR #$PR_NUMBER (${REMAINING}s remaining, poll timeout ${POLL_TIMEOUT}s) ---"
   if ! claude -p "$(cat <<PROMPT
 You are an automated nightly job. Process ONLY Dependabot PR #$PR_NUMBER for JakubAnderwald/drafto.
 
@@ -77,7 +85,7 @@ You are an automated nightly job. Process ONLY Dependabot PR #$PR_NUMBER for Jak
 3. Decision:
    - CI passes + minor/patch → squash merge via gh api, comment "Auto-merged: CI passed, minor/patch update."
    - CI fails + minor/patch → checkout the PR branch and use /push to fix failures and iterate until CI is green, then squash merge.
-   - CI pending → poll \`gh pr checks $PR_NUMBER\` every 30 seconds for up to 15 minutes until all checks complete. Then apply the rules above (merge/fix/flag). If still pending after 15 minutes, log "CI still pending after timeout, skipping" and exit.
+   - CI pending → poll \`gh pr checks $PR_NUMBER\` every 30 seconds for up to $POLL_TIMEOUT seconds until all checks complete. Then apply the rules above (merge/fix/flag). If still pending after timeout, log "CI still pending after timeout, skipping" and exit.
    - Major version bump → analyse the impact before flagging:
      1. Read the PR body and changelog/release notes linked by Dependabot.
      2. Search the codebase for all imports and usages of the bumped package.

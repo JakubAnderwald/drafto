@@ -114,11 +114,9 @@ chmod 755 scripts/nightly-support.sh
 - If the job fails to run, check `launchctl list | grep eu.drafto.nightly-support` for exit status
 - Owner: Jakub Anderwald (jakub@anderwald.info)
 
-## Dependabot CI Secrets
+### Dependabot CI Secrets
 
-GitHub does not expose repository secrets to `pull_request` events triggered by Dependabot. This causes SonarCloud analysis and E2E tests to fail on every Dependabot PR.
-
-**Fix:** Mirror the required secrets as [Dependabot secrets](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/configuring-access-to-private-registries-for-dependabot#storing-credentials-for-dependabot-to-use) (Settings → Secrets and variables → Dependabot):
+GitHub does not expose repository secrets to `pull_request` events triggered by Dependabot. This causes SonarCloud analysis and E2E tests to fail on every Dependabot PR. Mirror the required secrets as [Dependabot secrets](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/configuring-access-to-private-registries-for-dependabot#storing-credentials-for-dependabot-to-use) (Settings → Secrets and variables → Dependabot):
 
 | Secret                          | Source                                                |
 | ------------------------------- | ----------------------------------------------------- |
