@@ -114,6 +114,20 @@ chmod 755 scripts/nightly-support.sh
 - If the job fails to run, check `launchctl list | grep eu.drafto.nightly-support` for exit status
 - Owner: Jakub Anderwald (jakub@anderwald.info)
 
+### Dependabot CI Secrets
+
+GitHub does not expose repository secrets to `pull_request` events triggered by Dependabot. This causes SonarCloud analysis and E2E tests to fail on every Dependabot PR. Mirror the required secrets as [Dependabot secrets](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/configuring-access-to-private-registries-for-dependabot#storing-credentials-for-dependabot-to-use) (Settings → Secrets and variables → Dependabot):
+
+| Secret                          | Source                                                |
+| ------------------------------- | ----------------------------------------------------- |
+| `NEXT_PUBLIC_SUPABASE_URL`      | `apps/web/.env.local`                                 |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `apps/web/.env.local`                                 |
+| `E2E_TEST_EMAIL`                | `apps/web/.env.local`                                 |
+| `E2E_TEST_PASSWORD`             | `apps/web/.env.local`                                 |
+| `SONAR_TOKEN`                   | SonarCloud dashboard (My Account → Security → Tokens) |
+
+These must be kept in sync with the corresponding repository secrets. If a secret is rotated, update both the repo secret and the Dependabot secret.
+
 ## Alternatives Considered
 
 - **Claude Cloud (MCP-based)**: Would avoid local machine dependency, but lacks access to local tooling (pnpm, Node.js, project worktrees) needed for building, testing, and pushing code.
