@@ -80,7 +80,7 @@ pnpm supabase:push       # Apply migrations to prod
 
 ### Prerequisites
 
-- Node.js 22+ (see `.nvmrc`)
+- Node.js 22+
 - [pnpm](https://pnpm.io/)
 - A [Supabase](https://supabase.com/) project
 - [Supabase CLI](https://supabase.com/docs/guides/cli/getting-started) — for migrations and DB management
