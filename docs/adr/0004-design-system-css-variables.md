@@ -1,6 +1,6 @@
 # 0004 — Design System with CSS Custom Properties
 
-- **Status**: Accepted
+- **Status**: Superseded by [0014](./0014-digital-atelier-design-system.md)
 - **Date**: 2026-03-03
 - **Authors**: Claude (AI assistant), Jakub Anderwald
 

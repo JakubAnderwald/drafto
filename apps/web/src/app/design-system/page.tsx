@@ -44,39 +44,49 @@ interface ColorScaleProps {
 /* ── Token data ───────────────────────────────────────────── */
 
 const PRIMARY_SHADES: readonly ColorScaleShade[] = [
-  { shade: "50", hex: "#eef2ff" },
-  { shade: "100", hex: "#e0e7ff" },
-  { shade: "200", hex: "#c7d2fe" },
-  { shade: "300", hex: "#a5b4fc" },
-  { shade: "400", hex: "#818cf8" },
-  { shade: "500", hex: "#6366f1" },
-  { shade: "600", hex: "#4f46e5" },
-  { shade: "700", hex: "#4338ca" },
-  { shade: "800", hex: "#3730a3" },
-  { shade: "900", hex: "#312e81" },
+  { shade: "50", hex: "#EDE8FF" },
+  { shade: "100", hex: "#DBD1FF" },
+  { shade: "200", hex: "#B8A4FF" },
+  { shade: "300", hex: "#9478FF" },
+  { shade: "400", hex: "#6B4CFF" },
+  { shade: "500", hex: "#4A35E0" },
+  { shade: "600", hex: "#3525CD" },
+  { shade: "700", hex: "#2819A8" },
+  { shade: "800", hex: "#1E1283" },
+  { shade: "900", hex: "#150D5E" },
 ];
 
-const ACCENT_SHADES: readonly ColorScaleShade[] = [
-  { shade: "50", hex: "#fffbeb" },
-  { shade: "100", hex: "#fef3c7" },
-  { shade: "200", hex: "#fde68a" },
-  { shade: "300", hex: "#fcd34d" },
-  { shade: "400", hex: "#fbbf24" },
-  { shade: "500", hex: "#f59e0b" },
-  { shade: "600", hex: "#d97706" },
+const SECONDARY_SHADES: readonly ColorScaleShade[] = [
+  { shade: "50", hex: "#FFF4E0" },
+  { shade: "100", hex: "#FFE4B3" },
+  { shade: "200", hex: "#FFD180" },
+  { shade: "300", hex: "#FFBE4D" },
+  { shade: "400", hex: "#FFAB1A" },
+  { shade: "500", hex: "#CC8400" },
+  { shade: "600", hex: "#855300" },
+];
+
+const TERTIARY_SHADES: readonly ColorScaleShade[] = [
+  { shade: "50", hex: "#E0F5EE" },
+  { shade: "100", hex: "#B3E8D6" },
+  { shade: "200", hex: "#80DBBD" },
+  { shade: "300", hex: "#4DCEA5" },
+  { shade: "400", hex: "#1EA866" },
+  { shade: "500", hex: "#007A4D" },
+  { shade: "600", hex: "#005338" },
 ];
 
 const NEUTRAL_SHADES: readonly ColorScaleShade[] = [
-  { shade: "50", hex: "#fafaf9" },
-  { shade: "100", hex: "#f5f5f4" },
-  { shade: "200", hex: "#e7e5e4" },
-  { shade: "300", hex: "#d6d3d1" },
-  { shade: "400", hex: "#a8a29e" },
-  { shade: "500", hex: "#78716c" },
-  { shade: "600", hex: "#57534e" },
-  { shade: "700", hex: "#44403c" },
-  { shade: "800", hex: "#292524" },
-  { shade: "900", hex: "#1c1917" },
+  { shade: "50", hex: "#FFF8F5" },
+  { shade: "100", hex: "#FCF2EB" },
+  { shade: "200", hex: "#F4E9E0" },
+  { shade: "300", hex: "#EAE1DA" },
+  { shade: "400", hex: "#9C9590" },
+  { shade: "500", hex: "#6B6360" },
+  { shade: "600", hex: "#4E4940" },
+  { shade: "700", hex: "#382F28" },
+  { shade: "800", hex: "#251F1B" },
+  { shade: "900", hex: "#1F1B17" },
 ];
 
 const SEMANTIC_SWATCHES = [
@@ -94,6 +104,15 @@ const SEMANTIC_SWATCHES = [
   { name: "Sidebar Active", cssVar: "--sidebar-active" },
 ] as const;
 
+const SURFACE_SWATCHES = [
+  { name: "Surface Lowest", cssVar: "--surface-lowest" },
+  { name: "Background (bg)", cssVar: "--bg" },
+  { name: "Background Subtle", cssVar: "--bg-subtle" },
+  { name: "Background Muted", cssVar: "--bg-muted" },
+  { name: "Surface High", cssVar: "--surface-high" },
+  { name: "Surface Highest", cssVar: "--surface-highest" },
+] as const;
+
 const STATUS_TOKENS = [
   { name: "Success", bg: "--success-bg", text: "--success-text" },
   { name: "Warning", bg: "--warning-bg", text: "--warning-text" },
@@ -103,10 +122,10 @@ const STATUS_TOKENS = [
 const SHADOW_SIZES = ["xs", "sm", "md", "lg"] as const;
 
 const RADIUS_TOKENS = [
-  { token: "sm", value: "0.25rem" },
-  { token: "md", value: "0.375rem" },
-  { token: "lg", value: "0.5rem" },
-  { token: "xl", value: "0.75rem" },
+  { token: "sm", value: "0.375rem" },
+  { token: "md", value: "0.5rem" },
+  { token: "lg", value: "0.75rem" },
+  { token: "xl", value: "1rem" },
   { token: "full", value: "9999px" },
 ] as const;
 
@@ -178,7 +197,8 @@ export default function DesignSystemPage() {
       <Section title="Color Scales">
         <div className="space-y-6">
           <ColorScale label="Primary (Indigo)" prefix="primary" shades={PRIMARY_SHADES} />
-          <ColorScale label="Accent (Amber)" prefix="accent" shades={ACCENT_SHADES} />
+          <ColorScale label="Secondary (Amber)" prefix="secondary" shades={SECONDARY_SHADES} />
+          <ColorScale label="Tertiary (Teal)" prefix="tertiary" shades={TERTIARY_SHADES} />
           <ColorScale label="Neutral (Stone)" prefix="neutral" shades={NEUTRAL_SHADES} />
         </div>
       </Section>
@@ -188,6 +208,48 @@ export default function DesignSystemPage() {
           {SEMANTIC_SWATCHES.map((swatch) => (
             <Swatch key={swatch.cssVar} name={swatch.name} cssVar={swatch.cssVar} />
           ))}
+        </div>
+      </Section>
+
+      {/* ── Surface Architecture ──────────────────────────── */}
+      <Section title="Surface Architecture">
+        <p className="text-fg-muted mb-4 text-sm">
+          Surface tiers define elevation through tonal shifts rather than shadows or borders.
+        </p>
+        <div className="flex flex-wrap gap-4">
+          {SURFACE_SWATCHES.map((swatch) => (
+            <div key={swatch.cssVar} className="text-center">
+              <div
+                className="border-border h-16 w-24 rounded-lg border"
+                style={{ backgroundColor: `var(${swatch.cssVar})` }}
+              />
+              <p className="text-fg-muted mt-2 font-mono text-[10px]">{swatch.name}</p>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      {/* ── Glass Effects ─────────────────────────────────── */}
+      <Section title="Glass Effects">
+        <p className="text-fg-muted mb-4 text-sm">
+          Frosted glass panels use semi-transparent backgrounds with backdrop-blur.
+        </p>
+        <div className="from-primary-100 to-secondary-100 relative h-48 overflow-hidden rounded-xl bg-gradient-to-br p-6">
+          <div className="bg-primary-400 absolute top-4 left-8 h-20 w-20 rounded-full opacity-40" />
+          <div className="bg-secondary-400 absolute right-12 bottom-6 h-16 w-16 rounded-full opacity-40" />
+          <div
+            className="border-border relative rounded-lg border p-4"
+            style={{
+              backgroundColor: "var(--glass-bg)",
+              backdropFilter: "blur(var(--glass-blur))",
+              WebkitBackdropFilter: "blur(var(--glass-blur))",
+            }}
+          >
+            <p className="text-sm font-medium">Glass panel</p>
+            <p className="text-fg-muted text-xs">
+              backdrop-filter: blur(16px) with 72% opacity background
+            </p>
+          </div>
         </div>
       </Section>
 

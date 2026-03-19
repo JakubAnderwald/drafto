@@ -32,7 +32,7 @@ describe("DesignSystemPage", () => {
     render(<DesignSystemPage />);
 
     expect(screen.getByText("Primary (Indigo)")).toBeInTheDocument();
-    expect(screen.getByText("Accent (Amber)")).toBeInTheDocument();
+    expect(screen.getByText("Secondary (Amber)")).toBeInTheDocument();
     expect(screen.getByText("Neutral (Stone)")).toBeInTheDocument();
   });
 
@@ -180,7 +180,7 @@ describe("DesignSystemPage", () => {
   it("renders radius demos", () => {
     render(<DesignSystemPage />);
 
-    expect(screen.getByText(/^sm \(0\.25rem\)$/)).toBeInTheDocument();
+    expect(screen.getByText(/^sm \(0\.375rem\)$/)).toBeInTheDocument();
     expect(screen.getByText(/^full \(9999px\)$/)).toBeInTheDocument();
   });
 });

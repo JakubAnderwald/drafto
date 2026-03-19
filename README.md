@@ -230,12 +230,13 @@ The web app uses a custom design system built on CSS custom properties, defined 
 
 ### Color Palette
 
-| Role                 | Scale  | Usage                                                              |
-| -------------------- | ------ | ------------------------------------------------------------------ |
-| **Primary** (Indigo) | 50–900 | Buttons, links, focus rings, active states                         |
-| **Accent** (Amber)   | 50–600 | Highlights, interactive accents                                    |
-| **Neutral** (Stone)  | 50–900 | Backgrounds, text, borders                                         |
-| **Semantic**         | —      | `success` (green), `warning` (amber), `error` (red), `info` (blue) |
+| Role                  | Scale  | Usage                                                             |
+| --------------------- | ------ | ----------------------------------------------------------------- |
+| **Primary** (Indigo)  | 50–900 | Buttons, links, focus rings, active states                        |
+| **Secondary** (Amber) | 50–600 | Highlights, interactive accents                                   |
+| **Tertiary** (Teal)   | 50–600 | Success states, positive actions                                  |
+| **Neutral** (Stone)   | 50–900 | Backgrounds, text, borders                                        |
+| **Semantic**          | —      | `success` (teal), `warning` (amber), `error` (red), `info` (blue) |
 
 ### Surface Tokens
 

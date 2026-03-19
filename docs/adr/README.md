@@ -30,18 +30,20 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 
 ## Index
 
-| #                                                   | Title                                    | Status   | Date       |
-| --------------------------------------------------- | ---------------------------------------- | -------- | ---------- |
-| [0000](./0000-adr-template.md)                      | ADR Template                             | N/A      | 2026-02-24 |
-| [0001](./0001-data-model-and-rls-strategy.md)       | Data Model and RLS Strategy              | Accepted | 2026-02-24 |
-| [0002](./0002-api-route-conventions.md)             | API Route Conventions                    | Accepted | 2026-02-24 |
-| [0003](./0003-blocknote-editor-configuration.md)    | BlockNote Editor Configuration           | Accepted | 2026-02-25 |
-| [0004](./0004-design-system-css-variables.md)       | Design System with CSS Custom Properties | Accepted | 2026-03-03 |
-| [0005](./0005-dark-mode-implementation.md)          | Dark Mode Implementation                 | Accepted | 2026-03-04 |
-| [0006](./0006-dev-prod-environment-separation.md)   | Dev/Prod Environment Separation          | Accepted | 2026-03-04 |
-| [0007](./0007-evernote-import.md)                   | Evernote Import                          | Accepted | 2026-03-04 |
-| [0008](./0008-production-data-safety-guardrails.md) | Production Data Safety Guardrails        | Accepted | 2026-03-07 |
-| [0009](./0009-mobile-app-technology-choices.md)     | Mobile App Technology Choices            | Accepted | 2026-03-07 |
-| [0010](./0010-offline-sync-strategy.md)             | Offline Sync Strategy with WatermelonDB  | Accepted | 2026-03-07 |
-| [0011](./0011-app-store-deployment-strategy.md)     | App Store Deployment Strategy            | Accepted | 2026-03-08 |
-| [0012](./0012-search-implementation.md)             | Search Implementation                    | Accepted | 2026-03-14 |
+| #                                                   | Title                                    | Status             | Date       |
+| --------------------------------------------------- | ---------------------------------------- | ------------------ | ---------- |
+| [0000](./0000-adr-template.md)                      | ADR Template                             | N/A                | 2026-02-24 |
+| [0001](./0001-data-model-and-rls-strategy.md)       | Data Model and RLS Strategy              | Accepted           | 2026-02-24 |
+| [0002](./0002-api-route-conventions.md)             | API Route Conventions                    | Accepted           | 2026-02-24 |
+| [0003](./0003-blocknote-editor-configuration.md)    | BlockNote Editor Configuration           | Accepted           | 2026-02-25 |
+| [0004](./0004-design-system-css-variables.md)       | Design System with CSS Custom Properties | Superseded by 0014 | 2026-03-03 |
+| [0005](./0005-dark-mode-implementation.md)          | Dark Mode Implementation                 | Accepted           | 2026-03-04 |
+| [0006](./0006-dev-prod-environment-separation.md)   | Dev/Prod Environment Separation          | Accepted           | 2026-03-04 |
+| [0007](./0007-evernote-import.md)                   | Evernote Import                          | Accepted           | 2026-03-04 |
+| [0008](./0008-production-data-safety-guardrails.md) | Production Data Safety Guardrails        | Accepted           | 2026-03-07 |
+| [0009](./0009-mobile-app-technology-choices.md)     | Mobile App Technology Choices            | Accepted           | 2026-03-07 |
+| [0010](./0010-offline-sync-strategy.md)             | Offline Sync Strategy with WatermelonDB  | Accepted           | 2026-03-07 |
+| [0011](./0011-app-store-deployment-strategy.md)     | App Store Deployment Strategy            | Accepted           | 2026-03-08 |
+| [0012](./0012-search-implementation.md)             | Search Implementation                    | Accepted           | 2026-03-14 |
+| [0013](./0013-automated-support-pipeline.md)        | Automated Support Pipeline               | Accepted           | 2026-03-14 |
+| [0014](./0014-digital-atelier-design-system.md)     | Digital Atelier Design System            | Accepted           | 2026-03-19 |
