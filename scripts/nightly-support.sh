@@ -18,6 +18,7 @@ find "$LOG_DIR" -type f -name 'nightly-*.log' -mtime +30 -delete 2>/dev/null || 
 cd "$REPO_ROOT"
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
+NIGHTLY_MARKER='<!-- nightly-bot -->'
 
 # ── Failure notification ──
 cleanup() {
@@ -89,7 +90,7 @@ for PR_NUMBER in $(echo "$DEPENDABOT_PRS" | jq -r '.[].number'); do
     log "WARNING: Failed to fetch comments for PR #$PR_NUMBER; skipping to preserve idempotency."
     continue
   fi
-  if grep -Fq '<!-- nightly-bot -->' <<<"$COMMENT_BODIES"; then
+  if grep -Fq "$NIGHTLY_MARKER" <<<"$COMMENT_BODIES"; then
     log "PR #$PR_NUMBER already has nightly-bot comment, skipping."
     continue
   fi
@@ -100,7 +101,7 @@ You are an automated nightly job. Process ONLY Dependabot PR #$PR_NUMBER for Jak
 1. Read the PR: gh pr view $PR_NUMBER --json title,body,headRefName
 2. Check CI: gh pr checks $PR_NUMBER
 3. Decision:
-   - CI passes + minor/patch → squash merge via gh api, comment "<!-- nightly-bot -->Auto-merged: CI passed, minor/patch update."
+   - CI passes + minor/patch → squash merge via gh api, comment "${NIGHTLY_MARKER}Auto-merged: CI passed, minor/patch update."
    - CI fails + minor/patch → checkout the PR branch and use /push to fix failures and iterate until CI is green, then squash merge.
    - CI pending → poll \`gh pr checks $PR_NUMBER\` every 30 seconds for up to $POLL_TIMEOUT seconds until all checks complete. Then apply the rules above (merge/fix/flag). If still pending after timeout, log "CI still pending after timeout, skipping" and exit.
    - Major version bump → analyse the impact before flagging:
@@ -108,7 +109,7 @@ You are an automated nightly job. Process ONLY Dependabot PR #$PR_NUMBER for Jak
      2. Search the codebase for all imports and usages of the bumped package.
      3. Identify breaking changes from the changelog that affect this codebase.
      4. Check if the package's major bump requires peer dependency updates.
-     5. Add label "needs-review" and comment (starting with "<!-- nightly-bot -->") with a structured report:
+     5. Add label "needs-review" and comment (starting with "${NIGHTLY_MARKER}") with a structured report:
         - **Package**: name, old version → new version
         - **Breaking changes relevant to this codebase**: list each with affected files
         - **Breaking changes NOT relevant**: list briefly (features/APIs we don't use)
