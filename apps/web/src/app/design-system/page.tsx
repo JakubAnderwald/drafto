@@ -134,7 +134,7 @@ const RADIUS_TOKENS = [
 function Section({ title, children }: SectionProps) {
   return (
     <section className="mb-16">
-      <h2 className="border-border mb-6 border-b pb-2 text-xl font-semibold">{title}</h2>
+      <h2 className="text-fg mb-6 pb-2 text-xl font-semibold tracking-tight">{title}</h2>
       {children}
     </section>
   );
@@ -144,7 +144,7 @@ function Swatch({ name, cssVar, hex }: SwatchProps) {
   return (
     <div className="flex items-center gap-3">
       <div
-        className="border-border h-10 w-10 rounded-lg border shadow-xs"
+        className="border-outline-variant h-10 w-10 rounded-lg border shadow-xs"
         style={{ backgroundColor: `var(${cssVar})` }}
       />
       <div>
@@ -166,7 +166,7 @@ function ColorScale({ label, prefix, shades }: ColorScaleProps) {
         {shades.map((s) => (
           <div key={s.shade} className="text-center">
             <div
-              className="border-border h-10 w-12 rounded-md border"
+              className="border-outline-variant h-10 w-12 rounded-md border"
               style={{
                 backgroundColor: `var(--color-${prefix}-${s.shade})`,
               }}
@@ -220,7 +220,7 @@ export default function DesignSystemPage() {
           {SURFACE_SWATCHES.map((swatch) => (
             <div key={swatch.cssVar} className="text-center">
               <div
-                className="border-border h-16 w-24 rounded-lg border"
+                className="border-outline-variant h-16 w-24 rounded-lg border"
                 style={{ backgroundColor: `var(${swatch.cssVar})` }}
               />
               <p className="text-fg-muted mt-2 font-mono text-[10px]">{swatch.name}</p>
@@ -238,7 +238,7 @@ export default function DesignSystemPage() {
           <div className="bg-primary-400 absolute top-4 left-8 h-20 w-20 rounded-full opacity-40" />
           <div className="bg-secondary-400 absolute right-12 bottom-6 h-16 w-16 rounded-full opacity-40" />
           <div
-            className="border-border relative rounded-lg border p-4"
+            className="border-outline-variant relative rounded-lg border p-4"
             style={{
               backgroundColor: "var(--glass-bg)",
               backdropFilter: "blur(var(--glass-blur))",
@@ -258,7 +258,7 @@ export default function DesignSystemPage() {
           {STATUS_TOKENS.map((s) => (
             <div
               key={s.name}
-              className="border-border flex items-center gap-3 rounded-lg border p-3"
+              className="border-outline-variant flex items-center gap-3 rounded-lg border p-3"
               style={{ backgroundColor: `var(${s.bg})` }}
             >
               <span className="text-sm font-medium" style={{ color: `var(${s.text})` }}>
@@ -299,7 +299,7 @@ export default function DesignSystemPage() {
           {SHADOW_SIZES.map((s) => (
             <div
               key={s}
-              className="border-border bg-bg flex h-20 w-32 items-center justify-center rounded-lg border"
+              className="border-outline-variant bg-bg flex h-20 w-32 items-center justify-center rounded-lg border"
               style={{ boxShadow: `var(--shadow-${s})` }}
             >
               <span className="text-fg-muted font-mono text-xs">shadow-{s}</span>
