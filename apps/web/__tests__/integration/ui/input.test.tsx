@@ -14,7 +14,7 @@ describe("Input", () => {
     render(<Input aria-label="test" />);
     const input = screen.getByRole("textbox");
     expect(input.className).toContain("py-2");
-    expect(input.className).toContain("rounded-lg");
+    expect(input.className).toContain("rounded-md");
   });
 
   it("applies sm size styles", () => {
@@ -39,7 +39,7 @@ describe("Input", () => {
   it("applies normal border when error is false", () => {
     render(<Input aria-label="test" />);
     const input = screen.getByRole("textbox");
-    expect(input.className).toContain("border-border");
+    expect(input.className).toContain("border-outline-variant");
   });
 
   it("disables input when disabled prop is true", () => {

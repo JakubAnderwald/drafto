@@ -99,7 +99,7 @@ export function TrashList({
 
   return (
     <div className="flex flex-1 flex-col">
-      <div className="border-border flex items-center justify-between border-b p-3">
+      <div className="flex items-center justify-between p-3">
         <h2 className="text-fg text-sm font-semibold">Trash</h2>
       </div>
 

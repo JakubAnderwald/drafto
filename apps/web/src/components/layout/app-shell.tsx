@@ -358,11 +358,11 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       <aside
         className={`${
           mobileView === "notebooks" ? "flex" : "hidden"
-        } bg-sidebar-bg sm:border-border min-h-0 w-full flex-col overflow-hidden sm:fixed sm:inset-y-0 sm:left-0 sm:z-30 sm:flex sm:w-60 sm:shrink-0 sm:border-r sm:transition-transform sm:duration-[var(--transition-normal)] sm:ease-in-out lg:static lg:translate-x-0 ${
+        } bg-sidebar-bg min-h-0 w-full flex-col overflow-hidden sm:fixed sm:inset-y-0 sm:left-0 sm:z-30 sm:flex sm:w-60 sm:shrink-0 sm:transition-transform sm:duration-[var(--transition-normal)] sm:ease-in-out lg:static lg:translate-x-0 ${
           sidebarOpen ? "sm:translate-x-0" : "sm:-translate-x-full"
         }`}
       >
-        <div className="border-border flex items-center justify-between border-b p-2">
+        <div className="flex items-center justify-between p-2">
           <span className="text-fg ml-1 text-sm font-semibold">Drafto</span>
           <IconButton size="sm" onClick={() => setSearchOpen(true)} aria-label="Search notes">
             <SearchIcon />
@@ -376,7 +376,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           onSelectTrash={handleSelectTrash}
           refreshTrigger={refreshTrigger}
         />
-        <div className="border-border flex items-center justify-end border-t p-2">
+        <div className="flex items-center justify-end p-2">
           <AppMenu onImportEvernote={() => setShowImportDialog(true)} />
         </div>
       </aside>
@@ -387,10 +387,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       <section
         className={`${
           mobileView === "notes" ? "flex" : "hidden"
-        } bg-bg sm:border-border w-full flex-col overflow-hidden sm:flex sm:w-[300px] sm:shrink-0 sm:border-r`}
+        } bg-bg w-full flex-col overflow-hidden sm:flex sm:w-[300px] sm:shrink-0`}
       >
         {/* Mobile: back to notebooks */}
-        <div className="border-border bg-bg-subtle flex items-center border-b p-2 sm:hidden">
+        <div className="bg-bg-subtle flex items-center p-2 sm:hidden">
           <IconButton
             size="sm"
             onClick={handleMobileBackToNotebooks}
@@ -404,7 +404,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         </div>
 
         {/* Tablet: sidebar toggle */}
-        <div className="border-border bg-bg-subtle hidden items-center border-b p-2 sm:flex lg:hidden">
+        <div className="bg-bg-subtle hidden items-center p-2 sm:flex lg:hidden">
           <IconButton
             size="sm"
             onClick={() => setSidebarOpen((prev) => !prev)}
@@ -451,7 +451,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       >
         {/* Mobile: back to notes */}
         {selectedNoteId && (
-          <div className="border-border bg-bg-subtle flex items-center border-b p-2 sm:hidden">
+          <div className="bg-bg-subtle flex items-center p-2 sm:hidden">
             <IconButton size="sm" onClick={handleMobileBackToNotes} aria-label="Back to notes">
               <ChevronLeftIcon />
             </IconButton>

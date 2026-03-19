@@ -62,7 +62,7 @@ export const DropdownMenu = forwardRef<HTMLDivElement, DropdownMenuProps>(functi
       ref={menuRef}
       role="menu"
       className={cn(
-        "border-border bg-bg absolute z-10 min-w-[12rem] animate-[dropdown-in_var(--transition-fast)_ease-out] rounded-lg border py-1 shadow-lg motion-reduce:animate-none",
+        "bg-glass-bg absolute z-10 min-w-[12rem] animate-[dropdown-in_var(--transition-fast)_ease-out] rounded-lg py-1 shadow-md backdrop-blur-[16px] motion-reduce:animate-none",
         align === "right" ? "right-0" : "left-0",
         className,
       )}
@@ -96,7 +96,7 @@ export const DropdownMenuItem = forwardRef<HTMLButtonElement, DropdownMenuItemPr
         type="button"
         role="menuitem"
         className={cn(
-          "w-full truncate px-3 py-1.5 text-left text-sm transition-colors duration-[var(--transition-fast)]",
+          "w-full truncate rounded-md px-3 py-1.5 text-left text-sm transition-colors duration-[var(--transition-fast)]",
           itemVariantStyles[variant],
           className,
         )}
@@ -137,7 +137,12 @@ export type DropdownMenuSeparatorProps = HTMLAttributes<HTMLHRElement>;
 export const DropdownMenuSeparator = forwardRef<HTMLHRElement, DropdownMenuSeparatorProps>(
   function DropdownMenuSeparator({ className, ...props }, ref) {
     return (
-      <hr ref={ref} className={cn("border-border my-1", className)} role="separator" {...props} />
+      <hr
+        ref={ref}
+        className={cn("border-outline-variant my-1", className)}
+        role="separator"
+        {...props}
+      />
     );
   },
 );

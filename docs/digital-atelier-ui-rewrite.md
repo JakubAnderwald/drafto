@@ -13,7 +13,7 @@ This document outlines the phased plan to rewrite all UI components across web a
 
 ---
 
-## Phase 1: UI Primitives
+## Phase 1: UI Primitives (DONE)
 
 Update all base components in `apps/web/src/components/ui/` to use new tokens.
 
@@ -56,7 +56,7 @@ Update all base components in `apps/web/src/components/ui/` to use new tokens.
 
 ---
 
-## Phase 2: Layout & Navigation
+## Phase 2: Layout & Navigation (DONE)
 
 ### AppShell / Sidebar
 
@@ -77,7 +77,7 @@ Update all base components in `apps/web/src/components/ui/` to use new tokens.
 
 ---
 
-## Phase 3: Auth Pages
+## Phase 3: Auth Pages (DONE)
 
 ### Login / Signup / Reset Password
 
@@ -88,7 +88,7 @@ Update all base components in `apps/web/src/components/ui/` to use new tokens.
 
 ---
 
-## Phase 4: Core App Views
+## Phase 4: Core App Views (DONE)
 
 ### Note Editor
 
@@ -112,7 +112,7 @@ Update all base components in `apps/web/src/components/ui/` to use new tokens.
 
 ---
 
-## Phase 5: Dialogs & Overlays
+## Phase 5: Dialogs & Overlays (DONE)
 
 ### Modal Dialogs
 
@@ -131,7 +131,7 @@ Update all base components in `apps/web/src/components/ui/` to use new tokens.
 
 ---
 
-## Phase 6: Admin & Static Pages
+## Phase 6: Admin & Static Pages (DONE)
 
 ### Design System Showcase (`/design-system`)
 

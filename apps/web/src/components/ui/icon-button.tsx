@@ -21,8 +21,8 @@ const variantStyles: Record<IconButtonVariant, string> = {
 
 const sizeStyles: Record<IconButtonSize, string> = {
   sm: "h-7 w-7 rounded-md",
-  md: "h-9 w-9 rounded-lg",
-  lg: "h-11 w-11 rounded-lg",
+  md: "h-9 w-9 rounded-md",
+  lg: "h-11 w-11 rounded-md",
 };
 
 export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(

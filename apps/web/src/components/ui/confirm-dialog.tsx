@@ -38,7 +38,7 @@ export const ConfirmDialog = forwardRef<HTMLDivElement, ConfirmDialogProps>(func
       ref={ref}
       role="alertdialog"
       aria-label={title}
-      className={cn("border-border bg-bg-subtle border-t p-3", className)}
+      className={cn("bg-bg rounded-lg p-3 shadow-lg", className)}
       {...props}
     >
       <p className="text-fg mb-2 text-xs font-medium">{title}</p>

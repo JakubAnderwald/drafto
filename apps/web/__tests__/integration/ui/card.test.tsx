@@ -43,9 +43,8 @@ describe("Card", () => {
   it("applies border and background styles", () => {
     render(<Card data-testid="card">content</Card>);
     const card = screen.getByTestId("card");
-    expect(card.className).toContain("border-border");
-    expect(card.className).toContain("bg-bg");
-    expect(card.className).toContain("rounded-xl");
+    expect(card.className).toContain("bg-bg-subtle");
+    expect(card.className).toContain("rounded-lg");
   });
 
   it("merges custom className", () => {
@@ -85,7 +84,6 @@ describe("CardHeader", () => {
   it("applies bottom border and padding", () => {
     render(<CardHeader data-testid="header">Header</CardHeader>);
     const header = screen.getByTestId("header");
-    expect(header.className).toContain("border-b");
     expect(header.className).toContain("px-6");
     expect(header.className).toContain("py-4");
   });
@@ -150,7 +148,6 @@ describe("CardFooter", () => {
   it("applies top border and padding", () => {
     render(<CardFooter data-testid="footer">Footer</CardFooter>);
     const footer = screen.getByTestId("footer");
-    expect(footer.className).toContain("border-t");
     expect(footer.className).toContain("px-6");
     expect(footer.className).toContain("py-4");
   });
