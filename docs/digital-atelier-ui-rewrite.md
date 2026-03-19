@@ -5,7 +5,7 @@ This document outlines the phased plan to rewrite all UI components across web a
 ## Design Principles
 
 1. **No-line philosophy**: Separate regions with tonal surfaces, not visible borders. Use `bg-subtle`, `bg-muted`, `surface-high`, `surface-highest` to create hierarchy.
-2. **Glass effects**: Overlays, command palettes, and floating panels use `--glass-bg` + `backdrop-filter: blur(--glass-blur)` for frosted depth.
+2. **Glass effects**: Overlays, command palettes, and floating panels use `--glass-bg` + `backdrop-filter: blur(var(--glass-blur))` for frosted depth.
 3. **Warm shadows**: Use the warm-tinted shadow scale (`shadow-xs` through `shadow-lg`) sparingly — tonal separation is the primary elevation mechanism.
 4. **Soft radii**: All interactive elements use the larger radius scale (sm: 6px, md: 8px, lg: 12px, xl: 16px).
 5. **Tight tracking for headings**: Apply `tracking-tight` (-0.02em) to h1–h3 for a refined typographic feel.

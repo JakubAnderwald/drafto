@@ -247,7 +247,7 @@ export default function DesignSystemPage() {
           >
             <p className="text-sm font-medium">Glass panel</p>
             <p className="text-fg-muted text-xs">
-              backdrop-filter: blur(16px) with 72% opacity background
+              Uses <code>--glass-bg</code> and <code>--glass-blur</code> tokens
             </p>
           </div>
         </div>
