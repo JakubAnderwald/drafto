@@ -104,7 +104,7 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Title + timestamps + save indicator */}
-      <div className="border-border shrink-0 border-b px-6 py-4">
+      <div className="bg-bg-subtle shrink-0 px-6 py-4">
         <div className="flex items-center gap-3">
           <input
             type="text"

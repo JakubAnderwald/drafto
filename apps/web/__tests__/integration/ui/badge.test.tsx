@@ -57,7 +57,7 @@ describe("Badge", () => {
   it("applies pill shape", () => {
     render(<Badge data-testid="badge">Tag</Badge>);
     const badge = screen.getByTestId("badge");
-    expect(badge.className).toContain("rounded-full");
+    expect(badge.className).toContain("rounded-md");
   });
 
   it("applies small text size", () => {

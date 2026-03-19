@@ -23,7 +23,7 @@ export const Card = forwardRef<HTMLDivElement, CardProps>(function Card(
     <div
       ref={ref}
       className={cn(
-        "border-border bg-bg rounded-xl border transition-shadow duration-[var(--transition-normal)]",
+        "bg-bg-subtle rounded-lg transition-shadow duration-[var(--transition-normal)]",
         shadowStyles[shadow],
         className,
       )}
@@ -41,7 +41,7 @@ export const CardHeader = forwardRef<HTMLDivElement, CardHeaderProps>(function C
   ref,
 ) {
   return (
-    <div ref={ref} className={cn("border-border border-b px-6 py-4", className)} {...props}>
+    <div ref={ref} className={cn("px-6 py-4", className)} {...props}>
       {children}
     </div>
   );
@@ -67,7 +67,7 @@ export const CardFooter = forwardRef<HTMLDivElement, CardFooterProps>(function C
   ref,
 ) {
   return (
-    <div ref={ref} className={cn("border-border border-t px-6 py-4", className)} {...props}>
+    <div ref={ref} className={cn("px-6 py-4", className)} {...props}>
       {children}
     </div>
   );

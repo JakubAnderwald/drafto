@@ -3,7 +3,7 @@ import { ThemeToggle } from "@/components/ui/theme-toggle";
 
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="from-primary-50 to-accent-50 relative flex min-h-screen items-center justify-center bg-gradient-to-br px-4">
+    <div className="from-primary-50 to-secondary-50 relative flex min-h-screen items-center justify-center bg-gradient-to-br px-4">
       <div className="absolute top-4 right-4">
         <ThemeToggle />
       </div>

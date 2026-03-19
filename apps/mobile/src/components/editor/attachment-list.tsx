@@ -236,7 +236,7 @@ const pendingStyles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 2,
-    backgroundColor: colors.accent[50],
+    backgroundColor: colors.secondary[50],
     borderRadius: 4,
     paddingHorizontal: 4,
     paddingVertical: 1,

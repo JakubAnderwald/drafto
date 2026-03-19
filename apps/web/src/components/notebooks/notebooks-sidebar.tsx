@@ -206,7 +206,7 @@ export function NotebooksSidebar({
 
   return (
     <div className="bg-sidebar-bg flex min-h-0 flex-1 flex-col">
-      <div className="border-border flex items-center justify-between border-b p-3">
+      <div className="flex items-center justify-between p-3">
         <h2 className="text-fg-muted text-xs font-semibold tracking-wide uppercase">Notebooks</h2>
         <IconButton size="sm" variant="ghost" onClick={handleCreate} aria-label="New notebook">
           <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -271,7 +271,7 @@ export function NotebooksSidebar({
                   })}
                   className={`group flex w-full cursor-pointer items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors duration-[var(--transition-fast)] ${
                     selectedNotebookId === notebook.id
-                      ? "bg-sidebar-active text-sidebar-active-text border-primary-500 border-l-[3px] font-medium"
+                      ? "bg-sidebar-active text-sidebar-active-text font-medium"
                       : "text-fg hover:bg-sidebar-hover"
                   }`}
                 >
@@ -338,7 +338,7 @@ export function NotebooksSidebar({
       )}
 
       {onSelectTrash && (
-        <div className="border-border border-t p-2">
+        <div className="p-2">
           <button
             type="button"
             onClick={onSelectTrash}

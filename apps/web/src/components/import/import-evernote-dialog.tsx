@@ -148,7 +148,7 @@ export function ImportEvernoteDialog({ onClose, onComplete }: ImportEvernoteDial
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
       data-testid="import-dialog"
     >
-      <div className="bg-bg border-border mx-4 w-full max-w-md rounded-lg border p-6 shadow-xl">
+      <div className="bg-bg mx-4 w-full max-w-md rounded-xl p-6 shadow-lg">
         <h2 className="text-fg mb-4 text-lg font-semibold">Import from Evernote</h2>
 
         <div className="space-y-4">

@@ -148,12 +148,16 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
       onKeyDown={handleKeyDown}
     >
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden="true" />
+      <div
+        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+        onClick={onClose}
+        aria-hidden="true"
+      />
 
       {/* Card */}
-      <div className="bg-bg relative z-10 flex w-full max-w-lg flex-col rounded-xl shadow-lg">
+      <div className="bg-glass-bg relative z-10 flex w-full max-w-lg flex-col rounded-xl shadow-lg backdrop-blur-[16px]">
         {/* Header */}
-        <div className="border-border flex items-center gap-2 border-b p-3">
+        <div className="flex items-center gap-2 p-3">
           <Input
             ref={inputRef}
             value={query}
