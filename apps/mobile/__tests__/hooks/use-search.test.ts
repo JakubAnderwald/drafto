@@ -1,8 +1,25 @@
 import { renderHook, waitFor } from "@testing-library/react-native";
-import { of, throwError } from "rxjs";
 import { Q } from "@nozbe/watermelondb";
 
-import type { Note } from "@/db";
+/** Minimal observable that emits a value synchronously then completes. */
+function fakeObservable<T>(value: T) {
+  return {
+    subscribe(observer: { next: (v: T) => void; error?: (e: unknown) => void }) {
+      observer.next(value);
+      return { unsubscribe: jest.fn() };
+    },
+  };
+}
+
+/** Minimal observable that errors synchronously. */
+function fakeErrorObservable(error: Error) {
+  return {
+    subscribe(observer: { next?: (v: unknown) => void; error: (e: unknown) => void }) {
+      observer.error(error);
+      return { unsubscribe: jest.fn() };
+    },
+  };
+}
 
 const mockObserve = jest.fn();
 const mockQuery = jest.fn(() => ({ observe: mockObserve }));
@@ -23,7 +40,7 @@ const { useSearch } = require("@/hooks/use-search") as typeof import("@/hooks/us
 describe("useSearch", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockObserve.mockReturnValue(of([]));
+    mockObserve.mockReturnValue(fakeObservable([]));
   });
 
   it("returns empty results for blank query", () => {
@@ -59,7 +76,7 @@ describe("useSearch", () => {
       { id: "1", title: "Note 1" },
       { id: "2", title: "Note 2" },
     ];
-    mockObserve.mockReturnValue(of(mockNotes));
+    mockObserve.mockReturnValue(fakeObservable(mockNotes));
 
     const { result } = renderHook(() => useSearch("note"));
 
@@ -70,7 +87,7 @@ describe("useSearch", () => {
   });
 
   it("sets error on query failure", async () => {
-    mockObserve.mockReturnValue(throwError(() => new Error("DB error")));
+    mockObserve.mockReturnValue(fakeErrorObservable(new Error("DB error")));
 
     const { result } = renderHook(() => useSearch("fail"));
 
@@ -82,7 +99,7 @@ describe("useSearch", () => {
 
   it("resets results when query becomes empty", async () => {
     const mockNotes = [{ id: "1", title: "Note 1" }];
-    mockObserve.mockReturnValue(of(mockNotes));
+    mockObserve.mockReturnValue(fakeObservable(mockNotes));
 
     const { result, rerender } = renderHook((props: { query: string }) => useSearch(props.query), {
       initialProps: { query: "test" },
