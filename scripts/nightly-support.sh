@@ -84,8 +84,12 @@ for PR_NUMBER in $(echo "$DEPENDABOT_PRS" | jq -r '.[].number'); do
   fi
   POLL_TIMEOUT=$(( REMAINING < 900 ? REMAINING : 900 ))  # min(remaining, 15min) in seconds
   # Skip if already processed (comment marker from a prior run)
-  if gh api "repos/JakubAnderwald/drafto/issues/$PR_NUMBER/comments" \
-    --jq '.[].body' 2>/dev/null | grep -q '<!-- nightly-bot -->'; then
+  if ! COMMENT_BODIES=$(gh api --paginate "repos/JakubAnderwald/drafto/issues/$PR_NUMBER/comments" \
+    --jq '.[].body // empty' 2>/dev/null); then
+    log "WARNING: Failed to fetch comments for PR #$PR_NUMBER; skipping to preserve idempotency."
+    continue
+  fi
+  if grep -Fq '<!-- nightly-bot -->' <<<"$COMMENT_BODIES"; then
     log "PR #$PR_NUMBER already has nightly-bot comment, skipping."
     continue
   fi
