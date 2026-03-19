@@ -162,7 +162,7 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search notes..."
+            placeholder="Search notes and notebooks..."
             className="flex-1"
           />
           <IconButton size="sm" onClick={onClose} aria-label="Close search">
