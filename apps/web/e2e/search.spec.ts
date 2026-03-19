@@ -12,7 +12,7 @@ test.describe("Search functionality", () => {
     await page.keyboard.press("Meta+k");
 
     // Search overlay should appear with input
-    const searchInput = page.getByPlaceholder("Search notes...");
+    const searchInput = page.getByPlaceholder("Search notes and notebooks...");
     await expect(searchInput).toBeVisible({ timeout: 5000 });
     await expect(searchInput).toBeFocused();
 
@@ -29,7 +29,9 @@ test.describe("Search functionality", () => {
     await page.getByLabel("Search notes").click();
 
     // Search overlay should appear
-    await expect(page.getByPlaceholder("Search notes...")).toBeVisible({ timeout: 5000 });
+    await expect(page.getByPlaceholder("Search notes and notebooks...")).toBeVisible({
+      timeout: 5000,
+    });
   });
 
   test("search for an existing note and verify results appear", async ({ page }) => {
@@ -51,7 +53,7 @@ test.describe("Search functionality", () => {
 
     // Open search via icon (Cmd+K is blocked while focus is in the title input)
     await page.getByLabel("Search notes").click();
-    const searchInput = page.getByPlaceholder("Search notes...");
+    const searchInput = page.getByPlaceholder("Search notes and notebooks...");
     await expect(searchInput).toBeVisible({ timeout: 5000 });
 
     await searchInput.fill("SearchTest");

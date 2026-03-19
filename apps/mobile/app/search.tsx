@@ -46,7 +46,7 @@ export default function SearchScreen() {
     <View style={styles.container}>
       <TextInput
         style={styles.searchInput}
-        placeholder="Search notes..."
+        placeholder="Search notes and notebooks..."
         placeholderTextColor={semantic.fgSubtle}
         value={query}
         onChangeText={setQuery}

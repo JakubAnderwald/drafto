@@ -28,6 +28,7 @@ export function useSearch(query: string) {
         Q.or(
           Q.where("title", Q.like(`%${sanitized}%`)),
           Q.where("content", Q.like(`%${sanitized}%`)),
+          Q.on("notebooks", "name", Q.like(`%${sanitized}%`)),
         ),
         Q.sortBy("updated_at", Q.desc),
       )

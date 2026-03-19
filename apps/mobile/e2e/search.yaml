@@ -14,7 +14,7 @@ appId: eu.drafto.mobile
     timeout: 5000
 
 # Type a search query
-- tapOn: "Search notes..."
+- tapOn: "Search notes and notebooks..."
 - inputText: "test"
 
 # Verify search executed — either results or empty state is acceptable

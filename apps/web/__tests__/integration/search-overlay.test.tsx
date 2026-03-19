@@ -62,7 +62,7 @@ describe("SearchOverlay", () => {
         notebooks={mockNotebooks}
       />,
     );
-    expect(screen.getByPlaceholderText("Search notes...")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Search notes and notebooks...")).toBeInTheDocument();
   });
 
   it("calls onClose when close button is clicked", async () => {
@@ -93,7 +93,7 @@ describe("SearchOverlay", () => {
       />,
     );
 
-    await user.type(screen.getByPlaceholderText("Search notes..."), "meeting");
+    await user.type(screen.getByPlaceholderText("Search notes and notebooks..."), "meeting");
 
     // Advance past debounce
     vi.advanceTimersByTime(300);
@@ -130,7 +130,7 @@ describe("SearchOverlay", () => {
       />,
     );
 
-    await user.type(screen.getByPlaceholderText("Search notes..."), "nonexistent");
+    await user.type(screen.getByPlaceholderText("Search notes and notebooks..."), "nonexistent");
     vi.advanceTimersByTime(300);
 
     await waitFor(() => {
@@ -154,7 +154,7 @@ describe("SearchOverlay", () => {
       />,
     );
 
-    await user.type(screen.getByPlaceholderText("Search notes..."), "meeting");
+    await user.type(screen.getByPlaceholderText("Search notes and notebooks..."), "meeting");
     vi.advanceTimersByTime(300);
 
     await waitFor(() => {
@@ -181,7 +181,7 @@ describe("SearchOverlay", () => {
       />,
     );
 
-    await user.type(screen.getByPlaceholderText("Search notes..."), "meeting");
+    await user.type(screen.getByPlaceholderText("Search notes and notebooks..."), "meeting");
     vi.advanceTimersByTime(300);
 
     await waitFor(() => {
@@ -232,7 +232,7 @@ describe("SearchOverlay", () => {
       />,
     );
 
-    await user.type(screen.getByPlaceholderText("Search notes..."), "test");
+    await user.type(screen.getByPlaceholderText("Search notes and notebooks..."), "test");
     vi.advanceTimersByTime(300);
 
     await waitFor(() => {
@@ -260,7 +260,7 @@ describe("SearchOverlay", () => {
       />,
     );
 
-    await user.type(screen.getByPlaceholderText("Search notes..."), "test");
+    await user.type(screen.getByPlaceholderText("Search notes and notebooks..."), "test");
     vi.advanceTimersByTime(300);
 
     await waitFor(() => {
@@ -284,7 +284,7 @@ describe("SearchOverlay", () => {
       />,
     );
 
-    await user.type(screen.getByPlaceholderText("Search notes..."), "meeting");
+    await user.type(screen.getByPlaceholderText("Search notes and notebooks..."), "meeting");
     vi.advanceTimersByTime(300);
 
     await waitFor(() => {
@@ -328,7 +328,7 @@ describe("SearchOverlay", () => {
       />,
     );
 
-    await user.type(screen.getByPlaceholderText("Search notes..."), "test");
+    await user.type(screen.getByPlaceholderText("Search notes and notebooks..."), "test");
     vi.advanceTimersByTime(300);
 
     await waitFor(() => {
@@ -353,7 +353,7 @@ describe("SearchOverlay", () => {
       />,
     );
 
-    await user.type(screen.getByPlaceholderText("Search notes..."), "meeting");
+    await user.type(screen.getByPlaceholderText("Search notes and notebooks..."), "meeting");
     vi.advanceTimersByTime(300);
 
     await waitFor(() => {
@@ -383,7 +383,7 @@ describe("SearchOverlay", () => {
       />,
     );
 
-    await user.type(screen.getByPlaceholderText("Search notes..."), "meeting");
+    await user.type(screen.getByPlaceholderText("Search notes and notebooks..."), "meeting");
     vi.advanceTimersByTime(300);
 
     await waitFor(() => {
