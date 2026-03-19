@@ -219,7 +219,7 @@ body {
 
 .bn-container {
   --bn-colors-editor-text: var(--fg);
-  --bn-colors-editor-background: var(--bg);
+  --bn-colors-editor-background: var(--surface-lowest);
   --bn-colors-menu-text: var(--fg);
   --bn-colors-menu-background: var(--bg);
   --bn-colors-tooltip-text: var(--fg);

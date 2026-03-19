@@ -447,7 +447,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       <main
         className={`${
           mobileView === "editor" ? "flex" : "hidden"
-        } bg-bg min-w-0 flex-1 flex-col overflow-hidden sm:flex`}
+        } bg-surface-lowest min-w-0 flex-1 flex-col overflow-hidden sm:flex`}
       >
         {/* Mobile: back to notes */}
         {selectedNoteId && (
