@@ -52,15 +52,22 @@ EOF
 trap cleanup EXIT
 
 # ── Phase 1: Gather items ──
+START_TIME=$(date +%s)
 log "=== Nightly support run started ==="
 
-DEPENDABOT_PRS=$(gh pr list --repo JakubAnderwald/drafto --author "app/dependabot" --state open --json number,title --limit 50 2>/dev/null) || DEPENDABOT_PRS="[]"
+DEPENDABOT_PRS=$(gh pr list --repo JakubAnderwald/drafto --author "app/dependabot" \
+  --state open --json number,title,labels --limit 50 2>/dev/null) || DEPENDABOT_PRS="[]"
 SUPPORT_ISSUES=$(gh issue list --repo JakubAnderwald/drafto --label support --state open --json number,title --limit 50 2>/dev/null) || SUPPORT_ISSUES="[]"
 
-DEPENDABOT_COUNT=$(echo "$DEPENDABOT_PRS" | jq -e 'length' 2>/dev/null) || { log "ERROR: Failed to fetch Dependabot PRs"; DEPENDABOT_COUNT=0; }
+# Skip Dependabot PRs already labeled needs-review (processed in a prior run)
+DEPENDABOT_ALL_COUNT=$(echo "$DEPENDABOT_PRS" | jq -e 'length' 2>/dev/null) || { log "ERROR: Failed to fetch Dependabot PRs"; DEPENDABOT_ALL_COUNT=0; }
+DEPENDABOT_PRS=$(echo "$DEPENDABOT_PRS" | \
+  jq '[.[] | select(.labels | map(.name) | index("needs-review") | not)]') || DEPENDABOT_PRS="[]"
+DEPENDABOT_COUNT=$(echo "$DEPENDABOT_PRS" | jq 'length') || DEPENDABOT_COUNT=0
 SUPPORT_COUNT=$(echo "$SUPPORT_ISSUES" | jq -e 'length' 2>/dev/null) || { log "ERROR: Failed to fetch support issues"; SUPPORT_COUNT=0; }
 
-log "Found $DEPENDABOT_COUNT Dependabot PRs, $SUPPORT_COUNT support issues"
+SKIPPED_COUNT=$(( DEPENDABOT_ALL_COUNT - DEPENDABOT_COUNT ))
+log "Found $DEPENDABOT_ALL_COUNT Dependabot PRs ($SKIPPED_COUNT already labeled needs-review, $DEPENDABOT_COUNT to process), $SUPPORT_COUNT support issues"
 
 if [[ "$DEPENDABOT_COUNT" -eq 0 && "$SUPPORT_COUNT" -eq 0 ]]; then
   log "No items to process. Exiting."
@@ -76,6 +83,12 @@ for PR_NUMBER in $(echo "$DEPENDABOT_PRS" | jq -r '.[].number'); do
     break
   fi
   POLL_TIMEOUT=$(( REMAINING < 900 ? REMAINING : 900 ))  # min(remaining, 15min) in seconds
+  # Skip if already processed (comment marker from a prior run)
+  if gh api "repos/JakubAnderwald/drafto/issues/$PR_NUMBER/comments" \
+    --jq '.[].body' 2>/dev/null | grep -q '<!-- nightly-bot -->'; then
+    log "PR #$PR_NUMBER already has nightly-bot comment, skipping."
+    continue
+  fi
   log "--- Processing Dependabot PR #$PR_NUMBER (${REMAINING}s remaining, poll timeout ${POLL_TIMEOUT}s) ---"
   if ! claude -p "$(cat <<PROMPT
 You are an automated nightly job. Process ONLY Dependabot PR #$PR_NUMBER for JakubAnderwald/drafto.
@@ -83,7 +96,7 @@ You are an automated nightly job. Process ONLY Dependabot PR #$PR_NUMBER for Jak
 1. Read the PR: gh pr view $PR_NUMBER --json title,body,headRefName
 2. Check CI: gh pr checks $PR_NUMBER
 3. Decision:
-   - CI passes + minor/patch → squash merge via gh api, comment "Auto-merged: CI passed, minor/patch update."
+   - CI passes + minor/patch → squash merge via gh api, comment "<!-- nightly-bot -->Auto-merged: CI passed, minor/patch update."
    - CI fails + minor/patch → checkout the PR branch and use /push to fix failures and iterate until CI is green, then squash merge.
    - CI pending → poll \`gh pr checks $PR_NUMBER\` every 30 seconds for up to $POLL_TIMEOUT seconds until all checks complete. Then apply the rules above (merge/fix/flag). If still pending after timeout, log "CI still pending after timeout, skipping" and exit.
    - Major version bump → analyse the impact before flagging:
@@ -91,7 +104,7 @@ You are an automated nightly job. Process ONLY Dependabot PR #$PR_NUMBER for Jak
      2. Search the codebase for all imports and usages of the bumped package.
      3. Identify breaking changes from the changelog that affect this codebase.
      4. Check if the package's major bump requires peer dependency updates.
-     5. Add label "needs-review" and comment with a structured report:
+     5. Add label "needs-review" and comment (starting with "<!-- nightly-bot -->") with a structured report:
         - **Package**: name, old version → new version
         - **Breaking changes relevant to this codebase**: list each with affected files
         - **Breaking changes NOT relevant**: list briefly (features/APIs we don't use)
@@ -149,4 +162,5 @@ PROMPT
   PROCESSED=$((PROCESSED + 1))
 done
 
-log "=== Nightly support run completed ==="
+ELAPSED=$(( $(date +%s) - START_TIME ))
+log "=== Nightly support run completed in ${ELAPSED}s ==="
