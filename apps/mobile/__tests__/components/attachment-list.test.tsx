@@ -21,15 +21,30 @@ jest.mock("@/components/toast", () => ({
 }));
 
 const mockGetSignedUrl = jest.fn();
+const mockOpenAttachment = jest.fn();
 jest.mock("@/lib/data", () => ({
   getSignedUrl: (...args: unknown[]) => mockGetSignedUrl(...args),
   deleteAttachment: jest.fn(),
-}));
-
-const mockOpenAttachment = jest.fn();
-jest.mock("@/lib/data/open-attachment", () => ({
   openAttachment: (...args: unknown[]) => mockOpenAttachment(...args),
 }));
+
+// Mock shape matching WatermelonDB Attachment model — cast needed because
+// AttachmentList expects full model instances, not plain objects.
+interface MockAttachment {
+  id: string;
+  remoteId: string;
+  noteId: string;
+  userId: string;
+  fileName: string;
+  filePath: string;
+  fileSize: number;
+  mimeType: string;
+  createdAt: Date;
+  localUri: string | null;
+  uploadStatus: "pending" | "uploaded";
+  isPendingUpload: boolean;
+  markAsDeleted: jest.Mock;
+}
 
 function createMockAttachment(overrides: Partial<MockAttachment> = {}): MockAttachment {
   return {
@@ -48,22 +63,6 @@ function createMockAttachment(overrides: Partial<MockAttachment> = {}): MockAtta
     markAsDeleted: jest.fn(),
     ...overrides,
   };
-}
-
-interface MockAttachment {
-  id: string;
-  remoteId: string;
-  noteId: string;
-  userId: string;
-  fileName: string;
-  filePath: string;
-  fileSize: number;
-  mimeType: string;
-  createdAt: Date;
-  localUri: string | null;
-  uploadStatus: "pending" | "uploaded";
-  isPendingUpload: boolean;
-  markAsDeleted: jest.Mock;
 }
 
 beforeEach(() => {

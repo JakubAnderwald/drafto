@@ -11,8 +11,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-import { getSignedUrl, deleteAttachment as deleteAttachmentApi } from "@/lib/data";
-import { openAttachment } from "@/lib/data/open-attachment";
+import { getSignedUrl, deleteAttachment as deleteAttachmentApi, openAttachment } from "@/lib/data";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useToast } from "@/components/toast";

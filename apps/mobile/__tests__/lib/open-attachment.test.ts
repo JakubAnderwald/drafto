@@ -85,6 +85,12 @@ describe("openAttachment", () => {
   });
 
   describe("pending attachments", () => {
+    const originalOS = Platform.OS;
+
+    afterEach(() => {
+      (Platform as { OS: string }).OS = originalOS;
+    });
+
     it("returns unavailable when localUri is null", async () => {
       const result = await openAttachment({
         signedUrl: null,
@@ -96,7 +102,6 @@ describe("openAttachment", () => {
     });
 
     it("returns unavailable on Android (file:// URIs not supported)", async () => {
-      const originalOS = Platform.OS;
       (Platform as { OS: string }).OS = "android";
 
       const result = await openAttachment({
@@ -109,12 +114,9 @@ describe("openAttachment", () => {
         status: "unavailable",
         reason: "File will be available after upload completes",
       });
-
-      (Platform as { OS: string }).OS = originalOS;
     });
 
     it("opens local file on iOS via Linking", async () => {
-      const originalOS = Platform.OS;
       (Platform as { OS: string }).OS = "ios";
 
       const result = await openAttachment({
@@ -125,12 +127,9 @@ describe("openAttachment", () => {
 
       expect(mockOpenURL).toHaveBeenCalledWith("file:///var/mobile/Containers/test.jpg");
       expect(result).toEqual({ status: "opened" });
-
-      (Platform as { OS: string }).OS = originalOS;
     });
 
     it("returns unavailable when iOS cannot open the URI", async () => {
-      const originalOS = Platform.OS;
       (Platform as { OS: string }).OS = "ios";
       mockCanOpenURL.mockResolvedValue(false);
 
@@ -141,12 +140,9 @@ describe("openAttachment", () => {
       });
 
       expect(result).toEqual({ status: "unavailable", reason: "Cannot open this file type" });
-
-      (Platform as { OS: string }).OS = originalOS;
     });
 
     it("returns unavailable when iOS Linking.openURL throws", async () => {
-      const originalOS = Platform.OS;
       (Platform as { OS: string }).OS = "ios";
       mockOpenURL.mockRejectedValue(new Error("Failed"));
 
@@ -157,8 +153,6 @@ describe("openAttachment", () => {
       });
 
       expect(result).toEqual({ status: "unavailable", reason: "Failed to open file" });
-
-      (Platform as { OS: string }).OS = originalOS;
     });
   });
 });
