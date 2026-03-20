@@ -128,6 +128,7 @@ done
 # Record the timestamp before Phase 3 so Phase 4 can find builds triggered during this phase.
 PHASE3_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 PROCESSED=0
+PHASE3_ISSUE_NUMBERS=()  # Track which issues were processed (for Phase 4 comments)
 for ISSUE_NUMBER in $(echo "$SUPPORT_ISSUES" | jq -r '.[].number'); do
   if [[ "$PROCESSED" -ge 10 ]]; then
     log "Reached max 10 support issues per run, skipping remaining."
@@ -166,6 +167,7 @@ PROMPT
     log "ERROR: Support issue #$ISSUE_NUMBER failed; continuing with next item"
   fi
   log "--- Done with issue #$ISSUE_NUMBER ---"
+  PHASE3_ISSUE_NUMBERS+=("$ISSUE_NUMBER")
   PROCESSED=$((PROCESSED + 1))
 done
 
@@ -208,10 +210,10 @@ wait_for_builds() {
   done
 }
 
-# Track retry counts per build platform (android/ios)
+# Track retry counts per build platform (android/ios — lowercase to match EAS CLI JSON output)
 declare -A PLATFORM_RETRIES
-PLATFORM_RETRIES[ANDROID]=0
-PLATFORM_RETRIES[IOS]=0
+PLATFORM_RETRIES[android]=0
+PLATFORM_RETRIES[ios]=0
 
 ROUND=0
 while true; do
@@ -324,8 +326,8 @@ log "Phase 4 summary: $FINAL_FINISHED succeeded, $FINAL_ERRORED failed, $FINAL_P
 
 if [[ "$FINAL_ERRORED" -gt 0 ]]; then
   log "WARNING: Some builds still failing after retries. Manual intervention needed."
-  # Comment on any related support issues that builds are still failing
-  for ISSUE_NUMBER in $(echo "$SUPPORT_ISSUES" | jq -r '.[].number'); do
+  # Comment only on support issues that were actually processed in Phase 3
+  for ISSUE_NUMBER in "${PHASE3_ISSUE_NUMBERS[@]}"; do
     FAILED_PLATFORMS=$(echo "$FINAL_BUILDS" | jq -r '[.[] | select(.status == "ERRORED") | .platform] | join(", ")')
     gh issue comment "$ISSUE_NUMBER" --repo JakubAnderwald/drafto --body "${NIGHTLY_MARKER}
 ## Build monitoring update
