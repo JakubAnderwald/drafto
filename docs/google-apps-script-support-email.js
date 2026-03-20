@@ -23,6 +23,9 @@
 
 function processStarredSupportEmails() {
   var GITHUB_TOKEN = PropertiesService.getScriptProperties().getProperty("GITHUB_TOKEN");
+  if (!GITHUB_TOKEN) {
+    throw new Error("GITHUB_TOKEN script property is not set");
+  }
   var REPO = "JakubAnderwald/drafto";
   var SUPPORT_ADDRESS = "support@drafto.eu";
   var ATTACHMENT_PATH = "support-attachments";
@@ -53,25 +56,47 @@ function processStarredSupportEmails() {
         var contentType = attachment.getContentType();
         var base64Content = Utilities.base64Encode(attachment.getBytes());
 
-        var uploadResponse = UrlFetchApp.fetch(
-          "https://api.github.com/repos/" + REPO + "/contents/" + filePath,
-          {
-            method: "put",
-            contentType: "application/json",
-            headers: {
-              Authorization: "Bearer " + GITHUB_TOKEN,
-              Accept: "application/vnd.github+json",
-              "X-GitHub-Api-Version": "2022-11-28",
-            },
-            payload: JSON.stringify({
-              message: "chore: upload support attachment " + originalName,
-              content: base64Content,
-            }),
-            muteHttpExceptions: true,
-          },
-        );
+        var apiHeaders = {
+          Authorization: "Bearer " + GITHUB_TOKEN,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        };
+        var apiUrl = "https://api.github.com/repos/" + REPO + "/contents/" + filePath;
+        var uploadPayload = {
+          message: "chore: upload support attachment " + originalName,
+          content: base64Content,
+        };
 
-        if (uploadResponse.getResponseCode() === 201) {
+        var uploadResponse = UrlFetchApp.fetch(apiUrl, {
+          method: "put",
+          contentType: "application/json",
+          headers: apiHeaders,
+          payload: JSON.stringify(uploadPayload),
+          muteHttpExceptions: true,
+        });
+
+        // Handle 409 Conflict (file already exists from a previous partial run)
+        if (uploadResponse.getResponseCode() === 409) {
+          var existingFile = UrlFetchApp.fetch(apiUrl, {
+            method: "get",
+            headers: apiHeaders,
+            muteHttpExceptions: true,
+          });
+          if (existingFile.getResponseCode() === 200) {
+            var sha = JSON.parse(existingFile.getContentText()).sha;
+            uploadPayload.sha = sha;
+            uploadResponse = UrlFetchApp.fetch(apiUrl, {
+              method: "put",
+              contentType: "application/json",
+              headers: apiHeaders,
+              payload: JSON.stringify(uploadPayload),
+              muteHttpExceptions: true,
+            });
+          }
+        }
+
+        var uploadCode = uploadResponse.getResponseCode();
+        if (uploadCode === 201 || uploadCode === 200) {
           var uploadData = JSON.parse(uploadResponse.getContentText());
           var downloadUrl = uploadData.content.download_url;
 
@@ -80,6 +105,11 @@ function processStarredSupportEmails() {
           } else {
             attachmentMarkdown += "[" + originalName + "](" + downloadUrl + ")\n\n";
           }
+        } else {
+          console.error(
+            "Failed to upload attachment: " + originalName + " (HTTP " + uploadCode + ")",
+          );
+          attachmentMarkdown += "Failed to upload: " + originalName + "\n\n";
         }
       }
     }
@@ -96,12 +126,17 @@ function processStarredSupportEmails() {
         "X-GitHub-Api-Version": "2022-11-28",
       },
       payload: JSON.stringify({ title: subject, body: issueBody, labels: ["support"] }),
+      muteHttpExceptions: true,
     });
 
     if (response.getResponseCode() === 201) {
       thread.getMessages().forEach(function (m) {
         m.unstar();
       });
+    } else {
+      console.error(
+        "Failed to create issue for: " + subject + " (HTTP " + response.getResponseCode() + ")",
+      );
     }
   }
 }
