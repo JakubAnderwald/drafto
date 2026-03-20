@@ -1,0 +1,107 @@
+/**
+ * Google Apps Script — Stage 1 of the Automated Support Pipeline
+ *
+ * Watches starred emails sent to support@drafto.eu, creates GitHub issues
+ * with the `support` label, and uploads any email attachments as images
+ * embedded in the issue body.
+ *
+ * Setup:
+ *   1. Open https://script.google.com and create a new project
+ *   2. Paste this script
+ *   3. Add script property: GITHUB_TOKEN (Settings → Script Properties)
+ *   4. Add a time-driven trigger for processStarredSupportEmails (daily at 23:00)
+ *
+ * How attachments work:
+ *   - Email attachments are uploaded to the GitHub repo via the Contents API
+ *     (base64-encoded, stored in `support-attachments/` directory)
+ *   - Each file is named with the issue timestamp + original filename to avoid collisions
+ *   - Image attachments are embedded as ![img](...) in the issue body
+ *   - Non-image attachments are linked as regular markdown links
+ *
+ * See also: docs/adr/0013-automated-support-pipeline.md
+ */
+
+function processStarredSupportEmails() {
+  var GITHUB_TOKEN = PropertiesService.getScriptProperties().getProperty("GITHUB_TOKEN");
+  var REPO = "JakubAnderwald/drafto";
+  var SUPPORT_ADDRESS = "support@drafto.eu";
+  var ATTACHMENT_PATH = "support-attachments";
+
+  var threads = GmailApp.search("is:starred to:" + SUPPORT_ADDRESS);
+  if (threads.length === 0) return;
+
+  for (var t = 0; t < threads.length; t++) {
+    var thread = threads[t];
+    var msg = thread.getMessages()[0];
+    var subject = msg.getSubject() || "(No subject)";
+    var sender = msg.getFrom();
+    var date = msg.getDate().toISOString();
+    var body = msg.getPlainBody();
+    var attachments = msg.getAttachments();
+
+    // Upload attachments and collect markdown references
+    var attachmentMarkdown = "";
+    if (attachments.length > 0) {
+      var timestamp = date.replace(/[^0-9]/g, "").slice(0, 14);
+      attachmentMarkdown = "\n\n---\n\n**Attachments:**\n\n";
+
+      for (var i = 0; i < attachments.length; i++) {
+        var attachment = attachments[i];
+        var originalName = attachment.getName();
+        var safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
+        var filePath = ATTACHMENT_PATH + "/" + timestamp + "-" + safeName;
+        var contentType = attachment.getContentType();
+        var base64Content = Utilities.base64Encode(attachment.getBytes());
+
+        var uploadResponse = UrlFetchApp.fetch(
+          "https://api.github.com/repos/" + REPO + "/contents/" + filePath,
+          {
+            method: "put",
+            contentType: "application/json",
+            headers: {
+              Authorization: "Bearer " + GITHUB_TOKEN,
+              Accept: "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+            },
+            payload: JSON.stringify({
+              message: "chore: upload support attachment " + originalName,
+              content: base64Content,
+            }),
+            muteHttpExceptions: true,
+          },
+        );
+
+        if (uploadResponse.getResponseCode() === 201) {
+          var uploadData = JSON.parse(uploadResponse.getContentText());
+          var downloadUrl = uploadData.content.download_url;
+
+          if (contentType && contentType.indexOf("image/") === 0) {
+            attachmentMarkdown += "![" + originalName + "](" + downloadUrl + ")\n\n";
+          } else {
+            attachmentMarkdown += "[" + originalName + "](" + downloadUrl + ")\n\n";
+          }
+        }
+      }
+    }
+
+    var issueBody =
+      "**From:** " + sender + "\n**Date:** " + date + "\n\n---\n\n" + body + attachmentMarkdown;
+
+    var response = UrlFetchApp.fetch("https://api.github.com/repos/" + REPO + "/issues", {
+      method: "post",
+      contentType: "application/json",
+      headers: {
+        Authorization: "Bearer " + GITHUB_TOKEN,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      payload: JSON.stringify({ title: subject, body: issueBody, labels: ["support"] }),
+    });
+
+    if (response.getResponseCode() === 201) {
+      thread.getMessages().forEach(function (m) {
+        m.unstar();
+      });
+    }
+  }
+}
