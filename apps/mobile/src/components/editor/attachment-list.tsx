@@ -8,11 +8,10 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
-  Linking,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-import { getSignedUrl, deleteAttachment as deleteAttachmentApi } from "@/lib/data";
+import { getSignedUrl, deleteAttachment as deleteAttachmentApi, openAttachment } from "@/lib/data";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useToast } from "@/components/toast";
@@ -34,15 +33,19 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+type ShowToast = (message: string, type: "success" | "warning") => void;
+
 interface AttachmentItemProps {
   attachment: Attachment;
   onDelete: (attachment: Attachment) => void;
+  showToast: ShowToast;
   styles: ReturnType<typeof createStyles>;
 }
 
-function AttachmentItem({ attachment, onDelete, styles }: AttachmentItemProps) {
+function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentItemProps) {
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
   const [loadingUrl, setLoadingUrl] = useState(false);
+  const [urlError, setUrlError] = useState(false);
   const [imageError, setImageError] = useState(false);
   const isImage = isImageMimeType(attachment.mimeType);
   const isPending = attachment.isPendingUpload;
@@ -57,11 +60,12 @@ function AttachmentItem({ attachment, onDelete, styles }: AttachmentItemProps) {
 
     async function fetchUrl() {
       setLoadingUrl(true);
+      setUrlError(false);
       try {
         const url = await getSignedUrl(attachment.filePath);
         if (!cancelled) setSignedUrl(url);
       } catch {
-        // URL fetch failed - item still shows with filename
+        if (!cancelled) setUrlError(true);
       } finally {
         if (!cancelled) setLoadingUrl(false);
       }
@@ -74,22 +78,35 @@ function AttachmentItem({ attachment, onDelete, styles }: AttachmentItemProps) {
   }, [attachment.filePath, isPending]);
 
   const handlePress = useCallback(async () => {
-    if (isPending && attachment.localUri) {
-      // Open local file for pending attachments
+    // If URL failed to load, retry fetching it
+    if (!isPending && urlError) {
+      setLoadingUrl(true);
+      setUrlError(false);
       try {
-        await Linking.openURL(attachment.localUri);
+        const url = await getSignedUrl(attachment.filePath);
+        setSignedUrl(url);
+        setLoadingUrl(false);
+        const result = await openAttachment({ signedUrl: url, localUri: null, isPending: false });
+        if (result.status === "unavailable") {
+          showToast(result.reason, "warning");
+        }
       } catch {
-        // Failed to open local file
+        setUrlError(true);
+        setLoadingUrl(false);
+        showToast("Could not load attachment. Tap to retry.", "warning");
       }
       return;
     }
-    if (!signedUrl) return;
-    try {
-      await Linking.openURL(signedUrl);
-    } catch {
-      // Failed to open URL
+
+    const result = await openAttachment({
+      signedUrl,
+      localUri: attachment.localUri,
+      isPending,
+    });
+    if (result.status === "unavailable") {
+      showToast(result.reason, "warning");
     }
-  }, [signedUrl, isPending, attachment.localUri]);
+  }, [signedUrl, isPending, attachment.localUri, attachment.filePath, urlError, showToast]);
 
   const handleDelete = useCallback(() => {
     onDelete(attachment);
@@ -111,6 +128,11 @@ function AttachmentItem({ attachment, onDelete, styles }: AttachmentItemProps) {
               onError={() => setImageError(true)}
               accessibilityLabel={attachment.fileName}
             />
+          </Pressable>
+        ) : urlError ? (
+          <Pressable onPress={handlePress} style={styles.imagePlaceholder}>
+            <Ionicons name="refresh-outline" size={24} color={colors.neutral[400]} />
+            <Text style={styles.retryHint}>Tap to retry</Text>
           </Pressable>
         ) : (
           <View style={styles.imagePlaceholder}>
@@ -141,11 +163,15 @@ function AttachmentItem({ attachment, onDelete, styles }: AttachmentItemProps) {
     <Pressable
       style={styles.fileItem}
       onPress={handlePress}
-      disabled={!isPending && !signedUrl}
+      disabled={!isPending && !signedUrl && !urlError && loadingUrl}
       accessibilityLabel={`Open ${attachment.fileName}`}
       accessibilityRole="link"
     >
-      <Ionicons name="document-outline" size={24} color={colors.primary[600]} />
+      {urlError ? (
+        <Ionicons name="refresh-outline" size={24} color={colors.neutral[400]} />
+      ) : (
+        <Ionicons name="document-outline" size={24} color={colors.primary[600]} />
+      )}
       <View style={styles.fileInfo}>
         <View style={styles.fileNameRow}>
           {isPending && <PendingBadge />}
@@ -153,7 +179,9 @@ function AttachmentItem({ attachment, onDelete, styles }: AttachmentItemProps) {
             {attachment.fileName}
           </Text>
         </View>
-        <Text style={styles.fileMeta}>{formatFileSize(attachment.fileSize)}</Text>
+        <Text style={styles.fileMeta}>
+          {urlError ? "Tap to retry" : formatFileSize(attachment.fileSize)}
+        </Text>
       </View>
       <Pressable
         onPress={handleDelete}
@@ -224,7 +252,12 @@ export function AttachmentList({ attachments }: AttachmentListProps) {
         horizontal={false}
         scrollEnabled={false}
         renderItem={({ item }) => (
-          <AttachmentItem attachment={item} onDelete={handleDelete} styles={styles} />
+          <AttachmentItem
+            attachment={item}
+            onDelete={handleDelete}
+            showToast={showToast}
+            styles={styles}
+          />
         )}
       />
     </View>
@@ -277,6 +310,11 @@ const createStyles = (semantic: SemanticColors) =>
       alignItems: "center",
       justifyContent: "center",
       backgroundColor: semantic.bgMuted,
+    },
+    retryHint: {
+      fontSize: 12,
+      color: semantic.fgSubtle,
+      marginTop: 4,
     },
     imagePreview: {
       width: "100%",
