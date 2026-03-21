@@ -125,7 +125,10 @@ PROMPT
 done
 
 # ── Phase 3: Process support issues (one session each, max 10) ──
+# Record the timestamp before Phase 3 so Phase 4 can find builds triggered during this phase.
+PHASE3_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 PROCESSED=0
+PHASE3_ISSUE_NUMBERS=()  # Track which issues were processed (for Phase 4 comments)
 for ISSUE_NUMBER in $(echo "$SUPPORT_ISSUES" | jq -r '.[].number'); do
   if [[ "$PROCESSED" -ge 10 ]]; then
     log "Reached max 10 support issues per run, skipping remaining."
@@ -164,8 +167,180 @@ PROMPT
     log "ERROR: Support issue #$ISSUE_NUMBER failed; continuing with next item"
   fi
   log "--- Done with issue #$ISSUE_NUMBER ---"
+  PHASE3_ISSUE_NUMBERS+=("$ISSUE_NUMBER")
   PROCESSED=$((PROCESSED + 1))
 done
+
+# ── Phase 4: Monitor EAS builds and fix failures (up to 2 retries per build) ──
+MAX_BUILD_RETRIES=2
+BUILD_POLL_INTERVAL=60        # seconds between EAS status checks
+BUILD_POLL_TIMEOUT=2700       # 45 min max wait per build round
+PHASE4_DEADLINE=$(( $(date +%s) + 7200 ))  # 2h hard cap for entire Phase 4
+
+log "=== Phase 4: Monitoring EAS builds (started after $PHASE3_START_ISO) ==="
+
+# Collect EAS builds triggered during Phase 3 (filter by createdAt >= PHASE3_START_ISO)
+get_pending_builds() {
+  cd "$REPO_ROOT/apps/mobile"
+  npx eas-cli build:list --limit 20 --json --non-interactive 2>/dev/null | \
+    jq --arg since "$PHASE3_START_ISO" \
+      '[.[] | select(.createdAt >= $since and (.status == "NEW" or .status == "IN_QUEUE" or .status == "IN_PROGRESS" or .status == "ERRORED" or .status == "FINISHED"))]'
+  cd "$REPO_ROOT"
+}
+
+# Wait for all in-progress builds to reach a terminal state, return the JSON array
+wait_for_builds() {
+  local deadline=$(( $(date +%s) + BUILD_POLL_TIMEOUT ))
+  while true; do
+    local builds
+    builds=$(get_pending_builds) || { log "WARNING: Failed to query EAS builds"; echo "[]"; return; }
+    local in_progress
+    in_progress=$(echo "$builds" | jq '[.[] | select(.status == "NEW" or .status == "IN_QUEUE" or .status == "IN_PROGRESS")] | length')
+    if [[ "$in_progress" -eq 0 ]]; then
+      echo "$builds"
+      return
+    fi
+    if [[ $(date +%s) -ge $deadline ]]; then
+      log "WARNING: Build poll timeout reached with $in_progress builds still in progress"
+      echo "$builds"
+      return
+    fi
+    log "Waiting for $in_progress EAS build(s) to complete..."
+    sleep "$BUILD_POLL_INTERVAL"
+  done
+}
+
+# Track retry counts per build platform (android/ios — lowercase to match EAS CLI JSON output)
+declare -A PLATFORM_RETRIES
+PLATFORM_RETRIES[android]=0
+PLATFORM_RETRIES[ios]=0
+
+ROUND=0
+while true; do
+  ROUND=$((ROUND + 1))
+
+  # Hard deadline check
+  if [[ $(date +%s) -ge $PHASE4_DEADLINE ]]; then
+    log "Phase 4 hard deadline reached. Stopping build monitoring."
+    break
+  fi
+
+  log "--- Build monitoring round $ROUND ---"
+  BUILDS=$(wait_for_builds)
+  TOTAL=$(echo "$BUILDS" | jq 'length')
+
+  if [[ "$TOTAL" -eq 0 ]]; then
+    log "No EAS builds found from this run. Skipping Phase 4."
+    break
+  fi
+
+  ERRORED=$(echo "$BUILDS" | jq '[.[] | select(.status == "ERRORED")]')
+  ERRORED_COUNT=$(echo "$ERRORED" | jq 'length')
+  FINISHED_COUNT=$(echo "$BUILDS" | jq '[.[] | select(.status == "FINISHED")] | length')
+
+  log "Build results: $FINISHED_COUNT succeeded, $ERRORED_COUNT failed (of $TOTAL total)"
+
+  if [[ "$ERRORED_COUNT" -eq 0 ]]; then
+    log "All EAS builds succeeded."
+    break
+  fi
+
+  # Process each failed build
+  NEEDS_ANOTHER_ROUND=false
+  for BUILD_ROW in $(echo "$ERRORED" | jq -r '.[] | @base64'); do
+    BUILD_JSON=$(echo "$BUILD_ROW" | base64 --decode)
+    BUILD_ID=$(echo "$BUILD_JSON" | jq -r '.id')
+    BUILD_PLATFORM=$(echo "$BUILD_JSON" | jq -r '.platform')
+    BUILD_ERROR=$(echo "$BUILD_JSON" | jq -r '.error.message // "Unknown error"')
+    BUILD_ERROR_CODE=$(echo "$BUILD_JSON" | jq -r '.error.errorCode // "UNKNOWN"')
+
+    RETRIES=${PLATFORM_RETRIES[$BUILD_PLATFORM]:-0}
+    if [[ "$RETRIES" -ge "$MAX_BUILD_RETRIES" ]]; then
+      log "Platform $BUILD_PLATFORM: already retried $RETRIES times, skipping. Manual intervention needed."
+      continue
+    fi
+
+    log "Platform $BUILD_PLATFORM build $BUILD_ID failed ($BUILD_ERROR_CODE): $BUILD_ERROR"
+    log "Attempting fix (retry $((RETRIES + 1))/$MAX_BUILD_RETRIES)..."
+
+    PLATFORM_LC=$(echo "$BUILD_PLATFORM" | tr '[:upper:]' '[:lower:]')
+    if ! claude -p "$(cat <<PROMPT
+You are an automated nightly job fixing a failed EAS mobile build for JakubAnderwald/drafto.
+
+**Failed build details:**
+- Platform: $BUILD_PLATFORM
+- Build ID: $BUILD_ID
+- Error code: $BUILD_ERROR_CODE
+- Error message: $BUILD_ERROR
+
+**Your task:**
+1. Diagnose the build failure:
+   - Fetch the build logs: cd apps/mobile && npx eas-cli build:view $BUILD_ID --json
+   - If the error is a native build error (Gradle/Xcode), look at the error message and search the codebase for the affected code.
+   - Common causes: missing native dependencies after adding an Expo package (need expo prebuild), incompatible native code, misconfigured build settings.
+
+2. Fix the issue:
+   - Create a worktree branch (e.g., fix/eas-${PLATFORM_LC}-build).
+   - Make the minimal fix needed. Common fixes include:
+     - Running \`npx expo prebuild --clean\` to regenerate native projects
+     - Adding missing native dependencies or plugins to app.config.ts
+     - Fixing native code compilation errors in android/ or ios/ directories
+     - Updating EAS build profile settings in eas.json
+   - Run local checks: pnpm lint && pnpm typecheck && cd apps/mobile && pnpm test
+   - Use /push to commit, push, create PR, and wait for CI green.
+   - Squash-merge via gh api.
+
+3. Retrigger the build:
+   - cd apps/mobile && npx eas-cli build --profile beta --platform $PLATFORM_LC --auto-submit --non-interactive
+
+4. Comment on any related support issues (check recent closed issues with "support" label) with the fix status.
+
+Constraints:
+- Never push directly to main. Always branches + PRs.
+- Never modify production data.
+- If you cannot diagnose or fix the issue, comment on a new GitHub issue with the build error details and add label "needs-manual-intervention".
+PROMPT
+    )" --dangerously-skip-permissions 2>&1 | tee -a "$LOG_FILE"; then
+      log "ERROR: Fix attempt for $BUILD_PLATFORM build failed"
+    fi
+
+    PLATFORM_RETRIES[$BUILD_PLATFORM]=$((RETRIES + 1))
+    NEEDS_ANOTHER_ROUND=true
+    log "--- Done with $BUILD_PLATFORM build fix attempt ---"
+  done
+
+  if [[ "$NEEDS_ANOTHER_ROUND" == false ]]; then
+    log "No more builds to retry. Exiting Phase 4."
+    break
+  fi
+
+  log "Retriggered builds — starting next monitoring round..."
+done
+
+# Final build status summary
+FINAL_BUILDS=$(get_pending_builds 2>/dev/null) || FINAL_BUILDS="[]"
+FINAL_ERRORED=$(echo "$FINAL_BUILDS" | jq '[.[] | select(.status == "ERRORED")] | length')
+FINAL_FINISHED=$(echo "$FINAL_BUILDS" | jq '[.[] | select(.status == "FINISHED")] | length')
+FINAL_PENDING=$(echo "$FINAL_BUILDS" | jq '[.[] | select(.status == "NEW" or .status == "IN_QUEUE" or .status == "IN_PROGRESS")] | length')
+log "Phase 4 summary: $FINAL_FINISHED succeeded, $FINAL_ERRORED failed, $FINAL_PENDING still pending"
+
+if [[ "$FINAL_ERRORED" -gt 0 ]]; then
+  log "WARNING: Some builds still failing after retries. Manual intervention needed."
+  # Comment only on support issues that were actually processed in Phase 3
+  for ISSUE_NUMBER in "${PHASE3_ISSUE_NUMBERS[@]}"; do
+    FAILED_PLATFORMS=$(echo "$FINAL_BUILDS" | jq -r '[.[] | select(.status == "ERRORED") | .platform] | join(", ")')
+    gh issue comment "$ISSUE_NUMBER" --repo JakubAnderwald/drafto --body "${NIGHTLY_MARKER}
+## Build monitoring update
+
+After $ROUND round(s) of automated fix attempts, some mobile builds are still failing:
+- **Failed platforms**: $FAILED_PLATFORMS
+- **Retries exhausted**: $MAX_BUILD_RETRIES per platform
+
+Manual intervention is required to resolve the remaining build issues.
+" 2>/dev/null || log "WARNING: Failed to comment on issue #$ISSUE_NUMBER"
+    gh issue edit "$ISSUE_NUMBER" --repo JakubAnderwald/drafto --add-label "needs-manual-intervention" 2>/dev/null || true
+  done
+fi
 
 ELAPSED=$(( $(date +%s) - START_TIME ))
 log "=== Nightly support run completed in ${ELAPSED}s ==="
