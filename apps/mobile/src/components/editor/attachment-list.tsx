@@ -135,9 +135,14 @@ function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentI
             <Text style={styles.retryHint}>Tap to retry</Text>
           </Pressable>
         ) : (
-          <View style={styles.imagePlaceholder}>
+          <Pressable
+            onPress={handlePress}
+            style={styles.imagePlaceholder}
+            accessibilityLabel={`Open ${attachment.fileName}`}
+          >
             <Ionicons name="image-outline" size={24} color={colors.neutral[400]} />
-          </View>
+            {imageError && <Text style={styles.retryHint}>Tap to open</Text>}
+          </Pressable>
         )}
         <View style={styles.imageFooter}>
           <View style={styles.fileNameRow}>

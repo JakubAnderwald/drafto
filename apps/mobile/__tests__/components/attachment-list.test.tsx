@@ -144,6 +144,60 @@ describe("AttachmentList", () => {
     });
   });
 
+  it("allows opening image attachment when image preview fails to render", async () => {
+    const attachments = [createMockAttachment()];
+    const { getByLabelText, UNSAFE_getByType } = render(
+      <AttachmentList attachments={attachments as unknown as never[]} />,
+    );
+
+    // Wait for signed URL to load
+    await waitFor(() => {
+      expect(mockGetSignedUrl).toHaveBeenCalled();
+    });
+
+    // Simulate image load error
+    const { Image } = require("react-native");
+    await waitFor(() => {
+      const image = UNSAFE_getByType(Image);
+      fireEvent(image, "error");
+    });
+
+    // The fallback should be tappable
+    await waitFor(() => {
+      const pressable = getByLabelText("Open photo.jpg");
+      fireEvent.press(pressable);
+    });
+
+    await waitFor(() => {
+      expect(mockOpenAttachment).toHaveBeenCalledWith(
+        expect.objectContaining({ signedUrl: "https://example.com/signed-url" }),
+      );
+    });
+  });
+
+  it("shows 'Tap to open' hint when image preview fails", async () => {
+    const attachments = [createMockAttachment()];
+    const { UNSAFE_getByType, getByText } = render(
+      <AttachmentList attachments={attachments as unknown as never[]} />,
+    );
+
+    // Wait for signed URL to load
+    await waitFor(() => {
+      expect(mockGetSignedUrl).toHaveBeenCalled();
+    });
+
+    // Simulate image load error
+    const { Image } = require("react-native");
+    await waitFor(() => {
+      const image = UNSAFE_getByType(Image);
+      fireEvent(image, "error");
+    });
+
+    await waitFor(() => {
+      expect(getByText("Tap to open")).toBeTruthy();
+    });
+  });
+
   it("retries URL fetch on press when in error state", async () => {
     mockGetSignedUrl
       .mockRejectedValueOnce(new Error("Network error"))
