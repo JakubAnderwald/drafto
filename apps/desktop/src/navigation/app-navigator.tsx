@@ -34,7 +34,7 @@ function AppNavigator() {
         contentStyle: { backgroundColor: semantic.bg },
       }}
     >
-      <AppStack.Screen name="Main" component={MainScreen} options={{ title: "Drafto" }} />
+      <AppStack.Screen name="Main" component={MainScreen} options={{ headerShown: false }} />
     </AppStack.Navigator>
   );
 }
