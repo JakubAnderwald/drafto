@@ -56,6 +56,7 @@ function createRequest(body: unknown): NextRequest {
 
 describe("POST /api/attachments/resolve-url", () => {
   beforeEach(() => {
+    vi.resetModules();
     vi.clearAllMocks();
   });
 

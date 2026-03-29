@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import { useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
 import type { Block } from "@blocknote/core";
@@ -40,9 +40,16 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
     [noteId],
   );
 
+  const urlCache = useRef(new Map<string, string>());
+
   const resolveFileUrl = useCallback(async (url: string): Promise<string> => {
     if (!isAttachmentUrl(url)) {
       return url;
+    }
+
+    const cached = urlCache.current.get(url);
+    if (cached) {
+      return cached;
     }
 
     const filePath = extractFilePath(url);
@@ -57,6 +64,7 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
     }
 
     const data = await response.json();
+    urlCache.current.set(url, data.signedUrl);
     return data.signedUrl;
   }, []);
 
