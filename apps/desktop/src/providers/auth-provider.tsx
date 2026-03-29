@@ -21,22 +21,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [isCheckingApproval, setIsCheckingApproval] = useState(false);
 
-  const checkApproval = useCallback(async (userId: string): Promise<boolean> => {
-    setIsCheckingApproval(true);
-    try {
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("is_approved")
-        .eq("id", userId)
-        .single();
+  const checkApproval = useCallback(
+    async (userId: string): Promise<boolean> => {
+      setIsCheckingApproval(true);
+      try {
+        const { data: profile, error } = await supabase
+          .from("profiles")
+          .select("is_approved")
+          .eq("id", userId)
+          .single();
 
-      const approved = profile?.is_approved === true;
-      setIsApproved(approved);
-      return approved;
-    } finally {
-      setIsCheckingApproval(false);
-    }
-  }, []);
+        if (error) {
+          console.error("Failed to fetch approval status:", error);
+          return isApproved;
+        }
+
+        const approved = profile?.is_approved === true;
+        setIsApproved(approved);
+        return approved;
+      } finally {
+        setIsCheckingApproval(false);
+      }
+    },
+    [isApproved],
+  );
 
   const refreshApprovalStatus = useCallback(async (): Promise<boolean> => {
     if (session?.user) {
@@ -52,14 +60,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session: initialSession } }) => {
-      setSession(initialSession);
-      if (initialSession?.user) {
-        checkApproval(initialSession.user.id).finally(() => setIsLoading(false));
-      } else {
+    supabase.auth
+      .getSession()
+      .then(({ data: { session: initialSession } }) => {
+        setSession(initialSession);
+        if (initialSession?.user) {
+          checkApproval(initialSession.user.id).finally(() => setIsLoading(false));
+        } else {
+          setIsLoading(false);
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to get session:", error);
         setIsLoading(false);
-      }
-    });
+      });
 
     const {
       data: { subscription },

@@ -22,11 +22,15 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setThemeState] = useState<ThemePreference>("system");
 
   useEffect(() => {
-    AsyncStorage.getItem(STORAGE_KEY).then((stored) => {
-      if (stored === "light" || stored === "dark" || stored === "system") {
-        setThemeState(stored);
-      }
-    });
+    AsyncStorage.getItem(STORAGE_KEY)
+      .then((stored) => {
+        if (stored === "light" || stored === "dark" || stored === "system") {
+          setThemeState(stored);
+        }
+      })
+      .catch(() => {
+        // Storage unavailable; keep default "system" preference
+      });
   }, []);
 
   const setTheme = useCallback((newTheme: ThemePreference) => {

@@ -55,7 +55,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
         setPendingChangesCount(0);
       }
     } catch {
-      // Ignore errors checking pending state
+      console.debug("[DatabaseProvider] Error checking pending changes");
     }
   }, []);
 

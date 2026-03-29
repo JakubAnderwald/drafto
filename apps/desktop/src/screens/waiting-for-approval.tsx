@@ -24,6 +24,8 @@ export function WaitingForApprovalScreen() {
         setError("Your account is still pending approval.");
       }
       // If approved, the route guard will redirect automatically.
+    } catch {
+      setError("Unable to check approval status. Please try again.");
     } finally {
       setChecking(false);
     }

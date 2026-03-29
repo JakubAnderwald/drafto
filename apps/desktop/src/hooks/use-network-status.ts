@@ -20,9 +20,19 @@ export function useNetworkStatus(): NetworkStatus {
   }, []);
 
   useEffect(() => {
-    NetInfo.fetch().then(handleStateChange);
+    let mounted = true;
+    NetInfo.fetch()
+      .then((state) => {
+        if (mounted) handleStateChange(state);
+      })
+      .catch(() => {
+        // Network info unavailable; keep optimistic default
+      });
     const unsubscribe = NetInfo.addEventListener(handleStateChange);
-    return () => unsubscribe();
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
   }, [handleStateChange]);
 
   return status;
