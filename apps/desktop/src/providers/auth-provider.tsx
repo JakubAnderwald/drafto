@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
+import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 
 import { supabase } from "@/lib/supabase";
@@ -20,11 +20,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isApproved, setIsApproved] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isCheckingApproval, setIsCheckingApproval] = useState(false);
-  const isApprovedRef = useRef(isApproved);
-
-  useEffect(() => {
-    isApprovedRef.current = isApproved;
-  }, [isApproved]);
 
   const checkApproval = useCallback(async (userId: string): Promise<boolean> => {
     setIsCheckingApproval(true);
@@ -37,7 +32,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (error) {
         console.error("Failed to fetch approval status:", error);
-        return isApprovedRef.current;
+        return false;
       }
 
       const approved = profile?.is_approved === true;
@@ -62,24 +57,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    let mounted = true;
+
     supabase.auth
       .getSession()
       .then(({ data: { session: initialSession } }) => {
+        if (!mounted) return;
         setSession(initialSession);
         if (initialSession?.user) {
-          checkApproval(initialSession.user.id).finally(() => setIsLoading(false));
+          checkApproval(initialSession.user.id).finally(() => {
+            if (mounted) setIsLoading(false);
+          });
         } else {
           setIsLoading(false);
         }
       })
       .catch((error) => {
         console.error("Failed to get session:", error);
-        setIsLoading(false);
+        if (mounted) setIsLoading(false);
       });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      if (!mounted) return;
       setSession(newSession);
       if (newSession?.user) {
         checkApproval(newSession.user.id);
@@ -89,6 +90,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     return () => {
+      mounted = false;
       subscription.unsubscribe();
     };
   }, [checkApproval]);
