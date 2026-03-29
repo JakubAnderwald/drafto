@@ -13,7 +13,7 @@
   "dependencies": {
     "@drafto/shared": "workspace:*",
     "@nozbe/simdjson": "3.9.4",
-    "@nozbe/watermelondb": "^0.28.0",
+    "@nozbe/watermelondb": "0.28.0",
     "@nozbe/with-observables": "^1.6.0",
     "@supabase/supabase-js": "^2.100.0",
     "react": "^19.1.4",
@@ -24,6 +24,7 @@
     "@babel/core": "^7.25.0",
     "@babel/plugin-proposal-decorators": "^7.29.0",
     "@babel/runtime": "^7.25.0",
+    "babel-plugin-module-resolver": "^5.0.2",
     "@react-native-community/cli": "18.0.0",
     "@react-native-community/cli-platform-ios": "18.0.0",
     "@react-native/babel-preset": "0.81.5",
