@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { View, StyleSheet } from "react-native";
 
 import { useTheme } from "@/providers/theme-provider";
@@ -43,11 +43,8 @@ export function MainScreen() {
     setShowTrash(false);
   }, []);
 
-  // Cmd+K keyboard shortcut for search
-  useEffect(() => {
-    // React Native macOS doesn't have a global key handler API,
-    // so we rely on the native menu bar (Phase 5) for global shortcuts.
-    // For now, search is accessible via the sidebar or future menu integration.
+  const handleOpenSearch = useCallback(() => {
+    setSearchVisible(true);
   }, []);
 
   return (
@@ -62,6 +59,7 @@ export function MainScreen() {
             onSelectNotebook={handleSelectNotebook}
             showTrash={showTrash}
             onToggleTrash={handleToggleTrash}
+            onOpenSearch={handleOpenSearch}
           />
         </View>
 

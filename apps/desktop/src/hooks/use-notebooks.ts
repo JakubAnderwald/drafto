@@ -11,7 +11,7 @@ export function useNotebooks() {
   useEffect(() => {
     const subscription = database
       .get<Notebook>("notebooks")
-      .query(Q.sortBy("updated_at", Q.desc))
+      .query(Q.where("_status", Q.notEq("deleted")), Q.sortBy("updated_at", Q.desc))
       .observe()
       .subscribe({
         next: (records) => {

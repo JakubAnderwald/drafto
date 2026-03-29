@@ -1,6 +1,6 @@
 import type { NotebookRow } from "@drafto/shared";
 
-import { supabase } from "../supabase";
+import { supabase } from "@/lib/supabase";
 
 export async function getNotebooks(): Promise<NotebookRow[]> {
   const { data, error } = await supabase

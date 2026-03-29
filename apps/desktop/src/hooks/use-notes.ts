@@ -16,6 +16,7 @@ export function useNotes(notebookId: string | undefined) {
     }
 
     setError(null);
+    setLoading(true);
     const subscription = database
       .get<Note>("notes")
       .query(

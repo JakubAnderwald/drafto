@@ -2,7 +2,6 @@ import { useMemo } from "react";
 import { View, Text, StyleSheet } from "react-native";
 
 import { useTheme } from "@/providers/theme-provider";
-import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 
 interface EmptyStateProps {
@@ -38,7 +37,7 @@ const createStyles = (semantic: SemanticColors) =>
       width: 56,
       height: 56,
       borderRadius: 28,
-      backgroundColor: colors.primary[50],
+      backgroundColor: semantic.bgMuted,
       alignItems: "center",
       justifyContent: "center",
       marginBottom: 16,

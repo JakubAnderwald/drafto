@@ -14,18 +14,26 @@ export function TrashList() {
   const styles = useMemo(() => createStyles(semantic), [semantic]);
 
   const handleRestore = useCallback(async (note: Note) => {
-    await database.write(async () => {
-      await note.update((n) => {
-        n.isTrashed = false;
-        n.trashedAt = null;
+    try {
+      await database.write(async () => {
+        await note.update((n) => {
+          n.isTrashed = false;
+          n.trashedAt = null;
+        });
       });
-    });
+    } catch (err) {
+      console.error("Failed to restore note:", err);
+    }
   }, []);
 
   const handleDeletePermanently = useCallback(async (note: Note) => {
-    await database.write(async () => {
-      await note.markAsDeleted();
-    });
+    try {
+      await database.write(async () => {
+        await note.markAsDeleted();
+      });
+    } catch (err) {
+      console.error("Failed to delete note:", err);
+    }
   }, []);
 
   if (loading) {
@@ -147,7 +155,7 @@ const createStyles = (semantic: SemanticColors) =>
       paddingVertical: 4,
       paddingHorizontal: 10,
       borderRadius: 4,
-      backgroundColor: colors.primary[50],
+      backgroundColor: semantic.bgMuted,
     },
     deleteButton: {
       paddingVertical: 4,

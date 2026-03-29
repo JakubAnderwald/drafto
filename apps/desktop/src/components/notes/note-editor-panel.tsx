@@ -61,6 +61,14 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   const titleAutoSave = useAutoSave<string>({ onSave: handleSaveTitle });
   const contentAutoSave = useAutoSave<string>({ onSave: handleSaveContent });
 
+  // Flush pending autosaves when switching notes to prevent cross-note writes
+  useEffect(() => {
+    return () => {
+      titleAutoSave.flush();
+      contentAutoSave.flush();
+    };
+  }, [note?.id, titleAutoSave.flush, contentAutoSave.flush]);
+
   const handleTitleChange = useCallback(
     (text: string) => {
       setTitle(text);

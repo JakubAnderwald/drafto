@@ -23,7 +23,7 @@ interface SearchOverlayProps {
 
 export function SearchOverlay({ visible, onClose, onSelectNote }: SearchOverlayProps) {
   const [query, setQuery] = useState("");
-  const { results, loading } = useSearch(query);
+  const { results, loading, error } = useSearch(query);
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
   const inputRef = useRef<TextInput>(null);
@@ -71,7 +71,9 @@ export function SearchOverlay({ visible, onClose, onSelectNote }: SearchOverlayP
 
           {query.trim() !== "" && (
             <ScrollView style={styles.results}>
-              {results.length === 0 && !loading ? (
+              {error ? (
+                <Text style={styles.noResults}>{error}</Text>
+              ) : results.length === 0 && !loading ? (
                 <Text style={styles.noResults}>No results found</Text>
               ) : (
                 results.map((note) => (

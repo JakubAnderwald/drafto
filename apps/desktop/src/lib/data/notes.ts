@@ -1,6 +1,6 @@
 import type { Json, NoteRow } from "@drafto/shared";
 
-import { supabase } from "../supabase";
+import { supabase } from "@/lib/supabase";
 
 export async function getNote(id: string): Promise<NoteRow> {
   const { data, error } = await supabase

@@ -66,29 +66,37 @@ export function NoteList({ notebookId, selectedNoteId, onSelectNote }: NoteListP
   const handleCreateNote = useCallback(async () => {
     if (!notebookId || !user) return;
 
-    const noteId = generateId();
-    await database.write(async () => {
-      await database.get<Note>("notes").create((n) => {
-        n._raw.id = noteId;
-        n.remoteId = "";
-        n.userId = user.id;
-        n.notebookId = notebookId;
-        n.title = "Untitled";
-        n.content = null;
-        n.isTrashed = false;
+    try {
+      const noteId = generateId();
+      await database.write(async () => {
+        await database.get<Note>("notes").create((n) => {
+          n._raw.id = noteId;
+          n.remoteId = noteId;
+          n.userId = user.id;
+          n.notebookId = notebookId;
+          n.title = "Untitled";
+          n.content = null;
+          n.isTrashed = false;
+        });
       });
-    });
 
-    onSelectNote(noteId);
+      onSelectNote(noteId);
+    } catch (err) {
+      console.error("Failed to create note:", err);
+    }
   }, [notebookId, user, onSelectNote]);
 
   const handleTrashNote = useCallback(async (note: Note) => {
-    await database.write(async () => {
-      await note.update((n) => {
-        n.isTrashed = true;
-        n.trashedAt = new Date();
+    try {
+      await database.write(async () => {
+        await note.update((n) => {
+          n.isTrashed = true;
+          n.trashedAt = new Date();
+        });
       });
-    });
+    } catch (err) {
+      console.error("Failed to trash note:", err);
+    }
   }, []);
 
   if (!notebookId) {

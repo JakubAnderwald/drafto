@@ -15,6 +15,7 @@ interface NotebooksSidebarProps {
   onSelectNotebook: (id: string) => void;
   showTrash: boolean;
   onToggleTrash: () => void;
+  onOpenSearch: () => void;
 }
 
 export function NotebooksSidebar({
@@ -22,6 +23,7 @@ export function NotebooksSidebar({
   onSelectNotebook,
   showTrash,
   onToggleTrash,
+  onOpenSearch,
 }: NotebooksSidebarProps) {
   const { notebooks, loading } = useNotebooks();
   const { user, signOut } = useAuth();
@@ -37,17 +39,22 @@ export function NotebooksSidebar({
     const name = newName.trim();
     if (!name || !user) return;
 
-    await database.write(async () => {
-      await database.get<Notebook>("notebooks").create((nb) => {
-        nb._raw.id = generateId();
-        nb.remoteId = "";
-        nb.userId = user.id;
-        nb.name = name;
+    try {
+      const id = generateId();
+      await database.write(async () => {
+        await database.get<Notebook>("notebooks").create((nb) => {
+          nb._raw.id = id;
+          nb.remoteId = id;
+          nb.userId = user.id;
+          nb.name = name;
+        });
       });
-    });
 
-    setNewName("");
-    setIsCreating(false);
+      setNewName("");
+      setIsCreating(false);
+    } catch (err) {
+      console.error("Failed to create notebook:", err);
+    }
   }, [newName, user]);
 
   const handleRename = useCallback(
@@ -55,34 +62,50 @@ export function NotebooksSidebar({
       const name = editName.trim();
       if (!name) return;
 
-      await database.write(async () => {
-        await notebook.update((nb) => {
-          nb.name = name;
+      try {
+        await database.write(async () => {
+          await notebook.update((nb) => {
+            nb.name = name;
+          });
         });
-      });
 
-      setEditingId(null);
-      setEditName("");
+        setEditingId(null);
+        setEditName("");
+      } catch (err) {
+        console.error("Failed to rename notebook:", err);
+      }
     },
     [editName],
   );
 
   const handleDelete = useCallback(async (notebook: Notebook) => {
-    await database.write(async () => {
-      await notebook.markAsDeleted();
-    });
+    try {
+      await database.write(async () => {
+        await notebook.markAsDeleted();
+      });
+    } catch (err) {
+      console.error("Failed to delete notebook:", err);
+    }
   }, []);
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.appTitle}>Drafto</Text>
-        <Pressable
-          style={({ pressed }) => [styles.addButton, pressed && styles.addButtonPressed]}
-          onPress={() => setIsCreating(true)}
-        >
-          <Text style={styles.addButtonText}>+</Text>
-        </Pressable>
+        <View style={styles.headerActions}>
+          <Pressable
+            style={({ pressed }) => [styles.searchButton, pressed && styles.searchButtonPressed]}
+            onPress={onOpenSearch}
+          >
+            <Text style={styles.searchButtonText}>Search</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.addButton, pressed && styles.addButtonPressed]}
+            onPress={() => setIsCreating(true)}
+          >
+            <Text style={styles.addButtonText}>+</Text>
+          </Pressable>
+        </View>
       </View>
 
       {isCreating && (
@@ -207,6 +230,24 @@ const createStyles = (semantic: SemanticColors) =>
       fontSize: 15,
       fontWeight: "700",
       color: semantic.fg,
+    },
+    headerActions: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+    },
+    searchButton: {
+      paddingVertical: 3,
+      paddingHorizontal: 8,
+      borderRadius: 6,
+      backgroundColor: semantic.bgMuted,
+    },
+    searchButtonPressed: {
+      backgroundColor: semantic.bgMutedHover,
+    },
+    searchButtonText: {
+      fontSize: 11,
+      color: semantic.fgMuted,
     },
     addButton: {
       width: 24,
