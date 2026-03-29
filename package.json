@@ -37,6 +37,10 @@
     "overrides": {
       "minimatch": "10.2.4",
       "serialize-javascript": "7.0.4"
+    },
+    "patchedDependencies": {
+      "@nozbe/watermelondb@0.28.0": "patches/@nozbe__watermelondb@0.28.0.patch",
+      "@nozbe/simdjson@3.9.4": "patches/@nozbe__simdjson@3.9.4.patch"
     }
   },
   "devDependencies": {

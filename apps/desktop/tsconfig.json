@@ -1,0 +1,15 @@
+{
+  "extends": "@react-native/typescript-config/tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "experimentalDecorators": true,
+    "resolveJsonModule": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "baseUrl": ".",
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "index.js"],
+  "exclude": ["node_modules"]
+}
