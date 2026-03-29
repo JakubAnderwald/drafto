@@ -5,8 +5,9 @@ appId: eu.drafto.mobile
 
 # ===== FLOW 01: Login =====
 - clearKeychain
-- launchApp:
-    clearState: true
+- stopApp
+- clearState
+- launchApp
 
 - extendedWaitUntil:
     visible: "Log In"
