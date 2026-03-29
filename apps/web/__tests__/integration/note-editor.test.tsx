@@ -6,13 +6,33 @@ import { act } from "react";
 let capturedUploadFile: ((file: File) => Promise<string>) | undefined;
 let capturedResolveFileUrl: ((url: string) => Promise<string>) | undefined;
 
+// Mock the extracted hook — returns a resolver that delegates to fetch
+const ATTACHMENT_PREFIX = "attachment://";
+vi.mock("@/components/editor/use-attachment-url-resolver", () => ({
+  useAttachmentUrlResolver: () => {
+    const resolver = async (url: string): Promise<string> => {
+      if (!url.startsWith(ATTACHMENT_PREFIX)) return url;
+      const filePath = url.slice(ATTACHMENT_PREFIX.length);
+      const response = await fetch("/api/attachments/resolve-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filePath }),
+      });
+      if (!response.ok) throw new Error("Failed to resolve attachment URL");
+      const data = await response.json();
+      return data.signedUrl;
+    };
+    capturedResolveFileUrl = resolver;
+    return resolver;
+  },
+}));
+
 vi.mock("@blocknote/react", () => ({
   useCreateBlockNote: (opts?: {
     uploadFile?: (file: File) => Promise<string>;
     resolveFileUrl?: (url: string) => Promise<string>;
   }) => {
     capturedUploadFile = opts?.uploadFile;
-    capturedResolveFileUrl = opts?.resolveFileUrl;
     return { document: [] };
   },
   BlockNoteView: vi.fn(({ editor: _editor, theme: _theme }) => (

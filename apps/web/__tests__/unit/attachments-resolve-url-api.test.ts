@@ -122,39 +122,39 @@ describe("POST /api/attachments/resolve-url", () => {
 
   it("returns signed URL for valid file path", async () => {
     authenticateAs("user-1");
-    mockStorageFrom.mockReturnValue({
-      createSignedUrl: () =>
-        Promise.resolve({
-          data: {
-            signedUrl:
-              "https://test.supabase.co/storage/v1/object/sign/attachments/user-1/note-1/test.png?token=abc123",
-          },
-          error: null,
-        }),
+    const mockCreateSignedUrl = vi.fn().mockResolvedValue({
+      data: {
+        signedUrl:
+          "https://test.supabase.co/storage/v1/object/sign/attachments/user-1/note-1/test.png?token=abc123",
+      },
+      error: null,
     });
+    mockStorageFrom.mockReturnValue({ createSignedUrl: mockCreateSignedUrl });
 
     const { POST } = await import("@/app/api/attachments/resolve-url/route");
     const request = createRequest({ filePath: "user-1/note-1/test.png" });
     const response = await POST(request);
     expect(response.status).toBe(200);
+    expect(mockStorageFrom).toHaveBeenCalledWith("attachments");
+    expect(mockCreateSignedUrl).toHaveBeenCalledWith("user-1/note-1/test.png", expect.any(Number));
     const body = await response.json();
     expect(body.signedUrl).toContain("token=abc123");
   });
 
   it("returns 500 when signed URL generation fails", async () => {
     authenticateAs("user-1");
-    mockStorageFrom.mockReturnValue({
-      createSignedUrl: () =>
-        Promise.resolve({
-          data: null,
-          error: { message: "Signing error" },
-        }),
+    const mockCreateSignedUrl = vi.fn().mockResolvedValue({
+      data: null,
+      error: { message: "Signing error" },
     });
+    mockStorageFrom.mockReturnValue({ createSignedUrl: mockCreateSignedUrl });
 
     const { POST } = await import("@/app/api/attachments/resolve-url/route");
     const request = createRequest({ filePath: "user-1/note-1/test.png" });
     const response = await POST(request);
     expect(response.status).toBe(500);
+    expect(mockStorageFrom).toHaveBeenCalledWith("attachments");
+    expect(mockCreateSignedUrl).toHaveBeenCalledWith("user-1/note-1/test.png", expect.any(Number));
     const body = await response.json();
     expect(body.error).toBe("Failed to generate signed URL");
   });

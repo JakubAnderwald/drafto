@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useRef } from "react";
+import { useCallback } from "react";
 import { useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
 import type { Block } from "@blocknote/core";
 import "@blocknote/mantine/style.css";
 import { useTheme } from "@/hooks/use-theme";
-import { toAttachmentUrl, isAttachmentUrl, extractFilePath } from "@drafto/shared";
+import { toAttachmentUrl } from "@drafto/shared";
+import { useAttachmentUrlResolver } from "@/components/editor/use-attachment-url-resolver";
 
 interface NoteEditorProps {
   noteId: string;
@@ -40,33 +41,7 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
     [noteId],
   );
 
-  const urlCache = useRef(new Map<string, string>());
-
-  const resolveFileUrl = useCallback(async (url: string): Promise<string> => {
-    if (!isAttachmentUrl(url)) {
-      return url;
-    }
-
-    const cached = urlCache.current.get(url);
-    if (cached) {
-      return cached;
-    }
-
-    const filePath = extractFilePath(url);
-    const response = await fetch("/api/attachments/resolve-url", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filePath }),
-    });
-
-    if (!response.ok) {
-      throw new Error("Failed to resolve attachment URL");
-    }
-
-    const data = await response.json();
-    urlCache.current.set(url, data.signedUrl);
-    return data.signedUrl;
-  }, []);
+  const resolveFileUrl = useAttachmentUrlResolver();
 
   const editor = useCreateBlockNote({
     initialContent: initialContent && initialContent.length > 0 ? initialContent : undefined,
