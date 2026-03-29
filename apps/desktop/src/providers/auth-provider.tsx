@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 
 import { supabase } from "@/lib/supabase";
@@ -20,31 +20,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isApproved, setIsApproved] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isCheckingApproval, setIsCheckingApproval] = useState(false);
+  const isApprovedRef = useRef(isApproved);
 
-  const checkApproval = useCallback(
-    async (userId: string): Promise<boolean> => {
-      setIsCheckingApproval(true);
-      try {
-        const { data: profile, error } = await supabase
-          .from("profiles")
-          .select("is_approved")
-          .eq("id", userId)
-          .single();
+  useEffect(() => {
+    isApprovedRef.current = isApproved;
+  }, [isApproved]);
 
-        if (error) {
-          console.error("Failed to fetch approval status:", error);
-          return isApproved;
-        }
+  const checkApproval = useCallback(async (userId: string): Promise<boolean> => {
+    setIsCheckingApproval(true);
+    try {
+      const { data: profile, error } = await supabase
+        .from("profiles")
+        .select("is_approved")
+        .eq("id", userId)
+        .single();
 
-        const approved = profile?.is_approved === true;
-        setIsApproved(approved);
-        return approved;
-      } finally {
-        setIsCheckingApproval(false);
+      if (error) {
+        console.error("Failed to fetch approval status:", error);
+        return isApprovedRef.current;
       }
-    },
-    [isApproved],
-  );
+
+      const approved = profile?.is_approved === true;
+      setIsApproved(approved);
+      return approved;
+    } finally {
+      setIsCheckingApproval(false);
+    }
+  }, []);
 
   const refreshApprovalStatus = useCallback(async (): Promise<boolean> => {
     if (session?.user) {
