@@ -214,7 +214,8 @@ New test suite verifying data flows correctly across all 4 platforms. Located in
 - Controls macOS via Detox or AppleScript
 - Controls Android via Maestro (existing) or Detox
 - Controls iOS via Detox
-- Shares a test Supabase account across all platforms
+- Uses isolated test identities/workspaces per test case (or per platform run)
+- Seeds deterministic fixtures before each scenario and cleans up after completion
 - Waits for sync intervals between platform actions
 
 **Minimum viable cross-platform E2E**: Start with Desktop ↔ Web sync tests (both can run on CI macOS runner), then expand to include mobile simulators.
