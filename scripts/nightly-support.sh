@@ -29,6 +29,17 @@ cleanup() {
     local sanitized_log
     sanitized_log=$(grep -E '^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]' "$LOG_FILE" 2>/dev/null | tail -20 || echo "No log available")
     if command -v gh &>/dev/null; then
+      # Upload full log as a secret gist so it's accessible from the issue
+      local gist_url=""
+      if [[ -s "$LOG_FILE" ]]; then
+        gist_url=$(gh gist create --desc "Nightly script log $(date +%Y-%m-%d)" "$LOG_FILE" 2>/dev/null) || true
+      fi
+      local log_line
+      if [[ -n "$gist_url" ]]; then
+        log_line="**Full log**: $gist_url"
+      else
+        log_line="Full log (may contain sensitive content) is at \`logs/nightly-$(date +%Y-%m-%d).log\` on the local machine. (Gist upload failed.)"
+      fi
       gh issue create \
         --repo JakubAnderwald/drafto \
         --title "Nightly script failed ($(date +%Y-%m-%d))" \
@@ -42,7 +53,7 @@ The nightly script exited with code \`$exit_code\` on $(date '+%Y-%m-%d at %H:%M
 $sanitized_log
 \`\`\`
 
-Full log (may contain sensitive content) is at \`logs/nightly-$(date +%Y-%m-%d).log\` on the local machine.
+$log_line
 EOF
         )" 2>/dev/null || log "WARNING: Failed to create GitHub issue"
     else
