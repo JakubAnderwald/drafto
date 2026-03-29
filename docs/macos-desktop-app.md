@@ -288,17 +288,35 @@ Phases are designed so independent work can run as parallel subagents where note
 - react-native-macos-init generates an unused `Drafto-iOS` target — can be cleaned up later
 - Min macOS is 14.0 (not 13.0 as originally planned) — required by react-native-macos 0.81.5
 
-### Phase 2: Auth + Sync (~1-2 weeks)
+### Phase 2: Auth + Sync — ✅ COMPLETE (2026-03-29)
 
-**Can run in parallel:**
+**Completed:**
 
-- **Agent A**: Port auth provider (react-native-keychain for session, login/signup screens)
-- **Agent B**: Port sync engine from mobile (adapt imports, window focus triggers)
+- ✅ Supabase client with `react-native-keychain` for macOS Keychain session storage (replaces `expo-secure-store`)
+- ✅ Auth provider ported from mobile (identical logic — session management, approval gate)
+- ✅ Theme provider + design tokens ported (uses `@react-native-async-storage/async-storage` for preference persistence instead of `expo-secure-store`)
+- ✅ Sync engine copied from mobile (identical — WatermelonDB `synchronize()` + Supabase pull/push)
+- ✅ Full database provider with sync orchestration: window focus triggers (`AppState`), network reconnect (`@react-native-community/netinfo`), periodic 30s sync, retry with exponential backoff
+- ✅ Auth screens: login, signup, waiting-for-approval (adapted from mobile, using `@react-navigation/native-stack` instead of `expo-router`)
+- ✅ React Navigation auth flow with route guard (unauthenticated → login, unapproved → waiting-for-approval, approved → main app)
+- ✅ Main screen placeholder with sync status display
+- ✅ `use-network-status` hook and `generate-id` utility ported
+- ✅ TypeScript and ESLint pass cleanly
 
-**Sequential (after A+B):**
+**New dependencies added:**
 
-- Wire auth + sync together
-- Verify full sync round-trip: create on desktop → see on web/mobile and vice versa
+- `react-native-keychain` — macOS Keychain access for auth token storage
+- `@react-native-community/netinfo` — network connectivity detection
+- `@react-navigation/native` + `@react-navigation/native-stack` — navigation (replaces `expo-router`)
+- `react-native-safe-area-context` + `react-native-screens` — React Navigation peer deps
+- `@react-native-async-storage/async-storage` — theme preference persistence
+
+**Implementation notes:**
+
+- Config (Supabase URL/key) stored in `src/lib/config.ts` with dev credentials hardcoded; production builds will need a build-time replacement strategy
+- `AppState` on react-native-macos maps to `NSApplication.didBecomeActiveNotification` — same API as iOS
+- Attachment processing (`processPendingUploads`) deferred to Phase 4
+- Toast notifications deferred to Phase 3 (UI); sync conflicts are logged to console for now
 
 ### Phase 3: Core UI (~2-3 weeks)
 

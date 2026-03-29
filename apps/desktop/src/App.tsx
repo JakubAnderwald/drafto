@@ -1,40 +1,18 @@
 import React from "react";
-import { StyleSheet, Text, View } from "react-native";
 
+import { ThemeProvider } from "@/providers/theme-provider";
+import { AuthProvider } from "@/providers/auth-provider";
 import { DatabaseProvider } from "@/providers/database-provider";
-
-function AppContent() {
-  return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Drafto</Text>
-      <Text style={styles.subtitle}>macOS Desktop App</Text>
-    </View>
-  );
-}
+import { RootNavigator } from "@/navigation/app-navigator";
 
 export function App() {
   return (
-    <DatabaseProvider>
-      <AppContent />
-    </DatabaseProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <DatabaseProvider>
+          <RootNavigator />
+        </DatabaseProvider>
+      </AuthProvider>
+    </ThemeProvider>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: "700",
-    color: "#1A1A2E",
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 16,
-    color: "#6B7280",
-  },
-});
