@@ -6,8 +6,9 @@ appId: eu.drafto.mobile
 
 # --- Clean start ---
 - clearKeychain
-- launchApp:
-    clearState: true
+- stopApp
+- clearState
+- launchApp
 
 # Wait for JS bundle to load and login screen to render
 - extendedWaitUntil:

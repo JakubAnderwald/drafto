@@ -6,8 +6,8 @@ appId: eu.drafto.mobile
 
 # Full restart to land on Notebooks tab
 - stopApp
-- launchApp:
-    clearState: true
+- clearState
+- launchApp
 
 # Wait for Notebooks tab
 - extendedWaitUntil:
