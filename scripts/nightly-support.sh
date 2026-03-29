@@ -190,6 +190,22 @@ PHASE4_DEADLINE=$(( $(date +%s) + 7200 ))  # 2h hard cap for entire Phase 4
 
 log "=== Phase 4: Monitoring EAS builds (started after $PHASE3_START_ISO) ==="
 
+# Helper functions for platform retry tracking (bash 3.2 compatible — no associative arrays)
+get_platform_retries() {
+  case "$1" in
+    android|ANDROID) echo "$RETRIES_ANDROID" ;;
+    ios|IOS)         echo "$RETRIES_IOS" ;;
+    *)               echo 0 ;;
+  esac
+}
+
+set_platform_retries() {
+  case "$1" in
+    android|ANDROID) RETRIES_ANDROID=$2 ;;
+    ios|IOS)         RETRIES_IOS=$2 ;;
+  esac
+}
+
 # Collect EAS builds triggered during Phase 3 (filter by createdAt >= PHASE3_START_ISO)
 get_pending_builds() {
   cd "$REPO_ROOT/apps/mobile"
@@ -221,10 +237,9 @@ wait_for_builds() {
   done
 }
 
-# Track retry counts per build platform (android/ios — lowercase to match EAS CLI JSON output)
-declare -A PLATFORM_RETRIES
-PLATFORM_RETRIES[android]=0
-PLATFORM_RETRIES[ios]=0
+# Track retry counts per build platform (scalar variables for bash 3.2 compatibility)
+RETRIES_ANDROID=0
+RETRIES_IOS=0
 
 ROUND=0
 while true; do
@@ -265,7 +280,7 @@ while true; do
     BUILD_ERROR=$(echo "$BUILD_JSON" | jq -r '.error.message // "Unknown error"')
     BUILD_ERROR_CODE=$(echo "$BUILD_JSON" | jq -r '.error.errorCode // "UNKNOWN"')
 
-    RETRIES=${PLATFORM_RETRIES[$BUILD_PLATFORM]:-0}
+    RETRIES=$(get_platform_retries "$BUILD_PLATFORM")
     if [[ "$RETRIES" -ge "$MAX_BUILD_RETRIES" ]]; then
       log "Platform $BUILD_PLATFORM: already retried $RETRIES times, skipping. Manual intervention needed."
       continue
@@ -315,7 +330,7 @@ PROMPT
       log "ERROR: Fix attempt for $BUILD_PLATFORM build failed"
     fi
 
-    PLATFORM_RETRIES[$BUILD_PLATFORM]=$((RETRIES + 1))
+    set_platform_retries "$BUILD_PLATFORM" $((RETRIES + 1))
     NEEDS_ANOTHER_ROUND=true
     log "--- Done with $BUILD_PLATFORM build fix attempt ---"
   done
