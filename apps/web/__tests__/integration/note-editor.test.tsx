@@ -4,10 +4,15 @@ import { act } from "react";
 
 // Mock BlockNote dependencies — they require a real DOM canvas, which jsdom lacks
 let capturedUploadFile: ((file: File) => Promise<string>) | undefined;
+let capturedResolveFileUrl: ((url: string) => Promise<string>) | undefined;
 
 vi.mock("@blocknote/react", () => ({
-  useCreateBlockNote: (opts?: { uploadFile?: (file: File) => Promise<string> }) => {
+  useCreateBlockNote: (opts?: {
+    uploadFile?: (file: File) => Promise<string>;
+    resolveFileUrl?: (url: string) => Promise<string>;
+  }) => {
     capturedUploadFile = opts?.uploadFile;
+    capturedResolveFileUrl = opts?.resolveFileUrl;
     return { document: [] };
   },
   BlockNoteView: vi.fn(({ editor: _editor, theme: _theme }) => (
@@ -166,6 +171,63 @@ describe("NoteEditor", () => {
     const file = new File(["test"], "test.png", { type: "image/png" });
     await expect(capturedUploadFile!(file)).rejects.toThrow(
       "Upload succeeded but no file path was returned",
+    );
+  });
+
+  it("provides resolveFileUrl that resolves attachment:// URLs via API", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          signedUrl:
+            "https://test.supabase.co/storage/v1/object/sign/attachments/u/n/img.png?token=fresh",
+        }),
+    });
+
+    await act(async () => {
+      render(<NoteEditor noteId="note-1" />);
+    });
+
+    expect(capturedResolveFileUrl).toBeDefined();
+    const result = await capturedResolveFileUrl!("attachment://u/n/img.png");
+
+    expect(result).toBe(
+      "https://test.supabase.co/storage/v1/object/sign/attachments/u/n/img.png?token=fresh",
+    );
+    expect(mockFetch).toHaveBeenCalledWith("/api/attachments/resolve-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filePath: "u/n/img.png" }),
+    });
+  });
+
+  it("resolveFileUrl passes through non-attachment URLs unchanged", async () => {
+    await act(async () => {
+      render(<NoteEditor noteId="note-1" />);
+    });
+
+    expect(capturedResolveFileUrl).toBeDefined();
+    mockFetch.mockClear();
+    const signedUrl =
+      "https://test.supabase.co/storage/v1/object/sign/attachments/u/n/img.png?token=abc";
+    const result = await capturedResolveFileUrl!(signedUrl);
+
+    expect(result).toBe(signedUrl);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("resolveFileUrl throws when API returns an error", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      json: () => Promise.resolve({ error: "Forbidden" }),
+    });
+
+    await act(async () => {
+      render(<NoteEditor noteId="note-1" />);
+    });
+
+    await expect(capturedResolveFileUrl!("attachment://u/n/img.png")).rejects.toThrow(
+      "Failed to resolve attachment URL",
     );
   });
 });

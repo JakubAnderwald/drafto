@@ -6,7 +6,7 @@ import { BlockNoteView } from "@blocknote/mantine";
 import type { Block } from "@blocknote/core";
 import "@blocknote/mantine/style.css";
 import { useTheme } from "@/hooks/use-theme";
-import { toAttachmentUrl } from "@drafto/shared";
+import { toAttachmentUrl, isAttachmentUrl, extractFilePath } from "@drafto/shared";
 
 interface NoteEditorProps {
   noteId: string;
@@ -40,9 +40,30 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
     [noteId],
   );
 
+  const resolveFileUrl = useCallback(async (url: string): Promise<string> => {
+    if (!isAttachmentUrl(url)) {
+      return url;
+    }
+
+    const filePath = extractFilePath(url);
+    const response = await fetch("/api/attachments/resolve-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filePath }),
+    });
+
+    if (!response.ok) {
+      throw new Error("Failed to resolve attachment URL");
+    }
+
+    const data = await response.json();
+    return data.signedUrl;
+  }, []);
+
   const editor = useCreateBlockNote({
     initialContent: initialContent && initialContent.length > 0 ? initialContent : undefined,
     uploadFile,
+    resolveFileUrl,
   });
 
   return (
