@@ -1,0 +1,40 @@
+require 'pathname'
+
+ws_dir = Pathname.new(__dir__)
+ws_dir = ws_dir.parent until
+  File.exist?("#{ws_dir}/node_modules/react-native-macos/scripts/react_native_pods.rb") ||
+  ws_dir.expand_path.to_s == '/'
+require "#{ws_dir}/node_modules/react-native-macos/scripts/react_native_pods.rb"
+
+prepare_react_native_project!
+
+target 'Drafto-macOS' do
+  platform :macos, '14.0'
+  use_native_modules!
+
+  use_react_native!(
+    :path => '../../../node_modules/react-native-macos',
+    :fabric_enabled => ENV['RCT_NEW_ARCH_ENABLED'] == '1',
+    # An absolute path to your application root.
+    :app_path => "#{Pod::Config.instance.installation_root}/.."
+  )
+
+  # WatermelonDB and simdjson are auto-linked by use_native_modules!
+  # Both patched via pnpm patch to add macOS platform support
+
+  post_install do |installer|
+    react_native_post_install(installer)
+
+    # Fix dispatch_queue_t strong property error on Xcode 26+ / macOS SDK
+    # CocoaPods adds -DOS_OBJECT_USE_OBJC=0 as per-file compiler flags, which makes
+    # dispatch_queue_t a non-ObjC type and breaks 'strong' properties in RCTBridgeModule.h
+    installer.pods_project.targets.each do |target|
+      next unless target.respond_to?(:source_build_phase)
+      target.source_build_phase.files.each do |file|
+        next unless file.settings && file.settings['COMPILER_FLAGS']
+        file.settings['COMPILER_FLAGS'] = file.settings['COMPILER_FLAGS']
+          .gsub('-DOS_OBJECT_USE_OBJC=0', '-DOS_OBJECT_USE_OBJC=1')
+      end
+    end
+  end
+end

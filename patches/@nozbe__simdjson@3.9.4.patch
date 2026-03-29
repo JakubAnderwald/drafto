@@ -1,0 +1,13 @@
+diff --git a/simdjson.podspec b/simdjson.podspec
+index 33f0ff0276a3cf92883ce663d2914a368bfa06b2..90639829232ca076c2b59eb188c52b83fcdba5cf 100644
+--- a/simdjson.podspec
++++ b/simdjson.podspec
+@@ -10,7 +10,7 @@ Pod::Spec.new do |s|
+   s.homepage     = package["homepage"]
+   s.license      = package["license"]
+   s.author       = { "author" => package["author"] }
+-  s.platforms    = { :ios => "11.0", :tvos => "11.0" }
++  s.platforms    = { :ios => "11.0", :tvos => "11.0", :macos => "14.0" }
+   s.source = { :git => "https://github.com/Nozbe/simdmjson.git", :tag => "v#{s.version}" }
+   s.source_files = "src/*.{h,cpp}"
+   s.public_header_files = 'src/simdjson.h'
