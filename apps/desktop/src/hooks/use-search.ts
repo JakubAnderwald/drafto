@@ -25,6 +25,7 @@ export function useSearch(query: string) {
     const subscription = database
       .get<Note>("notes")
       .query(
+        Q.experimentalJoinTables(["notebooks"]),
         Q.or(
           Q.where("title", Q.like(`%${sanitized}%`)),
           Q.where("content", Q.like(`%${sanitized}%`)),

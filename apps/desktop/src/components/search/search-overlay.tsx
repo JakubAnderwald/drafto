@@ -7,7 +7,6 @@ import {
   StyleSheet,
   ActivityIndicator,
   ScrollView,
-  Modal,
 } from "react-native";
 
 import { useSearch } from "@/hooks/use-search";
@@ -47,66 +46,63 @@ export function SearchOverlay({ visible, onClose, onSelectNote }: SearchOverlayP
   if (!visible) return null;
 
   return (
-    <Modal transparent animationType="fade" visible={visible} onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.container} onPress={() => {}}>
-          <View style={styles.searchRow}>
-            <Text style={styles.searchIcon}>⌘K</Text>
-            <TextInput
-              ref={inputRef}
-              style={styles.input}
-              value={query}
-              onChangeText={setQuery}
-              placeholder="Search notes..."
-              placeholderTextColor={semantic.fgSubtle}
-              // @ts-expect-error -- RN macOS supports onKeyDown but types are incomplete
-              onKeyDown={(e: { nativeEvent: { key: string } }) => {
-                if (e.nativeEvent.key === "Escape") {
-                  onClose();
-                }
-              }}
-            />
-            {loading && <ActivityIndicator size="small" color={colors.primary[600]} />}
-          </View>
+    <View style={styles.backdrop}>
+      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+      <View style={styles.container}>
+        <View style={styles.searchRow}>
+          <Text style={styles.searchIcon}>⌘K</Text>
+          <TextInput
+            ref={inputRef}
+            style={styles.input}
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search notes..."
+            placeholderTextColor={semantic.fgSubtle}
+            // @ts-expect-error -- RN macOS supports onKeyDown but types are incomplete
+            onKeyDown={(e: { nativeEvent: { key: string } }) => {
+              if (e.nativeEvent.key === "Escape") {
+                onClose();
+              }
+            }}
+          />
+          {loading && <ActivityIndicator size="small" color={colors.primary[600]} />}
+        </View>
 
-          {query.trim() !== "" && (
-            <ScrollView style={styles.results}>
-              {error ? (
-                <Text style={styles.noResults}>{error}</Text>
-              ) : results.length === 0 && !loading ? (
-                <Text style={styles.noResults}>No results found</Text>
-              ) : (
-                results.map((note) => (
-                  <Pressable
-                    key={note.id}
-                    style={({ pressed }) => [
-                      styles.resultItem,
-                      pressed && styles.resultItemPressed,
-                    ]}
-                    onPress={() => handleSelect(note.id)}
-                  >
-                    <Text style={styles.resultTitle} numberOfLines={1}>
-                      {note.title || "Untitled"}
-                    </Text>
-                    <Text style={styles.resultDate}>{note.updatedAt.toLocaleDateString()}</Text>
-                  </Pressable>
-                ))
-              )}
-            </ScrollView>
-          )}
-        </Pressable>
-      </Pressable>
-    </Modal>
+        {query.trim() !== "" && (
+          <ScrollView style={styles.results}>
+            {error ? (
+              <Text style={styles.noResults}>{error}</Text>
+            ) : results.length === 0 && !loading ? (
+              <Text style={styles.noResults}>No results found</Text>
+            ) : (
+              results.map((note) => (
+                <Pressable
+                  key={note.id}
+                  style={({ pressed }) => [styles.resultItem, pressed && styles.resultItemPressed]}
+                  onPress={() => handleSelect(note.id)}
+                >
+                  <Text style={styles.resultTitle} numberOfLines={1}>
+                    {note.title || "Untitled"}
+                  </Text>
+                  <Text style={styles.resultDate}>{note.updatedAt.toLocaleDateString()}</Text>
+                </Pressable>
+              ))
+            )}
+          </ScrollView>
+        )}
+      </View>
+    </View>
   );
 }
 
 const createStyles = (semantic: SemanticColors) =>
   StyleSheet.create({
     backdrop: {
-      flex: 1,
+      ...StyleSheet.absoluteFillObject,
       backgroundColor: "rgba(0, 0, 0, 0.3)",
       alignItems: "center",
       paddingTop: 80,
+      zIndex: 1000,
     },
     container: {
       width: 480,
