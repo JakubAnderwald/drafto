@@ -1,7 +1,10 @@
 import React from "react";
 
 import { render, fireEvent, waitFor } from "../helpers/test-utils";
-import { AttachmentList } from "../../src/components/editor/attachment-list";
+import {
+  AttachmentList,
+  _signedUrlCacheForTesting as signedUrlCache,
+} from "../../src/components/editor/attachment-list";
 
 const mockSync = jest.fn().mockResolvedValue(undefined);
 const mockDatabaseWrite = jest.fn((fn: () => Promise<void>) => fn());
@@ -67,6 +70,7 @@ function createMockAttachment(overrides: Partial<MockAttachment> = {}): MockAtta
 
 beforeEach(() => {
   jest.clearAllMocks();
+  signedUrlCache.clear();
   mockGetSignedUrl.mockResolvedValue("https://example.com/signed-url");
   mockOpenAttachment.mockResolvedValue({ status: "opened" });
 });
@@ -181,17 +185,15 @@ describe("AttachmentList", () => {
       <AttachmentList attachments={attachments as unknown as never[]} />,
     );
 
-    // Wait for signed URL to load
-    await waitFor(() => {
-      expect(mockGetSignedUrl).toHaveBeenCalled();
-    });
-
-    // Simulate image load error
+    // Wait for signed URL to resolve and Image to appear
     const { Image } = require("react-native");
     await waitFor(() => {
-      const image = UNSAFE_getByType(Image);
-      fireEvent(image, "error");
+      UNSAFE_getByType(Image);
     });
+
+    // Simulate image load error outside waitFor to fire only once
+    const image = UNSAFE_getByType(Image);
+    fireEvent(image, "error");
 
     await waitFor(() => {
       expect(getByText("Tap to open")).toBeTruthy();
@@ -220,6 +222,75 @@ describe("AttachmentList", () => {
 
     await waitFor(() => {
       expect(mockGetSignedUrl).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("preserves image via lastGoodUri when transitioning from pending to uploaded", async () => {
+    const pending = createMockAttachment({
+      uploadStatus: "pending",
+      isPendingUpload: true,
+      localUri: "file:///local/photo.jpg",
+    });
+
+    const { rerender, UNSAFE_getByType } = render(
+      <AttachmentList attachments={[pending] as unknown as never[]} />,
+    );
+
+    // Image renders with localUri while pending
+    const { Image } = require("react-native");
+    await waitFor(() => {
+      const image = UNSAFE_getByType(Image);
+      expect(image.props.source.uri).toBe("file:///local/photo.jpg");
+    });
+
+    // Simulate upload completing: isPending becomes false, localUri is cleared
+    const uploaded = createMockAttachment({
+      uploadStatus: "uploaded",
+      isPendingUpload: false,
+      localUri: null,
+    });
+
+    rerender(<AttachmentList attachments={[uploaded] as unknown as never[]} />);
+
+    // Image should still be visible (using lastGoodUri fallback) while signed URL loads
+    await waitFor(() => {
+      const image = UNSAFE_getByType(Image);
+      expect(image.props.source.uri).toBeTruthy();
+    });
+  });
+
+  it("uses signed URL cache to avoid redundant network requests", async () => {
+    // Pre-populate cache
+    signedUrlCache.set("user-1/note-1/photo.jpg", "https://example.com/cached-url");
+
+    const attachments = [createMockAttachment()];
+    const { UNSAFE_getByType } = render(
+      <AttachmentList attachments={attachments as unknown as never[]} />,
+    );
+
+    // Image should render immediately from cache without calling getSignedUrl
+    const { Image } = require("react-native");
+    await waitFor(() => {
+      const image = UNSAFE_getByType(Image);
+      expect(image.props.source.uri).toBe("https://example.com/cached-url");
+    });
+
+    expect(mockGetSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it("populates cache after successful signed URL fetch", async () => {
+    expect(signedUrlCache.has("user-1/note-1/photo.jpg")).toBe(false);
+
+    const attachments = [createMockAttachment()];
+    render(<AttachmentList attachments={attachments as unknown as never[]} />);
+
+    await waitFor(() => {
+      expect(mockGetSignedUrl).toHaveBeenCalledWith("user-1/note-1/photo.jpg");
+    });
+
+    // Cache should now contain the URL
+    await waitFor(() => {
+      expect(signedUrlCache.get("user-1/note-1/photo.jpg")).toBe("https://example.com/signed-url");
     });
   });
 });
