@@ -1,4 +1,4 @@
-import "./src/lib/url-polyfill";
+import "@/lib/url-polyfill";
 import { AppRegistry } from "react-native";
 import { App } from "./src/App";
 

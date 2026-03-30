@@ -13,7 +13,7 @@ export function generateId(): string {
     crypto.getRandomValues(bytes);
   } else {
     // Fallback for Hermes versions without Web Crypto
-    for (let i = 0; i < 16; i++) {
+    for (let i = 0; i < bytes.length; i++) {
       bytes[i] = Math.floor(Math.random() * 256);
     }
   }

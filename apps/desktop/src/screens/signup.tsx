@@ -99,7 +99,7 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
       </View>
 
       <View style={styles.footer}>
-        <Pressable onPress={onNavigateToLogin}>
+        <Pressable onPress={onNavigateToLogin} disabled={!onNavigateToLogin}>
           <Text style={styles.footerText}>
             Already have an account? <Text style={styles.link}>Log in</Text>
           </Text>

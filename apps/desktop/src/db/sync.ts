@@ -139,8 +139,11 @@ async function pushNotebookChanges(changes: SyncTableChanges) {
 
   if (changes.updated.length > 0) {
     for (const r of changes.updated) {
-      const nbId = (r.remote_id || r.id) as string;
-      if (!nbId) continue;
+      const nbId = r.remote_id as string | undefined;
+      if (!nbId) {
+        console.warn(`[Sync] Skipping notebook update with no remote_id: ${r.id}`);
+        continue;
+      }
       const { error } = await supabase
         .from("notebooks")
         .update({
@@ -175,9 +178,9 @@ async function pushNoteChanges(changes: SyncTableChanges) {
 
   if (changes.updated.length > 0) {
     for (const r of changes.updated) {
-      const noteId = (r.remote_id || r.id) as string;
+      const noteId = r.remote_id as string | undefined;
       if (!noteId) {
-        console.warn("[Sync] Skipping note update with no id:", JSON.stringify(r));
+        console.warn(`[Sync] Skipping note update with no remote_id: ${r.id}`);
         continue;
       }
       const { error } = await supabase

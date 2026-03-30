@@ -28,15 +28,15 @@ export function RootNavigator() {
     return <MainScreen />;
   }
 
-  // Auth flow — determine which screen to show
-  const initialRoute: AuthRoute = user && !isApproved ? "WaitingForApproval" : "Login";
-  const currentRoute = authRoute === "Login" && user && !isApproved ? initialRoute : authRoute;
+  // Authenticated but not approved — always show waiting screen
+  if (user && !isApproved) {
+    return <WaitingForApprovalScreen />;
+  }
 
-  switch (currentRoute) {
+  // Not authenticated — show login/signup flow
+  switch (authRoute) {
     case "Signup":
       return <SignupScreen onNavigateToLogin={() => setAuthRoute("Login")} />;
-    case "WaitingForApproval":
-      return <WaitingForApprovalScreen />;
     case "Login":
     default:
       return <LoginScreen onNavigateToSignup={() => setAuthRoute("Signup")} />;
