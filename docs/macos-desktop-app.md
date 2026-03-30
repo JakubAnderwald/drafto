@@ -318,19 +318,31 @@ Phases are designed so independent work can run as parallel subagents where note
 - Attachment processing (`processPendingUploads`) deferred to Phase 4
 - Toast notifications deferred to Phase 3 (UI); sync conflicts are logged to console for now
 
-### Phase 3: Core UI (~2-3 weeks)
+### Phase 3: Core UI — ✅ COMPLETE (2026-03-29)
 
-**Can run in parallel:**
+**Completed:**
 
-- **Agent A**: macOS 3-pane layout (sidebar + note list + editor) — the structural shell
-- **Agent B**: Notebooks sidebar with CRUD + note list with selection
-- **Agent C**: Trash view + search overlay (Cmd+K)
+- ✅ macOS 3-pane layout (sidebar + note list + editor) — `MainScreen` with fixed sidebar (220px) + note list (280px) + flexible editor
+- ✅ Notebooks sidebar with full CRUD: create (inline input), rename (long-press to edit), delete, selection state
+- ✅ Note list with create, select, trash, preview text extraction (TipTap JSON + plain text), relative date formatting
+- ✅ Note editor panel with title + content editing, debounced auto-save via `useAutoSave` hook
+- ✅ Trash view with restore and permanent delete actions
+- ✅ Search overlay (Cmd+K style modal) with full-text search across titles, content, and notebook names
+- ✅ Sync status indicator (dot + text + last synced time, tap to sync)
+- ✅ Offline banner (animated slide-in/out, reconnection feedback)
+- ✅ Empty state component for no-selection and empty-list states
+- ✅ All hooks ported from mobile: `useNotebooks`, `useNotes`, `useNote`, `useSearch`, `useTrashedNotes`, `useAutoSave`
+- ✅ Data layer ported from mobile: `lib/data/notes.ts`, `lib/data/notebooks.ts`
+- ✅ All components use semantic design tokens from `theme/tokens.ts`
+- ✅ TypeScript and ESLint pass cleanly
 
-**Sequential:**
+**Implementation notes:**
 
-- Integrate all UI panels together
-- Ensure design system tokens are applied correctly
-- Add any new macOS-specific components to design system showcase
+- Editor uses plain `TextInput` for Phase 3 — TenTap rich text integration deferred to Phase 4
+- Cmd+K keyboard shortcut requires native menu bar integration (Phase 5); search overlay is functional via code
+- No `@expo/vector-icons` dependency — uses unicode characters and colored dots for status indicators
+- `react-hooks/exhaustive-deps` rule not available in current ESLint config (no `eslint-plugin-react-hooks`) — dependency arrays verified manually
+- Notebook/note CRUD operates directly on WatermelonDB (offline-first); changes sync to Supabase via existing sync engine
 
 ### Phase 4: Editor + Attachments (~1-2 weeks)
 
