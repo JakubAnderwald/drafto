@@ -1,0 +1,364 @@
+import { useState, useEffect, useCallback, useMemo } from "react";
+import {
+  View,
+  Text,
+  Image,
+  Pressable,
+  StyleSheet,
+  ActivityIndicator,
+  Alert,
+  FlatList,
+} from "react-native";
+
+import { getSignedUrl, deleteAttachment as deleteAttachmentApi, openAttachment } from "@/lib/data";
+import { useDatabase } from "@/providers/database-provider";
+import { useTheme } from "@/providers/theme-provider";
+import { colors } from "@/theme/tokens";
+import type { SemanticColors } from "@/theme/tokens";
+import type { Attachment } from "@/db";
+
+interface AttachmentListProps {
+  attachments: Attachment[];
+}
+
+function isImageMimeType(mimeType: string): boolean {
+  return mimeType.startsWith("image/");
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+interface AttachmentItemProps {
+  attachment: Attachment;
+  onDelete: (attachment: Attachment) => void;
+  styles: ReturnType<typeof createStyles>;
+}
+
+function AttachmentItem({ attachment, onDelete, styles }: AttachmentItemProps) {
+  const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  const [loadingUrl, setLoadingUrl] = useState(false);
+  const [urlError, setUrlError] = useState(false);
+  const [imageError, setImageError] = useState(false);
+  const isImage = isImageMimeType(attachment.mimeType);
+  const isPending = attachment.isPendingUpload;
+
+  const displayUri = isPending ? attachment.localUri : signedUrl;
+
+  useEffect(() => {
+    if (isPending) return;
+
+    let cancelled = false;
+
+    async function fetchUrl() {
+      setLoadingUrl(true);
+      setUrlError(false);
+      try {
+        const url = await getSignedUrl(attachment.filePath);
+        if (!cancelled) setSignedUrl(url);
+      } catch {
+        if (!cancelled) setUrlError(true);
+      } finally {
+        if (!cancelled) setLoadingUrl(false);
+      }
+    }
+
+    fetchUrl();
+    return () => {
+      cancelled = true;
+    };
+  }, [attachment.filePath, isPending]);
+
+  const handlePress = useCallback(async () => {
+    if (!isPending && urlError) {
+      setLoadingUrl(true);
+      setUrlError(false);
+      try {
+        const url = await getSignedUrl(attachment.filePath);
+        setSignedUrl(url);
+        setLoadingUrl(false);
+        await openAttachment({ signedUrl: url, localUri: null, isPending: false });
+      } catch {
+        setUrlError(true);
+        setLoadingUrl(false);
+      }
+      return;
+    }
+
+    await openAttachment({
+      signedUrl,
+      localUri: attachment.localUri,
+      isPending,
+    });
+  }, [signedUrl, isPending, attachment.localUri, attachment.filePath, urlError]);
+
+  const handleDelete = useCallback(() => {
+    onDelete(attachment);
+  }, [attachment, onDelete]);
+
+  if (isImage) {
+    return (
+      <View style={styles.imageItem}>
+        {!isPending && loadingUrl ? (
+          <View style={styles.imagePlaceholder}>
+            <ActivityIndicator size="small" color={colors.primary[600]} />
+          </View>
+        ) : displayUri && !imageError ? (
+          <Pressable onPress={handlePress} accessibilityLabel={`Open ${attachment.fileName}`}>
+            <Image
+              source={{ uri: displayUri }}
+              style={styles.imagePreview}
+              resizeMode="cover"
+              onError={() => setImageError(true)}
+              accessibilityLabel={attachment.fileName}
+            />
+          </Pressable>
+        ) : urlError ? (
+          <Pressable onPress={handlePress} style={styles.imagePlaceholder}>
+            <Text style={styles.retryIcon}>↻</Text>
+            <Text style={styles.retryHint}>Click to retry</Text>
+          </Pressable>
+        ) : (
+          <Pressable
+            onPress={handlePress}
+            style={styles.imagePlaceholder}
+            accessibilityLabel={`Open ${attachment.fileName}`}
+          >
+            <Text style={styles.placeholderIcon}>🖼</Text>
+            {imageError && <Text style={styles.retryHint}>Click to open</Text>}
+          </Pressable>
+        )}
+        <View style={styles.imageFooter}>
+          <View style={styles.fileNameRow}>
+            {isPending && <PendingBadge />}
+            <Text style={styles.imageFileName} numberOfLines={1}>
+              {attachment.fileName}
+            </Text>
+          </View>
+          <Pressable
+            onPress={handleDelete}
+            hitSlop={8}
+            accessibilityLabel={`Delete ${attachment.fileName}`}
+            accessibilityRole="button"
+          >
+            <Text style={styles.deleteIcon}>🗑</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      style={styles.fileItem}
+      onPress={handlePress}
+      disabled={!isPending && !signedUrl && !urlError && loadingUrl}
+      accessibilityLabel={`Open ${attachment.fileName}`}
+      accessibilityRole="link"
+    >
+      <Text style={styles.fileIcon}>{urlError ? "↻" : "📄"}</Text>
+      <View style={styles.fileInfo}>
+        <View style={styles.fileNameRow}>
+          {isPending && <PendingBadge />}
+          <Text style={styles.fileFileName} numberOfLines={1}>
+            {attachment.fileName}
+          </Text>
+        </View>
+        <Text style={styles.fileMeta}>
+          {urlError ? "Click to retry" : formatFileSize(attachment.fileSize)}
+        </Text>
+      </View>
+      <Pressable
+        onPress={handleDelete}
+        hitSlop={8}
+        accessibilityLabel={`Delete ${attachment.fileName}`}
+        accessibilityRole="button"
+      >
+        <Text style={styles.deleteIcon}>🗑</Text>
+      </Pressable>
+    </Pressable>
+  );
+}
+
+function PendingBadge() {
+  return (
+    <View style={pendingStyles.pendingBadge}>
+      <Text style={pendingStyles.pendingIcon}>☁</Text>
+      <Text style={pendingStyles.pendingText}>Pending</Text>
+    </View>
+  );
+}
+
+export function AttachmentList({ attachments }: AttachmentListProps) {
+  const { database, sync } = useDatabase();
+  const { semantic } = useTheme();
+  const styles = useMemo(() => createStyles(semantic), [semantic]);
+
+  const handleDelete = useCallback(
+    (attachment: Attachment) => {
+      Alert.alert("Delete Attachment", `Delete "${attachment.fileName}"?`, [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              // Only delete from Supabase if already uploaded
+              if (!attachment.isPendingUpload) {
+                await deleteAttachmentApi(attachment.remoteId, attachment.filePath);
+              }
+              await database.write(async () => {
+                await attachment.markAsDeleted();
+              });
+              await sync();
+            } catch (err) {
+              Alert.alert(
+                "Error",
+                err instanceof Error ? err.message : "Failed to delete attachment",
+              );
+            }
+          },
+        },
+      ]);
+    },
+    [database, sync],
+  );
+
+  if (attachments.length === 0) return null;
+
+  return (
+    <View style={styles.container}>
+      <Text style={styles.sectionTitle}>Attachments</Text>
+      <FlatList
+        data={attachments}
+        keyExtractor={(item) => item.id}
+        horizontal={false}
+        scrollEnabled={false}
+        renderItem={({ item }) => (
+          <AttachmentItem attachment={item} onDelete={handleDelete} styles={styles} />
+        )}
+      />
+    </View>
+  );
+}
+
+const pendingStyles = StyleSheet.create({
+  pendingBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    backgroundColor: colors.secondary[50],
+    borderRadius: 4,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+  },
+  pendingIcon: {
+    fontSize: 10,
+    color: colors.warning,
+  },
+  pendingText: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: colors.warning,
+  },
+});
+
+const createStyles = (semantic: SemanticColors) =>
+  StyleSheet.create({
+    container: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: semantic.border,
+      backgroundColor: semantic.bg,
+      paddingVertical: 8,
+    },
+    sectionTitle: {
+      fontSize: 13,
+      fontWeight: "600",
+      color: semantic.fgMuted,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+      paddingHorizontal: 16,
+      paddingVertical: 4,
+    },
+    imageItem: {
+      marginHorizontal: 16,
+      marginVertical: 4,
+      borderRadius: 8,
+      overflow: "hidden",
+      backgroundColor: semantic.bgMuted,
+    },
+    imagePlaceholder: {
+      height: 160,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: semantic.bgMuted,
+    },
+    placeholderIcon: {
+      fontSize: 24,
+    },
+    retryIcon: {
+      fontSize: 24,
+      color: colors.neutral[400],
+    },
+    retryHint: {
+      fontSize: 12,
+      color: semantic.fgSubtle,
+      marginTop: 4,
+    },
+    imagePreview: {
+      width: "100%",
+      height: 160,
+      borderRadius: 8,
+    },
+    imageFooter: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+    },
+    imageFileName: {
+      flex: 1,
+      fontSize: 12,
+      color: semantic.fgMuted,
+      marginRight: 8,
+    },
+    fileItem: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      marginHorizontal: 16,
+      marginVertical: 4,
+      paddingVertical: 10,
+      paddingHorizontal: 12,
+      borderRadius: 8,
+      backgroundColor: semantic.bgMuted,
+    },
+    fileIcon: {
+      fontSize: 20,
+    },
+    fileInfo: {
+      flex: 1,
+    },
+    fileFileName: {
+      fontSize: 14,
+      fontWeight: "500",
+      color: semantic.fg,
+      flex: 1,
+    },
+    fileMeta: {
+      fontSize: 12,
+      color: semantic.fgSubtle,
+      marginTop: 2,
+    },
+    fileNameRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+    },
+    deleteIcon: {
+      fontSize: 14,
+    },
+  });

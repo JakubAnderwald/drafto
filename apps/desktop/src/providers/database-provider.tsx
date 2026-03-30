@@ -7,6 +7,7 @@ import NetInfo from "@react-native-community/netinfo";
 
 import { database } from "@/db";
 import { syncDatabase, SyncNetworkError } from "@/db/sync";
+import { processPendingUploads, cleanupOrphanedFiles } from "@/lib/data";
 import { measureAsync } from "@/lib/performance";
 import { useAuth } from "@/providers/auth-provider";
 
@@ -67,6 +68,14 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       const result = await measureAsync("sync", () => syncDatabase(database));
       retryCountRef.current = 0;
       setLastSyncedAt(new Date());
+
+      // Upload any locally-queued attachments after sync
+      try {
+        await processPendingUploads();
+      } catch (uploadErr) {
+        console.error("[DatabaseProvider] Attachment upload processing failed:", uploadErr);
+      }
+
       await checkPendingChanges();
 
       if (result.conflictCount > 0) {
@@ -101,7 +110,12 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (user) {
       retryCountRef.current = 0;
-      sync();
+      // Sync first, then clean up orphaned files (cleanup needs complete DB state)
+      sync().then(() => {
+        cleanupOrphanedFiles().catch((cleanupErr) => {
+          console.warn("[DatabaseProvider] Orphaned file cleanup failed:", cleanupErr);
+        });
+      });
     }
     return () => {
       if (retryTimerRef.current) {

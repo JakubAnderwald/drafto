@@ -344,12 +344,38 @@ Phases are designed so independent work can run as parallel subagents where note
 - `react-hooks/exhaustive-deps` rule not available in current ESLint config (no `eslint-plugin-react-hooks`) — dependency arrays verified manually
 - Notebook/note CRUD operates directly on WatermelonDB (offline-first); changes sync to Supabase via existing sync engine
 
-### Phase 4: Editor + Attachments (~1-2 weeks)
+### Phase 4: Editor + Attachments — ✅ COMPLETE (2026-03-30)
 
-**Can run in parallel:**
+**Completed:**
 
-- **Agent A**: TenTap editor integration (verify macOS, implement fallback if needed) + auto-save
-- **Agent B**: Attachment upload/download (react-native-fs + Supabase Storage) + attachment queue
+- ✅ TenTap rich text editor integration (`@10play/tentap-editor` + `react-native-webview`) — replaces Phase 3 plain TextInput
+- ✅ Editor auto-save via `onChange` callback — saves content as TipTap JSON string to WatermelonDB
+- ✅ Content format handling: parses TipTap JSON, falls back to plain text → HTML conversion for legacy content
+- ✅ Attachment data layer ported from mobile:
+  - `attachments.ts` — file picking via `react-native-document-picker` (replaces Expo pickers), upload/download/delete via Supabase Storage
+  - `attachment-queue.ts` — offline-first queue using `react-native-fs` (replaces `expo-file-system`), local file save → background upload on sync
+  - `open-attachment.ts` — opens files via `Linking.openURL` (macOS opens in Finder/default app or browser)
+- ✅ `useAttachments` hook ported from mobile (identical — WatermelonDB observable query)
+- ✅ Attachment UI components: `AttachmentPicker` (image + file buttons), `AttachmentList` (image thumbnails, file items, pending badges, delete with confirmation)
+- ✅ `processPendingUploads()` wired into sync cycle — pending attachments upload after each successful sync
+- ✅ `cleanupOrphanedFiles()` runs on startup to remove stale local attachment files
+- ✅ Barrel export `lib/data/index.ts` for all data layer functions
+- ✅ TypeScript and ESLint pass cleanly
+
+**New dependencies added:**
+
+- `@10play/tentap-editor` — TipTap-based rich text editor (same as mobile)
+- `react-native-webview` — WebView for TenTap editor rendering (has macOS support)
+- `react-native-document-picker` — native NSOpenPanel file picker (replaces `expo-image-picker` + `expo-document-picker`)
+- `react-native-fs` — file system access for local attachment cache (replaces `expo-file-system`)
+
+**Implementation notes:**
+
+- TenTap uses WebView internally for the rich text area — rest of app remains fully native AppKit
+- `react-native-document-picker` uses NSOpenPanel on macOS, filtering by `types.images` for image picking and `types.allFiles` for general files
+- Content stored as JSON string in WatermelonDB `notes.content` field — compatible with mobile TipTap format
+- No `@expo/vector-icons` — attachment UI uses unicode characters for icons (consistent with Phase 3 approach)
+- Alert.alert used for error messages and delete confirmations (no toast provider yet)
 
 ### Phase 5: macOS Polish (~1-2 weeks)
 
