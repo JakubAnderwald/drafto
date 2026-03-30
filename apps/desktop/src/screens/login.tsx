@@ -1,13 +1,5 @@
 import { useState, useMemo } from "react";
-import {
-  Text,
-  View,
-  TextInput,
-  Pressable,
-  Button,
-  StyleSheet,
-  ActivityIndicator,
-} from "react-native";
+import { Text, View, TextInput, Pressable, Button, StyleSheet } from "react-native";
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors } from "@/theme/tokens";
