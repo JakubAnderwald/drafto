@@ -1,26 +1,17 @@
 import { useState, useMemo } from "react";
-import {
-  Text,
-  View,
-  TextInput,
-  Pressable,
-  StyleSheet,
-  ActivityIndicator,
-  ScrollView,
-} from "react-native";
-import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { useNavigation } from "@react-navigation/native";
-
+import { Text, View, TextInput, Pressable, Button, StyleSheet } from "react-native";
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
-import type { AuthStackParamList } from "@/navigation/app-navigator";
 
-export function LoginScreen() {
+interface LoginScreenProps {
+  onNavigateToSignup?: () => void;
+}
+
+export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
-  const navigation = useNavigation<NativeStackNavigationProp<AuthStackParamList>>();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -51,7 +42,7 @@ export function LoginScreen() {
   };
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
+    <View style={styles.container}>
       <Text style={styles.title}>Log In</Text>
       <Text style={styles.subtitle}>Sign in to your Drafto account</Text>
 
@@ -92,41 +83,29 @@ export function LoginScreen() {
           onSubmitEditing={handleLogin}
         />
 
-        <Pressable
-          style={({ pressed }) => [
-            styles.button,
-            pressed && styles.buttonPressed,
-            loading && styles.buttonDisabled,
-          ]}
+        <Button
+          title={loading ? "Logging in..." : "Log in"}
           onPress={handleLogin}
           disabled={loading}
-          accessibilityRole="button"
-          accessibilityLabel="Log in"
-          testID="login-button"
-        >
-          {loading ? (
-            <ActivityIndicator color={semantic.onPrimary} />
-          ) : (
-            <Text style={styles.buttonText}>Log in</Text>
-          )}
-        </Pressable>
+          color={colors.primary[600]}
+        />
       </View>
 
       <View style={styles.footer}>
-        <Pressable onPress={() => navigation.navigate("Signup")}>
+        <Pressable onPress={onNavigateToSignup} disabled={!onNavigateToSignup}>
           <Text style={styles.footerText}>
             Don&apos;t have an account? <Text style={styles.link}>Sign up</Text>
           </Text>
         </Pressable>
       </View>
-    </ScrollView>
+    </View>
   );
 }
 
 const createStyles = (semantic: SemanticColors) =>
   StyleSheet.create({
     container: {
-      flexGrow: 1,
+      flex: 1,
       alignItems: "center",
       justifyContent: "center",
       padding: 24,

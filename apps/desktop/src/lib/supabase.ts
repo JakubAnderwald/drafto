@@ -2,7 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 
 import type { Database } from "@drafto/shared";
 
-import { keychainAdapter } from "./keychain-adapter";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabaseUrl, supabaseAnonKey } from "./config";
 
 if (!supabaseUrl || !supabaseAnonKey) {
@@ -14,7 +14,9 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
   auth: {
-    storage: keychainAdapter,
+    // AsyncStorage for session persistence until keychain entitlements are configured.
+    // TODO: Switch back to keychainAdapter once App Sandbox keychain access is resolved.
+    storage: AsyncStorage,
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: false,

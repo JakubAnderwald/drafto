@@ -16,6 +16,9 @@ const config = {
       path.resolve(projectRoot, "node_modules"),
       path.resolve(monorepoRoot, "node_modules"),
     ],
+    extraNodeModules: {
+      "react-native": path.resolve(monorepoRoot, "node_modules/react-native-macos"),
+    },
     unstable_enableSymlinks: true,
   },
 };
