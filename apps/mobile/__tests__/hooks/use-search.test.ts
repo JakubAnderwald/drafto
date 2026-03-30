@@ -56,9 +56,13 @@ describe("useSearch", () => {
     expect(mockQuery).toHaveBeenCalled();
 
     const firstCall = mockQuery.mock.calls[0] as unknown as unknown[];
-    const orClause = firstCall[0] as { conditions: unknown[] };
 
-    // The Q.or clause should contain 3 conditions: title, content, and notebook name
+    // First arg is Q.experimentalJoinTables
+    const joinTables = firstCall[0] as { type: string; tables: string[] };
+    expect(joinTables).toEqual(Q.experimentalJoinTables(["notebooks"]));
+
+    // Second arg is the Q.or clause with 3 conditions
+    const orClause = firstCall[1] as { conditions: unknown[] };
     expect(orClause.conditions).toHaveLength(3);
 
     // title condition

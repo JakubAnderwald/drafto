@@ -3,6 +3,13 @@
 # Uses cliclick for mouse interactions and AppleScript for verification
 set -euo pipefail
 
+# Check required dependencies
+if ! command -v cliclick &> /dev/null; then
+  echo "Error: cliclick is required but not installed."
+  echo "Install with: brew install cliclick"
+  exit 1
+fi
+
 PASS=0
 FAIL=0
 ERRORS=""
@@ -72,13 +79,16 @@ click_element() {
     end tell
   end tell
   ")
-  local x=$(echo "$pos" | cut -d',' -f1)
-  local y=$(echo "$pos" | cut -d',' -f2)
-  cliclick c:$x,$y
+  local x
+  local y
+  x=$(echo "$pos" | cut -d',' -f1)
+  y=$(echo "$pos" | cut -d',' -f2)
+  cliclick "c:$x,$y"
 }
 
 wait_for_ui_change() {
-  sleep 1.5
+  # Allow time for React Native UI to update after interactions
+  sleep "${E2E_UI_WAIT:-1.5}"
 }
 
 # Ensure Drafto is frontmost
@@ -276,6 +286,7 @@ echo ""
 echo "TEST 6: Search functionality"
 # ──────────────────────────────────────────────
 # Click Search button (element 1)
+PRE_SEARCH_COUNT=$(get_element_count)
 click_element 1
 sleep 2
 
@@ -284,7 +295,7 @@ screencapture -x /tmp/drafto_e2e_search.png
 # Check if search overlay appeared
 SEARCH_DESCS=$(get_all_descs)
 SEARCH_ELEM_COUNT=$(get_element_count)
-if [ "$SEARCH_ELEM_COUNT" -ne "$AFTER_COUNT" ] || echo "$SEARCH_DESCS" | grep -qi "search\|query\|find"; then
+if echo "$SEARCH_DESCS" | grep -qi "search\|query\|find\|⌘K" || [ "$SEARCH_ELEM_COUNT" -ne "$PRE_SEARCH_COUNT" ]; then
   pass "Search overlay opened"
 
   # Type a search query
