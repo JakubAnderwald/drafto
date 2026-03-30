@@ -1,10 +1,7 @@
 import React from "react";
 
 import { render, fireEvent, waitFor } from "../helpers/test-utils";
-import {
-  AttachmentList,
-  _signedUrlCacheForTesting as signedUrlCache,
-} from "../../src/components/editor/attachment-list";
+import { AttachmentList } from "@/components/editor/attachment-list";
 
 const mockSync = jest.fn().mockResolvedValue(undefined);
 const mockDatabaseWrite = jest.fn((fn: () => Promise<void>) => fn());
@@ -23,12 +20,16 @@ jest.mock("@/components/toast", () => ({
   useToast: () => ({ showToast: mockShowToast }),
 }));
 
-const mockGetSignedUrl = jest.fn();
+const mockGetCachedSignedUrl = jest.fn();
 const mockOpenAttachment = jest.fn();
+const mockGetCachedSignedUrlSync = jest.fn();
+const mockInvalidateCachedSignedUrl = jest.fn();
 jest.mock("@/lib/data", () => ({
-  getSignedUrl: (...args: unknown[]) => mockGetSignedUrl(...args),
   deleteAttachment: jest.fn(),
   openAttachment: (...args: unknown[]) => mockOpenAttachment(...args),
+  getCachedSignedUrl: (...args: unknown[]) => mockGetCachedSignedUrl(...args),
+  getCachedSignedUrlSync: (...args: unknown[]) => mockGetCachedSignedUrlSync(...args),
+  invalidateCachedSignedUrl: (...args: unknown[]) => mockInvalidateCachedSignedUrl(...args),
 }));
 
 // Mock shape matching WatermelonDB Attachment model — cast needed because
@@ -70,8 +71,8 @@ function createMockAttachment(overrides: Partial<MockAttachment> = {}): MockAtta
 
 beforeEach(() => {
   jest.clearAllMocks();
-  signedUrlCache.clear();
-  mockGetSignedUrl.mockResolvedValue("https://example.com/signed-url");
+  mockGetCachedSignedUrl.mockResolvedValue("https://example.com/signed-url");
+  mockGetCachedSignedUrlSync.mockReturnValue(null);
   mockOpenAttachment.mockResolvedValue({ status: "opened" });
 });
 
@@ -134,7 +135,7 @@ describe("AttachmentList", () => {
   });
 
   it("shows retry text when signed URL fetch fails for documents", async () => {
-    mockGetSignedUrl.mockRejectedValue(new Error("Network error"));
+    mockGetCachedSignedUrl.mockRejectedValue(new Error("Network error"));
 
     const attachments = [
       createMockAttachment({ mimeType: "application/pdf", fileName: "doc.pdf" }),
@@ -156,7 +157,7 @@ describe("AttachmentList", () => {
 
     // Wait for signed URL to load
     await waitFor(() => {
-      expect(mockGetSignedUrl).toHaveBeenCalled();
+      expect(mockGetCachedSignedUrl).toHaveBeenCalled();
     });
 
     // Simulate image load error
@@ -201,7 +202,7 @@ describe("AttachmentList", () => {
   });
 
   it("retries URL fetch on press when in error state", async () => {
-    mockGetSignedUrl
+    mockGetCachedSignedUrl
       .mockRejectedValueOnce(new Error("Network error"))
       .mockResolvedValueOnce("https://example.com/signed-url-retry");
 
@@ -221,7 +222,7 @@ describe("AttachmentList", () => {
     fireEvent.press(getByLabelText("Open doc.pdf"));
 
     await waitFor(() => {
-      expect(mockGetSignedUrl).toHaveBeenCalledTimes(2);
+      expect(mockGetCachedSignedUrl).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -259,38 +260,55 @@ describe("AttachmentList", () => {
     });
   });
 
-  it("uses signed URL cache to avoid redundant network requests", async () => {
-    // Pre-populate cache
-    signedUrlCache.set("user-1/note-1/photo.jpg", "https://example.com/cached-url");
+  it("uses cached signed URL to render immediately without async fetch", async () => {
+    // Simulate cache hit via sync accessor
+    mockGetCachedSignedUrlSync.mockReturnValue("https://example.com/cached-url");
 
     const attachments = [createMockAttachment()];
     const { UNSAFE_getByType } = render(
       <AttachmentList attachments={attachments as unknown as never[]} />,
     );
 
-    // Image should render immediately from cache without calling getSignedUrl
+    // Image should render immediately from cache without calling async getCachedSignedUrl
     const { Image } = require("react-native");
     await waitFor(() => {
       const image = UNSAFE_getByType(Image);
       expect(image.props.source.uri).toBe("https://example.com/cached-url");
     });
 
-    expect(mockGetSignedUrl).not.toHaveBeenCalled();
+    // Async fetch should not be triggered since signedUrl was already set from cache
+    expect(mockGetCachedSignedUrl).not.toHaveBeenCalled();
   });
 
-  it("populates cache after successful signed URL fetch", async () => {
-    expect(signedUrlCache.has("user-1/note-1/photo.jpg")).toBe(false);
-
+  it("calls getCachedSignedUrl for uploaded attachments", async () => {
     const attachments = [createMockAttachment()];
     render(<AttachmentList attachments={attachments as unknown as never[]} />);
 
     await waitFor(() => {
-      expect(mockGetSignedUrl).toHaveBeenCalledWith("user-1/note-1/photo.jpg");
+      expect(mockGetCachedSignedUrl).toHaveBeenCalledWith("user-1/note-1/photo.jpg");
+    });
+  });
+
+  it("invalidates cache on retry after URL error", async () => {
+    mockGetCachedSignedUrl
+      .mockRejectedValueOnce(new Error("Network error"))
+      .mockResolvedValueOnce("https://example.com/retry-url");
+
+    const attachments = [
+      createMockAttachment({ mimeType: "application/pdf", fileName: "doc.pdf" }),
+    ];
+    const { getByLabelText, getByText } = render(
+      <AttachmentList attachments={attachments as unknown as never[]} />,
+    );
+
+    await waitFor(() => {
+      expect(getByText("Tap to retry")).toBeTruthy();
     });
 
-    // Cache should now contain the URL
+    fireEvent.press(getByLabelText("Open doc.pdf"));
+
     await waitFor(() => {
-      expect(signedUrlCache.get("user-1/note-1/photo.jpg")).toBe("https://example.com/signed-url");
+      expect(mockInvalidateCachedSignedUrl).toHaveBeenCalledWith("user-1/note-1/photo.jpg");
     });
   });
 });

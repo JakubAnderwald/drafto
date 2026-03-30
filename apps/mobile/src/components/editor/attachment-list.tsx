@@ -11,28 +11,19 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-import { getSignedUrl, deleteAttachment as deleteAttachmentApi, openAttachment } from "@/lib/data";
+import {
+  deleteAttachment as deleteAttachmentApi,
+  openAttachment,
+  getCachedSignedUrl,
+  getCachedSignedUrlSync,
+  invalidateCachedSignedUrl,
+} from "@/lib/data";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useToast } from "@/components/toast";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Attachment } from "@/db";
-
-// Module-level cache prevents redundant signed URL fetches across re-renders
-// and survives component unmount/remount cycles within the same app session.
-const signedUrlCache = new Map<string, string>();
-
-async function getCachedSignedUrl(filePath: string): Promise<string> {
-  const cached = signedUrlCache.get(filePath);
-  if (cached) return cached;
-
-  const url = await getSignedUrl(filePath);
-  signedUrlCache.set(filePath, url);
-  return url;
-}
-
-export { signedUrlCache as _signedUrlCacheForTesting };
 
 interface AttachmentListProps {
   attachments: Attachment[];
@@ -59,8 +50,8 @@ interface AttachmentItemProps {
 
 function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentItemProps) {
   // Initialise from cache so images that were already resolved render instantly
-  const [signedUrl, setSignedUrl] = useState<string | null>(
-    () => signedUrlCache.get(attachment.filePath) ?? null,
+  const [signedUrl, setSignedUrl] = useState<string | null>(() =>
+    getCachedSignedUrlSync(attachment.filePath),
   );
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [urlError, setUrlError] = useState(false);
@@ -120,8 +111,7 @@ function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentI
       setLoadingUrl(true);
       setUrlError(false);
       try {
-        // Clear stale cache entry before retry
-        signedUrlCache.delete(attachment.filePath);
+        invalidateCachedSignedUrl(attachment.filePath);
         const url = await getCachedSignedUrl(attachment.filePath);
         setSignedUrl(url);
         setLoadingUrl(false);
@@ -137,8 +127,12 @@ function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentI
       return;
     }
 
+    // Use displayUri (which includes lastGoodUri fallback) so the open action
+    // works even during the pending→uploaded transition when both signedUrl
+    // and localUri may be null.
+    const effectiveSignedUrl = signedUrl ?? lastGoodUri.current;
     const result = await openAttachment({
-      signedUrl,
+      signedUrl: effectiveSignedUrl,
       localUri: attachment.localUri,
       isPending,
     });
