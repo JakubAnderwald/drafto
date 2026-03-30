@@ -6,8 +6,11 @@
 export function generateId(): string {
   const bytes = new Uint8Array(16);
 
-  if (typeof globalThis.crypto?.getRandomValues === "function") {
-    globalThis.crypto.getRandomValues(bytes);
+  const crypto = (globalThis as Record<string, unknown>).crypto as
+    | { getRandomValues: (array: Uint8Array) => Uint8Array }
+    | undefined;
+  if (typeof crypto?.getRandomValues === "function") {
+    crypto.getRandomValues(bytes);
   } else {
     // Fallback for Hermes versions without Web Crypto
     for (let i = 0; i < 16; i++) {

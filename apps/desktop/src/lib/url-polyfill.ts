@@ -16,23 +16,23 @@ function stripTrailingSlash(href: string): string {
 }
 
 class PatchedURL {
-  _inner: InstanceType<typeof OrigURL>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  _inner: any;
   _protocolOverride?: string;
 
   constructor(url: string | URL, base?: string | URL) {
-    // @ts-expect-error -- OrigURL constructor overloads
-    this._inner = new OrigURL(url, base);
+    this._inner = new OrigURL(url as string, base as string);
   }
 
-  get protocol() {
+  get protocol(): string {
     return this._protocolOverride ?? this._inner.protocol;
   }
   set protocol(v: string) {
     this._protocolOverride = v;
   }
 
-  get pathname() {
-    const p = this._inner.pathname;
+  get pathname(): string {
+    const p: string = this._inner.pathname;
     return p.length > 1 && p.endsWith("/") ? p.slice(0, -1) : p;
   }
   set pathname(v: string) {
@@ -43,8 +43,8 @@ class PatchedURL {
     }
   }
 
-  get href() {
-    const original = this._inner.href;
+  get href(): string {
+    const original: string = this._inner.href;
     let result = stripTrailingSlash(original);
     if (this._protocolOverride) {
       result = result.replace(/^[a-z]+:/, this._protocolOverride);
@@ -52,47 +52,47 @@ class PatchedURL {
     return result;
   }
 
-  get host() {
+  get host(): string {
     return this._inner.host;
   }
-  get hostname() {
+  get hostname(): string {
     return this._inner.hostname;
   }
-  get port() {
+  get port(): string {
     return this._inner.port;
   }
-  get origin() {
+  get origin(): string {
     return this._inner.origin;
   }
-  get username() {
+  get username(): string {
     return this._inner.username;
   }
-  get password() {
+  get password(): string {
     return this._inner.password;
   }
-  get hash() {
+  get hash(): string {
     return this._inner.hash;
   }
   set hash(v: string) {
     this._inner.hash = v;
   }
-  get search() {
+  get search(): string {
     return this._inner.search;
   }
   set search(v: string) {
     this._inner.search = v;
   }
-  get searchParams() {
+  get searchParams(): URLSearchParams {
     return this._inner.searchParams;
   }
 
-  toString() {
+  toString(): string {
     return this.href;
   }
-  toJSON() {
+  toJSON(): string {
     return this.href;
   }
 }
 
-// @ts-expect-error -- replacing global URL
-globalThis.URL = PatchedURL;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).URL = PatchedURL;
