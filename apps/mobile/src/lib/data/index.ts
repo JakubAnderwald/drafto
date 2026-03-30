@@ -23,3 +23,10 @@ export { queueAttachment, processPendingUploads, cleanupOrphanedFiles } from "./
 
 export { openAttachment } from "./open-attachment";
 export type { OpenAttachmentParams, OpenAttachmentResult } from "./open-attachment";
+
+export {
+  getCachedSignedUrl,
+  invalidateCachedSignedUrl,
+  clearSignedUrlCache,
+  getCachedSignedUrlSync,
+} from "./signed-url-cache";
