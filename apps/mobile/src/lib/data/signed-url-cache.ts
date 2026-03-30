@@ -1,6 +1,6 @@
 import { SIGNED_URL_EXPIRY_SECONDS } from "@drafto/shared";
 
-import { getSignedUrl } from "./attachments";
+import { getSignedUrl } from "@/lib/data/attachments";
 
 interface CacheEntry {
   url: string;
@@ -15,8 +15,11 @@ const cache = new Map<string, CacheEntry>();
 
 export async function getCachedSignedUrl(filePath: string): Promise<string> {
   const entry = cache.get(filePath);
-  if (entry && entry.expiresAt > Date.now()) {
-    return entry.url;
+  if (entry) {
+    if (entry.expiresAt > Date.now()) {
+      return entry.url;
+    }
+    cache.delete(filePath);
   }
 
   const url = await getSignedUrl(filePath);
@@ -34,13 +37,20 @@ export function clearSignedUrlCache(): void {
 
 export function hasValidCacheEntry(filePath: string): boolean {
   const entry = cache.get(filePath);
-  return !!entry && entry.expiresAt > Date.now();
+  if (!entry) return false;
+  if (entry.expiresAt <= Date.now()) {
+    cache.delete(filePath);
+    return false;
+  }
+  return true;
 }
 
 export function getCachedSignedUrlSync(filePath: string): string | null {
   const entry = cache.get(filePath);
-  if (entry && entry.expiresAt > Date.now()) {
-    return entry.url;
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    cache.delete(filePath);
+    return null;
   }
-  return null;
+  return entry.url;
 }

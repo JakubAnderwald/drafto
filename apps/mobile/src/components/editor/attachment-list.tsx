@@ -127,14 +127,15 @@ function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentI
       return;
     }
 
-    // Use displayUri (which includes lastGoodUri fallback) so the open action
-    // works even during the pending→uploaded transition when both signedUrl
-    // and localUri may be null.
-    const effectiveSignedUrl = signedUrl ?? lastGoodUri.current;
+    // During the pending→uploaded bridge, lastGoodUri may hold a file:// URI.
+    // Route it through localUri (not signedUrl) to match openAttachment's contract.
+    const fallbackUri = lastGoodUri.current;
+    const useLocalFallback =
+      !isPending && !signedUrl && !!fallbackUri && fallbackUri.startsWith("file://");
     const result = await openAttachment({
-      signedUrl: effectiveSignedUrl,
-      localUri: attachment.localUri,
-      isPending,
+      signedUrl: useLocalFallback ? null : (signedUrl ?? fallbackUri),
+      localUri: useLocalFallback ? fallbackUri : attachment.localUri,
+      isPending: isPending || useLocalFallback,
     });
     if (result.status === "unavailable") {
       showToast(result.reason, "warning");
