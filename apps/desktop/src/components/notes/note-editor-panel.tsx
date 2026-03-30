@@ -56,10 +56,14 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   const contentAutoSave = useAutoSave<string>({ onSave: handleSaveContent });
   contentAutoSaveRef.current = contentAutoSave;
 
-  // Use onChange callback from useEditorBridge for auto-save
+  // Use onChange callback from useEditorBridge for auto-save.
+  // Capture note ID to prevent async getJSON() from saving to the wrong note
+  // if the user switches notes before the promise resolves.
   const handleEditorChange = useCallback(() => {
     if (!editorRef.current) return;
+    const capturedNoteId = noteIdRef.current;
     editorRef.current.getJSON().then((json: object) => {
+      if (noteIdRef.current !== capturedNoteId) return;
       const jsonString = JSON.stringify(json);
       contentAutoSaveRef.current?.trigger(jsonString);
     });

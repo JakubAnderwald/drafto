@@ -6,17 +6,10 @@ import { MAX_FILE_SIZE, BUCKET_NAME } from "@drafto/shared";
 import { database, Attachment } from "@/db";
 import { supabase } from "@/lib/supabase";
 import { generateId } from "@/lib/generate-id";
+import { sanitizeFileName } from "./attachment-utils";
 import type { PickedFile } from "./attachments";
 
 const ATTACHMENTS_DIR_NAME = "attachments";
-
-function sanitizeFileName(name: string): string {
-  return name
-    .replace(/[/\\]/g, "_")
-    .replace(/\.\./g, "_")
-    .replace(/[<>:"|?*\x00-\x1f]/g, "_")
-    .slice(0, 255);
-}
 
 function getAttachmentsDir(): string {
   return `${RNFS.DocumentDirectoryPath}/${ATTACHMENTS_DIR_NAME}`;
@@ -32,7 +25,7 @@ async function saveFileLocally(file: PickedFile): Promise<string> {
   const localFileName = `${generateId()}_${sanitizeFileName(file.fileName)}`;
   const destination = `${dir}/${localFileName}`;
 
-  // react-native-document-picker provides file:// URIs on macOS
+  // react-native-document-picker-macos provides file:// URIs on macOS
   const sourcePath = file.uri.startsWith("file://") ? file.uri.slice(7) : file.uri;
   await RNFS.copyFile(sourcePath, destination);
 
@@ -96,8 +89,13 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
     });
 
   if (uploadError) {
-    // If file already exists (e.g. retry after partial success), treat as success
-    if (!uploadError.message.includes("already exists")) {
+    // If file already exists (e.g. retry after partial success), treat as success.
+    // Check both message and status code for robustness.
+    const isDuplicate =
+      uploadError.message.includes("already exists") ||
+      uploadError.message.includes("Duplicate") ||
+      (uploadError as unknown as { statusCode?: string }).statusCode === "409";
+    if (!isDuplicate) {
       throw new Error(`Upload failed: ${uploadError.message}`);
     }
   }
@@ -133,27 +131,38 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
   }
 }
 
+let isProcessing = false;
+
 export async function processPendingUploads(): Promise<number> {
-  const pending = await database
-    .get<Attachment>("attachments")
-    .query(Q.where("upload_status", "pending"))
-    .fetch();
-
-  if (pending.length === 0) return 0;
-
-  let uploaded = 0;
-
-  for (const attachment of pending) {
-    try {
-      await uploadSingleAttachment(attachment);
-      uploaded += 1;
-    } catch (err) {
-      // Log and continue with next attachment — will retry on next sync
-      console.warn(`Failed to upload attachment ${attachment.fileName}:`, err);
-    }
+  if (isProcessing) {
+    return 0;
   }
+  isProcessing = true;
 
-  return uploaded;
+  try {
+    const pending = await database
+      .get<Attachment>("attachments")
+      .query(Q.where("upload_status", "pending"))
+      .fetch();
+
+    if (pending.length === 0) return 0;
+
+    let uploaded = 0;
+
+    for (const attachment of pending) {
+      try {
+        await uploadSingleAttachment(attachment);
+        uploaded += 1;
+      } catch (err) {
+        // Log and continue with next attachment — will retry on next sync
+        console.warn(`Failed to upload attachment ${attachment.fileName}:`, err);
+      }
+    }
+
+    return uploaded;
+  } finally {
+    isProcessing = false;
+  }
 }
 
 export async function cleanupOrphanedFiles(): Promise<void> {
@@ -162,17 +171,18 @@ export async function cleanupOrphanedFiles(): Promise<void> {
     const exists = await RNFS.exists(dir);
     if (!exists) return;
 
-    const pending = await database
+    // Query all attachments that have a local URI (not just pending)
+    const withLocalUri = await database
       .get<Attachment>("attachments")
-      .query(Q.where("upload_status", "pending"))
+      .query(Q.where("local_uri", Q.notEq(null)))
       .fetch();
 
-    const pendingUris = new Set(pending.map((a) => a.localUri));
+    const activeUris = new Set(withLocalUri.map((a) => a.localUri));
     const items = await RNFS.readDir(dir);
 
     for (const item of items) {
       const fileUri = `file://${item.path}`;
-      if (!pendingUris.has(fileUri)) {
+      if (!activeUris.has(fileUri)) {
         try {
           await RNFS.unlink(item.path);
         } catch {

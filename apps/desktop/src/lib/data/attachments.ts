@@ -1,8 +1,11 @@
-import { pick, types } from "react-native-document-picker";
+import { NativeModules } from "react-native";
 
 import { MAX_FILE_SIZE, BUCKET_NAME, SIGNED_URL_EXPIRY_SECONDS } from "@drafto/shared";
 
 import { supabase } from "@/lib/supabase";
+import { sanitizeFileName } from "./attachment-utils";
+
+const { RNDocumentPicker } = NativeModules;
 
 export interface PickedFile {
   uri: string;
@@ -20,31 +23,39 @@ interface UploadResult {
   mimeType: string;
 }
 
-function sanitizeFileName(name: string): string {
-  return name
-    .replace(/[/\\]/g, "_")
-    .replace(/\.\./g, "_")
-    .replace(/[<>:"|?*\x00-\x1f]/g, "_")
-    .slice(0, 255);
+interface MacOSPickerResult {
+  uri: string;
+  path: string;
+  name: string;
+  size: number | null;
+  mimeType: string | null;
+}
+
+async function pickFiles(allowedUTIs?: string[]): Promise<MacOSPickerResult[]> {
+  const options: Record<string, unknown> = {
+    allowFileSelection: true,
+    allowDirectorySelection: false,
+    multiple: false,
+  };
+  if (allowedUTIs) {
+    options.allowedUTIs = allowedUTIs;
+  }
+  return RNDocumentPicker.pick(options) as Promise<MacOSPickerResult[]>;
 }
 
 export async function pickImage(): Promise<PickedFile | null> {
   try {
-    const [result] = await pick({
-      type: [types.images],
-      allowMultiSelection: false,
-    });
+    const results = await pickFiles(["public.image"]);
+    if (!results || results.length === 0) return null;
 
-    if (!result) return null;
-
+    const result = results[0];
     return {
       uri: result.uri,
       fileName: result.name ?? `image_${Date.now()}.jpg`,
-      mimeType: result.type ?? "image/jpeg",
+      mimeType: result.mimeType ?? "image/jpeg",
       fileSize: result.size ?? 0,
     };
   } catch (err) {
-    // User cancelled the picker
     if (isPickerCancelled(err)) return null;
     throw err;
   }
@@ -52,17 +63,14 @@ export async function pickImage(): Promise<PickedFile | null> {
 
 export async function pickDocument(): Promise<PickedFile | null> {
   try {
-    const [result] = await pick({
-      type: [types.allFiles],
-      allowMultiSelection: false,
-    });
+    const results = await pickFiles();
+    if (!results || results.length === 0) return null;
 
-    if (!result) return null;
-
+    const result = results[0];
     return {
       uri: result.uri,
       fileName: result.name ?? `file_${Date.now()}`,
-      mimeType: result.type ?? "application/octet-stream",
+      mimeType: result.mimeType ?? "application/octet-stream",
       fileSize: result.size ?? 0,
     };
   } catch (err) {
@@ -72,8 +80,10 @@ export async function pickDocument(): Promise<PickedFile | null> {
 }
 
 function isPickerCancelled(err: unknown): boolean {
-  // react-native-document-picker throws when user cancels
-  return err instanceof Error && (err.message.includes("cancel") || err.message.includes("Cancel"));
+  if (!(err instanceof Error)) return false;
+  // react-native-document-picker-macos rejects with code "USER_CANCELLED"
+  const errorWithCode = err as Error & { code?: string };
+  return errorWithCode.code === "USER_CANCELLED" || err.message.includes("cancel");
 }
 
 export async function uploadAttachment(
@@ -145,12 +155,15 @@ export async function getSignedUrl(filePath: string): Promise<string> {
 }
 
 export async function deleteAttachment(attachmentId: string, filePath: string): Promise<void> {
-  // Delete from storage
-  await supabase.storage.from(BUCKET_NAME).remove([filePath]);
-
-  // Delete from database
+  // Delete from database first — orphaned storage is less problematic than orphaned DB records
   const { error } = await supabase.from("attachments").delete().eq("id", attachmentId);
   if (error) {
     throw new Error(`Failed to delete attachment: ${error.message}`);
+  }
+
+  // Delete from storage (best effort)
+  const { error: storageError } = await supabase.storage.from(BUCKET_NAME).remove([filePath]);
+  if (storageError) {
+    console.warn(`Failed to delete storage object: ${storageError.message}`);
   }
 }

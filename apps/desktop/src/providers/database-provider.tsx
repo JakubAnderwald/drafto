@@ -72,8 +72,8 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       // Upload any locally-queued attachments after sync
       try {
         await processPendingUploads();
-      } catch {
-        console.debug("[DatabaseProvider] Attachment upload processing failed");
+      } catch (uploadErr) {
+        console.error("[DatabaseProvider] Attachment upload processing failed:", uploadErr);
       }
 
       await checkPendingChanges();
@@ -110,10 +110,11 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (user) {
       retryCountRef.current = 0;
-      sync();
-      // Clean up orphaned local attachment files on startup
-      cleanupOrphanedFiles().catch(() => {
-        // Non-critical cleanup
+      // Sync first, then clean up orphaned files (cleanup needs complete DB state)
+      sync().then(() => {
+        cleanupOrphanedFiles().catch((cleanupErr) => {
+          console.warn("[DatabaseProvider] Orphaned file cleanup failed:", cleanupErr);
+        });
       });
     }
     return () => {
