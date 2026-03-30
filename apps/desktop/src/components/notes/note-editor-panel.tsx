@@ -1,13 +1,18 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
-import { View, Text, TextInput, StyleSheet, ActivityIndicator } from "react-native";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { View, Text, TextInput, StyleSheet, ActivityIndicator, ScrollView } from "react-native";
+import { useEditorBridge, TenTapStartKit } from "@10play/tentap-editor";
 
 import { useNote } from "@/hooks/use-note";
+import { useAttachments } from "@/hooks/use-attachments";
 import { useAutoSave } from "@/hooks/use-auto-save";
 import { useTheme } from "@/providers/theme-provider";
 import { database } from "@/db";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { EmptyState } from "@/components/ui/empty-state";
+import { NoteEditor } from "@/components/editor/note-editor";
+import { AttachmentPicker } from "@/components/editor/attachment-picker";
+import { AttachmentList } from "@/components/editor/attachment-list";
 
 interface NoteEditorPanelProps {
   noteId: string | undefined;
@@ -15,24 +20,13 @@ interface NoteEditorPanelProps {
 
 export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   const { note, loading } = useNote(noteId);
+  const { attachments } = useAttachments(noteId);
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
 
   const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
-
-  // Sync local state when a different note is loaded
-  useEffect(() => {
-    if (note) {
-      setTitle(note.title || "");
-      // For Phase 3, display content as plain text.
-      // Phase 4 will integrate TenTap for rich text editing.
-      setContent(note.content || "");
-    } else {
-      setTitle("");
-      setContent("");
-    }
-  }, [note?.id]);
+  const noteIdRef = useRef<string | undefined>(undefined);
+  const contentAutoSaveRef = useRef<{ trigger: (v: string) => void } | null>(null);
 
   const handleSaveTitle = useCallback(
     async (newTitle: string) => {
@@ -60,8 +54,64 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
 
   const titleAutoSave = useAutoSave<string>({ onSave: handleSaveTitle });
   const contentAutoSave = useAutoSave<string>({ onSave: handleSaveContent });
+  contentAutoSaveRef.current = contentAutoSave;
 
-  // Flush pending autosaves when switching notes to prevent cross-note writes
+  // Use onChange callback from useEditorBridge for auto-save
+  const handleEditorChange = useCallback(() => {
+    if (!editorRef.current) return;
+    editorRef.current.getJSON().then((json: object) => {
+      const jsonString = JSON.stringify(json);
+      contentAutoSaveRef.current?.trigger(jsonString);
+    });
+  }, []);
+
+  const editorRef = useRef<ReturnType<typeof useEditorBridge> | null>(null);
+  const editor = useEditorBridge({
+    autofocus: false,
+    avoidIosKeyboard: false,
+    bridgeExtensions: TenTapStartKit,
+    initialContent: "",
+    onChange: handleEditorChange,
+  });
+  editorRef.current = editor;
+
+  // Sync local state when a different note is loaded
+  useEffect(() => {
+    if (note && note.id !== noteIdRef.current) {
+      noteIdRef.current = note.id;
+      setTitle(note.title || "");
+
+      // Parse content: may be TipTap JSON string, plain text, or null
+      const rawContent = note.content || "";
+
+      if (rawContent) {
+        try {
+          const parsed = JSON.parse(rawContent);
+          // If it's a TipTap document, set it as JSON
+          if (parsed && typeof parsed === "object" && parsed.type === "doc") {
+            editor.setContent(parsed);
+            return;
+          }
+        } catch {
+          // Not JSON — treat as plain text
+        }
+        // Convert plain text to simple HTML for the editor
+        const htmlContent = rawContent
+          .split("\n")
+          .map((line: string) => `<p>${escapeHtml(line) || "<br>"}</p>`)
+          .join("");
+        editor.setContent(htmlContent);
+      } else {
+        editor.setContent("");
+      }
+    } else if (!note) {
+      noteIdRef.current = undefined;
+      setTitle("");
+      editor.setContent("");
+    }
+  }, [note?.id, editor]);
+
+  // Flush pending autosaves when switching notes
   useEffect(() => {
     return () => {
       titleAutoSave.flush();
@@ -75,14 +125,6 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
       titleAutoSave.trigger(text);
     },
     [titleAutoSave],
-  );
-
-  const handleContentChange = useCallback(
-    (text: string) => {
-      setContent(text);
-      contentAutoSave.trigger(text);
-    },
-    [contentAutoSave],
   );
 
   if (!noteId) {
@@ -128,17 +170,27 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
         placeholderTextColor={semantic.fgSubtle}
       />
 
-      <TextInput
-        style={styles.contentInput}
-        value={content}
-        onChangeText={handleContentChange}
-        placeholder="Start writing..."
-        placeholderTextColor={semantic.fgSubtle}
-        multiline
-        textAlignVertical="top"
-      />
+      <View style={styles.editorContainer}>
+        <NoteEditor editor={editor} />
+      </View>
+
+      {noteId && (
+        <ScrollView style={styles.attachmentsSection}>
+          <AttachmentList attachments={attachments} />
+          <AttachmentPicker noteId={noteId} />
+        </ScrollView>
+      )}
     </View>
   );
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 const createStyles = (semantic: SemanticColors) =>
@@ -173,13 +225,10 @@ const createStyles = (semantic: SemanticColors) =>
       paddingTop: 20,
       paddingBottom: 8,
     },
-    contentInput: {
+    editorContainer: {
       flex: 1,
-      fontSize: 14,
-      lineHeight: 22,
-      color: semantic.fg,
-      paddingHorizontal: 24,
-      paddingTop: 0,
-      paddingBottom: 24,
+    },
+    attachmentsSection: {
+      maxHeight: 300,
     },
   });
