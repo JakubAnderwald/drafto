@@ -51,8 +51,8 @@ export async function pickImage(): Promise<PickedFile | null> {
     const result = results[0];
     return {
       uri: result.uri,
-      fileName: result.name ?? `image_${Date.now()}.jpg`,
-      mimeType: result.mimeType ?? "image/jpeg",
+      fileName: result.name ?? `image_${Date.now()}`,
+      mimeType: result.mimeType ?? "application/octet-stream",
       fileSize: result.size ?? 0,
     };
   } catch (err) {
