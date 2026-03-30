@@ -1,47 +1,20 @@
+import { useState } from "react";
 import { ActivityIndicator, View, StyleSheet } from "react-native";
-import { NavigationContainer } from "@react-navigation/native";
-import { createNativeStackNavigator } from "@react-navigation/native-stack";
 
 import { useAuth } from "@/providers/auth-provider";
-import { useTheme } from "@/providers/theme-provider";
 import { colors } from "@/theme/tokens";
+import { useTheme } from "@/providers/theme-provider";
 import { LoginScreen } from "@/screens/login";
 import { SignupScreen } from "@/screens/signup";
 import { WaitingForApprovalScreen } from "@/screens/waiting-for-approval";
 import { MainScreen } from "@/screens/main";
 
-export type AuthStackParamList = {
-  Login: undefined;
-  Signup: undefined;
-  WaitingForApproval: undefined;
-};
-
-export type AppStackParamList = {
-  Main: undefined;
-};
-
-const AuthStack = createNativeStackNavigator<AuthStackParamList>();
-const AppStack = createNativeStackNavigator<AppStackParamList>();
-
-function AppNavigator() {
-  const { semantic } = useTheme();
-
-  return (
-    <AppStack.Navigator
-      screenOptions={{
-        headerStyle: { backgroundColor: semantic.bg },
-        headerTintColor: semantic.fg,
-        contentStyle: { backgroundColor: semantic.bg },
-      }}
-    >
-      <AppStack.Screen name="Main" component={MainScreen} options={{ headerShown: false }} />
-    </AppStack.Navigator>
-  );
-}
+type AuthRoute = "Login" | "Signup" | "WaitingForApproval";
 
 export function RootNavigator() {
   const { user, isApproved, isLoading, isCheckingApproval } = useAuth();
   const { semantic } = useTheme();
+  const [authRoute, setAuthRoute] = useState<AuthRoute>("Login");
 
   if (isLoading || isCheckingApproval) {
     return (
@@ -51,36 +24,23 @@ export function RootNavigator() {
     );
   }
 
-  // When user is logged in but not approved, show WaitingForApproval as initial route
-  const authInitialRoute = user && !isApproved ? "WaitingForApproval" : "Login";
+  if (user && isApproved) {
+    return <MainScreen />;
+  }
 
-  return (
-    <NavigationContainer>
-      {user && isApproved ? (
-        <AppNavigator />
-      ) : (
-        <AuthStack.Navigator
-          initialRouteName={authInitialRoute}
-          screenOptions={{
-            headerStyle: { backgroundColor: semantic.bg },
-            headerTintColor: semantic.fg,
-            contentStyle: { backgroundColor: semantic.bg },
-          }}
-        >
-          <AuthStack.Screen name="Login" component={LoginScreen} options={{ title: "Log In" }} />
-          <AuthStack.Screen name="Signup" component={SignupScreen} options={{ title: "Sign Up" }} />
-          <AuthStack.Screen
-            name="WaitingForApproval"
-            component={WaitingForApprovalScreen}
-            options={{
-              title: "Awaiting Approval",
-              headerBackVisible: false,
-            }}
-          />
-        </AuthStack.Navigator>
-      )}
-    </NavigationContainer>
-  );
+  // Auth flow — determine which screen to show
+  const initialRoute: AuthRoute = user && !isApproved ? "WaitingForApproval" : "Login";
+  const currentRoute = authRoute === "Login" && user && !isApproved ? initialRoute : authRoute;
+
+  switch (currentRoute) {
+    case "Signup":
+      return <SignupScreen onNavigateToLogin={() => setAuthRoute("Login")} />;
+    case "WaitingForApproval":
+      return <WaitingForApprovalScreen />;
+    case "Login":
+    default:
+      return <LoginScreen onNavigateToSignup={() => setAuthRoute("Signup")} />;
+  }
 }
 
 const styles = StyleSheet.create({

@@ -139,13 +139,15 @@ async function pushNotebookChanges(changes: SyncTableChanges) {
 
   if (changes.updated.length > 0) {
     for (const r of changes.updated) {
+      const nbId = (r.remote_id || r.id) as string;
+      if (!nbId) continue;
       const { error } = await supabase
         .from("notebooks")
         .update({
           name: r.name as string,
           updated_at: new Date().toISOString(),
         })
-        .eq("id", r.remote_id as string);
+        .eq("id", nbId);
       if (error) throw new Error(`Push notebook update failed: ${error.message}`);
     }
   }
@@ -173,6 +175,11 @@ async function pushNoteChanges(changes: SyncTableChanges) {
 
   if (changes.updated.length > 0) {
     for (const r of changes.updated) {
+      const noteId = (r.remote_id || r.id) as string;
+      if (!noteId) {
+        console.warn("[Sync] Skipping note update with no id:", JSON.stringify(r));
+        continue;
+      }
       const { error } = await supabase
         .from("notes")
         .update({
@@ -183,7 +190,7 @@ async function pushNoteChanges(changes: SyncTableChanges) {
           trashed_at: r.trashed_at ? toISO(r.trashed_at as number) : null,
           updated_at: new Date().toISOString(),
         })
-        .eq("id", r.remote_id as string);
+        .eq("id", noteId);
       if (error) throw new Error(`Push note update failed: ${error.message}`);
     }
   }

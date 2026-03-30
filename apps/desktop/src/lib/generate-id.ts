@@ -1,12 +1,19 @@
 /**
  * Generate a UUID v4 (RFC 4122).
- * Uses the global crypto API available in React Native's Hermes runtime.
+ * Uses crypto.getRandomValues when available (modern Hermes),
+ * falls back to Math.random for older runtimes.
  */
-
-declare const globalThis: { crypto: { getRandomValues: (array: Uint8Array) => Uint8Array } };
-
 export function generateId(): string {
-  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  const bytes = new Uint8Array(16);
+
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    // Fallback for Hermes versions without Web Crypto
+    for (let i = 0; i < 16; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
 
   // RFC 4122 v4: set version (4) and variant (10xx) bits
   bytes[6] = (bytes[6] & 0x0f) | 0x40;

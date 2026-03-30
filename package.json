@@ -36,7 +36,8 @@
     ],
     "overrides": {
       "minimatch": "10.2.4",
-      "serialize-javascript": "7.0.4"
+      "serialize-javascript": "7.0.4",
+      "react": "19.1.4"
     },
     "patchedDependencies": {
       "@nozbe/watermelondb@0.28.0": "patches/@nozbe__watermelondb@0.28.0.patch",
