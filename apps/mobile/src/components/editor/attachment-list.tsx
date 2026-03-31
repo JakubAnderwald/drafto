@@ -78,6 +78,31 @@ function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentI
     }
   }, [signedUrl]);
 
+  // When an image fails to render, the signed URL may be stale or the file
+  // may not have been ready yet. Invalidate the cache and fetch a fresh URL.
+  const retryCount = useRef(0);
+  useEffect(() => {
+    if (!imageError || isPending || retryCount.current >= 2) return;
+
+    retryCount.current += 1;
+    let cancelled = false;
+
+    async function refetchUrl() {
+      invalidateCachedSignedUrl(attachment.filePath);
+      try {
+        const url = await getCachedSignedUrl(attachment.filePath);
+        if (!cancelled) setSignedUrl(url);
+      } catch {
+        // Already in error state — leave as-is
+      }
+    }
+
+    refetchUrl();
+    return () => {
+      cancelled = true;
+    };
+  }, [imageError, isPending, attachment.filePath]);
+
   useEffect(() => {
     if (isPending) return; // No need to fetch URL for pending attachments
 

@@ -289,6 +289,32 @@ describe("AttachmentList", () => {
     });
   });
 
+  it("auto-retries signed URL when image fails to render", async () => {
+    mockGetCachedSignedUrl
+      .mockResolvedValueOnce("https://example.com/stale-url")
+      .mockResolvedValueOnce("https://example.com/fresh-url");
+
+    const attachments = [createMockAttachment()];
+    const { UNSAFE_getByType } = render(
+      <AttachmentList attachments={attachments as unknown as never[]} />,
+    );
+
+    const { Image } = require("react-native");
+    await waitFor(() => {
+      const image = UNSAFE_getByType(Image);
+      expect(image.props.source.uri).toBe("https://example.com/stale-url");
+    });
+
+    // Simulate image load error — triggers auto-retry
+    const image = UNSAFE_getByType(Image);
+    fireEvent(image, "error");
+
+    await waitFor(() => {
+      expect(mockInvalidateCachedSignedUrl).toHaveBeenCalledWith("user-1/note-1/photo.jpg");
+      expect(mockGetCachedSignedUrl).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it("invalidates cache on retry after URL error", async () => {
     mockGetCachedSignedUrl
       .mockRejectedValueOnce(new Error("Network error"))
