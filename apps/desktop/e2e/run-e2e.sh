@@ -209,15 +209,15 @@ screencapture -x /tmp/drafto_e2e_new_notebook.png
 echo ""
 echo "TEST 5: Create a new note"
 # ──────────────────────────────────────────────
-# After TEST 3 selected a notebook, look for "+ New" button
-# Search for element with "New" in its description
+# After TEST 3 selected a notebook, look for "+ New Note" button
+# Search for element with "New Note" in its description
 NEW_NOTE_IDX=$(osascript -e '
 tell application "System Events"
   tell process "Drafto"
     repeat with i from 1 to count of UI elements of window 1
       try
         set d to description of UI element i of window 1
-        if d contains "New" or d contains "+ New" then
+        if d contains "New Note" or d contains "+ New Note" then
           return i
         end if
       end try
@@ -252,7 +252,7 @@ if [ "$NEW_NOTE_IDX" -gt 0 ] 2>/dev/null; then
   fi
 else
   # Notebook may not be selected yet - click first notebook again
-  echo "  '+ New' not found, selecting first notebook..."
+  echo "  '+ New Note' not found, selecting first notebook..."
   click_element 3
   sleep 2
 
@@ -262,7 +262,7 @@ else
       repeat with i from 1 to count of UI elements of window 1
         try
           set d to description of UI element i of window 1
-          if d contains "New" or d contains "+ New" then
+          if d contains "New Note" or d contains "+ New Note" then
             return i
           end if
         end try
@@ -277,7 +277,7 @@ else
     wait_for_ui_change
     pass "New note created after re-selecting notebook"
   else
-    fail "Create note" "Could not find '+ New' button even after notebook selection"
+    fail "Create note" "Could not find '+ New Note' button even after notebook selection"
   fi
 fi
 
@@ -315,26 +315,61 @@ fi
 echo ""
 echo "TEST 7: Sync status check"
 # ──────────────────────────────────────────────
-SYNC_FOUND=$(osascript -e '
-tell application "System Events"
-  tell process "Drafto"
-    repeat with i from 1 to count of UI elements of window 1
-      try
-        set d to description of UI element i of window 1
-        if d contains "Sync" or d contains "sync" or d contains "Synced" or d contains "pending" then
-          return (i as text) & ":" & d
-        end if
-      end try
-    end repeat
-    return "none"
-  end tell
-end tell
-' 2>/dev/null)
+# Use get_all_descs (same approach as TEST 2 which reliably finds sync status)
+# and also check accessibility titles/values for sync-related text
+wait_for_ui_change
+SYNC_DESCS=$(get_all_descs)
 
-if [[ "$SYNC_FOUND" != "none" ]]; then
-  pass "Sync status button found ($SYNC_FOUND)"
+if echo "$SYNC_DESCS" | grep -qi "sync\|Synced\|pending\|Syncing"; then
+  SYNC_MATCH=$(echo "$SYNC_DESCS" | tr ',' '\n' | grep -i "sync\|Synced\|pending\|Syncing" | head -1)
+  pass "Sync status found ($SYNC_MATCH)"
 else
-  fail "Sync status" "No sync-related element found"
+  # Fallback: check accessibility titles (accessibilityLabel may map to title on macOS)
+  SYNC_TITLE=$(osascript -e '
+  tell application "System Events"
+    tell process "Drafto"
+      repeat with i from 1 to count of UI elements of window 1
+        try
+          set t to title of UI element i of window 1
+          if t contains "Sync" or t contains "sync" then
+            return (i as text) & ":" & t
+          end if
+        end try
+      end repeat
+      return "none"
+    end tell
+  end tell
+  ' 2>/dev/null)
+
+  if [[ "$SYNC_TITLE" != "none" ]]; then
+    pass "Sync status button found via title ($SYNC_TITLE)"
+  else
+    # Last resort: check entire accessibility tree for sync-related text
+    SYNC_DEEP=$(osascript -e '
+    tell application "System Events"
+      tell process "Drafto"
+        set found to "none"
+        repeat with i from 1 to count of UI elements of window 1
+          try
+            set allProps to properties of UI element i of window 1
+            set propsText to allProps as text
+            if propsText contains "Sync" or propsText contains "sync" then
+              set found to (i as text) & ":found"
+              exit repeat
+            end if
+          end try
+        end repeat
+        return found
+      end tell
+    end tell
+    ' 2>/dev/null)
+
+    if [[ "$SYNC_DEEP" != "none" ]]; then
+      pass "Sync status element found in accessibility tree ($SYNC_DEEP)"
+    else
+      fail "Sync status" "No sync-related element found"
+    fi
+  fi
 fi
 
 # ──────────────────────────────────────────────

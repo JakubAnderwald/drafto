@@ -56,6 +56,7 @@ export function SyncStatus() {
       }}
       accessibilityRole="button"
       accessibilityLabel="Sync status"
+      accessibilityHint={statusText}
     >
       <View style={styles.row}>
         {isSyncing ? (
