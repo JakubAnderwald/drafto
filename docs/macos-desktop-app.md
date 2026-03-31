@@ -17,9 +17,9 @@ Drafto has a web app (Next.js) and mobile app (Expo + React Native 0.83). The mo
 
 ### Key Constraints
 
-- **react-native-macos validated on v0.81.0** (Jan 2026) — 2 minor versions behind mobile's RN 0.83. Verify the [current stable release](https://github.com/microsoft/react-native-macos/releases) before starting implementation
+- **react-native-macos 0.81.5** (latest stable, verified 2026-03-29) — requires React 19 + RN 0.81.6, so no React version gap with mobile
 - **No Expo**: Expo doesn't support macOS. Must use bare React Native workflow
-- **WatermelonDB macOS**: Not officially supported, but JSI C++ SQLite adapter makes it feasible — the iOS native module can be adapted for macOS with minimal work
+- **WatermelonDB macOS**: Not officially supported, but confirmed working via `pnpm patch` — only the podspec platform line needed changing (zero native code changes). `@nozbe/simdjson` also needed the same podspec patch
 - **TenTap editor**: Uses react-native-webview internally (WebView for editor area only, rest of app is native). Needs macOS verification; fallback is a direct WKWebView + TipTap bridge
 
 ### Code Reuse from Mobile (~70%)
@@ -127,11 +127,9 @@ apps/desktop/                     # New package: @drafto/desktop
 
 ### 1. Database: WatermelonDB (same as mobile)
 
-Reuse WatermelonDB directly. The JSI C++ SQLite adapter is platform-agnostic — only the native module bridge needs a macOS target. Approach:
+Reuse WatermelonDB directly. The JSI C++ SQLite adapter is platform-agnostic — only the native module bridge needs a macOS target.
 
-1. Copy WatermelonDB's iOS native module (`Podspec` + Objective-C/Swift bridge)
-2. Adjust build target from iOS → macOS (UIKit → AppKit references)
-3. The core C++ SQLite code and JSI interface remain unchanged
+**Confirmed approach (Phase 1):** The iOS native code (`DatabasePlatformIOS.mm`, ObjC bridge) has zero UIKit imports — it uses only Foundation framework (`NSDocumentDirectory`, `NSFileManager`, `NSLog`). The only change needed was adding `:macos => "13.0"` to the `WatermelonDB.podspec` and `simdjson.podspec` platform hashes, done via `pnpm patch`. No code changes.
 
 This gives us **identical** schema, models, migrations, and reactive observable queries as mobile.
 
@@ -171,7 +169,7 @@ The sync logic in `apps/mobile/src/db/sync.ts` uses WatermelonDB's `synchronize(
   - `com.apple.security.app-sandbox = true` (required for MAS)
   - `com.apple.security.network.client = true` (Supabase API)
   - `com.apple.security.files.user-selected.read-write = true` (file attachments)
-- **Min macOS**: 13.0 (Ventura)
+- **Min macOS**: 14.0 (Sonoma) — required by react-native-macos 0.81.5 framework dependencies
 - **Build**: Xcode archive → export for Mac App Store
 - **Submit**: `xcrun altool --upload-app --apiKey <key> --apiIssuer <issuer>` or Transporter CLI with JWT auth. Store App Store Connect API keys in CI secrets
 
@@ -271,51 +269,113 @@ When the desktop app is added, update these docs to ensure all 4 platforms stay 
 
 Phases are designed so independent work can run as parallel subagents where noted.
 
-### Phase 1: Scaffold + WatermelonDB macOS (~2-3 weeks)
+### Phase 1: Scaffold + WatermelonDB macOS — ✅ COMPLETE (PR #196, 2026-03-29)
 
-**Can run in parallel:**
+**Completed:**
 
-- **Agent A**: Init react-native-macos project in `apps/desktop/`, monorepo integration (pnpm workspace, turbo, metro config)
-- **Agent B**: Port WatermelonDB iOS native module → macOS target (Podspec, UIKit→AppKit changes, build verification)
-- **Agent C**: Write ADR for desktop technology choice
+- ✅ Init react-native-macos 0.81.5 project in `apps/desktop/`, monorepo integration (pnpm workspace, turbo, metro config)
+- ✅ WatermelonDB macOS support via `pnpm patch` (podspec-only change — zero native code modifications needed). Also patched `@nozbe/simdjson` podspec
+- ✅ ADR 0015: Desktop app technology choice
+- ✅ WatermelonDB wired up — schema, models, migrations copied from mobile (identical)
+- ✅ Basic app shell with DatabaseProvider, `xcodebuild BUILD SUCCEEDED`
+- ✅ ESLint config (typescript-eslint + prettier)
 
-**Sequential (after A+B):**
+**Implementation notes (lessons learned):**
 
-- Wire up WatermelonDB in the desktop app, verify schema/models/migrations work
-- Basic app shell with database provider
+- `node-linker=hoisted` required in root `.npmrc` — pnpm's default symlinked `node_modules` breaks CocoaPods header resolution for Xcode builds
+- Xcode 26+ requires `OS_OBJECT_USE_OBJC=0` → `=1` replacement in per-file compiler flags (Podfile `post_install` hook) to fix `dispatch_queue_t` strong property errors
+- `babel-plugin-module-resolver` needed for `@/` path alias (Metro doesn't read tsconfig paths)
+- react-native-macos-init generates an unused `Drafto-iOS` target — can be cleaned up later
+- Min macOS is 14.0 (not 13.0 as originally planned) — required by react-native-macos 0.81.5
 
-### Phase 2: Auth + Sync (~1-2 weeks)
+### Phase 2: Auth + Sync — ✅ COMPLETE (2026-03-29)
 
-**Can run in parallel:**
+**Completed:**
 
-- **Agent A**: Port auth provider (react-native-keychain for session, login/signup screens)
-- **Agent B**: Port sync engine from mobile (adapt imports, window focus triggers)
+- ✅ Supabase client with `react-native-keychain` for macOS Keychain session storage (replaces `expo-secure-store`)
+- ✅ Auth provider ported from mobile (identical logic — session management, approval gate)
+- ✅ Theme provider + design tokens ported (uses `@react-native-async-storage/async-storage` for preference persistence instead of `expo-secure-store`)
+- ✅ Sync engine copied from mobile (identical — WatermelonDB `synchronize()` + Supabase pull/push)
+- ✅ Full database provider with sync orchestration: window focus triggers (`AppState`), network reconnect (`@react-native-community/netinfo`), periodic 30s sync, retry with exponential backoff
+- ✅ Auth screens: login, signup, waiting-for-approval (adapted from mobile, using `@react-navigation/native-stack` instead of `expo-router`)
+- ✅ React Navigation auth flow with route guard (unauthenticated → login, unapproved → waiting-for-approval, approved → main app)
+- ✅ Main screen placeholder with sync status display
+- ✅ `use-network-status` hook and `generate-id` utility ported
+- ✅ TypeScript and ESLint pass cleanly
 
-**Sequential (after A+B):**
+**New dependencies added:**
 
-- Wire auth + sync together
-- Verify full sync round-trip: create on desktop → see on web/mobile and vice versa
+- `react-native-keychain` — macOS Keychain access for auth token storage
+- `@react-native-community/netinfo` — network connectivity detection
+- `@react-navigation/native` + `@react-navigation/native-stack` — navigation (replaces `expo-router`)
+- `react-native-safe-area-context` + `react-native-screens` — React Navigation peer deps
+- `@react-native-async-storage/async-storage` — theme preference persistence
 
-### Phase 3: Core UI (~2-3 weeks)
+**Implementation notes:**
 
-**Can run in parallel:**
+- Config (Supabase URL/key) stored in `src/lib/config.ts` with dev credentials hardcoded; production builds will need a build-time replacement strategy
+- `AppState` on react-native-macos maps to `NSApplication.didBecomeActiveNotification` — same API as iOS
+- Attachment processing (`processPendingUploads`) deferred to Phase 4
+- Toast notifications deferred to Phase 3 (UI); sync conflicts are logged to console for now
 
-- **Agent A**: macOS 3-pane layout (sidebar + note list + editor) — the structural shell
-- **Agent B**: Notebooks sidebar with CRUD + note list with selection
-- **Agent C**: Trash view + search overlay (Cmd+K)
+### Phase 3: Core UI — ✅ COMPLETE (2026-03-29)
 
-**Sequential:**
+**Completed:**
 
-- Integrate all UI panels together
-- Ensure design system tokens are applied correctly
-- Add any new macOS-specific components to design system showcase
+- ✅ macOS 3-pane layout (sidebar + note list + editor) — `MainScreen` with fixed sidebar (220px) + note list (280px) + flexible editor
+- ✅ Notebooks sidebar with full CRUD: create (inline input), rename (long-press to edit), delete, selection state
+- ✅ Note list with create, select, trash, preview text extraction (TipTap JSON + plain text), relative date formatting
+- ✅ Note editor panel with title + content editing, debounced auto-save via `useAutoSave` hook
+- ✅ Trash view with restore and permanent delete actions
+- ✅ Search overlay (Cmd+K style modal) with full-text search across titles, content, and notebook names
+- ✅ Sync status indicator (dot + text + last synced time, tap to sync)
+- ✅ Offline banner (animated slide-in/out, reconnection feedback)
+- ✅ Empty state component for no-selection and empty-list states
+- ✅ All hooks ported from mobile: `useNotebooks`, `useNotes`, `useNote`, `useSearch`, `useTrashedNotes`, `useAutoSave`
+- ✅ Data layer ported from mobile: `lib/data/notes.ts`, `lib/data/notebooks.ts`
+- ✅ All components use semantic design tokens from `theme/tokens.ts`
+- ✅ TypeScript and ESLint pass cleanly
 
-### Phase 4: Editor + Attachments (~1-2 weeks)
+**Implementation notes:**
 
-**Can run in parallel:**
+- Editor uses plain `TextInput` for Phase 3 — TenTap rich text integration deferred to Phase 4
+- Cmd+K keyboard shortcut requires native menu bar integration (Phase 5); search overlay is functional via code
+- No `@expo/vector-icons` dependency — uses unicode characters and colored dots for status indicators
+- `react-hooks/exhaustive-deps` rule not available in current ESLint config (no `eslint-plugin-react-hooks`) — dependency arrays verified manually
+- Notebook/note CRUD operates directly on WatermelonDB (offline-first); changes sync to Supabase via existing sync engine
 
-- **Agent A**: TenTap editor integration (verify macOS, implement fallback if needed) + auto-save
-- **Agent B**: Attachment upload/download (react-native-fs + Supabase Storage) + attachment queue
+### Phase 4: Editor + Attachments — ✅ COMPLETE (2026-03-30)
+
+**Completed:**
+
+- ✅ TenTap rich text editor integration (`@10play/tentap-editor` + `react-native-webview`) — replaces Phase 3 plain TextInput
+- ✅ Editor auto-save via `onChange` callback — saves content as TipTap JSON string to WatermelonDB
+- ✅ Content format handling: parses TipTap JSON, falls back to plain text → HTML conversion for legacy content
+- ✅ Attachment data layer ported from mobile:
+  - `attachments.ts` — file picking via `react-native-document-picker` (replaces Expo pickers), upload/download/delete via Supabase Storage
+  - `attachment-queue.ts` — offline-first queue using `react-native-fs` (replaces `expo-file-system`), local file save → background upload on sync
+  - `open-attachment.ts` — opens files via `Linking.openURL` (macOS opens in Finder/default app or browser)
+- ✅ `useAttachments` hook ported from mobile (identical — WatermelonDB observable query)
+- ✅ Attachment UI components: `AttachmentPicker` (image + file buttons), `AttachmentList` (image thumbnails, file items, pending badges, delete with confirmation)
+- ✅ `processPendingUploads()` wired into sync cycle — pending attachments upload after each successful sync
+- ✅ `cleanupOrphanedFiles()` runs on startup to remove stale local attachment files
+- ✅ Barrel export `lib/data/index.ts` for all data layer functions
+- ✅ TypeScript and ESLint pass cleanly
+
+**New dependencies added:**
+
+- `@10play/tentap-editor` — TipTap-based rich text editor (same as mobile)
+- `react-native-webview` — WebView for TenTap editor rendering (has macOS support)
+- `react-native-document-picker` — native NSOpenPanel file picker (replaces `expo-image-picker` + `expo-document-picker`)
+- `react-native-fs` — file system access for local attachment cache (replaces `expo-file-system`)
+
+**Implementation notes:**
+
+- TenTap uses WebView internally for the rich text area — rest of app remains fully native AppKit
+- `react-native-document-picker` uses NSOpenPanel on macOS, filtering by `types.images` for image picking and `types.allFiles` for general files
+- Content stored as JSON string in WatermelonDB `notes.content` field — compatible with mobile TipTap format
+- No `@expo/vector-icons` — attachment UI uses unicode characters for icons (consistent with Phase 3 approach)
+- Alert.alert used for error messages and delete confirmations (no toast provider yet)
 
 ### Phase 5: macOS Polish (~1-2 weeks)
 
@@ -359,13 +419,13 @@ Phases are designed so independent work can run as parallel subagents where note
 
 ## Risks & Mitigations
 
-| Risk                          | Impact | Mitigation                                                                                                                      |
-| ----------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| WatermelonDB macOS adapter    | High   | JSI C++ core is platform-agnostic; iOS adapter needs minor UIKit→AppKit changes. Fallback: op-sqlite with custom reactive layer |
-| TenTap on macOS               | Medium | Uses react-native-webview which may need macOS patches. Fallback: direct WKWebView + TipTap native module                       |
-| RN version gap (0.81 vs 0.83) | Low    | Shared package is pure TS. WatermelonDB/hooks don't depend on RN minor version features                                         |
-| macOS E2E testing tooling     | Low    | Start with manual testing; add Detox or AppleScript-based tests later                                                           |
-| Mac App Store review          | Low    | Standard React Native app, no private APIs. Same team already has iOS app approved                                              |
+| Risk                          | Impact                | Mitigation                                                                                                |
+| ----------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------- |
+| WatermelonDB macOS adapter    | ~~High~~ **Resolved** | ✅ Podspec-only patch worked. Zero native code changes needed. JSI C++ core confirmed platform-agnostic   |
+| TenTap on macOS               | Medium                | Uses react-native-webview which may need macOS patches. Fallback: direct WKWebView + TipTap native module |
+| RN version gap (0.81 vs 0.83) | ~~Low~~ **Resolved**  | ✅ react-native-macos 0.81.5 uses React 19 — same as mobile. No version gap                               |
+| macOS E2E testing tooling     | Low                   | Start with manual testing; add Detox or AppleScript-based tests later                                     |
+| Mac App Store review          | Low                   | Standard React Native app, no private APIs. Same team already has iOS app approved                        |
 
 ## Verification
 

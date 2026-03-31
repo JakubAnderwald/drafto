@@ -1,7 +1,7 @@
 import React from "react";
 
 import { render, fireEvent, waitFor } from "../helpers/test-utils";
-import { AttachmentList } from "../../src/components/editor/attachment-list";
+import { AttachmentList } from "@/components/editor/attachment-list";
 
 const mockSync = jest.fn().mockResolvedValue(undefined);
 const mockDatabaseWrite = jest.fn((fn: () => Promise<void>) => fn());
@@ -20,12 +20,16 @@ jest.mock("@/components/toast", () => ({
   useToast: () => ({ showToast: mockShowToast }),
 }));
 
-const mockGetSignedUrl = jest.fn();
+const mockGetCachedSignedUrl = jest.fn();
 const mockOpenAttachment = jest.fn();
+const mockGetCachedSignedUrlSync = jest.fn();
+const mockInvalidateCachedSignedUrl = jest.fn();
 jest.mock("@/lib/data", () => ({
-  getSignedUrl: (...args: unknown[]) => mockGetSignedUrl(...args),
   deleteAttachment: jest.fn(),
   openAttachment: (...args: unknown[]) => mockOpenAttachment(...args),
+  getCachedSignedUrl: (...args: unknown[]) => mockGetCachedSignedUrl(...args),
+  getCachedSignedUrlSync: (...args: unknown[]) => mockGetCachedSignedUrlSync(...args),
+  invalidateCachedSignedUrl: (...args: unknown[]) => mockInvalidateCachedSignedUrl(...args),
 }));
 
 // Mock shape matching WatermelonDB Attachment model — cast needed because
@@ -67,7 +71,8 @@ function createMockAttachment(overrides: Partial<MockAttachment> = {}): MockAtta
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockGetSignedUrl.mockResolvedValue("https://example.com/signed-url");
+  mockGetCachedSignedUrl.mockResolvedValue("https://example.com/signed-url");
+  mockGetCachedSignedUrlSync.mockReturnValue(null);
   mockOpenAttachment.mockResolvedValue({ status: "opened" });
 });
 
@@ -130,7 +135,7 @@ describe("AttachmentList", () => {
   });
 
   it("shows retry text when signed URL fetch fails for documents", async () => {
-    mockGetSignedUrl.mockRejectedValue(new Error("Network error"));
+    mockGetCachedSignedUrl.mockRejectedValue(new Error("Network error"));
 
     const attachments = [
       createMockAttachment({ mimeType: "application/pdf", fileName: "doc.pdf" }),
@@ -152,7 +157,7 @@ describe("AttachmentList", () => {
 
     // Wait for signed URL to load
     await waitFor(() => {
-      expect(mockGetSignedUrl).toHaveBeenCalled();
+      expect(mockGetCachedSignedUrl).toHaveBeenCalled();
     });
 
     // Simulate image load error
@@ -181,17 +186,15 @@ describe("AttachmentList", () => {
       <AttachmentList attachments={attachments as unknown as never[]} />,
     );
 
-    // Wait for signed URL to load
-    await waitFor(() => {
-      expect(mockGetSignedUrl).toHaveBeenCalled();
-    });
-
-    // Simulate image load error
+    // Wait for signed URL to resolve and Image to appear
     const { Image } = require("react-native");
     await waitFor(() => {
-      const image = UNSAFE_getByType(Image);
-      fireEvent(image, "error");
+      UNSAFE_getByType(Image);
     });
+
+    // Simulate image load error outside waitFor to fire only once
+    const image = UNSAFE_getByType(Image);
+    fireEvent(image, "error");
 
     await waitFor(() => {
       expect(getByText("Tap to open")).toBeTruthy();
@@ -199,7 +202,7 @@ describe("AttachmentList", () => {
   });
 
   it("retries URL fetch on press when in error state", async () => {
-    mockGetSignedUrl
+    mockGetCachedSignedUrl
       .mockRejectedValueOnce(new Error("Network error"))
       .mockResolvedValueOnce("https://example.com/signed-url-retry");
 
@@ -219,7 +222,119 @@ describe("AttachmentList", () => {
     fireEvent.press(getByLabelText("Open doc.pdf"));
 
     await waitFor(() => {
-      expect(mockGetSignedUrl).toHaveBeenCalledTimes(2);
+      expect(mockGetCachedSignedUrl).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("preserves image via lastGoodUri when transitioning from pending to uploaded", async () => {
+    const pending = createMockAttachment({
+      uploadStatus: "pending",
+      isPendingUpload: true,
+      localUri: "file:///local/photo.jpg",
+    });
+
+    const { rerender, UNSAFE_getByType } = render(
+      <AttachmentList attachments={[pending] as unknown as never[]} />,
+    );
+
+    // Image renders with localUri while pending
+    const { Image } = require("react-native");
+    await waitFor(() => {
+      const image = UNSAFE_getByType(Image);
+      expect(image.props.source.uri).toBe("file:///local/photo.jpg");
+    });
+
+    // Simulate upload completing: isPending becomes false, localUri is cleared
+    const uploaded = createMockAttachment({
+      uploadStatus: "uploaded",
+      isPendingUpload: false,
+      localUri: null,
+    });
+
+    rerender(<AttachmentList attachments={[uploaded] as unknown as never[]} />);
+
+    // Image should still be visible (using lastGoodUri fallback) while signed URL loads
+    await waitFor(() => {
+      const image = UNSAFE_getByType(Image);
+      expect(image.props.source.uri).toBeTruthy();
+    });
+  });
+
+  it("uses cached signed URL to render immediately without async fetch", async () => {
+    // Simulate cache hit via sync accessor
+    mockGetCachedSignedUrlSync.mockReturnValue("https://example.com/cached-url");
+
+    const attachments = [createMockAttachment()];
+    const { UNSAFE_getByType } = render(
+      <AttachmentList attachments={attachments as unknown as never[]} />,
+    );
+
+    // Image should render immediately from cache without calling async getCachedSignedUrl
+    const { Image } = require("react-native");
+    await waitFor(() => {
+      const image = UNSAFE_getByType(Image);
+      expect(image.props.source.uri).toBe("https://example.com/cached-url");
+    });
+
+    // Async fetch should not be triggered since signedUrl was already set from cache
+    expect(mockGetCachedSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it("calls getCachedSignedUrl for uploaded attachments", async () => {
+    const attachments = [createMockAttachment()];
+    render(<AttachmentList attachments={attachments as unknown as never[]} />);
+
+    await waitFor(() => {
+      expect(mockGetCachedSignedUrl).toHaveBeenCalledWith("user-1/note-1/photo.jpg");
+    });
+  });
+
+  it("auto-retries signed URL when image fails to render", async () => {
+    mockGetCachedSignedUrl
+      .mockResolvedValueOnce("https://example.com/stale-url")
+      .mockResolvedValueOnce("https://example.com/fresh-url");
+
+    const attachments = [createMockAttachment()];
+    const { UNSAFE_getByType } = render(
+      <AttachmentList attachments={attachments as unknown as never[]} />,
+    );
+
+    const { Image } = require("react-native");
+    await waitFor(() => {
+      const image = UNSAFE_getByType(Image);
+      expect(image.props.source.uri).toBe("https://example.com/stale-url");
+    });
+
+    // Simulate image load error — triggers auto-retry
+    const image = UNSAFE_getByType(Image);
+    fireEvent(image, "error");
+
+    await waitFor(() => {
+      expect(mockInvalidateCachedSignedUrl).toHaveBeenCalledWith("user-1/note-1/photo.jpg");
+      expect(mockGetCachedSignedUrl).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("invalidates cache on retry after URL error", async () => {
+    mockGetCachedSignedUrl
+      .mockRejectedValueOnce(new Error("Network error"))
+      .mockResolvedValueOnce("https://example.com/retry-url");
+
+    const attachments = [
+      createMockAttachment({ mimeType: "application/pdf", fileName: "doc.pdf" }),
+    ];
+    const { getByLabelText, getByText } = render(
+      <AttachmentList attachments={attachments as unknown as never[]} />,
+    );
+
+    await waitFor(() => {
+      expect(getByText("Tap to retry")).toBeTruthy();
+    });
+
+    fireEvent.press(getByLabelText("Open doc.pdf"));
+
+    await waitFor(() => {
+      expect(mockInvalidateCachedSignedUrl).toHaveBeenCalledWith("user-1/note-1/photo.jpg");
     });
   });
 });

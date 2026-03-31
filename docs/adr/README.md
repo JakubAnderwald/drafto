@@ -47,3 +47,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0012](./0012-search-implementation.md)             | Search Implementation                    | Accepted           | 2026-03-14 |
 | [0013](./0013-automated-support-pipeline.md)        | Automated Support Pipeline               | Accepted           | 2026-03-14 |
 | [0014](./0014-digital-atelier-design-system.md)     | Digital Atelier Design System            | Accepted           | 2026-03-19 |
+| [0015](./0015-desktop-app-technology-choice.md)     | Desktop App Technology Choice            | Accepted           | 2026-03-29 |

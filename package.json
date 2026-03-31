@@ -36,7 +36,14 @@
     ],
     "overrides": {
       "minimatch": "10.2.4",
-      "serialize-javascript": "7.0.4"
+      "serialize-javascript": "7.0.4",
+      "react": "19.1.4",
+      "react-dom": "19.1.4",
+      "react-test-renderer": "19.1.4"
+    },
+    "patchedDependencies": {
+      "@nozbe/watermelondb@0.28.0": "patches/@nozbe__watermelondb@0.28.0.patch",
+      "@nozbe/simdjson@3.9.4": "patches/@nozbe__simdjson@3.9.4.patch"
     }
   },
   "devDependencies": {
@@ -46,6 +53,6 @@
     "lint-staged": "^16.4.0",
     "prettier": "^3.8.1",
     "prettier-plugin-tailwindcss": "^0.7.2",
-    "turbo": "^2.8.20"
+    "turbo": "^2.9.0"
   }
 }

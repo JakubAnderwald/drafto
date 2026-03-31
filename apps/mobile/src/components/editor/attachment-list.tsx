@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   View,
   Text,
@@ -11,7 +11,13 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-import { getSignedUrl, deleteAttachment as deleteAttachmentApi, openAttachment } from "@/lib/data";
+import {
+  deleteAttachment as deleteAttachmentApi,
+  openAttachment,
+  getCachedSignedUrl,
+  getCachedSignedUrlSync,
+  invalidateCachedSignedUrl,
+} from "@/lib/data";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useToast } from "@/components/toast";
@@ -43,18 +49,65 @@ interface AttachmentItemProps {
 }
 
 function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentItemProps) {
-  const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  // Initialise from cache so images that were already resolved render instantly
+  const [signedUrl, setSignedUrl] = useState<string | null>(() =>
+    getCachedSignedUrlSync(attachment.filePath),
+  );
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [urlError, setUrlError] = useState(false);
   const [imageError, setImageError] = useState(false);
   const isImage = isImageMimeType(attachment.mimeType);
   const isPending = attachment.isPendingUpload;
 
-  // Use local URI for pending attachments, fetch signed URL for uploaded ones
-  const displayUri = isPending ? attachment.localUri : signedUrl;
+  // Preserve the last successfully displayed URI so the image stays visible
+  // while transitioning from pending (localUri) to uploaded (signedUrl).
+  const lastGoodUri = useRef<string | null>(attachment.localUri ?? signedUrl);
+
+  const currentUri = isPending ? attachment.localUri : signedUrl;
+  if (currentUri) {
+    lastGoodUri.current = currentUri;
+  }
+
+  // Fall back to last known good URI to prevent flash-to-blank during transition
+  const displayUri = currentUri ?? lastGoodUri.current;
+
+  // Reset imageError when a new URL becomes available so the Image gets a fresh attempt
+  useEffect(() => {
+    if (signedUrl) {
+      setImageError(false);
+    }
+  }, [signedUrl]);
+
+  // When an image fails to render, the signed URL may be stale or the file
+  // may not have been ready yet. Invalidate the cache and fetch a fresh URL.
+  const retryCount = useRef(0);
+  useEffect(() => {
+    if (!imageError || isPending || retryCount.current >= 2) return;
+
+    retryCount.current += 1;
+    let cancelled = false;
+
+    async function refetchUrl() {
+      invalidateCachedSignedUrl(attachment.filePath);
+      try {
+        const url = await getCachedSignedUrl(attachment.filePath);
+        if (!cancelled) setSignedUrl(url);
+      } catch {
+        // Already in error state — leave as-is
+      }
+    }
+
+    refetchUrl();
+    return () => {
+      cancelled = true;
+    };
+  }, [imageError, isPending, attachment.filePath]);
 
   useEffect(() => {
     if (isPending) return; // No need to fetch URL for pending attachments
+
+    // If the cache already provided a URL, skip the fetch
+    if (signedUrl) return;
 
     let cancelled = false;
 
@@ -62,7 +115,7 @@ function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentI
       setLoadingUrl(true);
       setUrlError(false);
       try {
-        const url = await getSignedUrl(attachment.filePath);
+        const url = await getCachedSignedUrl(attachment.filePath);
         if (!cancelled) setSignedUrl(url);
       } catch {
         if (!cancelled) setUrlError(true);
@@ -75,15 +128,16 @@ function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentI
     return () => {
       cancelled = true;
     };
-  }, [attachment.filePath, isPending]);
+  }, [attachment.filePath, isPending, signedUrl]);
 
   const handlePress = useCallback(async () => {
-    // If URL failed to load, retry fetching it
+    // If URL failed to load, retry fetching it (bypass cache)
     if (!isPending && urlError) {
       setLoadingUrl(true);
       setUrlError(false);
       try {
-        const url = await getSignedUrl(attachment.filePath);
+        invalidateCachedSignedUrl(attachment.filePath);
+        const url = await getCachedSignedUrl(attachment.filePath);
         setSignedUrl(url);
         setLoadingUrl(false);
         const result = await openAttachment({ signedUrl: url, localUri: null, isPending: false });
@@ -98,10 +152,15 @@ function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentI
       return;
     }
 
+    // During the pending→uploaded bridge, lastGoodUri may hold a file:// URI.
+    // Route it through localUri (not signedUrl) to match openAttachment's contract.
+    const fallbackUri = lastGoodUri.current;
+    const useLocalFallback =
+      !isPending && !signedUrl && !!fallbackUri && fallbackUri.startsWith("file://");
     const result = await openAttachment({
-      signedUrl,
-      localUri: attachment.localUri,
-      isPending,
+      signedUrl: useLocalFallback ? null : (signedUrl ?? fallbackUri),
+      localUri: useLocalFallback ? fallbackUri : attachment.localUri,
+      isPending: isPending || useLocalFallback,
     });
     if (result.status === "unavailable") {
       showToast(result.reason, "warning");
@@ -115,7 +174,7 @@ function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentI
   if (isImage) {
     return (
       <View style={styles.imageItem}>
-        {!isPending && loadingUrl ? (
+        {!isPending && loadingUrl && !displayUri ? (
           <View style={styles.imagePlaceholder}>
             <ActivityIndicator size="small" color={colors.primary[600]} />
           </View>

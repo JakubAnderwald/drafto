@@ -29,6 +29,17 @@ cleanup() {
     local sanitized_log
     sanitized_log=$(grep -E '^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]' "$LOG_FILE" 2>/dev/null | tail -20 || echo "No log available")
     if command -v gh &>/dev/null; then
+      # Upload full log as a secret gist so it's accessible from the issue
+      local gist_url=""
+      if [[ -s "$LOG_FILE" ]]; then
+        gist_url=$(gh gist create --desc "Nightly script log $(date +%Y-%m-%d)" "$LOG_FILE" 2>/dev/null) || true
+      fi
+      local log_line
+      if [[ -n "$gist_url" ]]; then
+        log_line="**Full log**: $gist_url"
+      else
+        log_line="Full log (may contain sensitive content) is at \`logs/nightly-$(date +%Y-%m-%d).log\` on the local machine. (Gist upload failed.)"
+      fi
       gh issue create \
         --repo JakubAnderwald/drafto \
         --title "Nightly script failed ($(date +%Y-%m-%d))" \
@@ -42,7 +53,7 @@ The nightly script exited with code \`$exit_code\` on $(date '+%Y-%m-%d at %H:%M
 $sanitized_log
 \`\`\`
 
-Full log (may contain sensitive content) is at \`logs/nightly-$(date +%Y-%m-%d).log\` on the local machine.
+$log_line
 EOF
         )" 2>/dev/null || log "WARNING: Failed to create GitHub issue"
     else
@@ -179,6 +190,22 @@ PHASE4_DEADLINE=$(( $(date +%s) + 7200 ))  # 2h hard cap for entire Phase 4
 
 log "=== Phase 4: Monitoring EAS builds (started after $PHASE3_START_ISO) ==="
 
+# Helper functions for platform retry tracking (bash 3.2 compatible — no associative arrays)
+get_platform_retries() {
+  case "$1" in
+    android|ANDROID) echo "$RETRIES_ANDROID" ;;
+    ios|IOS)         echo "$RETRIES_IOS" ;;
+    *)               echo 0 ;;
+  esac
+}
+
+set_platform_retries() {
+  case "$1" in
+    android|ANDROID) RETRIES_ANDROID=$2 ;;
+    ios|IOS)         RETRIES_IOS=$2 ;;
+  esac
+}
+
 # Collect EAS builds triggered during Phase 3 (filter by createdAt >= PHASE3_START_ISO)
 get_pending_builds() {
   cd "$REPO_ROOT/apps/mobile"
@@ -210,10 +237,9 @@ wait_for_builds() {
   done
 }
 
-# Track retry counts per build platform (android/ios — lowercase to match EAS CLI JSON output)
-declare -A PLATFORM_RETRIES
-PLATFORM_RETRIES[android]=0
-PLATFORM_RETRIES[ios]=0
+# Track retry counts per build platform (scalar variables for bash 3.2 compatibility)
+RETRIES_ANDROID=0
+RETRIES_IOS=0
 
 ROUND=0
 while true; do
@@ -254,7 +280,7 @@ while true; do
     BUILD_ERROR=$(echo "$BUILD_JSON" | jq -r '.error.message // "Unknown error"')
     BUILD_ERROR_CODE=$(echo "$BUILD_JSON" | jq -r '.error.errorCode // "UNKNOWN"')
 
-    RETRIES=${PLATFORM_RETRIES[$BUILD_PLATFORM]:-0}
+    RETRIES=$(get_platform_retries "$BUILD_PLATFORM")
     if [[ "$RETRIES" -ge "$MAX_BUILD_RETRIES" ]]; then
       log "Platform $BUILD_PLATFORM: already retried $RETRIES times, skipping. Manual intervention needed."
       continue
@@ -304,7 +330,7 @@ PROMPT
       log "ERROR: Fix attempt for $BUILD_PLATFORM build failed"
     fi
 
-    PLATFORM_RETRIES[$BUILD_PLATFORM]=$((RETRIES + 1))
+    set_platform_retries "$BUILD_PLATFORM" $((RETRIES + 1))
     NEEDS_ANOTHER_ROUND=true
     log "--- Done with $BUILD_PLATFORM build fix attempt ---"
   done

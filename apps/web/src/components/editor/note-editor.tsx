@@ -7,6 +7,7 @@ import type { Block } from "@blocknote/core";
 import "@blocknote/mantine/style.css";
 import { useTheme } from "@/hooks/use-theme";
 import { toAttachmentUrl } from "@drafto/shared";
+import { useAttachmentUrlResolver } from "@/components/editor/use-attachment-url-resolver";
 
 interface NoteEditorProps {
   noteId: string;
@@ -40,9 +41,12 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
     [noteId],
   );
 
+  const resolveFileUrl = useAttachmentUrlResolver();
+
   const editor = useCreateBlockNote({
     initialContent: initialContent && initialContent.length > 0 ? initialContent : undefined,
     uploadFile,
+    resolveFileUrl,
   });
 
   return (
