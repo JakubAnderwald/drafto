@@ -61,7 +61,7 @@ echo "sdk.dir=/Users/jakub/Library/Android/sdk" > apps/mobile/android/local.prop
 
 - **Cannot checkout `main`**: In a worktree, `main` is already checked out by the original repo. To create a new branch from latest main, use: `git fetch origin main && git checkout -b <branch> origin/main`
 - **Cannot merge PRs with `--delete-branch`**: `gh pr merge --delete-branch` fails because it tries to switch to `main` locally. Instead use the GitHub API: `gh api repos/{owner}/{repo}/pulls/{number}/merge -f merge_method=squash`
-- **EAS builds from worktrees**: The `--auto-submit` flag for `eas-cli build` requires `google-play-service-account.json` locally (it's gitignored). If the file is missing, the build will still be submitted to EAS but auto-submit will fail. Either copy the file to the worktree or submit manually after the build completes: `npx eas-cli submit --profile beta --platform android --latest`
+- **Fastlane in worktrees**: Worktrees do not share Ruby gems. Run `bundle install` in the worktree's `apps/mobile/` directory before using Fastlane commands. Also copy `google-play-service-account.json` if needed for store submissions.
 
 ## Code Style
 
@@ -221,6 +221,8 @@ After cloning and running `pnpm install`, ensure these CLI tools are also instal
 2. **Vercel CLI**: `pnpm i -g vercel` ([install docs](https://vercel.com/docs/cli)) — used to pull env vars (`vercel env pull`)
 3. **Supabase CLI**: `brew install supabase/tap/supabase` (macOS) or see [install docs](https://supabase.com/docs/guides/cli/getting-started) for other platforms — used for migrations and DB management
 
+4. **Ruby + Fastlane**: `brew install rbenv ruby-build && rbenv install 3.3.7 && rbenv global 3.3.7` then `cd apps/mobile && bundle install` — required for mobile build and store submission via Fastlane
+
 Without these, E2E tests will fail and environment/database workflows won't work.
 
 ## Useful Commands
@@ -248,6 +250,13 @@ cd packages/shared && pnpm exec tsc --noEmit  # Shared type check
 # Mobile app (apps/mobile/)
 cd apps/mobile && pnpm android            # Debug build + run on device/emulator (dev backend)
 cd apps/mobile && pnpm android:release-local    # Release APK (prod backend) → android/app/build/outputs/apk/release/app-release.apk
+
+# Mobile releases (apps/mobile/) — Fastlane
+cd apps/mobile && pnpm release:beta:android     # Build + submit to Google Play internal track
+cd apps/mobile && pnpm release:beta:ios         # Build + submit to TestFlight
+cd apps/mobile && pnpm release:beta:all         # Both platforms
+cd apps/mobile && pnpm release:prod:android     # Build + submit to Google Play production
+cd apps/mobile && pnpm release:prod:ios         # Build + submit to App Store
 ```
 
 ## Mobile Build Environment Mapping
@@ -265,11 +274,11 @@ The mobile app uses different Supabase backends depending on the build type:
 
 - `android/local.properties` must have `sdk.dir` pointing to the Android SDK (e.g., `/Users/jakub/Library/Android/sdk`)
 - JDK 25+ requires `_JAVA_OPTIONS='--enable-native-access=ALL-UNNAMED'` (already set in the `android:release` script)
-- The release build is signed with the debug keystore — for Play Store distribution, use EAS build (`pnpm build:prod`)
+- For Play Store distribution, use Fastlane: `cd apps/mobile && pnpm release:beta:android` (internal testing) or `pnpm release:prod:android` (production)
 
 ## Mobile Versioning
 
-The mobile app version (`apps/mobile/package.json` → `version`) follows semver. Build numbers (iOS `buildNumber`, Android `versionCode`) are auto-managed by EAS and increment independently — only the user-facing version needs manual bumps.
+The mobile app version (`apps/mobile/package.json` → `version`) follows semver. Build numbers (iOS `buildNumber`, Android `versionCode`) are auto-incremented by Fastlane (queried from Google Play / TestFlight) — only the user-facing version needs manual bumps.
 
 **When to bump (agents must follow these rules automatically):**
 
@@ -287,49 +296,78 @@ The mobile app version (`apps/mobile/package.json` → `version`) follows semver
 
 **Current version lives in:** `apps/mobile/package.json` (single source of truth, read by `app.config.ts`)
 
-## Google Play Deployment (EAS Build + Submit)
+## Google Play Deployment (Fastlane)
 
 Single command to build and deploy to Google Play internal testing:
 
 ```bash
-cd apps/mobile && npx eas-cli build --profile beta --platform android --auto-submit --non-interactive
+cd apps/mobile && pnpm release:beta:android
 ```
+
+For production track: `pnpm release:prod:android`
+
+**What it does:** `expo prebuild` → Gradle `bundleRelease` (signed AAB) → `upload_to_play_store` → post release notes
 
 **Setup details:**
 
-- EAS project: `@jakubanderwald/drafto` (ID: `6cf2a8f0-c2a6-410c-89dc-3e49aa4119a5`)
 - Google Play service account key: `apps/mobile/google-play-service-account.json` (gitignored)
-- Submit track: `internal` (configured in `eas.json` submit.beta.android)
-- `node-linker=hoisted` is required for EAS Build — set via `eas-build-pre-install` script in `apps/mobile/package.json` (not a repo-level `.npmrc`, which breaks web CI tests)
-- `expo-updates` is NOT installed — `runtimeVersion` and `updates` config must not be in `app.config.ts`
-- App owner in Expo: `jakubanderwald` (set in `app.config.ts`)
+- Android upload keystore: `~/drafto-secrets/drafto-release.keystore` (env var `ANDROID_KEYSTORE_PATH`)
 - App package: `eu.drafto.mobile`
+- Build numbers auto-incremented from Google Play's latest version code
+- Signing config injected via Expo config plugin (`plugins/with-android-signing.js`)
 
-**CI automated deploy:** The `beta-release.yml` workflow writes the service account key from `GOOGLE_PLAY_SERVICE_ACCOUNT_KEY` GitHub secret before building. Ensure this secret is set in repo settings.
+**Required environment variables for local builds:**
 
-## App Store Deployment (EAS Build + Submit)
+```bash
+export ANDROID_KEYSTORE_PATH="$HOME/drafto-secrets/drafto-release.keystore"
+export ANDROID_KEYSTORE_PASSWORD="<password>"
+export ANDROID_KEY_PASSWORD="<password>"
+export ANDROID_KEY_ALIAS="54e4e5b83ca8617c2a3d8dbc2a5dbd87"
+```
+
+**CI automated deploy:** The `beta-release.yml` workflow decodes the keystore from `ANDROID_KEYSTORE_BASE64` secret and writes the service account key from `GOOGLE_PLAY_SERVICE_ACCOUNT_KEY`. Android builds run on `ubuntu-latest` (free).
+
+## App Store Deployment (Fastlane)
 
 Single command to build and deploy to TestFlight:
 
 ```bash
-cd apps/mobile && npx eas-cli build --profile beta --platform ios --auto-submit --non-interactive
+cd apps/mobile && pnpm release:beta:ios
 ```
+
+For App Store: `pnpm release:prod:ios`
+
+**What it does:** `expo prebuild` → `match` (fetch signing creds) → `gym` (build IPA) → `pilot` / `deliver` (upload) → post release notes
 
 **Setup details:**
 
 - App Store Connect App ID: `6760675784`
 - Apple Developer Team ID: `4J2USPSG2U`
-- Submit destination: TestFlight (configured in `eas.json` submit.beta.ios)
-- Signing credentials: Managed by EAS (no local certificates or provisioning profiles needed)
-- EAS handles Apple authentication via `EXPO_TOKEN` — no separate Apple ID secrets required
+- Signing: Fastlane match with a private Git repo for certificates and provisioning profiles
+- Build numbers auto-incremented from TestFlight's latest build number
 
-**First-time setup:** Run `cd apps/mobile && npx eas-cli credentials --platform ios` to configure signing credentials. This prompts for Apple ID login and stores certificates in EAS.
+**Required environment variables for local builds:**
+
+```bash
+export ASC_API_KEY_ID="<key-id>"
+export ASC_API_ISSUER_ID="<issuer-id>"
+export ASC_API_KEY_P8_PATH="/path/to/AuthKey.p8"
+```
+
+**First-time setup:** Run `cd apps/mobile && bundle exec fastlane match init` to configure the certificate repository, then `bundle exec fastlane match appstore` to create certificates.
 
 **TestFlight notes:**
 
 - First build requires Apple review (~24-48h), subsequent builds are usually available instantly
 - Internal testers are invited via App Store Connect → TestFlight → Internal Testing
 - Testers install via the TestFlight app on their iOS device
+
+## Build Both Platforms
+
+```bash
+cd apps/mobile && pnpm release:beta:all    # Android + iOS to internal testing / TestFlight
+cd apps/mobile && pnpm release:prod:all    # Android + iOS to production / App Store
+```
 
 ## Automated Release Notes
 
@@ -343,15 +381,20 @@ Release notes are auto-generated from conventional commits and posted to both st
 
 **Character limits:** Google Play: 500 chars, TestFlight "What to Test": 4000 chars.
 
-**Required GitHub Secrets for release notes:**
+**Required GitHub Secrets:**
 
-| Secret              | Purpose                                 |
-| ------------------- | --------------------------------------- |
-| `ASC_API_KEY_ID`    | App Store Connect API Key ID            |
-| `ASC_API_ISSUER_ID` | App Store Connect Issuer ID             |
-| `ASC_API_KEY_P8`    | App Store Connect API private key (.p8) |
-
-Google Play uses the existing `GOOGLE_PLAY_SERVICE_ACCOUNT_KEY` secret.
+| Secret                            | Purpose                                  |
+| --------------------------------- | ---------------------------------------- |
+| `GOOGLE_PLAY_SERVICE_ACCOUNT_KEY` | Google Play service account JSON         |
+| `ANDROID_KEYSTORE_BASE64`         | Android upload keystore (base64-encoded) |
+| `ANDROID_KEYSTORE_PASSWORD`       | Keystore password                        |
+| `ANDROID_KEY_PASSWORD`            | Key password                             |
+| `ANDROID_KEY_ALIAS`               | Android signing key alias                |
+| `ASC_API_KEY_ID`                  | App Store Connect API Key ID             |
+| `ASC_API_ISSUER_ID`               | App Store Connect Issuer ID              |
+| `ASC_API_KEY_P8`                  | App Store Connect API private key (.p8)  |
+| `MATCH_PASSWORD`                  | Fastlane match encryption passphrase     |
+| `MATCH_GIT_PRIVATE_KEY`           | SSH key for match certificate Git repo   |
 
 **Local usage (after building locally):**
 

@@ -1,7 +1,6 @@
 {
   "cli": {
     "version": ">= 16.0.0",
-    "appVersionSource": "remote",
     "requireCommit": false
   },
   "build": {
@@ -10,48 +9,6 @@
       "distribution": "internal",
       "ios": {
         "simulator": true
-      }
-    },
-    "preview": {
-      "distribution": "internal",
-      "ios": {
-        "simulator": false
-      }
-    },
-    "beta": {
-      "distribution": "store",
-      "autoIncrement": true,
-      "android": {
-        "buildType": "app-bundle"
-      },
-      "env": {
-        "APP_VARIANT": "beta"
-      }
-    },
-    "production": {
-      "autoIncrement": true,
-      "android": {
-        "buildType": "app-bundle"
-      }
-    }
-  },
-  "submit": {
-    "beta": {
-      "android": {
-        "serviceAccountKeyPath": "./google-play-service-account.json",
-        "track": "internal"
-      },
-      "ios": {
-        "ascAppId": "6760675784"
-      }
-    },
-    "production": {
-      "android": {
-        "serviceAccountKeyPath": "./google-play-service-account.json",
-        "track": "production"
-      },
-      "ios": {
-        "ascAppId": "6760675784"
       }
     }
   }

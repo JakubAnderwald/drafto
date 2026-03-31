@@ -12,16 +12,12 @@
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
     "test": "jest --passWithNoTests",
-    "build:dev": "eas build --profile development",
-    "build:preview": "eas build --profile preview",
-    "build:beta": "eas build --profile beta",
-    "build:prod": "eas build --profile production",
-    "submit:ios": "eas submit --platform ios",
-    "submit:android": "eas submit --platform android",
-    "beta:ios": "eas build --profile beta --platform ios --auto-submit",
-    "beta:android": "eas build --profile beta --platform android --auto-submit",
-    "beta:all": "eas build --profile beta --platform all --auto-submit",
-    "eas-build-pre-install": "echo 'node-linker=hoisted' > ../../.npmrc"
+    "release:beta:android": "bundle exec fastlane android beta",
+    "release:beta:ios": "bundle exec fastlane ios beta",
+    "release:beta:all": "bundle exec fastlane android beta && bundle exec fastlane ios beta",
+    "release:prod:android": "bundle exec fastlane android production",
+    "release:prod:ios": "bundle exec fastlane ios production",
+    "release:prod:all": "bundle exec fastlane android production && bundle exec fastlane ios production"
   },
   "dependencies": {
     "@10play/tentap-editor": "^1.0.1",

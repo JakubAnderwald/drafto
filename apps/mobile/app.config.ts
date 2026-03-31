@@ -68,5 +68,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     "expo-secure-store",
     "expo-font",
     "./plugins/with-android-optimizations",
+    "./plugins/with-android-signing",
   ],
 });

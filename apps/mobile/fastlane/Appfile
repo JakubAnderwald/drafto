@@ -1,0 +1,5 @@
+json_key_file(ENV["GOOGLE_PLAY_SERVICE_ACCOUNT_KEY_PATH"] || "google-play-service-account.json")
+package_name("eu.drafto.mobile")
+
+app_identifier("eu.drafto.mobile")
+team_id("4J2USPSG2U")
