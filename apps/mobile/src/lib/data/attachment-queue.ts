@@ -88,6 +88,10 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
   const fetchResponse = await fetch(localUri);
   const blob = await fetchResponse.blob();
 
+  if (blob.size === 0) {
+    throw new Error("Local file is empty — skipping upload");
+  }
+
   // Upload to Supabase Storage
   const { error: uploadError } = await supabase.storage
     .from(BUCKET_NAME)
