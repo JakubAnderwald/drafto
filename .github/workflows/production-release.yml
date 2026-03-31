@@ -58,7 +58,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version-file: apps/mobile/.ruby-version
           bundler-cache: true
           working-directory: apps/mobile
       - name: Build and submit to App Store
@@ -95,7 +94,6 @@ jobs:
           java-version: "17"
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version-file: apps/mobile/.ruby-version
           bundler-cache: true
           working-directory: apps/mobile
       - name: Set up Android signing
