@@ -14,6 +14,9 @@
  * How attachments work:
  *   - Email attachments are uploaded to the GitHub repo via the Contents API
  *     (base64-encoded, stored in `support-attachments/` directory)
+ *   - Uses includeInlineImages: true because Gmail classifies MIME parts
+ *     with Content-ID headers as inline images, even when Content-Disposition
+ *     is "attachment" — without this flag, such attachments are silently excluded
  *   - Each file is named with the issue timestamp + original filename to avoid collisions
  *   - Image attachments are embedded as ![img](...) in the issue body
  *   - Non-image attachments are linked as regular markdown links
@@ -40,7 +43,10 @@ function processStarredSupportEmails() {
     var sender = msg.getFrom();
     var date = msg.getDate().toISOString();
     var body = msg.getPlainBody();
-    var attachments = msg.getAttachments();
+    var attachments = msg.getAttachments({
+      includeInlineImages: true,
+      includeAttachments: true,
+    });
 
     // Upload attachments and collect markdown references
     var attachmentMarkdown = "";
@@ -49,67 +55,81 @@ function processStarredSupportEmails() {
       attachmentMarkdown = "\n\n---\n\n**Attachments:**\n\n";
 
       for (var i = 0; i < attachments.length; i++) {
-        var attachment = attachments[i];
-        var originalName = attachment.getName();
-        var safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
-        var filePath = ATTACHMENT_PATH + "/" + timestamp + "-" + safeName;
-        var contentType = attachment.getContentType();
-        var base64Content = Utilities.base64Encode(attachment.getBytes());
+        try {
+          var attachment = attachments[i];
+          var originalName = attachment.getName() || "attachment-" + (i + 1);
+          var safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
+          var filePath = ATTACHMENT_PATH + "/" + timestamp + "-" + safeName;
+          var contentType = attachment.getContentType();
+          var bytes = attachment.getBytes();
 
-        var apiHeaders = {
-          Authorization: "Bearer " + GITHUB_TOKEN,
-          Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": "2022-11-28",
-        };
-        var apiUrl = "https://api.github.com/repos/" + REPO + "/contents/" + filePath;
-        var uploadPayload = {
-          message: "chore: upload support attachment " + originalName,
-          content: base64Content,
-        };
+          if (!bytes || bytes.length === 0) {
+            console.warn("Skipping empty attachment: " + originalName);
+            attachmentMarkdown += "Skipped (empty): " + originalName + "\n\n";
+            continue;
+          }
 
-        var uploadResponse = UrlFetchApp.fetch(apiUrl, {
-          method: "put",
-          contentType: "application/json",
-          headers: apiHeaders,
-          payload: JSON.stringify(uploadPayload),
-          muteHttpExceptions: true,
-        });
+          var base64Content = Utilities.base64Encode(bytes);
 
-        // Handle 409 Conflict (file already exists from a previous partial run)
-        if (uploadResponse.getResponseCode() === 409) {
-          var existingFile = UrlFetchApp.fetch(apiUrl, {
-            method: "get",
+          var apiHeaders = {
+            Authorization: "Bearer " + GITHUB_TOKEN,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          };
+          var apiUrl = "https://api.github.com/repos/" + REPO + "/contents/" + filePath;
+          var uploadPayload = {
+            message: "chore: upload support attachment " + originalName,
+            content: base64Content,
+          };
+
+          var uploadResponse = UrlFetchApp.fetch(apiUrl, {
+            method: "put",
+            contentType: "application/json",
             headers: apiHeaders,
+            payload: JSON.stringify(uploadPayload),
             muteHttpExceptions: true,
           });
-          if (existingFile.getResponseCode() === 200) {
-            var sha = JSON.parse(existingFile.getContentText()).sha;
-            uploadPayload.sha = sha;
-            uploadResponse = UrlFetchApp.fetch(apiUrl, {
-              method: "put",
-              contentType: "application/json",
+
+          // Handle 409 Conflict (file already exists from a previous partial run)
+          if (uploadResponse.getResponseCode() === 409) {
+            var existingFile = UrlFetchApp.fetch(apiUrl, {
+              method: "get",
               headers: apiHeaders,
-              payload: JSON.stringify(uploadPayload),
               muteHttpExceptions: true,
             });
+            if (existingFile.getResponseCode() === 200) {
+              var sha = JSON.parse(existingFile.getContentText()).sha;
+              uploadPayload.sha = sha;
+              uploadResponse = UrlFetchApp.fetch(apiUrl, {
+                method: "put",
+                contentType: "application/json",
+                headers: apiHeaders,
+                payload: JSON.stringify(uploadPayload),
+                muteHttpExceptions: true,
+              });
+            }
           }
-        }
 
-        var uploadCode = uploadResponse.getResponseCode();
-        if (uploadCode === 201 || uploadCode === 200) {
-          var uploadData = JSON.parse(uploadResponse.getContentText());
-          var downloadUrl = uploadData.content.download_url;
+          var uploadCode = uploadResponse.getResponseCode();
+          if (uploadCode === 201 || uploadCode === 200) {
+            var uploadData = JSON.parse(uploadResponse.getContentText());
+            var downloadUrl = uploadData.content.download_url;
 
-          if (contentType && contentType.indexOf("image/") === 0) {
-            attachmentMarkdown += "![" + originalName + "](" + downloadUrl + ")\n\n";
+            if (contentType && contentType.indexOf("image/") === 0) {
+              attachmentMarkdown += "![" + originalName + "](" + downloadUrl + ")\n\n";
+            } else {
+              attachmentMarkdown += "[" + originalName + "](" + downloadUrl + ")\n\n";
+            }
           } else {
-            attachmentMarkdown += "[" + originalName + "](" + downloadUrl + ")\n\n";
+            console.error(
+              "Failed to upload attachment: " + originalName + " (HTTP " + uploadCode + ")",
+            );
+            attachmentMarkdown += "Failed to upload: " + originalName + "\n\n";
           }
-        } else {
-          console.error(
-            "Failed to upload attachment: " + originalName + " (HTTP " + uploadCode + ")",
-          );
-          attachmentMarkdown += "Failed to upload: " + originalName + "\n\n";
+        } catch (e) {
+          var failedName = (attachments[i] && attachments[i].getName()) || "attachment-" + (i + 1);
+          console.error("Error processing attachment " + failedName + ": " + e.message);
+          attachmentMarkdown += "Failed to process: " + failedName + "\n\n";
         }
       }
     }
