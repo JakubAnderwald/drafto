@@ -1864,6 +1864,34 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
+  - react-native-webview (13.16.1):
+    - boost
+    - DoubleConversion
+    - fast_float
+    - fmt
+    - glog
+    - hermes-engine
+    - RCT-Folly
+    - RCT-Folly/Fabric
+    - RCTRequired
+    - RCTTypeSafety
+    - React-Core
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-ImageManager
+    - React-jsi
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - SocketRocket
+    - Yoga
   - React-NativeModulesApple (0.81.5):
     - boost
     - DoubleConversion
@@ -2397,6 +2425,36 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
+  - RNDocumentPicker (1.0.0):
+    - boost
+    - DoubleConversion
+    - fast_float
+    - fmt
+    - glog
+    - hermes-engine
+    - RCT-Folly
+    - RCT-Folly/Fabric
+    - RCTRequired
+    - RCTTypeSafety
+    - React-Core
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-ImageManager
+    - React-jsi
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - SocketRocket
+    - Yoga
+  - RNFS (2.20.0):
+    - React-Core
   - RNKeychain (9.2.3):
     - boost
     - DoubleConversion
@@ -2476,6 +2534,7 @@ DEPENDENCIES:
   - React-microtasksnativemodule (from `../../../node_modules/react-native-macos/ReactCommon/react/nativemodule/microtasks`)
   - "react-native-netinfo (from `../../../node_modules/@react-native-community/netinfo`)"
   - react-native-safe-area-context (from `../../../node_modules/react-native-safe-area-context`)
+  - react-native-webview (from `../../../node_modules/react-native-webview`)
   - React-NativeModulesApple (from `../../../node_modules/react-native-macos/ReactCommon/react/nativemodule/core/platform/ios`)
   - React-oscompat (from `../../../node_modules/react-native-macos/ReactCommon/oscompat`)
   - React-perflogger (from `../../../node_modules/react-native-macos/ReactCommon/reactperflogger`)
@@ -2507,6 +2566,8 @@ DEPENDENCIES:
   - ReactCodegen (from `build/generated/ios`)
   - ReactCommon/turbomodule/core (from `../../../node_modules/react-native-macos/ReactCommon`)
   - "RNCAsyncStorage (from `../../../node_modules/@react-native-async-storage/async-storage`)"
+  - RNDocumentPicker (from `../../../node_modules/react-native-document-picker-macos`)
+  - RNFS (from `../../../node_modules/react-native-fs`)
   - RNKeychain (from `../../../node_modules/react-native-keychain`)
   - "simdjson (from `../../../node_modules/@nozbe/simdjson`)"
   - SocketRocket (~> 0.7.1)
@@ -2603,6 +2664,8 @@ EXTERNAL SOURCES:
     :path: "../../../node_modules/@react-native-community/netinfo"
   react-native-safe-area-context:
     :path: "../../../node_modules/react-native-safe-area-context"
+  react-native-webview:
+    :path: "../../../node_modules/react-native-webview"
   React-NativeModulesApple:
     :path: "../../../node_modules/react-native-macos/ReactCommon/react/nativemodule/core/platform/ios"
   React-oscompat:
@@ -2665,6 +2728,10 @@ EXTERNAL SOURCES:
     :path: "../../../node_modules/react-native-macos/ReactCommon"
   RNCAsyncStorage:
     :path: "../../../node_modules/@react-native-async-storage/async-storage"
+  RNDocumentPicker:
+    :path: "../../../node_modules/react-native-document-picker-macos"
+  RNFS:
+    :path: "../../../node_modules/react-native-fs"
   RNKeychain:
     :path: "../../../node_modules/react-native-keychain"
   simdjson:
@@ -2717,6 +2784,7 @@ SPEC CHECKSUMS:
   React-microtasksnativemodule: 6edd5d6c59121753a066cc0de179088ac07ba453
   react-native-netinfo: 57447b5a45c98808f8eae292cf641f3d91d13830
   react-native-safe-area-context: befb5404eb8a16fdc07fa2bebab3568ecabcbb8a
+  react-native-webview: 8407aaaf6b539b1e38b72fabb55d6885de03beaf
   React-NativeModulesApple: c458b7ad1d4bd52fec401d4f571a765441a19adf
   React-oscompat: fae6f20685a2116163b0086b28191f8df2d1e5b8
   React-perflogger: 93c7f304c7243e276bcb165ec143a659ac41b7bc
@@ -2748,6 +2816,8 @@ SPEC CHECKSUMS:
   ReactCodegen: 0fe1a82598317775838d2c1348bdac6175d3c97b
   ReactCommon: 2024e8fc1841d1e289c5bc5b26aaf0e6ced45142
   RNCAsyncStorage: 29f0230e1a25f36c20b05f65e2eb8958d6526e82
+  RNDocumentPicker: 59218a1700e1ad2d0bc9347f5c0954442be3f4c7
+  RNFS: 89de7d7f4c0f6bafa05343c578f61118c8282ed8
   RNKeychain: 483402cf2b90647eb0cf569cebbc069d32addea4
   simdjson: 3cd22243b8581d581c3ea0ee19fb671e18978a15
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748

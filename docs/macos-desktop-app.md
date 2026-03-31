@@ -377,13 +377,33 @@ Phases are designed so independent work can run as parallel subagents where note
 - No `@expo/vector-icons` — attachment UI uses unicode characters for icons (consistent with Phase 3 approach)
 - Alert.alert used for error messages and delete confirmations (no toast provider yet)
 
-### Phase 5: macOS Polish (~1-2 weeks)
+### Phase 5: macOS Polish — ✅ COMPLETE (2026-03-31)
 
-**Can run in parallel:**
+**Completed:**
 
-- **Agent A**: Native menu bar (NSMenu) + keyboard shortcuts
-- **Agent B**: Native toolbar + window state persistence + dark/light mode
-- **Agent C**: App icon design + Dock integration
+- ✅ Native menu bar (`DraftoMenuManager` ObjC module) — replaces Xcode template menus with Drafto-specific menus programmatically
+- ✅ Custom menus: Drafto (About, Settings, Hide/Quit), File (New Note, New Notebook, Close), Edit (standard first-responder), View (Toggle Sidebar, Search, Trash, Appearance submenu), Window, Help
+- ✅ Keyboard shortcuts: Cmd+N (new note), Cmd+Shift+N (new notebook), Cmd+K (search), Cmd+Shift+S (toggle sidebar), Cmd+Shift+T (trash)
+- ✅ Appearance submenu with Light/Dark/System theme switching + checkmark sync from JS
+- ✅ Window state persistence via `NSWindow.setFrameAutosaveName:` — remembers size/position across launches
+- ✅ Minimum window size (800×500) to prevent layout collapse
+- ✅ Sidebar toggle — View > Toggle Sidebar hides/shows the notebooks sidebar
+- ✅ `MenuProvider` context bridges native menu events to React components via `useMenuActions` hook
+- ✅ TypeScript, ESLint, and xcodebuild all pass cleanly
+
+**New files:**
+
+- `macos/Drafto-macOS/DraftoMenuManager.h` + `.mm` — native ObjC menu module (RCTEventEmitter)
+- `src/lib/native/menu-manager.ts` — JS bridge to native module
+- `src/providers/menu-provider.tsx` — React context for menu event routing + theme sync
+
+**Implementation notes:**
+
+- Native module uses `RCTEventEmitter` to emit `onMenuAction` events with action strings (e.g., `"newNote"`, `"openSearch"`)
+- Standard Edit menu items (Undo/Redo/Cut/Copy/Paste) use `nil` target = first-responder chain, so AppKit handles them automatically for all text fields
+- Theme state is pushed from JS to native via `updateMenuState()` for Appearance checkmarks (JS is source of truth)
+- `MenuProvider` is placed between `ThemeProvider` and `AuthProvider` so it works on all screens including login
+- Native toolbar and app icon deferred to later (functional polish prioritized over visual)
 
 ### Phase 6: Testing (~2 weeks, starts parallel with Phase 4)
 
