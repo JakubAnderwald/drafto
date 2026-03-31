@@ -34,7 +34,7 @@ The current mobile build infrastructure relies on Expo Application Services (EAS
 
 ### Architecture
 
-```
+```text
 pnpm build:beta:ios          pnpm build:beta:android
         |                              |
    fastlane ios beta            fastlane android beta
@@ -80,12 +80,13 @@ Android is simpler (no code signing complexity like iOS), so start here.
 
 ```bash
 keytool -genkeypair -v -storetype PKCS12 \
-  -keystore apps/mobile/android/drafto-release.keystore \
+  -keystore ~/drafto-secrets/drafto-release.keystore \
   -alias drafto -keyalg RSA -keysize 2048 -validity 10000
 ```
 
-- Store keystore file outside Git (add to `.gitignore`)
+- Store keystore outside the repository (e.g., `~/drafto-secrets/`) — never commit it
 - Save password securely (e.g., macOS Keychain or a password manager)
+- Set `ANDROID_KEYSTORE_PATH` environment variable pointing to the keystore file
 - **Critical**: Before generating, check if EAS's upload key can be exported. If EAS generated the original upload key, you must either:
   - Export it via `eas credentials` and convert to a local keystore, OR
   - Generate a new key and reset the upload key in Google Play Console
@@ -120,14 +121,14 @@ platform :android do
     # 1. Prebuild native project
     sh("npx", "expo", "prebuild", "--platform", "android", "--clean")
 
-    # 2. Increment version code
+    # 2. Increment version code (requires: fastlane add_plugin versioning_android)
     android_set_version_code(
       gradle_file: "android/app/build.gradle",
-      version_code: latest_google_play_version_code(
+      version_code: google_play_track_version_codes(
         json_key: "google-play-service-account.json",
         package_name: "eu.drafto.mobile",
         track: "internal"
-      ) + 1
+      ).max + 1
     )
 
     # 3. Build AAB
@@ -149,8 +150,8 @@ platform :android do
     )
 
     # 5. Post release notes (reuse existing script)
-    notes = sh("bash", "scripts/generate-release-notes.sh", "--max-chars", "500")
-    sh("node", "scripts/post-release-notes.mjs", "--platform", "android", "--notes", notes)
+    notes = sh("bash", "../scripts/generate-release-notes.sh", "--max-chars", "500")
+    sh("node", "../scripts/post-release-notes.mjs", "--platform", "android", "--notes", notes)
   end
 end
 ```
@@ -162,7 +163,7 @@ Create Expo config plugin or post-prebuild script to inject signing config into 
 ```groovy
 signingConfigs {
     release {
-        storeFile file("drafto-release.keystore")
+        storeFile file(System.getenv("ANDROID_KEYSTORE_PATH") ?: System.getProperty("user.home") + "/drafto-secrets/drafto-release.keystore")
         storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: ""
         keyAlias "drafto"
         keyPassword System.getenv("ANDROID_KEY_PASSWORD") ?: ""
@@ -218,14 +219,12 @@ apple_id("your@email.com")  # Apple ID
 team_id("4J2USPSG2U")       # Apple Developer Team ID
 ```
 
-Create `apps/mobile/fastlane/api_key.json` (gitignored):
+Store App Store Connect API credentials as environment variables (the Fastfile reads from `ENV[]`):
 
-```json
-{
-  "key_id": "<ASC_API_KEY_ID>",
-  "issuer_id": "<ASC_API_ISSUER_ID>",
-  "key_filepath": "path/to/AuthKey.p8"
-}
+```bash
+export ASC_API_KEY_ID="<your-key-id>"
+export ASC_API_ISSUER_ID="<your-issuer-id>"
+export ASC_API_KEY_P8_PATH="/path/to/AuthKey.p8"
 ```
 
 #### 2.3 Add iOS Lane to Fastfile
@@ -273,8 +272,8 @@ platform :ios do
     )
 
     # 6. Post release notes (reuse existing script)
-    notes = sh("bash", "scripts/generate-release-notes.sh", "--max-chars", "4000")
-    sh("node", "scripts/post-release-notes.mjs", "--platform", "ios", "--notes", notes)
+    notes = sh("bash", "../scripts/generate-release-notes.sh", "--max-chars", "4000")
+    sh("node", "../scripts/post-release-notes.mjs", "--platform", "ios", "--notes", notes)
   end
 end
 ```
@@ -312,14 +311,18 @@ Replace EAS build steps in `beta-release.yml` with fastlane:
 
 ```yaml
 # Android job (runs on ubuntu-latest — free)
+- name: Set up Google Play credentials
+  run: |
+    cd apps/mobile
+    echo '${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_KEY }}' > google-play-service-account.json
 - name: Build & Submit Android
   run: |
     cd apps/mobile
     bundle exec fastlane android beta
   env:
+    ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/drafto-release.keystore
     ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
     ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-    GOOGLE_PLAY_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_KEY }}
 
 # iOS job (runs on macos-latest — uses macOS minutes)
 - name: Build & Submit iOS
@@ -349,6 +352,7 @@ Update build documentation to reflect the new fastlane-based workflow. Remove EA
 
 ## Migration Checklist
 
+- [ ] **Phase 0**: Export and backup existing EAS credentials and configuration
 - [ ] **Phase 1.1**: Export or regenerate Android upload key
 - [ ] **Phase 1.2**: Install fastlane
 - [ ] **Phase 1.3**: Write Android lane in Fastfile
