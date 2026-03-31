@@ -274,6 +274,10 @@ RCT_EXPORT_METHOD(setupMenus) {
 
 RCT_EXPORT_METHOD(updateMenuState:(NSDictionary *)state) {
   dispatch_async(dispatch_get_main_queue(), ^{
+    if (!self->_themeLightItem) {
+      // Menus not yet initialized; skip update
+      return;
+    }
     NSString *currentTheme = state[@"currentTheme"];
     if (currentTheme) {
       self->_themeLightItem.state = [currentTheme isEqualToString:@"light"] ? NSControlStateValueOn : NSControlStateValueOff;

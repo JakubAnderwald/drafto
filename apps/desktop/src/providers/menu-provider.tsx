@@ -57,7 +57,7 @@ export function MenuProvider({ children }: { children: React.ReactNode }) {
   }, [setTheme]);
 
   const registerHandlers = useCallback((handlers: MenuActionHandlers) => {
-    handlersRef.current = { ...handlersRef.current, ...handlers };
+    handlersRef.current = handlers;
   }, []);
 
   return <MenuContext.Provider value={{ registerHandlers }}>{children}</MenuContext.Provider>;
@@ -65,7 +65,7 @@ export function MenuProvider({ children }: { children: React.ReactNode }) {
 
 /**
  * Hook to register menu action handlers from a component.
- * Handlers are stored in a ref so they can be updated without re-subscribing.
+ * Replaces all handlers on each call; cleans up on unmount.
  */
 export function useMenuActions(handlers: MenuActionHandlers): void {
   const context = useContext(MenuContext);
@@ -74,8 +74,11 @@ export function useMenuActions(handlers: MenuActionHandlers): void {
   }
 
   const { registerHandlers } = context;
+  const handlersRef = useRef(handlers);
+  handlersRef.current = handlers;
 
   useEffect(() => {
-    registerHandlers(handlers);
-  }, [registerHandlers, ...Object.values(handlers)]);
+    registerHandlers(handlersRef.current);
+    return () => registerHandlers({});
+  }, [registerHandlers]);
 }

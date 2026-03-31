@@ -69,6 +69,7 @@ export function MainScreen() {
           n.isTrashed = false;
         });
       });
+      setShowTrash(false);
       setSelectedNoteId(noteId);
     } catch (err) {
       console.error("Failed to create note from menu:", err);

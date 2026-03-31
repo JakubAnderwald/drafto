@@ -19,7 +19,9 @@ export function setupMenus(): void {
   DraftoMenuManager.setupMenus();
 }
 
-export function updateMenuState(state: { currentTheme: string }): void {
+export type MenuTheme = "light" | "dark" | "system";
+
+export function updateMenuState(state: { currentTheme: MenuTheme }): void {
   DraftoMenuManager.updateMenuState(state);
 }
 
