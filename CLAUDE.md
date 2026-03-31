@@ -389,6 +389,7 @@ Release notes are auto-generated from conventional commits and posted to both st
 | `ANDROID_KEYSTORE_BASE64`         | Android upload keystore (base64-encoded) |
 | `ANDROID_KEYSTORE_PASSWORD`       | Keystore password                        |
 | `ANDROID_KEY_PASSWORD`            | Key password                             |
+| `ANDROID_KEY_ALIAS`               | Android signing key alias                |
 | `ASC_API_KEY_ID`                  | App Store Connect API Key ID             |
 | `ASC_API_ISSUER_ID`               | App Store Connect Issuer ID              |
 | `ASC_API_KEY_P8`                  | App Store Connect API private key (.p8)  |

@@ -80,7 +80,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.3"
+          ruby-version-file: apps/mobile/.ruby-version
           bundler-cache: true
           working-directory: apps/mobile
       - name: Build and submit to TestFlight
@@ -117,15 +117,16 @@ jobs:
           java-version: "17"
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.3"
+          ruby-version-file: apps/mobile/.ruby-version
           bundler-cache: true
           working-directory: apps/mobile
       - name: Set up Android signing
         working-directory: apps/mobile
         run: |
-          echo '${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_KEY }}' > google-play-service-account.json
-          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > /tmp/drafto-release.keystore
+          printenv GOOGLE_PLAY_SERVICE_ACCOUNT_KEY > google-play-service-account.json
+          printenv ANDROID_KEYSTORE_BASE64 | base64 --decode > /tmp/drafto-release.keystore
         env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_KEY }}
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       - name: Build and submit to Google Play Internal Testing
         id: build-android

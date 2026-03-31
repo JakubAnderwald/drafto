@@ -23,7 +23,7 @@ function withAndroidSigning(config) {
         release {
             storeFile file(System.getenv("ANDROID_KEYSTORE_PATH") ?: System.getProperty("user.home") + "/drafto-secrets/drafto-release.keystore")
             storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: ""
-            keyAlias System.getenv("ANDROID_KEY_ALIAS") ?: "drafto"
+            keyAlias System.getenv("ANDROID_KEY_ALIAS") ?: "54e4e5b83ca8617c2a3d8dbc2a5dbd87"
             keyPassword System.getenv("ANDROID_KEY_PASSWORD") ?: ""
         }`;
 
