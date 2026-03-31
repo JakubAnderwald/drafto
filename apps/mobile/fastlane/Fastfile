@@ -1,0 +1,194 @@
+default_platform(:android)
+
+PACKAGE_NAME = "eu.drafto.mobile"
+PROJECT_ROOT = File.expand_path("..", __dir__)
+
+# ---------- helpers ----------
+
+def load_production_env
+  env_file = File.join(PROJECT_ROOT, ".env.production")
+  if File.exist?(env_file)
+    File.readlines(env_file).each do |line|
+      line = line.strip
+      next if line.empty? || line.start_with?("#")
+      key, value = line.split("=", 2)
+      ENV[key] = value if key && value
+    end
+  end
+end
+
+def write_local_properties
+  sdk_dir = ENV["ANDROID_SDK_ROOT"] || ENV["ANDROID_HOME"] || File.join(Dir.home, "Library", "Android", "sdk")
+  File.write(File.join(PROJECT_ROOT, "android", "local.properties"), "sdk.dir=#{sdk_dir}\n")
+end
+
+def json_key_path
+  ENV["GOOGLE_PLAY_SERVICE_ACCOUNT_KEY_PATH"] || File.join(PROJECT_ROOT, "google-play-service-account.json")
+end
+
+def run_in_project(*args)
+  Dir.chdir(PROJECT_ROOT) do
+    sh(*args)
+  end
+end
+
+def post_release_notes(platform:, max_chars:)
+  Dir.chdir(PROJECT_ROOT) do
+    notes = sh("bash", "scripts/generate-release-notes.sh", "--max-chars", max_chars.to_s).strip
+    sh("node", "scripts/post-release-notes.mjs", "--platform", platform, "--notes", notes) unless notes.empty?
+  end
+rescue StandardError => e
+  UI.important("Release notes posting failed (non-fatal): #{e.message}")
+end
+
+# ---------- Android ----------
+
+platform :android do
+  desc "Build and submit to Google Play internal track"
+  lane :beta do
+    build_and_submit(track: "internal")
+  end
+
+  desc "Build and submit to Google Play production track"
+  lane :production do
+    build_and_submit(track: "production")
+  end
+
+  private_lane :build_and_submit do |options|
+    track = options[:track]
+
+    # Load production Supabase credentials
+    load_production_env
+
+    # Generate native project
+    run_in_project("npx", "expo", "prebuild", "--platform", "android", "--clean")
+
+    # Write local.properties for Gradle to find Android SDK
+    write_local_properties
+
+    # Set JDK 25+ compatibility
+    ENV["_JAVA_OPTIONS"] = "--enable-native-access=ALL-UNNAMED"
+
+    # Auto-increment version code from store
+    latest_codes = google_play_track_version_codes(
+      package_name: PACKAGE_NAME,
+      track: track,
+      json_key: json_key_path
+    )
+    next_code = (latest_codes.max || 0) + 1
+    android_set_version_code(
+      gradle_file: File.join(PROJECT_ROOT, "android", "app", "build.gradle"),
+      version_code: next_code
+    )
+
+    # Build signed AAB
+    gradle(
+      task: "bundle",
+      build_type: "Release",
+      project_dir: File.join(PROJECT_ROOT, "android")
+    )
+
+    # Upload to Google Play
+    upload_to_play_store(
+      track: track,
+      aab: File.join(PROJECT_ROOT, "android", "app", "build", "outputs", "bundle", "release", "app-release.aab"),
+      json_key: json_key_path,
+      package_name: PACKAGE_NAME,
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+
+    # Post release notes
+    post_release_notes(platform: "android", max_chars: 500)
+  end
+end
+
+# ---------- iOS ----------
+
+platform :ios do
+  desc "Build and submit to TestFlight"
+  lane :beta do
+    build_and_submit(destination: "testflight")
+  end
+
+  desc "Build and submit to App Store"
+  lane :production do
+    build_and_submit(destination: "appstore")
+  end
+
+  private_lane :build_and_submit do |options|
+    destination = options[:destination]
+
+    # Load production Supabase credentials
+    load_production_env
+
+    # Generate native project
+    run_in_project("npx", "expo", "prebuild", "--platform", "ios", "--clean")
+
+    # Install CocoaPods dependencies (creates .xcworkspace)
+    cocoapods(
+      podfile: File.join(PROJECT_ROOT, "ios", "Podfile"),
+      try_repo_update_on_error: true
+    )
+
+    # Configure App Store Connect API key
+    api_key = app_store_connect_api_key(
+      key_id: ENV["ASC_API_KEY_ID"],
+      issuer_id: ENV["ASC_API_ISSUER_ID"],
+      key_filepath: ENV["ASC_API_KEY_P8_PATH"],
+      key_content: ENV["ASC_API_KEY_P8"],
+      in_house: false
+    )
+
+    # Fetch signing credentials from match
+    match(
+      type: "appstore",
+      app_identifier: PACKAGE_NAME,
+      api_key: api_key,
+      readonly: true
+    )
+
+    # Auto-increment build number from TestFlight
+    increment_build_number(
+      build_number: latest_testflight_build_number(api_key: api_key) + 1,
+      xcodeproj: File.join(PROJECT_ROOT, "ios", "Drafto.xcodeproj")
+    )
+
+    # Build IPA
+    update_code_signing_settings(
+      path: File.join(PROJECT_ROOT, "ios", "Drafto.xcodeproj"),
+      use_automatic_signing: false,
+      team_id: "4J2USPSG2U",
+      profile_name: "match AppStore eu.drafto.mobile",
+      code_sign_identity: "Apple Distribution"
+    )
+
+    build_app(
+      workspace: File.join(PROJECT_ROOT, "ios", "Drafto.xcworkspace"),
+      scheme: "Drafto",
+      export_method: "app-store",
+      output_directory: File.join(PROJECT_ROOT, "ios", "build")
+    )
+
+    # Upload
+    if destination == "testflight"
+      upload_to_testflight(
+        api_key: api_key,
+        ipa: File.join(PROJECT_ROOT, "ios", "build", "Drafto.ipa"),
+        skip_waiting_for_build_processing: true
+      )
+    else
+      upload_to_app_store(
+        api_key: api_key,
+        ipa: File.join(PROJECT_ROOT, "ios", "build", "Drafto.ipa"),
+        skip_metadata: true,
+        skip_screenshots: true,
+        precheck_include_in_app_purchases: false
+      )
+    end
+
+    # Post release notes
+    post_release_notes(platform: "ios", max_chars: 4000)
+  end
+end

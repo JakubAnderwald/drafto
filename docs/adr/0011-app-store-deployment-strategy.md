@@ -1,6 +1,6 @@
 # 0011 — App Store Deployment Strategy
 
-- **Status**: Accepted
+- **Status**: Superseded by [0016](./0016-local-fastlane-builds.md)
 - **Date**: 2026-03-08
 - **Authors**: Jakub
 

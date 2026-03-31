@@ -43,8 +43,9 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0008](./0008-production-data-safety-guardrails.md) | Production Data Safety Guardrails        | Accepted           | 2026-03-07 |
 | [0009](./0009-mobile-app-technology-choices.md)     | Mobile App Technology Choices            | Accepted           | 2026-03-07 |
 | [0010](./0010-offline-sync-strategy.md)             | Offline Sync Strategy with WatermelonDB  | Accepted           | 2026-03-07 |
-| [0011](./0011-app-store-deployment-strategy.md)     | App Store Deployment Strategy            | Accepted           | 2026-03-08 |
+| [0011](./0011-app-store-deployment-strategy.md)     | App Store Deployment Strategy            | Superseded by 0016 | 2026-03-08 |
 | [0012](./0012-search-implementation.md)             | Search Implementation                    | Accepted           | 2026-03-14 |
 | [0013](./0013-automated-support-pipeline.md)        | Automated Support Pipeline               | Accepted           | 2026-03-14 |
 | [0014](./0014-digital-atelier-design-system.md)     | Digital Atelier Design System            | Accepted           | 2026-03-19 |
 | [0015](./0015-desktop-app-technology-choice.md)     | Desktop App Technology Choice            | Accepted           | 2026-03-29 |
+| [0016](./0016-local-fastlane-builds.md)             | Local Fastlane Builds                    | Accepted           | 2026-03-31 |

@@ -67,7 +67,7 @@ jobs:
     name: Build & Submit iOS (TestFlight)
     needs: checks
     if: ${{ github.event.inputs.platform == 'all' || github.event.inputs.platform == 'ios' }}
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,28 +78,23 @@ jobs:
           node-version-file: ".nvmrc"
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
-      - uses: expo/expo-github-action@v8
+      - uses: ruby/setup-ruby@v1
         with:
-          eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: apps/mobile
       - name: Build and submit to TestFlight
         id: build-ios
         working-directory: apps/mobile
-        run: eas build --profile beta --platform ios --auto-submit --non-interactive
+        run: bundle exec fastlane ios beta
         env:
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
-          EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
-      - name: Post release notes to TestFlight
-        if: ${{ steps.build-ios.outcome == 'success' }}
-        working-directory: apps/mobile
-        run: |
-          NOTES=$(bash scripts/generate-release-notes.sh --max-chars 4000)
-          node scripts/post-release-notes.mjs --platform ios --notes "$NOTES"
-        env:
           ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
           ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
           ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_PRIVATE_KEY: ${{ secrets.MATCH_GIT_PRIVATE_KEY }}
 
   build-android:
     name: Build & Submit Android (Internal Testing)
@@ -116,27 +111,32 @@ jobs:
           node-version-file: ".nvmrc"
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
-      - uses: expo/expo-github-action@v8
+      - uses: actions/setup-java@v4
         with:
-          eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
-      - name: Write Google Play service account key
+          distribution: "temurin"
+          java-version: "17"
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: apps/mobile
+      - name: Set up Android signing
         working-directory: apps/mobile
-        run: echo '${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_KEY }}' > google-play-service-account.json
+        run: |
+          echo '${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_KEY }}' > google-play-service-account.json
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > /tmp/drafto-release.keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       - name: Build and submit to Google Play Internal Testing
         id: build-android
         working-directory: apps/mobile
-        run: eas build --profile beta --platform android --auto-submit --non-interactive
+        run: bundle exec fastlane android beta
         env:
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
-          EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
-      - name: Post release notes to Google Play
-        if: ${{ steps.build-android.outcome == 'success' }}
-        working-directory: apps/mobile
-        run: |
-          NOTES=$(bash scripts/generate-release-notes.sh --max-chars 500)
-          node scripts/post-release-notes.mjs --platform android --notes "$NOTES"
-        env:
+          ANDROID_KEYSTORE_PATH: /tmp/drafto-release.keystore
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           GOOGLE_PLAY_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_KEY }}
           GOOGLE_PLAY_TRACK: internal
