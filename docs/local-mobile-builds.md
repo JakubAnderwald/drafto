@@ -10,17 +10,17 @@ The current mobile build infrastructure relies on Expo Application Services (EAS
 
 ## Current Setup
 
-| Step | Tool | Details |
-|------|------|---------|
-| Build (iOS) | EAS Build (cloud) | `eas build --profile beta --platform ios` |
-| Build (Android) | EAS Build (cloud) | `eas build --profile beta --platform android` |
-| Code signing (iOS) | EAS-managed | EAS creates/manages certs and provisioning profiles |
-| Code signing (Android) | EAS-managed | EAS manages the upload keystore |
-| Submit (iOS) | EAS Submit | `--auto-submit` to TestFlight |
-| Submit (Android) | EAS Submit | `--auto-submit` to Google Play internal track |
-| Build numbers | EAS auto-increment | Remote version tracking |
-| Release notes | Custom scripts | `generate-release-notes.sh` + `post-release-notes.mjs` |
-| CI trigger | GitHub Actions | `beta-release.yml` dispatches EAS builds |
+| Step                   | Tool               | Details                                                |
+| ---------------------- | ------------------ | ------------------------------------------------------ |
+| Build (iOS)            | EAS Build (cloud)  | `eas build --profile beta --platform ios`              |
+| Build (Android)        | EAS Build (cloud)  | `eas build --profile beta --platform android`          |
+| Code signing (iOS)     | EAS-managed        | EAS creates/manages certs and provisioning profiles    |
+| Code signing (Android) | EAS-managed        | EAS manages the upload keystore                        |
+| Submit (iOS)           | EAS Submit         | `--auto-submit` to TestFlight                          |
+| Submit (Android)       | EAS Submit         | `--auto-submit` to Google Play internal track          |
+| Build numbers          | EAS auto-increment | Remote version tracking                                |
+| Release notes          | Custom scripts     | `generate-release-notes.sh` + `post-release-notes.mjs` |
+| CI trigger             | GitHub Actions     | `beta-release.yml` dispatches EAS builds               |
 
 ## Recommended Solution: Fastlane + Local macOS Builds
 
@@ -52,23 +52,23 @@ pnpm build:beta:ios          pnpm build:beta:android
 
 ### Alternatives Considered
 
-| Approach | Cost | Pros | Cons |
-|----------|------|------|------|
-| **Fastlane + local** (recommended) | Free | No limits, full control, battle-tested, CI-portable | Requires Mac to be on, Ruby dependency, one-time setup effort |
-| **GitHub Actions** | Free (200 macOS min/month) | CI/CD integration, no local Mac needed | 10x minute multiplier limits iOS to ~10 builds/month |
-| **Codemagic** | Free (500 min/month) | 500 M2 Mac minutes, native Expo support | Vendor lock-in, limits may tighten, still a cloud dependency |
-| **Raw scripts** (xcodebuild + gradle) | Free | No Ruby dependency | More maintenance, no signing management, reinventing fastlane |
-| **Keep EAS Build** | $15+/month | Zero migration effort, proven workflow | Monthly cost, build limits, cloud dependency |
+| Approach                              | Cost                       | Pros                                                | Cons                                                          |
+| ------------------------------------- | -------------------------- | --------------------------------------------------- | ------------------------------------------------------------- |
+| **Fastlane + local** (recommended)    | Free                       | No limits, full control, battle-tested, CI-portable | Requires Mac to be on, Ruby dependency, one-time setup effort |
+| **GitHub Actions**                    | Free (200 macOS min/month) | CI/CD integration, no local Mac needed              | 10x minute multiplier limits iOS to ~10 builds/month          |
+| **Codemagic**                         | Free (500 min/month)       | 500 M2 Mac minutes, native Expo support             | Vendor lock-in, limits may tighten, still a cloud dependency  |
+| **Raw scripts** (xcodebuild + gradle) | Free                       | No Ruby dependency                                  | More maintenance, no signing management, reinventing fastlane |
+| **Keep EAS Build**                    | $15+/month                 | Zero migration effort, proven workflow              | Monthly cost, build limits, cloud dependency                  |
 
 ### Key Risks and Mitigations
 
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| Android upload key migration | Builds rejected by Google Play | Export key from EAS or reset upload key in Google Play Console before migrating |
-| iOS signing setup complexity | Blocked on first build | Use fastlane match with a private Git repo; one-time 30-min setup |
-| Build number drift | Store rejects duplicate build numbers | Use fastlane `increment_build_number` / `increment_version_code` actions |
-| expo prebuild overwrites signing config | Build fails | Use Expo config plugins to inject signing config, or apply after prebuild |
-| Mac must be on for builds | Can't build remotely | Fallback: Codemagic free tier (500 min/month) for remote builds |
+| Risk                                    | Impact                                | Mitigation                                                                      |
+| --------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------- |
+| Android upload key migration            | Builds rejected by Google Play        | Export key from EAS or reset upload key in Google Play Console before migrating |
+| iOS signing setup complexity            | Blocked on first build                | Use fastlane match with a private Git repo; one-time 30-min setup               |
+| Build number drift                      | Store rejects duplicate build numbers | Use fastlane `increment_build_number` / `increment_version_code` actions        |
+| expo prebuild overwrites signing config | Build fails                           | Use Expo config plugins to inject signing config, or apply after prebuild       |
+| Mac must be on for builds               | Can't build remotely                  | Fallback: Codemagic free tier (500 min/month) for remote builds                 |
 
 ## Implementation Plan
 
@@ -183,6 +183,7 @@ fastlane android beta
 ```
 
 Verify:
+
 - [ ] AAB is produced
 - [ ] AAB is uploaded to Google Play internal track
 - [ ] Release notes appear in Google Play Console
@@ -286,6 +287,7 @@ fastlane ios beta
 ```
 
 Verify:
+
 - [ ] IPA is produced and code-signed
 - [ ] Build appears in TestFlight
 - [ ] Release notes appear in App Store Connect
@@ -363,12 +365,12 @@ Update build documentation to reflect the new fastlane-based workflow. Remove EA
 
 ## Estimated Effort
 
-| Phase | Effort | Complexity |
-|-------|--------|------------|
+| Phase             | Effort    | Complexity                                        |
+| ----------------- | --------- | ------------------------------------------------- |
 | Phase 1 (Android) | 2-3 hours | Low-Medium (upload key migration is the wildcard) |
-| Phase 2 (iOS) | 3-4 hours | Medium (signing setup, match configuration) |
-| Phase 3 (CI) | 1-2 hours | Low |
-| Phase 4 (Cleanup) | 30 min | Low |
+| Phase 2 (iOS)     | 3-4 hours | Medium (signing setup, match configuration)       |
+| Phase 3 (CI)      | 1-2 hours | Low                                               |
+| Phase 4 (Cleanup) | 30 min    | Low                                               |
 
 ## References
 
