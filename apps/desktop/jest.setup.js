@@ -84,10 +84,11 @@ jest.mock("react-native-document-picker-macos", () => ({
 // Mock react-native-webview
 jest.mock("react-native-webview", () => {
   const { View } = require("react-native");
+  const React = require("react");
   return {
     __esModule: true,
-    default: (props) => View(props),
-    WebView: (props) => View(props),
+    default: (props) => React.createElement(View, props),
+    WebView: (props) => React.createElement(View, props),
   };
 });
 

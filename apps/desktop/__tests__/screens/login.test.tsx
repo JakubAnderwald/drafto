@@ -20,11 +20,11 @@ describe("LoginScreen", () => {
   });
 
   it("renders login form", () => {
-    const { getByText } = render(<LoginScreen />);
+    const { getByText, getByTestId } = render(<LoginScreen />);
 
     expect(getByText("Log In")).toBeTruthy();
-    expect(getByText("Email")).toBeTruthy();
-    expect(getByText("Password")).toBeTruthy();
+    expect(getByTestId("email-input")).toBeTruthy();
+    expect(getByTestId("password-input")).toBeTruthy();
     expect(getByText("Log in")).toBeTruthy();
   });
 
@@ -41,15 +41,10 @@ describe("LoginScreen", () => {
   });
 
   it("calls signInWithPassword with email and password", async () => {
-    const { getByDisplayValue, getByText, UNSAFE_getAllByType } = render(<LoginScreen />);
+    const { getByTestId, getByText } = render(<LoginScreen />);
 
-    // Get TextInput elements by their rendered type
-    const inputs = UNSAFE_getAllByType("RCTSinglelineTextInputView" as never);
-    expect(inputs.length).toBeGreaterThanOrEqual(2);
-
-    // First input is email, second is password
-    fireEvent.changeText(inputs[0], "test@example.com");
-    fireEvent.changeText(inputs[1], "password123");
+    fireEvent.changeText(getByTestId("email-input"), "test@example.com");
+    fireEvent.changeText(getByTestId("password-input"), "password123");
     fireEvent.press(getByText("Log in"));
 
     await waitFor(() => {
@@ -65,11 +60,10 @@ describe("LoginScreen", () => {
       error: { message: "Invalid login credentials" },
     });
 
-    const { getByText, UNSAFE_getAllByType } = render(<LoginScreen />);
+    const { getByTestId, getByText } = render(<LoginScreen />);
 
-    const inputs = UNSAFE_getAllByType("RCTSinglelineTextInputView" as never);
-    fireEvent.changeText(inputs[0], "test@example.com");
-    fireEvent.changeText(inputs[1], "wrong");
+    fireEvent.changeText(getByTestId("email-input"), "test@example.com");
+    fireEvent.changeText(getByTestId("password-input"), "wrong");
     fireEvent.press(getByText("Log in"));
 
     await waitFor(() => {

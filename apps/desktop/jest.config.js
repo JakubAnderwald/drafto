@@ -1,13 +1,9 @@
-const path = require("path");
-
 module.exports = {
   preset: "react-native",
-  setupFiles: ["./jest.setup.js"],
+  setupFilesAfterEnv: ["./jest.setup.js"],
   testPathIgnorePatterns: ["<rootDir>/node_modules/", "<rootDir>/__tests__/helpers/"],
   moduleNameMapper: {
     "^@/(.*)$": "<rootDir>/src/$1",
-    // Force @testing-library/react-native to use the root react-native, not its nested copy
-    "^react-native$": path.resolve(__dirname, "../../node_modules/react-native"),
     // Mock TurboModuleRegistry to provide stubs for all native TurboModules
     ".*/TurboModule/TurboModuleRegistry$": "<rootDir>/jest/mocks/TurboModuleRegistry.js",
   },

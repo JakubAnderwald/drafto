@@ -55,6 +55,7 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
       <View style={styles.form}>
         <Text style={styles.label}>Email</Text>
         <TextInput
+          testID="email-input"
           style={styles.input}
           placeholder="you@example.com"
           placeholderTextColor={semantic.fgSubtle}
@@ -69,6 +70,7 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
 
         <Text style={styles.label}>Password</Text>
         <TextInput
+          testID="password-input"
           style={styles.input}
           placeholder="Your password"
           placeholderTextColor={semantic.fgSubtle}
