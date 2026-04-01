@@ -1,16 +1,20 @@
 const mockUpload = jest.fn();
 const mockUpsert = jest.fn();
 const mockQuery = jest.fn();
-const mockFetch = jest.fn();
 const mockDatabaseWrite = jest.fn((fn: () => Promise<unknown>) => fn());
 const mockDatabaseGet = jest.fn();
+const mockFileBytes = jest.fn();
+const mockFileDelete = jest.fn();
+const mockFileCopy = jest.fn();
 
 jest.mock("expo-file-system", () => {
   const mockFile = jest.fn().mockImplementation((...args: unknown[]) => ({
     uri: typeof args[0] === "string" ? args[0] : `file:///mock/${args[1]}`,
     exists: true,
-    copy: jest.fn(),
-    delete: jest.fn(),
+    size: 1024,
+    copy: mockFileCopy,
+    delete: mockFileDelete,
+    bytes: mockFileBytes,
   }));
   const mockDirectory = jest.fn().mockImplementation(() => ({
     exists: true,
@@ -53,15 +57,6 @@ jest.mock("@/lib/generate-id", () => ({
   generateId: () => "mock-id-123",
 }));
 
-// Mock global fetch
-const originalFetch = global.fetch;
-beforeAll(() => {
-  global.fetch = mockFetch as unknown as typeof fetch;
-});
-afterAll(() => {
-  global.fetch = originalFetch;
-});
-
 import { processPendingUploads } from "@/lib/data/attachment-queue";
 
 beforeEach(() => {
@@ -69,7 +64,7 @@ beforeEach(() => {
 });
 
 describe("processPendingUploads", () => {
-  it("skips upload when blob is empty", async () => {
+  it("skips upload when file bytes are empty", async () => {
     const mockAttachment = {
       id: "att-1",
       remoteId: "remote-1",
@@ -89,19 +84,17 @@ describe("processPendingUploads", () => {
       query: (...args: unknown[]) => mockQuery(...args),
     });
 
-    // Return an empty blob (simulates corrupted/deleted local file)
-    mockFetch.mockResolvedValue({
-      blob: jest.fn().mockResolvedValue({ size: 0 }),
-    });
+    // Return empty bytes (simulates corrupted/deleted local file)
+    mockFileBytes.mockResolvedValue(new Uint8Array(0));
 
-    const uploaded = await processPendingUploads();
+    const result = await processPendingUploads();
 
-    expect(uploaded).toBe(0);
+    expect(result).toEqual({ uploaded: 0, failed: 1 });
     // Should NOT have attempted the storage upload
     expect(mockUpload).not.toHaveBeenCalled();
   });
 
-  it("proceeds with upload when blob has content", async () => {
+  it("proceeds with upload when file has content", async () => {
     const mockAttachment = {
       id: "att-1",
       remoteId: "remote-1",
@@ -121,21 +114,79 @@ describe("processPendingUploads", () => {
       query: (...args: unknown[]) => mockQuery(...args),
     });
 
-    const mockBlob = { size: 1024 };
-    mockFetch.mockResolvedValue({
-      blob: jest.fn().mockResolvedValue(mockBlob),
-    });
+    const fileBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    mockFileBytes.mockResolvedValue(fileBytes);
 
     mockUpload.mockResolvedValue({ error: null });
     mockUpsert.mockResolvedValue({ error: null });
     mockDatabaseWrite.mockImplementation((fn: () => Promise<unknown>) => fn());
 
-    const uploaded = await processPendingUploads();
+    const result = await processPendingUploads();
 
-    expect(uploaded).toBe(1);
-    expect(mockUpload).toHaveBeenCalledWith("user-1/note-1/photo.jpg", mockBlob, {
+    expect(result).toEqual({ uploaded: 1, failed: 0 });
+    expect(mockUpload).toHaveBeenCalledWith("user-1/note-1/photo.jpg", expect.any(Blob), {
       contentType: "image/jpeg",
       upsert: false,
     });
+  });
+
+  it("returns correct counts when some uploads fail", async () => {
+    const successAttachment = {
+      id: "att-1",
+      remoteId: "remote-1",
+      noteId: "note-1",
+      userId: "user-1",
+      fileName: "photo.jpg",
+      filePath: "user-1/note-1/photo.jpg",
+      fileSize: 1024,
+      mimeType: "image/jpeg",
+      localUri: "file:///local/photo.jpg",
+      uploadStatus: "pending",
+      update: jest.fn(),
+    };
+
+    const failAttachment = {
+      id: "att-2",
+      remoteId: "remote-2",
+      noteId: "note-1",
+      userId: "user-1",
+      fileName: "doc.pdf",
+      filePath: "user-1/note-1/doc.pdf",
+      fileSize: 2048,
+      mimeType: "application/pdf",
+      localUri: "file:///local/doc.pdf",
+      uploadStatus: "pending",
+      update: jest.fn(),
+    };
+
+    mockQuery.mockReturnValue({
+      fetch: jest.fn().mockResolvedValue([successAttachment, failAttachment]),
+    });
+    mockDatabaseGet.mockReturnValue({
+      query: (...args: unknown[]) => mockQuery(...args),
+    });
+
+    const fileBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    // First call succeeds, second returns empty bytes
+    mockFileBytes.mockResolvedValueOnce(fileBytes).mockResolvedValueOnce(new Uint8Array(0));
+
+    mockUpload.mockResolvedValue({ error: null });
+    mockUpsert.mockResolvedValue({ error: null });
+    mockDatabaseWrite.mockImplementation((fn: () => Promise<unknown>) => fn());
+
+    const result = await processPendingUploads();
+
+    expect(result).toEqual({ uploaded: 1, failed: 1 });
+  });
+
+  it("returns zeros when no pending uploads exist", async () => {
+    mockQuery.mockReturnValue({ fetch: jest.fn().mockResolvedValue([]) });
+    mockDatabaseGet.mockReturnValue({
+      query: (...args: unknown[]) => mockQuery(...args),
+    });
+
+    const result = await processPendingUploads();
+
+    expect(result).toEqual({ uploaded: 0, failed: 0 });
   });
 });

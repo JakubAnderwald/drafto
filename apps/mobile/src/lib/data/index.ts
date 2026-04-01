@@ -20,6 +20,7 @@ export {
 } from "./attachments";
 
 export { queueAttachment, processPendingUploads, cleanupOrphanedFiles } from "./attachment-queue";
+export type { UploadResult } from "./attachment-queue";
 
 export { openAttachment } from "./open-attachment";
 export type { OpenAttachmentParams, OpenAttachmentResult } from "./open-attachment";
