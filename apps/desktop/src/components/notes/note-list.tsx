@@ -118,6 +118,8 @@ export function NoteList({ notebookId, selectedNoteId, onSelectNote }: NoteListP
         <Pressable
           style={({ pressed }) => [styles.newButton, pressed && styles.newButtonPressed]}
           onPress={handleCreateNote}
+          accessibilityRole="button"
+          accessibilityLabel="+ New Note"
         >
           <Text style={styles.newButtonText}>+ New</Text>
         </Pressable>

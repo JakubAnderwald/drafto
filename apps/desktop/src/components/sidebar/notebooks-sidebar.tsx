@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { View, Text, Pressable, TextInput, StyleSheet, ActivityIndicator } from "react-native";
 
 import { useNotebooks } from "@/hooks/use-notebooks";
@@ -16,6 +16,8 @@ interface NotebooksSidebarProps {
   showTrash: boolean;
   onToggleTrash: () => void;
   onOpenSearch: () => void;
+  triggerCreate?: boolean;
+  onTriggerCreateHandled?: () => void;
 }
 
 export function NotebooksSidebar({
@@ -24,6 +26,8 @@ export function NotebooksSidebar({
   showTrash,
   onToggleTrash,
   onOpenSearch,
+  triggerCreate,
+  onTriggerCreateHandled,
 }: NotebooksSidebarProps) {
   const { notebooks, loading } = useNotebooks();
   const { user, signOut } = useAuth();
@@ -34,6 +38,14 @@ export function NotebooksSidebar({
   const [newName, setNewName] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+
+  // Allow programmatic trigger of create mode (from menu shortcut)
+  useEffect(() => {
+    if (triggerCreate) {
+      setIsCreating(true);
+      onTriggerCreateHandled?.();
+    }
+  }, [triggerCreate, onTriggerCreateHandled]);
 
   const handleCreate = useCallback(async () => {
     const name = newName.trim();

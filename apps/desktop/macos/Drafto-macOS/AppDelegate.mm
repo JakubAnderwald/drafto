@@ -15,7 +15,14 @@
   self.initialProps = @{};
   self.dependencyProvider = [RCTAppDependencyProvider new];
   
-  return [super applicationDidFinishLaunching:notification];
+  [super applicationDidFinishLaunching:notification];
+
+  // Window frame persistence + minimum size
+  NSWindow *window = NSApp.windows.firstObject;
+  if (window) {
+    [window setFrameAutosaveName:@"DraftoMainWindow"];
+    window.minSize = NSMakeSize(800, 500);
+  }
 }
 
 - (NSURL *)sourceURLForBridge:(RCTBridge *)bridge

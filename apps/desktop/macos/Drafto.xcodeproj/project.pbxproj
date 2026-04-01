@@ -14,6 +14,7 @@
 		514201582437B4B40078DB4F /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 514201572437B4B40078DB4F /* main.m */; };
 		6F84DEBA251C9CAD674E76EC /* libPods-Drafto-macOS.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 2413F48896693F0AF7AE2BF5 /* libPods-Drafto-macOS.a */; };
 		C3F54CC22FA9847CF39F5125 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 51B42B3B6E5A98B3201B9415 /* PrivacyInfo.xcprivacy */; };
+		D5A0F00126E5B00100MENU01 /* DraftoMenuManager.mm in Sources */ = {isa = PBXBuildFile; fileRef = D5A0F00026E5B00100MENU00 /* DraftoMenuManager.mm */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +31,8 @@
 		51B42B3B6E5A98B3201B9415 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		8072CA749FA0ADBBF94C247B /* Pods-Drafto-macOS.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Drafto-macOS.release.xcconfig"; path = "Target Support Files/Pods-Drafto-macOS/Pods-Drafto-macOS.release.xcconfig"; sourceTree = "<group>"; };
 		CD0187C6006652118ECECA93 /* Pods-Drafto-macOS.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Drafto-macOS.debug.xcconfig"; path = "Target Support Files/Pods-Drafto-macOS/Pods-Drafto-macOS.debug.xcconfig"; sourceTree = "<group>"; };
+		D5A0F00026E5B00100MENU00 /* DraftoMenuManager.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = DraftoMenuManager.mm; sourceTree = "<group>"; };
+		D5A0F00026E5B00100MENUHD /* DraftoMenuManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DraftoMenuManager.h; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -66,6 +69,8 @@
 			children = (
 				5142014B2437B4B30078DB4F /* AppDelegate.h */,
 				5142014C2437B4B30078DB4F /* AppDelegate.mm */,
+				D5A0F00026E5B00100MENUHD /* DraftoMenuManager.h */,
+				D5A0F00026E5B00100MENU00 /* DraftoMenuManager.mm */,
 				514201512437B4B40078DB4F /* Assets.xcassets */,
 				514201532437B4B40078DB4F /* Main.storyboard */,
 				514201562437B4B40078DB4F /* Info.plist */,
@@ -332,6 +337,7 @@
 			files = (
 				514201582437B4B40078DB4F /* main.m in Sources */,
 				5142014D2437B4B30078DB4F /* AppDelegate.mm in Sources */,
+				D5A0F00126E5B00100MENU01 /* DraftoMenuManager.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
