@@ -37,6 +37,11 @@ function saveFileLocally(file: PickedFile): string {
   const source = new File(file.uri);
   const destination = new File(dir, localFileName);
   source.copy(destination);
+
+  if (!destination.exists || destination.size === 0) {
+    throw new Error("File copy failed — destination is missing or empty");
+  }
+
   return destination.uri;
 }
 
@@ -83,14 +88,15 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
     throw new Error("Local file not found");
   }
 
-  // Read file as a proper Blob via fetch — expo-file-system's File class
-  // is NOT a web Blob, so casting it directly fails on iOS.
-  const fetchResponse = await fetch(localUri);
-  const blob = await fetchResponse.blob();
+  // Read file bytes natively via expo-file-system — React Native's fetch()
+  // with file:// URIs can produce empty blobs on Android.
+  const bytes = await localFile.bytes();
 
-  if (blob.size === 0) {
+  if (bytes.length === 0) {
     throw new Error("Local file is empty — skipping upload");
   }
+
+  const blob = new Blob([bytes], { type: attachment.mimeType });
 
   // Upload to Supabase Storage
   const { error: uploadError } = await supabase.storage
@@ -138,27 +144,34 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
   }
 }
 
-export async function processPendingUploads(): Promise<number> {
+export interface UploadResult {
+  uploaded: number;
+  failed: number;
+}
+
+export async function processPendingUploads(): Promise<UploadResult> {
   const pending = await database
     .get<Attachment>("attachments")
     .query(Q.where("upload_status", "pending"))
     .fetch();
 
-  if (pending.length === 0) return 0;
+  if (pending.length === 0) return { uploaded: 0, failed: 0 };
 
   let uploaded = 0;
+  let failed = 0;
 
   for (const attachment of pending) {
     try {
       await uploadSingleAttachment(attachment);
       uploaded += 1;
     } catch (err) {
+      failed += 1;
       // Log and continue with next attachment — will retry on next sync
       console.warn(`Failed to upload attachment ${attachment.fileName}:`, err);
     }
   }
 
-  return uploaded;
+  return { uploaded, failed };
 }
 
 export function cleanupOrphanedFiles(): void {

@@ -39,8 +39,12 @@ export function AttachmentPicker({ noteId, onUploadComplete }: AttachmentPickerP
 
       if (isConnected) {
         // Trigger sync to upload immediately
-        await sync();
-        showToast("Attachment uploaded", "success");
+        const result = await sync();
+        if (result.failed > 0) {
+          showToast("Upload failed — will retry automatically", "warning");
+        } else {
+          showToast("Attachment uploaded", "success");
+        }
       } else {
         showToast("Attachment saved — will upload when online", "info");
       }

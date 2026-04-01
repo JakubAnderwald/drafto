@@ -8,6 +8,7 @@ import NetInfo from "@react-native-community/netinfo";
 import { database } from "@/db";
 import { syncDatabase, SyncNetworkError } from "@/db/sync";
 import { processPendingUploads } from "@/lib/data/attachment-queue";
+import type { UploadResult } from "@/lib/data/attachment-queue";
 import { measureAsync } from "@/lib/performance";
 import { useAuth } from "@/providers/auth-provider";
 import { useToast } from "@/components/toast";
@@ -17,7 +18,7 @@ const PERIODIC_SYNC_MS = 30_000;
 
 interface DatabaseContextValue {
   database: Database;
-  sync: () => Promise<void>;
+  sync: () => Promise<UploadResult>;
   hasPendingChanges: boolean;
   pendingChangesCount: number;
   lastSyncedAt: Date | null;
@@ -62,13 +63,14 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const sync = useCallback(async () => {
-    if (syncingRef.current) return;
+  const sync = useCallback(async (): Promise<UploadResult> => {
+    if (syncingRef.current) return { uploaded: 0, failed: 0 };
     syncingRef.current = true;
     setIsSyncing(true);
+    let uploadResult: UploadResult = { uploaded: 0, failed: 0 };
     try {
       // Upload any queued attachments before syncing metadata
-      await processPendingUploads();
+      uploadResult = await processPendingUploads();
 
       const result = await measureAsync("sync", () => syncDatabase(database));
       retryCountRef.current = 0;
@@ -102,6 +104,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       syncingRef.current = false;
       setIsSyncing(false);
     }
+    return uploadResult;
   }, [checkPendingChanges, showToast]);
 
   // Initial sync when user logs in
