@@ -68,6 +68,21 @@ describe("WaitingForApprovalScreen", () => {
     });
   });
 
+  it("does not show error when approved", async () => {
+    mockRefreshApprovalStatus.mockResolvedValue(true);
+
+    const { getByText, queryByText } = render(<WaitingForApprovalScreen />);
+
+    fireEvent.press(getByText("Check approval status"));
+
+    await waitFor(() => {
+      expect(mockRefreshApprovalStatus).toHaveBeenCalled();
+    });
+
+    // No error message should be shown when approved
+    expect(queryByText("Your account is still pending approval.")).toBeNull();
+  });
+
   it("calls signOut when sign out button is pressed", async () => {
     const { getByText } = render(<WaitingForApprovalScreen />);
 

@@ -5,7 +5,13 @@ import { useNetworkStatus } from "@/hooks/use-network-status";
 
 describe("useNetworkStatus", () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    jest.resetAllMocks();
+    // Restore default mock implementations after reset
+    (NetInfo.fetch as jest.Mock).mockResolvedValue({
+      isConnected: true,
+      isInternetReachable: true,
+    });
+    (NetInfo.addEventListener as jest.Mock).mockReturnValue(jest.fn());
   });
 
   it("starts with optimistic defaults (connected: true)", () => {

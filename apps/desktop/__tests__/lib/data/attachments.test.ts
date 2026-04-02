@@ -184,11 +184,12 @@ describe("deleteAttachment", () => {
     mockFrom.mockReturnValue(dbChain);
     mockRemove.mockResolvedValue({ error: { message: "Storage error" } });
 
-    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
-
-    await deleteAttachment("att-1", "path");
-
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Storage error"));
-    warnSpy.mockRestore();
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await deleteAttachment("att-1", "path");
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Storage error"));
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

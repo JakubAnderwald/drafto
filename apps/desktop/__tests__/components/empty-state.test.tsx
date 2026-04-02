@@ -22,8 +22,7 @@ describe("EmptyState", () => {
   it("does not render subtitle when not provided", () => {
     const { queryByText } = render(<EmptyState icon="📝" title="No notes" />);
 
-    // Only icon and title should be present
     expect(queryByText("No notes")).toBeTruthy();
-    // No subtitle text to query specifically, but verify component renders without error
+    expect(queryByText("Create your first note")).toBeNull();
   });
 });

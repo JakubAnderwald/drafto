@@ -20,6 +20,7 @@ describe("WatermelonDB Migrations", () => {
 
   it("version 2 adds local_uri and upload_status columns to attachments", () => {
     const v2 = migrations.sortedMigrations.find((m) => m.toVersion === 2);
+    expect(v2).toBeDefined();
     const step = v2!.steps[0] as { type: string; table: string; columns: { name: string }[] };
     expect(step.type).toBe("add_columns");
     expect(step.table).toBe("attachments");
