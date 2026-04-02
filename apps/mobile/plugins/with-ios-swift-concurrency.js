@@ -15,10 +15,7 @@ function withIosSwiftConcurrency(config) {
   return withDangerousMod(config, [
     "ios",
     (config) => {
-      const podfilePath = path.join(
-        config.modRequest.platformProjectRoot,
-        "Podfile",
-      );
+      const podfilePath = path.join(config.modRequest.platformProjectRoot, "Podfile");
 
       if (!fs.existsSync(podfilePath)) {
         return config;
@@ -42,10 +39,7 @@ function withIosSwiftConcurrency(config) {
       end
     end`;
 
-      contents = contents.replace(
-        /(react_native_post_install\([^)]*\))/,
-        `$1${postInstallPatch}`,
-      );
+      contents = contents.replace(/(react_native_post_install\([^)]*\))/, `$1${postInstallPatch}`);
 
       fs.writeFileSync(podfilePath, contents);
       return config;
