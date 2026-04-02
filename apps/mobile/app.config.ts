@@ -69,5 +69,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     "expo-font",
     "./plugins/with-android-optimizations",
     "./plugins/with-android-signing",
+    "./plugins/with-ios-swift-concurrency",
   ],
 });
