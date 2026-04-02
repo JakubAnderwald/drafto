@@ -3,13 +3,14 @@ const fs = require("fs");
 const path = require("path");
 
 /**
- * Expo config plugin that forces Swift 5 language mode for all pod targets
- * during `expo prebuild`.
+ * Expo config plugin that suppresses Swift 6 strict concurrency errors
+ * for all pod targets during `expo prebuild`.
  *
- * Xcode 16.2+ defaults to Swift 6 language mode, which treats concurrency
- * violations as errors. Expo SDK 55's expo-modules-core uses @MainActor
- * patterns that are incompatible with Swift 6 strict concurrency.
- * Forcing Swift 5 mode restores these as warnings/ignored.
+ * Expo SDK 55's expo-modules-core uses @MainActor as a retroactive
+ * conformance attribute (Swift 6 syntax) but isn't fully compatible
+ * with Swift 6 strict concurrency enforcement. We pass
+ * -Xfrontend -strict-concurrency=minimal to downgrade actor isolation
+ * and sendability violations to warnings while keeping Swift 6 syntax.
  *
  * Remove this plugin after upgrading to Expo SDK 56+.
  */
@@ -26,18 +27,19 @@ function withIosSwiftConcurrency(config) {
       let contents = fs.readFileSync(podfilePath, "utf-8");
 
       // Skip if already patched
-      if (contents.includes("SWIFT_STRICT_CONCURRENCY")) {
+      if (contents.includes("strict-concurrency=minimal")) {
         return config;
       }
 
-      // Insert Swift 5 enforcement before the closing `end` of the post_install block
+      // Insert concurrency fix before the closing `end` of the post_install block
       const postInstallPatch = `
-    # Force Swift 5 mode for pods (Expo SDK 55 + Xcode 16.2+ compat)
+    # Suppress Swift 6 strict concurrency errors for pods (Expo SDK 55 compat)
     installer.pods_project.targets.each do |target|
       target.build_configurations.each do |build_config|
-        build_config.build_settings['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
-        build_config.build_settings['SWIFT_VERSION'] = '5.0'
-        build_config.build_settings['OTHER_SWIFT_FLAGS'] = '$(inherited) -swift-version 5'
+        existing = build_config.build_settings['OTHER_SWIFT_FLAGS'] || '$(inherited)'
+        unless existing.include?('-strict-concurrency=minimal')
+          build_config.build_settings['OTHER_SWIFT_FLAGS'] = existing + ' -Xfrontend -strict-concurrency=minimal'
+        end
       end
     end
 `;
