@@ -4,6 +4,12 @@ set -euo pipefail
 # Ensure ~/.local/bin is in PATH (claude CLI location; launchd has minimal PATH)
 export PATH="$HOME/.local/bin:$PATH"
 
+# Load signing credentials for local Fastlane builds (Android keystore, ASC API key, Match password)
+if [[ -f "$HOME/drafto-secrets/android-env.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$HOME/drafto-secrets/android-env.sh"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 umask 077
@@ -136,10 +142,7 @@ PROMPT
 done
 
 # ── Phase 3: Process support issues (one session each, max 10) ──
-# Record the timestamp before Phase 3 so Phase 4 can find builds triggered during this phase.
-PHASE3_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 PROCESSED=0
-PHASE3_ISSUE_NUMBERS=()  # Track which issues were processed (for Phase 4 comments)
 for ISSUE_NUMBER in $(echo "$SUPPORT_ISSUES" | jq -r '.[].number'); do
   if [[ "$PROCESSED" -ge 10 ]]; then
     log "Reached max 10 support issues per run, skipping remaining."
@@ -163,12 +166,12 @@ You are an automated nightly job. Process ONLY support issue #${ISSUE_NUMBER} fo
 10. After CI green, squash-merge via gh api and capture merge commit SHA.
 11. Fetch main, checkout merge SHA, poll required CI checks every 30s up to 45 min.
     - If any check fails or timeout → comment, add "needs-manual-intervention", skip mobile deploy.
-12. Once main CI green, trigger mobile builds via GitHub Actions:
-    - gh workflow run beta-release.yml --repo JakubAnderwald/drafto -f platform=all
-    - Sleep 5 seconds, then capture the run ID:
-      gh run list --workflow=beta-release.yml --repo JakubAnderwald/drafto --limit 1 --json databaseId --jq '.[0].databaseId'
-    - Comment on issue with the Actions run URL: https://github.com/JakubAnderwald/drafto/actions/runs/<RUN_ID>
-13. Comment on issue with per-platform build trigger status.
+12. Once main CI green, run local Fastlane builds (signing credentials are pre-loaded in the environment):
+    - Android: cd apps/mobile && bundle install --quiet && bundle exec fastlane android beta
+    - iOS: cd apps/mobile && bundle exec fastlane ios beta
+    - Run each build separately. If one fails, still attempt the other.
+    - Important: run bundle install before Fastlane (worktrees do not share gems).
+13. Comment on issue with per-platform build result (succeeded/failed with error summary).
 
 Constraints:
 - Never push directly to main. Always branches + PRs.
@@ -180,240 +183,13 @@ PROMPT
     log "ERROR: Support issue #$ISSUE_NUMBER failed; continuing with next item"
   fi
   log "--- Done with issue #$ISSUE_NUMBER ---"
-  PHASE3_ISSUE_NUMBERS+=("$ISSUE_NUMBER")
   PROCESSED=$((PROCESSED + 1))
 done
 
-# ── Phase 4: Monitor GitHub Actions builds and fix failures (up to 2 retries per platform) ──
-MAX_BUILD_RETRIES=2
-BUILD_POLL_INTERVAL=60        # seconds between workflow status checks
-BUILD_POLL_TIMEOUT=2700       # 45 min max wait per monitoring round
-PHASE4_DEADLINE=$(( $(date +%s) + 7200 ))  # 2h hard cap for entire Phase 4
-
-log "=== Phase 4: Monitoring GitHub Actions builds (started after $PHASE3_START_ISO) ==="
-
-GH_REPO="JakubAnderwald/drafto"
-GH_WORKFLOW="beta-release.yml"
-
-# Helper functions for platform retry tracking (bash 3.2 compatible)
-get_platform_retries() {
-  case "$1" in
-    android) echo "$RETRIES_ANDROID" ;;
-    ios)     echo "$RETRIES_IOS" ;;
-    *)       echo 0 ;;
-  esac
-}
-
-set_platform_retries() {
-  case "$1" in
-    android) RETRIES_ANDROID=$2 ;;
-    ios)     RETRIES_IOS=$2 ;;
-  esac
-}
-
-# Find workflow runs triggered during Phase 3
-get_triggered_runs() {
-  gh run list --workflow="$GH_WORKFLOW" --repo "$GH_REPO" \
-    --json databaseId,status,conclusion,createdAt --limit 20 2>/dev/null | \
-    jq --arg since "$PHASE3_START_ISO" \
-      '[.[] | select(.createdAt >= $since)]'
-}
-
-# Wait for a specific run to reach a terminal state; returns 0 on completion, 1 on timeout
-wait_for_run() {
-  local run_id=$1
-  local deadline=$(( $(date +%s) + BUILD_POLL_TIMEOUT ))
-  while true; do
-    local status
-    status=$(gh run view "$run_id" --repo "$GH_REPO" --json status --jq '.status' 2>/dev/null) || {
-      log "WARNING: Failed to query run $run_id"
-      return 1
-    }
-    if [[ "$status" == "completed" ]]; then
-      return 0
-    fi
-    if [[ $(date +%s) -ge $deadline ]]; then
-      log "WARNING: Poll timeout reached for run $run_id (status: $status)"
-      return 1
-    fi
-    log "Run $run_id status: $status, waiting..."
-    sleep "$BUILD_POLL_INTERVAL"
-  done
-}
-
-# Get failed platform(s) from a completed run's job results
-# Outputs space-separated platform names (android ios)
-get_failed_platforms() {
-  local run_id=$1
-  local failed_jobs
-  failed_jobs=$(gh run view "$run_id" --repo "$GH_REPO" --json jobs \
-    --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join("\n")' 2>/dev/null) || return
-  local result=""
-  if echo "$failed_jobs" | grep -qi "android"; then result="android"; fi
-  if echo "$failed_jobs" | grep -qi "ios"; then result="$result ios"; fi
-  echo "$result"
-}
-
-# Track retry counts per platform (scalar variables for bash 3.2 compatibility)
-RETRIES_ANDROID=0
-RETRIES_IOS=0
-
-# Initial discovery: wait briefly for runs to appear, then collect them
-sleep 10
-RUNS_JSON=$(get_triggered_runs 2>/dev/null) || RUNS_JSON="[]"
-RUN_COUNT=$(echo "$RUNS_JSON" | jq 'length')
-
-if [[ "$RUN_COUNT" -eq 0 ]]; then
-  log "No GitHub Actions builds found from this run. Skipping Phase 4."
-else
-  ROUND=0
-  while true; do
-    ROUND=$((ROUND + 1))
-
-    if [[ $(date +%s) -ge $PHASE4_DEADLINE ]]; then
-      log "Phase 4 hard deadline reached. Stopping build monitoring."
-      break
-    fi
-
-    log "--- Build monitoring round $ROUND ---"
-
-    # Re-fetch runs (includes any retries triggered in previous rounds)
-    RUNS_JSON=$(get_triggered_runs 2>/dev/null) || RUNS_JSON="[]"
-    RUN_COUNT=$(echo "$RUNS_JSON" | jq 'length')
-    SUCCEEDED=0
-    FAILED=0
-    NEEDS_ANOTHER_ROUND=false
-
-    for RUN_ROW in $(echo "$RUNS_JSON" | jq -r '.[] | @base64'); do
-      RUN_DATA=$(echo "$RUN_ROW" | base64 --decode)
-      RUN_ID=$(echo "$RUN_DATA" | jq -r '.databaseId')
-      RUN_STATUS=$(echo "$RUN_DATA" | jq -r '.status')
-
-      # Wait for in-progress runs
-      if [[ "$RUN_STATUS" != "completed" ]]; then
-        wait_for_run "$RUN_ID" || true
-      fi
-
-      # Check conclusion
-      CONCLUSION=$(gh run view "$RUN_ID" --repo "$GH_REPO" --json conclusion --jq '.conclusion' 2>/dev/null) || CONCLUSION="unknown"
-
-      if [[ "$CONCLUSION" == "success" ]]; then
-        SUCCEEDED=$((SUCCEEDED + 1))
-        continue
-      fi
-
-      if [[ "$CONCLUSION" != "failure" ]]; then
-        log "Run $RUN_ID has conclusion: $CONCLUSION, skipping."
-        continue
-      fi
-
-      FAILED=$((FAILED + 1))
-
-      # Identify which platform(s) failed
-      FAILED_PLATS=$(get_failed_platforms "$RUN_ID")
-      if [[ -z "$FAILED_PLATS" ]]; then
-        log "Run $RUN_ID failed but could not determine which platform. Manual intervention needed."
-        continue
-      fi
-
-      # Process each failed platform (use for loop to avoid subshell from piping)
-      for PLATFORM in $FAILED_PLATS; do
-        RETRIES=$(get_platform_retries "$PLATFORM")
-        if [[ "$RETRIES" -ge "$MAX_BUILD_RETRIES" ]]; then
-          log "Platform $PLATFORM: already retried $RETRIES times, skipping. Manual intervention needed."
-          continue
-        fi
-
-        log "Platform $PLATFORM failed in run $RUN_ID"
-        log "Attempting fix (retry $((RETRIES + 1))/$MAX_BUILD_RETRIES)..."
-
-        if ! claude -p "$(cat <<PROMPT
-You are an automated nightly job fixing a failed GitHub Actions mobile build for JakubAnderwald/drafto.
-
-**Failed build details:**
-- Platform: $PLATFORM
-- GitHub Actions run ID: $RUN_ID
-- Run URL: https://github.com/$GH_REPO/actions/runs/$RUN_ID
-
-**Your task:**
-1. Diagnose the build failure:
-   - Fetch the failed job logs: gh run view $RUN_ID --repo $GH_REPO --log-failed
-   - If the error is a native build error (Gradle/Xcode), look at the error message and search the codebase for the affected code.
-   - Common causes: missing native dependencies after adding an Expo package (need expo prebuild), incompatible native code, misconfigured Fastlane settings.
-
-2. Fix the issue:
-   - Create a worktree branch (e.g., fix/${PLATFORM}-build).
-   - Make the minimal fix needed. Common fixes include:
-     - Running \`npx expo prebuild --clean\` to regenerate native projects
-     - Adding missing native dependencies or plugins to app.config.ts
-     - Fixing Fastlane configuration in apps/mobile/fastlane/Fastfile
-     - Fixing native code compilation errors
-   - Run local checks: pnpm lint && pnpm typecheck && cd apps/mobile && pnpm test
-   - Use /push to commit, push, create PR, and wait for CI green.
-   - Squash-merge via gh api.
-
-3. Retrigger the build:
-   - gh workflow run $GH_WORKFLOW --repo $GH_REPO -f platform=$PLATFORM
-
-4. Comment on any related support issues (check recent closed issues with "support" label) with the fix status.
-
-Constraints:
-- Never push directly to main. Always branches + PRs.
-- Never modify production data.
-- If you cannot diagnose or fix the issue, comment on a new GitHub issue with the build error details and add label "needs-manual-intervention".
-PROMPT
-        )" --dangerously-skip-permissions 2>&1 | tee -a "$LOG_FILE"; then
-          log "ERROR: Fix attempt for $PLATFORM build failed"
-        fi
-
-        set_platform_retries "$PLATFORM" $((RETRIES + 1))
-        NEEDS_ANOTHER_ROUND=true
-        log "--- Done with $PLATFORM build fix attempt ---"
-      done
-    done
-
-    log "Build results: $SUCCEEDED succeeded, $FAILED failed (of $RUN_COUNT runs)"
-
-    if [[ "$FAILED" -eq 0 ]]; then
-      log "All GitHub Actions builds succeeded."
-      break
-    fi
-
-    if [[ "$NEEDS_ANOTHER_ROUND" == false ]]; then
-      log "No more builds to retry. Exiting Phase 4."
-      break
-    fi
-
-    # Wait for newly dispatched runs to appear
-    sleep 10
-    log "Retriggered builds — starting next monitoring round..."
-  done
-fi
-
-# Final build status summary
-FINAL_RUNS=$(get_triggered_runs 2>/dev/null) || FINAL_RUNS="[]"
-FINAL_SUCCEEDED=$(echo "$FINAL_RUNS" | jq '[.[] | select(.conclusion == "success")] | length')
-FINAL_FAILED=$(echo "$FINAL_RUNS" | jq '[.[] | select(.conclusion == "failure")] | length')
-FINAL_PENDING=$(echo "$FINAL_RUNS" | jq '[.[] | select(.status != "completed")] | length')
-log "Phase 4 summary: $FINAL_SUCCEEDED succeeded, $FINAL_FAILED failed, $FINAL_PENDING still pending"
-
-if [[ "$FINAL_FAILED" -gt 0 ]]; then
-  log "WARNING: Some builds still failing after retries. Manual intervention needed."
-  for ISSUE_NUMBER in "${PHASE3_ISSUE_NUMBERS[@]}"; do
-    FAILED_PLATFORMS=$(echo "$FINAL_RUNS" | jq -r '[.[] | select(.conclusion == "failure") | .databaseId] | join(", ")')
-    gh issue comment "$ISSUE_NUMBER" --repo "$GH_REPO" --body "${NIGHTLY_MARKER}
-## Build monitoring update
-
-After $ROUND round(s) of automated fix attempts, some mobile builds are still failing:
-- **Failed run IDs**: $FAILED_PLATFORMS
-- **Retries exhausted**: $MAX_BUILD_RETRIES per platform
-
-See the [Actions tab](https://github.com/$GH_REPO/actions/workflows/$GH_WORKFLOW) for details.
-Manual intervention is required to resolve the remaining build issues.
-" 2>/dev/null || log "WARNING: Failed to comment on issue #$ISSUE_NUMBER"
-    gh issue edit "$ISSUE_NUMBER" --repo "$GH_REPO" --add-label "needs-manual-intervention" 2>/dev/null || true
-  done
-fi
+# ── Phase 4: (No-op — local Fastlane builds are synchronous) ──
+# Local builds run inline during Phase 3 Claude sessions. The session handles
+# success/failure and comments on the issue directly. Nothing to poll.
+log "=== Phase 4: Skipped (builds run locally in Phase 3) ==="
 
 ELAPSED=$(( $(date +%s) - START_TIME ))
 log "=== Nightly support run completed in ${ELAPSED}s ==="
