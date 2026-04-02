@@ -3,86 +3,82 @@ import NetInfo from "@react-native-community/netinfo";
 
 import { useNetworkStatus } from "@/hooks/use-network-status";
 
+const mockFetch = NetInfo.fetch as jest.MockedFunction<typeof NetInfo.fetch>;
+const mockAddEventListener = NetInfo.addEventListener as jest.MockedFunction<
+  typeof NetInfo.addEventListener
+>;
+
 describe("useNetworkStatus", () => {
   beforeEach(() => {
-    jest.resetAllMocks();
-    // Restore default mock implementations after reset
-    (NetInfo.fetch as jest.Mock).mockResolvedValue({
+    jest.clearAllMocks();
+    mockFetch.mockResolvedValue({
       isConnected: true,
       isInternetReachable: true,
-    });
-    (NetInfo.addEventListener as jest.Mock).mockReturnValue(jest.fn());
+    } as never);
+    mockAddEventListener.mockReturnValue(jest.fn());
   });
 
-  it("starts with optimistic defaults (connected: true)", () => {
+  it("defaults to connected with null reachability", () => {
     const { result } = renderHook(() => useNetworkStatus());
 
     expect(result.current.isConnected).toBe(true);
     expect(result.current.isInternetReachable).toBeNull();
   });
 
-  it("fetches initial network state on mount", async () => {
-    (NetInfo.fetch as jest.Mock).mockResolvedValue({
+  it("updates when NetInfo.fetch resolves", async () => {
+    mockFetch.mockResolvedValue({
       isConnected: false,
       isInternetReachable: false,
-    });
+    } as never);
 
     const { result } = renderHook(() => useNetworkStatus());
 
     await waitFor(() => {
       expect(result.current.isConnected).toBe(false);
+      expect(result.current.isInternetReachable).toBe(false);
     });
   });
 
-  it("subscribes to network state changes", () => {
-    renderHook(() => useNetworkStatus());
-
-    expect(NetInfo.addEventListener).toHaveBeenCalled();
-  });
-
-  it("updates state when network changes", async () => {
-    let listener:
-      | ((state: { isConnected: boolean; isInternetReachable: boolean }) => void)
-      | undefined;
-    (NetInfo.addEventListener as jest.Mock).mockImplementation((callback) => {
-      listener = callback;
+  it("subscribes to addEventListener and handles state changes", async () => {
+    let listener: ((state: unknown) => void) | undefined;
+    mockAddEventListener.mockImplementation((cb) => {
+      listener = cb as (state: unknown) => void;
       return jest.fn();
     });
 
     const { result } = renderHook(() => useNetworkStatus());
+
+    expect(mockAddEventListener).toHaveBeenCalledTimes(1);
 
     act(() => {
       listener?.({ isConnected: false, isInternetReachable: false });
     });
 
     expect(result.current.isConnected).toBe(false);
+    expect(result.current.isInternetReachable).toBe(false);
   });
 
   it("unsubscribes on unmount", () => {
     const mockUnsubscribe = jest.fn();
-    (NetInfo.addEventListener as jest.Mock).mockReturnValue(mockUnsubscribe);
+    mockAddEventListener.mockReturnValue(mockUnsubscribe);
 
     const { unmount } = renderHook(() => useNetworkStatus());
-    unmount();
 
-    expect(mockUnsubscribe).toHaveBeenCalled();
+    expect(mockUnsubscribe).not.toHaveBeenCalled();
+    unmount();
+    expect(mockUnsubscribe).toHaveBeenCalledTimes(1);
   });
 
   it("handles null isConnected as false", async () => {
-    let listener:
-      | ((state: { isConnected: boolean | null; isInternetReachable: boolean | null }) => void)
-      | undefined;
-    (NetInfo.addEventListener as jest.Mock).mockImplementation((callback) => {
-      listener = callback;
-      return jest.fn();
-    });
+    mockFetch.mockResolvedValue({
+      isConnected: null,
+      isInternetReachable: null,
+    } as never);
 
     const { result } = renderHook(() => useNetworkStatus());
 
-    act(() => {
-      listener?.({ isConnected: null, isInternetReachable: null });
+    await waitFor(() => {
+      expect(result.current.isConnected).toBe(false);
     });
-
-    expect(result.current.isConnected).toBe(false);
   });
 });

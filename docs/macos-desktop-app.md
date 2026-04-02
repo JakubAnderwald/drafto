@@ -405,17 +405,30 @@ Phases are designed so independent work can run as parallel subagents where note
 - `MenuProvider` is placed between `ThemeProvider` and `AuthProvider` so it works on all screens including login
 - Native toolbar and app icon deferred to later (functional polish prioritized over visual)
 
-### Phase 6: Testing (~2 weeks, starts parallel with Phase 4)
+### Phase 6: Testing — Unit Tests ✅ COMPLETE (2026-04-02)
 
-**Can run in parallel:**
+**Completed:**
 
-- **Agent A**: Desktop unit tests (Jest) — models, sync, data layer
-- **Agent B**: Desktop E2E tests (Detox for macOS) — full user flows
-- **Agent C**: Cross-platform E2E tests — Desktop ↔ Web sync verification (Detox + Playwright)
+- ✅ 22 test suites, 197 tests — all passing
+- ✅ Hook tests: `useNetworkStatus`, `useNotebooks`, `useNotes`, `useNote`, `useTrashedNotes`, `useAttachments` (+ existing `useAutoSave`, `useSearch`)
+- ✅ Data layer tests: `notes.ts` (CRUD + trash/restore), `notebooks.ts` (CRUD), `attachments.ts` (pick/upload/download/delete + error handling)
+- ✅ Sync tests: pull/push mapper logic (row mapping, timestamp conversion, JSON serialization), push ordering, pending attachment filtering, network error detection
+- ✅ Component tests: `OfflineBanner`, `SearchOverlay`, `SyncStatus`, `LoginScreen`
+- ✅ Utility tests: `generateId`, `sanitizeFileName`, `performance` measurement
+- ✅ Schema tests: table structure, columns, indexes, optional fields
 
-**Sequential (after cross-platform E2E foundation):**
+**Implementation notes:**
 
-- Extend cross-platform tests to include mobile simulators (Maestro/Detox + Playwright + Detox macOS)
+- WatermelonDB hooks tested via mock observable pattern (`database.get().query().observe().subscribe()`)
+- Data layer tested via chainable Supabase mock pattern
+- Sync mappers tested by capturing `pullChanges`/`pushChanges` callbacks from mocked `synchronize()`
+- `react-native-document-picker-macos` required `require()` instead of `import` for load-order-dependent NativeModules mock
+
+**Remaining (Phase 6b — future):**
+
+- Desktop E2E tests (Detox for macOS) — full user flows
+- Cross-platform E2E tests — Desktop ↔ Web sync verification (Detox + Playwright)
+- Extend cross-platform tests to include mobile simulators
 
 ### Phase 7: Mac App Store + CI/CD (~1-2 weeks)
 

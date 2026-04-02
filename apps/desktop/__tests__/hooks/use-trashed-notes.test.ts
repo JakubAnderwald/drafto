@@ -1,5 +1,6 @@
 import { renderHook, waitFor } from "@testing-library/react-native";
 
+/** Minimal observable that emits a value synchronously. */
 function fakeObservable<T>(value: T) {
   return {
     subscribe(observer: { next: (v: T) => void; error?: (e: unknown) => void }) {
@@ -9,6 +10,7 @@ function fakeObservable<T>(value: T) {
   };
 }
 
+/** Minimal observable that errors synchronously. */
 function fakeErrorObservable(error: Error) {
   return {
     subscribe(observer: { next?: (v: unknown) => void; error: (e: unknown) => void }) {
@@ -30,6 +32,7 @@ jest.mock("@/db", () => ({
   Note: {},
 }));
 
+// Must import after jest.mock
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { useTrashedNotes } =
   require("@/hooks/use-trashed-notes") as typeof import("@/hooks/use-trashed-notes");
@@ -40,32 +43,7 @@ describe("useTrashedNotes", () => {
     mockObserve.mockReturnValue(fakeObservable([]));
   });
 
-  it("queries trashed notes on mount", async () => {
-    const trashedNotes = [{ id: "1", isTrashed: true }];
-    mockObserve.mockReturnValue(fakeObservable(trashedNotes));
-
-    const { result } = renderHook(() => useTrashedNotes());
-
-    await waitFor(() => {
-      expect(result.current.notes).toEqual(trashedNotes);
-      expect(result.current.loading).toBe(false);
-    });
-
-    expect(mockQuery).toHaveBeenCalled();
-  });
-
-  it("sets error on query failure", async () => {
-    mockObserve.mockReturnValue(fakeErrorObservable(new Error("DB error")));
-
-    const { result } = renderHook(() => useTrashedNotes());
-
-    await waitFor(() => {
-      expect(result.current.error).toBe("DB error");
-      expect(result.current.loading).toBe(false);
-    });
-  });
-
-  it("starts with loading true and empty notes", () => {
+  it("starts with loading=true", () => {
     mockObserve.mockReturnValue({
       subscribe: () => ({ unsubscribe: jest.fn() }),
     });
@@ -74,5 +52,64 @@ describe("useTrashedNotes", () => {
 
     expect(result.current.loading).toBe(true);
     expect(result.current.notes).toEqual([]);
+    expect(result.current.error).toBeNull();
+  });
+
+  it("returns trashed notes when observable emits", async () => {
+    const mockNotes = [
+      { id: "t1", title: "Trashed 1", is_trashed: true },
+      { id: "t2", title: "Trashed 2", is_trashed: true },
+    ];
+    mockObserve.mockReturnValue(fakeObservable(mockNotes));
+
+    const { result } = renderHook(() => useTrashedNotes());
+
+    await waitFor(() => {
+      expect(result.current.notes).toEqual(mockNotes);
+      expect(result.current.loading).toBe(false);
+      expect(result.current.error).toBeNull();
+    });
+  });
+
+  it("handles observable error", async () => {
+    mockObserve.mockReturnValue(fakeErrorObservable(new Error("Trash query failed")));
+
+    const { result } = renderHook(() => useTrashedNotes());
+
+    await waitFor(() => {
+      expect(result.current.error).toBe("Trash query failed");
+      expect(result.current.loading).toBe(false);
+    });
+  });
+
+  it("sets generic error message for non-Error throws", async () => {
+    mockObserve.mockReturnValue({
+      subscribe(observer: { error: (e: unknown) => void }) {
+        observer.error(42);
+        return { unsubscribe: jest.fn() };
+      },
+    });
+
+    const { result } = renderHook(() => useTrashedNotes());
+
+    await waitFor(() => {
+      expect(result.current.error).toBe("Failed to load trashed notes");
+    });
+  });
+
+  it("unsubscribes on unmount", () => {
+    const mockUnsubscribe = jest.fn();
+    mockObserve.mockReturnValue({
+      subscribe(observer: { next: (v: unknown[]) => void }) {
+        observer.next([]);
+        return { unsubscribe: mockUnsubscribe };
+      },
+    });
+
+    const { unmount } = renderHook(() => useTrashedNotes());
+
+    expect(mockUnsubscribe).not.toHaveBeenCalled();
+    unmount();
+    expect(mockUnsubscribe).toHaveBeenCalledTimes(1);
   });
 });

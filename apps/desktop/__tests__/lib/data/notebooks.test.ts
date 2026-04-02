@@ -1,28 +1,5 @@
-const mockSelect = jest.fn();
-const mockInsert = jest.fn();
-const mockUpdate = jest.fn();
-const mockDelete = jest.fn();
-const mockEq = jest.fn();
-const mockOrder = jest.fn();
-const mockSingle = jest.fn();
-const mockReturns = jest.fn();
-
-function buildChain() {
-  const chain: Record<string, jest.Mock> = {
-    select: mockSelect,
-    insert: mockInsert,
-    update: mockUpdate,
-    delete: mockDelete,
-    eq: mockEq,
-    order: mockOrder,
-    single: mockSingle,
-    returns: mockReturns,
-  };
-  for (const fn of Object.values(chain)) {
-    fn.mockReturnValue(chain);
-  }
-  return chain;
-}
+import { supabase } from "@/lib/supabase";
+import { getNotebooks, createNotebook, updateNotebook, deleteNotebook } from "@/lib/data/notebooks";
 
 jest.mock("@/lib/supabase", () => ({
   supabase: {
@@ -30,20 +7,41 @@ jest.mock("@/lib/supabase", () => ({
   },
 }));
 
-import { getNotebooks, createNotebook, updateNotebook, deleteNotebook } from "@/lib/data/notebooks";
-import { supabase } from "@/lib/supabase";
+function createChainableMock(resolvedValue: { data?: unknown; error?: unknown }) {
+  const chain: Record<string, jest.Mock> = {};
+  const methods = ["select", "insert", "update", "delete", "eq", "order", "single", "returns"];
+  for (const m of methods) {
+    chain[m] = jest.fn(() => chain);
+  }
+  // .returns() is the terminal call that gets awaited
+  chain.returns = jest.fn(() => Promise.resolve(resolvedValue));
+  // Make chain thenable so await works at any position (e.g. delete().eq())
+  (chain as unknown as PromiseLike<typeof resolvedValue>).then = (
+    resolve?: (v: typeof resolvedValue) => unknown,
+    reject?: (e: unknown) => unknown,
+  ) => Promise.resolve(resolvedValue).then(resolve, reject);
+
+  return chain;
+}
 
 const mockFrom = supabase.from as jest.Mock;
+
+const fakeNotebook = {
+  id: "nb-1",
+  user_id: "user-1",
+  name: "My Notebook",
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z",
+};
 
 beforeEach(() => {
   jest.clearAllMocks();
 });
 
 describe("getNotebooks", () => {
-  it("fetches all notebooks sorted by updated_at desc", async () => {
-    const notebooks = [{ id: "1", name: "Work" }];
-    const chain = buildChain();
-    chain.returns.mockResolvedValue({ data: notebooks, error: null });
+  it("returns notebooks ordered by updated_at", async () => {
+    const notebooks = [fakeNotebook];
+    const chain = createChainableMock({ data: notebooks, error: null });
     mockFrom.mockReturnValue(chain);
 
     const result = await getNotebooks();
@@ -54,59 +52,79 @@ describe("getNotebooks", () => {
     expect(result).toEqual(notebooks);
   });
 
-  it("throws on error", async () => {
-    const chain = buildChain();
-    chain.returns.mockResolvedValue({ data: null, error: { message: "Fetch failed" } });
+  it("throws on supabase error", async () => {
+    const error = { message: "Query failed" };
+    const chain = createChainableMock({ data: null, error });
     mockFrom.mockReturnValue(chain);
 
-    await expect(getNotebooks()).rejects.toEqual({ message: "Fetch failed" });
+    await expect(getNotebooks()).rejects.toEqual(error);
   });
 });
 
 describe("createNotebook", () => {
-  it("creates a notebook with user id and name", async () => {
-    const notebook = { id: "new-1", name: "Personal" };
-    const chain = buildChain();
-    chain.returns.mockResolvedValue({ data: notebook, error: null });
+  it("inserts a notebook and returns it", async () => {
+    const chain = createChainableMock({ data: fakeNotebook, error: null });
     mockFrom.mockReturnValue(chain);
 
-    const result = await createNotebook("user-1", "Personal");
+    const result = await createNotebook("user-1", "My Notebook");
 
-    expect(chain.insert).toHaveBeenCalledWith({ user_id: "user-1", name: "Personal" });
-    expect(result).toEqual(notebook);
+    expect(mockFrom).toHaveBeenCalledWith("notebooks");
+    expect(chain.insert).toHaveBeenCalledWith({ user_id: "user-1", name: "My Notebook" });
+    expect(chain.select).toHaveBeenCalled();
+    expect(chain.single).toHaveBeenCalled();
+    expect(result).toEqual(fakeNotebook);
+  });
+
+  it("throws on supabase error", async () => {
+    const error = { message: "Insert failed" };
+    const chain = createChainableMock({ data: null, error });
+    mockFrom.mockReturnValue(chain);
+
+    await expect(createNotebook("user-1", "Notebook")).rejects.toEqual(error);
   });
 });
 
 describe("updateNotebook", () => {
-  it("updates notebook name", async () => {
-    const chain = buildChain();
-    chain.returns.mockResolvedValue({ data: { id: "1", name: "Renamed" }, error: null });
+  it("updates the notebook name and returns it", async () => {
+    const updated = { ...fakeNotebook, name: "Renamed" };
+    const chain = createChainableMock({ data: updated, error: null });
     mockFrom.mockReturnValue(chain);
 
-    await updateNotebook("1", "Renamed");
+    const result = await updateNotebook("nb-1", "Renamed");
 
+    expect(mockFrom).toHaveBeenCalledWith("notebooks");
     expect(chain.update).toHaveBeenCalledWith({ name: "Renamed" });
-    expect(chain.eq).toHaveBeenCalledWith("id", "1");
+    expect(chain.eq).toHaveBeenCalledWith("id", "nb-1");
+    expect(chain.single).toHaveBeenCalled();
+    expect(result).toEqual(updated);
+  });
+
+  it("throws on supabase error", async () => {
+    const error = { message: "Update failed" };
+    const chain = createChainableMock({ data: null, error });
+    mockFrom.mockReturnValue(chain);
+
+    await expect(updateNotebook("nb-1", "x")).rejects.toEqual(error);
   });
 });
 
 describe("deleteNotebook", () => {
   it("deletes a notebook by id", async () => {
-    const chain = buildChain();
-    chain.eq.mockResolvedValue({ error: null });
+    const chain = createChainableMock({ data: null, error: null });
     mockFrom.mockReturnValue(chain);
 
-    await deleteNotebook("1");
+    await deleteNotebook("nb-1");
 
+    expect(mockFrom).toHaveBeenCalledWith("notebooks");
     expect(chain.delete).toHaveBeenCalled();
-    expect(chain.eq).toHaveBeenCalledWith("id", "1");
+    expect(chain.eq).toHaveBeenCalledWith("id", "nb-1");
   });
 
-  it("throws on error", async () => {
-    const chain = buildChain();
-    chain.eq.mockResolvedValue({ error: { message: "Delete failed" } });
+  it("throws on supabase error", async () => {
+    const error = { message: "Delete failed" };
+    const chain = createChainableMock({ data: null, error });
     mockFrom.mockReturnValue(chain);
 
-    await expect(deleteNotebook("1")).rejects.toEqual({ message: "Delete failed" });
+    await expect(deleteNotebook("nb-1")).rejects.toEqual(error);
   });
 });
