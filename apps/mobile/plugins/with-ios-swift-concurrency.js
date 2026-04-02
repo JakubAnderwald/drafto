@@ -3,13 +3,15 @@ const fs = require("fs");
 const path = require("path");
 
 /**
- * Expo config plugin that disables Swift strict concurrency checking
- * for all pod targets during `expo prebuild`.
+ * Expo config plugin that forces Swift 5 language mode for all pod targets
+ * during `expo prebuild`.
  *
- * Expo SDK 55's expo-modules-core Swift code uses @MainActor patterns
- * that trigger errors with Xcode 16.2+ strict concurrency enforcement.
- * Setting SWIFT_STRICT_CONCURRENCY=minimal suppresses these errors
- * until Expo SDK 56+ adds proper concurrency annotations.
+ * Xcode 16.2+ defaults to Swift 6 language mode, which treats concurrency
+ * violations as errors. Expo SDK 55's expo-modules-core uses @MainActor
+ * patterns that are incompatible with Swift 6 strict concurrency.
+ * Forcing Swift 5 mode restores these as warnings/ignored.
+ *
+ * Remove this plugin after upgrading to Expo SDK 56+.
  */
 function withIosSwiftConcurrency(config) {
   return withDangerousMod(config, [
@@ -28,12 +30,14 @@ function withIosSwiftConcurrency(config) {
         return config;
       }
 
-      // Insert concurrency fix before the closing `end` of the post_install block
+      // Insert Swift 5 enforcement before the closing `end` of the post_install block
       const postInstallPatch = `
-    # Disable Swift strict concurrency for pods (Expo SDK 55 + Xcode 16.2+ compat)
+    # Force Swift 5 mode for pods (Expo SDK 55 + Xcode 16.2+ compat)
     installer.pods_project.targets.each do |target|
       target.build_configurations.each do |build_config|
         build_config.build_settings['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
+        build_config.build_settings['SWIFT_VERSION'] = '5.0'
+        build_config.build_settings['OTHER_SWIFT_FLAGS'] = '$(inherited) -swift-version 5'
       end
     end
 `;
