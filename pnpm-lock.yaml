@@ -138,6 +138,9 @@ importers:
       '@types/react':
         specifier: ^19.1.4
         version: 19.2.14
+      babel-jest:
+        specifier: ^29.7.0
+        version: 29.7.0(@babel/core@7.29.0)
       babel-plugin-module-resolver:
         specifier: ^5.0.2
         version: 5.0.3
@@ -12124,9 +12127,7 @@ snapshots:
       metro-runtime: 0.83.5
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
     optional: true
 
   '@react-native/normalize-colors@0.81.6': {}
