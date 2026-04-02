@@ -10,6 +10,7 @@ function fakeObservable<T>(value: T) {
   };
 }
 
+/** Minimal observable that errors synchronously. */
 function fakeErrorObservable(error: Error) {
   return {
     subscribe(observer: { next?: (v: unknown) => void; error: (e: unknown) => void }) {
@@ -31,6 +32,7 @@ jest.mock("@/db", () => ({
   Note: {},
 }));
 
+// Must import after jest.mock
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { useNotes } = require("@/hooks/use-notes") as typeof import("@/hooks/use-notes");
 
@@ -40,7 +42,7 @@ describe("useNotes", () => {
     mockObserve.mockReturnValue(fakeObservable([]));
   });
 
-  it("returns empty notes and stops loading when no notebookId", () => {
+  it("returns empty notes when notebookId is undefined", () => {
     const { result } = renderHook(() => useNotes(undefined));
 
     expect(result.current.notes).toEqual([]);
@@ -48,11 +50,14 @@ describe("useNotes", () => {
     expect(mockQuery).not.toHaveBeenCalled();
   });
 
-  it("queries notes for a notebookId", async () => {
-    const mockNotes = [{ id: "1", title: "Note 1" }];
+  it("subscribes and returns notes when notebookId is provided", async () => {
+    const mockNotes = [
+      { id: "n1", title: "Note 1" },
+      { id: "n2", title: "Note 2" },
+    ];
     mockObserve.mockReturnValue(fakeObservable(mockNotes));
 
-    const { result } = renderHook(() => useNotes("nb-1"));
+    const { result } = renderHook(() => useNotes("notebook-1"));
 
     await waitFor(() => {
       expect(result.current.notes).toEqual(mockNotes);
@@ -62,10 +67,10 @@ describe("useNotes", () => {
     expect(mockQuery).toHaveBeenCalled();
   });
 
-  it("sets error on query failure", async () => {
+  it("handles observable error", async () => {
     mockObserve.mockReturnValue(fakeErrorObservable(new Error("Query failed")));
 
-    const { result } = renderHook(() => useNotes("nb-1"));
+    const { result } = renderHook(() => useNotes("notebook-1"));
 
     await waitFor(() => {
       expect(result.current.error).toBe("Query failed");
@@ -73,24 +78,57 @@ describe("useNotes", () => {
     });
   });
 
-  it("resets notes when notebookId changes to undefined", async () => {
-    const mockNotes = [{ id: "1" }];
-    mockObserve.mockReturnValue(fakeObservable(mockNotes));
+  it("sets generic error message for non-Error throws", async () => {
+    mockObserve.mockReturnValue({
+      subscribe(observer: { error: (e: unknown) => void }) {
+        observer.error("string error");
+        return { unsubscribe: jest.fn() };
+      },
+    });
+
+    const { result } = renderHook(() => useNotes("notebook-1"));
+
+    await waitFor(() => {
+      expect(result.current.error).toBe("Failed to load notes");
+    });
+  });
+
+  it("unsubscribes on unmount", () => {
+    const mockUnsubscribe = jest.fn();
+    mockObserve.mockReturnValue({
+      subscribe(observer: { next: (v: unknown[]) => void }) {
+        observer.next([]);
+        return { unsubscribe: mockUnsubscribe };
+      },
+    });
+
+    const { unmount } = renderHook(() => useNotes("notebook-1"));
+
+    expect(mockUnsubscribe).not.toHaveBeenCalled();
+    unmount();
+    expect(mockUnsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("resubscribes when notebookId changes", async () => {
+    const firstNotes = [{ id: "n1", title: "First" }];
+    const secondNotes = [{ id: "n2", title: "Second" }];
+
+    mockObserve.mockReturnValueOnce(fakeObservable(firstNotes));
+    mockObserve.mockReturnValueOnce(fakeObservable(secondNotes));
 
     const { result, rerender } = renderHook(
-      (props: { id: string | undefined }) => useNotes(props.id),
-      { initialProps: { id: "nb-1" as string | undefined } },
+      (props: { notebookId: string }) => useNotes(props.notebookId),
+      { initialProps: { notebookId: "nb-1" } },
     );
 
     await waitFor(() => {
-      expect(result.current.notes).toEqual(mockNotes);
+      expect(result.current.notes).toEqual(firstNotes);
     });
 
-    rerender({ id: undefined });
+    rerender({ notebookId: "nb-2" });
 
     await waitFor(() => {
-      expect(result.current.notes).toEqual([]);
-      expect(result.current.loading).toBe(false);
+      expect(result.current.notes).toEqual(secondNotes);
     });
   });
 });

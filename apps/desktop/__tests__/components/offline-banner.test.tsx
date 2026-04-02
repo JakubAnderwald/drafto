@@ -1,34 +1,59 @@
 import React from "react";
 
-import { render } from "../helpers/test-utils";
-import { OfflineBanner } from "../../src/components/offline-banner";
-
-let mockIsConnected = true;
+import { useNetworkStatus } from "@/hooks/use-network-status";
 
 jest.mock("@/hooks/use-network-status", () => ({
-  useNetworkStatus: () => ({
-    isConnected: mockIsConnected,
-    isInternetReachable: mockIsConnected,
-  }),
+  useNetworkStatus: jest.fn(),
 }));
+
+const mockUseNetworkStatus = useNetworkStatus as jest.Mock;
+
+// Import render after mocks are set up
+import { render, screen } from "../helpers/test-utils";
+import { OfflineBanner } from "@/components/offline-banner";
 
 describe("OfflineBanner", () => {
   beforeEach(() => {
-    mockIsConnected = true;
+    jest.clearAllMocks();
   });
 
-  it("renders nothing when online and never been offline", () => {
-    const { queryByText } = render(<OfflineBanner />);
+  it("renders nothing when connected and never was offline", () => {
+    mockUseNetworkStatus.mockReturnValue({
+      isConnected: true,
+      isInternetReachable: true,
+    });
 
-    expect(queryByText("You are offline")).toBeNull();
-    expect(queryByText(/Back online/)).toBeNull();
+    const { toJSON } = render(<OfflineBanner />);
+    expect(toJSON()).toBeNull();
   });
 
-  it("shows offline message when disconnected", () => {
-    mockIsConnected = false;
+  it('shows "You are offline" when disconnected', () => {
+    mockUseNetworkStatus.mockReturnValue({
+      isConnected: false,
+      isInternetReachable: false,
+    });
 
-    const { getByText } = render(<OfflineBanner />);
+    render(<OfflineBanner />);
+    expect(screen.getByText("You are offline")).toBeTruthy();
+  });
 
-    expect(getByText("You are offline")).toBeTruthy();
+  it('shows "Back online — syncing..." after reconnection', () => {
+    // Start offline
+    mockUseNetworkStatus.mockReturnValue({
+      isConnected: false,
+      isInternetReachable: false,
+    });
+
+    const { rerender } = render(<OfflineBanner />);
+    expect(screen.getByText("You are offline")).toBeTruthy();
+
+    // Go back online
+    mockUseNetworkStatus.mockReturnValue({
+      isConnected: true,
+      isInternetReachable: true,
+    });
+
+    rerender(<OfflineBanner />);
+    expect(screen.getByText("Back online — syncing...")).toBeTruthy();
   });
 });
