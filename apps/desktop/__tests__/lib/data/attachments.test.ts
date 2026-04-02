@@ -10,7 +10,7 @@ jest.mock("@/lib/supabase", () => ({
 jest.mock("@drafto/shared", () => ({
   MAX_FILE_SIZE: 25 * 1024 * 1024,
   BUCKET_NAME: "attachments",
-  SIGNED_URL_EXPIRY_SECONDS: 3600,
+  SIGNED_URL_EXPIRY_SECONDS: 604800,
 }));
 
 jest.mock("@/lib/data/attachment-utils", () => ({
@@ -296,7 +296,7 @@ describe("getSignedUrl", () => {
     const result = await getSignedUrl("user-1/note-1/photo.jpg");
 
     expect(mockStorageFrom).toHaveBeenCalledWith("attachments");
-    expect(createSignedUrlMock).toHaveBeenCalledWith("user-1/note-1/photo.jpg", 3600);
+    expect(createSignedUrlMock).toHaveBeenCalledWith("user-1/note-1/photo.jpg", 604800);
     expect(result).toBe("https://signed.url/path");
   });
 

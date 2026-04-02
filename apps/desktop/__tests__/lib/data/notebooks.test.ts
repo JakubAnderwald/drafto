@@ -71,6 +71,7 @@ describe("createNotebook", () => {
     expect(mockFrom).toHaveBeenCalledWith("notebooks");
     expect(chain.insert).toHaveBeenCalledWith({ user_id: "user-1", name: "My Notebook" });
     expect(chain.select).toHaveBeenCalled();
+    expect(chain.single).toHaveBeenCalled();
     expect(result).toEqual(fakeNotebook);
   });
 
@@ -94,6 +95,7 @@ describe("updateNotebook", () => {
     expect(mockFrom).toHaveBeenCalledWith("notebooks");
     expect(chain.update).toHaveBeenCalledWith({ name: "Renamed" });
     expect(chain.eq).toHaveBeenCalledWith("id", "nb-1");
+    expect(chain.single).toHaveBeenCalled();
     expect(result).toEqual(updated);
   });
 
