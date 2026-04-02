@@ -7,7 +7,10 @@ export PATH="$HOME/.local/bin:$PATH"
 # Initialize rbenv so Fastlane uses the project Ruby (3.3.7), not system Ruby (2.6)
 if [[ -d "$HOME/.rbenv" ]]; then
   export PATH="$HOME/.rbenv/bin:$HOME/.rbenv/shims:$PATH"
-  eval "$("$HOME/.rbenv/bin/rbenv" init - 2>/dev/null)" || true
+  eval "$("$HOME/.rbenv/bin/rbenv" init -)" || {
+    echo "ERROR: rbenv init failed; aborting to avoid using system Ruby" >&2
+    exit 1
+  }
 fi
 
 # Load signing credentials for local Fastlane builds (Android keystore, ASC API key, Match password)

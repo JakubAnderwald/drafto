@@ -60,6 +60,14 @@ jobs:
         with:
           bundler-cache: true
           working-directory: apps/mobile
+      - name: Validate Match HTTPS auth secret
+        run: |
+          if [[ -z "${MATCH_GIT_BASIC_AUTHORIZATION:-}" ]]; then
+            echo "::error::Missing secret: MATCH_GIT_BASIC_AUTHORIZATION"
+            exit 1
+          fi
+        env:
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
       - name: Build and submit to App Store
         id: build-ios
         working-directory: apps/mobile
