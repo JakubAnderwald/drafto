@@ -28,18 +28,18 @@ function withIosSwiftConcurrency(config) {
         return config;
       }
 
-      // Insert concurrency fix into existing post_install block, right after
-      // the react_native_post_install call
+      // Insert concurrency fix before the closing `end` of the post_install block
       const postInstallPatch = `
-
     # Disable Swift strict concurrency for pods (Expo SDK 55 + Xcode 16.2+ compat)
     installer.pods_project.targets.each do |target|
       target.build_configurations.each do |build_config|
         build_config.build_settings['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
       end
-    end`;
+    end
+`;
 
-      contents = contents.replace(/(react_native_post_install\([^)]*\))/, `$1${postInstallPatch}`);
+      // Match the `end` that closes `post_install do |installer|` — it's followed by `\nend\n` (the target block end)
+      contents = contents.replace(/(\n  end\nend\s*$)/, `\n${postInstallPatch}$1`);
 
       fs.writeFileSync(podfilePath, contents);
       return config;
