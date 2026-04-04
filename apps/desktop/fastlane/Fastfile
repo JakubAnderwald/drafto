@@ -1,0 +1,135 @@
+default_platform(:mac)
+
+BUNDLE_ID = "eu.drafto.mobile"
+PROJECT_ROOT = File.expand_path("..", __dir__)
+
+# ---------- helpers ----------
+
+def post_release_notes(max_chars:)
+  Dir.chdir(PROJECT_ROOT) do
+    notes = sh("bash", "scripts/generate-release-notes.sh", "--max-chars", max_chars.to_s).strip
+    sh("node", "scripts/post-release-notes.mjs", "--platform", "macos", "--notes", notes) unless notes.empty?
+  end
+rescue StandardError => e
+  UI.important("Release notes posting failed (non-fatal): #{e.message}")
+end
+
+# ---------- macOS ----------
+
+platform :mac do
+  desc "Build and submit to TestFlight (macOS)"
+  lane :beta do
+    build_and_submit(destination: "testflight")
+  end
+
+  desc "Build and submit to App Store (macOS)"
+  lane :production do
+    build_and_submit(destination: "appstore")
+  end
+
+  private_lane :build_and_submit do |options|
+    destination = options[:destination]
+
+    # Install CocoaPods dependencies
+    cocoapods(
+      podfile: File.join(PROJECT_ROOT, "macos", "Podfile"),
+      try_repo_update_on_error: true
+    )
+
+    # Configure App Store Connect API key
+    api_key = app_store_connect_api_key(
+      key_id: ENV["ASC_API_KEY_ID"],
+      issuer_id: ENV["ASC_API_ISSUER_ID"],
+      key_filepath: ENV["ASC_API_KEY_P8_PATH"],
+      key_content: ENV["ASC_API_KEY_P8"],
+      in_house: false
+    )
+
+    # Fetch macOS signing credentials from match
+    match(
+      type: "appstore",
+      platform: "macos",
+      app_identifier: BUNDLE_ID,
+      api_key: api_key,
+      readonly: true
+    )
+
+    # Auto-increment build number from TestFlight
+    latest_build = begin
+      latest_testflight_build_number(
+        api_key: api_key,
+        app_identifier: BUNDLE_ID,
+        platform: "osx"
+      )
+    rescue StandardError => e
+      UI.important("Could not fetch latest build number (#{e.message}), defaulting to 0")
+      0
+    end
+
+    increment_build_number(
+      build_number: latest_build + 1,
+      xcodeproj: File.join(PROJECT_ROOT, "macos", "Drafto.xcodeproj")
+    )
+
+    # Update code signing for the macOS target
+    update_code_signing_settings(
+      path: File.join(PROJECT_ROOT, "macos", "Drafto.xcodeproj"),
+      use_automatic_signing: false,
+      team_id: "4J2USPSG2U",
+      profile_name: "match AppStore eu.drafto.mobile macos",
+      code_sign_identity: "Apple Distribution",
+      targets: ["Drafto-macOS"]
+    )
+
+    # Strip NSAllowsArbitraryLoads for App Store submission
+    update_info_plist(
+      xcodeproj: File.join(PROJECT_ROOT, "macos", "Drafto.xcodeproj"),
+      plist_path: "Drafto-macOS/Info.plist",
+      block: proc do |plist|
+        ats = plist["NSAppTransportSecurity"]
+        if ats
+          ats.delete("NSAllowsArbitraryLoads")
+          ats.delete("NSExceptionDomains")
+          plist.delete("NSAppTransportSecurity") if ats.empty?
+        end
+      end
+    )
+
+    # Build .pkg for Mac App Store
+    build_mac_app(
+      workspace: File.join(PROJECT_ROOT, "macos", "Drafto.xcworkspace"),
+      scheme: "Drafto-macOS",
+      export_method: "app-store",
+      output_directory: File.join(PROJECT_ROOT, "macos", "build"),
+      installer_cert_name: "Apple Distribution",
+      export_options: {
+        signingStyle: "manual",
+        provisioningProfiles: {
+          BUNDLE_ID => "match AppStore eu.drafto.mobile macos"
+        }
+      }
+    )
+
+    # Upload
+    pkg_path = File.join(PROJECT_ROOT, "macos", "build", "Drafto.pkg")
+
+    if destination == "testflight"
+      upload_to_testflight(
+        api_key: api_key,
+        pkg: pkg_path,
+        skip_waiting_for_build_processing: true
+      )
+    else
+      upload_to_app_store(
+        api_key: api_key,
+        pkg: pkg_path,
+        skip_metadata: true,
+        skip_screenshots: true,
+        precheck_include_in_app_purchases: false
+      )
+    end
+
+    # Post release notes
+    post_release_notes(max_chars: 4000)
+  end
+end

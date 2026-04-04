@@ -19,7 +19,8 @@
     "supabase:push": "supabase db push",
     "migration:check": "bash scripts/check-migration-safety.sh",
     "prepare": "husky",
-    "version:mobile": "cd apps/mobile && npm version --no-git-tag-version"
+    "version:mobile": "cd apps/mobile && npm version --no-git-tag-version",
+    "version:desktop": "cd apps/desktop && npm version --no-git-tag-version"
   },
   "lint-staged": {
     "*.{js,jsx,ts,tsx,mjs,mts}": [

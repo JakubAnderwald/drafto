@@ -8,7 +8,9 @@
     "macos": "npx react-native run-macos",
     "test": "jest --passWithNoTests",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src/"
+    "lint": "eslint src/",
+    "release:beta": "bundle exec fastlane mac beta",
+    "release:production": "bundle exec fastlane mac production"
   },
   "dependencies": {
     "@10play/tentap-editor": "^1.0.1",
