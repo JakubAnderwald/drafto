@@ -5,6 +5,31 @@ PROJECT_ROOT = File.expand_path("..", __dir__)
 
 # ---------- helpers ----------
 
+def load_local_secrets
+  secrets_file = File.join(Dir.home, "drafto-secrets", "android-env.sh")
+  return unless File.exist?(secrets_file)
+
+  File.readlines(secrets_file).each do |line|
+    line = line.strip
+    next if line.empty? || line.start_with?("#")
+    next unless line.start_with?("export ")
+
+    # Parse "export KEY=value" or "export KEY=\"value\""
+    assignment = line.sub(/^export\s+/, "")
+    key, value = assignment.split("=", 2)
+    next unless key && value
+
+    # Skip lines with shell expansions (e.g., $(command))
+    next if value.include?("$(")
+
+    value = value.gsub(/\A["']|["']\z/, "") # strip surrounding quotes
+    value = value.gsub("$HOME", Dir.home)
+    ENV[key] ||= value
+  end
+end
+
+load_local_secrets
+
 def load_production_env
   env_file = File.join(PROJECT_ROOT, ".env.production")
   if File.exist?(env_file)
