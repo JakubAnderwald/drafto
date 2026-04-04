@@ -11,13 +11,7 @@ export {
   deleteNotePermanent,
 } from "./notes";
 
-export {
-  pickImage,
-  pickDocument,
-  uploadAttachment,
-  deleteAttachment,
-  getSignedUrl,
-} from "./attachments";
+export { pickImage, pickDocument, deleteAttachment, getSignedUrl } from "./attachments";
 
 export { queueAttachment, processPendingUploads, cleanupOrphanedFiles } from "./attachment-queue";
 export type { UploadResult } from "./attachment-queue";
