@@ -1,0 +1,11 @@
+git_url("https://github.com/JakubAnderwald/ios-certificates.git")
+
+storage_mode("git")
+
+type("appstore")
+
+platform("macos")
+
+app_identifier(["eu.drafto.mobile"])
+
+team_id("4J2USPSG2U")

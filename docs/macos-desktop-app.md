@@ -163,8 +163,8 @@ The sync logic in `apps/mobile/src/db/sync.ts` uses WatermelonDB's `synchronize(
 ## Mac App Store Deployment
 
 - **Apple Developer Team**: `4J2USPSG2U` (already exists from iOS app)
-- **Bundle ID**: `eu.drafto.desktop`
-- **Certificates**: "3rd Party Mac Developer Application" + "3rd Party Mac Developer Installer"
+- **Bundle ID**: `eu.drafto.mobile` (shared with iOS — multi-platform app in App Store Connect)
+- **Certificates**: "Apple Distribution" (unified cert for iOS + macOS)
 - **Entitlements** (`Drafto.entitlements`):
   - `com.apple.security.app-sandbox = true` (required for MAS)
   - `com.apple.security.network.client = true` (Supabase API)
@@ -430,17 +430,44 @@ Phases are designed so independent work can run as parallel subagents where note
 - Cross-platform E2E tests — Desktop ↔ Web sync verification (Detox + Playwright)
 - Extend cross-platform tests to include mobile simulators
 
-### Phase 7: Mac App Store + CI/CD (~1-2 weeks)
+### Phase 7: Mac App Store + CI/CD — ✅ COMPLETE (2026-04-02)
 
-**Can run in parallel:**
+**Completed:**
 
-- **Agent A**: App Sandbox entitlements + code signing + Xcode archive setup
-- **Agent B**: GitHub Actions workflow on macOS runner (build, test, sign, upload)
-- **Agent C**: App Store Connect metadata + screenshots + privacy policy
+- ✅ Xcode project configured for Mac App Store: bundle ID `eu.drafto.mobile` (shared with iOS — multi-platform app in App Store Connect), manual code signing, `MARKETING_VERSION` build setting
+- ✅ App Sandbox entitlements updated: `files.user-selected.read-write` (was read-only), `network.client`, `app-sandbox`
+- ✅ Fastlane setup (`apps/desktop/fastlane/`): Appfile, Matchfile (platform "macos"), Fastfile with `beta` and `production` lanes
+- ✅ Fastlane build pipeline: CocoaPods → ASC API key → match (macOS certs) → auto-increment build number → update signing → strip ATS for release → `build_mac_app` (.pkg) → upload to TestFlight/App Store → post release notes
+- ✅ GitHub Actions workflow (`desktop-beta-release.yml`): manual dispatch, pre-release checks (lint/typecheck/test), git tagging (`desktop@VERSION`), macOS-15 runner build+submit
+- ✅ Release notes scripts adapted from mobile: `generate-release-notes.sh` (tag prefix `desktop@*`, path filter `apps/desktop/`), `post-release-notes.mjs` (TestFlight only, uses `ASC_DESKTOP_APP_ID`)
+- ✅ Package.json scripts: `release:beta`, `release:production` (desktop), `version:desktop` (root)
 
-**Sequential:**
+**New files:**
 
-- TestFlight beta → testing → App Store review → release
+- `apps/desktop/Gemfile` — Ruby dependencies (fastlane, cocoapods)
+- `apps/desktop/.ruby-version` — pins Ruby 3.3.7
+- `apps/desktop/fastlane/Appfile` — app identifier + team ID
+- `apps/desktop/fastlane/Matchfile` — match config for macOS platform
+- `apps/desktop/fastlane/Fastfile` — build + submit lanes
+- `apps/desktop/fastlane/Pluginfile` — empty (no plugins needed)
+- `apps/desktop/scripts/generate-release-notes.sh` — conventional commit changelog
+- `apps/desktop/scripts/post-release-notes.mjs` — TestFlight "What to Test" updater
+- `.github/workflows/desktop-beta-release.yml` — CI/CD workflow
+
+**Implementation notes:**
+
+- Reuses existing GitHub Secrets from mobile (`ASC_API_KEY_ID`, `ASC_API_ISSUER_ID`, `ASC_API_KEY_P8`, `MATCH_PASSWORD`, `MATCH_GIT_BASIC_AUTHORIZATION`). Only new secret: `ASC_DESKTOP_APP_ID`
+- `latest_testflight_build_number(platform: "osx")` with rescue for first-ever build (defaults to 0)
+- `update_info_plist` strips `NSAllowsArbitraryLoads` at build time so App Store review passes while dev builds keep localhost access
+- `installer_cert_name: "3rd Party Mac Developer Installer"` ensures `.pkg` output for Mac App Store submission
+- Match profile naming convention: `match AppStore eu.drafto.mobile macos` — verified after `fastlane match appstore --platform macos` run
+
+**Manual steps required before first release:**
+
+1. Create macOS app record in App Store Connect → note numeric App ID
+2. Add `ASC_DESKTOP_APP_ID` secret to GitHub repository
+3. Run `cd apps/desktop && bundle exec fastlane match appstore --platform macos` locally to bootstrap macOS certificates
+4. Dispatch `desktop-beta-release` workflow for first TestFlight build
 
 ### Phase 8: Documentation (~1 week, starts parallel with Phase 6)
 
