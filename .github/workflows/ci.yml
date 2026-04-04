@@ -119,6 +119,24 @@ jobs:
       - name: Run mobile tests
         run: cd apps/mobile && pnpm test
 
+  desktop-checks:
+    name: Desktop Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - name: Lint desktop
+        run: cd apps/desktop && pnpm lint
+      - name: Typecheck desktop
+        run: cd apps/desktop && pnpm typecheck
+      - name: Run desktop tests
+        run: cd apps/desktop && pnpm test
+
   sonarcloud:
     name: SonarCloud
     runs-on: ubuntu-latest
