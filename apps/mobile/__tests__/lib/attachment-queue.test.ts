@@ -124,7 +124,7 @@ describe("processPendingUploads", () => {
     const result = await processPendingUploads();
 
     expect(result).toEqual({ uploaded: 1, failed: 0 });
-    expect(mockUpload).toHaveBeenCalledWith("user-1/note-1/photo.jpg", expect.any(Blob), {
+    expect(mockUpload).toHaveBeenCalledWith("user-1/note-1/photo.jpg", expect.any(Uint8Array), {
       contentType: "image/jpeg",
       upsert: false,
     });

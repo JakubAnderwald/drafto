@@ -96,12 +96,11 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
     throw new Error("Local file is empty — skipping upload");
   }
 
-  const blob = new Blob([bytes], { type: attachment.mimeType });
-
-  // Upload to Supabase Storage
+  // Pass Uint8Array directly — Blob does not work reliably in React Native
+  // on Android (documented supabase-js limitation).
   const { error: uploadError } = await supabase.storage
     .from(BUCKET_NAME)
-    .upload(attachment.filePath, blob, {
+    .upload(attachment.filePath, bytes, {
       contentType: attachment.mimeType,
       upsert: false,
     });
