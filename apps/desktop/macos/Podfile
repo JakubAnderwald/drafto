@@ -25,6 +25,23 @@ target 'Drafto-macOS' do
   post_install do |installer|
     react_native_post_install(installer)
 
+    # Build arm64 only — macOS 14+ targets Apple Silicon; Rosetta handles Intel Macs
+    installer.pods_project.build_configurations.each do |config|
+      config.build_settings['EXCLUDED_ARCHS[sdk=macosx*]'] = 'x86_64'
+    end
+
+    # Fix fmt consteval errors on Xcode 26+ — consteval is broken in Apple Clang
+    # Patch fmt/base.h to skip consteval detection on Apple builds (see issue #242)
+    fmt_base = File.join(installer.sandbox.root, 'fmt', 'include', 'fmt', 'base.h')
+    if File.exist?(fmt_base)
+      File.chmod(0644, fmt_base)
+      content = File.read(fmt_base)
+      patched = content
+        .gsub('#elif defined(__cpp_consteval)', '#elif defined(__cpp_consteval) && !defined(__apple_build_version__)')
+        .gsub('#elif FMT_GCC_VERSION >= 1002 || FMT_CLANG_VERSION >= 1101', '#elif (FMT_GCC_VERSION >= 1002 || FMT_CLANG_VERSION >= 1101) && !defined(__apple_build_version__)')
+      File.write(fmt_base, patched) if patched != content
+    end
+
     # Fix dispatch_queue_t strong property error on Xcode 26+ / macOS SDK
     # CocoaPods adds -DOS_OBJECT_USE_OBJC=0 as per-file compiler flags, which makes
     # dispatch_queue_t a non-ObjC type and breaks 'strong' properties in RCTBridgeModule.h

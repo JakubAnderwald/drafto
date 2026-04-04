@@ -50,14 +50,21 @@ platform :mac do
       in_house: false
     )
 
-    # Fetch macOS signing credentials from match
+    # Remove stale "Apple Distribution" certs to avoid ambiguity during archive.
+    # Match may have previously installed a mac_installer_distribution cert with the same
+    # "Apple Distribution" name, causing Xcode to fail with "profile doesn't include cert".
+    keychain = File.expand_path("~/Library/Keychains/login.keychain-db")
+    hashes = `security find-certificate -a -c "Apple Distribution" -Z "#{keychain}" 2>/dev/null`
+      .scan(/SHA-1 hash: (\w+)/).flatten
+    hashes.each { |h| system("security", "delete-certificate", "-Z", h, keychain) }
+
+    # Fetch macOS app distribution cert + profile from match
     match(
       type: "appstore",
       platform: "macos",
       app_identifier: BUNDLE_ID,
       api_key: api_key,
-      readonly: true,
-      additional_cert_types: ["mac_installer_distribution"]
+      readonly: true
     )
 
     # Sync version from package.json to Xcode MARKETING_VERSION
@@ -108,13 +115,13 @@ platform :mac do
       end
     )
 
-    # Build .pkg for Mac App Store
+    # Build and export .app (skip .pkg — we create it separately with the installer cert)
     build_mac_app(
       workspace: File.join(PROJECT_ROOT, "macos", "Drafto.xcworkspace"),
       scheme: "Drafto-macOS",
       export_method: "app-store",
       output_directory: File.join(PROJECT_ROOT, "macos", "build"),
-      installer_cert_name: "3rd Party Mac Developer Installer",
+      skip_package_pkg: true,
       export_options: {
         signingStyle: "manual",
         provisioningProfiles: {
@@ -123,9 +130,15 @@ platform :mac do
       }
     )
 
-    # Upload
+    # Create .pkg with the "3rd Party Mac Developer Installer" cert (created via Xcode)
+    app_path = File.join(PROJECT_ROOT, "macos", "build", "Drafto.app")
     pkg_path = File.join(PROJECT_ROOT, "macos", "build", "Drafto.pkg")
+    sh("productbuild",
+       "--component", app_path, "/Applications",
+       "--sign", "3rd Party Mac Developer Installer: Jakub Anderwald (4J2USPSG2U)",
+       pkg_path)
 
+    # Upload
     if destination == "testflight"
       upload_to_testflight(
         api_key: api_key,
