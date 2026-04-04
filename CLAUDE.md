@@ -17,6 +17,12 @@ Note-taking web app at drafto.eu. Monorepo with pnpm workspaces + Turborepo. Bui
   - `.env.production` — Production Supabase credentials (prod backend)
   - `android/` — Native Android project (Gradle build)
   - `e2e/` — Maestro E2E tests
+- `apps/desktop/` — React Native macOS desktop app (offline-first, Mac App Store)
+  - `macos/` — Native macOS Xcode project (Drafto.xcworkspace)
+  - `src/` — App source (mirrors mobile: db/, providers/, hooks/, lib/, screens/, components/)
+  - `fastlane/` — Fastlane config for Mac App Store deployment
+  - `scripts/` — Release notes generation and posting
+  - `__tests__/` — Jest unit tests
 - `packages/shared/` — Shared types (`Database`, API types) and constants (`@drafto/shared`)
 - `docs/adr/` — Architecture Decision Records (see [ADR README](./docs/adr/README.md))
 - `supabase/` — Supabase migrations and config
@@ -61,7 +67,7 @@ echo "sdk.dir=/Users/jakub/Library/Android/sdk" > apps/mobile/android/local.prop
 
 - **Cannot checkout `main`**: In a worktree, `main` is already checked out by the original repo. To create a new branch from latest main, use: `git fetch origin main && git checkout -b <branch> origin/main`
 - **Cannot merge PRs with `--delete-branch`**: `gh pr merge --delete-branch` fails because it tries to switch to `main` locally. Instead use the GitHub API: `gh api repos/{owner}/{repo}/pulls/{number}/merge -f merge_method=squash`
-- **Fastlane in worktrees**: Worktrees do not share Ruby gems. Run `bundle install` in the worktree's `apps/mobile/` directory before using Fastlane commands. Also copy `google-play-service-account.json` if needed for store submissions.
+- **Fastlane in worktrees**: Worktrees do not share Ruby gems. Run `bundle install` in the worktree's `apps/mobile/` (or `apps/desktop/`) directory before using Fastlane commands. Also copy `google-play-service-account.json` if needed for store submissions.
 
 ## Code Style
 
@@ -108,6 +114,7 @@ Run tests: `cd apps/web && pnpm test` (unit+integration), `cd apps/web && pnpm t
 3. `cd packages/shared && pnpm test` — shared package tests
 4. `cd apps/mobile && pnpm test` — mobile unit tests
 5. `maestro test apps/mobile/e2e/ --platform android` — mobile Maestro E2E on Android emulator (requires a running emulator and the dev client started with `cd apps/mobile && npx expo start --dev-client`; also requires `E2E_TEST_EMAIL` and `E2E_TEST_PASSWORD` in env)
+6. `cd apps/desktop && pnpm test` — desktop unit tests
 
 **Pre-push verification (required before every push):**
 
@@ -119,7 +126,8 @@ Before pushing any changes, run these checks locally to avoid CI failures:
 4. **Shared package tests**: `cd packages/shared && pnpm test`
 5. **Mobile unit tests**: `cd apps/mobile && pnpm test`
 6. **Mobile E2E tests**: `maestro test apps/mobile/e2e/ --platform android` (requires running Android emulator + dev client)
-7. **Lint & typecheck**: `pnpm lint && pnpm typecheck`
+7. **Desktop unit tests**: `cd apps/desktop && pnpm test`
+8. **Lint & typecheck**: `pnpm lint && pnpm typecheck`
 
 Never push code that fails any of these checks. Common CI failure patterns to watch for:
 
@@ -141,6 +149,18 @@ Never push code that fails any of these checks. Common CI failure patterns to wa
 - Pre-commit hooks run lint-staged (ESLint + Prettier)
 - **Never commit or push directly to `main`** unless the user explicitly requests it. All work goes through feature branches and PRs.
 - **All pushes must use the `/push` command** — this ensures commits are pushed, CI/CD checks are polled until green, review comments are addressed, and failures are fixed automatically
+
+## Cross-Platform Feature Workflow
+
+Drafto runs on 4 platforms: **web**, **iOS**, **Android**, and **macOS**. Every new user-facing feature must be implemented on all relevant platforms or explicitly scoped to a subset with justification.
+
+**When adding a feature:**
+
+1. Determine which platforms are affected (most features affect all 4)
+2. Implement on each platform in the same PR or a coordinated set of PRs
+3. If a feature is intentionally skipped on a platform, document why (e.g., "macOS: deferred — requires native toolbar integration")
+
+**Shared code:** Changes in `packages/shared/` affect all platforms. Changes in `apps/mobile/src/db/` (schema, models, sync) are shared with `apps/desktop/` — keep them in sync.
 
 ## Architecture Decision Records (ADR)
 
@@ -221,7 +241,7 @@ After cloning and running `pnpm install`, ensure these CLI tools are also instal
 2. **Vercel CLI**: `pnpm i -g vercel` ([install docs](https://vercel.com/docs/cli)) — used to pull env vars (`vercel env pull`)
 3. **Supabase CLI**: `brew install supabase/tap/supabase` (macOS) or see [install docs](https://supabase.com/docs/guides/cli/getting-started) for other platforms — used for migrations and DB management
 
-4. **Ruby + Fastlane**: `brew install rbenv ruby-build && rbenv install 3.3.7 && rbenv global 3.3.7` then `cd apps/mobile && bundle install` — required for mobile build and store submission via Fastlane
+4. **Ruby + Fastlane**: `brew install rbenv ruby-build && rbenv install 3.3.7 && rbenv global 3.3.7` then `cd apps/mobile && bundle install` and `cd apps/desktop && bundle install` — required for mobile and desktop builds and store submission via Fastlane
 
 Without these, E2E tests will fail and environment/database workflows won't work.
 
@@ -257,6 +277,16 @@ cd apps/mobile && pnpm release:beta:ios         # Build + submit to TestFlight
 cd apps/mobile && pnpm release:beta:all         # Both platforms
 cd apps/mobile && pnpm release:prod:android     # Build + submit to Google Play production
 cd apps/mobile && pnpm release:prod:ios         # Build + submit to App Store
+
+# Desktop app (apps/desktop/)
+cd apps/desktop && npx react-native run-macos   # Build and run macOS app (dev)
+cd apps/desktop && pnpm test                    # Desktop unit tests
+cd apps/desktop && pnpm lint                    # Desktop lint
+cd apps/desktop && pnpm typecheck               # Desktop type check
+
+# Desktop releases (apps/desktop/) — Fastlane
+cd apps/desktop && pnpm release:beta            # Build + submit to TestFlight (macOS)
+cd apps/desktop && pnpm release:production      # Build + submit to Mac App Store
 ```
 
 ## Mobile Build Environment Mapping
@@ -361,6 +391,38 @@ export ASC_API_KEY_P8_PATH="/path/to/AuthKey.p8"
 - First build requires Apple review (~24-48h), subsequent builds are usually available instantly
 - Internal testers are invited via App Store Connect → TestFlight → Internal Testing
 - Testers install via the TestFlight app on their iOS device
+
+## Mac App Store Deployment (Fastlane)
+
+Single command to build and deploy to TestFlight (macOS):
+
+```bash
+cd apps/desktop && pnpm release:beta
+```
+
+For Mac App Store: `pnpm release:production`
+
+**What it does:** CocoaPods install → match (fetch macOS signing creds) → sync version from `package.json` → `build_mac_app` (signed `.pkg`) → `upload_to_testflight` → post release notes
+
+**Setup details:**
+
+- App Store Connect App ID: `6760675784` (shared with iOS — multi-platform app)
+- Bundle ID: `eu.drafto.mobile` (shared with iOS)
+- Apple Developer Team ID: `4J2USPSG2U`
+- Signing: Fastlane match with `platform: "macos"` (same Git repo as iOS certs)
+- Build numbers auto-incremented from TestFlight's latest macOS build number
+
+**Required environment variables for local builds:** Same as iOS (`ASC_API_KEY_ID`, `ASC_API_ISSUER_ID`, `ASC_API_KEY_P8_PATH`).
+
+**CI automated deploy:** The `desktop-beta-release.yml` workflow runs on `macos-15` runner. Only dispatches from `main` are allowed.
+
+## Desktop Versioning
+
+The desktop app version (`apps/desktop/package.json` → `version`) follows the same semver rules as mobile. Build numbers are auto-incremented by Fastlane from TestFlight.
+
+**How to bump:** Run `pnpm version:desktop [patch|minor|major]` from the repo root, then commit the changed `package.json`. The CI workflow creates `desktop@X.Y.Z` tags on deploy.
+
+**Same bump rules as mobile apply** (patch for fixes, minor for features, major for breaking changes).
 
 ## Build Both Platforms
 

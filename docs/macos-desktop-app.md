@@ -469,13 +469,13 @@ Phases are designed so independent work can run as parallel subagents where note
 3. Run `cd apps/desktop && bundle exec fastlane match appstore --platform macos` locally to bootstrap macOS certificates
 4. Dispatch `desktop-beta-release` workflow for first TestFlight build
 
-### Phase 8: Documentation (~1 week, starts parallel with Phase 6)
+### Phase 8: Documentation — ✅ COMPLETE (2026-04-04)
 
-**Can run in parallel:**
+**Completed:**
 
-- **Agent A**: Update `CLAUDE.md` — add desktop to all relevant sections (directory structure, commands, testing, pre-push, deployment)
-- **Agent B**: Update `README.md` — add desktop setup/build/run instructions
-- **Agent C**: Add cross-platform feature workflow rule to `CLAUDE.md` — "every new feature must target all 4 platforms"
+- ✅ `CLAUDE.md` updated: desktop in directory structure, testing requirements (item 6), pre-push verification (item 7), local dev setup, useful commands, worktree notes, Mac App Store deployment section, desktop versioning section
+- ✅ `README.md` updated: desktop in tech stack, prerequisites, scripts table, project structure, architecture section
+- ✅ Cross-platform feature workflow rule added to `CLAUDE.md` — "every new feature must target all 4 platforms"
 
 ## Risks & Mitigations
 
