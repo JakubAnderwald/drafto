@@ -52,14 +52,10 @@ jobs:
         with:
           bundler-cache: true
           working-directory: apps/desktop
-      - name: Validate Match HTTPS auth secret
-        run: |
-          if [[ -z "${MATCH_GIT_BASIC_AUTHORIZATION:-}" ]]; then
-            echo "::error::Missing secret: MATCH_GIT_BASIC_AUTHORIZATION"
-            exit 1
-          fi
-        env:
-          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+      - name: Set up SSH for match certificates repo
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.MATCH_GIT_PRIVATE_KEY }}
       - name: Build and submit to TestFlight
         working-directory: apps/desktop
         run: bundle exec fastlane mac beta
@@ -68,7 +64,6 @@ jobs:
           ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
           ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
-          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
 
   tag:
     if: github.ref == 'refs/heads/main'
