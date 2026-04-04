@@ -460,7 +460,7 @@ Phases are designed so independent work can run as parallel subagents where note
 - `latest_testflight_build_number(platform: "osx")` with rescue for first-ever build (defaults to 0)
 - `update_info_plist` strips `NSAllowsArbitraryLoads` at build time so App Store review passes while dev builds keep localhost access
 - `installer_cert_name: "3rd Party Mac Developer Installer"` ensures `.pkg` output for Mac App Store submission
-- Match profile naming convention: `match AppStore eu.drafto.desktop macos` — verify after first `fastlane match appstore --platform macos` run
+- Match profile naming convention: `match AppStore eu.drafto.mobile macos` — verified after `fastlane match appstore --platform macos` run
 
 **Manual steps required before first release:**
 

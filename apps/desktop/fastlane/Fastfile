@@ -14,6 +14,11 @@ rescue StandardError => e
   UI.important("Release notes posting failed (non-fatal): #{e.message}")
 end
 
+def package_json_version
+  require "json"
+  JSON.parse(File.read(File.join(PROJECT_ROOT, "package.json")))["version"]
+end
+
 # ---------- macOS ----------
 
 platform :mac do
@@ -51,7 +56,15 @@ platform :mac do
       platform: "macos",
       app_identifier: BUNDLE_ID,
       api_key: api_key,
-      readonly: true
+      readonly: true,
+      additional_cert_types: ["mac_installer_distribution"]
+    )
+
+    # Sync version from package.json to Xcode MARKETING_VERSION
+    version = package_json_version
+    increment_version_number(
+      version_number: version,
+      xcodeproj: File.join(PROJECT_ROOT, "macos", "Drafto.xcodeproj")
     )
 
     # Auto-increment build number from TestFlight
@@ -101,7 +114,7 @@ platform :mac do
       scheme: "Drafto-macOS",
       export_method: "app-store",
       output_directory: File.join(PROJECT_ROOT, "macos", "build"),
-      installer_cert_name: "Apple Distribution",
+      installer_cert_name: "3rd Party Mac Developer Installer",
       export_options: {
         signingStyle: "manual",
         provisioningProfiles: {
@@ -117,7 +130,7 @@ platform :mac do
       upload_to_testflight(
         api_key: api_key,
         pkg: pkg_path,
-        skip_waiting_for_build_processing: true
+        skip_waiting_for_build_processing: false
       )
     else
       upload_to_app_store(

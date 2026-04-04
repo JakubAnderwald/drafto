@@ -82,9 +82,9 @@ async function postTestFlightNotes(releaseNotes) {
     "Content-Type": "application/json",
   };
 
-  // 1. Find the latest build (most recent preReleaseVersion)
+  // 1. Find the latest macOS build (filter by platform-identifying fields for multi-platform app)
   const buildsRes = await fetch(
-    `${baseUrl}/apps/${appId}/builds?sort=-uploadedDate&limit=1&fields[builds]=version,processingState`,
+    `${baseUrl}/apps/${appId}/builds?sort=-uploadedDate&limit=10&fields[builds]=version,processingState,computedMinMacOsVersion,lsMinimumSystemVersion`,
     { headers },
   );
   if (!buildsRes.ok) {
@@ -97,7 +97,17 @@ async function postTestFlightNotes(releaseNotes) {
     return;
   }
 
-  const buildId = buildsData.data[0].id;
+  // Filter to macOS builds only (have computedMinMacOsVersion or lsMinimumSystemVersion)
+  const macosBuild = buildsData.data.find(
+    (b) => b.attributes.computedMinMacOsVersion || b.attributes.lsMinimumSystemVersion,
+  );
+
+  if (!macosBuild) {
+    console.error("Skipping TestFlight: no macOS builds found (only iOS builds present)");
+    return;
+  }
+
+  const buildId = macosBuild.id;
 
   // 2. Check if a betaBuildLocalization already exists for en-US
   const locRes = await fetch(
@@ -147,7 +157,7 @@ async function postTestFlightNotes(releaseNotes) {
   }
 
   console.log(
-    `TestFlight: "What to Test" updated for build ${buildsData.data[0].attributes.version}`,
+    `TestFlight: "What to Test" updated for macOS build ${macosBuild.attributes.version}`,
   );
 }
 

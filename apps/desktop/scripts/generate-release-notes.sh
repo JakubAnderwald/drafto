@@ -9,7 +9,14 @@ set -euo pipefail
 MAX_CHARS=4000
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --max-chars) MAX_CHARS="${2:-4000}"; shift 2 ;;
+    --max-chars)
+      if [[ $# -lt 2 || ! "$2" =~ ^[0-9]+$ ]]; then
+        echo "Usage: $0 [--max-chars N]" >&2
+        exit 1
+      fi
+      MAX_CHARS="$2"
+      shift 2
+      ;;
     *) shift ;;
   esac
 done
@@ -34,8 +41,8 @@ else
 fi
 
 # Extract conventional commit subjects, grouped by type
-FEATURES=$(git log "$RANGE" --oneline --no-merges --grep="^feat" --format="%s" -- apps/desktop/ packages/shared/ | sed 's/^feat[:(]//' | sed 's/^[^)]*) //' | sed 's/^: //')
-FIXES=$(git log "$RANGE" --oneline --no-merges --grep="^fix" --format="%s" -- apps/desktop/ packages/shared/ | sed 's/^fix[:(]//' | sed 's/^[^)]*) //' | sed 's/^: //')
+FEATURES=$(git log "$RANGE" --oneline --no-merges --grep="^feat" --format="%s" -- apps/desktop/ packages/shared/ | sed -E 's/^feat(\([^)]+\))?!?:[[:space:]]*//')
+FIXES=$(git log "$RANGE" --oneline --no-merges --grep="^fix" --format="%s" -- apps/desktop/ packages/shared/ | sed -E 's/^fix(\([^)]+\))?!?:[[:space:]]*//')
 
 NOTES=""
 
