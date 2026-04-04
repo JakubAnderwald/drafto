@@ -1,6 +1,6 @@
 # Drafto
 
-A note-taking app with notebooks, rich text editing, and auto-save. Available as a web app and a mobile app with offline support.
+A note-taking app with notebooks, rich text editing, and auto-save. Available as a web app, mobile app (iOS + Android), and macOS desktop app — all with offline support.
 
 **Live:** [drafto.eu](https://drafto.eu)
 
@@ -32,6 +32,16 @@ A note-taking app with notebooks, rich text editing, and auto-save. Available as
 - **Local database:** WatermelonDB (SQLite, offline-first with Supabase sync)
 - **Testing:** Jest + Testing Library React Native (unit), Maestro (E2E)
 
+### Desktop (`apps/desktop/`)
+
+- **Framework:** React Native macOS 0.81.5 (native AppKit components)
+- **Navigation:** React Navigation
+- **Editor:** TenTap Editor (WebView-based TipTap, same as mobile)
+- **Local database:** WatermelonDB (SQLite, offline-first with Supabase sync — shared with mobile)
+- **Native features:** macOS menu bar, keyboard shortcuts, window state persistence
+- **Distribution:** Mac App Store via Fastlane
+- **Testing:** Jest (unit)
+
 ### Shared (`packages/shared/`)
 
 - Shared TypeScript types (`Database`, API types) and constants, consumed by both web and mobile
@@ -40,7 +50,8 @@ A note-taking app with notebooks, rich text editing, and auto-save. Available as
 
 - **Backend:** Supabase (Postgres + Auth + Storage + Realtime) — two isolated projects for dev and prod
 - **Web hosting:** Vercel (with preview deployments)
-- **Mobile CI/CD:** EAS Build — Google Play (internal testing) and TestFlight
+- **Mobile CI/CD:** Fastlane — Google Play (internal testing) and TestFlight
+- **Desktop CI/CD:** Fastlane — Mac App Store via TestFlight
 - **CI:** GitHub Actions, SonarCloud (code quality)
 
 ## Features
@@ -91,6 +102,12 @@ For mobile development:
 - [Expo CLI](https://docs.expo.dev/get-started/set-up-your-environment/)
 - Android SDK (for Android builds)
 - Xcode (for iOS builds on macOS)
+
+For desktop development:
+
+- Xcode (for macOS builds)
+- CocoaPods (`gem install cocoapods`)
+- Ruby 3.3.7 via rbenv (for Fastlane)
 
 ### Setup
 
@@ -161,6 +178,15 @@ Open [http://localhost:3000](http://localhost:3000).
 | `pnpm android:release-local` | Release APK (prod backend)           |
 | `pnpm test`                  | Unit tests                           |
 
+### Desktop (`apps/desktop/`)
+
+| Command                      | Description                     |
+| ---------------------------- | ------------------------------- |
+| `npx react-native run-macos` | Build and run macOS app (dev)   |
+| `pnpm test`                  | Unit tests                      |
+| `pnpm release:beta`          | Build + submit to TestFlight    |
+| `pnpm release:production`    | Build + submit to Mac App Store |
+
 ## Project Structure
 
 ```text
@@ -199,6 +225,17 @@ apps/
       theme/            # Theme definitions
     store/              # State management
     e2e/                # Maestro E2E tests
+  desktop/
+    macos/              # Native macOS Xcode project
+    src/
+      components/       # macOS UI components (sidebar, editor, search)
+      db/               # WatermelonDB (shared schema/models with mobile)
+      hooks/            # Custom hooks (shared with mobile)
+      lib/              # Desktop libraries (supabase, attachments)
+      providers/        # Context providers (auth, database, theme, menu)
+      screens/          # App screens (login, main, settings)
+    fastlane/           # Fastlane config for Mac App Store
+    scripts/            # Release notes scripts
 packages/
   shared/              # Shared types and constants (@drafto/shared)
 supabase/
@@ -217,6 +254,10 @@ The web app uses a **three-panel layout**: notebooks sidebar, notes list, and ed
 ### Mobile
 
 The mobile app uses a **local-first architecture** with WatermelonDB (SQLite) for offline storage and Supabase for cloud sync. Notes are available offline and sync automatically when connectivity is restored.
+
+### Desktop
+
+The macOS desktop app uses the same **local-first architecture** as mobile — WatermelonDB (SQLite) for offline storage with Supabase sync. It shares ~70% of its code with the mobile app (database schema, models, sync logic, hooks, data layer). The UI is native AppKit rendered via React Native macOS with a macOS 3-pane layout (sidebar + note list + editor).
 
 ### Auth
 
