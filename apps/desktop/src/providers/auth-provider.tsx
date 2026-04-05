@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 
+import { getCachedApproval, setCachedApproval, clearCachedApproval } from "@/lib/approval-cache";
 import { supabase } from "@/lib/supabase";
 
 interface AuthContextValue {
@@ -31,12 +32,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         .single();
 
       if (error) {
-        console.error("Failed to fetch approval status:", error);
-        return false;
+        // Network failure — fall back to cached approval status
+        let approved = false;
+        try {
+          const cached = await getCachedApproval(userId);
+          approved = cached === true;
+        } catch {
+          // Storage unavailable — default to not approved
+        }
+        setIsApproved(approved);
+        return approved;
       }
 
       const approved = profile?.is_approved === true;
       setIsApproved(approved);
+      try {
+        await setCachedApproval(userId, approved);
+      } catch {
+        // Cache write failed — non-fatal
+      }
       return approved;
     } finally {
       setIsCheckingApproval(false);
@@ -51,10 +65,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [session?.user, checkApproval]);
 
   const signOut = useCallback(async () => {
+    const userId = session?.user?.id;
     await supabase.auth.signOut();
     setSession(null);
     setIsApproved(false);
-  }, []);
+    if (userId) {
+      await clearCachedApproval(userId);
+    }
+  }, [session?.user?.id]);
 
   useEffect(() => {
     let mounted = true;
