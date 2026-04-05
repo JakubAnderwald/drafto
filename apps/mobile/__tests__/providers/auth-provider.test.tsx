@@ -1,5 +1,6 @@
 import React from "react";
 import { renderHook, act, waitFor } from "@testing-library/react-native";
+import type { User } from "@supabase/supabase-js";
 
 import { AuthProvider, useAuth } from "@/providers/auth-provider";
 import { supabase } from "@/lib/supabase";
@@ -27,7 +28,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
   return <AuthProvider>{children}</AuthProvider>;
 }
 
-const TEST_USER = { id: "user-123" } as never;
+const TEST_USER = { id: "user-123" } as unknown as User;
 
 describe("AuthProvider", () => {
   beforeEach(() => {

@@ -33,15 +33,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (error) {
         // Network failure — fall back to cached approval status
-        const cached = await getCachedApproval();
-        const approved = cached === true;
+        let approved = false;
+        try {
+          const cached = await getCachedApproval();
+          approved = cached === true;
+        } catch {
+          // Storage unavailable — default to not approved
+        }
         setIsApproved(approved);
         return approved;
       }
 
       const approved = profile?.is_approved === true;
       setIsApproved(approved);
-      await setCachedApproval(approved);
+      try {
+        await setCachedApproval(approved);
+      } catch {
+        // Cache write failed — non-fatal
+      }
       return approved;
     } finally {
       setIsCheckingApproval(false);
