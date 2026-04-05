@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 
+import { getCachedApproval, setCachedApproval, clearCachedApproval } from "@/lib/approval-cache";
 import { supabase } from "@/lib/supabase";
 
 interface AuthContextValue {
@@ -24,14 +25,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const checkApproval = useCallback(async (userId: string): Promise<boolean> => {
     setIsCheckingApproval(true);
     try {
-      const { data: profile } = await supabase
+      const { data: profile, error } = await supabase
         .from("profiles")
         .select("is_approved")
         .eq("id", userId)
         .single();
 
+      if (error) {
+        // Network failure — fall back to cached approval status
+        const cached = await getCachedApproval();
+        const approved = cached === true;
+        setIsApproved(approved);
+        return approved;
+      }
+
       const approved = profile?.is_approved === true;
       setIsApproved(approved);
+      await setCachedApproval(approved);
       return approved;
     } finally {
       setIsCheckingApproval(false);
@@ -49,6 +59,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await supabase.auth.signOut();
     setSession(null);
     setIsApproved(false);
+    await clearCachedApproval();
   }, []);
 
   useEffect(() => {
