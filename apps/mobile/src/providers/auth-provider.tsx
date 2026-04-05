@@ -35,7 +35,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Network failure — fall back to cached approval status
         let approved = false;
         try {
-          const cached = await getCachedApproval();
+          const cached = await getCachedApproval(userId);
           approved = cached === true;
         } catch {
           // Storage unavailable — default to not approved
@@ -47,7 +47,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const approved = profile?.is_approved === true;
       setIsApproved(approved);
       try {
-        await setCachedApproval(approved);
+        await setCachedApproval(userId, approved);
       } catch {
         // Cache write failed — non-fatal
       }
@@ -65,11 +65,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [session?.user, checkApproval]);
 
   const signOut = useCallback(async () => {
+    const userId = session?.user?.id;
     await supabase.auth.signOut();
     setSession(null);
     setIsApproved(false);
-    await clearCachedApproval();
-  }, []);
+    if (userId) {
+      await clearCachedApproval(userId);
+    }
+  }, [session?.user?.id]);
 
   useEffect(() => {
     // Get initial session

@@ -30,6 +30,16 @@ function wrapper({ children }: { children: React.ReactNode }) {
 
 const TEST_USER = { id: "user-123" } as unknown as User;
 
+function mockProfileQuery(data: { is_approved: boolean } | null, error: unknown) {
+  (mockSupabase.from as jest.Mock).mockReturnValue({
+    select: jest.fn().mockReturnValue({
+      eq: jest.fn().mockReturnValue({
+        single: jest.fn().mockResolvedValue({ data, error }),
+      }),
+    }),
+  });
+}
+
 describe("AuthProvider", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -53,20 +63,11 @@ describe("AuthProvider", () => {
     expect(result.current.isApproved).toBe(false);
   });
 
-  it("checks approval online and caches result", async () => {
+  it("checks approval online and caches result scoped by userId", async () => {
     (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
       data: { session: { user: TEST_USER } },
     });
-    (mockSupabase.from as jest.Mock).mockReturnValue({
-      select: jest.fn().mockReturnValue({
-        eq: jest.fn().mockReturnValue({
-          single: jest.fn().mockResolvedValue({
-            data: { is_approved: true },
-            error: null,
-          }),
-        }),
-      }),
-    });
+    mockProfileQuery({ is_approved: true }, null);
 
     const { result } = renderHook(() => useAuth(), { wrapper });
 
@@ -75,23 +76,14 @@ describe("AuthProvider", () => {
     });
 
     expect(result.current.isApproved).toBe(true);
-    expect(mockApprovalCache.setCachedApproval).toHaveBeenCalledWith(true);
+    expect(mockApprovalCache.setCachedApproval).toHaveBeenCalledWith("user-123", true);
   });
 
   it("falls back to cached approval when network fails", async () => {
     (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
       data: { session: { user: TEST_USER } },
     });
-    (mockSupabase.from as jest.Mock).mockReturnValue({
-      select: jest.fn().mockReturnValue({
-        eq: jest.fn().mockReturnValue({
-          single: jest.fn().mockResolvedValue({
-            data: null,
-            error: { message: "Network error", code: "NETWORK_ERROR" },
-          }),
-        }),
-      }),
-    });
+    mockProfileQuery(null, { message: "Network error", code: "NETWORK_ERROR" });
     mockApprovalCache.getCachedApproval.mockResolvedValue(true);
 
     const { result } = renderHook(() => useAuth(), { wrapper });
@@ -101,23 +93,14 @@ describe("AuthProvider", () => {
     });
 
     expect(result.current.isApproved).toBe(true);
-    expect(mockApprovalCache.getCachedApproval).toHaveBeenCalled();
+    expect(mockApprovalCache.getCachedApproval).toHaveBeenCalledWith("user-123");
   });
 
   it("sets isApproved false when network fails and no cache exists", async () => {
     (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
       data: { session: { user: TEST_USER } },
     });
-    (mockSupabase.from as jest.Mock).mockReturnValue({
-      select: jest.fn().mockReturnValue({
-        eq: jest.fn().mockReturnValue({
-          single: jest.fn().mockResolvedValue({
-            data: null,
-            error: { message: "Network error", code: "NETWORK_ERROR" },
-          }),
-        }),
-      }),
-    });
+    mockProfileQuery(null, { message: "Network error", code: "NETWORK_ERROR" });
     mockApprovalCache.getCachedApproval.mockResolvedValue(null);
 
     const { result } = renderHook(() => useAuth(), { wrapper });
@@ -129,20 +112,43 @@ describe("AuthProvider", () => {
     expect(result.current.isApproved).toBe(false);
   });
 
+  it("defaults to not approved when cache read throws", async () => {
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+      data: { session: { user: TEST_USER } },
+    });
+    mockProfileQuery(null, { message: "Network error", code: "NETWORK_ERROR" });
+    mockApprovalCache.getCachedApproval.mockRejectedValue(new Error("storage down"));
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    expect(result.current.isApproved).toBe(false);
+  });
+
+  it("keeps approval true when cache write throws", async () => {
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+      data: { session: { user: TEST_USER } },
+    });
+    mockProfileQuery({ is_approved: true }, null);
+    mockApprovalCache.setCachedApproval.mockRejectedValue(new Error("storage down"));
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    expect(result.current.isApproved).toBe(true);
+  });
+
   it("clears cached approval on sign out", async () => {
     (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
       data: { session: { user: TEST_USER } },
     });
-    (mockSupabase.from as jest.Mock).mockReturnValue({
-      select: jest.fn().mockReturnValue({
-        eq: jest.fn().mockReturnValue({
-          single: jest.fn().mockResolvedValue({
-            data: { is_approved: true },
-            error: null,
-          }),
-        }),
-      }),
-    });
+    mockProfileQuery({ is_approved: true }, null);
     (mockSupabase.auth.signOut as jest.Mock).mockResolvedValue({});
 
     const { result } = renderHook(() => useAuth(), { wrapper });
@@ -155,7 +161,7 @@ describe("AuthProvider", () => {
       await result.current.signOut();
     });
 
-    expect(mockApprovalCache.clearCachedApproval).toHaveBeenCalled();
+    expect(mockApprovalCache.clearCachedApproval).toHaveBeenCalledWith("user-123");
     expect(result.current.isApproved).toBe(false);
   });
 });
