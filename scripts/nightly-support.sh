@@ -178,9 +178,10 @@ You are an automated nightly job. Process ONLY support issue #${ISSUE_NUMBER} fo
 12. Once main CI green, run local Fastlane builds (signing credentials are pre-loaded in the environment):
     - Android: cd apps/mobile && bundle install --quiet && bundle exec fastlane android beta
     - iOS: cd apps/mobile && bundle exec fastlane ios beta
-    - Run each build separately. If one fails, still attempt the other.
+    - Desktop (macOS): cd apps/desktop && bundle install --quiet && bundle exec fastlane beta
+    - Run each build separately. If one fails, still attempt the others.
     - Important: run bundle install before Fastlane (worktrees do not share gems).
-13. Comment on issue with per-platform build result (succeeded/failed with error summary).
+13. Comment on issue with per-platform build result (succeeded/failed with error summary for each of Android, iOS, and Desktop).
 
 Constraints:
 - Never push directly to main. Always branches + PRs.
