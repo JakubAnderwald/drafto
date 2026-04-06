@@ -20,7 +20,16 @@ Implement a two-stage nightly pipeline:
    - **Dependabot PRs**: Auto-merge minor/patch updates with passing CI, close failing PRs with explanations, flag major version bumps with `needs-review` label.
    - **Support issues**: Validate sender (allowlist: jakub@anderwald.info, joanna@anderwald.info), create worktree branches, implement fixes/features following CLAUDE.md guidelines, run lint/typecheck/tests, open PRs referencing the issue, and comment back.
 
-GitHub labels coordinate the workflow: `support`, `needs-triage`, `needs-review`, `needs-manual-intervention`, `needs-migration-review`.
+3. **Stage 3 — Nightly Audit (05:00 daily)**: A pure bash script (`scripts/nightly-audit.sh`) runs after the nightly processing completes. It checks:
+   - **Issue creation health**: Attachment upload failures, unrecognized senders (`needs-triage`)
+   - **Nightly script results**: Log errors, completion status, `needs-manual-intervention` issues
+   - **PR/merge health**: Main branch CI status after overnight merges, bot-processed PRs with failing CI
+   - **Build/deploy health**: Fastlane build failure patterns, per-platform build results
+   - **App health**: `drafto.eu` HTTP health check, GitHub Actions status on main
+
+   If any problems are found, it creates a single GitHub issue with the `nightly-audit` label summarizing all findings. Runs via `~/Library/LaunchAgents/eu.drafto.nightly-audit.plist`.
+
+GitHub labels coordinate the workflow: `support`, `needs-triage`, `needs-review`, `needs-manual-intervention`, `needs-migration-review`, `nightly-audit`.
 
 Safety constraints:
 
@@ -81,6 +90,44 @@ Install to `~/Library/LaunchAgents/eu.drafto.nightly-support.plist`:
 
 > Replace `/ABSOLUTE/PATH/TO/drafto` with your local absolute repo path.
 
+### Audit Plist Template
+
+Install to `~/Library/LaunchAgents/eu.drafto.nightly-audit.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>eu.drafto.nightly-audit</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/ABSOLUTE/PATH/TO/drafto/scripts/nightly-audit.sh</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>5</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/ABSOLUTE/PATH/TO/drafto/logs/launchd-audit-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/ABSOLUTE/PATH/TO/drafto/logs/launchd-audit-stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/YOUR_USERNAME/.local/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+        <key>HOME</key>
+        <string>/Users/YOUR_USERNAME</string>
+    </dict>
+</dict>
+</plist>
+```
+
 ### Bootstrap / Reload Commands
 
 ```bash
@@ -92,11 +139,15 @@ launchctl load ~/Library/LaunchAgents/eu.drafto.nightly-support.plist
 launchctl unload ~/Library/LaunchAgents/eu.drafto.nightly-support.plist
 launchctl load ~/Library/LaunchAgents/eu.drafto.nightly-support.plist
 
-# Verify it's registered
-launchctl list | grep eu.drafto.nightly-support
+# Same for audit agent
+launchctl load ~/Library/LaunchAgents/eu.drafto.nightly-audit.plist
+
+# Verify both are registered
+launchctl list | grep eu.drafto
 
 # Manual trigger for testing
 launchctl start eu.drafto.nightly-support
+launchctl start eu.drafto.nightly-audit
 ```
 
 ### File Ownership & Permissions
@@ -109,9 +160,10 @@ chmod 755 scripts/nightly-support.sh
 
 ### Monitoring
 
-- Check stdout/stderr logs at `/tmp/drafto-nightly-support.{stdout,stderr}.log`
-- Application logs at `$REPO_ROOT/logs/nightly-YYYY-MM-DD.log`
-- If the job fails to run, check `launchctl list | grep eu.drafto.nightly-support` for exit status
+- Nightly support logs: `$REPO_ROOT/logs/nightly-YYYY-MM-DD.log`
+- Nightly audit logs: `$REPO_ROOT/logs/audit-YYYY-MM-DD.log`
+- Launchd stdout/stderr: `$REPO_ROOT/logs/launchd-{stdout,stderr}.log` (support), `$REPO_ROOT/logs/launchd-audit-{stdout,stderr}.log` (audit)
+- If a job fails to run, check `launchctl list | grep eu.drafto` for exit status
 - Owner: Jakub Anderwald (jakub@anderwald.info)
 
 ### Dependabot CI Secrets
