@@ -40,7 +40,8 @@
       "serialize-javascript": "7.0.4",
       "react": "19.1.4",
       "react-dom": "19.1.4",
-      "react-test-renderer": "19.1.4"
+      "react-test-renderer": "19.1.4",
+      "lru-cache": "11.2.7"
     },
     "patchedDependencies": {
       "@nozbe/watermelondb@0.28.0": "patches/@nozbe__watermelondb@0.28.0.patch",
