@@ -27,10 +27,17 @@
 function fetchWithRetry(url, options, maxRetries) {
   var response;
   for (var attempt = 1; attempt <= maxRetries; attempt++) {
-    response = UrlFetchApp.fetch(url, options);
-    var code = response.getResponseCode();
-    if (code < 500 || attempt === maxRetries) return response;
-    console.warn("Retrying (attempt " + attempt + "/" + maxRetries + ") after HTTP " + code);
+    try {
+      response = UrlFetchApp.fetch(url, options);
+      var code = response.getResponseCode();
+      if (code < 500 || attempt === maxRetries) return response;
+      console.warn("Retrying (attempt " + attempt + "/" + maxRetries + ") after HTTP " + code);
+    } catch (e) {
+      if (attempt === maxRetries) throw e;
+      console.warn(
+        "Retrying (attempt " + attempt + "/" + maxRetries + ") after error: " + e.message,
+      );
+    }
     Utilities.sleep(attempt * 1000);
   }
   return response;

@@ -59,7 +59,7 @@ FAILED_UPLOADS=$(echo "$RECENT_ISSUES" | jq '[.[] | select(.body | test("Failed 
 FAILED_COUNT=$(echo "$FAILED_UPLOADS" | jq 'length')
 if [[ "$FAILED_COUNT" -gt 0 ]]; then
   ISSUE_NUMS=$(echo "$FAILED_UPLOADS" | jq -r '[.[].number | tostring] | join(", #")')
-  PROBLEMS+=("### Stage 1: Attachment upload failures\n\n$FAILED_COUNT issue(s) have attachment failures: #$ISSUE_NUMS")
+  PROBLEMS+=("### Stage 1: Attachment upload failures"$'\n\n'"$FAILED_COUNT issue(s) have attachment failures: #$ISSUE_NUMS")
   log "WARNING: $FAILED_COUNT issues with attachment failures"
 fi
 
@@ -69,7 +69,7 @@ TRIAGE_ISSUES=$(gh issue list --repo "$REPO" --label needs-triage --state open \
 TRIAGE_COUNT=$(echo "$TRIAGE_ISSUES" | jq 'length')
 if [[ "$TRIAGE_COUNT" -gt 0 ]]; then
   TRIAGE_NUMS=$(echo "$TRIAGE_ISSUES" | jq -r '[.[].number | tostring] | join(", #")')
-  PROBLEMS+=("### Stage 1: Issues needing triage\n\n$TRIAGE_COUNT open issue(s) with \`needs-triage\`: #$TRIAGE_NUMS")
+  PROBLEMS+=("### Stage 1: Issues needing triage"$'\n\n'"$TRIAGE_COUNT open issue(s) with \`needs-triage\`: #$TRIAGE_NUMS")
   log "WARNING: $TRIAGE_COUNT issues need triage"
 fi
 
@@ -78,21 +78,21 @@ log "--- Section B: Nightly Script Results ---"
 
 NIGHTLY_LOG="$LOG_DIR/nightly-$TODAY.log"
 if [[ ! -f "$NIGHTLY_LOG" ]]; then
-  PROBLEMS+=("### Stage 2: No nightly log\n\nExpected \`logs/nightly-$TODAY.log\` not found. The nightly script may not have run.")
+  PROBLEMS+=("### Stage 2: No nightly log"$'\n\n'"Expected \`logs/nightly-$TODAY.log\` not found. The nightly script may not have run.")
   log "WARNING: Nightly log not found"
 else
   # Check for ERROR entries (only timestamped lines to avoid false positives from Claude output)
   ERROR_LINES=$(grep -E '^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\].*ERROR' "$NIGHTLY_LOG" 2>/dev/null || true)
   if [[ -n "$ERROR_LINES" ]]; then
     ERROR_COUNT=$(echo "$ERROR_LINES" | wc -l | tr -d ' ')
-    PROBLEMS+=("### Stage 2: Errors in nightly log\n\n$ERROR_COUNT error(s) found:\n\n\`\`\`\n$ERROR_LINES\n\`\`\`")
+    PROBLEMS+=("### Stage 2: Errors in nightly log"$'\n\n'"$ERROR_COUNT error(s) found:"$'\n\n'"\`\`\`"$'\n'"$ERROR_LINES"$'\n'"\`\`\`")
     log "WARNING: $ERROR_COUNT errors in nightly log"
   fi
 
   # Check completion
   LAST_LINE=$(grep -E '^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]' "$NIGHTLY_LOG" 2>/dev/null | tail -1 || true)
   if [[ ! "$LAST_LINE" == *"completed"* ]]; then
-    PROBLEMS+=("### Stage 2: Script may not have completed\n\nLast timestamped line:\n\`\`\`\n$LAST_LINE\n\`\`\`")
+    PROBLEMS+=("### Stage 2: Script may not have completed"$'\n\n'"Last timestamped line:"$'\n'"\`\`\`"$'\n'"$LAST_LINE"$'\n'"\`\`\`")
     log "WARNING: Nightly script may not have completed normally"
   fi
 fi
@@ -103,7 +103,7 @@ MANUAL_ISSUES=$(gh issue list --repo "$REPO" --label needs-manual-intervention -
 MANUAL_COUNT=$(echo "$MANUAL_ISSUES" | jq 'length')
 if [[ "$MANUAL_COUNT" -gt 0 ]]; then
   MANUAL_LIST=$(echo "$MANUAL_ISSUES" | jq -r '.[] | "- #\(.number): \(.title)"')
-  PROBLEMS+=("### Stage 2: Issues needing manual intervention\n\n$MANUAL_COUNT open issue(s):\n\n$MANUAL_LIST")
+  PROBLEMS+=("### Stage 2: Issues needing manual intervention"$'\n\n'"$MANUAL_COUNT open issue(s):"$'\n\n'"$MANUAL_LIST")
   log "WARNING: $MANUAL_COUNT issues need manual intervention"
 fi
 
@@ -121,7 +121,7 @@ log "PRs merged to main in last 24h: $MERGED_COUNT"
 if [[ "$MERGED_COUNT" -gt 0 ]]; then
   MAIN_STATUS=$(gh api "repos/$REPO/commits/main/status" --jq '.state' 2>/dev/null) || MAIN_STATUS="unknown"
   if [[ "$MAIN_STATUS" != "success" && "$MAIN_STATUS" != "pending" ]]; then
-    PROBLEMS+=("### PR/Merge: Main branch CI is \`$MAIN_STATUS\`\n\nCI status on main after $MERGED_COUNT overnight merge(s).")
+    PROBLEMS+=("### PR/Merge: Main branch CI is \`$MAIN_STATUS\`"$'\n\n'"CI status on main after $MERGED_COUNT overnight merge(s).")
     log "WARNING: Main CI status is $MAIN_STATUS"
   else
     log "Main CI status: $MAIN_STATUS"
@@ -132,12 +132,11 @@ fi
 OPEN_PRS=$(gh pr list --repo "$REPO" --state open --json number,title --limit 50 2>/dev/null) || OPEN_PRS="[]"
 FAILING_BOT_PRS=()
 for PR_NUM in $(echo "$OPEN_PRS" | jq -r '.[].number'); do
-  # Check if any checks failed
-  FAIL_COUNT=$(gh pr checks "$PR_NUM" --repo "$REPO" 2>/dev/null | grep -c "fail" || true)
-  if [[ "$FAIL_COUNT" -gt 0 ]]; then
-    # Check if nightly bot processed this PR
-    COMMENTS=$(gh api --paginate "repos/$REPO/issues/$PR_NUM/comments" --jq '.[].body' 2>/dev/null || true)
-    if echo "$COMMENTS" | grep -Fq '<!-- nightly-bot -->'; then
+  # Check bot marker first (cheaper than fetching check status)
+  COMMENTS=$(gh api "repos/$REPO/issues/$PR_NUM/comments" --jq '.[].body' 2>/dev/null || true)
+  if echo "$COMMENTS" | grep -Fq '<!-- nightly-bot -->'; then
+    FAIL_COUNT=$(gh pr checks "$PR_NUM" --repo "$REPO" 2>/dev/null | grep -c "fail" || true)
+    if [[ "$FAIL_COUNT" -gt 0 ]]; then
       PR_TITLE=$(echo "$OPEN_PRS" | jq -r ".[] | select(.number == $PR_NUM) | .title")
       FAILING_BOT_PRS+=("#$PR_NUM ($PR_TITLE)")
       log "WARNING: Bot-processed PR #$PR_NUM has failing CI"
@@ -149,7 +148,7 @@ if [[ ${#FAILING_BOT_PRS[@]} -gt 0 ]]; then
   for pr in "${FAILING_BOT_PRS[@]}"; do
     PR_LIST+="- $pr"$'\n'
   done
-  PROBLEMS+=("### PR/Merge: Bot-processed PRs with failing CI\n\n$PR_LIST")
+  PROBLEMS+=("### PR/Merge: Bot-processed PRs with failing CI"$'\n\n'"$PR_LIST")
 fi
 
 # ── Section D: Build / Deploy Health ──
@@ -158,7 +157,7 @@ log "--- Section D: Build / Deploy Health ---"
 if [[ -f "$NIGHTLY_LOG" ]]; then
   BUILD_FAILURES=$(grep -iE '(build failed|BUILD FAILED|Failed.*CocoaPods|Failed.*Gradle|gym returned exit code|error:.*signing)' "$NIGHTLY_LOG" 2>/dev/null | head -20 || true)
   if [[ -n "$BUILD_FAILURES" ]]; then
-    PROBLEMS+=("### Build: Failures detected in nightly log\n\n\`\`\`\n$BUILD_FAILURES\n\`\`\`")
+    PROBLEMS+=("### Build: Failures detected in nightly log"$'\n\n'"\`\`\`"$'\n'"$BUILD_FAILURES"$'\n'"\`\`\`")
     log "WARNING: Build failures detected"
   fi
 
@@ -166,7 +165,7 @@ if [[ -f "$NIGHTLY_LOG" ]]; then
   IOS_FAILED=$(grep -c '| \*\*iOS\*\* | .*Failed' "$NIGHTLY_LOG" 2>/dev/null || true)
   ANDROID_FAILED=$(grep -c '| \*\*Android\*\* | .*Failed' "$NIGHTLY_LOG" 2>/dev/null || true)
   if [[ "$IOS_FAILED" -gt 0 || "$ANDROID_FAILED" -gt 0 ]]; then
-    PROBLEMS+=("### Build: Platform build failures\n\n- iOS failures: $IOS_FAILED\n- Android failures: $ANDROID_FAILED")
+    PROBLEMS+=("### Build: Platform build failures"$'\n\n'"- iOS failures: $IOS_FAILED"$'\n'"- Android failures: $ANDROID_FAILED")
     log "WARNING: Platform build failures (iOS: $IOS_FAILED, Android: $ANDROID_FAILED)"
   fi
 fi
@@ -176,7 +175,7 @@ log "--- Section E: App Health ---"
 
 HTTP_CODE=$(curl -sL -o /dev/null -w '%{http_code}' --max-time 10 "https://drafto.eu" 2>/dev/null) || HTTP_CODE="000"
 if [[ "$HTTP_CODE" != "200" ]]; then
-  PROBLEMS+=("### App: drafto.eu health check failed\n\nHTTP status: \`$HTTP_CODE\` (expected 200)")
+  PROBLEMS+=("### App: drafto.eu health check failed"$'\n\n'"HTTP status: \`$HTTP_CODE\` (expected 200)")
   log "WARNING: drafto.eu returned HTTP $HTTP_CODE"
 else
   log "drafto.eu health check: OK (HTTP $HTTP_CODE)"
@@ -188,7 +187,7 @@ FAILED_RUNS=$(echo "$WORKFLOW_RUNS" | jq '[.[] | select(.conclusion == "failure"
 FAILED_RUN_COUNT=$(echo "$FAILED_RUNS" | jq 'length')
 if [[ "$FAILED_RUN_COUNT" -gt 0 ]]; then
   FAILED_NAMES=$(echo "$FAILED_RUNS" | jq -r '[.[].name] | unique | join(", ")')
-  PROBLEMS+=("### App: Failed CI workflows on main\n\nFailing: $FAILED_NAMES")
+  PROBLEMS+=("### App: Failed CI workflows on main"$'\n\n'"Failing: $FAILED_NAMES")
   log "WARNING: $FAILED_RUN_COUNT failed workflows on main"
 else
   log "GitHub Actions on main: all passing"
@@ -208,7 +207,7 @@ log "Found ${#PROBLEMS[@]} problem(s). Creating audit issue."
 ISSUE_BODY="The nightly audit for **$TODAY** found the following problems:"
 ISSUE_BODY+=$'\n\n'
 for problem in "${PROBLEMS[@]}"; do
-  ISSUE_BODY+="$(printf '%b' "$problem")"
+  ISSUE_BODY+="$problem"
   ISSUE_BODY+=$'\n\n'
 done
 ISSUE_BODY+="---"

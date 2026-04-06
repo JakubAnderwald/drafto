@@ -72,9 +72,9 @@ Install to `~/Library/LaunchAgents/eu.drafto.nightly-support.plist`:
         <integer>3</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>/tmp/drafto-nightly-support.stdout.log</string>
+    <string>/ABSOLUTE/PATH/TO/drafto/logs/launchd-stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/drafto-nightly-support.stderr.log</string>
+    <string>/ABSOLUTE/PATH/TO/drafto/logs/launchd-stderr.log</string>
     <!-- launchd does NOT expand $HOME — replace /Users/YOUR_USERNAME with your actual home directory -->
     <!-- The script also exports PATH="$HOME/.local/bin:$PATH" as a belt-and-suspenders measure -->
     <key>EnvironmentVariables</key>
@@ -140,6 +140,7 @@ launchctl unload ~/Library/LaunchAgents/eu.drafto.nightly-support.plist
 launchctl load ~/Library/LaunchAgents/eu.drafto.nightly-support.plist
 
 # Same for audit agent
+launchctl unload ~/Library/LaunchAgents/eu.drafto.nightly-audit.plist
 launchctl load ~/Library/LaunchAgents/eu.drafto.nightly-audit.plist
 
 # Verify both are registered
