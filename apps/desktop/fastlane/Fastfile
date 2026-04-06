@@ -67,8 +67,8 @@ platform :mac do
     FileUtils.cp(prod_env, dev_env) if File.exist?(prod_env)
 
     # Clear Metro cache so react-native-dotenv picks up the new .env values
-    FileUtils.rm_rf(File.join(Dir.tmpdir, "metro-*"))
-    FileUtils.rm_rf(File.join(Dir.tmpdir, "haste-map-*"))
+    Dir.glob(File.join(Dir.tmpdir, "metro-*")).each { |f| FileUtils.rm_rf(f) }
+    Dir.glob(File.join(Dir.tmpdir, "haste-map-*")).each { |f| FileUtils.rm_rf(f) }
 
     # Install CocoaPods dependencies
     cocoapods(
