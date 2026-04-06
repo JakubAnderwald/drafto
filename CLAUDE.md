@@ -328,9 +328,9 @@ The mobile app version (`apps/mobile/package.json` → `version`) follows semver
 
 ## Build & Release Policy
 
-**All builds default to local Fastlane.** GitHub Actions CI workflows exist as a fallback but should only be used when the user explicitly requests a CI/remote build.
+**All builds run locally via Fastlane.** GitHub Actions CI workflows exist for Android, iOS, and macOS but are currently non-functional for iOS (Swift 6 concurrency errors on CI Xcode) and macOS (Metro bundling hangs). Do not use CI builds until these issues are resolved.
 
-### Local build commands (default)
+### Build commands
 
 | Platform          | Beta (TestFlight / Internal)                  | Production (App Store / Play Store)           |
 | ----------------- | --------------------------------------------- | --------------------------------------------- |
@@ -339,21 +339,11 @@ The mobile app version (`apps/mobile/package.json` → `version`) follows semver
 | **macOS**         | `cd apps/desktop && pnpm release:beta`        | `cd apps/desktop && pnpm release:production`  |
 | **Android + iOS** | `cd apps/mobile && pnpm release:beta:all`     | `cd apps/mobile && pnpm release:prod:all`     |
 
-### GitHub CI builds (only when explicitly requested)
-
-| Platform    | Beta workflow                          | Production workflow                          | Trigger             |
-| ----------- | -------------------------------------- | -------------------------------------------- | ------------------- |
-| **Android** | `beta-release.yml` (platform: android) | `production-release.yml` (platform: android) | `workflow_dispatch` |
-| **iOS**     | `beta-release.yml` (platform: ios)     | `production-release.yml` (platform: ios)     | `workflow_dispatch` |
-| **macOS**   | `desktop-beta-release.yml`             | `desktop-production-release.yml`             | `workflow_dispatch` |
-
-GitHub CI runners: Android on `ubuntu-latest` (~15 min, 1x cost), iOS on `macos-latest` (~30 min, 10x cost), macOS on `macos-15` (~15 min, 10x cost). All workflows require `main` branch and `workflow_dispatch`.
-
 ### Local build prerequisites
 
 - **Ruby**: rbenv with Ruby 3.3.7 (global default), Bundler 4.0.9
 - **Fastlane**: Installed via Bundler (`bundle exec fastlane`)
-- **Signing secrets**: Loaded from `~/drafto-secrets/android-env.sh` (Android) and env vars (iOS/macOS)
+- **Signing secrets**: Loaded automatically from `~/drafto-secrets/android-env.sh` (covers Android keystore, ASC API key, and Match password)
 - **Locale**: `LANG=en_US.UTF-8` required for CocoaPods (set in Fastfiles and nightly script)
 
 ## Google Play Deployment (Fastlane)
@@ -385,7 +375,7 @@ export ANDROID_KEY_PASSWORD="<password>"
 export ANDROID_KEY_ALIAS="54e4e5b83ca8617c2a3d8dbc2a5dbd87"
 ```
 
-**CI automated deploy:** The `beta-release.yml` workflow decodes the keystore from `ANDROID_KEYSTORE_BASE64` secret and writes the service account key from `GOOGLE_PLAY_SERVICE_ACCOUNT_KEY`. Android builds run on `ubuntu-latest` (free).
+**CI workflows exist** (`beta-release.yml`, `production-release.yml`) but are not currently used — all builds run locally.
 
 ## App Store Deployment (Fastlane)
 
@@ -444,7 +434,7 @@ For Mac App Store: `pnpm release:production`
 
 **Required environment variables for local builds:** Same as iOS (`ASC_API_KEY_ID`, `ASC_API_ISSUER_ID`, `ASC_API_KEY_P8_PATH`).
 
-**CI automated deploy:** The `desktop-beta-release.yml` (beta) and `desktop-production-release.yml` (production) workflows run on `macos-15` runner. Only dispatches from `main` are allowed.
+**CI workflows exist** (`desktop-beta-release.yml`, `desktop-production-release.yml`) but are not currently used — all builds run locally.
 
 ## Desktop Versioning
 
