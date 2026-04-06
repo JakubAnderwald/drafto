@@ -1,12 +1,13 @@
 /**
  * App configuration.
  *
- * In bare React Native (no Expo), there's no built-in .env loading.
- * These values are set directly here. For production builds, they
- * are replaced at build time via a preprocessing step or native config.
+ * Uses react-native-dotenv to load environment variables at build time:
+ * - Debug builds: reads from `.env` (dev Supabase project)
+ * - Release builds: Fastlane copies `.env.production` to `.env` before bundling (prod Supabase project)
  *
- * Development: points to drafto-dev Supabase project.
+ * Same pattern as mobile (Expo loads .env/.env.production based on build type).
  */
-export const supabaseUrl = "https://huhzactreblzcogqkbsd.supabase.co";
-export const supabaseAnonKey =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh1aHphY3RyZWJsemNvZ3FrYnNkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NTY1MDgsImV4cCI6MjA4ODIzMjUwOH0.v624kVdBEu6NtKr7jzG9IKDcDoZDKSyINeWCzy6sJBw";
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from "@env";
+
+export const supabaseUrl = SUPABASE_URL;
+export const supabaseAnonKey = SUPABASE_ANON_KEY;

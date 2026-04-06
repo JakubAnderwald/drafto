@@ -35,6 +35,11 @@ platform :mac do
   private_lane :build_and_submit do |options|
     destination = options[:destination]
 
+    # Load production Supabase credentials (copies .env.production → .env so Metro bundles prod config)
+    prod_env = File.join(PROJECT_ROOT, ".env.production")
+    dev_env = File.join(PROJECT_ROOT, ".env")
+    FileUtils.cp(prod_env, dev_env) if File.exist?(prod_env)
+
     # Install CocoaPods dependencies
     cocoapods(
       podfile: File.join(PROJECT_ROOT, "macos", "Podfile"),
