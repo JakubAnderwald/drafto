@@ -24,6 +24,25 @@
  * See also: docs/adr/0013-automated-support-pipeline.md
  */
 
+function fetchWithRetry(url, options, maxRetries) {
+  var response;
+  for (var attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      response = UrlFetchApp.fetch(url, options);
+      var code = response.getResponseCode();
+      if (code < 500 || attempt === maxRetries) return response;
+      console.warn("Retrying (attempt " + attempt + "/" + maxRetries + ") after HTTP " + code);
+    } catch (e) {
+      if (attempt === maxRetries) throw e;
+      console.warn(
+        "Retrying (attempt " + attempt + "/" + maxRetries + ") after error: " + e.message,
+      );
+    }
+    Utilities.sleep(attempt * 1000);
+  }
+  return response;
+}
+
 function processStarredSupportEmails() {
   var GITHUB_TOKEN = PropertiesService.getScriptProperties().getProperty("GITHUB_TOKEN");
   if (!GITHUB_TOKEN) {
@@ -82,31 +101,43 @@ function processStarredSupportEmails() {
             content: base64Content,
           };
 
-          var uploadResponse = UrlFetchApp.fetch(apiUrl, {
-            method: "put",
-            contentType: "application/json",
-            headers: apiHeaders,
-            payload: JSON.stringify(uploadPayload),
-            muteHttpExceptions: true,
-          });
+          var uploadResponse = fetchWithRetry(
+            apiUrl,
+            {
+              method: "put",
+              contentType: "application/json",
+              headers: apiHeaders,
+              payload: JSON.stringify(uploadPayload),
+              muteHttpExceptions: true,
+            },
+            3,
+          );
 
           // Handle 409 Conflict (file already exists from a previous partial run)
           if (uploadResponse.getResponseCode() === 409) {
-            var existingFile = UrlFetchApp.fetch(apiUrl, {
-              method: "get",
-              headers: apiHeaders,
-              muteHttpExceptions: true,
-            });
+            var existingFile = fetchWithRetry(
+              apiUrl,
+              {
+                method: "get",
+                headers: apiHeaders,
+                muteHttpExceptions: true,
+              },
+              3,
+            );
             if (existingFile.getResponseCode() === 200) {
               var sha = JSON.parse(existingFile.getContentText()).sha;
               uploadPayload.sha = sha;
-              uploadResponse = UrlFetchApp.fetch(apiUrl, {
-                method: "put",
-                contentType: "application/json",
-                headers: apiHeaders,
-                payload: JSON.stringify(uploadPayload),
-                muteHttpExceptions: true,
-              });
+              uploadResponse = fetchWithRetry(
+                apiUrl,
+                {
+                  method: "put",
+                  contentType: "application/json",
+                  headers: apiHeaders,
+                  payload: JSON.stringify(uploadPayload),
+                  muteHttpExceptions: true,
+                },
+                3,
+              );
             }
           }
 
@@ -124,7 +155,8 @@ function processStarredSupportEmails() {
             console.error(
               "Failed to upload attachment: " + originalName + " (HTTP " + uploadCode + ")",
             );
-            attachmentMarkdown += "Failed to upload: " + originalName + "\n\n";
+            attachmentMarkdown +=
+              "Failed to upload: " + originalName + " (HTTP " + uploadCode + ")\n\n";
           }
         } catch (e) {
           var failedName = (attachments[i] && attachments[i].getName()) || "attachment-" + (i + 1);
