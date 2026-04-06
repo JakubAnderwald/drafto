@@ -40,7 +40,9 @@
       "serialize-javascript": "7.0.4",
       "react": "19.1.4",
       "react-dom": "19.1.4",
-      "react-test-renderer": "19.1.4"
+      "react-test-renderer": "19.1.4",
+      "@asamuzakjp/css-color>lru-cache": "11.2.7",
+      "@asamuzakjp/dom-selector>lru-cache": "11.2.7"
     },
     "patchedDependencies": {
       "@nozbe/watermelondb@0.28.0": "patches/@nozbe__watermelondb@0.28.0.patch",
@@ -54,6 +56,6 @@
     "lint-staged": "^16.4.0",
     "prettier": "^3.8.1",
     "prettier-plugin-tailwindcss": "^0.7.2",
-    "turbo": "^2.9.0"
+    "turbo": "^2.9.4"
   }
 }
