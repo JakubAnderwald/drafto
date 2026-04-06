@@ -4,10 +4,23 @@ set -euo pipefail
 # Ensure ~/.local/bin is in PATH (claude CLI location; launchd has minimal PATH)
 export PATH="$HOME/.local/bin:$PATH"
 
+# Ensure UTF-8 locale for CocoaPods (launchd provides minimal C/POSIX locale)
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+
 # Initialize rbenv so Fastlane uses the project Ruby (3.3.7), not system Ruby (2.6)
-if [[ -d "$HOME/.rbenv" ]]; then
-  export PATH="$HOME/.rbenv/bin:$HOME/.rbenv/shims:$PATH"
-  eval "$("$HOME/.rbenv/bin/rbenv" init -)" || {
+# rbenv may be in ~/.rbenv/bin (manual install) or /opt/homebrew/bin (Homebrew)
+RBENV_BIN=""
+if command -v rbenv &>/dev/null; then
+  RBENV_BIN="$(command -v rbenv)"
+elif [[ -x "$HOME/.rbenv/bin/rbenv" ]]; then
+  RBENV_BIN="$HOME/.rbenv/bin/rbenv"
+elif [[ -x "/opt/homebrew/bin/rbenv" ]]; then
+  RBENV_BIN="/opt/homebrew/bin/rbenv"
+fi
+
+if [[ -n "$RBENV_BIN" ]]; then
+  eval "$("$RBENV_BIN" init -)" || {
     echo "ERROR: rbenv init failed; aborting to avoid using system Ruby" >&2
     exit 1
   }

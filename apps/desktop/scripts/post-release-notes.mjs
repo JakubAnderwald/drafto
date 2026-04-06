@@ -59,11 +59,16 @@ async function postTestFlightNotes(releaseNotes) {
   const privateKeyP8 =
     process.env.ASC_API_KEY_P8 ||
     (() => {
-      try {
-        return readFileSync("appstore-api-key.p8", "utf-8");
-      } catch {
-        return null;
+      const pathFromEnv = process.env.ASC_API_KEY_P8_PATH;
+      const candidates = [pathFromEnv, "appstore-api-key.p8"].filter(Boolean);
+      for (const p of candidates) {
+        try {
+          return readFileSync(p, "utf-8");
+        } catch {
+          // try next candidate
+        }
       }
+      return null;
     })();
 
   if (!keyId || !issuerId || !privateKeyP8) {

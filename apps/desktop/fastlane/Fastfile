@@ -1,9 +1,35 @@
+# Ensure UTF-8 locale for CocoaPods (required when launched from launchd/cron)
+ENV["LANG"] ||= "en_US.UTF-8"
+ENV["LC_ALL"] ||= "en_US.UTF-8"
+
 default_platform(:mac)
 
 BUNDLE_ID = "eu.drafto.mobile"
 PROJECT_ROOT = File.expand_path("..", __dir__)
 
 # ---------- helpers ----------
+
+def load_local_secrets
+  secrets_file = File.join(Dir.home, "drafto-secrets", "android-env.sh")
+  return unless File.exist?(secrets_file)
+
+  File.readlines(secrets_file).each do |line|
+    line = line.strip
+    next if line.empty? || line.start_with?("#")
+    next unless line.start_with?("export ")
+
+    assignment = line.sub(/^export\s+/, "")
+    key, value = assignment.split("=", 2)
+    next unless key && value
+    next if value.include?("$(")
+
+    value = value.gsub(/\A["']|["']\z/, "")
+    value = value.gsub("$HOME", Dir.home)
+    ENV[key] ||= value
+  end
+end
+
+load_local_secrets
 
 def post_release_notes(max_chars:)
   Dir.chdir(PROJECT_ROOT) do
@@ -39,6 +65,10 @@ platform :mac do
     prod_env = File.join(PROJECT_ROOT, ".env.production")
     dev_env = File.join(PROJECT_ROOT, ".env")
     FileUtils.cp(prod_env, dev_env) if File.exist?(prod_env)
+
+    # Clear Metro cache so react-native-dotenv picks up the new .env values
+    FileUtils.rm_rf(File.join(Dir.tmpdir, "metro-*"))
+    FileUtils.rm_rf(File.join(Dir.tmpdir, "haste-map-*"))
 
     # Install CocoaPods dependencies
     cocoapods(

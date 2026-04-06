@@ -326,6 +326,36 @@ The mobile app version (`apps/mobile/package.json` → `version`) follows semver
 
 **Current version lives in:** `apps/mobile/package.json` (single source of truth, read by `app.config.ts`)
 
+## Build & Release Policy
+
+**All builds default to local Fastlane.** GitHub Actions CI workflows exist as a fallback but should only be used when the user explicitly requests a CI/remote build.
+
+### Local build commands (default)
+
+| Platform          | Beta (TestFlight / Internal)                  | Production (App Store / Play Store)           |
+| ----------------- | --------------------------------------------- | --------------------------------------------- |
+| **Android**       | `cd apps/mobile && pnpm release:beta:android` | `cd apps/mobile && pnpm release:prod:android` |
+| **iOS**           | `cd apps/mobile && pnpm release:beta:ios`     | `cd apps/mobile && pnpm release:prod:ios`     |
+| **macOS**         | `cd apps/desktop && pnpm release:beta`        | `cd apps/desktop && pnpm release:production`  |
+| **Android + iOS** | `cd apps/mobile && pnpm release:beta:all`     | `cd apps/mobile && pnpm release:prod:all`     |
+
+### GitHub CI builds (only when explicitly requested)
+
+| Platform    | Beta workflow                          | Production workflow                          | Trigger             |
+| ----------- | -------------------------------------- | -------------------------------------------- | ------------------- |
+| **Android** | `beta-release.yml` (platform: android) | `production-release.yml` (platform: android) | `workflow_dispatch` |
+| **iOS**     | `beta-release.yml` (platform: ios)     | `production-release.yml` (platform: ios)     | `workflow_dispatch` |
+| **macOS**   | `desktop-beta-release.yml`             | `desktop-production-release.yml`             | `workflow_dispatch` |
+
+GitHub CI runners: Android on `ubuntu-latest` (~15 min, 1x cost), iOS on `macos-latest` (~30 min, 10x cost), macOS on `macos-15` (~15 min, 10x cost). All workflows require `main` branch and `workflow_dispatch`.
+
+### Local build prerequisites
+
+- **Ruby**: rbenv with Ruby 3.3.7 (global default), Bundler 4.0.9
+- **Fastlane**: Installed via Bundler (`bundle exec fastlane`)
+- **Signing secrets**: Loaded from `~/drafto-secrets/android-env.sh` (Android) and env vars (iOS/macOS)
+- **Locale**: `LANG=en_US.UTF-8` required for CocoaPods (set in Fastfiles and nightly script)
+
 ## Google Play Deployment (Fastlane)
 
 Single command to build and deploy to Google Play internal testing:
@@ -414,7 +444,7 @@ For Mac App Store: `pnpm release:production`
 
 **Required environment variables for local builds:** Same as iOS (`ASC_API_KEY_ID`, `ASC_API_ISSUER_ID`, `ASC_API_KEY_P8_PATH`).
 
-**CI automated deploy:** The `desktop-beta-release.yml` workflow runs on `macos-15` runner. Only dispatches from `main` are allowed.
+**CI automated deploy:** The `desktop-beta-release.yml` (beta) and `desktop-production-release.yml` (production) workflows run on `macos-15` runner. Only dispatches from `main` are allowed.
 
 ## Desktop Versioning
 
@@ -423,13 +453,6 @@ The desktop app version (`apps/desktop/package.json` → `version`) follows the 
 **How to bump:** Run `pnpm version:desktop [patch|minor|major]` from the repo root, then commit the changed `package.json`. The CI workflow creates `desktop@X.Y.Z` tags on deploy.
 
 **Same bump rules as mobile apply** (patch for fixes, minor for features, major for breaking changes).
-
-## Build Both Platforms
-
-```bash
-cd apps/mobile && pnpm release:beta:all    # Android + iOS to internal testing / TestFlight
-cd apps/mobile && pnpm release:prod:all    # Android + iOS to production / App Store
-```
 
 ## Automated Release Notes
 
