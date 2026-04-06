@@ -1,3 +1,7 @@
+# Ensure UTF-8 locale for CocoaPods (required when launched from launchd/cron)
+ENV["LANG"] ||= "en_US.UTF-8"
+ENV["LC_ALL"] ||= "en_US.UTF-8"
+
 default_platform(:android)
 
 PACKAGE_NAME = "eu.drafto.mobile"

@@ -1,10 +1,10 @@
-name: Desktop Beta Release
+name: Desktop Production Release
 
 on:
   workflow_dispatch:
 
 concurrency:
-  group: desktop-beta-release-${{ github.ref }}
+  group: desktop-production-release-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -35,7 +35,7 @@ jobs:
 
   build-macos:
     if: github.ref == 'refs/heads/main'
-    name: Build & Submit macOS (TestFlight)
+    name: Build & Submit macOS (App Store)
     needs: checks
     runs-on: macos-15
     steps:
@@ -52,9 +52,9 @@ jobs:
         with:
           bundler-cache: true
           working-directory: apps/desktop
-      - name: Build and submit to TestFlight
+      - name: Build and submit to App Store
         working-directory: apps/desktop
-        run: bundle exec fastlane mac beta
+        run: bundle exec fastlane mac production
         env:
           ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
           ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
