@@ -56,17 +56,26 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   const contentAutoSave = useAutoSave<string>({ onSave: handleSaveContent });
   contentAutoSaveRef.current = contentAutoSave;
 
+  // Track editor readiness — WebView initializes asynchronously.
+  // Poll editor.getEditorState() to detect when the bridge is functional.
+  const [editorReady, setEditorReady] = useState(false);
+
   // Use onChange callback from useEditorBridge for auto-save.
   // Capture note ID to prevent async getJSON() from saving to the wrong note
   // if the user switches notes before the promise resolves.
   const handleEditorChange = useCallback(() => {
     if (!editorRef.current) return;
     const capturedNoteId = noteIdRef.current;
-    editorRef.current.getJSON().then((json: object) => {
-      if (noteIdRef.current !== capturedNoteId) return;
-      const jsonString = JSON.stringify(json);
-      contentAutoSaveRef.current?.trigger(jsonString);
-    });
+    editorRef.current
+      .getJSON()
+      .then((json: object) => {
+        if (noteIdRef.current !== capturedNoteId) return;
+        const jsonString = JSON.stringify(json);
+        contentAutoSaveRef.current?.trigger(jsonString);
+      })
+      .catch((err: unknown) => {
+        console.warn("Editor getJSON failed:", err);
+      });
   }, []);
 
   const editorRef = useRef<ReturnType<typeof useEditorBridge> | null>(null);
@@ -79,8 +88,32 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   });
   editorRef.current = editor;
 
-  // Sync local state when a different note is loaded
+  // Detect when the editor WebView bridge is ready
   useEffect(() => {
+    if (editorReady) return;
+    const interval = setInterval(() => {
+      try {
+        // getJSON resolves only when the WebView bridge is functional
+        editor
+          .getJSON()
+          .then(() => {
+            setEditorReady(true);
+            clearInterval(interval);
+          })
+          .catch(() => {
+            // Not ready yet
+          });
+      } catch {
+        // Not ready yet
+      }
+    }, 200);
+    return () => clearInterval(interval);
+  }, [editor, editorReady]);
+
+  // Sync local state when a different note is loaded — wait for editor to be ready
+  useEffect(() => {
+    if (!editorReady) return;
+
     if (note && note.id !== noteIdRef.current) {
       noteIdRef.current = note.id;
       setTitle(note.title || "");
@@ -88,32 +121,41 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
       // Parse content: may be TipTap JSON string, plain text, or null
       const rawContent = note.content || "";
 
-      if (rawContent) {
-        try {
-          const parsed = JSON.parse(rawContent);
-          // If it's a TipTap document, set it as JSON
-          if (parsed && typeof parsed === "object" && parsed.type === "doc") {
-            editor.setContent(parsed);
-            return;
+      try {
+        if (rawContent) {
+          try {
+            const parsed = JSON.parse(rawContent);
+            // If it's a TipTap document, set it as JSON
+            if (parsed && typeof parsed === "object" && parsed.type === "doc") {
+              editor.setContent(parsed);
+              return;
+            }
+          } catch {
+            // Not JSON — treat as plain text
           }
-        } catch {
-          // Not JSON — treat as plain text
+          // Convert plain text to simple HTML for the editor
+          const htmlContent = rawContent
+            .split("\n")
+            .map((line: string) => `<p>${escapeHtml(line) || "<br>"}</p>`)
+            .join("");
+          editor.setContent(htmlContent);
+        } else {
+          editor.setContent("");
         }
-        // Convert plain text to simple HTML for the editor
-        const htmlContent = rawContent
-          .split("\n")
-          .map((line: string) => `<p>${escapeHtml(line) || "<br>"}</p>`)
-          .join("");
-        editor.setContent(htmlContent);
-      } else {
+      } catch (err) {
+        console.warn("Failed to set editor content:", err);
         editor.setContent("");
       }
     } else if (!note) {
       noteIdRef.current = undefined;
       setTitle("");
-      editor.setContent("");
+      try {
+        editor.setContent("");
+      } catch {
+        // Editor not ready — safe to ignore
+      }
     }
-  }, [note?.id, editor]);
+  }, [note?.id, editor, editorReady]);
 
   // Flush pending autosaves when switching notes
   useEffect(() => {
