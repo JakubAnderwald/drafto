@@ -75,6 +75,7 @@ const { NoteEditor } = await import("@/components/editor/note-editor");
 describe("NoteEditor", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", mockFetch);
+    mockUploadToSignedUrl.mockReset();
   });
 
   afterEach(() => {

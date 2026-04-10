@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedUser, errorResponse, successResponse } from "@/lib/api/utils";
-import { BUCKET_NAME, SIGNED_URL_EXPIRY_SECONDS } from "@drafto/shared";
+import { BUCKET_NAME, MAX_FILE_SIZE, SIGNED_URL_EXPIRY_SECONDS } from "@drafto/shared";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -47,6 +47,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   }
   if (typeof fileSize !== "number" || fileSize <= 0) {
     return errorResponse("fileSize must be a positive number", 400);
+  }
+  if (fileSize > MAX_FILE_SIZE) {
+    return errorResponse("File size exceeds 25MB limit", 400);
   }
   if (typeof mimeType !== "string" || mimeType.length === 0) {
     return errorResponse("mimeType is required", 400);

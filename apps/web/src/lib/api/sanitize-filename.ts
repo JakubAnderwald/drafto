@@ -12,13 +12,19 @@ export function sanitizeAndBuildPath(
   const sanitized = rawName
     .replace(/[/\\]/g, "_") // no path separators
     .replace(/\.\./g, "_") // no directory traversal
-    .replace(/[<>:"|?*\x00-\x1f]/g, "_") // no shell/HTML-special chars
-    .slice(0, 255); // cap length
+    .replace(/[<>:"|?*\x00-\x1f]/g, "_"); // no shell/HTML-special chars
 
   const dotIndex = sanitized.lastIndexOf(".");
-  const baseName = dotIndex > 0 ? sanitized.slice(0, dotIndex) : sanitized;
-  const extension = dotIndex > 0 ? sanitized.slice(dotIndex) : "";
-  const fileName = `${baseName}-${Date.now()}${extension}`;
+  const hasExtension = dotIndex > 0;
+  const baseName = hasExtension ? sanitized.slice(0, dotIndex) : sanitized;
+  const extension = hasExtension ? sanitized.slice(dotIndex) : "";
+
+  // Truncate the base name so the final fileName (base + timestamp + extension)
+  // stays within 255 characters.
+  const timestamp = `-${Date.now()}`;
+  const maxBaseLength = 255 - extension.length - timestamp.length;
+  const truncatedBase = baseName.slice(0, Math.max(1, maxBaseLength));
+  const fileName = `${truncatedBase}${timestamp}${extension}`;
   const filePath = `${userId}/${noteId}/${fileName}`;
 
   return { fileName, filePath };
