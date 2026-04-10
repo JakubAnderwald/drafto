@@ -44,16 +44,20 @@ function authenticateAs(userId: string) {
 
 const params = Promise.resolve({ id: "note-1" });
 
-function createFileRequest(file: File | null, noteId = "note-1"): NextRequest {
-  const request = new NextRequest(`http://localhost:3000/api/notes/${noteId}/attachments`, {
+function createUploadUrlRequest(body: Record<string, unknown>, noteId = "note-1"): NextRequest {
+  return new NextRequest(`http://localhost:3000/api/notes/${noteId}/attachments/upload-url`, {
     method: "POST",
+    body: JSON.stringify(body),
+    headers: { "content-type": "application/json" },
   });
-  const formData = new FormData();
-  if (file) {
-    formData.append("file", file);
-  }
-  vi.spyOn(request, "formData").mockResolvedValue(formData);
-  return request;
+}
+
+function createConfirmRequest(body: Record<string, unknown>, noteId = "note-1"): NextRequest {
+  return new NextRequest(`http://localhost:3000/api/notes/${noteId}/attachments/confirm`, {
+    method: "POST",
+    body: JSON.stringify(body),
+    headers: { "content-type": "application/json" },
+  });
 }
 
 function mockNoteExists(noteId = "note-1") {
@@ -119,31 +123,11 @@ function mockNoteNotFound() {
   });
 }
 
-function mockStorageUploadSuccess() {
-  mockStorageFrom.mockReturnValue({
-    upload: vi
-      .fn()
-      .mockImplementation((path: string) => Promise.resolve({ data: { path }, error: null })),
-    createSignedUrl: () =>
-      Promise.resolve({
-        data: {
-          signedUrl:
-            "https://test.supabase.co/storage/v1/object/sign/attachments/user-1/note-1/test.png?token=abc",
-        },
-        error: null,
-      }),
-    remove: vi.fn(),
-  });
-}
+// ============================================================
+// upload-url endpoint tests
+// ============================================================
 
-function mockStorageUploadFailure() {
-  mockStorageFrom.mockReturnValue({
-    upload: () => Promise.resolve({ data: null, error: { message: "Storage error" } }),
-    remove: vi.fn(),
-  });
-}
-
-describe("POST /api/notes/[id]/attachments", () => {
+describe("POST /api/notes/[id]/attachments/upload-url", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -154,11 +138,12 @@ describe("POST /api/notes/[id]/attachments", () => {
       error: { message: "Not auth" },
     });
 
-    const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-    const file = new File(["test content"], "test.png", {
-      type: "image/png",
+    const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
+    const request = createUploadUrlRequest({
+      fileName: "test.png",
+      fileSize: 1024,
+      mimeType: "image/png",
     });
-    const request = createFileRequest(file);
     const response = await POST(request, { params });
     expect(response.status).toBe(401);
   });
@@ -167,209 +152,218 @@ describe("POST /api/notes/[id]/attachments", () => {
     authenticateAs("user-1");
     mockNoteNotFound();
 
-    const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-    const file = new File(["test content"], "test.png", {
-      type: "image/png",
+    const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
+    const request = createUploadUrlRequest({
+      fileName: "test.png",
+      fileSize: 1024,
+      mimeType: "image/png",
     });
-    const request = createFileRequest(file);
     const response = await POST(request, { params });
     expect(response.status).toBe(404);
-    const body = await response.json();
-    expect(body.error).toBe("Note not found");
   });
 
-  it("returns 400 when no file is provided", async () => {
+  it("returns 400 when fileName is missing", async () => {
     authenticateAs("user-1");
     mockNoteExists();
 
-    const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-    const request = createFileRequest(null);
-    const response = await POST(request, { params });
-    expect(response.status).toBe(400);
-    const body = await response.json();
-    expect(body.error).toBe("No file provided");
-  });
-
-  it("returns 400 when file is empty", async () => {
-    authenticateAs("user-1");
-    mockNoteExists();
-
-    const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-    const file = new File([], "empty.txt", { type: "text/plain" });
-    const request = createFileRequest(file);
-    const response = await POST(request, { params });
-    expect(response.status).toBe(400);
-    const body = await response.json();
-    expect(body.error).toBe("File is empty");
-  });
-
-  it("returns 413 when file exceeds 25MB limit", async () => {
-    authenticateAs("user-1");
-    mockNoteExists();
-
-    const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-    const largeContent = new ArrayBuffer(26214401);
-    const file = new File([largeContent], "large.bin", {
-      type: "application/octet-stream",
+    const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
+    const request = createUploadUrlRequest({
+      fileSize: 1024,
+      mimeType: "image/png",
     });
-    const request = createFileRequest(file);
+    const response = await POST(request, { params });
+    expect(response.status).toBe(400);
+  });
+
+  it("returns 400 when fileSize is zero", async () => {
+    authenticateAs("user-1");
+    mockNoteExists();
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
+    const request = createUploadUrlRequest({
+      fileName: "test.png",
+      fileSize: 0,
+      mimeType: "image/png",
+    });
+    const response = await POST(request, { params });
+    expect(response.status).toBe(400);
+  });
+
+  it("returns 413 when fileSize exceeds 25MB limit", async () => {
+    authenticateAs("user-1");
+    mockNoteExists();
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
+    const request = createUploadUrlRequest({
+      fileName: "large.bin",
+      fileSize: 26214401,
+      mimeType: "application/octet-stream",
+    });
     const response = await POST(request, { params });
     expect(response.status).toBe(413);
-    const body = await response.json();
-    expect(body.error).toBe("File size exceeds 25MB limit");
   });
 
-  it("returns 500 with storage error detail when storage upload fails", async () => {
+  it("returns signed upload URL on success", async () => {
     authenticateAs("user-1");
     mockNoteExists();
-    mockStorageUploadFailure();
-
-    const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-    const file = new File(["test content"], "test.png", {
-      type: "image/png",
+    mockStorageFrom.mockReturnValue({
+      createSignedUploadUrl: vi.fn().mockResolvedValue({
+        data: {
+          signedUrl: "https://test.supabase.co/storage/v1/upload/sign/attachments/path?token=xyz",
+          token: "upload-token-123",
+        },
+        error: null,
+      }),
     });
-    const request = createFileRequest(file);
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
+    const request = createUploadUrlRequest({
+      fileName: "test.png",
+      fileSize: 1024,
+      mimeType: "image/png",
+    });
     const response = await POST(request, { params });
-    expect(response.status).toBe(500);
+    expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.error).toContain("Failed to upload file");
-    expect(body.error).toContain("Storage error");
+    expect(body.signedUrl).toContain("token=xyz");
+    expect(body.token).toBe("upload-token-123");
+    expect(body.filePath).toMatch(/^user-1\/note-1\/test-\d+\.png$/);
+    expect(body.fileName).toMatch(/^test-\d+\.png$/);
   });
 
-  it("uploads file and creates attachment record successfully", async () => {
+  it("sanitizes path traversal characters in filenames", async () => {
     authenticateAs("user-1");
     mockNoteExists();
-    mockStorageUploadSuccess();
-
-    const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-    const file = new File(["test content"], "test.png", {
-      type: "image/png",
+    mockStorageFrom.mockReturnValue({
+      createSignedUploadUrl: vi.fn().mockResolvedValue({
+        data: { signedUrl: "https://test.supabase.co/signed", token: "tok" },
+        error: null,
+      }),
     });
-    const request = createFileRequest(file);
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
+    const request = createUploadUrlRequest({
+      fileName: "../../etc/passwd",
+      fileSize: 100,
+      mimeType: "text/plain",
+    });
+    const response = await POST(request, { params });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.filePath).not.toContain("..");
+    expect(body.filePath).toMatch(/^user-1\/note-1\//);
+  });
+});
+
+// ============================================================
+// confirm endpoint tests
+// ============================================================
+
+describe("POST /api/notes/[id]/attachments/confirm", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    mockGetUser.mockResolvedValue({
+      data: { user: null },
+      error: { message: "Not auth" },
+    });
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
+    const request = createConfirmRequest({
+      filePath: "user-1/note-1/test.png",
+      fileName: "test.png",
+      fileSize: 1024,
+      mimeType: "image/png",
+    });
+    const response = await POST(request, { params });
+    expect(response.status).toBe(401);
+  });
+
+  it("returns 404 when note does not exist", async () => {
+    authenticateAs("user-1");
+    mockNoteNotFound();
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
+    const request = createConfirmRequest({
+      filePath: "user-1/note-1/test.png",
+      fileName: "test.png",
+      fileSize: 1024,
+      mimeType: "image/png",
+    });
+    const response = await POST(request, { params });
+    expect(response.status).toBe(404);
+  });
+
+  it("returns 403 when filePath does not match user/note", async () => {
+    authenticateAs("user-1");
+    mockNoteExists();
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
+    const request = createConfirmRequest({
+      filePath: "user-2/note-1/test.png",
+      fileName: "test.png",
+      fileSize: 1024,
+      mimeType: "image/png",
+    });
+    const response = await POST(request, { params });
+    expect(response.status).toBe(403);
+    const body = await response.json();
+    expect(body.error).toBe("Invalid file path");
+  });
+
+  it("returns 400 when file not found in storage", async () => {
+    authenticateAs("user-1");
+    mockNoteExists();
+    mockStorageFrom.mockReturnValue({
+      createSignedUrl: vi.fn().mockResolvedValue({
+        data: null,
+        error: { message: "Object not found" },
+      }),
+    });
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
+    const request = createConfirmRequest({
+      filePath: "user-1/note-1/test.png",
+      fileName: "test.png",
+      fileSize: 1024,
+      mimeType: "image/png",
+    });
+    const response = await POST(request, { params });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain("File not found in storage");
+  });
+
+  it("creates attachment record and returns signed URL on success", async () => {
+    authenticateAs("user-1");
+    mockNoteExists();
+    mockStorageFrom.mockReturnValue({
+      createSignedUrl: vi.fn().mockResolvedValue({
+        data: { signedUrl: "https://test.supabase.co/storage/signed/test?token=abc" },
+        error: null,
+      }),
+    });
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
+    const request = createConfirmRequest({
+      filePath: "user-1/note-1/test-12345.png",
+      fileName: "test-12345.png",
+      fileSize: 1024,
+      mimeType: "image/png",
+    });
     const response = await POST(request, { params });
     expect(response.status).toBe(201);
     const body = await response.json();
     expect(body.id).toBe("att-1");
-    expect(body.mime_type).toBe("image/png");
-    expect(body.note_id).toBe("note-1");
     expect(body.url).toContain("token=abc");
   });
 
-  it("adds a timestamp suffix to uploaded filenames to prevent collisions", async () => {
+  it("cleans up DB record when signed URL generation fails", async () => {
     authenticateAs("user-1");
-    mockNoteExists();
-    mockStorageUploadSuccess();
-
-    const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-    const file = new File(["test content"], "report.pdf", {
-      type: "application/pdf",
-    });
-    const request = createFileRequest(file);
-    await POST(request, { params });
-
-    const storageClient = mockStorageFrom.mock.results[0].value;
-    const uploadCall = storageClient.upload.mock.calls[0];
-    const uploadedPath: string = uploadCall[0];
-
-    // Path should be user_id/note_id/report-<timestamp>.pdf
-    expect(uploadedPath).toMatch(/^user-1\/note-1\/report-\d+\.pdf$/);
-  });
-
-  it("handles filenames without extensions", async () => {
-    authenticateAs("user-1");
-    mockNoteExists();
-    mockStorageUploadSuccess();
-
-    const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-    const file = new File(["data"], "Makefile", {
-      type: "application/octet-stream",
-    });
-    const request = createFileRequest(file);
-    await POST(request, { params });
-
-    const storageClient = mockStorageFrom.mock.results[0].value;
-    const uploadCall = storageClient.upload.mock.calls[0];
-    const uploadedPath: string = uploadCall[0];
-
-    // No extension: Makefile-<timestamp>
-    expect(uploadedPath).toMatch(/^user-1\/note-1\/Makefile-\d+$/);
-  });
-
-  it("cleans up storage when DB insert fails", async () => {
-    authenticateAs("user-1");
-    const mockRemove = vi.fn().mockResolvedValue({ error: null });
-    mockStorageFrom.mockReturnValue({
-      upload: vi
-        .fn()
-        .mockImplementation((path: string) => Promise.resolve({ data: { path }, error: null })),
-      remove: mockRemove,
-    });
-
-    mockFrom.mockImplementation((table: string) => {
-      if (table === "profiles") return approvedProfile;
-      if (table === "notes") {
-        return {
-          select: () => ({
-            eq: () => ({
-              eq: () => ({
-                single: () =>
-                  Promise.resolve({
-                    data: { id: "note-1" },
-                    error: null,
-                  }),
-              }),
-            }),
-          }),
-        };
-      }
-      if (table === "attachments") {
-        return {
-          insert: () => ({
-            select: () => ({
-              single: () =>
-                Promise.resolve({
-                  data: null,
-                  error: { message: "DB error" },
-                }),
-            }),
-          }),
-        };
-      }
-      return {};
-    });
-
-    const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-    const file = new File(["test content"], "test.png", {
-      type: "image/png",
-    });
-    const request = createFileRequest(file);
-    const response = await POST(request, { params });
-    expect(response.status).toBe(500);
-    const body = await response.json();
-    expect(body.error).toBe("Failed to save attachment record");
-    // Path includes timestamp: user-1/note-1/test-<timestamp>.png
-    expect(mockRemove).toHaveBeenCalledTimes(1);
-    const removedPath: string = mockRemove.mock.calls[0][0][0];
-    expect(removedPath).toMatch(/^user-1\/note-1\/test-\d+\.png$/);
-  });
-
-  it("cleans up storage and DB record when signed URL generation fails", async () => {
-    authenticateAs("user-1");
-    const mockRemove = vi.fn().mockResolvedValue({ error: null });
     const mockDelete = vi.fn();
 
-    mockStorageFrom.mockReturnValue({
-      upload: vi
-        .fn()
-        .mockImplementation((path: string) => Promise.resolve({ data: { path }, error: null })),
-      createSignedUrl: () =>
-        Promise.resolve({
-          data: null,
-          error: { message: "Signing error" },
-        }),
-      remove: mockRemove,
-    });
-
     mockFrom.mockImplementation((table: string) => {
       if (table === "profiles") return approvedProfile;
       if (table === "notes") {
@@ -377,11 +371,7 @@ describe("POST /api/notes/[id]/attachments", () => {
           select: () => ({
             eq: () => ({
               eq: () => ({
-                single: () =>
-                  Promise.resolve({
-                    data: { id: "note-1" },
-                    error: null,
-                  }),
+                single: () => Promise.resolve({ data: { id: "note-1" }, error: null }),
               }),
             }),
           }),
@@ -415,19 +405,33 @@ describe("POST /api/notes/[id]/attachments", () => {
       return {};
     });
 
-    const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-    const file = new File(["test content"], "test.png", {
-      type: "image/png",
+    let callCount = 0;
+    mockStorageFrom.mockReturnValue({
+      createSignedUrl: vi.fn().mockImplementation(() => {
+        callCount++;
+        // First call (verify existence) succeeds, second call (7-day URL) fails
+        if (callCount === 1) {
+          return Promise.resolve({
+            data: { signedUrl: "https://test.supabase.co/ok" },
+            error: null,
+          });
+        }
+        return Promise.resolve({
+          data: null,
+          error: { message: "Signing error" },
+        });
+      }),
     });
-    const request = createFileRequest(file);
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
+    const request = createConfirmRequest({
+      filePath: "user-1/note-1/test.png",
+      fileName: "test.png",
+      fileSize: 1024,
+      mimeType: "image/png",
+    });
     const response = await POST(request, { params });
     expect(response.status).toBe(500);
-    const body = await response.json();
-    expect(body.error).toBe("Failed to generate file URL");
-    // Path includes timestamp: user-1/note-1/test-<timestamp>.png
-    expect(mockRemove).toHaveBeenCalledTimes(1);
-    const removedPath: string = mockRemove.mock.calls[0][0][0];
-    expect(removedPath).toMatch(/^user-1\/note-1\/test-\d+\.png$/);
     expect(mockDelete).toHaveBeenCalledWith("id", "att-1");
   });
 });

@@ -48,6 +48,17 @@ vi.mock("@blocknote/mantine", () => ({
 
 vi.mock("@blocknote/mantine/style.css", () => ({}));
 
+const mockUploadToSignedUrl = vi.fn();
+vi.mock("@/lib/supabase/client", () => ({
+  createClient: () => ({
+    storage: {
+      from: () => ({
+        uploadToSignedUrl: mockUploadToSignedUrl,
+      }),
+    },
+  }),
+}));
+
 const mockSetTheme = vi.fn();
 vi.mock("@/hooks/use-theme", () => ({
   useTheme: () => ({
@@ -137,17 +148,33 @@ describe("NoteEditor", () => {
     expect(container).toHaveAttribute("data-testid", "editor-scroll-container");
   });
 
-  it("provides uploadFile handler to BlockNote that uploads to the attachments API", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: () =>
-        Promise.resolve({
-          id: "att-1",
-          file_name: "image.png",
-          file_path: "user-1/note-42/image.png",
-          url: "https://example.com/signed-url",
-        }),
-    });
+  it("provides uploadFile handler that uses three-step direct upload flow", async () => {
+    // Step 1: upload-url returns signed URL and token
+    // Step 2: uploadToSignedUrl (mocked via supabase client)
+    // Step 3: confirm returns attachment record
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            signedUrl: "https://storage.supabase.co/upload/sign/path?token=xyz",
+            token: "upload-token",
+            filePath: "user-1/note-42/image-12345.png",
+            fileName: "image-12345.png",
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            id: "att-1",
+            file_name: "image-12345.png",
+            file_path: "user-1/note-42/image-12345.png",
+            url: "https://example.com/signed-url",
+          }),
+      });
+
+    mockUploadToSignedUrl.mockResolvedValue({ error: null });
 
     await act(async () => {
       render(<NoteEditor noteId="note-42" />);
@@ -157,14 +184,38 @@ describe("NoteEditor", () => {
     const file = new File(["test"], "image.png", { type: "image/png" });
     const url = await capturedUploadFile!(file);
 
-    expect(url).toBe("attachment://user-1/note-42/image.png");
-    expect(mockFetch).toHaveBeenCalledWith("/api/notes/note-42/attachments", {
+    expect(url).toBe("attachment://user-1/note-42/image-12345.png");
+    // Step 1: request signed upload URL
+    expect(mockFetch).toHaveBeenCalledWith("/api/notes/note-42/attachments/upload-url", {
       method: "POST",
-      body: expect.any(FormData),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fileName: "image.png",
+        fileSize: 4,
+        mimeType: "image/png",
+      }),
+    });
+    // Step 2: direct upload to Supabase
+    expect(mockUploadToSignedUrl).toHaveBeenCalledWith(
+      "user-1/note-42/image-12345.png",
+      "upload-token",
+      file,
+      { contentType: "image/png" },
+    );
+    // Step 3: confirm upload
+    expect(mockFetch).toHaveBeenCalledWith("/api/notes/note-42/attachments/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filePath: "user-1/note-42/image-12345.png",
+        fileName: "image-12345.png",
+        fileSize: 4,
+        mimeType: "image/png",
+      }),
     });
   });
 
-  it("throws when upload API returns an error", async () => {
+  it("throws when upload-url API returns an error", async () => {
     mockFetch.mockResolvedValue({
       ok: false,
       json: () => Promise.resolve({ error: "File size exceeds 25MB limit" }),
@@ -178,26 +229,75 @@ describe("NoteEditor", () => {
     await expect(capturedUploadFile!(file)).rejects.toThrow("File size exceeds 25MB limit");
   });
 
-  it("throws with status code when upload error response is not valid JSON", async () => {
-    mockFetch.mockResolvedValue({
-      ok: false,
-      status: 413,
-      json: () => Promise.reject(new Error("invalid json")),
+  it("throws when direct upload to Supabase fails", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          signedUrl: "https://storage.supabase.co/upload/sign/path",
+          token: "tok",
+          filePath: "user-1/note-42/file.bin",
+          fileName: "file.bin",
+        }),
+    });
+    mockUploadToSignedUrl.mockResolvedValue({
+      error: { message: "Storage quota exceeded" },
     });
 
     await act(async () => {
       render(<NoteEditor noteId="note-42" />);
     });
 
-    const file = new File(["test"], "huge.bin", { type: "application/octet-stream" });
-    await expect(capturedUploadFile!(file)).rejects.toThrow("Upload failed with status 413");
+    const file = new File(["test"], "file.bin", { type: "application/octet-stream" });
+    await expect(capturedUploadFile!(file)).rejects.toThrow(
+      "Upload failed: Storage quota exceeded",
+    );
   });
 
-  it("throws when upload succeeds but file_path is missing from response", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({ id: "att-1", file_name: "test.png", file_path: null }),
+  it("throws when confirm API returns an error", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            signedUrl: "https://storage.supabase.co/upload",
+            token: "tok",
+            filePath: "user-1/note-42/file.bin",
+            fileName: "file.bin",
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ error: "Failed to save attachment record" }),
+      });
+    mockUploadToSignedUrl.mockResolvedValue({ error: null });
+
+    await act(async () => {
+      render(<NoteEditor noteId="note-42" />);
     });
+
+    const file = new File(["test"], "file.bin", { type: "application/octet-stream" });
+    await expect(capturedUploadFile!(file)).rejects.toThrow("Failed to save attachment record");
+  });
+
+  it("throws when confirm succeeds but file_path is missing from response", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            signedUrl: "https://storage.supabase.co/upload",
+            token: "tok",
+            filePath: "user-1/note-42/test.png",
+            fileName: "test.png",
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ id: "att-1", file_name: "test.png", file_path: null }),
+      });
+    mockUploadToSignedUrl.mockResolvedValue({ error: null });
 
     await act(async () => {
       render(<NoteEditor noteId="note-42" />);
@@ -207,6 +307,17 @@ describe("NoteEditor", () => {
     await expect(capturedUploadFile!(file)).rejects.toThrow(
       "Upload succeeded but no file path was returned",
     );
+  });
+
+  it("rejects empty files client-side", async () => {
+    await act(async () => {
+      render(<NoteEditor noteId="note-42" />);
+    });
+
+    mockFetch.mockClear();
+    const file = new File([], "empty.txt", { type: "text/plain" });
+    await expect(capturedUploadFile!(file)).rejects.toThrow("File is empty");
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("provides resolveFileUrl that resolves attachment:// URLs via API", async () => {
