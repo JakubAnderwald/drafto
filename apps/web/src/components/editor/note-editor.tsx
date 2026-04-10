@@ -28,8 +28,14 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
       });
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Upload failed");
+        let message = "Upload failed";
+        try {
+          const error = await response.json();
+          message = error.error || message;
+        } catch {
+          message = `Upload failed with status ${response.status}`;
+        }
+        throw new Error(message);
       }
 
       const data = await response.json();
