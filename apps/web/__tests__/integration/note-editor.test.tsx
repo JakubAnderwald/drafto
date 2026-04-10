@@ -178,6 +178,21 @@ describe("NoteEditor", () => {
     await expect(capturedUploadFile!(file)).rejects.toThrow("File size exceeds 25MB limit");
   });
 
+  it("throws with status code when upload error response is not valid JSON", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 413,
+      json: () => Promise.reject(new Error("invalid json")),
+    });
+
+    await act(async () => {
+      render(<NoteEditor noteId="note-42" />);
+    });
+
+    const file = new File(["test"], "huge.bin", { type: "application/octet-stream" });
+    await expect(capturedUploadFile!(file)).rejects.toThrow("Upload failed with status 413");
+  });
+
   it("throws when upload succeeds but file_path is missing from response", async () => {
     mockFetch.mockResolvedValue({
       ok: true,

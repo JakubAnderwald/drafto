@@ -80,11 +80,20 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
   // Sanitize filename: strip path traversal and dangerous characters
   const rawName = file.name || "unnamed";
-  const fileName = rawName
+  const sanitized = rawName
     .replace(/[/\\]/g, "_") // no path separators
     .replace(/\.\./g, "_") // no directory traversal
     .replace(/[<>:"|?*\x00-\x1f]/g, "_") // no shell/HTML-special chars
     .slice(0, 255); // cap length
+
+  // Add a timestamp suffix to prevent duplicate filename collisions.
+  // When a user uploads, deletes the block, and re-uploads the same file,
+  // the original storage object still exists — upsert is off for safety,
+  // so a unique name is required.
+  const dotIndex = sanitized.lastIndexOf(".");
+  const baseName = dotIndex > 0 ? sanitized.slice(0, dotIndex) : sanitized;
+  const extension = dotIndex > 0 ? sanitized.slice(dotIndex) : "";
+  const fileName = `${baseName}-${Date.now()}${extension}`;
   const filePath = `${user.id}/${noteId}/${fileName}`;
 
   // Upload to Supabase Storage
@@ -94,7 +103,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   });
 
   if (uploadError) {
-    return errorResponse("Failed to upload file", 500);
+    console.error("[attachments] Storage upload failed:", uploadError.message);
+    return errorResponse(`Failed to upload file: ${uploadError.message}`, 500);
   }
 
   // Create attachment record in database
