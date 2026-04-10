@@ -27,7 +27,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
   let body: {
     filePath?: unknown;
-    fileName?: unknown;
     fileSize?: unknown;
     mimeType?: unknown;
   };
@@ -37,13 +36,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     return errorResponse("Invalid JSON body", 400);
   }
 
-  const { filePath, fileName, fileSize, mimeType } = body;
+  const { filePath, fileSize, mimeType } = body;
 
   if (typeof filePath !== "string" || filePath.length === 0) {
     return errorResponse("filePath is required", 400);
-  }
-  if (typeof fileName !== "string" || fileName.length === 0) {
-    return errorResponse("fileName is required", 400);
   }
   if (typeof fileSize !== "number" || fileSize <= 0) {
     return errorResponse("fileSize must be a positive number", 400);
@@ -61,6 +57,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     return errorResponse("Invalid file path", 403);
   }
 
+  // Derive fileName from the server-generated filePath to prevent tampering
+  const derivedFileName = filePath.slice(expectedPrefix.length);
+  if (derivedFileName.length === 0 || derivedFileName.includes("/")) {
+    return errorResponse("Invalid file path", 400);
+  }
+
   // Verify the file was actually uploaded to storage
   const { error: verifyError } = await supabase.storage
     .from(BUCKET_NAME)
@@ -76,7 +78,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     .insert({
       note_id: noteId,
       user_id: user.id,
-      file_name: fileName,
+      file_name: derivedFileName,
       file_path: filePath,
       file_size: fileSize,
       mime_type: mimeType,
@@ -94,8 +96,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     .createSignedUrl(filePath, SIGNED_URL_EXPIRY_SECONDS);
 
   if (urlError || !urlData?.signedUrl) {
-    // Clean up the DB record if we can't generate a URL
+    // Clean up: remove DB record and storage object
     await supabase.from("attachments").delete().eq("id", attachment.id);
+    await supabase.storage.from(BUCKET_NAME).remove([filePath]);
     return errorResponse("Failed to generate file URL", 500);
   }
 

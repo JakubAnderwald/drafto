@@ -17,7 +17,9 @@ export function sanitizeAndBuildPath(
   const dotIndex = sanitized.lastIndexOf(".");
   const hasExtension = dotIndex > 0;
   const baseName = hasExtension ? sanitized.slice(0, dotIndex) : sanitized;
-  const extension = hasExtension ? sanitized.slice(dotIndex) : "";
+  // Cap extension to a reasonable length (e.g. ".mp3", ".docx" — not 200 chars)
+  const rawExtension = hasExtension ? sanitized.slice(dotIndex) : "";
+  const extension = rawExtension.slice(0, 20);
 
   // Truncate the base name so the final fileName (base + timestamp + extension)
   // stays within 255 characters.

@@ -157,7 +157,6 @@ describe("Security Audit", () => {
           method: "POST",
           body: JSON.stringify({
             filePath: "user-1/note-1/test.png",
-            fileName: "test.png",
             fileSize: 1024,
             mimeType: "image/png",
           }),

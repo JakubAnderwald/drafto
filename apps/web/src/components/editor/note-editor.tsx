@@ -63,7 +63,6 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           filePath,
-          fileName: filePath.split("/").pop() ?? file.name,
           fileSize: file.size,
           mimeType: file.type || "application/octet-stream",
         }),

@@ -74,6 +74,7 @@ const { NoteEditor } = await import("@/components/editor/note-editor");
 
 describe("NoteEditor", () => {
   beforeEach(() => {
+    mockFetch.mockReset();
     vi.stubGlobal("fetch", mockFetch);
     mockUploadToSignedUrl.mockReset();
   });
@@ -209,7 +210,6 @@ describe("NoteEditor", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         filePath: "user-1/note-42/image-12345.png",
-        fileName: "image-12345.png",
         fileSize: 4,
         mimeType: "image/png",
       }),

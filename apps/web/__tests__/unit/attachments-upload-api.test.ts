@@ -273,7 +273,6 @@ describe("POST /api/notes/[id]/attachments/confirm", () => {
     const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
     const request = createConfirmRequest({
       filePath: "user-1/note-1/test.png",
-      fileName: "test.png",
       fileSize: 1024,
       mimeType: "image/png",
     });
@@ -288,7 +287,6 @@ describe("POST /api/notes/[id]/attachments/confirm", () => {
     const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
     const request = createConfirmRequest({
       filePath: "user-1/note-1/test.png",
-      fileName: "test.png",
       fileSize: 1024,
       mimeType: "image/png",
     });
@@ -326,7 +324,6 @@ describe("POST /api/notes/[id]/attachments/confirm", () => {
     const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
     const request = createConfirmRequest({
       filePath: "user-1/note-1/test.png",
-      fileName: "test.png",
       fileSize: 1024,
       mimeType: "image/png",
     });
@@ -349,7 +346,6 @@ describe("POST /api/notes/[id]/attachments/confirm", () => {
     const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
     const request = createConfirmRequest({
       filePath: "user-1/note-1/test-12345.png",
-      fileName: "test-12345.png",
       fileSize: 1024,
       mimeType: "image/png",
     });
@@ -406,6 +402,7 @@ describe("POST /api/notes/[id]/attachments/confirm", () => {
     });
 
     let callCount = 0;
+    const mockRemove = vi.fn().mockResolvedValue({ error: null });
     mockStorageFrom.mockReturnValue({
       createSignedUrl: vi.fn().mockImplementation(() => {
         callCount++;
@@ -421,17 +418,18 @@ describe("POST /api/notes/[id]/attachments/confirm", () => {
           error: { message: "Signing error" },
         });
       }),
+      remove: mockRemove,
     });
 
     const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
     const request = createConfirmRequest({
       filePath: "user-1/note-1/test.png",
-      fileName: "test.png",
       fileSize: 1024,
       mimeType: "image/png",
     });
     const response = await POST(request, { params });
     expect(response.status).toBe(500);
     expect(mockDelete).toHaveBeenCalledWith("id", "att-1");
+    expect(mockRemove).toHaveBeenCalledWith(["user-1/note-1/test.png"]);
   });
 });
