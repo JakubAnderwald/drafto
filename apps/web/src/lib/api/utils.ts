@@ -47,6 +47,35 @@ export async function getAuthenticatedUser(): Promise<
   };
 }
 
+/**
+ * Authenticate the user and verify they own the given note.
+ * Combines getAuthenticatedUser + note ownership check (used by all attachment routes).
+ */
+export async function getAuthenticatedNoteOwner(
+  noteId: string,
+): Promise<{ data: AuthenticatedUser; error: null } | { data: null; error: NextResponse }> {
+  const { data: auth, error: authError } = await getAuthenticatedUser();
+  if (authError) return { data: null, error: authError };
+
+  const { supabase, user } = auth;
+
+  const { data: note, error: noteError } = await supabase
+    .from("notes")
+    .select("id")
+    .eq("id", noteId)
+    .eq("user_id", user.id)
+    .single();
+
+  if (noteError || !note) {
+    return {
+      data: null,
+      error: NextResponse.json({ error: "Note not found", status: 404 }, { status: 404 }),
+    };
+  }
+
+  return { data: auth, error: null };
+}
+
 export function errorResponse(message: string, status: number): NextResponse {
   return NextResponse.json({ error: message, status }, { status });
 }

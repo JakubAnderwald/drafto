@@ -135,15 +135,34 @@ describe("Security Audit", () => {
       expect(response.status).toBe(403);
     });
 
-    it("POST /api/notes/[id]/attachments returns 403 for unapproved users", async () => {
-      const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-      const file = new File(["test"], "test.png", { type: "image/png" });
-      const request = new NextRequest("http://localhost:3000/api/notes/note-1/attachments", {
-        method: "POST",
-      });
-      const formData = new FormData();
-      formData.append("file", file);
-      vi.spyOn(request, "formData").mockResolvedValue(formData);
+    it("POST /api/notes/[id]/attachments/upload-url returns 403 for unapproved users", async () => {
+      const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
+      const request = new NextRequest(
+        "http://localhost:3000/api/notes/note-1/attachments/upload-url",
+        {
+          method: "POST",
+          body: JSON.stringify({ fileName: "test.png", fileSize: 1024, mimeType: "image/png" }),
+          headers: { "content-type": "application/json" },
+        },
+      );
+      const response = await POST(request, { params: Promise.resolve({ id: "note-1" }) });
+      expect(response.status).toBe(403);
+    });
+
+    it("POST /api/notes/[id]/attachments/confirm returns 403 for unapproved users", async () => {
+      const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
+      const request = new NextRequest(
+        "http://localhost:3000/api/notes/note-1/attachments/confirm",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            filePath: "user-1/note-1/test.png",
+            fileSize: 1024,
+            mimeType: "image/png",
+          }),
+          headers: { "content-type": "application/json" },
+        },
+      );
       const response = await POST(request, { params: Promise.resolve({ id: "note-1" }) });
       expect(response.status).toBe(403);
     });
@@ -490,14 +509,19 @@ describe("Security Audit", () => {
         return {};
       });
 
-      const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-      const file = new File(["exploit"], "malicious.bin", { type: "application/octet-stream" });
-      const request = new NextRequest("http://localhost:3000/api/notes/note-1/attachments", {
-        method: "POST",
-      });
-      const formData = new FormData();
-      formData.append("file", file);
-      vi.spyOn(request, "formData").mockResolvedValue(formData);
+      const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
+      const request = new NextRequest(
+        "http://localhost:3000/api/notes/note-1/attachments/upload-url",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            fileName: "malicious.bin",
+            fileSize: 100,
+            mimeType: "application/octet-stream",
+          }),
+          headers: { "content-type": "application/json" },
+        },
+      );
       const response = await POST(request, { params: Promise.resolve({ id: "note-1" }) });
       expect(response.status).toBe(404);
       const body = await response.json();
@@ -587,67 +611,44 @@ describe("Security Audit", () => {
             }),
           };
         }
-        if (table === "attachments") {
-          return {
-            insert: () => ({
-              select: () => ({
-                single: () =>
-                  Promise.resolve({
-                    data: {
-                      id: "att-1",
-                      note_id: "note-1",
-                      user_id: "user-1",
-                      file_name: "sanitized_name.txt",
-                      file_path: "user-1/note-1/sanitized_name.txt",
-                      file_size: 100,
-                      mime_type: "text/plain",
-                      created_at: "2026-03-03T00:00:00Z",
-                    },
-                    error: null,
-                  }),
-              }),
-            }),
-          };
-        }
         return {};
       });
 
       mockStorageFrom.mockReturnValue({
-        upload: vi.fn().mockResolvedValue({
-          data: { path: "user-1/note-1/sanitized_name.txt" },
+        createSignedUploadUrl: vi.fn().mockResolvedValue({
+          data: {
+            signedUrl: "https://test.supabase.co/storage/signed/upload?token=abc",
+            token: "upload-tok",
+          },
           error: null,
         }),
-        createSignedUrl: vi.fn().mockResolvedValue({
-          data: { signedUrl: "https://test.supabase.co/storage/signed/test?token=abc" },
-          error: null,
-        }),
-        remove: vi.fn(),
       });
     }
 
     it("sanitizes path traversal characters in filenames", async () => {
       mockApprovedWithNotes();
 
-      const uploadMock = mockStorageFrom().upload;
-
-      const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-      const file = new File(["payload"], "../../etc/passwd", { type: "text/plain" });
-      const request = new NextRequest("http://localhost:3000/api/notes/note-1/attachments", {
-        method: "POST",
-      });
-      const formData = new FormData();
-      formData.append("file", file);
-      vi.spyOn(request, "formData").mockResolvedValue(formData);
+      const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
+      const request = new NextRequest(
+        "http://localhost:3000/api/notes/note-1/attachments/upload-url",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            fileName: "../../etc/passwd",
+            fileSize: 100,
+            mimeType: "text/plain",
+          }),
+          headers: { "content-type": "application/json" },
+        },
+      );
 
       const response = await POST(request, { params: Promise.resolve({ id: "note-1" }) });
-      expect(response.status).toBe(201);
+      expect(response.status).toBe(200);
 
-      // The upload path should NOT contain ".." or "/"
-      const uploadPath = uploadMock.mock.calls[0]?.[0] as string;
-      expect(uploadPath).not.toContain("..");
-      expect(uploadPath).toMatch(/^user-1\/note-1\//);
-      // Slashes in the filename portion should be replaced
-      const filenameInPath = uploadPath.replace("user-1/note-1/", "");
+      const body = await response.json();
+      expect(body.filePath).not.toContain("..");
+      expect(body.filePath).toMatch(/^user-1\/note-1\//);
+      const filenameInPath = body.filePath.replace("user-1/note-1/", "");
       expect(filenameInPath).not.toContain("/");
       expect(filenameInPath).not.toContain("\\");
     });
@@ -655,24 +656,25 @@ describe("Security Audit", () => {
     it("sanitizes HTML-special characters in filenames", async () => {
       mockApprovedWithNotes();
 
-      const uploadMock = mockStorageFrom().upload;
-
-      const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-      const file = new File(["payload"], '<script>alert("xss")</script>.txt', {
-        type: "text/plain",
-      });
-      const request = new NextRequest("http://localhost:3000/api/notes/note-1/attachments", {
-        method: "POST",
-      });
-      const formData = new FormData();
-      formData.append("file", file);
-      vi.spyOn(request, "formData").mockResolvedValue(formData);
+      const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
+      const request = new NextRequest(
+        "http://localhost:3000/api/notes/note-1/attachments/upload-url",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            fileName: '<script>alert("xss")</script>.txt',
+            fileSize: 100,
+            mimeType: "text/plain",
+          }),
+          headers: { "content-type": "application/json" },
+        },
+      );
 
       const response = await POST(request, { params: Promise.resolve({ id: "note-1" }) });
-      expect(response.status).toBe(201);
+      expect(response.status).toBe(200);
 
-      const uploadPath = uploadMock.mock.calls[0]?.[0] as string;
-      const filenameInPath = uploadPath.replace("user-1/note-1/", "");
+      const body = await response.json();
+      const filenameInPath = body.filePath.replace("user-1/note-1/", "");
       expect(filenameInPath).not.toContain("<");
       expect(filenameInPath).not.toContain(">");
       expect(filenameInPath).not.toContain('"');
@@ -681,36 +683,40 @@ describe("Security Audit", () => {
     it("accepts file at exact 25MB boundary", async () => {
       mockApprovedWithNotes();
 
-      const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-      const content = new ArrayBuffer(26214400); // exactly 25MB
-      const file = new File([content], "exact25mb.bin", {
-        type: "application/octet-stream",
-      });
-      const request = new NextRequest("http://localhost:3000/api/notes/note-1/attachments", {
-        method: "POST",
-      });
-      const formData = new FormData();
-      formData.append("file", file);
-      vi.spyOn(request, "formData").mockResolvedValue(formData);
+      const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
+      const request = new NextRequest(
+        "http://localhost:3000/api/notes/note-1/attachments/upload-url",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            fileName: "exact25mb.bin",
+            fileSize: 26214400,
+            mimeType: "application/octet-stream",
+          }),
+          headers: { "content-type": "application/json" },
+        },
+      );
 
       const response = await POST(request, { params: Promise.resolve({ id: "note-1" }) });
-      expect(response.status).toBe(201);
+      expect(response.status).toBe(200);
     });
 
     it("rejects files exceeding 25MB limit", async () => {
       mockApprovedWithNotes();
 
-      const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-      const largeContent = new ArrayBuffer(26214401);
-      const file = new File([largeContent], "huge.bin", {
-        type: "application/octet-stream",
-      });
-      const request = new NextRequest("http://localhost:3000/api/notes/note-1/attachments", {
-        method: "POST",
-      });
-      const formData = new FormData();
-      formData.append("file", file);
-      vi.spyOn(request, "formData").mockResolvedValue(formData);
+      const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
+      const request = new NextRequest(
+        "http://localhost:3000/api/notes/note-1/attachments/upload-url",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            fileName: "huge.bin",
+            fileSize: 26214401,
+            mimeType: "application/octet-stream",
+          }),
+          headers: { "content-type": "application/json" },
+        },
+      );
 
       const response = await POST(request, { params: Promise.resolve({ id: "note-1" }) });
       expect(response.status).toBe(413);
@@ -751,14 +757,19 @@ describe("Security Audit", () => {
         return {};
       });
 
-      const { POST } = await import("@/app/api/notes/[id]/attachments/route");
-      const file = new File(["test"], "test.png", { type: "image/png" });
-      const request = new NextRequest("http://localhost:3000/api/notes/note-1/attachments", {
-        method: "POST",
-      });
-      const formData = new FormData();
-      formData.append("file", file);
-      vi.spyOn(request, "formData").mockResolvedValue(formData);
+      const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
+      const request = new NextRequest(
+        "http://localhost:3000/api/notes/note-1/attachments/upload-url",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            fileName: "test.png",
+            fileSize: 1024,
+            mimeType: "image/png",
+          }),
+          headers: { "content-type": "application/json" },
+        },
+      );
 
       const response = await POST(request, { params: Promise.resolve({ id: "note-1" }) });
       expect(response.status).toBe(404);

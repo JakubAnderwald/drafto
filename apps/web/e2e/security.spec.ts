@@ -100,16 +100,13 @@ test.describe("Security: admin route protection", () => {
 
 test.describe("Security: upload constraints", () => {
   test("upload to nonexistent note returns 404", async ({ request }) => {
-    const buffer = Buffer.from("test file content");
     const response = await request.post(
-      "/api/notes/00000000-0000-0000-0000-000000000000/attachments",
+      "/api/notes/00000000-0000-0000-0000-000000000000/attachments/upload-url",
       {
-        multipart: {
-          file: {
-            name: "test.txt",
-            mimeType: "text/plain",
-            buffer,
-          },
+        data: {
+          fileName: "test.txt",
+          fileSize: 17,
+          mimeType: "text/plain",
         },
       },
     );
