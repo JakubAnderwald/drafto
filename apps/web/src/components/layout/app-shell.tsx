@@ -153,6 +153,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [lastNoteUpdate, setLastNoteUpdate] = useState<{
+    noteId: string;
+    updatedAt: string;
+  } | null>(null);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -176,6 +180,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const handleSelectNote = useCallback((noteId: string) => {
     setSelectedNoteId(noteId);
     setRefreshTrigger((prev) => prev + 1);
+  }, []);
+
+  const handleNoteUpdated = useCallback((noteId: string, updatedAt: string) => {
+    setLastNoteUpdate({ noteId, updatedAt });
   }, []);
 
   const handleSearchSelect = useCallback(
@@ -440,6 +448,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               onDeleteNote={handleDeleteNote}
               notebooks={notebooks}
               refreshTrigger={refreshTrigger}
+              lastNoteUpdate={lastNoteUpdate}
             />
           </Suspense>
         ) : (
@@ -471,6 +480,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               key={selectedNoteId}
               noteId={selectedNoteId}
               refreshTrigger={refreshTrigger}
+              onNoteUpdated={handleNoteUpdated}
             />
           </Suspense>
         ) : (

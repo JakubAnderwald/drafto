@@ -10,6 +10,7 @@ interface UseAutoSaveOptions {
 
 export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingData = useRef<Record<string, unknown> | null>(null);
   const savingRef = useRef(false);
@@ -39,7 +40,15 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
           return;
         }
 
-        setSaveStatus(res.ok ? "saved" : "error");
+        if (res.ok) {
+          setSaveStatus("saved");
+          const updated = await res.json();
+          if (updated?.updated_at) {
+            setLastSavedAt(updated.updated_at);
+          }
+        } else {
+          setSaveStatus("error");
+        }
       } catch {
         setSaveStatus("error");
       } finally {
@@ -93,5 +102,5 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
     };
   }, [noteId]);
 
-  return { saveStatus, debouncedSave };
+  return { saveStatus, debouncedSave, lastSavedAt };
 }
