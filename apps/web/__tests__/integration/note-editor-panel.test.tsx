@@ -347,7 +347,7 @@ describe("NoteEditorPanel", () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
-  it("updates Modified timestamp after save via lastSavedAt", async () => {
+  it("renders Modified timestamp from initial note data", async () => {
     const noteId = nextNoteId();
     const oldDate = new Date(Date.now() - 60 * 60000).toISOString(); // 1h ago
     const newDate = new Date().toISOString();
@@ -388,7 +388,7 @@ describe("NoteEditorPanel", () => {
     expect(screen.getByText(/Modified 1h ago/)).toBeInTheDocument();
   });
 
-  it("calls onNoteUpdated callback when provided", async () => {
+  it("does not call onNoteUpdated on initial render", async () => {
     const noteId = nextNoteId();
     const onNoteUpdated = vi.fn();
 
