@@ -75,6 +75,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     .single();
 
   if (dbError || !attachment) {
+    // Clean up the orphaned storage object
+    await supabase.storage.from(BUCKET_NAME).remove([filePath]);
     return errorResponse("Failed to save attachment record", 500);
   }
 
@@ -87,6 +89,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // Clean up: remove DB record and storage object
     await supabase.from("attachments").delete().eq("id", attachment.id);
     await supabase.storage.from(BUCKET_NAME).remove([filePath]);
+    console.error("[attachments] Failed to generate signed URL:", urlError?.message);
     return errorResponse("Failed to generate file URL", 500);
   }
 

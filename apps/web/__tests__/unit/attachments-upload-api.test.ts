@@ -227,8 +227,8 @@ describe("POST /api/notes/[id]/attachments/upload-url", () => {
     const body = await response.json();
     expect(body.signedUrl).toContain("token=xyz");
     expect(body.token).toBe("upload-token-123");
-    expect(body.filePath).toMatch(/^user-1\/note-1\/test-\d+\.png$/);
-    expect(body.fileName).toMatch(/^test-\d+\.png$/);
+    expect(body.filePath).toMatch(/^user-1\/note-1\/test-\d+-[a-z0-9]+\.png$/);
+    expect(body.fileName).toMatch(/^test-\d+-[a-z0-9]+\.png$/);
   });
 
   it("sanitizes path traversal characters in filenames", async () => {

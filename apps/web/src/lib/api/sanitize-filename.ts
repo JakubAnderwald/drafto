@@ -21,12 +21,11 @@ export function sanitizeAndBuildPath(
   const rawExtension = hasExtension ? sanitized.slice(dotIndex) : "";
   const extension = rawExtension.slice(0, 20);
 
-  // Truncate the base name so the final fileName (base + timestamp + extension)
-  // stays within 255 characters.
-  const timestamp = `-${Date.now()}`;
-  const maxBaseLength = 255 - extension.length - timestamp.length;
+  // Append timestamp + random suffix to prevent collisions (even within the same ms)
+  const suffix = `-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const maxBaseLength = 255 - extension.length - suffix.length;
   const truncatedBase = baseName.slice(0, Math.max(1, maxBaseLength));
-  const fileName = `${truncatedBase}${timestamp}${extension}`;
+  const fileName = `${truncatedBase}${suffix}${extension}`;
   const filePath = `${userId}/${noteId}/${fileName}`;
 
   return { fileName, filePath };
