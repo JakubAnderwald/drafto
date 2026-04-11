@@ -22,7 +22,7 @@ export function sanitizeAndBuildPath(
   const extension = rawExtension.slice(0, 20);
 
   // Append timestamp + random suffix to prevent collisions (even within the same ms)
-  const suffix = `-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const suffix = `-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
   const maxBaseLength = 255 - extension.length - suffix.length;
   const truncatedBase = baseName.slice(0, Math.max(1, maxBaseLength));
   const fileName = `${truncatedBase}${suffix}${extension}`;
