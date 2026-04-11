@@ -173,6 +173,11 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  const handleSelectNote = useCallback((noteId: string) => {
+    setSelectedNoteId(noteId);
+    setRefreshTrigger((prev) => prev + 1);
+  }, []);
+
   const handleSearchSelect = useCallback(
     (noteId: string, notebookId: string, isTrashed: boolean) => {
       setSearchOpen(false);
@@ -184,6 +189,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         setViewingTrash(false);
         setSelectedNotebookId(notebookId);
         setSelectedNoteId(noteId);
+        setRefreshTrigger((prev) => prev + 1);
       }
     },
     [],
@@ -428,7 +434,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
             <NoteList
               notebookId={selectedNotebookId}
               selectedNoteId={selectedNoteId}
-              onSelectNote={setSelectedNoteId}
+              onSelectNote={handleSelectNote}
               onCreateNote={handleCreateNote}
               onMoveNote={handleMoveNote}
               onDeleteNote={handleDeleteNote}
