@@ -12,6 +12,7 @@ import { MAX_TITLE_LENGTH } from "@drafto/shared";
 
 interface NoteEditorPanelProps {
   noteId: string;
+  refreshTrigger?: number;
 }
 
 interface NoteData {
@@ -24,8 +25,8 @@ interface NoteData {
 
 const noteCache = new Map<string, Promise<NoteData | null>>();
 
-function fetchNote(noteId: string): Promise<NoteData | null> {
-  const cached = noteCache.get(noteId);
+function fetchNote(noteId: string, cacheKey: string): Promise<NoteData | null> {
+  const cached = noteCache.get(cacheKey);
   if (cached) return cached;
 
   const promise = fetch(`/api/notes/${noteId}`).then((res) => {
@@ -33,7 +34,7 @@ function fetchNote(noteId: string): Promise<NoteData | null> {
     return res.ok ? res.json() : null;
   });
 
-  noteCache.set(noteId, promise);
+  noteCache.set(cacheKey, promise);
   return promise;
 }
 
@@ -79,8 +80,9 @@ function ClockIcon() {
   );
 }
 
-export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
-  const note = use(fetchNote(noteId));
+export function NoteEditorPanel({ noteId, refreshTrigger = 0 }: NoteEditorPanelProps) {
+  const cacheKey = `${noteId}-${refreshTrigger}`;
+  const note = use(fetchNote(noteId, cacheKey));
   const [title, setTitle] = useState(note?.title ?? "");
   const { saveStatus, debouncedSave } = useAutoSave({ noteId });
 

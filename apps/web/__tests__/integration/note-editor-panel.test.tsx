@@ -303,6 +303,50 @@ describe("NoteEditorPanel", () => {
     expect(screen.queryByTestId("save-status-badge")).not.toBeInTheDocument();
   });
 
+  it("re-fetches note when refreshTrigger changes", async () => {
+    const noteId = nextNoteId();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ ...mockNote, id: noteId, title: "Old Title" }),
+    });
+
+    const { unmount } = await act(async () =>
+      render(
+        <Suspense fallback={<Skeleton height="2rem" />}>
+          <NoteEditorPanel noteId={noteId} refreshTrigger={0} />
+        </Suspense>,
+      ),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("Old Title")).toBeInTheDocument();
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    unmount();
+
+    // Simulate refreshTrigger increment with updated data
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ ...mockNote, id: noteId, title: "New Title" }),
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<Skeleton height="2rem" />}>
+          <NoteEditorPanel noteId={noteId} refreshTrigger={1} />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("New Title")).toBeInTheDocument();
+    });
+
+    // Should have fetched again because refreshTrigger changed
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
   it("renders timestamp icons for created and modified dates", async () => {
     const noteId = nextNoteId();
     mockFetch.mockResolvedValue({

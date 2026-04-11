@@ -461,7 +461,11 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
         {selectedNoteId ? (
           <Suspense fallback={<EditorLoadingSkeleton />}>
-            <NoteEditorPanel key={selectedNoteId} noteId={selectedNoteId} />
+            <NoteEditorPanel
+              key={selectedNoteId}
+              noteId={selectedNoteId}
+              refreshTrigger={refreshTrigger}
+            />
           </Suspense>
         ) : (
           <EmptyState icon={<DocumentIcon />} message="Select a note" />
