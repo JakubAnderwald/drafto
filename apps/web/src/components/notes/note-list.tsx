@@ -17,6 +17,11 @@ interface NotebookOption {
   name: string;
 }
 
+interface NoteUpdate {
+  noteId: string;
+  updatedAt: string;
+}
+
 interface NoteListProps {
   notebookId: string;
   selectedNoteId: string | null;
@@ -26,6 +31,7 @@ interface NoteListProps {
   onDeleteNote?: (noteId: string) => void;
   notebooks?: NotebookOption[];
   refreshTrigger?: number;
+  lastNoteUpdate?: NoteUpdate | null;
 }
 
 const notesCache = new Map<string, Promise<NoteListItem[]>>();
@@ -55,11 +61,13 @@ export function NoteList({
   onDeleteNote,
   notebooks = [],
   refreshTrigger = 0,
+  lastNoteUpdate,
 }: NoteListProps) {
   const cacheKey = `${notebookId}-${refreshTrigger}`;
   const initialNotes = use(fetchNotes(notebookId, cacheKey));
   const [notes, setNotes] = useState(initialNotes);
   const [prevInitialNotes, setPrevInitialNotes] = useState(initialNotes);
+  const [prevNoteUpdate, setPrevNoteUpdate] = useState(lastNoteUpdate);
   const [menuOpenForNote, setMenuOpenForNote] = useState<string | null>(null);
 
   // Update notes when cache key changes (new data loaded via refreshTrigger)
@@ -67,6 +75,16 @@ export function NoteList({
   if (prevInitialNotes !== initialNotes) {
     setPrevInitialNotes(initialNotes);
     setNotes(initialNotes);
+  }
+
+  // Update a single note's timestamp in-place after save (no re-fetch)
+  if (lastNoteUpdate && lastNoteUpdate !== prevNoteUpdate) {
+    setPrevNoteUpdate(lastNoteUpdate);
+    setNotes((prev) =>
+      prev.map((n) =>
+        n.id === lastNoteUpdate.noteId ? { ...n, updated_at: lastNoteUpdate.updatedAt } : n,
+      ),
+    );
   }
 
   const handleDelete = useCallback(

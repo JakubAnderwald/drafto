@@ -347,6 +347,72 @@ describe("NoteEditorPanel", () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
+  it("renders Modified timestamp from initial note data", async () => {
+    const noteId = nextNoteId();
+    const oldDate = new Date(Date.now() - 60 * 60000).toISOString(); // 1h ago
+    const newDate = new Date().toISOString();
+
+    // Initial fetch returns old date
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ ...mockNote, id: noteId, updated_at: oldDate }),
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<Skeleton height="2rem" />}>
+          <NoteEditorPanel noteId={noteId} />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Modified 1h ago/)).toBeInTheDocument();
+    });
+
+    // Mock save response with new timestamp
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ ...mockNote, id: noteId, updated_at: newDate }),
+    });
+
+    // Trigger a title change to initiate auto-save
+    const titleInput = screen.getByLabelText("Note title");
+    await act(async () => {
+      await userEvent.setup().clear(titleInput);
+      await userEvent.setup().type(titleInput, "Updated");
+    });
+
+    // The debouncedSave is mocked, so lastSavedAt won't update through the hook.
+    // But we verify the initial "Modified" rendering with the old date works.
+    expect(screen.getByText(/Modified 1h ago/)).toBeInTheDocument();
+  });
+
+  it("does not call onNoteUpdated on initial render", async () => {
+    const noteId = nextNoteId();
+    const onNoteUpdated = vi.fn();
+
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ ...mockNote, id: noteId }),
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<Skeleton height="2rem" />}>
+          <NoteEditorPanel noteId={noteId} onNoteUpdated={onNoteUpdated} />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Note title")).toBeInTheDocument();
+    });
+
+    // onNoteUpdated should not be called on initial render (lastSavedAt is null)
+    expect(onNoteUpdated).not.toHaveBeenCalled();
+  });
+
   it("renders timestamp icons for created and modified dates", async () => {
     const noteId = nextNoteId();
     mockFetch.mockResolvedValue({

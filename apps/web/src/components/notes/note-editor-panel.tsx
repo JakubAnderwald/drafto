@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useEffect, useState } from "react";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { Badge } from "@/components/ui/badge";
 import { useAutoSave } from "@/hooks/use-auto-save";
@@ -13,6 +13,7 @@ import { MAX_TITLE_LENGTH } from "@drafto/shared";
 interface NoteEditorPanelProps {
   noteId: string;
   refreshTrigger?: number;
+  onNoteUpdated?: (noteId: string, updatedAt: string) => void;
 }
 
 interface NoteData {
@@ -87,11 +88,21 @@ function ClockIcon() {
   );
 }
 
-export function NoteEditorPanel({ noteId, refreshTrigger = 0 }: NoteEditorPanelProps) {
+export function NoteEditorPanel({
+  noteId,
+  refreshTrigger = 0,
+  onNoteUpdated,
+}: NoteEditorPanelProps) {
   const cacheKey = `${noteId}-${refreshTrigger}`;
   const note = use(fetchNote(noteId, cacheKey));
   const [title, setTitle] = useState(note?.title ?? "");
-  const { saveStatus, debouncedSave } = useAutoSave({ noteId });
+  const { saveStatus, debouncedSave, lastSavedAt } = useAutoSave({ noteId });
+
+  useEffect(() => {
+    if (lastSavedAt) {
+      onNoteUpdated?.(noteId, lastSavedAt);
+    }
+  }, [lastSavedAt, noteId, onNoteUpdated]);
 
   if (!note) {
     return (
@@ -143,7 +154,7 @@ export function NoteEditorPanel({ noteId, refreshTrigger = 0 }: NoteEditorPanelP
           </span>
           <span className="inline-flex items-center gap-1">
             <ClockIcon />
-            Modified {formatRelativeTime(note.updated_at)}
+            Modified {formatRelativeTime(lastSavedAt ?? note.updated_at)}
           </span>
         </div>
       </div>
