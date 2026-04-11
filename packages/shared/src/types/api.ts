@@ -4,6 +4,7 @@ export type ProfileRow = Database["public"]["Tables"]["profiles"]["Row"];
 export type NotebookRow = Database["public"]["Tables"]["notebooks"]["Row"];
 export type NoteRow = Database["public"]["Tables"]["notes"]["Row"];
 export type AttachmentRow = Database["public"]["Tables"]["attachments"]["Row"];
+export type ApiKeyRow = Database["public"]["Tables"]["api_keys"]["Row"];
 
 export type NotebookInsert = Database["public"]["Tables"]["notebooks"]["Insert"];
 export type NoteInsert = Database["public"]["Tables"]["notes"]["Insert"];

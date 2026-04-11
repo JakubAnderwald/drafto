@@ -169,6 +169,47 @@ export interface Database {
           },
         ];
       };
+      api_keys: {
+        Row: {
+          id: string;
+          user_id: string;
+          key_prefix: string;
+          key_hash: string;
+          name: string;
+          created_at: string;
+          last_used_at: string | null;
+          revoked_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          key_prefix: string;
+          key_hash: string;
+          name?: string;
+          created_at?: string;
+          last_used_at?: string | null;
+          revoked_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          key_prefix?: string;
+          key_hash?: string;
+          name?: string;
+          created_at?: string;
+          last_used_at?: string | null;
+          revoked_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "api_keys_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

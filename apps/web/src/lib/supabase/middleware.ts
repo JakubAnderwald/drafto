@@ -10,6 +10,7 @@ const PUBLIC_ROUTES = [
   "/forgot-password",
   "/reset-password",
   "/api/health",
+  "/api/mcp",
 ];
 
 function isPublicRoute(pathname: string): boolean {
