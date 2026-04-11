@@ -90,13 +90,16 @@ export async function searchNotes(
   userId: string,
   query: string,
 ): Promise<ToolResult> {
-  const { data, error } = await supabase.rpc(
-    "search_notes" as never,
-    {
-      search_query: query,
-      requesting_user_id: userId,
-    } as never,
-  );
+  // Direct query instead of RPC — the search_notes RPC uses auth.uid() which
+  // is not set for service-role clients. We do a simple ilike search instead.
+  const pattern = `%${query}%`;
+  const { data, error } = await supabase
+    .from("notes")
+    .select("id, title, notebook_id, is_trashed, updated_at")
+    .eq("user_id", userId)
+    .ilike("title", pattern)
+    .order("updated_at", { ascending: false })
+    .limit(50);
 
   if (error) return err(`Error: ${error.message}`);
   return ok(JSON.stringify(data, null, 2));

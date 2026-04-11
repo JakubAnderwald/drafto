@@ -175,17 +175,41 @@ describe("readNote", () => {
 describe("searchNotes", () => {
   it("returns search results on success", async () => {
     const results = [{ id: "note-1", title: "Match" }];
-    const mockRpc = vi.fn().mockResolvedValue({ data: results, error: null });
+    const supabase = createMockSupabase(
+      vi.fn(() => ({
+        select: () => ({
+          eq: () => ({
+            ilike: () => ({
+              order: () => ({
+                limit: () => Promise.resolve({ data: results, error: null }),
+              }),
+            }),
+          }),
+        }),
+      })),
+    );
 
-    const result = await searchNotes(createMockSupabase(vi.fn(), mockRpc), "user-1", "test");
+    const result = await searchNotes(supabase, "user-1", "test");
     expect(result.isError).toBeUndefined();
     expect(JSON.parse(result.content[0].text)).toEqual(results);
   });
 
-  it("returns error on RPC failure", async () => {
-    const mockRpc = vi.fn().mockResolvedValue({ data: null, error: { message: "RPC error" } });
+  it("returns error on query failure", async () => {
+    const supabase = createMockSupabase(
+      vi.fn(() => ({
+        select: () => ({
+          eq: () => ({
+            ilike: () => ({
+              order: () => ({
+                limit: () => Promise.resolve({ data: null, error: { message: "Query error" } }),
+              }),
+            }),
+          }),
+        }),
+      })),
+    );
 
-    const result = await searchNotes(createMockSupabase(vi.fn(), mockRpc), "user-1", "test");
+    const result = await searchNotes(supabase, "user-1", "test");
     expect(result.isError).toBe(true);
   });
 });
