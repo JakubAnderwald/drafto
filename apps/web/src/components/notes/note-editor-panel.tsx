@@ -29,6 +29,13 @@ function fetchNote(noteId: string, cacheKey: string): Promise<NoteData | null> {
   const cached = noteCache.get(cacheKey);
   if (cached) return cached;
 
+  // Evict stale entries for the same note to keep cache bounded
+  for (const key of noteCache.keys()) {
+    if (key.startsWith(`${noteId}-`)) {
+      noteCache.delete(key);
+    }
+  }
+
   const promise = fetch(`/api/notes/${noteId}`).then((res) => {
     if (handleAuthError(res)) return null;
     return res.ok ? res.json() : null;
