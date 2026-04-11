@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { getAuthenticatedUser, errorResponse, successResponse } from "@/lib/api/utils";
+import { getAuthenticatedNoteOwner, errorResponse, successResponse } from "@/lib/api/utils";
 import { BUCKET_NAME, MAX_FILE_SIZE, SIGNED_URL_EXPIRY_SECONDS } from "@drafto/shared";
 
 interface RouteParams {
@@ -7,23 +7,11 @@ interface RouteParams {
 }
 
 export async function POST(request: NextRequest, { params }: RouteParams) {
-  const { data: auth, error: authError } = await getAuthenticatedUser();
+  const { id: noteId } = await params;
+  const { data: auth, error: authError } = await getAuthenticatedNoteOwner(noteId);
   if (authError) return authError;
 
   const { supabase, user } = auth;
-  const { id: noteId } = await params;
-
-  // Verify the note exists and belongs to the user
-  const { data: note, error: noteError } = await supabase
-    .from("notes")
-    .select("id")
-    .eq("id", noteId)
-    .eq("user_id", user.id)
-    .single();
-
-  if (noteError || !note) {
-    return errorResponse("Note not found", 404);
-  }
 
   let body: {
     filePath?: unknown;
