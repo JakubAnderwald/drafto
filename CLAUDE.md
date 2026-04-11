@@ -132,6 +132,7 @@ Before pushing any changes, run these checks locally to avoid CI failures:
 Never push code that fails any of these checks. Common CI failure patterns to watch for:
 
 - **Missing test coverage**: When adding new code, write tests concurrently. Check coverage locally before pushing rather than iterating via CI.
+- **SonarCloud quality gate failure**: To check the specific failing conditions, query the SonarCloud API: `https://sonarcloud.io/api/qualitygates/project_status?projectKey=JakubAnderwald_drafto&pullRequest=<PR_NUMBER>`. This returns the exact metrics (e.g., coverage %, duplications) that failed the gate.
 - **E2E assumptions**: E2E tests depend on database state (migrations applied, seed data). If adding features that require new migrations, ensure the migration is applied to dev before running E2E tests.
 
 ## Supabase Patterns
