@@ -17,7 +17,10 @@ describe("useAutoSave", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
-    mockFetch.mockResolvedValue({ ok: true });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ updated_at: "2026-04-11T12:00:00Z" }),
+    });
   });
 
   afterEach(() => {
@@ -81,6 +84,47 @@ describe("useAutoSave", () => {
         body: JSON.stringify({ title: "Flush me" }),
       }),
     );
+  });
+
+  it("returns lastSavedAt from API response after save", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ updated_at: "2026-04-11T15:30:00Z" }),
+    });
+
+    const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+
+    expect(result.current.lastSavedAt).toBeNull();
+
+    act(() => {
+      result.current.debouncedSave({ title: "Test" });
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+    });
+
+    expect(result.current.lastSavedAt).toBe("2026-04-11T15:30:00Z");
+  });
+
+  it("sets error status when response is not ok", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      json: () => Promise.resolve({}),
+    });
+
+    const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+
+    act(() => {
+      result.current.debouncedSave({ title: "Test" });
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+    });
+
+    expect(result.current.saveStatus).toBe("error");
+    expect(result.current.lastSavedAt).toBeNull();
   });
 
   it("does not save when noteId is null", async () => {
