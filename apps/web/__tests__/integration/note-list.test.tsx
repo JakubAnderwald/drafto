@@ -532,6 +532,56 @@ describe("NoteList", () => {
     });
   });
 
+  it("updates a note's timestamp in-place when lastNoteUpdate changes", async () => {
+    const trigger = nextTrigger();
+    const oldDate = new Date(Date.now() - 60 * 60000).toISOString(); // 1h ago
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve([{ id: "note-ts", title: "Timestamp Note", updated_at: oldDate }]),
+    });
+
+    const { rerender } = await act(async () =>
+      render(
+        <Suspense fallback={<Skeleton height="2.5rem" />}>
+          <NoteList
+            notebookId="nb-1"
+            selectedNoteId={null}
+            onSelectNote={vi.fn()}
+            onCreateNote={vi.fn()}
+            refreshTrigger={trigger}
+            lastNoteUpdate={null}
+          />
+        </Suspense>,
+      ),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("1h ago")).toBeInTheDocument();
+    });
+
+    // Simulate a save that updates the timestamp to now
+    const newDate = new Date().toISOString();
+    await act(async () => {
+      rerender(
+        <Suspense fallback={<Skeleton height="2.5rem" />}>
+          <NoteList
+            notebookId="nb-1"
+            selectedNoteId={null}
+            onSelectNote={vi.fn()}
+            onCreateNote={vi.fn()}
+            refreshTrigger={trigger}
+            lastNoteUpdate={{ noteId: "note-ts", updatedAt: newDate }}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("just now")).toBeInTheDocument();
+    });
+  });
+
   it("fetches notes for the given notebook ID", async () => {
     const trigger = nextTrigger();
     const onSelect = vi.fn();
