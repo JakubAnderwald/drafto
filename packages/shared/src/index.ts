@@ -7,6 +7,7 @@ export type {
   NotebookInsert,
   NoteInsert,
   AttachmentInsert,
+  ApiKeyRow,
   NotebookUpdate,
   NoteUpdate,
 } from "./types/api";
@@ -27,6 +28,7 @@ export {
   contentToBlocknote,
 } from "./editor/format-converter";
 export { extractTextFromContent } from "./editor/extract-text";
+export { blockNoteToMarkdown, markdownToBlockNote } from "./editor/markdown-converter";
 export {
   toAttachmentUrl,
   isAttachmentUrl,

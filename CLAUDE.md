@@ -132,6 +132,7 @@ Before pushing any changes, run these checks locally to avoid CI failures:
 Never push code that fails any of these checks. Common CI failure patterns to watch for:
 
 - **Missing test coverage**: When adding new code, write tests concurrently. Check coverage locally before pushing rather than iterating via CI.
+- **SonarCloud quality gate failure**: To check the specific failing conditions, query the SonarCloud API: `https://sonarcloud.io/api/qualitygates/project_status?projectKey=JakubAnderwald_drafto&pullRequest=<PR_NUMBER>`. This returns the exact metrics (e.g., coverage %, duplications) that failed the gate.
 - **E2E assumptions**: E2E tests depend on database state (migrations applied, seed data). If adding features that require new migrations, ensure the migration is applied to dev before running E2E tests.
 
 ## Supabase Patterns
@@ -232,6 +233,24 @@ Supabase provides daily automatic backups. The Pro plan enables Point-in-Time Re
 - Client config: `instrumentation-client.ts` (NOT `sentry.client.config.ts` — Turbopack ignores the old webpack convention)
 - Server/edge configs: `sentry.server.config.ts`, `sentry.edge.config.ts` (loaded via `instrumentation.ts`)
 - Do not swallow errors silently — let them propagate to Sentry
+
+## MCP Server (Claude Cowork Integration)
+
+Drafto exposes a remote MCP server at `/api/mcp` for integration with Claude Desktop, Claude Cowork, and other MCP clients. Authenticated via API keys (managed at `/settings`).
+
+**Key files:**
+
+- `apps/web/src/app/api/mcp/route.ts` — MCP tool registry and handlers (all 9 tools defined here)
+- `apps/web/src/lib/api/mcp-auth.ts` — API key authentication
+- `packages/shared/src/editor/markdown-converter.ts` — BlockNote <-> Markdown conversion
+- `supabase/migrations/20260411000001_api_keys.sql` — API keys table
+
+**Maintenance rules (agents must follow):**
+
+- When adding a new user-facing feature (API route, data model, capability), evaluate whether it should be exposed as an MCP tool and update `apps/web/src/app/api/mcp/route.ts` accordingly
+- When changing an existing API route's behavior or schema, update the corresponding MCP tool handler and its input/output schemas to match
+- When adding or modifying database tables/columns that affect note content or structure, update `packages/shared/src/editor/markdown-converter.ts` if the new content type needs Markdown representation
+- Run MCP-related tests after changes: `cd apps/web && pnpm test` (includes mcp-auth and api-keys tests)
 
 ## Local Dev Setup
 

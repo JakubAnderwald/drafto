@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { IconButton } from "@/components/ui/icon-button";
 import {
@@ -36,6 +37,7 @@ function EllipsisIcon() {
 export function AppMenu({ onImportEvernote }: AppMenuProps) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
 
   const handleLogout = async () => {
     const supabase = createClient();
@@ -71,6 +73,15 @@ export function AppMenu({ onImportEvernote }: AppMenuProps) {
           data-testid="import-evernote-button"
         >
           Import from Evernote
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => {
+            setOpen(false);
+            router.push("/settings");
+          }}
+          data-testid="settings-button"
+        >
+          Settings
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="danger" onClick={handleLogout} data-testid="logout-button">

@@ -3,6 +3,12 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AppMenu } from "@/components/layout/app-menu";
 
+// Mock next/navigation
+const mockPush = vi.fn();
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mockPush }),
+}));
+
 // Mock Supabase client
 const mockSignOut = vi.fn().mockResolvedValue({ error: null });
 vi.mock("@/lib/supabase/client", () => ({

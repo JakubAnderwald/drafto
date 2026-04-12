@@ -10,6 +10,7 @@ const PUBLIC_ROUTES = [
   "/forgot-password",
   "/reset-password",
   "/api/health",
+  "/api/mcp",
 ];
 
 function isPublicRoute(pathname: string): boolean {
@@ -17,6 +18,13 @@ function isPublicRoute(pathname: string): boolean {
 }
 
 export async function updateSession(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  // Fast-path: MCP uses Bearer token auth, skip Supabase session lookup
+  if (pathname === "/api/mcp" || pathname.startsWith("/api/mcp/")) {
+    return NextResponse.next({ request });
+  }
+
   let supabaseResponse = NextResponse.next({
     request,
   });
@@ -47,8 +55,6 @@ export async function updateSession(request: NextRequest) {
   const {
     data: { user },
   } = await supabase.auth.getUser();
-
-  const { pathname } = request.nextUrl;
 
   // Public routes: allow access regardless of auth state
   if (isPublicRoute(pathname)) {
