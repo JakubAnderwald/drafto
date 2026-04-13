@@ -3,7 +3,8 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": [".next/**", "!.next/cache/**", "dist/**"]
+      "outputs": [".next/**", "!.next/cache/**", "dist/**"],
+      "passThroughEnv": ["SENTRY_AUTH_TOKEN", "SUPABASE_SERVICE_ROLE_KEY"]
     },
     "dev": {
       "cache": false,
