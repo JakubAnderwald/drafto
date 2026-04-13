@@ -25,7 +25,9 @@ type SynchronizeOpts = {
   }) => Promise<void>;
 };
 
-const mockDb = {} as Parameters<typeof syncDatabase>[0];
+const mockDb = {
+  get: () => ({ query: () => ({ fetch: () => Promise.resolve([]) }) }),
+} as unknown as Parameters<typeof syncDatabase>[0];
 
 // Helper to build a Supabase query chain that resolves with data
 function mockQueryChain(data: unknown[], error: null | { message: string } = null) {
