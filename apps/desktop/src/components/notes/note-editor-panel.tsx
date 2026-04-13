@@ -7,6 +7,8 @@ import { useAttachments } from "@/hooks/use-attachments";
 import { useAutoSave } from "@/hooks/use-auto-save";
 import { useTheme } from "@/providers/theme-provider";
 import { database } from "@/db";
+import { contentToTiptap, tiptapToBlocknote } from "@drafto/shared";
+import type { TipTapDoc } from "@drafto/shared";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -63,6 +65,8 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   // Use onChange callback from useEditorBridge for auto-save.
   // Capture note ID to prevent async getJSON() from saving to the wrong note
   // if the user switches notes before the promise resolves.
+  // TenTap returns TipTap JSON; convert to BlockNote before saving so the
+  // content stays compatible with the web editor (which uses BlockNote).
   const handleEditorChange = useCallback(() => {
     if (!editorRef.current) return;
     const capturedNoteId = noteIdRef.current;
@@ -70,7 +74,8 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
       .getJSON()
       .then((json: object) => {
         if (noteIdRef.current !== capturedNoteId) return;
-        const jsonString = JSON.stringify(json);
+        const blocknote = tiptapToBlocknote(json as TipTapDoc);
+        const jsonString = JSON.stringify(blocknote);
         contentAutoSaveRef.current?.trigger(jsonString);
       })
       .catch((err: unknown) => {
@@ -118,16 +123,25 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
       noteIdRef.current = note.id;
       setTitle(note.title || "");
 
-      // Parse content: may be TipTap JSON string, plain text, or null
+      // Parse content: may be BlockNote JSON array, TipTap JSON, plain text, or null
       const rawContent = note.content || "";
 
       try {
         if (rawContent) {
           try {
             const parsed = JSON.parse(rawContent);
-            // If it's a TipTap document, set it as JSON
-            if (parsed && typeof parsed === "object" && parsed.type === "doc") {
-              editor.setContent(parsed);
+            // Only convert if the parsed JSON is actually a BlockNote array or TipTap doc.
+            // Plain text that happens to be valid JSON (e.g. "123", '{"foo":1}') must
+            // fall through to the plain-text path to avoid blank notes.
+            const isBlockNote = Array.isArray(parsed) && parsed.length > 0 && parsed[0]?.type;
+            const isTipTap =
+              parsed &&
+              typeof parsed === "object" &&
+              !Array.isArray(parsed) &&
+              parsed.type === "doc";
+            if (isBlockNote || isTipTap) {
+              const tiptapDoc = contentToTiptap(parsed);
+              editor.setContent(tiptapDoc);
               return;
             }
           } catch {
@@ -264,17 +278,19 @@ const createStyles = (semantic: SemanticColors) =>
       color: semantic.fgSubtle,
     },
     titleInput: {
-      fontSize: 22,
+      fontSize: 20,
       fontWeight: "700",
       color: semantic.fg,
       paddingHorizontal: 24,
       paddingTop: 20,
       paddingBottom: 8,
+      fontFamily: "System",
     },
     editorContainer: {
       flex: 1,
+      minHeight: 0,
     },
     attachmentsSection: {
-      maxHeight: 300,
+      maxHeight: 180,
     },
   });

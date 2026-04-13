@@ -16,7 +16,9 @@ jest.mock("@/lib/supabase", () => ({
 import { syncDatabase, SyncNetworkError } from "@/db/sync";
 
 describe("syncDatabase", () => {
-  const mockDb = {} as Parameters<typeof syncDatabase>[0];
+  const mockDb = {
+    get: () => ({ query: () => ({ fetch: () => Promise.resolve([]) }) }),
+  } as unknown as Parameters<typeof syncDatabase>[0];
 
   beforeEach(() => {
     jest.clearAllMocks();

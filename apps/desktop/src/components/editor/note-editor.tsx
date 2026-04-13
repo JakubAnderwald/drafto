@@ -32,7 +32,18 @@ export function NoteEditor({ editor }: NoteEditorProps) {
 
   return (
     <>
-      <RichText editor={editor} style={[styles.editor, { backgroundColor: semantic.bg }]} />
+      <RichText
+        editor={editor}
+        style={[styles.editor, { backgroundColor: semantic.bg }]}
+        scrollEnabled={true}
+        injectedJavaScript={`
+          (function() {
+            var style = document.createElement('style');
+            style.textContent = 'body, .ProseMirror { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 15px; line-height: 1.6; color: #1a1a1a; }';
+            document.head.appendChild(style);
+          })();
+        `}
+      />
       <Toolbar editor={editor} items={DEFAULT_TOOLBAR_ITEMS} />
     </>
   );
