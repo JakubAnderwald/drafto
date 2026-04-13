@@ -20,6 +20,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     supportsTablet: true,
     bundleIdentifier: "eu.drafto.mobile",
     associatedDomains: ["applinks:drafto.eu", "applinks:www.drafto.eu"],
+    usesAppleSignIn: true,
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
     },
@@ -56,6 +57,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   extra: {
     supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL,
     supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
+    googleWebClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+    googleIosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
     eas: {
       projectId: "6cf2a8f0-c2a6-410c-89dc-3e49aa4119a5",
     },
@@ -67,6 +70,13 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     "expo-router",
     "expo-secure-store",
     "expo-font",
+    "expo-apple-authentication",
+    [
+      "@react-native-google-signin/google-signin",
+      {
+        iosUrlScheme: process.env.EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME,
+      },
+    ],
     "./plugins/with-android-optimizations",
     "./plugins/with-android-signing",
     "./plugins/with-ios-swift-concurrency",

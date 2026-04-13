@@ -7,6 +7,7 @@ import { StatusBar } from "expo-status-bar";
 
 import { AuthProvider, useAuth } from "@/providers/auth-provider";
 import { DatabaseProvider } from "@/providers/database-provider";
+import { configureGoogleSignIn } from "@/lib/oauth";
 import { ThemeProvider, useTheme } from "@/providers/theme-provider";
 import { OfflineBanner } from "@/components/offline-banner";
 import { ToastProvider } from "@/components/toast";
@@ -14,6 +15,7 @@ import { colors } from "@/theme/tokens";
 import { markStartupBegin, markStartupEnd } from "@/lib/performance";
 
 markStartupBegin();
+configureGoogleSignIn();
 
 const PUBLIC_AUTH_SCREENS = new Set(["login", "signup"]);
 

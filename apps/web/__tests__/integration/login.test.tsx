@@ -11,9 +11,13 @@ vi.mock("next/navigation", () => ({
 
 // Mock Supabase client
 const mockSignIn = vi.fn();
+const mockSignInWithOAuth = vi.fn();
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
-    auth: { signInWithPassword: mockSignIn },
+    auth: {
+      signInWithPassword: mockSignIn,
+      signInWithOAuth: mockSignInWithOAuth,
+    },
   }),
 }));
 
@@ -31,7 +35,7 @@ describe("Login page", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the login form", async () => {
+  it("renders the login form with OAuth buttons", async () => {
     await act(async () => {
       render(<LoginPage />);
     });
@@ -40,6 +44,9 @@ describe("Login page", () => {
     expect(screen.getByLabelText("Email")).toBeInTheDocument();
     expect(screen.getByLabelText("Password")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Log in" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Google" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Apple" })).toBeInTheDocument();
+    expect(screen.getByText("or continue with")).toBeInTheDocument();
   });
 
   it("has links to signup and forgot password", async () => {
@@ -113,6 +120,53 @@ describe("Login page", () => {
     await act(async () => {
       resolveSignIn!({ error: null });
     });
+  });
+
+  it("calls signInWithOAuth when Google button is clicked", async () => {
+    mockSignInWithOAuth.mockResolvedValueOnce({ error: null });
+    const user = userEvent.setup();
+
+    await act(async () => {
+      render(<LoginPage />);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Google" }));
+
+    expect(mockSignInWithOAuth).toHaveBeenCalledWith({
+      provider: "google",
+      options: { redirectTo: expect.stringContaining("/auth/callback") },
+    });
+  });
+
+  it("calls signInWithOAuth when Apple button is clicked", async () => {
+    mockSignInWithOAuth.mockResolvedValueOnce({ error: null });
+    const user = userEvent.setup();
+
+    await act(async () => {
+      render(<LoginPage />);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Apple" }));
+
+    expect(mockSignInWithOAuth).toHaveBeenCalledWith({
+      provider: "apple",
+      options: { redirectTo: expect.stringContaining("/auth/callback") },
+    });
+  });
+
+  it("displays error when OAuth sign-in fails", async () => {
+    mockSignInWithOAuth.mockResolvedValueOnce({
+      error: { message: "OAuth provider error" },
+    });
+    const user = userEvent.setup();
+
+    await act(async () => {
+      render(<LoginPage />);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Google" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("OAuth provider error");
   });
 
   it("clears previous error on new submission", async () => {

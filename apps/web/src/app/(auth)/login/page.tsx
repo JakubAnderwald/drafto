@@ -7,6 +7,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { OAuthButtons } from "@/components/auth/oauth-buttons";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -75,6 +76,8 @@ export default function LoginPage() {
           {loading ? "Logging in..." : "Log in"}
         </Button>
       </form>
+
+      <OAuthButtons />
 
       <div className="text-fg-muted mt-4 text-center text-sm">
         <p>

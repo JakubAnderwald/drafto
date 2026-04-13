@@ -4,6 +4,7 @@ import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
+import { OAuthButtons } from "@/components/auth/oauth-buttons";
 
 interface SignupScreenProps {
   onNavigateToLogin?: () => void;
@@ -97,6 +98,8 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
           color={colors.primary[600]}
         />
       </View>
+
+      <OAuthButtons onError={(msg) => setError(msg)} />
 
       <View style={styles.footer}>
         <Pressable onPress={onNavigateToLogin} disabled={!onNavigateToLogin}>
