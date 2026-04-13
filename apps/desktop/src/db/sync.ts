@@ -144,15 +144,21 @@ function createPullChanges(database: WMDatabase) {
       const localNotes = await database.get("notes").query().fetch();
       const localAttachments = await database.get("attachments").query().fetch();
 
+      // Only check synced records for server-side deletion. Unsynced local
+      // records (created/updated offline) won't exist on the server yet and
+      // must not be flagged as deleted before the push phase runs.
       for (const r of localNotebooks) {
+        if ((r as unknown as { _status: string })._status !== "synced") continue;
         const remoteId = (r as unknown as { remoteId: string }).remoteId || r.id;
         if (!serverNotebookSet.has(remoteId)) notebookChanges.deleted.push(r.id);
       }
       for (const r of localNotes) {
+        if ((r as unknown as { _status: string })._status !== "synced") continue;
         const remoteId = (r as unknown as { remoteId: string }).remoteId || r.id;
         if (!serverNoteSet.has(remoteId)) noteChanges.deleted.push(r.id);
       }
       for (const r of localAttachments) {
+        if ((r as unknown as { _status: string })._status !== "synced") continue;
         const remoteId = (r as unknown as { remoteId: string }).remoteId || r.id;
         if (!serverAttachmentSet.has(remoteId)) attachmentChanges.deleted.push(r.id);
       }

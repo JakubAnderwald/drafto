@@ -130,9 +130,17 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
         if (rawContent) {
           try {
             const parsed = JSON.parse(rawContent);
-            // Use shared converter: handles both BlockNote arrays and TipTap docs
-            const tiptapDoc = contentToTiptap(parsed);
-            if (tiptapDoc.type === "doc") {
+            // Only convert if the parsed JSON is actually a BlockNote array or TipTap doc.
+            // Plain text that happens to be valid JSON (e.g. "123", '{"foo":1}') must
+            // fall through to the plain-text path to avoid blank notes.
+            const isBlockNote = Array.isArray(parsed) && parsed.length > 0 && parsed[0]?.type;
+            const isTipTap =
+              parsed &&
+              typeof parsed === "object" &&
+              !Array.isArray(parsed) &&
+              parsed.type === "doc";
+            if (isBlockNote || isTipTap) {
+              const tiptapDoc = contentToTiptap(parsed);
               editor.setContent(tiptapDoc);
               return;
             }
