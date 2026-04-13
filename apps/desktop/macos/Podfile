@@ -42,6 +42,32 @@ target 'Drafto-macOS' do
       File.write(fmt_base, patched) if patched != content
     end
 
+    # Fix NSClassFromString nil crash in RCTThirdPartyComponentsProvider on macOS.
+    # The codegen generates an NSDictionary literal with NSClassFromString() values.
+    # Some classes (e.g. RNSFullWindowOverlay) are iOS-only and return nil on macOS,
+    # which crashes NSDictionary's initWithObjects:forKeys:count: (nil not allowed).
+    # Patch: 1) template uses NSMutableDictionary, 2) generator emits nil-safe setObject calls.
+    # Must patch ALL copies: react-native, react-native-macos, and react-native-macos/node_modules/react-native
+    nm_dir = File.join(ws_dir.to_s, 'node_modules')
+    Dir.glob(File.join(nm_dir, '**', 'codegen', 'templates', 'RCTThirdPartyComponentsProviderMM.template')).each do |template_mm|
+      content = File.read(template_mm)
+      if content.include?('thirdPartyComponents = @{')
+        patched = content
+          .sub("thirdPartyComponents = @{\n{thirdPartyComponentsMapping}\n    };",
+               "NSMutableDictionary *dict = [NSMutableDictionary new];\n{thirdPartyComponentsMapping}\n        thirdPartyComponents = [dict copy];")
+        File.write(template_mm, patched) if patched != content
+      end
+    end
+
+    Dir.glob(File.join(nm_dir, '**', 'codegen', 'generate-artifacts-executor', 'generateRCTThirdPartyComponents.js')).each do |generator_js|
+      content = File.read(generator_js)
+      old_line = 'return `\\t\\t@"${componentName}": NSClassFromString(@"${className}"), // ${library}`;'
+      new_line = 'return `\\t\\t{ Class c = NSClassFromString(@"${className}"); if (c) dict[@"${componentName}"] = c; } // ${library}`;'
+      if content.include?(old_line)
+        File.write(generator_js, content.sub(old_line, new_line))
+      end
+    end
+
     # Fix dispatch_queue_t strong property error on Xcode 26+ / macOS SDK
     # CocoaPods adds -DOS_OBJECT_USE_OBJC=0 as per-file compiler flags, which makes
     # dispatch_queue_t a non-ObjC type and breaks 'strong' properties in RCTBridgeModule.h

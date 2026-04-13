@@ -76,6 +76,28 @@ platform :mac do
       try_repo_update_on_error: true
     )
 
+    # Fix NSClassFromString nil crash in RCTThirdPartyComponentsProvider on macOS.
+    # The auto-generated file uses an NSDictionary literal with NSClassFromString() values.
+    # Some classes (e.g. RNSFullWindowOverlay) are iOS-only and return nil on macOS,
+    # which crashes NSDictionary's initWithObjects:forKeys:count:.
+    # Replace the @{} literal with NSMutableDictionary that skips nil values.
+    provider_mm = File.join(PROJECT_ROOT, "macos", "build", "generated", "ios", "RCTThirdPartyComponentsProvider.mm")
+    if File.exist?(provider_mm)
+      content = File.read(provider_mm)
+      if content.include?("thirdPartyComponents = @{")
+        pairs = content.scan(/@"(\w+)":\s*NSClassFromString\(@"(\w+)"\)/)
+        if pairs.any?
+          safe_lines = pairs.map { |key, cls|
+            "    { Class c = NSClassFromString(@\"#{cls}\"); if (c) dict[@\"#{key}\"] = c; }"
+          }
+          safe_body = "NSMutableDictionary *dict = [NSMutableDictionary new];\n#{safe_lines.join("\n")}\n    thirdPartyComponents = [dict copy];"
+          patched = content.sub(/thirdPartyComponents = @\{[^}]+\};/m, safe_body)
+          File.write(provider_mm, patched) if patched != content
+          UI.success("Patched RCTThirdPartyComponentsProvider.mm for nil-safe macOS class lookup")
+        end
+      end
+    end
+
     # Configure App Store Connect API key
     api_key = app_store_connect_api_key(
       key_id: ENV["ASC_API_KEY_ID"],

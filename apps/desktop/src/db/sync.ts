@@ -106,23 +106,66 @@ async function getServerTimestamp(): Promise<number> {
   return Date.now() - 5000;
 }
 
-async function pullChanges({ lastPulledAt }: { lastPulledAt?: number }): Promise<SyncPullResult> {
-  const isFirstSync = lastPulledAt === undefined;
+async function fetchAllIds(table: "notebooks" | "notes" | "attachments"): Promise<string[]> {
+  const { data, error } = await supabase.from(table).select("id");
+  if (error) throw new Error(`Fetch ${table} IDs failed: ${error.message}`);
+  return (data as { id: string }[]).map((r) => r.id);
+}
 
-  const [notebooks, notes, attachments, serverTimestamp] = await Promise.all([
-    fetchTable<NotebookRow>("notebooks", "updated_at", lastPulledAt, mapNotebookRow),
-    fetchTable<NoteRow>("notes", "updated_at", lastPulledAt, mapNoteRow),
-    fetchTable<AttachmentRow>("attachments", "created_at", lastPulledAt, mapAttachmentRow),
-    getServerTimestamp(),
-  ]);
+function createPullChanges(database: WMDatabase) {
+  return async ({ lastPulledAt }: { lastPulledAt?: number }): Promise<SyncPullResult> => {
+    const isFirstSync = lastPulledAt === undefined;
 
-  return {
-    changes: {
-      notebooks: splitChanges(notebooks, isFirstSync),
-      notes: splitChanges(notes, isFirstSync),
-      attachments: splitChanges(attachments, isFirstSync),
-    },
-    timestamp: serverTimestamp,
+    const [notebooks, notes, attachments, serverTimestamp] = await Promise.all([
+      fetchTable<NotebookRow>("notebooks", "updated_at", lastPulledAt, mapNotebookRow),
+      fetchTable<NoteRow>("notes", "updated_at", lastPulledAt, mapNoteRow),
+      fetchTable<AttachmentRow>("attachments", "created_at", lastPulledAt, mapAttachmentRow),
+      getServerTimestamp(),
+    ]);
+
+    const notebookChanges = splitChanges(notebooks, isFirstSync);
+    const noteChanges = splitChanges(notes, isFirstSync);
+    const attachmentChanges = splitChanges(attachments, isFirstSync);
+
+    // Detect server-side deletions on incremental syncs by comparing local IDs
+    // against all IDs currently on the server.
+    if (!isFirstSync) {
+      const [serverNotebookIds, serverNoteIds, serverAttachmentIds] = await Promise.all([
+        fetchAllIds("notebooks"),
+        fetchAllIds("notes"),
+        fetchAllIds("attachments"),
+      ]);
+
+      const serverNotebookSet = new Set(serverNotebookIds);
+      const serverNoteSet = new Set(serverNoteIds);
+      const serverAttachmentSet = new Set(serverAttachmentIds);
+
+      const localNotebooks = await database.get("notebooks").query().fetch();
+      const localNotes = await database.get("notes").query().fetch();
+      const localAttachments = await database.get("attachments").query().fetch();
+
+      for (const r of localNotebooks) {
+        const remoteId = (r as unknown as { remoteId: string }).remoteId || r.id;
+        if (!serverNotebookSet.has(remoteId)) notebookChanges.deleted.push(r.id);
+      }
+      for (const r of localNotes) {
+        const remoteId = (r as unknown as { remoteId: string }).remoteId || r.id;
+        if (!serverNoteSet.has(remoteId)) noteChanges.deleted.push(r.id);
+      }
+      for (const r of localAttachments) {
+        const remoteId = (r as unknown as { remoteId: string }).remoteId || r.id;
+        if (!serverAttachmentSet.has(remoteId)) attachmentChanges.deleted.push(r.id);
+      }
+    }
+
+    return {
+      changes: {
+        notebooks: notebookChanges,
+        notes: noteChanges,
+        attachments: attachmentChanges,
+      },
+      timestamp: serverTimestamp,
+    };
   };
 }
 
@@ -281,7 +324,7 @@ export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
   try {
     await synchronize({
       database: db,
-      pullChanges,
+      pullChanges: createPullChanges(db),
       pushChanges,
       migrationsEnabledAtVersion: 1,
       conflictResolver: (_table, _local, remote, resolved) => {
