@@ -17,9 +17,20 @@
 	<key>CFBundlePackageType</key>
 	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>0.2.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>eu.drafto.desktop</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>eu.drafto.desktop</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
-	<string>15</string>
+	<string>17</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
@@ -32,17 +43,6 @@
 	<true/>
 	<key>NSSupportsSuddenTermination</key>
 	<true/>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleURLName</key>
-			<string>eu.drafto.desktop</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>eu.drafto.desktop</string>
-			</array>
-		</dict>
-	</array>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 </dict>

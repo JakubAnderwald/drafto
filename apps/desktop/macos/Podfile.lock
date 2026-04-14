@@ -2483,6 +2483,63 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
+  - RNSVG (15.15.4):
+    - boost
+    - DoubleConversion
+    - fast_float
+    - fmt
+    - glog
+    - hermes-engine
+    - RCT-Folly
+    - RCT-Folly/Fabric
+    - RCTRequired
+    - RCTTypeSafety
+    - React-Core
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-ImageManager
+    - React-jsi
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - RNSVG/common (= 15.15.4)
+    - SocketRocket
+    - Yoga
+  - RNSVG/common (15.15.4):
+    - boost
+    - DoubleConversion
+    - fast_float
+    - fmt
+    - glog
+    - hermes-engine
+    - RCT-Folly
+    - RCT-Folly/Fabric
+    - RCTRequired
+    - RCTTypeSafety
+    - React-Core
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-ImageManager
+    - React-jsi
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - SocketRocket
+    - Yoga
   - simdjson (3.9.4)
   - SocketRocket (0.7.1)
   - WatermelonDB (0.28.0):
@@ -2569,6 +2626,7 @@ DEPENDENCIES:
   - RNDocumentPicker (from `../../../node_modules/react-native-document-picker-macos`)
   - RNFS (from `../../../node_modules/react-native-fs`)
   - RNKeychain (from `../../../node_modules/react-native-keychain`)
+  - RNSVG (from `../../../node_modules/react-native-svg`)
   - "simdjson (from `../../../node_modules/@nozbe/simdjson`)"
   - SocketRocket (~> 0.7.1)
   - "WatermelonDB (from `../../../node_modules/@nozbe/watermelondb`)"
@@ -2734,6 +2792,8 @@ EXTERNAL SOURCES:
     :path: "../../../node_modules/react-native-fs"
   RNKeychain:
     :path: "../../../node_modules/react-native-keychain"
+  RNSVG:
+    :path: "../../../node_modules/react-native-svg"
   simdjson:
     :path: "../../../node_modules/@nozbe/simdjson"
   WatermelonDB:
@@ -2819,6 +2879,7 @@ SPEC CHECKSUMS:
   RNDocumentPicker: 59218a1700e1ad2d0bc9347f5c0954442be3f4c7
   RNFS: 89de7d7f4c0f6bafa05343c578f61118c8282ed8
   RNKeychain: 483402cf2b90647eb0cf569cebbc069d32addea4
+  RNSVG: 681be694d501c0af971615811d4f2ea9baf58966
   simdjson: 3cd22243b8581d581c3ea0ee19fb671e18978a15
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
   WatermelonDB: 47d40f67c1e52b29a82a9c0179551eae0034e516
