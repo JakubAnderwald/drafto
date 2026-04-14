@@ -48,14 +48,18 @@ Never work directly on `main`. For every new task (feature, fix, chore, docs):
 
 **Only exception:** The user explicitly asks to work on or push to `main` directly. Without that explicit request, always use a branch + PR.
 
-**Worktree setup for mobile development:**
+**Worktree setup for mobile/desktop development:**
 
-Git worktrees do not copy gitignored files. When working on mobile code in a worktree, copy these files from the main repo before building or running tests:
+Git worktrees do not copy gitignored files. When working on mobile or desktop code in a worktree, copy these files from the main repo before building or running tests:
 
 ```bash
 # Required for mobile builds and Maestro E2E tests
 cp /Users/jakub/code/drafto/apps/mobile/.env apps/mobile/.env
 cp /Users/jakub/code/drafto/apps/mobile/.env.production apps/mobile/.env.production
+
+# Required for desktop builds
+cp /Users/jakub/code/drafto/apps/desktop/.env apps/desktop/.env
+cp /Users/jakub/code/drafto/apps/desktop/.env.production apps/desktop/.env.production
 
 # Required after expo prebuild (regenerates android/ without local.properties)
 echo "sdk.dir=/Users/jakub/Library/Android/sdk" > apps/mobile/android/local.properties
