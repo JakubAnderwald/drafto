@@ -50,3 +50,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0015](./0015-desktop-app-technology-choice.md)     | Desktop App Technology Choice            | Accepted           | 2026-03-29 |
 | [0016](./0016-local-fastlane-builds.md)             | Local Fastlane Builds                    | Accepted           | 2026-03-31 |
 | [0017](./0017-mcp-server-for-claude-cowork.md)      | MCP Server for Claude Cowork             | Accepted           | 2026-04-11 |
+| [0018](./0018-oauth-google-apple.md)                | OAuth with Google and Apple              | Accepted           | 2026-04-12 |

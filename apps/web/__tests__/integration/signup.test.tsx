@@ -11,9 +11,13 @@ vi.mock("next/navigation", () => ({
 
 // Mock Supabase client
 const mockSignUp = vi.fn();
+const mockSignInWithOAuth = vi.fn();
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
-    auth: { signUp: mockSignUp },
+    auth: {
+      signUp: mockSignUp,
+      signInWithOAuth: mockSignInWithOAuth,
+    },
   }),
 }));
 
@@ -32,7 +36,7 @@ describe("Signup page", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the signup form", async () => {
+  it("renders the signup form with OAuth buttons", async () => {
     await act(async () => {
       render(<SignupPage />);
     });
@@ -41,6 +45,8 @@ describe("Signup page", () => {
     expect(screen.getByLabelText("Email")).toBeInTheDocument();
     expect(screen.getByLabelText("Password")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign up" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Google" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Apple" })).toBeInTheDocument();
   });
 
   it("has a link to the login page", async () => {

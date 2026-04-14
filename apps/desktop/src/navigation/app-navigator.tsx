@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { ActivityIndicator, View, StyleSheet } from "react-native";
+import { useState, useEffect } from "react";
+import { ActivityIndicator, View, StyleSheet, Linking } from "react-native";
 
 import { useAuth } from "@/providers/auth-provider";
+import { handleOAuthCallback } from "@/lib/oauth";
 import { colors } from "@/theme/tokens";
 import { useTheme } from "@/providers/theme-provider";
 import { LoginScreen } from "@/screens/login";
@@ -15,6 +16,20 @@ export function RootNavigator() {
   const { user, isApproved, isLoading, isCheckingApproval } = useAuth();
   const { semantic } = useTheme();
   const [authRoute, setAuthRoute] = useState<AuthRoute>("Login");
+
+  useEffect(() => {
+    // Handle OAuth callback deep links (eu.drafto.desktop://auth/callback)
+    const subscription = Linking.addEventListener("url", ({ url }) => {
+      handleOAuthCallback(url);
+    });
+
+    // Check if the app was opened via a deep link
+    Linking.getInitialURL().then((url) => {
+      if (url) handleOAuthCallback(url);
+    });
+
+    return () => subscription.remove();
+  }, []);
 
   if (isLoading || isCheckingApproval) {
     return (

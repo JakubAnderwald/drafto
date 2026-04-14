@@ -16,6 +16,7 @@ import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
+import { OAuthButtons } from "@/components/auth/oauth-buttons";
 
 export default function SignupScreen() {
   const { semantic } = useTheme();
@@ -118,6 +119,8 @@ export default function SignupScreen() {
             )}
           </Pressable>
         </View>
+
+        <OAuthButtons onError={(msg) => setError(msg)} />
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>

@@ -124,6 +124,21 @@ jest.mock("@/providers/theme-provider", () => {
   };
 });
 
+// Mock react-native-svg
+jest.mock("react-native-svg", () => {
+  const { View, Text } = require("react-native");
+  return {
+    __esModule: true,
+    default: View,
+    Svg: View,
+    Path: View,
+    Circle: View,
+    Rect: View,
+    G: View,
+    Text: Text,
+  };
+});
+
 // Silence console.error for act warnings in tests
 const originalError = console.error;
 console.error = (...args) => {

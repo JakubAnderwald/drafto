@@ -1,7 +1,7 @@
 module.exports = {
   preset: "react-native",
   setupFilesAfterEnv: ["./jest.setup.js"],
-  testPathIgnorePatterns: ["<rootDir>/node_modules/", "<rootDir>/__tests__/helpers/"],
+  testPathIgnorePatterns: ["<rootDir>/node_modules/", "<rootDir>/__tests__/helpers/", "test-utils"],
   moduleNameMapper: {
     "^@/(.*)$": "<rootDir>/src/$1",
     // Mock TurboModuleRegistry to provide stubs for all native TurboModules

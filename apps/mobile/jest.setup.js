@@ -74,6 +74,57 @@ jest.mock("@expo/vector-icons", () => {
   };
 });
 
+// Mock @react-native-google-signin/google-signin
+jest.mock("@react-native-google-signin/google-signin", () => ({
+  GoogleSignin: {
+    configure: jest.fn(),
+    hasPlayServices: jest.fn().mockResolvedValue(true),
+    signIn: jest.fn().mockResolvedValue({ data: { idToken: "mock-id-token" } }),
+    signOut: jest.fn().mockResolvedValue(null),
+  },
+  statusCodes: {
+    SIGN_IN_CANCELLED: "SIGN_IN_CANCELLED",
+    IN_PROGRESS: "IN_PROGRESS",
+    PLAY_SERVICES_NOT_AVAILABLE: "PLAY_SERVICES_NOT_AVAILABLE",
+  },
+  isErrorWithCode: jest.fn(() => false),
+}));
+
+// Mock expo-apple-authentication
+jest.mock("expo-apple-authentication", () => ({
+  signInAsync: jest.fn().mockResolvedValue({
+    identityToken: "mock-apple-token",
+    fullName: { givenName: "Test", familyName: "User" },
+    email: "test@example.com",
+  }),
+  isAvailableAsync: jest.fn().mockResolvedValue(true),
+  AppleAuthenticationScope: {
+    FULL_NAME: 0,
+    EMAIL: 1,
+  },
+}));
+
+// Mock expo-web-browser
+jest.mock("expo-web-browser", () => ({
+  openAuthSessionAsync: jest.fn().mockResolvedValue({ type: "cancel" }),
+  maybeCompleteAuthSession: jest.fn(),
+}));
+
+// Mock react-native-svg
+jest.mock("react-native-svg", () => {
+  const { View, Text } = require("react-native");
+  return {
+    __esModule: true,
+    default: View,
+    Svg: View,
+    Path: View,
+    Circle: View,
+    Rect: View,
+    G: View,
+    Text: Text,
+  };
+});
+
 // Silence console.error for act warnings in tests
 const originalError = console.error;
 console.error = (...args) => {
