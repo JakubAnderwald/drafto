@@ -1,0 +1,25 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "eu.drafto/mcp",
+  "title": "Drafto",
+  "description": "Create, read, search, and organize your Drafto notes and notebooks.",
+  "repository": {
+    "url": "https://github.com/JakubAnderwald/drafto",
+    "source": "github"
+  },
+  "version": "1.0.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://drafto.eu/api/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Bearer token — generate an API key at drafto.eu/settings",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

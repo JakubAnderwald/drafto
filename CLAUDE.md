@@ -252,6 +252,28 @@ Drafto exposes a remote MCP server at `/api/mcp` for integration with Claude Des
 - When adding or modifying database tables/columns that affect note content or structure, update `packages/shared/src/editor/markdown-converter.ts` if the new content type needs Markdown representation
 - Run MCP-related tests after changes: `cd apps/web && pnpm test` (includes mcp-auth and api-keys tests)
 
+**MCP Registry:**
+
+Drafto is published on the official MCP Registry as `eu.drafto/mcp`. The registry metadata is defined in `server.json` (repo root).
+
+- **Registry entry:** `eu.drafto/mcp` at `registry.modelcontextprotocol.io`
+- **Auth namespace:** DNS-based (`drafto.eu` TXT record with Ed25519 public key)
+- **Private key:** `~/drafto-secrets/mcp-registry-key.pem` (never commit)
+- **Publisher CLI:** `~/bin/mcp-publisher`
+
+**To publish an update** (e.g., after adding/changing MCP tools):
+
+1. Bump `version` in `server.json`
+2. Run `~/bin/mcp-publisher publish`
+3. Verify: `curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=drafto"`
+
+If the login session has expired, re-authenticate:
+
+```bash
+PRIVATE_KEY="$(openssl pkey -in ~/drafto-secrets/mcp-registry-key.pem -noout -text | grep -A3 'priv:' | tail -n +2 | tr -d ' :\n')"
+~/bin/mcp-publisher login dns --domain "drafto.eu" --private-key "${PRIVATE_KEY}"
+```
+
 ## Local Dev Setup
 
 See [docs/local-dev-setup.md](./docs/local-dev-setup.md) for first-time machine setup (CLI tools, Fastlane, Claude Code memory symlink).

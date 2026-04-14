@@ -54,6 +54,14 @@ A note-taking app with notebooks, rich text editing, and auto-save. Available as
 - **Desktop CI/CD:** Fastlane — Mac App Store via TestFlight
 - **CI:** GitHub Actions, SonarCloud (code quality)
 
+## MCP Integration
+
+Drafto is available on the [MCP Registry](https://registry.modelcontextprotocol.io) as `eu.drafto/mcp`, enabling integration with Claude Desktop, Claude Cowork, and other MCP clients.
+
+**Tools available:** list notebooks, list/create/read/update/search/move/trash notes, create notebooks.
+
+**Setup:** Generate an API key at [drafto.eu/settings](https://drafto.eu/settings), then add Drafto as a remote MCP server with the endpoint `https://drafto.eu/api/mcp` and your API key as the Bearer token.
+
 ## Features
 
 - **Notebooks** — create, rename, delete notebooks to organize notes
