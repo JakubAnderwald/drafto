@@ -60,8 +60,12 @@ playwright/.cache/
 # OS files
 Thumbs.db
 
-# claude code
-.claude/
+# claude code (ignore ephemeral state, track shared config, hooks, commands, and memory)
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+!.claude/commands/
+!.claude/memory/
 
 # nightly support logs
 logs/
