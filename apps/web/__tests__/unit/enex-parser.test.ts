@@ -115,4 +115,51 @@ describe("parseEnexFile", () => {
     const notes = parseEnexFile(xml);
     expect(notes[0].resources[0].fileName).toBe("attachment.jpg");
   });
+
+  it("parses task elements from notes", () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<en-export>
+  <note>
+    <title>Note with tasks</title>
+    <content><![CDATA[<en-note><p>Tasks below</p></en-note>]]></content>
+    <created>20230101T000000Z</created>
+    <task>
+      <title>Buy milk</title>
+      <taskStatus>open</taskStatus>
+      <taskGroupNoteLevelID>group-1</taskGroupNoteLevelID>
+      <sortWeight>B</sortWeight>
+    </task>
+    <task>
+      <title>Clean house</title>
+      <taskStatus>completed</taskStatus>
+      <taskGroupNoteLevelID>group-1</taskGroupNoteLevelID>
+      <sortWeight>J</sortWeight>
+    </task>
+  </note>
+</en-export>`;
+
+    const notes = parseEnexFile(xml);
+    expect(notes).toHaveLength(1);
+    expect(notes[0].tasks).toHaveLength(2);
+    expect(notes[0].tasks[0].title).toBe("Buy milk");
+    expect(notes[0].tasks[0].checked).toBe(false);
+    expect(notes[0].tasks[0].groupId).toBe("group-1");
+    expect(notes[0].tasks[0].sortWeight).toBe("B");
+    expect(notes[0].tasks[1].title).toBe("Clean house");
+    expect(notes[0].tasks[1].checked).toBe(true);
+  });
+
+  it("returns empty tasks array when note has no tasks", () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<en-export>
+  <note>
+    <title>No tasks</title>
+    <content><![CDATA[<en-note><p>Plain note</p></en-note>]]></content>
+    <created>20230101T000000Z</created>
+  </note>
+</en-export>`;
+
+    const notes = parseEnexFile(xml);
+    expect(notes[0].tasks).toEqual([]);
+  });
 });

@@ -106,6 +106,7 @@ describe("POST /api/import/evernote", () => {
       created: "2023-01-01T00:00:00.000Z",
       updated: "2023-01-01T00:00:00.000Z",
       resources: [],
+      tasks: [],
     }));
 
     const req = new Request("http://localhost/api/import/evernote", {
@@ -138,6 +139,7 @@ describe("POST /api/import/evernote", () => {
           created: "2023-01-01T00:00:00.000Z",
           updated: "2023-01-01T00:00:00.000Z",
           resources: [],
+          tasks: [],
         },
       ],
     };
@@ -184,6 +186,7 @@ describe("POST /api/import/evernote", () => {
           created: "2023-01-01T00:00:00.000Z",
           updated: "2023-01-01T00:00:00.000Z",
           resources: [],
+          tasks: [],
         },
         {
           title: "Bad Note",
@@ -191,6 +194,7 @@ describe("POST /api/import/evernote", () => {
           created: "2023-01-01T00:00:00.000Z",
           updated: "2023-01-01T00:00:00.000Z",
           resources: [],
+          tasks: [],
         },
       ],
     };
@@ -240,6 +244,7 @@ describe("POST /api/import/evernote", () => {
           created: "2023-01-01T00:00:00.000Z",
           updated: "2023-01-01T00:00:00.000Z",
           resources: [],
+          tasks: [],
         },
       ],
     };
@@ -273,6 +278,7 @@ describe("POST /api/import/evernote", () => {
           created: "2023-01-01T00:00:00.000Z",
           updated: "2023-01-01T00:00:00.000Z",
           resources: [],
+          tasks: [],
         },
       ],
     };
@@ -326,6 +332,7 @@ describe("POST /api/import/evernote", () => {
               fileName: "photo.png",
             },
           ],
+          tasks: [],
         },
       ],
     };
@@ -340,7 +347,7 @@ describe("POST /api/import/evernote", () => {
 
     expect(mockUpload).toHaveBeenCalled();
     expect(mockCreateSignedUrl).toHaveBeenCalled();
-    expect(mockConvertEnmlToBlocks).toHaveBeenCalledWith(expect.any(String), expect.any(Map));
+    expect(mockConvertEnmlToBlocks).toHaveBeenCalledWith(expect.any(String), expect.any(Map), []);
     expect(mockSuccessResponse).toHaveBeenCalledWith(
       expect.objectContaining({ notesImported: 1 }),
       200,
@@ -377,6 +384,7 @@ describe("POST /api/import/evernote", () => {
               fileName: "bad.png",
             },
           ],
+          tasks: [],
         },
       ],
     };
@@ -432,6 +440,7 @@ describe("POST /api/import/evernote", () => {
               fileName: "file.png",
             },
           ],
+          tasks: [],
         },
       ],
     };
@@ -476,6 +485,7 @@ describe("POST /api/import/evernote", () => {
           created: "2023-01-01T00:00:00.000Z",
           updated: "2023-01-01T00:00:00.000Z",
           resources: [],
+          tasks: [],
         },
       ],
     };

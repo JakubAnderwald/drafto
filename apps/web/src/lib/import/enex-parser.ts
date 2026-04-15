@@ -1,4 +1,4 @@
-import type { EnexNote, EnexResource } from "@/lib/import/types";
+import type { EnexNote, EnexResource, EnexTask } from "@/lib/import/types";
 
 /**
  * Parse an Evernote .enex XML string into structured notes.
@@ -39,7 +39,29 @@ function parseNoteElement(noteEl: Element): EnexNote {
     }
   }
 
-  return { title, content, created, updated, resources };
+  const taskElements = noteEl.querySelectorAll("task");
+  const tasks: EnexTask[] = [];
+
+  for (const taskEl of taskElements) {
+    const task = parseTaskElement(taskEl);
+    if (task) {
+      tasks.push(task);
+    }
+  }
+
+  return { title, content, created, updated, resources, tasks };
+}
+
+function parseTaskElement(taskEl: Element): EnexTask | null {
+  const title = taskEl.querySelector("title")?.textContent?.trim() || "";
+  if (!title) return null;
+
+  const taskStatus = taskEl.querySelector("taskStatus")?.textContent?.trim() || "";
+  const checked = taskStatus === "completed";
+  const groupId = taskEl.querySelector("taskGroupNoteLevelID")?.textContent?.trim() || "";
+  const sortWeight = taskEl.querySelector("sortWeight")?.textContent?.trim() || undefined;
+
+  return { title, checked, groupId, sortWeight };
 }
 
 function parseResourceElement(resEl: Element): EnexResource | null {
