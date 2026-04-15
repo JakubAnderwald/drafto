@@ -282,6 +282,25 @@ describe("convertEnmlToBlocks", () => {
     expect(content[0].styles.bold).toBe(true);
   });
 
+  it("extracts links and br from li content", () => {
+    const enml =
+      '<en-note><ul><li><a href="https://example.com">Link text</a><br/><b>bold</b></li></ul></en-note>';
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    expect(blocks).toHaveLength(1);
+    const content = blocks[0].content as Array<{
+      type: string;
+      text: string;
+      href?: string;
+      styles: Record<string, boolean>;
+    }>;
+    expect(content[0].type).toBe("link");
+    expect(content[0].href).toBe("https://example.com");
+    expect(content[1].text).toBe("\n");
+    expect(content[2].text).toBe("bold");
+    expect(content[2].styles.bold).toBe(true);
+  });
+
   it("extracts text from ol > li > div (Evernote ordered list format)", () => {
     const enml =
       "<en-note><ol><li><div>First item</div></li><li><div>Second item</div></li></ol></en-note>";
