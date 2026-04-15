@@ -1,5 +1,7 @@
 import { parseHTML } from "linkedom";
 
+import type { EnexTask } from "@/lib/import/types";
+
 interface InlineContent {
   type: "text" | "link";
   text: string;
@@ -23,9 +25,32 @@ interface TableContent {
  * Convert ENML (Evernote Markup Language) to BlockNote blocks.
  * Uses linkedom for server-side DOM parsing.
  */
-export function convertEnmlToBlocks(enml: string, attachmentUrlMap: Map<string, string>): Block[] {
+export function convertEnmlToBlocks(
+  enml: string,
+  attachmentUrlMap: Map<string, string>,
+  tasks?: EnexTask[],
+): Block[] {
   if (!enml.trim()) {
     return [createParagraph([])];
+  }
+
+  // Build task group map for modern Evernote task format
+  const taskMap = new Map<string, EnexTask[]>();
+  const orphanTasks: EnexTask[] = [];
+  if (tasks) {
+    for (const task of tasks) {
+      if (task.groupId) {
+        const group = taskMap.get(task.groupId) || [];
+        group.push(task);
+        taskMap.set(task.groupId, group);
+      } else {
+        orphanTasks.push(task);
+      }
+    }
+    // Sort tasks within each group by sortWeight
+    for (const group of taskMap.values()) {
+      group.sort((a, b) => (a.sortWeight ?? "").localeCompare(b.sortWeight ?? ""));
+    }
   }
 
   // Strip XML declaration and DOCTYPE
@@ -37,12 +62,25 @@ export function convertEnmlToBlocks(enml: string, attachmentUrlMap: Map<string, 
   const { document } = parseHTML(`<body>${cleaned}</body>`);
   const root = document.querySelector("en-note") || document.body;
 
-  const blocks = processChildren(root, attachmentUrlMap);
+  const blocks = processChildren(root, attachmentUrlMap, taskMap);
+
+  // Append orphan tasks (tasks without a groupId) at the end
+  for (const task of orphanTasks) {
+    blocks.push({
+      type: "checkListItem",
+      props: { checked: task.checked },
+      content: [{ type: "text", text: task.title, styles: {} }],
+    });
+  }
 
   return blocks.length > 0 ? blocks : [createParagraph([])];
 }
 
-function processChildren(parent: Element, attachmentUrlMap: Map<string, string>): Block[] {
+function processChildren(
+  parent: Element,
+  attachmentUrlMap: Map<string, string>,
+  taskMap: Map<string, EnexTask[]>,
+): Block[] {
   const blocks: Block[] = [];
 
   for (const node of Array.from(parent.childNodes)) {
@@ -56,7 +94,7 @@ function processChildren(parent: Element, attachmentUrlMap: Map<string, string>)
       const el = node as Element;
       const tag = el.tagName.toLowerCase();
 
-      const converted = convertElement(el, tag, attachmentUrlMap);
+      const converted = convertElement(el, tag, attachmentUrlMap, taskMap);
       if (converted) {
         if (Array.isArray(converted)) {
           blocks.push(...converted);
@@ -74,15 +112,39 @@ function convertElement(
   el: Element,
   tag: string,
   attachmentUrlMap: Map<string, string>,
+  taskMap: Map<string, EnexTask[]>,
 ): Block | Block[] | null {
   switch (tag) {
-    case "div":
+    case "div": {
+      // Check for Evernote task group placeholder
+      const style = el.getAttribute("style") || "";
+      if (style.includes("--en-task-group:true")) {
+        const idMatch = style.match(/--en-id:\s*([^;]+)/);
+        const groupId = idMatch?.[1]?.trim() || "";
+        const groupTasks = taskMap.get(groupId) || [];
+        if (groupTasks.length > 0) {
+          return groupTasks.map((task) => ({
+            type: "checkListItem",
+            props: { checked: task.checked },
+            content: [{ type: "text", text: task.title, styles: {} }],
+          }));
+        }
+        return null; // empty task group, skip
+      }
+      // Fall through to standard block handling
+      const inline = extractInlineContent(el);
+      if (inline.length === 0) {
+        const childBlocks = processChildren(el, attachmentUrlMap, taskMap);
+        return childBlocks.length > 0 ? childBlocks : null;
+      }
+      return createParagraph(inline);
+    }
+
     case "p":
     case "span": {
       const inline = extractInlineContent(el);
       if (inline.length === 0) {
-        // Check for child block elements
-        const childBlocks = processChildren(el, attachmentUrlMap);
+        const childBlocks = processChildren(el, attachmentUrlMap, taskMap);
         return childBlocks.length > 0 ? childBlocks : null;
       }
       return createParagraph(inline);
@@ -96,17 +158,18 @@ function convertElement(
       return createHeading(extractInlineContent(el), 3);
 
     case "ul":
-      return convertList(el, "bulletListItem", attachmentUrlMap);
+      return convertList(el, "bulletListItem", attachmentUrlMap, taskMap);
     case "ol":
-      return convertList(el, "numberedListItem", attachmentUrlMap);
+      return convertList(el, "numberedListItem", attachmentUrlMap, taskMap);
 
     case "en-todo": {
+      // Linkedom parses <en-todo/> as non-void, so text content is inside the element
       const checked = el.getAttribute("checked") === "true";
-      // The text content follows the en-todo tag in the parent
+      const content = extractInlineContent(el);
       return {
         type: "checkListItem",
         props: { checked },
-        content: [],
+        content: content.length > 0 ? content : [{ type: "text", text: "", styles: {} }],
       };
     }
 
@@ -133,7 +196,7 @@ function convertElement(
       if (inline.length > 0) {
         return createParagraph(inline);
       }
-      return processChildren(el, attachmentUrlMap);
+      return processChildren(el, attachmentUrlMap, taskMap);
     }
   }
 }
@@ -142,13 +205,14 @@ function convertList(
   listEl: Element,
   blockType: string,
   attachmentUrlMap: Map<string, string>,
+  taskMap: Map<string, EnexTask[]>,
 ): Block[] {
   const items: Block[] = [];
 
   for (const child of Array.from(listEl.children)) {
     if (child.tagName.toLowerCase() === "li") {
-      const inline = extractInlineContent(child);
-      const nestedBlocks = processNestedLists(child, attachmentUrlMap);
+      const inline = extractListItemContent(child);
+      const nestedBlocks = processNestedLists(child, attachmentUrlMap, taskMap);
 
       items.push({
         type: blockType,
@@ -161,16 +225,64 @@ function convertList(
   return items;
 }
 
-function processNestedLists(li: Element, attachmentUrlMap: Map<string, string>): Block[] {
+function processNestedLists(
+  li: Element,
+  attachmentUrlMap: Map<string, string>,
+  taskMap: Map<string, EnexTask[]>,
+): Block[] {
   const nested: Block[] = [];
   for (const child of Array.from(li.children)) {
     const tag = child.tagName.toLowerCase();
     if (tag === "ul" || tag === "ol") {
       const type = tag === "ul" ? "bulletListItem" : "numberedListItem";
-      nested.push(...convertList(child, type, attachmentUrlMap));
+      nested.push(...convertList(child, type, attachmentUrlMap, taskMap));
     }
   }
   return nested;
+}
+
+/**
+ * Extract inline content from a list item element.
+ * Unlike extractInlineContent, this treats <div> children as inline containers
+ * because Evernote wraps list item text in <div> tags: <li><div>text</div></li>
+ */
+function extractListItemContent(li: Element): InlineContent[] {
+  const result: InlineContent[] = [];
+
+  for (const node of Array.from(li.childNodes)) {
+    if (node.nodeType === 3) {
+      const text = (node as Text).textContent || "";
+      if (text) {
+        result.push({ type: "text", text, styles: {} });
+      }
+    } else if (node.nodeType === 1) {
+      const childEl = node as Element;
+      const tag = childEl.tagName.toLowerCase();
+
+      if (tag === "div") {
+        // Evernote wraps li text in <div> — extract inline content from within
+        result.push(...extractInlineContent(childEl));
+      } else if (["ul", "ol", "table", "en-media"].includes(tag)) {
+        continue; // handled by processNestedLists
+      } else {
+        const styles = getInlineStyles(childEl);
+        if (tag === "a") {
+          const href = childEl.getAttribute("href") || "";
+          const text = childEl.textContent || "";
+          result.push({ type: "link", text, href, styles });
+        } else if (tag === "br") {
+          result.push({ type: "text", text: "\n", styles: {} });
+        } else {
+          const innerContent = extractInlineContent(childEl);
+          for (const item of innerContent) {
+            result.push({ ...item, styles: { ...item.styles, ...styles } });
+          }
+        }
+      }
+    }
+  }
+
+  return result;
 }
 
 function convertEnMedia(el: Element, attachmentUrlMap: Map<string, string>): Block | null {
@@ -241,8 +353,8 @@ function extractInlineContent(el: Element): InlineContent[] {
       const childEl = node as Element;
       const tag = childEl.tagName.toLowerCase();
 
-      // Skip block-level elements in inline extraction
-      if (["ul", "ol", "div", "table", "en-media"].includes(tag)) {
+      // Skip block-level elements and en-todo in inline extraction
+      if (["ul", "ol", "div", "table", "en-media", "en-todo"].includes(tag)) {
         continue;
       }
 

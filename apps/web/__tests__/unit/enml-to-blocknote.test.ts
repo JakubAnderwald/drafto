@@ -66,13 +66,15 @@ describe("convertEnmlToBlocks", () => {
     expect(blocks[0].type).toBe("numberedListItem");
   });
 
-  it("converts en-todo checkboxes", () => {
+  it("converts en-todo checkboxes with text content", () => {
     const enml = '<en-note><en-todo checked="true"/>Task done</en-note>';
     const blocks = convertEnmlToBlocks(enml, emptyMap);
 
     const checkbox = blocks.find((b) => b.type === "checkListItem");
     expect(checkbox).toBeDefined();
     expect(checkbox?.props?.checked).toBe(true);
+    const content = checkbox?.content as Array<{ text: string }>;
+    expect(content[0].text).toBe("Task done");
   });
 
   it("converts en-media images with URL from map", () => {
@@ -252,5 +254,140 @@ describe("convertEnmlToBlocks", () => {
     const content = blocks[0].content as Array<{ text: string; styles: Record<string, boolean> }>;
     expect(content.find((c) => c.text === "bold")?.styles.bold).toBe(true);
     expect(content.find((c) => c.text === "italic")?.styles.italic).toBe(true);
+  });
+
+  it("extracts text from li > div (Evernote list format)", () => {
+    const enml =
+      "<en-note><ul><li><div>Item text</div></li><li><div>Second item</div></li></ul></en-note>";
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].type).toBe("bulletListItem");
+    const content0 = blocks[0].content as Array<{ text: string }>;
+    expect(content0[0].text).toBe("Item text");
+    const content1 = blocks[1].content as Array<{ text: string }>;
+    expect(content1[0].text).toBe("Second item");
+  });
+
+  it("extracts styled text from li > div", () => {
+    const enml = "<en-note><ul><li><div><b>Bold item</b> text</div></li></ul></en-note>";
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    expect(blocks).toHaveLength(1);
+    const content = blocks[0].content as Array<{
+      text: string;
+      styles: Record<string, boolean>;
+    }>;
+    expect(content[0].text).toBe("Bold item");
+    expect(content[0].styles.bold).toBe(true);
+  });
+
+  it("extracts links and br from li content", () => {
+    const enml =
+      '<en-note><ul><li><a href="https://example.com">Link text</a><br/><b>bold</b></li></ul></en-note>';
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    expect(blocks).toHaveLength(1);
+    const content = blocks[0].content as Array<{
+      type: string;
+      text: string;
+      href?: string;
+      styles: Record<string, boolean>;
+    }>;
+    expect(content[0].type).toBe("link");
+    expect(content[0].href).toBe("https://example.com");
+    expect(content[1].text).toBe("\n");
+    expect(content[2].text).toBe("bold");
+    expect(content[2].styles.bold).toBe(true);
+  });
+
+  it("extracts text from ol > li > div (Evernote ordered list format)", () => {
+    const enml =
+      "<en-note><ol><li><div>First item</div></li><li><div>Second item</div></li></ol></en-note>";
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].type).toBe("numberedListItem");
+    const content0 = blocks[0].content as Array<{ text: string }>;
+    expect(content0[0].text).toBe("First item");
+    const content1 = blocks[1].content as Array<{ text: string }>;
+    expect(content1[0].text).toBe("Second item");
+  });
+
+  it("captures sibling text after en-todo in a div", () => {
+    const enml = '<en-note><div><en-todo checked="false"/>Buy groceries</div></en-note>';
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    const checkbox = blocks.find((b) => b.type === "checkListItem");
+    expect(checkbox).toBeDefined();
+    expect(checkbox?.props?.checked).toBe(false);
+    const content = checkbox?.content as Array<{ text: string }>;
+    expect(content[0].text).toBe("Buy groceries");
+  });
+
+  it("captures styled text after en-todo", () => {
+    const enml = '<en-note><div><en-todo checked="true"/><b>Important task</b></div></en-note>';
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    const checkbox = blocks.find((b) => b.type === "checkListItem");
+    expect(checkbox?.props?.checked).toBe(true);
+    const content = checkbox?.content as Array<{
+      text: string;
+      styles: Record<string, boolean>;
+    }>;
+    expect(content[0].text).toBe("Important task");
+    expect(content[0].styles.bold).toBe(true);
+  });
+
+  it("converts modern task group placeholders to checkListItems", () => {
+    const enml =
+      '<en-note><div style="--en-task-group:true; --en-id:group-abc123;"></div></en-note>';
+    const tasks = [
+      { title: "Task one", checked: false, groupId: "group-abc123" },
+      { title: "Task two", checked: true, groupId: "group-abc123" },
+    ];
+    const blocks = convertEnmlToBlocks(enml, emptyMap, tasks);
+
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].type).toBe("checkListItem");
+    expect(blocks[0].props?.checked).toBe(false);
+    expect((blocks[0].content as Array<{ text: string }>)[0].text).toBe("Task one");
+    expect(blocks[1].props?.checked).toBe(true);
+    expect((blocks[1].content as Array<{ text: string }>)[0].text).toBe("Task two");
+  });
+
+  it("skips task group div when no matching tasks exist", () => {
+    const enml =
+      '<en-note><p>Before</p><div style="--en-task-group:true; --en-id:no-match;"></div><p>After</p></en-note>';
+    const blocks = convertEnmlToBlocks(enml, emptyMap, []);
+
+    expect(blocks.every((b) => b.type === "paragraph")).toBe(true);
+  });
+
+  it("sorts tasks within a group by sortWeight", () => {
+    const enml = '<en-note><div style="--en-task-group:true; --en-id:grp1;"></div></en-note>';
+    const tasks = [
+      { title: "Third", checked: false, groupId: "grp1", sortWeight: "R" },
+      { title: "First", checked: false, groupId: "grp1", sortWeight: "B" },
+      { title: "Second", checked: false, groupId: "grp1", sortWeight: "J" },
+    ];
+    const blocks = convertEnmlToBlocks(enml, emptyMap, tasks);
+
+    expect(blocks).toHaveLength(3);
+    expect((blocks[0].content as Array<{ text: string }>)[0].text).toBe("First");
+    expect((blocks[1].content as Array<{ text: string }>)[0].text).toBe("Second");
+    expect((blocks[2].content as Array<{ text: string }>)[0].text).toBe("Third");
+  });
+
+  it("appends orphan tasks without groupId at the end", () => {
+    const enml = "<en-note><p>Note content</p></en-note>";
+    const tasks = [{ title: "Orphan task", checked: true, groupId: "" }];
+    const blocks = convertEnmlToBlocks(enml, emptyMap, tasks);
+
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].type).toBe("paragraph");
+    expect(blocks[1].type).toBe("checkListItem");
+    expect(blocks[1].props?.checked).toBe(true);
+    expect((blocks[1].content as Array<{ text: string }>)[0].text).toBe("Orphan task");
   });
 });

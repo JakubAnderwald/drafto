@@ -5,12 +5,20 @@ export interface EnexResource {
   fileName: string;
 }
 
+export interface EnexTask {
+  title: string;
+  checked: boolean; // derived from taskStatus === "completed"
+  groupId: string; // taskGroupNoteLevelID — matches placeholder div in ENML
+  sortWeight?: string; // for ordering within a group
+}
+
 export interface EnexNote {
   title: string;
   content: string; // raw ENML string
   created: string; // ISO timestamp
   updated: string; // ISO timestamp
   resources: EnexResource[];
+  tasks: EnexTask[];
 }
 
 export interface ImportBatchRequest {

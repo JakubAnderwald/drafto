@@ -46,12 +46,13 @@ export async function DELETE(_request: NextRequest, { params }: RouteParams) {
   const { supabase, user } = auth;
   const { id } = await params;
 
-  // Check if notebook has notes
+  // Check if notebook has non-trashed notes
   const { count, error: countError } = await supabase
     .from("notes")
     .select("id", { count: "exact", head: true })
     .eq("notebook_id", id)
-    .eq("user_id", user.id);
+    .eq("user_id", user.id)
+    .eq("is_trashed", false);
 
   if (countError) {
     return errorResponse("Failed to check notebook contents", 500);

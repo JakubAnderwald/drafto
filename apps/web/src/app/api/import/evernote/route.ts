@@ -107,7 +107,7 @@ async function importNote(
   }
 
   // Convert ENML to BlockNote blocks
-  const blocks = convertEnmlToBlocks(note.content, attachmentUrlMap);
+  const blocks = convertEnmlToBlocks(note.content, attachmentUrlMap, note.tasks);
 
   // Update note with converted content
   const { error: updateError } = await supabase
