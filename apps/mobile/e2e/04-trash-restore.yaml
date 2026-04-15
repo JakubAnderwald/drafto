@@ -24,7 +24,7 @@ appId: eu.drafto.mobile
 - tapOn: "Trash, tab.*"
 - extendedWaitUntil:
     visible: "Trash"
-    timeout: 5000
+    timeout: 10000
 
 # --- Test: go back to Notebooks tab ---
 - tapOn: "Notebooks, tab.*"

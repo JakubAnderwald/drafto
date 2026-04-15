@@ -108,12 +108,16 @@ export function NotebooksSidebar({
           <Pressable
             style={({ pressed }) => [styles.searchButton, pressed && styles.searchButtonPressed]}
             onPress={onOpenSearch}
+            accessibilityLabel="Search"
+            accessibilityRole="button"
           >
             <Text style={styles.searchButtonText}>Search</Text>
           </Pressable>
           <Pressable
             style={({ pressed }) => [styles.addButton, pressed && styles.addButtonPressed]}
             onPress={() => setIsCreating(true)}
+            accessibilityLabel="Add notebook"
+            accessibilityRole="button"
           >
             <Text style={styles.addButtonText}>+</Text>
           </Pressable>
@@ -158,6 +162,7 @@ export function NotebooksSidebar({
                 onPress={() => {
                   onSelectNotebook(nb.id);
                 }}
+                accessibilityLabel={nb.name}
                 onLongPress={() => {
                   setEditingId(nb.id);
                   setEditName(nb.name);
@@ -202,6 +207,8 @@ export function NotebooksSidebar({
         <Pressable
           style={[styles.trashButton, showTrash && styles.trashButtonActive]}
           onPress={onToggleTrash}
+          accessibilityLabel="Trash"
+          accessibilityRole="button"
         >
           <Text style={[styles.trashText, showTrash && styles.trashTextActive]}>Trash</Text>
         </Pressable>
@@ -212,7 +219,7 @@ export function NotebooksSidebar({
           <Text style={styles.userEmail} numberOfLines={1}>
             {user?.email}
           </Text>
-          <Pressable onPress={signOut}>
+          <Pressable onPress={signOut} accessibilityLabel="Sign out" accessibilityRole="button">
             <Text style={styles.signOutText}>Sign out</Text>
           </Pressable>
         </View>

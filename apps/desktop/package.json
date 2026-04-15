@@ -6,7 +6,9 @@
   "scripts": {
     "start": "npx react-native start",
     "macos": "npx react-native run-macos",
-    "test": "jest --passWithNoTests",
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "test:e2e": "bash e2e/run-e2e.sh",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
     "release:beta": "bundle exec fastlane mac beta",

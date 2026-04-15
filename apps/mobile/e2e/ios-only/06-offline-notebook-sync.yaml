@@ -1,10 +1,9 @@
 appId: eu.drafto.mobile
 ---
-# Flow 06: Offline notebook creation and multi-operation sync
+# Flow 06 (iOS): Offline notebook creation and multi-operation sync
 # Depends on: 01-login (user is logged in)
 # Pass -e RUN_ID=<timestamp> when running
-# Tests: create notebook offline, create note inside it offline,
-#         all queued operations sync correctly on reconnect
+# Run with: maestro test apps/mobile/e2e/ios-only/06-offline-notebook-sync.yaml --platform ios
 
 - launchApp
 
@@ -39,8 +38,8 @@ appId: eu.drafto.mobile
 
 - assertVisible: ".*OffNest ${RUN_ID}.*"
 
-# Go back to notebooks list
-- pressKey: back
+# Go back to notebooks list (iOS: tap header back button)
+- tapOn: "Notebooks"
 
 # --- Test 3: Verify pending changes indicator ---
 - assertVisible: "Offline"
@@ -70,7 +69,12 @@ appId: eu.drafto.mobile
     direction: LEFT
 - assertVisible: "Move to Trash"
 - tapOn: "Trash"
-- pressKey: back
+- extendedWaitUntil:
+    notVisible: ".*OffNest ${RUN_ID}.*"
+    timeout: 10000
+
+# Go back to notebooks list (iOS: tap header back button)
+- tapOn: "Notebooks"
 
 - swipe:
     from:

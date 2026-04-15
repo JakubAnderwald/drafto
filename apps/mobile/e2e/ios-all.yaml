@@ -1,7 +1,8 @@
 appId: eu.drafto.mobile
 ---
-# Combined Android E2E flow - all tests in a single run
+# Combined iOS E2E flow - all tests in a single run
 # Pass -e RUN_ID=<timestamp> -e E2E_TEST_EMAIL=... -e E2E_TEST_PASSWORD=...
+# Run with: maestro test apps/mobile/e2e/ios-all.yaml --platform ios
 
 # ===== FLOW 01: Login =====
 - clearKeychain
@@ -127,8 +128,8 @@ appId: eu.drafto.mobile
     visible: ".*Note ${RUN_ID}.*"
     timeout: 10000
 
-# --- Go back and rename via long press ---
-- pressKey: back
+# --- Go back (iOS: tap header back button) and rename via long press ---
+- tapOn: "Notes"
 - extendedWaitUntil:
     visible: ".*Note ${RUN_ID}.*"
     timeout: 10000
@@ -143,8 +144,8 @@ appId: eu.drafto.mobile
 
 # ===== FLOW 04: Navigate back to Notebooks =====
 
-# Go back to Notebooks tab
-- pressKey: back
+# Go back to Notebooks (iOS: tap header back button labeled "Notebooks")
+- tapOn: "Notebooks"
 - extendedWaitUntil:
     visible: "Notebooks"
     timeout: 10000

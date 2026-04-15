@@ -24,41 +24,76 @@ End-to-end tests for the Drafto mobile app using [Maestro](https://maestro.mobil
 
 ## Running Tests
 
-Run all flows sequentially:
+### Combined flows (recommended for full regression)
 
 ```bash
-maestro test apps/mobile/e2e/
+# Android — runs all core flows (login, notebooks, notes, navigation) in one session
+maestro test apps/mobile/e2e/android-all.yaml --platform android -e RUN_ID=$(date +%s)
+
+# iOS — runs all core flows in one session
+maestro test apps/mobile/e2e/ios-all.yaml --platform ios -e RUN_ID=$(date +%s)
 ```
 
-Run a single flow:
+### Individual flows (cross-platform)
+
+Flows 01-04 and 05-cross-platform-sync work on both platforms:
 
 ```bash
-maestro test apps/mobile/e2e/01-login.yaml
+maestro test apps/mobile/e2e/01-login.yaml --platform ios
+maestro test apps/mobile/e2e/02-create-notebook.yaml --platform ios -e RUN_ID=$(date +%s)
 ```
 
-Target a specific platform:
+### Platform-specific flows
 
 ```bash
-# iOS Simulator
-maestro test apps/mobile/e2e/ --platform ios
+# Android-only (uses pressKey: back, toggleAirplaneMode)
+maestro test apps/mobile/e2e/android-only/ --platform android -e RUN_ID=$(date +%s)
 
-# Android Emulator
-maestro test apps/mobile/e2e/ --platform android
+# iOS-only (uses header back buttons, swipe-to-dismiss modals)
+maestro test apps/mobile/e2e/ios-only/ --platform ios -e RUN_ID=$(date +%s)
 ```
 
 ## Test Flows
 
-| Flow                       | Description                                                         |
-| -------------------------- | ------------------------------------------------------------------- |
-| `01-login.yaml`            | Login with email/password, verify Notebooks screen                  |
-| `02-create-notebook.yaml`  | Create a new notebook, verify it appears                            |
-| `03-create-edit-note.yaml` | Create a note, open editor, rename, verify auto-save                |
-| `04-trash-restore.yaml`    | Swipe to trash a note, restore from Trash tab                       |
-| `05-offline-mode.yaml`     | Toggle airplane mode, create note offline, verify sync on reconnect |
+### Cross-platform (both iOS and Android)
+
+| Flow                          | Description                                        |
+| ----------------------------- | -------------------------------------------------- |
+| `01-login.yaml`               | Login with email/password, verify Notebooks screen |
+| `02-create-notebook.yaml`     | Create, rename, cancel notebooks                   |
+| `03-create-edit-note.yaml`    | Create notes, open editor, rename via long press   |
+| `04-trash-restore.yaml`       | Tab navigation between Notebooks and Trash         |
+| `05-cross-platform-sync.yaml` | Open a note created by web E2E, edit on mobile     |
+| `search.yaml`                 | Open search, type query, dismiss                   |
+
+### Android-only
+
+| Flow                                         | Description                                             |
+| -------------------------------------------- | ------------------------------------------------------- |
+| `android-all.yaml`                           | Combined flow: login + notebooks + notes + nav          |
+| `android-only/05-offline-mode.yaml`          | Airplane mode, offline note creation, sync on reconnect |
+| `android-only/06-offline-notebook-sync.yaml` | Offline notebook + note creation, sync verification     |
+
+### iOS-only
+
+| Flow                                     | Description                                             |
+| ---------------------------------------- | ------------------------------------------------------- |
+| `ios-all.yaml`                           | Combined flow: login + notebooks + notes + nav          |
+| `ios-only/05-offline-mode.yaml`          | Airplane mode, offline note creation, sync on reconnect |
+| `ios-only/06-offline-notebook-sync.yaml` | Offline notebook + note creation, sync verification     |
+| `ios-only/search.yaml`                   | Search with modal dismiss (swipe down)                  |
+
+## Platform differences
+
+The main navigation difference between platforms:
+
+- **Android**: Uses `pressKey: back` (hardware back button) to navigate between screens
+- **iOS**: Uses `tapOn: "Notes"` / `tapOn: "Notebooks"` to tap the header back button (label comes from the previous screen's title). The search screen is a modal dismissed with `swipe: { direction: DOWN }`
 
 ## Notes
 
 - Tests are designed to run **sequentially** (each builds on state from the previous flow)
-- Flow 01 clears app state and logs in fresh; flows 02-05 assume prior login
-- Maestro E2E tests are **local-only** — they do not run in CI (too expensive for iOS/Android emulators)
+- Flow 01 clears app state and logs in fresh; flows 02+ assume prior login
+- Maestro E2E tests are **local-only** — they do not run in CI
 - Run the full suite on both iOS Simulator and Android Emulator before any release
+- Minimum timeout tier is 10s to avoid flakiness on slow emulators
