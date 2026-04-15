@@ -131,7 +131,6 @@ export function NotebooksSidebar({
             value={newName}
             onChangeText={setNewName}
             placeholder="Notebook name"
-            testID="notebook-name-input"
             placeholderTextColor={semantic.fgSubtle}
             autoFocus
             onSubmitEditing={handleCreate}

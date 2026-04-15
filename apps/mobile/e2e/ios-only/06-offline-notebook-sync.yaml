@@ -69,6 +69,9 @@ appId: eu.drafto.mobile
     direction: LEFT
 - assertVisible: "Move to Trash"
 - tapOn: "Trash"
+- extendedWaitUntil:
+    notVisible: ".*OffNest ${RUN_ID}.*"
+    timeout: 10000
 
 # Go back to notebooks list (iOS: tap header back button)
 - tapOn: "Notebooks"

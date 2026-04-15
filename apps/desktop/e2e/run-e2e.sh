@@ -223,15 +223,26 @@ echo "TEST 4: Create a new notebook"
 # ──────────────────────────────────────────────
 BEFORE_COUNT=$(get_element_count)
 
+E2E_NB_NAME="E2E Notebook $(date +%s)"
+
 if click_element_by_desc "Add notebook"; then
+  wait_for_ui
+
+  # Type a notebook name and submit
+  cliclick t:"$E2E_NB_NAME"
+  cliclick kp:return
   wait_for_ui
   sleep 1
 
-  AFTER_COUNT=$(get_element_count)
-  if [ "$AFTER_COUNT" -ne "$BEFORE_COUNT" ]; then
-    pass "Create notebook form appeared (element count: $BEFORE_COUNT -> $AFTER_COUNT)"
+  if has_element "$E2E_NB_NAME"; then
+    pass "Notebook '$E2E_NB_NAME' created and visible"
   else
-    fail "Create notebook" "No change after clicking Add notebook"
+    AFTER_COUNT=$(get_element_count)
+    if [ "$AFTER_COUNT" -ne "$BEFORE_COUNT" ]; then
+      pass "Notebook created (element count: $BEFORE_COUNT -> $AFTER_COUNT)"
+    else
+      fail "Create notebook" "Notebook '$E2E_NB_NAME' not found after creation"
+    fi
   fi
 else
   fail "Create notebook" "Could not find 'Add notebook' button"

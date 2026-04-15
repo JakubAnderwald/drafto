@@ -57,7 +57,6 @@ export function SearchOverlay({ visible, onClose, onSelectNote }: SearchOverlayP
             value={query}
             onChangeText={setQuery}
             placeholder="Search notes..."
-            testID="search-input"
             placeholderTextColor={semantic.fgSubtle}
             // @ts-expect-error -- RN macOS supports onKeyDown but types are incomplete
             onKeyDown={(e: { nativeEvent: { key: string } }) => {
