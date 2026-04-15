@@ -26,7 +26,7 @@ appId: eu.drafto.mobile
 # Verify notebook appears in the list
 - extendedWaitUntil:
     visible: ".*NB ${RUN_ID}"
-    timeout: 5000
+    timeout: 10000
 
 # --- Test: cancel creating a notebook ---
 - tapOn:

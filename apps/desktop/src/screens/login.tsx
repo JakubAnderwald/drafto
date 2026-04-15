@@ -87,6 +87,7 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
         />
 
         <Button
+          testID="login-button"
           title={loading ? "Logging in..." : "Log in"}
           onPress={handleLogin}
           disabled={loading}

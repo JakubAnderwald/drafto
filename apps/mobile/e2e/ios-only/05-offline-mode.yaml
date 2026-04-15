@@ -1,11 +1,9 @@
 appId: eu.drafto.mobile
 ---
-# Flow 05: Offline mode — airplane mode toggle, verify local data persists
+# Flow 05 (iOS): Offline mode — airplane mode toggle, verify local data persists
 # Depends on: 03-create-edit-note (NoteR <RUN_ID> / NoteF <RUN_ID> exists in NB <RUN_ID>)
-# Note: this flow runs BEFORE 04-trash-restore in the offline test sequence
 # Pass -e RUN_ID=<timestamp> when running
-# Tests: offline indicator, offline note creation, offline editing,
-#         data persistence across app restart while offline, sync on reconnect
+# Run with: maestro test apps/mobile/e2e/ios-only/05-offline-mode.yaml --platform ios
 
 - launchApp
 
@@ -44,8 +42,8 @@ appId: eu.drafto.mobile
     timeout: 10000
     optional: true
 
-# Go back to notes list
-- pressKey: back
+# Go back to notes list (iOS: tap header back button)
+- tapOn: "Notes"
 
 # --- Test 4: Verify data persists across app restart while offline ---
 # (airplane mode still on — app should show local data from SQLite)

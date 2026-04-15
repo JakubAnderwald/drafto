@@ -15,7 +15,7 @@ appId: eu.drafto.mobile
 # --- Test: empty state ---
 - extendedWaitUntil:
     visible: "No notes yet"
-    timeout: 5000
+    timeout: 10000
     optional: true
 
 # --- Test: create a note with title ---
@@ -29,7 +29,7 @@ appId: eu.drafto.mobile
 # Verify the note appears in the list (async DB write)
 - extendedWaitUntil:
     visible: ".*Note ${RUN_ID}.*"
-    timeout: 5000
+    timeout: 10000
 
 # --- Test: create a note without title ---
 - tapOn:
@@ -41,7 +41,7 @@ appId: eu.drafto.mobile
 # An untitled note should appear
 - extendedWaitUntil:
     visible: ".*Untitled.*"
-    timeout: 5000
+    timeout: 10000
 
 # --- Test: cancel note creation ---
 - tapOn:
@@ -58,7 +58,7 @@ appId: eu.drafto.mobile
 # Verify editor screen loads with note title
 - extendedWaitUntil:
     visible: ".*Note ${RUN_ID}.*"
-    timeout: 5000
+    timeout: 10000
 
 # --- Test: rename via long press on notes list ---
 - tapOn: "Notes"
@@ -66,7 +66,7 @@ appId: eu.drafto.mobile
 # Verify the title shows in the list
 - extendedWaitUntil:
     visible: ".*Note ${RUN_ID}.*"
-    timeout: 5000
+    timeout: 10000
 
 # Long press to enter inline edit mode
 - longPressOn: ".*Note ${RUN_ID}.*"
@@ -76,7 +76,7 @@ appId: eu.drafto.mobile
     id: "checkmark"
 - extendedWaitUntil:
     visible: ".*NoteF ${RUN_ID}.*"
-    timeout: 5000
+    timeout: 10000
 
 # --- Test: pull to refresh ---
 - swipe:

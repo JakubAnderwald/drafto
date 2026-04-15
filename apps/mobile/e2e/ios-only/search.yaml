@@ -1,12 +1,15 @@
 appId: eu.drafto.mobile
 ---
-# Assumes user is already logged in (run after 01-login or android-all)
+# iOS search flow
+# Assumes user is already logged in (run after 01-login or ios-all)
+# Run with: maestro test apps/mobile/e2e/ios-only/search.yaml --platform ios
+
 - launchApp
 - extendedWaitUntil:
     visible: "Notebooks"
     timeout: 30000
 
-# Open search screen (tap the search icon in the header)
+# Open search screen (tap the search button by testID)
 - tapOn:
     id: "search-button"
 - extendedWaitUntil:
@@ -23,9 +26,10 @@ appId: eu.drafto.mobile
     timeout: 10000
     optional: true
 
-# Go back (first back dismisses keyboard, second navigates)
-- pressKey: back
-- pressKey: back
+# Dismiss the search modal (iOS: swipe down to dismiss)
+- swipe:
+    direction: DOWN
+    duration: 500
 - extendedWaitUntil:
     visible: "Notebooks"
     timeout: 10000

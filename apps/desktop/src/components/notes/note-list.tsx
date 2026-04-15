@@ -141,6 +141,7 @@ export function NoteList({ notebookId, selectedNoteId, onSelectNote }: NoteListP
                 key={note.id}
                 style={[styles.noteItem, isSelected && styles.noteItemSelected]}
                 onPress={() => onSelectNote(note.id)}
+                accessibilityLabel={note.title || "Untitled"}
               >
                 <View style={styles.noteItemRow}>
                   <Text
