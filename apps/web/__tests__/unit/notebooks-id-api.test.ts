@@ -132,7 +132,9 @@ describe("DELETE /api/notebooks/[id]", () => {
       return {
         select: () => ({
           eq: () => ({
-            eq: () => Promise.resolve({ count: 3, error: null }),
+            eq: () => ({
+              eq: () => Promise.resolve({ count: 3, error: null }),
+            }),
           }),
         }),
       };
@@ -157,7 +159,9 @@ describe("DELETE /api/notebooks/[id]", () => {
         return {
           select: () => ({
             eq: () => ({
-              eq: () => Promise.resolve({ count: 0, error: null }),
+              eq: () => ({
+                eq: () => Promise.resolve({ count: 0, error: null }),
+              }),
             }),
           }),
         };
