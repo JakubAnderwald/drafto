@@ -36,13 +36,20 @@ export function convertEnmlToBlocks(
 
   // Build task group map for modern Evernote task format
   const taskMap = new Map<string, EnexTask[]>();
+  const orphanTasks: EnexTask[] = [];
   if (tasks) {
     for (const task of tasks) {
       if (task.groupId) {
         const group = taskMap.get(task.groupId) || [];
         group.push(task);
         taskMap.set(task.groupId, group);
+      } else {
+        orphanTasks.push(task);
       }
+    }
+    // Sort tasks within each group by sortWeight
+    for (const group of taskMap.values()) {
+      group.sort((a, b) => (a.sortWeight ?? "").localeCompare(b.sortWeight ?? ""));
     }
   }
 
@@ -56,6 +63,15 @@ export function convertEnmlToBlocks(
   const root = document.querySelector("en-note") || document.body;
 
   const blocks = processChildren(root, attachmentUrlMap, taskMap);
+
+  // Append orphan tasks (tasks without a groupId) at the end
+  for (const task of orphanTasks) {
+    blocks.push({
+      type: "checkListItem",
+      props: { checked: task.checked },
+      content: [{ type: "text", text: task.title, styles: {} }],
+    });
+  }
 
   return blocks.length > 0 ? blocks : [createParagraph([])];
 }

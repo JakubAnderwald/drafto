@@ -344,4 +344,31 @@ describe("convertEnmlToBlocks", () => {
 
     expect(blocks.every((b) => b.type === "paragraph")).toBe(true);
   });
+
+  it("sorts tasks within a group by sortWeight", () => {
+    const enml = '<en-note><div style="--en-task-group:true; --en-id:grp1;"></div></en-note>';
+    const tasks = [
+      { title: "Third", checked: false, groupId: "grp1", sortWeight: "R" },
+      { title: "First", checked: false, groupId: "grp1", sortWeight: "B" },
+      { title: "Second", checked: false, groupId: "grp1", sortWeight: "J" },
+    ];
+    const blocks = convertEnmlToBlocks(enml, emptyMap, tasks);
+
+    expect(blocks).toHaveLength(3);
+    expect((blocks[0].content as Array<{ text: string }>)[0].text).toBe("First");
+    expect((blocks[1].content as Array<{ text: string }>)[0].text).toBe("Second");
+    expect((blocks[2].content as Array<{ text: string }>)[0].text).toBe("Third");
+  });
+
+  it("appends orphan tasks without groupId at the end", () => {
+    const enml = "<en-note><p>Note content</p></en-note>";
+    const tasks = [{ title: "Orphan task", checked: true, groupId: "" }];
+    const blocks = convertEnmlToBlocks(enml, emptyMap, tasks);
+
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].type).toBe("paragraph");
+    expect(blocks[1].type).toBe("checkListItem");
+    expect(blocks[1].props?.checked).toBe(true);
+    expect((blocks[1].content as Array<{ text: string }>)[0].text).toBe("Orphan task");
+  });
 });
