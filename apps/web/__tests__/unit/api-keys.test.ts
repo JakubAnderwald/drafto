@@ -50,7 +50,7 @@ describe("GET /api/api-keys", () => {
   it("returns 401 when not authenticated", async () => {
     mockGetUser.mockResolvedValue({ data: { user: null }, error: { message: "Not auth" } });
 
-    const response = await GET();
+    const response = await GET(new NextRequest("http://localhost:3000/api/api-keys"));
     expect(response.status).toBe(401);
   });
 
@@ -79,7 +79,7 @@ describe("GET /api/api-keys", () => {
       };
     });
 
-    const response = await GET();
+    const response = await GET(new NextRequest("http://localhost:3000/api/api-keys"));
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body).toHaveLength(1);

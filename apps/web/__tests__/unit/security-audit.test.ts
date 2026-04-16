@@ -118,7 +118,7 @@ describe("Security Audit", () => {
 
     it("GET /api/notebooks returns 403 for unapproved users", async () => {
       const { GET } = await import("@/app/api/notebooks/route");
-      const response = await GET();
+      const response = await GET(new NextRequest("http://localhost:3000/api/notebooks"));
       expect(response.status).toBe(403);
       const body = await response.json();
       expect(body.error).toBe("Forbidden");
@@ -241,7 +241,7 @@ describe("Security Audit", () => {
 
     it("GET /api/notes/trash returns 403 for unapproved users", async () => {
       const { GET } = await import("@/app/api/notes/trash/route");
-      const response = await GET();
+      const response = await GET(new NextRequest("http://localhost:3000/api/notes/trash"));
       expect(response.status).toBe(403);
     });
 

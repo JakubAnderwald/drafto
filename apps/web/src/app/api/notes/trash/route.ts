@@ -1,7 +1,8 @@
-import { getAuthenticatedUser, errorResponse, successResponse } from "@/lib/api/utils";
+import type { NextRequest } from "next/server";
+import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
 
-export async function GET() {
-  const { data: auth, error: authError } = await getAuthenticatedUser();
+export async function GET(request: NextRequest) {
+  const { data: auth, error: authError } = await getAuthenticatedUserFast(request);
   if (authError) return authError;
 
   const { supabase, user } = auth;

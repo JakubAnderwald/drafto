@@ -1,12 +1,12 @@
 import type { NextRequest } from "next/server";
-import { getAuthenticatedUser, errorResponse, successResponse } from "@/lib/api/utils";
+import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
 }
 
-export async function GET(_request: NextRequest, { params }: RouteParams) {
-  const { data: auth, error: authError } = await getAuthenticatedUser();
+export async function GET(request: NextRequest, { params }: RouteParams) {
+  const { data: auth, error: authError } = await getAuthenticatedUserFast(request);
   if (authError) return authError;
 
   const { supabase, user } = auth;
@@ -27,8 +27,8 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
   return successResponse(notes);
 }
 
-export async function POST(_request: NextRequest, { params }: RouteParams) {
-  const { data: auth, error: authError } = await getAuthenticatedUser();
+export async function POST(request: NextRequest, { params }: RouteParams) {
+  const { data: auth, error: authError } = await getAuthenticatedUserFast(request);
   if (authError) return authError;
 
   const { supabase, user } = auth;

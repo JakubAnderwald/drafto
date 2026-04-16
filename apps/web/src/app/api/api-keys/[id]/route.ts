@@ -1,14 +1,14 @@
 import type { NextRequest } from "next/server";
-import { getAuthenticatedUser, errorResponse, successResponse } from "@/lib/api/utils";
+import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
 
 /**
  * DELETE /api/api-keys/[id] — Revoke an API key (soft-delete by setting revoked_at).
  */
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const { data: auth, error: authError } = await getAuthenticatedUser();
+  const { data: auth, error: authError } = await getAuthenticatedUserFast(request);
   if (authError) return authError;
 
   const { supabase, user } = auth;

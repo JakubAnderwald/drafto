@@ -1,12 +1,12 @@
 import type { NextRequest } from "next/server";
-import { getAuthenticatedUser, errorResponse, successResponse } from "@/lib/api/utils";
+import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
 }
 
 export async function PATCH(request: NextRequest, { params }: RouteParams) {
-  const { data: auth, error: authError } = await getAuthenticatedUser();
+  const { data: auth, error: authError } = await getAuthenticatedUserFast(request);
   if (authError) return authError;
 
   const { supabase, user } = auth;
@@ -39,8 +39,8 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   return successResponse(notebook);
 }
 
-export async function DELETE(_request: NextRequest, { params }: RouteParams) {
-  const { data: auth, error: authError } = await getAuthenticatedUser();
+export async function DELETE(request: NextRequest, { params }: RouteParams) {
+  const { data: auth, error: authError } = await getAuthenticatedUserFast(request);
   if (authError) return authError;
 
   const { supabase, user } = auth;

@@ -8,7 +8,7 @@ interface RouteParams {
 
 export async function POST(request: NextRequest, { params }: RouteParams) {
   const { id: noteId } = await params;
-  const { data: auth, error: authError } = await getAuthenticatedNoteOwner(noteId);
+  const { data: auth, error: authError } = await getAuthenticatedNoteOwner(noteId, request);
   if (authError) return authError;
 
   const { supabase, user } = auth;
