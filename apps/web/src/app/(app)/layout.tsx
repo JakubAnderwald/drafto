@@ -33,8 +33,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // Try the middleware-verified header first to skip the redundant getUser() call.
   // Fall back to getUser() for edge cases (e.g., first request after client-side login
   // where RSC navigation may not carry the middleware header).
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const headersList = await headers();
-  let userId = headersList.get("x-verified-user-id");
+  const headerUserId = headersList.get("x-verified-user-id");
+  let userId = headerUserId && UUID_REGEX.test(headerUserId) ? headerUserId : null;
 
   const supabase = await createClient();
 
@@ -59,23 +61,30 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   // Prefetch notebooks + first notebook's notes on the server to eliminate
   // the client-side fetch waterfall (saves ~600ms of sequential API calls).
-  const { data: notebooks } = await supabase
+  const { data: notebooks, error: notebooksError } = await supabase
     .from("notebooks")
     .select("id, name, created_at, updated_at")
     .eq("user_id", userId)
     .order("name");
 
+  if (notebooksError) {
+    console.error("[layout] Failed to prefetch notebooks:", notebooksError.message);
+  }
+
   const firstNotebookId = notebooks?.[0]?.id ?? null;
 
   let initialNotes: { id: string; title: string; created_at: string; updated_at: string }[] = [];
   if (firstNotebookId) {
-    const { data: notes } = await supabase
+    const { data: notes, error: notesError } = await supabase
       .from("notes")
       .select("id, title, created_at, updated_at")
       .eq("notebook_id", firstNotebookId)
       .eq("user_id", userId)
       .eq("is_trashed", false)
       .order("updated_at", { ascending: false });
+    if (notesError) {
+      console.error("[layout] Failed to prefetch notes:", notesError.message);
+    }
     initialNotes = notes ?? [];
   }
 

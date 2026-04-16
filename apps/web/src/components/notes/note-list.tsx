@@ -67,9 +67,15 @@ export function NoteList({
 }: NoteListProps) {
   const cacheKey = `${notebookId}-${refreshTrigger}`;
 
-  // Pre-populate cache with server-fetched data to skip the client fetch.
-  // Only on the client — on the server the Suspense fallback should render instead.
-  if (typeof window !== "undefined" && serverNotes && !notesCache.has(cacheKey)) {
+  // Pre-populate cache with server-fetched data to skip the initial client fetch.
+  // Only on the client (to avoid SSR hydration mismatch), and only for the very first
+  // render (refreshTrigger === 0) — subsequent triggers must fetch fresh data.
+  if (
+    typeof window !== "undefined" &&
+    serverNotes &&
+    refreshTrigger === 0 &&
+    !notesCache.has(cacheKey)
+  ) {
     notesCache.set(cacheKey, Promise.resolve(serverNotes));
   }
 
