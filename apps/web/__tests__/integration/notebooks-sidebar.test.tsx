@@ -381,4 +381,41 @@ describe("NotebooksSidebar", () => {
       expect(mockFetch).toHaveBeenCalledWith("/api/notebooks");
     });
   });
+
+  it("skips client fetch when initialNotebooks are provided", async () => {
+    mockFetch.mockReset();
+
+    await act(async () => {
+      render(
+        <NotebooksSidebar
+          selectedNotebookId="nb-1"
+          onSelectNotebook={vi.fn()}
+          initialNotebooks={mockNotebooks}
+        />,
+      );
+    });
+
+    // Should render notebooks immediately without fetching
+    expect(screen.getByText("Notes")).toBeInTheDocument();
+    expect(screen.getByText("Work")).toBeInTheDocument();
+    expect(screen.queryByTestId("sidebar-skeleton")).not.toBeInTheDocument();
+
+    // Should NOT have made a fetch call
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("renders without loading state when initialNotebooks are provided", async () => {
+    await act(async () => {
+      render(
+        <NotebooksSidebar
+          selectedNotebookId={null}
+          onSelectNotebook={vi.fn()}
+          initialNotebooks={mockNotebooks}
+        />,
+      );
+    });
+
+    // Should show notebooks heading immediately (no skeleton)
+    expect(screen.getByRole("heading", { name: /notebooks/i })).toBeInTheDocument();
+  });
 });

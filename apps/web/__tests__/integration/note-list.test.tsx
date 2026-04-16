@@ -605,4 +605,61 @@ describe("NoteList", () => {
       expect(mockFetch).toHaveBeenCalledWith("/api/notebooks/nb-42/notes");
     });
   });
+
+  it("uses initialNotes to skip client fetch on first render", async () => {
+    mockFetch.mockReset();
+
+    const serverNotes = [
+      { id: "server-1", title: "Server Note", updated_at: new Date().toISOString() },
+    ];
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteList
+            notebookId="nb-prefetched"
+            selectedNoteId={null}
+            onSelectNote={vi.fn()}
+            onCreateNote={vi.fn()}
+            refreshTrigger={0}
+            initialNotes={serverNotes}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Server Note")).toBeInTheDocument();
+    });
+
+    // Should NOT have made a client-side fetch — data came from server
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("fetches fresh data on refreshTrigger > 0 even with initialNotes", async () => {
+    const trigger = nextTrigger();
+    const serverNotes = [
+      { id: "stale-1", title: "Stale Server Note", updated_at: new Date().toISOString() },
+    ];
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteList
+            notebookId="nb-refresh"
+            selectedNoteId={null}
+            onSelectNote={vi.fn()}
+            onCreateNote={vi.fn()}
+            refreshTrigger={trigger}
+            initialNotes={serverNotes}
+          />
+        </Suspense>,
+      );
+    });
+
+    // Should fetch fresh data since refreshTrigger > 0
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith("/api/notebooks/nb-refresh/notes");
+    });
+  });
 });
