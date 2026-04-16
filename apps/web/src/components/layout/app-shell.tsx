@@ -17,6 +17,19 @@ interface NotebookInfo {
   name: string;
 }
 
+interface NoteListItem {
+  id: string;
+  title: string;
+  updated_at: string;
+}
+
+interface InitialNotebook {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
 function ChevronLeftIcon() {
   return (
     <svg
@@ -144,11 +157,25 @@ function DocumentIcon() {
   );
 }
 
-export function AppShell({ children }: { children?: React.ReactNode }) {
-  const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null);
+interface AppShellProps {
+  children?: React.ReactNode;
+  initialNotebooks?: InitialNotebook[];
+  initialNotebookId?: string | null;
+  initialNotes?: NoteListItem[];
+}
+
+export function AppShell({
+  children,
+  initialNotebooks = [],
+  initialNotebookId = null,
+  initialNotes = [],
+}: AppShellProps) {
+  const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(initialNotebookId);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const [notebooks, setNotebooks] = useState<NotebookInfo[]>([]);
+  const [notebooks, setNotebooks] = useState<NotebookInfo[]>(
+    initialNotebooks.map((n) => ({ id: n.id, name: n.name })),
+  );
   const [viewingTrash, setViewingTrash] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
@@ -389,6 +416,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           isTrashSelected={viewingTrash}
           onSelectTrash={handleSelectTrash}
           refreshTrigger={refreshTrigger}
+          initialNotebooks={initialNotebooks}
         />
         <div className="flex items-center justify-end p-2">
           <AppMenu onImportEvernote={() => setShowImportDialog(true)} />
@@ -449,6 +477,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               notebooks={notebooks}
               refreshTrigger={refreshTrigger}
               lastNoteUpdate={lastNoteUpdate}
+              initialNotes={selectedNotebookId === initialNotebookId ? initialNotes : undefined}
             />
           </Suspense>
         ) : (

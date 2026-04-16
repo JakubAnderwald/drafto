@@ -32,6 +32,7 @@ interface NoteListProps {
   notebooks?: NotebookOption[];
   refreshTrigger?: number;
   lastNoteUpdate?: NoteUpdate | null;
+  initialNotes?: NoteListItem[];
 }
 
 const notesCache = new Map<string, Promise<NoteListItem[]>>();
@@ -62,8 +63,16 @@ export function NoteList({
   notebooks = [],
   refreshTrigger = 0,
   lastNoteUpdate,
+  initialNotes: serverNotes,
 }: NoteListProps) {
   const cacheKey = `${notebookId}-${refreshTrigger}`;
+
+  // Pre-populate cache with server-fetched data to skip the client fetch.
+  // Only on the client — on the server the Suspense fallback should render instead.
+  if (typeof window !== "undefined" && serverNotes && !notesCache.has(cacheKey)) {
+    notesCache.set(cacheKey, Promise.resolve(serverNotes));
+  }
+
   const initialNotes = use(fetchNotes(notebookId, cacheKey));
   const [notes, setNotes] = useState(initialNotes);
   const [prevInitialNotes, setPrevInitialNotes] = useState(initialNotes);

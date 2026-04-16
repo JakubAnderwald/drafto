@@ -21,6 +21,7 @@ interface NotebooksSidebarProps {
   isTrashSelected?: boolean;
   onSelectTrash?: () => void;
   refreshTrigger?: number;
+  initialNotebooks?: Notebook[];
 }
 
 export function NotebooksSidebar({
@@ -30,9 +31,10 @@ export function NotebooksSidebar({
   isTrashSelected = false,
   onSelectTrash,
   refreshTrigger = 0,
+  initialNotebooks = [],
 }: NotebooksSidebarProps) {
-  const [notebooks, setNotebooks] = useState<Notebook[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [notebooks, setNotebooks] = useState<Notebook[]>(initialNotebooks);
+  const [loading, setLoading] = useState(initialNotebooks.length === 0);
   const [creatingName, setCreatingName] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
@@ -40,7 +42,7 @@ export function NotebooksSidebar({
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const createInputRef = useRef<HTMLInputElement>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
-  const hasFetched = useRef(false);
+  const hasFetched = useRef(initialNotebooks.length > 0);
 
   useEffect(() => {
     if (hasFetched.current) return;

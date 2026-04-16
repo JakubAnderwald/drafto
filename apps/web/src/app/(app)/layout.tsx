@@ -1,10 +1,12 @@
+import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 
-async function ensureDefaultNotebook(userId: string) {
-  const supabase = await createClient();
-
+async function ensureDefaultNotebook(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+) {
   const { data: notebooks, error: selectError } = await supabase
     .from("notebooks")
     .select("id")
@@ -28,23 +30,62 @@ async function ensureDefaultNotebook(userId: string) {
 }
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
+  // Try the middleware-verified header first to skip the redundant getUser() call.
+  // Fall back to getUser() for edge cases (e.g., first request after client-side login
+  // where RSC navigation may not carry the middleware header).
+  const headersList = await headers();
+  let userId = headersList.get("x-verified-user-id");
+
   const supabase = await createClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
 
-  // AuthSessionMissingError is expected when there's no session — redirect, don't throw.
-  // Only throw for non-auth infrastructure errors (e.g. network failures).
-  if (authError && !("__isAuthError" in authError)) {
-    throw authError;
+  if (!userId) {
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError && !("__isAuthError" in authError)) {
+      throw authError;
+    }
+
+    if (!user) {
+      redirect("/login");
+    }
+
+    userId = user.id;
   }
 
-  if (!user) {
-    redirect("/login");
+  await ensureDefaultNotebook(supabase, userId);
+
+  // Prefetch notebooks + first notebook's notes on the server to eliminate
+  // the client-side fetch waterfall (saves ~600ms of sequential API calls).
+  const { data: notebooks } = await supabase
+    .from("notebooks")
+    .select("id, name, created_at, updated_at")
+    .eq("user_id", userId)
+    .order("name");
+
+  const firstNotebookId = notebooks?.[0]?.id ?? null;
+
+  let initialNotes: { id: string; title: string; created_at: string; updated_at: string }[] = [];
+  if (firstNotebookId) {
+    const { data: notes } = await supabase
+      .from("notes")
+      .select("id, title, created_at, updated_at")
+      .eq("notebook_id", firstNotebookId)
+      .eq("user_id", userId)
+      .eq("is_trashed", false)
+      .order("updated_at", { ascending: false });
+    initialNotes = notes ?? [];
   }
 
-  await ensureDefaultNotebook(user.id);
-
-  return <AppShell>{children}</AppShell>;
+  return (
+    <AppShell
+      initialNotebooks={notebooks ?? []}
+      initialNotebookId={firstNotebookId}
+      initialNotes={initialNotes}
+    >
+      {children}
+    </AppShell>
+  );
 }
