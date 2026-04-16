@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { NextRequest } from "next/server";
 import { errorResponse, successResponse } from "@/lib/api/utils";
 
 // Mock Supabase server client for getAuthenticatedUser tests
@@ -144,6 +145,86 @@ describe("API utils", () => {
       expect(result.error).toBeNull();
       expect(result.data!.user.id).toBe("user-1");
       expect(result.data!.user.email).toBe("test@test.com");
+    });
+  });
+
+  describe("getAuthenticatedUserFast", () => {
+    it("uses middleware headers when present with valid UUID", async () => {
+      const mockSupabase = { auth: {}, from: vi.fn() };
+      const { createClient } = await import("@/lib/supabase/server");
+      vi.mocked(createClient).mockResolvedValue(
+        mockSupabase as unknown as ReturnType<typeof createClient> extends Promise<infer T>
+          ? T
+          : never,
+      );
+
+      const { getAuthenticatedUserFast } = await import("@/lib/api/utils");
+      const request = new NextRequest("http://localhost:3000/api/notebooks", {
+        headers: {
+          "x-verified-user-id": "ca4c5472-d5a1-4a15-8223-26ff5dfd447b",
+          "x-verified-user-email": "test@test.com",
+        },
+      });
+
+      const result = await getAuthenticatedUserFast(request);
+
+      expect(result.error).toBeNull();
+      expect(result.data!.user.id).toBe("ca4c5472-d5a1-4a15-8223-26ff5dfd447b");
+      expect(result.data!.user.email).toBe("test@test.com");
+      // Should NOT call auth.getUser — fast path skips it
+    });
+
+    it("falls back to full auth when headers are absent", async () => {
+      const { createClient } = await import("@/lib/supabase/server");
+      vi.mocked(createClient).mockResolvedValue({
+        auth: {
+          getUser: () =>
+            Promise.resolve({ data: { user: null }, error: { message: "Not authenticated" } }),
+        },
+      } as ReturnType<typeof createClient> extends Promise<infer T> ? T : never);
+
+      const { getAuthenticatedUserFast } = await import("@/lib/api/utils");
+      const request = new NextRequest("http://localhost:3000/api/notebooks");
+
+      const result = await getAuthenticatedUserFast(request);
+
+      expect(result.data).toBeNull();
+      expect(result.error!.status).toBe(401);
+    });
+
+    it("falls back to full auth when user ID is not a valid UUID", async () => {
+      const { createClient } = await import("@/lib/supabase/server");
+      vi.mocked(createClient).mockResolvedValue({
+        auth: {
+          getUser: () =>
+            Promise.resolve({ data: { user: null }, error: { message: "Not authenticated" } }),
+        },
+      } as ReturnType<typeof createClient> extends Promise<infer T> ? T : never);
+
+      const { getAuthenticatedUserFast } = await import("@/lib/api/utils");
+      const request = new NextRequest("http://localhost:3000/api/notebooks", {
+        headers: {
+          "x-verified-user-id": "not-a-valid-uuid",
+          "x-verified-user-email": "hacker@evil.com",
+        },
+      });
+
+      const result = await getAuthenticatedUserFast(request);
+
+      // Should fall back to full auth (which returns 401 since no session)
+      expect(result.data).toBeNull();
+      expect(result.error!.status).toBe(401);
+    });
+  });
+
+  describe("successResponse with headers", () => {
+    it("includes custom headers when provided", async () => {
+      const response = successResponse({ ok: true }, 200, {
+        "Cache-Control": "private, no-cache",
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Cache-Control")).toBe("private, no-cache");
     });
   });
 });

@@ -6,7 +6,7 @@
 --
 -- Partial index (WHERE is_trashed = false) matches the filter exactly.
 -- updated_at DESC in the index avoids a separate sort step.
-CREATE INDEX IF NOT EXISTS idx_notes_notebook_user_active
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_notes_notebook_user_active
   ON public.notes (user_id, notebook_id, updated_at DESC)
   WHERE is_trashed = false;
 

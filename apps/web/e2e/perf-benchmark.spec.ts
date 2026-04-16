@@ -113,13 +113,6 @@ test.describe("Performance benchmarks", () => {
     const noteCount = await noteItems.count();
 
     // --- Benchmark 3: API response time for /api/notes/{id} ---
-    // First, get note IDs from the UI by fetching the notebook notes API
-    const noteIds: string[] = [];
-    for (let i = 0; i < Math.min(ITERATIONS, noteCount); i++) {
-      const noteText = await noteItems.nth(i).textContent();
-      if (noteText) noteIds.push(noteText); // We'll get IDs from network below
-    }
-
     // Get note IDs by fetching the list via API
     const notebookNotesData = await page.evaluate(async () => {
       // Find the notebook notes API from the current page
@@ -148,24 +141,9 @@ test.describe("Performance benchmarks", () => {
     console.log(`  Values: ${apiResult.values.join(", ")} ms`);
     console.log(`  Avg: ${apiResult.avg} ms | P50: ${apiResult.p50} ms | P95: ${apiResult.p95} ms`);
 
-    // --- Benchmark 4: Click note → editor visible (render timing) ---
-    const renderTimings: number[] = [];
-    for (let i = 0; i < Math.min(ITERATIONS, noteCount); i++) {
-      const noteIdx = i % noteCount;
-      const renderStart = Date.now();
-      await noteItems.nth(noteIdx).click();
-      await expect(page.getByRole("textbox", { name: "Note title" })).toBeVisible({
-        timeout: 15000,
-      });
-      renderTimings.push(Date.now() - renderStart);
-    }
-
-    const renderResult = summarize("Click note → editor visible", renderTimings);
-    console.log("\n=== NOTE CLICK → EDITOR VISIBLE ===");
-    console.log(`  Values: ${renderResult.values.join(", ")} ms`);
-    console.log(
-      `  Avg: ${renderResult.avg} ms | P50: ${renderResult.p50} ms | P95: ${renderResult.p95} ms`,
-    );
+    // Note: Click-to-render timing is unreliable due to client-side cache.
+    // Clicking a note that's already cached doesn't trigger a new API call,
+    // so the editor may not re-render. Use the raw API timing above instead.
   });
 
   test("measure auth overhead (getUser + profile check)", async ({ page }) => {

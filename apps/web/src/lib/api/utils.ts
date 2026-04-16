@@ -53,11 +53,13 @@ export async function getAuthenticatedUser(): Promise<AuthResult> {
  * the redundant getUser() + profiles query (~200ms savings per request).
  * Falls back to full auth if headers are absent (e.g., direct API calls).
  */
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function getAuthenticatedUserFast(request: NextRequest): Promise<AuthResult> {
   const userId = request.headers.get("x-verified-user-id");
   const userEmail = request.headers.get("x-verified-user-email");
 
-  if (!userId) {
+  if (!userId || !UUID_REGEX.test(userId)) {
     return getAuthenticatedUser();
   }
 
