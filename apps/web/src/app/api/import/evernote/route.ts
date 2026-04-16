@@ -1,4 +1,5 @@
-import { getAuthenticatedUser, errorResponse, successResponse } from "@/lib/api/utils";
+import type { NextRequest } from "next/server";
+import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
 import { convertEnmlToBlocks } from "@/lib/import/enml-to-blocknote";
 import type {
   ImportBatchRequest,
@@ -10,8 +11,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/supabase/database.types";
 import { BUCKET_NAME, SIGNED_URL_EXPIRY_SECONDS } from "@drafto/shared";
 
-export async function POST(request: Request) {
-  const { data: auth, error: authError } = await getAuthenticatedUser();
+export async function POST(request: NextRequest) {
+  const { data: auth, error: authError } = await getAuthenticatedUserFast(request);
   if (authError) return authError;
 
   const { supabase, user } = auth;

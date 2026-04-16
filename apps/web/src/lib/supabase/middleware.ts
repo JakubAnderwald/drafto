@@ -25,6 +25,11 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.next({ request });
   }
 
+  // Track cookies set by Supabase SSR so we can re-apply them
+  // if we replace supabaseResponse later (e.g., to inject auth headers).
+  let pendingCookies: Array<{ name: string; value: string; options?: Record<string, unknown> }> =
+    [];
+
   let supabaseResponse = NextResponse.next({
     request,
   });
@@ -38,6 +43,7 @@ export async function updateSession(request: NextRequest) {
           return request.cookies.getAll();
         },
         setAll(cookiesToSet) {
+          pendingCookies = cookiesToSet;
           cookiesToSet.forEach(({ name, value }) => {
             request.cookies.set(name, value);
           });
@@ -98,6 +104,21 @@ export async function updateSession(request: NextRequest) {
     const waitingUrl = request.nextUrl.clone();
     waitingUrl.pathname = "/waiting-for-approval";
     return NextResponse.redirect(waitingUrl);
+  }
+
+  // Forward verified auth state to route handlers so they can skip
+  // the redundant getUser() + profiles query (already validated above).
+  // Safe: Next.js middleware controls the request object — clients cannot
+  // forge these headers because middleware overwrites them before forwarding.
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("x-verified-user-id", user.id);
+  requestHeaders.set("x-verified-user-email", user.email ?? "");
+  supabaseResponse = NextResponse.next({
+    request: { headers: requestHeaders },
+  });
+  // Re-apply Supabase auth cookies that were set during session refresh
+  for (const { name, value, options } of pendingCookies) {
+    supabaseResponse.cookies.set(name, value, options);
   }
 
   return supabaseResponse;

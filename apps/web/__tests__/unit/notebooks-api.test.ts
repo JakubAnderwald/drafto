@@ -27,6 +27,9 @@ vi.mock("next/headers", () => ({
 
 const { GET, POST } = await import("@/app/api/notebooks/route");
 
+/** Minimal GET request for route handlers that require a NextRequest parameter */
+const mockGetRequest = () => new NextRequest("http://localhost:3000/api/notebooks");
+
 const approvedProfile = {
   select: () => ({
     eq: () => ({
@@ -50,7 +53,7 @@ describe("GET /api/notebooks", () => {
   it("returns 401 when not authenticated", async () => {
     mockGetUser.mockResolvedValue({ data: { user: null }, error: { message: "Not auth" } });
 
-    const response = await GET();
+    const response = await GET(mockGetRequest());
     expect(response.status).toBe(401);
   });
 
@@ -78,7 +81,7 @@ describe("GET /api/notebooks", () => {
       };
     });
 
-    const response = await GET();
+    const response = await GET(mockGetRequest());
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body).toHaveLength(1);

@@ -54,7 +54,7 @@ describe("Trash API", () => {
       mockGetUser.mockResolvedValue({ data: { user: null }, error: { message: "Not auth" } });
 
       const { GET } = await import("@/app/api/notes/trash/route");
-      const response = await GET();
+      const response = await GET(new NextRequest("http://localhost:3000/api/notes/trash"));
       expect(response.status).toBe(401);
     });
 
@@ -77,7 +77,7 @@ describe("Trash API", () => {
       });
 
       const { GET } = await import("@/app/api/notes/trash/route");
-      const response = await GET();
+      const response = await GET(new NextRequest("http://localhost:3000/api/notes/trash"));
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body).toHaveLength(1);
@@ -100,7 +100,7 @@ describe("Trash API", () => {
       });
 
       const { GET } = await import("@/app/api/notes/trash/route");
-      const response = await GET();
+      const response = await GET(new NextRequest("http://localhost:3000/api/notes/trash"));
       expect(response.status).toBe(500);
     });
   });

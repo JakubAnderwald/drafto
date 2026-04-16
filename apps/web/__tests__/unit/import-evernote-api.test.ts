@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { NextRequest } from "next/server";
 import type { ImportBatchRequest } from "@/lib/import/types";
 
 // Mock dependencies
@@ -9,6 +10,7 @@ const mockConvertEnmlToBlocks = vi.fn();
 
 vi.mock("@/lib/api/utils", () => ({
   getAuthenticatedUser: (...args: unknown[]) => mockGetAuthenticatedUser(...args),
+  getAuthenticatedUserFast: (...args: unknown[]) => mockGetAuthenticatedUser(...args),
   errorResponse: (...args: unknown[]) => mockErrorResponse(...args),
   successResponse: (...args: unknown[]) => mockSuccessResponse(...args),
 }));
@@ -48,7 +50,7 @@ const mockSupabase = {
 };
 
 describe("POST /api/import/evernote", () => {
-  let POST: (request: Request) => Promise<Response>;
+  let POST: (request: NextRequest) => Promise<Response>;
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -78,7 +80,7 @@ describe("POST /api/import/evernote", () => {
       error: new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
     });
 
-    const req = new Request("http://localhost/api/import/evernote", {
+    const req = new NextRequest("http://localhost/api/import/evernote", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ notes: [] }),
@@ -89,7 +91,7 @@ describe("POST /api/import/evernote", () => {
   });
 
   it("returns 400 for empty notes array", async () => {
-    const req = new Request("http://localhost/api/import/evernote", {
+    const req = new NextRequest("http://localhost/api/import/evernote", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ notes: [] }),
@@ -109,7 +111,7 @@ describe("POST /api/import/evernote", () => {
       tasks: [],
     }));
 
-    const req = new Request("http://localhost/api/import/evernote", {
+    const req = new NextRequest("http://localhost/api/import/evernote", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ notes }),
@@ -144,7 +146,7 @@ describe("POST /api/import/evernote", () => {
       ],
     };
 
-    const req = new Request("http://localhost/api/import/evernote", {
+    const req = new NextRequest("http://localhost/api/import/evernote", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -199,7 +201,7 @@ describe("POST /api/import/evernote", () => {
       ],
     };
 
-    const req = new Request("http://localhost/api/import/evernote", {
+    const req = new NextRequest("http://localhost/api/import/evernote", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -218,7 +220,7 @@ describe("POST /api/import/evernote", () => {
   });
 
   it("returns 400 for invalid JSON", async () => {
-    const req = new Request("http://localhost/api/import/evernote", {
+    const req = new NextRequest("http://localhost/api/import/evernote", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "not json",
@@ -249,7 +251,7 @@ describe("POST /api/import/evernote", () => {
       ],
     };
 
-    const req = new Request("http://localhost/api/import/evernote", {
+    const req = new NextRequest("http://localhost/api/import/evernote", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -283,7 +285,7 @@ describe("POST /api/import/evernote", () => {
       ],
     };
 
-    const req = new Request("http://localhost/api/import/evernote", {
+    const req = new NextRequest("http://localhost/api/import/evernote", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -337,7 +339,7 @@ describe("POST /api/import/evernote", () => {
       ],
     };
 
-    const req = new Request("http://localhost/api/import/evernote", {
+    const req = new NextRequest("http://localhost/api/import/evernote", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -389,7 +391,7 @@ describe("POST /api/import/evernote", () => {
       ],
     };
 
-    const req = new Request("http://localhost/api/import/evernote", {
+    const req = new NextRequest("http://localhost/api/import/evernote", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -445,7 +447,7 @@ describe("POST /api/import/evernote", () => {
       ],
     };
 
-    const req = new Request("http://localhost/api/import/evernote", {
+    const req = new NextRequest("http://localhost/api/import/evernote", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -490,7 +492,7 @@ describe("POST /api/import/evernote", () => {
       ],
     };
 
-    const req = new Request("http://localhost/api/import/evernote", {
+    const req = new NextRequest("http://localhost/api/import/evernote", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -508,7 +510,7 @@ describe("POST /api/import/evernote", () => {
   });
 
   it("returns 400 when notes is not an array", async () => {
-    const req = new Request("http://localhost/api/import/evernote", {
+    const req = new NextRequest("http://localhost/api/import/evernote", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ notes: "not-array" }),

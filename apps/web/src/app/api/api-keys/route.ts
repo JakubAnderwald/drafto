@@ -1,11 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { getAuthenticatedUser, errorResponse, successResponse } from "@/lib/api/utils";
+import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
 
 /**
  * GET /api/api-keys — List the current user's API keys (excludes key_hash).
  */
-export async function GET() {
-  const { data: auth, error: authError } = await getAuthenticatedUser();
+export async function GET(request: NextRequest) {
+  const { data: auth, error: authError } = await getAuthenticatedUserFast(request);
   if (authError) return authError;
 
   const { supabase, user } = auth;
@@ -27,7 +27,7 @@ export async function GET() {
  * Returns: { id, key, key_prefix, name } where `key` is the raw key (shown once).
  */
 export async function POST(request: NextRequest) {
-  const { data: auth, error: authError } = await getAuthenticatedUser();
+  const { data: auth, error: authError } = await getAuthenticatedUserFast(request);
   if (authError) return authError;
 
   const { supabase, user } = auth;

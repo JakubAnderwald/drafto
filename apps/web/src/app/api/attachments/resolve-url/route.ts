@@ -1,9 +1,9 @@
 import type { NextRequest } from "next/server";
-import { getAuthenticatedUser, errorResponse, successResponse } from "@/lib/api/utils";
+import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
 import { BUCKET_NAME, SIGNED_URL_EXPIRY_SECONDS } from "@drafto/shared";
 
 export async function POST(request: NextRequest) {
-  const { data: auth, error: authError } = await getAuthenticatedUser();
+  const { data: auth, error: authError } = await getAuthenticatedUserFast(request);
   if (authError) return authError;
 
   const { supabase, user } = auth;

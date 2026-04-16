@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { getAuthenticatedUser, errorResponse } from "@/lib/api/utils";
+import { getAuthenticatedUserFast, errorResponse } from "@/lib/api/utils";
 
 export async function POST(request: NextRequest) {
-  const { data: auth, error: authError } = await getAuthenticatedUser();
+  const { data: auth, error: authError } = await getAuthenticatedUserFast(request);
   if (authError) return authError;
 
   const { supabase, user } = auth;
