@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 import { getAuthenticatedUserFast, errorResponse } from "@/lib/api/utils";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { sendEmail } from "@/lib/email/client";
+import { userApprovedEmail } from "@/lib/email/templates";
+import { env } from "@/env";
 
 export async function POST(request: NextRequest) {
   const { data: auth, error: authError } = await getAuthenticatedUserFast(request);
@@ -8,7 +13,6 @@ export async function POST(request: NextRequest) {
 
   const { supabase, user } = auth;
 
-  // Check if requester is an admin
   const { data: profile, error: profileError } = await supabase
     .from("profiles")
     .select("is_admin")
@@ -39,7 +43,7 @@ export async function POST(request: NextRequest) {
     .from("profiles")
     .update({ is_approved: true })
     .eq("id", userId)
-    .select("id")
+    .select("id, display_name")
     .maybeSingle();
 
   if (updateError) {
@@ -48,6 +52,25 @@ export async function POST(request: NextRequest) {
 
   if (!updatedProfile) {
     return errorResponse("User not found", 404);
+  }
+
+  try {
+    const admin = createAdminClient();
+    const { data: approvedUser } = await admin.auth.admin.getUserById(userId);
+    if (approvedUser.user?.email) {
+      const content = userApprovedEmail({
+        displayName: updatedProfile.display_name,
+        loginUrl: `${env.APP_URL}/login`,
+      });
+      await sendEmail({
+        to: approvedUser.user.email,
+        subject: content.subject,
+        html: content.html,
+        text: content.text,
+      });
+    }
+  } catch (err) {
+    Sentry.captureException(err, { extra: { where: "approve-user:notify", userId } });
   }
 
   return NextResponse.json({ success: true });

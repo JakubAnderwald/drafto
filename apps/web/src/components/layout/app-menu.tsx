@@ -13,6 +13,7 @@ import { ThemeToggle } from "@/components/ui/theme-toggle";
 
 interface AppMenuProps {
   onImportEvernote: () => void;
+  isAdmin?: boolean;
 }
 
 function EllipsisIcon() {
@@ -34,7 +35,7 @@ function EllipsisIcon() {
   );
 }
 
-export function AppMenu({ onImportEvernote }: AppMenuProps) {
+export function AppMenu({ onImportEvernote, isAdmin = false }: AppMenuProps) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
@@ -83,6 +84,17 @@ export function AppMenu({ onImportEvernote }: AppMenuProps) {
         >
           Settings
         </DropdownMenuItem>
+        {isAdmin && (
+          <DropdownMenuItem
+            onClick={() => {
+              setOpen(false);
+              router.push("/admin");
+            }}
+            data-testid="admin-button"
+          >
+            Admin
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="danger" onClick={handleLogout} data-testid="logout-button">
           Log out

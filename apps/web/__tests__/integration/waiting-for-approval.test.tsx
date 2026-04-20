@@ -9,9 +9,10 @@ vi.mock("next/navigation", () => ({
 }));
 
 const mockSignOut = vi.fn();
+const mockGetUser = vi.fn();
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
-    auth: { signOut: mockSignOut },
+    auth: { signOut: mockSignOut, getUser: mockGetUser },
   }),
 }));
 
@@ -27,15 +28,26 @@ const { default: WaitingPage } = await import("@/app/(auth)/waiting-for-approval
 describe("Waiting for approval page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetUser.mockResolvedValue({ data: { user: { email: "pending@example.com" } } });
   });
 
-  it("renders the waiting message", async () => {
+  it("renders the waiting message and user email", async () => {
     await act(async () => {
       render(<WaitingPage />);
     });
 
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Waiting for Approval");
-    expect(screen.getByText(/pending approval/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Waiting for approval");
+    expect(screen.getByText(/admin has been notified/i)).toBeInTheDocument();
+    expect(screen.getByText("pending@example.com")).toBeInTheDocument();
+  });
+
+  it("falls back to a generic line when email is unavailable", async () => {
+    mockGetUser.mockResolvedValue({ data: { user: null } });
+    await act(async () => {
+      render(<WaitingPage />);
+    });
+
+    expect(screen.getByText(/email you as soon as you.+re approved/)).toBeInTheDocument();
   });
 
   it("has a logout button", async () => {
@@ -81,15 +93,5 @@ describe("Waiting for approval page", () => {
     expect(mockPush).toHaveBeenCalledWith("/login");
 
     consoleSpy.mockRestore();
-  });
-
-  it("displays the expected approval information text", async () => {
-    await act(async () => {
-      render(<WaitingPage />);
-    });
-
-    expect(
-      screen.getByText(/You'll be able to access Drafto once an admin approves your account/),
-    ).toBeInTheDocument();
   });
 });

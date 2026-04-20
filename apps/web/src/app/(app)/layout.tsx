@@ -59,6 +59,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   await ensureDefaultNotebook(supabase, userId);
 
+  const { data: profileRow } = await supabase
+    .from("profiles")
+    .select("is_admin")
+    .eq("id", userId)
+    .single();
+  const isAdmin = profileRow?.is_admin ?? false;
+
   // Prefetch notebooks + first notebook's notes on the server to eliminate
   // the client-side fetch waterfall (saves ~600ms of sequential API calls).
   const { data: notebooks, error: notebooksError } = await supabase
@@ -93,6 +100,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       initialNotebooks={notebooks ?? []}
       initialNotebookId={firstNotebookId}
       initialNotes={initialNotes}
+      isAdmin={isAdmin}
     >
       {children}
     </AppShell>
