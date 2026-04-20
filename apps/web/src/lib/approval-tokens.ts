@@ -4,15 +4,11 @@ import { env } from "@/env";
 const TOKEN_VERSION = "v1";
 const DEFAULT_TTL_MS = 72 * 60 * 60 * 1000;
 
-function base64UrlEncode(buf: Buffer): string {
-  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
 function hmac(message: string): string {
   if (!env.APPROVAL_LINK_SECRET) {
     throw new Error("APPROVAL_LINK_SECRET is not configured");
   }
-  return base64UrlEncode(createHmac("sha256", env.APPROVAL_LINK_SECRET).update(message).digest());
+  return createHmac("sha256", env.APPROVAL_LINK_SECRET).update(message).digest("base64url");
 }
 
 export function signApprovalToken(userId: string, now: Date = new Date()): string {
