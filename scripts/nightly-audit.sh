@@ -129,9 +129,15 @@ if [[ "$MERGED_COUNT" -gt 0 ]]; then
 fi
 
 # Open PRs from nightly bot with failing CI
-OPEN_PRS=$(gh pr list --repo "$REPO" --state open --json number,title --limit 50 2>/dev/null) || OPEN_PRS="[]"
+OPEN_PRS=$(gh pr list --repo "$REPO" --state open --json number,title,labels --limit 50 2>/dev/null) || OPEN_PRS="[]"
 FAILING_BOT_PRS=()
 for PR_NUM in $(echo "$OPEN_PRS" | jq -r '.[].number'); do
+  # Skip PRs already flagged for manual review — the bot has done its job there,
+  # and re-reporting every night is noise until a human acts.
+  NEEDS_REVIEW=$(echo "$OPEN_PRS" | jq -r ".[] | select(.number == $PR_NUM) | .labels | map(.name) | index(\"needs-review\")")
+  if [[ "$NEEDS_REVIEW" != "null" ]]; then
+    continue
+  fi
   # Check bot marker first (cheaper than fetching check status)
   COMMENTS=$(gh api "repos/$REPO/issues/$PR_NUM/comments" --jq '.[].body' 2>/dev/null || true)
   if echo "$COMMENTS" | grep -Fq '<!-- nightly-bot -->'; then
