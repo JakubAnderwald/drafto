@@ -110,7 +110,8 @@ SKIPPED_COUNT=$(( DEPENDABOT_ALL_COUNT - DEPENDABOT_COUNT ))
 log "Found $DEPENDABOT_ALL_COUNT Dependabot PRs ($SKIPPED_COUNT already labeled needs-review, $DEPENDABOT_COUNT to process), $SUPPORT_COUNT support issues"
 
 if [[ "$DEPENDABOT_COUNT" -eq 0 && "$SUPPORT_COUNT" -eq 0 ]]; then
-  log "No items to process. Exiting."
+  log "No items to process."
+  log "=== Nightly support run completed (no items) ==="
   exit 0
 fi
 
