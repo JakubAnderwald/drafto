@@ -3,6 +3,7 @@ import { Ionicons } from "@expo/vector-icons";
 import type { ComponentProps } from "react";
 
 import { useTheme } from "@/providers/theme-provider";
+import { fontSizes, radii, spacing } from "@/theme/tokens";
 
 interface EmptyStateProps {
   icon: ComponentProps<typeof Ionicons>["name"];
@@ -29,23 +30,23 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    padding: 24,
+    padding: spacing["2xl"],
   },
   iconCircle: {
     width: 64,
     height: 64,
-    borderRadius: 32,
+    borderRadius: radii.full,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 16,
+    marginBottom: spacing.lg,
   },
   title: {
-    fontSize: 18,
+    fontSize: fontSizes["2xl"],
     fontWeight: "600",
   },
   subtitle: {
-    fontSize: 14,
-    marginTop: 4,
+    fontSize: fontSizes.base,
+    marginTop: spacing.xs,
     textAlign: "center",
   },
 });

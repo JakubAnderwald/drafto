@@ -9,7 +9,7 @@ import { useTrashedNotes } from "@/hooks/use-trashed-notes";
 import { SwipeableRow } from "@/components/swipeable-row";
 import { ListSkeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
-import { colors } from "@/theme/tokens";
+import { colors, fontSizes, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Note, Attachment } from "@/db";
 import type { SwipeAction } from "@/components/swipeable-row";
@@ -165,29 +165,29 @@ const createStyles = (semantic: SemanticColors) =>
       backgroundColor: semantic.bgSubtle,
     },
     list: {
-      paddingVertical: 8,
+      paddingVertical: spacing.sm,
     },
     row: {
       flexDirection: "row",
       alignItems: "center",
-      paddingVertical: 14,
-      paddingHorizontal: 16,
+      paddingVertical: spacing.lg,
+      paddingHorizontal: spacing.lg,
       backgroundColor: semantic.bg,
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: semantic.border,
     },
     rowIcon: {
-      marginRight: 12,
+      marginRight: spacing.md,
     },
     rowContent: {
       flex: 1,
     },
     rowText: {
-      fontSize: 16,
+      fontSize: fontSizes.xl,
       color: semantic.fg,
     },
     rowDate: {
-      fontSize: 12,
+      fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
       marginTop: 2,
     },

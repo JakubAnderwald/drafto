@@ -22,7 +22,7 @@ import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useToast } from "@/components/toast";
 import { Badge } from "@/components/ui/badge";
-import { colors } from "@/theme/tokens";
+import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Attachment } from "@/db";
 
@@ -330,21 +330,21 @@ const createStyles = (semantic: SemanticColors) =>
       borderTopWidth: StyleSheet.hairlineWidth,
       borderTopColor: semantic.border,
       backgroundColor: semantic.bg,
-      paddingVertical: 8,
+      paddingVertical: spacing.sm,
     },
     sectionTitle: {
-      fontSize: 13,
+      fontSize: fontSizes.md,
       fontWeight: "600",
       color: semantic.fgMuted,
       textTransform: "uppercase",
       letterSpacing: 0.5,
-      paddingHorizontal: 16,
-      paddingVertical: 4,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.xs,
     },
     imageItem: {
-      marginHorizontal: 16,
-      marginVertical: 4,
-      borderRadius: 8,
+      marginHorizontal: spacing.lg,
+      marginVertical: spacing.xs,
+      borderRadius: radii.md,
       overflow: "hidden",
       backgroundColor: semantic.bgMuted,
     },
@@ -355,56 +355,56 @@ const createStyles = (semantic: SemanticColors) =>
       backgroundColor: semantic.bgMuted,
     },
     retryHint: {
-      fontSize: 12,
+      fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
-      marginTop: 4,
+      marginTop: spacing.xs,
     },
     imagePreview: {
       width: "100%",
       height: 160,
-      borderRadius: 8,
+      borderRadius: radii.md,
     },
     imageFooter: {
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
-      paddingHorizontal: 8,
-      paddingVertical: 6,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: spacing.sm,
     },
     imageFileName: {
       flex: 1,
-      fontSize: 12,
+      fontSize: fontSizes.sm,
       color: semantic.fgMuted,
-      marginRight: 8,
+      marginRight: spacing.sm,
     },
     fileItem: {
       flexDirection: "row",
       alignItems: "center",
-      gap: 10,
-      marginHorizontal: 16,
-      marginVertical: 4,
-      paddingVertical: 10,
-      paddingHorizontal: 12,
-      borderRadius: 8,
+      gap: spacing.md,
+      marginHorizontal: spacing.lg,
+      marginVertical: spacing.xs,
+      paddingVertical: spacing.md,
+      paddingHorizontal: spacing.md,
+      borderRadius: radii.md,
       backgroundColor: semantic.bgMuted,
     },
     fileInfo: {
       flex: 1,
     },
     fileFileName: {
-      fontSize: 14,
+      fontSize: fontSizes.base,
       fontWeight: "500",
       color: semantic.fg,
       flex: 1,
     },
     fileMeta: {
-      fontSize: 12,
+      fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
       marginTop: 2,
     },
     fileNameRow: {
       flexDirection: "row",
       alignItems: "center",
-      gap: 6,
+      gap: spacing.sm,
     },
   });

@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { useTheme } from "@/providers/theme-provider";
-import { colors } from "@/theme/tokens";
+import { colors, fontSizes, spacing } from "@/theme/tokens";
 
 export function OfflineBanner() {
   const { isConnected } = useNetworkStatus();
@@ -54,7 +54,7 @@ export function OfflineBanner() {
       style={[
         styles.container,
         isReconnected ? styles.reconnected : styles.offline,
-        { paddingTop: insets.top + 4, transform: [{ translateY: slideAnim }] },
+        { paddingTop: insets.top + spacing.xs, transform: [{ translateY: slideAnim }] },
       ]}
     >
       <View style={styles.content}>
@@ -78,7 +78,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     zIndex: 100,
-    paddingBottom: 6,
+    paddingBottom: spacing.sm,
   },
   offline: {
     backgroundColor: colors.error,
@@ -90,11 +90,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
+    gap: spacing.sm,
   },
   text: {
     color: colors.white,
-    fontSize: 13,
+    fontSize: fontSizes.md,
     fontWeight: "600",
   },
 });

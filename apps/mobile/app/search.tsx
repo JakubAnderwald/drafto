@@ -7,7 +7,7 @@ import { useTheme } from "@/providers/theme-provider";
 import { useSearch } from "@/hooks/use-search";
 import { ListSkeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
-import { colors } from "@/theme/tokens";
+import { colors, fontSizes, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Note } from "@/db";
 
@@ -80,28 +80,28 @@ const createStyles = (semantic: SemanticColors) =>
       backgroundColor: semantic.bgSubtle,
     },
     searchInput: {
-      fontSize: 16,
+      fontSize: fontSizes.xl,
       color: semantic.fg,
       backgroundColor: semantic.bg,
-      paddingVertical: 12,
-      paddingHorizontal: 16,
+      paddingVertical: spacing.md,
+      paddingHorizontal: spacing.lg,
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: semantic.border,
     },
     list: {
-      paddingVertical: 8,
+      paddingVertical: spacing.sm,
     },
     row: {
       flexDirection: "row",
       alignItems: "center",
-      paddingVertical: 14,
-      paddingHorizontal: 16,
+      paddingVertical: spacing.lg,
+      paddingHorizontal: spacing.lg,
       backgroundColor: semantic.bg,
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: semantic.border,
     },
     rowIcon: {
-      marginRight: 12,
+      marginRight: spacing.md,
     },
     rowContent: {
       flex: 1,
@@ -109,14 +109,14 @@ const createStyles = (semantic: SemanticColors) =>
       alignItems: "center",
     },
     rowTitle: {
-      fontSize: 16,
+      fontSize: fontSizes.xl,
       color: semantic.fg,
       flex: 1,
     },
     trashBadge: {
-      fontSize: 11,
+      fontSize: fontSizes.xs,
       color: colors.error,
       fontWeight: "600",
-      marginLeft: 8,
+      marginLeft: spacing.sm,
     },
   });
