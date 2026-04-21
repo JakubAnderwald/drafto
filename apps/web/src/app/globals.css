@@ -82,6 +82,7 @@
 }
 
 @theme inline {
+  /* Palette — kept in sync manually with apps/web/src/lib/email/templates.ts (EMAIL_COLORS). See ADR 0020. */
   /* Primary (Indigo) */
   --color-primary-50: #ede8ff;
   --color-primary-100: #dbd1ff;
