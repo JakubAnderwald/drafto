@@ -112,7 +112,7 @@ const createStyles = (semantic: SemanticColors) =>
     },
     // Sizes
     size_sm: {
-      paddingVertical: 6,
+      paddingVertical: spacing.sm,
       paddingHorizontal: spacing.md,
       minHeight: 28,
     },

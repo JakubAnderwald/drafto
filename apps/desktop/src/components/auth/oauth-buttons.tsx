@@ -3,6 +3,7 @@ import { View, Text, Pressable, StyleSheet, ActivityIndicator } from "react-nati
 import Svg, { Path } from "react-native-svg";
 
 import { useTheme } from "@/providers/theme-provider";
+import { fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { signInWithOAuthBrowser } from "@/lib/oauth";
 
@@ -117,13 +118,13 @@ const createStyles = (semantic: SemanticColors) =>
   StyleSheet.create({
     container: {
       width: "100%",
-      marginTop: 16,
-      gap: 12,
+      marginTop: spacing.lg,
+      gap: spacing.md,
     },
     dividerRow: {
       flexDirection: "row",
       alignItems: "center",
-      marginBottom: 4,
+      marginBottom: spacing.xs,
     },
     dividerLine: {
       flex: 1,
@@ -131,19 +132,19 @@ const createStyles = (semantic: SemanticColors) =>
       backgroundColor: semantic.border,
     },
     dividerText: {
-      marginHorizontal: 12,
-      fontSize: 13,
+      marginHorizontal: spacing.md,
+      fontSize: fontSizes.md,
       color: semantic.fgMuted,
     },
     oauthButton: {
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "center",
-      gap: 12,
+      gap: spacing.md,
       borderWidth: 1,
       borderColor: semantic.borderStrong,
-      borderRadius: 8,
-      padding: 14,
+      borderRadius: radii.md,
+      padding: spacing.lg,
       backgroundColor: semantic.bg,
     },
     oauthButtonPressed: {
@@ -153,7 +154,7 @@ const createStyles = (semantic: SemanticColors) =>
       opacity: 0.5,
     },
     oauthButtonText: {
-      fontSize: 16,
+      fontSize: fontSizes.xl,
       fontWeight: "500",
       color: semantic.fg,
     },

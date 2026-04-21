@@ -175,6 +175,7 @@ export function getSemanticColors(isDark: boolean): SemanticColors {
 }
 
 export const spacing = {
+  "2xs": 2,
   xs: 4,
   sm: 8,
   md: 12,

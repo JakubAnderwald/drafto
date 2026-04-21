@@ -11,7 +11,7 @@ import {
 
 import { useSearch } from "@/hooks/use-search";
 import { useTheme } from "@/providers/theme-provider";
-import { colors } from "@/theme/tokens";
+import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 
 interface SearchOverlayProps {
@@ -101,6 +101,7 @@ const createStyles = (semantic: SemanticColors) =>
       ...StyleSheet.absoluteFillObject,
       backgroundColor: "rgba(0, 0, 0, 0.3)",
       alignItems: "center",
+      // Absolute layout positioning — overlay offset from viewport top
       paddingTop: 80,
       zIndex: 1000,
     },
@@ -108,7 +109,7 @@ const createStyles = (semantic: SemanticColors) =>
       width: 480,
       maxHeight: 400,
       backgroundColor: semantic.bg,
-      borderRadius: 12,
+      borderRadius: radii.lg,
       borderWidth: 1,
       borderColor: semantic.borderStrong,
       overflow: "hidden",
@@ -120,38 +121,38 @@ const createStyles = (semantic: SemanticColors) =>
     searchRow: {
       flexDirection: "row",
       alignItems: "center",
-      padding: 12,
+      padding: spacing.md,
       borderBottomWidth: 1,
       borderBottomColor: semantic.border,
-      gap: 8,
+      gap: spacing.sm,
     },
     searchIcon: {
-      fontSize: 11,
+      fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
       backgroundColor: semantic.bgMuted,
-      paddingHorizontal: 6,
-      paddingVertical: 2,
-      borderRadius: 4,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: spacing["2xs"],
+      borderRadius: radii.sm,
       overflow: "hidden",
       fontWeight: "600",
     },
     input: {
       flex: 1,
-      fontSize: 14,
+      fontSize: fontSizes.base,
       color: semantic.fg,
     },
     results: {
       maxHeight: 320,
     },
     noResults: {
-      padding: 16,
-      fontSize: 13,
+      padding: spacing.lg,
+      fontSize: fontSizes.md,
       color: semantic.fgMuted,
       textAlign: "center",
     },
     resultItem: {
-      padding: 10,
-      paddingHorizontal: 16,
+      padding: spacing.md,
+      paddingHorizontal: spacing.lg,
       borderBottomWidth: 1,
       borderBottomColor: semantic.border,
     },
@@ -159,13 +160,13 @@ const createStyles = (semantic: SemanticColors) =>
       backgroundColor: semantic.bgMuted,
     },
     resultTitle: {
-      fontSize: 14,
+      fontSize: fontSizes.base,
       fontWeight: "500",
       color: semantic.fg,
     },
     resultDate: {
-      fontSize: 11,
+      fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
-      marginTop: 2,
+      marginTop: spacing["2xs"],
     },
   });

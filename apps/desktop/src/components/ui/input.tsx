@@ -97,7 +97,7 @@ const createStyles = (semantic: SemanticColors) =>
       fontSize: fontSizes.sm,
       fontWeight: "600",
       color: semantic.fgMuted,
-      marginBottom: 6,
+      marginBottom: spacing.sm,
     },
     inputContainer: {
       flexDirection: "row",
@@ -130,6 +130,6 @@ const createStyles = (semantic: SemanticColors) =>
     errorText: {
       fontSize: fontSizes.sm,
       color: semantic.errorText,
-      marginTop: 4,
+      marginTop: spacing.xs,
     },
   });

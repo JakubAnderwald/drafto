@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Animated } from "react-native";
 
 import { useNetworkStatus } from "@/hooks/use-network-status";
-import { colors } from "@/theme/tokens";
+import { colors, fontSizes, spacing } from "@/theme/tokens";
 
 export function OfflineBanner() {
   const { isConnected } = useNetworkStatus();
@@ -66,7 +66,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     zIndex: 100,
-    paddingVertical: 6,
+    paddingVertical: spacing.sm,
   },
   offline: {
     backgroundColor: colors.error,
@@ -78,11 +78,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
+    gap: spacing.sm,
   },
   text: {
     color: colors.white,
-    fontSize: 12,
+    fontSize: fontSizes.sm,
     fontWeight: "600",
   },
 });

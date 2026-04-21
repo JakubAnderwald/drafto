@@ -29,7 +29,7 @@ const createStyles = (semantic: SemanticColors) =>
     base: {
       borderRadius: radii.full,
       paddingHorizontal: spacing.sm,
-      paddingVertical: 2,
+      paddingVertical: spacing["2xs"],
       alignSelf: "flex-start",
     },
     text: {

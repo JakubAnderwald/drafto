@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { View, Text, StyleSheet } from "react-native";
 
 import { useTheme } from "@/providers/theme-provider";
+import { fontSizes, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 
 interface EmptyStateProps {
@@ -31,29 +32,31 @@ const createStyles = (semantic: SemanticColors) =>
       flex: 1,
       alignItems: "center",
       justifyContent: "center",
-      padding: 24,
+      padding: spacing["2xl"],
     },
     iconContainer: {
+      // Geometric circle: borderRadius is half of width/height
       width: 56,
       height: 56,
       borderRadius: 28,
       backgroundColor: semantic.bgMuted,
       alignItems: "center",
       justifyContent: "center",
-      marginBottom: 16,
+      marginBottom: spacing.lg,
     },
     icon: {
+      // Emoji icon sized as a visual, not typography
       fontSize: 24,
     },
     title: {
-      fontSize: 16,
+      fontSize: fontSizes.xl,
       fontWeight: "600",
       color: semantic.fg,
       textAlign: "center",
-      marginBottom: 4,
+      marginBottom: spacing.xs,
     },
     subtitle: {
-      fontSize: 13,
+      fontSize: fontSizes.md,
       color: semantic.fgMuted,
       textAlign: "center",
       maxWidth: 240,

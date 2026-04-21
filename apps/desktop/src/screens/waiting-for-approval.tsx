@@ -3,6 +3,7 @@ import { Text, View, StyleSheet } from "react-native";
 
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
+import { fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { Button } from "@/components/ui/button";
 
@@ -88,46 +89,47 @@ const createStyles = (semantic: SemanticColors) =>
       flex: 1,
       alignItems: "center",
       justifyContent: "center",
-      padding: 24,
+      padding: spacing["2xl"],
       maxWidth: 400,
       alignSelf: "center",
       width: "100%",
     },
     icon: {
+      // Hero emoji — intentionally large, no font-size token at 48px
       fontSize: 48,
-      marginBottom: 16,
+      marginBottom: spacing.lg,
     },
     title: {
-      fontSize: 28,
+      fontSize: fontSizes["4xl"],
       fontWeight: "bold",
-      marginBottom: 12,
+      marginBottom: spacing.md,
       color: semantic.fg,
     },
     subtitle: {
-      fontSize: 16,
+      fontSize: fontSizes.xl,
       color: semantic.fgMuted,
       textAlign: "center",
       lineHeight: 24,
-      marginBottom: 32,
+      marginBottom: spacing["3xl"],
     },
     errorContainer: {
       backgroundColor: semantic.errorBg,
       borderWidth: 1,
       borderColor: semantic.errorBorder,
-      borderRadius: 8,
-      padding: 12,
+      borderRadius: radii.md,
+      padding: spacing.md,
       width: "100%",
-      marginBottom: 16,
+      marginBottom: spacing.lg,
     },
     errorText: {
       color: semantic.errorText,
-      fontSize: 14,
+      fontSize: fontSizes.base,
       textAlign: "center",
     },
     buttonContainer: {
       width: "100%",
     },
     primaryButton: {
-      marginBottom: 12,
+      marginBottom: spacing.md,
     },
   });

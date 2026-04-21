@@ -4,7 +4,7 @@ import { View, Text, StyleSheet, Pressable, ActivityIndicator } from "react-nati
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useNetworkStatus } from "@/hooks/use-network-status";
-import { colors } from "@/theme/tokens";
+import { colors, fontSizes, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 
 function formatLastSynced(date: Date | null): string {
@@ -74,27 +74,28 @@ export function SyncStatus() {
 const createStyles = (semantic: SemanticColors) =>
   StyleSheet.create({
     container: {
-      padding: 12,
-      gap: 2,
+      padding: spacing.md,
+      gap: spacing["2xs"],
     },
     row: {
       flexDirection: "row",
       alignItems: "center",
-      gap: 6,
+      gap: spacing.sm,
     },
     dot: {
+      // Geometric circle: borderRadius is exactly half of width/height
       width: 8,
       height: 8,
       borderRadius: 4,
     },
     statusText: {
-      fontSize: 12,
+      fontSize: fontSizes.sm,
       fontWeight: "500",
       color: semantic.fgMuted,
     },
     lastSynced: {
-      fontSize: 11,
+      fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
-      marginLeft: 14,
+      marginLeft: spacing.lg,
     },
   });
