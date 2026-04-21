@@ -5,7 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useNetworkStatus } from "@/hooks/use-network-status";
-import { colors } from "@/theme/tokens";
+import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 
 function formatLastSynced(date: Date | null): string {
@@ -96,15 +96,15 @@ const createStyles = (semantic: SemanticColors) =>
     container: {
       flexDirection: "row",
       alignItems: "center",
-      padding: 16,
+      padding: spacing.lg,
       backgroundColor: semantic.bg,
-      borderRadius: 12,
-      gap: 12,
+      borderRadius: radii.lg,
+      gap: spacing.md,
     },
     indicator: {
       width: 40,
       height: 40,
-      borderRadius: 20,
+      borderRadius: radii.full,
       alignItems: "center",
       justifyContent: "center",
     },
@@ -113,12 +113,12 @@ const createStyles = (semantic: SemanticColors) =>
       gap: 2,
     },
     statusText: {
-      fontSize: 15,
+      fontSize: fontSizes.lg,
       fontWeight: "600",
       color: semantic.fg,
     },
     lastSynced: {
-      fontSize: 13,
+      fontSize: fontSizes.md,
       color: semantic.fgMuted,
     },
   });
