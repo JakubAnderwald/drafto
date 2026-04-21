@@ -100,6 +100,7 @@ const createStyles = (semantic: SemanticColors) =>
     },
     icon: {
       // 48pt emoji glyph — intentionally outside the text scale for visual prominence.
+      // eslint-disable-next-line no-restricted-syntax -- emoji hero glyph, not typography
       fontSize: 48,
       marginBottom: spacing.lg,
     },

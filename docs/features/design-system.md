@@ -49,6 +49,42 @@ Semantic surface tokens (`--bg`, `--fg`, …) react to the `.dark` class on web;
 - **Showcase-page rule:** when you add a new token to `globals.css` or a new primitive to `components/ui/`, you must add a corresponding example (all variants) to `apps/web/src/app/design-system/page.tsx`. This keeps the live reference in sync with the codebase.
 - **Cross-platform rule:** if you change a palette value or add a semantic token that mobile/desktop consume, update `apps/mobile/src/theme/tokens.ts` and `apps/desktop/src/theme/tokens.ts` in the same PR.
 
+## Lint guardrails (automated)
+
+The rules above are enforced by ESLint. Violations surface as `no-restricted-syntax` errors during `pnpm lint` and block PRs in CI.
+
+### Web (`apps/web/eslint.config.mjs`)
+
+Within `className` string and template literals, the web rule blocks:
+
+- **Raw Tailwind greys** — `bg-gray-*`, `text-slate-*`, `bg-stone-*`, `bg-zinc-*`, `bg-neutral-*` and their `border-/from-/to-/ring-/divide-/placeholder-/…` cousins. Use semantic tokens (`bg-bg`, `text-fg-muted`, `border-border`) or a palette scale class (`bg-primary-500`) that is defined in `globals.css`.
+- **Arbitrary color values** — `bg-[#...]`, `text-[#...]`, `border-[#...]`, `from-[#...]`, `to-[#...]`, `shadow-[rgb(...)]`, etc. Use a scale token. Arbitrary values that reference a CSS variable (`bg-[var(--surface-glass)]`) are still allowed.
+- **Arbitrary shadow/radius values** — `shadow-[0_0_10px_red]`, `rounded-[17px]`. Use the system shadows (`shadow-sm`, `shadow-md`) and radii (`rounded-md`, `rounded-lg`). CSS-variable-driven values (`shadow-[var(--shadow-glow)]`) remain allowed.
+
+### Mobile + desktop (`apps/mobile/eslint.config.mjs`, `apps/desktop/eslint.config.mjs`)
+
+Within `src/`, `app/`, and `components/` trees, the native rules block:
+
+- **Hardcoded `fontSize` numbers** — `fontSize: 14`, `fontSize: 20`. Use `fontSizes.sm` / `fontSizes.md` / … from `@/theme/tokens`.
+- **Hex color string literals assigned to color-bearing props** — `color: "#111"`, `backgroundColor: "#3525CD"`, `borderColor: "#fff"`, plus the `borderTopColor`/`borderBottomColor`/`borderLeftColor`/`borderRightColor`/`tintColor` variants. Use `semantic.fg` / `colors.primary[500]` / … from `@/theme/tokens`.
+- **Note:** `shadowColor` is intentionally **not** flagged. React Native's native shadow API expects a bare color (typically `"#000"`) and controls intensity via `shadowOpacity` + `shadowRadius`, so there is no semantic swap.
+
+Tests, jest setup, and build configs are deliberately out of scope — the rule only applies to UI source trees.
+
+### Suppressing for legitimate exceptions
+
+If you genuinely need a raw value (the canonical example is an emoji glyph sized as a visual, not typography), suppress with an explanatory comment:
+
+```tsx
+icon: {
+  // eslint-disable-next-line no-restricted-syntax -- emoji hero glyph, not typography
+  fontSize: 48,
+  marginBottom: spacing.lg,
+},
+```
+
+Always include a `-- <reason>` so reviewers can tell whether the exception still makes sense.
+
 ## Verify
 
 - Visit `/design-system` in the running web app and confirm every token swatch and primitive variant renders in both light and dark.
