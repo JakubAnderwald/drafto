@@ -1,99 +1,35 @@
 # Drafto
 
-A note-taking app with notebooks, rich text editing, and auto-save. Available as a web app, mobile app (iOS + Android), and macOS desktop app — all with offline support.
+A note-taking app with notebooks, rich text editing, and auto-save. Available as a web app, iOS + Android apps, and a macOS desktop app — all with offline support.
 
 **Live:** [drafto.eu](https://drafto.eu)
 
-## Tech Stack
-
-### Monorepo
-
-- **Package manager:** pnpm workspaces
-- **Orchestration:** Turborepo
-- **Language:** TypeScript (strict mode)
-- **Formatting:** Prettier + ESLint
-- **Git hooks:** Husky + lint-staged + commitlint (conventional commits)
-
-### Web (`apps/web/`)
-
-- **Framework:** Next.js 16 (App Router, Turbopack)
-- **UI:** React 19, Tailwind CSS v4 + custom design system (CSS variables)
-- **Editor:** BlockNote (block-based rich text)
-- **Database & Auth:** Supabase (PostgreSQL + Row Level Security)
-- **Env validation:** t3-env + Zod
-- **Monitoring:** Sentry (errors), PostHog (analytics)
-- **Testing:** Vitest + Testing Library (unit/integration), Playwright (E2E)
-
-### Mobile (`apps/mobile/`)
-
-- **Framework:** Expo 55 + React Native 0.84
-- **Navigation:** expo-router
-- **Editor:** TenTap Editor (WebView-based TipTap)
-- **Local database:** WatermelonDB (SQLite, offline-first with Supabase sync)
-- **Testing:** Jest + Testing Library React Native (unit), Maestro (E2E)
-
-### Desktop (`apps/desktop/`)
-
-- **Framework:** React Native macOS 0.81.5 (native AppKit components)
-- **Navigation:** React Navigation
-- **Editor:** TenTap Editor (WebView-based TipTap, same as mobile)
-- **Local database:** WatermelonDB (SQLite, offline-first with Supabase sync — shared with mobile)
-- **Native features:** macOS menu bar, keyboard shortcuts, window state persistence
-- **Distribution:** Mac App Store via Fastlane
-- **Testing:** Jest (unit)
-
-### Shared (`packages/shared/`)
-
-- Shared TypeScript types (`Database`, API types) and constants, consumed by both web and mobile
-
-### Infrastructure
-
-- **Backend:** Supabase (Postgres + Auth + Storage + Realtime) — two isolated projects for dev and prod
-- **Web hosting:** Vercel (with preview deployments)
-- **Mobile CI/CD:** Fastlane — Google Play (internal testing) and TestFlight
-- **Desktop CI/CD:** Fastlane — Mac App Store via TestFlight
-- **CI:** GitHub Actions, SonarCloud (code quality)
-
-## MCP Integration
-
-Drafto is available on the [MCP Registry](https://registry.modelcontextprotocol.io) as `eu.drafto/mcp`, enabling integration with Claude Desktop, Claude Cowork, and other MCP clients.
-
-**Tools available:** list notebooks, list/create/read/update/search/move/trash notes, create notebooks.
-
-**Setup:** Generate an API key at [drafto.eu/settings](https://drafto.eu/settings), then add Drafto as a remote MCP server with the endpoint `https://drafto.eu/api/mcp` and your API key as the Bearer token.
-
 ## Features
 
-- **Notebooks** — create, rename, delete notebooks to organize notes
-- **Notes** — create and edit notes within notebooks, with relative timestamps
-- **Rich text editor** — block editor with auto-save (BlockNote on web, TenTap on mobile)
-- **Offline support** — mobile app works offline via WatermelonDB, syncs when back online
-- **Dark mode** — system-preference-aware theme toggle with localStorage persistence
-- **Authentication** — email/password signup with email confirmation, password reset
-- **User approval** — new accounts require admin approval before access
-- **Evernote import** — import notes from Evernote `.enex` files with full content and attachment support
-- **Row Level Security** — all data access enforced at the database level
+- **Notebooks** — flat list of notebooks to organize notes
+- **Notes** — rich text with auto-save (BlockNote on web, TenTap on mobile/desktop)
+- **Offline support** — mobile and desktop use WatermelonDB locally and sync to Supabase when online
+- **Authentication** — email/password with email confirmation, plus Google and Apple OAuth; admin approval gates new accounts
+- **Dark mode** — system-aware theme toggle, persisted in localStorage
+- **Evernote import** — import notes from `.enex` files with full content and attachment support
+- **MCP server** — expose your notes to Claude Desktop, Claude Cowork, and other MCP clients via `eu.drafto/mcp` on the [MCP Registry](https://registry.modelcontextprotocol.io)
 
-## Environments
+See [`docs/features/`](./docs/features/) for one brief per functional area (code paths, ADRs, testing).
 
-| Environment     | Supabase Project | Supabase Ref           | Used By                              |
-| --------------- | ---------------- | ---------------------- | ------------------------------------ |
-| **Production**  | drafto.eu        | `tbmjbxxseonkciqovnpl` | Vercel production deploy (drafto.eu) |
-| **Development** | drafto-dev       | `huhzactreblzcogqkbsd` | Local dev, Vercel previews, CI/E2E   |
+## Tech Stack
 
-Sentry and PostHog use a single project each with environment tagging to distinguish data.
+| Area     | Stack                                                                                |
+| -------- | ------------------------------------------------------------------------------------ |
+| Web      | Next.js 16 (App Router, Turbopack), React 19, TypeScript, Tailwind CSS v4, BlockNote |
+| Mobile   | Expo 55, React Native 0.84, expo-router, TenTap editor, WatermelonDB                 |
+| Desktop  | React Native macOS 0.81.5, TenTap editor, WatermelonDB (shared with mobile)          |
+| Backend  | Supabase (Postgres + Auth + Storage + RLS)                                           |
+| Hosting  | Vercel (web), Fastlane → App Store / Play Store / Mac App Store                      |
+| Monitoring | Sentry (errors), PostHog (analytics)                                               |
+| Testing  | Vitest, Testing Library, Playwright, Jest, Maestro                                   |
+| Monorepo | pnpm workspaces + Turborepo                                                          |
 
-### Migration Workflow
-
-Apply migrations to dev first, verify, then apply to production:
-
-```bash
-pnpm supabase:link:dev   # Link CLI to dev project
-pnpm supabase:push       # Apply migrations to dev
-# Verify everything works
-pnpm supabase:link:prod  # Link CLI to prod project
-pnpm supabase:push       # Apply migrations to prod
-```
+Architecture deep-dive: [`docs/architecture/overview.md`](./docs/architecture/overview.md).
 
 ## Getting Started
 
@@ -101,53 +37,30 @@ pnpm supabase:push       # Apply migrations to prod
 
 - Node.js 22+
 - [pnpm](https://pnpm.io/)
-- A [Supabase](https://supabase.com/) project
-- [Supabase CLI](https://supabase.com/docs/guides/cli/getting-started) — for migrations and DB management
-- [Playwright browsers](https://playwright.dev/) — `pnpm exec playwright install` for E2E tests
+- A [Supabase](https://supabase.com/) project + [Supabase CLI](https://supabase.com/docs/guides/cli/getting-started)
+- [Playwright browsers](https://playwright.dev/) — `pnpm exec playwright install` (for E2E)
 
-For mobile development:
+For mobile dev: [Expo CLI](https://docs.expo.dev/get-started/set-up-your-environment/), Android SDK, Xcode.
+For desktop dev: Xcode, CocoaPods (`gem install cocoapods`), Ruby 3.3.7 via rbenv.
 
-- [Expo CLI](https://docs.expo.dev/get-started/set-up-your-environment/)
-- Android SDK (for Android builds)
-- Xcode (for iOS builds on macOS)
-
-For desktop development:
-
-- Xcode (for macOS builds)
-- CocoaPods (`gem install cocoapods`)
-- Ruby 3.3.7 via rbenv (for Fastlane)
+Full first-time setup guide: [`docs/operations/local-dev-setup.md`](./docs/operations/local-dev-setup.md).
 
 ### Setup
-
-1. Clone the repo and install dependencies:
 
 ```bash
 git clone https://github.com/JakubAnderwald/drafto.git
 cd drafto
 pnpm install
-```
 
-1. Copy the env file and fill in your Supabase credentials:
-
-```bash
+# Configure web env
 cp apps/web/.env.local.example apps/web/.env.local
-```
+# Fill in NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY
 
-Required variables:
-
-- `NEXT_PUBLIC_SUPABASE_URL` — your Supabase project URL
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY` — your Supabase anon key
-
-1. Push the database schema to your Supabase project:
-
-```bash
+# Push schema to your Supabase project
 supabase link --project-ref <your-project-ref>
 supabase db push
-```
 
-1. Start the dev server:
-
-```bash
+# Run the dev server
 pnpm dev
 ```
 
@@ -155,7 +68,7 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Scripts
 
-### Root (Turborepo)
+Dev commands live here. Build / release / deployment commands live in [`docs/operations/builds-and-releases.md`](./docs/operations/builds-and-releases.md).
 
 | Command                | Description                          |
 | ---------------------- | ------------------------------------ |
@@ -167,165 +80,32 @@ Open [http://localhost:3000](http://localhost:3000).
 | `pnpm typecheck`       | TypeScript check                     |
 | `pnpm migration:check` | Check migrations for destructive SQL |
 
-### Web (`apps/web/`)
+Per-app test commands: [`docs/architecture/testing.md`](./docs/architecture/testing.md).
 
-| Command                 | Description              |
-| ----------------------- | ------------------------ |
-| `pnpm test`             | Unit + integration tests |
-| `pnpm test:unit`        | Unit tests only          |
-| `pnpm test:integration` | Integration tests only   |
-| `pnpm test:coverage`    | Tests with coverage      |
-| `pnpm test:e2e`         | Playwright E2E tests     |
-| `pnpm typecheck`        | Type check               |
-
-### Mobile (`apps/mobile/`)
-
-| Command                      | Description                          |
-| ---------------------------- | ------------------------------------ |
-| `pnpm android`               | Debug build + run on device/emulator |
-| `pnpm android:release-local` | Release APK (prod backend)           |
-| `pnpm test`                  | Unit tests                           |
-
-### Desktop (`apps/desktop/`)
-
-| Command                      | Description                     |
-| ---------------------------- | ------------------------------- |
-| `npx react-native run-macos` | Build and run macOS app (dev)   |
-| `pnpm test`                  | Unit tests                      |
-| `pnpm release:beta`          | Build + submit to TestFlight    |
-| `pnpm release:production`    | Build + submit to Mac App Store |
-
-## Project Structure
+## Project Layout
 
 ```text
 apps/
-  web/
-    src/
-      app/
-        (app)/          # Authenticated app routes (notebooks, admin)
-        (auth)/         # Auth routes (login, signup, forgot/reset password)
-        api/            # API routes (notebooks, notes, admin)
-        auth/           # Auth callback handler
-        design-system/  # Design system showcase
-      components/
-        editor/         # BlockNote editor
-        layout/         # App shell (three-panel layout)
-        notebooks/      # Notebooks sidebar
-        notes/          # Note list, note editor panel
-        ui/             # Design system primitives (Button, Input, Card, etc.)
-      hooks/            # Custom hooks (auto-save, theme)
-      lib/
-        api/            # API utilities
-        supabase/       # Supabase client/server helpers
-      env.ts            # Environment variable validation (t3-env + zod)
-    __tests__/
-      unit/             # Unit tests (vitest)
-      integration/      # Integration tests (vitest + testing-library)
-    e2e/                # E2E tests (Playwright)
-  mobile/
-    app/                # Expo Router screens
-    src/
-      components/       # Mobile components
-      db/               # WatermelonDB schema, models, sync
-      hooks/            # Custom hooks
-      lib/              # Mobile libraries (supabase)
-      providers/        # Context providers
-      theme/            # Theme definitions
-    store/              # State management
-    e2e/                # Maestro E2E tests
-  desktop/
-    macos/              # Native macOS Xcode project
-    src/
-      components/       # macOS UI components (sidebar, editor, search)
-      db/               # WatermelonDB (shared schema/models with mobile)
-      hooks/            # Custom hooks (shared with mobile)
-      lib/              # Desktop libraries (supabase, attachments)
-      providers/        # Context providers (auth, database, theme, menu)
-      screens/          # App screens (login, main, settings)
-    fastlane/           # Fastlane config for Mac App Store
-    scripts/            # Release notes scripts
+  web/       Next.js web app (App Router)
+  mobile/    Expo + React Native iOS/Android
+  desktop/   React Native macOS
 packages/
-  shared/              # Shared types and constants (@drafto/shared)
+  shared/    TypeScript types + constants (@drafto/shared)
 supabase/
-  config.toml          # Supabase project config
-  migrations/          # Database migrations
+  migrations/
 docs/
-  adr/                 # Architecture Decision Records
+  features/       Per-area briefs (auth, notes, editor, sync, search, MCP, …)
+  architecture/   System shape (overview, environments, testing)
+  operations/     Runbooks (local-dev-setup, builds-and-releases, migrations)
+  adr/            Architecture Decision Records
+  archive/        Historical plans (not source of truth)
 ```
 
-## Architecture
+Full index: [`docs/README.md`](./docs/README.md).
 
-### Web
+## Contributing
 
-The web app uses a **three-panel layout**: notebooks sidebar, notes list, and editor. Data flows through Next.js API routes that use the Supabase server client, with Row Level Security enforcing access control at the database level.
-
-### Mobile
-
-The mobile app uses a **local-first architecture** with WatermelonDB (SQLite) for offline storage and Supabase for cloud sync. Notes are available offline and sync automatically when connectivity is restored.
-
-### Desktop
-
-The macOS desktop app uses the same **local-first architecture** as mobile — WatermelonDB (SQLite) for offline storage with Supabase sync. It shares ~70% of its code with the mobile app (database schema, models, sync logic, hooks, data layer). The UI is native AppKit rendered via React Native macOS with a macOS 3-pane layout (sidebar + note list + editor).
-
-### Auth
-
-Auth is handled via Supabase Auth with email confirmation. New users must be approved by an admin (`profiles.is_approved`) before they can access the app. Session refresh and approval checks run on every request via `middleware.ts`.
-
-**Account approval flow:** a Supabase Database Webhook on `INSERT INTO profiles` fires `POST /api/webhooks/new-signup`, which emails the admin a one-click approval link (HMAC-signed, 72h expiry). The admin can also approve from the `/admin` UI. Approved users receive a confirmation email and can then sign in. See [`docs/features/email-and-approval.md`](./docs/features/email-and-approval.md) for operational setup and [ADR 0019](./docs/adr/0019-email-infrastructure-and-approval-flow.md) for the rationale.
-
-**Transactional email:** all outbound email (Supabase auth + Drafto's own transactional) is sent via Resend from `hello@drafto.eu`.
-
-See [`docs/adr/`](./docs/adr/) for Architecture Decision Records.
-
-## Design System
-
-The web app uses a custom design system built on CSS custom properties, defined in [`apps/web/src/app/globals.css`](./apps/web/src/app/globals.css) and exposed to Tailwind via `@theme inline`. See the live showcase at `/design-system`.
-
-### Color Palette
-
-| Role                  | Scale  | Usage                                                             |
-| --------------------- | ------ | ----------------------------------------------------------------- |
-| **Primary** (Indigo)  | 50–900 | Buttons, links, focus rings, active states                        |
-| **Secondary** (Amber) | 50–600 | Highlights, interactive accents                                   |
-| **Tertiary** (Teal)   | 50–600 | Success states, positive actions                                  |
-| **Neutral** (Stone)   | 50–900 | Backgrounds, text, borders                                        |
-| **Semantic**          | —      | `success` (teal), `warning` (amber), `error` (red), `info` (blue) |
-
-### Surface Tokens
-
-Semantic tokens that automatically switch between light and dark mode:
-
-- `--bg`, `--bg-subtle`, `--bg-muted` — background surfaces
-- `--fg`, `--fg-muted`, `--fg-subtle` — foreground/text colors
-- `--border`, `--border-strong`, `--ring` — borders and focus rings
-- `--sidebar-bg`, `--sidebar-hover`, `--sidebar-active` — sidebar-specific
-
-Use them in Tailwind as `bg-bg`, `text-fg-muted`, `border-border`, etc.
-
-### UI Primitives
-
-Reusable components in `apps/web/src/components/ui/`:
-
-| Component       | File                 | Variants / Props                                            |
-| --------------- | -------------------- | ----------------------------------------------------------- |
-| `Button`        | `button.tsx`         | `primary`, `secondary`, `ghost`, `danger` + `loading` state |
-| `Input`         | `input.tsx`          | `sm`, `md`, `lg` sizes + `error` state                      |
-| `Label`         | `label.tsx`          | Standard form label                                         |
-| `Card`          | `card.tsx`           | `CardHeader`, `CardBody`, `CardFooter` slots                |
-| `Badge`         | `badge.tsx`          | `default`, `success`, `warning`, `error`                    |
-| `IconButton`    | `icon-button.tsx`    | `ghost`, `danger` variants                                  |
-| `Skeleton`      | `skeleton.tsx`       | Configurable `height`, `width`, `rounded`                   |
-| `ConfirmDialog` | `confirm-dialog.tsx` | Inline confirmation with confirm/cancel actions             |
-| `DropdownMenu`  | `dropdown-menu.tsx`  | Positioned menu with items + destructive variant            |
-| `ThemeToggle`   | `theme-toggle.tsx`   | Sun/moon toggle for dark mode                               |
-
-### Dark Mode
-
-Dark mode is toggled via a `.dark` class on `<html>`. The `useTheme` hook manages the theme:
-
-- Respects `prefers-color-scheme` on first visit
-- Persists choice to `localStorage("theme")`
-- A `<script>` in `<head>` prevents flash of wrong theme on load
+All work goes through branches + PRs — see [`CLAUDE.md`](./CLAUDE.md) for the project conventions (worktree workflow, SOLID, testing requirements, production safety rails). Decisions are recorded in [`docs/adr/`](./docs/adr/).
 
 ## License
 
