@@ -46,6 +46,7 @@ const createStyles = (semantic: SemanticColors) =>
     },
     icon: {
       // Emoji icon sized as a visual, not typography
+      // eslint-disable-next-line no-restricted-syntax -- emoji glyph, not typography
       fontSize: 24,
     },
     title: {

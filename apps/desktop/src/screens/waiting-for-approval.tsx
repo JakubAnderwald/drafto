@@ -96,6 +96,7 @@ const createStyles = (semantic: SemanticColors) =>
     },
     icon: {
       // Hero emoji — intentionally large, no font-size token at 48px
+      // eslint-disable-next-line no-restricted-syntax -- emoji hero glyph, not typography
       fontSize: 48,
       marginBottom: spacing.lg,
     },

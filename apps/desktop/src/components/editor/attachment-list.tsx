@@ -297,10 +297,12 @@ const createStyles = (semantic: SemanticColors) =>
     },
     placeholderIcon: {
       // Emoji icon sized as a visual, not typography
+      // eslint-disable-next-line no-restricted-syntax -- emoji glyph, not typography
       fontSize: 24,
     },
     retryIcon: {
       // Emoji icon sized as a visual, not typography
+      // eslint-disable-next-line no-restricted-syntax -- emoji glyph, not typography
       fontSize: 24,
       color: colors.neutral[400],
     },
@@ -340,6 +342,7 @@ const createStyles = (semantic: SemanticColors) =>
     },
     fileIcon: {
       // Emoji icon sized as a visual, not typography
+      // eslint-disable-next-line no-restricted-syntax -- emoji glyph, not typography
       fontSize: 20,
     },
     fileInfo: {

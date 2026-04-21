@@ -82,6 +82,12 @@ All UI code must use the design system defined in `apps/web/src/app/globals.css`
 - When adding a new token, add an example to the showcase page (`apps/web/src/app/design-system/page.tsx`)
 - When adding a new UI primitive, add it to the showcase page with all variants
 
+**Lint guardrails** enforce these rules automatically:
+
+- Web (`apps/web/eslint.config.mjs`) — blocks raw Tailwind greys (`bg-gray-*`, `text-slate-*`, …), arbitrary color values (`bg-[#...]`), and arbitrary shadow/radius values (`shadow-[...]`, `rounded-[...]`) inside `className`.
+- Mobile + desktop (`apps/{mobile,desktop}/eslint.config.mjs`) — blocks numeric `fontSize` literals and hex color strings assigned to `color`/`backgroundColor`/`borderColor` inside `src/`, `app/`, and `components/`.
+- Suppress legitimate exceptions with `// eslint-disable-next-line no-restricted-syntax -- <reason>` and explain why (e.g. an emoji glyph sized as a visual, not typography). See `docs/features/design-system.md` → "Lint guardrails" for the full rule set.
+
 ## Testing Requirements
 
 Every feature needs unit tests (`__tests__/unit/`), integration tests (`__tests__/integration/`), and E2E tests (`e2e/`). The full per-platform matrix of commands lives in [`docs/architecture/testing.md`](./docs/architecture/testing.md).
