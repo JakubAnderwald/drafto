@@ -1,164 +1,89 @@
-# Evernote Import Feature
+# Evernote Import
 
-## Context
+**Status:** shipped  **Updated:** 2026-04-21
 
-Users migrating from Evernote need a way to import their existing notes into Drafto. Evernote exports notes as `.enex` files (XML format containing notes with ENML content, metadata, and base64-encoded attachments). This feature adds an import flow that converts `.enex` files into Drafto notebooks and notes with full attachment support.
+## What it is
 
-Additionally, the app currently lacks a central app menu — there's no logout button, settings access, etc. This feature also introduces an **app menu** (hamburger dropdown) in the sidebar footer that houses "Import from Evernote", "Log out", and can be extended with future settings.
+Lets a signed-in user import an Evernote `.enex` export into Drafto as a notebook of notes with attachments preserved. Accessed via the sidebar app menu -> "Import from Evernote".
 
----
+## Current state
 
-## Architecture Overview
+Shipped on the web app. The flow:
 
+1. User picks a `.enex` file from a modal dialog.
+2. The browser parses the XML locally (native `DOMParser`) into note records with base64-encoded resources.
+3. Notes are sent to `POST /api/import/evernote` in batches of up to 5 — each batch either joins an existing target notebook or (on the first batch) creates one using the user-supplied name (default: filename without `.enex`).
+4. Server-side, each note has its resources uploaded to the `attachments` Storage bucket, its ENML converted to BlockNote blocks via `linkedom`, and a note row inserted; attachment rows are inserted alongside.
+5. The dialog shows per-batch progress and per-note failures; partial batches keep going and report an error list at the end. On completion the imported notebook is selected in the sidebar.
+
+Batching rationale: Vercel caps request bodies at 4.5 MB. Client-side parse + batched API calls stays under the limit and enables progress feedback.
+
+Platform coverage:
+
+- **Web:** implemented.
+- **iOS / Android / macOS:** not available. The dialog, parser, and API route all live in `apps/web`. Mobile and desktop users must import via the web app, after which the notes sync down through the normal Supabase pipeline.
+
+## Code paths
+
+| Concern                                    | Path                                                                      |
+| ------------------------------------------ | ------------------------------------------------------------------------- |
+| Import API route                           | `apps/web/src/app/api/import/evernote/route.ts`                           |
+| Shared types (`EnexNote`, batch req/res)   | `apps/web/src/lib/import/types.ts`                                        |
+| Client `.enex` XML parser (`DOMParser`)    | `apps/web/src/lib/import/enex-parser.ts`                                  |
+| Server ENML -> BlockNote converter         | `apps/web/src/lib/import/enml-to-blocknote.ts`                            |
+| Import dialog UI                           | `apps/web/src/components/import/import-evernote-dialog.tsx`               |
+| App menu entry (triggers dialog)           | `apps/web/src/components/layout/app-menu.tsx`                             |
+| Parser unit tests                          | `apps/web/__tests__/unit/enex-parser.test.ts`                             |
+| ENML converter unit tests                  | `apps/web/__tests__/unit/enml-to-blocknote.test.ts`                       |
+| API route unit tests                       | `apps/web/__tests__/unit/import-evernote-api.test.ts`                     |
+| Dialog integration tests                   | `apps/web/__tests__/integration/import-evernote-dialog.test.tsx`          |
+
+## Related ADRs
+
+- [0007 — Evernote Import](../adr/0007-evernote-import.md)
+
+## Cross-platform notes
+
+Importer code is web-only. Shared pieces:
+
+- The `attachments` Storage bucket and the `notebooks` / `notes` / `attachments` tables are the same surface every platform reads from — imports show up on mobile and desktop after the next sync.
+- Block shape is shared via `@drafto/shared` (same types the web, mobile, and desktop editors render). The converter emits BlockNote blocks that must stay compatible with that shared shape.
+
+## Modifying safely
+
+**Invariants:**
+
+- Batch size is capped at 5 notes server-side (`route.ts` rejects larger batches with 400). Keep the client chunking in the dialog aligned with this limit.
+- Parser uses the browser `DOMParser` (client-only). The converter uses `linkedom` (server-side). Do not swap either without re-testing bundle size — `jsdom` was rejected in ADR 0007 for being too heavy.
+- Failed notes within a batch must not abort the batch; they surface as entries in `ImportBatchResult.errors`.
+- The first batch is the one that creates the notebook (when `notebookId` is absent). Subsequent batches must pass the returned `notebookId` or a fresh notebook will be created per batch.
+- Attachment upload uses the same bucket and path conventions as regular note attachments — changing the bucket or path shape requires updating this route in lockstep.
+- ENML conversion is best-effort. New BlockNote block types require a matching branch in `convertEnmlToBlocks` or content will be dropped silently.
+
+**Tests that catch regressions:**
+
+- `apps/web/__tests__/unit/enex-parser.test.ts` — .enex XML parsing (notes, resources, tasks, timestamps).
+- `apps/web/__tests__/unit/enml-to-blocknote.test.ts` — ENML tag mapping to BlockNote blocks, inline styles, `en-media`, `en-todo`, tables.
+- `apps/web/__tests__/unit/import-evernote-api.test.ts` — auth, batch size cap, notebook creation, partial failure behavior.
+- `apps/web/__tests__/integration/import-evernote-dialog.test.tsx` — dialog progress states and error aggregation.
+
+**Files that must change together:**
+
+- Changing `EnexNote` / `ImportBatchRequest` / `ImportBatchResult` in `types.ts` requires touching both the parser and the route, plus the dialog that consumes them.
+- Changing the BlockNote block shape in `packages/shared` requires a matching update to `enml-to-blocknote.ts`.
+- Adding a new menu entry alongside "Import from Evernote" means editing `app-menu.tsx` and (if it surfaces a dialog) the app shell state that owns the dialog visibility.
+
+## Verify
+
+```bash
+# Unit + integration tests for every piece of the importer.
+cd apps/web && pnpm test
+
+# Type + lint.
+pnpm lint && pnpm typecheck
+
+# Manual smoke test: export a few notes from Evernote (including one with
+# images and one with a checklist), import via the dialog, then open the
+# imported notebook and check that titles, inline styles, checklists, and
+# images render.
 ```
-Client (browser)                              Server (API route)
-  |                                               |
-  1. User picks .enex file                        |
-  2. Parse XML with browser DOMParser             |
-  3. Extract notes + base64 attachments           |
-  4. Send batches (≤5 notes) to server  --------> 5. Auth check
-     POST /api/import/evernote                    6. Create notebook (1st batch)
-                                                  7. Per note:
-                                                     - Convert ENML → BlockNote blocks
-                                                     - Insert note row
-                                                     - Upload attachments to Storage
-                                                     - Insert attachment records
-  8. Show progress per batch <----- return counts
-  9. Select imported notebook on completion
-```
-
-**Batching rationale:** Vercel has a 4.5MB request body limit. Client-side XML parsing + batched API calls avoids this limit and enables progress feedback.
-
----
-
-## Implementation Plan
-
-### 1. Add `linkedom` dependency
-
-`pnpm add linkedom` — lightweight server-side DOM parser (~40KB) for ENML→BlockNote conversion in the API route. `jsdom` exists as a devDependency but is too heavy for production.
-
-### 2. Create shared types — `src/lib/import/types.ts`
-
-```ts
-EnexNote { title, content (ENML string), created, updated, resources[] }
-EnexResource { data (base64), mime, hash, fileName }
-ImportBatchRequest { notebookName?, notebookId?, notes: EnexNote[] }
-ImportBatchResult { notebookId, notesImported, notesFailed, errors[] }
-```
-
-### 3. Client-side .enex parser — `src/lib/import/enex-parser.ts`
-
-- `parseEnexFile(xmlString: string): EnexNote[]`
-- Uses browser `DOMParser` to parse XML
-- Extracts `<note>` elements: title, content, created/updated timestamps, `<resource>` elements (base64 data, mime, recognition hash, filename)
-- Handles missing fields gracefully (defaults)
-
-### 4. Server-side ENML→BlockNote converter — `src/lib/import/enml-to-blocknote.ts`
-
-- `convertEnmlToBlocks(enml: string, attachmentUrlMap: Map<string, string>): Block[]`
-- Uses `linkedom` to parse ENML into DOM
-- Recursive tree walker mapping:
-  - `<div>`, `<p>` → paragraph blocks
-  - `<h1>`-`<h3>` → heading blocks
-  - `<ul>/<ol>/<li>` → list item blocks
-  - `<en-todo>` → checkListItem blocks
-  - `<b>/<strong>`, `<i>/<em>`, `<u>`, `<s>` → inline styles
-  - `<a>` → link inline content
-  - `<en-media type="image/*">` → image blocks (URL from attachmentUrlMap)
-  - `<en-media>` (non-image) → file block or paragraph placeholder
-  - `<table>` → table blocks
-- Returns `[{ type: "paragraph", content: [] }]` for empty/unparseable content
-
-### 5. API route — `src/app/api/import/evernote/route.ts`
-
-- POST handler accepting JSON `ImportBatchRequest`
-- Uses `getAuthenticatedUser()`, `errorResponse()`, `successResponse()` from `@/lib/api/utils`
-- If no `notebookId`: create notebook via Supabase insert
-- For each note in batch:
-  1. Upload each resource to Supabase Storage (`attachments` bucket, path: `userId/noteId/filename`)
-  2. Build hash→signedURL map
-  3. Call `convertEnmlToBlocks()` with ENML + URL map
-  4. Insert note row with title, converted content, timestamps
-  5. Insert attachment records
-- Partial failure: skip failed notes, continue, report errors in response
-- Returns `ImportBatchResult`
-
-### 6. App menu component — `src/components/layout/app-menu.tsx`
-
-- Replaces the bare `ThemeToggle` in the sidebar footer
-- Uses existing `DropdownMenu`, `DropdownMenuItem`, `DropdownMenuSeparator` components
-- Menu items: **Import from Evernote**, **Theme toggle** (inline), **Log out** (danger variant)
-- Logout calls `supabase.auth.signOut()` then redirects to `/login`
-
-### 7. Import dialog — `src/components/import/import-evernote-dialog.tsx`
-
-- Modal dialog (similar pattern to `ConfirmDialog`)
-- File picker accepting `.enex`
-- Input for notebook name (defaults to filename without `.enex`)
-- Progress state: "Parsing file..." → "Importing note X of Y" → "Done" / "Completed with N errors"
-- Client logic: read file as text → `parseEnexFile()` → batch into groups of 5 → POST each batch sequentially → aggregate results
-- Uses existing `Button` (with loading), `Input`, `Badge` components
-
-### 8. Wire into app-shell — modify `src/components/layout/app-shell.tsx`
-
-- Replace the sidebar footer `ThemeToggle` with `AppMenu`
-- Add state for `showImportDialog`
-- Pass `onImportComplete` callback to refresh notebooks and select the imported one
-
-### 9. ADR — `docs/adr/0006-evernote-import.md`
-
-Document: client-side parsing + batched API approach, ENML conversion strategy, `linkedom` choice.
-
----
-
-## Files to Create
-
-| File                                                    | Purpose                                    |
-| ------------------------------------------------------- | ------------------------------------------ |
-| `src/lib/import/types.ts`                               | Shared types                               |
-| `src/lib/import/enex-parser.ts`                         | Client-side .enex XML parser               |
-| `src/lib/import/enml-to-blocknote.ts`                   | Server-side ENML → BlockNote converter     |
-| `src/app/api/import/evernote/route.ts`                  | Import API endpoint                        |
-| `src/components/layout/app-menu.tsx`                    | App hamburger menu (logout, import, theme) |
-| `src/components/import/import-evernote-dialog.tsx`      | Import modal UI                            |
-| `docs/adr/0006-evernote-import.md`                      | Architecture decision record               |
-| `__tests__/unit/enml-to-blocknote.test.ts`              | Converter unit tests                       |
-| `__tests__/unit/enex-parser.test.ts`                    | Parser unit tests                          |
-| `__tests__/unit/import-evernote-api.test.ts`            | API route unit tests                       |
-| `__tests__/integration/import-evernote-dialog.test.tsx` | Dialog integration tests                   |
-| `__tests__/integration/app-menu.test.tsx`               | App menu integration tests                 |
-| `e2e/import.spec.ts`                                    | E2E test with fixture .enex file           |
-| `e2e/fixtures/sample.enex`                              | Small test fixture                         |
-
-## Files to Modify
-
-| File                                             | Change                                                            |
-| ------------------------------------------------ | ----------------------------------------------------------------- |
-| `src/components/layout/app-shell.tsx`            | Replace ThemeToggle footer with AppMenu, add import dialog state  |
-| `src/components/notebooks/notebooks-sidebar.tsx` | Add `onImportComplete` prop to refresh notebook list after import |
-| `README.md`                                      | Document import feature                                           |
-| `docs/adr/README.md`                             | Add ADR 0006 to index                                             |
-
-## Existing Code to Reuse
-
-- `src/lib/api/utils.ts` — `getAuthenticatedUser()`, `errorResponse()`, `successResponse()`
-- `src/components/ui/dropdown-menu.tsx` — `DropdownMenu`, `DropdownMenuItem`, `DropdownMenuSeparator`
-- `src/components/ui/button.tsx` — `Button` with loading state
-- `src/components/ui/input.tsx` — form input
-- `src/components/ui/badge.tsx` — status indicators
-- `src/components/ui/icon-button.tsx` — menu trigger
-- `src/lib/supabase/server.ts` — server Supabase client
-- `src/lib/supabase/client.ts` — client Supabase client (for logout)
-- `src/lib/handle-auth-error.ts` — auth error redirect
-- Attachment upload pattern from `src/app/api/notes/[id]/attachments/route.ts`
-
----
-
-## Verification
-
-1. **Unit tests:** `pnpm test -- enml-to-blocknote enex-parser import-evernote-api`
-2. **Integration tests:** `pnpm test -- import-evernote-dialog app-menu`
-3. **Type check:** `pnpm exec tsc --noEmit`
-4. **Lint/format:** `pnpm lint && pnpm format:check`
-5. **Manual test:** Export a few notes from Evernote as .enex, import via the UI, verify content and attachments render correctly in the editor
-6. **E2E:** `pnpm test:e2e -- import`

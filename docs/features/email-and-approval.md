@@ -1,4 +1,79 @@
-# Email setup (Resend + drafto.eu)
+# Email and approval
+
+**Status:** shipped  **Updated:** 2026-04-21
+
+## What it is
+
+Transactional email delivered through Resend from `hello@drafto.eu`, plus an admin-notification and one-click-approve flow triggered when a new user signs up. The same Resend account powers Supabase auth emails (confirmation, password reset) so signup volume is never throttled by Supabase's built-in 2/hour mailer.
+
+## Current state
+
+Shipped in production. A Postgres `after insert on auth.users` trigger calls `/api/webhooks/new-signup`, which emails all `profiles.is_admin = true` users a "New signup" message containing a signed one-click approve link. Clicking the link hits `/api/admin/approve-user/one-click`, flips `profiles.is_approved`, and sends the new user a "You're approved" email. The approval UI at `/admin` covers the same flow interactively. Platform coverage: the email pipeline is web-only (runs on Vercel); mobile and desktop rely on the same `is_approved` gate and simply see the approval take effect on their next auth check.
+
+## Code paths
+
+| Concern                                   | Path                                                                   |
+| ----------------------------------------- | ---------------------------------------------------------------------- |
+| Resend client wrapper                     | `apps/web/src/lib/email/client.ts`                                     |
+| Email templates (new signup, approved)    | `apps/web/src/lib/email/templates.ts`                                  |
+| Supabase-triggered signup webhook         | `apps/web/src/app/api/webhooks/new-signup/route.ts`                    |
+| Interactive approve API                   | `apps/web/src/app/api/admin/approve-user/route.ts`                     |
+| One-click approve (signed link) API       | `apps/web/src/app/api/admin/approve-user/one-click/route.ts`           |
+| Signed approval token (HMAC)              | `apps/web/src/lib/approval-tokens.ts`                                  |
+| Admin UI                                  | `apps/web/src/app/(app)/admin/page.tsx`                                |
+| Admin user list component                 | `apps/web/src/app/(app)/admin/admin-user-list.tsx`                     |
+| Admin flash message component             | `apps/web/src/app/(app)/admin/admin-flash-message.tsx`                 |
+| Admin bootstrap migration (first admin)   | `supabase/migrations/20260420000001_admin_bootstrap.sql`               |
+| New-signup webhook trigger migration      | `supabase/migrations/20260421000001_new_signup_webhook.sql`            |
+| Webhook hardening migration               | `supabase/migrations/20260421000002_new_signup_webhook_harden.sql`     |
+
+## Related ADRs
+
+- [0013 — Automated Support Pipeline](../adr/0013-automated-support-pipeline.md)
+- [0019 — Email Infrastructure and Approval Flow](../adr/0019-email-infrastructure-and-approval-flow.md)
+
+## Cross-platform notes
+
+- The entire email + approval pipeline is **web-only** — it runs in Vercel API routes. Mobile and desktop never send email and never receive the admin notification.
+- What mobile/desktop do care about is the **result**: `profiles.is_approved` flipping to `true`. Their `AuthProvider` (see `apps/mobile/src/providers/auth-provider.tsx`, `apps/desktop/src/providers/auth-provider.tsx`) re-queries `profiles.is_approved` on app resume and on an explicit "refresh" action, so approval propagates without a code change on those platforms.
+- Shared pieces: the `profiles.is_approved` / `profiles.is_admin` columns, the RLS policies, and the admin-bootstrap migration — all defined in `supabase/migrations/` and consumed identically by every client.
+
+## Modifying safely
+
+- **Invariants:**
+  - The webhook route at `/api/webhooks/new-signup` must remain public in the middleware allowlist (`apps/web/src/lib/supabase/middleware.ts` → `PUBLIC_ROUTES` includes `/api/webhooks`). Authenticity is enforced by `WEBHOOK_SECRET`, not by Supabase session.
+  - One-click approve tokens are short-lived (72h) and signed with `APPROVAL_LINK_SECRET`. Rotating this secret invalidates every outstanding email link — coordinate with any in-flight admin actions.
+  - Only service-role code should flip `profiles.is_approved`. RLS blocks direct user writes to that column.
+  - When there are zero admins in `profiles`, the webhook falls back to `EMAIL_ADMIN_FALLBACK`. Do not remove this fallback without first proving an admin exists in every environment.
+- **Tests that will catch regressions:**
+  - `apps/web/__tests__/unit/new-signup-webhook.test.ts` — HMAC verification, admin discovery, fallback behavior.
+  - `apps/web/__tests__/unit/admin-approve-user.test.ts` — interactive admin approval auth and state transitions.
+  - `apps/web/__tests__/unit/approve-user-one-click.test.ts` — signed-link verification and approval flow.
+  - `apps/web/__tests__/unit/approval-tokens.test.ts` — HMAC signing, TTL, tamper detection.
+  - `apps/web/__tests__/unit/email-client.test.ts` + `email-templates.test.ts` — Resend transport and template rendering.
+- **Files that must change together:**
+  - Changing the webhook payload shape: update `apps/web/src/app/api/webhooks/new-signup/route.ts` **and** `supabase/migrations/20260421000001_new_signup_webhook.sql` (the trigger builds the body). Add a new migration rather than editing the old one.
+  - Adding a new transactional email: update `apps/web/src/lib/email/templates.ts`, add a sender call, and extend `email-templates.test.ts`.
+  - Rotating `APPROVAL_LINK_SECRET`, `WEBHOOK_SECRET`, or the Resend API key: follow the [Rotating secrets](#rotating-secrets) section below.
+
+## Verify
+
+```bash
+# Web unit + integration (covers webhook, approve-user, approval-tokens, email)
+cd apps/web && pnpm test
+
+# Targeted unit tests for this feature
+cd apps/web && pnpm test -- new-signup-webhook admin-approve-user approve-user-one-click approval-tokens email-client email-templates
+
+# Web E2E (signup + approval happy path)
+set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e -- auth
+
+# Manual end-to-end verification steps are in "Verifying the setup end-to-end" below.
+```
+
+---
+
+# Email setup (Resend + drafto.eu) — runbook
 
 Drafto sends all outbound email via **Resend** from `hello@drafto.eu`. The same Resend account handles Supabase auth emails (signup confirmation, password reset) _and_ Drafto's own transactional emails (admin signup notifications, user approval confirmations).
 
