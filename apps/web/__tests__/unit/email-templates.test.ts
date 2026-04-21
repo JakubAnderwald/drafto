@@ -37,6 +37,32 @@ describe("email templates", () => {
       const out = newSignupAdminEmail({ ...baseInput, userDisplayName: null });
       expect(out.html).not.toContain("Name");
     });
+
+    it("uses Drafto design system colors (indigo primary, warm neutrals)", () => {
+      const out = newSignupAdminEmail(baseInput);
+      // Uses Drafto primary indigo
+      expect(out.html).toContain("#3525cd");
+      // Uses warm neutral backgrounds
+      expect(out.html).toContain("#fff8f5");
+      expect(out.html).toContain("#fcf2eb");
+      // Does not use the previous generic palette
+      expect(out.html).not.toContain("#2563eb");
+      expect(out.html).not.toContain("#f4f4f5");
+      expect(out.html).not.toContain("#fafafa");
+      expect(out.html).not.toContain("#18181b");
+    });
+
+    it("includes a non-empty plaintext alternative", () => {
+      const out = newSignupAdminEmail(baseInput);
+      expect(out.text.length).toBeGreaterThan(0);
+      expect(out.text).toContain("New Drafto signup");
+    });
+
+    it("renders the shared Drafto footer", () => {
+      const out = newSignupAdminEmail(baseInput);
+      expect(out.html).toContain("drafto.eu");
+      expect(out.html).toContain("Drafto");
+    });
   });
 
   describe("userApprovedEmail", () => {
@@ -66,6 +92,37 @@ describe("email templates", () => {
       });
       expect(out.html).not.toContain("<b>x</b>");
       expect(out.html).toContain("&lt;b&gt;x&lt;/b&gt;");
+    });
+
+    it("uses Drafto design system colors (indigo primary, warm neutrals)", () => {
+      const out = userApprovedEmail({
+        displayName: "Jane",
+        loginUrl: "https://drafto.eu/login",
+      });
+      expect(out.html).toContain("#3525cd");
+      expect(out.html).toContain("#fff8f5");
+      expect(out.html).not.toContain("#2563eb");
+      expect(out.html).not.toContain("#f4f4f5");
+      expect(out.html).not.toContain("#fafafa");
+      expect(out.html).not.toContain("#18181b");
+    });
+
+    it("includes a non-empty plaintext alternative", () => {
+      const out = userApprovedEmail({
+        displayName: "Jane",
+        loginUrl: "https://drafto.eu/login",
+      });
+      expect(out.text.length).toBeGreaterThan(0);
+      expect(out.text).toContain("Jane");
+      expect(out.text).toContain("https://drafto.eu/login");
+    });
+
+    it("renders the shared Drafto footer", () => {
+      const out = userApprovedEmail({
+        displayName: "Jane",
+        loginUrl: "https://drafto.eu/login",
+      });
+      expect(out.html).toContain("drafto.eu");
     });
   });
 });

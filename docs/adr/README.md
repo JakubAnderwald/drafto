@@ -52,3 +52,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0017](./0017-mcp-server-for-claude-cowork.md)           | MCP Server for Claude Cowork                   | Accepted           | 2026-04-11 |
 | [0018](./0018-oauth-google-apple.md)                     | OAuth with Google and Apple                    | Accepted           | 2026-04-12 |
 | [0019](./0019-email-infrastructure-and-approval-flow.md) | Email Infrastructure and Account Approval Flow | Accepted           | 2026-04-20 |
+| [0020](./0020-email-design-tokens.md)                    | Email Design Tokens                            | Accepted           | 2026-04-21 |
