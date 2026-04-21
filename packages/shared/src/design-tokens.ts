@@ -93,6 +93,7 @@ export const semanticLight = {
   errorBg: "#FCEEEE",
   errorText: "#BA1A1A",
   errorBorder: "#E8C4C4",
+  errorHover: "#D32F2F",
 
   // Success surfaces
   successBg: "#E8F5EE",
@@ -129,6 +130,7 @@ export const semanticDark = {
   errorBg: "#2D1414",
   errorText: "#FFB4AB",
   errorBorder: "#7F1D1D",
+  errorHover: "#D32F2F",
 
   // Success surfaces
   successBg: "#142D1E",
@@ -160,6 +162,7 @@ export type SemanticColors = {
   readonly errorBg: string;
   readonly errorText: string;
   readonly errorBorder: string;
+  readonly errorHover: string;
   readonly successBg: string;
   readonly successText: string;
   readonly warningBg: string;

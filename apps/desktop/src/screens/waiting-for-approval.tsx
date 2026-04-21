@@ -1,10 +1,10 @@
 import { useState, useMemo } from "react";
-import { Text, View, Pressable, StyleSheet, ActivityIndicator } from "react-native";
+import { Text, View, StyleSheet } from "react-native";
 
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
-import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
+import { Button } from "@/components/ui/button";
 
 export function WaitingForApprovalScreen() {
   const { signOut, refreshApprovalStatus } = useAuth();
@@ -58,37 +58,25 @@ export function WaitingForApprovalScreen() {
       )}
 
       <View style={styles.buttonContainer}>
-        <Pressable
-          style={({ pressed }) => [
-            styles.button,
-            pressed && styles.buttonPressed,
-            checking && styles.buttonDisabled,
-          ]}
+        <Button
+          title="Check approval status"
           onPress={handleCheckApproval}
+          loading={checking}
           disabled={checking || signingOut}
-        >
-          {checking ? (
-            <ActivityIndicator color={semantic.onPrimary} />
-          ) : (
-            <Text style={styles.buttonText}>Check approval status</Text>
-          )}
-        </Pressable>
+          fullWidth
+          size="lg"
+          style={styles.primaryButton}
+        />
 
-        <Pressable
-          style={({ pressed }) => [
-            styles.signOutButton,
-            pressed && styles.signOutButtonPressed,
-            signingOut && styles.buttonDisabled,
-          ]}
+        <Button
+          title="Sign out"
           onPress={handleSignOut}
+          loading={signingOut}
           disabled={checking || signingOut}
-        >
-          {signingOut ? (
-            <ActivityIndicator color={colors.primary[600]} />
-          ) : (
-            <Text style={styles.signOutButtonText}>Sign out</Text>
-          )}
-        </Pressable>
+          variant="secondary"
+          fullWidth
+          size="lg"
+        />
       </View>
     </View>
   );
@@ -139,39 +127,7 @@ const createStyles = (semantic: SemanticColors) =>
     buttonContainer: {
       width: "100%",
     },
-    button: {
-      backgroundColor: colors.primary[600],
-      borderRadius: 8,
-      padding: 14,
-      alignItems: "center",
-      width: "100%",
+    primaryButton: {
       marginBottom: 12,
-    },
-    buttonPressed: {
-      backgroundColor: colors.primary[700],
-    },
-    buttonDisabled: {
-      opacity: 0.7,
-    },
-    buttonText: {
-      color: semantic.onPrimary,
-      fontSize: 16,
-      fontWeight: "600",
-    },
-    signOutButton: {
-      borderWidth: 1,
-      borderColor: semantic.borderStrong,
-      borderRadius: 8,
-      padding: 14,
-      alignItems: "center",
-      width: "100%",
-    },
-    signOutButtonPressed: {
-      backgroundColor: semantic.bgMuted,
-    },
-    signOutButtonText: {
-      color: colors.primary[600],
-      fontSize: 16,
-      fontWeight: "600",
     },
   });
