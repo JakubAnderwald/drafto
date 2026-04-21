@@ -75,7 +75,7 @@ export function OAuthButtons({ className }: OAuthButtonsProps) {
           <div className="border-border w-full border-t" />
         </div>
         <div className="relative flex justify-center text-sm">
-          <span className="bg-bg-card text-fg-muted px-2">or continue with</span>
+          <span className="bg-bg text-fg-muted px-2">or continue with</span>
         </div>
       </div>
 

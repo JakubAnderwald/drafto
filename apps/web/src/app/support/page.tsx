@@ -8,12 +8,10 @@ export const metadata: Metadata = {
 export default function SupportPage() {
   return (
     <main className="mx-auto max-w-2xl px-6 py-16">
-      <h1 className="mb-2 text-3xl font-bold text-stone-900 dark:text-stone-100">Support</h1>
-      <p className="mb-8 text-stone-600 dark:text-stone-400">
-        Need help with Drafto? We&apos;re here for you.
-      </p>
+      <h1 className="text-fg mb-2 text-3xl font-bold">Support</h1>
+      <p className="text-fg-muted mb-8">Need help with Drafto? We&apos;re here for you.</p>
 
-      <div className="prose prose-stone dark:prose-invert max-w-none">
+      <div className="prose dark:prose-invert max-w-none">
         <h2>Contact Us</h2>
         <p>
           For questions, bug reports, or feature requests, email us at{" "}

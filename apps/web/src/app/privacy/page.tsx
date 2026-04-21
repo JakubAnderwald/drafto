@@ -8,12 +8,12 @@ export const metadata: Metadata = {
 export default function PrivacyPolicyPage() {
   return (
     <main className="mx-auto max-w-2xl px-6 py-16">
-      <h1 className="mb-2 text-3xl font-bold text-stone-900 dark:text-stone-100">Privacy Policy</h1>
-      <p className="mb-8 text-sm text-stone-500 dark:text-stone-400">
+      <h1 className="text-fg mb-2 text-3xl font-bold">Privacy Policy</h1>
+      <p className="text-fg-muted mb-8 text-sm">
         Effective date: March 8, 2026 &middot; Last updated: March 8, 2026
       </p>
 
-      <div className="prose prose-stone dark:prose-invert max-w-none">
+      <div className="prose dark:prose-invert max-w-none">
         <p>
           Drafto (&ldquo;we&rdquo;, &ldquo;our&rdquo;, &ldquo;us&rdquo;) operates the Drafto mobile
           application and the drafto.eu website (collectively, the &ldquo;Service&rdquo;). This
