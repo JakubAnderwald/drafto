@@ -30,7 +30,7 @@ Migrate all design tokens to the Digital Atelier palette:
 
 Token infrastructure remains unchanged — CSS custom properties with `@theme inline` for Tailwind, mirrored in `apps/mobile/src/theme/tokens.ts`.
 
-A separate UI rewrite plan (`docs/digital-atelier-ui-rewrite.md`) documents the phased component migration to fully adopt these tokens.
+A separate UI rewrite plan (`docs/archive/digital-atelier-ui-rewrite.md`, archived) documented the phased component migration; current state lives in [`docs/features/design-system.md`](../features/design-system.md).
 
 ## Consequences
 

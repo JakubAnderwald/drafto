@@ -1,6 +1,11 @@
+> **Archived — historical reference only.**
+> This document describes work that has already shipped or a plan that has been superseded.
+> For current state see [docs/features/](../features/) and the relevant [ADRs](../adr/README.md).
+> Kept for historical context; do **not** treat as source of truth.
+
 # Digital Atelier UI Rewrite Plan
 
-This document outlines the phased plan to rewrite all UI components across web and mobile to fully adopt the Digital Atelier design system tokens introduced in [ADR 0014](./adr/0014-digital-atelier-design-system.md).
+This document outlines the phased plan to rewrite all UI components across web and mobile to fully adopt the Digital Atelier design system tokens introduced in [ADR 0014](../adr/0014-digital-atelier-design-system.md).
 
 ## Design Principles
 
