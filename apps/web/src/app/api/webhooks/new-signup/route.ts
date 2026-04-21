@@ -95,14 +95,14 @@ export async function POST(request: NextRequest) {
       adminUrl,
     });
 
-    await sendEmail({
+    const result = await sendEmail({
       to: recipients,
       subject: content.subject,
       html: content.html,
       text: content.text,
     });
 
-    return NextResponse.json({ ok: true, emailSent: true });
+    return NextResponse.json({ ok: true, emailSent: result !== null });
   } catch (err) {
     Sentry.captureException(err, { extra: { where: "new-signup-webhook", userId } });
     return NextResponse.json({ ok: true, emailSent: false });

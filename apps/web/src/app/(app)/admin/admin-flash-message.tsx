@@ -3,6 +3,13 @@ interface AdminFlashMessageProps {
   error?: string;
 }
 
+const approvedMessages: Record<string, string> = {
+  approved: "User approved. They've been emailed and can sign in now.",
+  approved_email_failed:
+    "User approved, but the confirmation email failed to send. They can still sign in — reach out manually if needed.",
+  already_approved: "That user was already approved. No action taken.",
+};
+
 const errorMessages: Record<string, string> = {
   missing_token: "The approval link was missing its token.",
   invalid_or_expired_token:
@@ -14,10 +21,21 @@ const errorMessages: Record<string, string> = {
 
 export function AdminFlashMessage({ approved, error }: AdminFlashMessageProps) {
   if (approved) {
+    const message = approvedMessages[approved] ?? approvedMessages.approved;
+    const isWarning = approved === "approved_email_failed";
+    const tone = isWarning ? "warning" : "success";
     return (
-      <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-        Approved <span className="font-semibold">{approved}</span>. They&rsquo;ve been emailed and
-        can sign in now.
+      <div
+        role="status"
+        data-testid="admin-flash-success"
+        data-tone={tone}
+        className={
+          isWarning
+            ? "bg-warning-bg text-warning-text mb-4 rounded-lg px-4 py-3 text-sm"
+            : "bg-success-bg text-success-text mb-4 rounded-lg px-4 py-3 text-sm"
+        }
+      >
+        {message}
       </div>
     );
   }
@@ -25,7 +43,11 @@ export function AdminFlashMessage({ approved, error }: AdminFlashMessageProps) {
   if (error) {
     const message = errorMessages[error] ?? "Something went wrong.";
     return (
-      <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
+      <div
+        role="alert"
+        data-testid="admin-flash-error"
+        className="bg-error-bg text-error-text mb-4 rounded-lg px-4 py-3 text-sm"
+      >
         {message}
       </div>
     );

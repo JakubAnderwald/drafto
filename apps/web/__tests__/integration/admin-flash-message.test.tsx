@@ -8,31 +8,45 @@ describe("AdminFlashMessage", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("renders success message with email when approved prop is set", () => {
-    render(<AdminFlashMessage approved="jane@example.com" />);
-    expect(screen.getByText("jane@example.com")).toBeInTheDocument();
-    expect(screen.getByText(/emailed and can sign in now/)).toBeInTheDocument();
+  it("renders success banner with the approved copy", () => {
+    render(<AdminFlashMessage approved="approved" />);
+    const banner = screen.getByTestId("admin-flash-success");
+    expect(banner).toHaveAttribute("data-tone", "success");
+    expect(banner.textContent).toMatch(/approved/i);
+    expect(banner.textContent).toMatch(/emailed/i);
   });
 
-  it("renders specific error message for known error code", () => {
-    render(<AdminFlashMessage error="invalid_or_expired_token" />);
-    expect(screen.getByText(/invalid or has expired/)).toBeInTheDocument();
+  it("renders warning-tone banner with approved_email_failed", () => {
+    render(<AdminFlashMessage approved="approved_email_failed" />);
+    const banner = screen.getByTestId("admin-flash-success");
+    expect(banner).toHaveAttribute("data-tone", "warning");
+    expect(banner.textContent).toMatch(/email failed/i);
   });
 
-  it("renders each known error message", () => {
-    const codes = [
-      "missing_token",
-      "invalid_or_expired_token",
-      "forbidden",
-      "update_failed",
-      "user_not_found",
-    ];
-    for (const code of codes) {
+  it("renders idempotent banner with already_approved", () => {
+    render(<AdminFlashMessage approved="already_approved" />);
+    expect(screen.getByText(/already approved/i)).toBeInTheDocument();
+  });
+
+  it("does not expose an email address in the rendered banner (no PII in flag)", () => {
+    // The flag is a short token, not the user's email. The component renders
+    // a generic message regardless of which user was approved.
+    render(<AdminFlashMessage approved="approved" />);
+    const banner = screen.getByTestId("admin-flash-success");
+    expect(banner.textContent).not.toMatch(/@/);
+  });
+
+  it("renders specific error message for each known error code", () => {
+    const expected: Record<string, RegExp> = {
+      missing_token: /missing its token/i,
+      invalid_or_expired_token: /invalid or has expired/i,
+      forbidden: /signed in as an admin/i,
+      update_failed: /Something went wrong/i,
+      user_not_found: /no longer exists/i,
+    };
+    for (const [code, pattern] of Object.entries(expected)) {
       const { unmount } = render(<AdminFlashMessage error={code} />);
-      const banner = screen.getByText(/./, {
-        selector: "div.bg-red-50",
-      });
-      expect(banner.textContent).not.toBe("Something went wrong.");
+      expect(screen.getByTestId("admin-flash-error").textContent).toMatch(pattern);
       unmount();
     }
   });
@@ -42,9 +56,9 @@ describe("AdminFlashMessage", () => {
     expect(screen.getByText("Something went wrong.")).toBeInTheDocument();
   });
 
-  it("prefers approved message over error when both given", () => {
-    render(<AdminFlashMessage approved="jane@example.com" error="forbidden" />);
-    expect(screen.getByText("jane@example.com")).toBeInTheDocument();
-    expect(screen.queryByText(/signed in as an admin/)).not.toBeInTheDocument();
+  it("prefers approved banner over error when both given", () => {
+    render(<AdminFlashMessage approved="approved" error="forbidden" />);
+    expect(screen.queryByTestId("admin-flash-error")).not.toBeInTheDocument();
+    expect(screen.getByTestId("admin-flash-success")).toBeInTheDocument();
   });
 });

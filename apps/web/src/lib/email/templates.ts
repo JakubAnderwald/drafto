@@ -26,6 +26,10 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+function sanitizePlaintext(value: string): string {
+  return value.replace(/[\r\n]+/g, " ").trim();
+}
+
 const baseStyles = `
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   color: #18181b;
@@ -55,8 +59,10 @@ const secondaryLinkStyles = `
 
 export function newSignupAdminEmail(input: NewSignupAdminEmailInput): EmailContent {
   const { userEmail, userDisplayName, signupAt, approveUrl, adminUrl } = input;
-  const safeEmail = escapeHtml(userEmail);
-  const safeName = userDisplayName ? escapeHtml(userDisplayName) : null;
+  const plainEmail = sanitizePlaintext(userEmail);
+  const plainName = userDisplayName ? sanitizePlaintext(userDisplayName) : null;
+  const safeEmail = escapeHtml(plainEmail);
+  const safeName = plainName ? escapeHtml(plainName) : null;
   const signupAtFormatted = signupAt.toUTCString();
 
   const html = `
@@ -100,8 +106,8 @@ export function newSignupAdminEmail(input: NewSignupAdminEmailInput): EmailConte
   const text = [
     "New Drafto signup",
     "",
-    `Email: ${userEmail}`,
-    safeName ? `Name: ${userDisplayName}` : null,
+    `Email: ${plainEmail}`,
+    plainName ? `Name: ${plainName}` : null,
     `Signed up: ${signupAtFormatted}`,
     "",
     `Approve this user: ${approveUrl}`,
@@ -121,7 +127,8 @@ export function newSignupAdminEmail(input: NewSignupAdminEmailInput): EmailConte
 
 export function userApprovedEmail(input: UserApprovedEmailInput): EmailContent {
   const { displayName, loginUrl } = input;
-  const greetingName = displayName ? escapeHtml(displayName) : "there";
+  const plainName = displayName ? sanitizePlaintext(displayName) : null;
+  const greetingName = plainName ? escapeHtml(plainName) : "there";
 
   const html = `
 <!doctype html>
@@ -144,7 +151,7 @@ export function userApprovedEmail(input: UserApprovedEmailInput): EmailContent {
 </html>`;
 
   const text = [
-    `Hi ${displayName ?? "there"},`,
+    `Hi ${plainName ?? "there"},`,
     "",
     "Your Drafto account has been approved. Sign in and start taking notes:",
     loginUrl,

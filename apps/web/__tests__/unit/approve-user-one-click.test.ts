@@ -35,14 +35,23 @@ vi.mock("@/lib/supabase/server", () => ({
 }));
 
 const adminUpdateMock = vi.fn();
+const adminExistingMaybeSingleMock = vi.fn();
 const adminGetUserByIdMock = vi.fn();
+
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({
     from: () => ({
+      // Update path: .update(...).eq(id).eq(is_approved).select(...).maybeSingle()
       update: () => ({
         eq: () => ({
-          select: () => ({ maybeSingle: adminUpdateMock }),
+          eq: () => ({
+            select: () => ({ maybeSingle: adminUpdateMock }),
+          }),
         }),
+      }),
+      // Post-update existence check: .select(...).eq(id).maybeSingle()
+      select: () => ({
+        eq: () => ({ maybeSingle: adminExistingMaybeSingleMock }),
       }),
     }),
     auth: { admin: { getUserById: adminGetUserByIdMock } },
@@ -101,7 +110,7 @@ describe("GET /api/admin/approve-user/one-click", () => {
     expect(response.headers.get("location")).toContain("error=forbidden");
   });
 
-  it("approves the user and redirects to /admin?approved=... on success", async () => {
+  it("approves the user, sends email, and redirects to /admin?approved=approved", async () => {
     serverGetUserMock.mockResolvedValue({
       data: { user: { id: "admin-1", email: "admin@drafto.eu" } },
       error: null,
@@ -121,17 +130,60 @@ describe("GET /api/admin/approve-user/one-click", () => {
     expect(response.status).toBe(307);
     const location = response.headers.get("location") ?? "";
     expect(location).toContain("/admin");
-    expect(location).toContain("approved=jane%40example.com");
+    expect(location).toContain("approved=approved");
+    // No email address should appear in the URL (PII via query string)
+    expect(location).not.toContain("jane%40example.com");
+    expect(location).not.toContain("jane@example.com");
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
   });
 
-  it("redirects with user_not_found when profile update returns no row", async () => {
+  it("redirects with approved_email_failed when approval email cannot be sent", async () => {
+    serverGetUserMock.mockResolvedValue({
+      data: { user: { id: "admin-1", email: "admin@drafto.eu" } },
+      error: null,
+    });
+    serverProfilesSingleMock.mockResolvedValue({ data: { is_admin: true }, error: null });
+    adminUpdateMock.mockResolvedValue({
+      data: { id: "target-user", display_name: null },
+      error: null,
+    });
+    adminGetUserByIdMock.mockResolvedValue({
+      data: { user: { email: "jane@example.com" } },
+      error: null,
+    });
+    sendEmailMock.mockResolvedValueOnce(null);
+
+    const token = signApprovalToken("target-user");
+    const response = await GET(buildRequest(token));
+    expect(response.headers.get("location")).toContain("approved=approved_email_failed");
+  });
+
+  it("redirects with approved=already_approved when user already approved (no re-email)", async () => {
     serverGetUserMock.mockResolvedValue({
       data: { user: { id: "admin-1", email: "admin@drafto.eu" } },
       error: null,
     });
     serverProfilesSingleMock.mockResolvedValue({ data: { is_admin: true }, error: null });
     adminUpdateMock.mockResolvedValue({ data: null, error: null });
+    adminExistingMaybeSingleMock.mockResolvedValue({
+      data: { is_approved: true },
+      error: null,
+    });
+
+    const token = signApprovalToken("target-user");
+    const response = await GET(buildRequest(token));
+    expect(response.headers.get("location")).toContain("approved=already_approved");
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it("redirects with user_not_found when profile no longer exists", async () => {
+    serverGetUserMock.mockResolvedValue({
+      data: { user: { id: "admin-1", email: "admin@drafto.eu" } },
+      error: null,
+    });
+    serverProfilesSingleMock.mockResolvedValue({ data: { is_admin: true }, error: null });
+    adminUpdateMock.mockResolvedValue({ data: null, error: null });
+    adminExistingMaybeSingleMock.mockResolvedValue({ data: null, error: null });
 
     const token = signApprovalToken("deleted-user");
     const response = await GET(buildRequest(token));

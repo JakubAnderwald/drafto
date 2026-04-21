@@ -100,7 +100,11 @@ describe("AdminUserList", () => {
       await user.click(screen.getByRole("button", { name: "Approve" }));
     });
 
-    expect(fetchMock).toHaveBeenCalledWith("/api/admin/approve-user", expect.any(Object));
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/approve-user", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: "u-1" }),
+    });
     expect(screen.queryByText("pending@example.com")).not.toBeInTheDocument();
   });
 });

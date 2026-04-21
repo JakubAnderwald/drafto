@@ -102,11 +102,33 @@ describe("POST /api/webhooks/new-signup", () => {
       }),
     );
     expect(response.status).toBe(200);
+    const okBody = await response.json();
+    expect(okBody.emailSent).toBe(true);
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
     const call = sendEmailMock.mock.calls[0][0];
     expect(call.to).toEqual(["fallback@drafto.eu"]);
     expect(call.subject).toContain("newuser@example.com");
     expect(call.html).toContain("/api/admin/approve-user/one-click?token=");
+  });
+
+  it("reports emailSent: false when Resend send fails", async () => {
+    getUserByIdMock.mockResolvedValue({
+      data: { user: { email: "newuser@example.com", created_at: "2026-04-20T12:00:00Z" } },
+      error: null,
+    });
+    sendEmailMock.mockResolvedValueOnce(null);
+
+    const response = await POST(
+      buildRequest({
+        type: "INSERT",
+        table: "profiles",
+        schema: "public",
+        record: { id: "user-1", display_name: null },
+      }),
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.emailSent).toBe(false);
   });
 
   it("sends email to resolved admin emails when present", async () => {

@@ -10,7 +10,7 @@ export const env = createEnv({
     EMAIL_FROM: z.string().min(1).default("Drafto <hello@drafto.eu>"),
     EMAIL_ADMIN_FALLBACK: z.string().email().default("jakub@anderwald.info"),
     APPROVAL_LINK_SECRET: z.string().min(32).optional(),
-    APP_URL: z.string().url().default("https://drafto.eu"),
+    APP_URL: z.string().url(),
     WEBHOOK_SECRET: z.string().min(16).optional(),
   },
   client: {

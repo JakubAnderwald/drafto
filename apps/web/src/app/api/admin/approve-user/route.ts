@@ -56,8 +56,12 @@ export async function POST(request: NextRequest) {
 
   try {
     const admin = createAdminClient();
-    const { data: approvedUser } = await admin.auth.admin.getUserById(userId);
-    if (approvedUser.user?.email) {
+    const { data: approvedUser, error: lookupError } = await admin.auth.admin.getUserById(userId);
+    if (lookupError) {
+      Sentry.captureException(lookupError, {
+        extra: { where: "approve-user:getUserById", userId },
+      });
+    } else if (approvedUser.user?.email) {
       const content = userApprovedEmail({
         displayName: updatedProfile.display_name,
         loginUrl: `${env.APP_URL}/login`,
