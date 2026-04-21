@@ -6,7 +6,8 @@ import { SyncStatus } from "@/components/sync-status";
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme, type ThemePreference } from "@/providers/theme-provider";
 import { useHaptics } from "@/hooks/use-haptics";
-import { colors } from "@/theme/tokens";
+import { Button } from "@/components/ui/button";
+import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 
 const THEME_OPTIONS: {
@@ -62,10 +63,15 @@ export default function SettingsScreen() {
       <SyncStatus />
 
       <Text style={styles.sectionTitle}>Account</Text>
-      <Pressable style={styles.signOutButton} onPress={signOut}>
-        <Ionicons name="log-out-outline" size={20} color={colors.error} />
-        <Text style={styles.signOutText}>Sign Out</Text>
-      </Pressable>
+      <Button
+        title="Sign Out"
+        onPress={signOut}
+        variant="danger"
+        size="lg"
+        fullWidth
+        leftIcon={<Ionicons name="log-out-outline" size={20} color={colors.white} />}
+        accessibilityLabel="Sign out"
+      />
     </ScrollView>
   );
 }
@@ -77,30 +83,30 @@ const createStyles = (semantic: SemanticColors) =>
       backgroundColor: semantic.bgMuted,
     },
     container: {
-      padding: 16,
-      gap: 8,
+      padding: spacing.lg,
+      gap: spacing.sm,
     },
     sectionTitle: {
-      fontSize: 13,
+      fontSize: fontSizes.md,
       fontWeight: "600",
       color: semantic.fgSubtle,
       textTransform: "uppercase",
       letterSpacing: 0.5,
-      marginTop: 8,
-      marginBottom: 4,
-      marginLeft: 4,
+      marginTop: spacing.sm,
+      marginBottom: spacing.xs,
+      marginLeft: spacing.xs,
     },
     themeRow: {
       flexDirection: "row",
-      gap: 8,
+      gap: spacing.sm,
     },
     themeOption: {
       flex: 1,
       alignItems: "center",
       gap: 6,
-      paddingVertical: 14,
+      paddingVertical: spacing.lg,
       backgroundColor: semantic.bg,
-      borderRadius: 12,
+      borderRadius: radii.lg,
       borderWidth: 2,
       borderColor: "transparent",
     },
@@ -109,25 +115,12 @@ const createStyles = (semantic: SemanticColors) =>
       backgroundColor: semantic.bgSubtle,
     },
     themeOptionText: {
-      fontSize: 13,
+      fontSize: fontSizes.md,
       fontWeight: "500",
       color: semantic.fgMuted,
     },
     themeOptionTextActive: {
       color: colors.primary[600],
       fontWeight: "600",
-    },
-    signOutButton: {
-      flexDirection: "row",
-      alignItems: "center",
-      padding: 16,
-      backgroundColor: semantic.bg,
-      borderRadius: 12,
-      gap: 12,
-    },
-    signOutText: {
-      fontSize: 15,
-      fontWeight: "600",
-      color: colors.error,
     },
   });
