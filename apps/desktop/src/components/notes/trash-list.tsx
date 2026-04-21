@@ -3,7 +3,7 @@ import { View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView } from
 
 import { useTrashedNotes } from "@/hooks/use-trashed-notes";
 import { database, Note } from "@/db";
-import { colors } from "@/theme/tokens";
+import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { useTheme } from "@/providers/theme-provider";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -105,74 +105,74 @@ const createStyles = (semantic: SemanticColors) =>
     header: {
       flexDirection: "row",
       alignItems: "center",
-      padding: 12,
-      paddingHorizontal: 16,
+      padding: spacing.md,
+      paddingHorizontal: spacing.lg,
       borderBottomWidth: 1,
       borderBottomColor: semantic.border,
-      gap: 8,
+      gap: spacing.sm,
     },
     headerTitle: {
-      fontSize: 13,
+      fontSize: fontSizes.md,
       fontWeight: "600",
       color: semantic.fgMuted,
       textTransform: "uppercase",
       letterSpacing: 0.5,
     },
     headerCount: {
-      fontSize: 11,
+      fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
       backgroundColor: semantic.bgMuted,
-      paddingHorizontal: 6,
-      paddingVertical: 1,
-      borderRadius: 8,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: spacing["2xs"],
+      borderRadius: radii.md,
       overflow: "hidden",
     },
     list: {
       flex: 1,
     },
     noteItem: {
-      padding: 12,
-      paddingHorizontal: 16,
+      padding: spacing.md,
+      paddingHorizontal: spacing.lg,
       borderBottomWidth: 1,
       borderBottomColor: semantic.border,
     },
     noteTitle: {
-      fontSize: 14,
+      fontSize: fontSizes.base,
       fontWeight: "500",
       color: semantic.fg,
     },
     noteDate: {
-      fontSize: 11,
+      fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
-      marginTop: 2,
+      marginTop: spacing["2xs"],
     },
     actions: {
       flexDirection: "row",
-      gap: 8,
-      marginTop: 8,
+      gap: spacing.sm,
+      marginTop: spacing.sm,
     },
     restoreButton: {
-      paddingVertical: 4,
-      paddingHorizontal: 10,
-      borderRadius: 4,
+      paddingVertical: spacing.xs,
+      paddingHorizontal: spacing.md,
+      borderRadius: radii.sm,
       backgroundColor: semantic.bgMuted,
     },
     deleteButton: {
-      paddingVertical: 4,
-      paddingHorizontal: 10,
-      borderRadius: 4,
+      paddingVertical: spacing.xs,
+      paddingHorizontal: spacing.md,
+      borderRadius: radii.sm,
       backgroundColor: semantic.errorBg,
     },
     buttonPressed: {
       opacity: 0.7,
     },
     restoreText: {
-      fontSize: 12,
+      fontSize: fontSizes.sm,
       fontWeight: "500",
       color: colors.primary[600],
     },
     deleteText: {
-      fontSize: 12,
+      fontSize: fontSizes.sm,
       fontWeight: "500",
       color: semantic.errorText,
     },

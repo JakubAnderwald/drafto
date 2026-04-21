@@ -6,7 +6,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { database, Notebook } from "@/db";
 import { generateId } from "@/lib/generate-id";
-import { colors } from "@/theme/tokens";
+import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { SyncStatus } from "@/components/sync-status";
 
@@ -240,38 +240,38 @@ const createStyles = (semantic: SemanticColors) =>
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
-      padding: 16,
-      paddingTop: 12,
+      padding: spacing.lg,
+      paddingTop: spacing.md,
       borderBottomWidth: 1,
       borderBottomColor: semantic.border,
     },
     appTitle: {
-      fontSize: 15,
+      fontSize: fontSizes.lg,
       fontWeight: "700",
       color: semantic.fg,
     },
     headerActions: {
       flexDirection: "row",
       alignItems: "center",
-      gap: 6,
+      gap: spacing.sm,
     },
     searchButton: {
-      paddingVertical: 3,
-      paddingHorizontal: 8,
-      borderRadius: 6,
+      paddingVertical: spacing.xs,
+      paddingHorizontal: spacing.sm,
+      borderRadius: radii.sm,
       backgroundColor: semantic.bgMuted,
     },
     searchButtonPressed: {
       backgroundColor: semantic.bgMutedHover,
     },
     searchButtonText: {
-      fontSize: 11,
+      fontSize: fontSizes.sm,
       color: semantic.fgMuted,
     },
     addButton: {
       width: 24,
       height: 24,
-      borderRadius: 6,
+      borderRadius: radii.sm,
       alignItems: "center",
       justifyContent: "center",
       backgroundColor: colors.primary[600],
@@ -280,24 +280,24 @@ const createStyles = (semantic: SemanticColors) =>
       backgroundColor: colors.primary[700],
     },
     addButtonText: {
-      fontSize: 16,
+      fontSize: fontSizes.xl,
       fontWeight: "600",
       color: colors.white,
       lineHeight: 18,
     },
     createRow: {
-      padding: 8,
-      paddingHorizontal: 12,
+      padding: spacing.sm,
+      paddingHorizontal: spacing.md,
     },
     input: {
-      fontSize: 13,
+      fontSize: fontSizes.md,
       color: semantic.fg,
       backgroundColor: semantic.bg,
       borderWidth: 1,
       borderColor: semantic.borderStrong,
-      borderRadius: 6,
-      padding: 6,
-      paddingHorizontal: 8,
+      borderRadius: radii.sm,
+      padding: spacing.sm,
+      paddingHorizontal: spacing.sm,
     },
     loadingContainer: {
       flex: 1,
@@ -306,13 +306,13 @@ const createStyles = (semantic: SemanticColors) =>
     },
     list: {
       flex: 1,
-      paddingVertical: 4,
+      paddingVertical: spacing.xs,
     },
     item: {
-      paddingVertical: 8,
-      paddingHorizontal: 12,
-      marginHorizontal: 8,
-      borderRadius: 6,
+      paddingVertical: spacing.sm,
+      paddingHorizontal: spacing.md,
+      marginHorizontal: spacing.sm,
+      borderRadius: radii.sm,
     },
     itemSelected: {
       backgroundColor: semantic.bgMuted,
@@ -323,7 +323,7 @@ const createStyles = (semantic: SemanticColors) =>
       justifyContent: "space-between",
     },
     itemText: {
-      fontSize: 13,
+      fontSize: fontSizes.md,
       color: semantic.fg,
       flex: 1,
     },
@@ -331,21 +331,21 @@ const createStyles = (semantic: SemanticColors) =>
       fontWeight: "600",
     },
     editInput: {
-      fontSize: 13,
+      fontSize: fontSizes.md,
       color: semantic.fg,
       backgroundColor: semantic.bg,
       borderWidth: 1,
       borderColor: semantic.borderStrong,
-      borderRadius: 4,
-      padding: 4,
-      paddingHorizontal: 6,
+      borderRadius: radii.sm,
+      padding: spacing.xs,
+      paddingHorizontal: spacing.sm,
     },
     deleteButton: {
-      marginLeft: 4,
+      marginLeft: spacing.xs,
       opacity: 0.5,
     },
     deleteButtonText: {
-      fontSize: 16,
+      fontSize: fontSizes.xl,
       color: semantic.fgMuted,
     },
     footer: {
@@ -353,17 +353,17 @@ const createStyles = (semantic: SemanticColors) =>
       borderTopColor: semantic.border,
     },
     trashButton: {
-      paddingVertical: 8,
-      paddingHorizontal: 12,
-      marginHorizontal: 8,
-      marginTop: 4,
-      borderRadius: 6,
+      paddingVertical: spacing.sm,
+      paddingHorizontal: spacing.md,
+      marginHorizontal: spacing.sm,
+      marginTop: spacing.xs,
+      borderRadius: radii.sm,
     },
     trashButtonActive: {
       backgroundColor: semantic.bgMuted,
     },
     trashText: {
-      fontSize: 13,
+      fontSize: fontSizes.md,
       color: semantic.fgMuted,
     },
     trashTextActive: {
@@ -371,17 +371,17 @@ const createStyles = (semantic: SemanticColors) =>
       color: semantic.fg,
     },
     userSection: {
-      padding: 12,
+      padding: spacing.md,
       borderTopWidth: 1,
       borderTopColor: semantic.border,
     },
     userEmail: {
-      fontSize: 11,
+      fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
-      marginBottom: 4,
+      marginBottom: spacing.xs,
     },
     signOutText: {
-      fontSize: 11,
+      fontSize: fontSizes.sm,
       color: colors.primary[600],
     },
   });

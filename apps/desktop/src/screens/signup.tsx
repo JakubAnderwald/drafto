@@ -2,7 +2,7 @@ import { useState, useMemo } from "react";
 import { Text, View, Pressable, StyleSheet } from "react-native";
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
-import { colors } from "@/theme/tokens";
+import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { OAuthButtons } from "@/components/auth/oauth-buttons";
 import { Button } from "@/components/ui/button";
@@ -115,47 +115,47 @@ const createStyles = (semantic: SemanticColors) =>
       flex: 1,
       alignItems: "center",
       justifyContent: "center",
-      padding: 24,
+      padding: spacing["2xl"],
       maxWidth: 400,
       alignSelf: "center",
       width: "100%",
     },
     title: {
-      fontSize: 28,
+      fontSize: fontSizes["4xl"],
       fontWeight: "bold",
-      marginBottom: 8,
+      marginBottom: spacing.sm,
       color: semantic.fg,
     },
     subtitle: {
-      fontSize: 16,
+      fontSize: fontSizes.xl,
       color: semantic.fgMuted,
-      marginBottom: 24,
+      marginBottom: spacing["2xl"],
     },
     errorContainer: {
       backgroundColor: semantic.errorBg,
       borderWidth: 1,
       borderColor: semantic.errorBorder,
-      borderRadius: 8,
-      padding: 12,
+      borderRadius: radii.md,
+      padding: spacing.md,
       width: "100%",
-      marginBottom: 16,
+      marginBottom: spacing.lg,
     },
     errorText: {
       color: semantic.errorText,
-      fontSize: 14,
+      fontSize: fontSizes.base,
       textAlign: "center",
     },
     form: {
       width: "100%",
     },
     field: {
-      marginBottom: 16,
+      marginBottom: spacing.lg,
     },
     footer: {
-      marginTop: 24,
+      marginTop: spacing["2xl"],
     },
     footerText: {
-      fontSize: 14,
+      fontSize: fontSizes.base,
       color: semantic.fgMuted,
     },
     link: {

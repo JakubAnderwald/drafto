@@ -6,7 +6,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useNetworkStatus } from "@/hooks/use-network-status";
-import { colors } from "@/theme/tokens";
+import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 
 interface AttachmentPickerProps {
@@ -86,9 +86,9 @@ const createStyles = (semantic: SemanticColors) =>
     container: {
       flexDirection: "row",
       alignItems: "center",
-      gap: 12,
-      paddingHorizontal: 16,
-      paddingVertical: 8,
+      gap: spacing.md,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.sm,
       borderTopWidth: StyleSheet.hairlineWidth,
       borderTopColor: semantic.border,
       backgroundColor: semantic.bg,
@@ -96,23 +96,23 @@ const createStyles = (semantic: SemanticColors) =>
     button: {
       flexDirection: "row",
       alignItems: "center",
-      gap: 6,
-      paddingVertical: 6,
-      paddingHorizontal: 12,
-      borderRadius: 8,
+      gap: spacing.sm,
+      paddingVertical: spacing.sm,
+      paddingHorizontal: spacing.md,
+      borderRadius: radii.md,
       backgroundColor: colors.primary[50],
     },
     buttonIcon: {
-      fontSize: 14,
+      fontSize: fontSizes.base,
     },
     buttonText: {
-      fontSize: 14,
+      fontSize: fontSizes.base,
       fontWeight: "500",
       color: colors.primary[600],
     },
     uploadingText: {
-      fontSize: 14,
+      fontSize: fontSizes.base,
       color: semantic.fgMuted,
-      marginLeft: 8,
+      marginLeft: spacing.sm,
     },
   });

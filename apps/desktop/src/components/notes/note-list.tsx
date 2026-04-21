@@ -5,7 +5,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { useNotes } from "@/hooks/use-notes";
 import { database, Note } from "@/db";
 import { generateId } from "@/lib/generate-id";
-import { colors } from "@/theme/tokens";
+import { colors, fontSizes, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { useTheme } from "@/providers/theme-provider";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -177,13 +177,13 @@ const createStyles = (semantic: SemanticColors) =>
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
-      padding: 12,
-      paddingHorizontal: 16,
+      padding: spacing.md,
+      paddingHorizontal: spacing.lg,
       borderBottomWidth: 1,
       borderBottomColor: semantic.border,
     },
     headerTitle: {
-      fontSize: 13,
+      fontSize: fontSizes.md,
       fontWeight: "600",
       color: semantic.fgMuted,
       textTransform: "uppercase",
@@ -198,8 +198,8 @@ const createStyles = (semantic: SemanticColors) =>
       flex: 1,
     },
     noteItem: {
-      padding: 12,
-      paddingHorizontal: 16,
+      padding: spacing.md,
+      paddingHorizontal: spacing.lg,
       borderBottomWidth: 1,
       borderBottomColor: semantic.border,
     },
@@ -212,7 +212,7 @@ const createStyles = (semantic: SemanticColors) =>
       justifyContent: "space-between",
     },
     noteTitle: {
-      fontSize: 14,
+      fontSize: fontSizes.base,
       fontWeight: "500",
       color: semantic.fg,
       flex: 1,
@@ -221,21 +221,21 @@ const createStyles = (semantic: SemanticColors) =>
       fontWeight: "600",
     },
     trashButton: {
-      marginLeft: 4,
+      marginLeft: spacing.xs,
       opacity: 0.4,
     },
     trashButtonText: {
-      fontSize: 16,
+      fontSize: fontSizes.xl,
       color: semantic.fgMuted,
     },
     notePreview: {
-      fontSize: 12,
+      fontSize: fontSizes.sm,
       color: semantic.fgMuted,
-      marginTop: 2,
+      marginTop: spacing["2xs"],
     },
     noteDate: {
-      fontSize: 11,
+      fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
-      marginTop: 4,
+      marginTop: spacing.xs,
     },
   });
