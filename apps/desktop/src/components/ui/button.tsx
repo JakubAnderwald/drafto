@@ -65,7 +65,7 @@ export function Button({
     <Pressable
       testID={testID}
       accessibilityRole="button"
-      accessibilityState={{ disabled: isDisabled }}
+      accessibilityState={{ disabled: isDisabled, busy: loading }}
       disabled={isDisabled}
       onPress={onPress}
       onHoverIn={() => setHovered(true)}
@@ -157,8 +157,8 @@ const createStyles = (semantic: SemanticColors) =>
       borderColor: colors.error,
     },
     variant_danger_hover: {
-      backgroundColor: "#991818",
-      borderColor: "#991818",
+      backgroundColor: semantic.errorHover,
+      borderColor: semantic.errorHover,
     },
     // Text base
     textBase: {

@@ -93,14 +93,7 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
           />
         </View>
 
-        <Button
-          title={loading ? "Signing up..." : "Sign up"}
-          onPress={handleSignup}
-          disabled={loading}
-          loading={loading}
-          fullWidth
-          size="lg"
-        />
+        <Button title="Sign up" onPress={handleSignup} loading={loading} fullWidth size="lg" />
       </View>
 
       <OAuthButtons onError={(msg) => setError(msg)} />

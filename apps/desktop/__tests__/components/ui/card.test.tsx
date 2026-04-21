@@ -2,7 +2,7 @@ import React from "react";
 import { Text } from "react-native";
 
 import { render } from "../../helpers/test-utils";
-import { Card } from "../../../src/components/ui/card";
+import { Card } from "@/components/ui/card";
 
 describe("Card", () => {
   it("renders children", () => {

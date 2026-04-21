@@ -1,7 +1,7 @@
 import React from "react";
 
 import { render, fireEvent } from "../../helpers/test-utils";
-import { Button } from "../../../src/components/ui/button";
+import { Button } from "@/components/ui/button";
 
 describe("Button", () => {
   it("renders the title", () => {

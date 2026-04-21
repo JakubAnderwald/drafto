@@ -70,6 +70,7 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
           placeholder={placeholder}
           placeholderTextColor={semantic.fgSubtle}
           secureTextEntry={secureTextEntry}
+          accessibilityLabel={label}
           onFocus={(e) => {
             setFocused(true);
             onFocus?.(e);

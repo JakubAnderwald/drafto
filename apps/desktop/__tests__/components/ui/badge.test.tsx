@@ -1,7 +1,7 @@
 import React from "react";
 
 import { render } from "../../helpers/test-utils";
-import { Badge } from "../../../src/components/ui/badge";
+import { Badge } from "@/components/ui/badge";
 
 describe("Badge", () => {
   it("renders the label", () => {

@@ -1,7 +1,7 @@
 import React from "react";
 
 import { render, fireEvent } from "../../helpers/test-utils";
-import { Input } from "../../../src/components/ui/input";
+import { Input } from "@/components/ui/input";
 
 describe("Input", () => {
   it("renders the value", () => {
