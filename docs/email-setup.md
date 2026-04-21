@@ -43,20 +43,19 @@ Configure auth emails to use Resend so the built-in Supabase mailer is bypassed 
 
 Repeat for both the **prod** (`tbmjbxxseonkciqovnpl`) and **dev** (`huhzactreblzcogqkbsd`) Supabase projects.
 
-### 4. Configure the Supabase Database Webhook
+### 4. Install the new-signup webhook (via migration + Vault)
 
-This is what fires the admin notification when a new user signs up.
+The trigger itself ships in `supabase/migrations/20260421000001_new_signup_webhook.sql` — apply it like any other migration. The trigger no-ops on any project where the Vault secrets below aren't set, so it's safe to apply everywhere.
 
-- Dashboard → Database → **Webhooks** → Create a new webhook:
-  - Name: `notify-admin-new-signup`
-  - Table: `public.profiles`
-  - Events: `INSERT`
-  - Type: `HTTP Request`
-  - Method: `POST`
-  - URL: `https://drafto.eu/api/webhooks/new-signup` (dev project uses the preview URL or localhost tunnel)
-  - HTTP headers: add a `x-webhook-secret` header with a 24+ character random value. Save this value — you need it in the Vercel env var step.
+To **activate** the webhook on a project, insert the URL + secret into Supabase Vault (Dashboard → SQL Editor, or `psql`):
 
-Configure on both dev and prod Supabase projects.
+```sql
+-- Production only (dev stays inert so test signups don't spam the admin):
+select vault.create_secret('https://drafto.eu/api/webhooks/new-signup', 'webhook_url');
+select vault.create_secret('<WEBHOOK_SECRET value from Vercel>',        'webhook_secret');
+```
+
+To rotate either value later, update the existing Vault secret (`select vault.update_secret(id, new_value)`).
 
 ### 5. Set Vercel environment variables
 
