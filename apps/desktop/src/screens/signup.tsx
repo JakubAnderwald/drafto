@@ -1,10 +1,12 @@
 import { useState, useMemo } from "react";
-import { Text, View, TextInput, Pressable, Button, StyleSheet } from "react-native";
+import { Text, View, Pressable, StyleSheet } from "react-native";
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { OAuthButtons } from "@/components/auth/oauth-buttons";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 interface SignupScreenProps {
   onNavigateToLogin?: () => void;
@@ -61,41 +63,43 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
       )}
 
       <View style={styles.form}>
-        <Text style={styles.label}>Email</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="you@example.com"
-          placeholderTextColor={semantic.fgSubtle}
-          value={email}
-          onChangeText={setEmail}
-          autoCapitalize="none"
-          autoComplete="email"
-          keyboardType="email-address"
-          textContentType="emailAddress"
-          editable={!loading}
-        />
+        <View style={styles.field}>
+          <Input
+            label="Email"
+            placeholder="you@example.com"
+            value={email}
+            onChangeText={setEmail}
+            autoCapitalize="none"
+            autoComplete="email"
+            keyboardType="email-address"
+            textContentType="emailAddress"
+            editable={!loading}
+          />
+        </View>
 
-        <Text style={styles.label}>Password</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Min. 6 characters"
-          placeholderTextColor={semantic.fgSubtle}
-          value={password}
-          onChangeText={setPassword}
-          secureTextEntry
-          autoCapitalize="none"
-          autoCorrect={false}
-          autoComplete="password"
-          textContentType="newPassword"
-          editable={!loading}
-          onSubmitEditing={handleSignup}
-        />
+        <View style={styles.field}>
+          <Input
+            label="Password"
+            placeholder="Min. 6 characters"
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="password"
+            textContentType="newPassword"
+            editable={!loading}
+            onSubmitEditing={handleSignup}
+          />
+        </View>
 
         <Button
           title={loading ? "Signing up..." : "Sign up"}
           onPress={handleSignup}
           disabled={loading}
-          color={colors.primary[600]}
+          loading={loading}
+          fullWidth
+          size="lg"
         />
       </View>
 
@@ -151,39 +155,8 @@ const createStyles = (semantic: SemanticColors) =>
     form: {
       width: "100%",
     },
-    label: {
-      fontSize: 14,
-      fontWeight: "600",
-      marginBottom: 6,
-      color: semantic.fgMuted,
-    },
-    input: {
-      borderWidth: 1,
-      borderColor: semantic.borderStrong,
-      borderRadius: 8,
-      padding: 12,
-      fontSize: 16,
+    field: {
       marginBottom: 16,
-      backgroundColor: semantic.bg,
-      color: semantic.fg,
-    },
-    button: {
-      backgroundColor: colors.primary[600],
-      borderRadius: 8,
-      padding: 14,
-      alignItems: "center",
-      marginTop: 8,
-    },
-    buttonPressed: {
-      backgroundColor: colors.primary[700],
-    },
-    buttonDisabled: {
-      opacity: 0.7,
-    },
-    buttonText: {
-      color: semantic.onPrimary,
-      fontSize: 16,
-      fontWeight: "600",
     },
     footer: {
       marginTop: 24,

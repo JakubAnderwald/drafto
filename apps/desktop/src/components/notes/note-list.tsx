@@ -9,6 +9,7 @@ import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { useTheme } from "@/providers/theme-provider";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Button } from "@/components/ui/button";
 
 interface NoteListProps {
   notebookId: string | undefined;
@@ -115,14 +116,7 @@ export function NoteList({ notebookId, selectedNoteId, onSelectNote }: NoteListP
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Notes</Text>
-        <Pressable
-          style={({ pressed }) => [styles.newButton, pressed && styles.newButtonPressed]}
-          onPress={handleCreateNote}
-          accessibilityRole="button"
-          accessibilityLabel="+ New Note"
-        >
-          <Text style={styles.newButtonText}>+ New</Text>
-        </Pressable>
+        <Button title="+ New" onPress={handleCreateNote} size="sm" testID="new-note-button" />
       </View>
 
       {loading ? (
@@ -194,20 +188,6 @@ const createStyles = (semantic: SemanticColors) =>
       color: semantic.fgMuted,
       textTransform: "uppercase",
       letterSpacing: 0.5,
-    },
-    newButton: {
-      paddingVertical: 4,
-      paddingHorizontal: 10,
-      borderRadius: 6,
-      backgroundColor: colors.primary[600],
-    },
-    newButtonPressed: {
-      backgroundColor: colors.primary[700],
-    },
-    newButtonText: {
-      fontSize: 12,
-      fontWeight: "600",
-      color: colors.white,
     },
     loadingContainer: {
       flex: 1,
