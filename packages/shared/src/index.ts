@@ -49,3 +49,13 @@ export type {
   TipTapNode,
   TipTapMark,
 } from "./editor/types";
+export {
+  colors,
+  semanticLight,
+  semanticDark,
+  getSemanticColors,
+  spacing,
+  radii,
+  fontSizes,
+} from "./design-tokens";
+export type { SemanticColors } from "./design-tokens";

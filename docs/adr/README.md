@@ -53,3 +53,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0018](./0018-oauth-google-apple.md)                     | OAuth with Google and Apple                    | Accepted           | 2026-04-12 |
 | [0019](./0019-email-infrastructure-and-approval-flow.md) | Email Infrastructure and Account Approval Flow | Accepted           | 2026-04-20 |
 | [0020](./0020-email-design-tokens.md)                    | Email Design Tokens                            | Accepted           | 2026-04-21 |
+| [0021](./0021-shared-design-tokens.md)                   | Shared Design Tokens in `@drafto/shared`       | Accepted           | 2026-04-21 |
