@@ -21,6 +21,7 @@ import {
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useToast } from "@/components/toast";
+import { Badge } from "@/components/ui/badge";
 import { colors } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Attachment } from "@/db";
@@ -260,12 +261,7 @@ function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentI
 }
 
 function PendingBadge() {
-  return (
-    <View style={pendingStyles.pendingBadge}>
-      <Ionicons name="cloud-upload-outline" size={10} color={colors.warning} />
-      <Text style={pendingStyles.pendingText}>Pending</Text>
-    </View>
-  );
+  return <Badge label="Pending" variant="warning" size="sm" />;
 }
 
 export function AttachmentList({ attachments }: AttachmentListProps) {
@@ -327,23 +323,6 @@ export function AttachmentList({ attachments }: AttachmentListProps) {
     </View>
   );
 }
-
-const pendingStyles = StyleSheet.create({
-  pendingBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 2,
-    backgroundColor: colors.secondary[50],
-    borderRadius: 4,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-  },
-  pendingText: {
-    fontSize: 10,
-    fontWeight: "600",
-    color: colors.warning,
-  },
-});
 
 const createStyles = (semantic: SemanticColors) =>
   StyleSheet.create({

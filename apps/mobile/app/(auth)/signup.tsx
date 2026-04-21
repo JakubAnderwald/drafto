@@ -1,22 +1,14 @@
 import { useState, useMemo } from "react";
-import {
-  Text,
-  View,
-  TextInput,
-  Pressable,
-  StyleSheet,
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-} from "react-native";
+import { Text, View, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
 import { Link, router } from "expo-router";
 
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
-import { colors } from "@/theme/tokens";
+import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { OAuthButtons } from "@/components/auth/oauth-buttons";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 export default function SignupScreen() {
   const { semantic } = useTheme();
@@ -73,11 +65,9 @@ export default function SignupScreen() {
         )}
 
         <View style={styles.form}>
-          <Text style={styles.label}>Email</Text>
-          <TextInput
-            style={styles.input}
+          <Input
+            label="Email"
             placeholder="you@example.com"
-            placeholderTextColor={semantic.fgSubtle}
             value={email}
             onChangeText={setEmail}
             autoCapitalize="none"
@@ -85,13 +75,12 @@ export default function SignupScreen() {
             keyboardType="email-address"
             textContentType="emailAddress"
             editable={!loading}
+            containerStyle={styles.field}
           />
 
-          <Text style={styles.label}>Password</Text>
-          <TextInput
-            style={styles.input}
+          <Input
+            label="Password"
             placeholder="Min. 6 characters"
-            placeholderTextColor={semantic.fgSubtle}
             value={password}
             onChangeText={setPassword}
             secureTextEntry
@@ -101,23 +90,19 @@ export default function SignupScreen() {
             textContentType="newPassword"
             editable={!loading}
             onSubmitEditing={handleSignup}
+            containerStyle={styles.field}
           />
 
-          <Pressable
-            style={({ pressed }) => [
-              styles.button,
-              pressed && styles.buttonPressed,
-              loading && styles.buttonDisabled,
-            ]}
+          <Button
+            title="Sign up"
             onPress={handleSignup}
+            loading={loading}
             disabled={loading}
-          >
-            {loading ? (
-              <ActivityIndicator color={semantic.onPrimary} />
-            ) : (
-              <Text style={styles.buttonText}>Sign up</Text>
-            )}
-          </Pressable>
+            fullWidth
+            size="lg"
+            accessibilityLabel="Sign up"
+            style={styles.submitButton}
+          />
         </View>
 
         <OAuthButtons onError={(msg) => setError(msg)} />
@@ -144,75 +129,47 @@ const createStyles = (semantic: SemanticColors) =>
       flexGrow: 1,
       alignItems: "center",
       justifyContent: "center",
-      padding: 24,
+      padding: spacing["2xl"],
     },
     title: {
-      fontSize: 28,
+      fontSize: fontSizes["4xl"],
       fontWeight: "bold",
-      marginBottom: 8,
+      marginBottom: spacing.sm,
       color: semantic.fg,
     },
     subtitle: {
-      fontSize: 16,
+      fontSize: fontSizes.xl,
       color: semantic.fgMuted,
-      marginBottom: 24,
+      marginBottom: spacing["2xl"],
     },
     errorContainer: {
       backgroundColor: semantic.errorBg,
       borderWidth: 1,
       borderColor: semantic.errorBorder,
-      borderRadius: 8,
-      padding: 12,
+      borderRadius: radii.md,
+      padding: spacing.md,
       width: "100%",
-      marginBottom: 16,
+      marginBottom: spacing.lg,
     },
     errorText: {
       color: semantic.errorText,
-      fontSize: 14,
+      fontSize: fontSizes.base,
       textAlign: "center",
     },
     form: {
       width: "100%",
     },
-    label: {
-      fontSize: 14,
-      fontWeight: "600",
-      marginBottom: 6,
-      color: semantic.fgMuted,
+    field: {
+      marginBottom: spacing.lg,
     },
-    input: {
-      borderWidth: 1,
-      borderColor: semantic.borderStrong,
-      borderRadius: 8,
-      padding: 12,
-      fontSize: 16,
-      marginBottom: 16,
-      backgroundColor: semantic.bg,
-      color: semantic.fg,
-    },
-    button: {
-      backgroundColor: colors.primary[600],
-      borderRadius: 8,
-      padding: 14,
-      alignItems: "center",
-      marginTop: 8,
-    },
-    buttonPressed: {
-      backgroundColor: colors.primary[700],
-    },
-    buttonDisabled: {
-      opacity: 0.7,
-    },
-    buttonText: {
-      color: semantic.onPrimary,
-      fontSize: 16,
-      fontWeight: "600",
+    submitButton: {
+      marginTop: spacing.sm,
     },
     footer: {
-      marginTop: 24,
+      marginTop: spacing["2xl"],
     },
     footerText: {
-      fontSize: 14,
+      fontSize: fontSizes.base,
       color: semantic.fgMuted,
     },
     link: {
