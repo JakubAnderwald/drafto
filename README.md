@@ -18,16 +18,16 @@ See [`docs/features/`](./docs/features/) for one brief per functional area (code
 
 ## Tech Stack
 
-| Area     | Stack                                                                                |
-| -------- | ------------------------------------------------------------------------------------ |
-| Web      | Next.js 16 (App Router, Turbopack), React 19, TypeScript, Tailwind CSS v4, BlockNote |
-| Mobile   | Expo 55, React Native 0.84, expo-router, TenTap editor, WatermelonDB                 |
-| Desktop  | React Native macOS 0.81.5, TenTap editor, WatermelonDB (shared with mobile)          |
-| Backend  | Supabase (Postgres + Auth + Storage + RLS)                                           |
-| Hosting  | Vercel (web), Fastlane → App Store / Play Store / Mac App Store                      |
-| Monitoring | Sentry (errors), PostHog (analytics)                                               |
-| Testing  | Vitest, Testing Library, Playwright, Jest, Maestro                                   |
-| Monorepo | pnpm workspaces + Turborepo                                                          |
+| Area       | Stack                                                                                |
+| ---------- | ------------------------------------------------------------------------------------ |
+| Web        | Next.js 16 (App Router, Turbopack), React 19, TypeScript, Tailwind CSS v4, BlockNote |
+| Mobile     | Expo 55, React Native 0.84, expo-router, TenTap editor, WatermelonDB                 |
+| Desktop    | React Native macOS 0.81.5, TenTap editor, WatermelonDB (shared with mobile)          |
+| Backend    | Supabase (Postgres + Auth + Storage + RLS)                                           |
+| Hosting    | Vercel (web), Fastlane → App Store / Play Store / Mac App Store                      |
+| Monitoring | Sentry (errors), PostHog (analytics)                                                 |
+| Testing    | Vitest, Testing Library, Playwright, Jest, Maestro                                   |
+| Monorepo   | pnpm workspaces + Turborepo                                                          |
 
 Architecture deep-dive: [`docs/architecture/overview.md`](./docs/architecture/overview.md).
 

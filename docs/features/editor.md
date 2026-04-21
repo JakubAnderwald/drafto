@@ -1,6 +1,6 @@
 # Editor
 
-**Status:** shipped  **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-04-21
 
 ## What it is
 
@@ -19,30 +19,30 @@ Shipped on all four platforms.
 
 ## Code paths
 
-| Concern                                        | Path                                                                                        |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Web editor wrapper                             | `apps/web/src/components/editor/note-editor.tsx`                                            |
-| Web editor panel (title + status + fetch)      | `apps/web/src/components/notes/note-editor-panel.tsx`                                       |
-| Web auto-save hook                             | `apps/web/src/hooks/use-auto-save.ts`                                                       |
-| Web attachment URL resolver                    | `apps/web/src/components/editor/use-attachment-url-resolver.ts`                             |
-| Mobile editor screen                           | `apps/mobile/app/notes/[id].tsx`                                                            |
-| Mobile editor component                        | `apps/mobile/src/components/editor/note-editor.tsx`                                         |
-| Mobile attachment picker + list                | `apps/mobile/src/components/editor/attachment-picker.tsx`, `attachment-list.tsx`            |
-| Mobile auto-save hook                          | `apps/mobile/src/hooks/use-auto-save.ts`                                                    |
-| Desktop editor component                       | `apps/desktop/src/components/editor/note-editor.tsx`                                        |
-| Desktop editor panel                           | `apps/desktop/src/components/notes/note-editor-panel.tsx`                                   |
-| Desktop auto-save hook                         | `apps/desktop/src/hooks/use-auto-save.ts`                                                   |
-| Shared format converter (BlockNote ↔ TipTap)   | `packages/shared/src/editor/format-converter.ts`                                            |
-| Shared Markdown converter (MCP, import paths)  | `packages/shared/src/editor/markdown-converter.ts`                                          |
-| Shared text extractor (search)                 | `packages/shared/src/editor/extract-text.ts`                                                |
-| Shared attachment URL helpers                  | `packages/shared/src/editor/attachment-url.ts`, `resolve-urls.ts`                           |
-| Shared types (`BlockNoteBlock`, `TipTapDoc`)   | `packages/shared/src/editor/types.ts`                                                       |
-| Shared constants (`DEBOUNCE_MS`, title limits) | `packages/shared/src/constants.ts`                                                          |
-| Note read with content migration               | `apps/web/src/app/api/notes/[id]/route.ts`                                                  |
+| Concern                                        | Path                                                                                                  |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Web editor wrapper                             | `apps/web/src/components/editor/note-editor.tsx`                                                      |
+| Web editor panel (title + status + fetch)      | `apps/web/src/components/notes/note-editor-panel.tsx`                                                 |
+| Web auto-save hook                             | `apps/web/src/hooks/use-auto-save.ts`                                                                 |
+| Web attachment URL resolver                    | `apps/web/src/components/editor/use-attachment-url-resolver.ts`                                       |
+| Mobile editor screen                           | `apps/mobile/app/notes/[id].tsx`                                                                      |
+| Mobile editor component                        | `apps/mobile/src/components/editor/note-editor.tsx`                                                   |
+| Mobile attachment picker + list                | `apps/mobile/src/components/editor/attachment-picker.tsx`, `attachment-list.tsx`                      |
+| Mobile auto-save hook                          | `apps/mobile/src/hooks/use-auto-save.ts`                                                              |
+| Desktop editor component                       | `apps/desktop/src/components/editor/note-editor.tsx`                                                  |
+| Desktop editor panel                           | `apps/desktop/src/components/notes/note-editor-panel.tsx`                                             |
+| Desktop auto-save hook                         | `apps/desktop/src/hooks/use-auto-save.ts`                                                             |
+| Shared format converter (BlockNote ↔ TipTap)   | `packages/shared/src/editor/format-converter.ts`                                                      |
+| Shared Markdown converter (MCP, import paths)  | `packages/shared/src/editor/markdown-converter.ts`                                                    |
+| Shared text extractor (search)                 | `packages/shared/src/editor/extract-text.ts`                                                          |
+| Shared attachment URL helpers                  | `packages/shared/src/editor/attachment-url.ts`, `resolve-urls.ts`                                     |
+| Shared types (`BlockNoteBlock`, `TipTapDoc`)   | `packages/shared/src/editor/types.ts`                                                                 |
+| Shared constants (`DEBOUNCE_MS`, title limits) | `packages/shared/src/constants.ts`                                                                    |
+| Note read with content migration               | `apps/web/src/app/api/notes/[id]/route.ts`                                                            |
 | Auto-save unit tests                           | `apps/web/__tests__/unit/use-auto-save.test.ts`, `apps/desktop/__tests__/hooks/use-auto-save.test.ts` |
-| Web editor integration tests                   | `apps/web/__tests__/integration/note-editor.test.tsx`, `note-editor-panel.test.tsx`         |
-| Shared editor tests                            | `packages/shared/src/editor/__tests__/markdown-converter.test.ts`, `extract-text.test.ts`   |
-| Mobile editor screen test                      | `apps/mobile/__tests__/screens/editor.test.tsx`                                             |
+| Web editor integration tests                   | `apps/web/__tests__/integration/note-editor.test.tsx`, `note-editor-panel.test.tsx`                   |
+| Shared editor tests                            | `packages/shared/src/editor/__tests__/markdown-converter.test.ts`, `extract-text.test.ts`             |
+| Mobile editor screen test                      | `apps/mobile/__tests__/screens/editor.test.tsx`                                                       |
 
 ## Related ADRs
 

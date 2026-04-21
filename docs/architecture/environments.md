@@ -4,9 +4,9 @@ Drafto runs against two Supabase projects with full data isolation between produ
 
 ## Supabase projects
 
-| Environment     | Project      | Ref                    | Region          | Used by                                                                    |
-| --------------- | ------------ | ---------------------- | --------------- | -------------------------------------------------------------------------- |
-| **Production**  | `drafto.eu`  | `tbmjbxxseonkciqovnpl` | West EU Ireland | Vercel production deployment (drafto.eu)                                   |
+| Environment     | Project      | Ref                    | Region          | Used by                                                                       |
+| --------------- | ------------ | ---------------------- | --------------- | ----------------------------------------------------------------------------- |
+| **Production**  | `drafto.eu`  | `tbmjbxxseonkciqovnpl` | West EU Ireland | Vercel production deployment (drafto.eu)                                      |
 | **Development** | `drafto-dev` | `huhzactreblzcogqkbsd` | West EU Ireland | Local dev, Vercel previews (`*-jakubanderwalds-projects.vercel.app`), CI, E2E |
 
 Both projects run on the Supabase **Pro plan**, which provides daily automatic backups and enables Point-in-Time Recovery (PITR) for granular restore.
@@ -26,10 +26,10 @@ Supabase `config.toml` lives at [`supabase/config.toml`](../../supabase/config.t
 
 Two env files, selected by build type:
 
-| Build type  | Env file          | Backend     | Supabase ref           | Command                                                    |
-| ----------- | ----------------- | ----------- | ---------------------- | ---------------------------------------------------------- |
-| **Debug**   | `.env`            | Development | `huhzactreblzcogqkbsd` | `cd apps/mobile && pnpm android` / `expo run:android`      |
-| **Release** | `.env.production` | Production  | `tbmjbxxseonkciqovnpl` | `cd apps/mobile && pnpm android:release-local`             |
+| Build type  | Env file          | Backend     | Supabase ref           | Command                                               |
+| ----------- | ----------------- | ----------- | ---------------------- | ----------------------------------------------------- |
+| **Debug**   | `.env`            | Development | `huhzactreblzcogqkbsd` | `cd apps/mobile && pnpm android` / `expo run:android` |
+| **Release** | `.env.production` | Production  | `tbmjbxxseonkciqovnpl` | `cd apps/mobile && pnpm android:release-local`        |
 
 Both env files are gitignored. In a worktree, copy them from the main checkout before building — see the "Worktree setup" section in [`CLAUDE.md`](../../CLAUDE.md).
 

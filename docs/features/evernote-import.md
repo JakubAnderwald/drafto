@@ -1,6 +1,6 @@
 # Evernote Import
 
-**Status:** shipped  **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-04-21
 
 ## What it is
 
@@ -25,18 +25,18 @@ Platform coverage:
 
 ## Code paths
 
-| Concern                                    | Path                                                                      |
-| ------------------------------------------ | ------------------------------------------------------------------------- |
-| Import API route                           | `apps/web/src/app/api/import/evernote/route.ts`                           |
-| Shared types (`EnexNote`, batch req/res)   | `apps/web/src/lib/import/types.ts`                                        |
-| Client `.enex` XML parser (`DOMParser`)    | `apps/web/src/lib/import/enex-parser.ts`                                  |
-| Server ENML -> BlockNote converter         | `apps/web/src/lib/import/enml-to-blocknote.ts`                            |
-| Import dialog UI                           | `apps/web/src/components/import/import-evernote-dialog.tsx`               |
-| App menu entry (triggers dialog)           | `apps/web/src/components/layout/app-menu.tsx`                             |
-| Parser unit tests                          | `apps/web/__tests__/unit/enex-parser.test.ts`                             |
-| ENML converter unit tests                  | `apps/web/__tests__/unit/enml-to-blocknote.test.ts`                       |
-| API route unit tests                       | `apps/web/__tests__/unit/import-evernote-api.test.ts`                     |
-| Dialog integration tests                   | `apps/web/__tests__/integration/import-evernote-dialog.test.tsx`          |
+| Concern                                  | Path                                                             |
+| ---------------------------------------- | ---------------------------------------------------------------- |
+| Import API route                         | `apps/web/src/app/api/import/evernote/route.ts`                  |
+| Shared types (`EnexNote`, batch req/res) | `apps/web/src/lib/import/types.ts`                               |
+| Client `.enex` XML parser (`DOMParser`)  | `apps/web/src/lib/import/enex-parser.ts`                         |
+| Server ENML -> BlockNote converter       | `apps/web/src/lib/import/enml-to-blocknote.ts`                   |
+| Import dialog UI                         | `apps/web/src/components/import/import-evernote-dialog.tsx`      |
+| App menu entry (triggers dialog)         | `apps/web/src/components/layout/app-menu.tsx`                    |
+| Parser unit tests                        | `apps/web/__tests__/unit/enex-parser.test.ts`                    |
+| ENML converter unit tests                | `apps/web/__tests__/unit/enml-to-blocknote.test.ts`              |
+| API route unit tests                     | `apps/web/__tests__/unit/import-evernote-api.test.ts`            |
+| Dialog integration tests                 | `apps/web/__tests__/integration/import-evernote-dialog.test.tsx` |
 
 ## Related ADRs
 

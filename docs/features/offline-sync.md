@@ -1,6 +1,6 @@
 # Offline Sync
 
-**Status:** shipped  **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-04-21
 
 ## What it is
 
@@ -20,26 +20,26 @@ before metadata is pushed.
 
 ## Code paths
 
-| Concern                              | Path                                                         |
-| ------------------------------------ | ------------------------------------------------------------ |
-| Mobile schema (version 2)            | `apps/mobile/src/db/schema.ts`                               |
-| Mobile migrations                    | `apps/mobile/src/db/migrations.ts`                           |
-| Mobile WatermelonDB instance         | `apps/mobile/src/db/index.ts`                                |
-| Mobile models                        | `apps/mobile/src/db/models/{notebook,note,attachment}.ts`    |
-| Mobile sync driver (pull / push)     | `apps/mobile/src/db/sync.ts`                                 |
-| Mobile sync orchestration + triggers | `apps/mobile/src/providers/database-provider.tsx`            |
-| Mobile attachment upload queue       | `apps/mobile/src/lib/data/attachment-queue.ts`               |
-| Desktop schema (must match mobile)   | `apps/desktop/src/db/schema.ts`                              |
-| Desktop migrations                   | `apps/desktop/src/db/migrations.ts`                          |
-| Desktop WatermelonDB instance        | `apps/desktop/src/db/index.ts`                               |
-| Desktop models                       | `apps/desktop/src/db/models/{notebook,note,attachment}.ts`   |
-| Desktop sync driver                  | `apps/desktop/src/db/sync.ts`                                |
-| Desktop sync orchestration           | `apps/desktop/src/providers/database-provider.tsx`           |
-| Desktop attachment upload queue      | `apps/desktop/src/lib/data/attachment-queue.ts`              |
-| Supabase tables (source of truth)    | `supabase/migrations/*notebooks*`, `*notes*`, `*attachments*` |
-| Server timestamp RPC                 | `get_server_time` Supabase function                          |
-| Sync driver tests                    | `apps/desktop/__tests__/db/sync.test.ts`, `sync-mappers.test.ts` |
-| Schema / migration tests             | `apps/desktop/__tests__/db/{schema,migrations,models}.test.ts` |
+| Concern                              | Path                                                                                                           |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| Mobile schema (version 2)            | `apps/mobile/src/db/schema.ts`                                                                                 |
+| Mobile migrations                    | `apps/mobile/src/db/migrations.ts`                                                                             |
+| Mobile WatermelonDB instance         | `apps/mobile/src/db/index.ts`                                                                                  |
+| Mobile models                        | `apps/mobile/src/db/models/{notebook,note,attachment}.ts`                                                      |
+| Mobile sync driver (pull / push)     | `apps/mobile/src/db/sync.ts`                                                                                   |
+| Mobile sync orchestration + triggers | `apps/mobile/src/providers/database-provider.tsx`                                                              |
+| Mobile attachment upload queue       | `apps/mobile/src/lib/data/attachment-queue.ts`                                                                 |
+| Desktop schema (must match mobile)   | `apps/desktop/src/db/schema.ts`                                                                                |
+| Desktop migrations                   | `apps/desktop/src/db/migrations.ts`                                                                            |
+| Desktop WatermelonDB instance        | `apps/desktop/src/db/index.ts`                                                                                 |
+| Desktop models                       | `apps/desktop/src/db/models/{notebook,note,attachment}.ts`                                                     |
+| Desktop sync driver                  | `apps/desktop/src/db/sync.ts`                                                                                  |
+| Desktop sync orchestration           | `apps/desktop/src/providers/database-provider.tsx`                                                             |
+| Desktop attachment upload queue      | `apps/desktop/src/lib/data/attachment-queue.ts`                                                                |
+| Supabase tables (source of truth)    | `supabase/migrations/*notebooks*`, `*notes*`, `*attachments*`                                                  |
+| Server timestamp RPC                 | `get_server_time` Supabase function                                                                            |
+| Sync driver tests                    | `apps/desktop/__tests__/db/sync.test.ts`, `sync-mappers.test.ts`                                               |
+| Schema / migration tests             | `apps/desktop/__tests__/db/{schema,migrations,models}.test.ts`                                                 |
 | Sync UI + perf tests                 | `apps/mobile/__tests__/components/sync-status.test.tsx`, `apps/mobile/__tests__/performance/sync-perf.test.ts` |
 
 ## Related ADRs

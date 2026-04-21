@@ -4,15 +4,15 @@ Drafto has seven test suites across four platforms. This doc consolidates the te
 
 ## Test matrix
 
-| Platform | Test type          | Command                                                                              | Location                                                                           | What breaks CI                         |
-| -------- | ------------------ | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- | -------------------------------------- |
-| Web      | Unit + integration | `cd apps/web && pnpm test`                                                           | `apps/web/__tests__/unit/`, `apps/web/__tests__/integration/`                      | vitest fail                            |
-| Web      | E2E (Playwright)   | `set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e`     | `apps/web/e2e/`                                                                    | playwright fail                        |
-| Web      | Coverage           | `cd apps/web && pnpm test:coverage`                                                  | same as web unit + integration                                                     | SonarCloud quality gate (~80% on new)  |
-| Shared   | Unit               | `cd packages/shared && pnpm test`                                                    | `packages/shared/__tests__/`                                                       | vitest fail                            |
-| Mobile   | Unit               | `cd apps/mobile && pnpm test`                                                        | `apps/mobile/__tests__/`                                                           | jest fail                              |
-| Mobile   | E2E (Maestro)      | `maestro test apps/mobile/e2e/ --platform android`                                   | `apps/mobile/e2e/`                                                                 | manual (not wired into CI yet)         |
-| Desktop  | Unit               | `cd apps/desktop && pnpm test`                                                       | `apps/desktop/__tests__/`                                                          | jest fail                              |
+| Platform | Test type          | Command                                                                          | Location                                                      | What breaks CI                        |
+| -------- | ------------------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------- |
+| Web      | Unit + integration | `cd apps/web && pnpm test`                                                       | `apps/web/__tests__/unit/`, `apps/web/__tests__/integration/` | vitest fail                           |
+| Web      | E2E (Playwright)   | `set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e` | `apps/web/e2e/`                                               | playwright fail                       |
+| Web      | Coverage           | `cd apps/web && pnpm test:coverage`                                              | same as web unit + integration                                | SonarCloud quality gate (~80% on new) |
+| Shared   | Unit               | `cd packages/shared && pnpm test`                                                | `packages/shared/__tests__/`                                  | vitest fail                           |
+| Mobile   | Unit               | `cd apps/mobile && pnpm test`                                                    | `apps/mobile/__tests__/`                                      | jest fail                             |
+| Mobile   | E2E (Maestro)      | `maestro test apps/mobile/e2e/ --platform android`                               | `apps/mobile/e2e/`                                            | manual (not wired into CI yet)        |
+| Desktop  | Unit               | `cd apps/desktop && pnpm test`                                                   | `apps/desktop/__tests__/`                                     | jest fail                             |
 
 Turborepo aggregates these at the root: `pnpm test` fans out to every workspace that defines a `test` script, and `pnpm typecheck` / `pnpm lint` do the same for their respective tasks.
 

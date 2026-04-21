@@ -1,6 +1,6 @@
 # Email and approval
 
-**Status:** shipped  **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-04-21
 
 ## What it is
 
@@ -12,20 +12,20 @@ Shipped in production. A Postgres `after insert on auth.users` trigger calls `/a
 
 ## Code paths
 
-| Concern                                   | Path                                                                   |
-| ----------------------------------------- | ---------------------------------------------------------------------- |
-| Resend client wrapper                     | `apps/web/src/lib/email/client.ts`                                     |
-| Email templates (new signup, approved)    | `apps/web/src/lib/email/templates.ts`                                  |
-| Supabase-triggered signup webhook         | `apps/web/src/app/api/webhooks/new-signup/route.ts`                    |
-| Interactive approve API                   | `apps/web/src/app/api/admin/approve-user/route.ts`                     |
-| One-click approve (signed link) API       | `apps/web/src/app/api/admin/approve-user/one-click/route.ts`           |
-| Signed approval token (HMAC)              | `apps/web/src/lib/approval-tokens.ts`                                  |
-| Admin UI                                  | `apps/web/src/app/(app)/admin/page.tsx`                                |
-| Admin user list component                 | `apps/web/src/app/(app)/admin/admin-user-list.tsx`                     |
-| Admin flash message component             | `apps/web/src/app/(app)/admin/admin-flash-message.tsx`                 |
-| Admin bootstrap migration (first admin)   | `supabase/migrations/20260420000001_admin_bootstrap.sql`               |
-| New-signup webhook trigger migration      | `supabase/migrations/20260421000001_new_signup_webhook.sql`            |
-| Webhook hardening migration               | `supabase/migrations/20260421000002_new_signup_webhook_harden.sql`     |
+| Concern                                 | Path                                                               |
+| --------------------------------------- | ------------------------------------------------------------------ |
+| Resend client wrapper                   | `apps/web/src/lib/email/client.ts`                                 |
+| Email templates (new signup, approved)  | `apps/web/src/lib/email/templates.ts`                              |
+| Supabase-triggered signup webhook       | `apps/web/src/app/api/webhooks/new-signup/route.ts`                |
+| Interactive approve API                 | `apps/web/src/app/api/admin/approve-user/route.ts`                 |
+| One-click approve (signed link) API     | `apps/web/src/app/api/admin/approve-user/one-click/route.ts`       |
+| Signed approval token (HMAC)            | `apps/web/src/lib/approval-tokens.ts`                              |
+| Admin UI                                | `apps/web/src/app/(app)/admin/page.tsx`                            |
+| Admin user list component               | `apps/web/src/app/(app)/admin/admin-user-list.tsx`                 |
+| Admin flash message component           | `apps/web/src/app/(app)/admin/admin-flash-message.tsx`             |
+| Admin bootstrap migration (first admin) | `supabase/migrations/20260420000001_admin_bootstrap.sql`           |
+| New-signup webhook trigger migration    | `supabase/migrations/20260421000001_new_signup_webhook.sql`        |
+| Webhook hardening migration             | `supabase/migrations/20260421000002_new_signup_webhook_harden.sql` |
 
 ## Related ADRs
 

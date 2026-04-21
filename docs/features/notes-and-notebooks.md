@@ -1,6 +1,6 @@
 # Notes and Notebooks
 
-**Status:** shipped  **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-04-21
 
 ## What it is
 
@@ -19,30 +19,30 @@ Shipped on all four platforms: web, iOS, Android, macOS.
 
 ## Code paths
 
-| Concern                                  | Path                                                                                         |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------- |
-| Initial schema (tables, RLS, triggers)   | `supabase/migrations/20260224000001_initial_schema.sql`                                      |
-| Fix RLS recursion                        | `supabase/migrations/20260225000001_fix_rls_recursion.sql`                                   |
-| Trash auto-cleanup cron (30 days)        | `supabase/migrations/20260302000001_trash_auto_cleanup.sql`                                  |
-| Composite perf index                     | `supabase/migrations/20260416000001_perf_composite_index.sql`                                |
-| Notebooks list + create                  | `apps/web/src/app/api/notebooks/route.ts`                                                    |
-| Notebook rename + delete                 | `apps/web/src/app/api/notebooks/[id]/route.ts`                                               |
-| Notes list + create (scoped to notebook) | `apps/web/src/app/api/notebooks/[id]/notes/route.ts`                                         |
-| Note read / update / soft-delete         | `apps/web/src/app/api/notes/[id]/route.ts`                                                   |
-| Trash list                               | `apps/web/src/app/api/notes/trash/route.ts`                                                  |
-| Permanent delete                         | `apps/web/src/app/api/notes/[id]/permanent/route.ts`                                         |
-| Default notebook provisioning            | `apps/web/src/app/(app)/layout.tsx`                                                          |
-| Web sidebar + note list + trash list     | `apps/web/src/components/notebooks/notebooks-sidebar.tsx`, `apps/web/src/components/notes/`  |
-| Shared types (rows, inserts, updates)    | `packages/shared/src/types/api.ts`, `packages/shared/src/index.ts`                           |
-| Shared constants (title/name limits)     | `packages/shared/src/constants.ts`                                                           |
-| Mobile WatermelonDB schema + models      | `apps/mobile/src/db/schema.ts`, `apps/mobile/src/db/models/note.ts`, `models/notebook.ts`    |
-| Desktop WatermelonDB schema + models     | `apps/desktop/src/db/schema.ts`, `apps/desktop/src/db/models/`                               |
-| Mobile/desktop sync layer                | `apps/mobile/src/db/sync.ts`, `apps/desktop/src/db/sync.ts`                                  |
-| Mobile routes (notebook + note screens)  | `apps/mobile/app/notebooks/[id].tsx`, `apps/mobile/app/notes/[id].tsx`, `app/(tabs)/trash.tsx` |
-| Desktop screens                          | `apps/desktop/src/screens/main.tsx`, `apps/desktop/src/components/notes/`, `components/sidebar/` |
+| Concern                                  | Path                                                                                                                                           |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Initial schema (tables, RLS, triggers)   | `supabase/migrations/20260224000001_initial_schema.sql`                                                                                        |
+| Fix RLS recursion                        | `supabase/migrations/20260225000001_fix_rls_recursion.sql`                                                                                     |
+| Trash auto-cleanup cron (30 days)        | `supabase/migrations/20260302000001_trash_auto_cleanup.sql`                                                                                    |
+| Composite perf index                     | `supabase/migrations/20260416000001_perf_composite_index.sql`                                                                                  |
+| Notebooks list + create                  | `apps/web/src/app/api/notebooks/route.ts`                                                                                                      |
+| Notebook rename + delete                 | `apps/web/src/app/api/notebooks/[id]/route.ts`                                                                                                 |
+| Notes list + create (scoped to notebook) | `apps/web/src/app/api/notebooks/[id]/notes/route.ts`                                                                                           |
+| Note read / update / soft-delete         | `apps/web/src/app/api/notes/[id]/route.ts`                                                                                                     |
+| Trash list                               | `apps/web/src/app/api/notes/trash/route.ts`                                                                                                    |
+| Permanent delete                         | `apps/web/src/app/api/notes/[id]/permanent/route.ts`                                                                                           |
+| Default notebook provisioning            | `apps/web/src/app/(app)/layout.tsx`                                                                                                            |
+| Web sidebar + note list + trash list     | `apps/web/src/components/notebooks/notebooks-sidebar.tsx`, `apps/web/src/components/notes/`                                                    |
+| Shared types (rows, inserts, updates)    | `packages/shared/src/types/api.ts`, `packages/shared/src/index.ts`                                                                             |
+| Shared constants (title/name limits)     | `packages/shared/src/constants.ts`                                                                                                             |
+| Mobile WatermelonDB schema + models      | `apps/mobile/src/db/schema.ts`, `apps/mobile/src/db/models/note.ts`, `models/notebook.ts`                                                      |
+| Desktop WatermelonDB schema + models     | `apps/desktop/src/db/schema.ts`, `apps/desktop/src/db/models/`                                                                                 |
+| Mobile/desktop sync layer                | `apps/mobile/src/db/sync.ts`, `apps/desktop/src/db/sync.ts`                                                                                    |
+| Mobile routes (notebook + note screens)  | `apps/mobile/app/notebooks/[id].tsx`, `apps/mobile/app/notes/[id].tsx`, `app/(tabs)/trash.tsx`                                                 |
+| Desktop screens                          | `apps/desktop/src/screens/main.tsx`, `apps/desktop/src/components/notes/`, `components/sidebar/`                                               |
 | API unit tests                           | `apps/web/__tests__/unit/notebooks-api.test.ts`, `notebooks-id-api.test.ts`, `notes-api.test.ts`, `trash-api.test.ts`, `trash-cleanup.test.ts` |
-| Web E2E                                  | `apps/web/e2e/notebooks.spec.ts`, `apps/web/e2e/notes.spec.ts`, `apps/web/e2e/cross-platform-sync.spec.ts` |
-| Mobile E2E                               | `apps/mobile/e2e/02-create-notebook.yaml`, `03-create-edit-note.yaml`, `04-trash-restore.yaml` |
+| Web E2E                                  | `apps/web/e2e/notebooks.spec.ts`, `apps/web/e2e/notes.spec.ts`, `apps/web/e2e/cross-platform-sync.spec.ts`                                     |
+| Mobile E2E                               | `apps/mobile/e2e/02-create-notebook.yaml`, `03-create-edit-note.yaml`, `04-trash-restore.yaml`                                                 |
 
 ## Related ADRs
 

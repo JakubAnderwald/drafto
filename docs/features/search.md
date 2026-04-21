@@ -1,6 +1,6 @@
 # Search
 
-**Status:** shipped  **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-04-21
 
 ## What it is
 
@@ -18,24 +18,24 @@ Shipped on all four platforms (web, iOS, Android, macOS).
 
 ## Code paths
 
-| Concern                                         | Path                                                                           |
-| ----------------------------------------------- | ------------------------------------------------------------------------------ |
-| Search RPC + JSONB text extraction              | `supabase/migrations/20260314000001_search_function.sql`                       |
-| Extend search to notebook titles                | `supabase/migrations/20260320000001_search_notebook_titles.sql`                |
-| Web API route                                   | `apps/web/src/app/api/notes/search/route.ts`                                   |
-| Web search overlay UI (debounced, cancelable)   | `apps/web/src/components/search/search-overlay.tsx`                            |
-| Web overlay invocation + notebook list          | `apps/web/src/components/layout/app-shell.tsx`                                 |
-| Mobile search tab screen                        | `apps/mobile/app/search.tsx`                                                   |
-| Mobile search hook (WatermelonDB `Q.like`)      | `apps/mobile/src/hooks/use-search.ts`                                          |
-| Desktop search overlay                          | `apps/desktop/src/components/search/search-overlay.tsx`                        |
-| Desktop search hook                             | `apps/desktop/src/hooks/use-search.ts`                                         |
-| Shared text extractor (parity with server RPC)  | `packages/shared/src/editor/extract-text.ts`                                   |
-| Web unit test (API + validation)                | `apps/web/__tests__/unit/notes-search.test.ts`                                 |
-| Web integration test (overlay)                  | `apps/web/__tests__/integration/search-overlay.test.tsx`                       |
-| Web E2E                                         | `apps/web/e2e/search.spec.ts`                                                  |
-| Mobile unit test                                | `apps/mobile/__tests__/hooks/use-search.test.ts`                               |
-| Mobile E2E                                      | `apps/mobile/e2e/search.yaml`                                                  |
-| Desktop tests                                   | `apps/desktop/__tests__/hooks/use-search.test.ts`, `__tests__/components/search-overlay.test.tsx` |
+| Concern                                        | Path                                                                                              |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Search RPC + JSONB text extraction             | `supabase/migrations/20260314000001_search_function.sql`                                          |
+| Extend search to notebook titles               | `supabase/migrations/20260320000001_search_notebook_titles.sql`                                   |
+| Web API route                                  | `apps/web/src/app/api/notes/search/route.ts`                                                      |
+| Web search overlay UI (debounced, cancelable)  | `apps/web/src/components/search/search-overlay.tsx`                                               |
+| Web overlay invocation + notebook list         | `apps/web/src/components/layout/app-shell.tsx`                                                    |
+| Mobile search tab screen                       | `apps/mobile/app/search.tsx`                                                                      |
+| Mobile search hook (WatermelonDB `Q.like`)     | `apps/mobile/src/hooks/use-search.ts`                                                             |
+| Desktop search overlay                         | `apps/desktop/src/components/search/search-overlay.tsx`                                           |
+| Desktop search hook                            | `apps/desktop/src/hooks/use-search.ts`                                                            |
+| Shared text extractor (parity with server RPC) | `packages/shared/src/editor/extract-text.ts`                                                      |
+| Web unit test (API + validation)               | `apps/web/__tests__/unit/notes-search.test.ts`                                                    |
+| Web integration test (overlay)                 | `apps/web/__tests__/integration/search-overlay.test.tsx`                                          |
+| Web E2E                                        | `apps/web/e2e/search.spec.ts`                                                                     |
+| Mobile unit test                               | `apps/mobile/__tests__/hooks/use-search.test.ts`                                                  |
+| Mobile E2E                                     | `apps/mobile/e2e/search.yaml`                                                                     |
+| Desktop tests                                  | `apps/desktop/__tests__/hooks/use-search.test.ts`, `__tests__/components/search-overlay.test.tsx` |
 
 ## Related ADRs
 

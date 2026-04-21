@@ -1,6 +1,6 @@
 # MCP Server
 
-**Status:** shipped  **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-04-21
 
 ## What it is
 
@@ -19,21 +19,21 @@ The route is stateless: every POST is independent, and the transport is Streamab
 
 ## Code paths
 
-| Concern                                 | Path                                                                  |
-| --------------------------------------- | --------------------------------------------------------------------- |
-| MCP route (tool registry + transport)   | `apps/web/src/app/api/mcp/route.ts`                                   |
-| Tool handler implementations            | `apps/web/src/lib/api/mcp-tools.ts`                                   |
-| Bearer-token authentication             | `apps/web/src/lib/api/mcp-auth.ts`                                    |
-| API-key CRUD (list, generate)           | `apps/web/src/app/api/api-keys/route.ts`                              |
-| API-key revoke                          | `apps/web/src/app/api/api-keys/[id]/route.ts`                         |
-| API-key management UI (`/settings`)     | `apps/web/src/app/settings/page.tsx`                                  |
-| `api_keys` table + RLS                  | `supabase/migrations/20260411000001_api_keys.sql`                     |
-| BlockNote <-> Markdown conversion       | `packages/shared/src/editor/markdown-converter.ts`                    |
-| MCP Registry metadata                   | `server.json` (repo root)                                             |
-| Auth tests                              | `apps/web/__tests__/unit/mcp-auth.test.ts`                            |
-| Route tests                             | `apps/web/__tests__/unit/mcp-route.test.ts`                           |
-| Tool handler tests                      | `apps/web/__tests__/unit/mcp-tools.test.ts`                           |
-| API-key endpoint tests                  | `apps/web/__tests__/unit/api-keys.test.ts`                            |
+| Concern                               | Path                                               |
+| ------------------------------------- | -------------------------------------------------- |
+| MCP route (tool registry + transport) | `apps/web/src/app/api/mcp/route.ts`                |
+| Tool handler implementations          | `apps/web/src/lib/api/mcp-tools.ts`                |
+| Bearer-token authentication           | `apps/web/src/lib/api/mcp-auth.ts`                 |
+| API-key CRUD (list, generate)         | `apps/web/src/app/api/api-keys/route.ts`           |
+| API-key revoke                        | `apps/web/src/app/api/api-keys/[id]/route.ts`      |
+| API-key management UI (`/settings`)   | `apps/web/src/app/settings/page.tsx`               |
+| `api_keys` table + RLS                | `supabase/migrations/20260411000001_api_keys.sql`  |
+| BlockNote <-> Markdown conversion     | `packages/shared/src/editor/markdown-converter.ts` |
+| MCP Registry metadata                 | `server.json` (repo root)                          |
+| Auth tests                            | `apps/web/__tests__/unit/mcp-auth.test.ts`         |
+| Route tests                           | `apps/web/__tests__/unit/mcp-route.test.ts`        |
+| Tool handler tests                    | `apps/web/__tests__/unit/mcp-tools.test.ts`        |
+| API-key endpoint tests                | `apps/web/__tests__/unit/api-keys.test.ts`         |
 
 ## Related ADRs
 
@@ -43,17 +43,17 @@ The route is stateless: every POST is independent, and the transport is Streamab
 
 Nine tools are registered in `createMcpServer` in `apps/web/src/app/api/mcp/route.ts`. Every handler lives in `apps/web/src/lib/api/mcp-tools.ts` and returns an MCP `ToolResult` with a single `text` content item (success) or the same shape with `isError: true` (failure). Unless noted, successful JSON payloads are pretty-printed with `JSON.stringify(..., null, 2)`.
 
-| Tool              | Purpose                                                                     | Input                                                                                                                                       | Output (text content)                                                                                                                 |
-| ----------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `list_notebooks`  | List all notebooks owned by the caller, ordered by name.                    | `{}` (no arguments)                                                                                                                         | JSON array of `{ id, name, created_at, updated_at }`.                                                                                 |
-| `list_notes`      | List non-trashed notes in a notebook, ordered by `updated_at` descending.   | `{ notebook_id: string (uuid) }`                                                                                                            | JSON array of `{ id, title, created_at, updated_at }`.                                                                                |
-| `read_note`       | Read a note's full content as Markdown, prefixed with a metadata header.    | `{ note_id: string (uuid) }`                                                                                                                | Markdown: `# <title>` header, bullet list of `Notebook`, `Created`, `Updated`, `Trashed`, a `---` separator, then the note body Markdown (converted from BlockNote JSON via `contentToBlocknote` + `blockNoteToMarkdown`). |
-| `search_notes`    | Title-substring search across the caller's notes (trashed included).        | `{ query: string, 1..200 chars }`                                                                                                           | JSON array of up to 50 matches: `{ id, title, notebook_id, is_trashed, updated_at }`. Uses a Postgres `ilike` on title — not a full-text search despite the tool description. |
-| `create_notebook` | Create a new notebook owned by the caller.                                  | `{ name: string, 1..100 chars }`                                                                                                            | JSON object `{ id, name }` of the new notebook.                                                                                       |
-| `create_note`     | Create a note inside an existing notebook, optionally with Markdown body.   | `{ notebook_id: string (uuid), title: string 1..255, content_markdown?: string }`                                                           | JSON object `{ id, title }` of the new note. Markdown body (if provided) is converted via `markdownToBlockNote` before insert.        |
-| `update_note`     | Update a note's title, body, or both. At least one of the two is required. | `{ note_id: string (uuid), title?: string 1..255, content_markdown?: string }`                                                              | JSON object `{ id, title, updated_at }`. Errors with "No fields to update" when both optional fields are omitted.                     |
-| `move_note`       | Move a note to a different notebook owned by the caller.                    | `{ note_id: string (uuid), notebook_id: string (uuid) }`                                                                                    | JSON object `{ id, title, notebook_id }`. Fails if the target notebook does not belong to the caller.                                 |
-| `trash_note`      | Soft-delete a note (sets `is_trashed = true`, `trashed_at = now()`).        | `{ note_id: string (uuid) }`                                                                                                                | Plain-text confirmation: `Note "<title>" moved to trash.` Recoverable for 30 days per the note trash policy; permanent delete is intentionally not exposed. |
+| Tool              | Purpose                                                                    | Input                                                                             | Output (text content)                                                                                                                                                                                                      |
+| ----------------- | -------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_notebooks`  | List all notebooks owned by the caller, ordered by name.                   | `{}` (no arguments)                                                               | JSON array of `{ id, name, created_at, updated_at }`.                                                                                                                                                                      |
+| `list_notes`      | List non-trashed notes in a notebook, ordered by `updated_at` descending.  | `{ notebook_id: string (uuid) }`                                                  | JSON array of `{ id, title, created_at, updated_at }`.                                                                                                                                                                     |
+| `read_note`       | Read a note's full content as Markdown, prefixed with a metadata header.   | `{ note_id: string (uuid) }`                                                      | Markdown: `# <title>` header, bullet list of `Notebook`, `Created`, `Updated`, `Trashed`, a `---` separator, then the note body Markdown (converted from BlockNote JSON via `contentToBlocknote` + `blockNoteToMarkdown`). |
+| `search_notes`    | Title-substring search across the caller's notes (trashed included).       | `{ query: string, 1..200 chars }`                                                 | JSON array of up to 50 matches: `{ id, title, notebook_id, is_trashed, updated_at }`. Uses a Postgres `ilike` on title — not a full-text search despite the tool description.                                              |
+| `create_notebook` | Create a new notebook owned by the caller.                                 | `{ name: string, 1..100 chars }`                                                  | JSON object `{ id, name }` of the new notebook.                                                                                                                                                                            |
+| `create_note`     | Create a note inside an existing notebook, optionally with Markdown body.  | `{ notebook_id: string (uuid), title: string 1..255, content_markdown?: string }` | JSON object `{ id, title }` of the new note. Markdown body (if provided) is converted via `markdownToBlockNote` before insert.                                                                                             |
+| `update_note`     | Update a note's title, body, or both. At least one of the two is required. | `{ note_id: string (uuid), title?: string 1..255, content_markdown?: string }`    | JSON object `{ id, title, updated_at }`. Errors with "No fields to update" when both optional fields are omitted.                                                                                                          |
+| `move_note`       | Move a note to a different notebook owned by the caller.                   | `{ note_id: string (uuid), notebook_id: string (uuid) }`                          | JSON object `{ id, title, notebook_id }`. Fails if the target notebook does not belong to the caller.                                                                                                                      |
+| `trash_note`      | Soft-delete a note (sets `is_trashed = true`, `trashed_at = now()`).       | `{ note_id: string (uuid) }`                                                      | Plain-text confirmation: `Note "<title>" moved to trash.` Recoverable for 30 days per the note trash policy; permanent delete is intentionally not exposed.                                                                |
 
 Notes on the implementation:
 

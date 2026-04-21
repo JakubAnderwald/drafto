@@ -1,6 +1,6 @@
 # Mobile and Desktop Apps
 
-**Status:** shipped  **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-04-21
 
 ## What it is
 
@@ -18,28 +18,28 @@ Both link the same `@nozbe/watermelondb@0.28.x` native module and reuse the
 
 ## Code paths
 
-| Concern                             | Path                                                      |
-| ----------------------------------- | --------------------------------------------------------- |
-| Mobile package manifest             | `apps/mobile/package.json`                                |
-| Mobile Expo config (iOS + Android)  | `apps/mobile/app.config.ts`                               |
-| Mobile app routes (expo-router)     | `apps/mobile/app/`                                        |
-| Mobile source tree                  | `apps/mobile/src/{components,db,hooks,lib,providers,screens,theme}/` |
-| Mobile Expo config plugins          | `apps/mobile/plugins/with-android-optimizations.js`, `with-android-signing.js`, `with-ios-swift-concurrency.js` |
-| Mobile Fastlane                     | `apps/mobile/fastlane/{Fastfile,Appfile,Matchfile,Pluginfile}` |
-| Mobile release-notes scripts        | `apps/mobile/scripts/{generate-release-notes.sh,post-release-notes.mjs}` |
-| Mobile tests                        | `apps/mobile/__tests__/{components,hooks,lib,performance,providers,screens}/` |
-| Mobile Maestro E2E                  | `apps/mobile/e2e/`                                        |
-| Desktop package manifest            | `apps/desktop/package.json`                               |
-| Desktop Xcode workspace             | `apps/desktop/macos/Drafto.xcworkspace`                   |
-| Desktop native target               | `apps/desktop/macos/Drafto-macOS/` (AppDelegate, Info.plist, entitlements, menu manager) |
-| Desktop source tree                 | `apps/desktop/src/{components,db,helpers,hooks,lib,screens}/` plus `App.tsx`, `navigation/`, `providers/`, `theme/`, `types/` |
-| Desktop Fastlane                    | `apps/desktop/fastlane/{Fastfile,Appfile,Matchfile,Pluginfile}` |
-| Desktop release-notes scripts       | `apps/desktop/scripts/{generate-release-notes.sh,post-release-notes.mjs}` |
-| Desktop tests                       | `apps/desktop/__tests__/{components,db,helpers,lib,screens}/` |
-| Shared types and constants          | `packages/shared/src/`                                    |
-| Shared markdown converter (MCP)     | `packages/shared/src/editor/markdown-converter.ts`        |
-| Dev env (both apps)                 | `apps/mobile/.env`, `apps/desktop/.env` (gitignored)      |
-| Prod env (both apps)                | `apps/mobile/.env.production`, `apps/desktop/.env.production` (gitignored) |
+| Concern                            | Path                                                                                                                          |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Mobile package manifest            | `apps/mobile/package.json`                                                                                                    |
+| Mobile Expo config (iOS + Android) | `apps/mobile/app.config.ts`                                                                                                   |
+| Mobile app routes (expo-router)    | `apps/mobile/app/`                                                                                                            |
+| Mobile source tree                 | `apps/mobile/src/{components,db,hooks,lib,providers,screens,theme}/`                                                          |
+| Mobile Expo config plugins         | `apps/mobile/plugins/with-android-optimizations.js`, `with-android-signing.js`, `with-ios-swift-concurrency.js`               |
+| Mobile Fastlane                    | `apps/mobile/fastlane/{Fastfile,Appfile,Matchfile,Pluginfile}`                                                                |
+| Mobile release-notes scripts       | `apps/mobile/scripts/{generate-release-notes.sh,post-release-notes.mjs}`                                                      |
+| Mobile tests                       | `apps/mobile/__tests__/{components,hooks,lib,performance,providers,screens}/`                                                 |
+| Mobile Maestro E2E                 | `apps/mobile/e2e/`                                                                                                            |
+| Desktop package manifest           | `apps/desktop/package.json`                                                                                                   |
+| Desktop Xcode workspace            | `apps/desktop/macos/Drafto.xcworkspace`                                                                                       |
+| Desktop native target              | `apps/desktop/macos/Drafto-macOS/` (AppDelegate, Info.plist, entitlements, menu manager)                                      |
+| Desktop source tree                | `apps/desktop/src/{components,db,helpers,hooks,lib,screens}/` plus `App.tsx`, `navigation/`, `providers/`, `theme/`, `types/` |
+| Desktop Fastlane                   | `apps/desktop/fastlane/{Fastfile,Appfile,Matchfile,Pluginfile}`                                                               |
+| Desktop release-notes scripts      | `apps/desktop/scripts/{generate-release-notes.sh,post-release-notes.mjs}`                                                     |
+| Desktop tests                      | `apps/desktop/__tests__/{components,db,helpers,lib,screens}/`                                                                 |
+| Shared types and constants         | `packages/shared/src/`                                                                                                        |
+| Shared markdown converter (MCP)    | `packages/shared/src/editor/markdown-converter.ts`                                                                            |
+| Dev env (both apps)                | `apps/mobile/.env`, `apps/desktop/.env` (gitignored)                                                                          |
+| Prod env (both apps)               | `apps/mobile/.env.production`, `apps/desktop/.env.production` (gitignored)                                                    |
 
 ## Related ADRs
 
@@ -79,12 +79,12 @@ Both link the same `@nozbe/watermelondb@0.28.x` native module and reuse the
 
 **Backend routing (from `CLAUDE.md` "Mobile Build Environment Mapping"):**
 
-| Build                 | Env file          | Supabase project        | Project ref            |
-| --------------------- | ----------------- | ----------------------- | ---------------------- |
-| Mobile debug / dev    | `.env`            | drafto-dev              | `huhzactreblzcogqkbsd` |
-| Mobile release        | `.env.production` | drafto.eu               | `tbmjbxxseonkciqovnpl` |
-| Desktop dev run       | `.env`            | drafto-dev              | `huhzactreblzcogqkbsd` |
-| Desktop release       | `.env.production` | drafto.eu               | `tbmjbxxseonkciqovnpl` |
+| Build              | Env file          | Supabase project | Project ref            |
+| ------------------ | ----------------- | ---------------- | ---------------------- |
+| Mobile debug / dev | `.env`            | drafto-dev       | `huhzactreblzcogqkbsd` |
+| Mobile release     | `.env.production` | drafto.eu        | `tbmjbxxseonkciqovnpl` |
+| Desktop dev run    | `.env`            | drafto-dev       | `huhzactreblzcogqkbsd` |
+| Desktop release    | `.env.production` | drafto.eu        | `tbmjbxxseonkciqovnpl` |
 
 Git worktrees do not copy these env files — see the worktree setup section of
 `CLAUDE.md` before building in one.
@@ -99,7 +99,7 @@ Git worktrees do not copy these env files — see the worktree setup section of
   `apps/desktop/src/db/` (schema, models, migrations, sync). See
   [offline-sync.md](./offline-sync.md) for the invariants.
 - **Expo config plugins** under `apps/mobile/plugins/` run during `expo
-  prebuild`. If you add native config, write a config plugin rather than
+prebuild`. If you add native config, write a config plugin rather than
   editing generated `android/` or `ios/` folders — `prebuild` will wipe manual
   edits.
 - **Desktop native code** under `apps/desktop/macos/Drafto-macOS/` is checked

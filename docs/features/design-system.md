@@ -1,6 +1,6 @@
 # Design System
 
-**Status:** shipped  **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-04-21
 
 ## What it is
 
@@ -16,17 +16,17 @@ Drafto's shared visual language — a token layer (colors, shadows, radii, trans
 
 ## Code paths
 
-| Concern                           | Path                                                        |
-| --------------------------------- | ----------------------------------------------------------- |
-| Web token source (CSS variables)  | `apps/web/src/app/globals.css`                              |
-| Web UI primitives                 | `apps/web/src/components/ui/`                               |
-| Showcase page                     | `apps/web/src/app/design-system/page.tsx`                   |
-| Showcase layout                   | `apps/web/src/app/design-system/layout.tsx`                 |
-| Theme hook (web)                  | `apps/web/src/hooks/use-theme.ts`                           |
-| Theme toggle component            | `apps/web/src/components/ui/theme-toggle.tsx`               |
-| Pre-hydration theme script        | `apps/web/src/app/layout.tsx`                               |
-| Mobile token mirror               | `apps/mobile/src/theme/tokens.ts`                           |
-| Desktop token mirror (identical)  | `apps/desktop/src/theme/tokens.ts`                          |
+| Concern                          | Path                                          |
+| -------------------------------- | --------------------------------------------- |
+| Web token source (CSS variables) | `apps/web/src/app/globals.css`                |
+| Web UI primitives                | `apps/web/src/components/ui/`                 |
+| Showcase page                    | `apps/web/src/app/design-system/page.tsx`     |
+| Showcase layout                  | `apps/web/src/app/design-system/layout.tsx`   |
+| Theme hook (web)                 | `apps/web/src/hooks/use-theme.ts`             |
+| Theme toggle component           | `apps/web/src/components/ui/theme-toggle.tsx` |
+| Pre-hydration theme script       | `apps/web/src/app/layout.tsx`                 |
+| Mobile token mirror              | `apps/mobile/src/theme/tokens.ts`             |
+| Desktop token mirror (identical) | `apps/desktop/src/theme/tokens.ts`            |
 
 ## Related ADRs
 

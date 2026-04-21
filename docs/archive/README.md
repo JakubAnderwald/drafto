@@ -17,13 +17,13 @@ This directory holds historical planning documents — implementation roadmaps, 
 
 ## Contents
 
-| File                                           | What it was                                        | Superseded by                                                                               |
-| ---------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `PRD-v1.md`                                    | Original product requirements (v1.0, 2026-02-24)   | [`../features/`](../features/) briefs (living state)                                        |
-| `implementation-plan.md`                       | Ralph Loop plan for the web app, all phases done   | Shipped code + [`../features/`](../features/)                                               |
-| `mobile_app.md`                                | Ralph Loop plan for iOS/Android, all phases done   | Shipped code + [`../features/mobile-desktop-apps.md`](../features/mobile-desktop-apps.md)   |
-| `macos-desktop-app.md`                         | Implementation plan for macOS app, all phases done | Shipped code + [`../features/mobile-desktop-apps.md`](../features/mobile-desktop-apps.md)   |
-| `local-mobile-builds.md`                       | Migration plan from EAS Build to local Fastlane    | [ADR 0016](../adr/0016-local-fastlane-builds.md) + [`../operations/builds-and-releases.md`](../operations/builds-and-releases.md) |
-| `ui-redesign-plan.md`                          | Phased plan for the Digital Atelier UI rewrite     | [ADR 0014](../adr/0014-digital-atelier-design-system.md) + [`../features/design-system.md`](../features/design-system.md) |
-| `digital-atelier-ui-rewrite.md`                | Component-level rewrite plan                       | [ADR 0014](../adr/0014-digital-atelier-design-system.md) + [`../features/design-system.md`](../features/design-system.md) |
-| `dev-prod-environment-separation.md`           | Plan for splitting dev and prod Supabase projects  | [ADR 0006](../adr/0006-dev-prod-environment-separation.md) + [`../architecture/environments.md`](../architecture/environments.md) |
+| File                                 | What it was                                        | Superseded by                                                                                                                     |
+| ------------------------------------ | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `PRD-v1.md`                          | Original product requirements (v1.0, 2026-02-24)   | [`../features/`](../features/) briefs (living state)                                                                              |
+| `implementation-plan.md`             | Ralph Loop plan for the web app, all phases done   | Shipped code + [`../features/`](../features/)                                                                                     |
+| `mobile_app.md`                      | Ralph Loop plan for iOS/Android, all phases done   | Shipped code + [`../features/mobile-desktop-apps.md`](../features/mobile-desktop-apps.md)                                         |
+| `macos-desktop-app.md`               | Implementation plan for macOS app, all phases done | Shipped code + [`../features/mobile-desktop-apps.md`](../features/mobile-desktop-apps.md)                                         |
+| `local-mobile-builds.md`             | Migration plan from EAS Build to local Fastlane    | [ADR 0016](../adr/0016-local-fastlane-builds.md) + [`../operations/builds-and-releases.md`](../operations/builds-and-releases.md) |
+| `ui-redesign-plan.md`                | Phased plan for the Digital Atelier UI rewrite     | [ADR 0014](../adr/0014-digital-atelier-design-system.md) + [`../features/design-system.md`](../features/design-system.md)         |
+| `digital-atelier-ui-rewrite.md`      | Component-level rewrite plan                       | [ADR 0014](../adr/0014-digital-atelier-design-system.md) + [`../features/design-system.md`](../features/design-system.md)         |
+| `dev-prod-environment-separation.md` | Plan for splitting dev and prod Supabase projects  | [ADR 0006](../adr/0006-dev-prod-environment-separation.md) + [`../architecture/environments.md`](../architecture/environments.md) |

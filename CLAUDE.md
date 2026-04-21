@@ -4,17 +4,17 @@ Note-taking app at drafto.eu. Monorepo with pnpm workspaces + Turborepo. Web (Ne
 
 ## Where to find things
 
-| Need                                               | Start at                                                          |
-| -------------------------------------------------- | ----------------------------------------------------------------- |
-| What a feature does and where it lives in code    | [`docs/features/`](./docs/features/)                               |
-| System shape, data flow, platform parity          | [`docs/architecture/`](./docs/architecture/)                       |
-| Testing matrix (commands per platform)            | [`docs/architecture/testing.md`](./docs/architecture/testing.md)   |
-| Environments, Supabase refs, migration workflow   | [`docs/architecture/environments.md`](./docs/architecture/environments.md) |
-| Local machine setup                                | [`docs/operations/local-dev-setup.md`](./docs/operations/local-dev-setup.md) |
+| Need                                              | Start at                                                                             |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| What a feature does and where it lives in code    | [`docs/features/`](./docs/features/)                                                 |
+| System shape, data flow, platform parity          | [`docs/architecture/`](./docs/architecture/)                                         |
+| Testing matrix (commands per platform)            | [`docs/architecture/testing.md`](./docs/architecture/testing.md)                     |
+| Environments, Supabase refs, migration workflow   | [`docs/architecture/environments.md`](./docs/architecture/environments.md)           |
+| Local machine setup                               | [`docs/operations/local-dev-setup.md`](./docs/operations/local-dev-setup.md)         |
 | Builds, Fastlane, App Store / Play / Mac releases | [`docs/operations/builds-and-releases.md`](./docs/operations/builds-and-releases.md) |
-| Supabase migration safety workflow                | [`docs/operations/migrations.md`](./docs/operations/migrations.md) |
-| Why a tech / pattern was chosen                   | [`docs/adr/`](./docs/adr/README.md)                                |
-| Full index                                         | [`docs/README.md`](./docs/README.md)                               |
+| Supabase migration safety workflow                | [`docs/operations/migrations.md`](./docs/operations/migrations.md)                   |
+| Why a tech / pattern was chosen                   | [`docs/adr/`](./docs/adr/README.md)                                                  |
+| Full index                                        | [`docs/README.md`](./docs/README.md)                                                 |
 
 Historical plans live in [`docs/archive/`](./docs/archive/) — do not treat as source of truth.
 

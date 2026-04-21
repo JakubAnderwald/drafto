@@ -1,6 +1,6 @@
 # Authentication
 
-**Status:** shipped  **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-04-21
 
 ## What it is
 
@@ -12,38 +12,38 @@ Available on all four platforms: web, iOS, Android, and macOS. The web app uses 
 
 ## Code paths
 
-| Concern                                     | Path                                                                             |
-| ------------------------------------------- | -------------------------------------------------------------------------------- |
-| Next.js middleware entrypoint               | `apps/web/middleware.ts`                                                         |
-| Middleware session refresh + `is_approved` gate | `apps/web/src/lib/supabase/middleware.ts`                                    |
-| Web Supabase browser client                 | `apps/web/src/lib/supabase/client.ts`                                            |
-| Web Supabase server client                  | `apps/web/src/lib/supabase/server.ts`                                            |
-| Web Supabase admin (service-role) client    | `apps/web/src/lib/supabase/admin.ts`                                             |
-| Login page (email+password, OAuth)          | `apps/web/src/app/(auth)/login/page.tsx`                                         |
-| Signup page                                 | `apps/web/src/app/(auth)/signup/page.tsx`                                        |
-| Forgot password                             | `apps/web/src/app/(auth)/forgot-password/page.tsx`                               |
-| Reset password                              | `apps/web/src/app/(auth)/reset-password/page.tsx`                                |
-| Waiting-for-approval landing                | `apps/web/src/app/(auth)/waiting-for-approval/page.tsx`                          |
-| OAuth callback (PKCE code exchange)         | `apps/web/src/app/auth/callback/route.ts`                                        |
-| OAuth button component (web)                | `apps/web/src/components/auth/oauth-buttons.tsx`                                 |
-| OAuth button component (mobile)             | `apps/mobile/src/components/auth/oauth-buttons.tsx`                              |
-| Admin approval UI                           | `apps/web/src/app/(app)/admin/page.tsx`                                          |
-| Admin user list component                   | `apps/web/src/app/(app)/admin/admin-user-list.tsx`                               |
-| Admin flash message                         | `apps/web/src/app/(app)/admin/admin-flash-message.tsx`                           |
-| Admin approve-user API                      | `apps/web/src/app/api/admin/approve-user/route.ts`                               |
-| One-click approve (email link)              | `apps/web/src/app/api/admin/approve-user/one-click/route.ts`                     |
-| Signed approval token helper                | `apps/web/src/lib/approval-tokens.ts`                                            |
-| Mobile login screen                         | `apps/mobile/app/(auth)/login.tsx`                                               |
-| Mobile signup screen                        | `apps/mobile/app/(auth)/signup.tsx`                                              |
-| Mobile waiting-for-approval                 | `apps/mobile/app/(auth)/waiting-for-approval.tsx`                                |
-| Mobile auth provider                        | `apps/mobile/src/providers/auth-provider.tsx`                                    |
-| Desktop login screen                        | `apps/desktop/src/screens/login.tsx`                                             |
-| Desktop signup screen                       | `apps/desktop/src/screens/signup.tsx`                                            |
-| Desktop waiting-for-approval                | `apps/desktop/src/screens/waiting-for-approval.tsx`                              |
-| Desktop auth provider                       | `apps/desktop/src/providers/auth-provider.tsx`                                   |
-| Initial schema + RLS + `profiles` table     | `supabase/migrations/20260224000001_initial_schema.sql`                          |
-| RLS recursion fix                           | `supabase/migrations/20260225000001_fix_rls_recursion.sql`                       |
-| Admin bootstrap (first approved user)       | `supabase/migrations/20260420000001_admin_bootstrap.sql`                         |
+| Concern                                         | Path                                                         |
+| ----------------------------------------------- | ------------------------------------------------------------ |
+| Next.js middleware entrypoint                   | `apps/web/middleware.ts`                                     |
+| Middleware session refresh + `is_approved` gate | `apps/web/src/lib/supabase/middleware.ts`                    |
+| Web Supabase browser client                     | `apps/web/src/lib/supabase/client.ts`                        |
+| Web Supabase server client                      | `apps/web/src/lib/supabase/server.ts`                        |
+| Web Supabase admin (service-role) client        | `apps/web/src/lib/supabase/admin.ts`                         |
+| Login page (email+password, OAuth)              | `apps/web/src/app/(auth)/login/page.tsx`                     |
+| Signup page                                     | `apps/web/src/app/(auth)/signup/page.tsx`                    |
+| Forgot password                                 | `apps/web/src/app/(auth)/forgot-password/page.tsx`           |
+| Reset password                                  | `apps/web/src/app/(auth)/reset-password/page.tsx`            |
+| Waiting-for-approval landing                    | `apps/web/src/app/(auth)/waiting-for-approval/page.tsx`      |
+| OAuth callback (PKCE code exchange)             | `apps/web/src/app/auth/callback/route.ts`                    |
+| OAuth button component (web)                    | `apps/web/src/components/auth/oauth-buttons.tsx`             |
+| OAuth button component (mobile)                 | `apps/mobile/src/components/auth/oauth-buttons.tsx`          |
+| Admin approval UI                               | `apps/web/src/app/(app)/admin/page.tsx`                      |
+| Admin user list component                       | `apps/web/src/app/(app)/admin/admin-user-list.tsx`           |
+| Admin flash message                             | `apps/web/src/app/(app)/admin/admin-flash-message.tsx`       |
+| Admin approve-user API                          | `apps/web/src/app/api/admin/approve-user/route.ts`           |
+| One-click approve (email link)                  | `apps/web/src/app/api/admin/approve-user/one-click/route.ts` |
+| Signed approval token helper                    | `apps/web/src/lib/approval-tokens.ts`                        |
+| Mobile login screen                             | `apps/mobile/app/(auth)/login.tsx`                           |
+| Mobile signup screen                            | `apps/mobile/app/(auth)/signup.tsx`                          |
+| Mobile waiting-for-approval                     | `apps/mobile/app/(auth)/waiting-for-approval.tsx`            |
+| Mobile auth provider                            | `apps/mobile/src/providers/auth-provider.tsx`                |
+| Desktop login screen                            | `apps/desktop/src/screens/login.tsx`                         |
+| Desktop signup screen                           | `apps/desktop/src/screens/signup.tsx`                        |
+| Desktop waiting-for-approval                    | `apps/desktop/src/screens/waiting-for-approval.tsx`          |
+| Desktop auth provider                           | `apps/desktop/src/providers/auth-provider.tsx`               |
+| Initial schema + RLS + `profiles` table         | `supabase/migrations/20260224000001_initial_schema.sql`      |
+| RLS recursion fix                               | `supabase/migrations/20260225000001_fix_rls_recursion.sql`   |
+| Admin bootstrap (first approved user)           | `supabase/migrations/20260420000001_admin_bootstrap.sql`     |
 
 ## Related ADRs
 

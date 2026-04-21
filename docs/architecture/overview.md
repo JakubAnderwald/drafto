@@ -13,14 +13,14 @@ A single-page system map for placing new code in Drafto. Read the root [`CLAUDE.
 
 Drafto is a pnpm + Turborepo workspace. Packages are declared in [`pnpm-workspace.yaml`](../../pnpm-workspace.yaml) (`apps/*` and `packages/*`); build orchestration lives in [`turbo.json`](../../turbo.json).
 
-| Path                     | Role                                                              |
-| ------------------------ | ----------------------------------------------------------------- |
-| [`apps/web/`](../../apps/web/)         | Next.js 16 web app (drafto.eu). App Router, Turbopack, RSC.       |
-| [`apps/mobile/`](../../apps/mobile/)   | Expo + React Native mobile app (iOS + Android). Offline-first.    |
-| [`apps/desktop/`](../../apps/desktop/) | React Native macOS app (Mac App Store). Offline-first.            |
-| [`packages/shared/`](../../packages/shared/) | `@drafto/shared` — types, editor converters, constants.           |
-| [`supabase/`](../../supabase/)         | Migrations (`supabase/migrations/`) and `config.toml`.            |
-| [`docs/`](../)           | Architecture, features, operations, and ADRs.                     |
+| Path                                         | Role                                                           |
+| -------------------------------------------- | -------------------------------------------------------------- |
+| [`apps/web/`](../../apps/web/)               | Next.js 16 web app (drafto.eu). App Router, Turbopack, RSC.    |
+| [`apps/mobile/`](../../apps/mobile/)         | Expo + React Native mobile app (iOS + Android). Offline-first. |
+| [`apps/desktop/`](../../apps/desktop/)       | React Native macOS app (Mac App Store). Offline-first.         |
+| [`packages/shared/`](../../packages/shared/) | `@drafto/shared` — types, editor converters, constants.        |
+| [`supabase/`](../../supabase/)               | Migrations (`supabase/migrations/`) and `config.toml`.         |
+| [`docs/`](../)                               | Architecture, features, operations, and ADRs.                  |
 
 Within each app:
 
@@ -91,25 +91,25 @@ From [`CLAUDE.md`](../../CLAUDE.md) — authoritative source:
 
 ## Technology stack
 
-| Layer                | Technology                                                                       |
-| -------------------- | -------------------------------------------------------------------------------- |
-| Web framework        | Next.js 16 (App Router, Turbopack, RSC)                                          |
-| UI runtime           | React 19                                                                         |
-| Language             | TypeScript (strict)                                                              |
-| Styling (web)        | Tailwind CSS v4 + CSS-variable design tokens                                     |
-| Web editor           | BlockNote (Mantine adapter) — see [ADR 0003](../adr/0003-blocknote-editor-configuration.md) |
-| Mobile editor        | @10play/tentap-editor (TipTap-based)                                             |
-| Backend              | Supabase (Postgres + Auth + Storage + RLS) — see [ADR 0001](../adr/0001-data-model-and-rls-strategy.md) |
-| Mobile app           | Expo SDK 55, React Native 0.83, Expo Router — see [ADR 0009](../adr/0009-mobile-app-technology-choices.md) |
-| Desktop app          | React Native macOS 0.81 (no Expo) — see [ADR 0015](../adr/0015-desktop-app-technology-choice.md) |
-| Offline DB           | WatermelonDB (SQLite) — see [ADR 0010](../adr/0010-offline-sync-strategy.md)     |
-| Observability        | Sentry + PostHog (single project each, env-tagged)                               |
-| Email                | Resend — see [ADR 0019](../adr/0019-email-infrastructure-and-approval-flow.md)   |
-| Auth                 | Supabase Auth + Google/Apple OAuth — see [ADR 0018](../adr/0018-oauth-google-apple.md) |
-| MCP                  | `@modelcontextprotocol/sdk` at `/api/mcp` — see [ADR 0017](../adr/0017-mcp-server-for-claude-cowork.md) |
-| Mobile/desktop release | Fastlane (local builds) — see [ADR 0016](../adr/0016-local-fastlane-builds.md) |
-| Monorepo             | pnpm 10 workspaces + Turborepo 2                                                 |
-| Package manager      | pnpm (Node >= 22)                                                                |
+| Layer                  | Technology                                                                                                 |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Web framework          | Next.js 16 (App Router, Turbopack, RSC)                                                                    |
+| UI runtime             | React 19                                                                                                   |
+| Language               | TypeScript (strict)                                                                                        |
+| Styling (web)          | Tailwind CSS v4 + CSS-variable design tokens                                                               |
+| Web editor             | BlockNote (Mantine adapter) — see [ADR 0003](../adr/0003-blocknote-editor-configuration.md)                |
+| Mobile editor          | @10play/tentap-editor (TipTap-based)                                                                       |
+| Backend                | Supabase (Postgres + Auth + Storage + RLS) — see [ADR 0001](../adr/0001-data-model-and-rls-strategy.md)    |
+| Mobile app             | Expo SDK 55, React Native 0.83, Expo Router — see [ADR 0009](../adr/0009-mobile-app-technology-choices.md) |
+| Desktop app            | React Native macOS 0.81 (no Expo) — see [ADR 0015](../adr/0015-desktop-app-technology-choice.md)           |
+| Offline DB             | WatermelonDB (SQLite) — see [ADR 0010](../adr/0010-offline-sync-strategy.md)                               |
+| Observability          | Sentry + PostHog (single project each, env-tagged)                                                         |
+| Email                  | Resend — see [ADR 0019](../adr/0019-email-infrastructure-and-approval-flow.md)                             |
+| Auth                   | Supabase Auth + Google/Apple OAuth — see [ADR 0018](../adr/0018-oauth-google-apple.md)                     |
+| MCP                    | `@modelcontextprotocol/sdk` at `/api/mcp` — see [ADR 0017](../adr/0017-mcp-server-for-claude-cowork.md)    |
+| Mobile/desktop release | Fastlane (local builds) — see [ADR 0016](../adr/0016-local-fastlane-builds.md)                             |
+| Monorepo               | pnpm 10 workspaces + Turborepo 2                                                                           |
+| Package manager        | pnpm (Node >= 22)                                                                                          |
 
 ## Where to put new code
 
