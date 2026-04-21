@@ -2,7 +2,7 @@
 
 Drafto sends all outbound email via **Resend** from `hello@drafto.eu`. The same Resend account handles Supabase auth emails (signup confirmation, password reset) _and_ Drafto's own transactional emails (admin signup notifications, user approval confirmations).
 
-See [ADR 0019](./adr/0019-email-infrastructure-and-approval-flow.md) for the rationale.
+See [ADR 0019](../adr/0019-email-infrastructure-and-approval-flow.md) for the rationale.
 
 This document is the operational runbook — follow it top-to-bottom when setting up a new environment, or jump to individual sections when rotating a credential.
 

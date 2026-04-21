@@ -1,3 +1,8 @@
+> **Archived — historical reference only.**
+> This document describes work that has already shipped or a plan that has been superseded.
+> For current state see [docs/architecture/environments.md](../architecture/environments.md) and [ADR 0006](../adr/0006-dev-prod-environment-separation.md).
+> Kept for historical context; do **not** treat as source of truth.
+
 # Plan: Dev/Prod Environment Separation
 
 ## Context

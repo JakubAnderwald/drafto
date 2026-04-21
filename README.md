@@ -271,7 +271,7 @@ The macOS desktop app uses the same **local-first architecture** as mobile — W
 
 Auth is handled via Supabase Auth with email confirmation. New users must be approved by an admin (`profiles.is_approved`) before they can access the app. Session refresh and approval checks run on every request via `middleware.ts`.
 
-**Account approval flow:** a Supabase Database Webhook on `INSERT INTO profiles` fires `POST /api/webhooks/new-signup`, which emails the admin a one-click approval link (HMAC-signed, 72h expiry). The admin can also approve from the `/admin` UI. Approved users receive a confirmation email and can then sign in. See [`docs/email-setup.md`](./docs/email-setup.md) for operational setup and [ADR 0019](./docs/adr/0019-email-infrastructure-and-approval-flow.md) for the rationale.
+**Account approval flow:** a Supabase Database Webhook on `INSERT INTO profiles` fires `POST /api/webhooks/new-signup`, which emails the admin a one-click approval link (HMAC-signed, 72h expiry). The admin can also approve from the `/admin` UI. Approved users receive a confirmation email and can then sign in. See [`docs/features/email-and-approval.md`](./docs/features/email-and-approval.md) for operational setup and [ADR 0019](./docs/adr/0019-email-infrastructure-and-approval-flow.md) for the rationale.
 
 **Transactional email:** all outbound email (Supabase auth + Drafto's own transactional) is sent via Resend from `hello@drafto.eu`.
 

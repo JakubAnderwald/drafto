@@ -1,3 +1,8 @@
+> **Archived — historical reference only.**
+> This document describes work that has already shipped or a plan that has been superseded.
+> For current state see [docs/features/](../features/) and the relevant [ADRs](../adr/README.md).
+> Kept for historical context; do **not** treat as source of truth.
+
 # Drafto UI Redesign — Implementation Plan (Ralph Loop Edition)
 
 ## Context

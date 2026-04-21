@@ -280,7 +280,7 @@ PRIVATE_KEY="$(openssl pkey -in ~/drafto-secrets/mcp-registry-key.pem -noout -te
 
 ## Local Dev Setup
 
-See [docs/local-dev-setup.md](./docs/local-dev-setup.md) for first-time machine setup (CLI tools, Fastlane, Claude Code memory symlink).
+See [docs/operations/local-dev-setup.md](./docs/operations/local-dev-setup.md) for first-time machine setup (CLI tools, Fastlane, Claude Code memory symlink).
 
 ## Useful Commands
 

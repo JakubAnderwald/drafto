@@ -54,7 +54,7 @@ Additionally, the production Supabase project had no custom SMTP configured. Aut
 **Negative**
 
 - Two new secrets to manage (`WEBHOOK_SECRET`, `APPROVAL_LINK_SECRET`) plus the Resend API key, across Vercel + Supabase Dashboard.
-- Manual setup steps outside the repo (DNS records, Supabase Dashboard SMTP, Supabase Database Webhook configuration) — documented in `docs/email-setup.md`.
+- Manual setup steps outside the repo (DNS records, Supabase Dashboard SMTP, Supabase Database Webhook configuration) — documented in `docs/features/email-and-approval.md`.
 - Best-effort email sending means a Resend outage silently drops notifications (Sentry-logged). Acceptable for approval notifications; would not be acceptable for payment receipts or similar.
 
 **Neutral**
@@ -78,4 +78,4 @@ Additionally, the production Supabase project had no custom SMTP configured. Aut
 - `apps/web/src/app/api/webhooks/new-signup/route.ts` — admin notification
 - `apps/web/src/app/api/admin/approve-user/one-click/route.ts` — one-click approve
 - `supabase/migrations/20260420000001_admin_bootstrap.sql`
-- `docs/email-setup.md` — operational runbook
+- `docs/features/email-and-approval.md` — operational runbook
