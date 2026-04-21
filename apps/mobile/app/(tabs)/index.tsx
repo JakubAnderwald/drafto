@@ -23,7 +23,7 @@ import { generateId } from "@/lib/generate-id";
 import { SwipeableRow } from "@/components/swipeable-row";
 import { ListSkeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
-import { colors } from "@/theme/tokens";
+import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Notebook, Note, Attachment } from "@/db";
 import type { SwipeAction } from "@/components/swipeable-row";
@@ -282,13 +282,13 @@ const createStyles = (semantic: SemanticColors) =>
       backgroundColor: semantic.bgSubtle,
     },
     list: {
-      paddingVertical: 8,
+      paddingVertical: spacing.sm,
     },
     row: {
       flexDirection: "row",
       alignItems: "center",
-      paddingVertical: 14,
-      paddingHorizontal: 16,
+      paddingVertical: spacing.lg,
+      paddingHorizontal: spacing.lg,
       backgroundColor: semantic.bg,
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: semantic.border,
@@ -297,49 +297,49 @@ const createStyles = (semantic: SemanticColors) =>
       backgroundColor: semantic.bgMuted,
     },
     rowIcon: {
-      marginRight: 12,
+      marginRight: spacing.md,
     },
     rowText: {
       flex: 1,
-      fontSize: 16,
+      fontSize: fontSizes.xl,
       color: semantic.fg,
     },
     iconButton: {
-      padding: 6,
+      padding: spacing.sm,
     },
     input: {
       borderWidth: 1,
       borderColor: semantic.borderStrong,
-      borderRadius: 8,
-      padding: 10,
-      fontSize: 16,
+      borderRadius: radii.md,
+      padding: spacing.md,
+      fontSize: fontSizes.xl,
       backgroundColor: semantic.bg,
       color: semantic.fg,
     },
     createBar: {
       flexDirection: "row",
       alignItems: "center",
-      paddingHorizontal: 16,
-      paddingVertical: 10,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.md,
       backgroundColor: semantic.bg,
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: semantic.border,
     },
     createInput: {
       flex: 1,
-      marginRight: 8,
+      marginRight: spacing.sm,
     },
     editInput: {
       flex: 1,
-      marginRight: 8,
+      marginRight: spacing.sm,
     },
     fab: {
       position: "absolute",
-      right: 20,
-      bottom: 20,
+      right: spacing.xl,
+      bottom: spacing.xl,
       width: 56,
       height: 56,
-      borderRadius: 28,
+      borderRadius: radii.full,
       backgroundColor: colors.primary[600],
       alignItems: "center",
       justifyContent: "center",

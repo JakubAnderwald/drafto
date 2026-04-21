@@ -3,6 +3,7 @@ import { Animated, StyleSheet, View } from "react-native";
 import type { ViewStyle } from "react-native";
 
 import { useTheme } from "@/providers/theme-provider";
+import { spacing } from "@/theme/tokens";
 
 interface SkeletonProps {
   width?: number | `${number}%`;
@@ -59,7 +60,7 @@ export function ListSkeleton({ rows = 6, variant = "notebook" }: ListSkeletonPro
   const { semantic } = useTheme();
 
   return (
-    <View style={{ flex: 1, backgroundColor: semantic.bgSubtle, paddingTop: 8 }}>
+    <View style={{ flex: 1, backgroundColor: semantic.bgSubtle, paddingTop: spacing.sm }}>
       {Array.from({ length: rows }).map((_, i) => (
         <View
           key={i}
@@ -111,28 +112,28 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 14,
-    paddingHorizontal: 16,
+    paddingVertical: spacing.lg,
+    paddingHorizontal: spacing.lg,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   icon: {
-    marginRight: 12,
+    marginRight: spacing.md,
   },
   content: {
     flex: 1,
   },
   subtitle: {
-    marginTop: 6,
+    marginTop: spacing.sm,
   },
   titleBar: {
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.lg,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   editorBody: {
-    padding: 16,
+    padding: spacing.lg,
   },
   line: {
-    marginBottom: 12,
+    marginBottom: spacing.md,
   },
 });

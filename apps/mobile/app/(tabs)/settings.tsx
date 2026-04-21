@@ -103,7 +103,7 @@ const createStyles = (semantic: SemanticColors) =>
     themeOption: {
       flex: 1,
       alignItems: "center",
-      gap: 6,
+      gap: spacing.sm,
       paddingVertical: spacing.lg,
       backgroundColor: semantic.bg,
       borderRadius: radii.lg,

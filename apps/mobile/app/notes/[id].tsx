@@ -33,7 +33,7 @@ import {
   isAttachmentUrl,
 } from "@drafto/shared";
 import type { TipTapDoc, TipTapNode } from "@drafto/shared";
-import { colors } from "@/theme/tokens";
+import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Note } from "@/db";
 
@@ -273,7 +273,7 @@ const createStyles = (semantic: SemanticColors) =>
       flex: 1,
       alignItems: "center",
       justifyContent: "center",
-      padding: 24,
+      padding: spacing["2xl"],
       backgroundColor: semantic.bgSubtle,
     },
     titleRow: {
@@ -285,45 +285,45 @@ const createStyles = (semantic: SemanticColors) =>
     },
     titleInput: {
       flex: 1,
-      fontSize: 22,
+      fontSize: fontSizes["3xl"],
       fontWeight: "700",
       color: semantic.fg,
-      paddingHorizontal: 16,
-      paddingVertical: 12,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.md,
     },
     statusText: {
-      fontSize: 12,
+      fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
-      paddingRight: 16,
+      paddingRight: spacing.lg,
     },
     statusTextSaved: {
-      fontSize: 12,
+      fontSize: fontSizes.sm,
       color: semantic.successText,
-      paddingRight: 16,
+      paddingRight: spacing.lg,
     },
     statusTextError: {
-      fontSize: 12,
+      fontSize: fontSizes.sm,
       color: semantic.errorText,
-      paddingRight: 16,
+      paddingRight: spacing.lg,
     },
     editorContainer: {
       flex: 1,
     },
     errorText: {
-      fontSize: 16,
+      fontSize: fontSizes.xl,
       color: semantic.errorText,
       textAlign: "center",
-      marginBottom: 16,
+      marginBottom: spacing.lg,
     },
     retryButton: {
       backgroundColor: colors.primary[600],
-      borderRadius: 8,
-      paddingVertical: 10,
-      paddingHorizontal: 20,
+      borderRadius: radii.md,
+      paddingVertical: spacing.md,
+      paddingHorizontal: spacing.xl,
     },
     retryText: {
       color: semantic.onPrimary,
-      fontSize: 16,
+      fontSize: fontSizes.xl,
       fontWeight: "600",
     },
   });

@@ -3,7 +3,7 @@ import { Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
 import { useTheme } from "@/providers/theme-provider";
-import { colors } from "@/theme/tokens";
+import { colors, spacing } from "@/theme/tokens";
 
 export default function TabsLayout() {
   const { semantic } = useTheme();
@@ -35,7 +35,7 @@ export default function TabsLayout() {
               accessibilityLabel="Search"
               accessibilityRole="button"
               onPress={() => router.push("/search")}
-              style={{ marginRight: 16 }}
+              style={{ marginRight: spacing.lg }}
             >
               <Ionicons name="search-outline" size={22} color={semantic.fg} />
             </Pressable>

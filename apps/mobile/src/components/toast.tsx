@@ -5,7 +5,7 @@ import * as Haptics from "expo-haptics";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useTheme } from "@/providers/theme-provider";
-import { colors } from "@/theme/tokens";
+import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 
 type ToastType = "info" | "warning" | "success";
@@ -146,18 +146,18 @@ export function useToast(): ToastContextValue {
 const styles = StyleSheet.create({
   container: {
     position: "absolute",
-    left: 16,
-    right: 16,
-    gap: 8,
+    left: spacing.lg,
+    right: spacing.lg,
+    gap: spacing.sm,
     zIndex: 200,
   },
   toast: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 10,
+    gap: spacing.md,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radii.lg,
     borderLeftWidth: 4,
     shadowColor: colors.black,
     shadowOffset: { width: 0, height: 2 },
@@ -167,7 +167,7 @@ const styles = StyleSheet.create({
   },
   toastText: {
     flex: 1,
-    fontSize: 14,
+    fontSize: fontSizes.base,
     fontWeight: "500",
   },
 });
