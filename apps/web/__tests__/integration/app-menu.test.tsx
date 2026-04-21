@@ -51,6 +51,25 @@ describe("AppMenu", () => {
     expect(mockOnImportEvernote).toHaveBeenCalled();
   });
 
+  it("does not render Admin link when isAdmin is false", async () => {
+    const user = userEvent.setup();
+    render(<AppMenu onImportEvernote={mockOnImportEvernote} />);
+    await user.click(screen.getByTestId("app-menu-trigger"));
+    expect(screen.queryByTestId("admin-button")).not.toBeInTheDocument();
+  });
+
+  it("renders Admin link and navigates when isAdmin is true", async () => {
+    const user = userEvent.setup();
+    render(<AppMenu onImportEvernote={mockOnImportEvernote} isAdmin />);
+    await user.click(screen.getByTestId("app-menu-trigger"));
+
+    const adminButton = screen.getByTestId("admin-button");
+    expect(adminButton).toBeInTheDocument();
+
+    await user.click(adminButton);
+    expect(mockPush).toHaveBeenCalledWith("/admin");
+  });
+
   it("calls signOut and redirects on logout", async () => {
     const user = userEvent.setup();
 

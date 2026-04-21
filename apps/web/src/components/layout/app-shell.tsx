@@ -162,6 +162,7 @@ interface AppShellProps {
   initialNotebooks?: InitialNotebook[];
   initialNotebookId?: string | null;
   initialNotes?: NoteListItem[];
+  isAdmin?: boolean;
 }
 
 export function AppShell({
@@ -169,6 +170,7 @@ export function AppShell({
   initialNotebooks = [],
   initialNotebookId = null,
   initialNotes = [],
+  isAdmin = false,
 }: AppShellProps) {
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(initialNotebookId);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
@@ -419,7 +421,7 @@ export function AppShell({
           initialNotebooks={initialNotebooks}
         />
         <div className="flex items-center justify-end p-2">
-          <AppMenu onImportEvernote={() => setShowImportDialog(true)} />
+          <AppMenu onImportEvernote={() => setShowImportDialog(true)} isAdmin={isAdmin} />
         </div>
       </aside>
 

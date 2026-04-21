@@ -4,7 +4,16 @@
     "build": {
       "dependsOn": ["^build"],
       "outputs": [".next/**", "!.next/cache/**", "dist/**"],
-      "passThroughEnv": ["SENTRY_AUTH_TOKEN", "SUPABASE_SERVICE_ROLE_KEY"]
+      "passThroughEnv": [
+        "SENTRY_AUTH_TOKEN",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "RESEND_API_KEY",
+        "EMAIL_FROM",
+        "EMAIL_ADMIN_FALLBACK",
+        "APPROVAL_LINK_SECRET",
+        "APP_URL",
+        "WEBHOOK_SECRET"
+      ]
     },
     "dev": {
       "cache": false,
