@@ -41,6 +41,7 @@ describe("Auth middleware", () => {
       "/forgot-password",
       "/reset-password",
       "/api/health",
+      "/api/webhooks/new-signup",
     ];
 
     for (const route of publicRoutes) {

@@ -11,6 +11,7 @@ const PUBLIC_ROUTES = [
   "/reset-password",
   "/api/health",
   "/api/mcp",
+  "/api/webhooks",
 ];
 
 function isPublicRoute(pathname: string): boolean {
