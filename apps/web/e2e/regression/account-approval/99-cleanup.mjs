@@ -9,6 +9,7 @@ const raw = execSync(
   { encoding: "utf8" },
 );
 const jsonStart = raw.indexOf("{");
+if (jsonStart < 0) throw new Error(`unexpected CLI output:\n${raw}`);
 const rows = JSON.parse(raw.slice(jsonStart)).rows ?? [];
 
 console.log(`Deleted ${rows.length} test user(s):`);

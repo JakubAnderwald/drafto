@@ -58,9 +58,16 @@ if (last.status !== 200) {
 
 let testUserId;
 try {
-  testUserId = JSON.parse(last.body).id;
+  const parsed = JSON.parse(last.body);
+  testUserId = parsed?.id ?? parsed?.user?.id;
 } catch {
-  console.error("FAIL: could not parse signup response body");
+  console.error(`FAIL: could not parse signup response body:\n${last.body}`);
+  process.exit(1);
+}
+if (typeof testUserId !== "string" || testUserId.length === 0) {
+  console.error(
+    `FAIL: signup response did not contain a user id (neither .id nor .user.id):\n${last.body}`,
+  );
   process.exit(1);
 }
 

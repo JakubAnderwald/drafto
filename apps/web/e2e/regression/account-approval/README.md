@@ -62,8 +62,8 @@ Test emails use the form `jakub+draftoe2e-<timestamp>@anderwald.info`. Gmail-sty
 ## What each script does
 
 - **`01-signup.mjs`** — Launches headless Chromium, navigates to `https://drafto.eu/signup`, fills `jakub+draftoe2e-<ts>@anderwald.info` + a random password, submits the form via `form.requestSubmit()` (more reliable than button click), captures the Supabase signup response, and saves state to `/tmp/e2e-approval/state.json`.
-- **`02-verify-webhook.mjs`** — Polls `auth.users` + `public.profiles` for the new row, then polls `net._http_response` for a 200 response from the webhook. Fails loudly if the response is 307/401/405 or if it doesn't show up within 30s.
-- **`03-verify-approved.mjs`** — Polls `profiles.is_approved` until it flips to `true` (fails after 60s if the admin hasn't clicked yet).
+- **`02-verify-webhook.mjs`** — Polls `auth.users` + `public.profiles` for the new row, then polls `net._http_response` for a 200 response from the webhook. Fails loudly if the response is 307/401/405 or if it doesn't show up within ~40s.
+- **`03-verify-approved.mjs`** — Polls `profiles.is_approved` until it flips to `true` (fails after 2 min if the admin hasn't clicked yet).
 - **`99-cleanup.mjs`** — `DELETE FROM auth.users WHERE email LIKE 'jakub+draftoe2e-%@anderwald.info';` — relies on the FK cascade to clean `profiles`.
 
 ## Known gotchas (lessons from the first run)

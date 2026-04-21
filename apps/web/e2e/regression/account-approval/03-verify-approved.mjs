@@ -13,6 +13,7 @@ function sbQuery(sql) {
     encoding: "utf8",
   });
   const jsonStart = raw.indexOf("{");
+  if (jsonStart < 0) throw new Error(`unexpected CLI output:\n${raw}`);
   return JSON.parse(raw.slice(jsonStart)).rows ?? [];
 }
 
