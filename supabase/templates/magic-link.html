@@ -1,28 +1,46 @@
 <!doctype html>
 <html>
-  <body style="margin:0;padding:0;background:#fff8f5;">
+  <body style="margin: 0; padding: 0; background: #fff8f5">
     <div
-      style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1f1b17;line-height:1.5;max-width:560px;margin:0 auto;padding:32px 24px;"
+      style="
+        font-family:
+          -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Roboto, Helvetica, Arial,
+          sans-serif;
+        color: #1f1b17;
+        line-height: 1.5;
+        max-width: 560px;
+        margin: 0 auto;
+        padding: 32px 24px;
+      "
     >
-      <h1 style="margin:0 0 16px;font-size:20px;font-weight:700;color:#1f1b17;">
+      <h1 style="margin: 0 0 16px; font-size: 20px; font-weight: 700; color: #1f1b17">
         Sign in to Drafto
       </h1>
-      <p style="margin:0 0 16px;">
+      <p style="margin: 0 0 16px">
         Use the button below to sign in to Drafto. This link is single-use and expires shortly.
       </p>
-      <p style="margin:24px 0;">
+      <p style="margin: 24px 0">
         <a
           href="{{ .ConfirmationURL }}"
-          style="display:inline-block;background:#3525cd;color:#ffffff !important;text-decoration:none;padding:12px 24px;border-radius:8px;font-weight:600;font-size:16px;"
+          style="
+            display: inline-block;
+            background: #3525cd;
+            color: #ffffff !important;
+            text-decoration: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 16px;
+          "
           >Sign in</a
         >
       </p>
-      <p style="margin:0 0 8px;color:#6b6360;font-size:14px;">
-        Or enter this code: <strong style="color:#1f1b17;">{{ .Token }}</strong>
+      <p style="margin: 0 0 8px; color: #6b6360; font-size: 14px">
+        Or enter this code: <strong style="color: #1f1b17">{{ .Token }}</strong>
       </p>
-      <hr style="margin:32px 0 16px;border:0;border-top:1px solid #eae1da;" />
-      <p style="margin:0;font-size:12px;color:#9c9590;">
-        Drafto · <a href="https://drafto.eu" style="color:#6b6360;">drafto.eu</a>
+      <hr style="margin: 32px 0 16px; border: 0; border-top: 1px solid #eae1da" />
+      <p style="margin: 0; font-size: 12px; color: #9c9590">
+        Drafto · <a href="https://drafto.eu" style="color: #6b6360">drafto.eu</a>
       </p>
     </div>
   </body>
