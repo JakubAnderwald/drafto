@@ -3,7 +3,7 @@ import { field, date, readonly, relation } from "@nozbe/watermelondb/decorators"
 
 import type { Note } from "./note";
 
-export type UploadStatus = "pending" | "uploaded";
+export type UploadStatus = "pending" | "uploaded" | "failed";
 
 export class Attachment extends Model {
   static table = "attachments";
@@ -22,10 +22,15 @@ export class Attachment extends Model {
   @readonly @date("created_at") createdAt!: Date;
   @field("local_uri") localUri!: string | null;
   @field("upload_status") uploadStatus!: UploadStatus;
+  @field("upload_error") uploadError!: string | null;
 
   @relation("notes", "note_id") note!: Relation<Note>;
 
   get isPendingUpload(): boolean {
     return this.uploadStatus === "pending";
+  }
+
+  get hasFailed(): boolean {
+    return this.uploadStatus === "failed";
   }
 }

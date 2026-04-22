@@ -39,10 +39,11 @@ export const attachmentsTable = tableSchema({
     { name: "created_at", type: "number" },
     { name: "local_uri", type: "string", isOptional: true },
     { name: "upload_status", type: "string" },
+    { name: "upload_error", type: "string", isOptional: true },
   ],
 });
 
 export const schema = appSchema({
-  version: 2,
+  version: 3,
   tables: [notebooksTable, notesTable, attachmentsTable],
 });
