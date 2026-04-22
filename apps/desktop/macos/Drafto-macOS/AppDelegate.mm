@@ -2,6 +2,7 @@
 
 #import <React/RCTBundleURLProvider.h>
 #import <React/RCTDevLoadingViewSetEnabled.h>
+#import <React/RCTLinkingManager.h>
 #import <ReactAppDependencyProvider/RCTAppDependencyProvider.h>
 
 @implementation AppDelegate
@@ -16,6 +17,15 @@
   self.dependencyProvider = [RCTAppDependencyProvider new];
   
   [super applicationDidFinishLaunching:notification];
+
+  // React Native macOS delivers custom-scheme URL callbacks via the classic
+  // 'GURL' Apple Event. Route them into RCTLinkingManager so JS
+  // Linking.addEventListener("url", ...) fires for eu.drafto.desktop://auth/callback.
+  [[NSAppleEventManager sharedAppleEventManager]
+      setEventHandler:[RCTLinkingManager class]
+          andSelector:@selector(getUrlEventHandler:withReplyEvent:)
+        forEventClass:kInternetEventClass
+           andEventID:kAEGetURL];
 
   // Window frame persistence + minimum size
   NSWindow *window = NSApp.windows.firstObject;
