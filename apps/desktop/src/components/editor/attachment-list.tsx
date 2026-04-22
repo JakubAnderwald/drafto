@@ -13,6 +13,7 @@ import {
 import { getSignedUrl, deleteAttachment as deleteAttachmentApi, openAttachment } from "@/lib/data";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
+import { Badge } from "@/components/ui/badge";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Attachment } from "@/db";
@@ -34,21 +35,24 @@ function formatFileSize(bytes: number): string {
 interface AttachmentItemProps {
   attachment: Attachment;
   onDelete: (attachment: Attachment) => void;
+  onRetry: () => void;
   styles: ReturnType<typeof createStyles>;
 }
 
-function AttachmentItem({ attachment, onDelete, styles }: AttachmentItemProps) {
+function AttachmentItem({ attachment, onDelete, onRetry, styles }: AttachmentItemProps) {
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [urlError, setUrlError] = useState(false);
   const [imageError, setImageError] = useState(false);
   const isImage = isImageMimeType(attachment.mimeType);
   const isPending = attachment.isPendingUpload;
+  const hasFailed = attachment.hasFailed;
+  const isLocal = isPending || hasFailed;
 
-  const displayUri = isPending ? attachment.localUri : signedUrl;
+  const displayUri = isLocal ? attachment.localUri : signedUrl;
 
   useEffect(() => {
-    if (isPending) return;
+    if (isLocal) return;
 
     let cancelled = false;
 
@@ -69,9 +73,14 @@ function AttachmentItem({ attachment, onDelete, styles }: AttachmentItemProps) {
     return () => {
       cancelled = true;
     };
-  }, [attachment.filePath, isPending]);
+  }, [attachment.filePath, isLocal]);
 
   const handlePress = useCallback(async () => {
+    if (hasFailed) {
+      onRetry();
+      return;
+    }
+
     if (!isPending && urlError) {
       setLoadingUrl(true);
       setUrlError(false);
@@ -92,7 +101,15 @@ function AttachmentItem({ attachment, onDelete, styles }: AttachmentItemProps) {
       localUri: attachment.localUri,
       isPending,
     });
-  }, [signedUrl, isPending, attachment.localUri, attachment.filePath, urlError]);
+  }, [
+    signedUrl,
+    isPending,
+    hasFailed,
+    attachment.localUri,
+    attachment.filePath,
+    urlError,
+    onRetry,
+  ]);
 
   const handleDelete = useCallback(() => {
     onDelete(attachment);
@@ -101,7 +118,7 @@ function AttachmentItem({ attachment, onDelete, styles }: AttachmentItemProps) {
   if (isImage) {
     return (
       <View style={styles.imageItem}>
-        {!isPending && loadingUrl ? (
+        {!isLocal && loadingUrl ? (
           <View style={styles.imagePlaceholder}>
             <ActivityIndicator size="small" color={colors.primary[600]} />
           </View>
@@ -115,7 +132,7 @@ function AttachmentItem({ attachment, onDelete, styles }: AttachmentItemProps) {
               accessibilityLabel={attachment.fileName}
             />
           </Pressable>
-        ) : urlError ? (
+        ) : urlError || hasFailed ? (
           <Pressable onPress={handlePress} style={styles.imagePlaceholder}>
             <Text style={styles.retryIcon}>↻</Text>
             <Text style={styles.retryHint}>Click to retry</Text>
@@ -133,6 +150,7 @@ function AttachmentItem({ attachment, onDelete, styles }: AttachmentItemProps) {
         <View style={styles.imageFooter}>
           <View style={styles.fileNameRow}>
             {isPending && <PendingBadge />}
+            {hasFailed && <FailedBadge />}
             <Text style={styles.imageFileName} numberOfLines={1}>
               {attachment.fileName}
             </Text>
@@ -146,28 +164,42 @@ function AttachmentItem({ attachment, onDelete, styles }: AttachmentItemProps) {
             <Text style={styles.deleteIcon}>🗑</Text>
           </Pressable>
         </View>
+        {hasFailed && attachment.uploadError && (
+          <Text style={styles.errorText} numberOfLines={2}>
+            {attachment.uploadError}
+          </Text>
+        )}
       </View>
     );
   }
+
+  const fileMeta = hasFailed
+    ? (attachment.uploadError ?? "Upload failed — click to retry")
+    : urlError
+      ? "Click to retry"
+      : formatFileSize(attachment.fileSize);
 
   return (
     <Pressable
       style={styles.fileItem}
       onPress={handlePress}
-      disabled={!isPending && !signedUrl && !urlError && loadingUrl}
-      accessibilityLabel={`Open ${attachment.fileName}`}
-      accessibilityRole="link"
+      disabled={!isLocal && !signedUrl && !urlError && loadingUrl}
+      accessibilityLabel={
+        hasFailed ? `Retry upload of ${attachment.fileName}` : `Open ${attachment.fileName}`
+      }
+      accessibilityRole={hasFailed ? "button" : "link"}
     >
-      <Text style={styles.fileIcon}>{urlError ? "↻" : "📄"}</Text>
+      <Text style={styles.fileIcon}>{hasFailed || urlError ? "↻" : "📄"}</Text>
       <View style={styles.fileInfo}>
         <View style={styles.fileNameRow}>
           {isPending && <PendingBadge />}
+          {hasFailed && <FailedBadge />}
           <Text style={styles.fileFileName} numberOfLines={1}>
             {attachment.fileName}
           </Text>
         </View>
-        <Text style={styles.fileMeta}>
-          {urlError ? "Click to retry" : formatFileSize(attachment.fileSize)}
+        <Text style={hasFailed ? styles.errorText : styles.fileMeta} numberOfLines={2}>
+          {fileMeta}
         </Text>
       </View>
       <Pressable
@@ -191,10 +223,20 @@ function PendingBadge() {
   );
 }
 
+function FailedBadge() {
+  return <Badge label="Failed" variant="error" />;
+}
+
 export function AttachmentList({ attachments }: AttachmentListProps) {
   const { database, sync } = useDatabase();
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+
+  const handleRetry = useCallback(() => {
+    sync().catch((err) => {
+      console.warn("[AttachmentList] Retry sync failed:", err);
+    });
+  }, [sync]);
 
   const handleDelete = useCallback(
     (attachment: Attachment) => {
@@ -206,7 +248,7 @@ export function AttachmentList({ attachments }: AttachmentListProps) {
           onPress: async () => {
             try {
               // Only delete from Supabase if already uploaded
-              if (!attachment.isPendingUpload) {
+              if (attachment.uploadStatus === "uploaded") {
                 await deleteAttachmentApi(attachment.remoteId, attachment.filePath);
               }
               await database.write(async () => {
@@ -237,7 +279,12 @@ export function AttachmentList({ attachments }: AttachmentListProps) {
         horizontal={false}
         scrollEnabled={false}
         renderItem={({ item }) => (
-          <AttachmentItem attachment={item} onDelete={handleDelete} styles={styles} />
+          <AttachmentItem
+            attachment={item}
+            onDelete={handleDelete}
+            onRetry={handleRetry}
+            styles={styles}
+          />
         )}
       />
     </View>
@@ -358,6 +405,12 @@ const createStyles = (semantic: SemanticColors) =>
       fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
       marginTop: spacing["2xs"],
+    },
+    errorText: {
+      fontSize: fontSizes.sm,
+      color: semantic.errorText,
+      marginTop: spacing["2xs"],
+      paddingHorizontal: spacing.sm,
     },
     fileNameRow: {
       flexDirection: "row",

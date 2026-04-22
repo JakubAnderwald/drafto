@@ -1,15 +1,16 @@
 const mockUpload = jest.fn();
 const mockUpsert = jest.fn();
 const mockQuery = jest.fn();
-const mockFetch = jest.fn();
 const mockDatabaseWrite = jest.fn((fn: () => Promise<unknown>) => fn());
 const mockDatabaseGet = jest.fn();
+const mockCreate = jest.fn();
 
 jest.mock("react-native-fs", () => ({
   DocumentDirectoryPath: "/mock/documents",
   exists: jest.fn().mockResolvedValue(true),
   mkdir: jest.fn().mockResolvedValue(undefined),
   copyFile: jest.fn().mockResolvedValue(undefined),
+  readFile: jest.fn().mockResolvedValue(""),
   unlink: jest.fn().mockResolvedValue(undefined),
   readDir: jest.fn().mockResolvedValue([]),
 }));
@@ -24,7 +25,12 @@ jest.mock("@/db", () => ({
     write: (fn: () => Promise<unknown>) => mockDatabaseWrite(fn),
     get: (_table: string) =>
       mockDatabaseGet(_table) ?? {
-        create: jest.fn().mockResolvedValue({ id: "att-1" }),
+        create: (builder: (rec: Record<string, unknown>) => void) => {
+          const rec: Record<string, unknown> = { _raw: {} };
+          builder(rec);
+          mockCreate(rec);
+          return { id: rec.remoteId ?? "att-1" };
+        },
         query: (...qArgs: unknown[]) => mockQuery(...qArgs),
       },
   },
@@ -44,24 +50,114 @@ jest.mock("@/lib/generate-id", () => ({
   generateId: () => "mock-id-123",
 }));
 
-// Mock global fetch
-const originalFetch = global.fetch;
-beforeAll(() => {
-  global.fetch = mockFetch as unknown as typeof fetch;
-});
-afterAll(() => {
-  global.fetch = originalFetch;
-});
+// atob is used by attachment-queue to decode base64 from RNFS.readFile.
+// In Node test env, provide a global shim if not already present.
+if (typeof globalThis.atob !== "function") {
+  globalThis.atob = (b64: string) => Buffer.from(b64, "base64").toString("binary");
+}
 
-import { processPendingUploads, cleanupOrphanedFiles } from "@/lib/data/attachment-queue";
+import {
+  queueAttachment,
+  processPendingUploads,
+  cleanupOrphanedFiles,
+} from "@/lib/data/attachment-queue";
 import RNFS from "react-native-fs";
 
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.spyOn(console, "warn").mockImplementation(() => {});
+  (RNFS.exists as jest.Mock).mockResolvedValue(true);
+  mockDatabaseWrite.mockImplementation((fn: () => Promise<unknown>) => fn());
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
+});
+
+describe("queueAttachment (saveFileLocally path handling)", () => {
+  it("passes the decoded filesystem path to RNFS.copyFile (not the percent-encoded URI)", async () => {
+    // Simulates react-native-document-picker-macos output for a file whose name
+    // contains a space and an NFD-decomposed umlaut: percent-encoded URI +
+    // decoded path. Using the URI string with RNFS.copyFile surfaces the
+    // "no such file" error reported on macOS.
+    const file = {
+      uri: "file:///Users/j/Downloads/partikelverb%20Ao%CC%88b(1).pdf",
+      path: "/Users/j/Downloads/partikelverb Aöb(1).pdf",
+      fileName: "partikelverb Aöb(1).pdf",
+      mimeType: "application/pdf",
+      fileSize: 2048,
+    };
+
+    await queueAttachment("user-1", "note-1", file);
+
+    expect(RNFS.copyFile).toHaveBeenCalledWith(
+      "/Users/j/Downloads/partikelverb Aöb(1).pdf",
+      expect.stringContaining("/mock/documents/attachments/"),
+    );
+    expect(RNFS.copyFile).not.toHaveBeenCalledWith(
+      expect.stringContaining("%20"),
+      expect.anything(),
+    );
+  });
+
+  it("throws when file exceeds MAX_FILE_SIZE", async () => {
+    const bigFile = {
+      uri: "file:///big.bin",
+      path: "/big.bin",
+      fileName: "big.bin",
+      mimeType: "application/octet-stream",
+      fileSize: 26 * 1024 * 1024,
+    };
+
+    await expect(queueAttachment("user-1", "note-1", bigFile)).rejects.toThrow(
+      "File size exceeds 25MB limit",
+    );
+    expect(RNFS.copyFile).not.toHaveBeenCalled();
+  });
+
+  it("initialises record with pending status and null uploadError", async () => {
+    const file = {
+      uri: "file:///doc.pdf",
+      path: "/doc.pdf",
+      fileName: "doc.pdf",
+      mimeType: "application/pdf",
+      fileSize: 1024,
+    };
+
+    await queueAttachment("user-1", "note-1", file);
+
+    expect(mockCreate).toHaveBeenCalled();
+    const record = mockCreate.mock.calls[0][0] as Record<string, unknown>;
+    expect(record.uploadStatus).toBe("pending");
+    expect(record.uploadError).toBeNull();
+  });
 });
 
 describe("processPendingUploads", () => {
-  it("returns 0 when no pending attachments", async () => {
+  function makeAttachment(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: "att-1",
+      remoteId: "remote-1",
+      noteId: "note-1",
+      userId: "user-1",
+      fileName: "photo.jpg",
+      filePath: "user-1/note-1/photo.jpg",
+      fileSize: 1024,
+      mimeType: "image/jpeg",
+      localUri: "file:///local/photo.jpg",
+      uploadStatus: "pending",
+      uploadError: null,
+      update: jest.fn((builder: (rec: Record<string, unknown>) => void) => {
+        const rec: Record<string, unknown> = {};
+        builder(rec);
+        Object.assign(overrides, rec);
+        return Promise.resolve();
+      }),
+      ...overrides,
+    };
+  }
+
+  it("returns 0 when queue is empty", async () => {
     mockQuery.mockReturnValue({ fetch: jest.fn().mockResolvedValue([]) });
     mockDatabaseGet.mockReturnValue({
       query: (...args: unknown[]) => mockQuery(...args),
@@ -71,117 +167,121 @@ describe("processPendingUploads", () => {
     expect(uploaded).toBe(0);
   });
 
-  it("skips upload when local file does not exist", async () => {
-    const mockAttachment = {
-      id: "att-1",
-      remoteId: "remote-1",
-      noteId: "note-1",
-      userId: "user-1",
-      fileName: "photo.jpg",
-      filePath: "user-1/note-1/photo.jpg",
-      fileSize: 1024,
-      mimeType: "image/jpeg",
-      localUri: "file:///local/photo.jpg",
-      uploadStatus: "pending",
-      update: jest.fn(),
-    };
+  it("uploads via Uint8Array derived from RNFS.readFile(base64), not fetch+blob", async () => {
+    const attachment = makeAttachment();
+    mockQuery.mockReturnValue({ fetch: jest.fn().mockResolvedValue([attachment]) });
+    mockDatabaseGet.mockReturnValue({
+      query: (...args: unknown[]) => mockQuery(...args),
+    });
 
-    mockQuery.mockReturnValue({ fetch: jest.fn().mockResolvedValue([mockAttachment]) });
+    // "hello" in base64
+    (RNFS.readFile as jest.Mock).mockResolvedValue("aGVsbG8=");
+    mockUpload.mockResolvedValue({ error: null });
+    mockUpsert.mockResolvedValue({ error: null });
+
+    const uploaded = await processPendingUploads();
+
+    expect(uploaded).toBe(1);
+    expect(RNFS.readFile).toHaveBeenCalledWith("/local/photo.jpg", "base64");
+    const [, body, opts] = mockUpload.mock.calls[0];
+    expect(body).toBeInstanceOf(Uint8Array);
+    expect((body as Uint8Array).length).toBe(5);
+    expect(opts).toEqual({ contentType: "image/jpeg", upsert: false });
+  });
+
+  it("persists error message and transitions status to 'failed' when upload throws", async () => {
+    const attachment = makeAttachment();
+    mockQuery.mockReturnValue({ fetch: jest.fn().mockResolvedValue([attachment]) });
+    mockDatabaseGet.mockReturnValue({
+      query: (...args: unknown[]) => mockQuery(...args),
+    });
+
+    (RNFS.readFile as jest.Mock).mockResolvedValue("aGVsbG8=");
+    mockUpload.mockResolvedValue({ error: { message: "Upload timeout" } });
+
+    await processPendingUploads();
+
+    // Last update call should set status=failed and uploadError=message
+    expect(attachment.update).toHaveBeenCalled();
+    const calls = attachment.update.mock.calls;
+    const lastBuilder = calls[calls.length - 1][0] as (rec: Record<string, unknown>) => void;
+    const rec: Record<string, unknown> = {};
+    lastBuilder(rec);
+    expect(rec.uploadStatus).toBe("failed");
+    expect(rec.uploadError).toContain("Upload timeout");
+  });
+
+  it("persists 'Local file not found' as error when file is missing", async () => {
+    const attachment = makeAttachment();
+    mockQuery.mockReturnValue({ fetch: jest.fn().mockResolvedValue([attachment]) });
     mockDatabaseGet.mockReturnValue({
       query: (...args: unknown[]) => mockQuery(...args),
     });
 
     (RNFS.exists as jest.Mock).mockResolvedValue(false);
 
-    const uploaded = await processPendingUploads();
-    expect(uploaded).toBe(0);
-    expect(mockUpload).not.toHaveBeenCalled();
+    await processPendingUploads();
+
+    const calls = attachment.update.mock.calls;
+    const lastBuilder = calls[calls.length - 1][0] as (rec: Record<string, unknown>) => void;
+    const rec: Record<string, unknown> = {};
+    lastBuilder(rec);
+    expect(rec.uploadStatus).toBe("failed");
+    expect(rec.uploadError).toBe("Local file not found");
   });
 
-  it("uploads attachment and marks as uploaded on success", async () => {
-    const mockUpdate = jest.fn();
-    const mockAttachment = {
-      id: "att-1",
-      remoteId: "remote-1",
-      noteId: "note-1",
-      userId: "user-1",
-      fileName: "photo.jpg",
-      filePath: "user-1/note-1/photo.jpg",
-      fileSize: 1024,
-      mimeType: "image/jpeg",
-      localUri: "file:///local/photo.jpg",
-      uploadStatus: "pending",
-      update: mockUpdate,
-    };
-
-    mockQuery.mockReturnValue({ fetch: jest.fn().mockResolvedValue([mockAttachment]) });
+  it("resets a previously-failed attachment to 'pending' before retrying", async () => {
+    const attachment = makeAttachment({ uploadStatus: "failed", uploadError: "prior failure" });
+    mockQuery.mockReturnValue({ fetch: jest.fn().mockResolvedValue([attachment]) });
     mockDatabaseGet.mockReturnValue({
       query: (...args: unknown[]) => mockQuery(...args),
     });
 
-    (RNFS.exists as jest.Mock).mockResolvedValue(true);
-
-    const mockBlob = { size: 1024 };
-    mockFetch.mockResolvedValue({
-      blob: jest.fn().mockResolvedValue(mockBlob),
-    });
+    (RNFS.readFile as jest.Mock).mockResolvedValue("aGVsbG8=");
     mockUpload.mockResolvedValue({ error: null });
     mockUpsert.mockResolvedValue({ error: null });
-    mockDatabaseWrite.mockImplementation((fn: () => Promise<unknown>) => fn());
 
-    const uploaded = await processPendingUploads();
+    await processPendingUploads();
 
-    expect(uploaded).toBe(1);
-    expect(mockUpload).toHaveBeenCalledWith("user-1/note-1/photo.jpg", mockBlob, {
-      contentType: "image/jpeg",
-      upsert: false,
-    });
+    // First update call (before the upload attempt) should flip to pending + null error
+    const firstBuilder = attachment.update.mock.calls[0][0] as (
+      rec: Record<string, unknown>,
+    ) => void;
+    const rec: Record<string, unknown> = {};
+    firstBuilder(rec);
+    expect(rec.uploadStatus).toBe("pending");
+    expect(rec.uploadError).toBeNull();
   });
 
-  it("continues with next attachment on individual failure", async () => {
-    const att1 = {
-      id: "att-1",
-      remoteId: "remote-1",
-      noteId: "note-1",
-      userId: "user-1",
-      fileName: "fail.jpg",
-      filePath: "user-1/note-1/fail.jpg",
-      fileSize: 1024,
-      mimeType: "image/jpeg",
-      localUri: "file:///local/fail.jpg",
-      uploadStatus: "pending",
-      update: jest.fn(),
-    };
-
-    const att2 = {
-      id: "att-2",
-      remoteId: "remote-2",
-      noteId: "note-1",
-      userId: "user-1",
-      fileName: "ok.jpg",
-      filePath: "user-1/note-1/ok.jpg",
-      fileSize: 2048,
-      mimeType: "image/jpeg",
-      localUri: "file:///local/ok.jpg",
-      uploadStatus: "pending",
-      update: jest.fn(),
-    };
-
-    mockQuery.mockReturnValue({ fetch: jest.fn().mockResolvedValue([att1, att2]) });
+  it("queries for both 'pending' and 'failed' upload_status values", async () => {
+    mockQuery.mockReturnValue({ fetch: jest.fn().mockResolvedValue([]) });
     mockDatabaseGet.mockReturnValue({
       query: (...args: unknown[]) => mockQuery(...args),
     });
 
-    (RNFS.exists as jest.Mock).mockResolvedValue(true);
+    await processPendingUploads();
 
-    // First attachment fails at fetch, second succeeds
-    mockFetch.mockRejectedValueOnce(new Error("File read error")).mockResolvedValueOnce({
-      blob: jest.fn().mockResolvedValue({ size: 2048 }),
+    // First arg to Q.where is the column; second should be a Q.oneOf(["pending", "failed"])
+    expect(mockQuery).toHaveBeenCalled();
+    const queryArg = mockQuery.mock.calls[0][0];
+    // Q.where("upload_status", Q.oneOf(["pending", "failed"])) — just verify
+    // the query was called with something involving upload_status; the exact
+    // shape depends on WatermelonDB internals.
+    expect(JSON.stringify(queryArg)).toContain("upload_status");
+  });
+
+  it("treats 'already exists' storage error as success (idempotent retry)", async () => {
+    const attachment = makeAttachment();
+    mockQuery.mockReturnValue({ fetch: jest.fn().mockResolvedValue([attachment]) });
+    mockDatabaseGet.mockReturnValue({
+      query: (...args: unknown[]) => mockQuery(...args),
     });
 
-    mockUpload.mockResolvedValue({ error: null });
+    (RNFS.readFile as jest.Mock).mockResolvedValue("aGVsbG8=");
+    mockUpload.mockResolvedValue({
+      error: { message: "The resource already exists", statusCode: "409" },
+    });
     mockUpsert.mockResolvedValue({ error: null });
-    mockDatabaseWrite.mockImplementation((fn: () => Promise<unknown>) => fn());
 
     const uploaded = await processPendingUploads();
     expect(uploaded).toBe(1);

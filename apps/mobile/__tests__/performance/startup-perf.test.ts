@@ -94,7 +94,7 @@ describe("Startup Performance", () => {
     const duration = Date.now() - start;
 
     expect(schema).toBeDefined();
-    expect(schema.version).toBe(2);
+    expect(schema.version).toBe(3);
     expect(Object.keys(schema.tables)).toHaveLength(3);
     // 500ms allows headroom for slower CI runners
     expect(duration).toBeLessThan(500);

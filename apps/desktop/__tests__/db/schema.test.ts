@@ -1,8 +1,8 @@
 import { schema, notebooksTable, notesTable, attachmentsTable } from "@/db/schema";
 
 describe("WatermelonDB Schema", () => {
-  it("has schema version 2", () => {
-    expect(schema.version).toBe(2);
+  it("has schema version 3", () => {
+    expect(schema.version).toBe(3);
   });
 
   it("defines 3 tables", () => {
@@ -78,6 +78,7 @@ describe("WatermelonDB Schema", () => {
       expect(columnNames).toContain("mime_type");
       expect(columnNames).toContain("local_uri");
       expect(columnNames).toContain("upload_status");
+      expect(columnNames).toContain("upload_error");
       expect(columnNames).toContain("created_at");
     });
 
@@ -89,6 +90,11 @@ describe("WatermelonDB Schema", () => {
     it("has local_uri as optional", () => {
       const localUriCol = attachmentsTable.columnArray.find((c) => c.name === "local_uri");
       expect(localUriCol?.isOptional).toBe(true);
+    });
+
+    it("has upload_error as optional", () => {
+      const uploadErrorCol = attachmentsTable.columnArray.find((c) => c.name === "upload_error");
+      expect(uploadErrorCol?.isOptional).toBe(true);
     });
   });
 });

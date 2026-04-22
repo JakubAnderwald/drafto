@@ -45,11 +45,12 @@ type ShowToast = (message: string, type: "success" | "warning") => void;
 interface AttachmentItemProps {
   attachment: Attachment;
   onDelete: (attachment: Attachment) => void;
+  onRetry: () => void;
   showToast: ShowToast;
   styles: ReturnType<typeof createStyles>;
 }
 
-function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentItemProps) {
+function AttachmentItem({ attachment, onDelete, onRetry, showToast, styles }: AttachmentItemProps) {
   // Initialise from cache so images that were already resolved render instantly
   const [signedUrl, setSignedUrl] = useState<string | null>(() =>
     getCachedSignedUrlSync(attachment.filePath),
@@ -59,6 +60,7 @@ function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentI
   const [imageError, setImageError] = useState(false);
   const isImage = isImageMimeType(attachment.mimeType);
   const isPending = attachment.isPendingUpload;
+  const hasFailed = attachment.hasFailed;
 
   // Preserve the last successfully displayed URI so the image stays visible
   // while transitioning from pending (localUri) to uploaded (signedUrl).
@@ -132,6 +134,12 @@ function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentI
   }, [attachment.filePath, isPending, signedUrl]);
 
   const handlePress = useCallback(async () => {
+    if (hasFailed) {
+      onRetry();
+      showToast("Retrying upload…", "success");
+      return;
+    }
+
     // If URL failed to load, retry fetching it (bypass cache)
     if (!isPending && urlError) {
       setLoadingUrl(true);
@@ -166,7 +174,16 @@ function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentI
     if (result.status === "unavailable") {
       showToast(result.reason, "warning");
     }
-  }, [signedUrl, isPending, attachment.localUri, attachment.filePath, urlError, showToast]);
+  }, [
+    signedUrl,
+    isPending,
+    hasFailed,
+    attachment.localUri,
+    attachment.filePath,
+    urlError,
+    showToast,
+    onRetry,
+  ]);
 
   const handleDelete = useCallback(() => {
     onDelete(attachment);
@@ -207,6 +224,7 @@ function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentI
         <View style={styles.imageFooter}>
           <View style={styles.fileNameRow}>
             {isPending && <PendingBadge />}
+            {hasFailed && <FailedBadge />}
             <Text style={styles.imageFileName} numberOfLines={1}>
               {attachment.fileName}
             </Text>
@@ -244,8 +262,12 @@ function AttachmentItem({ attachment, onDelete, showToast, styles }: AttachmentI
             {attachment.fileName}
           </Text>
         </View>
-        <Text style={styles.fileMeta}>
-          {urlError ? "Tap to retry" : formatFileSize(attachment.fileSize)}
+        <Text style={hasFailed ? styles.errorText : styles.fileMeta} numberOfLines={2}>
+          {hasFailed
+            ? (attachment.uploadError ?? "Upload failed — tap to retry")
+            : urlError
+              ? "Tap to retry"
+              : formatFileSize(attachment.fileSize)}
         </Text>
       </View>
       <Pressable
@@ -264,11 +286,21 @@ function PendingBadge() {
   return <Badge label="Pending" variant="warning" size="sm" />;
 }
 
+function FailedBadge() {
+  return <Badge label="Failed" variant="error" size="sm" />;
+}
+
 export function AttachmentList({ attachments }: AttachmentListProps) {
   const { database, sync } = useDatabase();
   const { showToast } = useToast();
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+
+  const handleRetry = useCallback(() => {
+    sync().catch((err) => {
+      console.warn("[AttachmentList] Retry sync failed:", err);
+    });
+  }, [sync]);
 
   const handleDelete = useCallback(
     (attachment: Attachment) => {
@@ -315,6 +347,7 @@ export function AttachmentList({ attachments }: AttachmentListProps) {
           <AttachmentItem
             attachment={item}
             onDelete={handleDelete}
+            onRetry={handleRetry}
             showToast={showToast}
             styles={styles}
           />
@@ -400,6 +433,11 @@ const createStyles = (semantic: SemanticColors) =>
     fileMeta: {
       fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
+      marginTop: 2,
+    },
+    errorText: {
+      fontSize: fontSizes.sm,
+      color: semantic.errorText,
       marginTop: 2,
     },
     fileNameRow: {

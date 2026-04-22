@@ -25,9 +25,10 @@ async function saveFileLocally(file: PickedFile): Promise<string> {
   const localFileName = `${generateId()}_${sanitizeFileName(file.fileName)}`;
   const destination = `${dir}/${localFileName}`;
 
-  // react-native-document-picker-macos provides file:// URIs on macOS
-  const sourcePath = file.uri.startsWith("file://") ? file.uri.slice(7) : file.uri;
-  await RNFS.copyFile(sourcePath, destination);
+  // Use the decoded POSIX path from the native picker — `file.uri` is a
+  // percent-encoded file:// URL (e.g. macOS NFD-decomposed ö becomes %CC%88),
+  // which RNFS.copyFile cannot resolve as a filesystem path.
+  await RNFS.copyFile(file.path, destination);
 
   return `file://${destination}`;
 }
@@ -58,10 +59,20 @@ export async function queueAttachment(
       record.mimeType = file.mimeType;
       record.localUri = localUri;
       record.uploadStatus = "pending";
+      record.uploadError = null;
     });
   });
 
   return attachment;
+}
+
+function base64ToBytes(base64: string): Uint8Array {
+  const binary = globalThis.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
 }
 
 async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
@@ -76,14 +87,20 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
     throw new Error("Local file not found");
   }
 
-  // Read file as a Blob via fetch
-  const fetchResponse = await fetch(localUri);
-  const blob = await fetchResponse.blob();
+  // Read file bytes natively via RNFS — React Native's fetch() with file://
+  // URIs can produce empty or truncated blobs for larger files on macOS.
+  const base64 = await RNFS.readFile(localPath, "base64");
+  const bytes = base64ToBytes(base64);
 
-  // Upload to Supabase Storage
+  if (bytes.length === 0) {
+    throw new Error("Local file is empty — skipping upload");
+  }
+
+  // Pass Uint8Array directly — Blob does not work reliably in React Native
+  // (documented supabase-js limitation).
   const { error: uploadError } = await supabase.storage
     .from(BUCKET_NAME)
-    .upload(attachment.filePath, blob, {
+    .upload(attachment.filePath, bytes, {
       contentType: attachment.mimeType,
       upsert: false,
     });
@@ -119,6 +136,7 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
   await database.write(async () => {
     await attachment.update((record) => {
       record.uploadStatus = "uploaded";
+      record.uploadError = null;
       record.localUri = null;
     });
   });
@@ -140,22 +158,41 @@ export async function processPendingUploads(): Promise<number> {
   isProcessing = true;
 
   try {
-    const pending = await database
+    // Retry both pending and previously failed uploads so a transient error
+    // doesn't strand an attachment forever.
+    const queued = await database
       .get<Attachment>("attachments")
-      .query(Q.where("upload_status", "pending"))
+      .query(Q.where("upload_status", Q.oneOf(["pending", "failed"])))
       .fetch();
 
-    if (pending.length === 0) return 0;
+    if (queued.length === 0) return 0;
 
     let uploaded = 0;
 
-    for (const attachment of pending) {
+    for (const attachment of queued) {
+      // Flip back to "pending" (and clear any prior error) so the UI reads
+      // "Pending" during the retry attempt rather than "Failed".
+      if (attachment.uploadStatus === "failed") {
+        await database.write(async () => {
+          await attachment.update((record) => {
+            record.uploadStatus = "pending";
+            record.uploadError = null;
+          });
+        });
+      }
+
       try {
         await uploadSingleAttachment(attachment);
         uploaded += 1;
       } catch (err) {
-        // Log and continue with next attachment — will retry on next sync
+        const message = err instanceof Error ? err.message : String(err);
         console.warn(`Failed to upload attachment ${attachment.fileName}:`, err);
+        await database.write(async () => {
+          await attachment.update((record) => {
+            record.uploadStatus = "failed";
+            record.uploadError = message;
+          });
+        });
       }
     }
 

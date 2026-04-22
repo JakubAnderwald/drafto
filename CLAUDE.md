@@ -54,6 +54,19 @@ echo "sdk.dir=/Users/jakub/Library/Android/sdk" > apps/mobile/android/local.prop
 - **Cannot merge PRs with `--delete-branch`**: `gh pr merge --delete-branch` fails because it tries to switch to `main` locally. Instead use the GitHub API: `gh api repos/{owner}/{repo}/pulls/{number}/merge -f merge_method=squash`
 - **Fastlane in worktrees**: Worktrees do not share Ruby gems. Run `bundle install` in the worktree's `apps/mobile/` (or `apps/desktop/`) directory before using Fastlane commands. Also copy `google-play-service-account.json` if needed for store submissions.
 
+## Parallel Tool Execution
+
+When planning, fan out independent actions into a single batched message — don't serialise across turns. Only stay sequential when a tool genuinely needs a prior tool's output (e.g., commit after edits, push after commit).
+
+**High-yield cases in this repo:**
+
+- **Cross-platform mirror edits**: `apps/mobile/src/db/` and `apps/desktop/src/db/` must stay in sync (schema, migrations, models). Batch all 6 file edits in one message — never edit one platform, then the other.
+- **Cross-platform UI**: files like `attachment-list.tsx` on desktop and mobile are different files with no dependency — batch, don't serialise.
+- **Verification sweep**: `pnpm lint`, `pnpm typecheck`, `pnpm format:check`, per-app `pnpm --filter … test`, and `pnpm --filter=@drafto/shared test` are independent — fan out in one message.
+- **Exploration**: Launch multiple `Explore` subagents in one message when scoping work across separate areas.
+
+**Worktree gotcha**: `Edit`/`Write` require a prior `Read` of the _exact_ path. Reading `/Users/…/drafto/foo.ts` does NOT satisfy an edit against `/Users/…/drafto-worktree/foo.ts`. Pattern when starting work in a worktree: one batched `Read` for every worktree file you'll touch, then one batched `Edit`/`Write` for all the changes.
+
 ## SOLID Principles (Enforced)
 
 Every module must follow SOLID:

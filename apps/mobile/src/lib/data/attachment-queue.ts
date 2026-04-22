@@ -71,6 +71,7 @@ export async function queueAttachment(
       record.mimeType = file.mimeType;
       record.localUri = localUri;
       record.uploadStatus = "pending";
+      record.uploadError = null;
     });
   });
 
@@ -131,6 +132,7 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
   await database.write(async () => {
     await attachment.update((record) => {
       record.uploadStatus = "uploaded";
+      record.uploadError = null;
       record.localUri = null;
     });
   });
@@ -149,24 +151,43 @@ export interface UploadResult {
 }
 
 export async function processPendingUploads(): Promise<UploadResult> {
-  const pending = await database
+  // Retry both pending and previously failed uploads so a transient error
+  // doesn't strand an attachment forever.
+  const queued = await database
     .get<Attachment>("attachments")
-    .query(Q.where("upload_status", "pending"))
+    .query(Q.where("upload_status", Q.oneOf(["pending", "failed"])))
     .fetch();
 
-  if (pending.length === 0) return { uploaded: 0, failed: 0 };
+  if (queued.length === 0) return { uploaded: 0, failed: 0 };
 
   let uploaded = 0;
   let failed = 0;
 
-  for (const attachment of pending) {
+  for (const attachment of queued) {
+    // Flip back to "pending" (and clear any prior error) so the UI reads
+    // "Pending" during the retry attempt rather than "Failed".
+    if (attachment.uploadStatus === "failed") {
+      await database.write(async () => {
+        await attachment.update((record) => {
+          record.uploadStatus = "pending";
+          record.uploadError = null;
+        });
+      });
+    }
+
     try {
       await uploadSingleAttachment(attachment);
       uploaded += 1;
     } catch (err) {
       failed += 1;
-      // Log and continue with next attachment — will retry on next sync
+      const message = err instanceof Error ? err.message : String(err);
       console.warn(`Failed to upload attachment ${attachment.fileName}:`, err);
+      await database.write(async () => {
+        await attachment.update((record) => {
+          record.uploadStatus = "failed";
+          record.uploadError = message;
+        });
+      });
     }
   }
 

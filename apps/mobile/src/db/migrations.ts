@@ -3,6 +3,15 @@ import { schemaMigrations, addColumns } from "@nozbe/watermelondb/Schema/migrati
 export const migrations = schemaMigrations({
   migrations: [
     {
+      toVersion: 3,
+      steps: [
+        addColumns({
+          table: "attachments",
+          columns: [{ name: "upload_error", type: "string", isOptional: true }],
+        }),
+      ],
+    },
+    {
       toVersion: 2,
       steps: [
         addColumns({
