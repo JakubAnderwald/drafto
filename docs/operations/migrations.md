@@ -50,7 +50,7 @@ Never run any of the following against production:
 - `DELETE FROM ...` without a `WHERE` clause
 - `supabase db reset` (drops and recreates the entire database)
 
-`pnpm migration:check` scans staged migrations for these patterns and blocks the push when it finds them. Run it before every migration push.
+`pnpm migration:check` scans all `supabase/migrations/*.sql` files (or explicitly passed paths) for these patterns and blocks the push when it finds them. Run it before every migration push.
 
 ## Production operation confirmation rules
 
@@ -79,7 +79,7 @@ Dev is meant to break — prefer the cheapest recovery:
 
 - Fix the migration file and re-run `pnpm supabase:link:dev && pnpm supabase:push`, **or**
 - Restore via the Supabase dashboard → dev project → Database → Backups, **or**
-- If dev is throwaway, `pnpm supabase:link:dev` then `supabase db reset` to wipe and re-apply all migrations. **Never run `supabase db reset` against prod.**
+- If dev is throwaway, `pnpm supabase:link:dev` then `supabase db reset --linked` to wipe and re-apply all migrations on the linked dev project. **Never run `supabase db reset --linked` against prod.**
 
 #### 3. Bad migration or query hit **prod** (`tbmjbxxseonkciqovnpl`)
 
@@ -110,7 +110,7 @@ PITR cannot help. Remaining options, in order of viability:
 
 ### Preventative guardrails to lean on
 
-- `pnpm migration:check` — blocks `DROP TABLE`, `TRUNCATE`, and bare `DELETE` in staged migrations.
+- `pnpm migration:check` — inspects all `supabase/migrations/*.sql` files (or explicitly passed paths) and blocks `DROP TABLE`, `TRUNCATE`, and bare `DELETE`.
 - `supabase projects list` before every prod push — confirms which ref is currently linked. Easy to forget when switching between dev and prod.
 - Require explicit user "yes" before any prod database operation; state the project ref, operation, and affected data first.
 - Apply every migration to dev first and verify before touching prod.
