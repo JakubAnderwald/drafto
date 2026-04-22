@@ -232,6 +232,23 @@ otp_expiry = 3600
 # subject = "You have been invited"
 # content_path = "./supabase/templates/invite.html"
 
+# Drafto-branded auth email templates (palette mirrors apps/web/src/lib/email/templates.ts EMAIL_COLORS).
+[auth.email.template.confirmation]
+subject = "Confirm your Drafto account"
+content_path = "./supabase/templates/confirmation.html"
+
+[auth.email.template.recovery]
+subject = "Reset your Drafto password"
+content_path = "./supabase/templates/recovery.html"
+
+[auth.email.template.magic_link]
+subject = "Your Drafto sign-in link"
+content_path = "./supabase/templates/magic-link.html"
+
+[auth.email.template.reauthentication]
+subject = "Confirm your Drafto identity"
+content_path = "./supabase/templates/reauthentication.html"
+
 # Uncomment to customize notification email template
 # [auth.email.notification.password_changed]
 # enabled = true
