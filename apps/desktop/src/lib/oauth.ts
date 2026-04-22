@@ -31,16 +31,30 @@ export async function signInWithOAuthBrowser(
 
 export function handleOAuthCallback(url: string): void {
   try {
-    const parsed = new URL(url);
-
-    if (!parsed.pathname.includes("auth/callback")) {
+    // URL schemes are case-insensitive per RFC 3986 — normalize before match.
+    if (!url.toLowerCase().startsWith("eu.drafto.desktop:")) {
       return;
     }
 
-    // Handle fragment-based tokens (implicit flow) or code-based (PKCE)
-    const params = new URLSearchParams(parsed.hash ? parsed.hash.substring(1) : parsed.search);
+    const parsed = new URL(url);
 
-    const code = params.get("code");
+    // Callbacks can arrive with params in the query string (PKCE) or the
+    // hash fragment (implicit). WHATWG URL parses `auth` as the host for
+    // non-special schemes, so do not gate on pathname — gate on scheme
+    // above and on the presence of known auth params below.
+    const searchParams = new URLSearchParams(parsed.search);
+    const hashParams = new URLSearchParams(
+      parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash,
+    );
+
+    // Log only non-sensitive metadata — never the raw URL, which carries
+    // the OAuth code or access/refresh tokens.
+    console.info("[oauth] handling callback", {
+      hasQuery: !!parsed.search,
+      hasHash: !!parsed.hash,
+    });
+
+    const code = searchParams.get("code") ?? hashParams.get("code");
     if (code) {
       supabase.auth.exchangeCodeForSession(code).catch((err) => {
         console.error("[oauth] Failed to exchange code for session:", err);
@@ -48,8 +62,8 @@ export function handleOAuthCallback(url: string): void {
       return;
     }
 
-    const accessToken = params.get("access_token");
-    const refreshToken = params.get("refresh_token");
+    const accessToken = searchParams.get("access_token") ?? hashParams.get("access_token");
+    const refreshToken = searchParams.get("refresh_token") ?? hashParams.get("refresh_token");
     if (accessToken && refreshToken) {
       supabase.auth
         .setSession({ access_token: accessToken, refresh_token: refreshToken })

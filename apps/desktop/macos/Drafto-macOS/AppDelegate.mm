@@ -2,9 +2,22 @@
 
 #import <React/RCTBundleURLProvider.h>
 #import <React/RCTDevLoadingViewSetEnabled.h>
+#import <React/RCTLinkingManager.h>
 #import <ReactAppDependencyProvider/RCTAppDependencyProvider.h>
 
 @implementation AppDelegate
+
+- (void)applicationWillFinishLaunching:(NSNotification *)notification
+{
+  // Register the 'GURL' Apple Event handler before DidFinishLaunching so
+  // cold-launch URLs (app opened by clicking eu.drafto.desktop://...) reach
+  // RCTLinkingManager in time for JS Linking.getInitialURL() to see them.
+  [[NSAppleEventManager sharedAppleEventManager]
+      setEventHandler:[RCTLinkingManager class]
+          andSelector:@selector(getUrlEventHandler:withReplyEvent:)
+        forEventClass:kInternetEventClass
+           andEventID:kAEGetURL];
+}
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification
 {
@@ -14,7 +27,7 @@
   // They will be passed down to the ViewController used by React Native.
   self.initialProps = @{};
   self.dependencyProvider = [RCTAppDependencyProvider new];
-  
+
   [super applicationDidFinishLaunching:notification];
 
   // Window frame persistence + minimum size
