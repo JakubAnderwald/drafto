@@ -1,0 +1,11 @@
+diff --git a/ios/DomWebView.swift b/ios/DomWebView.swift
+index 7a38d9f98bf8c37853b777dbf945a13d46560e30..7da5303dd353e5bf05a824d75876984c9cb42c69 100644
+--- a/ios/DomWebView.swift
++++ b/ios/DomWebView.swift
+@@ -1,5 +1,6 @@
+ // Copyright 2015-present 650 Industries. All rights reserved.
+ 
++import React
+ import ExpoModulesCore
+ import WebKit
+ 
