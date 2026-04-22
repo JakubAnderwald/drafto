@@ -31,11 +31,10 @@ export async function signInWithOAuthBrowser(
 
 export function handleOAuthCallback(url: string): void {
   try {
-    if (!url.startsWith("eu.drafto.desktop:")) {
+    // URL schemes are case-insensitive per RFC 3986 — normalize before match.
+    if (!url.toLowerCase().startsWith("eu.drafto.desktop:")) {
       return;
     }
-
-    console.info("[oauth] handling callback", url);
 
     const parsed = new URL(url);
 
@@ -47,6 +46,13 @@ export function handleOAuthCallback(url: string): void {
     const hashParams = new URLSearchParams(
       parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash,
     );
+
+    // Log only non-sensitive metadata — never the raw URL, which carries
+    // the OAuth code or access/refresh tokens.
+    console.info("[oauth] handling callback", {
+      hasQuery: !!parsed.search,
+      hasHash: !!parsed.hash,
+    });
 
     const code = searchParams.get("code") ?? hashParams.get("code");
     if (code) {

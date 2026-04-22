@@ -7,6 +7,18 @@
 
 @implementation AppDelegate
 
+- (void)applicationWillFinishLaunching:(NSNotification *)notification
+{
+  // Register the 'GURL' Apple Event handler before DidFinishLaunching so
+  // cold-launch URLs (app opened by clicking eu.drafto.desktop://...) reach
+  // RCTLinkingManager in time for JS Linking.getInitialURL() to see them.
+  [[NSAppleEventManager sharedAppleEventManager]
+      setEventHandler:[RCTLinkingManager class]
+          andSelector:@selector(getUrlEventHandler:withReplyEvent:)
+        forEventClass:kInternetEventClass
+           andEventID:kAEGetURL];
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)notification
 {
   RCTDevLoadingViewSetEnabled(NO);
@@ -15,17 +27,8 @@
   // They will be passed down to the ViewController used by React Native.
   self.initialProps = @{};
   self.dependencyProvider = [RCTAppDependencyProvider new];
-  
-  [super applicationDidFinishLaunching:notification];
 
-  // React Native macOS delivers custom-scheme URL callbacks via the classic
-  // 'GURL' Apple Event. Route them into RCTLinkingManager so JS
-  // Linking.addEventListener("url", ...) fires for eu.drafto.desktop://auth/callback.
-  [[NSAppleEventManager sharedAppleEventManager]
-      setEventHandler:[RCTLinkingManager class]
-          andSelector:@selector(getUrlEventHandler:withReplyEvent:)
-        forEventClass:kInternetEventClass
-           andEventID:kAEGetURL];
+  [super applicationDidFinishLaunching:notification];
 
   // Window frame persistence + minimum size
   NSWindow *window = NSApp.windows.firstObject;
