@@ -21,6 +21,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Run from repo root so `git log -- apps/desktop/ packages/shared/` pathspecs
+# resolve correctly regardless of where fastlane invoked us (it calls this
+# script from `apps/desktop/`, which would make the pathspec look for
+# `apps/desktop/apps/desktop/` and silently match nothing).
+cd "$(git rev-parse --show-toplevel)"
+
 # Find the latest desktop release tag.
 # If the latest tag points to HEAD (just created by the tag job), use the
 # previous tag so the range covers the actual changes in this release.
