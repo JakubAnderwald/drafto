@@ -203,9 +203,11 @@ async function postTestFlightNotes(releaseNotes) {
     "Content-Type": "application/json",
   };
 
-  // 1. Find the latest build (most recent preReleaseVersion)
+  // 1. Find the latest build (most recent preReleaseVersion).
+  // Uses the top-level /v1/builds endpoint because the relationship endpoint /v1/apps/{id}/builds
+  // no longer accepts the `sort` query parameter.
   const buildsRes = await fetch(
-    `${baseUrl}/apps/${appId}/builds?sort=-uploadedDate&limit=1&fields[builds]=version,processingState`,
+    `${baseUrl}/builds?filter[app]=${appId}&sort=-uploadedDate&limit=1&fields[builds]=version,processingState`,
     { headers },
   );
   if (!buildsRes.ok) {

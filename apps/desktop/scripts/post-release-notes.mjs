@@ -87,9 +87,11 @@ async function postTestFlightNotes(releaseNotes) {
     "Content-Type": "application/json",
   };
 
-  // 1. Find the latest macOS build (filter by platform-identifying fields for multi-platform app)
+  // 1. Find the latest macOS build (filter by platform-identifying fields for multi-platform app).
+  // Uses the top-level /v1/builds endpoint because the relationship endpoint /v1/apps/{id}/builds
+  // no longer accepts the `sort` query parameter.
   const buildsRes = await fetch(
-    `${baseUrl}/apps/${appId}/builds?sort=-uploadedDate&limit=10&fields[builds]=version,processingState,computedMinMacOsVersion,lsMinimumSystemVersion`,
+    `${baseUrl}/builds?filter[app]=${appId}&sort=-uploadedDate&limit=10&fields[builds]=version,processingState,computedMinMacOsVersion,lsMinimumSystemVersion`,
     { headers },
   );
   if (!buildsRes.ok) {
