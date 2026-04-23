@@ -15,6 +15,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Run from repo root so `git log -- apps/mobile/ packages/shared/` pathspecs
+# resolve correctly regardless of where fastlane invoked us (it calls this
+# script from `apps/mobile/`, which would make the pathspec look for
+# `apps/mobile/apps/mobile/` and silently match nothing).
+cd "$(git rev-parse --show-toplevel)"
+
 # Find the latest mobile release tag.
 # If the latest tag points to HEAD (just created by the tag job), use the
 # previous tag so the range covers the actual changes in this release.
