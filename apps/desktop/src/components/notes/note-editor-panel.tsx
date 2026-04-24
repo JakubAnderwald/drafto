@@ -11,6 +11,7 @@ import {
   tiptapToBlocknote,
   toAttachmentUrl,
   resolveTipTapImageUrls,
+  migrateSignedUrlsToAttachmentUrls,
 } from "@drafto/shared";
 import type { TipTapDoc, TipTapNode } from "@drafto/shared";
 import { getSignedUrl } from "@/lib/data";
@@ -117,9 +118,13 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
         // while getJSON() was in flight.
         if (loadedNoteIdRef.current !== loaded || noteIdRef.current !== loaded) return;
         const blocknote = tiptapToBlocknote(json as TipTapDoc);
+        // Rewrite any signed URLs back to attachment:// before persisting so
+        // expiring tokens never reach the DB. Display-side resolution happens
+        // on note load via resolveTipTapImageUrls.
+        const migrated = migrateSignedUrlsToAttachmentUrls(blocknote);
         contentAutoSaveRef.current?.trigger({
           noteId: loaded,
-          content: JSON.stringify(blocknote),
+          content: JSON.stringify(migrated),
         });
       })
       .catch((err: unknown) => {
@@ -265,12 +270,17 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
         editor.setContent(appended);
         // setContent doesn't reliably trigger onChange in tentap. Persist
         // directly, addressing the note by id rather than via the prop closure
-        // so a mid-flight note switch can't reroute the write.
+        // so a mid-flight note switch can't reroute the write. Supersede any
+        // pending pre-attachment autosave first — otherwise its 800 ms debounce
+        // would fire later with stale content and strand the inline reference.
         const blocks = tiptapToBlocknote(appended);
+        const migrated = migrateSignedUrlsToAttachmentUrls(blocks);
+        const serialized = JSON.stringify(migrated);
+        contentAutoSaveRef.current?.cancel();
         const record = await database.get<Note>("notes").find(active);
         await database.write(async () => {
           await record.update((n) => {
-            n.content = JSON.stringify(blocks);
+            n.content = serialized;
           });
         });
       } catch (err) {

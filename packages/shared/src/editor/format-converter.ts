@@ -360,11 +360,13 @@ function tryExtractFileBlock(node: TipTapNode): BlockNoteBlock | null {
   if (!content || content.length !== 1) return null;
   const only = content[0];
   if (only.type !== "text" || typeof only.text !== "string" || !only.text) return null;
+  // Tolerate extra formatting marks (bold/italic/etc.) alongside the link so
+  // that a user decorating an attachment link doesn't silently downgrade the
+  // `file` block to a paragraph-with-link on round-trip.
   const marks = only.marks ?? [];
-  if (marks.length !== 1) return null;
-  const [mark] = marks;
-  if (mark.type !== "link") return null;
-  const href = mark.attrs?.href;
+  const linkMarks = marks.filter((m) => m.type === "link");
+  if (linkMarks.length !== 1) return null;
+  const href = linkMarks[0]?.attrs?.href;
   if (typeof href !== "string" || !isAttachmentUrl(href)) return null;
   return {
     type: "file",

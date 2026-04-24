@@ -237,9 +237,17 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
       try {
         let node: TipTapNode;
         if (isImageMimeType(attachment.mimeType)) {
-          const { getSignedUrl } = await import("@/lib/data/attachments");
-          const signedUrl = await getSignedUrl(attachment.filePath);
-          node = { type: "image", attrs: { src: signedUrl, alt: attachment.fileName } };
+          // Default to attachment:// so a getSignedUrl failure (offline, expired
+          // session, storage outage) still inserts a recoverable node rather than
+          // bailing out and leaving the attachment row orphaned.
+          let src = toAttachmentUrl(attachment.filePath);
+          try {
+            const { getSignedUrl } = await import("@/lib/data/attachments");
+            src = await getSignedUrl(attachment.filePath);
+          } catch (err) {
+            console.warn("getSignedUrl failed; falling back to attachment://", err);
+          }
+          node = { type: "image", attrs: { src, alt: attachment.fileName } };
         } else {
           node = {
             type: "paragraph",
