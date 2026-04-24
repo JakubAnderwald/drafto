@@ -141,6 +141,11 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   const styles = useMemo(() => createStyles(semantic), [semantic]);
   const [title, setTitle] = useState(initialNote.title);
   const noteIdRef = useRef(noteId);
+  // Gate autosave on TenTap's readiness. Without this, onChange emissions during
+  // WebView bootstrap (before initialContent has actually hydrated the editor)
+  // can trigger a save that reads an empty/partial editor state and clobbers
+  // the note — the same class of race that corrupted prod data on 2026-04-24.
+  const editorReadyRef = useRef(false);
   const { content: resolvedContent, resolving } = useResolvedContent(initialNote);
 
   const titleSave = useAutoSave<string>({
@@ -192,11 +197,16 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
         }
       : undefined,
     onChange: () => {
+      if (!editorReadyRef.current) return;
       contentSave.trigger();
     },
   });
 
   const { isReady } = useBridgeState(editor);
+
+  useEffect(() => {
+    editorReadyRef.current = isReady;
+  }, [isReady]);
 
   useEffect(() => {
     if (!isReady) return;
