@@ -1,5 +1,5 @@
-import type { BlockNoteBlock } from "./types";
-import type { TipTapDoc, TipTapNode } from "./types";
+import type { BlockNoteBlock, BlockNoteInlineContent } from "./types";
+import type { TipTapDoc, TipTapNode, TipTapMark } from "./types";
 import {
   isAttachmentUrl,
   extractFilePath,
@@ -10,20 +10,56 @@ import {
 
 type UrlResolver = (filePath: string) => Promise<string>;
 
+const BLOCKNOTE_ATTACHMENT_BLOCK_TYPES = new Set(["image", "file"]);
+
+function collectBlockNoteInlineUrls(content: BlockNoteInlineContent[] | undefined): string[] {
+  if (!content) return [];
+  const urls: string[] = [];
+  for (const item of content) {
+    if (item.type === "link" && typeof item.href === "string" && isAttachmentUrl(item.href)) {
+      urls.push(item.href);
+    }
+    if (item.type === "link" && item.content) {
+      urls.push(...collectBlockNoteInlineUrls(item.content));
+    }
+  }
+  return urls;
+}
+
 function collectBlockNoteImageUrls(blocks: BlockNoteBlock[]): string[] {
   const urls: string[] = [];
   for (const block of blocks) {
-    if (block.type === "image" && typeof block.props?.url === "string") {
+    if (BLOCKNOTE_ATTACHMENT_BLOCK_TYPES.has(block.type) && typeof block.props?.url === "string") {
       const url = block.props.url;
       if (isAttachmentUrl(url)) {
         urls.push(url);
       }
+    }
+    if (Array.isArray(block.content)) {
+      urls.push(...collectBlockNoteInlineUrls(block.content));
     }
     if (block.children) {
       urls.push(...collectBlockNoteImageUrls(block.children));
     }
   }
   return urls;
+}
+
+function applyResolvedInlineUrls(
+  content: BlockNoteInlineContent[] | undefined,
+  urlMap: Map<string, string>,
+): BlockNoteInlineContent[] | undefined {
+  if (!content) return content;
+  return content.map((item) => {
+    if (item.type !== "link") return item;
+    const nextHref =
+      typeof item.href === "string" && urlMap.has(item.href) ? urlMap.get(item.href)! : item.href;
+    return {
+      ...item,
+      href: nextHref,
+      content: applyResolvedInlineUrls(item.content, urlMap),
+    };
+  });
 }
 
 function applyResolvedUrls(
@@ -33,11 +69,17 @@ function applyResolvedUrls(
   return blocks.map((block) => {
     const newBlock = { ...block };
     if (
-      newBlock.type === "image" &&
+      BLOCKNOTE_ATTACHMENT_BLOCK_TYPES.has(newBlock.type) &&
       typeof newBlock.props?.url === "string" &&
       urlMap.has(newBlock.props.url)
     ) {
       newBlock.props = { ...newBlock.props, url: urlMap.get(newBlock.props.url)! };
+    }
+    if (Array.isArray(newBlock.content)) {
+      newBlock.content = applyResolvedInlineUrls(
+        newBlock.content as BlockNoteInlineContent[],
+        urlMap,
+      );
     }
     if (newBlock.children) {
       newBlock.children = applyResolvedUrls(newBlock.children, urlMap);
@@ -68,13 +110,26 @@ export async function resolveBlockNoteImageUrls(
   return applyResolvedUrls(blocks, urlMap);
 }
 
+const TIPTAP_ATTACHMENT_NODE_TYPES = new Set(["image", "file"]);
+
 function collectTipTapImageUrls(nodes: TipTapNode[]): string[] {
   const urls: string[] = [];
   for (const node of nodes) {
-    if (node.type === "image" && typeof node.attrs?.src === "string") {
+    if (TIPTAP_ATTACHMENT_NODE_TYPES.has(node.type) && typeof node.attrs?.src === "string") {
       const src = node.attrs.src;
       if (isAttachmentUrl(src)) {
         urls.push(src);
+      }
+    }
+    if (Array.isArray(node.marks)) {
+      for (const mark of node.marks) {
+        if (
+          mark.type === "link" &&
+          typeof mark.attrs?.href === "string" &&
+          isAttachmentUrl(mark.attrs.href)
+        ) {
+          urls.push(mark.attrs.href);
+        }
       }
     }
     if (node.content) {
@@ -88,11 +143,23 @@ function applyResolvedTipTapUrls(nodes: TipTapNode[], urlMap: Map<string, string
   return nodes.map((node) => {
     const newNode = { ...node };
     if (
-      newNode.type === "image" &&
+      TIPTAP_ATTACHMENT_NODE_TYPES.has(newNode.type) &&
       typeof newNode.attrs?.src === "string" &&
       urlMap.has(newNode.attrs.src)
     ) {
       newNode.attrs = { ...newNode.attrs, src: urlMap.get(newNode.attrs.src)! };
+    }
+    if (Array.isArray(newNode.marks)) {
+      newNode.marks = newNode.marks.map<TipTapMark>((mark) => {
+        if (
+          mark.type === "link" &&
+          typeof mark.attrs?.href === "string" &&
+          urlMap.has(mark.attrs.href)
+        ) {
+          return { ...mark, attrs: { ...mark.attrs, href: urlMap.get(mark.attrs.href)! } };
+        }
+        return mark;
+      });
     }
     if (newNode.content) {
       newNode.content = applyResolvedTipTapUrls(newNode.content, urlMap);
@@ -125,11 +192,32 @@ export async function resolveTipTapImageUrls(
 
 // --- Backward compatibility: migrate old signed URLs to attachment:// ---
 
+function migrateBlockNoteInlineSignedUrls(
+  content: BlockNoteInlineContent[] | undefined,
+): BlockNoteInlineContent[] | undefined {
+  if (!content) return content;
+  return content.map((item) => {
+    if (item.type !== "link") return item;
+    const nextHref =
+      typeof item.href === "string" && isSignedStorageUrl(item.href)
+        ? (() => {
+            const filePath = extractFilePathFromSignedUrl(item.href!);
+            return filePath ? toAttachmentUrl(filePath) : item.href;
+          })()
+        : item.href;
+    return {
+      ...item,
+      href: nextHref,
+      content: migrateBlockNoteInlineSignedUrls(item.content),
+    };
+  });
+}
+
 function migrateBlockNoteSignedUrls(blocks: BlockNoteBlock[]): BlockNoteBlock[] {
   return blocks.map((block) => {
     const newBlock = { ...block };
     if (
-      newBlock.type === "image" &&
+      BLOCKNOTE_ATTACHMENT_BLOCK_TYPES.has(newBlock.type) &&
       typeof newBlock.props?.url === "string" &&
       isSignedStorageUrl(newBlock.props.url)
     ) {
@@ -137,6 +225,11 @@ function migrateBlockNoteSignedUrls(blocks: BlockNoteBlock[]): BlockNoteBlock[] 
       if (filePath) {
         newBlock.props = { ...newBlock.props, url: toAttachmentUrl(filePath) };
       }
+    }
+    if (Array.isArray(newBlock.content)) {
+      newBlock.content = migrateBlockNoteInlineSignedUrls(
+        newBlock.content as BlockNoteInlineContent[],
+      );
     }
     if (newBlock.children) {
       newBlock.children = migrateBlockNoteSignedUrls(newBlock.children);

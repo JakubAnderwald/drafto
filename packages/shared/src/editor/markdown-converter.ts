@@ -84,6 +84,13 @@ function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
       break;
     }
 
+    case "file": {
+      const url = (block.props?.url as string) ?? "";
+      const name = (block.props?.name as string) ?? (block.props?.caption as string) ?? url;
+      lines.push(`${prefix}[${name}](${url})`);
+      break;
+    }
+
     case "table": {
       const tableContent = block.content as BlockNoteTableContent | undefined;
       if (tableContent?.type === "tableContent" && tableContent.rows.length > 0) {

@@ -225,6 +225,29 @@ describe("blocknoteToTiptap", () => {
     });
   });
 
+  it("converts a file block to a paragraph with an attachment link", () => {
+    const blocks: BlockNoteBlock[] = [
+      {
+        type: "file",
+        props: { url: "attachment://user-1/note-1/report.pdf", name: "report.pdf" },
+        children: [],
+      },
+    ];
+
+    const doc = blocknoteToTiptap(blocks);
+
+    expect(doc.content[0]).toEqual({
+      type: "paragraph",
+      content: [
+        {
+          type: "text",
+          text: "report.pdf",
+          marks: [{ type: "link", attrs: { href: "attachment://user-1/note-1/report.pdf" } }],
+        },
+      ],
+    });
+  });
+
   it("converts a table", () => {
     const blocks: BlockNoteBlock[] = [
       {
@@ -500,6 +523,67 @@ describe("tiptapToBlocknote", () => {
       props: { url: "https://example.com/img.png", caption: "Photo", width: 300 },
       children: [],
     });
+  });
+
+  it("restores a file block from a paragraph containing a single attachment link", () => {
+    const doc: TipTapDoc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "report.pdf",
+              marks: [
+                {
+                  type: "link",
+                  attrs: { href: "attachment://user-1/note-1/report.pdf" },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const blocks = tiptapToBlocknote(doc);
+
+    expect(blocks[0]).toEqual({
+      type: "file",
+      props: { url: "attachment://user-1/note-1/report.pdf", name: "report.pdf" },
+      children: [],
+    });
+  });
+
+  it("keeps external links in paragraphs (not converted to file blocks)", () => {
+    const doc: TipTapDoc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "docs",
+              marks: [{ type: "link", attrs: { href: "https://docs.example.com" } }],
+            },
+          ],
+        },
+      ],
+    };
+
+    const blocks = tiptapToBlocknote(doc);
+
+    expect(blocks[0].type).toBe("paragraph");
+    expect(blocks[0].content).toEqual([
+      {
+        type: "link",
+        text: "docs",
+        href: "https://docs.example.com",
+        content: [{ type: "text", text: "docs", styles: {} }],
+      },
+    ]);
   });
 
   it("converts a table", () => {
@@ -859,6 +943,22 @@ describe("round-trip fidelity", () => {
     const original: BlockNoteBlock[] = [{ type: "paragraph", content: [], children: [] }];
 
     const roundTripped = tiptapToBlocknote(blocknoteToTiptap(original));
+    expect(roundTripped).toEqual(original);
+  });
+
+  it("file block round-trips via paragraph-with-attachment-link", () => {
+    const original: BlockNoteBlock[] = [
+      {
+        type: "file",
+        props: { url: "attachment://user-1/note-1/report.pdf", name: "report.pdf" },
+        children: [],
+      },
+    ];
+
+    const tiptap = blocknoteToTiptap(original);
+    expect(tiptap.content[0].type).toBe("paragraph");
+
+    const roundTripped = tiptapToBlocknote(tiptap);
     expect(roundTripped).toEqual(original);
   });
 

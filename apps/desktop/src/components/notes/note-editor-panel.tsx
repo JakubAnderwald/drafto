@@ -1,20 +1,49 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { View, Text, TextInput, StyleSheet, ActivityIndicator, ScrollView } from "react-native";
+import { View, Text, TextInput, StyleSheet, ActivityIndicator } from "react-native";
 import { useEditorBridge, TenTapStartKit } from "@10play/tentap-editor";
 
 import { useNote } from "@/hooks/use-note";
-import { useAttachments } from "@/hooks/use-attachments";
 import { useAutoSave } from "@/hooks/use-auto-save";
 import { useTheme } from "@/providers/theme-provider";
-import { database } from "@/db";
-import { contentToTiptap, tiptapToBlocknote } from "@drafto/shared";
-import type { TipTapDoc } from "@drafto/shared";
+import { database, type Attachment } from "@/db";
+import {
+  contentToTiptap,
+  tiptapToBlocknote,
+  toAttachmentUrl,
+  resolveTipTapImageUrls,
+} from "@drafto/shared";
+import type { TipTapDoc, TipTapNode } from "@drafto/shared";
+import { getSignedUrl } from "@/lib/data";
 import { colors, fontSizes, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { EmptyState } from "@/components/ui/empty-state";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
-import { AttachmentList } from "@/components/editor/attachment-list";
+
+function isImageMimeType(mimeType: string | null | undefined): boolean {
+  return typeof mimeType === "string" && mimeType.startsWith("image/");
+}
+
+async function buildInsertNode(attachment: Attachment): Promise<TipTapNode> {
+  const attachmentUrl = toAttachmentUrl(attachment.filePath);
+  if (isImageMimeType(attachment.mimeType)) {
+    // tentap's image node renders `<img src>` directly, so embed a signed URL
+    // for this session; the save pipeline rewrites it back to attachment:// in
+    // the DB and later loads resolve a fresh signed URL on demand.
+    const signedUrl = await getSignedUrl(attachment.filePath);
+    return { type: "image", attrs: { src: signedUrl, alt: attachment.fileName } };
+  }
+  return {
+    type: "paragraph",
+    content: [
+      {
+        type: "text",
+        text: attachment.fileName,
+        marks: [{ type: "link", attrs: { href: attachmentUrl } }],
+      },
+    ],
+  };
+}
 
 interface NoteEditorPanelProps {
   noteId: string | undefined;
@@ -22,7 +51,6 @@ interface NoteEditorPanelProps {
 
 export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   const { note, loading } = useNote(noteId);
-  const { attachments } = useAttachments(noteId);
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
 
@@ -115,7 +143,9 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
     return () => clearInterval(interval);
   }, [editor, editorReady]);
 
-  // Sync local state when a different note is loaded — wait for editor to be ready
+  // Sync local state when a different note is loaded — wait for editor to be ready.
+  // `attachment://` URLs are resolved to signed URLs before loading so tentap can
+  // actually render images/file links inside the WebView.
   useEffect(() => {
     if (!editorReady) return;
 
@@ -123,43 +153,55 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
       noteIdRef.current = note.id;
       setTitle(note.title || "");
 
-      // Parse content: may be BlockNote JSON array, TipTap JSON, plain text, or null
       const rawContent = note.content || "";
+      let cancelled = false;
 
-      try {
-        if (rawContent) {
+      (async () => {
+        try {
+          if (!rawContent) {
+            editor.setContent("");
+            return;
+          }
+          let parsed: unknown;
           try {
-            const parsed = JSON.parse(rawContent);
-            // Only convert if the parsed JSON is actually a BlockNote array or TipTap doc.
-            // Plain text that happens to be valid JSON (e.g. "123", '{"foo":1}') must
-            // fall through to the plain-text path to avoid blank notes.
-            const isBlockNote = Array.isArray(parsed) && parsed.length > 0 && parsed[0]?.type;
-            const isTipTap =
-              parsed &&
-              typeof parsed === "object" &&
-              !Array.isArray(parsed) &&
-              parsed.type === "doc";
-            if (isBlockNote || isTipTap) {
-              const tiptapDoc = contentToTiptap(parsed);
-              editor.setContent(tiptapDoc);
-              return;
-            }
+            parsed = JSON.parse(rawContent);
           } catch {
             // Not JSON — treat as plain text
+            const htmlContent = rawContent
+              .split("\n")
+              .map((line: string) => `<p>${escapeHtml(line) || "<br>"}</p>`)
+              .join("");
+            editor.setContent(htmlContent);
+            return;
           }
-          // Convert plain text to simple HTML for the editor
-          const htmlContent = rawContent
-            .split("\n")
-            .map((line: string) => `<p>${escapeHtml(line) || "<br>"}</p>`)
-            .join("");
-          editor.setContent(htmlContent);
-        } else {
-          editor.setContent("");
+          const isBlockNote =
+            Array.isArray(parsed) && parsed.length > 0 && (parsed[0] as { type?: string })?.type;
+          const isTipTap =
+            parsed &&
+            typeof parsed === "object" &&
+            !Array.isArray(parsed) &&
+            (parsed as { type?: string }).type === "doc";
+          if (!isBlockNote && !isTipTap) {
+            const htmlContent = rawContent
+              .split("\n")
+              .map((line: string) => `<p>${escapeHtml(line) || "<br>"}</p>`)
+              .join("");
+            editor.setContent(htmlContent);
+            return;
+          }
+          const tiptapDoc = contentToTiptap(parsed);
+          const resolved = await resolveTipTapImageUrls(tiptapDoc, getSignedUrl);
+          if (cancelled || noteIdRef.current !== note.id) return;
+          editor.setContent(resolved);
+        } catch (err) {
+          console.warn("Failed to set editor content:", err);
+          if (!cancelled) editor.setContent("");
         }
-      } catch (err) {
-        console.warn("Failed to set editor content:", err);
-        editor.setContent("");
-      }
+      })();
+
+      return () => {
+        cancelled = true;
+      };
     } else if (!note) {
       noteIdRef.current = undefined;
       setTitle("");
@@ -170,6 +212,32 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
       }
     }
   }, [note?.id, editor, editorReady]);
+
+  const handleAttachmentReady = useCallback(
+    async (attachment: Attachment) => {
+      try {
+        const node = await buildInsertNode(attachment);
+        const currentJson = (await editor.getJSON()) as TipTapDoc;
+        const appended: TipTapDoc = {
+          type: "doc",
+          content: [...(currentJson.content ?? []), node],
+        };
+        editor.setContent(appended);
+        // setContent doesn't always fire the editor's onChange path reliably —
+        // persist explicitly so sync doesn't strand the inline reference.
+        const blocks = tiptapToBlocknote(appended);
+        await database.write(async () => {
+          if (!note) return;
+          await note.update((n) => {
+            n.content = JSON.stringify(blocks);
+          });
+        });
+      } catch (err) {
+        console.warn("Failed to insert attachment inline:", err);
+      }
+    },
+    [editor, note],
+  );
 
   // Flush pending autosaves when switching notes
   useEffect(() => {
@@ -234,12 +302,7 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
         <NoteEditor editor={editor} />
       </View>
 
-      {noteId && (
-        <ScrollView style={styles.attachmentsSection}>
-          <AttachmentList attachments={attachments} />
-          <AttachmentPicker noteId={noteId} />
-        </ScrollView>
-      )}
+      {noteId && <AttachmentPicker noteId={noteId} onAttachmentReady={handleAttachmentReady} />}
     </View>
   );
 }
@@ -289,8 +352,5 @@ const createStyles = (semantic: SemanticColors) =>
     editorContainer: {
       flex: 1,
       minHeight: 0,
-    },
-    attachmentsSection: {
-      maxHeight: 180,
     },
   });
