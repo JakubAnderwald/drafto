@@ -86,7 +86,9 @@ function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
 
     case "file": {
       const url = (block.props?.url as string) ?? "";
-      const name = (block.props?.name as string) ?? (block.props?.caption as string) ?? url;
+      // `||` so an explicit empty-string name falls through to caption/url;
+      // `??` would emit `[](url)` and produce invisible link text.
+      const name = (block.props?.name as string) || (block.props?.caption as string) || url;
       lines.push(`${prefix}[${name}](${url})`);
       break;
     }

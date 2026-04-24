@@ -159,7 +159,10 @@ function blockToTipTapNode(block: BlockNoteBlock): TipTapNode[] {
       // filename. The reverse converter detects this shape and restores the
       // `file` block on save, preserving round-trip fidelity.
       const href = (block.props?.url as string) ?? "";
-      const name = (block.props?.name as string) ?? (block.props?.caption as string) ?? href;
+      // Use `||` (not `??`) so an explicit empty-string `name` falls through
+      // to `caption` and then to `href` — otherwise the projection would emit
+      // an invisible link with no display text.
+      const name = (block.props?.name as string) || (block.props?.caption as string) || href;
       return [
         {
           type: "paragraph",

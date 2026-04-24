@@ -105,16 +105,26 @@ async function main() {
 
   console.log(`[backfill] target=${supabaseUrl} dry-run=${dryRun}`);
 
-  const { data: attachmentsRaw, error: attachmentsError } = await supabase
-    .from("attachments")
-    .select("id, note_id, file_path, file_name, mime_type")
-    .order("created_at", { ascending: true });
+  // Paginate — supabase-js caps per-request rows at 1000 by default. A single
+  // silent-truncated fetch would make the backfill skip attachments without any
+  // error, leaving orphans on prod forever.
+  const PAGE_SIZE = 1000;
+  const attachments: AttachmentRow[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data: page, error } = await supabase
+      .from("attachments")
+      .select("id, note_id, file_path, file_name, mime_type")
+      .order("created_at", { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
 
-  if (attachmentsError) {
-    console.error("[backfill] Failed to fetch attachments:", attachmentsError);
-    process.exit(1);
+    if (error) {
+      console.error(`[backfill] Failed to fetch attachments page from=${from}:`, error);
+      process.exit(1);
+    }
+    const rows = (page ?? []) as AttachmentRow[];
+    attachments.push(...rows);
+    if (rows.length < PAGE_SIZE) break;
   }
-  const attachments = (attachmentsRaw ?? []) as AttachmentRow[];
   console.log(`[backfill] attachments scanned=${attachments.length}`);
 
   const byNoteId = new Map<string, AttachmentRow[]>();
@@ -174,7 +184,7 @@ async function main() {
     const { error: updateError } = await supabase
       .from("notes")
       .update({
-        content: nextBlocks as unknown as string,
+        content: nextBlocks,
         updated_at: typedNote.updated_at,
       })
       .eq("id", noteId);
