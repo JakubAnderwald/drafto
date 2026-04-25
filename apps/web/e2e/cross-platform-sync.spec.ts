@@ -99,6 +99,9 @@ test.describe("Cross-platform format sync", () => {
       await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({
         timeout: 10000,
       });
+      // Default-selected notebook depends on API sort order; explicitly pick the
+      // notebook that the API note was created in.
+      await page.getByRole("button", { name: notebookName, exact: true }).click();
       await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
 
       await expect(page.getByText(title)).toBeVisible({ timeout: 10000 });
@@ -123,6 +126,9 @@ test.describe("Cross-platform format sync", () => {
       await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({
         timeout: 10000,
       });
+      // Default-selected notebook depends on API sort order; explicitly pick the
+      // notebook the test will assert against.
+      await page.getByRole("button", { name: notebookName, exact: true }).click();
       await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
 
       await page.getByRole("button", { name: "New note", exact: true }).click();
