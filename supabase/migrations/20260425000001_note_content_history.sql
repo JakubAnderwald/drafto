@@ -73,25 +73,27 @@ security definer
 set search_path = public, pg_catalog
 as $$
 begin
-  if old.content is distinct from new.content then
-    insert into public.note_content_history
-      (note_id, user_id, content, content_updated_at, archived_by)
-    values
-      (
-        old.id,
-        old.user_id,
-        old.content,
-        old.updated_at,
-        nullif(current_setting('app.client', true), '')
-      );
-  end if;
+  insert into public.note_content_history
+    (note_id, user_id, content, content_updated_at, archived_by)
+  values
+    (
+      old.id,
+      old.user_id,
+      old.content,
+      old.updated_at,
+      nullif(current_setting('app.client', true), '')
+    );
   return new;
 end;
 $$;
 
+-- The IS DISTINCT FROM guard lives on the trigger so plain title /
+-- is_trashed / notebook_id updates skip the SECURITY DEFINER call entirely.
 create trigger on_notes_content_archive
   before update on public.notes
-  for each row execute function public.archive_note_content();
+  for each row
+  when (old.content is distinct from new.content)
+  execute function public.archive_note_content();
 
 -- =============================================================================
 -- CLEANUP FUNCTION (30-day retention)

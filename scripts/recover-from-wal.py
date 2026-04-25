@@ -28,11 +28,13 @@ Usage:
       --note-id 4261ef83-3431-4a77-9adc-9251d8b0642c \\
       --output-dir ~/drafto-recovery/
 
-Then, after picking the right candidate JSON, generate the restore SQL:
+Then, after picking the right candidate JSON by index from the listing, generate
+the restore SQL (note: the most recent candidate is often the corruption itself,
+so always pick by explicit index rather than recency):
   python3 scripts/recover-from-wal.py \\
       --wal ... --db ... --note-id ... \\
       --emit-sql ~/drafto-recovery/restore.sql \\
-      --pick latest
+      --pick 1
 """
 
 from __future__ import annotations
@@ -41,9 +43,16 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import struct
 import sys
+from collections import ChainMap
+from collections.abc import Mapping
 from dataclasses import dataclass
+
+UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 WAL_HEADER_SIZE = 32
 FRAME_HEADER_SIZE = 24
@@ -255,7 +264,7 @@ def parse_leaf_page(
 
 def follow_overflow_chain(
     first_page: int,
-    pages: dict[int, bytes],
+    pages: Mapping[int, bytes],
     page_size: int,
     needed: int,
 ) -> bytes:
@@ -382,6 +391,9 @@ def extract_candidates(
 
     # Use the live DB pages as a fallback source for overflow chains.
     fallback_pages: dict[int, bytes] = db_pages(db_path, page_size) if db_path else {}
+    # Build the page-lookup map once. ChainMap consults the per-snapshot dict
+    # first and only falls back to the (potentially large) DB page map on miss
+    # — avoids reallocating the merged dict for every commit group.
 
     snapshots = commit_group_snapshots(frames)
     print(
@@ -398,9 +410,8 @@ def extract_candidates(
         candidate_pages = [
             (pn, page) for pn, page in snap.items() if target_bytes in page
         ]
-        # Build a merged page map (snapshot WAL pages overlay the fallback DB pages).
-        merged_pages = dict(fallback_pages)
-        merged_pages.update(snap)
+        # Snapshot WAL pages overlay the fallback DB pages without copying.
+        merged_pages = ChainMap(snap, fallback_pages)
 
         for page_num, page in candidate_pages:
             is_first = page_num == 1
@@ -433,7 +444,9 @@ def extract_candidates(
                 )
                 if not isinstance(updated_val, (int, float)):
                     updated_val = None
-                digest = hashlib.sha1(content_val.encode()).hexdigest()
+                digest = hashlib.sha1(
+                    content_val.encode(), usedforsecurity=False
+                ).hexdigest()
                 if digest in seen:
                     continue
                 seen[digest] = Candidate(
@@ -542,6 +555,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Fully qualified destination table name in the SQL output.",
     )
     args = parser.parse_args(argv)
+
+    if args.emit_sql and not UUID_RE.match(args.note_id):
+        print(
+            f"--note-id {args.note_id!r} is not a UUID; refusing to emit SQL.",
+            file=sys.stderr,
+        )
+        return 2
 
     candidates = extract_candidates(
         wal_path=args.wal,
