@@ -60,10 +60,14 @@ Never run any of the following against production:
 
 ## Backups and recovery
 
-- **Daily automatic backups**: provided by Supabase on all projects.
-- **Point-in-Time Recovery (PITR)**: enabled on the Pro plan (production), allowing granular restore to any moment in the retention window.
+Production is on the Supabase **Free** tier — there are **no daily automatic backups and no Point-in-Time Recovery**. The 2026-04-24 incident (PR #323) made the cost of relying on those backups concrete: a race-condition bug overwrote one note's content, and recovery only worked because a snapshot of the WatermelonDB WAL file was still on a developer's Mac. The defenses below are the ones we actually have.
+
+- **Per-note content history (`note_content_history`)**: a BEFORE-UPDATE trigger on `notes` archives the prior `content` jsonb on every change. Retained 30 days, then nightly `pg_cron` cleanup. See `supabase/migrations/20260425000001_note_content_history.sql` and ADR 0022. **First-line defense for content overwrites.**
 - **Soft delete for notes**: deletions set `is_trashed = true`; a `pg_cron` job purges rows trashed more than 30 days ago (`supabase/migrations/20260302000001_trash_auto_cleanup.sql`). Users can self-recover any accidentally deleted note within that window.
 - **Local replicas**: mobile and desktop clients keep a full WatermelonDB SQLite copy per device. These are not a formal backup, but in a worst-case server loss they are the last surviving copy of a user's notes.
+- **WAL recovery script**: `scripts/recover-from-wal.py` extracts pre-corruption row versions from a client-side WatermelonDB `.db-wal` file when no other copy survives. Last-resort tool — see section 5 below.
+
+If/when production is upgraded to the Supabase Pro tier, daily backups and PITR become available; the runbook below already references both. The defenses above remain useful regardless.
 
 ### Recovery runbook
 
@@ -92,7 +96,22 @@ Dev is meant to break — prefer the cheapest recovery:
 
 #### 4. You only need to recover specific rows (e.g. a bad `DELETE FROM notes WHERE …`)
 
-Full PITR is overkill here because it clobbers unrelated user activity. Preferred path:
+**For `notes.content` overwrites within the last 30 days, check the history table first** — it's almost always the right answer and doesn't disturb other user activity:
+
+```sql
+select content, content_updated_at, archived_at
+  from public.note_content_history
+ where note_id = '<id>'
+ order by archived_at desc;
+
+-- Restore the version you want:
+update public.notes
+   set content = (select content from public.note_content_history where id = '<history-id>'),
+       updated_at = now()
+ where id = '<note-id>';
+```
+
+If history isn't sufficient (older damage, deleted notes, or a different column), full PITR is overkill — it clobbers unrelated user activity. Preferred path on a paid plan:
 
 1. In the Supabase dashboard, restore PITR **into a new temporary project** (not over prod).
 2. `pg_dump` only the affected rows from the temp project.
@@ -101,11 +120,28 @@ Full PITR is overkill here because it clobbers unrelated user activity. Preferre
 
 If your plan tier does not expose "restore into a new project," contact Supabase support before touching prod — they can perform the side restore for you.
 
-#### 5. Damage is older than the PITR retention window
+#### 5. Damage is older than the PITR retention window (or there is no PITR)
 
-PITR cannot help. Remaining options, in order of viability:
+Production is on the Free tier today, so this is the _normal_ case for damage older than 30 days. Remaining options, in order of viability:
 
-- **Mobile/desktop users**: their WatermelonDB SQLite files (`apps/mobile/src/db/`, same schema on desktop) still hold their notes. There is no automated re-ingest — reconstruction is manual per user.
+- **`note_content_history`** (≤ 30 days, content overwrites only): see section 4 above.
+- **Mobile/desktop users**: their WatermelonDB SQLite files (`apps/mobile/src/db/`, same schema on desktop) still hold their notes. Two paths:
+  - **Live DB still readable**: open the `.db` file with `sqlite3` and `SELECT content FROM notes WHERE remote_id = '...'`.
+  - **Live DB already corrupted but `.db-wal` exists**: run `scripts/recover-from-wal.py` against the WAL file. It walks every commit group in the WAL and prints each pre-corruption version of the row. This is exactly how the 2026-04-24 incident was recovered.
+
+  Example (the actual 2026-04-24 incident invocation):
+
+  ```bash
+  python3 scripts/recover-from-wal.py \
+    --wal ~/Library/Containers/eu.drafto.mobile/Data/Documents/watermelon.db-wal \
+    --db  ~/Library/Containers/eu.drafto.mobile/Data/Documents/watermelon.db \
+    --note-id <supabase-uuid>
+  # ...inspect candidates, then emit SQL for the right one:
+  python3 scripts/recover-from-wal.py ... --emit-sql restore.sql --pick 1
+  ```
+
+  There is no automated re-ingest — reconstruction is manual per user.
+
 - **Web-only users**: effectively unrecoverable. Communicate honestly with affected users.
 
 ### Preventative guardrails to lean on
