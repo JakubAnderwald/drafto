@@ -24,7 +24,7 @@ export async function listNotebooks(
     .from("notebooks")
     .select("id, name, created_at, updated_at")
     .eq("user_id", userId)
-    .order("name");
+    .order("updated_at", { ascending: false });
 
   if (error) return err(`Error: ${error.message}`);
   return ok(JSON.stringify(data, null, 2));

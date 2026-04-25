@@ -72,10 +72,15 @@ test.describe("Note editing flow", () => {
     await createInput.press("Enter");
     await expect(page.getByText(targetNotebook)).toBeVisible();
 
-    // Switch back to the first notebook (auto-created "Notes" or whatever is first)
+    // Switch to any notebook other than the just-created Target. The first list
+    // entry is no longer guaranteed to be the auto-created "Notes" — under
+    // updated_at-desc ordering, "Target {ts}" we just created is now first.
     const sidebar = page.locator("aside");
-    const firstNotebook = sidebar.locator("nav li").first();
-    await firstNotebook.click();
+    const nonTargetNotebook = sidebar
+      .locator("nav li")
+      .filter({ hasNotText: targetNotebook })
+      .first();
+    await nonTargetNotebook.click();
     await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 5000 });
 
     // Create a note in the first notebook

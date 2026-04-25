@@ -72,7 +72,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     .from("notebooks")
     .select("id, name, created_at, updated_at")
     .eq("user_id", userId)
-    .order("name");
+    .order("updated_at", { ascending: false });
 
   if (notebooksError) {
     console.error("[layout] Failed to prefetch notebooks:", notebooksError.message);

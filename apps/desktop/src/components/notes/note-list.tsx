@@ -138,6 +138,10 @@ function NoteRow({ note, isSelected, onSelect, onTrash, styles }: NoteRowProps) 
           style={[styles.trashButton, !hovered && styles.trashButtonHidden]}
           onPress={onTrash}
           hitSlop={8}
+          disabled={!hovered}
+          focusable={hovered}
+          accessibilityElementsHidden={!hovered}
+          importantForAccessibility={hovered ? "yes" : "no-hide-descendants"}
           accessibilityLabel="Delete note"
           accessibilityRole="button"
         >
@@ -227,6 +231,8 @@ const createStyles = (semantic: SemanticColors) =>
     },
     trashButtonHidden: {
       opacity: 0,
+      // Prevent the invisible button from intercepting taps on the row body.
+      pointerEvents: "none",
     },
     trashButtonText: {
       fontSize: fontSizes.xl,

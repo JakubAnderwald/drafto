@@ -259,6 +259,10 @@ function NotebookRow({
             style={[styles.deleteButton, !hovered && styles.deleteButtonHidden]}
             onPress={onDelete}
             hitSlop={8}
+            disabled={!hovered}
+            focusable={hovered}
+            accessibilityElementsHidden={!hovered}
+            importantForAccessibility={hovered ? "yes" : "no-hide-descendants"}
             accessibilityLabel="Delete notebook"
             accessibilityRole="button"
           >
@@ -388,6 +392,8 @@ const createStyles = (semantic: SemanticColors) =>
     },
     deleteButtonHidden: {
       opacity: 0,
+      // Prevent the invisible button from intercepting taps on the row body.
+      pointerEvents: "none",
     },
     deleteButtonText: {
       fontSize: fontSizes.xl,
