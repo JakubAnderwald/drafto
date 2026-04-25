@@ -65,8 +65,22 @@ test.describe("Cross-platform format sync", () => {
     expect(res.ok()).toBe(true);
     const notebooks: { id: string; name: string }[] = await res.json();
     expect(notebooks.length).toBeGreaterThan(0);
-    notebookId = notebooks[0].id;
-    notebookName = notebooks[0].name;
+    // The /api/notebooks endpoint returns rows by updated_at desc, so the first
+    // entry can be an ephemeral notebook another parallel test created and is
+    // about to delete. Pick the first notebook whose name doesn't match any
+    // E2E-created pattern so we land on stable seed data.
+    const ephemeralPatterns = [
+      /^Target \d+$/,
+      /^Test Notebook \d+$/,
+      /^Renamed \d+$/,
+      /^XPlat NB \d+$/,
+    ];
+    const stable = notebooks.find(
+      (nb) => !ephemeralPatterns.some((pattern) => pattern.test(nb.name)),
+    );
+    expect(stable).toBeDefined();
+    notebookId = stable!.id;
+    notebookName = stable!.name;
   });
 
   test("TipTap content injected via API renders correctly on web and is repaired to BlockNote", async ({
