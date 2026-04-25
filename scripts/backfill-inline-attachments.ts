@@ -15,7 +15,10 @@
  *
  * Usage:
  *   SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
- *   pnpm tsx scripts/backfill-inline-attachments.ts
+ *   pnpm backfill:attachments [--dry-run]
+ *
+ * The package.json script wires `tsx --tsconfig scripts/tsconfig.json` so the
+ * `@drafto/shared` path alias resolves correctly at runtime.
  *
  * Dev project ref:  huhzactreblzcogqkbsd
  * Prod project ref: tbmjbxxseonkciqovnpl
