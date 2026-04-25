@@ -61,26 +61,25 @@ test.describe("Cross-platform format sync", () => {
   let notebookName: string;
 
   test.beforeAll(async ({ request }) => {
-    const res = await request.get("/api/notebooks");
-    expect(res.ok()).toBe(true);
-    const notebooks: { id: string; name: string }[] = await res.json();
-    expect(notebooks.length).toBeGreaterThan(0);
-    // The /api/notebooks endpoint returns rows by updated_at desc, so the first
-    // entry can be an ephemeral notebook another parallel test created and is
-    // about to delete. Pick the first notebook whose name doesn't match any
-    // E2E-created pattern so we land on stable seed data.
-    const ephemeralPatterns = [
-      /^Target \d+$/,
-      /^Test Notebook \d+$/,
-      /^Renamed \d+$/,
-      /^XPlat NB \d+$/,
-    ];
-    const stable = notebooks.find(
-      (nb) => !ephemeralPatterns.some((pattern) => pattern.test(nb.name)),
-    );
-    expect(stable).toBeDefined();
-    notebookId = stable!.id;
-    notebookName = stable!.name;
+    // Create a dedicated notebook for this test suite. Using the API directly
+    // (rather than picking notebooks[0]) is robust to the /api/notebooks
+    // updated_at-desc ordering and to leftover dev-DB notebooks whose names
+    // don't match the cleanup helper's ephemeral patterns. The "XPlat NB"
+    // prefix matches cleanup.ts so this notebook is auto-deleted between runs.
+    notebookName = `XPlat NB ${Date.now()}`;
+    const createRes = await request.post("/api/notebooks", {
+      data: { name: notebookName },
+    });
+    expect(createRes.ok()).toBe(true);
+    const created: { id: string } = await createRes.json();
+    notebookId = created.id;
+  });
+
+  test.afterAll(async ({ request }) => {
+    // Best-effort: cleanup helper also catches "XPlat NB" by pattern.
+    if (notebookId) {
+      await request.delete(`/api/notebooks/${notebookId}`).catch(() => {});
+    }
   });
 
   test("TipTap content injected via API renders correctly on web and is repaired to BlockNote", async ({
