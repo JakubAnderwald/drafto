@@ -113,8 +113,15 @@ test.describe("Cross-platform format sync", () => {
         timeout: 10000,
       });
       // Default-selected notebook depends on API sort order; explicitly pick the
-      // notebook that the API note was created in.
-      await page.getByRole("button", { name: notebookName, exact: true }).click();
+      // notebook that the API note was created in. The wrapper div has
+      // role=button but its accessible name includes the inline delete button's
+      // aria-label, so locate by the <li>'s text instead.
+      await page
+        .locator("nav li")
+        .filter({ hasText: notebookName })
+        .locator('[role="button"]')
+        .first()
+        .click();
       await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
 
       await expect(page.getByText(title)).toBeVisible({ timeout: 10000 });
@@ -140,8 +147,13 @@ test.describe("Cross-platform format sync", () => {
         timeout: 10000,
       });
       // Default-selected notebook depends on API sort order; explicitly pick the
-      // notebook the test will assert against.
-      await page.getByRole("button", { name: notebookName, exact: true }).click();
+      // notebook the test will assert against. See above for selector rationale.
+      await page
+        .locator("nav li")
+        .filter({ hasText: notebookName })
+        .locator('[role="button"]')
+        .first()
+        .click();
       await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
 
       await page.getByRole("button", { name: "New note", exact: true }).click();
