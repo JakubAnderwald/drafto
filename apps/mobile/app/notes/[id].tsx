@@ -19,10 +19,8 @@ import {
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useNote } from "@/hooks/use-note";
-import { useAttachments } from "@/hooks/use-attachments";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
-import { AttachmentList } from "@/components/editor/attachment-list";
 import { EditorSkeleton } from "@/components/ui/skeleton";
 import { useAutoSave } from "@/hooks/use-auto-save";
 import {
@@ -31,11 +29,16 @@ import {
   migrateSignedUrlsToAttachmentUrls,
   resolveTipTapImageUrls,
   isAttachmentUrl,
+  toAttachmentUrl,
 } from "@drafto/shared";
 import type { TipTapDoc, TipTapNode } from "@drafto/shared";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
-import type { Note } from "@/db";
+import type { Note, Attachment } from "@/db";
+
+function isImageMimeType(mimeType: string | null | undefined): boolean {
+  return typeof mimeType === "string" && mimeType.startsWith("image/");
+}
 
 const EMPTY_DOC: TipTapDoc = { type: "doc", content: [] };
 
@@ -136,9 +139,13 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   const { database, sync } = useDatabase();
   const { semantic, isDark } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
-  const { attachments } = useAttachments(noteId);
   const [title, setTitle] = useState(initialNote.title);
   const noteIdRef = useRef(noteId);
+  // Gate autosave on TenTap's readiness. Without this, onChange emissions during
+  // WebView bootstrap (before initialContent has actually hydrated the editor)
+  // can trigger a save that reads an empty/partial editor state and clobbers
+  // the note — the same class of race that corrupted prod data on 2026-04-24.
+  const editorReadyRef = useRef(false);
   const { content: resolvedContent, resolving } = useResolvedContent(initialNote);
 
   const titleSave = useAutoSave<string>({
@@ -190,11 +197,16 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
         }
       : undefined,
     onChange: () => {
+      if (!editorReadyRef.current) return;
       contentSave.trigger();
     },
   });
 
   const { isReady } = useBridgeState(editor);
+
+  useEffect(() => {
+    editorReadyRef.current = isReady;
+  }, [isReady]);
 
   useEffect(() => {
     if (!isReady) return;
@@ -219,6 +231,62 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     setTitle(text);
     titleSave.trigger(text);
   };
+
+  const handleAttachmentReady = useCallback(
+    async (attachment: Attachment) => {
+      try {
+        let node: TipTapNode;
+        if (isImageMimeType(attachment.mimeType)) {
+          // Default to attachment:// so a getSignedUrl failure (offline, expired
+          // session, storage outage) still inserts a recoverable node rather than
+          // bailing out and leaving the attachment row orphaned.
+          let src = toAttachmentUrl(attachment.filePath);
+          try {
+            const { getSignedUrl } = await import("@/lib/data/attachments");
+            src = await getSignedUrl(attachment.filePath);
+          } catch (err) {
+            console.warn("getSignedUrl failed; falling back to attachment://", err);
+          }
+          node = { type: "image", attrs: { src, alt: attachment.fileName } };
+        } else {
+          node = {
+            type: "paragraph",
+            content: [
+              {
+                type: "text",
+                text: attachment.fileName,
+                marks: [
+                  {
+                    type: "link",
+                    attrs: { href: toAttachmentUrl(attachment.filePath) },
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        const currentJson = (await editor.getJSON()) as TipTapDoc;
+        const appended: TipTapDoc = {
+          type: "doc",
+          content: [...(currentJson.content ?? []), node],
+        };
+        editor.setContent(appended);
+        const blocks = contentToBlocknote(appended);
+        const migrated = migrateSignedUrlsToAttachmentUrls(blocks);
+        await database.write(async () => {
+          const record = await database.get<Note>("notes").find(noteId);
+          await record.update((r) => {
+            r.content = JSON.stringify(migrated);
+          });
+        });
+        sync();
+      } catch (err) {
+        console.warn("Failed to insert attachment inline:", err);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [noteId, database, sync],
+  );
 
   const saveStatus =
     titleSave.status === "saving" || contentSave.status === "saving"
@@ -256,8 +324,7 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
         <View style={styles.editorContainer}>
           <NoteEditor editor={editor} />
         </View>
-        <AttachmentList attachments={attachments} />
-        <AttachmentPicker noteId={noteId} />
+        <AttachmentPicker noteId={noteId} onAttachmentReady={handleAttachmentReady} />
       </KeyboardAvoidingView>
     </>
   );

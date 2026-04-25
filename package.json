@@ -18,6 +18,7 @@
     "supabase:link:prod": "supabase link --project-ref tbmjbxxseonkciqovnpl",
     "supabase:push": "supabase db push",
     "migration:check": "bash scripts/check-migration-safety.sh",
+    "backfill:attachments": "tsx --tsconfig scripts/tsconfig.json scripts/backfill-inline-attachments.ts",
     "prepare": "husky",
     "version:mobile": "cd apps/mobile && npm version --no-git-tag-version",
     "version:desktop": "cd apps/desktop && npm version --no-git-tag-version"
@@ -57,6 +58,7 @@
     "lint-staged": "^16.4.0",
     "prettier": "^3.8.1",
     "prettier-plugin-tailwindcss": "^0.7.2",
+    "tsx": "^4.21.0",
     "turbo": "^2.9.4"
   }
 }

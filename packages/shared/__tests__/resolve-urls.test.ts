@@ -82,6 +82,48 @@ describe("resolveBlockNoteImageUrls", () => {
 
     expect(resolver).toHaveBeenCalledTimes(1);
   });
+
+  it("resolves attachment:// URLs on file blocks", async () => {
+    const blocks: BlockNoteBlock[] = [
+      {
+        type: "file",
+        props: { url: "attachment://user-1/note-1/report.pdf", name: "report.pdf" },
+        children: [],
+      },
+    ];
+
+    const resolver = vi.fn().mockResolvedValue("https://signed.url/report.pdf");
+    const result = await resolveBlockNoteImageUrls(blocks, resolver);
+
+    expect(resolver).toHaveBeenCalledWith("user-1/note-1/report.pdf");
+    expect(result[0].props?.url).toBe("https://signed.url/report.pdf");
+    expect(result[0].props?.name).toBe("report.pdf");
+  });
+
+  it("resolves attachment:// hrefs on inline link content", async () => {
+    const blocks: BlockNoteBlock[] = [
+      {
+        type: "paragraph",
+        content: [
+          {
+            type: "link",
+            text: "report.pdf",
+            href: "attachment://user-1/note-1/report.pdf",
+            content: [{ type: "text", text: "report.pdf", styles: {} }],
+          },
+        ],
+        children: [],
+      },
+    ];
+
+    const resolver = vi.fn().mockResolvedValue("https://signed.url/report.pdf");
+    const result = await resolveBlockNoteImageUrls(blocks, resolver);
+
+    expect(resolver).toHaveBeenCalledWith("user-1/note-1/report.pdf");
+    expect((result[0].content as { type: string; href?: string }[])[0].href).toBe(
+      "https://signed.url/report.pdf",
+    );
+  });
 });
 
 describe("resolveTipTapImageUrls", () => {
@@ -131,6 +173,31 @@ describe("resolveTipTapImageUrls", () => {
 
     expect(resolver).not.toHaveBeenCalled();
     expect(result).toBe(doc);
+  });
+
+  it("resolves attachment:// hrefs on link marks inside paragraphs", async () => {
+    const doc: TipTapDoc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "report.pdf",
+              marks: [{ type: "link", attrs: { href: "attachment://user-1/note-1/report.pdf" } }],
+            },
+          ],
+        },
+      ],
+    };
+
+    const resolver = vi.fn().mockResolvedValue("https://signed.url/report.pdf");
+    const result = await resolveTipTapImageUrls(doc, resolver);
+
+    expect(resolver).toHaveBeenCalledWith("user-1/note-1/report.pdf");
+    const text = result.content[0].content![0];
+    expect(text.marks?.[0].attrs?.href).toBe("https://signed.url/report.pdf");
   });
 });
 
@@ -193,6 +260,23 @@ describe("migrateSignedUrlsToAttachmentUrls", () => {
     migrateSignedUrlsToAttachmentUrls(blocks);
 
     expect(blocks[0].props?.url).toContain("storage/v1/object/sign");
+  });
+
+  it("migrates signed URLs on file blocks", () => {
+    const blocks: BlockNoteBlock[] = [
+      {
+        type: "file",
+        props: {
+          url: "https://abc.supabase.co/storage/v1/object/sign/attachments/user-1/note-1/report.pdf?token=xyz",
+          name: "report.pdf",
+        },
+        children: [],
+      },
+    ];
+
+    const result = migrateSignedUrlsToAttachmentUrls(blocks);
+
+    expect(result[0].props?.url).toBe("attachment://user-1/note-1/report.pdf");
   });
 
   it("handles mixed content with images and text", () => {

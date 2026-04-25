@@ -1,20 +1,57 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { View, Text, TextInput, StyleSheet, ActivityIndicator, ScrollView } from "react-native";
+import { View, Text, TextInput, StyleSheet, ActivityIndicator } from "react-native";
 import { useEditorBridge, TenTapStartKit } from "@10play/tentap-editor";
 
 import { useNote } from "@/hooks/use-note";
-import { useAttachments } from "@/hooks/use-attachments";
 import { useAutoSave } from "@/hooks/use-auto-save";
 import { useTheme } from "@/providers/theme-provider";
-import { database } from "@/db";
-import { contentToTiptap, tiptapToBlocknote } from "@drafto/shared";
-import type { TipTapDoc } from "@drafto/shared";
+import { database, Note, type Attachment } from "@/db";
+import {
+  contentToTiptap,
+  tiptapToBlocknote,
+  toAttachmentUrl,
+  resolveTipTapImageUrls,
+  migrateSignedUrlsToAttachmentUrls,
+} from "@drafto/shared";
+import type { TipTapDoc, TipTapNode } from "@drafto/shared";
+import { getSignedUrl } from "@/lib/data";
 import { colors, fontSizes, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { EmptyState } from "@/components/ui/empty-state";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
-import { AttachmentList } from "@/components/editor/attachment-list";
+
+// Autosave payloads carry the noteId of the note that was being edited when the
+// save was queued. Looking up the record by id inside the save handler (rather
+// than closing over the `note` prop) makes it impossible for a late-firing
+// debounced save to land on the wrong row if the user has since switched notes.
+type TitleSavePayload = { noteId: string; title: string };
+type ContentSavePayload = { noteId: string; content: string };
+
+function isImageMimeType(mimeType: string | null | undefined): boolean {
+  return typeof mimeType === "string" && mimeType.startsWith("image/");
+}
+
+async function buildInsertNode(attachment: Attachment): Promise<TipTapNode> {
+  const attachmentUrl = toAttachmentUrl(attachment.filePath);
+  if (isImageMimeType(attachment.mimeType)) {
+    // tentap's image node renders `<img src>` directly, so embed a signed URL
+    // for this session; the save pipeline rewrites it back to attachment:// in
+    // the DB and later loads resolve a fresh signed URL on demand.
+    const signedUrl = await getSignedUrl(attachment.filePath);
+    return { type: "image", attrs: { src: signedUrl, alt: attachment.fileName } };
+  }
+  return {
+    type: "paragraph",
+    content: [
+      {
+        type: "text",
+        text: attachment.fileName,
+        marks: [{ type: "link", attrs: { href: attachmentUrl } }],
+      },
+    ],
+  };
+}
 
 interface NoteEditorPanelProps {
   noteId: string | undefined;
@@ -22,61 +59,73 @@ interface NoteEditorPanelProps {
 
 export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   const { note, loading } = useNote(noteId);
-  const { attachments } = useAttachments(noteId);
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
 
   const [title, setTitle] = useState("");
+
+  // noteIdRef tracks which note the panel is currently *displaying* (updated as
+  // soon as a note switch is intended). loadedNoteIdRef tracks which note's
+  // content is actually inside the WebView editor right now (set only after
+  // setContent has completed). Autosave is gated on loadedNoteIdRef so that
+  // onChange events emitted before a load finishes are ignored and cannot leak
+  // the previous note's content into the newly-switched-to row.
   const noteIdRef = useRef<string | undefined>(undefined);
-  const contentAutoSaveRef = useRef<{ trigger: (v: string) => void } | null>(null);
+  const loadedNoteIdRef = useRef<string | null>(null);
 
-  const handleSaveTitle = useCallback(
-    async (newTitle: string) => {
-      if (!note) return;
-      await database.write(async () => {
-        await note.update((n) => {
-          n.title = newTitle;
-        });
+  const handleSaveTitle = useCallback(async (payload: TitleSavePayload) => {
+    const record = await database.get<Note>("notes").find(payload.noteId);
+    await database.write(async () => {
+      await record.update((n) => {
+        n.title = payload.title;
       });
-    },
-    [note],
-  );
+    });
+  }, []);
 
-  const handleSaveContent = useCallback(
-    async (newContent: string) => {
-      if (!note) return;
-      await database.write(async () => {
-        await note.update((n) => {
-          n.content = newContent;
-        });
+  const handleSaveContent = useCallback(async (payload: ContentSavePayload) => {
+    const record = await database.get<Note>("notes").find(payload.noteId);
+    await database.write(async () => {
+      await record.update((n) => {
+        n.content = payload.content;
       });
-    },
-    [note],
-  );
+    });
+  }, []);
 
-  const titleAutoSave = useAutoSave<string>({ onSave: handleSaveTitle });
-  const contentAutoSave = useAutoSave<string>({ onSave: handleSaveContent });
+  const titleAutoSave = useAutoSave<TitleSavePayload>({ onSave: handleSaveTitle });
+  const contentAutoSave = useAutoSave<ContentSavePayload>({ onSave: handleSaveContent });
+
+  const titleAutoSaveRef = useRef(titleAutoSave);
+  const contentAutoSaveRef = useRef(contentAutoSave);
+  titleAutoSaveRef.current = titleAutoSave;
   contentAutoSaveRef.current = contentAutoSave;
 
-  // Track editor readiness — WebView initializes asynchronously.
-  // Poll editor.getEditorState() to detect when the bridge is functional.
   const [editorReady, setEditorReady] = useState(false);
 
-  // Use onChange callback from useEditorBridge for auto-save.
-  // Capture note ID to prevent async getJSON() from saving to the wrong note
-  // if the user switches notes before the promise resolves.
-  // TenTap returns TipTap JSON; convert to BlockNote before saving so the
-  // content stays compatible with the web editor (which uses BlockNote).
   const handleEditorChange = useCallback(() => {
-    if (!editorRef.current) return;
-    const capturedNoteId = noteIdRef.current;
-    editorRef.current
+    const editor = editorRef.current;
+    if (!editor) return;
+    // Guard: only persist edits for the note whose content is actually loaded
+    // into the editor. Spurious onChange emissions during note switches (or any
+    // tentap internal transition) would otherwise read stale editor JSON and
+    // save it to the wrong note — the exact incident that corrupted data in
+    // prod on 2026-04-24.
+    const loaded = loadedNoteIdRef.current;
+    if (!loaded || loaded !== noteIdRef.current) return;
+    editor
       .getJSON()
       .then((json: object) => {
-        if (noteIdRef.current !== capturedNoteId) return;
+        // Re-check after the async boundary; the user may have switched notes
+        // while getJSON() was in flight.
+        if (loadedNoteIdRef.current !== loaded || noteIdRef.current !== loaded) return;
         const blocknote = tiptapToBlocknote(json as TipTapDoc);
-        const jsonString = JSON.stringify(blocknote);
-        contentAutoSaveRef.current?.trigger(jsonString);
+        // Rewrite any signed URLs back to attachment:// before persisting so
+        // expiring tokens never reach the DB. Display-side resolution happens
+        // on note load via resolveTipTapImageUrls.
+        const migrated = migrateSignedUrlsToAttachmentUrls(blocknote);
+        contentAutoSaveRef.current?.trigger({
+          noteId: loaded,
+          content: JSON.stringify(migrated),
+        });
       })
       .catch((err: unknown) => {
         console.warn("Editor getJSON failed:", err);
@@ -93,75 +142,109 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   });
   editorRef.current = editor;
 
-  // Detect when the editor WebView bridge is ready
   useEffect(() => {
     if (editorReady) return;
     const interval = setInterval(() => {
       try {
-        // getJSON resolves only when the WebView bridge is functional
         editor
           .getJSON()
           .then(() => {
             setEditorReady(true);
             clearInterval(interval);
           })
-          .catch(() => {
-            // Not ready yet
-          });
-      } catch {
-        // Not ready yet
-      }
+          .catch(() => {});
+      } catch {}
     }, 200);
     return () => clearInterval(interval);
   }, [editor, editorReady]);
 
-  // Sync local state when a different note is loaded — wait for editor to be ready
+  // Sync local state when a different note is loaded.
   useEffect(() => {
     if (!editorReady) return;
 
     if (note && note.id !== noteIdRef.current) {
+      // Flush pending autosaves BEFORE switching the noteId refs so any
+      // still-in-flight save goes through with the previous note's payload
+      // (which already carries that note's id, so it lands on the right row).
+      titleAutoSaveRef.current?.flush();
+      contentAutoSaveRef.current?.flush();
+
       noteIdRef.current = note.id;
+      loadedNoteIdRef.current = null; // gate autosave until setContent completes
       setTitle(note.title || "");
 
-      // Parse content: may be BlockNote JSON array, TipTap JSON, plain text, or null
       const rawContent = note.content || "";
+      let cancelled = false;
+      const targetNoteId = note.id;
 
-      try {
-        if (rawContent) {
+      const markLoaded = () => {
+        if (cancelled) return;
+        // Only flip the gate if the user hasn't switched notes again while we
+        // were loading; otherwise another effect run is already handling the
+        // newer note.
+        if (noteIdRef.current === targetNoteId) {
+          loadedNoteIdRef.current = targetNoteId;
+        }
+      };
+
+      (async () => {
+        try {
+          if (!rawContent) {
+            editor.setContent("");
+            markLoaded();
+            return;
+          }
+          let parsed: unknown;
           try {
-            const parsed = JSON.parse(rawContent);
-            // Only convert if the parsed JSON is actually a BlockNote array or TipTap doc.
-            // Plain text that happens to be valid JSON (e.g. "123", '{"foo":1}') must
-            // fall through to the plain-text path to avoid blank notes.
-            const isBlockNote = Array.isArray(parsed) && parsed.length > 0 && parsed[0]?.type;
-            const isTipTap =
-              parsed &&
-              typeof parsed === "object" &&
-              !Array.isArray(parsed) &&
-              parsed.type === "doc";
-            if (isBlockNote || isTipTap) {
-              const tiptapDoc = contentToTiptap(parsed);
-              editor.setContent(tiptapDoc);
-              return;
-            }
+            parsed = JSON.parse(rawContent);
           } catch {
             // Not JSON — treat as plain text
+            const htmlContent = rawContent
+              .split("\n")
+              .map((line: string) => `<p>${escapeHtml(line) || "<br>"}</p>`)
+              .join("");
+            editor.setContent(htmlContent);
+            markLoaded();
+            return;
           }
-          // Convert plain text to simple HTML for the editor
-          const htmlContent = rawContent
-            .split("\n")
-            .map((line: string) => `<p>${escapeHtml(line) || "<br>"}</p>`)
-            .join("");
-          editor.setContent(htmlContent);
-        } else {
-          editor.setContent("");
+          const isBlockNote =
+            Array.isArray(parsed) && parsed.length > 0 && (parsed[0] as { type?: string })?.type;
+          const isTipTap =
+            parsed &&
+            typeof parsed === "object" &&
+            !Array.isArray(parsed) &&
+            (parsed as { type?: string }).type === "doc";
+          if (!isBlockNote && !isTipTap) {
+            const htmlContent = rawContent
+              .split("\n")
+              .map((line: string) => `<p>${escapeHtml(line) || "<br>"}</p>`)
+              .join("");
+            editor.setContent(htmlContent);
+            markLoaded();
+            return;
+          }
+          const tiptapDoc = contentToTiptap(parsed);
+          const resolved = await resolveTipTapImageUrls(tiptapDoc, getSignedUrl);
+          if (cancelled || noteIdRef.current !== targetNoteId) return;
+          editor.setContent(resolved);
+          markLoaded();
+        } catch (err) {
+          console.warn("Failed to set editor content:", err);
+          if (!cancelled) {
+            editor.setContent("");
+            markLoaded();
+          }
         }
-      } catch (err) {
-        console.warn("Failed to set editor content:", err);
-        editor.setContent("");
-      }
+      })();
+
+      return () => {
+        cancelled = true;
+      };
     } else if (!note) {
+      titleAutoSaveRef.current?.flush();
+      contentAutoSaveRef.current?.flush();
       noteIdRef.current = undefined;
+      loadedNoteIdRef.current = null;
       setTitle("");
       try {
         editor.setContent("");
@@ -171,21 +254,60 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
     }
   }, [note?.id, editor, editorReady]);
 
-  // Flush pending autosaves when switching notes
+  const handleAttachmentReady = useCallback(
+    async (attachment: Attachment) => {
+      // Only append if the editor is actually loaded with the right note.
+      const active = loadedNoteIdRef.current;
+      if (!active || active !== noteIdRef.current) return;
+      try {
+        const node = await buildInsertNode(attachment);
+        const currentJson = (await editor.getJSON()) as TipTapDoc;
+        if (loadedNoteIdRef.current !== active || noteIdRef.current !== active) return;
+        const appended: TipTapDoc = {
+          type: "doc",
+          content: [...(currentJson.content ?? []), node],
+        };
+        editor.setContent(appended);
+        // setContent doesn't reliably trigger onChange in tentap. Persist
+        // directly, addressing the note by id rather than via the prop closure
+        // so a mid-flight note switch can't reroute the write. Supersede any
+        // pending pre-attachment autosave first — otherwise its 800 ms debounce
+        // would fire later with stale content and strand the inline reference.
+        const blocks = tiptapToBlocknote(appended);
+        const migrated = migrateSignedUrlsToAttachmentUrls(blocks);
+        const serialized = JSON.stringify(migrated);
+        const record = await database.get<Note>("notes").find(active);
+        await database.write(async () => {
+          await record.update((n) => {
+            n.content = serialized;
+          });
+        });
+        // Cancel after the authoritative write completes — `setContent(appended)`
+        // may have synchronously fired tentap's onChange, which then async-resolves
+        // a fresh `trigger()` past the cancel. Clearing once the explicit write
+        // has landed guarantees no redundant debounced rewrite remains scheduled.
+        contentAutoSaveRef.current?.cancel();
+      } catch (err) {
+        console.warn("Failed to insert attachment inline:", err);
+      }
+    },
+    [editor],
+  );
+
+  // Flush pending autosaves on unmount.
   useEffect(() => {
     return () => {
-      titleAutoSave.flush();
-      contentAutoSave.flush();
+      titleAutoSaveRef.current?.flush();
+      contentAutoSaveRef.current?.flush();
     };
-  }, [note?.id, titleAutoSave.flush, contentAutoSave.flush]);
+  }, []);
 
-  const handleTitleChange = useCallback(
-    (text: string) => {
-      setTitle(text);
-      titleAutoSave.trigger(text);
-    },
-    [titleAutoSave],
-  );
+  const handleTitleChange = useCallback((text: string) => {
+    setTitle(text);
+    const active = loadedNoteIdRef.current;
+    if (!active || active !== noteIdRef.current) return;
+    titleAutoSaveRef.current?.trigger({ noteId: active, title: text });
+  }, []);
 
   if (!noteId) {
     return (
@@ -234,12 +356,7 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
         <NoteEditor editor={editor} />
       </View>
 
-      {noteId && (
-        <ScrollView style={styles.attachmentsSection}>
-          <AttachmentList attachments={attachments} />
-          <AttachmentPicker noteId={noteId} />
-        </ScrollView>
-      )}
+      {noteId && <AttachmentPicker noteId={noteId} onAttachmentReady={handleAttachmentReady} />}
     </View>
   );
 }
@@ -289,8 +406,5 @@ const createStyles = (semantic: SemanticColors) =>
     editorContainer: {
       flex: 1,
       minHeight: 0,
-    },
-    attachmentsSection: {
-      maxHeight: 180,
     },
   });

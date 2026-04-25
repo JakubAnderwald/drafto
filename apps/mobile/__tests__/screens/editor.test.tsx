@@ -44,13 +44,6 @@ jest.mock("@/hooks/use-note", () => ({
   }),
 }));
 
-jest.mock("@/hooks/use-attachments", () => ({
-  useAttachments: () => ({
-    attachments: [],
-    loading: false,
-  }),
-}));
-
 const mockSetContent = jest.fn();
 const mockGetJSON = jest.fn().mockResolvedValue({ type: "doc", content: [] });
 
@@ -74,10 +67,6 @@ jest.mock("@/components/editor/note-editor", () => ({
 
 jest.mock("@/components/editor/attachment-picker", () => ({
   AttachmentPicker: () => null,
-}));
-
-jest.mock("@/components/editor/attachment-list", () => ({
-  AttachmentList: () => null,
 }));
 
 jest.mock("@/lib/data/attachments", () => ({

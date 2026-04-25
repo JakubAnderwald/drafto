@@ -6,6 +6,7 @@ import type {
   TipTapMark,
   TipTapNode,
 } from "./types";
+import { isAttachmentUrl } from "./attachment-url";
 
 // --- BlockNote -> TipTap ---
 
@@ -150,6 +151,30 @@ function blockToTipTapNode(block: BlockNoteBlock): TipTapNode[] {
       if (block.props?.caption) attrs.alt = block.props.caption;
       if (block.props?.width) attrs.width = block.props.width;
       return [{ type: "image", attrs }];
+    }
+
+    case "file": {
+      // tentap's prebuilt WebView bundle has no `file` node, so we project
+      // BlockNote file blocks as a paragraph whose only child is a linked
+      // filename. The reverse converter detects this shape and restores the
+      // `file` block on save, preserving round-trip fidelity.
+      const href = (block.props?.url as string) ?? "";
+      // Use `||` (not `??`) so an explicit empty-string `name` falls through
+      // to `caption` and then to `href` — otherwise the projection would emit
+      // an invisible link with no display text.
+      const name = (block.props?.name as string) || (block.props?.caption as string) || href;
+      return [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: name,
+              marks: [{ type: "link", attrs: { href } }],
+            },
+          ],
+        },
+      ];
     }
 
     case "table": {
@@ -326,9 +351,35 @@ function extractListItems(listNode: TipTapNode, blockType: string): BlockNoteBlo
   return blocks;
 }
 
+function tryExtractFileBlock(node: TipTapNode): BlockNoteBlock | null {
+  // A non-image attachment uploaded from mobile/desktop is stored as a
+  // paragraph whose only child is a text node wearing a single `attachment://`
+  // link mark. Restoring it to a BlockNote `file` block keeps the web editor's
+  // native file rendering and keeps the canonical schema symmetric.
+  const content = node.content;
+  if (!content || content.length !== 1) return null;
+  const only = content[0];
+  if (only.type !== "text" || typeof only.text !== "string" || !only.text) return null;
+  // Tolerate extra formatting marks (bold/italic/etc.) alongside the link so
+  // that a user decorating an attachment link doesn't silently downgrade the
+  // `file` block to a paragraph-with-link on round-trip.
+  const marks = only.marks ?? [];
+  const linkMarks = marks.filter((m) => m.type === "link");
+  if (linkMarks.length !== 1) return null;
+  const href = linkMarks[0]?.attrs?.href;
+  if (typeof href !== "string" || !isAttachmentUrl(href)) return null;
+  return {
+    type: "file",
+    props: { url: href, name: only.text },
+    children: [],
+  };
+}
+
 function tipTapNodeToBlocks(node: TipTapNode): BlockNoteBlock[] {
   switch (node.type) {
     case "paragraph": {
+      const fileBlock = tryExtractFileBlock(node);
+      if (fileBlock) return [fileBlock];
       return [
         {
           type: "paragraph",

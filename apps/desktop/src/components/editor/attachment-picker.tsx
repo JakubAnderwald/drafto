@@ -8,13 +8,14 @@ import { useTheme } from "@/providers/theme-provider";
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
+import type { Attachment } from "@/db";
 
 interface AttachmentPickerProps {
   noteId: string;
-  onUploadComplete?: () => void;
+  onAttachmentReady?: (attachment: Attachment) => void;
 }
 
-export function AttachmentPicker({ noteId, onUploadComplete }: AttachmentPickerProps) {
+export function AttachmentPicker({ noteId, onAttachmentReady }: AttachmentPickerProps) {
   const { user } = useAuth();
   const { sync } = useDatabase();
   const { isConnected } = useNetworkStatus();
@@ -32,14 +33,14 @@ export function AttachmentPicker({ noteId, onUploadComplete }: AttachmentPickerP
       setUploading(true);
 
       // Always save locally first, then try uploading
-      await queueAttachment(user.id, noteId, file);
+      const attachment = await queueAttachment(user.id, noteId, file);
 
       if (isConnected) {
         // Trigger sync to upload immediately
         await sync();
       }
 
-      onUploadComplete?.();
+      onAttachmentReady?.(attachment);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to attach file";
       Alert.alert("Attachment Error", message);

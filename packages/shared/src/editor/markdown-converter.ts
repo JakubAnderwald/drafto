@@ -84,6 +84,15 @@ function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
       break;
     }
 
+    case "file": {
+      const url = (block.props?.url as string) ?? "";
+      // `||` so an explicit empty-string name falls through to caption/url;
+      // `??` would emit `[](url)` and produce invisible link text.
+      const name = (block.props?.name as string) || (block.props?.caption as string) || url;
+      lines.push(`${prefix}[${name}](${url})`);
+      break;
+    }
+
     case "table": {
       const tableContent = block.content as BlockNoteTableContent | undefined;
       if (tableContent?.type === "tableContent" && tableContent.rows.length > 0) {
@@ -245,6 +254,21 @@ export function markdownToBlockNote(markdown: string): BlockNoteBlock[] {
       const props: Record<string, unknown> = { url: imageMatch[2] };
       if (imageMatch[1]) props.caption = imageMatch[1];
       blocks.push({ type: "image", props, children: [] });
+      i++;
+      continue;
+    }
+
+    // Standalone attachment file link: [name](attachment://...)
+    // The forward direction (blockToMarkdown) emits file blocks in this exact
+    // shape, so reading it back without restoring the file block would silently
+    // downgrade it to a paragraph and break web's native attachment rendering.
+    const fileMatch = content.match(/^\[([^\]]*)\]\((attachment:\/\/[^)]+)\)\s*$/);
+    if (fileMatch) {
+      blocks.push({
+        type: "file",
+        props: { url: fileMatch[2], name: fileMatch[1] },
+        children: [],
+      });
       i++;
       continue;
     }
