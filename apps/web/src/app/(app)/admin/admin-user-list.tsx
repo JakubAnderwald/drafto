@@ -3,25 +3,13 @@
 import { useState } from "react";
 import { Card, CardBody } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { formatRelativeTime } from "@drafto/shared";
 
 export interface PendingUser {
   id: string;
   email: string;
   display_name: string | null;
   created_at: string;
-}
-
-function formatRelative(iso: string): string {
-  const then = new Date(iso).getTime();
-  const diffMs = Date.now() - then;
-  const minutes = Math.floor(diffMs / 60000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString();
 }
 
 export function AdminUserList({ initialUsers }: { initialUsers: PendingUser[] }) {
@@ -78,7 +66,7 @@ export function AdminUserList({ initialUsers }: { initialUsers: PendingUser[] })
                 <p className="text-fg truncate font-medium">{user.email}</p>
                 <p className="text-fg-muted truncate text-sm">
                   {user.display_name ? `${user.display_name} · ` : ""}
-                  Signed up {formatRelative(user.created_at)}
+                  Signed up {formatRelativeTime(user.created_at)}
                 </p>
               </div>
               <Button

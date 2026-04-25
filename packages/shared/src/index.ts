@@ -21,6 +21,7 @@ export {
   SIGNED_URL_EXPIRY_SECONDS,
   ATTACHMENT_URL_PREFIX,
 } from "./constants";
+export { formatRelativeTime } from "./formatters";
 export {
   blocknoteToTiptap,
   tiptapToBlocknote,

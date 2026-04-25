@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState, useCallback } from "react";
-import { formatRelativeTime } from "@/lib/format-utils";
+import { formatRelativeTime } from "@drafto/shared";
 import { handleAuthError } from "@/lib/handle-auth-error";
 import { IconButton } from "@/components/ui/icon-button";
 import { DropdownMenu, DropdownMenuItem, DropdownMenuLabel } from "@/components/ui/dropdown-menu";

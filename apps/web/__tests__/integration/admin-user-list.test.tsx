@@ -43,7 +43,7 @@ describe("AdminUserList", () => {
     );
     expect(screen.getByText("pending@example.com")).toBeInTheDocument();
     expect(screen.getByText(/Pending User/)).toBeInTheDocument();
-    expect(screen.getByText(/30 min ago/)).toBeInTheDocument();
+    expect(screen.getByText(/30m ago/)).toBeInTheDocument();
   });
 
   it("formats times across ranges", () => {

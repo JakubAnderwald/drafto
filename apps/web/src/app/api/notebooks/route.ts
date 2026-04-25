@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
     .from("notebooks")
     .select("*")
     .eq("user_id", user.id)
-    .order("name");
+    .order("updated_at", { ascending: false });
 
   if (error) {
     return errorResponse("Failed to fetch notebooks", 500);

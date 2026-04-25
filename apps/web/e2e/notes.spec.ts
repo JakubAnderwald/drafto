@@ -1,4 +1,22 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+
+/**
+ * The /api/notebooks endpoint and the SSR layout prefetch both order by
+ * updated_at desc, so the auto-selected notebook on `page.goto("/")` is
+ * whichever was last touched — including by other parallel workers.
+ *
+ * Capture the currently-active notebook's name so the test can deterministically
+ * re-select it after a reload (the active row carries data-testid).
+ */
+async function getActiveNotebookName(page: Page): Promise<string> {
+  const active = page.locator('[data-testid="notebook-item-active"]');
+  await active.waitFor({ timeout: 10000 });
+  return (await active.innerText()).trim();
+}
+
+async function selectNotebookByName(page: Page, name: string): Promise<void> {
+  await page.locator("nav li").filter({ hasText: name }).locator('[role="button"]').first().click();
+}
 
 test.describe("Note editing flow", () => {
   test("create note, edit title, type content, verify auto-save, and reload to confirm persistence", async ({
@@ -11,6 +29,8 @@ test.describe("Note editing flow", () => {
 
     // Wait for a notebook to be auto-selected (shows "Notes" heading in middle panel)
     await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
+
+    const activeNotebook = await getActiveNotebookName(page);
 
     // --- Create a new note ---
     await page.getByRole("button", { name: "New note", exact: true }).click();
@@ -40,6 +60,7 @@ test.describe("Note editing flow", () => {
 
     // Wait for app to reload
     await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({ timeout: 10000 });
+    await selectNotebookByName(page, activeNotebook);
     await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
 
     // After reload, the note list should show our title (fresh fetch from API)
@@ -72,13 +93,22 @@ test.describe("Note editing flow", () => {
     await createInput.press("Enter");
     await expect(page.getByText(targetNotebook)).toBeVisible();
 
-    // Switch back to the first notebook (auto-created "Notes" or whatever is first)
+    // Switch to any notebook other than the just-created Target. The first list
+    // entry is no longer guaranteed to be the auto-created "Notes" — under
+    // updated_at-desc ordering, "Target {ts}" we just created is now first.
+    // Capture the source notebook's name so we can re-select it after reload
+    // (the SSR layout also orders by updated_at, so the just-created Target
+    // would otherwise be auto-selected on the next page load).
     const sidebar = page.locator("aside");
-    const firstNotebook = sidebar.locator("nav li").first();
-    await firstNotebook.click();
+    const nonTargetNotebook = sidebar
+      .locator("nav li")
+      .filter({ hasNotText: targetNotebook })
+      .first();
+    const sourceNotebookName = (await nonTargetNotebook.innerText()).trim();
+    await nonTargetNotebook.click();
     await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 5000 });
 
-    // Create a note in the first notebook
+    // Create a note in the source notebook
     await page.getByRole("button", { name: "New note", exact: true }).click();
     const titleInput = page.getByRole("textbox", { name: "Note title" });
     await expect(titleInput).toBeVisible({ timeout: 5000 });
@@ -91,6 +121,9 @@ test.describe("Note editing flow", () => {
     // Reload to get fresh note list with updated title
     await page.reload();
     await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({ timeout: 10000 });
+    // Re-select the source notebook explicitly — the auto-selected one after
+    // reload is whichever is most-recently-updated, which may not be us.
+    await selectNotebookByName(page, sourceNotebookName);
     await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
 
     // Now move the note: click the "..." menu on the note
@@ -118,6 +151,8 @@ test.describe("Note editing flow", () => {
     await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
 
+    const activeNotebook = await getActiveNotebookName(page);
+
     // Create a note to delete
     await page.getByRole("button", { name: "New note", exact: true }).click();
     const titleInput = page.getByRole("textbox", { name: "Note title" });
@@ -139,6 +174,8 @@ test.describe("Note editing flow", () => {
 
     // Reload to get fresh note list
     await page.reload();
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({ timeout: 10000 });
+    await selectNotebookByName(page, activeNotebook);
     await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
 
     const noteList = page
@@ -183,11 +220,13 @@ test.describe("Note editing flow", () => {
     await expect(page.getByText(noteTitle2)).not.toBeVisible({ timeout: 5000 });
 
     // --- Verify restoration: go back to the notebook ---
-    await sidebar.locator("nav li").first().click();
+    await selectNotebookByName(page, activeNotebook);
     await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 5000 });
 
     // Reload to verify from server
     await page.reload();
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({ timeout: 10000 });
+    await selectNotebookByName(page, activeNotebook);
     await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
 
     // Restored note should be visible in the notebook
@@ -200,6 +239,8 @@ test.describe("Note editing flow", () => {
     await page.goto("/");
 
     await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
+
+    const activeNotebook = await getActiveNotebookName(page);
 
     // Create first note
     await page.getByRole("button", { name: "New note", exact: true }).click();
@@ -223,6 +264,8 @@ test.describe("Note editing flow", () => {
 
     // Reload to get fresh note list with updated titles
     await page.reload();
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({ timeout: 10000 });
+    await selectNotebookByName(page, activeNotebook);
     await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
 
     // Both notes should be in the list after reload

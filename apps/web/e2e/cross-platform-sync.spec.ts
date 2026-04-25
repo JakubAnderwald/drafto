@@ -61,12 +61,25 @@ test.describe("Cross-platform format sync", () => {
   let notebookName: string;
 
   test.beforeAll(async ({ request }) => {
-    const res = await request.get("/api/notebooks");
-    expect(res.ok()).toBe(true);
-    const notebooks: { id: string; name: string }[] = await res.json();
-    expect(notebooks.length).toBeGreaterThan(0);
-    notebookId = notebooks[0].id;
-    notebookName = notebooks[0].name;
+    // Create a dedicated notebook for this test suite. Using the API directly
+    // (rather than picking notebooks[0]) is robust to the /api/notebooks
+    // updated_at-desc ordering and to leftover dev-DB notebooks whose names
+    // don't match the cleanup helper's ephemeral patterns. The "XPlat NB"
+    // prefix matches cleanup.ts so this notebook is auto-deleted between runs.
+    notebookName = `XPlat NB ${Date.now()}`;
+    const createRes = await request.post("/api/notebooks", {
+      data: { name: notebookName },
+    });
+    expect(createRes.ok()).toBe(true);
+    const created: { id: string } = await createRes.json();
+    notebookId = created.id;
+  });
+
+  test.afterAll(async ({ request }) => {
+    // Best-effort: cleanup helper also catches "XPlat NB" by pattern.
+    if (notebookId) {
+      await request.delete(`/api/notebooks/${notebookId}`).catch(() => {});
+    }
   });
 
   test("TipTap content injected via API renders correctly on web and is repaired to BlockNote", async ({
@@ -99,6 +112,16 @@ test.describe("Cross-platform format sync", () => {
       await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({
         timeout: 10000,
       });
+      // Default-selected notebook depends on API sort order; explicitly pick the
+      // notebook that the API note was created in. The wrapper div has
+      // role=button but its accessible name includes the inline delete button's
+      // aria-label, so locate by the <li>'s text instead.
+      await page
+        .locator("nav li")
+        .filter({ hasText: notebookName })
+        .locator('[role="button"]')
+        .first()
+        .click();
       await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
 
       await expect(page.getByText(title)).toBeVisible({ timeout: 10000 });
@@ -123,6 +146,14 @@ test.describe("Cross-platform format sync", () => {
       await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({
         timeout: 10000,
       });
+      // Default-selected notebook depends on API sort order; explicitly pick the
+      // notebook the test will assert against. See above for selector rationale.
+      await page
+        .locator("nav li")
+        .filter({ hasText: notebookName })
+        .locator('[role="button"]')
+        .first()
+        .click();
       await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
 
       await page.getByRole("button", { name: "New note", exact: true }).click();
