@@ -8,6 +8,7 @@ import { useTheme } from "@/providers/theme-provider";
 import { database, Note, type Attachment } from "@/db";
 import {
   contentToTiptap,
+  formatRelativeTime,
   tiptapToBlocknote,
   toAttachmentUrl,
   resolveTipTapImageUrls,
@@ -352,6 +353,14 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
         placeholderTextColor={semantic.fgSubtle}
       />
 
+      {note && (
+        <Text style={styles.metadata}>
+          Created {formatRelativeTime(note.createdAt)}
+          {" • "}
+          Modified {formatRelativeTime(note.updatedAt)}
+        </Text>
+      )}
+
       <View style={styles.editorContainer}>
         <NoteEditor editor={editor} />
       </View>
@@ -402,6 +411,12 @@ const createStyles = (semantic: SemanticColors) =>
       paddingTop: spacing.xl,
       paddingBottom: spacing.sm,
       fontFamily: "System",
+    },
+    metadata: {
+      fontSize: fontSizes.sm,
+      color: semantic.fgMuted,
+      paddingHorizontal: spacing["2xl"],
+      paddingBottom: spacing.md,
     },
     editorContainer: {
       flex: 1,

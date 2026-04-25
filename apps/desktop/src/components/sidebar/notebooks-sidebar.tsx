@@ -145,61 +145,36 @@ export function NotebooksSidebar({
         </View>
       )}
 
+      <Text style={styles.sectionLabel}>NOTEBOOKS</Text>
+
       {loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="small" color={colors.primary[600]} />
         </View>
       ) : (
         <View style={styles.list}>
-          {notebooks.map((nb) => {
-            const isSelected = !showTrash && nb.id === selectedNotebookId;
-            const isEditing = editingId === nb.id;
-
-            return (
-              <Pressable
-                key={nb.id}
-                style={[styles.item, isSelected && styles.itemSelected]}
-                onPress={() => {
-                  onSelectNotebook(nb.id);
-                }}
-                accessibilityLabel={nb.name}
-                onLongPress={() => {
-                  setEditingId(nb.id);
-                  setEditName(nb.name);
-                }}
-              >
-                {isEditing ? (
-                  <TextInput
-                    style={styles.editInput}
-                    value={editName}
-                    onChangeText={setEditName}
-                    autoFocus
-                    onSubmitEditing={() => handleRename(nb)}
-                    onBlur={() => {
-                      setEditingId(null);
-                      setEditName("");
-                    }}
-                  />
-                ) : (
-                  <View style={styles.itemRow}>
-                    <Text
-                      style={[styles.itemText, isSelected && styles.itemTextSelected]}
-                      numberOfLines={1}
-                    >
-                      {nb.name}
-                    </Text>
-                    <Pressable
-                      style={styles.deleteButton}
-                      onPress={() => handleDelete(nb)}
-                      hitSlop={8}
-                    >
-                      <Text style={styles.deleteButtonText}>&times;</Text>
-                    </Pressable>
-                  </View>
-                )}
-              </Pressable>
-            );
-          })}
+          {notebooks.map((nb) => (
+            <NotebookRow
+              key={nb.id}
+              notebook={nb}
+              isSelected={!showTrash && nb.id === selectedNotebookId}
+              isEditing={editingId === nb.id}
+              editName={editName}
+              onSelect={() => onSelectNotebook(nb.id)}
+              onStartEdit={() => {
+                setEditingId(nb.id);
+                setEditName(nb.name);
+              }}
+              onEditNameChange={setEditName}
+              onSubmitRename={() => handleRename(nb)}
+              onCancelEdit={() => {
+                setEditingId(null);
+                setEditName("");
+              }}
+              onDelete={() => handleDelete(nb)}
+              styles={styles}
+            />
+          ))}
         </View>
       )}
 
@@ -225,6 +200,73 @@ export function NotebooksSidebar({
         </View>
       </View>
     </View>
+  );
+}
+
+interface NotebookRowProps {
+  notebook: Notebook;
+  isSelected: boolean;
+  isEditing: boolean;
+  editName: string;
+  onSelect: () => void;
+  onStartEdit: () => void;
+  onEditNameChange: (name: string) => void;
+  onSubmitRename: () => void;
+  onCancelEdit: () => void;
+  onDelete: () => void;
+  styles: ReturnType<typeof createStyles>;
+}
+
+function NotebookRow({
+  notebook,
+  isSelected,
+  isEditing,
+  editName,
+  onSelect,
+  onStartEdit,
+  onEditNameChange,
+  onSubmitRename,
+  onCancelEdit,
+  onDelete,
+  styles,
+}: NotebookRowProps) {
+  const [hovered, setHovered] = useState(false);
+
+  return (
+    <Pressable
+      style={[styles.item, isSelected && styles.itemSelected]}
+      onPress={onSelect}
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      accessibilityLabel={notebook.name}
+      onLongPress={onStartEdit}
+    >
+      {isEditing ? (
+        <TextInput
+          style={styles.editInput}
+          value={editName}
+          onChangeText={onEditNameChange}
+          autoFocus
+          onSubmitEditing={onSubmitRename}
+          onBlur={onCancelEdit}
+        />
+      ) : (
+        <View style={styles.itemRow}>
+          <Text style={[styles.itemText, isSelected && styles.itemTextSelected]} numberOfLines={1}>
+            {notebook.name}
+          </Text>
+          <Pressable
+            style={[styles.deleteButton, !hovered && styles.deleteButtonHidden]}
+            onPress={onDelete}
+            hitSlop={8}
+            accessibilityLabel="Delete notebook"
+            accessibilityRole="button"
+          >
+            <Text style={styles.deleteButtonText}>&times;</Text>
+          </Pressable>
+        </View>
+      )}
+    </Pressable>
   );
 }
 
@@ -342,11 +384,24 @@ const createStyles = (semantic: SemanticColors) =>
     },
     deleteButton: {
       marginLeft: spacing.xs,
-      opacity: 0.5,
+      opacity: 1,
+    },
+    deleteButtonHidden: {
+      opacity: 0,
     },
     deleteButtonText: {
       fontSize: fontSizes.xl,
       color: semantic.fgMuted,
+    },
+    sectionLabel: {
+      fontSize: fontSizes.xs,
+      fontWeight: "600",
+      color: semantic.fgMuted,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+      paddingHorizontal: spacing.lg,
+      paddingTop: spacing.md,
+      paddingBottom: spacing.xs,
     },
     footer: {
       borderTopWidth: 1,

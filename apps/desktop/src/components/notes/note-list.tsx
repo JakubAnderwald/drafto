@@ -1,61 +1,21 @@
-import { useMemo, useCallback } from "react";
+import { useMemo, useState, useCallback } from "react";
 import { View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView } from "react-native";
+
+import { formatRelativeTime } from "@drafto/shared";
 
 import { useAuth } from "@/providers/auth-provider";
 import { useNotes } from "@/hooks/use-notes";
 import { database, Note } from "@/db";
 import { generateId } from "@/lib/generate-id";
-import { colors, fontSizes, spacing } from "@/theme/tokens";
+import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { useTheme } from "@/providers/theme-provider";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Button } from "@/components/ui/button";
 
 interface NoteListProps {
   notebookId: string | undefined;
   selectedNoteId: string | undefined;
   onSelectNote: (id: string) => void;
-}
-
-function formatDate(date: Date): string {
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMin = Math.floor(diffMs / 60_000);
-
-  if (diffMin < 1) return "Just now";
-  if (diffMin < 60) return `${diffMin}m ago`;
-
-  const diffHour = Math.floor(diffMin / 60);
-  if (diffHour < 24) return `${diffHour}h ago`;
-
-  const diffDay = Math.floor(diffHour / 24);
-  if (diffDay < 7) return `${diffDay}d ago`;
-
-  return date.toLocaleDateString();
-}
-
-function getPreview(content: string | null): string {
-  if (!content) return "No content";
-  try {
-    const parsed = JSON.parse(content);
-    // TipTap JSON: extract text from first content node
-    if (parsed?.content) {
-      for (const node of parsed.content) {
-        if (node.content) {
-          const text = node.content
-            .filter((c: { type: string }) => c.type === "text")
-            .map((c: { text: string }) => c.text)
-            .join("");
-          if (text.trim()) return text.trim();
-        }
-      }
-    }
-    return "No content";
-  } catch {
-    // Plain text content
-    const trimmed = content.trim();
-    return trimmed || "No content";
-  }
 }
 
 export function NoteList({ notebookId, selectedNoteId, onSelectNote }: NoteListProps) {
@@ -116,7 +76,15 @@ export function NoteList({ notebookId, selectedNoteId, onSelectNote }: NoteListP
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Notes</Text>
-        <Button title="+ New" onPress={handleCreateNote} size="sm" testID="new-note-button" />
+        <Pressable
+          style={({ pressed }) => [styles.addButton, pressed && styles.addButtonPressed]}
+          onPress={handleCreateNote}
+          accessibilityLabel="New note"
+          accessibilityRole="button"
+          testID="new-note-button"
+        >
+          <Text style={styles.addButtonText}>+</Text>
+        </Pressable>
       </View>
 
       {loading ? (
@@ -127,41 +95,57 @@ export function NoteList({ notebookId, selectedNoteId, onSelectNote }: NoteListP
         <EmptyState icon="📝" title="No notes yet" subtitle="Create your first note" />
       ) : (
         <ScrollView style={styles.list}>
-          {notes.map((note) => {
-            const isSelected = note.id === selectedNoteId;
-
-            return (
-              <Pressable
-                key={note.id}
-                style={[styles.noteItem, isSelected && styles.noteItemSelected]}
-                onPress={() => onSelectNote(note.id)}
-                accessibilityLabel={note.title || "Untitled"}
-              >
-                <View style={styles.noteItemRow}>
-                  <Text
-                    style={[styles.noteTitle, isSelected && styles.noteTitleSelected]}
-                    numberOfLines={1}
-                  >
-                    {note.title || "Untitled"}
-                  </Text>
-                  <Pressable
-                    style={styles.trashButton}
-                    onPress={() => handleTrashNote(note)}
-                    hitSlop={8}
-                  >
-                    <Text style={styles.trashButtonText}>&times;</Text>
-                  </Pressable>
-                </View>
-                <Text style={styles.notePreview} numberOfLines={1}>
-                  {getPreview(note.content)}
-                </Text>
-                <Text style={styles.noteDate}>{formatDate(note.updatedAt)}</Text>
-              </Pressable>
-            );
-          })}
+          {notes.map((note) => (
+            <NoteRow
+              key={note.id}
+              note={note}
+              isSelected={note.id === selectedNoteId}
+              onSelect={() => onSelectNote(note.id)}
+              onTrash={() => handleTrashNote(note)}
+              styles={styles}
+            />
+          ))}
         </ScrollView>
       )}
     </View>
+  );
+}
+
+interface NoteRowProps {
+  note: Note;
+  isSelected: boolean;
+  onSelect: () => void;
+  onTrash: () => void;
+  styles: ReturnType<typeof createStyles>;
+}
+
+function NoteRow({ note, isSelected, onSelect, onTrash, styles }: NoteRowProps) {
+  const [hovered, setHovered] = useState(false);
+
+  return (
+    <Pressable
+      style={[styles.noteItem, isSelected && styles.noteItemSelected]}
+      onPress={onSelect}
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      accessibilityLabel={note.title || "Untitled"}
+    >
+      <View style={styles.noteItemRow}>
+        <Text style={[styles.noteTitle, isSelected && styles.noteTitleSelected]} numberOfLines={1}>
+          {note.title || "Untitled"}
+        </Text>
+        <Pressable
+          style={[styles.trashButton, !hovered && styles.trashButtonHidden]}
+          onPress={onTrash}
+          hitSlop={8}
+          accessibilityLabel="Delete note"
+          accessibilityRole="button"
+        >
+          <Text style={styles.trashButtonText}>&times;</Text>
+        </Pressable>
+      </View>
+      <Text style={styles.noteDate}>{formatRelativeTime(note.updatedAt)}</Text>
+    </Pressable>
   );
 }
 
@@ -188,6 +172,23 @@ const createStyles = (semantic: SemanticColors) =>
       color: semantic.fgMuted,
       textTransform: "uppercase",
       letterSpacing: 0.5,
+    },
+    addButton: {
+      width: 24,
+      height: 24,
+      borderRadius: radii.sm,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.primary[600],
+    },
+    addButtonPressed: {
+      backgroundColor: colors.primary[700],
+    },
+    addButtonText: {
+      fontSize: fontSizes.xl,
+      fontWeight: "600",
+      color: colors.white,
+      lineHeight: 18,
     },
     loadingContainer: {
       flex: 1,
@@ -222,16 +223,14 @@ const createStyles = (semantic: SemanticColors) =>
     },
     trashButton: {
       marginLeft: spacing.xs,
-      opacity: 0.4,
+      opacity: 1,
+    },
+    trashButtonHidden: {
+      opacity: 0,
     },
     trashButtonText: {
       fontSize: fontSizes.xl,
       color: semantic.fgMuted,
-    },
-    notePreview: {
-      fontSize: fontSizes.sm,
-      color: semantic.fgMuted,
-      marginTop: spacing["2xs"],
     },
     noteDate: {
       fontSize: fontSizes.sm,

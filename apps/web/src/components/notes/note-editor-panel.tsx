@@ -5,10 +5,9 @@ import { NoteEditor } from "@/components/editor/note-editor";
 import { Badge } from "@/components/ui/badge";
 import { useAutoSave } from "@/hooks/use-auto-save";
 import { handleAuthError } from "@/lib/handle-auth-error";
-import { formatRelativeTime } from "@/lib/format-utils";
 import type { Block } from "@blocknote/core";
 import type { BadgeVariant } from "@/components/ui/badge";
-import { MAX_TITLE_LENGTH } from "@drafto/shared";
+import { MAX_TITLE_LENGTH, formatRelativeTime } from "@drafto/shared";
 
 interface NoteEditorPanelProps {
   noteId: string;

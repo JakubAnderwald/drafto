@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState, useCallback } from "react";
-import { formatRelativeTime } from "@/lib/format-utils";
+import { formatRelativeTime } from "@drafto/shared";
 import { handleAuthError } from "@/lib/handle-auth-error";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
