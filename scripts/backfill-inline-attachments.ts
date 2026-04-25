@@ -182,19 +182,32 @@ async function main() {
 
     if (dryRun) continue;
 
-    // Preserve the original updated_at so the backfill doesn't bump every
-    // note's modified-time to "now".
-    const { error: updateError } = await supabase
+    // Optimistic concurrency: only update if updated_at hasn't moved since we
+    // read it. The live app keeps writing during the run, so a row read here
+    // could be overtaken by a real edit before our update lands. Matching on
+    // the original updated_at lets PostgREST return 0 affected rows in that
+    // case so we can log + skip rather than overwrite a fresher version.
+    // Preserving updated_at on the write also keeps the note's modified-time
+    // honest — the backfill is a content repair, not a user edit.
+    const { data: updateData, error: updateError } = await supabase
       .from("notes")
       .update({
         content: nextBlocks,
         updated_at: typedNote.updated_at,
       })
-      .eq("id", noteId);
+      .eq("id", noteId)
+      .eq("updated_at", typedNote.updated_at)
+      .select("id");
 
     if (updateError) {
       console.error(`[backfill] failed to update note ${noteId}:`, updateError.message);
       errors += 1;
+    } else if (!updateData || updateData.length === 0) {
+      console.warn(
+        `[backfill] note ${noteId}: skipped — concurrent edit detected (updated_at moved); re-run to retry`,
+      );
+      notesUpdated -= 1;
+      blocksInserted -= missing.length;
     }
   }
 

@@ -276,13 +276,17 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
         const blocks = tiptapToBlocknote(appended);
         const migrated = migrateSignedUrlsToAttachmentUrls(blocks);
         const serialized = JSON.stringify(migrated);
-        contentAutoSaveRef.current?.cancel();
         const record = await database.get<Note>("notes").find(active);
         await database.write(async () => {
           await record.update((n) => {
             n.content = serialized;
           });
         });
+        // Cancel after the authoritative write completes — `setContent(appended)`
+        // may have synchronously fired tentap's onChange, which then async-resolves
+        // a fresh `trigger()` past the cancel. Clearing once the explicit write
+        // has landed guarantees no redundant debounced rewrite remains scheduled.
+        contentAutoSaveRef.current?.cancel();
       } catch (err) {
         console.warn("Failed to insert attachment inline:", err);
       }

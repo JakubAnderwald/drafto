@@ -258,6 +258,21 @@ export function markdownToBlockNote(markdown: string): BlockNoteBlock[] {
       continue;
     }
 
+    // Standalone attachment file link: [name](attachment://...)
+    // The forward direction (blockToMarkdown) emits file blocks in this exact
+    // shape, so reading it back without restoring the file block would silently
+    // downgrade it to a paragraph and break web's native attachment rendering.
+    const fileMatch = content.match(/^\[([^\]]*)\]\((attachment:\/\/[^)]+)\)\s*$/);
+    if (fileMatch) {
+      blocks.push({
+        type: "file",
+        props: { url: fileMatch[2], name: fileMatch[1] },
+        children: [],
+      });
+      i++;
+      continue;
+    }
+
     // Check list item
     const checkMatch = content.match(/^-\s+\[([ xX])\]\s+(.*)/);
     if (checkMatch) {
