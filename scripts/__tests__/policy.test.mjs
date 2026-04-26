@@ -12,6 +12,7 @@ import {
   isAllowlistedSender,
   THREAD_24H_CAP,
   SENDER_1H_CAP,
+  DAILY_GLOBAL_CAP,
   ADMIN_NOTIFY_COOLDOWN_MS,
 } from "../lib/policy.mjs";
 import { emptyState } from "../lib/state.mjs";
@@ -116,6 +117,14 @@ describe("checkRateLimit", () => {
     assert.equal(r.ok, false);
     assert.match(r.reason, /sender cap/);
   });
+
+  it("rejects after DAILY_GLOBAL_CAP hits in a day", () => {
+    const state = emptyState();
+    state.global.autoRepliesByDay[now.slice(0, 10)] = DAILY_GLOBAL_CAP;
+    const r = checkRateLimit(state, "T1", "jane@example.com", now);
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /daily global cap/);
+  });
 });
 
 describe("bumpCounters", () => {
@@ -135,6 +144,18 @@ describe("bumpCounters", () => {
     state.threads["T1"] = { autoReplies: [old, old, old], lastAdminNotificationAt: null };
     bumpCounters(state, "T1", "jane@example.com", now);
     assert.equal(state.threads["T1"].autoReplies.length, 1);
+  });
+
+  it("prunes stale per-sender entries (older than 1h) on bump", () => {
+    const state = emptyState();
+    const oldHit = new Date(Date.parse(now) - 2 * 60 * 60 * 1000).toISOString();
+    const recentHit = new Date(Date.parse(now) - 30 * 60 * 1000).toISOString();
+    state.senders["jane@example.com"] = { autoReplies: [oldHit, recentHit, oldHit] };
+    bumpCounters(state, "T1", "jane@example.com", now);
+    // Only the recent hit + the new bump should survive.
+    assert.equal(state.senders["jane@example.com"].autoReplies.length, 2);
+    assert.ok(state.senders["jane@example.com"].autoReplies.includes(recentHit));
+    assert.ok(state.senders["jane@example.com"].autoReplies.includes(now));
   });
 });
 

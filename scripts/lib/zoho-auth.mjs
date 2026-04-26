@@ -30,6 +30,16 @@ export function _resetForTests({ fetchImpl } = {}) {
 
 export async function loadConfig(filePath = DEFAULT_OAUTH_PATH) {
   if (cached.config) return cached.config;
+  // setup-zoho-oauth.mjs writes this file with mode 0600. If it ever drifts
+  // (cp without -p, restored from a backup with a permissive umask, etc.) the
+  // long-lived refresh_token + client_secret would be readable by other local
+  // users — fail loudly rather than silently load it.
+  const stat = await fs.stat(filePath);
+  if ((stat.mode & 0o077) !== 0) {
+    throw new Error(
+      `${filePath} is group/world-readable (mode ${(stat.mode & 0o777).toString(8)}); chmod 600 it.`,
+    );
+  }
   const raw = await fs.readFile(filePath, "utf8");
   const parsed = JSON.parse(raw);
   const required = ["client_id", "client_secret", "refresh_token", "account_id", "primary_email"];

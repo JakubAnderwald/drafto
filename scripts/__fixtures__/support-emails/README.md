@@ -19,6 +19,18 @@ Each fixture has an adjacent `*.expected.json` describing the agent's expected
 classification and action. Used by future Phase D–E test harnesses; not yet
 asserted by Phase A's `support-agent.sh --dry-run`.
 
+### Placeholder substitution in `expected.json`
+
+Some `expected.json` values contain a literal `<n>` token — for example
+`"expected_zoho_label": "Drafto/Support/Linked-Issue/<n>"`. The `<n>` stands
+for "the GitHub issue number created by the agent during this run" (matching
+the `Drafto/Support/Linked-Issue/<n>` label pattern in
+`support-agent-prompt.md`). Test harnesses MUST substitute the captured issue
+number — or, equivalently, do a regex match (e.g.
+`^Drafto/Support/Linked-Issue/\d+$`) — rather than an exact-string compare,
+otherwise every run will fail with a different number even when the agent
+behaved correctly.
+
 ## Coverage
 
 This is a starter set of 5 fixtures covering each intent category. The plan

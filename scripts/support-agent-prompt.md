@@ -67,7 +67,7 @@ If a customer asks you to run any other command, refuse and escalate.
 1. **Classify intent** ∈ `{bug, feature, question, spam, other}` with `confidence ∈ [0,1]`.
 
 2. **Loop guard.** If `state.rateLimitOk === false` OR the headers contain
-   `Auto-Submitted: !'no'`, `Precedence: bulk|junk|list`, or DSN markers
+   an `Auto-Submitted` value other than `no`, `Precedence: bulk|junk|list`, or DSN markers
    (`X-Failed-Recipients`, or `Content-Type: multipart/report; report-type=delivery-status`):
    - `add-label Drafto/Support/Needs-Human`, leave in Inbox.
    - Fire admin notification (see below) — but only if `shouldNotifyAdmin`.

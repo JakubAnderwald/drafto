@@ -87,7 +87,7 @@ async function main() {
       }).toString(),
     });
     const tokenBody = await tokenRes.json();
-    if (!tokenRes.ok || !tokenBody.refresh_token) {
+    if (!tokenRes.ok || !tokenBody.refresh_token || !tokenBody.access_token) {
       throw new Error(
         `OAuth exchange failed (status=${tokenRes.status}): ${JSON.stringify(tokenBody)}`,
       );
@@ -111,7 +111,13 @@ async function main() {
           primaryEmail.toLowerCase(),
       ) ?? accounts[0];
     if (!account) throw new Error(`No accounts returned for ${primaryEmail}`);
-    const accountId = String(account.accountId ?? account.account_id ?? account.id);
+    const rawAccountId = account.accountId ?? account.account_id ?? account.id;
+    if (rawAccountId === undefined || rawAccountId === null || rawAccountId === "") {
+      throw new Error(
+        `Could not determine account_id from /api/accounts payload: ${JSON.stringify(account)}`,
+      );
+    }
+    const accountId = String(rawAccountId);
 
     const outDir = path.dirname(outPath);
     await fs.mkdir(outDir, { recursive: true });

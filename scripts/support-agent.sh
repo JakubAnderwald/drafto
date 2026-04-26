@@ -39,7 +39,15 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
-    --fixture) FIXTURE="${2:-}"; shift 2 ;;
+    --fixture)
+      if [[ -z "${2:-}" || "${2:0:2}" == "--" ]]; then
+        echo "ERROR: --fixture requires a path argument" >&2
+        usage >&2
+        exit 2
+      fi
+      FIXTURE="$2"
+      shift 2
+      ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -94,6 +102,12 @@ cleanup() {
   rm -f "$LOCK_FILE"
   if [[ $exit_code -ne 0 ]]; then
     log "ERROR: support-agent exiting with code $exit_code"
+    # IMPORTANT: this regex intentionally drops any line that lacks a
+    # `[HH:MM:SS]` log() prefix — including the JSON context bundles printed
+    # in dry-run mode, which contain customer email bodies / addresses /
+    # headers (PII). Don't loosen this filter without redacting bundle
+    # contents first; otherwise `nightly-failure` GitHub issues could leak
+    # customer data via the failure-issue body.
     local sanitized_log
     sanitized_log=$(grep -E '^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]' "$LOG_FILE" 2>/dev/null | tail -20 \
       || echo "No log available")
@@ -121,13 +135,21 @@ EOF
 }
 trap cleanup EXIT
 
-# ── OAuth precondition ──────────────────────────────────────────────────────
+# ── OAuth precondition + identity ───────────────────────────────────────────
 OAUTH_FILE="$HOME/drafto-secrets/zoho-oauth.json"
 if [[ -z "$FIXTURE" && ! -f "$OAUTH_FILE" ]]; then
   log "ERROR: $OAUTH_FILE not found."
   log "       Run: node scripts/lib/setup-zoho-oauth.mjs"
   exit 1
 fi
+# Derive the OAuth user's email from the secrets file rather than hardcoding,
+# so the bundle handed to Claude matches whatever sender zoho-cli.mjs actually
+# uses (cfg.primaryEmail). Falls back to a sensible default for fixture-only
+# runs where the secrets file isn't required.
+if [[ -f "$OAUTH_FILE" ]]; then
+  OAUTH_USER_EMAIL=$(jq -r '.primary_email // empty' "$OAUTH_FILE" 2>/dev/null || echo "")
+fi
+OAUTH_USER_EMAIL="${OAUTH_USER_EMAIL:-support@drafto.eu}"
 
 START_TIME=$(date +%s)
 log "=== support-agent run started (dry-run=$DRY_RUN, fixture=${FIXTURE:-none}) ==="
@@ -186,11 +208,18 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
     fi
   fi
 
+  # TODO(phase-D): replace the hardcoded `state` placeholders below with values
+  # computed from scripts/lib/state.mjs + scripts/lib/policy.mjs before this
+  # bundle is fed to Claude. Phase A only prints bundles, so leaving the loop
+  # guard / human-intervention flags as constants is harmless — but they MUST
+  # be wired up before Phase D flips on auto-classify+escalate, otherwise
+  # rateLimitOk and humanIntervened will never trip.
   BUNDLE=$(jq -n \
     --argjson thread "$THREAD_JSON" \
     --argjson headers "$HEADERS_JSON" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
     --arg adminEmail "$ADMIN_EMAIL" \
+    --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
     '{
        kind: "inbound_thread",
        thread: $thread,
@@ -200,7 +229,7 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
        config: {
          allowlist: ($allowlist | split(",") | map(ascii_downcase | gsub("^\\s+|\\s+$"; ""))),
          adminEmail: $adminEmail,
-         oauthUserEmail: "support@drafto.eu"
+         oauthUserEmail: $oauthUserEmail
        }
      }')
 

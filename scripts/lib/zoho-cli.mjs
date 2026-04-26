@@ -36,6 +36,11 @@ const SUPPORT_NAMESPACE = "Drafto/Support/";
 
 // Centralised endpoint paths. Templated with ${accountId}, ${messageId}, etc.
 // at call time. Documented against zoho.com/mail/help/api/ as of Apr 2026.
+//
+// Thread-level mutations (applying labels, moving folders) all go through the
+// unified `PUT /updatethread` endpoint with a `mode` parameter — see
+// https://www.zoho.com/mail/help/api/put-label-thread.html and
+// https://www.zoho.com/mail/help/api/put-move-thread.html.
 const ZOHO_API_PATHS = {
   folders: (accountId) => `/api/accounts/${accountId}/folders`,
   labels: (accountId) => `/api/accounts/${accountId}/labels`,
@@ -45,8 +50,7 @@ const ZOHO_API_PATHS = {
   messageHeader: (accountId, messageId) =>
     `/api/accounts/${accountId}/messages/${encodeURIComponent(messageId)}/header`,
   sendOrReply: (accountId) => `/api/accounts/${accountId}/messages`,
-  applyLabel: (accountId) => `/api/accounts/${accountId}/messages/applyLabel`,
-  moveMessage: (accountId) => `/api/accounts/${accountId}/messages/moveMessage`,
+  updateThread: (accountId) => `/api/accounts/${accountId}/updatethread`,
 };
 
 let fetchImpl = globalThis.fetch;
@@ -246,36 +250,59 @@ export async function sendFresh({ to, subject, bodyFile }) {
   return res.data ?? res;
 }
 
+function assertSupportNamespace(name, kind) {
+  if (
+    typeof name !== "string" ||
+    !name.startsWith(SUPPORT_NAMESPACE) ||
+    name.length === SUPPORT_NAMESPACE.length ||
+    name.includes("//") ||
+    /[\x00-\x1f\x7f]/.test(name)
+  ) {
+    throw new Error(`${kind} must start with "${SUPPORT_NAMESPACE}" (got "${name}")`);
+  }
+}
+
 export async function addLabel(threadId, labelName) {
   if (!threadId) throw new Error("threadId required");
-  if (typeof labelName !== "string" || !labelName.startsWith(SUPPORT_NAMESPACE)) {
-    throw new Error(`label must start with "${SUPPORT_NAMESPACE}" (got "${labelName}")`);
-  }
+  assertSupportNamespace(labelName, "label");
   const cfg = await loadConfig();
   const label = await ensureLabel(labelName);
   const labelId = label.labelId ?? label.id;
-  const res = await zohoApi("POST", ZOHO_API_PATHS.applyLabel(cfg.accountId), {
-    body: { threadId, labelId },
+  // PUT /updatethread, mode=applyLabel, with threadId/labelId as arrays. See:
+  // https://www.zoho.com/mail/help/api/put-label-thread.html
+  const res = await zohoApi("PUT", ZOHO_API_PATHS.updateThread(cfg.accountId), {
+    body: { mode: "applyLabel", threadId: [threadId], labelId: [labelId] },
   });
   return res.data ?? res;
 }
 
 export async function moveToFolder(threadId, folderName) {
   if (!threadId) throw new Error("threadId required");
-  if (typeof folderName !== "string" || !folderName.startsWith(SUPPORT_NAMESPACE)) {
-    throw new Error(`folder must start with "${SUPPORT_NAMESPACE}" (got "${folderName}")`);
-  }
+  assertSupportNamespace(folderName, "folder");
   const cfg = await loadConfig();
   const folder = await ensureFolder(folderName);
   const folderId = folder.folderId ?? folder.id;
-  const res = await zohoApi("POST", ZOHO_API_PATHS.moveMessage(cfg.accountId), {
-    body: { threadId, destFolderId: folderId },
+  // PUT /updatethread, mode=moveMessage. See:
+  // https://www.zoho.com/mail/help/api/put-move-thread.html
+  // NOTE: per the docs, `folderId` here is the SOURCE folder for threads, not
+  // the destination — Zoho implies the destination from the move mode. Our use
+  // case (moving Inbox→Resolved/Spam) needs destination semantics, so we send
+  // `destFolderId` as well; if Zoho ignores it during Phase B live verification,
+  // switch to per-message moves via /messages/{id}/moveTo or fall back to
+  // label-only organisation. Flagged as TODO(phase-B).
+  const res = await zohoApi("PUT", ZOHO_API_PATHS.updateThread(cfg.accountId), {
+    body: { mode: "moveMessage", threadId: [threadId], destFolderId: folderId },
   });
   return res.data ?? res;
 }
 
 // ── CLI dispatch ────────────────────────────────────────────────────────────
 
+// All current zoho-cli flags require a value (--to, --subject, --body-file).
+// Treating any `--xxx` token as boolean would mis-parse `--body-file --to x`
+// (the body-file flag silently becomes `true` and `--to` is consumed as a
+// separate flag with `x` as its value). Both `--key=value` and `--key value`
+// are accepted; missing values raise a clear error.
 function parseFlags(argv) {
   const flags = {};
   const positional = [];
@@ -283,12 +310,14 @@ function parseFlags(argv) {
     const arg = argv[i];
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
-      const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith("--")) {
-        flags[key] = next;
-        i++;
+      const eq = key.indexOf("=");
+      if (eq !== -1) {
+        flags[key.slice(0, eq)] = key.slice(eq + 1);
+      } else if (i + 1 >= argv.length) {
+        throw new Error(`Missing value for --${key}`);
       } else {
-        flags[key] = true;
+        flags[key] = argv[i + 1];
+        i++;
       }
     } else {
       positional.push(arg);

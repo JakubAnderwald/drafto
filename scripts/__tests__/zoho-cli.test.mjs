@@ -19,7 +19,11 @@ before(async () => {
       primary_email: "support@drafto.eu",
       datacenter: "eu",
     }),
+    { mode: 0o600 },
   );
+  // Some platforms ignore the `mode` flag on writeFile (umask differences) —
+  // chmod explicitly so loadConfig's 0600 sanity check is satisfied.
+  await fs.chmod(OAUTH_FILE, 0o600);
   await fs.writeFile(BODY_FILE, "hello body");
   process.env.ZOHO_OAUTH_PATH = OAUTH_FILE;
 });
@@ -72,6 +76,14 @@ describe("add-label", () => {
     assert.equal(calls.length, 0);
   });
 
+  it("refuses empty-leaf, double-slash, and control-char labels", async () => {
+    cli._setFetchForTests(makeFetch([]));
+    await assert.rejects(() => cli.addLabel("T1", "Drafto/Support/"), /Drafto\/Support\//);
+    await assert.rejects(() => cli.addLabel("T1", "Drafto/Support//Foo"), /Drafto\/Support\//);
+    await assert.rejects(() => cli.addLabel("T1", "Drafto/Support/Bad\x01"), /Drafto\/Support\//);
+    assert.equal(calls.length, 0);
+  });
+
   it("creates the label lazily if missing, then applies it", async () => {
     cli._setFetchForTests(
       makeFetch([
@@ -87,18 +99,20 @@ describe("add-label", () => {
           }),
         },
         {
-          match: (url, init) => url.endsWith("/messages/applyLabel") && init.method === "POST",
+          match: (url, init) => url.endsWith("/updatethread") && init.method === "PUT",
           response: jsonResponse(200, { data: { ok: true } }),
         },
       ]),
     );
     const out = await cli.addLabel("T1", "Drafto/Support/Seen");
     assert.equal(out.ok, true);
-    const applyCall = calls.find((c) => c.url.endsWith("/messages/applyLabel"));
+    const applyCall = calls.find((c) => c.url.endsWith("/updatethread"));
     assert.ok(applyCall);
+    assert.equal(applyCall.init.method, "PUT");
     const applyBody = JSON.parse(applyCall.init.body);
-    assert.equal(applyBody.threadId, "T1");
-    assert.equal(applyBody.labelId, "L42");
+    assert.equal(applyBody.mode, "applyLabel");
+    assert.deepEqual(applyBody.threadId, ["T1"]);
+    assert.deepEqual(applyBody.labelId, ["L42"]);
   });
 });
 
@@ -124,16 +138,19 @@ describe("move-to-folder", () => {
           }),
         },
         {
-          match: (url, init) => url.endsWith("/messages/moveMessage") && init.method === "POST",
+          match: (url, init) => url.endsWith("/updatethread") && init.method === "PUT",
           response: jsonResponse(200, { data: { ok: true } }),
         },
       ]),
     );
     const out = await cli.moveToFolder("T1", "Drafto/Support/Resolved");
     assert.equal(out.ok, true);
-    const moveCall = calls.find((c) => c.url.endsWith("/messages/moveMessage"));
+    const moveCall = calls.find((c) => c.url.endsWith("/updatethread"));
     assert.ok(moveCall);
+    assert.equal(moveCall.init.method, "PUT");
     const moveBody = JSON.parse(moveCall.init.body);
+    assert.equal(moveBody.mode, "moveMessage");
+    assert.deepEqual(moveBody.threadId, ["T1"]);
     assert.equal(moveBody.destFolderId, "F99");
   });
 });
@@ -209,7 +226,7 @@ describe("OAuth refresh on 401", () => {
           },
         },
         {
-          match: (url, init) => url.endsWith("/messages/applyLabel") && init.method === "POST",
+          match: (url, init) => url.endsWith("/updatethread") && init.method === "PUT",
           response: jsonResponse(200, { data: { ok: true } }),
         },
       ]),
@@ -217,6 +234,12 @@ describe("OAuth refresh on 401", () => {
     await cli.addLabel("T1", "Drafto/Support/Seen");
     assert.equal(labelGetCalls, 2, "label-get retried exactly once");
     assert.equal(tokenCalls, 2, "token re-fetched after 401");
+    // The retried label-get must use the NEW access token, not the stale one.
+    const labelGets = calls.filter(
+      (c) => c.url.endsWith("/labels") && (c.init.method ?? "GET") === "GET",
+    );
+    assert.equal(labelGets[0].init.headers.Authorization, "Zoho-oauthtoken TOKEN-1");
+    assert.equal(labelGets[1].init.headers.Authorization, "Zoho-oauthtoken TOKEN-2");
   });
 
   it("does not loop forever on persistent 401", async () => {
