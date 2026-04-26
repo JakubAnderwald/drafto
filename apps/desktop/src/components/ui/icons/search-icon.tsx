@@ -2,12 +2,12 @@ import { View } from "react-native";
 
 interface SearchIconProps {
   size?: number;
-  color?: string;
+  color: string;
 }
 
 // View-based magnifying glass to avoid the 0×0 react-native-svg rendering
 // bug on RN macOS. Circle in the upper-left, stem extending bottom-right.
-export function SearchIcon({ size = 18, color = "currentColor" }: SearchIconProps) {
+export function SearchIcon({ size = 18, color }: SearchIconProps) {
   const stroke = Math.max(1.5, size / 11);
   const circleSize = size * 0.6;
   const stemLen = size * 0.32;

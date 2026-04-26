@@ -84,8 +84,8 @@ export const semanticLight = {
   ring: colors.primary[600],
 
   // Sidebar / nav-list selection (purple highlight + indigo text)
-  sidebarBg: "#FCF2EB",
-  sidebarHover: "#F4E9E0",
+  sidebarBg: colors.neutral[100],
+  sidebarHover: colors.neutral[200],
   sidebarActive: "#E8E0FF",
   sidebarActiveText: colors.primary[600],
 
@@ -126,7 +126,9 @@ export const semanticDark = {
   borderStrong: "rgba(199, 196, 216, 0.20)",
   ring: colors.primary[300],
 
-  // Sidebar / nav-list selection (deep purple + lavender text)
+  // Sidebar / nav-list selection (deep purple + lavender text).
+  // Dark mode values aren't in the neutral palette (warm light scale only),
+  // so kept as hex; the drift test guards against divergence with globals.css.
   sidebarBg: "#251F1B",
   sidebarHover: "#2E2822",
   sidebarActive: "#2A2250",
@@ -207,6 +209,15 @@ export const radii = {
   lg: 12,
   xl: 16,
   full: 9999,
+} as const;
+
+export const fontFamily = {
+  /**
+   * Sans-serif chrome font. Web loads Geist via `next/font/google`; native apps
+   * bundle the Geist Sans static `.ttf` weights and reference the same family
+   * name here so chrome typography matches across platforms.
+   */
+  sans: "Geist",
 } as const;
 
 export const fontSizes = {

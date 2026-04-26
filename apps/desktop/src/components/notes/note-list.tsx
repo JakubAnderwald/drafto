@@ -7,14 +7,12 @@ import { useAuth } from "@/providers/auth-provider";
 import { useNotes } from "@/hooks/use-notes";
 import { database, Note } from "@/db";
 import { generateId } from "@/lib/generate-id";
-import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
+import { colors, fontFamily, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { useTheme } from "@/providers/theme-provider";
 import { EmptyState } from "@/components/ui/empty-state";
 import { IconButton } from "@/components/ui/icon-button";
 import { PlusIcon } from "@/components/ui/icons/plus-icon";
-
-const FONT_SANS = "Geist";
 
 interface NoteListProps {
   notebookId: string | undefined;
@@ -183,7 +181,7 @@ const createStyles = (semantic: SemanticColors) =>
       color: semantic.fgMuted,
       textTransform: "uppercase",
       letterSpacing: 0.5,
-      fontFamily: FONT_SANS,
+      fontFamily: fontFamily.sans,
     },
     loadingContainer: {
       flex: 1,
@@ -222,7 +220,7 @@ const createStyles = (semantic: SemanticColors) =>
       fontWeight: "500",
       color: semantic.fg,
       flex: 1,
-      fontFamily: FONT_SANS,
+      fontFamily: fontFamily.sans,
     },
     noteTitleSelected: {
       fontWeight: "600",
@@ -245,7 +243,7 @@ const createStyles = (semantic: SemanticColors) =>
       fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
       marginTop: spacing["2xs"],
-      fontFamily: FONT_SANS,
+      fontFamily: fontFamily.sans,
     },
     noteDateSelected: {
       color: semantic.sidebarActiveText,

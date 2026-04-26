@@ -2,12 +2,12 @@ import { View } from "react-native";
 
 interface CalendarIconProps {
   size?: number;
-  color?: string;
+  color: string;
 }
 
 // View-based calendar glyph (outer rounded rect + horizontal divider near the
 // top) — react-native-svg renders 0×0 on RN macOS.
-export function CalendarIcon({ size = 14, color = "currentColor" }: CalendarIconProps) {
+export function CalendarIcon({ size = 14, color }: CalendarIconProps) {
   const stroke = 1.2;
   const padX = size * 0.14;
   const padY = size * 0.18;

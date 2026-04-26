@@ -16,7 +16,7 @@ import {
 } from "@drafto/shared";
 import type { TipTapDoc, TipTapNode } from "@drafto/shared";
 import { getSignedUrl } from "@/lib/data";
-import { colors, fontSizes, spacing } from "@/theme/tokens";
+import { colors, fontFamily, fontSizes, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Badge, type BadgeVariant } from "@/components/ui/badge";
@@ -25,9 +25,9 @@ import { ClockIcon } from "@/components/ui/icons/clock-icon";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
 
-const FONT_SANS = "Geist";
+type SaveStatusKey = "saving" | "saved" | "error";
 
-const saveStatusConfig: Record<string, { label: string; variant: BadgeVariant }> = {
+const saveStatusConfig: Record<SaveStatusKey, { label: string; variant: BadgeVariant }> = {
   saving: { label: "Saving", variant: "warning" },
   saved: { label: "Saved", variant: "success" },
   error: { label: "Error", variant: "error" },
@@ -341,7 +341,7 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
     );
   }
 
-  const saveStatusKey =
+  const saveStatusKey: SaveStatusKey | null =
     titleAutoSave.status === "saving" || contentAutoSave.status === "saving"
       ? "saving"
       : titleAutoSave.status === "error" || contentAutoSave.status === "error"
@@ -422,7 +422,7 @@ const createStyles = (semantic: SemanticColors) =>
       fontSize: fontSizes["3xl"],
       fontWeight: "700",
       color: semantic.fg,
-      fontFamily: FONT_SANS,
+      fontFamily: fontFamily.sans,
       padding: 0,
     },
     metadataRow: {
@@ -439,7 +439,7 @@ const createStyles = (semantic: SemanticColors) =>
     metadataText: {
       fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
-      fontFamily: FONT_SANS,
+      fontFamily: fontFamily.sans,
     },
     editorContainer: {
       flex: 1,

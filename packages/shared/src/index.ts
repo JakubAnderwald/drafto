@@ -57,6 +57,7 @@ export {
   getSemanticColors,
   spacing,
   radii,
+  fontFamily,
   fontSizes,
 } from "./design-tokens";
 export type { SemanticColors } from "./design-tokens";

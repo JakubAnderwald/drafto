@@ -2,12 +2,12 @@ import { View } from "react-native";
 
 interface ClockIconProps {
   size?: number;
-  color?: string;
+  color: string;
 }
 
 // View-based clock glyph — circle with two short hands. react-native-svg
 // renders 0×0 on RN macOS, so we build it from primitives.
-export function ClockIcon({ size = 14, color = "currentColor" }: ClockIconProps) {
+export function ClockIcon({ size = 14, color }: ClockIconProps) {
   const stroke = 1.2;
   const pad = size * 0.1;
   const dim = size - pad * 2;
