@@ -1,18 +1,26 @@
 #!/bin/bash
 # Real-time support agent — launchd entrypoint.
 #
-# Phase A scope: dry-run only. The script polls the Zoho Inbox via
-# zoho-cli.mjs list-pending, builds a context bundle per pending thread,
-# and prints the bundle(s) to stdout. It does NOT invoke Claude Code,
-# does NOT reply to threads, does NOT create GitHub issues, and does NOT
-# touch labels or folders. Phase C+ will lift these gates progressively
-# (read-only labels → escalate → auto-reply → full).
+# Phase C scope: live but inert. The script polls the Zoho Inbox via
+# zoho-cli.mjs list-pending and either prints a context bundle per pending
+# thread (dry-run) or applies the `Drafto/Support/Seen` label so the thread
+# disappears from the agent's pending set (label-only). It does NOT invoke
+# Claude Code, does NOT reply to threads, does NOT create GitHub issues,
+# and does NOT move folders. Phase D+ will lift these gates progressively
+# (escalate → auto-reply → full).
 #
-# Modes:
-#   --dry-run                  Phase A. Required until Phase C ships.
-#   --fixture <path>           Replay a captured Zoho list-pending JSON
-#                              instead of hitting the live API. Useful for
-#                              unit-test-style golden runs.
+# Modes (exactly one of --dry-run or --label-only is required):
+#   --dry-run                  Build and print bundles. No Zoho mutations.
+#                              Useful for golden-run testing and for
+#                              eyeballing live-API output.
+#   --label-only               Apply Drafto/Support/Seen to each pending
+#                              thread. Live API mutation, but inert from
+#                              the customer's perspective. Phase C live mode.
+#   --fixture <path>           (--dry-run only) Replay a captured Zoho
+#                              list-pending JSON instead of hitting the
+#                              live API. Refused under --label-only because
+#                              fixtures contain synthetic threadIds that
+#                              don't exist in the real mailbox.
 #
 # Failure mode: if the script exits non-zero, the cleanup trap files a
 # `nightly-failure`-labelled GitHub issue, mirroring the existing pattern
@@ -27,18 +35,25 @@ export LC_ALL=en_US.UTF-8
 
 # ── Args ────────────────────────────────────────────────────────────────────
 DRY_RUN=0
+LABEL_ONLY=0
 FIXTURE=""
 usage() {
   cat <<EOF
-Usage: $0 --dry-run [--fixture <path-to-list-pending.json>]
+Usage: $0 (--dry-run | --label-only) [--fixture <path-to-list-pending.json>]
 
-Phase A scope — dry-run is required. The agent does not yet make any
-changes to Zoho or GitHub.
+Exactly one of --dry-run or --label-only is required (Phase C). The agent
+does not yet reply, file issues, move folders, or invoke Claude.
+
+  --dry-run      Print the context bundle that Claude would receive.
+                 No Zoho mutations.
+  --label-only   Apply Drafto/Support/Seen to each pending thread.
+                 Live API mutation. Refuses --fixture.
 EOF
 }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
+    --label-only) LABEL_ONLY=1; shift ;;
     --fixture)
       if [[ -z "${2:-}" || "${2:0:2}" == "--" ]]; then
         echo "ERROR: --fixture requires a path argument" >&2
@@ -53,9 +68,17 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$DRY_RUN" -ne 1 ]]; then
-  echo "ERROR: Phase A requires --dry-run." >&2
+if [[ "$DRY_RUN" -eq 0 && "$LABEL_ONLY" -eq 0 ]]; then
+  echo "ERROR: must specify --dry-run or --label-only (Phase C)." >&2
   usage >&2
+  exit 2
+fi
+if [[ "$DRY_RUN" -eq 1 && "$LABEL_ONLY" -eq 1 ]]; then
+  echo "ERROR: --dry-run and --label-only are mutually exclusive." >&2
+  exit 2
+fi
+if [[ "$LABEL_ONLY" -eq 1 && -n "$FIXTURE" ]]; then
+  echo "ERROR: --fixture cannot be combined with --label-only (would mutate Zoho with synthetic threadIds)." >&2
   exit 2
 fi
 
@@ -152,7 +175,7 @@ fi
 OAUTH_USER_EMAIL="${OAUTH_USER_EMAIL:-support@drafto.eu}"
 
 START_TIME=$(date +%s)
-log "=== support-agent run started (dry-run=$DRY_RUN, fixture=${FIXTURE:-none}) ==="
+log "=== support-agent run started (dry-run=$DRY_RUN, label-only=$LABEL_ONLY, fixture=${FIXTURE:-none}) ==="
 
 # ── Cheap pre-check: list-pending ───────────────────────────────────────────
 if [[ -n "$FIXTURE" ]]; then
@@ -178,42 +201,92 @@ if [[ "$PENDING_COUNT" -eq 0 ]]; then
   exit 0
 fi
 
-# ── Build & emit context bundles (Phase A: print only) ──────────────────────
+# ── Per-thread loop ─────────────────────────────────────────────────────────
+# list-pending dedupes in zoho-cli.mjs, so each iteration here corresponds to
+# a unique conversation. The list entry IS the latest message in that thread
+# (Zoho returns newest-first; lib keeps first occurrence). Singleton inbound
+# messages don't get a threadId assigned by Zoho until they're replied to —
+# we treat those as 1-message threads keyed off messageId for tracking, and
+# label them via add-message-label instead of add-label.
+LABEL_FAILURES=0
 for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
-  THREAD_ID=$(echo "$PENDING" \
-    | jq -r ".[${THREAD_INDEX}].threadId // .[${THREAD_INDEX}].messageId // .[${THREAD_INDEX}].id // empty")
-  if [[ -z "$THREAD_ID" ]]; then
+  ENTRY=$(echo "$PENDING" | jq ".[${THREAD_INDEX}]")
+  THREAD_ID=$(echo "$ENTRY" | jq -r '.threadId // empty')
+  MSG_ID=$(echo "$ENTRY" | jq -r '.messageId // .id // empty')
+  FOLDER_ID=$(echo "$ENTRY" | jq -r '.folderId // empty')
+  TRACK_ID="${THREAD_ID:-$MSG_ID}"
+  if [[ -z "$TRACK_ID" ]]; then
     log "WARNING: pending entry $THREAD_INDEX has no threadId/messageId — skipping"
     continue
   fi
-  log "Building bundle for thread $THREAD_ID"
 
-  # In a real run we'd call zoho-cli.mjs get-thread + get-headers here. In
-  # dry-run with a fixture, the fixture entry IS the thread payload and we
-  # pass it through as-is. In dry-run against the live API, only fetch when
-  # we have OAuth (we already verified above).
-  if [[ -n "$FIXTURE" ]]; then
-    THREAD_JSON=$(echo "$PENDING" | jq ".[${THREAD_INDEX}]")
-    HEADERS_JSON=$(echo "$THREAD_JSON" | jq '.headers // {}')
-  else
-    if ! THREAD_JSON=$(node "$SCRIPT_DIR/lib/zoho-cli.mjs" get-thread "$THREAD_ID" 2>>"$LOG_FILE"); then
-      log "ERROR: get-thread failed for $THREAD_ID; skipping"
-      continue
+  if [[ "$LABEL_ONLY" -eq 1 ]]; then
+    if [[ -n "$THREAD_ID" ]]; then
+      log "Applying Drafto/Support/Seen to thread $THREAD_ID"
+      if node "$SCRIPT_DIR/lib/zoho-cli.mjs" add-label "$THREAD_ID" "Drafto/Support/Seen" \
+          >>"$LOG_FILE" 2>&1; then
+        log "Labelled thread $THREAD_ID"
+      else
+        LABEL_FAILURES=$((LABEL_FAILURES + 1))
+        log "ERROR: add-label failed for thread $THREAD_ID"
+      fi
+    elif [[ -n "$MSG_ID" ]]; then
+      log "Applying Drafto/Support/Seen to message $MSG_ID (singleton, no threadId)"
+      if node "$SCRIPT_DIR/lib/zoho-cli.mjs" add-message-label "$MSG_ID" "Drafto/Support/Seen" \
+          >>"$LOG_FILE" 2>&1; then
+        log "Labelled message $MSG_ID"
+      else
+        LABEL_FAILURES=$((LABEL_FAILURES + 1))
+        log "ERROR: add-message-label failed for message $MSG_ID"
+      fi
     fi
-    LATEST_MSG_ID=$(echo "$THREAD_JSON" | jq -r '.messages[-1].messageId // .messages[-1].id // empty')
-    if [[ -n "$LATEST_MSG_ID" ]]; then
-      HEADERS_JSON=$(node "$SCRIPT_DIR/lib/zoho-cli.mjs" get-headers "$LATEST_MSG_ID" 2>>"$LOG_FILE" || echo '{}')
+    continue
+  fi
+
+  # --dry-run path: build a context bundle and print it.
+  log "Building bundle for $TRACK_ID (threadId=${THREAD_ID:-<none>}, msgId=$MSG_ID)"
+  if [[ -n "$FIXTURE" ]]; then
+    # Fixtures already wrap messages in {threadId, messages, headers, ...}.
+    THREAD_JSON="$ENTRY"
+    HEADERS_JSON=$(echo "$ENTRY" | jq '.headers // {}')
+  else
+    if [[ -n "$THREAD_ID" ]]; then
+      # get-thread returns a raw [<msg>, ...] array. Wrap it as
+      # {threadId, messages} so bundle.thread has the same shape as fixtures.
+      if MSGS_JSON=$(node "$SCRIPT_DIR/lib/zoho-cli.mjs" get-thread "$THREAD_ID" 2>>"$LOG_FILE"); then
+        THREAD_JSON=$(jq -n \
+          --argjson messages "$MSGS_JSON" \
+          --arg threadId "$THREAD_ID" \
+          '{ threadId: $threadId, messages: $messages }')
+      else
+        log "WARNING: get-thread failed for $THREAD_ID; falling back to list-pending entry"
+        THREAD_JSON=$(jq -n --argjson entry "$ENTRY" --arg threadId "$THREAD_ID" \
+          '{ threadId: $threadId, messages: [$entry] }')
+      fi
     else
+      # No threadId yet — treat the list-pending entry as a 1-message thread.
+      THREAD_JSON=$(jq -n --argjson entry "$ENTRY" \
+        '{ threadId: null, messages: [$entry] }')
+    fi
+    # Headers come from the list-pending entry's message id+folder id, since
+    # that entry IS the latest message in the thread. The header endpoint is
+    # folder-scoped (see zoho-cli.mjs ZOHO_API_PATHS.messageHeader).
+    if [[ -n "$MSG_ID" && -n "$FOLDER_ID" ]]; then
+      HEADERS_JSON=$(node "$SCRIPT_DIR/lib/zoho-cli.mjs" get-headers "$FOLDER_ID" "$MSG_ID" \
+        2>>"$LOG_FILE" || echo '{}')
+    else
+      log "WARNING: pending entry for $TRACK_ID has no folderId/messageId — headers omitted"
       HEADERS_JSON='{}'
     fi
   fi
 
   # TODO(phase-D): replace the hardcoded `state` placeholders below with values
   # computed from scripts/lib/state.mjs + scripts/lib/policy.mjs before this
-  # bundle is fed to Claude. Phase A only prints bundles, so leaving the loop
-  # guard / human-intervention flags as constants is harmless — but they MUST
-  # be wired up before Phase D flips on auto-classify+escalate, otherwise
-  # rateLimitOk and humanIntervened will never trip.
+  # bundle is fed to Claude. Phase C only prints bundles in dry-run mode and
+  # only labels in --label-only, so leaving the loop guard / human-intervention
+  # flags as constants is harmless — but they MUST be wired up before Phase D
+  # flips on auto-classify+escalate, otherwise rateLimitOk and humanIntervened
+  # will never trip.
   BUNDLE=$(jq -n \
     --argjson thread "$THREAD_JSON" \
     --argjson headers "$HEADERS_JSON" \
@@ -233,14 +306,14 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
        }
      }')
 
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    log "DRY-RUN: would invoke claude with the following bundle:"
-    echo "$BUNDLE" | tee -a "$LOG_FILE"
-    log "DRY-RUN: end of bundle for $THREAD_ID"
-  else
-    log "ERROR: live mode is not implemented yet (Phase C+)."
-    exit 1
-  fi
+  log "DRY-RUN: would invoke claude with the following bundle:"
+  echo "$BUNDLE" | tee -a "$LOG_FILE"
+  log "DRY-RUN: end of bundle for $TRACK_ID"
 done
+
+if [[ "$LABEL_ONLY" -eq 1 && "$LABEL_FAILURES" -gt 0 ]]; then
+  log "ERROR: $LABEL_FAILURES of $PENDING_COUNT label operations failed"
+  exit 1
+fi
 
 log "=== support-agent run completed in $(( $(date +%s) - START_TIME ))s ==="

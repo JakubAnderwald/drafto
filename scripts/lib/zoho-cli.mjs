@@ -2,19 +2,32 @@
 // Zoho Mail CLI used by the support agent.
 //
 // Subcommands (all argv-driven so Claude Code can invoke them via Bash):
-//   list-pending                            → JSON array of Inbox messages
-//                                             that don't yet carry a terminal
+//   list-pending                            → JSON array of Inbox threads
+//                                             (deduped by threadId) that don't
+//                                             yet carry a terminal
 //                                             Drafto/Support/* label.
-//   get-thread <threadId>                   → full thread JSON (messages + headers).
-//   get-headers <messageId>                 → parsed header object for one message.
+//   get-thread <threadId>                   → array of messages in the thread,
+//                                             oldest-first. Each entry carries
+//                                             messageId + folderId + subject
+//                                             + addresses (no headers).
+//   get-headers <folderId> <messageId>      → parsed header object for one
+//                                             message. Zoho's header endpoint
+//                                             requires the folder id of the
+//                                             message, so list-pending /
+//                                             get-thread surface it.
 //   reply <threadId> --body-file <path>     → posts a reply in-thread; sender is
 //                                             always the OAuth user (no --from).
 //   send --to <addr> --subject <s>          → sends a fresh non-reply email; sender
 //        --body-file <path>                   always the OAuth user. Used for admin
 //                                             notifications.
-//   add-label <threadId> <labelName>        → applies a label; refuses any name not
-//                                             under "Drafto/Support/". Creates the
-//                                             label lazily if it doesn't exist yet.
+//   add-label <threadId> <labelName>        → applies a label to a thread; refuses
+//                                             any name not under "Drafto/Support/".
+//                                             Creates the label lazily if it
+//                                             doesn't exist yet.
+//   add-message-label <messageId> <label>   → same as add-label but targets a
+//                                             single message (used for inbound
+//                                             singletons that Zoho hasn't yet
+//                                             assigned a threadId to).
 //   move-to-folder <threadId> <folder>      → moves a thread to a folder; refuses
 //                                             any name not under "Drafto/Support/".
 //                                             Creates the folder lazily.
@@ -25,8 +38,8 @@
 // All subcommands print JSON to stdout and exit 0 on success. On failure they
 // print a single-line JSON {"error": "..."} to stderr and exit non-zero.
 //
-// Endpoint paths reflect Zoho's documented Mail REST API. Phase A live
-// verification may surface small adjustments — keep the paths in
+// Endpoint paths reflect Zoho's documented Mail REST API as verified live
+// against account 8620967000000002002 in April 2026. Keep the paths in
 // ZOHO_API_PATHS centralised so they can be changed in one place.
 
 import { promises as fs } from "node:fs";
@@ -46,11 +59,15 @@ const SUPPORT_NAMESPACE = "Drafto/Support/";
 const ZOHO_API_PATHS = {
   folders: (accountId) => `/api/accounts/${accountId}/folders`,
   labels: (accountId) => `/api/accounts/${accountId}/labels`,
+  // Both Inbox listing and per-thread message listing go through the same
+  // endpoint, parameterised by query string (folderId vs threadId). Returns
+  // {data: [{messageId, threadId, folderId, subject, fromAddress, ...}]}.
   messagesView: (accountId) => `/api/accounts/${accountId}/messages/view`,
-  threadDetails: (accountId, threadId) =>
-    `/api/accounts/${accountId}/messages/${encodeURIComponent(threadId)}/details`,
-  messageHeader: (accountId, messageId) =>
-    `/api/accounts/${accountId}/messages/${encodeURIComponent(messageId)}/header`,
+  // The header endpoint is folder-scoped, not message-id-scoped. Hitting the
+  // unscoped variant returns 404 URL_RULE_NOT_CONFIGURED. The response is
+  // {data: {headerContent: "<CRLF-delimited raw headers>"}}.
+  messageHeader: (accountId, folderId, messageId) =>
+    `/api/accounts/${accountId}/folders/${encodeURIComponent(folderId)}/messages/${encodeURIComponent(messageId)}/header`,
   sendOrReply: (accountId) => `/api/accounts/${accountId}/messages`,
   updateThread: (accountId) => `/api/accounts/${accountId}/updatethread`,
   updateMessage: (accountId) => `/api/accounts/${accountId}/updatemessage`,
@@ -182,23 +199,51 @@ export async function listPending() {
     query: { folderId: inboxId, includeto: "true", limit: 200 },
   });
   const arr = res.data ?? res.messages ?? [];
-  return arr.filter((m) => !messageHasTerminalLabel(m));
+  // Inbox listing returns one entry per *message*; two messages in the same
+  // thread share a threadId and would otherwise be processed twice in one
+  // run. Filter terminal labels first, then dedupe by threadId (falling back
+  // to messageId when a message is not threaded), keeping the first
+  // occurrence — Zoho returns newest-first so that's the most recent message.
+  const filtered = arr.filter((m) => !messageHasTerminalLabel(m));
+  const seen = new Set();
+  const deduped = [];
+  for (const m of filtered) {
+    const key = m.threadId ?? m.messageId ?? m.id;
+    if (!key) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(m);
+  }
+  return deduped;
 }
 
 export async function getThread(threadId) {
   if (!threadId) throw new Error("threadId required");
   const cfg = await loadConfig();
-  const res = await zohoApi("GET", ZOHO_API_PATHS.threadDetails(cfg.accountId, threadId));
-  return res.data ?? res;
+  // /messages/view?threadId=<id> returns {data: [<msg>, ...]} — one entry per
+  // message in the thread. The earlier /messages/{id}/details path tried
+  // during Phase A returned 404 URL_RULE_NOT_CONFIGURED.
+  const res = await zohoApi("GET", ZOHO_API_PATHS.messagesView(cfg.accountId), {
+    query: { threadId, includeto: "true", limit: 200 },
+  });
+  return res.data ?? res.messages ?? [];
 }
 
-export async function getHeaders(messageId) {
+export async function getHeaders(folderId, messageId) {
+  if (!folderId) throw new Error("folderId required");
   if (!messageId) throw new Error("messageId required");
   const cfg = await loadConfig();
-  const res = await zohoApi("GET", ZOHO_API_PATHS.messageHeader(cfg.accountId, messageId));
-  // Zoho returns headers as an object or as a CRLF-delimited string depending
-  // on the endpoint variant; normalise to a plain {Name: value} object.
-  const raw = res.data?.header ?? res.data ?? res.header ?? res;
+  const res = await zohoApi(
+    "GET",
+    ZOHO_API_PATHS.messageHeader(cfg.accountId, folderId, messageId),
+  );
+  // Zoho returns headers as a CRLF-delimited string under data.headerContent.
+  const headerContent = res.data?.headerContent ?? res.headerContent;
+  if (typeof headerContent === "string") return parseRawHeaders(headerContent);
+  // Defensive fallback: if the shape ever shifts (or in tests with a stub),
+  // treat a string `data` as raw headers and an object `data` as already
+  // parsed.
+  const raw = res.data ?? res;
   if (typeof raw === "string") return parseRawHeaders(raw);
   return raw;
 }
@@ -279,6 +324,22 @@ export async function addLabel(threadId, labelName) {
   return res.data ?? res;
 }
 
+// Zoho assigns a threadId only after a message has at least one reply; until
+// then a single inbound message has only a messageId. To prevent an unreplied
+// singleton from re-appearing in list-pending every poll, we label it via
+// /updatemessage instead of /updatethread.
+export async function addMessageLabel(messageId, labelName) {
+  if (!messageId) throw new Error("messageId required");
+  assertSupportNamespace(labelName, "label");
+  const cfg = await loadConfig();
+  const label = await ensureLabel(labelName);
+  const labelId = label.labelId ?? label.id;
+  const res = await zohoApi("PUT", ZOHO_API_PATHS.updateMessage(cfg.accountId), {
+    body: { mode: "applyLabel", messageId: [messageId], labelId: [labelId] },
+  });
+  return res.data ?? res;
+}
+
 export async function moveToFolder(threadId, folderName) {
   if (!threadId) throw new Error("threadId required");
   assertSupportNamespace(folderName, "folder");
@@ -337,20 +398,22 @@ async function main(argv) {
     case "get-thread":
       return getThread(positional[0]);
     case "get-headers":
-      return getHeaders(positional[0]);
+      return getHeaders(positional[0], positional[1]);
     case "reply":
       return replyToThread(positional[0], flags["body-file"]);
     case "send":
       return sendFresh({ to: flags.to, subject: flags.subject, bodyFile: flags["body-file"] });
     case "add-label":
       return addLabel(positional[0], positional[1]);
+    case "add-message-label":
+      return addMessageLabel(positional[0], positional[1]);
     case "move-to-folder":
       return moveToFolder(positional[0], positional[1]);
     case "--help":
     case "-h":
     case undefined:
       process.stdout.write(
-        "Usage: zoho-cli.mjs <list-pending|get-thread|get-headers|reply|send|add-label|move-to-folder> [args]\n",
+        "Usage: zoho-cli.mjs <list-pending|get-thread <threadId>|get-headers <folderId> <messageId>|reply <threadId> --body-file <path>|send --to <addr> --subject <s> --body-file <path>|add-label <threadId> <label>|add-message-label <messageId> <label>|move-to-folder <threadId> <folder>>\n",
       );
       return null;
     default:

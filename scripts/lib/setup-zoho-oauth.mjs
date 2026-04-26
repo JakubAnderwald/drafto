@@ -7,7 +7,10 @@
 //      (do NOT reuse the test client `1000.1WE9804R1QYUL3MHUF578XC2ZR554F`
 //      used during planning).
 //   2. Generating a 10-minute grant code for scopes
-//        ZohoMail.accounts.READ,ZohoMail.messages.ALL,ZohoMail.folders.ALL
+//        ZohoMail.accounts.READ,ZohoMail.messages.ALL,
+//        ZohoMail.folders.ALL,ZohoMail.labels.ALL
+//      (Phase B shipped without ZohoMail.labels.ALL; Phase C surfaced
+//      INVALID_OAUTHSCOPE on /labels — re-run this script with the full set.)
 //   3. Pasting client_id, client_secret, and grant code into the prompt.
 //
 // The script exchanges the grant code at accounts.zoho.<dc>/oauth/v2/token,
@@ -15,8 +18,8 @@
 // ~/drafto-secrets/zoho-oauth.json with {client_id, client_secret,
 // refresh_token, account_id, primary_email, datacenter}, perms 0600.
 //
-// Re-run this script if the refresh token is ever revoked or the Self Client
-// app is deleted.
+// Re-run this script if the refresh token is ever revoked, the Self Client
+// app is deleted, or the scope set changes.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -51,8 +54,9 @@ async function main() {
         "Before continuing:",
         "  1. Open https://api-console.zoho.eu/ (or your data centre's console).",
         "  2. Create a new Self Client app for the support agent.",
-        "  3. Generate a grant code with all three scopes:",
-        "       ZohoMail.accounts.READ,ZohoMail.messages.ALL,ZohoMail.folders.ALL",
+        "  3. Generate a grant code with ALL FOUR scopes:",
+        "       ZohoMail.accounts.READ,ZohoMail.messages.ALL,",
+        "       ZohoMail.folders.ALL,ZohoMail.labels.ALL",
         "     and a 10-minute lifetime. Copy it now — it expires fast.",
         "",
       ].join("\n") + "\n",
