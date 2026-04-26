@@ -37,10 +37,12 @@ const SUPPORT_NAMESPACE = "Drafto/Support/";
 // Centralised endpoint paths. Templated with ${accountId}, ${messageId}, etc.
 // at call time. Documented against zoho.com/mail/help/api/ as of Apr 2026.
 //
-// Thread-level mutations (applying labels, moving folders) all go through the
-// unified `PUT /updatethread` endpoint with a `mode` parameter — see
-// https://www.zoho.com/mail/help/api/put-label-thread.html and
-// https://www.zoho.com/mail/help/api/put-move-thread.html.
+// Thread label changes go through `PUT /updatethread` with mode=applyLabel
+// (https://www.zoho.com/mail/help/api/put-label-thread.html). Folder moves go
+// through `PUT /updatemessage` with `destfolderId` — `/updatethread`'s
+// `folderId` is documented as the SOURCE folder, not the destination, so we
+// use `/updatemessage` (which accepts a thread ID via `threadId`) for moves
+// (https://www.zoho.com/mail/help/api/put-move-message.html).
 const ZOHO_API_PATHS = {
   folders: (accountId) => `/api/accounts/${accountId}/folders`,
   labels: (accountId) => `/api/accounts/${accountId}/labels`,
@@ -51,6 +53,7 @@ const ZOHO_API_PATHS = {
     `/api/accounts/${accountId}/messages/${encodeURIComponent(messageId)}/header`,
   sendOrReply: (accountId) => `/api/accounts/${accountId}/messages`,
   updateThread: (accountId) => `/api/accounts/${accountId}/updatethread`,
+  updateMessage: (accountId) => `/api/accounts/${accountId}/updatemessage`,
 };
 
 let fetchImpl = globalThis.fetch;
@@ -282,16 +285,15 @@ export async function moveToFolder(threadId, folderName) {
   const cfg = await loadConfig();
   const folder = await ensureFolder(folderName);
   const folderId = folder.folderId ?? folder.id;
-  // PUT /updatethread, mode=moveMessage. See:
-  // https://www.zoho.com/mail/help/api/put-move-thread.html
-  // NOTE: per the docs, `folderId` here is the SOURCE folder for threads, not
-  // the destination — Zoho implies the destination from the move mode. Our use
-  // case (moving Inbox→Resolved/Spam) needs destination semantics, so we send
-  // `destFolderId` as well; if Zoho ignores it during Phase B live verification,
-  // switch to per-message moves via /messages/{id}/moveTo or fall back to
-  // label-only organisation. Flagged as TODO(phase-B).
-  const res = await zohoApi("PUT", ZOHO_API_PATHS.updateThread(cfg.accountId), {
-    body: { mode: "moveMessage", threadId: [threadId], destFolderId: folderId },
+  // PUT /updatemessage with `destfolderId` (lowercase 'f' — capital-ID has been
+  // observed to return EXTRA_KEY_FOUND_IN_JSON). `/updatemessage` accepts a
+  // thread id via `threadId` to move the whole conversation in one call. See:
+  // https://www.zoho.com/mail/help/api/put-move-message.html
+  // If Phase B live verification surfaces "thread not found in Inbox" type
+  // errors when threads sit in non-Inbox folders, add
+  // `isFolderSpecific: true` + the source `folderId` to disambiguate.
+  const res = await zohoApi("PUT", ZOHO_API_PATHS.updateMessage(cfg.accountId), {
+    body: { mode: "moveMessage", destfolderId: folderId, threadId: [threadId] },
   });
   return res.data ?? res;
 }

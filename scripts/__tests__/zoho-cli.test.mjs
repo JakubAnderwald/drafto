@@ -138,20 +138,22 @@ describe("move-to-folder", () => {
           }),
         },
         {
-          match: (url, init) => url.endsWith("/updatethread") && init.method === "PUT",
+          match: (url, init) => url.endsWith("/updatemessage") && init.method === "PUT",
           response: jsonResponse(200, { data: { ok: true } }),
         },
       ]),
     );
     const out = await cli.moveToFolder("T1", "Drafto/Support/Resolved");
     assert.equal(out.ok, true);
-    const moveCall = calls.find((c) => c.url.endsWith("/updatethread"));
+    const moveCall = calls.find((c) => c.url.endsWith("/updatemessage"));
     assert.ok(moveCall);
     assert.equal(moveCall.init.method, "PUT");
     const moveBody = JSON.parse(moveCall.init.body);
     assert.equal(moveBody.mode, "moveMessage");
     assert.deepEqual(moveBody.threadId, ["T1"]);
-    assert.equal(moveBody.destFolderId, "F99");
+    // Note: lowercase 'f' in destfolderId — capital-ID has been observed to
+    // return EXTRA_KEY_FOUND_IN_JSON.
+    assert.equal(moveBody.destfolderId, "F99");
   });
 });
 
