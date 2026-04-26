@@ -7,10 +7,12 @@ import { useAuth } from "@/providers/auth-provider";
 import { useNotes } from "@/hooks/use-notes";
 import { database, Note } from "@/db";
 import { generateId } from "@/lib/generate-id";
-import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
+import { colors, fontFamily, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { useTheme } from "@/providers/theme-provider";
 import { EmptyState } from "@/components/ui/empty-state";
+import { IconButton } from "@/components/ui/icon-button";
+import { PlusIcon } from "@/components/ui/icons/plus-icon";
 
 interface NoteListProps {
   notebookId: string | undefined;
@@ -75,16 +77,14 @@ export function NoteList({ notebookId, selectedNoteId, onSelectNote }: NoteListP
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Notes</Text>
-        <Pressable
-          style={({ pressed }) => [styles.addButton, pressed && styles.addButtonPressed]}
+        <Text style={styles.headerTitle}>NOTES</Text>
+        <IconButton
           onPress={handleCreateNote}
           accessibilityLabel="New note"
-          accessibilityRole="button"
           testID="new-note-button"
         >
-          <Text style={styles.addButtonText}>+</Text>
-        </Pressable>
+          <PlusIcon size={16} color={semantic.fgMuted} />
+        </IconButton>
       </View>
 
       {loading ? (
@@ -94,7 +94,7 @@ export function NoteList({ notebookId, selectedNoteId, onSelectNote }: NoteListP
       ) : notes.length === 0 ? (
         <EmptyState icon="📝" title="No notes yet" subtitle="Create your first note" />
       ) : (
-        <ScrollView style={styles.list}>
+        <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
           {notes.map((note) => (
             <NoteRow
               key={note.id}
@@ -124,7 +124,11 @@ function NoteRow({ note, isSelected, onSelect, onTrash, styles }: NoteRowProps) 
 
   return (
     <Pressable
-      style={[styles.noteItem, isSelected && styles.noteItemSelected]}
+      style={[
+        styles.noteItem,
+        hovered && !isSelected && styles.noteItemHover,
+        isSelected && styles.noteItemSelected,
+      ]}
       onPress={onSelect}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
@@ -148,7 +152,9 @@ function NoteRow({ note, isSelected, onSelect, onTrash, styles }: NoteRowProps) 
           <Text style={styles.trashButtonText}>&times;</Text>
         </Pressable>
       </View>
-      <Text style={styles.noteDate}>{formatRelativeTime(note.updatedAt)}</Text>
+      <Text style={[styles.noteDate, isSelected && styles.noteDateSelected]} numberOfLines={1}>
+        {formatRelativeTime(note.updatedAt)}
+      </Text>
     </Pressable>
   );
 }
@@ -165,34 +171,17 @@ const createStyles = (semantic: SemanticColors) =>
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
-      padding: spacing.md,
-      paddingHorizontal: spacing.lg,
-      borderBottomWidth: 1,
-      borderBottomColor: semantic.border,
+      paddingHorizontal: spacing.md,
+      paddingTop: spacing.md,
+      paddingBottom: spacing.xs,
     },
     headerTitle: {
-      fontSize: fontSizes.md,
+      fontSize: fontSizes.xs,
       fontWeight: "600",
       color: semantic.fgMuted,
       textTransform: "uppercase",
       letterSpacing: 0.5,
-    },
-    addButton: {
-      width: 24,
-      height: 24,
-      borderRadius: radii.sm,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: colors.primary[600],
-    },
-    addButtonPressed: {
-      backgroundColor: colors.primary[700],
-    },
-    addButtonText: {
-      fontSize: fontSizes.xl,
-      fontWeight: "600",
-      color: colors.white,
-      lineHeight: 18,
+      fontFamily: fontFamily.sans,
     },
     loadingContainer: {
       flex: 1,
@@ -202,14 +191,24 @@ const createStyles = (semantic: SemanticColors) =>
     list: {
       flex: 1,
     },
+    listContent: {
+      paddingHorizontal: spacing.sm,
+      paddingBottom: spacing.sm,
+      gap: 2,
+    },
     noteItem: {
-      padding: spacing.md,
-      paddingHorizontal: spacing.lg,
-      borderBottomWidth: 1,
-      borderBottomColor: semantic.border,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+      borderRadius: radii.sm,
+      borderLeftWidth: 3,
+      borderLeftColor: "transparent",
+    },
+    noteItemHover: {
+      backgroundColor: semantic.sidebarHover,
     },
     noteItemSelected: {
-      backgroundColor: semantic.bgMuted,
+      backgroundColor: semantic.sidebarActive,
+      borderLeftColor: colors.primary[500],
     },
     noteItemRow: {
       flexDirection: "row",
@@ -221,9 +220,11 @@ const createStyles = (semantic: SemanticColors) =>
       fontWeight: "500",
       color: semantic.fg,
       flex: 1,
+      fontFamily: fontFamily.sans,
     },
     noteTitleSelected: {
       fontWeight: "600",
+      color: semantic.sidebarActiveText,
     },
     trashButton: {
       marginLeft: spacing.xs,
@@ -241,6 +242,11 @@ const createStyles = (semantic: SemanticColors) =>
     noteDate: {
       fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
-      marginTop: spacing.xs,
+      marginTop: spacing["2xs"],
+      fontFamily: fontFamily.sans,
+    },
+    noteDateSelected: {
+      color: semantic.sidebarActiveText,
+      opacity: 0.75,
     },
   });

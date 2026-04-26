@@ -16,11 +16,22 @@ import {
 } from "@drafto/shared";
 import type { TipTapDoc, TipTapNode } from "@drafto/shared";
 import { getSignedUrl } from "@/lib/data";
-import { colors, fontSizes, spacing } from "@/theme/tokens";
+import { colors, fontFamily, fontSizes, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Badge, type BadgeVariant } from "@/components/ui/badge";
+import { CalendarIcon } from "@/components/ui/icons/calendar-icon";
+import { ClockIcon } from "@/components/ui/icons/clock-icon";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
+
+type SaveStatusKey = "saving" | "saved" | "error";
+
+const saveStatusConfig: Record<SaveStatusKey, { label: string; variant: BadgeVariant }> = {
+  saving: { label: "Saving", variant: "warning" },
+  saved: { label: "Saved", variant: "success" },
+  error: { label: "Error", variant: "error" },
+};
 
 // Autosave payloads carry the noteId of the note that was being edited when the
 // save was queued. Looking up the record by id inside the save handler (rather
@@ -330,36 +341,43 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
     );
   }
 
-  const saveStatus =
+  const saveStatusKey: SaveStatusKey | null =
     titleAutoSave.status === "saving" || contentAutoSave.status === "saving"
-      ? "Saving..."
+      ? "saving"
       : titleAutoSave.status === "error" || contentAutoSave.status === "error"
-        ? "Error saving"
+        ? "error"
         : titleAutoSave.status === "saved" || contentAutoSave.status === "saved"
-          ? "Saved"
-          : "";
+          ? "saved"
+          : null;
+  const statusConfig = saveStatusKey ? saveStatusConfig[saveStatusKey] : null;
 
   return (
     <View style={styles.container}>
-      <View style={styles.toolbar}>
-        {saveStatus !== "" && <Text style={styles.saveStatus}>{saveStatus}</Text>}
+      <View style={styles.header}>
+        <View style={styles.titleRow}>
+          <TextInput
+            style={styles.titleInput}
+            value={title}
+            onChangeText={handleTitleChange}
+            placeholder="Untitled"
+            placeholderTextColor={semantic.fgSubtle}
+          />
+          {statusConfig && <Badge variant={statusConfig.variant} label={statusConfig.label} />}
+        </View>
+
+        {note && (
+          <View style={styles.metadataRow}>
+            <View style={styles.metadataItem}>
+              <CalendarIcon size={14} color={semantic.fgSubtle} />
+              <Text style={styles.metadataText}>Created {formatRelativeTime(note.createdAt)}</Text>
+            </View>
+            <View style={styles.metadataItem}>
+              <ClockIcon size={14} color={semantic.fgSubtle} />
+              <Text style={styles.metadataText}>Modified {formatRelativeTime(note.updatedAt)}</Text>
+            </View>
+          </View>
+        )}
       </View>
-
-      <TextInput
-        style={styles.titleInput}
-        value={title}
-        onChangeText={handleTitleChange}
-        placeholder="Note title"
-        placeholderTextColor={semantic.fgSubtle}
-      />
-
-      {note && (
-        <Text style={styles.metadata}>
-          Created {formatRelativeTime(note.createdAt)}
-          {" • "}
-          Modified {formatRelativeTime(note.updatedAt)}
-        </Text>
-      )}
 
       <View style={styles.editorContainer}>
         <NoteEditor editor={editor} />
@@ -389,34 +407,39 @@ const createStyles = (semantic: SemanticColors) =>
       alignItems: "center",
       justifyContent: "center",
     },
-    toolbar: {
+    header: {
+      backgroundColor: semantic.bgSubtle,
+      paddingHorizontal: spacing["2xl"],
+      paddingVertical: spacing.lg,
+    },
+    titleRow: {
       flexDirection: "row",
       alignItems: "center",
-      justifyContent: "flex-end",
-      paddingHorizontal: spacing.lg,
-      paddingVertical: spacing.sm,
-      borderBottomWidth: 1,
-      borderBottomColor: semantic.border,
-      minHeight: 36,
-    },
-    saveStatus: {
-      fontSize: fontSizes.sm,
-      color: semantic.fgSubtle,
+      gap: spacing.md,
     },
     titleInput: {
+      flex: 1,
       fontSize: fontSizes["3xl"],
       fontWeight: "700",
       color: semantic.fg,
-      paddingHorizontal: spacing["2xl"],
-      paddingTop: spacing.xl,
-      paddingBottom: spacing.sm,
-      fontFamily: "System",
+      fontFamily: fontFamily.sans,
+      padding: 0,
     },
-    metadata: {
+    metadataRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.lg,
+      marginTop: spacing.sm,
+    },
+    metadataItem: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.xs,
+    },
+    metadataText: {
       fontSize: fontSizes.sm,
-      color: semantic.fgMuted,
-      paddingHorizontal: spacing["2xl"],
-      paddingBottom: spacing.md,
+      color: semantic.fgSubtle,
+      fontFamily: fontFamily.sans,
     },
     editorContainer: {
       flex: 1,

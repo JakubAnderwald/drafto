@@ -15,6 +15,7 @@ export {
   getSemanticColors,
   spacing,
   radii,
+  fontFamily,
   fontSizes,
 } from "@drafto/shared";
 export type { SemanticColors } from "@drafto/shared";

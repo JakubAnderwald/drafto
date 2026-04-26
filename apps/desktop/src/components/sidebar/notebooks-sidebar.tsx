@@ -6,9 +6,12 @@ import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { database, Notebook } from "@/db";
 import { generateId } from "@/lib/generate-id";
-import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
+import { colors, fontFamily, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { SyncStatus } from "@/components/sync-status";
+import { IconButton } from "@/components/ui/icon-button";
+import { PlusIcon } from "@/components/ui/icons/plus-icon";
+import { SearchIcon } from "@/components/ui/icons/search-icon";
 
 interface NotebooksSidebarProps {
   selectedNotebookId: string | undefined;
@@ -104,24 +107,16 @@ export function NotebooksSidebar({
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.appTitle}>Drafto</Text>
-        <View style={styles.headerActions}>
-          <Pressable
-            style={({ pressed }) => [styles.searchButton, pressed && styles.searchButtonPressed]}
-            onPress={onOpenSearch}
-            accessibilityLabel="Search"
-            accessibilityRole="button"
-          >
-            <Text style={styles.searchButtonText}>Search</Text>
-          </Pressable>
-          <Pressable
-            style={({ pressed }) => [styles.addButton, pressed && styles.addButtonPressed]}
-            onPress={() => setIsCreating(true)}
-            accessibilityLabel="Add notebook"
-            accessibilityRole="button"
-          >
-            <Text style={styles.addButtonText}>+</Text>
-          </Pressable>
-        </View>
+        <IconButton onPress={onOpenSearch} accessibilityLabel="Search">
+          <SearchIcon size={18} color={semantic.fgMuted} />
+        </IconButton>
+      </View>
+
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionLabel}>NOTEBOOKS</Text>
+        <IconButton onPress={() => setIsCreating(true)} accessibilityLabel="New notebook">
+          <PlusIcon size={16} color={semantic.fgMuted} />
+        </IconButton>
       </View>
 
       {isCreating && (
@@ -144,8 +139,6 @@ export function NotebooksSidebar({
           />
         </View>
       )}
-
-      <Text style={styles.sectionLabel}>NOTEBOOKS</Text>
 
       {loading ? (
         <View style={styles.loadingContainer}>
@@ -234,7 +227,11 @@ function NotebookRow({
 
   return (
     <Pressable
-      style={[styles.item, isSelected && styles.itemSelected]}
+      style={[
+        styles.item,
+        hovered && !isSelected && styles.itemHover,
+        isSelected && styles.itemSelected,
+      ]}
       onPress={onSelect}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
@@ -278,7 +275,7 @@ const createStyles = (semantic: SemanticColors) =>
   StyleSheet.create({
     container: {
       flex: 1,
-      backgroundColor: semantic.bgSubtle,
+      backgroundColor: semantic.sidebarBg,
       borderRightWidth: 1,
       borderRightColor: semantic.border,
     },
@@ -286,57 +283,38 @@ const createStyles = (semantic: SemanticColors) =>
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
-      padding: spacing.lg,
-      paddingTop: spacing.md,
-      borderBottomWidth: 1,
-      borderBottomColor: semantic.border,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: spacing.sm,
     },
     appTitle: {
-      fontSize: fontSizes.lg,
-      fontWeight: "700",
+      fontSize: fontSizes.base,
+      fontWeight: "600",
       color: semantic.fg,
+      fontFamily: fontFamily.sans,
+      paddingLeft: spacing.xs,
     },
-    headerActions: {
+    sectionHeader: {
       flexDirection: "row",
       alignItems: "center",
-      gap: spacing.sm,
+      justifyContent: "space-between",
+      paddingHorizontal: spacing.md,
+      paddingTop: spacing.md,
+      paddingBottom: spacing.xs,
     },
-    searchButton: {
-      paddingVertical: spacing.xs,
-      paddingHorizontal: spacing.sm,
-      borderRadius: radii.sm,
-      backgroundColor: semantic.bgMuted,
-    },
-    searchButtonPressed: {
-      backgroundColor: semantic.bgMutedHover,
-    },
-    searchButtonText: {
-      fontSize: fontSizes.sm,
-      color: semantic.fgMuted,
-    },
-    addButton: {
-      width: 24,
-      height: 24,
-      borderRadius: radii.sm,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: colors.primary[600],
-    },
-    addButtonPressed: {
-      backgroundColor: colors.primary[700],
-    },
-    addButtonText: {
-      fontSize: fontSizes.xl,
+    sectionLabel: {
+      fontSize: fontSizes.xs,
       fontWeight: "600",
-      color: colors.white,
-      lineHeight: 18,
+      color: semantic.fgMuted,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+      fontFamily: fontFamily.sans,
     },
     createRow: {
-      padding: spacing.sm,
-      paddingHorizontal: spacing.md,
+      paddingHorizontal: spacing.sm,
+      paddingBottom: spacing.xs,
     },
     input: {
-      fontSize: fontSizes.md,
+      fontSize: fontSizes.base,
       color: semantic.fg,
       backgroundColor: semantic.bg,
       borderWidth: 1,
@@ -344,6 +322,7 @@ const createStyles = (semantic: SemanticColors) =>
       borderRadius: radii.sm,
       padding: spacing.sm,
       paddingHorizontal: spacing.sm,
+      fontFamily: fontFamily.sans,
     },
     loadingContainer: {
       flex: 1,
@@ -352,16 +331,19 @@ const createStyles = (semantic: SemanticColors) =>
     },
     list: {
       flex: 1,
-      paddingVertical: spacing.xs,
+      paddingHorizontal: spacing.sm,
     },
     item: {
-      paddingVertical: spacing.sm,
-      paddingHorizontal: spacing.md,
-      marginHorizontal: spacing.sm,
+      paddingVertical: 6,
+      paddingHorizontal: spacing.sm,
       borderRadius: radii.sm,
+      marginBottom: 2,
+    },
+    itemHover: {
+      backgroundColor: semantic.sidebarHover,
     },
     itemSelected: {
-      backgroundColor: semantic.bgMuted,
+      backgroundColor: semantic.sidebarActive,
     },
     itemRow: {
       flexDirection: "row",
@@ -369,15 +351,17 @@ const createStyles = (semantic: SemanticColors) =>
       justifyContent: "space-between",
     },
     itemText: {
-      fontSize: fontSizes.md,
+      fontSize: fontSizes.base,
       color: semantic.fg,
       flex: 1,
+      fontFamily: fontFamily.sans,
     },
     itemTextSelected: {
-      fontWeight: "600",
+      fontWeight: "500",
+      color: semantic.sidebarActiveText,
     },
     editInput: {
-      fontSize: fontSizes.md,
+      fontSize: fontSizes.base,
       color: semantic.fg,
       backgroundColor: semantic.bg,
       borderWidth: 1,
@@ -385,6 +369,7 @@ const createStyles = (semantic: SemanticColors) =>
       borderRadius: radii.sm,
       padding: spacing.xs,
       paddingHorizontal: spacing.sm,
+      fontFamily: fontFamily.sans,
     },
     deleteButton: {
       marginLeft: spacing.xs,
@@ -399,37 +384,28 @@ const createStyles = (semantic: SemanticColors) =>
       fontSize: fontSizes.xl,
       color: semantic.fgMuted,
     },
-    sectionLabel: {
-      fontSize: fontSizes.xs,
-      fontWeight: "600",
-      color: semantic.fgMuted,
-      textTransform: "uppercase",
-      letterSpacing: 0.5,
-      paddingHorizontal: spacing.lg,
-      paddingTop: spacing.md,
-      paddingBottom: spacing.xs,
-    },
     footer: {
       borderTopWidth: 1,
       borderTopColor: semantic.border,
     },
     trashButton: {
       paddingVertical: spacing.sm,
-      paddingHorizontal: spacing.md,
+      paddingHorizontal: spacing.sm,
       marginHorizontal: spacing.sm,
       marginTop: spacing.xs,
       borderRadius: radii.sm,
     },
     trashButtonActive: {
-      backgroundColor: semantic.bgMuted,
+      backgroundColor: semantic.sidebarActive,
     },
     trashText: {
-      fontSize: fontSizes.md,
+      fontSize: fontSizes.base,
       color: semantic.fgMuted,
+      fontFamily: fontFamily.sans,
     },
     trashTextActive: {
-      fontWeight: "600",
-      color: semantic.fg,
+      fontWeight: "500",
+      color: semantic.sidebarActiveText,
     },
     userSection: {
       padding: spacing.md,
@@ -440,9 +416,11 @@ const createStyles = (semantic: SemanticColors) =>
       fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
       marginBottom: spacing.xs,
+      fontFamily: fontFamily.sans,
     },
     signOutText: {
       fontSize: fontSizes.sm,
       color: colors.primary[600],
+      fontFamily: fontFamily.sans,
     },
   });
