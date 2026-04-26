@@ -1,12 +1,6 @@
 {
   "permissions": {
-    "allow": [
-      "Bash(bundle exec fastlane mac *)",
-      "Bash(set -a && source /Users/jakub/drafto-secrets/match-env.sh && set +a && bundle exec fastlane mac *)",
-      "Bash(set -a; source /Users/jakub/drafto-secrets/match-env.sh; set +a && bundle exec fastlane mac *)",
-      "Bash(cd /Users/jakub/code/drafto/apps/desktop && set -a && source /Users/jakub/drafto-secrets/match-env.sh && set +a && bundle exec fastlane mac *)",
-      "Bash(cd /Users/jakub/code/drafto/apps/desktop && set -a; source /Users/jakub/drafto-secrets/match-env.sh; set +a && bundle exec fastlane mac *)"
-    ]
+    "allow": ["Bash(bundle exec fastlane mac *)"]
   },
   "hooks": {
     "PreToolUse": [
