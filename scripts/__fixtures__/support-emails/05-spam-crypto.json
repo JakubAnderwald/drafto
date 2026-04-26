@@ -1,0 +1,30 @@
+[
+  {
+    "threadId": "fixture-thread-0005",
+    "subject": "Congratulations! You've been selected for our exclusive crypto airdrop",
+    "fromAddress": "promotions@xn--crypto-promo.example",
+    "from": "BIG WIN <promotions@xn--crypto-promo.example>",
+    "labels": [],
+    "messages": [
+      {
+        "messageId": "fixture-msg-0005",
+        "from": "BIG WIN <promotions@xn--crypto-promo.example>",
+        "fromAddress": "promotions@xn--crypto-promo.example",
+        "to": "support@drafto.eu",
+        "subject": "Congratulations! You've been selected for our exclusive crypto airdrop",
+        "receivedTime": "2026-04-26T03:11:00.000Z",
+        "summary": "Bulk crypto promotion. Spammy.",
+        "content": "<email>HELLO friend!! Your wallet address has been chosen at random to receive 5,000 USDT in our APRIL AIRDROP. Click here to claim within 24 hours: http://example-airdrop.example/claim?u=12345 — limited slots!!!</email>"
+      }
+    ],
+    "headers": {
+      "From": "BIG WIN <promotions@xn--crypto-promo.example>",
+      "To": "support@drafto.eu",
+      "Subject": "Congratulations! You've been selected for our exclusive crypto airdrop",
+      "Date": "Sun, 26 Apr 2026 03:11:00 +0000",
+      "Message-ID": "<fixture-0005@xn--crypto-promo.example>",
+      "Precedence": "bulk",
+      "Content-Type": "text/html; charset=UTF-8"
+    }
+  }
+]

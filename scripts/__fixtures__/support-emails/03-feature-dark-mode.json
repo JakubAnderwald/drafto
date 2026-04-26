@@ -1,0 +1,29 @@
+[
+  {
+    "threadId": "fixture-thread-0003",
+    "subject": "Pure-black AMOLED dark mode?",
+    "fromAddress": "priya@example.org",
+    "from": "Priya N. <priya@example.org>",
+    "labels": [],
+    "messages": [
+      {
+        "messageId": "fixture-msg-0003",
+        "from": "Priya N. <priya@example.org>",
+        "fromAddress": "priya@example.org",
+        "to": "support@drafto.eu",
+        "subject": "Pure-black AMOLED dark mode?",
+        "receivedTime": "2026-04-26T07:48:00.000Z",
+        "summary": "Feature request: a pure-black (#000) theme variant for OLED screens.",
+        "content": "<email>Hi! Drafto's dark mode is great but on my Pixel the dark grey background still glows. Could you add a pure-black theme variant for OLED screens?\n\nNothing else needs to change — just the bg colour token. Thanks for considering!\n\nPriya</email>"
+      }
+    ],
+    "headers": {
+      "From": "Priya N. <priya@example.org>",
+      "To": "support@drafto.eu",
+      "Subject": "Pure-black AMOLED dark mode?",
+      "Date": "Sun, 26 Apr 2026 07:48:00 +0000",
+      "Message-ID": "<fixture-0003@example.org>",
+      "Content-Type": "text/plain; charset=UTF-8"
+    }
+  }
+]

@@ -1,0 +1,29 @@
+[
+  {
+    "threadId": "fixture-thread-0004",
+    "subject": "Can I import from Apple Notes?",
+    "fromAddress": "morgan@example.net",
+    "from": "Morgan K. <morgan@example.net>",
+    "labels": [],
+    "messages": [
+      {
+        "messageId": "fixture-msg-0004",
+        "from": "Morgan K. <morgan@example.net>",
+        "fromAddress": "morgan@example.net",
+        "to": "support@drafto.eu",
+        "subject": "Can I import from Apple Notes?",
+        "receivedTime": "2026-04-26T06:30:00.000Z",
+        "summary": "Asks whether Drafto can import from Apple Notes.",
+        "content": "<email>Hi — quick question. I have ~600 notes in Apple Notes. Is there a way to bring them into Drafto, or do I need to copy-paste each one? Thanks!</email>"
+      }
+    ],
+    "headers": {
+      "From": "Morgan K. <morgan@example.net>",
+      "To": "support@drafto.eu",
+      "Subject": "Can I import from Apple Notes?",
+      "Date": "Sun, 26 Apr 2026 06:30:00 +0000",
+      "Message-ID": "<fixture-0004@example.net>",
+      "Content-Type": "text/plain; charset=UTF-8"
+    }
+  }
+]
