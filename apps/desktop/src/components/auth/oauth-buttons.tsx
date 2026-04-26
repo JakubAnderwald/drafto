@@ -1,5 +1,13 @@
 import { useState, useMemo } from "react";
-import { View, Text, Pressable, StyleSheet, ActivityIndicator, Platform } from "react-native";
+import {
+  View,
+  Text,
+  Pressable,
+  StyleSheet,
+  ActivityIndicator,
+  Platform,
+  Image,
+} from "react-native";
 import Svg, { Path } from "react-native-svg";
 
 import { useTheme } from "@/providers/theme-provider";
@@ -7,19 +15,16 @@ import { fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { signInWithOAuthBrowser } from "@/lib/oauth";
 
+import googleLogo from "./icons/google.png";
+import appleLogo from "./icons/apple.png";
+
 type OAuthProvider = "google" | "apple";
 
-// react-native-svg renders as 0x0 on react-native-macos, so we fall back to
-// text-based icons there. Other platforms keep the branded SVG.
 const IS_MACOS = Platform.OS === "macos";
 
 function GoogleIcon() {
   if (IS_MACOS) {
-    return (
-      <View style={googleFallback.wrap}>
-        <Text style={googleFallback.letter}>G</Text>
-      </View>
-    );
+    return <Image source={googleLogo} style={iconImage.square} accessibilityIgnoresInvertColors />;
   }
   return (
     <Svg width={20} height={20} viewBox="0 0 24 24">
@@ -45,8 +50,13 @@ function GoogleIcon() {
 
 function AppleIcon({ color }: { color: string }) {
   if (IS_MACOS) {
-    // U+F8FF is the Apple logo glyph in Apple system fonts — renders natively on macOS.
-    return <Text style={[appleFallback.glyph, { color }]}>{""}</Text>;
+    return (
+      <Image
+        source={appleLogo}
+        style={[iconImage.square, { tintColor: color }]}
+        accessibilityIgnoresInvertColors
+      />
+    );
   }
   return (
     <Svg width={20} height={20} viewBox="0 0 24 24" fill={color}>
@@ -55,34 +65,11 @@ function AppleIcon({ color }: { color: string }) {
   );
 }
 
-const googleFallback = StyleSheet.create({
-  wrap: {
+const iconImage = StyleSheet.create({
+  square: {
     width: 20,
     height: 20,
-    borderRadius: radii.sm,
-    // eslint-disable-next-line no-restricted-syntax -- Google brand white
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    // eslint-disable-next-line no-restricted-syntax -- Google brand outline
-    borderColor: "#DADCE0",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  letter: {
-    fontSize: fontSizes.md,
-    fontWeight: "700",
-    // eslint-disable-next-line no-restricted-syntax -- Google brand blue
-    color: "#4285F4",
-    lineHeight: 16,
-  },
-});
-
-const appleFallback = StyleSheet.create({
-  glyph: {
-    fontSize: fontSizes["2xl"],
-    lineHeight: 20,
-    width: 20,
-    textAlign: "center",
+    resizeMode: "contain",
   },
 });
 
