@@ -1,0 +1,11 @@
+{
+  "intent": "spam",
+  "confidence_floor": 0.85,
+  "reporter_allowlisted": false,
+  "action": "spammed",
+  "expected_folder_after": "Drafto/Support/Spam",
+  "no_reply_sent": true,
+  "no_issue_filed": true,
+  "admin_notification_fired": false,
+  "notes": "The Precedence: bulk header alone should also trigger the loop guard, so the agent has two independent reasons to not reply."
+}

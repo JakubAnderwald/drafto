@@ -1,0 +1,29 @@
+[
+  {
+    "threadId": "fixture-thread-0001",
+    "subject": "PDF export crashes on macOS 14",
+    "fromAddress": "alex@example.com",
+    "from": "Alex Rivera <alex@example.com>",
+    "labels": [],
+    "messages": [
+      {
+        "messageId": "fixture-msg-0001",
+        "from": "Alex Rivera <alex@example.com>",
+        "fromAddress": "alex@example.com",
+        "to": "support@drafto.eu",
+        "subject": "PDF export crashes on macOS 14",
+        "receivedTime": "2026-04-26T09:14:22.000Z",
+        "summary": "Repro: open any note with embedded images, File > Export > PDF, app freezes for ~15s then crashes.",
+        "content": "<email>Hi,\n\nLove the app. PDF export is reliably crashing for me on the macOS desktop build.\n\nRepro:\n  1. Open any note with at least one embedded image.\n  2. File > Export > PDF.\n  3. App freezes for ~15s, then crashes silently. No dialog.\n\nmacOS 14.4, Drafto 1.4.2 (build 1234).\n\nThanks,\nAlex</email>"
+      }
+    ],
+    "headers": {
+      "From": "Alex Rivera <alex@example.com>",
+      "To": "support@drafto.eu",
+      "Subject": "PDF export crashes on macOS 14",
+      "Date": "Sun, 26 Apr 2026 09:14:22 +0000",
+      "Message-ID": "<fixture-0001@example.com>",
+      "Content-Type": "text/plain; charset=UTF-8"
+    }
+  }
+]

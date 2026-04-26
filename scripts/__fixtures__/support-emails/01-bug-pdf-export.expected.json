@@ -1,0 +1,11 @@
+{
+  "intent": "bug",
+  "confidence_floor": 0.85,
+  "reporter_allowlisted": false,
+  "action": "filed-issue",
+  "issue_label_must_include": ["support"],
+  "expected_reply_substring": "Thanks — filed as #",
+  "expected_zoho_label": "Drafto/Support/Linked-Issue/<n>",
+  "expected_folder_after": "Drafto/Support/Resolved",
+  "admin_notification_fired": false
+}

@@ -1,0 +1,29 @@
+[
+  {
+    "threadId": "fixture-thread-0002",
+    "subject": "Sync conflict marker shown twice",
+    "fromAddress": "jakub@anderwald.info",
+    "from": "Jakub Anderwald <jakub@anderwald.info>",
+    "labels": [],
+    "messages": [
+      {
+        "messageId": "fixture-msg-0002",
+        "from": "Jakub Anderwald <jakub@anderwald.info>",
+        "fromAddress": "jakub@anderwald.info",
+        "to": "support@drafto.eu",
+        "subject": "Sync conflict marker shown twice",
+        "receivedTime": "2026-04-26T08:02:11.000Z",
+        "summary": "When two devices edit the same note, the conflict toast appears twice in quick succession on the second device.",
+        "content": "<email>Reproduces consistently:\n\n1. Edit note on iOS, hit save.\n2. Within 5s, edit same note on macOS.\n3. iOS now shows the orange conflict toast TWICE — once correctly, once a frame later.\n\nProbably a duplicate dispatch in the watermelon sync hook.\n\n— J</email>"
+      }
+    ],
+    "headers": {
+      "From": "Jakub Anderwald <jakub@anderwald.info>",
+      "To": "support@drafto.eu",
+      "Subject": "Sync conflict marker shown twice",
+      "Date": "Sun, 26 Apr 2026 08:02:11 +0000",
+      "Message-ID": "<fixture-0002@anderwald.info>",
+      "Content-Type": "text/plain; charset=UTF-8"
+    }
+  }
+]

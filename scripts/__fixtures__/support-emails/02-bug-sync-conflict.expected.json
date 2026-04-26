@@ -1,0 +1,13 @@
+{
+  "intent": "bug",
+  "confidence_floor": 0.85,
+  "reporter_allowlisted": true,
+  "action": "filed-issue",
+  "issue_label_must_include": ["support"],
+  "expected_reply_substring": "Filed as #",
+  "expected_reply_must_mention": "nightly agent",
+  "expected_zoho_label": "Drafto/Support/Linked-Issue/<n>",
+  "expected_folder_after": "Drafto/Support/Resolved",
+  "admin_notification_fired": false,
+  "issue_footer_must_include": "reporter-allowlisted: true"
+}
