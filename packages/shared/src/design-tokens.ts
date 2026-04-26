@@ -83,6 +83,12 @@ export const semanticLight = {
   borderStrong: "rgba(199, 196, 216, 0.30)",
   ring: colors.primary[600],
 
+  // Sidebar / nav-list selection (purple highlight + indigo text)
+  sidebarBg: "#FCF2EB",
+  sidebarHover: "#F4E9E0",
+  sidebarActive: "#E8E0FF",
+  sidebarActiveText: colors.primary[600],
+
   // Surface architecture
   surfaceLowest: colors.white,
   surfaceHigh: colors.neutral[200],
@@ -120,6 +126,12 @@ export const semanticDark = {
   borderStrong: "rgba(199, 196, 216, 0.20)",
   ring: colors.primary[300],
 
+  // Sidebar / nav-list selection (deep purple + lavender text)
+  sidebarBg: "#251F1B",
+  sidebarHover: "#2E2822",
+  sidebarActive: "#2A2250",
+  sidebarActiveText: "#A5B4FC",
+
   // Surface architecture
   surfaceLowest: "#171310",
   surfaceHigh: "#2E2822",
@@ -155,6 +167,10 @@ export type SemanticColors = {
   readonly border: string;
   readonly borderStrong: string;
   readonly ring: string;
+  readonly sidebarBg: string;
+  readonly sidebarHover: string;
+  readonly sidebarActive: string;
+  readonly sidebarActiveText: string;
   readonly surfaceLowest: string;
   readonly surfaceHigh: string;
   readonly surfaceHighest: string;

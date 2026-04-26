@@ -12,6 +12,7 @@
 		514201522437B4B40078DB4F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 514201512437B4B40078DB4F /* Assets.xcassets */; };
 		514201552437B4B40078DB4F /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 514201532437B4B40078DB4F /* Main.storyboard */; };
 		514201582437B4B40078DB4F /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 514201572437B4B40078DB4F /* main.m */; };
+		60D5615368FD2F8815475AA4 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = 69175B9AE2C7E2F0D2555633 /* Fonts */; };
 		6F84DEBA251C9CAD674E76EC /* libPods-Drafto-macOS.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 2413F48896693F0AF7AE2BF5 /* libPods-Drafto-macOS.a */; };
 		C3F54CC22FA9847CF39F5125 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 51B42B3B6E5A98B3201B9415 /* PrivacyInfo.xcprivacy */; };
 		D5A0F00126E5B00100MENU01 /* DraftoMenuManager.mm in Sources */ = {isa = PBXBuildFile; fileRef = D5A0F00026E5B00100MENU00 /* DraftoMenuManager.mm */; };
@@ -29,6 +30,7 @@
 		514201572437B4B40078DB4F /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
 		514201592437B4B40078DB4F /* Drafto.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Drafto.entitlements; sourceTree = "<group>"; };
 		51B42B3B6E5A98B3201B9415 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		69175B9AE2C7E2F0D2555633 /* Fonts */ = {isa = PBXFileReference; explicitFileType = folder; includeInIndex = 1; path = Fonts; sourceTree = "<group>"; };
 		8072CA749FA0ADBBF94C247B /* Pods-Drafto-macOS.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Drafto-macOS.release.xcconfig"; path = "Target Support Files/Pods-Drafto-macOS/Pods-Drafto-macOS.release.xcconfig"; sourceTree = "<group>"; };
 		CD0187C6006652118ECECA93 /* Pods-Drafto-macOS.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Drafto-macOS.debug.xcconfig"; path = "Target Support Files/Pods-Drafto-macOS/Pods-Drafto-macOS.debug.xcconfig"; sourceTree = "<group>"; };
 		D5A0F00026E5B00100MENU00 /* DraftoMenuManager.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = DraftoMenuManager.mm; sourceTree = "<group>"; };
@@ -76,6 +78,7 @@
 				514201562437B4B40078DB4F /* Info.plist */,
 				514201572437B4B40078DB4F /* main.m */,
 				514201592437B4B40078DB4F /* Drafto.entitlements */,
+				69175B9AE2C7E2F0D2555633 /* Fonts */,
 			);
 			path = "Drafto-macOS";
 			sourceTree = "<group>";
@@ -215,6 +218,7 @@
 				514201522437B4B40078DB4F /* Assets.xcassets in Resources */,
 				514201552437B4B40078DB4F /* Main.storyboard in Resources */,
 				C3F54CC22FA9847CF39F5125 /* PrivacyInfo.xcprivacy in Resources */,
+				60D5615368FD2F8815475AA4 /* Fonts in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
