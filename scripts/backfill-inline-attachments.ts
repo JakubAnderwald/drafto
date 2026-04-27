@@ -104,6 +104,7 @@ async function main() {
 
   const supabase = createClient(supabaseUrl, serviceKey, {
     auth: { persistSession: false },
+    global: { headers: { "x-drafto-client": "script-backfill" } },
   });
 
   console.log(`[backfill] target=${supabaseUrl} dry-run=${dryRun}`);

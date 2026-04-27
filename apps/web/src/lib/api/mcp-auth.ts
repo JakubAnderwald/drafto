@@ -36,9 +36,12 @@ export async function authenticateMcpRequest(authHeader: string | null): Promise
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 
-  // Use service role client to look up the key (bypasses RLS)
+  // Use service role client to look up the key (bypasses RLS).
+  // Tag as web-mcp so note_content_history.archived_by distinguishes
+  // MCP-driven writes from regular admin/cron paths (see ADR 0023).
   const adminClient = createClient<Database>(env.NEXT_PUBLIC_SUPABASE_URL, serviceRoleKey, {
     auth: { autoRefreshToken: false, persistSession: false },
+    global: { headers: { "x-drafto-client": "web-mcp" } },
   });
 
   // Look up key by hash

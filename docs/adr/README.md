@@ -55,3 +55,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0020](./0020-email-design-tokens.md)                    | Email Design Tokens                            | Accepted           | 2026-04-21 |
 | [0021](./0021-shared-design-tokens.md)                   | Shared Design Tokens in `@drafto/shared`       | Accepted           | 2026-04-21 |
 | [0022](./0022-note-content-history.md)                   | Note Content History Table                     | Accepted           | 2026-04-25 |
+| [0023](./0023-per-request-client-tagging.md)             | Per-Request Client Tagging                     | Accepted           | 2026-04-27 |
