@@ -145,18 +145,36 @@ async function listLabels() {
   const arr = res.data ?? res.labels ?? [];
   _labelsByName = new Map();
   for (const l of arr) {
-    const name = l.labelName ?? l.name;
+    // Zoho's POST/GET use `displayName` for the label's human-readable name.
+    // Older docs / mocks may surface `labelName` or `name`; accept any.
+    const name = l.displayName ?? l.labelName ?? l.name;
     if (name) _labelsByName.set(name, l);
   }
   return _labelsByName;
+}
+
+// Inverse of listLabels — used when filtering messages by label, since
+// /messages/view returns labels as a flat `labelId: ["<id>", ...]` array.
+async function listLabelsById() {
+  const byName = await listLabels();
+  const byId = new Map();
+  for (const label of byName.values()) {
+    const id = label.labelId ?? label.tagId ?? label.id;
+    const name = label.displayName ?? label.labelName ?? label.name;
+    if (id !== undefined && id !== null && name) byId.set(String(id), name);
+  }
+  return byId;
 }
 
 async function ensureLabel(name) {
   const labels = await listLabels();
   if (labels.has(name)) return labels.get(name);
   const cfg = await loadConfig();
+  // POST /labels expects `displayName` (Zoho calls them "tags" internally;
+  // posting `labelName` returns 404 EXTRA_KEY_FOUND_IN_JSON).
+  // https://www.zoho.com/mail/help/api/post-create-new-label.html
   const created = await zohoApi("POST", ZOHO_API_PATHS.labels(cfg.accountId), {
-    body: { labelName: name },
+    body: { displayName: name },
   });
   const obj = created.data ?? created;
   labels.set(name, obj);
@@ -184,9 +202,17 @@ function isTerminalSupportLabel(labelName) {
   return labelName !== `${SUPPORT_NAMESPACE}Needs-Human`;
 }
 
-function messageHasTerminalLabel(msg) {
-  const labels = msg.labels ?? msg.labelInfo ?? [];
-  return labels.some((l) => isTerminalSupportLabel(l.labelName ?? l.name ?? l));
+function messageHasTerminalLabel(msg, idToName) {
+  // Real Zoho /messages/view surface: a flat `labelId: ["<id>", ...]` array.
+  // Resolve IDs via the labels cache.
+  const ids = Array.isArray(msg.labelId) ? msg.labelId : [];
+  for (const id of ids) {
+    const name = idToName.get(String(id));
+    if (name && isTerminalSupportLabel(name)) return true;
+  }
+  // Fallback for tests / endpoint variants that return label objects inline.
+  const objs = msg.labels ?? msg.labelInfo ?? [];
+  return objs.some((l) => isTerminalSupportLabel(l.displayName ?? l.labelName ?? l.name ?? l));
 }
 
 export async function listPending() {
@@ -195,6 +221,7 @@ export async function listPending() {
   const inbox = folders.get("Inbox");
   if (!inbox) throw new Error('Could not locate Zoho "Inbox" folder');
   const inboxId = inbox.folderId ?? inbox.id;
+  const idToName = await listLabelsById();
   const res = await zohoApi("GET", ZOHO_API_PATHS.messagesView(cfg.accountId), {
     query: { folderId: inboxId, includeto: "true", limit: 200 },
   });
@@ -204,7 +231,7 @@ export async function listPending() {
   // run. Filter terminal labels first, then dedupe by threadId (falling back
   // to messageId when a message is not threaded), keeping the first
   // occurrence — Zoho returns newest-first so that's the most recent message.
-  const filtered = arr.filter((m) => !messageHasTerminalLabel(m));
+  const filtered = arr.filter((m) => !messageHasTerminalLabel(m, idToName));
   const seen = new Set();
   const deduped = [];
   for (const m of filtered) {

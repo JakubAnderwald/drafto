@@ -391,13 +391,77 @@ describe("OAuth disk cache", () => {
 });
 
 describe("listPending filters terminal labels", () => {
-  it("excludes Agent-Replied/Spam/Linked-Issue threads but keeps Needs-Human", async () => {
+  it("excludes Agent-Replied/Spam/Linked-Issue threads but keeps Needs-Human (real labelId[] shape)", async () => {
+    // Real Zoho /messages/view surface: each message carries `labelId: [<id>]`,
+    // not full label objects. The lib resolves IDs against /labels.
     cli._setFetchForTests(
       makeFetch([
         tokenHandler,
         {
           match: (url, init) => url.endsWith("/folders") && (init.method ?? "GET") === "GET",
           response: jsonResponse(200, { data: [{ folderName: "Inbox", folderId: "INBOX-1" }] }),
+        },
+        {
+          match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, {
+            data: [
+              { labelId: "L-AR", displayName: "Drafto/Support/Agent-Replied" },
+              { labelId: "L-NH", displayName: "Drafto/Support/Needs-Human" },
+              { labelId: "L-LI42", displayName: "Drafto/Support/Linked-Issue/42" },
+              { labelId: "L-SP", displayName: "Drafto/Support/Spam" },
+            ],
+          }),
+        },
+        {
+          match: (url) => url.includes("/messages/view"),
+          response: jsonResponse(200, {
+            data: [
+              { threadId: "A", messageId: "MA", subject: "no labels" },
+              {
+                threadId: "B",
+                messageId: "MB",
+                subject: "agent replied",
+                labelId: ["L-AR"],
+              },
+              {
+                threadId: "C",
+                messageId: "MC",
+                subject: "needs human",
+                labelId: ["L-NH"],
+              },
+              {
+                threadId: "D",
+                messageId: "MD",
+                subject: "linked issue",
+                labelId: ["L-LI42"],
+              },
+              {
+                threadId: "E",
+                messageId: "ME",
+                subject: "spam",
+                labelId: ["L-SP"],
+              },
+            ],
+          }),
+        },
+      ]),
+    );
+    const out = await cli.listPending();
+    const ids = out.map((m) => m.threadId).sort();
+    assert.deepEqual(ids, ["A", "C"]);
+  });
+
+  it("also accepts inline `labels: [{displayName}]` objects (legacy shape)", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url, init) => url.endsWith("/folders") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, { data: [{ folderName: "Inbox", folderId: "INBOX-1" }] }),
+        },
+        {
+          match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, { data: [] }),
         },
         {
           match: (url) => url.includes("/messages/view"),
@@ -408,25 +472,7 @@ describe("listPending filters terminal labels", () => {
                 threadId: "B",
                 messageId: "MB",
                 subject: "agent replied",
-                labels: [{ labelName: "Drafto/Support/Agent-Replied" }],
-              },
-              {
-                threadId: "C",
-                messageId: "MC",
-                subject: "needs human",
-                labels: [{ labelName: "Drafto/Support/Needs-Human" }],
-              },
-              {
-                threadId: "D",
-                messageId: "MD",
-                subject: "linked issue",
-                labels: [{ labelName: "Drafto/Support/Linked-Issue/42" }],
-              },
-              {
-                threadId: "E",
-                messageId: "ME",
-                subject: "spam",
-                labels: [{ labelName: "Drafto/Support/Spam" }],
+                labels: [{ displayName: "Drafto/Support/Agent-Replied" }],
               },
             ],
           }),
@@ -434,8 +480,10 @@ describe("listPending filters terminal labels", () => {
       ]),
     );
     const out = await cli.listPending();
-    const ids = out.map((m) => m.threadId).sort();
-    assert.deepEqual(ids, ["A", "C"]);
+    assert.deepEqual(
+      out.map((m) => m.threadId),
+      ["A"],
+    );
   });
 
   // Inbox listing returns one entry per message — two messages in the same
@@ -449,6 +497,10 @@ describe("listPending filters terminal labels", () => {
         {
           match: (url, init) => url.endsWith("/folders") && (init.method ?? "GET") === "GET",
           response: jsonResponse(200, { data: [{ folderName: "Inbox", folderId: "INBOX-1" }] }),
+        },
+        {
+          match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, { data: [] }),
         },
         {
           match: (url) => url.includes("/messages/view"),
