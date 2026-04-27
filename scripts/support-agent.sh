@@ -1,26 +1,35 @@
 #!/bin/bash
 # Real-time support agent — launchd entrypoint.
 #
-# Phase C scope: live but inert. The script polls the Zoho Inbox via
-# zoho-cli.mjs list-pending and either prints a context bundle per pending
-# thread (dry-run) or applies the `Drafto/Support/Seen` label so the thread
-# disappears from the agent's pending set (label-only). It does NOT invoke
-# Claude Code, does NOT reply to threads, does NOT create GitHub issues,
-# and does NOT move folders. Phase D+ will lift these gates progressively
-# (escalate → auto-reply → full).
+# Phase D scope: auto-classify + escalate. The script polls the Zoho Inbox
+# via zoho-cli.mjs list-pending and, depending on the mode, either prints a
+# bundle (dry-run), applies the `Drafto/Support/Seen` label (label-only — Phase
+# C fallback), or invokes Claude with the bundle and lets it apply
+# `Drafto/Support/NeedsHuman` / move to `Drafto/Support/Spam` and email an
+# admin notification (auto-classify — Phase D live mode). Auto-replies and
+# GitHub issue creation remain off until Phase E / F respectively; the prompt
+# enforces this via the bundle's `config.phase`.
 #
-# Modes (exactly one of --dry-run or --label-only is required):
+# Modes (exactly one of --dry-run, --label-only, --auto-classify is required):
 #   --dry-run                  Build and print bundles. No Zoho mutations.
 #                              Useful for golden-run testing and for
 #                              eyeballing live-API output.
 #   --label-only               Apply Drafto/Support/Seen to each pending
-#                              thread. Live API mutation, but inert from
-#                              the customer's perspective. Phase C live mode.
+#                              thread. Live API mutation, but inert from the
+#                              customer's perspective. Phase C live mode kept
+#                              as a fallback when Claude usage is undesirable.
+#   --auto-classify            Phase D live mode. For each pending thread,
+#                              build a bundle (with humanIntervened/rate-limit
+#                              flags from state) and invoke Claude. Claude is
+#                              constrained by the prompt to only label
+#                              NeedsHuman / move to Spam folder / email an
+#                              admin notification — no replies, no GH issues.
 #   --fixture <path>           (--dry-run only) Replay a captured Zoho
 #                              list-pending JSON instead of hitting the
-#                              live API. Refused under --label-only because
-#                              fixtures contain synthetic threadIds that
-#                              don't exist in the real mailbox.
+#                              live API. Refused under --label-only and
+#                              --auto-classify because fixtures contain
+#                              synthetic threadIds that don't exist in the
+#                              real mailbox.
 #
 # Failure mode: if the script exits non-zero, the cleanup trap files a
 # `nightly-failure`-labelled GitHub issue, mirroring the existing pattern
@@ -36,24 +45,33 @@ export LC_ALL=en_US.UTF-8
 # ── Args ────────────────────────────────────────────────────────────────────
 DRY_RUN=0
 LABEL_ONLY=0
+AUTO_CLASSIFY=0
 FIXTURE=""
+PHASE="D"
 usage() {
   cat <<EOF
-Usage: $0 (--dry-run | --label-only) [--fixture <path-to-list-pending.json>]
+Usage: $0 (--dry-run | --label-only | --auto-classify) [--fixture <path>] [--phase <D|E|F|G>]
 
-Exactly one of --dry-run or --label-only is required (Phase C). The agent
-does not yet reply, file issues, move folders, or invoke Claude.
+Exactly one of --dry-run, --label-only, or --auto-classify is required.
 
-  --dry-run      Print the context bundle that Claude would receive.
-                 No Zoho mutations.
-  --label-only   Apply Drafto/Support/Seen to each pending thread.
-                 Live API mutation. Refuses --fixture.
+  --dry-run         Print the context bundle that Claude would receive.
+                    No Zoho mutations.
+  --label-only      Apply Drafto/Support/Seen to each pending thread.
+                    Live API mutation only; no Claude. Phase C fallback.
+  --auto-classify   Invoke Claude per pending thread. Claude is constrained
+                    by scripts/support-agent-prompt.md and the bundle's
+                    config.phase to escalate (Drafto/Support/NeedsHuman +
+                    admin email) or label as spam — no replies, no GH issues.
+  --fixture <path>  (--dry-run only) Replay a captured Zoho list-pending JSON.
+                    Refused under --label-only and --auto-classify.
+  --phase <D|...>   Override the phase advertised to Claude (default: D).
 EOF
 }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --label-only) LABEL_ONLY=1; shift ;;
+    --auto-classify) AUTO_CLASSIFY=1; shift ;;
     --fixture)
       if [[ -z "${2:-}" || "${2:0:2}" == "--" ]]; then
         echo "ERROR: --fixture requires a path argument" >&2
@@ -63,24 +81,38 @@ while [[ $# -gt 0 ]]; do
       FIXTURE="$2"
       shift 2
       ;;
+    --phase)
+      if [[ -z "${2:-}" || "${2:0:2}" == "--" ]]; then
+        echo "ERROR: --phase requires a value (D|E|F|G)" >&2
+        usage >&2
+        exit 2
+      fi
+      PHASE="$2"
+      shift 2
+      ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
-if [[ "$DRY_RUN" -eq 0 && "$LABEL_ONLY" -eq 0 ]]; then
-  echo "ERROR: must specify --dry-run or --label-only (Phase C)." >&2
+MODE_COUNT=$((DRY_RUN + LABEL_ONLY + AUTO_CLASSIFY))
+if [[ "$MODE_COUNT" -eq 0 ]]; then
+  echo "ERROR: must specify --dry-run, --label-only, or --auto-classify." >&2
   usage >&2
   exit 2
 fi
-if [[ "$DRY_RUN" -eq 1 && "$LABEL_ONLY" -eq 1 ]]; then
-  echo "ERROR: --dry-run and --label-only are mutually exclusive." >&2
+if [[ "$MODE_COUNT" -gt 1 ]]; then
+  echo "ERROR: --dry-run / --label-only / --auto-classify are mutually exclusive." >&2
   exit 2
 fi
-if [[ "$LABEL_ONLY" -eq 1 && -n "$FIXTURE" ]]; then
-  echo "ERROR: --fixture cannot be combined with --label-only (would mutate Zoho with synthetic threadIds)." >&2
+if [[ -n "$FIXTURE" && "$DRY_RUN" -eq 0 ]]; then
+  echo "ERROR: --fixture is only valid with --dry-run (synthetic threadIds aren't in the real mailbox)." >&2
   exit 2
 fi
+case "$PHASE" in
+  D|E|F|G) ;;
+  *) echo "ERROR: --phase must be one of D, E, F, G (got '$PHASE')" >&2; exit 2 ;;
+esac
 
 # ── Allowlist env (single source of truth for the support pipeline) ─────────
 if [[ -f "$HOME/drafto-secrets/support-env.sh" ]]; then
@@ -174,8 +206,16 @@ if [[ -f "$OAUTH_FILE" ]]; then
 fi
 OAUTH_USER_EMAIL="${OAUTH_USER_EMAIL:-support@drafto.eu}"
 
+STATE_FILE="$REPO_ROOT/logs/support-state.json"
+
 START_TIME=$(date +%s)
-log "=== support-agent run started (dry-run=$DRY_RUN, label-only=$LABEL_ONLY, fixture=${FIXTURE:-none}) ==="
+log "=== support-agent run started (dry-run=$DRY_RUN, label-only=$LABEL_ONLY, auto-classify=$AUTO_CLASSIFY, phase=$PHASE, fixture=${FIXTURE:-none}) ==="
+
+# auto-classify requires the `claude` CLI on PATH.
+if [[ "$AUTO_CLASSIFY" -eq 1 ]] && ! command -v claude >/dev/null 2>&1; then
+  log "ERROR: --auto-classify requires the claude CLI on PATH (looked in: \$PATH=$PATH)"
+  exit 1
+fi
 
 # ── Cheap pre-check: list-pending ───────────────────────────────────────────
 if [[ -n "$FIXTURE" ]]; then
@@ -243,11 +283,13 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
     continue
   fi
 
-  # --dry-run path: build a context bundle and print it.
+  # --dry-run / --auto-classify path: build a context bundle.
   log "Building bundle for $TRACK_ID (threadId=${THREAD_ID:-<none>}, msgId=$MSG_ID)"
+  THREAD_JSON='null'
+  HEADERS_JSON='{}'
   if [[ -n "$FIXTURE" ]]; then
     # Fixtures already wrap messages in {threadId, messages, headers, ...}.
-    THREAD_JSON="$ENTRY"
+    THREAD_JSON=$(echo "$ENTRY" | jq '{ threadId: (.threadId // null), messages: (.messages // [.]) }')
     HEADERS_JSON=$(echo "$ENTRY" | jq '.headers // {}')
   else
     if [[ -n "$THREAD_ID" ]]; then
@@ -272,48 +314,139 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
     # that entry IS the latest message in the thread. The header endpoint is
     # folder-scoped (see zoho-cli.mjs ZOHO_API_PATHS.messageHeader).
     if [[ -n "$MSG_ID" && -n "$FOLDER_ID" ]]; then
-      if HEADERS_JSON=$(node "$SCRIPT_DIR/lib/zoho-cli.mjs" get-headers "$FOLDER_ID" "$MSG_ID" \
+      if HEADERS_JSON_TMP=$(node "$SCRIPT_DIR/lib/zoho-cli.mjs" get-headers "$FOLDER_ID" "$MSG_ID" \
           2>>"$LOG_FILE"); then
-        :
+        HEADERS_JSON="$HEADERS_JSON_TMP"
       else
         log "WARNING: get-headers failed for $TRACK_ID (folder=$FOLDER_ID, msg=$MSG_ID); headers omitted"
-        HEADERS_JSON='{}'
       fi
     else
       log "WARNING: pending entry for $TRACK_ID has no folderId/messageId — headers omitted"
-      HEADERS_JSON='{}'
     fi
   fi
 
-  # TODO(phase-D): replace the hardcoded `state` placeholders below with values
-  # computed from scripts/lib/state.mjs + scripts/lib/policy.mjs before this
-  # bundle is fed to Claude. Phase C only prints bundles in dry-run mode and
-  # only labels in --label-only, so leaving the loop guard / human-intervention
-  # flags as constants is harmless — but they MUST be wired up before Phase D
-  # flips on auto-classify+escalate, otherwise rateLimitOk and humanIntervened
-  # will never trip.
-  BUNDLE=$(jq -n \
+  # Read state once per bundle so humanIntervened / rateLimitOk /
+  # shouldNotifyAdmin reflect what we'd actually do. Missing file → empty
+  # state (build-bundle.mjs handles this).
+  if [[ -f "$STATE_FILE" ]]; then
+    STATE_JSON=$(cat "$STATE_FILE")
+  else
+    STATE_JSON='{}'
+  fi
+
+  # build-bundle.mjs takes one combined JSON on stdin. Keeps the bundle
+  # construction in Node where the policy.mjs functions live, instead of
+  # duplicating the logic in `jq -n`.
+  BUILD_INPUT=$(jq -n \
+    --argjson pending "$ENTRY" \
     --argjson thread "$THREAD_JSON" \
     --argjson headers "$HEADERS_JSON" \
+    --argjson state "$STATE_JSON" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
     --arg adminEmail "$ADMIN_EMAIL" \
     --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
+    --arg phase "$PHASE" \
     '{
-       kind: "inbound_thread",
+       pending: $pending,
        thread: $thread,
        headers: $headers,
-       history: {},
-       state: { humanIntervened: false, rateLimitOk: true, shouldNotifyAdmin: true },
+       state: $state,
        config: {
-         allowlist: ($allowlist | split(",") | map(ascii_downcase | gsub("^\\s+|\\s+$"; ""))),
+         allowlist: $allowlist,
          adminEmail: $adminEmail,
-         oauthUserEmail: $oauthUserEmail
+         oauthUserEmail: $oauthUserEmail,
+         phase: $phase
        }
      }')
+  if ! BUNDLE=$(echo "$BUILD_INPUT" | node "$SCRIPT_DIR/lib/build-bundle.mjs" 2>>"$LOG_FILE"); then
+    log "ERROR: build-bundle failed for $TRACK_ID"
+    continue
+  fi
 
-  log "DRY-RUN: would invoke claude with the following bundle:"
-  echo "$BUNDLE" | tee -a "$LOG_FILE"
-  log "DRY-RUN: end of bundle for $TRACK_ID"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    # The bundle contains the customer's email body, sender address, and
+    # full headers (PII). Print it to stdout so the operator running
+    # --dry-run interactively can see it, but do NOT tee into LOG_FILE —
+    # the rotating logs/support/*.log files are 0600 + 30-day retention but
+    # we don't want PII persisted there. (Deferred from PR #335; this PR
+    # is the Phase D rollout that triggers the deferral.)
+    log "DRY-RUN: bundle for $TRACK_ID (printed to stdout only; not logged)"
+    echo "$BUNDLE"
+    continue
+  fi
+
+  # ── --auto-classify path ────────────────────────────────────────────────
+  # Hand the prompt + bundle to `claude -p` and capture stdout. Claude is
+  # constrained by the prompt + bundle.config.phase to only escalate or
+  # spam-folder in Phase D — the prompt itself enforces this. We don't pipe
+  # the bundle on real stdin because `claude -p` takes the prompt as an
+  # argument and ignores stdin.
+  PROMPT_FILE="$SCRIPT_DIR/support-agent-prompt.md"
+  if [[ ! -f "$PROMPT_FILE" ]]; then
+    log "ERROR: prompt file missing: $PROMPT_FILE"
+    exit 1
+  fi
+  PROMPT_TEXT=$(cat "$PROMPT_FILE")
+  CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
+    "$PROMPT_TEXT" "$BUNDLE")
+
+  log "Invoking claude for $TRACK_ID (phase=$PHASE)"
+  CLAUDE_OUTPUT_FILE=$(mktemp -t support-agent-out.XXXXXX)
+  if ! claude -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
+      >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE"; then
+    log "ERROR: claude exited non-zero for $TRACK_ID"
+    cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
+    rm -f "$CLAUDE_OUTPUT_FILE"
+    continue
+  fi
+  cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE"
+  # The prompt instructs Claude to end with a single line:
+  #   thread=<id> action=<x> issue=<n|->
+  # The strict regex avoids false positives from mid-stream reasoning that
+  # happens to start with `thread=` (e.g. quoting customer text), and
+  # rejects partial/malformed lines so the action handler doesn't get a
+  # half-parsed value.
+  SUMMARY_LINE=$(grep -E '^thread=[^ ]+ action=[^ ]+ issue=[^ ]+$' "$CLAUDE_OUTPUT_FILE" | tail -1 || true)
+  rm -f "$CLAUDE_OUTPUT_FILE"
+  if [[ -z "$SUMMARY_LINE" ]]; then
+    log "WARNING: no well-formed summary line returned by claude for $TRACK_ID"
+    continue
+  fi
+  log "Claude summary: $SUMMARY_LINE"
+  ACTION=$(echo "$SUMMARY_LINE" | sed -E 's/.*action=([^ ]+).*/\1/')
+
+  # If Claude escalated (NeedsHuman), it should also have fired an admin
+  # email per the prompt. Bump the cooldown cursor here so the next run
+  # respects it. Phase-disallowed actions (auto-replied in Phase D,
+  # filed-issue in Phase D/E) are treated as hard errors so an LLM
+  # regression doesn't slip past the prompt's gate silently.
+  case "$ACTION" in
+    escalated)
+      if ! node "$SCRIPT_DIR/lib/state-cli.mjs" bump-notification "$TRACK_ID" \
+          --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+        log "WARNING: state-cli bump-notification failed for $TRACK_ID"
+      fi
+      ;;
+    spammed|noop|sync-comment|sync-state)
+      : # No state change required at this stage.
+      ;;
+    auto-replied)
+      if [[ "$PHASE" == "D" ]]; then
+        log "ERROR: claude returned auto-replied under Phase D for $TRACK_ID — prompt phase gate violated"
+        exit 1
+      fi
+      # Phase E+: bump-counters here once the auto-reply path is wired in.
+      ;;
+    filed-issue)
+      if [[ "$PHASE" =~ ^[DE]$ ]]; then
+        log "ERROR: claude returned filed-issue under Phase $PHASE for $TRACK_ID — prompt phase gate violated"
+        exit 1
+      fi
+      ;;
+    *)
+      log "WARNING: unrecognised action '$ACTION' from claude for $TRACK_ID"
+      ;;
+  esac
 done
 
 if [[ "$LABEL_ONLY" -eq 1 && "$LABEL_FAILURES" -gt 0 ]]; then

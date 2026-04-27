@@ -44,8 +44,25 @@
 
 import { promises as fs } from "node:fs";
 import { loadConfig, getAccessToken, invalidateAccessToken, _resetForTests } from "./zoho-auth.mjs";
+import { parseFlags } from "./parse-flags.mjs";
+import { isMainModule } from "./is-main.mjs";
 
 const SUPPORT_NAMESPACE = "Drafto/Support/";
+
+// Closed allowlist of permitted label *suffixes* under the support
+// namespace. Without this, an LLM call could invent new labels (e.g.
+// "Drafto/Support/Stuck") that pass the namespace prefix check but fragment
+// the state machine. Phase F will add `Linked-Issue/<n>` here once we settle
+// on its 25-char-limit-friendly form.
+const SUPPORT_LABEL_SUFFIXES = new Set([
+  "Seen", // Phase C: agent has acknowledged the thread (label-only mode).
+  "NeedsHuman", // Phase D: escalated; awaits human review. (25 chars — Zoho cap.)
+  "Spam", // Phase D: classified spam; thread moves to Spam folder too.
+  "Resolved", // Phase E onward: agent finished with the thread (Resolved folder).
+  "Replied", // Phase E onward: agent posted an auto-reply.
+]);
+// Folders are looser — Phase D only uses Spam, Phase E+ uses Resolved.
+const SUPPORT_FOLDER_SUFFIXES = new Set(["Spam", "Resolved"]);
 
 // Centralised endpoint paths. Templated with ${accountId}, ${messageId}, etc.
 // at call time. Documented against zoho.com/mail/help/api/ as of Apr 2026.
@@ -195,11 +212,22 @@ async function ensureFolder(name) {
 
 // ── Subcommands ─────────────────────────────────────────────────────────────
 
+// `isTerminalSupportLabel` (read path, used by `listPending`) is
+// intentionally permissive — it accepts ANY `Drafto/Support/<anything>` and
+// treats everything except `NeedsHuman` as terminal. The asymmetry with
+// `assertSupportNamespace` (write path, closed allowlist) is deliberate: a
+// stale label written by an older agent version, or one created during a
+// Phase F-style scheme migration, must still cause `listPending` to skip
+// the thread instead of looping. Don't unify these — keep read tolerant,
+// write strict.
+//
+// Zoho enforces a 25-char `displayName` max, which is why the label is
+// `Drafto/Support/NeedsHuman` (25) without the hyphen — see PR #344 for
+// the live ENOLABEL repro.
 function isTerminalSupportLabel(labelName) {
   if (typeof labelName !== "string") return false;
   if (!labelName.startsWith(SUPPORT_NAMESPACE)) return false;
-  // Inbox + Needs-Human stays "pending" from the agent's POV.
-  return labelName !== `${SUPPORT_NAMESPACE}Needs-Human`;
+  return labelName !== `${SUPPORT_NAMESPACE}NeedsHuman`;
 }
 
 function messageHasTerminalLabel(msg, idToName) {
@@ -335,6 +363,17 @@ function assertSupportNamespace(name, kind) {
   ) {
     throw new Error(`${kind} must start with "${SUPPORT_NAMESPACE}" (got "${name}")`);
   }
+  // Closed allowlist on the suffix — refuses arbitrary labels even if they
+  // satisfy the prefix. The first live Phase D run produced an unintended
+  // `Drafto/Support/Stuck` label because the prompt's documented label was
+  // 26 chars (over Zoho's 25-char limit) and the agent improvised; this
+  // guard makes that invisible drift impossible.
+  const suffix = name.slice(SUPPORT_NAMESPACE.length);
+  const allowlist = kind === "folder" ? SUPPORT_FOLDER_SUFFIXES : SUPPORT_LABEL_SUFFIXES;
+  if (!allowlist.has(suffix)) {
+    const allowed = [...allowlist].sort().join(", ");
+    throw new Error(`${kind} suffix "${suffix}" not in allowlist (permitted: ${allowed})`);
+  }
 }
 
 export async function addLabel(threadId, labelName) {
@@ -389,33 +428,9 @@ export async function moveToFolder(threadId, folderName) {
 // ── CLI dispatch ────────────────────────────────────────────────────────────
 
 // All current zoho-cli flags require a value (--to, --subject, --body-file).
-// Treating any `--xxx` token as boolean would mis-parse `--body-file --to x`
-// (the body-file flag silently becomes `true` and `--to` is consumed as a
-// separate flag with `x` as its value). Both `--key=value` and `--key value`
-// are accepted; missing values raise a clear error.
-function parseFlags(argv) {
-  const flags = {};
-  const positional = [];
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg.startsWith("--")) {
-      const key = arg.slice(2);
-      const eq = key.indexOf("=");
-      if (eq !== -1) {
-        flags[key.slice(0, eq)] = key.slice(eq + 1);
-      } else if (i + 1 >= argv.length) {
-        throw new Error(`Missing value for --${key}`);
-      } else {
-        flags[key] = argv[i + 1];
-        i++;
-      }
-    } else {
-      positional.push(arg);
-    }
-  }
-  return { flags, positional };
-}
-
+// parseFlags lives in ./parse-flags.mjs so state-cli.mjs uses the same
+// parser; both refuse missing values to avoid mis-parsing chains like
+// `--body-file --to x` as boolean + flag.
 async function main(argv) {
   const [sub, ...rest] = argv;
   const { flags, positional } = parseFlags(rest);
@@ -448,8 +463,7 @@ async function main(argv) {
   }
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`;
-if (isMain) {
+if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2)).then(
     (out) => {
       if (out !== null && out !== undefined) {

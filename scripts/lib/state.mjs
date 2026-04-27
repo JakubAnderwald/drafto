@@ -52,6 +52,10 @@ export function emptyState() {
 export async function loadState(filePath = DEFAULT_STATE_PATH) {
   try {
     const raw = await fs.readFile(filePath, "utf8");
+    // An empty / whitespace-only file is treated as a fresh state. This can
+    // happen if a previous run crashed between the open(O_TRUNC) and the
+    // write — rare with atomic-write-via-rename, but cheap to guard against.
+    if (!raw.trim()) return emptyState();
     const parsed = JSON.parse(raw);
     return mergeWithDefaults(parsed);
   } catch (err) {
