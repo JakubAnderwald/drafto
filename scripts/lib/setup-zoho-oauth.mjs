@@ -8,9 +8,10 @@
 //      used during planning).
 //   2. Generating a 10-minute grant code for scopes
 //        ZohoMail.accounts.READ,ZohoMail.messages.ALL,
-//        ZohoMail.folders.ALL,ZohoMail.labels.ALL
-//      (Phase B shipped without ZohoMail.labels.ALL; Phase C surfaced
-//      INVALID_OAUTHSCOPE on /labels — re-run this script with the full set.)
+//        ZohoMail.folders.ALL,ZohoMail.tags.ALL
+//      (Zoho's API calls them "labels" externally but the OAuth scope is
+//       `tags`. Phase B shipped without it; Phase C surfaced
+//       INVALID_OAUTHSCOPE on /labels — re-run this script with the full set.)
 //   3. Pasting client_id, client_secret, and grant code into the prompt.
 //
 // The script exchanges the grant code at accounts.zoho.<dc>/oauth/v2/token,
@@ -56,8 +57,9 @@ async function main() {
         "  2. Create a new Self Client app for the support agent.",
         "  3. Generate a grant code with ALL FOUR scopes:",
         "       ZohoMail.accounts.READ,ZohoMail.messages.ALL,",
-        "       ZohoMail.folders.ALL,ZohoMail.labels.ALL",
-        "     and a 10-minute lifetime. Copy it now — it expires fast.",
+        "       ZohoMail.folders.ALL,ZohoMail.tags.ALL",
+        "     (Zoho's UI calls labels 'labels', but the OAuth scope is 'tags'.)",
+        "     10-minute lifetime — copy the code now, it expires fast.",
         "",
       ].join("\n") + "\n",
     );
