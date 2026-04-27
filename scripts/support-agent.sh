@@ -5,7 +5,7 @@
 # via zoho-cli.mjs list-pending and, depending on the mode, either prints a
 # bundle (dry-run), applies the `Drafto/Support/Seen` label (label-only — Phase
 # C fallback), or invokes Claude with the bundle and lets it apply
-# `Drafto/Support/Needs-Human` / move to `Drafto/Support/Spam` and email an
+# `Drafto/Support/NeedsHuman` / move to `Drafto/Support/Spam` and email an
 # admin notification (auto-classify — Phase D live mode). Auto-replies and
 # GitHub issue creation remain off until Phase E / F respectively; the prompt
 # enforces this via the bundle's `config.phase`.
@@ -22,7 +22,7 @@
 #                              build a bundle (with humanIntervened/rate-limit
 #                              flags from state) and invoke Claude. Claude is
 #                              constrained by the prompt to only label
-#                              Needs-Human / move to Spam folder / email an
+#                              NeedsHuman / move to Spam folder / email an
 #                              admin notification — no replies, no GH issues.
 #   --fixture <path>           (--dry-run only) Replay a captured Zoho
 #                              list-pending JSON instead of hitting the
@@ -60,7 +60,7 @@ Exactly one of --dry-run, --label-only, or --auto-classify is required.
                     Live API mutation only; no Claude. Phase C fallback.
   --auto-classify   Invoke Claude per pending thread. Claude is constrained
                     by scripts/support-agent-prompt.md and the bundle's
-                    config.phase to escalate (Drafto/Support/Needs-Human +
+                    config.phase to escalate (Drafto/Support/NeedsHuman +
                     admin email) or label as spam — no replies, no GH issues.
   --fixture <path>  (--dry-run only) Replay a captured Zoho list-pending JSON.
                     Refused under --label-only and --auto-classify.
@@ -407,7 +407,7 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
   log "Claude summary: $SUMMARY_LINE"
   ACTION=$(echo "$SUMMARY_LINE" | sed -E 's/.*action=([^ ]+).*/\1/')
 
-  # If Claude escalated (Needs-Human), it should also have fired an admin
+  # If Claude escalated (NeedsHuman), it should also have fired an admin
   # email per the prompt. Bump the cooldown cursor here so the next run
   # respects it. No-op for spam / noop / sync-* actions.
   case "$ACTION" in

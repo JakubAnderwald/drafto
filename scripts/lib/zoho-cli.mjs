@@ -47,6 +47,21 @@ import { loadConfig, getAccessToken, invalidateAccessToken, _resetForTests } fro
 
 const SUPPORT_NAMESPACE = "Drafto/Support/";
 
+// Closed allowlist of permitted label *suffixes* under the support
+// namespace. Without this, an LLM call could invent new labels (e.g.
+// "Drafto/Support/Stuck") that pass the namespace prefix check but fragment
+// the state machine. Phase F will add `Linked-Issue/<n>` here once we settle
+// on its 25-char-limit-friendly form.
+const SUPPORT_LABEL_SUFFIXES = new Set([
+  "Seen", // Phase C: agent has acknowledged the thread (label-only mode).
+  "NeedsHuman", // Phase D: escalated; awaits human review. (25 chars — Zoho cap.)
+  "Spam", // Phase D: classified spam; thread moves to Spam folder too.
+  "Resolved", // Phase E onward: agent finished with the thread (Resolved folder).
+  "Replied", // Phase E onward: agent posted an auto-reply.
+]);
+// Folders are looser — Phase D only uses Spam, Phase E+ uses Resolved.
+const SUPPORT_FOLDER_SUFFIXES = new Set(["Spam", "Resolved"]);
+
 // Centralised endpoint paths. Templated with ${accountId}, ${messageId}, etc.
 // at call time. Documented against zoho.com/mail/help/api/ as of Apr 2026.
 //
@@ -198,8 +213,11 @@ async function ensureFolder(name) {
 function isTerminalSupportLabel(labelName) {
   if (typeof labelName !== "string") return false;
   if (!labelName.startsWith(SUPPORT_NAMESPACE)) return false;
-  // Inbox + Needs-Human stays "pending" from the agent's POV.
-  return labelName !== `${SUPPORT_NAMESPACE}Needs-Human`;
+  // Inbox + NeedsHuman stays "pending" from the agent's POV.
+  // Note: Zoho enforces a 25-char displayName max, so the label is
+  // `Drafto/Support/NeedsHuman` (25) without the hyphen — see PR #344
+  // discussion for the live ENOLABEL repro.
+  return labelName !== `${SUPPORT_NAMESPACE}NeedsHuman`;
 }
 
 function messageHasTerminalLabel(msg, idToName) {
@@ -334,6 +352,17 @@ function assertSupportNamespace(name, kind) {
     /[\x00-\x1f\x7f]/.test(name)
   ) {
     throw new Error(`${kind} must start with "${SUPPORT_NAMESPACE}" (got "${name}")`);
+  }
+  // Closed allowlist on the suffix — refuses arbitrary labels even if they
+  // satisfy the prefix. The first live Phase D run produced an unintended
+  // `Drafto/Support/Stuck` label because the prompt's documented label was
+  // 26 chars (over Zoho's 25-char limit) and the agent improvised; this
+  // guard makes that invisible drift impossible.
+  const suffix = name.slice(SUPPORT_NAMESPACE.length);
+  const allowlist = kind === "folder" ? SUPPORT_FOLDER_SUFFIXES : SUPPORT_LABEL_SUFFIXES;
+  if (!allowlist.has(suffix)) {
+    const allowed = [...allowlist].sort().join(", ");
+    throw new Error(`${kind} suffix "${suffix}" not in allowlist (permitted: ${allowed})`);
   }
 }
 
