@@ -116,7 +116,8 @@ function snapshotPath(projectRef, mode) {
 }
 
 function describeProject(ref) {
-  if (ref === "tbmjbxxseonkciqovnpl") return `${COLOR.red}${COLOR.bold}PROD (drafto.eu)${COLOR.reset}`;
+  if (ref === "tbmjbxxseonkciqovnpl")
+    return `${COLOR.red}${COLOR.bold}PROD (drafto.eu)${COLOR.reset}`;
   if (ref === "huhzactreblzcogqkbsd") return `${COLOR.dim}dev${COLOR.reset}`;
   return ref;
 }
@@ -128,9 +129,7 @@ function diffSnapshots(pre, post) {
     const a = pre.tables[table];
     const b = post.tables[table];
     if (a?.error || b?.error) {
-      lines.push(
-        `  ${table}: skipped (${a?.error ?? ""}${b?.error ? ` / ${b.error}` : ""})`,
-      );
+      lines.push(`  ${table}: skipped (${a?.error ?? ""}${b?.error ? ` / ${b.error}` : ""})`);
       continue;
     }
     const before = a.count;
