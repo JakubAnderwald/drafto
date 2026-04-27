@@ -272,8 +272,13 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
     # that entry IS the latest message in the thread. The header endpoint is
     # folder-scoped (see zoho-cli.mjs ZOHO_API_PATHS.messageHeader).
     if [[ -n "$MSG_ID" && -n "$FOLDER_ID" ]]; then
-      HEADERS_JSON=$(node "$SCRIPT_DIR/lib/zoho-cli.mjs" get-headers "$FOLDER_ID" "$MSG_ID" \
-        2>>"$LOG_FILE" || echo '{}')
+      if HEADERS_JSON=$(node "$SCRIPT_DIR/lib/zoho-cli.mjs" get-headers "$FOLDER_ID" "$MSG_ID" \
+          2>>"$LOG_FILE"); then
+        :
+      else
+        log "WARNING: get-headers failed for $TRACK_ID (folder=$FOLDER_ID, msg=$MSG_ID); headers omitted"
+        HEADERS_JSON='{}'
+      fi
     else
       log "WARNING: pending entry for $TRACK_ID has no folderId/messageId — headers omitted"
       HEADERS_JSON='{}'

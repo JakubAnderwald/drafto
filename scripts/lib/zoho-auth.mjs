@@ -108,6 +108,11 @@ async function readTokenFromDisk() {
 async function writeTokenToDisk(token) {
   const file = defaultTokenCachePath();
   const tmp = `${file}.${process.pid}.tmp`;
+  // The cache dir may not exist when ZOHO_TOKEN_CACHE_PATH overrides the
+  // default to a fresh location (per-app cache, tmpfs, CI runner). Without
+  // this, every refresh silently fails to persist and the script keeps
+  // burning OAuth refreshes on each launchd interval.
+  await fs.mkdir(path.dirname(file), { recursive: true });
   // Atomic write: open with 0600 so the tmp file is never world/group-readable
   // even momentarily; then rename into place.
   await fs.writeFile(tmp, JSON.stringify(token), { mode: 0o600 });
