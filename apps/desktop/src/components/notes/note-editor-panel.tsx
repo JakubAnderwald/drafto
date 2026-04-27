@@ -24,7 +24,7 @@ import { CalendarIcon } from "@/components/ui/icons/calendar-icon";
 import { ClockIcon } from "@/components/ui/icons/clock-icon";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
-import { isCatastrophicEraseSave } from "./erase-tripwire";
+import { isCatastrophicEraseSave } from "@/components/notes/erase-tripwire";
 
 type SaveStatusKey = "saving" | "saved" | "error";
 

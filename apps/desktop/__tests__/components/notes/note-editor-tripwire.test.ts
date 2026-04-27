@@ -1,4 +1,4 @@
-import { isCatastrophicEraseSave } from "../../../src/components/notes/erase-tripwire";
+import { isCatastrophicEraseSave } from "@/components/notes/erase-tripwire";
 
 const FORTY_KB_NOTE = JSON.stringify(
   Array.from({ length: 200 }, (_, i) => ({
