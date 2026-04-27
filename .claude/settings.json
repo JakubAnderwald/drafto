@@ -14,6 +14,21 @@
           {
             "type": "command",
             "command": "bash .claude/hooks/prevent-main-push.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/migration-stats-pre.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/migration-stats-post.sh"
           }
         ]
       }

@@ -150,6 +150,7 @@ Production is on the Free tier today, so this is the _normal_ case for damage ol
 - `supabase projects list` before every prod push — confirms which ref is currently linked. Easy to forget when switching between dev and prod.
 - Require explicit user "yes" before any prod database operation; state the project ref, operation, and affected data first.
 - Apply every migration to dev first and verify before touching prod.
+- **Migration safety hook** (`.claude/hooks/migration-stats-{pre,post}.sh` + `scripts/migration-stats.mjs`) — Claude Code automatically snapshots row counts on critical tables (`notes`, `note_content_history`, `notebooks`, `attachments`, `profiles`, `api_keys`) before every `supabase db push` / `pnpm supabase:push` / `supabase db reset` and diffs them after. Decreases on user-data tables print a loud `⚠ DECREASE` alert. The hook is observability-only and never blocks the migration; it runs against whichever project is currently linked, so it works for both dev and prod.
 
 ## Related
 
