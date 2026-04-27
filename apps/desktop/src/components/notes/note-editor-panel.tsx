@@ -24,6 +24,7 @@ import { CalendarIcon } from "@/components/ui/icons/calendar-icon";
 import { ClockIcon } from "@/components/ui/icons/clock-icon";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
+import { isCatastrophicEraseSave } from "./erase-tripwire";
 
 type SaveStatusKey = "saving" | "saved" | "error";
 
@@ -96,6 +97,15 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
 
   const handleSaveContent = useCallback(async (payload: ContentSavePayload) => {
     const record = await database.get<Note>("notes").find(payload.noteId);
+    if (isCatastrophicEraseSave(record.content, payload.content)) {
+      console.warn(
+        "[note-editor] tripwire blocked catastrophic-erase save",
+        `noteId=${payload.noteId}`,
+        `existing=${record.content?.length ?? 0}B`,
+        `incoming=${payload.content.length}B`,
+      );
+      return;
+    }
     await database.write(async () => {
       await record.update((n) => {
         n.content = payload.content;
@@ -241,11 +251,19 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
           editor.setContent(resolved);
           markLoaded();
         } catch (err) {
-          console.warn("Failed to set editor content:", err);
-          if (!cancelled) {
-            editor.setContent("");
-            markLoaded();
-          }
+          // Intentionally do NOT call editor.setContent("") or markLoaded()
+          // here. Wiping the editor would only cosmetically clear the WebView;
+          // calling markLoaded would open the autosave gate, allowing the
+          // editor's empty bootstrap onChange to persist an empty BlockNote
+          // and overwrite real DB content. The 2026-04-24 and 2026-04-27
+          // incidents both took this exact path. Leaving the gate closed on
+          // load failure means a stuck editor (the user can close+reopen),
+          // never a destructively-persisted empty doc.
+          console.warn(
+            "[note-editor] content load failed; leaving autosave gated",
+            `noteId=${targetNoteId}`,
+            err,
+          );
         }
       })();
 

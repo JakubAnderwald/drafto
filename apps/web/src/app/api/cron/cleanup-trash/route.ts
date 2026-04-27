@@ -10,7 +10,7 @@ export async function POST(request: NextRequest) {
 
   if (cronSecret && authHeader === `Bearer ${cronSecret}`) {
     // Cron secret authenticated — use server client directly
-    const supabase = await createClient();
+    const supabase = await createClient("web-cron");
     const { data, error } = await supabase.rpc("cleanup_trashed_notes");
 
     if (error) {

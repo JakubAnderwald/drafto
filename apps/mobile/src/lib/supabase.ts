@@ -17,11 +17,22 @@ if (!supabaseUrl || !supabaseAnonKey) {
   );
 }
 
+// Tag every request so note_content_history.archived_by records which
+// platform did a write (see ADR 0023). Platform.OS is "ios" | "android" |
+// "web" — the mobile app ships only on iOS and Android, so anything
+// unexpected falls back to a generic "mobile" tag rather than silently
+// emitting a NULL.
+const clientTag =
+  Platform.OS === "ios" ? "mobile-ios" : Platform.OS === "android" ? "mobile-android" : "mobile";
+
 export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
   auth: {
     storage: secureStoreAdapter,
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: Platform.OS === "web",
+  },
+  global: {
+    headers: { "x-drafto-client": clientTag },
   },
 });

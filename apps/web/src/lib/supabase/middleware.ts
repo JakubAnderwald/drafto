@@ -39,6 +39,9 @@ export async function updateSession(request: NextRequest) {
     env.NEXT_PUBLIC_SUPABASE_URL,
     env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
     {
+      global: {
+        headers: { "x-drafto-client": "web" },
+      },
       cookies: {
         getAll() {
           return request.cookies.getAll();

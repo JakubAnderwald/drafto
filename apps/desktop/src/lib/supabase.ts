@@ -22,4 +22,11 @@ export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
     detectSessionInUrl: false,
     flowType: "pkce",
   },
+  // Tag every request so note_content_history.archived_by records which
+  // platform did a write (see ADR 0023). The desktop app today targets
+  // macOS only — if a future build lands on Windows/Linux, broaden this
+  // mapping rather than emitting a NULL.
+  global: {
+    headers: { "x-drafto-client": "desktop-macos" },
+  },
 });
