@@ -1,14 +1,18 @@
 #!/bin/bash
 # Real-time support agent — launchd entrypoint.
 #
-# Phase D scope: auto-classify + escalate. The script polls the Zoho Inbox
-# via zoho-cli.mjs list-pending and, depending on the mode, either prints a
-# bundle (dry-run), applies the `Drafto/Support/Seen` label (label-only — Phase
-# C fallback), or invokes Claude with the bundle and lets it apply
-# `Drafto/Support/NeedsHuman` / move to `Drafto/Support/Spam` and email an
-# admin notification (auto-classify — Phase D live mode). Auto-replies and
-# GitHub issue creation remain off until Phase E / F respectively; the prompt
-# enforces this via the bundle's `config.phase`.
+# Phase D/E scope: auto-classify + escalate, and (Phase E) auto-reply for
+# high-confidence questions. The script polls the Zoho Inbox via zoho-cli.mjs
+# list-pending and, depending on the mode, either prints a bundle (dry-run),
+# applies the `Drafto/Support/Seen` label (label-only — Phase C fallback), or
+# invokes Claude with the bundle. The prompt's phase gate decides what Claude
+# may do:
+#   - Phase D: label NeedsHuman / move to Spam / fire admin email.
+#   - Phase E: Phase D + reply to high-confidence questions, label
+#     Drafto/Support/Replied, move to Drafto/Support/Resolved, bump
+#     rate-limit counters (the bash side handles the bump after Claude
+#     reports `action=auto-replied`).
+# GitHub issue creation remains off until Phase F.
 #
 # Modes (exactly one of --dry-run, --label-only, --auto-classify is required):
 #   --dry-run                  Build and print bundles. No Zoho mutations.
@@ -254,6 +258,7 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
   THREAD_ID=$(echo "$ENTRY" | jq -r '.threadId // empty')
   MSG_ID=$(echo "$ENTRY" | jq -r '.messageId // .id // empty')
   FOLDER_ID=$(echo "$ENTRY" | jq -r '.folderId // empty')
+  SENDER=$(echo "$ENTRY" | jq -r '.fromAddress // .sender // empty')
   TRACK_ID="${THREAD_ID:-$MSG_ID}"
   if [[ -z "$TRACK_ID" ]]; then
     log "WARNING: pending entry $THREAD_INDEX has no threadId/messageId — skipping"
@@ -435,7 +440,17 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
         log "ERROR: claude returned auto-replied under Phase D for $TRACK_ID — prompt phase gate violated"
         exit 1
       fi
-      # Phase E+: bump-counters here once the auto-reply path is wired in.
+      # Phase E+: bump rate-limit counters so the next run respects the
+      # ≤3-per-thread / ≤5-per-sender / ≤100-per-day caps. Sender comes from
+      # the list-pending entry's fromAddress (the latest message in the
+      # thread). If sender resolution failed, log a warning and skip the bump
+      # — the thread cap still works because TRACK_ID alone covers it.
+      if [[ -z "$SENDER" ]]; then
+        log "WARNING: no sender address for $TRACK_ID; skipping bump-counters"
+      elif ! node "$SCRIPT_DIR/lib/state-cli.mjs" bump-counters "$TRACK_ID" "$SENDER" \
+          --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+        log "WARNING: state-cli bump-counters failed for $TRACK_ID"
+      fi
       ;;
     filed-issue)
       if [[ "$PHASE" =~ ^[DE]$ ]]; then
