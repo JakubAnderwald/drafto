@@ -116,6 +116,44 @@ describe("add-label", () => {
   });
 });
 
+describe("add-message-label", () => {
+  it("refuses any label outside Drafto/Support/", async () => {
+    cli._setFetchForTests(makeFetch([]));
+    await assert.rejects(() => cli.addMessageLabel("M1", "Foo/Bar"), /Drafto\/Support\//);
+    assert.equal(calls.length, 0);
+  });
+
+  it("creates the label lazily, then PUTs /updatemessage with messageId", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, { data: [] }),
+        },
+        {
+          match: (url, init) => url.endsWith("/labels") && init.method === "POST",
+          response: jsonResponse(200, {
+            data: { labelName: "Drafto/Support/Seen", labelId: "L42" },
+          }),
+        },
+        {
+          match: (url, init) => url.endsWith("/updatemessage") && init.method === "PUT",
+          response: jsonResponse(200, { data: { ok: true } }),
+        },
+      ]),
+    );
+    const out = await cli.addMessageLabel("MSG-X", "Drafto/Support/Seen");
+    assert.equal(out.ok, true);
+    const applyCall = calls.find((c) => c.url.endsWith("/updatemessage"));
+    assert.ok(applyCall);
+    const applyBody = JSON.parse(applyCall.init.body);
+    assert.equal(applyBody.mode, "applyLabel");
+    assert.deepEqual(applyBody.messageId, ["MSG-X"]);
+    assert.deepEqual(applyBody.labelId, ["L42"]);
+  });
+});
+
 describe("move-to-folder", () => {
   it("refuses any folder outside Drafto/Support/", async () => {
     cli._setFetchForTests(makeFetch([]));
@@ -263,8 +301,99 @@ describe("OAuth refresh on 401", () => {
   });
 });
 
+// support-agent.sh fires several short-lived `node scripts/lib/zoho-cli.mjs`
+// processes per launchd interval. Without an on-disk cache, each one would
+// refresh the OAuth token and we'd hit Zoho's "too many requests" cap.
+describe("OAuth disk cache", () => {
+  // Per-test cache file inside TMP_DIR — overrides the default
+  // <oauth-dir>/zoho-token-cache.json so tests can isolate their state.
+  const TOKEN_CACHE_FILE = path.join(TMP_DIR, `token-cache-${Date.now()}.json`);
+
+  beforeEach(() => {
+    process.env.ZOHO_TOKEN_CACHE_PATH = TOKEN_CACHE_FILE;
+  });
+
+  after(() => {
+    delete process.env.ZOHO_TOKEN_CACHE_PATH;
+  });
+
+  it("hydrates the second process from disk and skips the refresh", async () => {
+    let tokenCalls = 0;
+    const fetchA = makeFetch([
+      {
+        match: (url) => url.startsWith("https://accounts.zoho.eu/oauth/v2/token"),
+        response: () => {
+          tokenCalls += 1;
+          return jsonResponse(200, { access_token: "DISK-TOKEN", expires_in: 3600 });
+        },
+      },
+      {
+        match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+        response: jsonResponse(200, {
+          data: [{ labelName: "Drafto/Support/Seen", labelId: "L1" }],
+        }),
+      },
+      {
+        match: (url, init) => url.endsWith("/updatethread") && init.method === "PUT",
+        response: jsonResponse(200, { data: { ok: true } }),
+      },
+    ]);
+    cli._setFetchForTests(fetchA);
+    await cli.addLabel("T1", "Drafto/Support/Seen");
+    assert.equal(tokenCalls, 1, "first process refreshes once");
+    const onDisk = JSON.parse(await fs.readFile(TOKEN_CACHE_FILE, "utf8"));
+    assert.equal(onDisk.value, "DISK-TOKEN");
+    const stat = await fs.stat(TOKEN_CACHE_FILE);
+    assert.equal(stat.mode & 0o777, 0o600, "token cache file is mode 0600");
+
+    // Simulate a second Node process by re-importing zoho-cli.mjs (cache-bust)
+    // — that gives us a fresh in-memory cache, so getAccessToken must consult
+    // the disk to find DISK-TOKEN.
+    const cli2 = await import(`../lib/zoho-cli.mjs?t=${Date.now()}-disk-cache`);
+    const fetchB = makeFetch([
+      {
+        match: (url) => url.startsWith("https://accounts.zoho.eu/oauth/v2/token"),
+        response: () => {
+          tokenCalls += 1;
+          return jsonResponse(200, { access_token: "WOULD-NOT-USE", expires_in: 3600 });
+        },
+      },
+      {
+        match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+        response: jsonResponse(200, {
+          data: [{ labelName: "Drafto/Support/Seen", labelId: "L1" }],
+        }),
+      },
+      {
+        match: (url, init) => url.endsWith("/updatethread") && init.method === "PUT",
+        response: jsonResponse(200, { data: { ok: true } }),
+      },
+    ]);
+    cli2._setFetchForTests(fetchB);
+    // _setFetchForTests calls _resetForTests which (now) clears the disk cache
+    // — undo that for this test, since we want to assert the disk path.
+    await fs.writeFile(TOKEN_CACHE_FILE, JSON.stringify(onDisk), { mode: 0o600 });
+    await fs.chmod(TOKEN_CACHE_FILE, 0o600);
+
+    await cli2.addLabel("T2", "Drafto/Support/Seen");
+    assert.equal(tokenCalls, 1, "second process reused disk token instead of refreshing");
+    const labelGet = calls.find(
+      (c) => c.url.endsWith("/labels") && (c.init.method ?? "GET") === "GET" && c.init.headers,
+    );
+    assert.ok(labelGet);
+    // The disk-hydrated token must be the one in use.
+    const labelCalls = calls.filter((c) => c.url.endsWith("/labels"));
+    assert.equal(
+      labelCalls[labelCalls.length - 1].init.headers.Authorization,
+      "Zoho-oauthtoken DISK-TOKEN",
+    );
+  });
+});
+
 describe("listPending filters terminal labels", () => {
-  it("excludes Agent-Replied/Spam/Linked-Issue threads but keeps Needs-Human", async () => {
+  it("excludes Agent-Replied/Spam/Linked-Issue threads but keeps Needs-Human (real labelId[] shape)", async () => {
+    // Real Zoho /messages/view surface: each message carries `labelId: [<id>]`,
+    // not full label objects. The lib resolves IDs against /labels.
     cli._setFetchForTests(
       makeFetch([
         tokenHandler,
@@ -273,26 +402,45 @@ describe("listPending filters terminal labels", () => {
           response: jsonResponse(200, { data: [{ folderName: "Inbox", folderId: "INBOX-1" }] }),
         },
         {
+          match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, {
+            data: [
+              { labelId: "L-AR", displayName: "Drafto/Support/Agent-Replied" },
+              { labelId: "L-NH", displayName: "Drafto/Support/Needs-Human" },
+              { labelId: "L-LI42", displayName: "Drafto/Support/Linked-Issue/42" },
+              { labelId: "L-SP", displayName: "Drafto/Support/Spam" },
+            ],
+          }),
+        },
+        {
           match: (url) => url.includes("/messages/view"),
           response: jsonResponse(200, {
             data: [
-              { threadId: "A", subject: "no labels", labels: [] },
+              { threadId: "A", messageId: "MA", subject: "no labels" },
               {
                 threadId: "B",
+                messageId: "MB",
                 subject: "agent replied",
-                labels: [{ labelName: "Drafto/Support/Agent-Replied" }],
+                labelId: ["L-AR"],
               },
               {
                 threadId: "C",
+                messageId: "MC",
                 subject: "needs human",
-                labels: [{ labelName: "Drafto/Support/Needs-Human" }],
+                labelId: ["L-NH"],
               },
               {
                 threadId: "D",
+                messageId: "MD",
                 subject: "linked issue",
-                labels: [{ labelName: "Drafto/Support/Linked-Issue/42" }],
+                labelId: ["L-LI42"],
               },
-              { threadId: "E", subject: "spam", labels: [{ labelName: "Drafto/Support/Spam" }] },
+              {
+                threadId: "E",
+                messageId: "ME",
+                subject: "spam",
+                labelId: ["L-SP"],
+              },
             ],
           }),
         },
@@ -301,5 +449,143 @@ describe("listPending filters terminal labels", () => {
     const out = await cli.listPending();
     const ids = out.map((m) => m.threadId).sort();
     assert.deepEqual(ids, ["A", "C"]);
+  });
+
+  it("also accepts inline `labels: [{displayName}]` objects (legacy shape)", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url, init) => url.endsWith("/folders") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, { data: [{ folderName: "Inbox", folderId: "INBOX-1" }] }),
+        },
+        {
+          match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, { data: [] }),
+        },
+        {
+          match: (url) => url.includes("/messages/view"),
+          response: jsonResponse(200, {
+            data: [
+              { threadId: "A", messageId: "MA", subject: "no labels", labels: [] },
+              {
+                threadId: "B",
+                messageId: "MB",
+                subject: "agent replied",
+                labels: [{ displayName: "Drafto/Support/Agent-Replied" }],
+              },
+            ],
+          }),
+        },
+      ]),
+    );
+    const out = await cli.listPending();
+    assert.deepEqual(
+      out.map((m) => m.threadId),
+      ["A"],
+    );
+  });
+
+  // Inbox listing returns one entry per message — two messages in the same
+  // thread share a threadId and would otherwise be processed twice in one run.
+  // Filtering happens before dedupe; first occurrence wins (Zoho returns
+  // newest-first, so the most recent message represents the thread).
+  it("dedupes by threadId, keeping the first occurrence", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url, init) => url.endsWith("/folders") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, { data: [{ folderName: "Inbox", folderId: "INBOX-1" }] }),
+        },
+        {
+          match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, { data: [] }),
+        },
+        {
+          match: (url) => url.includes("/messages/view"),
+          response: jsonResponse(200, {
+            data: [
+              { threadId: "T1", messageId: "M1-newer", subject: "reply 2" },
+              { threadId: "T1", messageId: "M1-older", subject: "reply 1" },
+              { threadId: "T2", messageId: "M2", subject: "another thread" },
+              // No threadId at all — should fall back to messageId for keying.
+              { messageId: "M3", subject: "orphan" },
+            ],
+          }),
+        },
+      ]),
+    );
+    const out = await cli.listPending();
+    assert.equal(out.length, 3);
+    assert.equal(out[0].messageId, "M1-newer", "first-occurrence (newest) wins for T1");
+    assert.equal(out[1].threadId, "T2");
+    assert.equal(out[2].messageId, "M3");
+  });
+});
+
+describe("getThread", () => {
+  it("calls /messages/view with threadId query and returns the data array", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url) => url.includes("/messages/view") && url.includes("threadId=THREAD-7"),
+          response: jsonResponse(200, {
+            data: [
+              { messageId: "M1", threadId: "THREAD-7", folderId: "INBOX-1", subject: "first" },
+              { messageId: "M2", threadId: "THREAD-7", folderId: "INBOX-1", subject: "reply" },
+            ],
+          }),
+        },
+      ]),
+    );
+    const out = await cli.getThread("THREAD-7");
+    assert.equal(Array.isArray(out), true);
+    assert.equal(out.length, 2);
+    assert.equal(out[0].messageId, "M1");
+    assert.equal(out[1].subject, "reply");
+    const call = calls.find((c) => c.url.includes("/messages/view"));
+    assert.ok(call.url.includes("threadId=THREAD-7"));
+    assert.ok(!call.url.includes("folderId="));
+  });
+
+  it("rejects empty threadId before any HTTP call", async () => {
+    cli._setFetchForTests(makeFetch([]));
+    await assert.rejects(() => cli.getThread(""), /threadId required/);
+    assert.equal(calls.length, 0);
+  });
+});
+
+describe("getHeaders", () => {
+  it("uses the folder-scoped path and parses headerContent CRLF blob", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url) =>
+            url.includes("/folders/INBOX-1/messages/MSG-9/header") && !url.includes("?"),
+          response: jsonResponse(200, {
+            data: {
+              headerContent:
+                "Delivered-To: support@drafto.eu\r\nFrom: jane@example.com\r\nSubject: hi\r\nReceived: a\r\nReceived: b\r\n",
+            },
+          }),
+        },
+      ]),
+    );
+    const out = await cli.getHeaders("INBOX-1", "MSG-9");
+    assert.equal(out["Delivered-To"], "support@drafto.eu");
+    assert.equal(out.From, "jane@example.com");
+    assert.equal(out.Subject, "hi");
+    // Repeated header names are collapsed comma-separated by parseRawHeaders.
+    assert.equal(out.Received, "a, b");
+  });
+
+  it("requires both folderId and messageId", async () => {
+    cli._setFetchForTests(makeFetch([]));
+    await assert.rejects(() => cli.getHeaders("", "MSG-9"), /folderId required/);
+    await assert.rejects(() => cli.getHeaders("INBOX-1", ""), /messageId required/);
+    assert.equal(calls.length, 0);
   });
 });
