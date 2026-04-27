@@ -92,9 +92,6 @@ describe("add-label", () => {
     // that drift impossible — only the documented suffixes pass.
     await assert.rejects(() => cli.addLabel("T1", "Drafto/Support/Stuck"), /not in allowlist/);
     await assert.rejects(() => cli.addLabel("T1", "Drafto/Support/Custom"), /not in allowlist/);
-    // Sanity: the documented Phase D names DO pass the suffix check (they
-    // still need a fetch mock to actually create the label, but the early
-    // throw is what we're testing here).
     assert.equal(calls.length, 0);
   });
 
@@ -405,7 +402,7 @@ describe("OAuth disk cache", () => {
 });
 
 describe("listPending filters terminal labels", () => {
-  it("excludes Agent-Replied/Spam/Linked-Issue threads but keeps NeedsHuman (real labelId[] shape)", async () => {
+  it("excludes Replied/Spam/legacy threads but keeps NeedsHuman (real labelId[] shape)", async () => {
     // Real Zoho /messages/view surface: each message carries `labelId: [<id>]`,
     // not full label objects. The lib resolves IDs against /labels.
     cli._setFetchForTests(
@@ -419,9 +416,12 @@ describe("listPending filters terminal labels", () => {
           match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
           response: jsonResponse(200, {
             data: [
-              { labelId: "L-AR", displayName: "Drafto/Support/Agent-Replied" },
+              { labelId: "L-AR", displayName: "Drafto/Support/Replied" },
               { labelId: "L-NH", displayName: "Drafto/Support/NeedsHuman" },
-              { labelId: "L-LI42", displayName: "Drafto/Support/Linked-Issue/42" },
+              // Phase F's "linked-issue" label name is not yet finalised
+              // (must fit Zoho's 25-char cap); this fixture name is just a
+              // placeholder to verify isTerminalSupportLabel filters it.
+              { labelId: "L-LI42", displayName: "Drafto/Support/LegacyTerm" },
               { labelId: "L-SP", displayName: "Drafto/Support/Spam" },
             ],
           }),
@@ -486,7 +486,7 @@ describe("listPending filters terminal labels", () => {
                 threadId: "B",
                 messageId: "MB",
                 subject: "agent replied",
-                labels: [{ displayName: "Drafto/Support/Agent-Replied" }],
+                labels: [{ displayName: "Drafto/Support/Replied" }],
               },
             ],
           }),

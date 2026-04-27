@@ -26,8 +26,10 @@ import {
   shouldNotifyAdmin,
   isAutoReplyableEnvelope,
   parseAllowlist,
+  THREAD_WINDOW_MS,
 } from "./policy.mjs";
 import { emptyState } from "./state.mjs";
+import { isMainModule } from "./is-main.mjs";
 
 export function buildInboundThreadBundle({
   pending,
@@ -69,7 +71,7 @@ export function buildInboundThreadBundle({
   const rateLimitReason = !envelope.ok ? envelope.reason : !rateLimit.ok ? rateLimit.reason : null;
   const notify = trackKey ? shouldNotifyAdmin(stateObj, trackKey, nowIso) : false;
 
-  const history = trackKey ? historyFor(stateObj, trackKey) : {};
+  const history = trackKey ? historyFor(stateObj, trackKey, nowIso) : {};
 
   return {
     kind: "inbound_thread",
@@ -129,11 +131,20 @@ function normaliseAllowlist(input) {
   return [];
 }
 
-function historyFor(state, trackKey) {
+function historyFor(state, trackKey, nowIso) {
   const entry = state?.threads?.[trackKey];
   if (!entry) return {};
+  // policy.mjs::bumpCounters prunes the autoReplies array on WRITE, but if a
+  // thread hasn't been auto-replied since some entries fell out of the 24h
+  // window, the array can still hold stale ISO timestamps. Filter at READ
+  // time too so the prompt sees a true 24h-windowed count, not "count at
+  // last bump".
+  const now = Date.parse(nowIso);
+  const recentAutoReplies = Array.isArray(entry.autoReplies)
+    ? entry.autoReplies.filter((t) => now - Date.parse(t) < THREAD_WINDOW_MS)
+    : [];
   return {
-    autoReplyCount24h: Array.isArray(entry.autoReplies) ? entry.autoReplies.length : 0,
+    autoReplyCount24h: recentAutoReplies.length,
     lastAdminNotificationAt: entry.lastAdminNotificationAt ?? null,
   };
 }
@@ -167,8 +178,7 @@ async function main() {
   process.stdout.write(JSON.stringify(bundle, null, 2) + "\n");
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`;
-if (isMain) {
+if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     process.stderr.write(JSON.stringify({ error: err.message }) + "\n");
     process.exit(1);

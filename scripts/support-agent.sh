@@ -364,9 +364,14 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
   fi
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    log "DRY-RUN: would invoke claude with the following bundle:"
-    echo "$BUNDLE" | tee -a "$LOG_FILE"
-    log "DRY-RUN: end of bundle for $TRACK_ID"
+    # The bundle contains the customer's email body, sender address, and
+    # full headers (PII). Print it to stdout so the operator running
+    # --dry-run interactively can see it, but do NOT tee into LOG_FILE —
+    # the rotating logs/support/*.log files are 0600 + 30-day retention but
+    # we don't want PII persisted there. (Deferred from PR #335; this PR
+    # is the Phase D rollout that triggers the deferral.)
+    log "DRY-RUN: bundle for $TRACK_ID (printed to stdout only; not logged)"
+    echo "$BUNDLE"
     continue
   fi
 
@@ -397,11 +402,14 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
   cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE"
   # The prompt instructs Claude to end with a single line:
   #   thread=<id> action=<x> issue=<n|->
-  # We grep the LAST such line so any earlier explanatory output is ignored.
-  SUMMARY_LINE=$(grep -E '^thread=' "$CLAUDE_OUTPUT_FILE" | tail -1 || true)
+  # The strict regex avoids false positives from mid-stream reasoning that
+  # happens to start with `thread=` (e.g. quoting customer text), and
+  # rejects partial/malformed lines so the action handler doesn't get a
+  # half-parsed value.
+  SUMMARY_LINE=$(grep -E '^thread=[^ ]+ action=[^ ]+ issue=[^ ]+$' "$CLAUDE_OUTPUT_FILE" | tail -1 || true)
   rm -f "$CLAUDE_OUTPUT_FILE"
   if [[ -z "$SUMMARY_LINE" ]]; then
-    log "WARNING: no summary line returned by claude for $TRACK_ID"
+    log "WARNING: no well-formed summary line returned by claude for $TRACK_ID"
     continue
   fi
   log "Claude summary: $SUMMARY_LINE"
@@ -409,7 +417,9 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
 
   # If Claude escalated (NeedsHuman), it should also have fired an admin
   # email per the prompt. Bump the cooldown cursor here so the next run
-  # respects it. No-op for spam / noop / sync-* actions.
+  # respects it. Phase-disallowed actions (auto-replied in Phase D,
+  # filed-issue in Phase D/E) are treated as hard errors so an LLM
+  # regression doesn't slip past the prompt's gate silently.
   case "$ACTION" in
     escalated)
       if ! node "$SCRIPT_DIR/lib/state-cli.mjs" bump-notification "$TRACK_ID" \
@@ -417,8 +427,21 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
         log "WARNING: state-cli bump-notification failed for $TRACK_ID"
       fi
       ;;
-    spammed|noop|sync-comment|sync-state|filed-issue|auto-replied)
+    spammed|noop|sync-comment|sync-state)
       : # No state change required at this stage.
+      ;;
+    auto-replied)
+      if [[ "$PHASE" == "D" ]]; then
+        log "ERROR: claude returned auto-replied under Phase D for $TRACK_ID — prompt phase gate violated"
+        exit 1
+      fi
+      # Phase E+: bump-counters here once the auto-reply path is wired in.
+      ;;
+    filed-issue)
+      if [[ "$PHASE" =~ ^[DE]$ ]]; then
+        log "ERROR: claude returned filed-issue under Phase $PHASE for $TRACK_ID — prompt phase gate violated"
+        exit 1
+      fi
       ;;
     *)
       log "WARNING: unrecognised action '$ACTION' from claude for $TRACK_ID"

@@ -5,7 +5,7 @@
   "action": "auto-replied-or-escalated",
   "expected_reply_must_be_grounded_in_docs": true,
   "expected_reply_max_lines": 8,
-  "expected_zoho_label_if_replied": "Drafto/Support/Agent-Replied",
+  "expected_zoho_label_if_replied": "Drafto/Support/Replied",
   "expected_folder_after_if_replied": "Drafto/Support/Resolved",
   "expected_zoho_label_if_escalated": "Drafto/Support/NeedsHuman",
   "admin_notification_fired_if_escalated": true,

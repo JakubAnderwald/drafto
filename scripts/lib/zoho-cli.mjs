@@ -44,6 +44,8 @@
 
 import { promises as fs } from "node:fs";
 import { loadConfig, getAccessToken, invalidateAccessToken, _resetForTests } from "./zoho-auth.mjs";
+import { parseFlags } from "./parse-flags.mjs";
+import { isMainModule } from "./is-main.mjs";
 
 const SUPPORT_NAMESPACE = "Drafto/Support/";
 
@@ -210,13 +212,21 @@ async function ensureFolder(name) {
 
 // ── Subcommands ─────────────────────────────────────────────────────────────
 
+// `isTerminalSupportLabel` (read path, used by `listPending`) is
+// intentionally permissive — it accepts ANY `Drafto/Support/<anything>` and
+// treats everything except `NeedsHuman` as terminal. The asymmetry with
+// `assertSupportNamespace` (write path, closed allowlist) is deliberate: a
+// stale label written by an older agent version, or one created during a
+// Phase F-style scheme migration, must still cause `listPending` to skip
+// the thread instead of looping. Don't unify these — keep read tolerant,
+// write strict.
+//
+// Zoho enforces a 25-char `displayName` max, which is why the label is
+// `Drafto/Support/NeedsHuman` (25) without the hyphen — see PR #344 for
+// the live ENOLABEL repro.
 function isTerminalSupportLabel(labelName) {
   if (typeof labelName !== "string") return false;
   if (!labelName.startsWith(SUPPORT_NAMESPACE)) return false;
-  // Inbox + NeedsHuman stays "pending" from the agent's POV.
-  // Note: Zoho enforces a 25-char displayName max, so the label is
-  // `Drafto/Support/NeedsHuman` (25) without the hyphen — see PR #344
-  // discussion for the live ENOLABEL repro.
   return labelName !== `${SUPPORT_NAMESPACE}NeedsHuman`;
 }
 
@@ -418,33 +428,9 @@ export async function moveToFolder(threadId, folderName) {
 // ── CLI dispatch ────────────────────────────────────────────────────────────
 
 // All current zoho-cli flags require a value (--to, --subject, --body-file).
-// Treating any `--xxx` token as boolean would mis-parse `--body-file --to x`
-// (the body-file flag silently becomes `true` and `--to` is consumed as a
-// separate flag with `x` as its value). Both `--key=value` and `--key value`
-// are accepted; missing values raise a clear error.
-function parseFlags(argv) {
-  const flags = {};
-  const positional = [];
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg.startsWith("--")) {
-      const key = arg.slice(2);
-      const eq = key.indexOf("=");
-      if (eq !== -1) {
-        flags[key.slice(0, eq)] = key.slice(eq + 1);
-      } else if (i + 1 >= argv.length) {
-        throw new Error(`Missing value for --${key}`);
-      } else {
-        flags[key] = argv[i + 1];
-        i++;
-      }
-    } else {
-      positional.push(arg);
-    }
-  }
-  return { flags, positional };
-}
-
+// parseFlags lives in ./parse-flags.mjs so state-cli.mjs uses the same
+// parser; both refuse missing values to avoid mis-parsing chains like
+// `--body-file --to x` as boolean + flag.
 async function main(argv) {
   const [sub, ...rest] = argv;
   const { flags, positional } = parseFlags(rest);
@@ -477,8 +463,7 @@ async function main(argv) {
   }
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`;
-if (isMain) {
+if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2)).then(
     (out) => {
       if (out !== null && out !== undefined) {

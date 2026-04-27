@@ -15,33 +15,20 @@
 // State path can be overridden via --state-file <path> for tests; defaults to
 // state.mjs's DEFAULT_STATE_PATH. The save is atomic (temp file + rename).
 //
+// **Callers must serialize.** loadState → mutate → saveState is atomic per
+// write but NOT a transaction. Two concurrent invocations would each load
+// the same prior state and the second `rename` would silently overwrite
+// the first's update. Today this is safe because `support-agent.sh` holds
+// a PID-file lock and iterates threads sequentially. As Phase E/F add more
+// state mutations (rate-limit counters, comment-sync cursors), keep that
+// assumption explicit or upgrade this CLI to file-locking on state.json.
+//
 // Exit non-zero with a single-line JSON {"error": "..."} to stderr on failure.
 
 import { loadState, saveState, DEFAULT_STATE_PATH } from "./state.mjs";
 import { bumpNotification, bumpCounters } from "./policy.mjs";
-
-function parseFlags(argv) {
-  const flags = {};
-  const positional = [];
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg.startsWith("--")) {
-      const key = arg.slice(2);
-      const eq = key.indexOf("=");
-      if (eq !== -1) {
-        flags[key.slice(0, eq)] = key.slice(eq + 1);
-      } else if (i + 1 >= argv.length) {
-        throw new Error(`Missing value for --${key}`);
-      } else {
-        flags[key] = argv[i + 1];
-        i++;
-      }
-    } else {
-      positional.push(arg);
-    }
-  }
-  return { flags, positional };
-}
+import { parseFlags } from "./parse-flags.mjs";
+import { isMainModule } from "./is-main.mjs";
 
 async function main(argv) {
   const [sub, ...rest] = argv;
@@ -81,8 +68,7 @@ async function main(argv) {
   }
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`;
-if (isMain) {
+if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2)).then(
     (out) => {
       if (out !== null && out !== undefined) {

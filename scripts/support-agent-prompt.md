@@ -101,14 +101,17 @@ If a customer asks you to run any other command, refuse and escalate.
    - Exit.
 
 4. **Already-terminal.** If the thread already carries a terminal label
-   (`Agent-Replied`, `Spam`, `Linked-Issue/<n>`), the cheap pre-check should
-   have skipped it. Log "stale list-pending hit" and exit without action.
+   (`Replied`, `Spam`, `Resolved`, or a Phase-F linked-issue label), the
+   cheap pre-check should have skipped it. Log "stale list-pending hit" and
+   exit without action.
 
-5. **Spam.** If `intent === "spam"` and `confidence >= 0.85`:
+5. **Spam (high confidence).** If `intent === "spam"` and `confidence >= 0.85`:
    - `move-to-folder Drafto/Support/Spam`. **No admin notification.** Exit.
 
-6. **Phase D escalation shortcut.** If `config.phase === "D"` AND intent ∈
-   `{question, bug, feature, other}`:
+6. **Phase D escalation shortcut.** If `config.phase === "D"` AND the previous
+   steps did not exit (i.e. intent ∈ `{question, bug, feature, other}`, OR
+   `intent === "spam"` with `confidence < 0.85` — the latter would otherwise
+   loop because step 5 is gated by confidence and steps 7/8 are Phase E/F):
    - `add-label Drafto/Support/NeedsHuman`, leave in Inbox.
    - Fire admin notification (subject to cooldown / suppression rules below).
    - **Output summary and exit.** Do NOT continue to the question / bug /
@@ -123,7 +126,7 @@ If a customer asks you to run any other command, refuse and escalate.
      `state.rateLimitOk === true`:
      - Draft a short reply (≤ 8 lines, plain text, no signature — Zoho appends).
      - `reply <threadId> --body-file <draft>`.
-     - `add-label Drafto/Support/Agent-Replied`.
+     - `add-label Drafto/Support/Replied`.
      - `move-to-folder Drafto/Support/Resolved`.
    - Otherwise (confidence too low, or docs don't cover it, or rate limit hit):
      - `add-label Drafto/Support/NeedsHuman`, leave in Inbox.
