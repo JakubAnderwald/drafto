@@ -440,6 +440,19 @@ describe("buildGithubCommentBatchBundle (Phase F)", () => {
     assert.equal(bundle.zoho_thread_id, "");
   });
 
+  it("CLI rejects unknown kinds rather than silently defaulting to inbound_thread", () => {
+    const input = {
+      kind: "future_kind",
+      issue: { number: 1, title: "x" },
+    };
+    const r = spawnSync("node", [CLI], {
+      encoding: "utf8",
+      input: JSON.stringify(input),
+    });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /unknown kind: future_kind/);
+  });
+
   it("CLI dispatches on `kind` to the github_comment_batch builder", () => {
     const input = {
       kind: "github_comment_batch",

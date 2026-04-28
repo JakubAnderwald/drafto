@@ -231,7 +231,7 @@ async function main() {
       // `zoho_thread_id` (snake_case). Builder normalises to snake on output.
       zohoThreadId: input.zohoThreadId ?? input.zoho_thread_id,
     });
-  } else {
+  } else if (input.kind == null || input.kind === "inbound_thread") {
     const cfg = input.config ?? {};
     bundle = buildInboundThreadBundle({
       pending: input.pending ?? null,
@@ -242,6 +242,12 @@ async function main() {
       linkedIssue: input.linkedIssue ?? "",
       nowIso: cfg.now ?? new Date().toISOString(),
     });
+  } else {
+    // Fail fast on typos / future kinds rather than silently routing them
+    // into inbound_thread. The bash entry points always set `kind`
+    // explicitly (or omit it for the legacy inbound_thread shape), so an
+    // unknown value is a real bug, not a missing default.
+    throw new Error(`build-bundle: unknown kind: ${input.kind}`);
   }
   process.stdout.write(JSON.stringify(bundle, null, 2) + "\n");
 }

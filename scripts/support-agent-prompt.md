@@ -208,7 +208,7 @@ it as new mail or file a duplicate issue. Instead:
      issue URL is always `https://github.com/JakubAnderwald/drafto/issues/<n>`.
      - **allowlisted:**
 
-       ```
+       ```text
        Hi,
 
        Thanks for the report — I've filed it as issue #<n>:
@@ -224,7 +224,7 @@ it as new mail or file a duplicate issue. Instead:
 
      - **public:**
 
-       ```
+       ```text
        Hi,
 
        Thanks for reaching out — I've filed your <bug report|feature
