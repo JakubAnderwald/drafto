@@ -17,6 +17,13 @@
 //                                    the per-issue cursor after Claude
 //                                    forwards a batch of GitHub comments to
 //                                    the linked Zoho thread.
+//   set-issue-state <issue> <state> [<state-reason>]
+//                                    Record state.issues[<issue>].lastKnownState
+//                                    = {state, state_reason} and bump
+//                                    lastIssueStateSync. Used by --state-sync
+//                                    after handling (or bootstrapping) a
+//                                    transition. <state-reason> may be
+//                                    empty/"null" to record an explicit null.
 //
 // State path can be overridden via --state-file <path> for tests; defaults to
 // state.mjs's DEFAULT_STATE_PATH. The save is atomic (temp file + rename).
@@ -75,11 +82,47 @@ async function main(argv) {
       await saveState(state, file);
       return { ok: true, issueNumber, cursor };
     }
+    case "set-issue-state": {
+      const issueNumber = positional[0];
+      const stateName = positional[1];
+      const stateReasonRaw = positional[2];
+      if (!issueNumber || !stateName) {
+        throw new Error("set-issue-state requires <issue-number> <state> [<state-reason>]");
+      }
+      // Trim before checking so that bash callers passing " completed " (with
+      // surrounding whitespace from a quoted variable) hit the same normalised
+      // form as github-sync.mjs's normaliseStateReason — otherwise the
+      // persisted value wouldn't compare equal to what diffStateChanges
+      // produces from the live API on the next run, and we'd email the same
+      // transition again.
+      const trimmedReason =
+        stateReasonRaw == null ? "" : String(stateReasonRaw).trim().toLowerCase();
+      const stateReason = trimmedReason === "" || trimmedReason === "null" ? null : trimmedReason;
+      const state = await loadState(file);
+      state.issues ??= {};
+      state.issues[issueNumber] ??= {};
+      state.issues[issueNumber].lastKnownState = {
+        state: String(stateName).trim().toLowerCase(),
+        state_reason: stateReason,
+      };
+      state.issues[issueNumber].lastIssueStateSync = now;
+      await saveState(state, file);
+      return {
+        ok: true,
+        issueNumber,
+        state: state.issues[issueNumber].lastKnownState.state,
+        state_reason: state.issues[issueNumber].lastKnownState.state_reason,
+      };
+    }
     case "--help":
     case "-h":
     case undefined:
       process.stdout.write(
-        "Usage: state-cli.mjs <bump-notification <track-key>|bump-counters <track-key> <sender>|set-issue-cursor <issue-number> <cursor-iso>> [--state-file <path>] [--now <iso>]\n",
+        "Usage: state-cli.mjs <bump-notification <track-key>|" +
+          "bump-counters <track-key> <sender>|" +
+          "set-issue-cursor <issue-number> <cursor-iso>|" +
+          "set-issue-state <issue-number> <state> [<state-reason>]> " +
+          "[--state-file <path>] [--now <iso>]\n",
       );
       return null;
     default:

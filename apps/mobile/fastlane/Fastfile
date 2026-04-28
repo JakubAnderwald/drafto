@@ -70,6 +70,29 @@ rescue StandardError => e
   UI.important("Release notes posting failed (non-fatal): #{e.message}")
 end
 
+# Phase G: walk PRs merged since the last `mobile@*` tag, find `Closes #N`
+# refs, and comment "Now live in <track>." on each linked support issue.
+# `track` is the customer-facing label (e.g. "TestFlight build 145"),
+# composed by the caller because Fastlane has direct access to the lane
+# and build identifier. Best-effort — a comment failure shouldn't fail
+# the release pipeline.
+def comment_released_issues(platform:, build:, track:)
+  return if build.nil? || build.to_s.empty? || track.nil? || track.empty?
+  Dir.chdir(PROJECT_ROOT) do
+    repo_root = `git rev-parse --show-toplevel`.strip
+    script = File.join(repo_root, "scripts", "comment-released-issues.mjs")
+    next unless File.exist?(script)
+    sh("node", script,
+       "--platform", platform,
+       "--build", build.to_s,
+       "--track", track,
+       "--tag-prefix", "mobile@",
+       "--paths", "apps/mobile/,packages/shared/")
+  end
+rescue StandardError => e
+  UI.important("Released-issue comments failed (non-fatal): #{e.message}")
+end
+
 # ---------- Android ----------
 
 platform :android do
@@ -130,6 +153,14 @@ platform :android do
 
     # Post release notes
     post_release_notes(platform: "android", max_chars: 500)
+
+    # Phase G: comment "Now live" on closed support issues for this build.
+    # Track label distinguishes internal-track beta from production for the
+    # customer-facing email (TestFlight is iOS-only — Android beta is the
+    # Play "internal" track).
+    track_label =
+      track == "production" ? "Google Play (build #{next_code})" : "Google Play internal track (build #{next_code})"
+    comment_released_issues(platform: "android", build: next_code, track: track_label)
   end
 end
 
@@ -179,8 +210,9 @@ platform :ios do
     )
 
     # Auto-increment build number from TestFlight
+    new_build_number = latest_testflight_build_number(api_key: api_key) + 1
     increment_build_number(
-      build_number: latest_testflight_build_number(api_key: api_key) + 1,
+      build_number: new_build_number,
       xcodeproj: File.join(PROJECT_ROOT, "ios", "Drafto.xcodeproj")
     )
 
@@ -219,5 +251,12 @@ platform :ios do
 
     # Post release notes
     post_release_notes(platform: "ios", max_chars: 4000)
+
+    # Phase G: comment "Now live" on closed support issues for this build.
+    # TestFlight (beta) and the App Store (production) ship the same build
+    # number but to different audiences — distinguish in the customer label.
+    track_label =
+      destination == "appstore" ? "the App Store (build #{new_build_number})" : "TestFlight (build #{new_build_number})"
+    comment_released_issues(platform: "ios", build: new_build_number, track: track_label)
   end
 end

@@ -314,18 +314,39 @@ yourself.
 
 Compose ONE Zoho reply body keyed off `(newState.state, newState.state_reason)`:
 
-| Transition                                                                             | Body                                                                                                        |
-| -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `closed` / `completed`, `platforms` includes `web`                                     | `We've fixed this — live on drafto.eu now.`                                                                 |
-| `closed` / `completed`, otherwise                                                      | `We've fixed this. It'll go out with our next release; we'll email you when it's live.`                     |
-| `closed` / `not_planned` or `duplicate`                                                | `After review, we won't be implementing this.` + (if `lastComment` non-null) `\n\nReason: ` + `lastComment` |
-| `reopened` (newState.state_reason === "reopened" or transition open→open after closed) | `Reopened — we're looking at this again.`                                                                   |
-| anything else                                                                          | do nothing, log "ignored state change"                                                                      |
+| Transition                                                                                                       | Body                                                                                                                                                  |
+| ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `closed` / `completed`, `platforms` includes `web`                                                               | `We've fixed this — live on drafto.eu now.`                                                                                                           |
+| `closed` / `completed`, otherwise                                                                                | `We've fixed this. It'll go out with our next release; we'll email you when it's live.`                                                               |
+| `closed` / `not_planned` or `duplicate`                                                                          | `After review, we won't be implementing this.` then, if `lastComment` is non-null, a blank line followed by `Reason:` and the extracted comment text. |
+| `oldState.state === "closed"` and `newState.state === "open"` (issue was reopened, regardless of `state_reason`) | `Reopened — we're looking at this again.`                                                                                                             |
+| anything else (e.g. `open` → `open` with only a stateReason rewrite)                                             | do nothing — emit `action=noop` and exit                                                                                                              |
+
+`lastComment` (when non-null) arrives wrapped in `<github-comment>...</github-comment>`
+exactly like comment-sync bodies. Strip the envelope tags before quoting it
+in the customer reply — the wrapper is for prompt-injection safety, not
+customer content.
+
+Wrap the body in friendly multi-line plain text (short paragraphs, sign-off)
+matching the tone of step 8's filing acks — terse single-sentence emails
+read as curt to customers.
 
 Then, same as `github_comment_batch`:
-`messages = get-thread <zoho_thread_id>` →
-`latest = messages[messages.length - 1]` →
-`reply <latest.messageId> --to <latest.fromAddress> --subject "<latest.subject>" --body-file <draft>`.
+
+- `messages = get-thread <zoho_thread_id>` →
+  `latest = messages[messages.length - 1]`.
+- `result = reply <latest.messageId> --to <latest.fromAddress> --subject "<latest.subject>" --body-file <draft>`.
+  Capture `ackMessageId = result.messageId` from the response.
+- `add-message-label <ackMessageId> Drafto/Support/Issue/<issue.number>`.
+  **Do not skip this step** — Zoho frequently spawns a fresh thread for each
+  agent outbound rather than threading them together. Without the label on
+  the agent's reply, a customer follow-up ("thanks", "when does it ship?")
+  lands in an unlabelled thread and gets misclassified as new mail by
+  step 4.5 of the inbound flow.
+
+Output `thread=<zoho_thread_id> action=sync-state issue=<issue.number>` on
+success, or `thread=<zoho_thread_id> action=noop issue=<issue.number>` for
+the "anything else" row above.
 
 ## Admin notification
 

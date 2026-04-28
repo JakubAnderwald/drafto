@@ -197,6 +197,100 @@ describe("state-cli set-issue-cursor (Phase F comment-sync)", () => {
   });
 });
 
+describe("state-cli set-issue-state (Phase G state-sync)", () => {
+  it("records lastKnownState + lastIssueStateSync", () => {
+    const fresh = path.join(workdir, "phase-g.json");
+    const now = "2026-04-28T12:00:00.000Z";
+    const r = run([
+      "set-issue-state",
+      "349",
+      "closed",
+      "completed",
+      "--state-file",
+      fresh,
+      "--now",
+      now,
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, true);
+    assert.equal(out.state, "closed");
+    assert.equal(out.state_reason, "completed");
+    const state = JSON.parse(readFileSync(fresh, "utf8"));
+    assert.deepEqual(state.issues["349"].lastKnownState, {
+      state: "closed",
+      state_reason: "completed",
+    });
+    assert.equal(state.issues["349"].lastIssueStateSync, now);
+  });
+
+  it("normalises empty / 'null' state_reason to JSON null", () => {
+    const fresh = path.join(workdir, "phase-g-null.json");
+    const now = "2026-04-28T12:00:00.000Z";
+    const r1 = run(["set-issue-state", "1", "open", "", "--state-file", fresh, "--now", now]);
+    assert.equal(r1.status, 0, r1.stderr);
+    const state1 = JSON.parse(readFileSync(fresh, "utf8"));
+    assert.equal(state1.issues["1"].lastKnownState.state_reason, null);
+
+    const r2 = run(["set-issue-state", "2", "open", "null", "--state-file", fresh, "--now", now]);
+    assert.equal(r2.status, 0, r2.stderr);
+    const state2 = JSON.parse(readFileSync(fresh, "utf8"));
+    assert.equal(state2.issues["2"].lastKnownState.state_reason, null);
+
+    // Omitted entirely (no third positional) also yields null.
+    const r3 = run(["set-issue-state", "3", "open", "--state-file", fresh, "--now", now]);
+    assert.equal(r3.status, 0, r3.stderr);
+    const state3 = JSON.parse(readFileSync(fresh, "utf8"));
+    assert.equal(state3.issues["3"].lastKnownState.state_reason, null);
+  });
+
+  it("preserves prior per-issue cursors when bumping the state", () => {
+    const fresh = path.join(workdir, "phase-g-merge.json");
+    const earlier = "2026-04-27T11:00:00.000Z";
+    const now = "2026-04-28T12:00:00.000Z";
+    writeFileSync(
+      fresh,
+      JSON.stringify({
+        issues: {
+          349: {
+            lastGithubCommentSyncAt: earlier,
+            lastKnownState: { state: "open", state_reason: null },
+            lastIssueStateSync: earlier,
+          },
+        },
+        threads: {},
+        senders: {},
+        global: { autoRepliesByDay: {} },
+      }),
+    );
+    const r = run([
+      "set-issue-state",
+      "349",
+      "closed",
+      "completed",
+      "--state-file",
+      fresh,
+      "--now",
+      now,
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    const state = JSON.parse(readFileSync(fresh, "utf8"));
+    // Phase F cursor must not be clobbered by the Phase G bump.
+    assert.equal(state.issues["349"].lastGithubCommentSyncAt, earlier);
+    assert.deepEqual(state.issues["349"].lastKnownState, {
+      state: "closed",
+      state_reason: "completed",
+    });
+    assert.equal(state.issues["349"].lastIssueStateSync, now);
+  });
+
+  it("rejects missing state argument", () => {
+    const r = run(["set-issue-state", "349", "--state-file", stateFile]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /<state>/);
+  });
+});
+
 describe("state-cli usage / errors", () => {
   it("prints usage on no args", () => {
     const r = run([]);

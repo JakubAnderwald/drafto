@@ -105,6 +105,38 @@ describe("filterNewComments (pure)", () => {
     );
   });
 
+  it("forwards bot-authored comments carrying the progress marker (Phase G)", async () => {
+    // The customer→GH→Zoho echo loop is broken by suppressing bot-authored
+    // comments — but specific bot-authored comments (nightly-support's
+    // "Working on it now", post-release-notes' "Now live in build X")
+    // SHOULD reach the customer. The progress marker opts those in.
+    const variant = [
+      {
+        id: 10,
+        user: { login: "JakubAnderwald" },
+        body: "Customer replied via support@drafto.eu: ...",
+        created_at: "2026-04-28T11:00:00.000Z",
+      },
+      {
+        id: 11,
+        user: { login: "JakubAnderwald" },
+        body: "Working on it now (from the nightly agent). <!-- drafto-progress -->",
+        created_at: "2026-04-28T12:00:00.000Z",
+      },
+      {
+        id: 12,
+        user: { login: "JakubAnderwald" },
+        body: "Now live in ios 1234. <!-- drafto-progress --> <!-- now-live:ios:1234 -->",
+        created_at: "2026-04-28T13:00:00.000Z",
+      },
+    ];
+    const out = lib.filterNewComments(variant, "2026-04-28T00:00:00.000Z", "JakubAnderwald");
+    assert.deepEqual(
+      out.map((c) => c.id),
+      [11, 12],
+    );
+  });
+
   it("falls back to author.login when user.login is absent (gh json shape variant)", async () => {
     const variant = [
       {
@@ -198,5 +230,265 @@ describe("findLinkedThread", () => {
     );
     const tid = await lib.findLinkedThread(123);
     assert.equal(tid, "");
+  });
+});
+
+describe("derivePlatforms (Phase G — pure)", () => {
+  it("buckets web/mobile/desktop paths into the platform set", async () => {
+    const out = lib.derivePlatforms([
+      "apps/web/src/foo.ts",
+      "apps/web/src/bar.ts",
+      "apps/mobile/app/x.ts",
+      "apps/desktop/src/y.ts",
+    ]);
+    assert.deepEqual(out, ["desktop", "mobile", "web"]);
+  });
+
+  it("ignores shared and root paths so we don't claim a single platform", async () => {
+    const out = lib.derivePlatforms([
+      "packages/shared/src/x.ts",
+      "tsconfig.json",
+      ".github/workflows/ci.yml",
+    ]);
+    assert.deepEqual(out, []);
+  });
+
+  it("accepts both string and {path} / {filename} shapes", async () => {
+    const out = lib.derivePlatforms([
+      "apps/web/a.ts",
+      { path: "apps/mobile/b.ts" },
+      { filename: "apps/desktop/c.ts" },
+    ]);
+    assert.deepEqual(out, ["desktop", "mobile", "web"]);
+  });
+
+  it("handles non-array / null input defensively", async () => {
+    assert.deepEqual(lib.derivePlatforms(null), []);
+    assert.deepEqual(lib.derivePlatforms(undefined), []);
+    assert.deepEqual(lib.derivePlatforms("apps/web/a.ts"), []);
+  });
+});
+
+describe("diffStateChanges (Phase G — pure)", () => {
+  it("flags issues with no prior state as bootstrap (no email, just record)", async () => {
+    const issues = [
+      { number: 1, state: "OPEN", stateReason: null },
+      { number: 2, state: "CLOSED", stateReason: "COMPLETED" },
+    ];
+    const changes = lib.diffStateChanges(issues, {});
+    assert.equal(changes.length, 2);
+    assert.ok(changes.every((c) => c.isBootstrap === true));
+    assert.equal(changes[0].oldState, null);
+    assert.equal(changes[0].newState.state, "open");
+  });
+
+  it("emits a change when state transitions", async () => {
+    const issues = [{ number: 1, state: "CLOSED", stateReason: "completed" }];
+    const known = { 1: { state: "open", state_reason: null } };
+    const changes = lib.diffStateChanges(issues, known);
+    assert.equal(changes.length, 1);
+    assert.equal(changes[0].isBootstrap, false);
+    assert.deepEqual(changes[0].oldState, { state: "open", state_reason: null });
+    assert.deepEqual(changes[0].newState, { state: "closed", state_reason: "completed" });
+  });
+
+  it("emits a change when only state_reason transitions (e.g. completed → not_planned)", async () => {
+    const issues = [{ number: 1, state: "CLOSED", stateReason: "not_planned" }];
+    const known = { 1: { state: "closed", state_reason: "completed" } };
+    const changes = lib.diffStateChanges(issues, known);
+    assert.equal(changes.length, 1);
+    assert.equal(changes[0].newState.state_reason, "not_planned");
+  });
+
+  it("emits no change when state and state_reason are unchanged", async () => {
+    const issues = [{ number: 1, state: "CLOSED", stateReason: "completed" }];
+    const known = { 1: { state: "closed", state_reason: "completed" } };
+    assert.deepEqual(lib.diffStateChanges(issues, known), []);
+  });
+
+  it("treats string 'null' / empty / null as the same state_reason", async () => {
+    const issues = [{ number: 1, state: "OPEN", stateReason: null }];
+    const known = { 1: { state: "open", state_reason: "null" } };
+    assert.deepEqual(lib.diffStateChanges(issues, known), []);
+  });
+
+  it("normalises state casing on both sides", async () => {
+    const issues = [{ number: 1, state: "Closed", stateReason: "Completed" }];
+    const known = { 1: { state: "closed", state_reason: "completed" } };
+    assert.deepEqual(lib.diffStateChanges(issues, known), []);
+  });
+});
+
+describe("extractIssueRefs (Phase G — pure)", () => {
+  it("extracts Closes / Fixes / Resolves variants case-insensitively", async () => {
+    const text = `feat: x
+
+closes #123
+Fixes #456
+RESOLVES #789
+fixed #1000
+closed #2000
+resolved #3000`;
+    assert.deepEqual(lib.extractIssueRefs(text), [123, 456, 789, 1000, 2000, 3000]);
+  });
+
+  it("dedupes refs that appear multiple times", async () => {
+    assert.deepEqual(lib.extractIssueRefs("Closes #1, fixes #1, also resolves #1"), [1]);
+  });
+
+  it("ignores #N references that lack a closing keyword", async () => {
+    assert.deepEqual(lib.extractIssueRefs("see #99 for context"), []);
+  });
+
+  it("matches the long-form GitHub URL form too", async () => {
+    const text = "Fixes https://github.com/JakubAnderwald/drafto/issues/42";
+    assert.deepEqual(lib.extractIssueRefs(text), [42]);
+  });
+
+  it("returns [] for non-string / empty input", async () => {
+    assert.deepEqual(lib.extractIssueRefs(null), []);
+    assert.deepEqual(lib.extractIssueRefs(""), []);
+    assert.deepEqual(lib.extractIssueRefs(undefined), []);
+  });
+});
+
+describe("getStateChangeInfo (Phase G — mocked gh)", () => {
+  it("returns zoho_thread_id, derived platforms, and the closing-actor comment within the time window", async () => {
+    const closeTime = "2026-04-28T19:00:00Z";
+    const sameTime = "2026-04-28T19:00:30Z"; // within 60s window
+    const wayLater = "2026-04-28T20:00:00Z"; // outside window
+    lib._setExecFileForTests(
+      makeExecFile([
+        {
+          match: (cmd, args) =>
+            cmd === "gh" && args[0] === "issue" && args[1] === "view" && args.includes("body"),
+          response: {
+            stdout: JSON.stringify({
+              body: `bug
+
+<!-- drafto-support-agent v1
+reporter-email: jane@example.com
+reporter-allowlisted: false
+zoho-thread-id: 8537837000999
+-->`,
+            }),
+          },
+        },
+        {
+          match: (cmd, args) =>
+            cmd === "gh" &&
+            args[0] === "issue" &&
+            args[1] === "view" &&
+            args.includes("closedByPullRequestsReferences"),
+          response: {
+            stdout: JSON.stringify({
+              closedByPullRequestsReferences: [{ number: 500 }],
+            }),
+          },
+        },
+        {
+          match: (cmd, args) => cmd === "gh" && args[0] === "pr" && args[1] === "view",
+          response: {
+            stdout: JSON.stringify({
+              files: [{ path: "apps/web/src/x.ts" }, { path: "apps/mobile/app/y.ts" }],
+            }),
+          },
+        },
+        {
+          // events endpoint: most recent close was by `maintainer` at 19:00.
+          match: (cmd, args) =>
+            cmd === "gh" && args[0] === "api" && args.some((a) => a.endsWith("/events")),
+          response: {
+            stdout: JSON.stringify([
+              {
+                event: "labeled",
+                actor: { login: "maintainer" },
+                created_at: "2026-04-28T18:00:00Z",
+              },
+              { event: "closed", actor: { login: "maintainer" }, created_at: closeTime },
+            ]),
+          },
+        },
+        {
+          // comments endpoint: an older customer comment (out-of-window),
+          // a same-actor + same-time comment (the closing rationale),
+          // and a much-later customer comment (also out-of-window).
+          match: (cmd, args) =>
+            cmd === "gh" && args[0] === "api" && args.some((a) => a.endsWith("/comments")),
+          response: {
+            stdout: JSON.stringify([
+              {
+                user: { login: "customer" },
+                body: "Original report.",
+                created_at: "2026-04-28T10:00:00Z",
+              },
+              {
+                user: { login: "maintainer" },
+                body: "Out of scope — see ROADMAP.",
+                created_at: sameTime,
+              },
+              { user: { login: "customer" }, body: "Thanks for clarifying.", created_at: wayLater },
+            ]),
+          },
+        },
+      ]),
+    );
+    const info = await lib.getStateChangeInfo(42, { botUser: "JakubAnderwald" });
+    assert.equal(info.zoho_thread_id, "8537837000999");
+    assert.deepEqual(info.platforms, ["mobile", "web"]);
+    assert.equal(info.lastComment, "Out of scope — see ROADMAP.");
+  });
+
+  it("returns null lastComment when no comment falls within the closing-actor / time window", async () => {
+    lib._setExecFileForTests(
+      makeExecFile([
+        {
+          match: (cmd, args) =>
+            cmd === "gh" && args[0] === "issue" && args[1] === "view" && args.includes("body"),
+          response: { stdout: JSON.stringify({ body: "no footer" }) },
+        },
+        {
+          match: (cmd, args) =>
+            cmd === "gh" &&
+            args[0] === "issue" &&
+            args[1] === "view" &&
+            args.includes("closedByPullRequestsReferences"),
+          response: { stdout: JSON.stringify({ closedByPullRequestsReferences: [] }) },
+        },
+        {
+          match: (cmd, args) =>
+            cmd === "gh" && args[0] === "api" && args.some((a) => a.endsWith("/events")),
+          response: {
+            stdout: JSON.stringify([
+              {
+                event: "closed",
+                actor: { login: "maintainer" },
+                created_at: "2026-04-28T19:00:00Z",
+              },
+            ]),
+          },
+        },
+        {
+          match: (cmd, args) =>
+            cmd === "gh" && args[0] === "api" && args.some((a) => a.endsWith("/comments")),
+          response: {
+            // Reporter posted a comment hours later — wrong actor AND outside
+            // the window. Must NOT be surfaced as the closing reason.
+            stdout: JSON.stringify([
+              {
+                user: { login: "reporter" },
+                body: "Bumping this.",
+                created_at: "2026-04-29T03:00:00Z",
+              },
+              { user: { login: "JakubAnderwald" }, body: "Working on it" },
+            ]),
+          },
+        },
+      ]),
+    );
+    const info = await lib.getStateChangeInfo(42, { botUser: "JakubAnderwald" });
+    assert.equal(info.lastComment, null);
+    assert.equal(info.zoho_thread_id, "");
+    assert.deepEqual(info.platforms, []);
   });
 });
