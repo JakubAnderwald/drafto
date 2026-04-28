@@ -95,6 +95,46 @@ describe("add-label", () => {
     assert.equal(calls.length, 0);
   });
 
+  it("accepts Phase F linked-issue labels (Issue/<n>, 1-4 digits)", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, { data: [] }),
+        },
+        {
+          match: (url, init) => url.endsWith("/labels") && init.method === "POST",
+          response: jsonResponse(200, {
+            data: { displayName: "Drafto/Support/Issue/347", labelId: "L-347" },
+          }),
+        },
+        {
+          match: (url, init) => url.endsWith("/updatethread") && init.method === "PUT",
+          response: jsonResponse(200, { data: { ok: true } }),
+        },
+      ]),
+    );
+    const out = await cli.addLabel("T1", "Drafto/Support/Issue/347");
+    assert.equal(out.ok, true);
+  });
+
+  it("rejects Phase F linked-issue labels exceeding 4 digits (Zoho 25-char cap)", async () => {
+    cli._setFetchForTests(makeFetch([]));
+    // `Drafto/Support/Issue/12345` = 26 chars; Zoho would reject the
+    // displayName even if we allowed it. Shut it down at the CLI boundary.
+    await assert.rejects(
+      () => cli.addLabel("T1", "Drafto/Support/Issue/12345"),
+      /not in allowlist/,
+    );
+    // Non-numeric and zero-prefixed are also rejected — keeps the format
+    // predictable so future readers can grep for `Issue/<n>` without regex
+    // gymnastics.
+    await assert.rejects(() => cli.addLabel("T1", "Drafto/Support/Issue/abc"), /not in allowlist/);
+    await assert.rejects(() => cli.addLabel("T1", "Drafto/Support/Issue/0123"), /not in allowlist/);
+    assert.equal(calls.length, 0);
+  });
+
   it("creates the label lazily if missing, then applies it", async () => {
     cli._setFetchForTests(
       makeFetch([

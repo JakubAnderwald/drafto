@@ -32,6 +32,14 @@ if [[ -f "$HOME/drafto-secrets/android-env.sh" ]]; then
   source "$HOME/drafto-secrets/android-env.sh"
 fi
 
+# Load support pipeline allowlist (Phase F gate). Single source of truth used
+# by scripts/support-agent.sh too — keep them in sync.
+if [[ -f "$HOME/drafto-secrets/support-env.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$HOME/drafto-secrets/support-env.sh"
+fi
+SUPPORT_ALLOWLIST="${SUPPORT_ALLOWLIST:-jakub@anderwald.info,joanna@anderwald.info}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 umask 077
@@ -97,17 +105,26 @@ log "=== Nightly support run started ==="
 
 DEPENDABOT_PRS=$(gh pr list --repo JakubAnderwald/drafto --author "app/dependabot" \
   --state open --json number,title,labels --limit 50 2>/dev/null) || DEPENDABOT_PRS="[]"
-SUPPORT_ISSUES=$(gh issue list --repo JakubAnderwald/drafto --label support --state open --json number,title --limit 50 2>/dev/null) || SUPPORT_ISSUES="[]"
+# Pull body + labels too: Phase F gate parses the support-agent footer in the
+# body, and we filter out issues already marked needs-triage so we don't
+# re-comment on rejected reporters every nightly run.
+SUPPORT_ISSUES=$(gh issue list --repo JakubAnderwald/drafto --label support --state open --json number,title,body,labels --limit 50 2>/dev/null) || SUPPORT_ISSUES="[]"
 
 # Skip Dependabot PRs already labeled needs-review (processed in a prior run)
 DEPENDABOT_ALL_COUNT=$(echo "$DEPENDABOT_PRS" | jq -e 'length' 2>/dev/null) || { log "ERROR: Failed to fetch Dependabot PRs"; DEPENDABOT_ALL_COUNT=0; }
 DEPENDABOT_PRS=$(echo "$DEPENDABOT_PRS" | \
   jq '[.[] | select(.labels | map(.name) | index("needs-review") | not)]') || DEPENDABOT_PRS="[]"
 DEPENDABOT_COUNT=$(echo "$DEPENDABOT_PRS" | jq 'length') || DEPENDABOT_COUNT=0
-SUPPORT_COUNT=$(echo "$SUPPORT_ISSUES" | jq -e 'length' 2>/dev/null) || { log "ERROR: Failed to fetch support issues"; SUPPORT_COUNT=0; }
+# Skip support issues already triaged (Phase F gate added needs-triage on a
+# prior run). Dependabot uses the same pattern with needs-review.
+SUPPORT_ISSUES_ALL_COUNT=$(echo "$SUPPORT_ISSUES" | jq -e 'length' 2>/dev/null) || { log "ERROR: Failed to fetch support issues"; SUPPORT_ISSUES_ALL_COUNT=0; }
+SUPPORT_ISSUES=$(echo "$SUPPORT_ISSUES" | \
+  jq '[.[] | select(.labels | map(.name) | index("needs-triage") | not)]') || SUPPORT_ISSUES="[]"
+SUPPORT_COUNT=$(echo "$SUPPORT_ISSUES" | jq 'length') || SUPPORT_COUNT=0
+SUPPORT_TRIAGED_COUNT=$(( SUPPORT_ISSUES_ALL_COUNT - SUPPORT_COUNT ))
 
 SKIPPED_COUNT=$(( DEPENDABOT_ALL_COUNT - DEPENDABOT_COUNT ))
-log "Found $DEPENDABOT_ALL_COUNT Dependabot PRs ($SKIPPED_COUNT already labeled needs-review, $DEPENDABOT_COUNT to process), $SUPPORT_COUNT support issues"
+log "Found $DEPENDABOT_ALL_COUNT Dependabot PRs ($SKIPPED_COUNT already labeled needs-review, $DEPENDABOT_COUNT to process), $SUPPORT_COUNT support issues ($SUPPORT_TRIAGED_COUNT already labeled needs-triage)"
 
 if [[ "$DEPENDABOT_COUNT" -eq 0 && "$SUPPORT_COUNT" -eq 0 ]]; then
   log "No items to process."
@@ -166,36 +183,62 @@ done
 
 # ── Phase 3: Process support issues (one session each, max 10) ──
 PROCESSED=0
-for ISSUE_NUMBER in $(echo "$SUPPORT_ISSUES" | jq -r '.[].number'); do
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+for IDX in $(seq 0 $((SUPPORT_COUNT - 1))); do
   if [[ "$PROCESSED" -ge 10 ]]; then
     log "Reached max 10 support issues per run, skipping remaining."
     break
   fi
-  log "--- Processing support issue #$ISSUE_NUMBER ---"
+  ISSUE_ENTRY=$(echo "$SUPPORT_ISSUES" | jq ".[${IDX}]")
+  ISSUE_NUMBER=$(echo "$ISSUE_ENTRY" | jq -r '.number')
+  ISSUE_BODY=$(echo "$ISSUE_ENTRY" | jq -r '.body // ""')
+
+  # ── Phase F gate: defence-in-depth allowlist check ──
+  # Pre-gate before invoking Claude, so a non-allowlisted reporter doesn't
+  # burn a full Claude session. The gate requires BOTH:
+  #   (a) the agent footer claims `reporter-allowlisted: true`, AND
+  #   (b) the footer's `reporter-email` is in $SUPPORT_ALLOWLIST.
+  # A tampered issue body could smuggle (a) past us — (b) catches that.
+  GATE=$(printf '%s' "$ISSUE_BODY" | node "$SCRIPT_DIR/lib/parse-issue-footer.mjs" \
+      --check-allowlist --allowlist "$SUPPORT_ALLOWLIST" 2>/dev/null) || GATE="allowed=false reason=gate-error"
+  if ! [[ "$GATE" =~ ^allowed=true ]]; then
+    REASON=$(echo "$GATE" | sed -nE 's/.*reason=([^ ]+).*/\1/p')
+    REASON="${REASON:-unknown}"
+    log "Issue #$ISSUE_NUMBER: gate rejected (reason=$REASON); marking needs-triage"
+    gh issue comment "$ISSUE_NUMBER" --repo JakubAnderwald/drafto \
+      --body "Reporter not on the support allowlist (reason: ${REASON}). Needs manual triage." \
+      2>/dev/null || log "WARNING: failed to comment on issue #$ISSUE_NUMBER"
+    gh issue edit "$ISSUE_NUMBER" --repo JakubAnderwald/drafto \
+      --add-label needs-triage \
+      2>/dev/null || log "WARNING: failed to add needs-triage to issue #$ISSUE_NUMBER"
+    continue
+  fi
+
+  log "--- Processing support issue #$ISSUE_NUMBER (gate passed) ---"
   if ! claude -p "$(cat <<PROMPT
 You are an automated nightly job. Process ONLY support issue #${ISSUE_NUMBER} for JakubAnderwald/drafto.
+
+The issue has already passed the support-agent footer gate (reporter is on \$SUPPORT_ALLOWLIST). Skip any From: / sender re-checks.
 
 1. Read the issue: gh issue view ${ISSUE_NUMBER} --json title,body,author,createdAt
 2. Verify the issue has the "support" label (applied by the Stage 1 ingest pipeline).
    - If the label is missing → comment "Issue missing support label, needs manual triage", add label "needs-triage", exit.
-3. Check the "From:" field. Only process from jakub@anderwald.info or joanna@anderwald.info.
-   - Other senders → comment "Sender not recognized, needs manual triage", add label "needs-triage", exit.
-4. Analyze: feature request or bug report?
-5. Create a worktree branch.
-6. Implement following CLAUDE.md guidelines (SOLID, strict TS, named exports, kebab-case, design system tokens).
-7. Add unit + integration tests.
-8. Run full pre-push verification (per CLAUDE.md).
-9. Use /push to commit, push, create PR referencing "Closes #${ISSUE_NUMBER}", wait for CI.
-10. After CI green, squash-merge via gh api and capture merge commit SHA.
-11. Fetch main, checkout merge SHA, poll required CI checks every 30s up to 45 min.
+3. Analyze: feature request or bug report?
+4. Create a worktree branch.
+5. Implement following CLAUDE.md guidelines (SOLID, strict TS, named exports, kebab-case, design system tokens).
+6. Add unit + integration tests.
+7. Run full pre-push verification (per CLAUDE.md).
+8. Use /push to commit, push, create PR referencing "Closes #${ISSUE_NUMBER}", wait for CI.
+9. After CI green, squash-merge via gh api and capture merge commit SHA.
+10. Fetch main, checkout merge SHA, poll required CI checks every 30s up to 45 min.
     - If any check fails or timeout → comment, add "needs-manual-intervention", skip mobile deploy.
-12. Once main CI green, run local Fastlane builds (signing credentials are pre-loaded in the environment):
+11. Once main CI green, run local Fastlane builds (signing credentials are pre-loaded in the environment):
     - Android: cd apps/mobile && bundle install --quiet && bundle exec fastlane android beta
     - iOS: cd apps/mobile && bundle exec fastlane ios beta
     - Desktop (macOS): cd apps/desktop && bundle install --quiet && bundle exec fastlane beta
     - Run each build separately. If one fails, still attempt the others.
     - Important: run bundle install before Fastlane (worktrees do not share gems).
-13. Comment on issue with per-platform build result (succeeded/failed with error summary for each of Android, iOS, and Desktop).
+12. Comment on issue with per-platform build result (succeeded/failed with error summary for each of Android, iOS, and Desktop).
 
 Constraints:
 - Never push directly to main. Always branches + PRs.

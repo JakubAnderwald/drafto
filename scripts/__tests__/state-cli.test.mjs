@@ -132,6 +132,71 @@ describe("state-cli bump-counters (Phase E)", () => {
   });
 });
 
+describe("state-cli set-issue-cursor (Phase F comment-sync)", () => {
+  it("creates state.issues[<n>].lastGithubCommentSyncAt", () => {
+    const fresh = path.join(workdir, "phase-f.json");
+    const cursor = "2026-04-28T12:00:00.000Z";
+    const r = run(["set-issue-cursor", "123", cursor, "--state-file", fresh]);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, true);
+    assert.equal(out.issueNumber, "123");
+    assert.equal(out.cursor, cursor);
+    const state = JSON.parse(readFileSync(fresh, "utf8"));
+    assert.equal(state.issues["123"].lastGithubCommentSyncAt, cursor);
+  });
+
+  it("preserves prior issues when bumping a different one", () => {
+    const fresh = path.join(workdir, "phase-f-merge.json");
+    const earlier = "2026-04-27T11:00:00.000Z";
+    const now = "2026-04-28T12:00:00.000Z";
+    writeFileSync(
+      fresh,
+      JSON.stringify({
+        issues: { 100: { lastGithubCommentSyncAt: earlier } },
+        threads: {},
+        senders: {},
+        global: { autoRepliesByDay: {} },
+      }),
+    );
+    const r = run(["set-issue-cursor", "200", now, "--state-file", fresh]);
+    assert.equal(r.status, 0, r.stderr);
+    const state = JSON.parse(readFileSync(fresh, "utf8"));
+    assert.equal(state.issues["100"].lastGithubCommentSyncAt, earlier);
+    assert.equal(state.issues["200"].lastGithubCommentSyncAt, now);
+  });
+
+  it("overwrites an existing cursor on the same issue", () => {
+    const fresh = path.join(workdir, "phase-f-overwrite.json");
+    const earlier = "2026-04-27T11:00:00.000Z";
+    const now = "2026-04-28T12:00:00.000Z";
+    writeFileSync(
+      fresh,
+      JSON.stringify({
+        issues: { 100: { lastGithubCommentSyncAt: earlier, lastIssueStateSync: earlier } },
+        threads: {},
+        senders: {},
+        global: { autoRepliesByDay: {} },
+      }),
+    );
+    const r = run(["set-issue-cursor", "100", now, "--state-file", fresh]);
+    assert.equal(r.status, 0, r.stderr);
+    const state = JSON.parse(readFileSync(fresh, "utf8"));
+    assert.equal(state.issues["100"].lastGithubCommentSyncAt, now);
+    // Other per-issue fields (e.g. Phase G's lastIssueStateSync) must NOT be
+    // clobbered by the comment-sync cursor write.
+    assert.equal(state.issues["100"].lastIssueStateSync, earlier);
+  });
+
+  it("rejects missing args", () => {
+    const r1 = run(["set-issue-cursor", "--state-file", stateFile]);
+    assert.notEqual(r1.status, 0);
+    assert.match(r1.stderr, /<issue-number> <cursor-iso>/);
+    const r2 = run(["set-issue-cursor", "100", "--state-file", stateFile]);
+    assert.notEqual(r2.status, 0);
+  });
+});
+
 describe("state-cli usage / errors", () => {
   it("prints usage on no args", () => {
     const r = run([]);

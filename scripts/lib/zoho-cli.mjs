@@ -60,8 +60,8 @@ const SUPPORT_NAMESPACE = "Drafto/Support/";
 // Closed allowlist of permitted label *suffixes* under the support
 // namespace. Without this, an LLM call could invent new labels (e.g.
 // "Drafto/Support/Stuck") that pass the namespace prefix check but fragment
-// the state machine. Phase F will add `Linked-Issue/<n>` here once we settle
-// on its 25-char-limit-friendly form.
+// the state machine. Phase F adds `Issue/<n>` via SUPPORT_ISSUE_LABEL_RE
+// — kept regex-based so we don't need to enumerate every issue number.
 const SUPPORT_LABEL_SUFFIXES = new Set([
   "Seen", // Phase C: agent has acknowledged the thread (label-only mode).
   "NeedsHuman", // Phase D: escalated; awaits human review. (25 chars — Zoho cap.)
@@ -69,8 +69,18 @@ const SUPPORT_LABEL_SUFFIXES = new Set([
   "Resolved", // Phase E onward: agent finished with the thread (Resolved folder).
   "Replied", // Phase E onward: agent posted an auto-reply.
 ]);
+// Phase F: linked-issue labels carry the GitHub issue number. Constrained to
+// 1–4 digits so the full label (`Drafto/Support/Issue/9999`) fits Zoho's
+// 25-char `displayName` cap. Beyond #9999 we'd need a shorter scheme — but
+// that's years away (current issues are in the low hundreds). Leading-zero
+// numbers and non-digits are rejected.
+const SUPPORT_ISSUE_LABEL_RE = /^Issue\/[1-9]\d{0,3}$/;
 // Folders are looser — Phase D only uses Spam, Phase E+ uses Resolved.
 const SUPPORT_FOLDER_SUFFIXES = new Set(["Spam", "Resolved"]);
+
+function isAllowedLabelSuffix(suffix) {
+  return SUPPORT_LABEL_SUFFIXES.has(suffix) || SUPPORT_ISSUE_LABEL_RE.test(suffix);
+}
 
 // Centralised endpoint paths. Templated with ${accountId}, ${messageId}, etc.
 // at call time. Documented against zoho.com/mail/help/api/ as of Apr 2026.
@@ -407,9 +417,12 @@ function assertSupportNamespace(name, kind) {
   // 26 chars (over Zoho's 25-char limit) and the agent improvised; this
   // guard makes that invisible drift impossible.
   const suffix = name.slice(SUPPORT_NAMESPACE.length);
-  const allowlist = kind === "folder" ? SUPPORT_FOLDER_SUFFIXES : SUPPORT_LABEL_SUFFIXES;
-  if (!allowlist.has(suffix)) {
-    const allowed = [...allowlist].sort().join(", ");
+  const ok = kind === "folder" ? SUPPORT_FOLDER_SUFFIXES.has(suffix) : isAllowedLabelSuffix(suffix);
+  if (!ok) {
+    const allowed =
+      kind === "folder"
+        ? [...SUPPORT_FOLDER_SUFFIXES].sort().join(", ")
+        : `${[...SUPPORT_LABEL_SUFFIXES].sort().join(", ")}, Issue/<n> (1-4 digit)`;
     throw new Error(`${kind} suffix "${suffix}" not in allowlist (permitted: ${allowed})`);
   }
 }

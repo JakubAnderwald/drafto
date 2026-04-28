@@ -11,6 +11,12 @@
 //                                    rate-limit counters. Used after a
 //                                    successful auto-reply (Phase E onward;
 //                                    safe to leave wired in now).
+//   set-issue-cursor <issue> <iso>
+//                                    Set state.issues[<issue>].lastGithubCommentSyncAt
+//                                    = <iso>. Used by --comment-sync to advance
+//                                    the per-issue cursor after Claude
+//                                    forwards a batch of GitHub comments to
+//                                    the linked Zoho thread.
 //
 // State path can be overridden via --state-file <path> for tests; defaults to
 // state.mjs's DEFAULT_STATE_PATH. The save is atomic (temp file + rename).
@@ -56,11 +62,24 @@ async function main(argv) {
       await saveState(state, file);
       return { ok: true, trackKey, sender };
     }
+    case "set-issue-cursor": {
+      const issueNumber = positional[0];
+      const cursor = positional[1];
+      if (!issueNumber || !cursor) {
+        throw new Error("set-issue-cursor requires <issue-number> <cursor-iso>");
+      }
+      const state = await loadState(file);
+      state.issues ??= {};
+      state.issues[issueNumber] ??= {};
+      state.issues[issueNumber].lastGithubCommentSyncAt = cursor;
+      await saveState(state, file);
+      return { ok: true, issueNumber, cursor };
+    }
     case "--help":
     case "-h":
     case undefined:
       process.stdout.write(
-        "Usage: state-cli.mjs <bump-notification <track-key>|bump-counters <track-key> <sender>> [--state-file <path>] [--now <iso>]\n",
+        "Usage: state-cli.mjs <bump-notification <track-key>|bump-counters <track-key> <sender>|set-issue-cursor <issue-number> <cursor-iso>> [--state-file <path>] [--now <iso>]\n",
       );
       return null;
     default:

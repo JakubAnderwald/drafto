@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // Build a context bundle that Claude consumes.
 //
-// Pure function (`buildInboundThreadBundle`) for unit tests, plus a CLI that
-// reads a single JSON object on stdin and prints the resulting bundle JSON to
-// stdout. The bash entry point (`scripts/support-agent.sh`) shells out once
-// per pending thread instead of building the bundle inline with `jq -n`, so
-// the wiring stays consistent with what the unit tests cover.
+// Pure functions (`buildInboundThreadBundle`, `buildGithubCommentBatchBundle`)
+// for unit tests, plus a CLI that reads a single JSON object on stdin and
+// prints the resulting bundle JSON to stdout. The bash entry point
+// (`scripts/support-agent.sh`) shells out once per work unit instead of
+// building bundles inline with `jq -n`, so the wiring stays consistent with
+// what the unit tests cover.
 //
-// Stdin shape:
+// Stdin shape (inbound_thread — `--auto-classify` / `--dry-run`):
 //   {
 //     "pending":  { /* one Zoho list-pending entry — the latest message */ },
 //     "thread":   { "threadId": "...", "messages": [...] } | [<msg>, ...] | null,
@@ -17,8 +18,15 @@
 //                   "now"? }
 //   }
 //
-// Stdout: the same `inbound_thread` bundle the prompt documents (kind,
-// thread, headers, history, state, config).
+// Stdin shape (github_comment_batch — `--comment-sync`):
+//   {
+//     "kind":          "github_comment_batch",
+//     "issue":         { "number", "title", "state" },
+//     "comments":      [ { "id", "user": { "login" }, "body", "created_at"|"createdAt" }, ... ],
+//     "zohoThreadId":  "8537837000001234567"
+//   }
+//
+// Stdout: the bundle the prompt documents.
 
 import {
   humanIntervened,
@@ -131,6 +139,31 @@ function normaliseAllowlist(input) {
   return [];
 }
 
+// Phase F: GitHub-comment → Zoho-reply sync. The bash side fetches the
+// support issue + new comments via gh CLI (`scripts/lib/github-sync.mjs`),
+// then hands the raw shape to this builder. Mirrors the prompt's
+// `github_comment_batch` documentation exactly — `kind`, `issue` (subset),
+// `comments` (normalised to `{id, user.login, body, createdAt}`), and the
+// linked `zoho_thread_id`. The runner pre-filters out bot-author comments
+// before calling, but the prompt re-checks defensively.
+export function buildGithubCommentBatchBundle({ issue, comments, zohoThreadId } = {}) {
+  return {
+    kind: "github_comment_batch",
+    issue: {
+      number: issue?.number ?? null,
+      title: issue?.title ?? "",
+      state: issue?.state ?? "open",
+    },
+    comments: (Array.isArray(comments) ? comments : []).map((c) => ({
+      id: c?.id ?? null,
+      user: { login: c?.user?.login ?? c?.author?.login ?? "" },
+      body: c?.body ?? "",
+      createdAt: c?.createdAt ?? c?.created_at ?? null,
+    })),
+    zoho_thread_id: zohoThreadId ?? "",
+  };
+}
+
 function historyFor(state, trackKey, nowIso) {
   const entry = state?.threads?.[trackKey];
   if (!entry) return {};
@@ -166,15 +199,27 @@ async function main() {
   } catch (err) {
     throw new Error(`build-bundle: invalid stdin JSON: ${err.message}`);
   }
-  const cfg = input.config ?? {};
-  const bundle = buildInboundThreadBundle({
-    pending: input.pending ?? null,
-    thread: input.thread ?? null,
-    headers: input.headers ?? {},
-    state: input.state ?? emptyState(),
-    config: cfg,
-    nowIso: cfg.now ?? new Date().toISOString(),
-  });
+  let bundle;
+  if (input.kind === "github_comment_batch") {
+    bundle = buildGithubCommentBatchBundle({
+      issue: input.issue,
+      comments: input.comments,
+      // Accept both shapes — bash uses `zohoThreadId` (camelCase, matches the
+      // CLI flag), while the prompt documents the on-bundle field as
+      // `zoho_thread_id` (snake_case). Builder normalises to snake on output.
+      zohoThreadId: input.zohoThreadId ?? input.zoho_thread_id,
+    });
+  } else {
+    const cfg = input.config ?? {};
+    bundle = buildInboundThreadBundle({
+      pending: input.pending ?? null,
+      thread: input.thread ?? null,
+      headers: input.headers ?? {},
+      state: input.state ?? emptyState(),
+      config: cfg,
+      nowIso: cfg.now ?? new Date().toISOString(),
+    });
+  }
   process.stdout.write(JSON.stringify(bundle, null, 2) + "\n");
 }
 

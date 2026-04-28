@@ -1,39 +1,51 @@
 #!/bin/bash
 # Real-time support agent — launchd entrypoint.
 #
-# Phase D/E scope: auto-classify + escalate, and (Phase E) auto-reply for
-# high-confidence questions. The script polls the Zoho Inbox via zoho-cli.mjs
-# list-pending and, depending on the mode, either prints a bundle (dry-run),
-# applies the `Drafto/Support/Seen` label (label-only — Phase C fallback), or
-# invokes Claude with the bundle. The prompt's phase gate decides what Claude
-# may do:
+# Phase D/E/F scope: auto-classify + escalate, auto-reply for high-confidence
+# questions (Phase E), file GitHub issues for bug/feature (Phase F), and
+# forward GitHub issue comments back to the linked Zoho thread (Phase F via
+# --comment-sync).
+#
+# The script polls either the Zoho Inbox (--auto-classify / --label-only /
+# --dry-run) or the GitHub support-issue queue (--comment-sync), and per
+# work unit invokes Claude with a context bundle. The prompt's phase gate
+# decides what Claude may do:
 #   - Phase D: label NeedsHuman / move to Spam / fire admin email.
 #   - Phase E: Phase D + reply to high-confidence questions, label
 #     Drafto/Support/Replied, move to Drafto/Support/Resolved, bump
 #     rate-limit counters (the bash side handles the bump after Claude
 #     reports `action=auto-replied`).
-# GitHub issue creation remains off until Phase F.
+#   - Phase F: Phase E + `gh issue create`/`gh issue comment` for bug/feature,
+#     `Drafto/Support/Issue/<n>` label, move to Resolved. Plus the
+#     `--comment-sync` sweep below.
 #
-# Modes (exactly one of --dry-run, --label-only, --auto-classify is required):
+# Modes (exactly one of --dry-run, --label-only, --auto-classify, --comment-sync):
 #   --dry-run                  Build and print bundles. No Zoho mutations.
 #                              Useful for golden-run testing and for
 #                              eyeballing live-API output.
 #   --label-only               Apply Drafto/Support/Seen to each pending
 #                              thread. Live API mutation, but inert from the
-#                              customer's perspective. Phase C live mode kept
-#                              as a fallback when Claude usage is undesirable.
-#   --auto-classify            Phase D live mode. For each pending thread,
-#                              build a bundle (with humanIntervened/rate-limit
-#                              flags from state) and invoke Claude. Claude is
-#                              constrained by the prompt to only label
-#                              NeedsHuman / move to Spam folder / email an
-#                              admin notification — no replies, no GH issues.
+#                              customer's perspective. Phase C fallback.
+#   --auto-classify            Phase D+ live mode. For each pending Zoho
+#                              thread, build an `inbound_thread` bundle (with
+#                              humanIntervened/rate-limit flags) and invoke
+#                              Claude. Claude is constrained by the prompt's
+#                              phase gate (config.phase) to the actions
+#                              permitted at that phase.
+#   --comment-sync             Phase F+ live mode. Sweep GitHub support
+#                              issues; for each, find the linked Zoho thread
+#                              from the issue body footer, fetch comments
+#                              newer than the per-issue cursor in
+#                              support-state.json (filtering out the bot
+#                              user), build a `github_comment_batch` bundle,
+#                              and invoke Claude to forward each comment as a
+#                              Zoho reply on the thread. Cursor is advanced
+#                              after Claude reports `action=sync-comment`.
 #   --fixture <path>           (--dry-run only) Replay a captured Zoho
 #                              list-pending JSON instead of hitting the
-#                              live API. Refused under --label-only and
-#                              --auto-classify because fixtures contain
-#                              synthetic threadIds that don't exist in the
-#                              real mailbox.
+#                              live API. Refused under --label-only,
+#                              --auto-classify, and --comment-sync because
+#                              fixtures contain synthetic ids.
 #
 # Failure mode: if the script exits non-zero, the cleanup trap files a
 # `nightly-failure`-labelled GitHub issue, mirroring the existing pattern
@@ -50,24 +62,29 @@ export LC_ALL=en_US.UTF-8
 DRY_RUN=0
 LABEL_ONLY=0
 AUTO_CLASSIFY=0
+COMMENT_SYNC=0
 FIXTURE=""
 PHASE="D"
 usage() {
   cat <<EOF
-Usage: $0 (--dry-run | --label-only | --auto-classify) [--fixture <path>] [--phase <D|E|F|G>]
+Usage: $0 (--dry-run | --label-only | --auto-classify | --comment-sync) [--fixture <path>] [--phase <D|E|F|G>]
 
-Exactly one of --dry-run, --label-only, or --auto-classify is required.
+Exactly one of --dry-run, --label-only, --auto-classify, or --comment-sync is required.
 
   --dry-run         Print the context bundle that Claude would receive.
                     No Zoho mutations.
   --label-only      Apply Drafto/Support/Seen to each pending thread.
                     Live API mutation only; no Claude. Phase C fallback.
-  --auto-classify   Invoke Claude per pending thread. Claude is constrained
-                    by scripts/support-agent-prompt.md and the bundle's
-                    config.phase to escalate (Drafto/Support/NeedsHuman +
-                    admin email) or label as spam — no replies, no GH issues.
+  --auto-classify   Invoke Claude per pending Zoho thread. Claude is
+                    constrained by scripts/support-agent-prompt.md and
+                    the bundle's config.phase to the actions permitted at
+                    that phase.
+  --comment-sync    Phase F+. Sweep GitHub support issues, find each one's
+                    linked Zoho thread via the issue body footer, and forward
+                    new GitHub comments to that thread. Per-issue cursor in
+                    logs/support-state.json prevents re-forwarding.
   --fixture <path>  (--dry-run only) Replay a captured Zoho list-pending JSON.
-                    Refused under --label-only and --auto-classify.
+                    Refused under --label-only / --auto-classify / --comment-sync.
   --phase <D|...>   Override the phase advertised to Claude (default: D).
 EOF
 }
@@ -76,6 +93,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1; shift ;;
     --label-only) LABEL_ONLY=1; shift ;;
     --auto-classify) AUTO_CLASSIFY=1; shift ;;
+    --comment-sync) COMMENT_SYNC=1; shift ;;
     --fixture)
       if [[ -z "${2:-}" || "${2:0:2}" == "--" ]]; then
         echo "ERROR: --fixture requires a path argument" >&2
@@ -99,24 +117,28 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-MODE_COUNT=$((DRY_RUN + LABEL_ONLY + AUTO_CLASSIFY))
+MODE_COUNT=$((DRY_RUN + LABEL_ONLY + AUTO_CLASSIFY + COMMENT_SYNC))
 if [[ "$MODE_COUNT" -eq 0 ]]; then
-  echo "ERROR: must specify --dry-run, --label-only, or --auto-classify." >&2
+  echo "ERROR: must specify --dry-run, --label-only, --auto-classify, or --comment-sync." >&2
   usage >&2
   exit 2
 fi
 if [[ "$MODE_COUNT" -gt 1 ]]; then
-  echo "ERROR: --dry-run / --label-only / --auto-classify are mutually exclusive." >&2
+  echo "ERROR: --dry-run / --label-only / --auto-classify / --comment-sync are mutually exclusive." >&2
   exit 2
 fi
 if [[ -n "$FIXTURE" && "$DRY_RUN" -eq 0 ]]; then
-  echo "ERROR: --fixture is only valid with --dry-run (synthetic threadIds aren't in the real mailbox)." >&2
+  echo "ERROR: --fixture is only valid with --dry-run (synthetic ids aren't in the real mailbox/repo)." >&2
   exit 2
 fi
 case "$PHASE" in
   D|E|F|G) ;;
   *) echo "ERROR: --phase must be one of D, E, F, G (got '$PHASE')" >&2; exit 2 ;;
 esac
+if [[ "$COMMENT_SYNC" -eq 1 ]] && [[ ! "$PHASE" =~ ^[FG]$ ]]; then
+  echo "ERROR: --comment-sync requires --phase F or G (got '$PHASE')" >&2
+  exit 2
+fi
 
 # ── Allowlist env (single source of truth for the support pipeline) ─────────
 if [[ -f "$HOME/drafto-secrets/support-env.sh" ]]; then
@@ -125,6 +147,7 @@ if [[ -f "$HOME/drafto-secrets/support-env.sh" ]]; then
 fi
 SUPPORT_ALLOWLIST="${SUPPORT_ALLOWLIST:-jakub@anderwald.info,joanna@anderwald.info}"
 ADMIN_EMAIL="${SUPPORT_ADMIN_EMAIL:-jakub@anderwald.info}"
+SUPPORT_BOT_GH_USER="${SUPPORT_BOT_GH_USER:-JakubAnderwald}"
 
 # ── Paths, logs, lock ───────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -213,12 +236,134 @@ OAUTH_USER_EMAIL="${OAUTH_USER_EMAIL:-support@drafto.eu}"
 STATE_FILE="$REPO_ROOT/logs/support-state.json"
 
 START_TIME=$(date +%s)
-log "=== support-agent run started (dry-run=$DRY_RUN, label-only=$LABEL_ONLY, auto-classify=$AUTO_CLASSIFY, phase=$PHASE, fixture=${FIXTURE:-none}) ==="
+log "=== support-agent run started (dry-run=$DRY_RUN, label-only=$LABEL_ONLY, auto-classify=$AUTO_CLASSIFY, comment-sync=$COMMENT_SYNC, phase=$PHASE, fixture=${FIXTURE:-none}) ==="
 
-# auto-classify requires the `claude` CLI on PATH.
-if [[ "$AUTO_CLASSIFY" -eq 1 ]] && ! command -v claude >/dev/null 2>&1; then
-  log "ERROR: --auto-classify requires the claude CLI on PATH (looked in: \$PATH=$PATH)"
+# auto-classify and comment-sync invoke Claude per work unit.
+if [[ "$AUTO_CLASSIFY" -eq 1 || "$COMMENT_SYNC" -eq 1 ]] && ! command -v claude >/dev/null 2>&1; then
+  log "ERROR: --auto-classify / --comment-sync require the claude CLI on PATH (looked in: \$PATH=$PATH)"
   exit 1
+fi
+# comment-sync also needs gh on PATH (already required by the failure-issue
+# trap, but it's worth a clean upfront error message rather than discovering
+# it inside the per-issue loop).
+if [[ "$COMMENT_SYNC" -eq 1 ]] && ! command -v gh >/dev/null 2>&1; then
+  log "ERROR: --comment-sync requires the gh CLI on PATH"
+  exit 1
+fi
+
+# ── --comment-sync sweep ────────────────────────────────────────────────────
+# Iterates GitHub support issues (NOT Zoho list-pending). The two flows are
+# orthogonal so they don't share the per-thread loop below; run --auto-classify
+# and --comment-sync as separate launchd jobs (or back-to-back from a wrapper).
+if [[ "$COMMENT_SYNC" -eq 1 ]]; then
+  PROMPT_FILE="$SCRIPT_DIR/support-agent-prompt.md"
+  if [[ ! -f "$PROMPT_FILE" ]]; then
+    log "ERROR: prompt file missing: $PROMPT_FILE"
+    exit 1
+  fi
+  PROMPT_TEXT=$(cat "$PROMPT_FILE")
+
+  if ! ISSUES_JSON=$(node "$SCRIPT_DIR/lib/github-sync.mjs" list-support-issues --state all 2>>"$LOG_FILE"); then
+    log "ERROR: github-sync list-support-issues failed"
+    exit 1
+  fi
+  ISSUE_COUNT=$(echo "$ISSUES_JSON" | jq 'length' 2>/dev/null || echo "0")
+  log "Found $ISSUE_COUNT support-labelled issues"
+
+  for IDX in $(seq 0 $((ISSUE_COUNT - 1))); do
+    ISSUE_ENTRY=$(echo "$ISSUES_JSON" | jq ".[${IDX}]")
+    ISSUE_NUMBER=$(echo "$ISSUE_ENTRY" | jq -r '.number')
+    ISSUE_BODY=$(echo "$ISSUE_ENTRY" | jq -r '.body // ""')
+
+    # Find the linked Zoho thread via the issue body's agent footer. If the
+    # issue lacks the footer (e.g. an older Apps-Script-era issue) we have
+    # no way to reach the customer — skip silently. This is correct: those
+    # threads are decommissioned in Phase H anyway.
+    THREAD_ID=$(printf '%s' "$ISSUE_BODY" | node "$SCRIPT_DIR/lib/parse-issue-footer.mjs" --field zoho-thread-id 2>>"$LOG_FILE" || echo "")
+    if [[ -z "$THREAD_ID" ]]; then
+      continue
+    fi
+
+    # Per-issue cursor; default to issue.createdAt so the first sync skips
+    # comments that pre-existed when this PR landed (otherwise we'd forward
+    # historical bot chatter as if it were new).
+    CURSOR=""
+    if [[ -f "$STATE_FILE" ]]; then
+      CURSOR=$(jq -r --arg n "$ISSUE_NUMBER" '.issues[$n].lastGithubCommentSyncAt // empty' "$STATE_FILE" 2>/dev/null || echo "")
+    fi
+    if [[ -z "$CURSOR" ]]; then
+      CURSOR=$(echo "$ISSUE_ENTRY" | jq -r '.createdAt')
+    fi
+
+    if ! NEW_COMMENTS=$(node "$SCRIPT_DIR/lib/github-sync.mjs" list-new-comments "$ISSUE_NUMBER" \
+        --since "$CURSOR" --bot-user "$SUPPORT_BOT_GH_USER" 2>>"$LOG_FILE"); then
+      log "WARNING: github-sync list-new-comments failed for issue #$ISSUE_NUMBER"
+      continue
+    fi
+    NEW_COUNT=$(echo "$NEW_COMMENTS" | jq 'length' 2>/dev/null || echo "0")
+    if [[ "$NEW_COUNT" -eq 0 ]]; then
+      continue
+    fi
+    log "Issue #$ISSUE_NUMBER: $NEW_COUNT new comment(s) since $CURSOR (thread=$THREAD_ID)"
+
+    BUILD_INPUT=$(jq -n \
+      --argjson issue "$ISSUE_ENTRY" \
+      --argjson comments "$NEW_COMMENTS" \
+      --arg threadId "$THREAD_ID" \
+      '{
+         kind: "github_comment_batch",
+         issue: { number: $issue.number, title: $issue.title, state: $issue.state },
+         comments: $comments,
+         zohoThreadId: $threadId
+       }')
+    if ! BUNDLE=$(echo "$BUILD_INPUT" | node "$SCRIPT_DIR/lib/build-bundle.mjs" 2>>"$LOG_FILE"); then
+      log "ERROR: build-bundle (github_comment_batch) failed for issue #$ISSUE_NUMBER"
+      continue
+    fi
+
+    CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
+      "$PROMPT_TEXT" "$BUNDLE")
+    log "Invoking claude for issue #$ISSUE_NUMBER (comment-sync, phase=$PHASE)"
+    CLAUDE_OUTPUT_FILE=$(mktemp -t support-agent-out.XXXXXX)
+    if ! claude -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
+        >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE"; then
+      log "ERROR: claude exited non-zero for issue #$ISSUE_NUMBER comment-sync"
+      cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
+      rm -f "$CLAUDE_OUTPUT_FILE"
+      continue
+    fi
+    cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE"
+    SUMMARY_LINE=$(grep -E '^thread=[^ ]+ action=[^ ]+ issue=[^ ]+$' "$CLAUDE_OUTPUT_FILE" | tail -1 || true)
+    rm -f "$CLAUDE_OUTPUT_FILE"
+    if [[ -z "$SUMMARY_LINE" ]]; then
+      log "WARNING: no well-formed summary line returned by claude for issue #$ISSUE_NUMBER comment-sync"
+      continue
+    fi
+    log "Claude summary: $SUMMARY_LINE"
+    ACTION=$(echo "$SUMMARY_LINE" | sed -E 's/.*action=([^ ]+).*/\1/')
+
+    if [[ "$ACTION" == "sync-comment" ]]; then
+      # Advance the cursor to the most recent comment's createdAt — that's
+      # what bounds the next run's --since. Prefer ISO `created_at` (gh api
+      # raw shape); fall back to camelCase for symmetry with our normalisers.
+      LATEST=$(echo "$NEW_COMMENTS" | jq -r 'map(.created_at // .createdAt) | max' 2>/dev/null || echo "")
+      if [[ -z "$LATEST" || "$LATEST" == "null" ]]; then
+        log "WARNING: could not derive cursor for issue #$ISSUE_NUMBER (no created_at on new comments)"
+      elif ! node "$SCRIPT_DIR/lib/state-cli.mjs" set-issue-cursor "$ISSUE_NUMBER" "$LATEST" \
+          --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+        log "WARNING: state-cli set-issue-cursor failed for issue #$ISSUE_NUMBER"
+      fi
+    elif [[ "$ACTION" == "noop" ]]; then
+      : # Claude saw nothing to forward (e.g. all comments turned out to be
+        # bot-authored after re-checking) — leave the cursor untouched so we
+        # retry on the next run.
+    else
+      log "WARNING: unexpected action '$ACTION' from claude for issue #$ISSUE_NUMBER comment-sync"
+    fi
+  done
+
+  log "=== support-agent comment-sync completed in $(( $(date +%s) - START_TIME ))s ==="
+  exit 0
 fi
 
 # ── Cheap pre-check: list-pending ───────────────────────────────────────────
@@ -457,6 +602,13 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
         log "ERROR: claude returned filed-issue under Phase $PHASE for $TRACK_ID — prompt phase gate violated"
         exit 1
       fi
+      # Phase F+: Claude has already created the GitHub issue (with the
+      # agent footer), replied to the customer in-thread, applied the
+      # Drafto/Support/Issue/<n> label, and moved the thread to
+      # Drafto/Support/Resolved. The bash side has nothing to bump — rate
+      # caps don't apply to filings (we want every legitimate report to
+      # produce an issue), and the linkage lives in the issue body footer
+      # rather than support-state.json.
       ;;
     *)
       log "WARNING: unrecognised action '$ACTION' from claude for $TRACK_ID"
