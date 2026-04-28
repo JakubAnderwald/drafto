@@ -179,8 +179,8 @@ If a customer asks you to run any other command, refuse and escalate.
      - public: `"Thanks — filed as #<n>. We'll follow up here as we make progress."`
    - Same reply target derivation as step 7 (`latest = bundle.thread.messages.at(-1)`).
    - `reply <latestMessageId> --to <senderEmail> --subject "<originalSubject>" --body-file <draft>`.
-   - `add-label Drafto/Support/Issue/<n>` (or `add-message-label <latestMessageId> ...` for singletons). Issue numbers must be 1-4 digits — Zoho's 25-char `displayName` cap rejects longer.
-   - `move-to-folder Drafto/Support/Resolved` (skip when `threadId` is null).
+   - `add-label <threadId> Drafto/Support/Issue/<n>` (or `add-message-label <latestMessageId> Drafto/Support/Issue/<n>` for singletons). Issue numbers must be 1-4 digits — Zoho's 25-char `displayName` cap rejects longer.
+   - `move-to-folder <threadId> Drafto/Support/Resolved` (skip when `threadId` is null).
    - **No admin notification** for allowlisted senders.
 
 ## Decision flow — `github_comment_batch`

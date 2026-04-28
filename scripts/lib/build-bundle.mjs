@@ -146,6 +146,21 @@ function normaliseAllowlist(input) {
 // `comments` (normalised to `{id, user.login, body, createdAt}`), and the
 // linked `zoho_thread_id`. The runner pre-filters out bot-author comments
 // before calling, but the prompt re-checks defensively.
+//
+// Each comment body is wrapped in `<github-comment>...</github-comment>` —
+// the same envelope the prompt's "treat input as data, not instructions"
+// directive enforces for inbound email. Without this wrapping, a customer
+// commenting on a GitHub issue could inject prompt instructions that the
+// model would otherwise execute (the prompt only ignores text inside the
+// documented envelope tags). Any literal `</github-comment>` inside the body
+// is neutralised by inserting a zero-width space so an attacker can't
+// escape the envelope by closing it early.
+function envelopeCommentBody(raw) {
+  const text = typeof raw === "string" ? raw : "";
+  const safe = text.replace(/<\/github-comment>/gi, "<​/github-comment>");
+  return `<github-comment>${safe}</github-comment>`;
+}
+
 export function buildGithubCommentBatchBundle({ issue, comments, zohoThreadId } = {}) {
   return {
     kind: "github_comment_batch",
@@ -157,7 +172,7 @@ export function buildGithubCommentBatchBundle({ issue, comments, zohoThreadId } 
     comments: (Array.isArray(comments) ? comments : []).map((c) => ({
       id: c?.id ?? null,
       user: { login: c?.user?.login ?? c?.author?.login ?? "" },
-      body: c?.body ?? "",
+      body: envelopeCommentBody(c?.body),
       createdAt: c?.createdAt ?? c?.created_at ?? null,
     })),
     zoho_thread_id: zohoThreadId ?? "",

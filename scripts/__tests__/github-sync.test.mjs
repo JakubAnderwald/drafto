@@ -83,6 +83,28 @@ describe("filterNewComments (pure)", () => {
     );
   });
 
+  it("matches the bot user case-insensitively (GitHub usernames are case-insensitive)", async () => {
+    const variant = [
+      {
+        id: 1,
+        user: { login: "JAKUBANDERWALD" },
+        body: "uppercase variant",
+        created_at: "2026-04-28T11:00:00.000Z",
+      },
+      {
+        id: 2,
+        user: { login: "Customer" },
+        body: "ok",
+        created_at: "2026-04-28T12:00:00.000Z",
+      },
+    ];
+    const out = lib.filterNewComments(variant, "2026-04-28T00:00:00.000Z", "JakubAnderwald");
+    assert.deepEqual(
+      out.map((c) => c.id),
+      [2],
+    );
+  });
+
   it("falls back to author.login when user.login is absent (gh json shape variant)", async () => {
     const variant = [
       {

@@ -91,14 +91,20 @@ export async function getIssueBody(issueNumber) {
 }
 
 // Pure (no IO) — kept exported so tests can drive it without the gh shim.
+// GitHub usernames are case-insensitive (the API normalises display, but
+// JSON payloads can vary in casing across endpoints), so the bot-user match
+// lowercases both sides to avoid a silent miss like `jakubanderwald` vs
+// `JakubAnderwald` where the customer-side reply would be forwarded back to
+// the customer (an echo loop).
 export function filterNewComments(comments, sinceIso, botUser = DEFAULT_BOT_USER) {
   const since = sinceIso ? Date.parse(sinceIso) : 0;
   if (Number.isNaN(since)) {
     throw new Error(`filterNewComments: --since is not a valid ISO timestamp: ${sinceIso}`);
   }
+  const botUserLower = (botUser ?? "").toLowerCase();
   return (Array.isArray(comments) ? comments : []).filter((c) => {
-    const author = c?.user?.login ?? c?.author?.login ?? "";
-    if (author === botUser) return false;
+    const author = (c?.user?.login ?? c?.author?.login ?? "").toLowerCase();
+    if (author === botUserLower) return false;
     const t = Date.parse(c?.created_at ?? c?.createdAt ?? "");
     if (Number.isNaN(t)) return false;
     return t > since;

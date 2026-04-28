@@ -268,6 +268,10 @@ if [[ "$COMMENT_SYNC" -eq 1 ]]; then
     exit 1
   fi
   ISSUE_COUNT=$(echo "$ISSUES_JSON" | jq 'length' 2>/dev/null || echo "0")
+  if ! [[ "$ISSUE_COUNT" =~ ^[0-9]+$ ]]; then
+    log "ERROR: unexpected non-numeric ISSUE_COUNT='$ISSUE_COUNT' (jq output malformed?)"
+    exit 1
+  fi
   log "Found $ISSUE_COUNT support-labelled issues"
 
   for IDX in $(seq 0 $((ISSUE_COUNT - 1))); do
@@ -301,6 +305,10 @@ if [[ "$COMMENT_SYNC" -eq 1 ]]; then
       continue
     fi
     NEW_COUNT=$(echo "$NEW_COMMENTS" | jq 'length' 2>/dev/null || echo "0")
+    if ! [[ "$NEW_COUNT" =~ ^[0-9]+$ ]]; then
+      log "WARNING: unexpected non-numeric NEW_COUNT='$NEW_COUNT' for issue #$ISSUE_NUMBER; skipping"
+      continue
+    fi
     if [[ "$NEW_COUNT" -eq 0 ]]; then
       continue
     fi
