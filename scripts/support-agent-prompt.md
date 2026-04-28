@@ -296,7 +296,15 @@ For each comment in `comments`, in `createdAt` order:
   `latestMessageId = latest.messageId`,
   `senderEmail = latest.fromAddress`,
   `originalSubject = latest.subject`.
-- `reply <latestMessageId> --to <senderEmail> --subject "<originalSubject>" --body-file <draft>`.
+- `result = reply <latestMessageId> --to <senderEmail> --subject "<originalSubject>" --body-file <draft>`.
+  Capture `ackMessageId = result.messageId` from the response. Zoho frequently
+  spawns a NEW threadId for each agent outbound (rather than threading them
+  together), so without explicitly labelling our forwards, the next customer
+  reply lands in an unlabelled thread and the linked-thread detection in
+  step 4.5 misses it.
+- `add-message-label <ackMessageId> Drafto/Support/Issue/<issue.number>` so
+  the new thread Zoho creates for this forward is detectable on future
+  customer replies.
 
 After the batch: the runner advances `lastGithubCommentSyncAt` based on the
 most recent comment's `createdAt`. You do not need to update state files
