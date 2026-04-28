@@ -45,7 +45,7 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0010](./0010-offline-sync-strategy.md)                  | Offline Sync Strategy with WatermelonDB        | Accepted           | 2026-03-07 |
 | [0011](./0011-app-store-deployment-strategy.md)          | App Store Deployment Strategy                  | Superseded by 0016 | 2026-03-08 |
 | [0012](./0012-search-implementation.md)                  | Search Implementation                          | Accepted           | 2026-03-14 |
-| [0013](./0013-automated-support-pipeline.md)             | Automated Support Pipeline                     | Accepted           | 2026-03-14 |
+| [0013](./0013-automated-support-pipeline.md)             | Automated Support Pipeline                     | Superseded by 0024 | 2026-03-14 |
 | [0014](./0014-digital-atelier-design-system.md)          | Digital Atelier Design System                  | Accepted           | 2026-03-19 |
 | [0015](./0015-desktop-app-technology-choice.md)          | Desktop App Technology Choice                  | Accepted           | 2026-03-29 |
 | [0016](./0016-local-fastlane-builds.md)                  | Local Fastlane Builds                          | Accepted           | 2026-03-31 |
@@ -56,3 +56,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0021](./0021-shared-design-tokens.md)                   | Shared Design Tokens in `@drafto/shared`       | Accepted           | 2026-04-21 |
 | [0022](./0022-note-content-history.md)                   | Note Content History Table                     | Accepted           | 2026-04-25 |
 | [0023](./0023-per-request-client-tagging.md)             | Per-Request Client Tagging                     | Accepted           | 2026-04-27 |
+| [0024](./0024-realtime-support-agent.md)                 | Real-Time Support Agent                        | Accepted           | 2026-04-28 |

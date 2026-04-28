@@ -29,8 +29,8 @@ Shipped in production. A Postgres `after insert on auth.users` trigger calls `/a
 
 ## Related ADRs
 
-- [0013 — Automated Support Pipeline](../adr/0013-automated-support-pipeline.md)
 - [0019 — Email Infrastructure and Approval Flow](../adr/0019-email-infrastructure-and-approval-flow.md)
+- [0024 — Real-Time Support Agent](../adr/0024-realtime-support-agent.md) — inbound `support@drafto.eu` (independent pipeline, Zoho Mail rather than Resend); see [`docs/features/support-agent.md`](./support-agent.md).
 
 ## Cross-platform notes
 

@@ -1,6 +1,6 @@
 # 0013 — Automated Support Pipeline
 
-- **Status**: Accepted
+- **Status**: Superseded by [0024](./0024-realtime-support-agent.md) (Stage 1 only — Stages 2 and 3 remain in force)
 - **Date**: 2026-03-16
 - **Authors**: Jakub Anderwald
 
