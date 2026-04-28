@@ -60,8 +60,8 @@ const SUPPORT_NAMESPACE = "Drafto/Support/";
 // Closed allowlist of permitted label *suffixes* under the support
 // namespace. Without this, an LLM call could invent new labels (e.g.
 // "Drafto/Support/Stuck") that pass the namespace prefix check but fragment
-// the state machine. Phase F will add `Linked-Issue/<n>` here once we settle
-// on its 25-char-limit-friendly form.
+// the state machine. Phase F adds `Issue/<n>` via SUPPORT_ISSUE_LABEL_RE
+// — kept regex-based so we don't need to enumerate every issue number.
 const SUPPORT_LABEL_SUFFIXES = new Set([
   "Seen", // Phase C: agent has acknowledged the thread (label-only mode).
   "NeedsHuman", // Phase D: escalated; awaits human review. (25 chars — Zoho cap.)
@@ -69,8 +69,18 @@ const SUPPORT_LABEL_SUFFIXES = new Set([
   "Resolved", // Phase E onward: agent finished with the thread (Resolved folder).
   "Replied", // Phase E onward: agent posted an auto-reply.
 ]);
+// Phase F: linked-issue labels carry the GitHub issue number. Constrained to
+// 1–4 digits so the full label (`Drafto/Support/Issue/9999`) fits Zoho's
+// 25-char `displayName` cap. Beyond #9999 we'd need a shorter scheme — but
+// that's years away (current issues are in the low hundreds). Leading-zero
+// numbers and non-digits are rejected.
+const SUPPORT_ISSUE_LABEL_RE = /^Issue\/[1-9]\d{0,3}$/;
 // Folders are looser — Phase D only uses Spam, Phase E+ uses Resolved.
 const SUPPORT_FOLDER_SUFFIXES = new Set(["Spam", "Resolved"]);
+
+function isAllowedLabelSuffix(suffix) {
+  return SUPPORT_LABEL_SUFFIXES.has(suffix) || SUPPORT_ISSUE_LABEL_RE.test(suffix);
+}
 
 // Centralised endpoint paths. Templated with ${accountId}, ${messageId}, etc.
 // at call time. Documented against zoho.com/mail/help/api/ as of Apr 2026.
@@ -280,6 +290,41 @@ export async function listPending() {
   return deduped;
 }
 
+// Phase F linked-thread detection: scan every message in the given thread
+// for a `Drafto/Support/Issue/<n>` label and return the issue number if
+// found, or empty string otherwise. Used by `--auto-classify --phase F` to
+// route customer replies on already-filed threads to `gh issue comment <n>`
+// instead of treating them as fresh inbound to classify.
+//
+// We intentionally check ALL messages, not just the latest, because:
+// - Singleton-first contacts label the original message; the agent's ack
+//   creates a NEW Zoho thread that doesn't contain the original. To make the
+//   linkage survive, the agent also labels its own ack message in step 8.
+// - Threaded conversations may have the label applied to any earlier
+//   message; the latest customer reply doesn't carry it.
+export async function findLinkedIssue(threadId) {
+  if (!threadId) throw new Error("threadId required");
+  const messages = await getThread(threadId);
+  const idToName = await listLabelsById();
+  const re = new RegExp(`^${SUPPORT_NAMESPACE.replace(/\//g, "\\/")}Issue\\/(\\d+)$`);
+  for (const msg of messages) {
+    const ids = Array.isArray(msg.labelId) ? msg.labelId : [];
+    for (const id of ids) {
+      const name = idToName.get(String(id));
+      const m = name && name.match(re);
+      if (m) return m[1];
+    }
+    // Test-shape fallback (inline label objects) — same pattern as listPending.
+    const objs = msg.labels ?? msg.labelInfo ?? [];
+    for (const l of objs) {
+      const name = l.displayName ?? l.labelName ?? l.name ?? l;
+      const m = typeof name === "string" && name.match(re);
+      if (m) return m[1];
+    }
+  }
+  return "";
+}
+
 export async function getThread(threadId) {
   if (!threadId) throw new Error("threadId required");
   const cfg = await loadConfig();
@@ -407,9 +452,12 @@ function assertSupportNamespace(name, kind) {
   // 26 chars (over Zoho's 25-char limit) and the agent improvised; this
   // guard makes that invisible drift impossible.
   const suffix = name.slice(SUPPORT_NAMESPACE.length);
-  const allowlist = kind === "folder" ? SUPPORT_FOLDER_SUFFIXES : SUPPORT_LABEL_SUFFIXES;
-  if (!allowlist.has(suffix)) {
-    const allowed = [...allowlist].sort().join(", ");
+  const ok = kind === "folder" ? SUPPORT_FOLDER_SUFFIXES.has(suffix) : isAllowedLabelSuffix(suffix);
+  if (!ok) {
+    const allowed =
+      kind === "folder"
+        ? [...SUPPORT_FOLDER_SUFFIXES].sort().join(", ")
+        : `${[...SUPPORT_LABEL_SUFFIXES].sort().join(", ")}, Issue/<n> (1-4 digit)`;
     throw new Error(`${kind} suffix "${suffix}" not in allowlist (permitted: ${allowed})`);
   }
 }
@@ -477,6 +525,8 @@ async function main(argv) {
       return listPending();
     case "get-thread":
       return getThread(positional[0]);
+    case "find-linked-issue":
+      return findLinkedIssue(positional[0]);
     case "get-headers":
       return getHeaders(positional[0], positional[1]);
     case "reply":
@@ -496,7 +546,7 @@ async function main(argv) {
     case "-h":
     case undefined:
       process.stdout.write(
-        "Usage: zoho-cli.mjs <list-pending|get-thread <threadId>|get-headers <folderId> <messageId>|reply <messageId> --to <addr> --subject <s> --body-file <path>|send --to <addr> --subject <s> --body-file <path>|add-label <threadId> <label>|add-message-label <messageId> <label>|move-to-folder <threadId> <folder>>\n",
+        "Usage: zoho-cli.mjs <list-pending|get-thread <threadId>|find-linked-issue <threadId>|get-headers <folderId> <messageId>|reply <messageId> --to <addr> --subject <s> --body-file <path>|send --to <addr> --subject <s> --body-file <path>|add-label <threadId> <label>|add-message-label <messageId> <label>|move-to-folder <threadId> <folder>>\n",
       );
       return null;
     default:
@@ -507,9 +557,13 @@ async function main(argv) {
 if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2)).then(
     (out) => {
-      if (out !== null && out !== undefined) {
-        process.stdout.write(JSON.stringify(out, null, 2) + "\n");
-      }
+      if (out === null || out === undefined) return;
+      // find-linked-issue returns a bare string ("349" or ""); other
+      // subcommands return JSON. Bash callers parse JSON for arrays/objects
+      // and capture plain strings as `$(node zoho-cli.mjs find-linked-issue …)`,
+      // so emit pretty-printed JSON for objects/arrays and raw string otherwise.
+      if (typeof out === "string") process.stdout.write(out);
+      else process.stdout.write(JSON.stringify(out, null, 2) + "\n");
     },
     (err) => {
       process.stderr.write(JSON.stringify({ error: err.message, body: err.body }) + "\n");

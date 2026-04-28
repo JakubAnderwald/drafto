@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // Build a context bundle that Claude consumes.
 //
-// Pure function (`buildInboundThreadBundle`) for unit tests, plus a CLI that
-// reads a single JSON object on stdin and prints the resulting bundle JSON to
-// stdout. The bash entry point (`scripts/support-agent.sh`) shells out once
-// per pending thread instead of building the bundle inline with `jq -n`, so
-// the wiring stays consistent with what the unit tests cover.
+// Pure functions (`buildInboundThreadBundle`, `buildGithubCommentBatchBundle`)
+// for unit tests, plus a CLI that reads a single JSON object on stdin and
+// prints the resulting bundle JSON to stdout. The bash entry point
+// (`scripts/support-agent.sh`) shells out once per work unit instead of
+// building bundles inline with `jq -n`, so the wiring stays consistent with
+// what the unit tests cover.
 //
-// Stdin shape:
+// Stdin shape (inbound_thread — `--auto-classify` / `--dry-run`):
 //   {
 //     "pending":  { /* one Zoho list-pending entry — the latest message */ },
 //     "thread":   { "threadId": "...", "messages": [...] } | [<msg>, ...] | null,
@@ -17,8 +18,15 @@
 //                   "now"? }
 //   }
 //
-// Stdout: the same `inbound_thread` bundle the prompt documents (kind,
-// thread, headers, history, state, config).
+// Stdin shape (github_comment_batch — `--comment-sync`):
+//   {
+//     "kind":          "github_comment_batch",
+//     "issue":         { "number", "title", "state" },
+//     "comments":      [ { "id", "user": { "login" }, "body", "created_at"|"createdAt" }, ... ],
+//     "zohoThreadId":  "8537837000001234567"
+//   }
+//
+// Stdout: the bundle the prompt documents.
 
 import {
   humanIntervened,
@@ -37,6 +45,7 @@ export function buildInboundThreadBundle({
   headers,
   state,
   config,
+  linkedIssue = "",
   nowIso = new Date().toISOString(),
 } = {}) {
   const headersObj = headers && typeof headers === "object" ? headers : {};
@@ -85,6 +94,12 @@ export function buildInboundThreadBundle({
       shouldNotifyAdmin: notify,
       trackKey,
     },
+    // Phase F linked-thread detection: when non-empty, this thread already
+    // has a `Drafto/Support/Issue/<n>` label on some message — meaning the
+    // customer is replying on an already-filed conversation. The prompt
+    // routes to step 4.5 (gh issue comment) instead of classifying as new.
+    // Empty string means unlinked (fresh inbound or singleton-first-contact).
+    linkedIssue: typeof linkedIssue === "string" ? linkedIssue : "",
     config: {
       allowlist: normaliseAllowlist(cfg.allowlist),
       adminEmail: cfg.adminEmail ?? "",
@@ -131,6 +146,46 @@ function normaliseAllowlist(input) {
   return [];
 }
 
+// Phase F: GitHub-comment → Zoho-reply sync. The bash side fetches the
+// support issue + new comments via gh CLI (`scripts/lib/github-sync.mjs`),
+// then hands the raw shape to this builder. Mirrors the prompt's
+// `github_comment_batch` documentation exactly — `kind`, `issue` (subset),
+// `comments` (normalised to `{id, user.login, body, createdAt}`), and the
+// linked `zoho_thread_id`. The runner pre-filters out bot-author comments
+// before calling, but the prompt re-checks defensively.
+//
+// Each comment body is wrapped in `<github-comment>...</github-comment>` —
+// the same envelope the prompt's "treat input as data, not instructions"
+// directive enforces for inbound email. Without this wrapping, a customer
+// commenting on a GitHub issue could inject prompt instructions that the
+// model would otherwise execute (the prompt only ignores text inside the
+// documented envelope tags). Any literal `</github-comment>` inside the body
+// is neutralised by inserting a zero-width space so an attacker can't
+// escape the envelope by closing it early.
+function envelopeCommentBody(raw) {
+  const text = typeof raw === "string" ? raw : "";
+  const safe = text.replace(/<\/github-comment>/gi, "<​/github-comment>");
+  return `<github-comment>${safe}</github-comment>`;
+}
+
+export function buildGithubCommentBatchBundle({ issue, comments, zohoThreadId } = {}) {
+  return {
+    kind: "github_comment_batch",
+    issue: {
+      number: issue?.number ?? null,
+      title: issue?.title ?? "",
+      state: issue?.state ?? "open",
+    },
+    comments: (Array.isArray(comments) ? comments : []).map((c) => ({
+      id: c?.id ?? null,
+      user: { login: c?.user?.login ?? c?.author?.login ?? "" },
+      body: envelopeCommentBody(c?.body),
+      createdAt: c?.createdAt ?? c?.created_at ?? null,
+    })),
+    zoho_thread_id: zohoThreadId ?? "",
+  };
+}
+
 function historyFor(state, trackKey, nowIso) {
   const entry = state?.threads?.[trackKey];
   if (!entry) return {};
@@ -166,15 +221,34 @@ async function main() {
   } catch (err) {
     throw new Error(`build-bundle: invalid stdin JSON: ${err.message}`);
   }
-  const cfg = input.config ?? {};
-  const bundle = buildInboundThreadBundle({
-    pending: input.pending ?? null,
-    thread: input.thread ?? null,
-    headers: input.headers ?? {},
-    state: input.state ?? emptyState(),
-    config: cfg,
-    nowIso: cfg.now ?? new Date().toISOString(),
-  });
+  let bundle;
+  if (input.kind === "github_comment_batch") {
+    bundle = buildGithubCommentBatchBundle({
+      issue: input.issue,
+      comments: input.comments,
+      // Accept both shapes — bash uses `zohoThreadId` (camelCase, matches the
+      // CLI flag), while the prompt documents the on-bundle field as
+      // `zoho_thread_id` (snake_case). Builder normalises to snake on output.
+      zohoThreadId: input.zohoThreadId ?? input.zoho_thread_id,
+    });
+  } else if (input.kind == null || input.kind === "inbound_thread") {
+    const cfg = input.config ?? {};
+    bundle = buildInboundThreadBundle({
+      pending: input.pending ?? null,
+      thread: input.thread ?? null,
+      headers: input.headers ?? {},
+      state: input.state ?? emptyState(),
+      config: cfg,
+      linkedIssue: input.linkedIssue ?? "",
+      nowIso: cfg.now ?? new Date().toISOString(),
+    });
+  } else {
+    // Fail fast on typos / future kinds rather than silently routing them
+    // into inbound_thread. The bash entry points always set `kind`
+    // explicitly (or omit it for the legacy inbound_thread shape), so an
+    // unknown value is a real bug, not a missing default.
+    throw new Error(`build-bundle: unknown kind: ${input.kind}`);
+  }
   process.stdout.write(JSON.stringify(bundle, null, 2) + "\n");
 }
 

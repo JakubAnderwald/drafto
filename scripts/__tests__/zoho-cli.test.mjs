@@ -95,6 +95,46 @@ describe("add-label", () => {
     assert.equal(calls.length, 0);
   });
 
+  it("accepts Phase F linked-issue labels (Issue/<n>, 1-4 digits)", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, { data: [] }),
+        },
+        {
+          match: (url, init) => url.endsWith("/labels") && init.method === "POST",
+          response: jsonResponse(200, {
+            data: { displayName: "Drafto/Support/Issue/347", labelId: "L-347" },
+          }),
+        },
+        {
+          match: (url, init) => url.endsWith("/updatethread") && init.method === "PUT",
+          response: jsonResponse(200, { data: { ok: true } }),
+        },
+      ]),
+    );
+    const out = await cli.addLabel("T1", "Drafto/Support/Issue/347");
+    assert.equal(out.ok, true);
+  });
+
+  it("rejects Phase F linked-issue labels exceeding 4 digits (Zoho 25-char cap)", async () => {
+    cli._setFetchForTests(makeFetch([]));
+    // `Drafto/Support/Issue/12345` = 26 chars; Zoho would reject the
+    // displayName even if we allowed it. Shut it down at the CLI boundary.
+    await assert.rejects(
+      () => cli.addLabel("T1", "Drafto/Support/Issue/12345"),
+      /not in allowlist/,
+    );
+    // Non-numeric and zero-prefixed are also rejected — keeps the format
+    // predictable so future readers can grep for `Issue/<n>` without regex
+    // gymnastics.
+    await assert.rejects(() => cli.addLabel("T1", "Drafto/Support/Issue/abc"), /not in allowlist/);
+    await assert.rejects(() => cli.addLabel("T1", "Drafto/Support/Issue/0123"), /not in allowlist/);
+    assert.equal(calls.length, 0);
+  });
+
   it("creates the label lazily if missing, then applies it", async () => {
     cli._setFetchForTests(
       makeFetch([
@@ -609,6 +649,118 @@ describe("listPending filters terminal labels", () => {
     assert.equal(out[0].messageId, "M1-newer", "first-occurrence (newest) wins for T1");
     assert.equal(out[1].threadId, "T2");
     assert.equal(out[2].messageId, "M3");
+  });
+});
+
+describe("findLinkedIssue (Phase F linked-thread detection)", () => {
+  it("returns the issue number when any message in the thread carries Drafto/Support/Issue/<n>", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, {
+            data: [
+              { labelId: "L-NH", displayName: "Drafto/Support/NeedsHuman" },
+              { labelId: "L-I-349", displayName: "Drafto/Support/Issue/349" },
+            ],
+          }),
+        },
+        {
+          match: (url) => url.includes("/messages/view") && url.includes("threadId=THREAD-X"),
+          response: jsonResponse(200, {
+            data: [
+              { messageId: "M1", subject: "first", labelId: ["L-I-349"] },
+              { messageId: "M2", subject: "reply", labelId: [] },
+            ],
+          }),
+        },
+      ]),
+    );
+    const out = await cli.findLinkedIssue("THREAD-X");
+    assert.equal(out, "349");
+  });
+
+  it("returns empty string when no message carries an Issue/<n> label", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, {
+            data: [{ labelId: "L-NH", displayName: "Drafto/Support/NeedsHuman" }],
+          }),
+        },
+        {
+          match: (url) => url.includes("/messages/view") && url.includes("threadId=THREAD-Y"),
+          response: jsonResponse(200, {
+            data: [
+              { messageId: "M1", labelId: ["L-NH"] },
+              { messageId: "M2", labelId: [] },
+            ],
+          }),
+        },
+      ]),
+    );
+    const out = await cli.findLinkedIssue("THREAD-Y");
+    assert.equal(out, "");
+  });
+
+  it("ignores non-Issue support labels (NeedsHuman, Replied, etc.)", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, {
+            data: [
+              { labelId: "L-AR", displayName: "Drafto/Support/Replied" },
+              { labelId: "L-NH", displayName: "Drafto/Support/NeedsHuman" },
+              { labelId: "L-RES", displayName: "Drafto/Support/Resolved" },
+            ],
+          }),
+        },
+        {
+          match: (url) => url.includes("/messages/view") && url.includes("threadId=THREAD-Z"),
+          response: jsonResponse(200, {
+            data: [{ messageId: "M1", labelId: ["L-AR", "L-NH", "L-RES"] }],
+          }),
+        },
+      ]),
+    );
+    const out = await cli.findLinkedIssue("THREAD-Z");
+    assert.equal(out, "");
+  });
+
+  it("supports inline labels[] shape (test/legacy fallback)", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, { data: [] }),
+        },
+        {
+          match: (url) => url.includes("/messages/view") && url.includes("threadId=THREAD-INLINE"),
+          response: jsonResponse(200, {
+            data: [
+              {
+                messageId: "M1",
+                labels: [{ displayName: "Drafto/Support/Issue/77" }],
+              },
+            ],
+          }),
+        },
+      ]),
+    );
+    const out = await cli.findLinkedIssue("THREAD-INLINE");
+    assert.equal(out, "77");
+  });
+
+  it("rejects empty threadId before any HTTP call", async () => {
+    cli._setFetchForTests(makeFetch([]));
+    await assert.rejects(() => cli.findLinkedIssue(""), /threadId required/);
+    assert.equal(calls.length, 0);
   });
 });
 
