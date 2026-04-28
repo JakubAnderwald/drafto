@@ -121,6 +121,41 @@ it, so regenerating the Supabase types automatically propagates to both clients.
 - `supabase/migrations/*` (when columns change)
 - `packages/shared/src/types/supabase.ts` (regenerated types)
 
+## Incident: note content erasure
+
+The desktop app has overwritten `notes.content` with the BlockNote empty doc (`[{"type":"paragraph","content":[],"children":[]}]`, 49–54 bytes) at least twice in production:
+
+1. **2026-04-24** — first occurrence, traced to PR #323 (attachments refactor) running on a dev build. Motivated the recovery infrastructure shipped in commit `50a890f` on 2026-04-25: the `note_content_history` trigger, [`scripts/recover-from-wal.py`](../../scripts/recover-from-wal.py), and [ADR 0022](../adr/0022-note-content-history.md).
+2. **2026-04-27 17:45:31 UTC** — note `4261ef83-3431-4a77-9adc-9251d8b0642c` overwritten from 40,826 bytes to 54 bytes; recovered same day from the 17:44:43 autosave row in `note_content_history`. `archived_by` was `NULL` because clients aren't tagging themselves yet.
+
+PRs #323 and #341 narrowed the surface but a path that produces this exact failure mode still exists. Treat as a live bug, not a one-off.
+
+### Recovery procedure
+
+When a user reports an erased note, recovery is mechanical. Service-role key lives in `~/drafto-secrets/supabase service keys.txt`; target the prod Supabase project (`tbmjbxxseonkciqovnpl`).
+
+```sql
+UPDATE notes
+SET content = (
+  SELECT content
+  FROM note_content_history
+  WHERE note_id = '<uuid>'
+    AND length(content::text) > 200
+  ORDER BY created_at DESC
+  LIMIT 1
+)
+WHERE id = '<uuid>';
+```
+
+Pick the most recent history row whose content length is non-trivial. Confirm the byte size matches the user's expectation before committing.
+
+### Open investigation
+
+Desktop is the only platform that has reproduced this — `apps/desktop/src/db/sync.ts` does server-side deletion detection that `apps/mobile/src/db/sync.ts` does not, which makes the desktop sync wrapper a prime suspect. Two follow-ups still open:
+
+- Wire `SET app.client = 'desktop'` (and `'mobile'` / `'web'`) on every client write so future `note_content_history` rows populate `archived_by` and pinpoint the responsible client.
+- A third recurrence is the trigger to file a tracked GitHub issue with timestamps + pre/post diff and stop guessing.
+
 ## Verify
 
 ```bash
