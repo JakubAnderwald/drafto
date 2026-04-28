@@ -67,6 +67,8 @@ When planning, fan out independent actions into a single batched message — don
 
 **Worktree gotcha**: `Edit`/`Write` require a prior `Read` of the _exact_ path. Reading `/Users/…/drafto/foo.ts` does NOT satisfy an edit against `/Users/…/drafto-worktree/foo.ts`. Pattern when starting work in a worktree: one batched `Read` for every worktree file you'll touch, then one batched `Edit`/`Write` for all the changes.
 
+**Plan structure**: Multi-PR or multi-step plans should also exploit parallelism — group independent work into "waves" (Wave 1 fully parallel, Wave 2 after Wave 1, etc.) and assign each independent unit to its own subagent. End any plan that ships a cross-platform release with the explicit per-platform release commands as a final wave: web (Vercel auto-deploys on merge), `cd apps/mobile && pnpm release:prod:android`, `pnpm release:prod:ios`, `cd apps/desktop && pnpm release:production`. The three store releases run concurrently in their own subagents. Note any required version bumps (`pnpm version:mobile|desktop patch|minor|major`) before the release wave.
+
 ## SOLID Principles (Enforced)
 
 Every module must follow SOLID:
@@ -127,6 +129,12 @@ Common CI failure patterns:
 - Pre-commit hooks run lint-staged (ESLint + Prettier)
 - **Never commit or push directly to `main`** unless the user explicitly requests it. All work goes through feature branches and PRs.
 - **All pushes must use the `/push` command** — this ensures commits are pushed, CI/CD checks are polled until green, review comments are addressed, and failures are fixed automatically
+
+## Release Authorization
+
+Beta TestFlight builds (Mac App Store Connect, iOS, Android internal track) are **pre-authorized** — ship them without asking. Communicate what's going out (version + build number, what's in it) but don't gate on permission. A bad TestFlight build is reversible: the next build supersedes it, and old builds can be expired in App Store Connect.
+
+Production / public-store releases (`pnpm release:prod:*`, `pnpm release:production`, App Store / Play Store submission) still require explicit user approval — those affect non-tester users.
 
 ## Cross-Platform Feature Workflow
 

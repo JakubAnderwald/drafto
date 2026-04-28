@@ -57,6 +57,49 @@ export ASC_API_KEY_P8_PATH="/path/to/AuthKey.p8"
 
 These are sourced automatically from `~/drafto-secrets/android-env.sh` on local machines set up per [local dev setup](./local-dev-setup.md).
 
+## Known release gotchas
+
+Recurring issues hit when running release lanes locally. Check these first if a release fails on a fresh machine or worktree.
+
+### `MATCH_PASSWORD` not picked up by desktop fastlane
+
+`bundle exec fastlane mac beta` (and `mac production`) bails at the `match` step with `Neither the MATCH_PASSWORD environment variable nor the local keychain contained a password.` `~/drafto-secrets/match-env.sh` is a single-line `MATCH_PASSWORD=…` assignment without `export`, and `load_local_secrets` in `apps/desktop/fastlane/Fastfile` only sources `android-env.sh`. Plain `source` therefore creates a shell var, not an env var, and fastlane can't see it.
+
+Prefix the command with `set -a` so subsequent assignments are exported:
+
+```bash
+set -a; source ~/drafto-secrets/match-env.sh; set +a
+cd apps/desktop && bundle exec fastlane mac beta
+```
+
+Permanent fix: extend `load_local_secrets` to source `match-env.sh`, or add `export` to the secrets file.
+
+### "3rd Party Mac Developer Installer" cert missing
+
+`fastlane mac beta` signs the `.pkg` with `productbuild --sign "3rd Party Mac Developer Installer: …"`. This cert is **not** managed by Match (the Matchfile uses `type("appstore")`, which only fetches the "Apple Distribution" code-signing cert). It must be installed manually per machine via Xcode → Settings → Accounts → Manage Certificates… → `+` → "Mac Installer Distribution".
+
+Verify before running the lane:
+
+```bash
+security find-identity -v -p basic | grep "3rd Party Mac Developer Installer"
+```
+
+If missing, `productbuild` fails with `Could not find appropriate signing identity`. One-time per machine; worktrees inherit the host's keychain.
+
+### `post-release-notes.mjs` 400 on List Builds (non-fatal)
+
+After `upload_to_testflight`, `apps/desktop/scripts/post-release-notes.mjs` fails with:
+
+> TestFlight error: List builds failed: 400 PARAMETER_ERROR.ILLEGAL "The parameter 'sort' can not be used with this request"
+
+App Store Connect no longer accepts the `sort` query param on List Builds. The TestFlight upload itself succeeded — fastlane logs `Release notes posting failed (non-fatal)` and continues. Fix is to drop the `sort` param (or switch endpoints) in the script.
+
+### Missing `.env` / `.env.production` files
+
+`pnpm release:beta:*` and `pnpm release:prod:*` need `apps/mobile/.env` (dev) and `apps/mobile/.env.production` (prod); desktop equivalents at `apps/desktop/.env{,.production}`. Without them, `expo prebuild` fails with `google-signin without Firebase config plugin: Missing iosUrlScheme in provided options`.
+
+These files hold Expo public env vars (Supabase URL/anon key, Google iOS URL scheme) and are gitignored. They are **not** in `~/drafto-secrets/` — restore from a personal backup. Worktree copy steps for these files are in [`CLAUDE.md`](../../CLAUDE.md) → "Worktree Workflow".
+
 ## Android
 
 App package: `eu.drafto.mobile`
