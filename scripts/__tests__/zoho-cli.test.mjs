@@ -206,8 +206,8 @@ describe("move-to-folder", () => {
   });
 });
 
-describe("reply / send always set sender to OAuth user", () => {
-  it("reply uses primary_email as fromAddress", async () => {
+describe("reply (unified — always uses inReplyTo + toAddress + subject)", () => {
+  function setup() {
     cli._setFetchForTests(
       makeFetch([
         tokenHandler,
@@ -217,16 +217,89 @@ describe("reply / send always set sender to OAuth user", () => {
         },
       ]),
     );
-    await cli.replyToThread("T1", BODY_FILE);
+  }
+
+  it("singleton path: routes by inReplyTo + toAddress + subject, no threadId", async () => {
+    setup();
+    await cli.replyToMessage("MSG-1", BODY_FILE, {
+      to: "jane@example.com",
+      subject: "How do I import?",
+    });
     const sendCall = calls.find((c) => c.url.endsWith("/messages") && c.init.method === "POST");
     assert.ok(sendCall);
     const body = JSON.parse(sendCall.init.body);
     assert.equal(body.fromAddress, "support@drafto.eu");
-    assert.equal(body.threadId, "T1");
-    assert.equal(body.headers["Auto-Submitted"], "auto-replied");
+    assert.equal(body.toAddress, "jane@example.com");
+    assert.equal(body.inReplyTo, "MSG-1");
+    assert.equal(body.subject, "Re: How do I import?", "auto-prefixes Re: when missing");
+    assert.equal(body.threadId, undefined, "no threadId when caller didn't pass one");
+    // Zoho's POST /messages rejects unknown top-level keys with
+    // EXTRA_KEY_FOUND_IN_JSON; we previously included a `headers` field that
+    // was silently bouncing every send. This guard keeps us from re-adding it.
+    assert.equal(body.headers, undefined, "must not include the rejected headers key");
   });
 
-  it("send uses primary_email as fromAddress", async () => {
+  it("threaded path: anchors inReplyTo to the LATEST messageId; never sends threadId", async () => {
+    // Zoho rejects `inReplyTo + threadId` together with 404 JSON_PARSE_ERROR
+    // (verified live 2026-04-28). Threading is achieved purely through
+    // `inReplyTo` — Zoho derives the In-Reply-To/References headers and both
+    // its own UI and the customer's mail client group on those.
+    setup();
+    await cli.replyToMessage("MSG-LATEST", BODY_FILE, {
+      to: "jane@example.com",
+      subject: "Re: existing thread",
+    });
+    const body = JSON.parse(
+      calls.find((c) => c.url.endsWith("/messages") && c.init.method === "POST").init.body,
+    );
+    assert.equal(body.inReplyTo, "MSG-LATEST");
+    assert.equal(
+      body.threadId,
+      undefined,
+      "must not send threadId alongside inReplyTo (Zoho rejects the combo)",
+    );
+    // Re: prefix is preserved when already present.
+    assert.equal(body.subject, "Re: existing thread");
+  });
+
+  it("does not double-prefix Re: (case-insensitive)", async () => {
+    setup();
+    await cli.replyToMessage("MSG-3", BODY_FILE, {
+      to: "jane@example.com",
+      subject: "RE: existing thread",
+    });
+    const body = JSON.parse(
+      calls.find((c) => c.url.endsWith("/messages") && c.init.method === "POST").init.body,
+    );
+    assert.equal(body.subject, "RE: existing thread");
+  });
+
+  it("rejects missing required args before hitting the network", async () => {
+    setup();
+    await assert.rejects(
+      cli.replyToMessage("", BODY_FILE, { to: "x", subject: "y" }),
+      /messageId required/,
+    );
+    await assert.rejects(
+      cli.replyToMessage("M", "", { to: "x", subject: "y" }),
+      /--body-file required/,
+    );
+    await assert.rejects(
+      cli.replyToMessage("M", BODY_FILE, { to: "", subject: "y" }),
+      /--to required/,
+    );
+    await assert.rejects(
+      cli.replyToMessage("M", BODY_FILE, { to: "x", subject: "" }),
+      /--subject required/,
+    );
+    // None of these should have made it to the wire.
+    const sendCalls = calls.filter((c) => c.url.endsWith("/messages") && c.init.method === "POST");
+    assert.equal(sendCalls.length, 0);
+  });
+});
+
+describe("send always sets sender to OAuth user", () => {
+  it("send uses primary_email as fromAddress and omits the headers key", async () => {
     cli._setFetchForTests(
       makeFetch([
         tokenHandler,
@@ -246,6 +319,7 @@ describe("reply / send always set sender to OAuth user", () => {
     assert.equal(body.fromAddress, "support@drafto.eu");
     assert.equal(body.toAddress, "jakub@anderwald.info");
     assert.equal(body.subject, "test");
+    assert.equal(body.headers, undefined);
   });
 });
 

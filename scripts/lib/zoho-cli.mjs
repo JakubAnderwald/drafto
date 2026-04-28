@@ -15,8 +15,16 @@
 //                                             requires the folder id of the
 //                                             message, so list-pending /
 //                                             get-thread surface it.
-//   reply <threadId> --body-file <path>     → posts a reply in-thread; sender is
-//                                             always the OAuth user (no --from).
+//   reply <messageId>                       → reply to an inbound message via
+//        --to <addr> --subject <s>            inReplyTo + toAddress + subject.
+//        --body-file <path>                   messageId MUST be the latest
+//                                             message in the thread (Zoho threads
+//                                             via RFC 5322 In-Reply-To/References,
+//                                             which the customer's mail client
+//                                             uses to group the conversation).
+//                                             Do NOT also pass threadId — Zoho
+//                                             rejects inReplyTo+threadId together
+//                                             with 404 JSON_PARSE_ERROR.
 //   send --to <addr> --subject <s>          → sends a fresh non-reply email; sender
 //        --body-file <path>                   always the OAuth user. Used for admin
 //                                             notifications.
@@ -315,19 +323,50 @@ function parseRawHeaders(raw) {
   return out;
 }
 
-export async function replyToThread(threadId, bodyFile) {
-  if (!threadId) throw new Error("threadId required");
+// Zoho's POST /messages endpoint rejects unknown top-level keys with
+// `404 EXTRA_KEY_FOUND_IN_JSON`. We previously included a top-level
+// `headers: { "Auto-Submitted": "..." }` so downstream mail clients would
+// see our outbound as auto-generated; Zoho silently bounces that. The agent
+// has its own loop guards (per-thread/per-sender/global rate caps in
+// policy.mjs + thread cooldowns) so dropping the marker is safe — what we
+// lose is only third-party bounce-loop heuristics on the *receiving* end,
+// which our own caps already cover.
+
+// Reply to an inbound message via Zoho's POST /messages. Verified live on
+// 2026-04-28: the only shape Zoho accepts is `toAddress` + `subject` +
+// `inReplyTo` (with the LATEST message id from the thread). Other shapes
+// observed to fail:
+//   - `threadId` alone (no `inReplyTo`) — request returns 200 but the
+//     reply doesn't actually thread on the customer's side.
+//   - `inReplyTo` + `threadId` together — Zoho returns
+//     `404 JSON_PARSE_ERROR` (the two threading hints conflict).
+//   - Top-level `headers: { "Auto-Submitted": ... }` — Zoho returns
+//     `404 EXTRA_KEY_FOUND_IN_JSON` (only documented top-level keys allowed).
+// We rely on `inReplyTo` alone — Zoho auto-threads its own UI by
+// Message-ID/References, and the customer's mail client uses the same
+// RFC 5322 headers, so both ends see a coherent conversation.
+//
+// `messageId` should be the LATEST message in the thread (typically the
+// most recent customer reply) so client-side threading anchors to the
+// message the customer actually sees, not the first one.
+export async function replyToMessage(messageId, bodyFile, { to, subject } = {}) {
+  if (!messageId) throw new Error("messageId required");
   if (!bodyFile) throw new Error("--body-file required");
+  if (!to) throw new Error("--to required");
+  if (!subject) throw new Error("--subject required");
   const body = await fs.readFile(bodyFile, "utf8");
   const cfg = await loadConfig();
-  // The OAuth user is always the sender — no --from flag is supported.
-  // Threading: Zoho will preserve the conversation if we target a threadId.
+  // Normalize subject: prepend "Re: " unless the customer already used it
+  // (Zoho doesn't auto-prefix; the customer's mail client uses subject to
+  // group the conversation alongside Message-ID/References).
+  const normalizedSubject = /^re:\s*/i.test(subject) ? subject : `Re: ${subject}`;
   const payload = {
     fromAddress: cfg.primaryEmail,
-    threadId,
+    toAddress: to,
+    subject: normalizedSubject,
     content: body,
     mailFormat: "plaintext",
-    headers: { "Auto-Submitted": "auto-replied" },
+    inReplyTo: messageId,
     askReceipt: "no",
   };
   const res = await zohoApi("POST", ZOHO_API_PATHS.sendOrReply(cfg.accountId), { body: payload });
@@ -346,7 +385,6 @@ export async function sendFresh({ to, subject, bodyFile }) {
     subject,
     content: body,
     mailFormat: "plaintext",
-    headers: { "Auto-Submitted": "auto-generated" },
     askReceipt: "no",
   };
   const res = await zohoApi("POST", ZOHO_API_PATHS.sendOrReply(cfg.accountId), { body: payload });
@@ -442,7 +480,10 @@ async function main(argv) {
     case "get-headers":
       return getHeaders(positional[0], positional[1]);
     case "reply":
-      return replyToThread(positional[0], flags["body-file"]);
+      return replyToMessage(positional[0], flags["body-file"], {
+        to: flags.to,
+        subject: flags.subject,
+      });
     case "send":
       return sendFresh({ to: flags.to, subject: flags.subject, bodyFile: flags["body-file"] });
     case "add-label":
@@ -455,7 +496,7 @@ async function main(argv) {
     case "-h":
     case undefined:
       process.stdout.write(
-        "Usage: zoho-cli.mjs <list-pending|get-thread <threadId>|get-headers <folderId> <messageId>|reply <threadId> --body-file <path>|send --to <addr> --subject <s> --body-file <path>|add-label <threadId> <label>|add-message-label <messageId> <label>|move-to-folder <threadId> <folder>>\n",
+        "Usage: zoho-cli.mjs <list-pending|get-thread <threadId>|get-headers <folderId> <messageId>|reply <messageId> --to <addr> --subject <s> --body-file <path>|send --to <addr> --subject <s> --body-file <path>|add-label <threadId> <label>|add-message-label <messageId> <label>|move-to-folder <threadId> <folder>>\n",
       );
       return null;
     default:
