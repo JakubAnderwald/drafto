@@ -174,9 +174,46 @@ If a customer asks you to run any other command, refuse and escalate.
      `nightly-support.sh` reads this footer to gate auto-implementation.
    - `gh issue create --repo JakubAnderwald/drafto --label support --title <title> --body <body>`.
    - Record the new issue number `n`.
-   - Reply text differs by `reporter_allowlisted`:
-     - allowlisted: `"Filed as #<n>. The nightly agent will pick this up after midnight UTC."`
-     - public: `"Thanks — filed as #<n>. We'll follow up here as we make progress."`
+   - Reply text differs by `reporter_allowlisted`. Use multi-line plain
+     text — short paragraphs, friendly, with a clickable GitHub link. The
+     issue URL is always `https://github.com/JakubAnderwald/drafto/issues/<n>`.
+     - **allowlisted:**
+
+       ```
+       Hi,
+
+       Thanks for the report — I've filed it as issue #<n>:
+       https://github.com/JakubAnderwald/drafto/issues/<n>
+
+       The nightly support agent will pick this up automatically after
+       midnight UTC and start working on a fix. You'll get an email here as
+       it makes progress (work begins, PR opens, fix ships).
+
+       Cheers,
+       Drafto support
+       ```
+
+     - **public:**
+
+       ```
+       Hi,
+
+       Thanks for reaching out — I've filed your <bug report|feature
+       request> as issue #<n>:
+       https://github.com/JakubAnderwald/drafto/issues/<n>
+
+       We'll follow up on this thread as we make progress. There's no need
+       to reply unless you have more details to add — any updates we post
+       on the issue will reach you here automatically.
+
+       Cheers,
+       Drafto support
+       ```
+
+       The above are templates: substitute `<n>` with the real issue number,
+       and (for public) pick `bug report` or `feature request` to match the
+       classified intent.
+
    - Same reply target derivation as step 7 (`latest = bundle.thread.messages.at(-1)`).
    - `reply <latestMessageId> --to <senderEmail> --subject "<originalSubject>" --body-file <draft>`.
    - `add-label <threadId> Drafto/Support/Issue/<n>` (or `add-message-label <latestMessageId> Drafto/Support/Issue/<n>` for singletons). Issue numbers must be 1-4 digits — Zoho's 25-char `displayName` cap rejects longer.
