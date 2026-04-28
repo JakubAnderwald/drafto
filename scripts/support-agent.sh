@@ -492,6 +492,20 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
     STATE_JSON='{}'
   fi
 
+  # Phase F linked-thread detection: if any message in the thread carries a
+  # Drafto/Support/Issue/<n> label, the customer is replying on a
+  # conversation we've already filed. Pre-fetch once here so the prompt's
+  # step 4.5 can branch deterministically. Singletons (no threadId) are
+  # never linked (they're definitionally first contact).
+  LINKED_ISSUE=""
+  if [[ -n "$THREAD_ID" && -z "$FIXTURE" && "$PHASE" =~ ^[FG]$ ]]; then
+    if ! LINKED_ISSUE=$(node "$SCRIPT_DIR/lib/zoho-cli.mjs" find-linked-issue "$THREAD_ID" \
+        2>>"$LOG_FILE"); then
+      log "WARNING: find-linked-issue failed for $TRACK_ID; treating as unlinked"
+      LINKED_ISSUE=""
+    fi
+  fi
+
   # build-bundle.mjs takes one combined JSON on stdin. Keeps the bundle
   # construction in Node where the policy.mjs functions live, instead of
   # duplicating the logic in `jq -n`.
@@ -504,11 +518,13 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
     --arg adminEmail "$ADMIN_EMAIL" \
     --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
     --arg phase "$PHASE" \
+    --arg linkedIssue "$LINKED_ISSUE" \
     '{
        pending: $pending,
        thread: $thread,
        headers: $headers,
        state: $state,
+       linkedIssue: $linkedIssue,
        config: {
          allowlist: $allowlist,
          adminEmail: $adminEmail,
@@ -617,6 +633,18 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
       # caps don't apply to filings (we want every legitimate report to
       # produce an issue), and the linkage lives in the issue body footer
       # rather than support-state.json.
+      ;;
+    customer-reply)
+      if [[ "$PHASE" =~ ^[DE]$ ]]; then
+        log "ERROR: claude returned customer-reply under Phase $PHASE for $TRACK_ID — prompt phase gate violated"
+        exit 1
+      fi
+      # Phase F+: Claude detected a customer reply on a thread linked to a
+      # filed issue (Drafto/Support/Issue/<n> label found on some message in
+      # the thread), commented on the GH issue with the customer's text, and
+      # labelled the new message so list-pending stops surfacing it. No
+      # bash-side state mutations — the cursor + footer linkage are
+      # sufficient on their own.
       ;;
     *)
       log "WARNING: unrecognised action '$ACTION' from claude for $TRACK_ID"

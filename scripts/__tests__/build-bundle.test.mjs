@@ -323,6 +323,46 @@ describe("buildInboundThreadBundle — config normalisation", () => {
   });
 });
 
+describe("buildInboundThreadBundle — linkedIssue (Phase F)", () => {
+  it("propagates linkedIssue when the runner detected an Issue/<n> label in the thread", () => {
+    const bundle = buildInboundThreadBundle({
+      pending: basePending(),
+      thread: null,
+      headers: {},
+      state: emptyState(),
+      config: baseConfig({ phase: "F" }),
+      linkedIssue: "349",
+      nowIso: NOW,
+    });
+    assert.equal(bundle.linkedIssue, "349");
+  });
+
+  it("defaults linkedIssue to empty string when omitted (unlinked thread)", () => {
+    const bundle = buildInboundThreadBundle({
+      pending: basePending(),
+      thread: null,
+      headers: {},
+      state: emptyState(),
+      config: baseConfig({ phase: "F" }),
+      nowIso: NOW,
+    });
+    assert.equal(bundle.linkedIssue, "");
+  });
+
+  it("coerces a non-string linkedIssue to empty (defensive)", () => {
+    const bundle = buildInboundThreadBundle({
+      pending: basePending(),
+      thread: null,
+      headers: {},
+      state: emptyState(),
+      config: baseConfig({ phase: "F" }),
+      linkedIssue: 349,
+      nowIso: NOW,
+    });
+    assert.equal(bundle.linkedIssue, "");
+  });
+});
+
 describe("buildGithubCommentBatchBundle (Phase F)", () => {
   it("produces a kind=github_comment_batch bundle with normalised comment shape", () => {
     const bundle = buildGithubCommentBatchBundle({

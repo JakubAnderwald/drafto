@@ -290,6 +290,41 @@ export async function listPending() {
   return deduped;
 }
 
+// Phase F linked-thread detection: scan every message in the given thread
+// for a `Drafto/Support/Issue/<n>` label and return the issue number if
+// found, or empty string otherwise. Used by `--auto-classify --phase F` to
+// route customer replies on already-filed threads to `gh issue comment <n>`
+// instead of treating them as fresh inbound to classify.
+//
+// We intentionally check ALL messages, not just the latest, because:
+// - Singleton-first contacts label the original message; the agent's ack
+//   creates a NEW Zoho thread that doesn't contain the original. To make the
+//   linkage survive, the agent also labels its own ack message in step 8.
+// - Threaded conversations may have the label applied to any earlier
+//   message; the latest customer reply doesn't carry it.
+export async function findLinkedIssue(threadId) {
+  if (!threadId) throw new Error("threadId required");
+  const messages = await getThread(threadId);
+  const idToName = await listLabelsById();
+  const re = new RegExp(`^${SUPPORT_NAMESPACE.replace(/\//g, "\\/")}Issue\\/(\\d+)$`);
+  for (const msg of messages) {
+    const ids = Array.isArray(msg.labelId) ? msg.labelId : [];
+    for (const id of ids) {
+      const name = idToName.get(String(id));
+      const m = name && name.match(re);
+      if (m) return m[1];
+    }
+    // Test-shape fallback (inline label objects) — same pattern as listPending.
+    const objs = msg.labels ?? msg.labelInfo ?? [];
+    for (const l of objs) {
+      const name = l.displayName ?? l.labelName ?? l.name ?? l;
+      const m = typeof name === "string" && name.match(re);
+      if (m) return m[1];
+    }
+  }
+  return "";
+}
+
 export async function getThread(threadId) {
   if (!threadId) throw new Error("threadId required");
   const cfg = await loadConfig();
@@ -490,6 +525,8 @@ async function main(argv) {
       return listPending();
     case "get-thread":
       return getThread(positional[0]);
+    case "find-linked-issue":
+      return findLinkedIssue(positional[0]);
     case "get-headers":
       return getHeaders(positional[0], positional[1]);
     case "reply":
@@ -509,7 +546,7 @@ async function main(argv) {
     case "-h":
     case undefined:
       process.stdout.write(
-        "Usage: zoho-cli.mjs <list-pending|get-thread <threadId>|get-headers <folderId> <messageId>|reply <messageId> --to <addr> --subject <s> --body-file <path>|send --to <addr> --subject <s> --body-file <path>|add-label <threadId> <label>|add-message-label <messageId> <label>|move-to-folder <threadId> <folder>>\n",
+        "Usage: zoho-cli.mjs <list-pending|get-thread <threadId>|find-linked-issue <threadId>|get-headers <folderId> <messageId>|reply <messageId> --to <addr> --subject <s> --body-file <path>|send --to <addr> --subject <s> --body-file <path>|add-label <threadId> <label>|add-message-label <messageId> <label>|move-to-folder <threadId> <folder>>\n",
       );
       return null;
     default:
@@ -520,9 +557,13 @@ async function main(argv) {
 if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2)).then(
     (out) => {
-      if (out !== null && out !== undefined) {
-        process.stdout.write(JSON.stringify(out, null, 2) + "\n");
-      }
+      if (out === null || out === undefined) return;
+      // find-linked-issue returns a bare string ("349" or ""); other
+      // subcommands return JSON. Bash callers parse JSON for arrays/objects
+      // and capture plain strings as `$(node zoho-cli.mjs find-linked-issue …)`,
+      // so emit pretty-printed JSON for objects/arrays and raw string otherwise.
+      if (typeof out === "string") process.stdout.write(out);
+      else process.stdout.write(JSON.stringify(out, null, 2) + "\n");
     },
     (err) => {
       process.stderr.write(JSON.stringify({ error: err.message, body: err.body }) + "\n");

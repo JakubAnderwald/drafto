@@ -652,6 +652,118 @@ describe("listPending filters terminal labels", () => {
   });
 });
 
+describe("findLinkedIssue (Phase F linked-thread detection)", () => {
+  it("returns the issue number when any message in the thread carries Drafto/Support/Issue/<n>", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, {
+            data: [
+              { labelId: "L-NH", displayName: "Drafto/Support/NeedsHuman" },
+              { labelId: "L-I-349", displayName: "Drafto/Support/Issue/349" },
+            ],
+          }),
+        },
+        {
+          match: (url) => url.includes("/messages/view") && url.includes("threadId=THREAD-X"),
+          response: jsonResponse(200, {
+            data: [
+              { messageId: "M1", subject: "first", labelId: ["L-I-349"] },
+              { messageId: "M2", subject: "reply", labelId: [] },
+            ],
+          }),
+        },
+      ]),
+    );
+    const out = await cli.findLinkedIssue("THREAD-X");
+    assert.equal(out, "349");
+  });
+
+  it("returns empty string when no message carries an Issue/<n> label", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, {
+            data: [{ labelId: "L-NH", displayName: "Drafto/Support/NeedsHuman" }],
+          }),
+        },
+        {
+          match: (url) => url.includes("/messages/view") && url.includes("threadId=THREAD-Y"),
+          response: jsonResponse(200, {
+            data: [
+              { messageId: "M1", labelId: ["L-NH"] },
+              { messageId: "M2", labelId: [] },
+            ],
+          }),
+        },
+      ]),
+    );
+    const out = await cli.findLinkedIssue("THREAD-Y");
+    assert.equal(out, "");
+  });
+
+  it("ignores non-Issue support labels (NeedsHuman, Replied, etc.)", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, {
+            data: [
+              { labelId: "L-AR", displayName: "Drafto/Support/Replied" },
+              { labelId: "L-NH", displayName: "Drafto/Support/NeedsHuman" },
+              { labelId: "L-RES", displayName: "Drafto/Support/Resolved" },
+            ],
+          }),
+        },
+        {
+          match: (url) => url.includes("/messages/view") && url.includes("threadId=THREAD-Z"),
+          response: jsonResponse(200, {
+            data: [{ messageId: "M1", labelId: ["L-AR", "L-NH", "L-RES"] }],
+          }),
+        },
+      ]),
+    );
+    const out = await cli.findLinkedIssue("THREAD-Z");
+    assert.equal(out, "");
+  });
+
+  it("supports inline labels[] shape (test/legacy fallback)", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url, init) => url.endsWith("/labels") && (init.method ?? "GET") === "GET",
+          response: jsonResponse(200, { data: [] }),
+        },
+        {
+          match: (url) => url.includes("/messages/view") && url.includes("threadId=THREAD-INLINE"),
+          response: jsonResponse(200, {
+            data: [
+              {
+                messageId: "M1",
+                labels: [{ displayName: "Drafto/Support/Issue/77" }],
+              },
+            ],
+          }),
+        },
+      ]),
+    );
+    const out = await cli.findLinkedIssue("THREAD-INLINE");
+    assert.equal(out, "77");
+  });
+
+  it("rejects empty threadId before any HTTP call", async () => {
+    cli._setFetchForTests(makeFetch([]));
+    await assert.rejects(() => cli.findLinkedIssue(""), /threadId required/);
+    assert.equal(calls.length, 0);
+  });
+});
+
 describe("getThread", () => {
   it("calls /messages/view with threadId query and returns the data array", async () => {
     cli._setFetchForTests(

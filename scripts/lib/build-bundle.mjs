@@ -45,6 +45,7 @@ export function buildInboundThreadBundle({
   headers,
   state,
   config,
+  linkedIssue = "",
   nowIso = new Date().toISOString(),
 } = {}) {
   const headersObj = headers && typeof headers === "object" ? headers : {};
@@ -93,6 +94,12 @@ export function buildInboundThreadBundle({
       shouldNotifyAdmin: notify,
       trackKey,
     },
+    // Phase F linked-thread detection: when non-empty, this thread already
+    // has a `Drafto/Support/Issue/<n>` label on some message — meaning the
+    // customer is replying on an already-filed conversation. The prompt
+    // routes to step 4.5 (gh issue comment) instead of classifying as new.
+    // Empty string means unlinked (fresh inbound or singleton-first-contact).
+    linkedIssue: typeof linkedIssue === "string" ? linkedIssue : "",
     config: {
       allowlist: normaliseAllowlist(cfg.allowlist),
       adminEmail: cfg.adminEmail ?? "",
@@ -232,6 +239,7 @@ async function main() {
       headers: input.headers ?? {},
       state: input.state ?? emptyState(),
       config: cfg,
+      linkedIssue: input.linkedIssue ?? "",
       nowIso: cfg.now ?? new Date().toISOString(),
     });
   }
