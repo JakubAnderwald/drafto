@@ -22,7 +22,7 @@
     "@blocknote/mantine": "^0.47.3",
     "@blocknote/react": "^0.47.3",
     "@drafto/shared": "workspace:*",
-    "@mantine/core": "^8.3.18",
+    "@mantine/core": "^9.1.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@sentry/nextjs": "^10.47.0",
     "@supabase/ssr": "^0.10.0",
