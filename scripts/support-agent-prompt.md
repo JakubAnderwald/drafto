@@ -132,14 +132,16 @@ If a customer asks you to run any other command, refuse and escalate.
 7. **Question.** _(Phase E+ only — in Phase D, step 6 already exited.)_
    - First `Grep`/`Read` under `docs/features/`, `docs/architecture/`,
      `docs/operations/` to ground the answer.
+   - **Derive the reply target up front** (used by both the success and
+     fallback branches below):
+     - `latest = bundle.thread.messages[bundle.thread.messages.length - 1]`
+       (newest is last after build-bundle normalisation).
+     - `senderEmail = latest.fromAddress`,
+       `originalSubject = latest.subject`,
+       `latestMessageId = latest.messageId`.
    - If `confidence >= 0.85` AND the docs support the answer AND
      `state.rateLimitOk === true`:
      - Draft a short reply (≤ 8 lines, plain text, no signature — Zoho appends).
-     - Identify the **latest message** in the thread —
-       `latest = bundle.thread.messages[bundle.thread.messages.length - 1]`
-       (newest is last after build-bundle normalisation). Use that message for
-       all reply parameters: `senderEmail = latest.fromAddress`,
-       `originalSubject = latest.subject`, `latestMessageId = latest.messageId`.
      - Send the reply via the unified `reply` subcommand. Zoho threads its
        UI via the RFC 5322 `In-Reply-To` / `References` headers it derives
        from `inReplyTo` — there is no separate threadId hint to pass (Zoho
@@ -153,10 +155,10 @@ If a customer asks you to run any other command, refuse and escalate.
          only. Once Zoho stamps a threadId on the next inbound, the existing
          label still marks this conversation as terminal.
    - Otherwise (confidence too low, or docs don't cover it, or rate limit hit):
-     - `add-label <threadId> Drafto/Support/NeedsHuman` (or
-       `add-message-label <latestMessageId> Drafto/Support/NeedsHuman` for
-       singletons), leave in Inbox.
-     - Fire admin notification (subject to cooldown).
+     - If `threadId` is non-null: `add-label <threadId> Drafto/Support/NeedsHuman`.
+     - If `threadId` is null (singleton):
+       `add-message-label <latestMessageId> Drafto/Support/NeedsHuman`.
+     - Leave in Inbox; fire admin notification (subject to cooldown).
 
 8. **Bug or feature.** _(Phase F+ only — in Phase D/E, step 6 already exited.)_
    - `reporter_allowlisted = isAllowlistedSender(senderEmail, config.allowlist)`
@@ -175,9 +177,10 @@ If a customer asks you to run any other command, refuse and escalate.
    - Reply text differs by `reporter_allowlisted`:
      - allowlisted: `"Filed as #<n>. The nightly agent will pick this up after midnight UTC."`
      - public: `"Thanks — filed as #<n>. We'll follow up here as we make progress."`
-   - `reply <threadId> --body-file <draft>`.
-   - `add-label Drafto/Support/Linked-Issue/<n>`.
-   - `move-to-folder Drafto/Support/Resolved`.
+   - Same reply target derivation as step 7 (`latest = bundle.thread.messages.at(-1)`).
+   - `reply <latestMessageId> --to <senderEmail> --subject "<originalSubject>" --body-file <draft>`.
+   - `add-label Drafto/Support/Linked-Issue/<n>` (or `add-message-label <latestMessageId> ...` for singletons).
+   - `move-to-folder Drafto/Support/Resolved` (skip when `threadId` is null).
    - **No admin notification** for allowlisted senders.
 
 ## Decision flow — `github_comment_batch`
@@ -193,7 +196,14 @@ For each comment in `comments`, in `createdAt` order:
   <comment.body verbatim>
   ```
 
-- `reply <zoho_thread_id> --body-file <draft>`.
+- These bundles only carry `zoho_thread_id`, not the messages. Fetch the
+  thread first so the reply anchors to the latest message:
+  `messages = get-thread <zoho_thread_id>` →
+  `latest = messages[messages.length - 1]` →
+  `latestMessageId = latest.messageId`,
+  `senderEmail = latest.fromAddress`,
+  `originalSubject = latest.subject`.
+- `reply <latestMessageId> --to <senderEmail> --subject "<originalSubject>" --body-file <draft>`.
 
 After the batch: the runner advances `lastGithubCommentSyncAt` based on the
 most recent comment's `createdAt`. You do not need to update state files
@@ -211,7 +221,10 @@ Compose ONE Zoho reply body keyed off `(newState.state, newState.state_reason)`:
 | `reopened` (newState.state_reason === "reopened" or transition open→open after closed) | `Reopened — we're looking at this again.`                                                                   |
 | anything else                                                                          | do nothing, log "ignored state change"                                                                      |
 
-`reply <zoho_thread_id> --body-file <draft>`.
+Then, same as `github_comment_batch`:
+`messages = get-thread <zoho_thread_id>` →
+`latest = messages[messages.length - 1]` →
+`reply <latest.messageId> --to <latest.fromAddress> --subject "<latest.subject>" --body-file <draft>`.
 
 ## Admin notification
 
