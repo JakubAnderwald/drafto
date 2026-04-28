@@ -25,8 +25,8 @@ Drafto runs on free / already-paid-for tiers. Before proposing any new paid serv
 - **Vercel free tier** for the web app (with the existing cron at `/api/cron/cleanup-trash`).
 - **Supabase free tier** for both prod (`tbmjbxxseonkciqovnpl`) and dev (`huhzactreblzcogqkbsd`) projects.
 - **Resend free tier** (3k/month, 100/day) for outbound transactional email — already verified on `drafto.eu`.
-- **Zoho Mail** for inbound `support@drafto.eu` — already configured; the support-agent automation runs against this mailbox.
-- **Mac mini** for scheduled agent work — already runs `scripts/nightly-support.sh` and `scripts/nightly-audit.sh` via launchd, has `gh` CLI authenticated, and runs Claude Code with `--dangerously-skip-permissions` on an existing paid subscription.
+- **Zoho Mail Forever Free** for inbound `support@drafto.eu` (EU data centre, MX `mx.zoho.eu`) — the dedicated `support@drafto.eu` user is OAuthed by `scripts/support-agent.sh`. See [`docs/features/support-agent.md`](./docs/features/support-agent.md) and [ADR-0024](./docs/adr/0024-realtime-support-agent.md).
+- **Mac mini** for scheduled agent work — already runs `scripts/support-agent.sh` (every 5 min, real-time support pipeline), `scripts/nightly-support.sh` (00:03), and `scripts/nightly-audit.sh` (05:00) via launchd, has `gh` CLI authenticated, and runs Claude Code with `--dangerously-skip-permissions` on an existing paid subscription.
 - **GoDaddy** registrar / DNS (don't assume Cloudflare; Cloudflare is not the DNS provider).
 
 If a feature genuinely requires paid infrastructure, surface that explicitly as a tradeoff and let the user decide. Don't silently introduce new monthly line items.

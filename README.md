@@ -13,6 +13,7 @@ A note-taking app with notebooks, rich text editing, and auto-save. Available as
 - **Dark mode** — system-aware theme toggle, persisted in localStorage
 - **Evernote import** — import notes from `.enex` files with full content and attachment support
 - **MCP server** — expose your notes to Claude Desktop, Claude Cowork, and other MCP clients via `eu.drafto/mcp` on the [MCP Registry](https://registry.modelcontextprotocol.io)
+- **Real-time support pipeline** — mail to `support@drafto.eu` is polled every 5 minutes by a Mac-mini-resident agent, classified by Claude Code, and synced bidirectionally with GitHub issues; see [`docs/features/support-agent.md`](./docs/features/support-agent.md)
 
 See [`docs/features/`](./docs/features/) for one brief per functional area (code paths, ADRs, testing).
 
