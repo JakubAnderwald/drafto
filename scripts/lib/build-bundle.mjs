@@ -26,6 +26,17 @@
 //     "zohoThreadId":  "8537837000001234567"
 //   }
 //
+// Stdin shape (github_state_change — Phase G `--state-sync`):
+//   {
+//     "kind":         "github_state_change",
+//     "issue":        { "number", "title" },
+//     "oldState":     { "state": "open"|"closed", "state_reason": null|"completed"|"not_planned"|"duplicate"|"reopened" },
+//     "newState":     { "state": ..., "state_reason": ... },
+//     "lastComment":  string | null,
+//     "platforms":    ["web"|"mobile"|"desktop", ...],
+//     "zohoThreadId": "8537837000001234567"
+//   }
+//
 // Stdout: the bundle the prompt documents.
 
 import {
@@ -38,6 +49,7 @@ import {
 } from "./policy.mjs";
 import { emptyState } from "./state.mjs";
 import { isMainModule } from "./is-main.mjs";
+import { PROGRESS_MARKER } from "./github-sync.mjs";
 
 export function buildInboundThreadBundle({
   pending,
@@ -164,7 +176,13 @@ function normaliseAllowlist(input) {
 // escape the envelope by closing it early.
 function envelopeCommentBody(raw) {
   const text = typeof raw === "string" ? raw : "";
-  const safe = text.replace(/<\/github-comment>/gi, "<​/github-comment>");
+  // Strip the progress-marker first — it's a routing artifact (filterNewComments
+  // uses it to allow bot-authored comments through), not customer content.
+  // Leaving it in would surface in the forwarded email as an HTML comment that
+  // some clients render as an empty line. Trim trailing whitespace too so the
+  // forwarded body doesn't carry the marker's surrounding spaces.
+  const stripped = text.split(PROGRESS_MARKER).join("").replace(/\s+$/u, "");
+  const safe = stripped.replace(/<\/github-comment>/gi, "<​/github-comment>");
   return `<github-comment>${safe}</github-comment>`;
 }
 
@@ -182,6 +200,37 @@ export function buildGithubCommentBatchBundle({ issue, comments, zohoThreadId } 
       body: envelopeCommentBody(c?.body),
       createdAt: c?.createdAt ?? c?.created_at ?? null,
     })),
+    zoho_thread_id: zohoThreadId ?? "",
+  };
+}
+
+// Phase G: GitHub-state-change → Zoho-reply sync. The bash side detects the
+// transition (open → closed/completed, etc.) and hands the raw shape to
+// this builder. `lastComment` is the most recent non-bot comment used as
+// the human-readable reason on `not_planned` / `duplicate` transitions —
+// wrap it in the same `<github-comment>` envelope as comment-sync so a
+// hostile manual comment can't escape into prompt instructions.
+export function buildGithubStateChangeBundle({
+  issue,
+  oldState,
+  newState,
+  lastComment,
+  platforms,
+  zohoThreadId,
+} = {}) {
+  return {
+    kind: "github_state_change",
+    issue: {
+      number: issue?.number ?? null,
+      title: issue?.title ?? "",
+    },
+    oldState: oldState ?? null,
+    newState: newState ?? null,
+    lastComment:
+      typeof lastComment === "string" && lastComment.length > 0
+        ? envelopeCommentBody(lastComment)
+        : null,
+    platforms: Array.isArray(platforms) ? platforms : [],
     zoho_thread_id: zohoThreadId ?? "",
   };
 }
@@ -229,6 +278,15 @@ async function main() {
       // Accept both shapes — bash uses `zohoThreadId` (camelCase, matches the
       // CLI flag), while the prompt documents the on-bundle field as
       // `zoho_thread_id` (snake_case). Builder normalises to snake on output.
+      zohoThreadId: input.zohoThreadId ?? input.zoho_thread_id,
+    });
+  } else if (input.kind === "github_state_change") {
+    bundle = buildGithubStateChangeBundle({
+      issue: input.issue,
+      oldState: input.oldState,
+      newState: input.newState,
+      lastComment: input.lastComment,
+      platforms: input.platforms,
       zohoThreadId: input.zohoThreadId ?? input.zoho_thread_id,
     });
   } else if (input.kind == null || input.kind === "inbound_thread") {

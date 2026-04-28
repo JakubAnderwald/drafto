@@ -40,6 +40,27 @@ rescue StandardError => e
   UI.important("Release notes posting failed (non-fatal): #{e.message}")
 end
 
+# Phase G: walk PRs merged since the last `desktop@*` tag, find `Closes #N`
+# refs, and comment "Now live in <track>." on each linked support issue.
+# `track` is the customer-facing label (e.g. "TestFlight macOS build 145").
+# Best-effort — a comment failure shouldn't fail the release pipeline.
+def comment_released_issues(build:, track:)
+  return if build.nil? || build.to_s.empty? || track.nil? || track.empty?
+  Dir.chdir(PROJECT_ROOT) do
+    repo_root = `git rev-parse --show-toplevel`.strip
+    script = File.join(repo_root, "scripts", "comment-released-issues.mjs")
+    next unless File.exist?(script)
+    sh("node", script,
+       "--platform", "macos",
+       "--build", build.to_s,
+       "--track", track,
+       "--tag-prefix", "desktop@",
+       "--paths", "apps/desktop/,packages/shared/")
+  end
+rescue StandardError => e
+  UI.important("Released-issue comments failed (non-fatal): #{e.message}")
+end
+
 def package_json_version
   require "json"
   JSON.parse(File.read(File.join(PROJECT_ROOT, "package.json")))["version"]
@@ -143,8 +164,9 @@ platform :mac do
       0
     end
 
+    new_build_number = latest_build + 1
     increment_build_number(
-      build_number: latest_build + 1,
+      build_number: new_build_number,
       xcodeproj: File.join(PROJECT_ROOT, "macos", "Drafto.xcodeproj")
     )
 
@@ -214,5 +236,12 @@ platform :mac do
 
     # Post release notes
     post_release_notes(max_chars: 4000)
+
+    # Phase G: comment "Now live" on closed support issues for this build.
+    # TestFlight (beta) and the App Store (production) ship the same macOS
+    # build to different audiences — distinguish in the customer label.
+    track_label =
+      destination == "appstore" ? "the macOS App Store (build #{new_build_number})" : "TestFlight macOS (build #{new_build_number})"
+    comment_released_issues(build: new_build_number, track: track_label)
   end
 end

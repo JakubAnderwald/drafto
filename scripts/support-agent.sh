@@ -1,15 +1,16 @@
 #!/bin/bash
 # Real-time support agent — launchd entrypoint.
 #
-# Phase D/E/F scope: auto-classify + escalate, auto-reply for high-confidence
-# questions (Phase E), file GitHub issues for bug/feature (Phase F), and
-# forward GitHub issue comments back to the linked Zoho thread (Phase F via
-# --comment-sync).
+# Phase D/E/F/G scope: auto-classify + escalate, auto-reply for high-confidence
+# questions (Phase E), file GitHub issues for bug/feature (Phase F), forward
+# GitHub issue comments back to the linked Zoho thread (Phase F via
+# --comment-sync), and forward GitHub-issue lifecycle transitions (closed /
+# reopened) to the linked Zoho thread (Phase G via --state-sync).
 #
 # The script polls either the Zoho Inbox (--auto-classify / --label-only /
-# --dry-run) or the GitHub support-issue queue (--comment-sync), and per
-# work unit invokes Claude with a context bundle. The prompt's phase gate
-# decides what Claude may do:
+# --dry-run) or the GitHub support-issue queue (--comment-sync /
+# --state-sync), and per work unit invokes Claude with a context bundle.
+# The prompt's phase gate decides what Claude may do:
 #   - Phase D: label NeedsHuman / move to Spam / fire admin email.
 #   - Phase E: Phase D + reply to high-confidence questions, label
 #     Drafto/Support/Replied, move to Drafto/Support/Resolved, bump
@@ -18,8 +19,12 @@
 #   - Phase F: Phase E + `gh issue create`/`gh issue comment` for bug/feature,
 #     `Drafto/Support/Issue/<n>` label, move to Resolved. Plus the
 #     `--comment-sync` sweep below.
+#   - Phase G: Phase F + `--state-sync` sweep that emails the customer when
+#     their linked GitHub issue closes (completed / not_planned / duplicate)
+#     or reopens.
 #
-# Modes (exactly one of --dry-run, --label-only, --auto-classify, --comment-sync):
+# Modes (exactly one of --dry-run, --label-only, --auto-classify,
+# --comment-sync, --state-sync):
 #   --dry-run                  Build and print bundles. No Zoho mutations.
 #                              Useful for golden-run testing and for
 #                              eyeballing live-API output.
@@ -41,11 +46,24 @@
 #                              and invoke Claude to forward each comment as a
 #                              Zoho reply on the thread. Cursor is advanced
 #                              after Claude reports `action=sync-comment`.
+#   --state-sync               Phase G+ live mode. Sweep GitHub support
+#                              issues; for each, compare the current
+#                              {state, state_reason} against
+#                              state.issues[<n>].lastKnownState. On the
+#                              first run for an issue, record current state
+#                              without firing (bootstrap). On subsequent
+#                              runs, build a `github_state_change` bundle
+#                              and hand to Claude — Claude composes the
+#                              appropriate "fixed / won't-do / reopened"
+#                              email and replies in-thread. lastKnownState +
+#                              lastIssueStateSync are advanced after Claude
+#                              reports `action=sync-state` (or noop).
 #   --fixture <path>           (--dry-run only) Replay a captured Zoho
 #                              list-pending JSON instead of hitting the
 #                              live API. Refused under --label-only,
-#                              --auto-classify, and --comment-sync because
-#                              fixtures contain synthetic ids.
+#                              --auto-classify, --comment-sync, and
+#                              --state-sync because fixtures contain
+#                              synthetic ids.
 #
 # Failure mode: if the script exits non-zero, the cleanup trap files a
 # `nightly-failure`-labelled GitHub issue, mirroring the existing pattern
@@ -63,13 +81,14 @@ DRY_RUN=0
 LABEL_ONLY=0
 AUTO_CLASSIFY=0
 COMMENT_SYNC=0
+STATE_SYNC=0
 FIXTURE=""
 PHASE="D"
 usage() {
   cat <<EOF
-Usage: $0 (--dry-run | --label-only | --auto-classify | --comment-sync) [--fixture <path>] [--phase <D|E|F|G>]
+Usage: $0 (--dry-run | --label-only | --auto-classify | --comment-sync | --state-sync) [--fixture <path>] [--phase <D|E|F|G>]
 
-Exactly one of --dry-run, --label-only, --auto-classify, or --comment-sync is required.
+Exactly one of --dry-run, --label-only, --auto-classify, --comment-sync, or --state-sync is required.
 
   --dry-run         Print the context bundle that Claude would receive.
                     No Zoho mutations.
@@ -83,8 +102,13 @@ Exactly one of --dry-run, --label-only, --auto-classify, or --comment-sync is re
                     linked Zoho thread via the issue body footer, and forward
                     new GitHub comments to that thread. Per-issue cursor in
                     logs/support-state.json prevents re-forwarding.
+  --state-sync      Phase G+. Sweep GitHub support issues, detect transitions
+                    in {state, state_reason} since the per-issue
+                    lastKnownState in logs/support-state.json, and email the
+                    customer about closed / reopened lifecycle events.
   --fixture <path>  (--dry-run only) Replay a captured Zoho list-pending JSON.
-                    Refused under --label-only / --auto-classify / --comment-sync.
+                    Refused under --label-only / --auto-classify /
+                    --comment-sync / --state-sync.
   --phase <D|...>   Override the phase advertised to Claude (default: D).
 EOF
 }
@@ -94,6 +118,7 @@ while [[ $# -gt 0 ]]; do
     --label-only) LABEL_ONLY=1; shift ;;
     --auto-classify) AUTO_CLASSIFY=1; shift ;;
     --comment-sync) COMMENT_SYNC=1; shift ;;
+    --state-sync) STATE_SYNC=1; shift ;;
     --fixture)
       if [[ -z "${2:-}" || "${2:0:2}" == "--" ]]; then
         echo "ERROR: --fixture requires a path argument" >&2
@@ -117,14 +142,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-MODE_COUNT=$((DRY_RUN + LABEL_ONLY + AUTO_CLASSIFY + COMMENT_SYNC))
+MODE_COUNT=$((DRY_RUN + LABEL_ONLY + AUTO_CLASSIFY + COMMENT_SYNC + STATE_SYNC))
 if [[ "$MODE_COUNT" -eq 0 ]]; then
-  echo "ERROR: must specify --dry-run, --label-only, --auto-classify, or --comment-sync." >&2
+  echo "ERROR: must specify --dry-run, --label-only, --auto-classify, --comment-sync, or --state-sync." >&2
   usage >&2
   exit 2
 fi
 if [[ "$MODE_COUNT" -gt 1 ]]; then
-  echo "ERROR: --dry-run / --label-only / --auto-classify / --comment-sync are mutually exclusive." >&2
+  echo "ERROR: --dry-run / --label-only / --auto-classify / --comment-sync / --state-sync are mutually exclusive." >&2
   exit 2
 fi
 if [[ -n "$FIXTURE" && "$DRY_RUN" -eq 0 ]]; then
@@ -137,6 +162,10 @@ case "$PHASE" in
 esac
 if [[ "$COMMENT_SYNC" -eq 1 ]] && [[ ! "$PHASE" =~ ^[FG]$ ]]; then
   echo "ERROR: --comment-sync requires --phase F or G (got '$PHASE')" >&2
+  exit 2
+fi
+if [[ "$STATE_SYNC" -eq 1 ]] && [[ "$PHASE" != "G" ]]; then
+  echo "ERROR: --state-sync requires --phase G (got '$PHASE')" >&2
   exit 2
 fi
 
@@ -236,18 +265,19 @@ OAUTH_USER_EMAIL="${OAUTH_USER_EMAIL:-support@drafto.eu}"
 STATE_FILE="$REPO_ROOT/logs/support-state.json"
 
 START_TIME=$(date +%s)
-log "=== support-agent run started (dry-run=$DRY_RUN, label-only=$LABEL_ONLY, auto-classify=$AUTO_CLASSIFY, comment-sync=$COMMENT_SYNC, phase=$PHASE, fixture=${FIXTURE:-none}) ==="
+log "=== support-agent run started (dry-run=$DRY_RUN, label-only=$LABEL_ONLY, auto-classify=$AUTO_CLASSIFY, comment-sync=$COMMENT_SYNC, state-sync=$STATE_SYNC, phase=$PHASE, fixture=${FIXTURE:-none}) ==="
 
-# auto-classify and comment-sync invoke Claude per work unit.
-if [[ "$AUTO_CLASSIFY" -eq 1 || "$COMMENT_SYNC" -eq 1 ]] && ! command -v claude >/dev/null 2>&1; then
-  log "ERROR: --auto-classify / --comment-sync require the claude CLI on PATH (looked in: \$PATH=$PATH)"
+# auto-classify, comment-sync, and state-sync each invoke Claude per work unit.
+if [[ "$AUTO_CLASSIFY" -eq 1 || "$COMMENT_SYNC" -eq 1 || "$STATE_SYNC" -eq 1 ]] \
+    && ! command -v claude >/dev/null 2>&1; then
+  log "ERROR: --auto-classify / --comment-sync / --state-sync require the claude CLI on PATH (looked in: \$PATH=$PATH)"
   exit 1
 fi
-# comment-sync also needs gh on PATH (already required by the failure-issue
-# trap, but it's worth a clean upfront error message rather than discovering
-# it inside the per-issue loop).
-if [[ "$COMMENT_SYNC" -eq 1 ]] && ! command -v gh >/dev/null 2>&1; then
-  log "ERROR: --comment-sync requires the gh CLI on PATH"
+# comment-sync and state-sync also need gh on PATH (already required by the
+# failure-issue trap, but it's worth a clean upfront error message rather than
+# discovering it inside the per-issue loop).
+if [[ "$COMMENT_SYNC" -eq 1 || "$STATE_SYNC" -eq 1 ]] && ! command -v gh >/dev/null 2>&1; then
+  log "ERROR: --comment-sync / --state-sync require the gh CLI on PATH"
   exit 1
 fi
 
@@ -371,6 +401,154 @@ if [[ "$COMMENT_SYNC" -eq 1 ]]; then
   done
 
   log "=== support-agent comment-sync completed in $(( $(date +%s) - START_TIME ))s ==="
+  exit 0
+fi
+
+# ── --state-sync sweep ──────────────────────────────────────────────────────
+# Iterates GitHub support issues. For each, compares current state +
+# stateReason against state.issues[<n>].lastKnownState. Bootstrap (no prior
+# state) records current state silently; transitions build a
+# github_state_change bundle and Claude composes the customer-facing email.
+if [[ "$STATE_SYNC" -eq 1 ]]; then
+  PROMPT_FILE="$SCRIPT_DIR/support-agent-prompt.md"
+  if [[ ! -f "$PROMPT_FILE" ]]; then
+    log "ERROR: prompt file missing: $PROMPT_FILE"
+    exit 1
+  fi
+  PROMPT_TEXT=$(cat "$PROMPT_FILE")
+
+  if ! ISSUES_JSON=$(node "$SCRIPT_DIR/lib/github-sync.mjs" list-support-issues --state all 2>>"$LOG_FILE"); then
+    log "ERROR: github-sync list-support-issues failed"
+    exit 1
+  fi
+  ISSUE_COUNT=$(echo "$ISSUES_JSON" | jq 'length' 2>/dev/null || echo "0")
+  if ! [[ "$ISSUE_COUNT" =~ ^[0-9]+$ ]]; then
+    log "ERROR: unexpected non-numeric ISSUE_COUNT='$ISSUE_COUNT' (jq output malformed?)"
+    exit 1
+  fi
+  log "State-sync: found $ISSUE_COUNT support-labelled issues"
+
+  for IDX in $(seq 0 $((ISSUE_COUNT - 1))); do
+    ISSUE_ENTRY=$(echo "$ISSUES_JSON" | jq ".[${IDX}]")
+    ISSUE_NUMBER=$(echo "$ISSUE_ENTRY" | jq -r '.number')
+    NEW_STATE=$(echo "$ISSUE_ENTRY" | jq -r '.state // empty' | tr '[:upper:]' '[:lower:]')
+    NEW_REASON=$(echo "$ISSUE_ENTRY" | jq -r '.stateReason // empty' | tr '[:upper:]' '[:lower:]')
+    if [[ "$NEW_REASON" == "null" ]]; then
+      NEW_REASON=""
+    fi
+    if [[ -z "$NEW_STATE" ]]; then
+      log "WARNING: issue #$ISSUE_NUMBER has no .state field; skipping"
+      continue
+    fi
+
+    # Look up the persisted lastKnownState. Missing → bootstrap.
+    OLD_STATE=""
+    OLD_REASON=""
+    if [[ -f "$STATE_FILE" ]]; then
+      OLD_STATE=$(jq -r --arg n "$ISSUE_NUMBER" \
+        '.issues[$n].lastKnownState.state // empty' "$STATE_FILE" 2>/dev/null || echo "")
+      OLD_REASON=$(jq -r --arg n "$ISSUE_NUMBER" \
+        '.issues[$n].lastKnownState.state_reason // empty' "$STATE_FILE" 2>/dev/null || echo "")
+      if [[ "$OLD_REASON" == "null" ]]; then
+        OLD_REASON=""
+      fi
+    fi
+
+    if [[ -z "$OLD_STATE" ]]; then
+      log "State-sync: bootstrapping issue #$ISSUE_NUMBER (state=$NEW_STATE,reason=${NEW_REASON:-null})"
+      if ! node "$SCRIPT_DIR/lib/state-cli.mjs" set-issue-state "$ISSUE_NUMBER" \
+          "$NEW_STATE" "$NEW_REASON" \
+          --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+        log "WARNING: set-issue-state (bootstrap) failed for issue #$ISSUE_NUMBER"
+      fi
+      continue
+    fi
+
+    if [[ "$NEW_STATE" == "$OLD_STATE" && "$NEW_REASON" == "$OLD_REASON" ]]; then
+      continue
+    fi
+
+    log "State-sync: issue #$ISSUE_NUMBER transitioned ${OLD_STATE}/${OLD_REASON:-null} → ${NEW_STATE}/${NEW_REASON:-null}"
+
+    if ! INFO=$(node "$SCRIPT_DIR/lib/github-sync.mjs" state-change-info "$ISSUE_NUMBER" \
+        --bot-user "$SUPPORT_BOT_GH_USER" 2>>"$LOG_FILE"); then
+      log "WARNING: state-change-info failed for issue #$ISSUE_NUMBER"
+      continue
+    fi
+    THREAD_ID=$(echo "$INFO" | jq -r '.zoho_thread_id // empty')
+    if [[ -z "$THREAD_ID" ]]; then
+      # No linked Zoho thread — nothing to email. Still advance lastKnownState
+      # so we don't re-detect the same transition every 5 minutes.
+      log "State-sync: issue #$ISSUE_NUMBER has no zoho-thread-id footer; recording new state without notifying"
+      if ! node "$SCRIPT_DIR/lib/state-cli.mjs" set-issue-state "$ISSUE_NUMBER" \
+          "$NEW_STATE" "$NEW_REASON" \
+          --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+        log "WARNING: set-issue-state failed for issue #$ISSUE_NUMBER"
+      fi
+      continue
+    fi
+
+    BUILD_INPUT=$(jq -n \
+      --argjson issue "$ISSUE_ENTRY" \
+      --arg oldState "$OLD_STATE" \
+      --arg oldReason "$OLD_REASON" \
+      --arg newState "$NEW_STATE" \
+      --arg newReason "$NEW_REASON" \
+      --argjson info "$INFO" \
+      '{
+         kind: "github_state_change",
+         issue: { number: $issue.number, title: $issue.title },
+         oldState: { state: $oldState, state_reason: (if $oldReason == "" then null else $oldReason end) },
+         newState: { state: $newState, state_reason: (if $newReason == "" then null else $newReason end) },
+         lastComment: $info.lastComment,
+         platforms: $info.platforms,
+         zohoThreadId: $info.zoho_thread_id
+       }')
+    if ! BUNDLE=$(echo "$BUILD_INPUT" | node "$SCRIPT_DIR/lib/build-bundle.mjs" 2>>"$LOG_FILE"); then
+      log "ERROR: build-bundle (github_state_change) failed for issue #$ISSUE_NUMBER"
+      continue
+    fi
+
+    CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
+      "$PROMPT_TEXT" "$BUNDLE")
+    log "Invoking claude for issue #$ISSUE_NUMBER (state-sync, phase=$PHASE)"
+    CLAUDE_OUTPUT_FILE=$(mktemp -t support-agent-out.XXXXXX)
+    if ! claude -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
+        >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE"; then
+      log "ERROR: claude exited non-zero for issue #$ISSUE_NUMBER state-sync"
+      cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
+      rm -f "$CLAUDE_OUTPUT_FILE"
+      continue
+    fi
+    cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE"
+    SUMMARY_LINE=$(grep -E '^thread=[^ ]+ action=[^ ]+ issue=[^ ]+$' "$CLAUDE_OUTPUT_FILE" | tail -1 || true)
+    rm -f "$CLAUDE_OUTPUT_FILE"
+    if [[ -z "$SUMMARY_LINE" ]]; then
+      log "WARNING: no summary line returned by claude for issue #$ISSUE_NUMBER state-sync"
+      continue
+    fi
+    log "Claude summary: $SUMMARY_LINE"
+    ACTION=$(echo "$SUMMARY_LINE" | sed -E 's/.*action=([^ ]+).*/\1/')
+
+    case "$ACTION" in
+      sync-state|noop)
+        # Advance the cursor on both sync-state (email sent) and noop
+        # (Claude classified the transition as one we don't act on, e.g.
+        # open → open with a stale stateReason rewrite). Either way the
+        # transition is "handled" — leaving it would re-fire forever.
+        if ! node "$SCRIPT_DIR/lib/state-cli.mjs" set-issue-state "$ISSUE_NUMBER" \
+            "$NEW_STATE" "$NEW_REASON" \
+            --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+          log "WARNING: set-issue-state failed for issue #$ISSUE_NUMBER"
+        fi
+        ;;
+      *)
+        log "WARNING: unexpected action '$ACTION' for issue #$ISSUE_NUMBER state-sync; not advancing cursor"
+        ;;
+    esac
+  done
+
+  log "=== support-agent state-sync completed in $(( $(date +%s) - START_TIME ))s ==="
   exit 0
 fi
 

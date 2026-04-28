@@ -5,10 +5,11 @@
 // auto-implementation, the failure-issue path in support-agent.sh). Reusing
 // it here keeps the auth model identical: no new tokens, no new env vars.
 //
-// Subcommands (called from scripts/support-agent.sh during --comment-sync):
+// Subcommands (called from scripts/support-agent.sh during --comment-sync
+// and --state-sync):
 //   list-support-issues [--state <open|closed|all>] [--limit <n>]
-//        Returns the support-labelled issues, with body + createdAt + labels.
-//        Uses the same gh-issue-list shape as nightly-support.sh.
+//        Returns the support-labelled issues, with body + createdAt + labels
+//        + state + stateReason (Phase G state-sync needs the latter two).
 //
 //   list-new-comments <issue-number> --since <iso> [--bot-user <login>]
 //        Returns issue comments newer than --since AND not authored by
@@ -20,6 +21,14 @@
 //   find-linked-thread <issue-number>
 //        Reads the issue body and returns the `zoho-thread-id` field from the
 //        agent's footer. Empty string if no footer or no field.
+//
+//   state-change-info <issue-number> [--bot-user <login>]
+//        Returns `{zoho_thread_id, platforms, lastComment}` for the issue.
+//        Used by Phase G --state-sync to enrich a transition into a
+//        github_state_change bundle. `platforms` is derived from the
+//        closing PR's changed paths; `lastComment` is the most recent
+//        non-bot comment body, used as the human-readable reason text on
+//        `closed/not_planned` / `duplicate` transitions.
 //
 // All subcommands print JSON (or a plain string for find-linked-thread) to
 // stdout and exit 0. Errors print `{"error": "..."}` to stderr and exit
@@ -35,6 +44,18 @@ const execFileP = promisify(execFile);
 
 const REPO = "JakubAnderwald/drafto";
 const DEFAULT_BOT_USER = "JakubAnderwald";
+
+// Hidden marker the support pipeline writes onto bot-authored progress
+// comments that we DO want forwarded to the customer (Phase G):
+//   - nightly-support.sh's "Working on it now" / "Hit a blocker" / "Fix in
+//     review" comments.
+//   - post-release-notes.mjs's "Now live in <platform> <build>" comments.
+// Without this marker, the default bot-author filter (introduced to break
+// the customer→GH→Zoho echo loop on "Customer replied via support@..."
+// forwards) would also suppress legitimate progress updates. The marker is
+// stripped from the customer-facing reply by build-bundle.mjs before the
+// model sees it, so it never leaks into outbound mail.
+export const PROGRESS_MARKER = "<!-- drafto-progress -->";
 
 let _execFileForTests = null;
 
@@ -61,7 +82,7 @@ export async function listSupportIssues({ state = "all", limit = 200 } = {}) {
     "--state",
     state,
     "--json",
-    "number,title,state,body,createdAt,labels",
+    "number,title,state,stateReason,body,createdAt,labels",
     "--limit",
     String(limit),
   ]);
@@ -96,6 +117,12 @@ export async function getIssueBody(issueNumber) {
 // lowercases both sides to avoid a silent miss like `jakubanderwald` vs
 // `JakubAnderwald` where the customer-side reply would be forwarded back to
 // the customer (an echo loop).
+//
+// Bot-authored comments are filtered out by default — except those carrying
+// the progress marker (`<!-- drafto-progress -->`), which the support
+// pipeline uses to tag deliberate customer-facing progress updates that
+// must reach the customer regardless of who posted them. See PROGRESS_MARKER
+// above for the full list of writers.
 export function filterNewComments(comments, sinceIso, botUser = DEFAULT_BOT_USER) {
   const since = sinceIso ? Date.parse(sinceIso) : 0;
   if (Number.isNaN(since)) {
@@ -104,7 +131,8 @@ export function filterNewComments(comments, sinceIso, botUser = DEFAULT_BOT_USER
   const botUserLower = (botUser ?? "").toLowerCase();
   return (Array.isArray(comments) ? comments : []).filter((c) => {
     const author = (c?.user?.login ?? c?.author?.login ?? "").toLowerCase();
-    if (author === botUserLower) return false;
+    const body = typeof c?.body === "string" ? c.body : "";
+    if (author === botUserLower && !body.includes(PROGRESS_MARKER)) return false;
     const t = Date.parse(c?.created_at ?? c?.createdAt ?? "");
     if (Number.isNaN(t)) return false;
     return t > since;
@@ -115,6 +143,160 @@ export async function findLinkedThread(issueNumber) {
   const body = await getIssueBody(issueNumber);
   const fields = parseIssueFooter(body);
   return fields?.["zoho-thread-id"] ?? "";
+}
+
+// Pure: bucket changed file paths into the platform-tag set the prompt
+// uses to choose between "live on drafto.eu now" vs "we'll email you when
+// it's live". Anything outside `apps/{web,mobile,desktop}/` is ignored
+// (shared `packages/`, root configs, etc. don't pin a single platform).
+export function derivePlatforms(files) {
+  const set = new Set();
+  for (const entry of Array.isArray(files) ? files : []) {
+    const path = typeof entry === "string" ? entry : (entry?.path ?? entry?.filename ?? "");
+    if (typeof path !== "string") continue;
+    if (path.startsWith("apps/web/")) set.add("web");
+    else if (path.startsWith("apps/mobile/")) set.add("mobile");
+    else if (path.startsWith("apps/desktop/")) set.add("desktop");
+  }
+  return [...set].sort();
+}
+
+function normaliseStateReason(raw) {
+  if (raw == null) return null;
+  const s = String(raw).trim().toLowerCase();
+  return s === "" || s === "null" ? null : s;
+}
+
+// Pure: compare current support-issue states against the persisted
+// `lastKnownState` map and return one entry per issue that needs handling.
+// Bootstrap entries (no prior state) are flagged so the runner can record
+// them without firing a customer email — otherwise the first run after this
+// PR lands would email every closed support issue retroactively.
+export function diffStateChanges(issues, lastKnownState = {}) {
+  const changes = [];
+  for (const issue of Array.isArray(issues) ? issues : []) {
+    const number = issue?.number;
+    if (number == null) continue;
+    const newState = {
+      state: String(issue?.state ?? "").toLowerCase(),
+      state_reason: normaliseStateReason(issue?.stateReason),
+    };
+    const known = lastKnownState?.[String(number)] ?? null;
+    if (!known || typeof known !== "object" || !known.state) {
+      changes.push({ issueNumber: number, oldState: null, newState, isBootstrap: true });
+      continue;
+    }
+    const oldState = {
+      state: String(known.state ?? "").toLowerCase(),
+      state_reason: normaliseStateReason(known.state_reason),
+    };
+    if (oldState.state !== newState.state || oldState.state_reason !== newState.state_reason) {
+      changes.push({ issueNumber: number, oldState, newState, isBootstrap: false });
+    }
+  }
+  return changes;
+}
+
+// Pure: pull `Closes #N` / `Fixes #N` / `Resolves #N` style refs out of a
+// commit message or PR body. Used by scripts/comment-released-issues.mjs to
+// map merged PRs back to the support issues they closed.
+export function extractIssueRefs(text) {
+  if (typeof text !== "string" || text.length === 0) return [];
+  const refs = new Set();
+  const re = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b/gi;
+  let m;
+  while ((m = re.exec(text)) !== null) refs.add(Number(m[1]));
+  // Also match the long-form GitHub URL — Dependabot and a few external
+  // tools write that instead of the shorthand.
+  const urlRe =
+    /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+https?:\/\/github\.com\/[^/\s]+\/[^/\s]+\/issues\/(\d+)\b/gi;
+  while ((m = urlRe.exec(text)) !== null) refs.add(Number(m[1]));
+  return [...refs].sort((a, b) => a - b);
+}
+
+export async function getClosingPrFiles(issueNumber) {
+  let raw;
+  try {
+    raw = await runGh([
+      "issue",
+      "view",
+      String(issueNumber),
+      "--repo",
+      REPO,
+      "--json",
+      "closedByPullRequestsReferences",
+    ]);
+  } catch {
+    return [];
+  }
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  const refs = data?.closedByPullRequestsReferences ?? [];
+  if (!Array.isArray(refs) || refs.length === 0) return [];
+  // The latest PR (highest number) is the actual fix in the rare case there
+  // were multiple — duplicates / superseded PRs come earlier in the list.
+  const pr = refs[refs.length - 1]?.number;
+  if (!pr) return [];
+  let prRaw;
+  try {
+    prRaw = await runGh(["pr", "view", String(pr), "--repo", REPO, "--json", "files"]);
+  } catch {
+    return [];
+  }
+  let prData;
+  try {
+    prData = JSON.parse(prRaw);
+  } catch {
+    return [];
+  }
+  return Array.isArray(prData?.files) ? prData.files : [];
+}
+
+// Returns the most recent non-bot comment body, or null if there isn't one.
+// Used to populate the "Reason: ..." text on closed/not_planned transitions
+// — bot-authored comments (progress markers, customer echoes) are noise
+// rather than reasons.
+export async function getLastNonBotCommentBody(issueNumber, botUser = DEFAULT_BOT_USER) {
+  let raw;
+  try {
+    raw = await runGh(["api", "--paginate", `repos/${REPO}/issues/${issueNumber}/comments`]);
+  } catch {
+    return null;
+  }
+  let comments;
+  try {
+    comments = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(comments) || comments.length === 0) return null;
+  const botUserLower = (botUser ?? "").toLowerCase();
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const c = comments[i];
+    const author = (c?.user?.login ?? c?.author?.login ?? "").toLowerCase();
+    if (author === botUserLower) continue;
+    const body = c?.body;
+    if (typeof body === "string" && body.length > 0) return body;
+  }
+  return null;
+}
+
+export async function getStateChangeInfo(issueNumber, { botUser = DEFAULT_BOT_USER } = {}) {
+  const [body, files, lastComment] = await Promise.all([
+    getIssueBody(issueNumber),
+    getClosingPrFiles(issueNumber),
+    getLastNonBotCommentBody(issueNumber, botUser),
+  ]);
+  const fields = parseIssueFooter(body);
+  return {
+    zoho_thread_id: fields?.["zoho-thread-id"] ?? "",
+    platforms: derivePlatforms(files),
+    lastComment,
+  };
 }
 
 async function main(argv) {
@@ -138,13 +320,21 @@ async function main(argv) {
       if (!issueNumber) throw new Error("find-linked-thread requires <issue-number>");
       return findLinkedThread(issueNumber);
     }
+    case "state-change-info": {
+      const issueNumber = positional[0];
+      if (!issueNumber) throw new Error("state-change-info requires <issue-number>");
+      return getStateChangeInfo(issueNumber, {
+        botUser: flags["bot-user"] ?? DEFAULT_BOT_USER,
+      });
+    }
     case "--help":
     case "-h":
     case undefined:
       process.stdout.write(
         "Usage: github-sync.mjs <list-support-issues [--state <s>] [--limit <n>]|" +
           "list-new-comments <issue-number> --since <iso> [--bot-user <login>]|" +
-          "find-linked-thread <issue-number>>\n",
+          "find-linked-thread <issue-number>|" +
+          "state-change-info <issue-number> [--bot-user <login>]>\n",
       );
       return null;
     default:

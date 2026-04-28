@@ -55,6 +55,13 @@ cd "$REPO_ROOT"
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 NIGHTLY_MARKER='<!-- nightly-bot -->'
+# Progress-comment marker (Phase G). Bot-authored issue comments carrying
+# this string are forwarded to the customer by support-agent.sh's
+# --comment-sync sweep; bot-authored comments without it (e.g. the
+# customer-echo "Customer replied via support@drafto.eu" forwards) are
+# suppressed to avoid an echo loop. Keep this in sync with PROGRESS_MARKER
+# in scripts/lib/github-sync.mjs.
+PROGRESS_MARKER='<!-- drafto-progress -->'
 
 # ── Failure notification ──
 cleanup() {
@@ -215,10 +222,31 @@ for IDX in $(seq 0 $((SUPPORT_COUNT - 1))); do
   fi
 
   log "--- Processing support issue #$ISSUE_NUMBER (gate passed) ---"
+
+  # Phase G progress comment (a): "Working on it now" before Claude starts.
+  # Idempotent — skip if a previous nightly run already posted one (or if the
+  # earlier "Hit a blocker" comment is present, in which case we'd be
+  # re-trying a stuck issue and don't need a fresh "starting" ping).
+  if PRIOR_COMMENTS=$(gh api --paginate "repos/JakubAnderwald/drafto/issues/${ISSUE_NUMBER}/comments" \
+        --jq '.[].body // empty' 2>/dev/null) && \
+      ! grep -Fq "$PROGRESS_MARKER" <<<"$PRIOR_COMMENTS"; then
+    gh issue comment "$ISSUE_NUMBER" --repo JakubAnderwald/drafto \
+      --body "Working on it now (from the nightly agent). ${PROGRESS_MARKER}" \
+      2>/dev/null || log "WARNING: failed to post 'working on it' comment on issue #$ISSUE_NUMBER"
+  fi
+
   if ! claude -p "$(cat <<PROMPT
 You are an automated nightly job. Process ONLY support issue #${ISSUE_NUMBER} for JakubAnderwald/drafto.
 
 The issue has already passed the support-agent footer gate (reporter is on \$SUPPORT_ALLOWLIST). Skip any From: / sender re-checks.
+
+A "Working on it now" progress comment has already been posted on the issue
+by the runner before this Claude session — do NOT re-post it. The comments
+you DO need to emit are the ones below tagged "Phase G progress comment".
+All Phase G progress comments must end with the literal marker
+${PROGRESS_MARKER} so support-agent.sh's --comment-sync sweep forwards them
+to the customer's Zoho thread (bot-authored comments without the marker are
+suppressed to break the customer→GH→Zoho echo loop).
 
 1. Read the issue: gh issue view ${ISSUE_NUMBER} --json title,body,author,createdAt
 2. Verify the issue has the "support" label (applied by the Stage 1 ingest pipeline).
@@ -229,6 +257,10 @@ The issue has already passed the support-agent footer gate (reporter is on \$SUP
 6. Add unit + integration tests.
 7. Run full pre-push verification (per CLAUDE.md).
 8. Use /push to commit, push, create PR referencing "Closes #${ISSUE_NUMBER}", wait for CI.
+   **Phase G progress comment (b)** — immediately after the PR is created
+   (before /push starts polling CI), post:
+   gh issue comment ${ISSUE_NUMBER} --body "Fix in review: <PR url>. ${PROGRESS_MARKER}"
+   Substitute <PR url> with the URL printed by gh pr create.
 9. After CI green, squash-merge via gh api and capture merge commit SHA.
 10. Fetch main, checkout merge SHA, poll required CI checks every 30s up to 45 min.
     - If any check fails or timeout → comment, add "needs-manual-intervention", skip mobile deploy.
@@ -244,7 +276,10 @@ Constraints:
 - Never push directly to main. Always branches + PRs.
 - Never modify production data or run database migrations.
 - If DB changes needed: create migration file, add label "needs-migration-review", comment that manual deploy is required.
-- If stuck: comment with the problem, add label "needs-manual-intervention".
+- If stuck: add label "needs-manual-intervention", post a detailed comment
+  describing the problem (no marker), AND post a customer-facing
+  **Phase G progress comment (c)**:
+  gh issue comment ${ISSUE_NUMBER} --body "Hit a blocker; flagged for human review. ${PROGRESS_MARKER}"
 PROMPT
   )" --dangerously-skip-permissions 2>&1 | tee -a "$LOG_FILE"; then
     log "ERROR: Support issue #$ISSUE_NUMBER failed; continuing with next item"
