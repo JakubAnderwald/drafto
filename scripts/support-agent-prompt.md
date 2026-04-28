@@ -314,13 +314,13 @@ yourself.
 
 Compose ONE Zoho reply body keyed off `(newState.state, newState.state_reason)`:
 
-| Transition                                                                                                       | Body                                                                                                             |
-| ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `closed` / `completed`, `platforms` includes `web`                                                               | `We've fixed this — live on drafto.eu now.`                                                                      |
-| `closed` / `completed`, otherwise                                                                                | `We've fixed this. It'll go out with our next release; we'll email you when it's live.`                          |
-| `closed` / `not_planned` or `duplicate`                                                                          | `After review, we won't be implementing this.` + (if `lastComment` non-null) `\n\nReason: ` + `<extracted text>` |
-| `oldState.state === "closed"` and `newState.state === "open"` (issue was reopened, regardless of `state_reason`) | `Reopened — we're looking at this again.`                                                                        |
-| anything else (e.g. `open` → `open` with only a stateReason rewrite)                                             | do nothing — emit `action=noop` and exit                                                                         |
+| Transition                                                                                                       | Body                                                                                                                                                  |
+| ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `closed` / `completed`, `platforms` includes `web`                                                               | `We've fixed this — live on drafto.eu now.`                                                                                                           |
+| `closed` / `completed`, otherwise                                                                                | `We've fixed this. It'll go out with our next release; we'll email you when it's live.`                                                               |
+| `closed` / `not_planned` or `duplicate`                                                                          | `After review, we won't be implementing this.` then, if `lastComment` is non-null, a blank line followed by `Reason:` and the extracted comment text. |
+| `oldState.state === "closed"` and `newState.state === "open"` (issue was reopened, regardless of `state_reason`) | `Reopened — we're looking at this again.`                                                                                                             |
+| anything else (e.g. `open` → `open` with only a stateReason rewrite)                                             | do nothing — emit `action=noop` and exit                                                                                                              |
 
 `lastComment` (when non-null) arrives wrapped in `<github-comment>...</github-comment>`
 exactly like comment-sync bodies. Strip the envelope tags before quoting it

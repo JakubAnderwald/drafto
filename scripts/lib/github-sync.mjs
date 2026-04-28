@@ -238,8 +238,15 @@ export async function getClosingPrFiles(issueNumber) {
   const refs = data?.closedByPullRequestsReferences ?? [];
   if (!Array.isArray(refs) || refs.length === 0) return [];
   // The latest PR (highest number) is the actual fix in the rare case there
-  // were multiple — duplicates / superseded PRs come earlier in the list.
-  const pr = refs[refs.length - 1]?.number;
+  // were multiple — duplicates / superseded PRs come earlier. GitHub's
+  // GraphQL `closedByPullRequestsReferences` doesn't document an ordering
+  // guarantee, so sort explicitly by number rather than trusting array
+  // position.
+  const pr = refs
+    .map((ref) => Number(ref?.number))
+    .filter((n) => Number.isInteger(n) && n > 0)
+    .sort((a, b) => a - b)
+    .at(-1);
   if (!pr) return [];
   let prRaw;
   try {
@@ -256,40 +263,86 @@ export async function getClosingPrFiles(issueNumber) {
   return Array.isArray(prData?.files) ? prData.files : [];
 }
 
-// Returns the most recent non-bot comment body, or null if there isn't one.
-// Used to populate the "Reason: ..." text on closed/not_planned transitions
-// — bot-authored comments (progress markers, customer echoes) are noise
-// rather than reasons.
-export async function getLastNonBotCommentBody(issueNumber, botUser = DEFAULT_BOT_USER) {
-  let raw;
+// Window inside which a non-bot comment is plausibly the closing rationale.
+// Picked to cover both `gh issue close --comment "..."` (which posts the
+// comment seconds before/after the close event) and the GitHub web UI
+// "Close with comment" affordance.
+const CLOSING_COMMENT_WINDOW_MS = 60_000;
+
+// Returns the comment body that explains the most recent close event, or
+// `null` if no comment can be tied to the closure. We match by (a) the
+// actor who closed the issue, and (b) a temporal window around the close
+// event. Without these correlations, the "last non-bot comment" heuristic
+// would surface unrelated reporter chatter as a "Reason: ..." in the
+// customer-facing not_planned/duplicate email, which is worse than
+// silence — see PR #352 / CodeRabbit review.
+export async function getClosingComment(issueNumber, botUser = DEFAULT_BOT_USER) {
+  let eventsRaw;
   try {
-    raw = await runGh(["api", "--paginate", `repos/${REPO}/issues/${issueNumber}/comments`]);
+    eventsRaw = await runGh(["api", "--paginate", `repos/${REPO}/issues/${issueNumber}/events`]);
+  } catch {
+    return null;
+  }
+  let events;
+  try {
+    events = JSON.parse(eventsRaw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(events) || events.length === 0) return null;
+  // GitHub returns events oldest-first; the most recent close is the one
+  // we care about (an issue may be closed→reopened→closed multiple times).
+  let closeEvent = null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i]?.event === "closed") {
+      closeEvent = events[i];
+      break;
+    }
+  }
+  if (!closeEvent) return null;
+  const closeTime = Date.parse(closeEvent.created_at ?? "");
+  const closer = (closeEvent.actor?.login ?? "").toLowerCase();
+  if (Number.isNaN(closeTime) || !closer) return null;
+
+  let commentsRaw;
+  try {
+    commentsRaw = await runGh([
+      "api",
+      "--paginate",
+      `repos/${REPO}/issues/${issueNumber}/comments`,
+    ]);
   } catch {
     return null;
   }
   let comments;
   try {
-    comments = JSON.parse(raw);
+    comments = JSON.parse(commentsRaw);
   } catch {
     return null;
   }
   if (!Array.isArray(comments) || comments.length === 0) return null;
+
   const botUserLower = (botUser ?? "").toLowerCase();
-  for (let i = comments.length - 1; i >= 0; i--) {
-    const c = comments[i];
+  let best = null;
+  for (const c of comments) {
     const author = (c?.user?.login ?? c?.author?.login ?? "").toLowerCase();
-    if (author === botUserLower) continue;
+    if (!author || author === botUserLower) continue;
+    if (author !== closer) continue;
+    const t = Date.parse(c?.created_at ?? c?.createdAt ?? "");
+    if (Number.isNaN(t)) continue;
+    if (Math.abs(t - closeTime) > CLOSING_COMMENT_WINDOW_MS) continue;
     const body = c?.body;
-    if (typeof body === "string" && body.length > 0) return body;
+    if (typeof body !== "string" || body.length === 0) continue;
+    if (!best || t > Date.parse(best.created_at ?? best.createdAt ?? "")) best = c;
   }
-  return null;
+  return best?.body ?? null;
 }
 
 export async function getStateChangeInfo(issueNumber, { botUser = DEFAULT_BOT_USER } = {}) {
   const [body, files, lastComment] = await Promise.all([
     getIssueBody(issueNumber),
     getClosingPrFiles(issueNumber),
-    getLastNonBotCommentBody(issueNumber, botUser),
+    getClosingComment(issueNumber, botUser),
   ]);
   const fields = parseIssueFooter(body);
   return {

@@ -89,15 +89,20 @@ async function main(argv) {
       if (!issueNumber || !stateName) {
         throw new Error("set-issue-state requires <issue-number> <state> [<state-reason>]");
       }
-      const stateReason =
-        stateReasonRaw === undefined || stateReasonRaw === "" || stateReasonRaw === "null"
-          ? null
-          : String(stateReasonRaw).toLowerCase();
+      // Trim before checking so that bash callers passing " completed " (with
+      // surrounding whitespace from a quoted variable) hit the same normalised
+      // form as github-sync.mjs's normaliseStateReason — otherwise the
+      // persisted value wouldn't compare equal to what diffStateChanges
+      // produces from the live API on the next run, and we'd email the same
+      // transition again.
+      const trimmedReason =
+        stateReasonRaw == null ? "" : String(stateReasonRaw).trim().toLowerCase();
+      const stateReason = trimmedReason === "" || trimmedReason === "null" ? null : trimmedReason;
       const state = await loadState(file);
       state.issues ??= {};
       state.issues[issueNumber] ??= {};
       state.issues[issueNumber].lastKnownState = {
-        state: String(stateName).toLowerCase(),
+        state: String(stateName).trim().toLowerCase(),
         state_reason: stateReason,
       };
       state.issues[issueNumber].lastIssueStateSync = now;

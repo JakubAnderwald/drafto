@@ -353,10 +353,12 @@ resolved #3000`;
 });
 
 describe("getStateChangeInfo (Phase G — mocked gh)", () => {
-  it("returns zoho_thread_id, derived platforms, and the last non-bot comment", async () => {
+  it("returns zoho_thread_id, derived platforms, and the closing-actor comment within the time window", async () => {
+    const closeTime = "2026-04-28T19:00:00Z";
+    const sameTime = "2026-04-28T19:00:30Z"; // within 60s window
+    const wayLater = "2026-04-28T20:00:00Z"; // outside window
     lib._setExecFileForTests(
       makeExecFile([
-        // 1) gh issue view --json body  → footer carries zoho-thread-id
         {
           match: (cmd, args) =>
             cmd === "gh" && args[0] === "issue" && args[1] === "view" && args.includes("body"),
@@ -372,7 +374,6 @@ zoho-thread-id: 8537837000999
             }),
           },
         },
-        // 2) gh issue view --json closedByPullRequestsReferences → PR #500
         {
           match: (cmd, args) =>
             cmd === "gh" &&
@@ -385,7 +386,6 @@ zoho-thread-id: 8537837000999
             }),
           },
         },
-        // 3) gh pr view --json files → web + mobile paths
         {
           match: (cmd, args) => cmd === "gh" && args[0] === "pr" && args[1] === "view",
           response: {
@@ -394,17 +394,40 @@ zoho-thread-id: 8537837000999
             }),
           },
         },
-        // 4) gh api comments → most recent is from JakubAnderwald (bot, skip),
-        //    second-newest is from a customer ("won't fix because too niche")
         {
-          match: (cmd, args) => cmd === "gh" && args[0] === "api",
+          // events endpoint: most recent close was by `maintainer` at 19:00.
+          match: (cmd, args) =>
+            cmd === "gh" && args[0] === "api" && args.some((a) => a.endsWith("/events")),
           response: {
             stdout: JSON.stringify([
-              { user: { login: "customer" }, body: "Too niche, sorry." },
               {
-                user: { login: "JakubAnderwald" },
-                body: "Working on it now <!-- drafto-progress -->",
+                event: "labeled",
+                actor: { login: "maintainer" },
+                created_at: "2026-04-28T18:00:00Z",
               },
+              { event: "closed", actor: { login: "maintainer" }, created_at: closeTime },
+            ]),
+          },
+        },
+        {
+          // comments endpoint: an older customer comment (out-of-window),
+          // a same-actor + same-time comment (the closing rationale),
+          // and a much-later customer comment (also out-of-window).
+          match: (cmd, args) =>
+            cmd === "gh" && args[0] === "api" && args.some((a) => a.endsWith("/comments")),
+          response: {
+            stdout: JSON.stringify([
+              {
+                user: { login: "customer" },
+                body: "Original report.",
+                created_at: "2026-04-28T10:00:00Z",
+              },
+              {
+                user: { login: "maintainer" },
+                body: "Out of scope — see ROADMAP.",
+                created_at: sameTime,
+              },
+              { user: { login: "customer" }, body: "Thanks for clarifying.", created_at: wayLater },
             ]),
           },
         },
@@ -413,10 +436,10 @@ zoho-thread-id: 8537837000999
     const info = await lib.getStateChangeInfo(42, { botUser: "JakubAnderwald" });
     assert.equal(info.zoho_thread_id, "8537837000999");
     assert.deepEqual(info.platforms, ["mobile", "web"]);
-    assert.equal(info.lastComment, "Too niche, sorry.");
+    assert.equal(info.lastComment, "Out of scope — see ROADMAP.");
   });
 
-  it("returns null lastComment when every comment is from the bot", async () => {
+  it("returns null lastComment when no comment falls within the closing-actor / time window", async () => {
     lib._setExecFileForTests(
       makeExecFile([
         {
@@ -433,9 +456,32 @@ zoho-thread-id: 8537837000999
           response: { stdout: JSON.stringify({ closedByPullRequestsReferences: [] }) },
         },
         {
-          match: (cmd, args) => cmd === "gh" && args[0] === "api",
+          match: (cmd, args) =>
+            cmd === "gh" && args[0] === "api" && args.some((a) => a.endsWith("/events")),
           response: {
-            stdout: JSON.stringify([{ user: { login: "JakubAnderwald" }, body: "Working on it" }]),
+            stdout: JSON.stringify([
+              {
+                event: "closed",
+                actor: { login: "maintainer" },
+                created_at: "2026-04-28T19:00:00Z",
+              },
+            ]),
+          },
+        },
+        {
+          match: (cmd, args) =>
+            cmd === "gh" && args[0] === "api" && args.some((a) => a.endsWith("/comments")),
+          response: {
+            // Reporter posted a comment hours later — wrong actor AND outside
+            // the window. Must NOT be surfaced as the closing reason.
+            stdout: JSON.stringify([
+              {
+                user: { login: "reporter" },
+                body: "Bumping this.",
+                created_at: "2026-04-29T03:00:00Z",
+              },
+              { user: { login: "JakubAnderwald" }, body: "Working on it" },
+            ]),
           },
         },
       ]),

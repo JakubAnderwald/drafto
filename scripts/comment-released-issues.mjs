@@ -113,19 +113,15 @@ export async function findClosedIssueNumbers({ tag, paths }) {
 async function getSupportIssueNumbers() {
   let stdout;
   try {
+    // Paginate via the underlying API rather than `gh issue list --limit N`:
+    // the CLI caps `--limit` and silently truncates beyond 500, which would
+    // mean older support issues stop receiving "Now live" notifications once
+    // the project crosses that threshold. `gh api --paginate` follows the
+    // Link header to fetch every page and emits the concatenated JSON array.
     stdout = await run("gh", [
-      "issue",
-      "list",
-      "--repo",
-      REPO,
-      "--label",
-      "support",
-      "--state",
-      "all",
-      "--json",
-      "number",
-      "--limit",
-      "500",
+      "api",
+      "--paginate",
+      `repos/${REPO}/issues?labels=support&state=all&per_page=100`,
     ]);
   } catch {
     return new Set();
@@ -136,7 +132,16 @@ async function getSupportIssueNumbers() {
   } catch {
     return new Set();
   }
-  return new Set((Array.isArray(data) ? data : []).map((d) => Number(d.number)));
+  // The `/issues` endpoint includes PRs (each PR is also an issue). We only
+  // label issues with `support`, but filter defensively by the absence of
+  // `.pull_request` so a future labelled PR doesn't slip into the candidate
+  // set and confuse the per-issue comment posting below.
+  return new Set(
+    (Array.isArray(data) ? data : [])
+      .filter((entry) => entry?.pull_request == null)
+      .map((entry) => Number(entry.number))
+      .filter((n) => Number.isInteger(n) && n > 0),
+  );
 }
 
 function fingerprintMarker(platform, build) {
