@@ -76,6 +76,12 @@ beforeEach(async () => {
   vi.clearAllMocks();
   vi.resetModules();
 
+  try {
+    window.localStorage.clear();
+  } catch {
+    // localStorage may not be available in all environments
+  }
+
   mockFetch.mockImplementation((url: string) => {
     if (url === "/api/notebooks") {
       return Promise.resolve({
@@ -1373,6 +1379,180 @@ describe("AppShell", () => {
       expect(aside?.className).toMatch(/(?:^|\s)flex(?:\s|$)/);
       expect(section?.className).toContain("hidden");
       expect(main?.className).toContain("hidden");
+    });
+  });
+
+  describe("desktop layout — collapsible panes", () => {
+    it("renders a collapse button for the notebook list", async () => {
+      await act(async () => {
+        render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      expect(screen.getByLabelText("Collapse notebook list")).toBeInTheDocument();
+    });
+
+    it("renders a collapse button for the note list", async () => {
+      await act(async () => {
+        render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      expect(screen.getByLabelText("Collapse note list")).toBeInTheDocument();
+    });
+
+    it("does not render the editor expand toolbar when both panes are expanded", async () => {
+      await act(async () => {
+        render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      expect(screen.queryByTestId("editor-expand-toolbar")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Show notebook list")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Show note list")).not.toBeInTheDocument();
+    });
+
+    it("collapsing notebooks adds lg:hidden to the notebooks pane and shows expand button", async () => {
+      const user = userEvent.setup();
+
+      await act(async () => {
+        render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      const notebooksPane = screen.getByTestId("notebooks-pane");
+      expect(notebooksPane.className).not.toContain("lg:hidden");
+
+      await act(async () => {
+        await user.click(screen.getByLabelText("Collapse notebook list"));
+      });
+
+      expect(notebooksPane.className).toContain("lg:hidden");
+      expect(screen.getByLabelText("Show notebook list")).toBeInTheDocument();
+    });
+
+    it("collapsing notes adds lg:hidden to the notes pane and shows expand button", async () => {
+      const user = userEvent.setup();
+
+      await act(async () => {
+        render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      const notesPane = screen.getByTestId("notes-pane");
+      expect(notesPane.className).not.toContain("lg:hidden");
+
+      await act(async () => {
+        await user.click(screen.getByLabelText("Collapse note list"));
+      });
+
+      expect(notesPane.className).toContain("lg:hidden");
+      expect(screen.getByLabelText("Show note list")).toBeInTheDocument();
+    });
+
+    it("expanding from the editor toolbar restores the pane", async () => {
+      const user = userEvent.setup();
+
+      await act(async () => {
+        render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      const notebooksPane = screen.getByTestId("notebooks-pane");
+
+      await act(async () => {
+        await user.click(screen.getByLabelText("Collapse notebook list"));
+      });
+      expect(notebooksPane.className).toContain("lg:hidden");
+
+      await act(async () => {
+        await user.click(screen.getByLabelText("Show notebook list"));
+      });
+      expect(notebooksPane.className).not.toContain("lg:hidden");
+      expect(screen.queryByLabelText("Show notebook list")).not.toBeInTheDocument();
+    });
+
+    it("each pane collapses independently", async () => {
+      const user = userEvent.setup();
+
+      await act(async () => {
+        render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      const notebooksPane = screen.getByTestId("notebooks-pane");
+      const notesPane = screen.getByTestId("notes-pane");
+
+      await act(async () => {
+        await user.click(screen.getByLabelText("Collapse notebook list"));
+      });
+
+      expect(notebooksPane.className).toContain("lg:hidden");
+      expect(notesPane.className).not.toContain("lg:hidden");
+
+      await act(async () => {
+        await user.click(screen.getByLabelText("Collapse note list"));
+      });
+
+      expect(notebooksPane.className).toContain("lg:hidden");
+      expect(notesPane.className).toContain("lg:hidden");
+
+      // Toolbar should now offer both expand handles
+      expect(screen.getByLabelText("Show notebook list")).toBeInTheDocument();
+      expect(screen.getByLabelText("Show note list")).toBeInTheDocument();
+    });
+
+    it("persists collapse state across remounts via localStorage", async () => {
+      const user = userEvent.setup();
+
+      const { unmount } = await act(async () => {
+        return render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        await user.click(screen.getByLabelText("Collapse notebook list"));
+      });
+
+      expect(screen.getByTestId("notebooks-pane").className).toContain("lg:hidden");
+
+      // Unmount and re-render — module state + localStorage should restore collapse
+      unmount();
+
+      await act(async () => {
+        render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      expect(screen.getByTestId("notebooks-pane").className).toContain("lg:hidden");
+      expect(screen.getByLabelText("Show notebook list")).toBeInTheDocument();
     });
   });
 });

@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AppMenu } from "@/components/layout/app-menu";
 import { ImportEvernoteDialog } from "@/components/import/import-evernote-dialog";
 import { SearchOverlay } from "@/components/search/search-overlay";
+import { usePaneCollapse } from "@/hooks/use-pane-collapse";
 
 interface NotebookInfo {
   id: string;
@@ -59,6 +60,36 @@ function HamburgerIcon() {
         strokeWidth={2}
         d="M4 6h16M4 12h16M4 18h16"
       />
+    </svg>
+  );
+}
+
+function PanelCollapseIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7" />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 19l-7-7 7-7" />
+    </svg>
+  );
+}
+
+function PanelExpandIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5l7 7-7 7" />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7" />
     </svg>
   );
 }
@@ -182,6 +213,7 @@ export function AppShell({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const { notebooksCollapsed, notesCollapsed, togglePane } = usePaneCollapse();
   const [lastNoteUpdate, setLastNoteUpdate] = useState<{
     noteId: string;
     updatedAt: string;
@@ -397,19 +429,30 @@ export function AppShell({
       {/* Sidebar — notebooks
           Mobile: full-width panel, shown only in notebooks view
           Tablet: fixed overlay, toggled via hamburger
-          Desktop: static, always visible */}
+          Desktop: static, always visible (unless collapsed) */}
       <aside
+        data-testid="notebooks-pane"
         className={`${
           mobileView === "notebooks" ? "flex" : "hidden"
         } bg-sidebar-bg min-h-0 w-full flex-col overflow-hidden sm:fixed sm:inset-y-0 sm:left-0 sm:z-30 sm:flex sm:w-60 sm:shrink-0 sm:transition-transform sm:duration-[var(--transition-normal)] sm:ease-in-out lg:static lg:translate-x-0 ${
           sidebarOpen ? "sm:translate-x-0" : "sm:-translate-x-full"
-        }`}
+        } ${notebooksCollapsed ? "lg:hidden" : ""}`}
       >
         <div className="flex items-center justify-between p-2">
           <span className="text-fg ml-1 text-sm font-semibold">Drafto</span>
-          <IconButton size="sm" onClick={() => setSearchOpen(true)} aria-label="Search notes">
-            <SearchIcon />
-          </IconButton>
+          <div className="flex items-center gap-1">
+            <IconButton size="sm" onClick={() => setSearchOpen(true)} aria-label="Search notes">
+              <SearchIcon />
+            </IconButton>
+            <IconButton
+              size="sm"
+              onClick={() => togglePane("notebooks")}
+              aria-label="Collapse notebook list"
+              className="hidden lg:inline-flex"
+            >
+              <PanelCollapseIcon />
+            </IconButton>
+          </div>
         </div>
         <NotebooksSidebar
           selectedNotebookId={selectedNotebookId}
@@ -427,11 +470,14 @@ export function AppShell({
 
       {/* Middle panel — note list or trash
           Mobile: full-width panel, shown only in notes view
-          Tablet/Desktop: fixed 300px width */}
+          Tablet/Desktop: fixed 300px width (unless collapsed on desktop) */}
       <section
+        data-testid="notes-pane"
         className={`${
           mobileView === "notes" ? "flex" : "hidden"
-        } bg-bg w-full flex-col overflow-hidden sm:flex sm:w-[300px] sm:shrink-0`}
+        } bg-bg w-full flex-col overflow-hidden sm:flex sm:w-[300px] sm:shrink-0 ${
+          notesCollapsed ? "lg:hidden" : ""
+        }`}
       >
         {/* Mobile: back to notebooks */}
         <div className="bg-bg-subtle flex items-center p-2 sm:hidden">
@@ -455,6 +501,13 @@ export function AppShell({
             aria-label="Toggle sidebar"
           >
             <HamburgerIcon />
+          </IconButton>
+        </div>
+
+        {/* Desktop: collapse note list */}
+        <div className="bg-bg-subtle hidden items-center justify-end p-2 lg:flex">
+          <IconButton size="sm" onClick={() => togglePane("notes")} aria-label="Collapse note list">
+            <PanelCollapseIcon />
           </IconButton>
         </div>
 
@@ -502,6 +555,29 @@ export function AppShell({
               <ChevronLeftIcon />
             </IconButton>
             <span className="text-fg ml-1 text-sm font-semibold">Back</span>
+          </div>
+        )}
+
+        {/* Desktop: expand handles for collapsed panes */}
+        {(notebooksCollapsed || notesCollapsed) && (
+          <div
+            className="bg-bg-subtle hidden items-center gap-1 p-2 lg:flex"
+            data-testid="editor-expand-toolbar"
+          >
+            {notebooksCollapsed && (
+              <IconButton
+                size="sm"
+                onClick={() => togglePane("notebooks")}
+                aria-label="Show notebook list"
+              >
+                <PanelExpandIcon />
+              </IconButton>
+            )}
+            {notesCollapsed && (
+              <IconButton size="sm" onClick={() => togglePane("notes")} aria-label="Show note list">
+                <PanelExpandIcon />
+              </IconButton>
+            )}
           </div>
         )}
 
