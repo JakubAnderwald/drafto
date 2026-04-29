@@ -33,7 +33,9 @@ fi
 trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
 # Each mode is independent; if one fails, still try the others so a transient
-# Zoho hiccup doesn't starve the GitHub-side sweeps.
-bash "$AGENT" --auto-classify --phase G || true
-bash "$AGENT" --comment-sync  --phase G || true
-bash "$AGENT" --state-sync    --phase G || true
+# Zoho hiccup doesn't starve the GitHub-side sweeps. Use the absolute
+# `/bin/bash` rather than relying on PATH — launchd's PATH is minimal and a
+# missing `bash` lookup here would silently no-op the whole tick.
+/bin/bash "$AGENT" --auto-classify --phase G || true
+/bin/bash "$AGENT" --comment-sync  --phase G || true
+/bin/bash "$AGENT" --state-sync    --phase G || true
