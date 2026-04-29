@@ -10,6 +10,16 @@
 #
 # Mutex: macOS lacks flock(1), so we use a mkdir-based lock. If the previous
 # tick is still running, this run exits cleanly without waiting.
+#
+# Shebang bypass: we invoke the agent as `bash "$AGENT"` instead of letting
+# the kernel resolve the script's `#!/bin/bash` shebang. On macOS 26.3.1
+# (and likely related builds), launching a `#!/bin/bash` script from a
+# child of a launchd-spawned bash hangs at `_dyld_start` indefinitely
+# (sample shows the universal-binary slice mis-selected as plain ARM64
+# rather than the available ARM64E). Calling `bash <path>` explicitly
+# sidesteps that resolution path. Verified by side-by-side test:
+# `bash -c 'support-agent.sh ...'` hangs; `bash -c 'bash support-agent.sh ...'`
+# completes immediately.
 
 set -euo pipefail
 
@@ -24,6 +34,6 @@ trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
 # Each mode is independent; if one fails, still try the others so a transient
 # Zoho hiccup doesn't starve the GitHub-side sweeps.
-"$AGENT" --auto-classify --phase G || true
-"$AGENT" --comment-sync  --phase G || true
-"$AGENT" --state-sync    --phase G || true
+bash "$AGENT" --auto-classify --phase G || true
+bash "$AGENT" --comment-sync  --phase G || true
+bash "$AGENT" --state-sync    --phase G || true
