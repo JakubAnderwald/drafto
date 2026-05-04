@@ -57,3 +57,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0022](./0022-note-content-history.md)                   | Note Content History Table                     | Accepted           | 2026-04-25 |
 | [0023](./0023-per-request-client-tagging.md)             | Per-Request Client Tagging                     | Accepted           | 2026-04-27 |
 | [0024](./0024-realtime-support-agent.md)                 | Real-Time Support Agent                        | Accepted           | 2026-04-28 |
+| [0025](./0025-support-allowlist-from-zoho-sender.md)     | Support Allowlist Gate from Zoho Sender        | Accepted           | 2026-05-03 |

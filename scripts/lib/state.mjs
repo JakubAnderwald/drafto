@@ -8,6 +8,11 @@
 //   {
 //     issues: {
 //       "<n>": {
+//         reporterEmail:           string,           // inbound Zoho fromAddress, lower-cased;
+//                                                    // recorded by support-agent.sh after a
+//                                                    // successful filed-issue. nightly-support.sh
+//                                                    // reads this to gate auto-implementation
+//                                                    // — see ADR-0025.
 //         lastGithubCommentSyncAt: ISO-8601,        // cursor for comment-sync
 //         lastIssueStateSync:      ISO-8601,        // cursor for state-sync
 //         lastKnownState: {

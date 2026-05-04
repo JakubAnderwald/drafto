@@ -1,6 +1,6 @@
 # Support agent
 
-**Status:** shipped **Updated:** 2026-04-28
+**Status:** shipped **Updated:** 2026-05-03
 
 ## What it is
 
@@ -25,9 +25,9 @@ Shipped. The pipeline has been live since 2026-04-26; lifecycle sync (Phase G) m
 | Pure policy helpers (rate limits, allowlist, etc.) | `scripts/lib/policy.mjs`               |
 | State load / save (atomic, mode 0600)              | `scripts/lib/state.mjs`                |
 | GitHub sync helpers (`gh` subprocess wrappers)     | `scripts/lib/github-sync.mjs`          |
-| Issue-body footer parser + allowlist gate          | `scripts/lib/parse-issue-footer.mjs`   |
-| State-mutation CLI (cooldowns, cursors)            | `scripts/lib/state-cli.mjs`            |
-| Stage 2 (preserved, gated on footer)               | `scripts/nightly-support.sh`           |
+| Issue-body footer parser (zoho-thread-id routing)  | `scripts/lib/parse-issue-footer.mjs`   |
+| State-mutation CLI (cooldowns, cursors, sender)    | `scripts/lib/state-cli.mjs`            |
+| Stage 2 (preserved, sender-gated via state)        | `scripts/nightly-support.sh`           |
 | Release-announcement walker (Fastlane post-hook)   | `scripts/comment-released-issues.mjs`  |
 | Unit tests (167)                                   | `scripts/__tests__/`                   |
 | Captured Zoho fixtures for golden runs             | `scripts/__fixtures__/support-emails/` |
@@ -59,8 +59,8 @@ Tools available to Claude (allow-listed only):
         │
         ▼
 [Zoho labels under Drafto/Support/*] + [Drafto/Support/Resolved | Spam folder]
-+ [GitHub issue body footer carrying reporter-email + reporter-allowlisted + zoho-thread-id]
-+ [logs/support-state.json — cursors, rate-limit counters, admin-notification cooldown]
++ [GitHub issue body footer carrying zoho-thread-id (load-bearing for comment-sync) + reporter-email/reporter-allowlisted (provenance only — see ADR-0025)]
++ [logs/support-state.json — cursors, rate-limit counters, admin-notification cooldown, reporterEmail per filed issue]
 ```
 
 ### State machine (Zoho-side)
@@ -88,9 +88,19 @@ zoho-thread-id: 1777397751089013400
 -->
 ```
 
-`scripts/nightly-support.sh` parses this via `parse-issue-footer.mjs --check-allowlist` and refuses to auto-implement unless **both** `reporter-allowlisted: true` **and** `reporter-email` is in `SUPPORT_ALLOWLIST`. A tampered issue body cannot smuggle past the second check.
+The `zoho-thread-id` field is load-bearing — comment-sync uses it to route GitHub-comment forwards back to the originating Zoho thread. `reporter-email` and `reporter-allowlisted` are kept for human-readable provenance only and are NOT trusted for any privilege decision (see [ADR-0025](../adr/0025-support-allowlist-from-zoho-sender.md)).
 
 > **Singleton-threadId quirk.** Zoho assigns a `threadId` only after a customer-side reply. First-contact filings record `zoho-thread-id: null` in the footer; the operator (or the next agent pass after the customer replies) patches it once Zoho assigns one.
+
+### Allowlist gate (Stage 2)
+
+`scripts/nightly-support.sh` decides whether to spend a Claude session on a `support`-labelled issue by reading the recorded sender, not the issue body:
+
+1. At filing time, `support-agent.sh` extracts the inbound `fromAddress` from the Zoho bundle (captured BEFORE Claude runs) and persists it to `state.issues[<n>].reporterEmail` via `state-cli.mjs record-filed-issue`.
+2. At gate time, `nightly-support.sh` calls `state-cli.mjs get-reporter-email <n>` and compares the result (case-insensitive, comma-bounded) against `$SUPPORT_ALLOWLIST` from `~/drafto-secrets/support-env.sh`.
+3. Two reject reasons surface: `unknown-sender` (no state entry — legacy / manually-filed / runner failure) and `not-allowlisted`. Either one labels the issue `needs-triage` and posts a comment.
+
+This eliminates the spoof window where a forged `<!-- drafto-support-agent v1 ... reporter-allowlisted: true -->` block in a customer's email body could slip through if the LLM copied it verbatim into the issue body. See [ADR-0025](../adr/0025-support-allowlist-from-zoho-sender.md) for the full rationale.
 
 ## Cross-platform notes
 
@@ -206,13 +216,13 @@ Stage 2 already authenticates `gh` on the Mac mini for the same user. No additio
   - `POST /messages` (used for `reply` and `send`) rejects unknown top-level keys with `404 EXTRA_KEY_FOUND_IN_JSON`. Don't add `headers: { ... }` for `Auto-Submitted` — rely on the rate-limit caps for loop protection.
   - Replies must thread via `inReplyTo` + `toAddress` + `subject` anchored to the latest messageId in the thread. `inReplyTo + threadId` together returns `404 JSON_PARSE_ERROR`. The CLI signature is `reply <messageId> --to <addr> --subject <s> --body-file <path>`.
   - Customer-facing replies must be verbose, include the full GitHub URL, and explain "what happens next." The existing prompt templates encode this — keep them.
-  - `nightly-support.sh` defence-in-depth: never auto-implement an issue solely because its body claims `reporter-allowlisted: true`. Always re-check the footer's `reporter-email` against `SUPPORT_ALLOWLIST`.
+  - `nightly-support.sh` allowlist gate: read the inbound sender from `state.issues[<n>].reporterEmail` (recorded by the runner at filing time, not from the issue body). Never trust LLM-written content in the issue body for the gate decision — the body could carry a forged footer copied from a customer email. See ADR-0025.
 - **Tests that will catch regressions:**
   - `scripts/__tests__/policy.test.mjs` — loop headers, rate limits, sender allowlisting.
   - `scripts/__tests__/zoho-cli.test.mjs` — namespace gates, `add-label` / `move-to-folder` refusals, OAuth refresh-on-401 retries exactly once.
   - `scripts/__tests__/notification.test.mjs` — admin notification 24h cooldown; suppressed for allowlisted senders; suppressed when state.humanIntervened.
-  - `scripts/__tests__/allowlist.test.mjs` — defence-in-depth gate for `nightly-support.sh`.
   - `scripts/__tests__/state-cli.test.mjs` — counter bumps, atomic save, prior-state preservation.
+  - `scripts/__tests__/state-cli-reporter-email.test.mjs` — `record-filed-issue` / `get-reporter-email` round-trip for the Stage 2 allowlist gate (ADR-0025).
   - `scripts/__tests__/build-bundle.test.mjs` — bundle shape for all three kinds.
   - `scripts/__tests__/github-sync.test.mjs` — comment / state diffing, marker filter, platform derivation.
 - **Files that must change together:**

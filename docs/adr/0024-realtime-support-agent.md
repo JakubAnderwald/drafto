@@ -1,8 +1,10 @@
 # 0024 — Real-Time Support Agent (Zoho REST + Mac mini)
 
-- **Status**: Accepted
+- **Status**: Accepted (allowlist-gate aspect superseded by [ADR-0025](./0025-support-allowlist-from-zoho-sender.md))
 - **Date**: 2026-04-28
 - **Authors**: Jakub Anderwald
+
+> **Update 2026-05-03**: The "GitHub issue body footer reads `reporter-allowlisted` to gate auto-implementation" mechanism described under "State storage" point 2 below has been replaced. `nightly-support.sh` now reads the inbound Zoho `fromAddress` from `logs/support-state.json` (recorded by `support-agent.sh` at filing time) — the LLM-written footer is no longer trusted for the allowlist decision. The footer itself stays in the issue body for `zoho-thread-id` comment-sync routing only. See [ADR-0025](./0025-support-allowlist-from-zoho-sender.md).
 
 ## Context
 

@@ -24,6 +24,18 @@
 //                                    after handling (or bootstrapping) a
 //                                    transition. <state-reason> may be
 //                                    empty/"null" to record an explicit null.
+//   record-filed-issue <issue> <sender-email>
+//                                    Persist state.issues[<issue>].reporterEmail
+//                                    = sender-email (lower-cased, trimmed). Called
+//                                    by support-agent.sh after Claude reports
+//                                    `action=filed-issue`; the inbound `fromAddress`
+//                                    is the authoritative sender (captured before
+//                                    the LLM ran) — nightly-support.sh reads it to
+//                                    gate auto-implementation. See ADR-0025.
+//   get-reporter-email <issue>      Print state.issues[<issue>].reporterEmail (or
+//                                    empty string if absent / unknown). Exit 0
+//                                    regardless — callers branch on the printed
+//                                    value. Used by nightly-support.sh's gate.
 //
 // State path can be overridden via --state-file <path> for tests; defaults to
 // state.mjs's DEFAULT_STATE_PATH. The save is atomic (temp file + rename).
@@ -114,6 +126,35 @@ async function main(argv) {
         state_reason: state.issues[issueNumber].lastKnownState.state_reason,
       };
     }
+    case "record-filed-issue": {
+      const issueNumber = positional[0];
+      const senderEmail = positional[1];
+      if (!issueNumber || !senderEmail) {
+        throw new Error("record-filed-issue requires <issue-number> <sender-email>");
+      }
+      const normalised = String(senderEmail).trim().toLowerCase();
+      if (!normalised) {
+        throw new Error("record-filed-issue: sender-email is empty after trim");
+      }
+      const state = await loadState(file);
+      state.issues ??= {};
+      state.issues[issueNumber] ??= {};
+      state.issues[issueNumber].reporterEmail = normalised;
+      await saveState(state, file);
+      return { ok: true, issueNumber, reporterEmail: normalised };
+    }
+    case "get-reporter-email": {
+      const issueNumber = positional[0];
+      if (!issueNumber) {
+        throw new Error("get-reporter-email requires <issue-number>");
+      }
+      const state = await loadState(file);
+      const email = state.issues?.[issueNumber]?.reporterEmail ?? "";
+      // Print bare value (no JSON wrapper, no trailing newline) so bash callers
+      // can `REPORTER_EMAIL=$(node ... get-reporter-email "$N")` directly.
+      process.stdout.write(email);
+      return null;
+    }
     case "--help":
     case "-h":
     case undefined:
@@ -121,7 +162,9 @@ async function main(argv) {
         "Usage: state-cli.mjs <bump-notification <track-key>|" +
           "bump-counters <track-key> <sender>|" +
           "set-issue-cursor <issue-number> <cursor-iso>|" +
-          "set-issue-state <issue-number> <state> [<state-reason>]> " +
+          "set-issue-state <issue-number> <state> [<state-reason>]|" +
+          "record-filed-issue <issue-number> <sender-email>|" +
+          "get-reporter-email <issue-number>> " +
           "[--state-file <path>] [--now <iso>]\n",
       );
       return null;
