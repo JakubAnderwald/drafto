@@ -210,59 +210,66 @@ async function main() {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "drafto-backfill-360-"));
   console.log(`Tmp dir: ${tmpDir}`);
 
-  const ts = timestampFrom(source.raw);
-  const lines = ["", "---", "", MARKER, ""];
-  let written = 0;
-  for (const [idx, att] of meta.entries()) {
-    const sName = safeName(att.filename);
-    const localPath = path.join(tmpDir, `${idx}-${sName}`);
-    let downloaded;
-    try {
-      downloaded = await downloadAttachment(source.folderId, source.messageId, att.attachmentId, {
-        out: localPath,
-      });
-    } catch (err) {
-      console.error(`download failed for ${att.filename}: ${err.message}`);
-      lines.push(`Failed to download: ${att.filename}`);
-      continue;
-    }
-    const repoPath = `${ATTACHMENTS_DIR}/${ts}-${sName}`;
-    let uploaded;
-    try {
-      uploaded = await uploadToContents(
-        repoPath,
-        localPath,
-        `chore: backfill support attachment ${sName} (issue #${ISSUE_NUMBER})`,
+  // Wrap the whole download/upload/patch flow in try/finally so the tmpDir is
+  // reaped even on partial failure. The downloads are customer attachments
+  // (PII potentially), so leaving them in /tmp across runs is sloppy.
+  try {
+    const ts = timestampFrom(source.raw);
+    const lines = ["", "---", "", MARKER, ""];
+    let written = 0;
+    for (const [idx, att] of meta.entries()) {
+      const sName = safeName(att.filename);
+      const localPath = path.join(tmpDir, `${idx}-${sName}`);
+      let downloaded;
+      try {
+        downloaded = await downloadAttachment(source.folderId, source.messageId, att.attachmentId, {
+          out: localPath,
+        });
+      } catch (err) {
+        console.error(`download failed for ${att.filename}: ${err.message}`);
+        lines.push(`Failed to download: ${att.filename}`);
+        continue;
+      }
+      const repoPath = `${ATTACHMENTS_DIR}/${ts}-${sName}`;
+      let uploaded;
+      try {
+        uploaded = await uploadToContents(
+          repoPath,
+          localPath,
+          `chore: backfill support attachment ${sName} (issue #${ISSUE_NUMBER})`,
+        );
+      } catch (err) {
+        console.error(`upload failed for ${att.filename}: ${err.message}`);
+        lines.push(`Failed to upload: ${att.filename}`);
+        continue;
+      }
+      const downloadUrl = uploaded?.content?.download_url ?? uploaded?.download_url;
+      if (!downloadUrl) {
+        console.error(`upload returned no download_url for ${att.filename}`);
+        lines.push(`Failed to upload: ${att.filename} (no download_url returned)`);
+        continue;
+      }
+      const isImage = (downloaded.contentType ?? "").startsWith("image/");
+      lines.push(
+        isImage ? `![${att.filename}](${downloadUrl})` : `[${att.filename}](${downloadUrl})`,
       );
-    } catch (err) {
-      console.error(`upload failed for ${att.filename}: ${err.message}`);
-      lines.push(`Failed to upload: ${att.filename}`);
-      continue;
+      lines.push("");
+      written += 1;
+      console.log(`Uploaded ${att.filename} → ${repoPath}`);
     }
-    const downloadUrl = uploaded?.content?.download_url ?? uploaded?.download_url;
-    if (!downloadUrl) {
-      console.error(`upload returned no download_url for ${att.filename}`);
-      lines.push(`Failed to upload: ${att.filename} (no download_url returned)`);
-      continue;
+
+    if (written === 0) {
+      console.log("No attachments uploaded successfully — leaving issue body untouched.");
+      return;
     }
-    const isImage = (downloaded.contentType ?? "").startsWith("image/");
-    lines.push(
-      isImage ? `![${att.filename}](${downloadUrl})` : `[${att.filename}](${downloadUrl})`,
+
+    await patchIssueBody(ISSUE_NUMBER, lines.join("\n").replace(/\n+$/, ""));
+    console.log(
+      `Done. ${written}/${meta.length} attachment(s) backfilled to issue #${ISSUE_NUMBER}.`,
     );
-    lines.push("");
-    written += 1;
-    console.log(`Uploaded ${att.filename} → ${repoPath}`);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
   }
-
-  if (written === 0) {
-    console.log("No attachments uploaded successfully — leaving issue body untouched.");
-    return;
-  }
-
-  await patchIssueBody(ISSUE_NUMBER, lines.join("\n").replace(/\n+$/, ""));
-  console.log(
-    `Done. ${written}/${meta.length} attachment(s) backfilled to issue #${ISSUE_NUMBER}.`,
-  );
 }
 
 main().catch((err) => {

@@ -488,23 +488,21 @@ export async function getAttachmentInfo(folderId, messageId) {
 // (e.g. `image/png`); we propagate that as `contentType` so the prompt can
 // decide whether to embed as `![]()` (image) or `[]()` (link).
 //
-// `out` is resolved against the caller's CWD; we refuse paths that escape
-// outside of it (`..` segments) so a malicious filename can't steer writes
-// elsewhere on disk. The bash entry point hands us a tmpdir-relative path
-// and that constraint matches.
+// `out` is resolved against the caller's CWD; we refuse anything outside
+// TMPDIR so a malicious filename (or a misconfigured caller) can't steer
+// writes into the repo or elsewhere on disk. The realtime bash runner and
+// the backfill script both write to per-run mktemp'd dirs under /tmp, so
+// this constraint matches every legitimate caller — and a hardening past
+// CodeRabbit's review (originally we also allowed CWD, which is the repo).
 export async function downloadAttachment(folderId, messageId, attachmentId, { out } = {}) {
   if (!folderId) throw new Error("folderId required");
   if (!messageId) throw new Error("messageId required");
   if (!attachmentId) throw new Error("attachmentId required");
   if (!out) throw new Error("--out required");
   const resolved = path.resolve(out);
-  // Guard against `..` escapes: the resolved path must stay under CWD. The
-  // bash runner mktemp's a per-run dir under /tmp and CWDs into the repo, so
-  // we accept anything under the repo OR under TMPDIR.
-  const cwd = process.cwd();
   const tmpRoot = path.resolve(process.env.TMPDIR ?? "/tmp");
-  if (!resolved.startsWith(cwd + path.sep) && !resolved.startsWith(tmpRoot + path.sep)) {
-    throw new Error(`refusing to write attachment outside CWD or TMPDIR: ${resolved}`);
+  if (!resolved.startsWith(tmpRoot + path.sep)) {
+    throw new Error(`refusing to write attachment outside TMPDIR: ${resolved}`);
   }
   const cfg = await loadConfig();
   const res = await zohoApi(

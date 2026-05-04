@@ -716,18 +716,34 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
         MSG_TMP_DIR="$ATTACHMENTS_TMP_DIR/$SAFE_TRACK"
         mkdir -p "$MSG_TMP_DIR"
         DOWNLOADED_JSON='[]'
+        # 25 MB applies to BOTH the per-file size and the cumulative-per-thread
+        # total. Tracking only per-file would let a thread with five 6 MB
+        # attachments slip past, then base64-expand to ~40 MB during step 8.0
+        # uploads (1.33x blowup) and risk OOMs in Node's heap when the prompt
+        # builds the upload payload.
+        ATT_TOTAL_BYTES=0
+        ATT_BUDGET=26214400
         for AIDX in $(seq 0 $((INFO_COUNT - 1))); do
           ATT=$(echo "$INFO_JSON" | jq ".[${AIDX}]")
           ATT_ID=$(echo "$ATT" | jq -r '.attachmentId')
           ATT_NAME=$(echo "$ATT" | jq -r '.filename // ("attachment-" + (.attachmentId|tostring))')
           ATT_SIZE=$(echo "$ATT" | jq -r '.size // 0')
           ATT_INLINE=$(echo "$ATT" | jq -r '.isInline // false')
-          # Pre-check size against a 25 MB cap. GitHub Contents API allows
-          # ≤100 MB but recommends ≤1 MB; 25 MB leaves headroom for screenshots
-          # and short videos without risking base64-blowup OOMs in node's heap.
-          if [[ "$ATT_SIZE" =~ ^[0-9]+$ && "$ATT_SIZE" -gt 26214400 ]]; then
+          # Per-file cap — same as the per-run budget, since one file at the
+          # cap is allowed but anything over is rejected outright.
+          if [[ "$ATT_SIZE" =~ ^[0-9]+$ && "$ATT_SIZE" -gt "$ATT_BUDGET" ]]; then
             log "WARNING: skipping oversized attachment ($ATT_SIZE B) for $TRACK_ID: $ATT_NAME"
             continue
+          fi
+          # Per-run cumulative budget — stop downloading further attachments
+          # once the next file would push the total over the cap. We `break`
+          # rather than `continue` because attachments are typically returned
+          # smallest-first by Zoho, but even when that's not the case, bailing
+          # protects the host from an unbounded base64 expansion.
+          if [[ "$ATT_SIZE" =~ ^[0-9]+$ ]] \
+              && [[ $((ATT_TOTAL_BYTES + ATT_SIZE)) -gt "$ATT_BUDGET" ]]; then
+            log "WARNING: per-run attachment budget ($ATT_BUDGET B) exhausted for $TRACK_ID; skipping $ATT_NAME and any later files"
+            break
           fi
           # Sanitise filename for the tmpfile: same regex Apps Script uses
           # (a-z, A-Z, 0-9, dot, underscore, hyphen). Length-cap at 100 chars
@@ -751,6 +767,12 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
               --arg localPath "$LOCAL_PATH" \
               --argjson isInline "$ATT_INLINE" \
               '. + [{filename: $filename, contentType: $contentType, size: $size, localPath: $localPath, isInline: $isInline}]')
+            # Bump the cumulative budget tracker using the actual downloaded
+            # size (Zoho's attachmentinfo size is occasionally a few bytes off
+            # for inline parts after MIME unwrapping).
+            if [[ "$DL_SIZE" =~ ^[0-9]+$ ]]; then
+              ATT_TOTAL_BYTES=$((ATT_TOTAL_BYTES + DL_SIZE))
+            fi
           else
             log "WARNING: download-attachment failed for $TRACK_ID/$ATT_NAME — continuing without it"
           fi

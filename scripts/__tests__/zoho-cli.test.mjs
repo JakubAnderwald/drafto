@@ -1057,12 +1057,25 @@ describe("downloadAttachment", () => {
     assert.equal(calls.length, 0);
   });
 
-  it("refuses to write outside CWD or TMPDIR", async () => {
+  it("refuses to write outside TMPDIR", async () => {
     cli._setFetchForTests(makeFetch([]));
-    // /etc is neither under CWD (the repo) nor under TMPDIR — reject before any HTTP call.
+    // /etc/passwd is not under TMPDIR — reject before any HTTP call.
     await assert.rejects(
       () => cli.downloadAttachment("INBOX-1", "MSG-9", "ATT-1", { out: "/etc/passwd" }),
-      /refusing to write attachment outside/,
+      /refusing to write attachment outside TMPDIR/,
+    );
+    assert.equal(calls.length, 0);
+  });
+
+  it("refuses to write into the repo CWD (TMPDIR-only guard)", async () => {
+    cli._setFetchForTests(makeFetch([]));
+    // Even an in-repo path like ./logs/foo.png is rejected — the guard
+    // exists so a stray --out pointing at the working tree can't accidentally
+    // commit binaries via the agent.
+    const repoRelative = path.resolve(process.cwd(), "logs", "stray.png");
+    await assert.rejects(
+      () => cli.downloadAttachment("INBOX-1", "MSG-9", "ATT-1", { out: repoRelative }),
+      /refusing to write attachment outside TMPDIR/,
     );
     assert.equal(calls.length, 0);
   });
