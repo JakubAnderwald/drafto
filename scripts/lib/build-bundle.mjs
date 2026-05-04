@@ -10,13 +10,20 @@
 //
 // Stdin shape (inbound_thread — `--auto-classify` / `--dry-run`):
 //   {
-//     "pending":  { /* one Zoho list-pending entry — the latest message */ },
-//     "thread":   { "threadId": "...", "messages": [...] } | [<msg>, ...] | null,
-//     "headers":  { /* parsed headers of the latest message */ } | {},
-//     "state":    { /* state.mjs payload */ } | { /* empty */ },
-//     "config":   { "allowlist", "adminEmail", "oauthUserEmail", "phase",
-//                   "now"? }
+//     "pending":     { /* one Zoho list-pending entry — the latest message */ },
+//     "thread":      { "threadId": "...", "messages": [...] } | [<msg>, ...] | null,
+//     "headers":     { /* parsed headers of the latest message */ } | {},
+//     "state":       { /* state.mjs payload */ } | { /* empty */ },
+//     "attachments": [ { "filename", "contentType", "size", "localPath", "isInline"? }, ... ] | [],
+//     "config":      { "allowlist", "adminEmail", "oauthUserEmail", "phase",
+//                      "now"? }
 //   }
+//
+// Attachments live at the top level (not under config) because they are
+// per-thread runtime data, not configuration. Bash downloads them to a
+// per-run tmpdir before invoking this builder; the prompt's step 8.0
+// uploads them to GitHub when (and only when) the thread classifies as
+// bug/feature.
 //
 // Stdin shape (github_comment_batch — `--comment-sync`):
 //   {
@@ -58,6 +65,7 @@ export function buildInboundThreadBundle({
   state,
   config,
   linkedIssue = "",
+  attachments = [],
   nowIso = new Date().toISOString(),
 } = {}) {
   const headersObj = headers && typeof headers === "object" ? headers : {};
@@ -112,6 +120,13 @@ export function buildInboundThreadBundle({
     // routes to step 4.5 (gh issue comment) instead of classifying as new.
     // Empty string means unlinked (fresh inbound or singleton-first-contact).
     linkedIssue: typeof linkedIssue === "string" ? linkedIssue : "",
+    // Per-thread attachment metadata. Bash downloads each file to a tmpdir
+    // before invoking the builder; the prompt's step 8.0 uploads them to
+    // GitHub when classifying as bug/feature, ignores them otherwise.
+    // Whitelisted to a fixed shape so bash can't sneak through extra fields
+    // (e.g. absolute paths outside the tmpdir, raw content) — the bundle is
+    // logged in dry-run, so PII discipline starts here.
+    attachments: normaliseAttachments(attachments),
     config: {
       allowlist: normaliseAllowlist(cfg.allowlist),
       adminEmail: cfg.adminEmail ?? "",
@@ -156,6 +171,27 @@ function normaliseAllowlist(input) {
   }
   if (typeof input === "string") return parseAllowlist(input);
   return [];
+}
+
+function normaliseAttachments(input) {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((a) => {
+      if (!a || typeof a !== "object") return null;
+      const filename = typeof a.filename === "string" ? a.filename : "";
+      const contentType =
+        typeof a.contentType === "string" ? a.contentType : "application/octet-stream";
+      const sizeRaw = a.size;
+      const size = Number.isFinite(Number(sizeRaw)) ? Number(sizeRaw) : 0;
+      const localPath = typeof a.localPath === "string" ? a.localPath : "";
+      const isInline = Boolean(a.isInline);
+      // Drop entries with no filename or no localPath — those are useless
+      // (the prompt has nothing to upload). Bash should never emit these,
+      // but the whitelist is defence-in-depth.
+      if (!filename || !localPath) return null;
+      return { filename, contentType, size, localPath, isInline };
+    })
+    .filter(Boolean);
 }
 
 // Phase F: GitHub-comment → Zoho-reply sync. The bash side fetches the
@@ -298,6 +334,7 @@ async function main() {
       state: input.state ?? emptyState(),
       config: cfg,
       linkedIssue: input.linkedIssue ?? "",
+      attachments: input.attachments ?? [],
       nowIso: cfg.now ?? new Date().toISOString(),
     });
   } else {
