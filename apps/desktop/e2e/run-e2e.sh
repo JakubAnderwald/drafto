@@ -137,11 +137,21 @@ if has_element "Email" && has_element "Password" && has_element "Log in"; then
   click_element_by_desc "Password"
   cliclick t:"$E2E_TEST_PASSWORD"
   click_element_by_desc "Log in"
-  # Poll up to 15s for the sidebar to render.
+  # Poll up to 15s for the sidebar to render. Fail fast if it never does — the
+  # rest of the suite would otherwise run against the login screen and emit
+  # confusing failures unrelated to the underlying auth issue.
+  LOGIN_OK=false
   for _ in $(seq 1 30); do
-    has_element "New notebook" && break
+    if has_element "New notebook"; then
+      LOGIN_OK=true
+      break
+    fi
     sleep 0.5
   done
+  if [ "$LOGIN_OK" = false ]; then
+    echo "Error: Login did not complete within 15s — aborting." >&2
+    exit 1
+  fi
 fi
 
 # Notebook name is set up here so the cleanup teardown can find it later.
