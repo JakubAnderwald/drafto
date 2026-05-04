@@ -15,6 +15,26 @@
 //                                             requires the folder id of the
 //                                             message, so list-pending /
 //                                             get-thread surface it.
+//   get-attachment-info <folderId> <msgId>  → JSON array of attachments for a
+//                                             single message. Each entry
+//                                             carries {attachmentId, filename,
+//                                             size, isInline, cid?}. Both
+//                                             "regular" attachments and inline
+//                                             (cid:) parts are surfaced — the
+//                                             agent uploads both to the issue
+//                                             so customers see screenshots
+//                                             even when the email used inline
+//                                             references.
+//   download-attachment <folderId>          → downloads ONE attachment to a
+//        <messageId> <attachmentId>           local file. The Zoho endpoint
+//        --out <path>                         streams binary, so this path
+//                                             uses zohoApi(... { expect:
+//                                             "binary" }). Prints
+//                                             {filename, size, contentType,
+//                                             path} to stdout — contentType
+//                                             comes from the response header
+//                                             (attachmentinfo doesn't include
+//                                             it).
 //   reply <messageId>                       → reply to an inbound message via
 //        --to <addr> --subject <s>            inReplyTo + toAddress + subject.
 //        --body-file <path>                   messageId MUST be the latest
@@ -51,6 +71,7 @@
 // ZOHO_API_PATHS centralised so they can be changed in one place.
 
 import { promises as fs } from "node:fs";
+import path from "node:path";
 import { loadConfig, getAccessToken, invalidateAccessToken, _resetForTests } from "./zoho-auth.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 import { isMainModule } from "./is-main.mjs";
@@ -103,6 +124,22 @@ const ZOHO_API_PATHS = {
   // {data: {headerContent: "<CRLF-delimited raw headers>"}}.
   messageHeader: (accountId, folderId, messageId) =>
     `/api/accounts/${accountId}/folders/${encodeURIComponent(folderId)}/messages/${encodeURIComponent(messageId)}/header`,
+  // Attachment metadata. Folder-scoped like /header. Response shape:
+  //   {status, data: {
+  //      attachments: [{attachmentId, attachmentName, attachmentSize}, ...],
+  //      inline:      [{attachmentId, attachmentName, attachmentSize, cid}, ...],
+  //      messageId
+  //   }}
+  // Inline parts (cid:) are returned in a separate array; we surface both
+  // through `getAttachmentInfo` and tag inline ones with `isInline: true`.
+  attachmentInfo: (accountId, folderId, messageId) =>
+    `/api/accounts/${accountId}/folders/${encodeURIComponent(folderId)}/messages/${encodeURIComponent(messageId)}/attachmentinfo`,
+  // Binary attachment content. Returns the raw bytes with Content-Type set to
+  // the original MIME type — NOT a JSON wrapper. Hitting this through the
+  // default JSON-parse path produces garbage (UTF-8 decode + JSON.parse on a
+  // PNG); use zohoApi(..., { expect: "binary" }) for this endpoint only.
+  attachmentDownload: (accountId, folderId, messageId, attachmentId) =>
+    `/api/accounts/${accountId}/folders/${encodeURIComponent(folderId)}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
   sendOrReply: (accountId) => `/api/accounts/${accountId}/messages`,
   updateThread: (accountId) => `/api/accounts/${accountId}/updatethread`,
   updateMessage: (accountId) => `/api/accounts/${accountId}/updatemessage`,
@@ -119,7 +156,7 @@ export function _setFetchForTests(impl) {
   _labelsByName = null;
 }
 
-async function zohoApi(method, urlPath, { query, body, _retry = false } = {}) {
+async function zohoApi(method, urlPath, { query, body, expect = "json", _retry = false } = {}) {
   const cfg = await loadConfig();
   const url = new URL(`https://${cfg.mailHost}${urlPath}`);
   if (query) {
@@ -128,17 +165,50 @@ async function zohoApi(method, urlPath, { query, body, _retry = false } = {}) {
     }
   }
   const token = await getAccessToken();
+  // Binary-expecting GETs (attachment downloads) advertise the right Accept
+  // and skip the JSON Content-Type — the latter is harmless on GET but
+  // sending it on a binary-result endpoint is a misleading signal in audits.
+  const headers = { Authorization: `Zoho-oauthtoken ${token}` };
+  if (expect === "binary") {
+    headers["Accept"] = "application/octet-stream";
+  } else {
+    headers["Content-Type"] = "application/json";
+  }
   const res = await fetchImpl(url.toString(), {
     method,
-    headers: {
-      Authorization: `Zoho-oauthtoken ${token}`,
-      "Content-Type": "application/json",
-    },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   if (res.status === 401 && !_retry) {
     invalidateAccessToken();
-    return zohoApi(method, urlPath, { query, body, _retry: true });
+    return zohoApi(method, urlPath, { query, body, expect, _retry: true });
+  }
+  if (expect === "binary") {
+    // On error, Zoho returns a JSON error body even for binary endpoints.
+    // Read as bytes either way; on !ok try to parse the bytes as JSON so the
+    // existing err.body shape (parsed Zoho error object) is preserved for
+    // callers who key off it.
+    const buffer = Buffer.from(await res.arrayBuffer());
+    if (!res.ok) {
+      let parsed;
+      try {
+        parsed = buffer.length ? JSON.parse(buffer.toString("utf8")) : {};
+      } catch {
+        parsed = { _raw: buffer.toString("utf8") };
+      }
+      const err = new Error(
+        `Zoho ${method} ${urlPath} failed: ${res.status} ${parsed?.data?.errorCode ?? parsed?.status?.code ?? ""}`,
+      );
+      err.status = res.status;
+      err.body = parsed;
+      throw err;
+    }
+    return {
+      buffer,
+      contentType: res.headers.get("content-type"),
+      contentLength: Number(res.headers.get("content-length")) || buffer.length,
+      contentDisposition: res.headers.get("content-disposition"),
+    };
   }
   const text = await res.text();
   let parsed;
@@ -368,6 +438,107 @@ function parseRawHeaders(raw) {
   return out;
 }
 
+// Returns a flat array of attachment metadata for a single message, merging
+// Zoho's split `data.attachments` (regular) and `data.inline` (cid:) lists
+// and tagging each entry with `isInline`. Field names are normalised:
+//   {attachmentId, filename, size, isInline, cid?}
+//
+// `attachmentinfo` does NOT return a Content-Type per attachment — that comes
+// from the response header on the binary download endpoint instead. Callers
+// that need a contentType should call `downloadAttachment` and read the
+// returned `contentType` field.
+//
+// Field-name fallbacks (`attachmentName | name | filename`,
+// `attachmentSize | size | sizeInBytes`) follow the same defensive pattern as
+// `listLabels` — if Zoho ever shifts the shape, callers don't immediately
+// break.
+export async function getAttachmentInfo(folderId, messageId) {
+  if (!folderId) throw new Error("folderId required");
+  if (!messageId) throw new Error("messageId required");
+  const cfg = await loadConfig();
+  const res = await zohoApi(
+    "GET",
+    ZOHO_API_PATHS.attachmentInfo(cfg.accountId, folderId, messageId),
+  );
+  const data = res.data ?? res;
+  const regular = Array.isArray(data?.attachments) ? data.attachments : [];
+  const inline = Array.isArray(data?.inline) ? data.inline : [];
+  const norm = (entry, isInline) => {
+    const filename = entry.attachmentName ?? entry.name ?? entry.filename ?? "";
+    const sizeRaw = entry.attachmentSize ?? entry.size ?? entry.sizeInBytes;
+    const size = Number.isFinite(Number(sizeRaw)) ? Number(sizeRaw) : 0;
+    const out = {
+      attachmentId: String(entry.attachmentId ?? entry.id ?? ""),
+      filename,
+      size,
+      isInline,
+    };
+    if (isInline && entry.cid) out.cid = String(entry.cid);
+    return out;
+  };
+  return [...regular.map((e) => norm(e, false)), ...inline.map((e) => norm(e, true))];
+}
+
+// Downloads ONE attachment to `out`. Returns + prints
+// {filename, size, contentType, path}. The filename is parsed from the
+// response's `Content-Disposition` header when present, otherwise falls back
+// to the basename of `out` (which the caller picked).
+//
+// Zoho's binary endpoint sets the `Content-Type` to the original MIME type
+// (e.g. `image/png`); we propagate that as `contentType` so the prompt can
+// decide whether to embed as `![]()` (image) or `[]()` (link).
+//
+// `out` is resolved against the caller's CWD; we refuse paths that escape
+// outside of it (`..` segments) so a malicious filename can't steer writes
+// elsewhere on disk. The bash entry point hands us a tmpdir-relative path
+// and that constraint matches.
+export async function downloadAttachment(folderId, messageId, attachmentId, { out } = {}) {
+  if (!folderId) throw new Error("folderId required");
+  if (!messageId) throw new Error("messageId required");
+  if (!attachmentId) throw new Error("attachmentId required");
+  if (!out) throw new Error("--out required");
+  const resolved = path.resolve(out);
+  // Guard against `..` escapes: the resolved path must stay under CWD. The
+  // bash runner mktemp's a per-run dir under /tmp and CWDs into the repo, so
+  // we accept anything under the repo OR under TMPDIR.
+  const cwd = process.cwd();
+  const tmpRoot = path.resolve(process.env.TMPDIR ?? "/tmp");
+  if (!resolved.startsWith(cwd + path.sep) && !resolved.startsWith(tmpRoot + path.sep)) {
+    throw new Error(`refusing to write attachment outside CWD or TMPDIR: ${resolved}`);
+  }
+  const cfg = await loadConfig();
+  const res = await zohoApi(
+    "GET",
+    ZOHO_API_PATHS.attachmentDownload(cfg.accountId, folderId, messageId, attachmentId),
+    { expect: "binary" },
+  );
+  await fs.mkdir(path.dirname(resolved), { recursive: true });
+  await fs.writeFile(resolved, res.buffer);
+  return {
+    filename: filenameFromDisposition(res.contentDisposition) ?? path.basename(resolved),
+    size: res.buffer.length,
+    contentType: res.contentType ?? "application/octet-stream",
+    path: resolved,
+  };
+}
+
+// Parse the filename out of a `Content-Disposition` header. Handles both
+// `filename="foo.png"` (RFC 2616) and `filename*=UTF-8''foo.png` (RFC 5987).
+// Returns null if no filename token is present.
+function filenameFromDisposition(header) {
+  if (typeof header !== "string") return null;
+  const star = header.match(/filename\*\s*=\s*[^']+'[^']*'([^;]+)/i);
+  if (star) {
+    try {
+      return decodeURIComponent(star[1].trim());
+    } catch {
+      /* fall through */
+    }
+  }
+  const plain = header.match(/filename\s*=\s*"?([^";]+)"?/i);
+  return plain ? plain[1].trim() : null;
+}
+
 // Zoho's POST /messages endpoint rejects unknown top-level keys with
 // `404 EXTRA_KEY_FOUND_IN_JSON`. We previously included a top-level
 // `headers: { "Auto-Submitted": "..." }` so downstream mail clients would
@@ -529,6 +700,10 @@ async function main(argv) {
       return findLinkedIssue(positional[0]);
     case "get-headers":
       return getHeaders(positional[0], positional[1]);
+    case "get-attachment-info":
+      return getAttachmentInfo(positional[0], positional[1]);
+    case "download-attachment":
+      return downloadAttachment(positional[0], positional[1], positional[2], { out: flags.out });
     case "reply":
       return replyToMessage(positional[0], flags["body-file"], {
         to: flags.to,
@@ -546,7 +721,7 @@ async function main(argv) {
     case "-h":
     case undefined:
       process.stdout.write(
-        "Usage: zoho-cli.mjs <list-pending|get-thread <threadId>|find-linked-issue <threadId>|get-headers <folderId> <messageId>|reply <messageId> --to <addr> --subject <s> --body-file <path>|send --to <addr> --subject <s> --body-file <path>|add-label <threadId> <label>|add-message-label <messageId> <label>|move-to-folder <threadId> <folder>>\n",
+        "Usage: zoho-cli.mjs <list-pending|get-thread <threadId>|find-linked-issue <threadId>|get-headers <folderId> <messageId>|get-attachment-info <folderId> <messageId>|download-attachment <folderId> <messageId> <attachmentId> --out <path>|reply <messageId> --to <addr> --subject <s> --body-file <path>|send --to <addr> --subject <s> --body-file <path>|add-label <threadId> <label>|add-message-label <messageId> <label>|move-to-folder <threadId> <folder>>\n",
       );
       return null;
     default:

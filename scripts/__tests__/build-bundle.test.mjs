@@ -367,6 +367,116 @@ describe("buildInboundThreadBundle — linkedIssue (Phase F)", () => {
   });
 });
 
+describe("buildInboundThreadBundle — attachments (Phase F)", () => {
+  const SAMPLE_ATTACHMENT = {
+    filename: "screenshot.png",
+    contentType: "image/png",
+    size: 12345,
+    localPath: "/tmp/drafto-support/0-screenshot.png",
+    isInline: false,
+  };
+
+  it("propagates attachments verbatim through the bundle", () => {
+    const bundle = buildInboundThreadBundle({
+      pending: basePending(),
+      thread: null,
+      headers: {},
+      state: emptyState(),
+      config: baseConfig({ phase: "F" }),
+      attachments: [SAMPLE_ATTACHMENT],
+      nowIso: NOW,
+    });
+    assert.deepEqual(bundle.attachments, [SAMPLE_ATTACHMENT]);
+  });
+
+  it("defaults to [] when omitted", () => {
+    const bundle = buildInboundThreadBundle({
+      pending: basePending(),
+      thread: null,
+      headers: {},
+      state: emptyState(),
+      config: baseConfig({ phase: "F" }),
+      nowIso: NOW,
+    });
+    assert.deepEqual(bundle.attachments, []);
+  });
+
+  it("coerces a non-array attachments to []", () => {
+    const bundle = buildInboundThreadBundle({
+      pending: basePending(),
+      thread: null,
+      headers: {},
+      state: emptyState(),
+      config: baseConfig({ phase: "F" }),
+      attachments: "not-an-array",
+      nowIso: NOW,
+    });
+    assert.deepEqual(bundle.attachments, []);
+  });
+
+  it("strips fields outside the allowed whitelist", () => {
+    const bundle = buildInboundThreadBundle({
+      pending: basePending(),
+      thread: null,
+      headers: {},
+      state: emptyState(),
+      config: baseConfig({ phase: "F" }),
+      attachments: [
+        {
+          ...SAMPLE_ATTACHMENT,
+          // Sneaky extras — must not survive into the bundle.
+          rawBytes: "AAAAAA==",
+          internalCookie: "secret",
+        },
+      ],
+      nowIso: NOW,
+    });
+    assert.equal(bundle.attachments.length, 1);
+    assert.deepEqual(Object.keys(bundle.attachments[0]).sort(), [
+      "contentType",
+      "filename",
+      "isInline",
+      "localPath",
+      "size",
+    ]);
+  });
+
+  it("drops entries with no filename or no localPath (defensive)", () => {
+    const bundle = buildInboundThreadBundle({
+      pending: basePending(),
+      thread: null,
+      headers: {},
+      state: emptyState(),
+      config: baseConfig({ phase: "F" }),
+      attachments: [
+        SAMPLE_ATTACHMENT,
+        { filename: "", contentType: "image/png", size: 1, localPath: "/tmp/x" },
+        { filename: "x.png", contentType: "image/png", size: 1, localPath: "" },
+        null,
+      ],
+      nowIso: NOW,
+    });
+    assert.equal(bundle.attachments.length, 1);
+    assert.equal(bundle.attachments[0].filename, "screenshot.png");
+  });
+
+  it("CLI round-trips attachments on stdin", () => {
+    const input = {
+      pending: basePending(),
+      thread: null,
+      headers: {},
+      state: emptyState(),
+      attachments: [SAMPLE_ATTACHMENT],
+      config: { ...baseConfig({ phase: "F" }), now: NOW },
+    };
+    const r = spawnSync("node", [CLI], { encoding: "utf8", input: JSON.stringify(input) });
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.kind, "inbound_thread");
+    assert.deepEqual(out.attachments, [SAMPLE_ATTACHMENT]);
+  });
+});
+
 describe("buildGithubCommentBatchBundle (Phase F)", () => {
   it("produces a kind=github_comment_batch bundle with normalised comment shape", () => {
     const bundle = buildGithubCommentBatchBundle({

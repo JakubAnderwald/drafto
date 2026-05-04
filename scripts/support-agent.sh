@@ -203,6 +203,11 @@ if [[ -f "$LOCK_FILE" ]]; then
 fi
 echo "$$" > "$LOCK_FILE"
 
+# Per-run scratch dir for downloaded Zoho attachments. Reaped by the cleanup
+# trap regardless of exit code. Lives outside REPO_ROOT so a `git status`
+# during a run can't surface ephemeral binaries.
+ATTACHMENTS_TMP_DIR=$(mktemp -d -t drafto-support-attachments.XXXXXX)
+
 cd "$REPO_ROOT"
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
@@ -211,6 +216,12 @@ log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 cleanup() {
   local exit_code=$?
   rm -f "$LOCK_FILE"
+  # Reap the per-run attachments scratch dir. `rm -rf` on a tempdir we created
+  # ourselves under TMPDIR is safe; do it before the failure-issue branch so
+  # binaries don't linger if filing the issue itself fails.
+  if [[ -n "${ATTACHMENTS_TMP_DIR:-}" && -d "$ATTACHMENTS_TMP_DIR" ]]; then
+    rm -rf "$ATTACHMENTS_TMP_DIR"
+  fi
   if [[ $exit_code -ne 0 ]]; then
     log "ERROR: support-agent exiting with code $exit_code"
     # IMPORTANT: this regex intentionally drops any line that lacks a
@@ -684,6 +695,75 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
     fi
   fi
 
+  # Attachment fetch (Phase F+ only). Download every attachment on the
+  # latest message to a per-thread tmpdir so the prompt's step 8.0 can
+  # upload them when classifying as bug/feature. We always download
+  # regardless of intent because bash doesn't know what Claude will
+  # classify; unused files get reaped by the EXIT trap. Failures here
+  # never block filing — issue without attachments is strictly better
+  # than no filing.
+  ATTACHMENTS_JSON='[]'
+  if [[ -z "$FIXTURE" && -n "$MSG_ID" && -n "$FOLDER_ID" && "$PHASE" =~ ^[FG]$ ]]; then
+    if INFO_JSON=$(node "$SCRIPT_DIR/lib/zoho-cli.mjs" get-attachment-info \
+        "$FOLDER_ID" "$MSG_ID" 2>>"$LOG_FILE"); then
+      INFO_COUNT=$(echo "$INFO_JSON" | jq 'length' 2>/dev/null || echo "0")
+      if ! [[ "$INFO_COUNT" =~ ^[0-9]+$ ]]; then INFO_COUNT=0; fi
+      if [[ "$INFO_COUNT" -gt 0 ]]; then
+        # One tmp subdir per message (TRACK_ID may be a threadId or messageId).
+        # Sanitise to be safe — TRACK_ID comes from Zoho's API so it's almost
+        # certainly digits, but we don't want a stray slash to escape.
+        SAFE_TRACK=$(printf '%s' "$TRACK_ID" | tr -c 'A-Za-z0-9._-' '_')
+        MSG_TMP_DIR="$ATTACHMENTS_TMP_DIR/$SAFE_TRACK"
+        mkdir -p "$MSG_TMP_DIR"
+        DOWNLOADED_JSON='[]'
+        for AIDX in $(seq 0 $((INFO_COUNT - 1))); do
+          ATT=$(echo "$INFO_JSON" | jq ".[${AIDX}]")
+          ATT_ID=$(echo "$ATT" | jq -r '.attachmentId')
+          ATT_NAME=$(echo "$ATT" | jq -r '.filename // ("attachment-" + (.attachmentId|tostring))')
+          ATT_SIZE=$(echo "$ATT" | jq -r '.size // 0')
+          ATT_INLINE=$(echo "$ATT" | jq -r '.isInline // false')
+          # Pre-check size against a 25 MB cap. GitHub Contents API allows
+          # ≤100 MB but recommends ≤1 MB; 25 MB leaves headroom for screenshots
+          # and short videos without risking base64-blowup OOMs in node's heap.
+          if [[ "$ATT_SIZE" =~ ^[0-9]+$ && "$ATT_SIZE" -gt 26214400 ]]; then
+            log "WARNING: skipping oversized attachment ($ATT_SIZE B) for $TRACK_ID: $ATT_NAME"
+            continue
+          fi
+          # Sanitise filename for the tmpfile: same regex Apps Script uses
+          # (a-z, A-Z, 0-9, dot, underscore, hyphen). Length-cap at 100 chars
+          # so a pathological filename can't bust PATH_MAX. The full original
+          # filename (UTF-8 etc.) is still preserved in the JSON metadata for
+          # the prompt to use when picking the GitHub repo path.
+          SAFE_NAME=$(printf '%s' "$ATT_NAME" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-100)
+          if [[ -z "$SAFE_NAME" ]]; then SAFE_NAME="attachment-${AIDX}"; fi
+          LOCAL_PATH="$MSG_TMP_DIR/${AIDX}-${SAFE_NAME}"
+          if DL_JSON=$(node "$SCRIPT_DIR/lib/zoho-cli.mjs" download-attachment \
+              "$FOLDER_ID" "$MSG_ID" "$ATT_ID" --out "$LOCAL_PATH" 2>>"$LOG_FILE"); then
+            # download-attachment returns {filename, size, contentType, path};
+            # contentType comes from the Zoho response header (attachmentinfo
+            # doesn't include it). Merge with the original filename.
+            DL_CT=$(echo "$DL_JSON" | jq -r '.contentType // "application/octet-stream"')
+            DL_SIZE=$(echo "$DL_JSON" | jq -r '.size // 0')
+            DOWNLOADED_JSON=$(echo "$DOWNLOADED_JSON" | jq \
+              --arg filename "$ATT_NAME" \
+              --arg contentType "$DL_CT" \
+              --argjson size "$DL_SIZE" \
+              --arg localPath "$LOCAL_PATH" \
+              --argjson isInline "$ATT_INLINE" \
+              '. + [{filename: $filename, contentType: $contentType, size: $size, localPath: $localPath, isInline: $isInline}]')
+          else
+            log "WARNING: download-attachment failed for $TRACK_ID/$ATT_NAME — continuing without it"
+          fi
+        done
+        ATTACHMENTS_JSON="$DOWNLOADED_JSON"
+        DOWNLOADED_COUNT=$(echo "$ATTACHMENTS_JSON" | jq 'length' 2>/dev/null || echo "0")
+        log "Downloaded $DOWNLOADED_COUNT/$INFO_COUNT attachment(s) for $TRACK_ID"
+      fi
+    else
+      log "WARNING: get-attachment-info failed for $TRACK_ID (folder=$FOLDER_ID, msg=$MSG_ID); proceeding with no attachments"
+    fi
+  fi
+
   # build-bundle.mjs takes one combined JSON on stdin. Keeps the bundle
   # construction in Node where the policy.mjs functions live, instead of
   # duplicating the logic in `jq -n`.
@@ -692,6 +772,7 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
     --argjson thread "$THREAD_JSON" \
     --argjson headers "$HEADERS_JSON" \
     --argjson state "$STATE_JSON" \
+    --argjson attachments "$ATTACHMENTS_JSON" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
     --arg adminEmail "$ADMIN_EMAIL" \
     --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
@@ -703,6 +784,7 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
        headers: $headers,
        state: $state,
        linkedIssue: $linkedIssue,
+       attachments: $attachments,
        config: {
          allowlist: $allowlist,
          adminEmail: $adminEmail,

@@ -829,3 +829,241 @@ describe("getHeaders", () => {
     assert.equal(calls.length, 0);
   });
 });
+
+describe("getAttachmentInfo", () => {
+  it("hits /attachmentinfo and merges regular + inline arrays", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url) => url.includes("/folders/INBOX-1/messages/MSG-9/attachmentinfo"),
+          response: jsonResponse(200, {
+            status: { code: 200, description: "success" },
+            data: {
+              attachments: [
+                {
+                  attachmentId: "138907275303090130",
+                  attachmentName: "test.odt",
+                  attachmentSize: 6737,
+                },
+                {
+                  attachmentId: "138907275303110000",
+                  attachmentName: "spathiphyllum.jpg",
+                  attachmentSize: 15321,
+                },
+              ],
+              inline: [
+                {
+                  attachmentId: "138907275356550040",
+                  attachmentName: "import.jpg",
+                  attachmentSize: 71730,
+                  cid: "0.28869215390.9068479665823862258@example",
+                },
+              ],
+              messageId: "1671434730313114778",
+            },
+          }),
+        },
+      ]),
+    );
+    const out = await cli.getAttachmentInfo("INBOX-1", "MSG-9");
+    assert.equal(out.length, 3);
+    // Regular attachments come first, normalised.
+    assert.deepEqual(out[0], {
+      attachmentId: "138907275303090130",
+      filename: "test.odt",
+      size: 6737,
+      isInline: false,
+    });
+    assert.deepEqual(out[1], {
+      attachmentId: "138907275303110000",
+      filename: "spathiphyllum.jpg",
+      size: 15321,
+      isInline: false,
+    });
+    // Inline attachments come last and carry the cid.
+    assert.deepEqual(out[2], {
+      attachmentId: "138907275356550040",
+      filename: "import.jpg",
+      size: 71730,
+      isInline: true,
+      cid: "0.28869215390.9068479665823862258@example",
+    });
+    // Hit the right URL.
+    const call = calls.find((c) => c.url.includes("/attachmentinfo"));
+    assert.ok(call);
+    assert.equal(call.init.method ?? "GET", "GET");
+  });
+
+  it("returns [] when both arrays are empty or missing", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url) => url.includes("/attachmentinfo"),
+          response: jsonResponse(200, { data: { messageId: "MSG-9" } }),
+        },
+      ]),
+    );
+    const out = await cli.getAttachmentInfo("INBOX-1", "MSG-9");
+    assert.deepEqual(out, []);
+  });
+
+  it("requires both folderId and messageId", async () => {
+    cli._setFetchForTests(makeFetch([]));
+    await assert.rejects(() => cli.getAttachmentInfo("", "MSG-9"), /folderId required/);
+    await assert.rejects(() => cli.getAttachmentInfo("INBOX-1", ""), /messageId required/);
+    assert.equal(calls.length, 0);
+  });
+
+  it("surfaces errors via err.body (Zoho error JSON)", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url) => url.includes("/attachmentinfo"),
+          response: jsonResponse(404, {
+            status: { code: 404, description: "URL_RULE_NOT_CONFIGURED" },
+            data: { errorCode: "URL_RULE_NOT_CONFIGURED" },
+          }),
+        },
+      ]),
+    );
+    await assert.rejects(
+      () => cli.getAttachmentInfo("INBOX-1", "MSG-9"),
+      (err) => {
+        assert.equal(err.status, 404);
+        assert.equal(err.body?.data?.errorCode, "URL_RULE_NOT_CONFIGURED");
+        return true;
+      },
+    );
+  });
+});
+
+describe("downloadAttachment", () => {
+  // PNG magic header — used to assert we wrote real bytes, not a JSON-decoded
+  // string of them. If the binary path goes through the JSON branch, the
+  // first 4 bytes of the file would be ASCII (`{`/`"`) instead of these.
+  const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+  function binaryResponse(buffer, headers = {}) {
+    return new Response(buffer, {
+      status: 200,
+      headers: { "Content-Type": "image/png", "Content-Length": String(buffer.length), ...headers },
+    });
+  }
+
+  it("writes the raw bytes to --out and returns contentType from response header", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url) => url.includes("/folders/INBOX-1/messages/MSG-9/attachments/ATT-1"),
+          response: () => binaryResponse(PNG_MAGIC),
+        },
+      ]),
+    );
+    const outPath = path.join(TMP_DIR, "screenshot.png");
+    const result = await cli.downloadAttachment("INBOX-1", "MSG-9", "ATT-1", { out: outPath });
+    assert.equal(result.contentType, "image/png");
+    assert.equal(result.size, PNG_MAGIC.length);
+    assert.equal(result.path, outPath);
+    // No Content-Disposition supplied → falls back to basename.
+    assert.equal(result.filename, "screenshot.png");
+    const written = await fs.readFile(outPath);
+    assert.deepEqual(Uint8Array.from(written), Uint8Array.from(PNG_MAGIC));
+  });
+
+  it("parses filename from Content-Disposition when present (RFC 2616)", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url) => url.includes("/attachments/ATT-2"),
+          response: () =>
+            binaryResponse(PNG_MAGIC, {
+              "Content-Disposition": 'attachment; filename="real-name.png"',
+            }),
+        },
+      ]),
+    );
+    const outPath = path.join(TMP_DIR, "fallback-name.png");
+    const result = await cli.downloadAttachment("INBOX-1", "MSG-9", "ATT-2", { out: outPath });
+    assert.equal(result.filename, "real-name.png");
+  });
+
+  it("parses filename* (RFC 5987 UTF-8 form) when present", async () => {
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url) => url.includes("/attachments/ATT-3"),
+          response: () =>
+            binaryResponse(PNG_MAGIC, {
+              "Content-Disposition": "attachment; filename*=UTF-8''r%C3%A9sum%C3%A9.png",
+            }),
+        },
+      ]),
+    );
+    const outPath = path.join(TMP_DIR, "ignored.png");
+    const result = await cli.downloadAttachment("INBOX-1", "MSG-9", "ATT-3", { out: outPath });
+    assert.equal(result.filename, "résumé.png");
+  });
+
+  it("retries once on 401 after invalidating the cached access token", async () => {
+    let attempt = 0;
+    cli._setFetchForTests(
+      makeFetch([
+        tokenHandler,
+        {
+          match: (url) => url.includes("/attachments/ATT-4"),
+          response: () => {
+            attempt += 1;
+            if (attempt === 1) {
+              return new Response(JSON.stringify({ data: { errorCode: "INVALID_OAUTHTOKEN" } }), {
+                status: 401,
+                headers: { "Content-Type": "application/json" },
+              });
+            }
+            return binaryResponse(PNG_MAGIC);
+          },
+        },
+      ]),
+    );
+    const outPath = path.join(TMP_DIR, "retried.png");
+    const result = await cli.downloadAttachment("INBOX-1", "MSG-9", "ATT-4", { out: outPath });
+    assert.equal(attempt, 2);
+    assert.equal(result.size, PNG_MAGIC.length);
+  });
+
+  it("requires --out and all positional args", async () => {
+    cli._setFetchForTests(makeFetch([]));
+    await assert.rejects(
+      () => cli.downloadAttachment("", "MSG-9", "ATT-1", { out: path.join(TMP_DIR, "x.png") }),
+      /folderId required/,
+    );
+    await assert.rejects(
+      () => cli.downloadAttachment("INBOX-1", "", "ATT-1", { out: path.join(TMP_DIR, "x.png") }),
+      /messageId required/,
+    );
+    await assert.rejects(
+      () => cli.downloadAttachment("INBOX-1", "MSG-9", "", { out: path.join(TMP_DIR, "x.png") }),
+      /attachmentId required/,
+    );
+    await assert.rejects(
+      () => cli.downloadAttachment("INBOX-1", "MSG-9", "ATT-1", { out: "" }),
+      /--out required/,
+    );
+    assert.equal(calls.length, 0);
+  });
+
+  it("refuses to write outside CWD or TMPDIR", async () => {
+    cli._setFetchForTests(makeFetch([]));
+    // /etc is neither under CWD (the repo) nor under TMPDIR — reject before any HTTP call.
+    await assert.rejects(
+      () => cli.downloadAttachment("INBOX-1", "MSG-9", "ATT-1", { out: "/etc/passwd" }),
+      /refusing to write attachment outside/,
+    );
+    assert.equal(calls.length, 0);
+  });
+});
