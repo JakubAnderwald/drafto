@@ -126,6 +126,37 @@ wait_for_ui() {
 osascript -e 'tell application "Drafto" to activate'
 sleep 1
 
+# ── Auth setup ────────────────────────────────
+# If the app is sitting on the login screen, sign in with the E2E test user.
+# Same env contract as the web suite (apps/web/e2e/auth.setup.ts).
+if has_element "Email" && has_element "Password" && has_element "Log in"; then
+  : "${E2E_TEST_EMAIL:?E2E_TEST_EMAIL must be set (see apps/web/.env.local)}"
+  : "${E2E_TEST_PASSWORD:?E2E_TEST_PASSWORD must be set (see apps/web/.env.local)}"
+  click_element_by_desc "Email"
+  cliclick t:"$E2E_TEST_EMAIL"
+  click_element_by_desc "Password"
+  cliclick t:"$E2E_TEST_PASSWORD"
+  click_element_by_desc "Log in"
+  # Poll up to 15s for the sidebar to render. Fail fast if it never does — the
+  # rest of the suite would otherwise run against the login screen and emit
+  # confusing failures unrelated to the underlying auth issue.
+  LOGIN_OK=false
+  for _ in $(seq 1 30); do
+    if has_element "New notebook"; then
+      LOGIN_OK=true
+      break
+    fi
+    sleep 0.5
+  done
+  if [ "$LOGIN_OK" = false ]; then
+    echo "Error: Login did not complete within 15s — aborting." >&2
+    exit 1
+  fi
+fi
+
+# Notebook name is set up here so the cleanup teardown can find it later.
+E2E_NB_NAME="E2E Notebook $(date +%s)"
+
 echo ""
 echo "=== Drafto macOS E2E Tests ==="
 echo ""
@@ -146,10 +177,10 @@ else
   fail "Search button" "No element with description 'Search' found"
 fi
 
-if has_element "Add notebook"; then
-  pass "Add notebook button present"
+if has_element "New notebook"; then
+  pass "New notebook button present"
 else
-  fail "Add notebook button" "No element with description 'Add notebook' found"
+  fail "New notebook button" "No element with description 'New notebook' found"
 fi
 
 # ──────────────────────────────────────────────
@@ -182,7 +213,7 @@ echo "TEST 3: Select a notebook"
 FIRST_NB_IDX=$(osascript -e '
 tell application "System Events"
   tell process "Drafto"
-    set knownDescs to {"Search", "Add notebook", "Trash", "Sign out", "Sync status", "Drafto", "+ New Note"}
+    set knownDescs to {"Search", "New notebook", "Trash", "Sign out", "Sync status", "Drafto", "New note"}
     repeat with i from 1 to count of UI elements of window 1
       try
         set d to description of UI element i of window 1
@@ -202,8 +233,8 @@ if [ "$FIRST_NB_IDX" -gt 0 ] 2>/dev/null; then
 
   screencapture -x /tmp/drafto_e2e_notebook_click.png
 
-  # After selecting a notebook, the "+ New Note" button should appear
-  if has_element "+ New Note"; then
+  # After selecting a notebook, the "New note" button should appear
+  if has_element "New note"; then
     pass "Note list panel appeared after notebook selection"
   else
     NEW_COUNT=$(get_element_count)
@@ -221,31 +252,28 @@ fi
 echo ""
 echo "TEST 4: Create a new notebook"
 # ──────────────────────────────────────────────
-BEFORE_COUNT=$(get_element_count)
-
-E2E_NB_NAME="E2E Notebook $(date +%s)"
-
-if click_element_by_desc "Add notebook"; then
-  wait_for_ui
-
-  # Type a notebook name and submit
-  cliclick t:"$E2E_NB_NAME"
-  cliclick kp:return
+if click_element_by_desc "New notebook"; then
+  # The TextInput renders with autoFocus. cliclick's per-character typing on
+  # RN macOS drops keys at the start (focus latency) and its kp:return on a
+  # text input was observed not to fire onSubmitEditing. Use clipboard paste
+  # via AppleScript keystroke for both the value and the submit — these go
+  # through the standard input pipeline and respect modifiers.
+  sleep 1.5
+  osascript -e "set the clipboard to \"$E2E_NB_NAME\""
+  sleep 0.2
+  osascript -e 'tell application "System Events" to keystroke "v" using command down'
+  sleep 0.4
+  osascript -e 'tell application "System Events" to keystroke return'
   wait_for_ui
   sleep 1
 
   if has_element "$E2E_NB_NAME"; then
     pass "Notebook '$E2E_NB_NAME' created and visible"
   else
-    AFTER_COUNT=$(get_element_count)
-    if [ "$AFTER_COUNT" -ne "$BEFORE_COUNT" ]; then
-      pass "Notebook created (element count: $BEFORE_COUNT -> $AFTER_COUNT)"
-    else
-      fail "Create notebook" "Notebook '$E2E_NB_NAME' not found after creation"
-    fi
+    fail "Create notebook" "Notebook '$E2E_NB_NAME' not found after creation"
   fi
 else
-  fail "Create notebook" "Could not find 'Add notebook' button"
+  fail "Create notebook" "Could not find 'New notebook' button"
 fi
 
 screencapture -x /tmp/drafto_e2e_new_notebook.png
@@ -258,9 +286,9 @@ echo "TEST 5: Create a new note"
 cliclick kp:esc
 wait_for_ui
 
-if has_element "+ New Note"; then
+if has_element "New note"; then
   BEFORE_NOTE_COUNT=$(get_element_count)
-  click_element_by_desc "+ New Note"
+  click_element_by_desc "New note"
   wait_for_ui
   sleep 1
 
@@ -274,10 +302,10 @@ if has_element "+ New Note"; then
   elif [ "$AFTER_NOTE_COUNT" -ne "$BEFORE_NOTE_COUNT" ]; then
     pass "New note created (element count: $BEFORE_NOTE_COUNT -> $AFTER_NOTE_COUNT)"
   else
-    fail "Create note" "No visible change after clicking + New Note"
+    fail "Create note" "No visible change after clicking New note"
   fi
 else
-  fail "Create note" "Could not find '+ New Note' button — is a notebook selected?"
+  fail "Create note" "Could not find 'New note' button — is a notebook selected?"
 fi
 
 # ──────────────────────────────────────────────
@@ -355,18 +383,62 @@ fi
 echo ""
 echo "TEST 9: Metro bundler connection"
 # ──────────────────────────────────────────────
-METRO_PID=$(lsof -ti :8081 2>/dev/null | head -1)
-if [ -n "$METRO_PID" ]; then
-  pass "Metro bundler running on port 8081 (PID: $METRO_PID)"
+# Metro only runs when targeting a debug build started via `pnpm start`.
+# Production builds (e.g. /Applications/Drafto.app) bundle JS into the .app
+# and don't open port 8081 — skip the test in that case rather than fail it.
+METRO_PID=$(lsof -ti :8081 2>/dev/null | head -1 || true)
+if [ -z "$METRO_PID" ]; then
+  echo "  ⏭  Skipped — Metro not running (likely a production-build target)"
 else
-  fail "Metro bundler" "Not running on port 8081"
+  pass "Metro bundler running on port 8081 (PID: $METRO_PID)"
+  METRO_STATUS=$(curl -s http://localhost:8081/status 2>/dev/null || echo "unreachable")
+  if [[ "$METRO_STATUS" == *"packager-status:running"* ]]; then
+    pass "Metro bundler is healthy"
+  else
+    fail "Metro health" "Status: $METRO_STATUS"
+  fi
 fi
 
-METRO_STATUS=$(curl -s http://localhost:8081/status 2>/dev/null || echo "unreachable")
-if [[ "$METRO_STATUS" == *"packager-status:running"* ]]; then
-  pass "Metro bundler is healthy"
+# ──────────────────────────────────────────────
+echo ""
+echo "TEARDOWN: Delete E2E test notebook"
+# ──────────────────────────────────────────────
+# Both delete buttons are hover-gated (accessibilityElementsHidden={!hovered}),
+# so the cursor must move over the row before the Delete button enters the
+# accessibility tree. notebook.markAsDeleted() cascades to child notes via
+# WatermelonDB, so deleting the notebook also collects the orphan note from
+# Test 5 — no second pass needed.
+NB_IDX=$(find_element_by_desc "$E2E_NB_NAME")
+if [ "$NB_IDX" -gt 0 ] 2>/dev/null; then
+  NB_POS=$(osascript -e "
+  tell application \"System Events\"
+    tell process \"Drafto\"
+      set p to position of UI element $NB_IDX of window 1
+      set s to size of UI element $NB_IDX of window 1
+      set cx to (item 1 of p) + (item 1 of s) / 2
+      set cy to (item 2 of p) + (item 2 of s) / 2
+      return (cx as integer as text) & \",\" & (cy as integer as text)
+    end tell
+  end tell")
+  # RN macOS onHoverIn fires on real mouse motion, not on teleport. Move to a
+  # different position first, then to the notebook row, so the cursor crosses
+  # the row boundary and triggers the hover state that surfaces Delete.
+  cliclick "m:10,10"
+  sleep 0.2
+  cliclick "m:$NB_POS"
+  sleep 1.0
+  if click_element_by_desc "Delete notebook"; then
+    sleep 1
+    if has_element "$E2E_NB_NAME"; then
+      echo "  ⚠  Cleanup: Delete clicked but notebook still visible (state left behind)"
+    else
+      echo "  ✅ Cleanup: E2E notebook removed"
+    fi
+  else
+    echo "  ⚠  Cleanup: 'Delete notebook' button not in a11y tree (hover may have failed)"
+  fi
 else
-  fail "Metro health" "Status: $METRO_STATUS"
+  echo "  ℹ  Cleanup: No matching E2E notebook to delete (Test 4 may have failed)"
 fi
 
 # ──────────────────────────────────────────────

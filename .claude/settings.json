@@ -9,15 +9,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/prevent-main-commit.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/prevent-main-commit.sh\""
           },
           {
             "type": "command",
-            "command": "bash .claude/hooks/prevent-main-push.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/prevent-main-push.sh\""
           },
           {
             "type": "command",
-            "command": "bash .claude/hooks/migration-stats-pre.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/migration-stats-pre.sh\""
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/migration-stats-post.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/migration-stats-post.sh\""
           }
         ]
       }
