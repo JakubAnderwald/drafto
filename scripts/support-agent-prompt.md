@@ -235,7 +235,12 @@ it as new mail or file a duplicate issue. Instead:
      zoho-thread-id: <threadId>
      -->
      ```
-     `nightly-support.sh` reads this footer to gate auto-implementation.
+     The `zoho-thread-id` field is load-bearing: comment-sync uses it to
+     route GitHub-comment forwards back to the originating Zoho thread.
+     `reporter-email` / `reporter-allowlisted` are human-readable provenance
+     only — the bash runner persists the inbound `fromAddress` to
+     `logs/support-state.json` separately, and `nightly-support.sh` reads
+     that (not this footer) to gate auto-implementation. See ADR-0025.
    - **Append `attachmentMarkdown` (from step 8.0) to `github_body` immediately before the footer.** The footer must remain at the end so `parse-issue-footer.mjs` can extract the `zoho-thread-id`. If `bundle.attachments.length === 0`, skip the append entirely — no separator block.
    - `gh issue create --repo JakubAnderwald/drafto --label support --title <title> --body <body>`.
    - Record the new issue number `n`.

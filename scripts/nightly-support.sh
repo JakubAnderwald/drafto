@@ -112,9 +112,11 @@ log "=== Nightly support run started ==="
 
 DEPENDABOT_PRS=$(gh pr list --repo JakubAnderwald/drafto --author "app/dependabot" \
   --state open --json number,title,labels --limit 50 2>/dev/null) || DEPENDABOT_PRS="[]"
-# Pull body + labels too: Phase F gate parses the support-agent footer in the
-# body, and we filter out issues already marked needs-triage so we don't
-# re-comment on rejected reporters every nightly run.
+# Pull labels too — we filter out issues already marked needs-triage so we
+# don't re-comment on rejected reporters every nightly run. Body is no longer
+# needed here (the Phase F gate moved off issue-body footer parsing — see
+# ADR-0025) but we keep it in the query so existing downstream consumers in
+# the loop don't break.
 SUPPORT_ISSUES=$(gh issue list --repo JakubAnderwald/drafto --label support --state open --json number,title,body,labels --limit 50 2>/dev/null) || SUPPORT_ISSUES="[]"
 
 # Skip Dependabot PRs already labeled needs-review (processed in a prior run)
@@ -198,22 +200,40 @@ for IDX in $(seq 0 $((SUPPORT_COUNT - 1))); do
   fi
   ISSUE_ENTRY=$(echo "$SUPPORT_ISSUES" | jq ".[${IDX}]")
   ISSUE_NUMBER=$(echo "$ISSUE_ENTRY" | jq -r '.number')
-  ISSUE_BODY=$(echo "$ISSUE_ENTRY" | jq -r '.body // ""')
 
-  # ── Phase F gate: defence-in-depth allowlist check ──
+  # ── Phase F gate: sender-based allowlist check (ADR-0025) ──
   # Pre-gate before invoking Claude, so a non-allowlisted reporter doesn't
-  # burn a full Claude session. The gate requires BOTH:
-  #   (a) the agent footer claims `reporter-allowlisted: true`, AND
-  #   (b) the footer's `reporter-email` is in $SUPPORT_ALLOWLIST.
-  # A tampered issue body could smuggle (a) past us — (b) catches that.
-  GATE=$(printf '%s' "$ISSUE_BODY" | node "$SCRIPT_DIR/lib/parse-issue-footer.mjs" \
-      --check-allowlist --allowlist "$SUPPORT_ALLOWLIST" 2>/dev/null) || GATE="allowed=false reason=gate-error"
-  if ! [[ "$GATE" =~ ^allowed=true ]]; then
-    REASON=$(echo "$GATE" | sed -nE 's/.*reason=([^ ]+).*/\1/p')
-    REASON="${REASON:-unknown}"
-    log "Issue #$ISSUE_NUMBER: gate rejected (reason=$REASON); marking needs-triage"
+  # burn a full Claude session. The reporter email is the inbound Zoho
+  # `fromAddress` captured by support-agent.sh BEFORE invoking the LLM
+  # (recorded into logs/support-state.json). Reading from state, not from
+  # an LLM-written issue-body footer, eliminates the spoof window where a
+  # crafted email could trick the LLM into copying a forged
+  # `reporter-allowlisted: true` block into the issue body.
+  REPORTER_EMAIL=$(node "$SCRIPT_DIR/lib/state-cli.mjs" get-reporter-email "$ISSUE_NUMBER" \
+    2>/dev/null || true)
+  GATE_REASON=""
+  if [[ -z "$REPORTER_EMAIL" ]]; then
+    # No state entry. Either a legacy issue filed before ADR-0025, an issue
+    # filed manually outside the agent, or the agent ran but the runner
+    # failed to persist (logged at filing time). Fall through to triage —
+    # human can backfill state if appropriate.
+    GATE_REASON="unknown-sender"
+  else
+    # Comma-bounded glob match against the lower-cased CSV. `,X,Y,Z,` always
+    # has commas at both ends so the pattern `*,<email>,*` matches at any
+    # position. state-cli stores reporterEmail already lower-cased; we lower
+    # the allowlist here too so user-edited support-env.sh casing doesn't
+    # leak through.
+    SUPPORT_ALLOWLIST_LC="${SUPPORT_ALLOWLIST,,}"
+    REPORTER_EMAIL_LC="${REPORTER_EMAIL,,}"
+    if [[ ",${SUPPORT_ALLOWLIST_LC}," != *",${REPORTER_EMAIL_LC},"* ]]; then
+      GATE_REASON="not-allowlisted"
+    fi
+  fi
+  if [[ -n "$GATE_REASON" ]]; then
+    log "Issue #$ISSUE_NUMBER: gate rejected (reason=$GATE_REASON, sender=${REPORTER_EMAIL:-<none>}); marking needs-triage"
     gh issue comment "$ISSUE_NUMBER" --repo JakubAnderwald/drafto \
-      --body "Reporter not on the support allowlist (reason: ${REASON}). Needs manual triage." \
+      --body "Reporter not on the support allowlist (reason: ${GATE_REASON}). Needs manual triage." \
       2>/dev/null || log "WARNING: failed to comment on issue #$ISSUE_NUMBER"
     gh issue edit "$ISSUE_NUMBER" --repo JakubAnderwald/drafto \
       --add-label needs-triage \

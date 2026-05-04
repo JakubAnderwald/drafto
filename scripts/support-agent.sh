@@ -908,13 +908,24 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
         log "ERROR: claude returned filed-issue under Phase $PHASE for $TRACK_ID — prompt phase gate violated"
         exit 1
       fi
-      # Phase F+: Claude has already created the GitHub issue (with the
-      # agent footer), replied to the customer in-thread, applied the
-      # Drafto/Support/Issue/<n> label, and moved the thread to
-      # Drafto/Support/Resolved. The bash side has nothing to bump — rate
-      # caps don't apply to filings (we want every legitimate report to
-      # produce an issue), and the linkage lives in the issue body footer
-      # rather than support-state.json.
+      # Phase F+: Claude has already created the GitHub issue, replied to the
+      # customer in-thread, applied the Drafto/Support/Issue/<n> label, and
+      # moved the thread to Drafto/Support/Resolved.
+      #
+      # Persist the inbound sender against the issue number (ADR-0025). The
+      # bash runner extracted SENDER from the Zoho bundle BEFORE invoking
+      # Claude — that's the authoritative source for the allowlist gate.
+      # nightly-support.sh reads this at gate time instead of parsing an
+      # LLM-written footer in the issue body.
+      ISSUE_NUM=$(echo "$SUMMARY_LINE" | sed -E 's/.*issue=([^ ]+).*/\1/')
+      if [[ -n "$ISSUE_NUM" && "$ISSUE_NUM" != "-" && -n "$SENDER" ]]; then
+        if ! node "$SCRIPT_DIR/lib/state-cli.mjs" record-filed-issue "$ISSUE_NUM" "$SENDER" \
+            --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+          log "WARNING: state-cli record-filed-issue failed for issue $ISSUE_NUM ($TRACK_ID)"
+        fi
+      else
+        log "WARNING: filed-issue but cannot record sender (issue=$ISSUE_NUM sender=${SENDER:-<empty>})"
+      fi
       ;;
     customer-reply)
       if [[ "$PHASE" =~ ^[DE]$ ]]; then
