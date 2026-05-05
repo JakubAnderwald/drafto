@@ -390,9 +390,16 @@ function tryUnwrapLayoutTable(
 
   const blocks: Block[] = [];
   for (const cell of cells) {
-    blocks.push(...processChildren(cell, attachmentUrlMap, taskMap));
+    for (const block of processChildren(cell, attachmentUrlMap, taskMap)) {
+      if (!isBlankParagraph(block)) blocks.push(block);
+    }
   }
   return blocks;
+}
+
+function isBlankParagraph(block: Block): boolean {
+  if (block.type !== "paragraph" || !Array.isArray(block.content)) return false;
+  return block.content.every((item) => item.type === "text" && !item.text.trim());
 }
 
 function isBlockOnlyCell(cell: Element): boolean {

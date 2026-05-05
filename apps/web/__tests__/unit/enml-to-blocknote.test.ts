@@ -121,6 +121,9 @@ describe("convertEnmlToBlocks", () => {
     const secondContent = bullets[1].content as Array<{ text: string }>;
     expect(firstContent.map((i) => i.text).join("")).toBe("first");
     expect(secondContent.map((i) => i.text).join("")).toBe("second");
+    // The empty <td><div><br/></div></td> spacer cell must not leak through
+    // as a paragraph containing only whitespace.
+    expect(blocks.every((b) => b.type === "bulletListItem")).toBe(true);
   });
 
   it("flattens nested lists in genuine multi-column tables instead of dropping them", () => {
