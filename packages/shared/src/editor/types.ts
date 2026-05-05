@@ -1,7 +1,9 @@
 // BlockNote block types (web editor format)
 export interface BlockNoteInlineContent {
   type: "text" | "link";
-  text: string;
+  // Required for `type: "text"`; absent on canonical `type: "link"` items
+  // (those carry their text inside `content[].text` instead).
+  text?: string;
   styles?: Record<string, boolean>;
   href?: string;
   content?: BlockNoteInlineContent[];

@@ -39,14 +39,41 @@ describe("convertEnmlToBlocks", () => {
     expect(content.find((c) => c.text === "underline")?.styles.underline).toBe(true);
   });
 
-  it("converts links", () => {
+  it("converts links into the canonical BlockNote shape", () => {
     const enml = '<en-note><p><a href="https://example.com">Link</a></p></en-note>';
     const blocks = convertEnmlToBlocks(enml, emptyMap);
 
-    const content = blocks[0].content as Array<{ type: string; text: string; href?: string }>;
+    const content = blocks[0].content as Array<{
+      type: string;
+      href?: string;
+      content?: Array<{ type: string; text: string; styles?: Record<string, boolean> }>;
+    }>;
     expect(content[0].type).toBe("link");
     expect(content[0].href).toBe("https://example.com");
-    expect(content[0].text).toBe("Link");
+    expect(content[0].content).toEqual([{ type: "text", text: "Link", styles: {} }]);
+    // The flat-shape `text` field must NOT be present at the top level —
+    // BlockNote rejects it and the editor crashes (regression: drafto.eu
+    // "Email śmietnik" / "Adresy" notes after Evernote import).
+    expect((content[0] as { text?: string }).text).toBeUndefined();
+  });
+
+  it("opens a div containing only a mailto link without producing a flat-shape link (Email śmietnik repro)", () => {
+    const enml =
+      '<en-note><div><a href="mailto:dev.smietnik@gmail.com">dev.smietnik@gmail.com</a></div></en-note>';
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe("paragraph");
+    const content = blocks[0].content as Array<{
+      type: string;
+      href?: string;
+      content?: Array<{ text: string }>;
+    }>;
+    expect(content[0]).toEqual({
+      type: "link",
+      href: "mailto:dev.smietnik@gmail.com",
+      content: [{ type: "text", text: "dev.smietnik@gmail.com", styles: {} }],
+    });
   });
 
   it("converts unordered lists", () => {
@@ -178,14 +205,17 @@ describe("convertEnmlToBlocks", () => {
       rows: {
         cells: Array<{
           type: string;
-          text: string;
+          text?: string;
           href?: string;
           styles?: Record<string, boolean>;
+          content?: Array<{ type: string; text: string; styles?: Record<string, boolean> }>;
         }>[];
       }[];
     };
     const cell = content.rows[0].cells[1];
-    const flat = cell.map((i) => i.text).join("");
+    const flat = cell
+      .map((i) => (i.type === "link" ? (i.content?.[0]?.text ?? "") : (i.text ?? "")))
+      .join("");
     expect(flat).toContain("1. one");
     expect(flat).toContain("2. two");
     expect(flat).toContain("tail");
@@ -193,6 +223,7 @@ describe("convertEnmlToBlocks", () => {
     expect(bold?.styles?.bold).toBe(true);
     const link = cell.find((i) => i.type === "link");
     expect(link?.href).toBe("https://x.test");
+    expect(link?.content?.[0]?.text).toBe("l");
   });
 
   it("returns default paragraph for empty content", () => {
@@ -216,17 +247,21 @@ describe("convertEnmlToBlocks", () => {
     expect(content[0].styles.italic).toBe(true);
   });
 
-  it("converts non-image attachment as link when URL exists", () => {
+  it("converts non-image attachment as canonical link when URL exists", () => {
     const urlMap = new Map([["def456", "https://storage.example.com/doc.pdf"]]);
     const enml = '<en-note><en-media type="application/pdf" hash="def456"/></en-note>';
     const blocks = convertEnmlToBlocks(enml, urlMap);
 
     expect(blocks).toHaveLength(1);
     expect(blocks[0].type).toBe("paragraph");
-    const content = blocks[0].content as Array<{ type: string; text: string; href?: string }>;
+    const content = blocks[0].content as Array<{
+      type: string;
+      href?: string;
+      content?: Array<{ text: string }>;
+    }>;
     expect(content[0].type).toBe("link");
     expect(content[0].href).toBe("https://storage.example.com/doc.pdf");
-    expect(content[0].text).toContain("application/pdf");
+    expect(content[0].content?.[0]?.text).toContain("application/pdf");
   });
 
   it("converts hr to paragraph with ---", () => {
@@ -379,15 +414,17 @@ describe("convertEnmlToBlocks", () => {
     expect(blocks).toHaveLength(1);
     const content = blocks[0].content as Array<{
       type: string;
-      text: string;
+      text?: string;
       href?: string;
-      styles: Record<string, boolean>;
+      styles?: Record<string, boolean>;
+      content?: Array<{ text: string; styles?: Record<string, boolean> }>;
     }>;
     expect(content[0].type).toBe("link");
     expect(content[0].href).toBe("https://example.com");
+    expect(content[0].content?.[0]?.text).toBe("Link text");
     expect(content[1].text).toBe("\n");
     expect(content[2].text).toBe("bold");
-    expect(content[2].styles.bold).toBe(true);
+    expect(content[2].styles?.bold).toBe(true);
   });
 
   it("extracts text from ol > li > div (Evernote ordered list format)", () => {

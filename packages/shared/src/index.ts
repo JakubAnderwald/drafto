@@ -29,6 +29,7 @@ export {
   contentToBlocknote,
 } from "./editor/format-converter";
 export { extractTextFromContent } from "./editor/extract-text";
+export { normalizeBlocks } from "./editor/normalize-blocks";
 export { blockNoteToMarkdown, markdownToBlockNote } from "./editor/markdown-converter";
 export {
   toAttachmentUrl,

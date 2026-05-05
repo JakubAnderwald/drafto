@@ -2,11 +2,26 @@ import { parseHTML } from "linkedom";
 
 import type { EnexTask } from "@/lib/import/types";
 
-interface InlineContent {
-  type: "text" | "link";
+interface StyledText {
+  type: "text";
   text: string;
   styles?: Record<string, boolean>;
-  href?: string;
+}
+
+interface LinkInlineContent {
+  type: "link";
+  href: string;
+  content: StyledText[];
+}
+
+type InlineContent = StyledText | LinkInlineContent;
+
+function createLink(
+  text: string,
+  href: string,
+  styles: Record<string, boolean> = {},
+): LinkInlineContent {
+  return { type: "link", href, content: [{ type: "text", text, styles }] };
 }
 
 interface Block {
@@ -272,13 +287,13 @@ function extractListItemContent(li: Element): InlineContent[] {
         if (tag === "a") {
           const href = childEl.getAttribute("href") || "";
           const text = childEl.textContent || "";
-          result.push({ type: "link", text, href, styles });
+          result.push(createLink(text, href, styles));
         } else if (tag === "br") {
           result.push({ type: "text", text: "\n", styles: {} });
         } else {
           const innerContent = extractInlineContent(childEl);
           for (const item of innerContent) {
-            result.push({ ...item, styles: { ...item.styles, ...styles } });
+            result.push(applyStyles(item, styles));
           }
         }
       }
@@ -286,6 +301,16 @@ function extractListItemContent(li: Element): InlineContent[] {
   }
 
   return result;
+}
+
+function applyStyles(item: InlineContent, styles: Record<string, boolean>): InlineContent {
+  if (item.type === "link") {
+    return {
+      ...item,
+      content: item.content.map((t) => ({ ...t, styles: { ...t.styles, ...styles } })),
+    };
+  }
+  return { ...item, styles: { ...item.styles, ...styles } };
 }
 
 function convertEnMedia(el: Element, attachmentUrlMap: Map<string, string>): Block | null {
@@ -311,14 +336,7 @@ function convertEnMedia(el: Element, attachmentUrlMap: Map<string, string>): Blo
   }
 
   // Non-image attachment — render as text link
-  return createParagraph([
-    {
-      type: "link",
-      text: `[Attachment: ${type}]`,
-      href: url,
-      styles: {},
-    },
-  ]);
+  return createParagraph([createLink(`[Attachment: ${type}]`, url)]);
 }
 
 function convertTable(tableEl: Element): Block {
@@ -464,17 +482,12 @@ function extractCellInlineContent(cell: Element): InlineContent[] {
       const styles = getInlineStyles(childEl);
       if (tag === "a") {
         parts.push([
-          {
-            type: "link",
-            text: childEl.textContent || "",
-            href: childEl.getAttribute("href") || "",
-            styles,
-          },
+          createLink(childEl.textContent || "", childEl.getAttribute("href") || "", styles),
         ]);
       } else {
         const inner = extractInlineContent(childEl);
         if (inner.length > 0) {
-          parts.push(inner.map((item) => ({ ...item, styles: { ...item.styles, ...styles } })));
+          parts.push(inner.map((item) => applyStyles(item, styles)));
         }
       }
     }
@@ -515,16 +528,13 @@ function extractInlineContent(el: Element): InlineContent[] {
       if (tag === "a") {
         const href = childEl.getAttribute("href") || "";
         const text = childEl.textContent || "";
-        result.push({ type: "link", text, href, styles });
+        result.push(createLink(text, href, styles));
       } else if (tag === "br") {
         result.push({ type: "text", text: "\n", styles: {} });
       } else {
         // Merge styles into inner content
         for (const item of innerContent) {
-          result.push({
-            ...item,
-            styles: { ...item.styles, ...styles },
-          });
+          result.push(applyStyles(item, styles));
         }
       }
     }

@@ -7,7 +7,12 @@ import { useAutoSave } from "@/hooks/use-auto-save";
 import { handleAuthError } from "@/lib/handle-auth-error";
 import type { Block } from "@blocknote/core";
 import type { BadgeVariant } from "@/components/ui/badge";
-import { MAX_TITLE_LENGTH, formatRelativeTime } from "@drafto/shared";
+import {
+  MAX_TITLE_LENGTH,
+  formatRelativeTime,
+  normalizeBlocks,
+  type BlockNoteBlock,
+} from "@drafto/shared";
 
 interface NoteEditorPanelProps {
   noteId: string;
@@ -162,7 +167,11 @@ export function NoteEditorPanel({
       <NoteEditor
         key={noteId}
         noteId={noteId}
-        initialContent={note.content as Block[] | undefined}
+        initialContent={
+          note.content
+            ? (normalizeBlocks(note.content as unknown as BlockNoteBlock[]) as unknown as Block[])
+            : undefined
+        }
         onChange={handleContentChange}
       />
     </div>
