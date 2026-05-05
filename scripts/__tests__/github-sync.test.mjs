@@ -160,6 +160,107 @@ describe("filterNewComments (pure)", () => {
   });
 });
 
+describe("runGh retry behaviour (transient gh failures)", () => {
+  function makeFlakyExec(failures, finalResponse) {
+    let calls = 0;
+    return async (cmd, args) => {
+      execCalls.push({ cmd, args });
+      calls += 1;
+      if (calls <= failures.length) {
+        throw failures[calls - 1];
+      }
+      return finalResponse;
+    };
+  }
+
+  function transientErr(message) {
+    const e = new Error(`Command failed: gh ...\n${message}`);
+    e.stderr = message;
+    return e;
+  }
+
+  function permanentErr(message) {
+    const e = new Error(`Command failed: gh ...\n${message}`);
+    e.stderr = message;
+    return e;
+  }
+
+  it("retries on HTTP 504 from GitHub and returns the eventual success", async () => {
+    lib._setSleepForTests(async () => {});
+    lib._setExecFileForTests(
+      makeFlakyExec(
+        [transientErr("HTTP 504: 504 Gateway Timeout (https://api.github.com/graphql)")],
+        { stdout: JSON.stringify([{ number: 1 }]) },
+      ),
+    );
+    const issues = await lib.listSupportIssues({ state: "all" });
+    assert.equal(issues.length, 1);
+    assert.equal(execCalls.length, 2);
+  });
+
+  it("retries on HTTP 502 / 503 / 429 / connection reset / i/o timeout", async () => {
+    const transients = [
+      "HTTP 502: 502 Bad Gateway",
+      "HTTP 503: Service Unavailable",
+      "HTTP 429: Too Many Requests",
+      "dial tcp: connection reset by peer",
+      'Get "https://api.github.com/...": net/http: TLS handshake timeout (i/o timeout)',
+      "ETIMEDOUT",
+      "EAI_AGAIN getaddrinfo",
+    ];
+    for (const msg of transients) {
+      lib._setSleepForTests(async () => {});
+      lib._setExecFileForTests(makeFlakyExec([transientErr(msg)], { stdout: JSON.stringify([]) }));
+      execCalls = [];
+      const issues = await lib.listSupportIssues({ state: "all" });
+      assert.equal(issues.length, 0, `should retry on: ${msg}`);
+      assert.equal(execCalls.length, 2, `should retry exactly once for: ${msg}`);
+    }
+  });
+
+  it("does NOT retry on permanent errors (HTTP 404 / auth / parse)", async () => {
+    lib._setSleepForTests(async () => {});
+    lib._setExecFileForTests(
+      makeFlakyExec([permanentErr("HTTP 404: Not Found")], { stdout: JSON.stringify([]) }),
+    );
+    await assert.rejects(() => lib.listSupportIssues({ state: "all" }), /404/);
+    assert.equal(execCalls.length, 1);
+  });
+
+  it("gives up after the configured retry budget and surfaces the last error", async () => {
+    lib._setSleepForTests(async () => {});
+    lib._setExecFileForTests(
+      makeFlakyExec(
+        [
+          transientErr("HTTP 504: Gateway Timeout"),
+          transientErr("HTTP 504: Gateway Timeout"),
+          transientErr("HTTP 504: Gateway Timeout"),
+          transientErr("HTTP 504: Gateway Timeout"),
+        ],
+        { stdout: "[]" },
+      ),
+    );
+    await assert.rejects(() => lib.listSupportIssues({ state: "all" }), /504/);
+    // 1 initial attempt + 3 retries = 4 calls total
+    assert.equal(execCalls.length, 4);
+  });
+
+  it("backs off between retries (sleep is invoked with growing delays)", async () => {
+    const delays = [];
+    lib._setSleepForTests(async (ms) => {
+      delays.push(ms);
+    });
+    lib._setExecFileForTests(
+      makeFlakyExec(
+        [transientErr("HTTP 504: Gateway Timeout"), transientErr("HTTP 504: Gateway Timeout")],
+        { stdout: "[]" },
+      ),
+    );
+    await lib.listSupportIssues({ state: "all" });
+    assert.deepEqual(delays, [1000, 2000]);
+  });
+});
+
 describe("listSupportIssues (mocked gh)", () => {
   it("invokes `gh issue list` with the right flags and parses the JSON", async () => {
     lib._setExecFileForTests(

@@ -58,17 +58,55 @@ const DEFAULT_BOT_USER = "JakubAnderwald";
 export const PROGRESS_MARKER = "<!-- drafto-progress -->";
 
 let _execFileForTests = null;
+let _sleepForTests = null;
 
 export function _setExecFileForTests(impl) {
   _execFileForTests = impl;
 }
 
+export function _setSleepForTests(impl) {
+  _sleepForTests = impl;
+}
+
+// Transient errors we should retry rather than surface to the caller. Real
+// case from 2026-05-05: GitHub returned `HTTP 504: 504 Gateway Timeout` to
+// `gh issue list`, the support-agent's --state-sync mode exited 1, and the
+// failure-issue trap filed issue #376. The next 5-minute tick would have
+// succeeded — retrying inline keeps a transient hiccup from spamming
+// nightly-failure issues.
+function isTransientGhError(err) {
+  const text = `${err?.message ?? ""} ${err?.stderr ?? ""} ${err?.stdout ?? ""}`;
+  if (/\bHTTP\s+(?:429|500|502|503|504)\b/i.test(text)) return true;
+  if (/\bgateway\s+time-?out\b/i.test(text)) return true;
+  if (/\b(?:ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|ENETUNREACH|ECONNREFUSED)\b/i.test(text)) {
+    return true;
+  }
+  // gh prints a generic "connection reset"/"i/o timeout" line on flaky
+  // networks where the upstream HTTP code is unavailable.
+  if (/\b(?:connection reset|i\/o timeout|temporary failure)\b/i.test(text)) return true;
+  return false;
+}
+
+const RETRY_DELAYS_MS = [1000, 2000, 4000];
+
 async function runGh(args) {
   const fn = _execFileForTests ?? execFileP;
-  // 16 MiB output cap — gh api --paginate can return large JSON arrays for
-  // long-lived issues; the default 1 MiB cap was hit during dev.
-  const { stdout } = await fn("gh", args, { maxBuffer: 16 * 1024 * 1024 });
-  return stdout;
+  const sleep = _sleepForTests ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  let lastError;
+  // One initial attempt + up to RETRY_DELAYS_MS.length retries.
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      // 16 MiB output cap — gh api --paginate can return large JSON arrays for
+      // long-lived issues; the default 1 MiB cap was hit during dev.
+      const { stdout } = await fn("gh", args, { maxBuffer: 16 * 1024 * 1024 });
+      return stdout;
+    } catch (err) {
+      lastError = err;
+      if (attempt === RETRY_DELAYS_MS.length || !isTransientGhError(err)) throw err;
+      await sleep(RETRY_DELAYS_MS[attempt]);
+    }
+  }
+  throw lastError;
 }
 
 export async function listSupportIssues({ state = "all", limit = 200 } = {}) {
