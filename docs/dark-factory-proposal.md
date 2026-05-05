@@ -1,0 +1,298 @@
+# Drafto Dark Factory — Unattended Development Pipeline
+
+> **Status**: Proposal under review. Not yet implemented. When promoted past
+> Phase A this document will be replaced by an ADR (`docs/adr/0026-dark-factory-pipeline.md`)
+> plus operator docs at `docs/features/dark-factory.md` and `docs/operations/factory-runbook.md`.
+
+## Context
+
+The goal is a "vibe-kanban-style" pipeline where moving a card on a board
+triggers Claude-driven implementation, automatically deploys to a beta channel,
+and waits for explicit human approval before firing production releases.
+Backlog stays in GitHub Issues. The drafto Mac mini already runs three
+unattended Claude loops (`support-agent` every 5 min, `nightly-support` 00:03,
+`nightly-audit` 05:00) with proven patterns: PID locks, atomic state via
+`state-cli.mjs`, phase-gated rollout, failure-issue trap. The factory extends
+that same skeleton rather than introducing new infra. Cost discipline is
+preserved — no new paid services; everything runs on the Mac mini, free
+Vercel, free GitHub, free GitHub Actions for the Status→label mirror.
+
+## Decisions locked
+
+1. **UI**: GitHub Projects v2 board (free, native to issues, mobile-app friendly).
+2. **Merge policy**: factory opens PRs and iterates them to a working Vercel
+   preview ("In Test"). The PR is **not merged** until a human drags the card
+   to **Approved**. That column transition IS the merge authorisation; the
+   factory then squash-merges, lets Vercel auto-deploy prod, and (Phase D)
+   dispatches mobile/desktop beta workflows.
+3. **Concurrency**: up to **2 parallel worktrees** (slot-based locking).
+4. **Rollout**: phased A → B → C → D (dry-run → web → mobile/desktop work
+   allowed → mobile beta auto-dispatch).
+
+## Architecture overview
+
+```
+GitHub Projects v2 board
+       |
+       | (drag card -> Status field changes)
+       v
+.github/workflows/factory-status-mirror.yml
+       |  on: project_v2_item / pull_request
+       |  mirrors Status -> status:* label on the linked issue
+       v
+Issue labels (status:ready / in-progress / in-review / in-test / approved / released / done / blocked)
+       |
+       | (5-min poll on Mac mini via launchd)
+       v
+scripts/factory-agent.sh  (modes: --implement / --release / --watch)
+       |
+       +-- two worktree slots, PID-locked separately
+       +-- state in logs/factory-state.json (atomic via state-cli.mjs)
+       +-- phase gate (--phase A|B|C|D) enforced in bash and prompt
+       +-- failure trap files factory-failure issue
+```
+
+## State machine (Project v2 Status field)
+
+| Status      | Who sets it | Meaning / trigger                                                                                                                                                        |
+| ----------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Backlog     | human       | Filed, not yet specced.                                                                                                                                                  |
+| Ready       | human       | Spec complete; factory may pick up. Must have all required template sections.                                                                                            |
+| In Progress | factory     | Worktree slot taken; Claude is implementing.                                                                                                                             |
+| In Review   | factory     | PR opened, summary posted, CI running. Claude monitors CI and resolves all comments / failures (loops `/push`-style until green).                                        |
+| In Test     | factory     | PR's Vercel preview is deployed and reachable. PR remains open; awaits human approval.                                                                                   |
+| Approved    | human       | Human drags card here to authorise prod release. Migration gate enforced.                                                                                                |
+| Released    | factory     | Factory merges PR (Vercel auto-deploys prod) and dispatches iOS / Android / macOS beta workflows (TestFlight, Play internal, Mac TF — all pre-authorised per CLAUDE.md). |
+| Done        | human       | Human marks after all store reviews accepted; customer notified (existing released-comment hook).                                                                        |
+| Blocked     | factory     | Spec incomplete, retry budget exhausted, parity violation, migration gate, or unrecoverable CI failure.                                                                  |
+
+Notes:
+
+- The PR is **not merged** until the human drags the card to **Approved**. The
+  Approved transition IS the merge authorisation. This preserves the "human
+  merges" decision while letting the kanban column be the action surface.
+- **In Test = Vercel preview only.** Mobile/desktop beta builds do not fire
+  until Released. This avoids burning TestFlight / Play internal slots on
+  every iteration.
+- Card cannot enter `Approved` if the linked PR contains files under
+  `supabase/migrations/**` and the `migration-approved` label is absent —
+  bash-side check, mirrors `check-migration-safety.sh`.
+- Mobile/desktop **production app-store** submissions stay outside this flow
+  per CLAUDE.md's release-authorisation rule. Released ships beta channels only.
+
+## Phases
+
+| Phase | Behaviour                                                                                                                                                               |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A     | Dry-run. Claude reads the issue, posts its proposed plan as a comment, does NOT open a worktree.                                                                        |
+| B     | Web-only. Implement → In Review → In Test (Vercel preview). Approved auto-merges PR; mobile/desktop changes auto-blocked.                                               |
+| C     | Web + mobile/desktop changes allowed end-to-end. Approved still merges + Vercel prod only. No mobile/desktop dispatch yet — human kicks beta lanes manually.            |
+| D     | Approved → factory merges PR AND dispatches iOS / Android / macOS beta workflows automatically. macOS prod app-store submission stays manual (CI broken per CLAUDE.md). |
+
+Promote after ≥5 clean runs without human intervention at the current phase.
+
+## Files to add/modify
+
+### New files
+
+| Path                                             | Role                                                                                                                                                               |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `scripts/factory-agent.sh`                       | Bash entrypoint, modeled on `support-agent.sh`. Modes `--implement`, `--release`, `--watch`. Two-slot worktree locking.                                            |
+| `scripts/factory-prompt.md`                      | System prompt — parity mandate, phase contract, single-line directive, refuse-on-incomplete-spec.                                                                  |
+| `scripts/lib/factory-bundle.mjs`                 | Builds per-issue context bundle (body, comments, affected platforms, prior PR if retry, screenshots).                                                              |
+| `scripts/lib/worktree-cli.mjs`                   | Headless `git worktree add/remove`. Branch naming `factory/issue-<n>`. Slot-aware.                                                                                 |
+| `scripts/lib/dispatch-release.mjs`               | `gh workflow run` wrapper for `beta-release.yml` / `production-release.yml`, polls run status.                                                                     |
+| `scripts/lib/factory-state.mjs`                  | Helpers over `state-cli.mjs`: `factory.slots[0\|1]`, `factory.issues[<n>] = {attempts, lastBeta, lastProd}`, `factory.paused`.                                     |
+| `scripts/setup-factory-board.sh`                 | One-time `gh project create` + field provisioning. Idempotent.                                                                                                     |
+| `.github/workflows/factory-status-mirror.yml`    | Mirrors Project v2 Status → issue `status:*` label. Also reacts to `pull_request: closed` to advance In Review → In Test (after merge) and dispatch beta releases. |
+| `.github/ISSUE_TEMPLATE/factory-feature.yml`     | Spec contract form (acceptance, platforms, schema?, UI?, out-of-scope).                                                                                            |
+| `docs/adr/0026-dark-factory-pipeline.md`         | ADR — decision, alternatives (vibe-kanban, custom UI), consequences.                                                                                               |
+| `docs/features/dark-factory.md`                  | Operator manual — board URL, label semantics, kill switch, troubleshooting.                                                                                        |
+| `docs/operations/factory-runbook.md`             | Phase progression criteria, rollback drills, "what to do when factory misbehaves".                                                                                 |
+| `~/Library/LaunchAgents/eu.drafto.factory.plist` | launchd entry, every 5 min, runs `factory-agent.sh --implement --watch --phase <current>`. NOT version-controlled (matches existing pattern).                      |
+
+### Modified files
+
+| Path                                | Change                                                                                                                                                                                                                                                                       |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scripts/lib/state-cli.mjs`         | Add `factory:*` subcommands (slot acquire/release, issue cursor mutate, paused flag).                                                                                                                                                                                        |
+| `CLAUDE.md`                         | New "Dark Factory" section: labels, kill switch, parity-mandate enforcement point, link to runbook.                                                                                                                                                                          |
+| Repo labels (via `gh label create`) | `status:ready`, `status:in-progress`, `status:in-review`, `status:in-test`, `status:approved`, `status:released`, `status:done`, `status:blocked`, `factory-pause`, `migration-approved`, `factory-failure`, `parity:web-only`, `parity:mobile-only`, `parity:desktop-only`. |
+
+## Factory loop — how a single card flows
+
+1. **Human** drags issue to **Ready** column on Projects board.
+2. `factory-status-mirror.yml` adds `status:ready` label.
+3. Mac mini's launchd fires `factory-agent.sh --implement` (≤5 min later).
+4. Bash queries `gh issue list --label status:ready --state open`, picks first.
+5. Acquires slot 0 or 1 (PID lock per slot in `logs/factory.slot{0,1}.pid`).
+6. Validates spec contract — required template sections present? If not, label
+   `status:blocked`, comment `spec incomplete: missing X`, release slot, exit.
+7. `factory-bundle.mjs` builds bundle (issue + comments + platform checkboxes + prior PR if retry).
+8. `worktree-cli.mjs` creates `worktrees/factory-issue-<n>` from `origin/main`,
+   copies gitignored env files per CLAUDE.md (`apps/mobile/.env*`, `apps/desktop/.env*`,
+   `apps/mobile/android/local.properties`), runs `pnpm install`.
+9. Invokes `claude --dangerously-skip-permissions` with `factory-prompt.md` + bundle.
+10. Claude implements, runs lint/typecheck/tests in the worktree, commits, pushes,
+    opens PR via `gh pr create`. Outputs single directive line:
+    `issue=<n> action=<implemented|noop|blocked> pr=<url|->`.
+11. Bash post-check: parity diff scan. If "Affected platforms" includes mobile
+    but no `apps/mobile/**` files in diff → `status:blocked`, comment, stop.
+12. Set `status:in-review`.
+13. **`--watch` mode** picks up `status:in-review` issues every cycle and runs a
+    `/push`-style loop in the worktree: poll CI, fetch new PR review comments,
+    invoke Claude to fix any failures or unresolved comments, re-push. Loop ends
+    when CI is green AND no unresolved review comments remain. Retry budget
+    bounded by `factory.issues[<n>].attempts`.
+14. Once CI is green and Vercel preview is reachable (`gh pr view --json`
+    surfaces the preview URL via the Vercel bot comment), `--watch` flips card
+    to **In Test** and posts the preview URL on the issue. **PR stays open.**
+15. **Human** validates the preview, drags card to **Approved**.
+16. `factory-agent.sh --release` runs migration gate (refuses if `supabase/migrations/**`
+    files present without `migration-approved` label). On pass:
+    - Squash-merges the PR via `gh api` (per CLAUDE.md worktree gotcha — uses the
+      API form, not `gh pr merge --delete-branch`).
+    - Vercel auto-deploys main → prod.
+    - Dispatches `beta-release.yml` (iOS, Android) and runs Mac TF beta lane
+      locally on the Mac mini via `dispatch-release.mjs` (Phase D only; in
+      Phase C this step is a no-op and the human kicks lanes manually).
+    - Comments build numbers + TestFlight / Play internal links on the issue.
+    - Card → **Released**.
+17. **Human** marks card **Done** after store reviews accepted. Existing
+    `comment-released-issues.mjs` hook (already fires from fastlane post-release)
+    posts the customer-facing announcement on linked support issues.
+
+## Concurrency model (2 worktree slots)
+
+- `logs/factory.slot0.pid` and `logs/factory.slot1.pid` — separate flock files.
+- `factory-agent.sh --implement` tries slot 0 first, then slot 1. If both held, exit 0.
+- Conflict avoidance: before claiming an issue, check that no other in-flight PR
+  touches files in the same top-level package (`apps/web`, `apps/mobile`,
+  `apps/desktop`, `packages/shared`, `supabase`). If overlap → defer, try next issue.
+- `--release` and `--watch` modes use a separate single lock; never contend with implement slots.
+
+## Spec contract for a "Ready" issue
+
+Enforced by `factory-feature.yml` template + bash validation:
+
+1. **What** — one paragraph user-facing description.
+2. **Acceptance criteria** — bulleted, testable.
+3. **Affected platforms** — checkboxes web/iOS/Android/macOS (drives parity check).
+4. **Schema changes?** — yes/no. If yes, factory adds `needs-migration-review`.
+5. **UI?** — if yes, screenshot or Figma URL required.
+6. **Out of scope** — explicit non-goals.
+
+`parity:web-only` / `parity:mobile-only` / `parity:desktop-only` labels override
+the cross-platform parity check for legitimate single-platform work.
+
+## Cross-platform parity enforcement (CLAUDE.md mandate)
+
+Two layers:
+
+1. **Prompt instruction**: Claude self-reports a parity checklist in the PR
+   description before pushing.
+2. **Bash post-check** in `factory-agent.sh`: `gh pr diff --name-only` vs
+   "Affected platforms" checkboxes. Any claimed-but-missing platform → `status:blocked`.
+
+## Kill switches
+
+- Per-card: drag to **Blocked** column → `status:blocked` label → factory ignores it.
+- Global: `state-cli.mjs factory:pause` sets `factory.paused=true` in state file. Agent reads on every cycle and exits early when set. `factory:resume` to unpause.
+- Emergency stop: remove the launchd plist (`launchctl unload …`) or `kill` the active claude PID.
+
+## Implementation waves
+
+### Wave 1 — Foundations (all parallel, no dependencies)
+
+- Create labels via `gh label create` (one-shot script).
+- Write `factory-feature.yml` issue template.
+- Write `factory-status-mirror.yml` GitHub Action.
+- Write ADR-0026, `dark-factory.md`, `factory-runbook.md`.
+- Run `setup-factory-board.sh` once to provision the Project v2 board.
+- Update `CLAUDE.md` with the Dark Factory section.
+
+### Wave 2 — Core libraries (parallel)
+
+- `scripts/lib/worktree-cli.mjs`
+- `scripts/lib/factory-bundle.mjs`
+- `scripts/lib/dispatch-release.mjs`
+- `scripts/lib/factory-state.mjs` (extends `state-cli.mjs`)
+
+### Wave 3 — The agent (depends on Wave 2)
+
+- `scripts/factory-prompt.md` (write before agent — bash heredocs reference it).
+- `scripts/factory-agent.sh` with all three modes.
+- Unit tests: dry-run against a fake issue in dev environment.
+
+### Wave 4 — Schedule & promote
+
+- Install launchd plist on Mac mini (manual; matches existing pattern).
+- Run in `--phase A` for ≥1 week / ≥5 successful dry-runs.
+- Promote to B (web only), then C (mobile beta), then D (prod) gated by stable runs.
+
+## Verification
+
+End-to-end test before promoting past Phase A:
+
+1. File a trivial test issue (`feat: add timestamp to footer`), tag `status:ready`.
+2. Watch Mac mini logs (`tail -f logs/factory-*.log`) for the next 5-min poll.
+3. Confirm Claude posts a plan comment on the issue (Phase A behaviour).
+4. Drag card to Blocked → confirm factory leaves it alone.
+5. Once promoted to Phase B: file a real web-only issue. Confirm: PR opens
+   (status:in-review), CI runs to green via `--watch` loop (any failures
+   auto-resolved by Claude), Vercel preview comment lands, card auto-advances
+   to **In Test**, preview URL is posted on the issue.
+6. Drag card to Approved → confirm factory squash-merges via `gh api`, Vercel
+   prod deploys main, card → Released. Verify no mobile/desktop dispatch fired
+   (Phase B scope).
+7. For Phase C: same drill with a mobile issue. PR includes mobile changes; In
+   Test still ends at Vercel preview only (mobile beta is human-fired manually).
+8. For Phase D: same drill, but Approved now also dispatches iOS+Android beta
+   workflows and the local Mac TF lane. Confirm TestFlight + Play internal
+   builds appear; card → Released; you mark Done after store-review acceptance.
+
+Manual checks per phase promotion:
+
+- `pnpm lint && pnpm typecheck && pnpm test` (run on the factory's PR before merge).
+- `pnpm migration:check` if any migration files touched.
+- SonarCloud quality gate green on factory PRs (existing pre-push checklist).
+
+## Documentation deliverables
+
+- ADR-0026 records the decision.
+- `docs/features/dark-factory.md` is the operator manual (board URL after
+  setup, label glossary, troubleshooting).
+- `docs/operations/factory-runbook.md` covers phase promotion criteria, kill
+  switch, rollback drill, on-call response when `factory-failure` issue appears.
+- CLAUDE.md gets a one-paragraph Dark Factory section pointing to the above.
+
+## Coexistence with existing support / nightly scripts
+
+The factory does not replace the support pipeline; it integrates with it.
+
+| Existing job                                                | Change                                                                                                                                                                                                                                                                                                                             |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `support-agent.sh` (every 5 min)                            | Real-time email→issue role unchanged. New behaviour: when filing from an **allowlisted** reporter (per `$SUPPORT_ALLOWLIST` in `logs/support-state.json` — Jakub and his wife), it auto-applies `status:ready` and adds the issue to the Projects v2 board. Non-allowlisted reports land in Backlog as today.                      |
+| `nightly-support.sh` Phase 2 (Dependabot)                   | Unchanged. Dependabot PRs aren't feature work; kanban abstraction doesn't fit. Existing conditional auto-merge stays.                                                                                                                                                                                                              |
+| `nightly-support.sh` Phase 3 (support-issue implementation) | **Deprecated in stages.** Factory phase A/B: Phase 3 keeps running; factory only touches `status:ready` issues set by a human. Factory phase C cutover: Phase 3 disabled — factory handles all support-issue implementation; allowlisted reporters auto-promoted to Ready by support-agent. Factory phase D: Phase 3 code removed. |
+| `nightly-audit.sh` (05:00)                                  | Adds a check: factory launchd job alive AND `factory.paused != true` in state file. Otherwise files a `nightly-audit` issue as today.                                                                                                                                                                                              |
+| `comment-released-issues.mjs` (post-fastlane hook)          | Unchanged. Already posts release announcements on linked support issues — works for factory-released issues without modification.                                                                                                                                                                                                  |
+
+Net effect for the household reporters: emails to support@drafto.eu still get
+auto-classified and turned into GitHub issues, but allowlisted reports now skip
+the Backlog and land directly in the factory's Ready queue, getting picked up
+within 5 minutes by the dark-factory pipeline rather than waiting until 00:03
+for `nightly-support.sh` Phase 3.
+
+## Out of scope (explicit non-goals for v1)
+
+- Custom kanban UI in `apps/web` (Projects v2 covers it).
+- vibe-kanban integration (rejected — splits state across two systems).
+- Cross-repo orchestration (drafto is single-repo today).
+- **Mobile / desktop production app-store submissions** — Released ships beta
+  channels only (TestFlight, Play internal, Mac TF). Production store releases
+  remain a separate manual step per CLAUDE.md's release-authorisation rule.
+- Desktop production release CI dispatch (broken per CLAUDE.md; even at Phase D,
+  Mac TF beta runs as a local lane on the Mac mini, not via GitHub Actions).
+- Auto-merge before Approved — the merge happens at the Approved transition,
+  which is the explicit human authorisation gate.
