@@ -105,6 +105,43 @@ describe("normalizeBlocks", () => {
     expect(tableContent.rows[0].cells[0][0].content[0].text).toBe("cell-link");
   });
 
+  it("defaults missing text/href/styles when normalizing a partial flat-shape link", () => {
+    const blocks: BlockNoteBlock[] = [
+      {
+        type: "paragraph",
+        content: [{ type: "link" }],
+      },
+    ];
+
+    const out = normalizeBlocks(blocks);
+    const link = (out[0].content as unknown as Array<Record<string, unknown>>)[0];
+    expect(link.href).toBe("");
+    expect(link.content).toEqual([{ type: "text", text: "", styles: {} }]);
+  });
+
+  it("treats a link with empty content array as flat and rewrites it", () => {
+    const blocks: BlockNoteBlock[] = [
+      {
+        type: "paragraph",
+        content: [{ type: "link", href: "https://x.test", text: "x", content: [] }],
+      },
+    ];
+
+    const out = normalizeBlocks(blocks);
+    const link = (out[0].content as unknown as Array<Record<string, unknown>>)[0];
+    expect(link.content).toEqual([{ type: "text", text: "x", styles: {} }]);
+  });
+
+  it("leaves blocks without content untouched (e.g. image blocks)", () => {
+    const blocks: BlockNoteBlock[] = [{ type: "image", props: { url: "https://x.test/a.png" } }];
+    const out = normalizeBlocks(blocks);
+    expect(out).toEqual(blocks);
+  });
+
+  it("returns the same shape for an empty input array", () => {
+    expect(normalizeBlocks([])).toEqual([]);
+  });
+
   it("leaves non-link inline items untouched", () => {
     const blocks: BlockNoteBlock[] = [
       {

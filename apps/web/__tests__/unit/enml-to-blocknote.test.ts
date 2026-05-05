@@ -57,6 +57,18 @@ describe("convertEnmlToBlocks", () => {
     expect((content[0] as { text?: string }).text).toBeUndefined();
   });
 
+  it("propagates parent inline styles into the nested text of a link", () => {
+    const enml = '<en-note><p><b><a href="https://x.test">x</a></b></p></en-note>';
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+    const content = blocks[0].content as Array<{
+      type: string;
+      href?: string;
+      content?: Array<{ text: string; styles?: Record<string, boolean> }>;
+    }>;
+    expect(content[0].type).toBe("link");
+    expect(content[0].content?.[0]?.styles?.bold).toBe(true);
+  });
+
   it("opens a div containing only a mailto link without producing a flat-shape link (Email śmietnik repro)", () => {
     const enml =
       '<en-note><div><a href="mailto:dev.smietnik@gmail.com">dev.smietnik@gmail.com</a></div></en-note>';
