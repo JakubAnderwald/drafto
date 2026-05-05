@@ -106,6 +106,42 @@ describe("convertEnmlToBlocks", () => {
     expect(content.rows[0].cells).toHaveLength(2);
   });
 
+  it("unwraps single-column layout tables of bullet lists into a flat list", () => {
+    const enml = `<en-note><table>
+      <tr><td><ul><li>first</li></ul></td></tr>
+      <tr><td><ul><li>second</li></ul></td></tr>
+      <tr><td><div><br/></div></td></tr>
+    </table></en-note>`;
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    expect(blocks.find((b) => b.type === "table")).toBeUndefined();
+    const bullets = blocks.filter((b) => b.type === "bulletListItem");
+    expect(bullets).toHaveLength(2);
+    const firstContent = bullets[0].content as Array<{ text: string }>;
+    const secondContent = bullets[1].content as Array<{ text: string }>;
+    expect(firstContent.map((i) => i.text).join("")).toBe("first");
+    expect(secondContent.map((i) => i.text).join("")).toBe("second");
+  });
+
+  it("flattens nested lists in genuine multi-column tables instead of dropping them", () => {
+    const enml = `<en-note><table>
+      <tr><td>label</td><td><ul><li>x</li><li>y</li></ul></td></tr>
+    </table></en-note>`;
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    const table = blocks.find((b) => b.type === "table");
+    expect(table).toBeDefined();
+    const content = table?.content as {
+      rows: { cells: Array<{ text: string }>[] }[];
+    };
+    expect(content.rows).toHaveLength(1);
+    expect(content.rows[0].cells).toHaveLength(2);
+    const labelText = content.rows[0].cells[0].map((i) => i.text).join("");
+    const listText = content.rows[0].cells[1].map((i) => i.text).join("");
+    expect(labelText).toBe("label");
+    expect(listText).toBe("• x\n• y");
+  });
+
   it("returns default paragraph for empty content", () => {
     const blocks = convertEnmlToBlocks("", emptyMap);
     expect(blocks).toHaveLength(1);
