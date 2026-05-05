@@ -142,6 +142,56 @@ describe("convertEnmlToBlocks", () => {
     expect(listText).toBe("• x\n• y");
   });
 
+  it("keeps a real table when any row has a header cell", () => {
+    const enml = `<en-note><table>
+      <tr><th>Header</th></tr>
+      <tr><td><ul><li>x</li></ul></td></tr>
+    </table></en-note>`;
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+    expect(blocks.find((b) => b.type === "table")).toBeDefined();
+    expect(blocks.find((b) => b.type === "bulletListItem")).toBeUndefined();
+  });
+
+  it("keeps a real table when a single-column cell contains inline text mixed with blocks", () => {
+    const enml = `<en-note><table>
+      <tr><td>inline text<ul><li>a</li></ul></td></tr>
+    </table></en-note>`;
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+    const table = blocks.find((b) => b.type === "table");
+    expect(table).toBeDefined();
+    const content = table?.content as { rows: { cells: Array<{ text: string }>[] }[] };
+    const cellText = content.rows[0].cells[0].map((i) => i.text).join("");
+    expect(cellText).toBe("inline text\n• a");
+  });
+
+  it("flattens ordered lists, links, paragraphs and inline styles in cells", () => {
+    const enml = `<en-note><table>
+      <tr><td>k</td><td><ol><li>one</li><li>two</li></ol><p>tail</p><b>bold</b><a href="https://x.test">l</a></td></tr>
+    </table></en-note>`;
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+    const table = blocks.find((b) => b.type === "table");
+    expect(table).toBeDefined();
+    const content = table?.content as {
+      rows: {
+        cells: Array<{
+          type: string;
+          text: string;
+          href?: string;
+          styles?: Record<string, boolean>;
+        }>[];
+      }[];
+    };
+    const cell = content.rows[0].cells[1];
+    const flat = cell.map((i) => i.text).join("");
+    expect(flat).toContain("1. one");
+    expect(flat).toContain("2. two");
+    expect(flat).toContain("tail");
+    const bold = cell.find((i) => i.text === "bold");
+    expect(bold?.styles?.bold).toBe(true);
+    const link = cell.find((i) => i.type === "link");
+    expect(link?.href).toBe("https://x.test");
+  });
+
   it("returns default paragraph for empty content", () => {
     const blocks = convertEnmlToBlocks("", emptyMap);
     expect(blocks).toHaveLength(1);
