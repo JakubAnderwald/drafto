@@ -106,6 +106,95 @@ describe("convertEnmlToBlocks", () => {
     expect(content.rows[0].cells).toHaveLength(2);
   });
 
+  it("unwraps single-column layout tables of bullet lists into a flat list", () => {
+    const enml = `<en-note><table>
+      <tr><td><ul><li>first</li></ul></td></tr>
+      <tr><td><ul><li>second</li></ul></td></tr>
+      <tr><td><div><br/></div></td></tr>
+    </table></en-note>`;
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    expect(blocks.find((b) => b.type === "table")).toBeUndefined();
+    const bullets = blocks.filter((b) => b.type === "bulletListItem");
+    expect(bullets).toHaveLength(2);
+    const firstContent = bullets[0].content as Array<{ text: string }>;
+    const secondContent = bullets[1].content as Array<{ text: string }>;
+    expect(firstContent.map((i) => i.text).join("")).toBe("first");
+    expect(secondContent.map((i) => i.text).join("")).toBe("second");
+    // The empty <td><div><br/></div></td> spacer cell must not leak through
+    // as a paragraph containing only whitespace.
+    expect(blocks.every((b) => b.type === "bulletListItem")).toBe(true);
+  });
+
+  it("flattens nested lists in genuine multi-column tables instead of dropping them", () => {
+    const enml = `<en-note><table>
+      <tr><td>label</td><td><ul><li>x</li><li>y</li></ul></td></tr>
+    </table></en-note>`;
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    const table = blocks.find((b) => b.type === "table");
+    expect(table).toBeDefined();
+    const content = table?.content as {
+      rows: { cells: Array<{ text: string }>[] }[];
+    };
+    expect(content.rows).toHaveLength(1);
+    expect(content.rows[0].cells).toHaveLength(2);
+    const labelText = content.rows[0].cells[0].map((i) => i.text).join("");
+    const listText = content.rows[0].cells[1].map((i) => i.text).join("");
+    expect(labelText).toBe("label");
+    expect(listText).toBe("• x\n• y");
+  });
+
+  it("keeps a real table when any row has a header cell", () => {
+    const enml = `<en-note><table>
+      <tr><th>Header</th></tr>
+      <tr><td><ul><li>x</li></ul></td></tr>
+    </table></en-note>`;
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+    expect(blocks.find((b) => b.type === "table")).toBeDefined();
+    expect(blocks.find((b) => b.type === "bulletListItem")).toBeUndefined();
+  });
+
+  it("keeps a real table when a single-column cell contains inline text mixed with blocks", () => {
+    const enml = `<en-note><table>
+      <tr><td>inline text<ul><li>a</li></ul></td></tr>
+    </table></en-note>`;
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+    const table = blocks.find((b) => b.type === "table");
+    expect(table).toBeDefined();
+    const content = table?.content as { rows: { cells: Array<{ text: string }>[] }[] };
+    const cellText = content.rows[0].cells[0].map((i) => i.text).join("");
+    expect(cellText).toBe("inline text\n• a");
+  });
+
+  it("flattens ordered lists, links, paragraphs and inline styles in cells", () => {
+    const enml = `<en-note><table>
+      <tr><td>k</td><td><ol><li>one</li><li>two</li></ol><p>tail</p><b>bold</b><a href="https://x.test">l</a></td></tr>
+    </table></en-note>`;
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+    const table = blocks.find((b) => b.type === "table");
+    expect(table).toBeDefined();
+    const content = table?.content as {
+      rows: {
+        cells: Array<{
+          type: string;
+          text: string;
+          href?: string;
+          styles?: Record<string, boolean>;
+        }>[];
+      }[];
+    };
+    const cell = content.rows[0].cells[1];
+    const flat = cell.map((i) => i.text).join("");
+    expect(flat).toContain("1. one");
+    expect(flat).toContain("2. two");
+    expect(flat).toContain("tail");
+    const bold = cell.find((i) => i.text === "bold");
+    expect(bold?.styles?.bold).toBe(true);
+    const link = cell.find((i) => i.type === "link");
+    expect(link?.href).toBe("https://x.test");
+  });
+
   it("returns default paragraph for empty content", () => {
     const blocks = convertEnmlToBlocks("", emptyMap);
     expect(blocks).toHaveLength(1);

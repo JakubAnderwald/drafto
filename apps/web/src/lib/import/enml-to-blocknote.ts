@@ -176,8 +176,11 @@ function convertElement(
     case "en-media":
       return convertEnMedia(el, attachmentUrlMap);
 
-    case "table":
+    case "table": {
+      const unwrapped = tryUnwrapLayoutTable(el, attachmentUrlMap, taskMap);
+      if (unwrapped !== null) return unwrapped;
       return convertTable(el);
+    }
 
     case "br":
       return null;
@@ -326,7 +329,7 @@ function convertTable(tableEl: Element): Block {
     const cells: InlineContent[][] = [];
     const cellElements = tr.querySelectorAll("td, th");
     for (const cell of cellElements) {
-      cells.push(extractInlineContent(cell));
+      cells.push(extractCellInlineContent(cell));
     }
     if (cells.length > 0) {
       rows.push({ cells });
@@ -337,6 +340,154 @@ function convertTable(tableEl: Element): Block {
     type: "table",
     content: { type: "tableContent", rows },
   };
+}
+
+const BLOCK_TAGS = new Set([
+  "ul",
+  "ol",
+  "div",
+  "p",
+  "table",
+  "en-media",
+  "en-todo",
+  "blockquote",
+  "h1",
+  "h2",
+  "h3",
+  "hr",
+]);
+
+/**
+ * Detect tables used purely for layout (Evernote often wraps a column of
+ * lists in a single-column table). When detected, unwrap each cell's
+ * children into top-level blocks so lists/divs render naturally instead of
+ * being lost inside cells (BlockNote table cells only allow inline content).
+ *
+ * Heuristic: no <th>, every <tr> has at most one <td>, and every non-empty
+ * cell contains only block-level children (no meaningful inline text).
+ * Returns null when the table doesn't match — caller falls back to a real table.
+ */
+function tryUnwrapLayoutTable(
+  tableEl: Element,
+  attachmentUrlMap: Map<string, string>,
+  taskMap: Map<string, EnexTask[]>,
+): Block[] | null {
+  if (tableEl.querySelector("th")) return null;
+
+  const rows = tableEl.querySelectorAll("tr");
+  if (rows.length === 0) return null;
+
+  const cells: Element[] = [];
+  for (const tr of rows) {
+    const tds = tr.querySelectorAll("td");
+    if (tds.length > 1) return null;
+    if (tds.length === 1) cells.push(tds[0]);
+  }
+
+  for (const cell of cells) {
+    if (!isBlockOnlyCell(cell)) return null;
+  }
+
+  const blocks: Block[] = [];
+  for (const cell of cells) {
+    for (const block of processChildren(cell, attachmentUrlMap, taskMap)) {
+      if (!isBlankParagraph(block)) blocks.push(block);
+    }
+  }
+  return blocks;
+}
+
+function isBlankParagraph(block: Block): boolean {
+  if (block.type !== "paragraph" || !Array.isArray(block.content)) return false;
+  return block.content.every((item) => item.type === "text" && !item.text.trim());
+}
+
+function isBlockOnlyCell(cell: Element): boolean {
+  for (const node of Array.from(cell.childNodes)) {
+    if (node.nodeType === 3) {
+      // Inline text in a cell disqualifies it from layout-table treatment.
+      if ((node as Text).textContent?.trim()) return false;
+    } else if (node.nodeType === 1) {
+      const tag = (node as Element).tagName.toLowerCase();
+      // <br> alone (e.g. <div><br/></div>) is fine; any other inline tag means
+      // the cell mixes inline content and shouldn't be unwrapped.
+      if (tag === "br") continue;
+      if (!BLOCK_TAGS.has(tag)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Extract inline content from a table cell. Unlike extractInlineContent,
+ * this recurses into block-level children (divs, paragraphs, lists) so their
+ * text isn't silently dropped. Lists are flattened with bullet/number prefixes
+ * and newline separators.
+ */
+function extractCellInlineContent(cell: Element): InlineContent[] {
+  const parts: InlineContent[][] = [];
+
+  for (const node of Array.from(cell.childNodes)) {
+    if (node.nodeType === 3) {
+      const text = (node as Text).textContent || "";
+      if (text.trim()) parts.push([{ type: "text", text, styles: {} }]);
+      continue;
+    }
+    if (node.nodeType !== 1) continue;
+    const childEl = node as Element;
+    const tag = childEl.tagName.toLowerCase();
+
+    if (tag === "ul" || tag === "ol") {
+      const ordered = tag === "ol";
+      let n = 0;
+      for (const li of Array.from(childEl.children)) {
+        if (li.tagName.toLowerCase() !== "li") continue;
+        n += 1;
+        const prefix = ordered ? `${n}. ` : "• ";
+        const inner = extractCellInlineContent(li);
+        if (inner.length === 0) {
+          parts.push([{ type: "text", text: prefix, styles: {} }]);
+        } else {
+          parts.push([{ type: "text", text: prefix, styles: {} }, ...inner]);
+        }
+      }
+    } else if (tag === "div" || tag === "p" || tag === "blockquote") {
+      const inner = extractCellInlineContent(childEl);
+      if (inner.length > 0) parts.push(inner);
+    } else if (tag === "table" || tag === "en-media") {
+      // Genuinely unrepresentable as inline; skip.
+      continue;
+    } else if (tag === "br") {
+      parts.push([{ type: "text", text: "\n", styles: {} }]);
+    } else {
+      // Inline tag — apply the same logic extractInlineContent uses per element.
+      const styles = getInlineStyles(childEl);
+      if (tag === "a") {
+        parts.push([
+          {
+            type: "link",
+            text: childEl.textContent || "",
+            href: childEl.getAttribute("href") || "",
+            styles,
+          },
+        ]);
+      } else {
+        const inner = extractInlineContent(childEl);
+        if (inner.length > 0) {
+          parts.push(inner.map((item) => ({ ...item, styles: { ...item.styles, ...styles } })));
+        }
+      }
+    }
+  }
+
+  if (parts.length === 0) return [];
+
+  const result: InlineContent[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    if (i > 0) result.push({ type: "text", text: "\n", styles: {} });
+    result.push(...parts[i]);
+  }
+  return result;
 }
 
 function extractInlineContent(el: Element): InlineContent[] {
