@@ -13,10 +13,10 @@ export function sanitizeAndBuildPath(
     // Decompose accented chars (e.g. "ö" → "o" + U+0308) and strip the combining marks,
     // so the readable base letter survives instead of being replaced with "_".
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replaceAll(/[\u0300-\u036f]/g, "")
     // Supabase Storage rejects non-ASCII keys — replace any remaining
     // non-printable-ASCII (emoji, CJK, surrogates, control chars).
-    .replace(/[^\x20-\x7e]/g, "_")
+    .replaceAll(/[^\x20-\x7e]/g, "_")
     .replace(/[/\\]/g, "_") // no path separators
     .replace(/\.\./g, "_") // no directory traversal
     .replace(/[<>:"|?*\x00-\x1f]/g, "_"); // no shell/HTML-special chars
