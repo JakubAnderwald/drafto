@@ -10,7 +10,7 @@ function inlineItemToMarkdown(item: BlockNoteInlineContent): string {
   let text =
     item.type === "link" && item.content?.length
       ? item.content.map(inlineItemToMarkdown).join("")
-      : item.text;
+      : (item.text ?? "");
 
   if (item.styles) {
     if (item.styles.code) text = `\`${text}\``;
