@@ -34,10 +34,12 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
 4. **Create a PAT for the mirror workflow.**
    - GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens.
    - Resource owner: `JakubAnderwald` (your user). Repository access: only `JakubAnderwald/drafto`.
-   - Permissions:
-     - **Repository → Issues**: Read and write.
-     - **Repository → Metadata**: Read-only (auto-set).
-     - **Account → Projects**: Read-only.
+   - Permissions — note the two tabs at the top of the **Permissions** section, **Repositories** and **Account**:
+     - **Repositories** tab:
+       - **Issues**: Read and write.
+       - **Metadata**: Read-only (auto-set).
+     - **Account** tab (Projects v2 are user-owned, not repo-scoped, so the Project permission lives here):
+       - **Projects**: Read-only.
    - Expiration: 90 days (set a calendar reminder to rotate; rotation is in this runbook).
 
 5. **Add the PAT to repo secrets.**
