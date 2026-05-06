@@ -14,6 +14,7 @@ Note-taking app at drafto.eu. Monorepo with pnpm workspaces + Turborepo. Web (Ne
 | Builds, Fastlane, App Store / Play / Mac releases | [`docs/operations/builds-and-releases.md`](./docs/operations/builds-and-releases.md) |
 | Supabase migration safety workflow                | [`docs/operations/migrations.md`](./docs/operations/migrations.md)                   |
 | Why a tech / pattern was chosen                   | [`docs/adr/`](./docs/adr/README.md)                                                  |
+| Dark factory pipeline (kanban-driven autopilot)   | [`docs/features/dark-factory.md`](./docs/features/dark-factory.md)                   |
 | Full index                                        | [`docs/README.md`](./docs/README.md)                                                 |
 
 Historical plans live in [`docs/archive/`](./docs/archive/) — do not treat as source of truth.
@@ -148,6 +149,16 @@ Common CI failure patterns:
 Beta TestFlight builds (Mac App Store Connect, iOS, Android internal track) are **pre-authorized** — ship them without asking. Communicate what's going out (version + build number, what's in it) but don't gate on permission. A bad TestFlight build is reversible: the next build supersedes it, and old builds can be expired in App Store Connect.
 
 Production / public-store releases (`pnpm release:prod:*`, `pnpm release:production`, App Store / Play Store submission) still require explicit user approval — those affect non-tester users.
+
+## Dark Factory
+
+Drafto runs an unattended development pipeline on the Mac mini ("dark factory") that watches a GitHub Projects v2 board and drives issues through plan → implement → preview → ship. State lives in `status:*` labels mirrored from the board's Status field, plus `logs/factory-state.json`. See [`docs/features/dark-factory.md`](./docs/features/dark-factory.md) for the operator manual, [`docs/operations/factory-runbook.md`](./docs/operations/factory-runbook.md) for phase promotion + rollback, and [ADR-0026](./docs/adr/0026-dark-factory-pipeline.md) for the decision.
+
+**Two human gates** the factory will never bypass: Plan Review → In Progress (plan-approval) and In Test → Approved (merge + ship). Both are reachable via the kanban board for any reporter, and via email reply for allowlisted reporters (Jakub + his wife). The migration gate (`migration-approved` label required when a PR touches `supabase/migrations/**`) is a hard stop on the Approved transition for everyone.
+
+**Kill switches**: per-card via `factory-pause` label or dragging to **Blocked**; global via `node scripts/lib/state-cli.mjs factory:pause`; emergency via `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist`.
+
+**Parity-mandate enforcement**: the factory's `--implement` post-check diffs the PR against the issue's "Affected platforms" checkboxes and blocks the card if a claimed platform has no code changes. To run a legitimate single-platform feature, apply `parity:web-only` / `parity:mobile-only` / `parity:desktop-only` to the issue.
 
 ## Cross-Platform Feature Workflow
 
