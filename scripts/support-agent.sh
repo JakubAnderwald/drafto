@@ -374,9 +374,15 @@ if [[ "$COMMENT_SYNC" -eq 1 ]]; then
       "$PROMPT_TEXT" "$BUNDLE")
     log "Invoking claude for issue #$ISSUE_NUMBER (comment-sync, phase=$PHASE)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t support-agent-out.XXXXXX)
-    if ! claude -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
-        >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE"; then
-      log "ERROR: claude exited non-zero for issue #$ISSUE_NUMBER comment-sync"
+    EXIT_CODE=0
+    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
+        >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
+    if [[ $EXIT_CODE -eq 124 ]]; then
+      log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC:-180}s) for issue #$ISSUE_NUMBER comment-sync — skipping; next tick retries"
+      rm -f "$CLAUDE_OUTPUT_FILE"
+      continue
+    elif [[ $EXIT_CODE -ne 0 ]]; then
+      log "ERROR: claude exited non-zero ($EXIT_CODE) for issue #$ISSUE_NUMBER comment-sync"
       cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
       rm -f "$CLAUDE_OUTPUT_FILE"
       continue
@@ -524,9 +530,15 @@ if [[ "$STATE_SYNC" -eq 1 ]]; then
       "$PROMPT_TEXT" "$BUNDLE")
     log "Invoking claude for issue #$ISSUE_NUMBER (state-sync, phase=$PHASE)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t support-agent-out.XXXXXX)
-    if ! claude -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
-        >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE"; then
-      log "ERROR: claude exited non-zero for issue #$ISSUE_NUMBER state-sync"
+    EXIT_CODE=0
+    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
+        >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
+    if [[ $EXIT_CODE -eq 124 ]]; then
+      log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC:-180}s) for issue #$ISSUE_NUMBER state-sync — skipping; next tick retries"
+      rm -f "$CLAUDE_OUTPUT_FILE"
+      continue
+    elif [[ $EXIT_CODE -ne 0 ]]; then
+      log "ERROR: claude exited non-zero ($EXIT_CODE) for issue #$ISSUE_NUMBER state-sync"
       cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
       rm -f "$CLAUDE_OUTPUT_FILE"
       continue
@@ -848,9 +860,15 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
 
   log "Invoking claude for $TRACK_ID (phase=$PHASE)"
   CLAUDE_OUTPUT_FILE=$(mktemp -t support-agent-out.XXXXXX)
-  if ! claude -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
-      >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE"; then
-    log "ERROR: claude exited non-zero for $TRACK_ID"
+  EXIT_CODE=0
+  node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
+      >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
+  if [[ $EXIT_CODE -eq 124 ]]; then
+    log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC:-180}s) for $TRACK_ID — skipping; next tick retries"
+    rm -f "$CLAUDE_OUTPUT_FILE"
+    continue
+  elif [[ $EXIT_CODE -ne 0 ]]; then
+    log "ERROR: claude exited non-zero ($EXIT_CODE) for $TRACK_ID"
     cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
     rm -f "$CLAUDE_OUTPUT_FILE"
     continue
