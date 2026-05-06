@@ -32,15 +32,16 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
    Without this, issues filed in the repo don't auto-add to the board.
 
 4. **Create a PAT for the mirror workflow.**
-   - GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens.
-   - Resource owner: `JakubAnderwald` (your user). Repository access: only `JakubAnderwald/drafto`.
-   - Permissions — note the two tabs at the top of the **Permissions** section, **Repositories** and **Account**:
-     - **Repositories** tab:
-       - **Issues**: Read and write.
-       - **Metadata**: Read-only (auto-set).
-     - **Account** tab (Projects v2 are user-owned, not repo-scoped, so the Project permission lives here):
-       - **Projects**: Read-only.
+
+   Use a **classic PAT** rather than a fine-grained one. Projects v2 access via fine-grained PATs is gated on an Account-tab "Projects" permission that is unreliably surfaced for personal accounts (search filters return "No items available"). Classic PATs cover Projects v2 out of the box.
+   - GitHub → Settings → Developer settings → Personal access tokens → **Tokens (classic)** → Generate new token (classic).
+   - Note: name it something like "drafto factory mirror".
+   - Scopes:
+     - `repo` (full) — covers issue label edits on `JakubAnderwald/drafto`.
+     - `project` — Projects v2 read.
    - Expiration: 90 days (set a calendar reminder to rotate; rotation is in this runbook).
+
+   Classic PATs are user-wide rather than repo-scoped, which is a slightly larger blast radius than fine-grained — for a single-user, single-repo project this is an acceptable tradeoff for "always works". If you'd rather use fine-grained, the equivalent is **Repositories → Issues: Read+Write, Metadata: Read-only** plus **Account → Projects: Read-only** — the Account permission only appears in the search if your account context exposes it.
 
 5. **Add the PAT to repo secrets.**
    - Repo → Settings → Secrets and variables → Actions → New repository secret.
@@ -119,7 +120,7 @@ The `FACTORY_PROJECT_TOKEN` PAT expires every 90 days (per setup step 4). When i
 
 To rotate:
 
-1. Generate a new fine-grained PAT with the same scopes as setup step 4.
+1. Generate a new classic PAT with the same scopes as setup step 4 (`repo`, `project`).
 2. Update the `FACTORY_PROJECT_TOKEN` secret value in repo settings.
 3. Smoke-test by dragging a Backlog card to Ready and back; the workflow should run twice and the labels should toggle.
 4. Set a new 90-day calendar reminder.
