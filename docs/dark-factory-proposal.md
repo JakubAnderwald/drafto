@@ -198,69 +198,69 @@ Promote after ≥5 clean runs without human intervention at the current phase.
 
 ### Stage 2 — Implementation (gated by plan approval)
 
-10. **Human** reviews the plan comment and drags card to **In Progress** to
-    approve. (Allowlisted reporters can approve via email — see Household
-    autopilot section.) The Status field is now "In Progress" — no mirror
-    workflow involved; the agent reads it directly on its next tick.
-11. Mac mini's next `factory-agent.sh --implement` cycle queries Project v2
-    via `factory-project.mjs` for Status = "In Progress" items. Acquires
-    slot 0 or 1 (PID lock per slot in `logs/factory.slot{0,1}.pid`). Applies
-    `status:in-progress` label as a transition side-effect.
-12. `worktree-cli.mjs` creates `worktrees/factory-issue-<n>` from `origin/main`,
-    copies gitignored env files per CLAUDE.md (`apps/mobile/.env*`,
-    `apps/desktop/.env*`, `apps/mobile/android/local.properties`), runs
-    `pnpm install`.
-13. `factory-bundle.mjs` rebuilds the bundle, this time including the
-    approved plan comment as the primary instruction source.
-14. Invokes `claude --dangerously-skip-permissions` with `factory-prompt.md` +
-    bundle. Claude implements per the approved plan, runs
-    lint/typecheck/tests in the worktree, commits, pushes, opens PR via
-    `gh pr create`. Outputs single directive line:
-    `issue=<n> action=<implemented|noop|blocked> pr=<url|->`.
-15. Bash post-check: parity diff scan AND plan-vs-diff drift check. If "Affected
-    platforms" includes mobile but no `apps/mobile/**` files in diff →
-    `status:blocked`, comment, stop. If the diff substantially exceeds
-    files-to-touch in the approved plan → comment a drift warning but proceed
-    (drift is a quality signal, not a hard block).
-16. Set `status:in-review`.
-17. **`--watch` mode** picks up `status:in-review` issues every cycle and runs a
-    `/push`-style loop in the worktree: poll CI, fetch new PR review comments,
-    invoke Claude to fix any failures or unresolved comments, re-push. Loop ends
-    when CI is green AND no unresolved review comments remain. Retry budget
-    bounded by `factory.issues[<n>].attempts`.
-18. Once CI is green and Vercel preview is reachable (`gh pr view --json`
-    surfaces the preview URL via the Vercel bot comment), `--watch` flips card
-    to **In Test** and posts the preview URL on the issue. **PR stays open.**
+1. **Human** reviews the plan comment and drags card to **In Progress** to
+   approve. (Allowlisted reporters can approve via email — see Household
+   autopilot section.) The Status field is now "In Progress" — no mirror
+   workflow involved; the agent reads it directly on its next tick.
+2. Mac mini's next `factory-agent.sh --implement` cycle queries Project v2
+   via `factory-project.mjs` for Status = "In Progress" items. Acquires
+   slot 0 or 1 (PID lock per slot in `logs/factory.slot{0,1}.pid`). Applies
+   `status:in-progress` label as a transition side-effect.
+3. `worktree-cli.mjs` creates `worktrees/factory-issue-<n>` from `origin/main`,
+   copies gitignored env files per CLAUDE.md (`apps/mobile/.env*`,
+   `apps/desktop/.env*`, `apps/mobile/android/local.properties`), runs
+   `pnpm install`.
+4. `factory-bundle.mjs` rebuilds the bundle, this time including the
+   approved plan comment as the primary instruction source.
+5. Invokes `claude --dangerously-skip-permissions` with `factory-prompt.md` +
+   bundle. Claude implements per the approved plan, runs
+   lint/typecheck/tests in the worktree, commits, pushes, opens PR via
+   `gh pr create`. Outputs single directive line:
+   `issue=<n> action=<implemented|noop|blocked> pr=<url|->`.
+6. Bash post-check: parity diff scan AND plan-vs-diff drift check. If "Affected
+   platforms" includes mobile but no `apps/mobile/**` files in diff →
+   `status:blocked`, comment, stop. If the diff substantially exceeds
+   files-to-touch in the approved plan → comment a drift warning but proceed
+   (drift is a quality signal, not a hard block).
+7. Set `status:in-review`.
+8. **`--watch` mode** picks up `status:in-review` issues every cycle and runs a
+   `/push`-style loop in the worktree: poll CI, fetch new PR review comments,
+   invoke Claude to fix any failures or unresolved comments, re-push. Loop ends
+   when CI is green AND no unresolved review comments remain. Retry budget
+   bounded by `factory.issues[<n>].attempts`.
+9. Once CI is green and Vercel preview is reachable (`gh pr view --json`
+   surfaces the preview URL via the Vercel bot comment), `--watch` flips card
+   to **In Test** and posts the preview URL on the issue. **PR stays open.**
 
 ### Stage 3 — Approval & release
 
-19. **Approval gate** — branches by reporter:
-    - **Allowlisted reporter** (`reporter-allowlisted: true` in the support-agent
-      footer): `--watch` immediately advances card to **Approved** (provided
-      migration gate passes). The reporter's identity-on-file is the implicit
-      sign-off; no human drag required. Migration changes still hold for an
-      explicit `migration-approved` label.
-    - **Anyone else**: card waits in In Test until a human drags it to Approved.
-20. `factory-agent.sh --release` runs migration gate (refuses if `supabase/migrations/**`
-    files present without `migration-approved` label). On pass:
-    - Squash-merges the PR via `gh api` (per CLAUDE.md worktree gotcha — uses the
-      API form, not `gh pr merge --delete-branch`).
-    - Vercel auto-deploys main → prod.
-    - Dispatches `beta-release.yml` (iOS, Android) and runs Mac TF beta lane
-      locally on the Mac mini via `dispatch-release.mjs` (Phase D only; in
-      Phase C this step is a no-op and the human kicks lanes manually).
-    - Comments build numbers + TestFlight / Play internal links on the issue.
-    - Card → **Released**.
-21. **Done** transition — branches by reporter:
-    - **Allowlisted reporter**: can mark Done by replying to any support-agent
-      email on the thread with an "accept" signal (e.g. "looks good, ship",
-      "done", "thanks", or `[ACCEPT]`). The support-agent classifier (extended
-      via the existing `support-agent-prompt.md`) recognises the intent and
-      runs `state-cli.mjs factory:done <issue>`, which sets `status:done` and
-      closes the issue via `gh`.
-    - **Anyone else**: human drags card to Done after all store reviews
-      accepted. The existing `comment-released-issues.mjs` hook posts the
-      release announcement either way.
+1. **Approval gate** — branches by reporter:
+   - **Allowlisted reporter** (`reporter-allowlisted: true` in the support-agent
+     footer): `--watch` immediately advances card to **Approved** (provided
+     migration gate passes). The reporter's identity-on-file is the implicit
+     sign-off; no human drag required. Migration changes still hold for an
+     explicit `migration-approved` label.
+   - **Anyone else**: card waits in In Test until a human drags it to Approved.
+2. `factory-agent.sh --release` runs migration gate (refuses if `supabase/migrations/**`
+   files present without `migration-approved` label). On pass:
+   - Squash-merges the PR via `gh api` (per CLAUDE.md worktree gotcha — uses the
+     API form, not `gh pr merge --delete-branch`).
+   - Vercel auto-deploys main → prod.
+   - Dispatches `beta-release.yml` (iOS, Android) and runs Mac TF beta lane
+     locally on the Mac mini via `dispatch-release.mjs` (Phase D only; in
+     Phase C this step is a no-op and the human kicks lanes manually).
+   - Comments build numbers + TestFlight / Play internal links on the issue.
+   - Card → **Released**.
+3. **Done** transition — branches by reporter:
+   - **Allowlisted reporter**: can mark Done by replying to any support-agent
+     email on the thread with an "accept" signal (e.g. "looks good, ship",
+     "done", "thanks", or `[ACCEPT]`). The support-agent classifier (extended
+     via the existing `support-agent-prompt.md`) recognises the intent and
+     runs `state-cli.mjs factory:done <issue>`, which sets `status:done` and
+     closes the issue via `gh`.
+   - **Anyone else**: human drags card to Done after all store reviews
+     accepted. The existing `comment-released-issues.mjs` hook posts the
+     release announcement either way.
 
 ## Concurrency model (2 worktree slots)
 
