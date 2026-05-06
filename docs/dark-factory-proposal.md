@@ -1,8 +1,54 @@
 # Drafto Dark Factory — Unattended Development Pipeline
 
-> **Status**: Proposal under review. Not yet implemented. When promoted past
-> Phase A this document will be replaced by an ADR (`docs/adr/0026-dark-factory-pipeline.md`)
-> plus operator docs at `docs/features/dark-factory.md` and `docs/operations/factory-runbook.md`.
+> **Status (2026-05-06)**: Phase A rollout in progress. ADR-0026 records the
+> decision; operator docs live at `docs/features/dark-factory.md` and
+> `docs/operations/factory-runbook.md`. This proposal stays as the canonical
+> wave-by-wave breakdown until Phase B lands and the doc is archived.
+>
+> **What's landed**:
+>
+> - **Wave 1 — Foundations** (PR #386, merged 2026-05-06): all 16 labels
+>   (`status:*`, `parity:*`, `factory-pause`, `migration-approved`,
+>   `factory-failure`); the **Drafto Factory** Project v2 board with the
+>   11-option Status field; `setup-factory-labels.sh` + `setup-factory-board.sh`
+>   bootstrap scripts (the latter rewritten to use direct GraphQL throughout —
+>   see PR #386 follow-up commit `21266d6`); `factory-feature.yml` issue
+>   template; ADR-0026; operator manual + runbook.
+> - **PR #388 trigger-name fix** (merged 2026-05-06): one-line correction of
+>   the workflow's `on:` event name from `project_v2_item` to
+>   `projects_v2_item`. Necessary but insufficient — see pivot below.
+>
+> **Path-A pivot (this update)**: the GitHub Actions mirror workflow
+> (`.github/workflows/factory-status-mirror.yml`) has been **dropped** because
+> `projects_v2_item` events are documented org-only — they do not fire for
+> user-owned Project v2 boards (community discussion #40848, open since 2022,
+> no fix planned). Drafto lives under a personal account, so no event ever
+> reached the workflow. The architecture now has the Mac-mini agent read the
+> Project v2 board directly via GraphQL on its 5-min tick. Labels are written
+> by the agent as transition side-effects (for human filtering / observability)
+> rather than as the agent's queue. Single source of truth: the board's Status
+> field. Reaction time: ≤5 min instead of ≤30 s — acceptable for the
+> "vibe-kanban" cadence and matches Drafto's existing Mac-mini polling
+> pattern (`support-agent.sh`, `nightly-support.sh`, `nightly-audit.sh`).
+>
+> **What's pending**:
+>
+> - **Wave 2 — Core libraries** (next PR): `scripts/lib/factory-project.mjs`
+>   (Project v2 GraphQL reader/writer — replaces the `factory-status-mirror.yml`
+>   role), `scripts/lib/factory-state.mjs`, `scripts/lib/factory-bundle.mjs`,
+>   `scripts/lib/state-cli.mjs` extensions for `factory:*` subcommands.
+> - **Wave 3 — The agent** (after Wave 2): `scripts/factory-plan-prompt.md`,
+>   `scripts/factory-prompt.md` (Phase A no-op stub), `scripts/factory-agent.sh`
+>   with `--plan` working end-to-end and `--implement` returning a "phase=A;
+>   implementation skipped" comment.
+> - **Wave 4 — Mac-mini deployment** (operator-side, after Wave 3): install
+>   `~/Library/LaunchAgents/eu.drafto.factory.plist`, run in `--phase A` for
+>   ≥5 clean ticks before promoting.
+>
+> **Smoke test plan (post-Wave-4)**: drag a test card to **Ready**; within
+> ≤5 min the agent posts a structured plan as an issue comment, advances the
+> card to **Plan Review**, and applies `status:plan-review`. Operator reviews
+> ≥5 plan comments before promoting to Phase B.
 
 ## Context
 
@@ -36,22 +82,28 @@ Vercel, free GitHub, free GitHub Actions for the Status→label mirror.
 ```
 GitHub Projects v2 board
        |
-       | (drag card -> Status field changes)
+       | (drag card -> Status field changes; no webhook needed)
        v
-.github/workflows/factory-status-mirror.yml
-       |  on: project_v2_item / pull_request
-       |  mirrors Status -> status:* label on the linked issue
-       v
-Issue labels (status:ready / planning / plan-review / in-progress / in-review / in-test / approved / released / done / blocked)
+Mac-mini launchd  →  scripts/factory-agent.sh  (every 5 min)
+       |  modes: --plan / --implement / --release / --watch
        |
-       | (5-min poll on Mac mini via launchd)
-       v
-scripts/factory-agent.sh  (modes: --plan / --implement / --release / --watch)
-       |
-       +-- two worktree slots, PID-locked separately
+       +-- scripts/lib/factory-project.mjs queries Project v2 via GraphQL
+       |   for items matching the mode's target Status (Ready, In Progress,
+       |   In Test, etc.) — replaces the role originally assigned to
+       |   factory-status-mirror.yml, which was retired before Phase A
+       |   landed because user-owned Project v2 boards do not emit
+       |   `projects_v2_item` events (org-only per GitHub docs).
+       +-- per-issue: build bundle, invoke `claude --dangerously-skip-permissions`
+       |   with the appropriate prompt, parse a single-line directive, then
+       |   advance Status + apply status:* labels via factory-project.mjs.
+       +-- two worktree slots for --implement, PID-locked separately
        +-- state in logs/factory-state.json (atomic via state-cli.mjs)
        +-- phase gate (--phase A|B|C|D) enforced in bash and prompt
        +-- failure trap files factory-failure issue
+
+Labels (`status:*`) are written by the agent as transition side-effects, for
+human filtering on the Issues list and for the legacy `nightly-support.sh`
+Phase-3 deprecation window — they're observability, not the agent's queue.
 ```
 
 ## State machine (Project v2 Status field)
@@ -109,48 +161,51 @@ Promote after ≥5 clean runs without human intervention at the current phase.
 | `scripts/factory-plan-prompt.md`                 | System prompt for `--plan` mode — read-only research, output a structured plan (approach, files-to-touch, risks, parity checklist) as an issue comment, no code.                                                            |
 | `scripts/factory-prompt.md`                      | System prompt for `--implement` mode — references the approved plan posted on the issue, parity mandate, phase contract, single-line directive.                                                                             |
 | `scripts/lib/factory-bundle.mjs`                 | Builds per-issue context bundle (body, comments, affected platforms, prior PR if retry, screenshots).                                                                                                                       |
+| `scripts/lib/factory-project.mjs`                | Project v2 GraphQL reader/writer (Path-A pivot — replaces `factory-status-mirror.yml`). `queryStatusItems(status)`, `setStatus(itemId, status)`, `getStatusFieldMeta(projectId)`.                                           |
 | `scripts/lib/worktree-cli.mjs`                   | Headless `git worktree add/remove`. Branch naming `factory/issue-<n>`. Slot-aware.                                                                                                                                          |
 | `scripts/lib/dispatch-release.mjs`               | `gh workflow run` wrapper for `beta-release.yml` / `production-release.yml`, polls run status.                                                                                                                              |
 | `scripts/lib/factory-state.mjs`                  | Helpers over `state-cli.mjs`: `factory.slots[0\|1]`, `factory.issues[<n>] = {attempts, lastBeta, lastProd}`, `factory.paused`.                                                                                              |
-| `scripts/setup-factory-board.sh`                 | One-time `gh project create` + field provisioning. Idempotent.                                                                                                                                                              |
-| `.github/workflows/factory-status-mirror.yml`    | Mirrors Project v2 Status → issue `status:*` label. Also reacts to `pull_request: closed` to advance In Review → In Test (after merge) and dispatch beta releases.                                                          |
-| `.github/ISSUE_TEMPLATE/factory-feature.yml`     | Spec contract form (acceptance, platforms, schema?, UI?, out-of-scope).                                                                                                                                                     |
-| `docs/adr/0026-dark-factory-pipeline.md`         | ADR — decision, alternatives (vibe-kanban, custom UI), consequences.                                                                                                                                                        |
-| `docs/features/dark-factory.md`                  | Operator manual — board URL, label semantics, kill switch, troubleshooting.                                                                                                                                                 |
-| `docs/operations/factory-runbook.md`             | Phase progression criteria, rollback drills, "what to do when factory misbehaves".                                                                                                                                          |
+| `scripts/setup-factory-board.sh`                 | One-time Project v2 board provisioning via direct GraphQL (idempotent). **Shipped 2026-05-06 in PR #386.**                                                                                                                  |
+| `scripts/setup-factory-labels.sh`                | One-time `gh label create` upsert of the 16 factory labels. **Shipped 2026-05-06 in PR #386.**                                                                                                                              |
+| `.github/ISSUE_TEMPLATE/factory-feature.yml`     | Spec contract form (acceptance, platforms, schema?, UI?, out-of-scope). **Shipped 2026-05-06 in PR #386.**                                                                                                                  |
+| `docs/adr/0026-dark-factory-pipeline.md`         | ADR — decision, alternatives (vibe-kanban, custom UI), consequences. **Shipped 2026-05-06 in PR #386.**                                                                                                                     |
+| `docs/features/dark-factory.md`                  | Operator manual — board URL, label semantics, kill switch, troubleshooting. **Shipped 2026-05-06 in PR #386.**                                                                                                              |
+| `docs/operations/factory-runbook.md`             | Phase progression criteria, rollback drills, "what to do when factory misbehaves". **Shipped 2026-05-06 in PR #386.**                                                                                                       |
 | `~/Library/LaunchAgents/eu.drafto.factory.plist` | launchd entry, every 5 min, runs `factory-agent.sh --plan --implement --watch --phase <current>` (modes run sequentially under the same parent, each with its own lock). NOT version-controlled (matches existing pattern). |
 
 ### Modified files
 
-| Path                                | Change                                                                                                                                                                                                                                                                                                                |
-| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `scripts/lib/state-cli.mjs`         | Add `factory:*` subcommands (slot acquire/release, issue cursor mutate, paused flag).                                                                                                                                                                                                                                 |
-| `CLAUDE.md`                         | New "Dark Factory" section: labels, kill switch, parity-mandate enforcement point, link to runbook.                                                                                                                                                                                                                   |
-| Repo labels (via `gh label create`) | `status:ready`, `status:planning`, `status:plan-review`, `status:in-progress`, `status:in-review`, `status:in-test`, `status:approved`, `status:released`, `status:done`, `status:blocked`, `factory-pause`, `migration-approved`, `factory-failure`, `parity:web-only`, `parity:mobile-only`, `parity:desktop-only`. |
+| Path                                | Change                                                                                                                                                                                                                                                                                                                                                                                 |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scripts/lib/state-cli.mjs`         | Add `factory:*` subcommands (slot acquire/release, issue cursor mutate, paused flag).                                                                                                                                                                                                                                                                                                  |
+| `CLAUDE.md`                         | New "Dark Factory" section: labels, kill switch, parity-mandate enforcement point, link to runbook. **Shipped 2026-05-06 in PR #386.**                                                                                                                                                                                                                                                 |
+| Repo labels (via `gh label create`) | `status:ready`, `status:planning`, `status:plan-review`, `status:in-progress`, `status:in-review`, `status:in-test`, `status:approved`, `status:released`, `status:done`, `status:blocked`, `factory-pause`, `migration-approved`, `factory-failure`, `parity:web-only`, `parity:mobile-only`, `parity:desktop-only`. **Shipped 2026-05-06 in PR #386 via `setup-factory-labels.sh`.** |
 
 ## Factory loop — how a single card flows
 
 ### Stage 1 — Planning (read-only)
 
-1. **Human** drags issue to **Ready** column on Projects board.
-2. `factory-status-mirror.yml` adds `status:ready` label.
-3. Mac mini's launchd fires `factory-agent.sh --plan` (≤5 min later).
-4. Bash queries `gh issue list --label status:ready --state open`, picks first.
-5. Validates spec contract — required template sections present? If not,
-   label `status:blocked`, comment `spec incomplete: missing X`, exit.
-6. Sets `status:planning`. Builds bundle via `factory-bundle.mjs` (issue + comments + platform checkboxes; no PR/worktree context — Stage 1 is read-only).
-7. Invokes `claude --dangerously-skip-permissions` with `factory-plan-prompt.md`. Claude has filesystem read access to the repo at `origin/main` HEAD (no worktree, no edits) for grounding the plan in actual code.
-8. Claude posts a structured plan as an issue comment: approach, files-to-touch, risks, parity checklist, estimated affected platforms. Outputs single directive line: `issue=<n> action=<planned|blocked> plan-comment=<url>`.
-9. Sets `status:plan-review`. **Factory stops on this card** until a human (or allowlisted-reporter email) approves.
+1. **Human** drags issue to **Ready** column on Projects board (Status field flips to "Ready").
+2. Mac mini's launchd fires `factory-agent.sh --plan` (≤5 min later).
+3. Bash queries Project v2 via `factory-project.mjs` for items with Status = "Ready" linked to issues in `JakubAnderwald/drafto`.
+4. Validates spec contract — required template sections present? If not,
+   `factory-project.mjs setStatus(itemId, "Blocked")`, label `status:blocked`,
+   comment `spec incomplete: missing X`, exit.
+5. Sets Status = "Planning" + label `status:planning`. Builds bundle via `factory-bundle.mjs` (issue + comments + platform checkboxes; no PR/worktree context — Stage 1 is read-only).
+6. Invokes `claude --dangerously-skip-permissions` with `factory-plan-prompt.md`. Claude has filesystem read access to the repo at `origin/main` HEAD (no worktree, no edits) for grounding the plan in actual code.
+7. Claude posts a structured plan as an issue comment: approach, files-to-touch, risks, parity checklist, estimated affected platforms. Outputs single directive line: `issue=<n> action=<planned|blocked> plan-comment=<url>`.
+8. Sets Status = "Plan Review" + label `status:plan-review`. **Factory stops on this card** until a human (or allowlisted-reporter email) approves.
 
 ### Stage 2 — Implementation (gated by plan approval)
 
 10. **Human** reviews the plan comment and drags card to **In Progress** to
     approve. (Allowlisted reporters can approve via email — see Household
-    autopilot section.) `factory-status-mirror.yml` flips the label to
-    `status:in-progress`.
-11. Mac mini's next `factory-agent.sh --implement` cycle picks up the card.
-    Acquires slot 0 or 1 (PID lock per slot in `logs/factory.slot{0,1}.pid`).
+    autopilot section.) The Status field is now "In Progress" — no mirror
+    workflow involved; the agent reads it directly on its next tick.
+11. Mac mini's next `factory-agent.sh --implement` cycle queries Project v2
+    via `factory-project.mjs` for Status = "In Progress" items. Acquires
+    slot 0 or 1 (PID lock per slot in `logs/factory.slot{0,1}.pid`). Applies
+    `status:in-progress` label as a transition side-effect.
 12. `worktree-cli.mjs` creates `worktrees/factory-issue-<n>` from `origin/main`,
     copies gitignored env files per CLAUDE.md (`apps/mobile/.env*`,
     `apps/desktop/.env*`, `apps/mobile/android/local.properties`), runs
@@ -307,20 +362,21 @@ Two layers:
 
 ## Implementation waves
 
-### Wave 1 — Foundations (all parallel, no dependencies)
+### Wave 1 — Foundations (all parallel, no dependencies) — **shipped 2026-05-06 (PRs #386, #388)**
 
-- Create labels via `gh label create` (one-shot script).
-- Write `factory-feature.yml` issue template.
-- Write `factory-status-mirror.yml` GitHub Action.
-- Write ADR-0026, `dark-factory.md`, `factory-runbook.md`.
-- Run `setup-factory-board.sh` once to provision the Project v2 board.
-- Update `CLAUDE.md` with the Dark Factory section.
+- ✅ Create labels via `gh label create` (one-shot script — `setup-factory-labels.sh`).
+- ✅ Write `factory-feature.yml` issue template.
+- ✅ Write `factory-status-mirror.yml` GitHub Action — **retired before Phase A landed** (Path-A pivot — see status note at top). Removed in the same PR as this status update.
+- ✅ Write ADR-0026, `dark-factory.md`, `factory-runbook.md`.
+- ✅ `setup-factory-board.sh` provisions the Project v2 board (uses direct GraphQL throughout — runs in environments where the `gh project` CLI's extra `read:org` scope isn't available).
+- ✅ Update `CLAUDE.md` with the Dark Factory section.
 
-### Wave 2 — Core libraries (parallel)
+### Wave 2 — Core libraries (parallel) — pending
 
-- `scripts/lib/worktree-cli.mjs`
+- `scripts/lib/factory-project.mjs` (Project v2 GraphQL reader/writer — Path-A; new since the original proposal).
+- `scripts/lib/worktree-cli.mjs` (Phase B+; not needed for Phase A).
 - `scripts/lib/factory-bundle.mjs`
-- `scripts/lib/dispatch-release.mjs`
+- `scripts/lib/dispatch-release.mjs` (Phase D; not needed for Phase A).
 - `scripts/lib/factory-state.mjs` (extends `state-cli.mjs`)
 
 ### Wave 3 — The agent (depends on Wave 2)
