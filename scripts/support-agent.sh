@@ -76,6 +76,15 @@ export PATH="$HOME/.local/bin:$PATH"
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 
+# ── Claude call timeout ─────────────────────────────────────────────────────
+# Single source of truth for the wall-time cap on each `claude -p` invocation.
+# scripts/lib/run-claude.mjs reads this from the env (defaulting to 180s if
+# unset there too — see DEFAULT_TIMEOUT_SEC). Defining it here and exporting
+# means (a) the bash log lines below use the same value the wrapper actually
+# enforces, and (b) operators can override per-launchd-job by editing the
+# plist's EnvironmentVariables block.
+export CLAUDE_CALL_TIMEOUT_SEC="${CLAUDE_CALL_TIMEOUT_SEC:-180}"
+
 # ── Args ────────────────────────────────────────────────────────────────────
 DRY_RUN=0
 LABEL_ONLY=0
@@ -378,7 +387,7 @@ if [[ "$COMMENT_SYNC" -eq 1 ]]; then
     node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
     if [[ $EXIT_CODE -eq 124 ]]; then
-      log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC:-180}s) for issue #$ISSUE_NUMBER comment-sync — skipping; next tick retries"
+      log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC}s) for issue #$ISSUE_NUMBER comment-sync — skipping; next tick retries"
       rm -f "$CLAUDE_OUTPUT_FILE"
       continue
     elif [[ $EXIT_CODE -ne 0 ]]; then
@@ -534,7 +543,7 @@ if [[ "$STATE_SYNC" -eq 1 ]]; then
     node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
     if [[ $EXIT_CODE -eq 124 ]]; then
-      log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC:-180}s) for issue #$ISSUE_NUMBER state-sync — skipping; next tick retries"
+      log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC}s) for issue #$ISSUE_NUMBER state-sync — skipping; next tick retries"
       rm -f "$CLAUDE_OUTPUT_FILE"
       continue
     elif [[ $EXIT_CODE -ne 0 ]]; then
@@ -864,7 +873,7 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
   node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
       >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
   if [[ $EXIT_CODE -eq 124 ]]; then
-    log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC:-180}s) for $TRACK_ID — skipping; next tick retries"
+    log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC}s) for $TRACK_ID — skipping; next tick retries"
     rm -f "$CLAUDE_OUTPUT_FILE"
     continue
   elif [[ $EXIT_CODE -ne 0 ]]; then

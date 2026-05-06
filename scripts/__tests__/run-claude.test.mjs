@@ -86,20 +86,18 @@ describe("runClaudeWithTimeout (mocked spawn)", () => {
     const scenario = { spawnCalls: [], children: [] };
     const promise = lib.runClaudeWithTimeout({
       args: [],
-      timeoutMs: 30, // very short; never receives an exit before
-      killGraceMs: 1000,
-      spawn: makeSpawn(scenario),
+      timeoutMs: 200, // small but wide enough that GC pauses on a loaded
+      killGraceMs: 2000, // CI runner won't make the SIGTERM-driven exit
+      spawn: makeSpawn(scenario), // race against the wall timer
     });
-    // Simulate child responding to SIGTERM by exiting after ~10ms.
-    scenario.children[0].on("newListener", () => {});
-    // Wait for the timer to fire and the wrapper to issue SIGTERM, then have
-    // the child report exit. Doing this via setTimeout so the wrapper's own
-    // setTimeout(timeoutMs=30) gets a chance to run first.
+    // Wait for the wall timer to fire and the wrapper to issue SIGTERM,
+    // then have the child report exit. setTimeout(500) is intentionally
+    // ~2.5x timeoutMs so wallTimer always wins ordering.
     setTimeout(() => {
       const c = scenario.children[0];
       assert.ok(c.killSignals.includes("SIGTERM"), "should send SIGTERM");
       c.emit("exit", null, "SIGTERM");
-    }, 80);
+    }, 500);
     const result = await promise;
     assert.equal(result.exitCode, 124);
     assert.equal(result.timedOut, true);
@@ -109,17 +107,18 @@ describe("runClaudeWithTimeout (mocked spawn)", () => {
     const scenario = { spawnCalls: [], children: [] };
     const promise = lib.runClaudeWithTimeout({
       args: [],
-      timeoutMs: 30,
-      killGraceMs: 60,
+      timeoutMs: 200,
+      killGraceMs: 400,
       spawn: makeSpawn(scenario),
     });
     // Stubborn child: ignores SIGTERM, only exits after SIGKILL fires.
+    // 1000ms is well past timeoutMs (200) + killGraceMs (400) = 600ms.
     setTimeout(() => {
       const c = scenario.children[0];
       assert.ok(c.killSignals.includes("SIGTERM"));
       assert.ok(c.killSignals.includes("SIGKILL"), "should escalate to SIGKILL");
       c.emit("exit", null, "SIGKILL");
-    }, 200);
+    }, 1000);
     const result = await promise;
     assert.equal(result.exitCode, 124);
     assert.equal(result.timedOut, true);

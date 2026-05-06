@@ -23,6 +23,7 @@
 // (stdout → tempfile, stderr → log). The wrapper itself prints nothing.
 
 import { spawn as nodeSpawn } from "node:child_process";
+import { constants as osConstants } from "node:os";
 import { isMainModule } from "./is-main.mjs";
 
 const DEFAULT_TIMEOUT_SEC = 180;
@@ -39,24 +40,17 @@ export function resolveTimeoutSec(env = process.env) {
   return n;
 }
 
-// Inject-able for tests. Mirrors the `_setExecFileForTests` pattern in
-// scripts/lib/github-sync.mjs.
-let _spawnForTests = null;
-export function _setSpawnForTests(impl) {
-  _spawnForTests = impl;
-}
-
 // Core: spawn `command` with `args`, kill it after `timeoutMs`, return a
 // promise resolving to {exitCode, timedOut}. exitCode is the raw child exit
 // code on normal exit; on timeout it's TIMEOUT_EXIT_CODE (124). The caller
 // is responsible for translating that into a process.exit() if running as
-// a CLI.
+// a CLI. Tests inject a fake `spawn` via the parameter directly.
 export function runClaudeWithTimeout({
   command = "claude",
   args = [],
   timeoutMs,
   killGraceMs = KILL_GRACE_MS,
-  spawn = _spawnForTests ?? nodeSpawn,
+  spawn = nodeSpawn,
 } = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { stdio: "inherit" });
@@ -68,13 +62,21 @@ export function runClaudeWithTimeout({
       // SIGTERM first; if the child is genuinely stuck in a syscall it may
       // ignore it, in which case SIGKILL after the grace window guarantees
       // we exit. .unref() so the SIGKILL timer doesn't hold the event loop
-      // open if the child exits cleanly under SIGTERM.
+      // open if the child exits cleanly under SIGTERM. The stderr trace is
+      // symmetric with the spawn-failure path below — readers of
+      // `support-agent-*.log` can attribute exit 124 without guessing.
+      process.stderr.write(
+        `run-claude: wall-time cap reached after ${timeoutMs}ms; sending SIGTERM\n`,
+      );
       try {
         child.kill("SIGTERM");
       } catch {
         /* child already exited */
       }
       killTimer = setTimeout(() => {
+        process.stderr.write(
+          `run-claude: child ignored SIGTERM for ${killGraceMs}ms; escalating to SIGKILL\n`,
+        );
         try {
           child.kill("SIGKILL");
         } catch {
@@ -95,11 +97,15 @@ export function runClaudeWithTimeout({
         return;
       }
       // Normal exit: propagate the child's exit code. If killed by an
-      // external signal (not us), surface 128+sig like a shell would.
+      // external signal (not us), surface 128+signum like a POSIX shell —
+      // os.constants.signals provides the platform's name→number map; fall
+      // back to bare 128 for the rare case the signal name isn't in the
+      // table (shouldn't happen on macOS/Linux but cheap to be defensive).
       if (code != null) {
         resolve({ exitCode: code, timedOut: false, signal });
       } else if (signal) {
-        resolve({ exitCode: 128, timedOut: false, signal });
+        const signum = osConstants.signals[signal] ?? 0;
+        resolve({ exitCode: 128 + signum, timedOut: false, signal });
       } else {
         resolve({ exitCode: 1, timedOut: false, signal });
       }
