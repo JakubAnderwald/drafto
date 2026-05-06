@@ -14,7 +14,9 @@ A "vibe-kanban-style" pipeline where moving a card on a GitHub Projects v2 board
 
 - **Owner**: `JakubAnderwald`
 - **Title**: `Drafto Factory`
-- **URL**: bootstrap with `scripts/setup-factory-board.sh`, then record the URL here. The script prints it on success.
+- **URL**: <https://github.com/users/JakubAnderwald/projects/1>
+
+To re-bootstrap (e.g. after a deletion), run `scripts/setup-factory-board.sh`. It is idempotent and prints the URL on success.
 
 The board has one custom Status field with eleven values:
 
