@@ -20,14 +20,16 @@ Vercel, free GitHub, free GitHub Actions for the Status→label mirror.
 ## Decisions locked
 
 1. **UI**: GitHub Projects v2 board (free, native to issues, mobile-app friendly).
-2. **Merge policy**: factory opens PRs and iterates them to a working Vercel
-   preview ("In Test"). The PR is **not merged** until a human drags the card
-   to **Approved**. That column transition IS the merge authorisation; the
-   factory then squash-merges, lets Vercel auto-deploy prod, and (Phase D)
-   dispatches mobile/desktop beta workflows.
-3. **Concurrency**: up to **2 parallel worktrees** (slot-based locking).
-4. **Rollout**: phased A → B → C → D (dry-run → web → mobile/desktop work
-   allowed → mobile beta auto-dispatch).
+2. **Two human gates**: (a) Plan Review → In Progress is the plan-approval
+   gate (no code is written until the human reviews the proposed plan and
+   drags the card forward — or approves over email if allowlisted), and
+   (b) In Test → Approved is the merge + ship gate. Both are reachable via
+   the kanban for anyone, and via email for allowlisted reporters.
+3. **Concurrency**: up to **2 parallel worktrees** for `--implement`
+   (slot-based locking). `--plan`, `--watch`, `--release` are I/O-bound and
+   share single locks.
+4. **Rollout**: phased A → B → C → D (plan-only → web implementation →
+   mobile/desktop work allowed → mobile beta auto-dispatch).
 
 ## Architecture overview
 
@@ -40,11 +42,11 @@ GitHub Projects v2 board
        |  on: project_v2_item / pull_request
        |  mirrors Status -> status:* label on the linked issue
        v
-Issue labels (status:ready / in-progress / in-review / in-test / approved / released / done / blocked)
+Issue labels (status:ready / planning / plan-review / in-progress / in-review / in-test / approved / released / done / blocked)
        |
        | (5-min poll on Mac mini via launchd)
        v
-scripts/factory-agent.sh  (modes: --implement / --release / --watch)
+scripts/factory-agent.sh  (modes: --plan / --implement / --release / --watch)
        |
        +-- two worktree slots, PID-locked separately
        +-- state in logs/factory-state.json (atomic via state-cli.mjs)
@@ -56,9 +58,11 @@ scripts/factory-agent.sh  (modes: --implement / --release / --watch)
 
 | Status      | Who sets it                    | Meaning / trigger                                                                                                                                                                                                                                                                                      |
 | ----------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Backlog     | human                          | Filed, not yet specced.                                                                                                                                                                                                                                                                                |
-| Ready       | human                          | Spec complete; factory may pick up. Must have all required template sections.                                                                                                                                                                                                                          |
-| In Progress | factory                        | Worktree slot taken; Claude is implementing.                                                                                                                                                                                                                                                           |
+| Backlog     | human                          | Filed, not yet specced. Human-controlled; factory ignores.                                                                                                                                                                                                                                             |
+| Ready       | human                          | Spec complete; factory may **plan** (not implement). Must have all required template sections. Human-controlled — moving a card here is the explicit signal that Claude is allowed to read it and propose an approach.                                                                                |
+| Planning    | factory                        | Claude is reading the issue and writing a plan. No worktree, no code; read-only research only.                                                                                                                                                                                                         |
+| Plan Review | factory                        | Plan has been posted as an issue comment; factory has stopped. Waits for human (or allowlisted-reporter email) to approve before any code is written.<br/><br/>The drag from **Plan Review → In Progress** IS the plan-approval signal — same kanban-as-action-surface pattern as Approved.            |
+| In Progress | human or factory (allowlisted) | Plan approved; factory has taken a worktree slot and Claude is implementing per the approved plan. Human drags card here from Plan Review, OR an allowlisted reporter sends a "go ahead" reply on the linked support thread (support-agent's accept-signal classifier advances on their behalf).       |
 | In Review   | factory                        | PR opened, summary posted, CI running. Claude monitors CI and resolves all comments / failures (loops `/push`-style until green).                                                                                                                                                                      |
 | In Test     | factory                        | PR's Vercel preview is deployed and reachable. PR remains open; awaits human approval.<br/><br/>**Allowlisted-reporter exception**: factory auto-advances to Approved (skips this gate) when the issue carries `reporter-allowlisted: true` in its support-agent footer and the migration gate passes. |
 | Approved    | human or factory (allowlisted) | Drag card here to authorise prod release. Migration gate enforced.                                                                                                                                                                                                                                     |
@@ -68,6 +72,10 @@ scripts/factory-agent.sh  (modes: --implement / --release / --watch)
 
 Notes:
 
+- **Two human-gated transitions**: (1) Plan Review → In Progress is the
+  plan-approval signal (Claude doesn't touch any code until this happens),
+  and (2) In Test → Approved is the merge + ship signal. Both can be
+  satisfied via email by allowlisted reporters; everyone else uses the board.
 - The PR is **not merged** until the human drags the card to **Approved**. The
   Approved transition IS the merge authorisation. This preserves the "human
   merges" decision while letting the kanban column be the action surface.
@@ -82,12 +90,12 @@ Notes:
 
 ## Phases
 
-| Phase | Behaviour                                                                                                                                                               |
-| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A     | Dry-run. Claude reads the issue, posts its proposed plan as a comment, does NOT open a worktree.                                                                        |
-| B     | Web-only. Implement → In Review → In Test (Vercel preview). Approved auto-merges PR; mobile/desktop changes auto-blocked.                                               |
-| C     | Web + mobile/desktop changes allowed end-to-end. Approved still merges + Vercel prod only. No mobile/desktop dispatch yet — human kicks beta lanes manually.            |
-| D     | Approved → factory merges PR AND dispatches iOS / Android / macOS beta workflows automatically. macOS prod app-store submission stays manual (CI broken per CLAUDE.md). |
+| Phase | Behaviour                                                                                                                                                                                                                                              |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A     | **Plan-only.** `--plan` mode runs (Ready → Planning → Plan Review). Even if you approve a plan and drag the card to In Progress, `--implement` is a no-op. Pure observation of the planning quality before any code is written.                        |
+| B     | Web-only. Plan-and-review proceeds end-to-end: approved plan → Implement → In Review → In Test (Vercel preview). Approved auto-merges PR; mobile/desktop changes auto-blocked at the implementation post-check.                                        |
+| C     | Web + mobile/desktop changes allowed end-to-end. Approved still merges + Vercel prod only. No mobile/desktop dispatch yet — human kicks beta lanes manually.                                                                                           |
+| D     | Approved → factory merges PR AND dispatches iOS / Android / macOS beta workflows automatically. macOS prod app-store submission stays manual (CI broken per CLAUDE.md).                                                                                |
 
 Promote after ≥5 clean runs without human intervention at the current phase.
 
@@ -97,8 +105,9 @@ Promote after ≥5 clean runs without human intervention at the current phase.
 
 | Path                                             | Role                                                                                                                                                               |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `scripts/factory-agent.sh`                       | Bash entrypoint, modeled on `support-agent.sh`. Modes `--implement`, `--release`, `--watch`. Two-slot worktree locking.                                            |
-| `scripts/factory-prompt.md`                      | System prompt — parity mandate, phase contract, single-line directive, refuse-on-incomplete-spec.                                                                  |
+| `scripts/factory-agent.sh`                       | Bash entrypoint, modeled on `support-agent.sh`. Modes `--plan`, `--implement`, `--release`, `--watch`. Two-slot worktree locking on `--implement` only.            |
+| `scripts/factory-plan-prompt.md`                 | System prompt for `--plan` mode — read-only research, output a structured plan (approach, files-to-touch, risks, parity checklist) as an issue comment, no code.   |
+| `scripts/factory-prompt.md`                      | System prompt for `--implement` mode — references the approved plan posted on the issue, parity mandate, phase contract, single-line directive.                    |
 | `scripts/lib/factory-bundle.mjs`                 | Builds per-issue context bundle (body, comments, affected platforms, prior PR if retry, screenshots).                                                              |
 | `scripts/lib/worktree-cli.mjs`                   | Headless `git worktree add/remove`. Branch naming `factory/issue-<n>`. Slot-aware.                                                                                 |
 | `scripts/lib/dispatch-release.mjs`               | `gh workflow run` wrapper for `beta-release.yml` / `production-release.yml`, polls run status.                                                                     |
@@ -109,7 +118,7 @@ Promote after ≥5 clean runs without human intervention at the current phase.
 | `docs/adr/0026-dark-factory-pipeline.md`         | ADR — decision, alternatives (vibe-kanban, custom UI), consequences.                                                                                               |
 | `docs/features/dark-factory.md`                  | Operator manual — board URL, label semantics, kill switch, troubleshooting.                                                                                        |
 | `docs/operations/factory-runbook.md`             | Phase progression criteria, rollback drills, "what to do when factory misbehaves".                                                                                 |
-| `~/Library/LaunchAgents/eu.drafto.factory.plist` | launchd entry, every 5 min, runs `factory-agent.sh --implement --watch --phase <current>`. NOT version-controlled (matches existing pattern).                      |
+| `~/Library/LaunchAgents/eu.drafto.factory.plist` | launchd entry, every 5 min, runs `factory-agent.sh --plan --implement --watch --phase <current>` (modes run sequentially under the same parent, each with its own lock). NOT version-controlled (matches existing pattern). |
 
 ### Modified files
 
@@ -117,44 +126,67 @@ Promote after ≥5 clean runs without human intervention at the current phase.
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `scripts/lib/state-cli.mjs`         | Add `factory:*` subcommands (slot acquire/release, issue cursor mutate, paused flag).                                                                                                                                                                                        |
 | `CLAUDE.md`                         | New "Dark Factory" section: labels, kill switch, parity-mandate enforcement point, link to runbook.                                                                                                                                                                          |
-| Repo labels (via `gh label create`) | `status:ready`, `status:in-progress`, `status:in-review`, `status:in-test`, `status:approved`, `status:released`, `status:done`, `status:blocked`, `factory-pause`, `migration-approved`, `factory-failure`, `parity:web-only`, `parity:mobile-only`, `parity:desktop-only`. |
+| Repo labels (via `gh label create`) | `status:ready`, `status:planning`, `status:plan-review`, `status:in-progress`, `status:in-review`, `status:in-test`, `status:approved`, `status:released`, `status:done`, `status:blocked`, `factory-pause`, `migration-approved`, `factory-failure`, `parity:web-only`, `parity:mobile-only`, `parity:desktop-only`. |
 
 ## Factory loop — how a single card flows
 
+### Stage 1 — Planning (read-only)
+
 1. **Human** drags issue to **Ready** column on Projects board.
 2. `factory-status-mirror.yml` adds `status:ready` label.
-3. Mac mini's launchd fires `factory-agent.sh --implement` (≤5 min later).
+3. Mac mini's launchd fires `factory-agent.sh --plan` (≤5 min later).
 4. Bash queries `gh issue list --label status:ready --state open`, picks first.
-5. Acquires slot 0 or 1 (PID lock per slot in `logs/factory.slot{0,1}.pid`).
-6. Validates spec contract — required template sections present? If not, label
-   `status:blocked`, comment `spec incomplete: missing X`, release slot, exit.
-7. `factory-bundle.mjs` builds bundle (issue + comments + platform checkboxes + prior PR if retry).
-8. `worktree-cli.mjs` creates `worktrees/factory-issue-<n>` from `origin/main`,
-   copies gitignored env files per CLAUDE.md (`apps/mobile/.env*`, `apps/desktop/.env*`,
-   `apps/mobile/android/local.properties`), runs `pnpm install`.
-9. Invokes `claude --dangerously-skip-permissions` with `factory-prompt.md` + bundle.
-10. Claude implements, runs lint/typecheck/tests in the worktree, commits, pushes,
-    opens PR via `gh pr create`. Outputs single directive line:
+5. Validates spec contract — required template sections present? If not,
+   label `status:blocked`, comment `spec incomplete: missing X`, exit.
+6. Sets `status:planning`. Builds bundle via `factory-bundle.mjs` (issue + comments + platform checkboxes; no PR/worktree context — Stage 1 is read-only).
+7. Invokes `claude --dangerously-skip-permissions` with `factory-plan-prompt.md`. Claude has filesystem read access to the repo at `origin/main` HEAD (no worktree, no edits) for grounding the plan in actual code.
+8. Claude posts a structured plan as an issue comment: approach, files-to-touch, risks, parity checklist, estimated affected platforms. Outputs single directive line: `issue=<n> action=<planned|blocked> plan-comment=<url>`.
+9. Sets `status:plan-review`. **Factory stops on this card** until a human (or allowlisted-reporter email) approves.
+
+### Stage 2 — Implementation (gated by plan approval)
+
+10. **Human** reviews the plan comment and drags card to **In Progress** to
+    approve. (Allowlisted reporters can approve via email — see Household
+    autopilot section.) `factory-status-mirror.yml` flips the label to
+    `status:in-progress`.
+11. Mac mini's next `factory-agent.sh --implement` cycle picks up the card.
+    Acquires slot 0 or 1 (PID lock per slot in `logs/factory.slot{0,1}.pid`).
+12. `worktree-cli.mjs` creates `worktrees/factory-issue-<n>` from `origin/main`,
+    copies gitignored env files per CLAUDE.md (`apps/mobile/.env*`,
+    `apps/desktop/.env*`, `apps/mobile/android/local.properties`), runs
+    `pnpm install`.
+13. `factory-bundle.mjs` rebuilds the bundle, this time including the
+    approved plan comment as the primary instruction source.
+14. Invokes `claude --dangerously-skip-permissions` with `factory-prompt.md` +
+    bundle. Claude implements per the approved plan, runs
+    lint/typecheck/tests in the worktree, commits, pushes, opens PR via
+    `gh pr create`. Outputs single directive line:
     `issue=<n> action=<implemented|noop|blocked> pr=<url|->`.
-11. Bash post-check: parity diff scan. If "Affected platforms" includes mobile
-    but no `apps/mobile/**` files in diff → `status:blocked`, comment, stop.
-12. Set `status:in-review`.
-13. **`--watch` mode** picks up `status:in-review` issues every cycle and runs a
+15. Bash post-check: parity diff scan AND plan-vs-diff drift check. If "Affected
+    platforms" includes mobile but no `apps/mobile/**` files in diff →
+    `status:blocked`, comment, stop. If the diff substantially exceeds
+    files-to-touch in the approved plan → comment a drift warning but proceed
+    (drift is a quality signal, not a hard block).
+16. Set `status:in-review`.
+17. **`--watch` mode** picks up `status:in-review` issues every cycle and runs a
     `/push`-style loop in the worktree: poll CI, fetch new PR review comments,
     invoke Claude to fix any failures or unresolved comments, re-push. Loop ends
     when CI is green AND no unresolved review comments remain. Retry budget
     bounded by `factory.issues[<n>].attempts`.
-14. Once CI is green and Vercel preview is reachable (`gh pr view --json`
+18. Once CI is green and Vercel preview is reachable (`gh pr view --json`
     surfaces the preview URL via the Vercel bot comment), `--watch` flips card
     to **In Test** and posts the preview URL on the issue. **PR stays open.**
-15. **Approval gate** — branches by reporter:
+
+### Stage 3 — Approval & release
+
+19. **Approval gate** — branches by reporter:
     - **Allowlisted reporter** (`reporter-allowlisted: true` in the support-agent
       footer): `--watch` immediately advances card to **Approved** (provided
       migration gate passes). The reporter's identity-on-file is the implicit
       sign-off; no human drag required. Migration changes still hold for an
       explicit `migration-approved` label.
     - **Anyone else**: card waits in In Test until a human drags it to Approved.
-16. `factory-agent.sh --release` runs migration gate (refuses if `supabase/migrations/**`
+20. `factory-agent.sh --release` runs migration gate (refuses if `supabase/migrations/**`
     files present without `migration-approved` label). On pass:
     - Squash-merges the PR via `gh api` (per CLAUDE.md worktree gotcha — uses the
       API form, not `gh pr merge --delete-branch`).
@@ -164,7 +196,7 @@ Promote after ≥5 clean runs without human intervention at the current phase.
       Phase C this step is a no-op and the human kicks lanes manually).
     - Comments build numbers + TestFlight / Play internal links on the issue.
     - Card → **Released**.
-17. **Done** transition — branches by reporter:
+21. **Done** transition — branches by reporter:
     - **Allowlisted reporter**: can mark Done by replying to any support-agent
       email on the thread with an "accept" signal (e.g. "looks good, ship",
       "done", "thanks", or `[ACCEPT]`). The support-agent classifier (extended
@@ -177,12 +209,15 @@ Promote after ≥5 clean runs without human intervention at the current phase.
 
 ## Concurrency model (2 worktree slots)
 
-- `logs/factory.slot0.pid` and `logs/factory.slot1.pid` — separate flock files.
+- `logs/factory.slot0.pid` and `logs/factory.slot1.pid` — separate flock files,
+  used by `--implement` only. Plan, watch, and release modes are I/O-bound
+  (no worktrees) and run under their own single locks.
 - `factory-agent.sh --implement` tries slot 0 first, then slot 1. If both held, exit 0.
 - Conflict avoidance: before claiming an issue, check that no other in-flight PR
   touches files in the same top-level package (`apps/web`, `apps/mobile`,
   `apps/desktop`, `packages/shared`, `supabase`). If overlap → defer, try next issue.
-- `--release` and `--watch` modes use a separate single lock; never contend with implement slots.
+- `--plan`, `--release`, and `--watch` modes use separate single locks; never
+  contend with implement slots.
 
 ## Spec contract for a "Ready" issue
 
@@ -202,8 +237,8 @@ the cross-platform parity check for legitimate single-platform work.
 
 For issues filed by `$SUPPORT_ALLOWLIST` reporters (Jakub and his wife), the
 factory runs end-to-end with **zero GitHub UI interaction required from the
-reporter**. The only state transitions that need human input — Approved and
-Done — are both reachable via email.
+reporter**. The three transitions that need human input — Plan approval, Ship
+approval, and Done — are all reachable via email.
 
 Trigger: every issue filed by support-agent carries a footer block
 (`<!-- drafto-progress -->` HTML comment) with `zoho-thread-id`,
@@ -212,37 +247,48 @@ reads the flag and changes behaviour accordingly.
 
 Lifecycle for an allowlisted bug report:
 
-| Stage            | Triggered by                                                                                        | Customer-visible action                                                                  |
-| ---------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Intake           | Email to `support@drafto.eu`                                                                        | "Got your report, filed as #N" auto-reply (existing Phase E behaviour).                  |
-| Implementation   | support-agent applies `status:ready`; factory picks up within 5 min                                 | (Optional) "Started work in #PR" comment forwarded as Zoho reply.                        |
-| Test deploy      | Vercel preview ready                                                                                | Preview URL forwarded as Zoho reply.                                                     |
-| **Auto-approve** | factory `--watch` checks `reporter-allowlisted: true` + migration gate; advances to Approved        | (Optional) "Shipping…" comment forwarded as Zoho reply.                                  |
-| Release          | factory `--release` merges, dispatches mobile/desktop beta lanes, card → Released                   | "Your fix is in TestFlight build X / Play internal track Y" forwarded as Zoho reply.     |
-| Live notice      | After store-review acceptance, fastlane post-hook fires `comment-released-issues.mjs`               | "Your fix is now live in version X.Y.Z" forwarded as Zoho reply.                         |
-| **Email-Done**   | Reporter replies to any progress email with an accept signal (e.g. "thanks", "ship it", `[ACCEPT]`) | Card → Done, issue closed; existing `--state-sync` sends the closure-confirmation email. |
+| Stage             | Triggered by                                                                                            | Customer-visible action                                                                                       |
+| ----------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Intake            | Email to `support@drafto.eu`                                                                            | "Got your report, filed as #N" auto-reply (existing Phase E behaviour). support-agent applies `status:ready`. |
+| Plan posted       | factory `--plan` runs within 5 min; Claude reads the issue and posts a structured plan as a comment     | Plan forwarded as Zoho reply: "Here's how I'd approach this: …". Card → Plan Review.                          |
+| **Plan approval** | Reporter replies with positive intent ("go ahead", "looks good", `[GO]`)                               | (Optional) "Starting work" comment forwarded back. Card → In Progress; factory `--implement` picks up.        |
+| Test deploy       | Vercel preview ready                                                                                    | Preview URL forwarded as Zoho reply.                                                                          |
+| **Auto-approve**  | factory `--watch` checks `reporter-allowlisted: true` + migration gate; advances to Approved            | (Optional) "Shipping…" comment forwarded as Zoho reply.                                                       |
+| Release           | factory `--release` merges, dispatches mobile/desktop beta lanes, card → Released                       | "Your fix is in TestFlight build X / Play internal track Y" forwarded as Zoho reply.                          |
+| Live notice       | After store-review acceptance, fastlane post-hook fires `comment-released-issues.mjs`                   | "Your fix is now live in version X.Y.Z" forwarded as Zoho reply.                                              |
+| **Email-Done**    | Reporter replies to any progress email with an accept signal (e.g. "thanks", "ship it", `[ACCEPT]`)     | Card → Done, issue closed; existing `--state-sync` sends the closure-confirmation email.                      |
 
 Implementation:
 
-- **Auto-approve**: `factory-agent.sh --watch` parses the issue body footer with
-  `grep -oP 'reporter-allowlisted:\s*\K\w+'`. On `true` and the migration gate
-  passes, sets `status:approved` directly instead of stopping at In Test.
-- **Email-accept classifier**: `scripts/support-agent-prompt.md` gains a new
+- **Plan-only (no auto-approve)**: even for allowlisted reporters, the factory
+  always stops at Plan Review. Plan approval is the one autopilot stage that
+  always requires the reporter's positive signal — it's the early-stage
+  misinterpretation catcher and must not be skipped.
+- **Auto-approve at In Test**: `factory-agent.sh --watch` parses the issue body
+  footer with `grep -oP 'reporter-allowlisted:\s*\K\w+'`. On `true` and the
+  migration gate passes, sets `status:approved` directly instead of stopping at
+  In Test.
+- **Accept-signal classifier**: `scripts/support-agent-prompt.md` gains a new
   output value, `action=accept-signal issue=<n>`. The classifier recognises
   short positive replies on threads linked to a GitHub issue. The bash wrapper
-  in `support-agent.sh` then invokes `state-cli.mjs factory:done <n>` (new
-  subcommand) which sets `status:done` and `gh issue close <n> --reason completed`.
-- **Safety check**: accept-signal only triggers state transitions when (a) the
-  reporter email is allowlisted, (b) the issue currently has either `status:released`
-  or `status:in-test`/`status:approved`, and (c) the reply email's `From` matches
+  in `support-agent.sh` reads the issue's current `status:*` label and
+  dispatches via `state-cli.mjs factory:advance <n>`, which translates the
+  signal differently per state:
+  - `status:plan-review` → set `status:in-progress` (plan approved, factory will pick up next `--implement` cycle).
+  - `status:released` → set `status:done` and `gh issue close <n> --reason completed`.
+  - any other state → ignore (post the reply as a normal comment).
+- **Safety checks**: accept-signal only triggers state transitions when (a) the
+  reporter email is allowlisted, (b) the issue is in one of the two
+  transitionable states above, and (c) the reply email's `From` matches
   `reporter-email` from the footer (no impersonation via cc/bcc).
-- **Rejection path**: if the reporter replies with anything that classifies as
-  rejection or new bug ("preview is broken", "still wrong"), support-agent posts
-  the reply as a comment as today; factory `--watch` picks up the new comment on
-  its next cycle and Claude iterates.
+- **Rejection / iteration path**: if the reporter replies with rejection or a
+  new direction ("plan looks wrong, do X instead", "preview is broken, still
+  fails on Y"), support-agent posts the reply as a comment as today; factory
+  picks up the new comment on its next cycle and either re-plans (in Plan
+  Review state) or iterates the PR (in In Review/In Test states).
 - **Phase gate**: household autopilot is enabled at Phase B+ (i.e. as soon as
-  the factory does real work). At Phase A everything still routes to the
-  reporter via plan-only comments.
+  the factory does real work). At Phase A `--plan` runs and emails the plan,
+  but plan-approval drag does nothing because `--implement` is a no-op.
 
 ## Cross-platform parity enforcement (CLAUDE.md mandate)
 
@@ -293,12 +339,16 @@ Two layers:
 
 End-to-end test before promoting past Phase A:
 
-1. File a trivial test issue (`feat: add timestamp to footer`), tag `status:ready`.
+1. File a trivial test issue (`feat: add timestamp to footer`), drag to **Ready**.
 2. Watch Mac mini logs (`tail -f logs/factory-*.log`) for the next 5-min poll.
-3. Confirm Claude posts a plan comment on the issue (Phase A behaviour).
-4. Drag card to Blocked → confirm factory leaves it alone.
-5. Once promoted to Phase B: file a real web-only issue. Confirm: PR opens
-   (status:in-review), CI runs to green via `--watch` loop (any failures
+3. Confirm `--plan` runs: card moves Ready → Planning → Plan Review, plan
+   comment is posted, factory stops.
+4. Drag card to **In Progress**. In Phase A, confirm `--implement` is a no-op
+   (factory comments "phase=A; implementation skipped"). Drag card to Blocked
+   → confirm factory leaves it alone.
+5. Once promoted to Phase B: file a real web-only issue, drag to Ready.
+   Confirm `--plan` posts a plan; review and drag to In Progress. Confirm: PR
+   opens (status:in-review), CI runs to green via `--watch` loop (any failures
    auto-resolved by Claude), Vercel preview comment lands, card auto-advances
    to **In Test**, preview URL is posted on the issue.
 6. Drag card to Approved → confirm factory squash-merges via `gh api`, Vercel
@@ -311,10 +361,12 @@ End-to-end test before promoting past Phase A:
    builds appear; card → Released; you mark Done after store-review acceptance.
 9. **Household autopilot drill** (Phase B+): email a real bug from an
    allowlisted address. Confirm: issue filed with `reporter-allowlisted: true`
-   footer, factory implements + posts preview URL, card auto-advances to
-   Approved without manual drag, factory merges and (Phase D) dispatches beta,
-   reporter receives all progress emails. Reply "ship it" to the final email →
-   confirm card lands in Done and issue is closed without touching the GitHub UI.
+   footer, factory `--plan` runs and forwards the plan as a Zoho reply.
+   Reply "go ahead" → confirm card moves to In Progress and factory begins
+   implementation (no GitHub UI used). Confirm preview URL email arrives,
+   card auto-advances to Approved without manual drag, factory merges and
+   (Phase D) dispatches beta. Reply "ship it" to the final email → confirm
+   card lands in Done and issue is closed.
 10. **Migration safety drill**: file an allowlisted issue that touches
     `supabase/migrations/**`. Confirm auto-approve is held back; card stays in
     In Test until the `migration-approved` label is applied manually.
@@ -340,17 +392,18 @@ The factory does not replace the support pipeline; it integrates with it.
 
 | Existing job                                                | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `support-agent.sh` (every 5 min)                            | Real-time email→issue role unchanged. Two new behaviours:<br/>1. **Auto-Ready for allowlisted**: when filing from an allowlisted reporter (per `$SUPPORT_ALLOWLIST` in `logs/support-state.json` — Jakub and his wife), auto-applies `status:ready` and adds the issue to the Projects v2 board. Non-allowlisted reports land in Backlog as today.<br/>2. **Accept-signal classifier**: when an allowlisted reporter replies on a thread linked to a factory issue with positive intent ("thanks", "ship it", `[ACCEPT]`), support-agent runs `state-cli.mjs factory:done <issue>` to advance the card and close the issue. Non-allowlisted replies still go through as comments only. |
+| `support-agent.sh` (every 5 min)                            | Real-time email→issue role unchanged. Two new behaviours:<br/>1. **Auto-Ready for allowlisted**: when filing from an allowlisted reporter (per `$SUPPORT_ALLOWLIST` in `logs/support-state.json` — Jakub and his wife), auto-applies `status:ready` and adds the issue to the Projects v2 board. Non-allowlisted reports land in Backlog as today.<br/>2. **Accept-signal classifier**: when an allowlisted reporter replies on a thread linked to a factory issue with positive intent ("go ahead", "ship it", "thanks"), support-agent runs `state-cli.mjs factory:advance <issue>`. The script reads the issue's current `status:*` label and dispatches: Plan Review → In Progress (plan approved), Released → Done (final acceptance). Other states ignore the signal and post the reply as a normal comment. |
 | `nightly-support.sh` Phase 2 (Dependabot)                   | Unchanged. Dependabot PRs aren't feature work; kanban abstraction doesn't fit. Existing conditional auto-merge stays.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `nightly-support.sh` Phase 3 (support-issue implementation) | **Deprecated in stages.** Factory phase A/B: Phase 3 keeps running; factory only touches `status:ready` issues set by a human. Factory phase C cutover: Phase 3 disabled — factory handles all support-issue implementation; allowlisted reporters auto-promoted to Ready by support-agent. Factory phase D: Phase 3 code removed.                                                                                                                                                                                                                                                                                                                                                     |
 | `nightly-audit.sh` (05:00)                                  | Adds a check: factory launchd job alive AND `factory.paused != true` in state file. Otherwise files a `nightly-audit` issue as today.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `comment-released-issues.mjs` (post-fastlane hook)          | Unchanged. Already posts release announcements on linked support issues — works for factory-released issues without modification.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
-Net effect for the household reporters: end-to-end zero-touch. Email a bug to
-support@drafto.eu, receive a stream of progress emails (filed → preview ready →
-TestFlight build X → live in version Y), reply "thanks" or "ship it" to the
-final email. No GitHub UI, no kanban dragging — the kanban exists for visibility
-and for non-allowlisted reports, but the household lane is pure email.
+Net effect for the household reporters: end-to-end via email. Email a bug to
+support@drafto.eu → receive a plan email → reply "go ahead" → receive progress
+emails (preview ready → TestFlight build X → live in version Y) → reply
+"thanks" to the final email. The reporter touches email twice (plan approval +
+done acknowledgement) and never opens GitHub. The kanban exists for visibility
+and for non-allowlisted reports.
 
 ## Out of scope (explicit non-goals for v1)
 
