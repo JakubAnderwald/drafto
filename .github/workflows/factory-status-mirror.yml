@@ -18,7 +18,10 @@ name: Factory Status Mirror
 #   See docs/operations/factory-runbook.md → "Initial setup".
 
 on:
-  project_v2_item:
+  # Note: trigger name is `projects_v2_item` (plural), matching the webhook
+  # event and the `github.event.projects_v2_item.*` payload key. The singular
+  # form does not match any GitHub event and silently never fires.
+  projects_v2_item:
     types: [edited, reopened, restored]
 
 concurrency:
