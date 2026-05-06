@@ -1,0 +1,168 @@
+name: Factory Status Mirror
+
+# Mirrors the Project v2 Status field on the Drafto Factory board into
+# `status:*` labels on the linked issue / PR. The factory agent on the Mac
+# mini polls labels (not the Project v2 API), so this workflow is the bridge
+# between human drag-and-drop on the board and the factory's queue.
+#
+# Why a workflow and not direct API polling from the Mac mini?
+#   - GitHub fires `project_v2_item.edited` within seconds of a drag, so
+#     reaction time is sub-minute (vs. up to 5 min for the launchd tick).
+#   - It runs in GitHub-controlled infra, so the Mac mini can be offline
+#     (e.g. boot reboot) without losing state-transition signals — the
+#     workflow still applies the label and the factory picks it up later.
+#
+# Permissions:
+#   The default GITHUB_TOKEN cannot read Project v2 items. We use a PAT
+#   stored in the FACTORY_PROJECT_TOKEN secret (scopes: project, repo).
+#   See docs/operations/factory-runbook.md → "Initial setup".
+
+on:
+  project_v2_item:
+    types: [edited, reopened, restored]
+
+concurrency:
+  # Serialise per-item so a rapid drag-drop sequence doesn't race.
+  group: factory-status-mirror-${{ github.event.projects_v2_item.id }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Mirror Status → label
+    runs-on: ubuntu-latest
+    # Keep this scoped to the JakubAnderwald/Drafto Factory project. If the
+    # PAT is ever attached to additional projects we don't want this workflow
+    # mutating their linked issues.
+    if: github.event.projects_v2_item.project_node_id != ''
+    steps:
+      - name: Resolve item, status, and target issue
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_PROJECT_TOKEN }}
+          ITEM_ID: ${{ github.event.projects_v2_item.node_id }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::FACTORY_PROJECT_TOKEN secret is not set."
+            exit 1
+          fi
+          if [[ -z "$ITEM_ID" ]]; then
+            echo "::warning::No projects_v2_item.node_id in event payload; skipping."
+            echo "skip=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          QUERY='
+            query($id: ID!) {
+              node(id: $id) {
+                ... on ProjectV2Item {
+                  content {
+                    __typename
+                    ... on Issue       { number repository { nameWithOwner } }
+                    ... on PullRequest { number repository { nameWithOwner } }
+                  }
+                  fieldValues(first: 50) {
+                    nodes {
+                      ... on ProjectV2ItemFieldSingleSelectValue {
+                        name
+                        field {
+                          ... on ProjectV2SingleSelectField { name }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }'
+          RESP=$(gh api graphql -f query="$QUERY" -f id="$ITEM_ID")
+
+          REPO=$(echo "$RESP" | jq -r '.data.node.content.repository.nameWithOwner // empty')
+          NUMBER=$(echo "$RESP" | jq -r '.data.node.content.number // empty')
+          STATUS=$(echo "$RESP" | jq -r '
+            .data.node.fieldValues.nodes
+            | map(select(.field.name == "Status"))
+            | (.[0].name // empty)')
+
+          if [[ -z "$REPO" || -z "$NUMBER" ]]; then
+            echo "::warning::Item has no linked issue/PR (draft item?); skipping."
+            echo "skip=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -z "$STATUS" ]]; then
+            echo "::notice::Item #$NUMBER has no Status set; skipping (no label change)."
+            echo "skip=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Map Status → label. Backlog has no label — it's the implicit
+          # "factory ignores" state. Anything not in the map is rejected so
+          # a typo on a field rename doesn't silently mislabel issues.
+          case "$STATUS" in
+            "Backlog")     LABEL="" ;;
+            "Ready")       LABEL="status:ready" ;;
+            "Planning")    LABEL="status:planning" ;;
+            "Plan Review") LABEL="status:plan-review" ;;
+            "In Progress") LABEL="status:in-progress" ;;
+            "In Review")   LABEL="status:in-review" ;;
+            "In Test")     LABEL="status:in-test" ;;
+            "Approved")    LABEL="status:approved" ;;
+            "Released")    LABEL="status:released" ;;
+            "Done")        LABEL="status:done" ;;
+            "Blocked")     LABEL="status:blocked" ;;
+            *)
+              echo "::error::Unknown Status value '$STATUS'. Add it to setup-factory-board.sh and this workflow's case statement, then re-run setup."
+              exit 1
+              ;;
+          esac
+
+          echo "repo=$REPO"     >>"$GITHUB_OUTPUT"
+          echo "number=$NUMBER" >>"$GITHUB_OUTPUT"
+          echo "status=$STATUS" >>"$GITHUB_OUTPUT"
+          echo "label=$LABEL"   >>"$GITHUB_OUTPUT"
+          echo "skip=false"     >>"$GITHUB_OUTPUT"
+
+      - name: Apply label (idempotent)
+        if: steps.resolve.outputs.skip == 'false'
+        env:
+          # Issue label edits also need repo scope; the PAT has both.
+          GH_TOKEN: ${{ secrets.FACTORY_PROJECT_TOKEN }}
+          REPO: ${{ steps.resolve.outputs.repo }}
+          NUMBER: ${{ steps.resolve.outputs.number }}
+          STATUS: ${{ steps.resolve.outputs.status }}
+          LABEL: ${{ steps.resolve.outputs.label }}
+        run: |
+          set -euo pipefail
+          # Read current labels so we can (a) detect "already correct" and
+          # (b) remove any *other* status:* labels the issue still carries
+          # from a previous Status value.
+          CURRENT=$(gh issue view "$NUMBER" --repo "$REPO" --json labels \
+            | jq -r '.labels[].name')
+
+          # Compute the set of status:* labels that should NOT be on the issue.
+          TO_REMOVE=()
+          while IFS= read -r name; do
+            [[ -z "$name" ]] && continue
+            if [[ "$name" == status:* && "$name" != "$LABEL" ]]; then
+              TO_REMOVE+=("$name")
+            fi
+          done <<<"$CURRENT"
+
+          ALREADY=0
+          if [[ -n "$LABEL" ]] && grep -Fxq "$LABEL" <<<"$CURRENT"; then
+            ALREADY=1
+          fi
+
+          for stale in "${TO_REMOVE[@]:-}"; do
+            [[ -z "$stale" ]] && continue
+            echo "  removing stale label: $stale"
+            gh issue edit "$NUMBER" --repo "$REPO" --remove-label "$stale" >/dev/null
+          done
+
+          if [[ -n "$LABEL" && "$ALREADY" -eq 0 ]]; then
+            echo "  adding label: $LABEL"
+            gh issue edit "$NUMBER" --repo "$REPO" --add-label "$LABEL" >/dev/null
+          elif [[ -n "$LABEL" ]]; then
+            echo "  $LABEL already present — no-op"
+          else
+            echo "  Status=$STATUS maps to no label (Backlog); only removed stale labels"
+          fi

@@ -1,0 +1,82 @@
+name: Factory feature spec
+description: A feature or change spec the dark factory can read end-to-end.
+title: "feat: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for any change you want the factory to plan / implement
+        autonomously. The factory's `--plan` mode validates that every section
+        below is filled in; missing sections cause the card to be moved to
+        **Blocked** with a "spec incomplete" comment.
+
+        See `docs/features/dark-factory.md` for the full lifecycle.
+  - type: textarea
+    id: what
+    attributes:
+      label: What
+      description: One paragraph user-facing description. What changes for the user?
+      placeholder: |
+        e.g. "Add a 'duplicate note' action to the note list context menu so users
+        can fork a note as a template."
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Bulleted, testable. The factory uses these as the pass/fail bar.
+      placeholder: |
+        - Right-clicking a note shows "Duplicate note".
+        - The duplicated note appears in the same notebook with title "<original> (copy)".
+        - The duplicate is a deep copy — editing it does not affect the original.
+    validations:
+      required: true
+  - type: checkboxes
+    id: platforms
+    attributes:
+      label: Affected platforms
+      description: |
+        Drives the parity check. The factory's plan-vs-diff post-check fails the
+        card if a checked platform has no corresponding code changes. Use one
+        of the parity:* labels to override for legitimate single-platform work.
+      options:
+        - label: web (`apps/web`)
+        - label: iOS / Android (`apps/mobile`)
+        - label: macOS (`apps/desktop`)
+    validations:
+      required: true
+  - type: dropdown
+    id: schema
+    attributes:
+      label: Schema changes?
+      description: |
+        If "yes", the factory adds `needs-migration-review` and the Approved
+        gate requires a `migration-approved` label before merging.
+      options:
+        - "no"
+        - "yes"
+      default: 0
+    validations:
+      required: true
+  - type: textarea
+    id: ui
+    attributes:
+      label: UI design (if applicable)
+      description: |
+        If this changes user-facing UI, paste a screenshot, mockup, or Figma URL.
+        Skip if the change has no visible UI.
+      placeholder: "https://www.figma.com/file/... or paste a screenshot"
+    validations:
+      required: false
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+      description: Explicit non-goals. What should the factory NOT do?
+      placeholder: |
+        - No bulk-duplicate (multiple notes at once).
+        - No cross-notebook duplication.
+    validations:
+      required: true
