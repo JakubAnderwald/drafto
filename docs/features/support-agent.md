@@ -99,6 +99,7 @@ The `zoho-thread-id` field is load-bearing — comment-sync uses it to route Git
 1. At filing time, `support-agent.sh` extracts the inbound `fromAddress` from the Zoho bundle (captured BEFORE Claude runs) and persists it to `state.issues[<n>].reporterEmail` via `state-cli.mjs record-filed-issue`.
 2. At gate time, `nightly-support.sh` calls `state-cli.mjs get-reporter-email <n>` and compares the result (case-insensitive, comma-bounded) against `$SUPPORT_ALLOWLIST` from `~/drafto-secrets/support-env.sh`.
 3. Two reject reasons surface: `unknown-sender` (no state entry — legacy / manually-filed / runner failure) and `not-allowlisted`. Either one labels the issue `needs-triage` and posts a comment.
+4. **Manual override**: applying the `support-allowlisted` label (repo collaborators only — GitHub-authenticated, not LLM-mediated) short-circuits the gate. The next nightly run treats the issue as allowlisted regardless of the state entry, and the issue is kept in the queue even if `needs-triage` is also present. Use this for legacy issues filed before sender persistence existed (ADR-0025 "Negative" point) or one-off backfills where the operator can't easily edit `logs/support-state.json` on the Mac mini.
 
 This eliminates the spoof window where a forged `<!-- drafto-support-agent v1 ... reporter-allowlisted: true -->` block in a customer's email body could slip through if the LLM copied it verbatim into the issue body. See [ADR-0025](../adr/0025-support-allowlist-from-zoho-sender.md) for the full rationale.
 

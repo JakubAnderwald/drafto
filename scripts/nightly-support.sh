@@ -126,9 +126,14 @@ DEPENDABOT_PRS=$(echo "$DEPENDABOT_PRS" | \
 DEPENDABOT_COUNT=$(echo "$DEPENDABOT_PRS" | jq 'length') || DEPENDABOT_COUNT=0
 # Skip support issues already triaged (Phase F gate added needs-triage on a
 # prior run). Dependabot uses the same pattern with needs-review.
+# Exception: if a human triager applied `support-allowlisted` (manual override
+# of the ADR-0025 sender gate, e.g. for legacy issues filed before sender
+# persistence existed), keep the issue in the queue even with needs-triage so
+# the next nightly run picks it up. The Phase F gate below also short-circuits
+# on this label.
 SUPPORT_ISSUES_ALL_COUNT=$(echo "$SUPPORT_ISSUES" | jq -e 'length' 2>/dev/null) || { log "ERROR: Failed to fetch support issues"; SUPPORT_ISSUES_ALL_COUNT=0; }
 SUPPORT_ISSUES=$(echo "$SUPPORT_ISSUES" | \
-  jq '[.[] | select(.labels | map(.name) | index("needs-triage") | not)]') || SUPPORT_ISSUES="[]"
+  jq '[.[] | select((.labels | map(.name) | index("needs-triage") | not) or (.labels | map(.name) | index("support-allowlisted")))]') || SUPPORT_ISSUES="[]"
 SUPPORT_COUNT=$(echo "$SUPPORT_ISSUES" | jq 'length') || SUPPORT_COUNT=0
 SUPPORT_TRIAGED_COUNT=$(( SUPPORT_ISSUES_ALL_COUNT - SUPPORT_COUNT ))
 
@@ -209,25 +214,38 @@ for IDX in $(seq 0 $((SUPPORT_COUNT - 1))); do
   # an LLM-written issue-body footer, eliminates the spoof window where a
   # crafted email could trick the LLM into copying a forged
   # `reporter-allowlisted: true` block into the issue body.
-  REPORTER_EMAIL=$(node "$SCRIPT_DIR/lib/state-cli.mjs" get-reporter-email "$ISSUE_NUMBER" \
-    2>/dev/null || true)
+  #
+  # Manual override: a `support-allowlisted` label, applied by a human
+  # triager (only repo collaborators can add labels — GitHub-authenticated,
+  # not LLM-mediated), short-circuits the gate. This handles legacy issues
+  # filed before sender persistence existed (ADR-0025 "Negative" point) and
+  # any one-off backfill the operator wants to run from outside the Mac mini
+  # without touching state.json directly.
+  HAS_OVERRIDE=$(echo "$ISSUE_ENTRY" | jq -r '.labels // [] | map(.name) | index("support-allowlisted") | tostring')
   GATE_REASON=""
-  if [[ -z "$REPORTER_EMAIL" ]]; then
-    # No state entry. Either a legacy issue filed before ADR-0025, an issue
-    # filed manually outside the agent, or the agent ran but the runner
-    # failed to persist (logged at filing time). Fall through to triage —
-    # human can backfill state if appropriate.
-    GATE_REASON="unknown-sender"
+  REPORTER_EMAIL=""
+  if [[ "$HAS_OVERRIDE" != "null" ]]; then
+    log "Issue #$ISSUE_NUMBER: support-allowlisted label present; bypassing sender gate"
   else
-    # Comma-bounded glob match against the lower-cased CSV. `,X,Y,Z,` always
-    # has commas at both ends so the pattern `*,<email>,*` matches at any
-    # position. state-cli stores reporterEmail already lower-cased; we lower
-    # the allowlist here too so user-edited support-env.sh casing doesn't
-    # leak through.
-    SUPPORT_ALLOWLIST_LC="${SUPPORT_ALLOWLIST,,}"
-    REPORTER_EMAIL_LC="${REPORTER_EMAIL,,}"
-    if [[ ",${SUPPORT_ALLOWLIST_LC}," != *",${REPORTER_EMAIL_LC},"* ]]; then
-      GATE_REASON="not-allowlisted"
+    REPORTER_EMAIL=$(node "$SCRIPT_DIR/lib/state-cli.mjs" get-reporter-email "$ISSUE_NUMBER" \
+      2>/dev/null || true)
+    if [[ -z "$REPORTER_EMAIL" ]]; then
+      # No state entry. Either a legacy issue filed before ADR-0025, an issue
+      # filed manually outside the agent, or the agent ran but the runner
+      # failed to persist (logged at filing time). Fall through to triage —
+      # human can backfill state or apply `support-allowlisted` to bypass.
+      GATE_REASON="unknown-sender"
+    else
+      # Comma-bounded glob match against the lower-cased CSV. `,X,Y,Z,` always
+      # has commas at both ends so the pattern `*,<email>,*` matches at any
+      # position. state-cli stores reporterEmail already lower-cased; we lower
+      # the allowlist here too so user-edited support-env.sh casing doesn't
+      # leak through.
+      SUPPORT_ALLOWLIST_LC="${SUPPORT_ALLOWLIST,,}"
+      REPORTER_EMAIL_LC="${REPORTER_EMAIL,,}"
+      if [[ ",${SUPPORT_ALLOWLIST_LC}," != *",${REPORTER_EMAIL_LC},"* ]]; then
+        GATE_REASON="not-allowlisted"
+      fi
     fi
   fi
   if [[ -n "$GATE_REASON" ]]; then
