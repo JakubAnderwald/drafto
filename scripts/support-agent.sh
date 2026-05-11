@@ -646,9 +646,11 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
   # ~1440x/day from 2026-05-05 onward — Claude returned `escalated`, bash
   # bumped the timestamp, but list-pending kept surfacing the message because
   # `isTerminalSupportLabel` deliberately treats NeedsHuman as non-terminal.)
-  # LABEL_ONLY runs and fixture replays bypass the cooldown — both are
-  # operator-driven and want fresh classification regardless of state.
-  if [[ "$LABEL_ONLY" -ne 1 && -z "$FIXTURE" && -f "$STATE_FILE" ]]; then
+  # Scoped to the production --auto-classify path. --dry-run inspection runs
+  # and --label-only sweeps both want to see every entry, and --fixture
+  # replays are deterministic by design — none of them should be filtered by
+  # the live state's cooldown.
+  if [[ "$AUTO_CLASSIFY" -eq 1 && -z "$FIXTURE" && -f "$STATE_FILE" ]]; then
     LAST_NOTIFIED=$(jq -r --arg k "$TRACK_ID" \
       '.threads[$k].lastAdminNotificationAt // empty' "$STATE_FILE" 2>/dev/null || echo "")
     if [[ -n "$LAST_NOTIFIED" ]]; then
@@ -660,6 +662,10 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
       if [[ "$LAST_NOTIFIED_SEC" -gt 0 ]]; then
         AGE_SEC=$(( $(date +%s) - LAST_NOTIFIED_SEC ))
         ESCALATED_COOLDOWN_SEC="${ESCALATED_COOLDOWN_SEC:-86400}"
+        if ! [[ "$ESCALATED_COOLDOWN_SEC" =~ ^[0-9]+$ ]]; then
+          log "ERROR: ESCALATED_COOLDOWN_SEC must be a non-negative integer (got '$ESCALATED_COOLDOWN_SEC')"
+          exit 1
+        fi
         if [[ "$AGE_SEC" -lt "$ESCALATED_COOLDOWN_SEC" ]]; then
           log "Skipping $TRACK_ID: already escalated at $LAST_NOTIFIED (cooldown ${ESCALATED_COOLDOWN_SEC}s)"
           continue

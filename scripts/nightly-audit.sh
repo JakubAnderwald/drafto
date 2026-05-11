@@ -236,11 +236,17 @@ ISSUE_BODY+="$SIG_MARKER"
 # every day for the same standing-state problems (e.g. one stuck
 # `needs-triage` issue + one chronically-failing workflow produced 7 OPEN
 # audit issues #374/383/390/393/395/397/398 from May 5–11).
-EXISTING_AUDIT_ISSUES=$(gh issue list --repo "$REPO" --label nightly-audit --state open \
-  --json number,body --limit 30 2>/dev/null) || EXISTING_AUDIT_ISSUES="[]"
+if ! EXISTING_AUDIT_ISSUES=$(gh issue list --repo "$REPO" --label nightly-audit --state open \
+  --json number,body --limit 30 2>>"$LOG_FILE"); then
+  # Treating a failed list as `[]` would re-open the bug we're trying to fix
+  # (a fresh issue gets filed every day). Abort instead — the next launchd
+  # run at 05:00 tomorrow will retry. Per-CodeRabbit review on PR #400.
+  log "WARNING: failed to list open nightly-audit issues; skipping create to avoid duplicate audit issue noise"
+  exit 0
+fi
 
 MATCHING_NUM=$(echo "$EXISTING_AUDIT_ISSUES" | \
-  jq -r --arg marker "$SIG_MARKER" '[.[] | select(.body | contains($marker))] | first | .number // empty')
+  jq -r --arg marker "$SIG_MARKER" '[.[] | select((.body // "") | contains($marker))] | first | .number // empty')
 
 if [[ -n "$MATCHING_NUM" ]]; then
   log "Audit signature $PROBLEM_SIG matches open issue #$MATCHING_NUM — commenting instead of filing duplicate."
