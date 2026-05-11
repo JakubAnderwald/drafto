@@ -314,8 +314,14 @@ if [[ "$COMMENT_SYNC" -eq 1 ]]; then
   PROMPT_TEXT=$(cat "$PROMPT_FILE")
 
   if ! ISSUES_JSON=$(node "$SCRIPT_DIR/lib/github-sync.mjs" list-support-issues --state all 2>>"$LOG_FILE"); then
-    log "ERROR: github-sync list-support-issues failed"
-    exit 1
+    # Transient GitHub API failures (e.g. HTTP 504) sometimes outlast the
+    # 4-attempt retry window in github-sync.mjs's runGh. Skip this tick — the
+    # next 60-second launchd run will retry — rather than exit non-zero, which
+    # would fire the cleanup trap and file a noise `support-agent failed`
+    # GitHub issue. The cleanup trap still catches genuine crashes (missing
+    # OAuth file, claude CLI gone, etc.).
+    log "WARNING: github-sync list-support-issues failed (transient?); skipping this comment-sync tick"
+    exit 0
   fi
   ISSUE_COUNT=$(echo "$ISSUES_JSON" | jq 'length' 2>/dev/null || echo "0")
   if ! [[ "$ISSUE_COUNT" =~ ^[0-9]+$ ]]; then
@@ -444,8 +450,10 @@ if [[ "$STATE_SYNC" -eq 1 ]]; then
   PROMPT_TEXT=$(cat "$PROMPT_FILE")
 
   if ! ISSUES_JSON=$(node "$SCRIPT_DIR/lib/github-sync.mjs" list-support-issues --state all 2>>"$LOG_FILE"); then
-    log "ERROR: github-sync list-support-issues failed"
-    exit 1
+    # Same transient-API rationale as the --comment-sync branch above. Skip
+    # this tick rather than file a noise failure issue.
+    log "WARNING: github-sync list-support-issues failed (transient?); skipping this state-sync tick"
+    exit 0
   fi
   ISSUE_COUNT=$(echo "$ISSUES_JSON" | jq 'length' 2>/dev/null || echo "0")
   if ! [[ "$ISSUE_COUNT" =~ ^[0-9]+$ ]]; then
@@ -594,8 +602,11 @@ if [[ -n "$FIXTURE" ]]; then
   log "Pre-check: loaded fixture $FIXTURE"
 else
   if ! PENDING=$(node "$SCRIPT_DIR/lib/zoho-cli.mjs" list-pending 2>>"$LOG_FILE"); then
-    log "ERROR: zoho-cli list-pending failed"
-    exit 1
+    # Transient Zoho API failure. Skip this auto-classify tick — the next
+    # 60-second launchd run will retry — rather than file a noise failure
+    # issue via the cleanup trap.
+    log "WARNING: zoho-cli list-pending failed (transient?); skipping this auto-classify tick"
+    exit 0
   fi
 fi
 
@@ -626,6 +637,35 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
   if [[ -z "$TRACK_ID" ]]; then
     log "WARNING: pending entry $THREAD_INDEX has no threadId/messageId — skipping"
     continue
+  fi
+
+  # Cooldown: if this thread/singleton was escalated in the last 24h, skip
+  # re-classification. `lastAdminNotificationAt` is bumped by the `escalated`
+  # action branch below; honor it here so a NeedsHuman singleton doesn't burn
+  # a Claude call every tick. (Real case: msg 1777408758140014300 cycled
+  # ~1440x/day from 2026-05-05 onward — Claude returned `escalated`, bash
+  # bumped the timestamp, but list-pending kept surfacing the message because
+  # `isTerminalSupportLabel` deliberately treats NeedsHuman as non-terminal.)
+  # LABEL_ONLY runs and fixture replays bypass the cooldown — both are
+  # operator-driven and want fresh classification regardless of state.
+  if [[ "$LABEL_ONLY" -ne 1 && -z "$FIXTURE" && -f "$STATE_FILE" ]]; then
+    LAST_NOTIFIED=$(jq -r --arg k "$TRACK_ID" \
+      '.threads[$k].lastAdminNotificationAt // empty' "$STATE_FILE" 2>/dev/null || echo "")
+    if [[ -n "$LAST_NOTIFIED" ]]; then
+      # state-cli writes ISO 8601 UTC timestamps (suffix Z). macOS `date -j -f`
+      # defaults to the local timezone, so prefix TZ=UTC to interpret the
+      # value as UTC; otherwise CEST hosts would compute an age ~2h larger
+      # than reality.
+      LAST_NOTIFIED_SEC=$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' "${LAST_NOTIFIED%.*}" +%s 2>/dev/null || echo 0)
+      if [[ "$LAST_NOTIFIED_SEC" -gt 0 ]]; then
+        AGE_SEC=$(( $(date +%s) - LAST_NOTIFIED_SEC ))
+        ESCALATED_COOLDOWN_SEC="${ESCALATED_COOLDOWN_SEC:-86400}"
+        if [[ "$AGE_SEC" -lt "$ESCALATED_COOLDOWN_SEC" ]]; then
+          log "Skipping $TRACK_ID: already escalated at $LAST_NOTIFIED (cooldown ${ESCALATED_COOLDOWN_SEC}s)"
+          continue
+        fi
+      fi
+    fi
   fi
 
   if [[ "$LABEL_ONLY" -eq 1 ]]; then
