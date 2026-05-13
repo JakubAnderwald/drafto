@@ -1545,13 +1545,14 @@ describe("AppShell", () => {
       const rail = screen.getByTestId("notebooks-rail");
       const notesPane = screen.getByTestId("notes-pane");
       const main = container.querySelector("main");
+      if (!main) throw new Error("main element should be present");
 
       // The rail sits between the notebooks pane and the notes pane so the user
       // can clearly see which column the expand handle belongs to.
       expect(
         rail.compareDocumentPosition(notesPane) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
-      expect(main?.contains(rail)).toBe(false);
+      expect(main.contains(rail)).toBe(false);
       expect(notesPane.contains(rail)).toBe(false);
 
       const expandBtn = screen.getByLabelText("Show notebook list");
@@ -1576,10 +1577,11 @@ describe("AppShell", () => {
       const rail = screen.getByTestId("notes-rail");
       const aside = container.querySelector("aside");
       const main = container.querySelector("main");
+      if (!aside || !main) throw new Error("aside and main should both be present");
 
-      expect(aside?.compareDocumentPosition(rail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(rail.compareDocumentPosition(main!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(main?.contains(rail)).toBe(false);
+      expect(aside.compareDocumentPosition(rail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(rail.compareDocumentPosition(main) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(main.contains(rail)).toBe(false);
 
       const expandBtn = screen.getByLabelText("Show note list");
       expect(rail.contains(expandBtn)).toBe(true);
