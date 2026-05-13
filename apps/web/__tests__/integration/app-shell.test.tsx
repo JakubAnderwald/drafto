@@ -1407,7 +1407,7 @@ describe("AppShell", () => {
       expect(screen.getByLabelText("Collapse note list")).toBeInTheDocument();
     });
 
-    it("does not render the editor expand toolbar when both panes are expanded", async () => {
+    it("does not render expand rails when both panes are expanded", async () => {
       await act(async () => {
         render(<AppShell />);
       });
@@ -1416,7 +1416,8 @@ describe("AppShell", () => {
         expect(screen.getByText("Notebooks")).toBeInTheDocument();
       });
 
-      expect(screen.queryByTestId("editor-expand-toolbar")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("notebooks-rail")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("notes-rail")).not.toBeInTheDocument();
       expect(screen.queryByLabelText("Show notebook list")).not.toBeInTheDocument();
       expect(screen.queryByLabelText("Show note list")).not.toBeInTheDocument();
     });
@@ -1465,7 +1466,7 @@ describe("AppShell", () => {
       expect(screen.getByLabelText("Show note list")).toBeInTheDocument();
     });
 
-    it("expanding from the editor toolbar restores the pane", async () => {
+    it("expanding from the rail restores the pane", async () => {
       const user = userEvent.setup();
 
       await act(async () => {
@@ -1488,6 +1489,7 @@ describe("AppShell", () => {
       });
       expect(notebooksPane.className).not.toContain("lg:hidden");
       expect(screen.queryByLabelText("Show notebook list")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("notebooks-rail")).not.toBeInTheDocument();
     });
 
     it("each pane collapses independently", async () => {
@@ -1518,9 +1520,69 @@ describe("AppShell", () => {
       expect(notebooksPane.className).toContain("lg:hidden");
       expect(notesPane.className).toContain("lg:hidden");
 
-      // Toolbar should now offer both expand handles
+      // Each collapsed pane should be replaced by its own rail
+      expect(screen.getByTestId("notebooks-rail")).toBeInTheDocument();
+      expect(screen.getByTestId("notes-rail")).toBeInTheDocument();
       expect(screen.getByLabelText("Show notebook list")).toBeInTheDocument();
       expect(screen.getByLabelText("Show note list")).toBeInTheDocument();
+    });
+
+    it("collapsing notebooks renders a rail before the notes pane, not inside the editor", async () => {
+      const user = userEvent.setup();
+
+      const { container } = await act(async () => {
+        return render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        await user.click(screen.getByLabelText("Collapse notebook list"));
+      });
+
+      const rail = screen.getByTestId("notebooks-rail");
+      const notesPane = screen.getByTestId("notes-pane");
+      const main = container.querySelector("main");
+
+      // The rail sits between the notebooks pane and the notes pane so the user
+      // can clearly see which column the expand handle belongs to.
+      expect(
+        rail.compareDocumentPosition(notesPane) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(main?.contains(rail)).toBe(false);
+      expect(notesPane.contains(rail)).toBe(false);
+
+      const expandBtn = screen.getByLabelText("Show notebook list");
+      expect(rail.contains(expandBtn)).toBe(true);
+    });
+
+    it("collapsing notes renders a rail between the notebooks pane and the editor", async () => {
+      const user = userEvent.setup();
+
+      const { container } = await act(async () => {
+        return render(<AppShell />);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Notebooks")).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        await user.click(screen.getByLabelText("Collapse note list"));
+      });
+
+      const rail = screen.getByTestId("notes-rail");
+      const aside = container.querySelector("aside");
+      const main = container.querySelector("main");
+
+      expect(aside?.compareDocumentPosition(rail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(rail.compareDocumentPosition(main!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(main?.contains(rail)).toBe(false);
+
+      const expandBtn = screen.getByLabelText("Show note list");
+      expect(rail.contains(expandBtn)).toBe(true);
     });
 
     it("persists collapse state across remounts via localStorage", async () => {
