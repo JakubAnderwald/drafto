@@ -468,6 +468,24 @@ export function AppShell({
         </div>
       </aside>
 
+      {/* Notebooks expand rail — replaces the notebooks pane when collapsed on desktop.
+          Sits in the column position the notebooks pane occupied, so users can tell
+          which pane the expand handle controls. */}
+      {notebooksCollapsed && (
+        <div
+          data-testid="notebooks-rail"
+          className="bg-sidebar-bg border-border hidden w-11 shrink-0 flex-col items-center border-r p-2 lg:flex"
+        >
+          <IconButton
+            size="sm"
+            onClick={() => togglePane("notebooks")}
+            aria-label="Show notebook list"
+          >
+            <PanelExpandIcon />
+          </IconButton>
+        </div>
+      )}
+
       {/* Middle panel — note list or trash
           Mobile: full-width panel, shown only in notes view
           Tablet/Desktop: fixed 300px width (unless collapsed on desktop) */}
@@ -540,6 +558,20 @@ export function AppShell({
         )}
       </section>
 
+      {/* Notes expand rail — replaces the notes pane when collapsed on desktop.
+          Sits between the notebooks pane (or its rail) and the editor, in the
+          column position the notes pane occupied. */}
+      {notesCollapsed && (
+        <div
+          data-testid="notes-rail"
+          className="bg-bg border-border hidden w-11 shrink-0 flex-col items-center border-r p-2 lg:flex"
+        >
+          <IconButton size="sm" onClick={() => togglePane("notes")} aria-label="Show note list">
+            <PanelExpandIcon />
+          </IconButton>
+        </div>
+      )}
+
       {/* Main panel — editor
           Mobile: full-width panel, shown only in editor view
           Tablet/Desktop: fills remaining space */}
@@ -555,29 +587,6 @@ export function AppShell({
               <ChevronLeftIcon />
             </IconButton>
             <span className="text-fg ml-1 text-sm font-semibold">Back</span>
-          </div>
-        )}
-
-        {/* Desktop: expand handles for collapsed panes */}
-        {(notebooksCollapsed || notesCollapsed) && (
-          <div
-            className="bg-bg-subtle hidden items-center gap-1 p-2 lg:flex"
-            data-testid="editor-expand-toolbar"
-          >
-            {notebooksCollapsed && (
-              <IconButton
-                size="sm"
-                onClick={() => togglePane("notebooks")}
-                aria-label="Show notebook list"
-              >
-                <PanelExpandIcon />
-              </IconButton>
-            )}
-            {notesCollapsed && (
-              <IconButton size="sm" onClick={() => togglePane("notes")} aria-label="Show note list">
-                <PanelExpandIcon />
-              </IconButton>
-            )}
           </div>
         )}
 
