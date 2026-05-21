@@ -171,11 +171,13 @@ export function getSlot(state, slotIndex) {
 // just the bookkeeping check; callers should still flock before mutating.
 export function isSlotFree(state, slotIndex, { isPidAlive } = {}) {
   const slot = getSlot(state, slotIndex);
-  if (!slot.pid && !slot.issueNumber) return true;
+  // Explicit null checks (vs `!slot.pid`) so a hypothetical pid 0 — the kernel
+  // scheduler, never a user process — wouldn't be misread as "no pid recorded".
+  if (slot.pid == null && slot.issueNumber == null) return true;
   // If a pid is recorded but the process is gone, treat the slot as free —
   // the prior run crashed without releasing. Same liveness check the agent
   // uses for the support-agent lockfile.
-  if (slot.pid && typeof isPidAlive === "function") {
+  if (slot.pid != null && typeof isPidAlive === "function") {
     return !isPidAlive(slot.pid);
   }
   return false;
