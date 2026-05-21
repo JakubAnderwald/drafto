@@ -37,8 +37,48 @@
 //                                    regardless — callers branch on the printed
 //                                    value. Used by nightly-support.sh's gate.
 //
+// Dark-factory subcommands (all prefixed with `factory:`). These mutate
+// logs/factory-state.json (separate file from support-state.json) via
+// factory-state.mjs's atomic save. The shared `--state-file <path>` override
+// targets the factory file for these subcommands; tests use it.
+//
+//   factory:pause [<reason>]        Set paused=true, pausedAt=now,
+//                                    pausedReason=<reason>. Agent exits early
+//                                    on every cycle while set.
+//   factory:resume                  Clear the pause flag.
+//   factory:status                  Print the full factory state JSON
+//                                    (paused, slots, issues).
+//   factory:paused?                 Exit 0 if paused, exit 1 otherwise. Bash-
+//                                    friendly: `if node ... factory:paused?; then echo paused; fi`
+//   factory:slot-acquire <slot> <issue> [<pid>]
+//                                    Record slot <slot> (0|1) as occupied by
+//                                    <issue> + <pid>. Caller still holds an
+//                                    flock on logs/factory.slot<N>.pid for
+//                                    real mutual exclusion — this is just
+//                                    the bookkeeping side. Refuses if slot
+//                                    is already occupied and the existing
+//                                    pid is still alive (use --force to
+//                                    steal a slot whose pid is dead).
+//   factory:slot-release <slot>     Clear slot <slot>.
+//   factory:slot-status [<slot>]    Print one slot's record, or all slots
+//                                    if <slot> is omitted.
+//   factory:bump-attempts <issue>   Increment issues[<n>].attempts by 1 and
+//                                    print the new value.
+//   factory:reset-attempts <issue>  Set issues[<n>].attempts = 0.
+//   factory:get-attempts <issue>    Print issues[<n>].attempts (0 if absent).
+//   factory:set-issue-field <issue> <field> <value>
+//                                    Set issues[<n>][<field>] = <value>.
+//                                    <field> ∈ {lastPlanAt, lastImplementAt,
+//                                    lastWatchAt, lastReleaseAt, lastBeta,
+//                                    lastProd, lastStatus, lastError}.
+//                                    Empty/`null` clears the field.
+//   factory:get-issue <issue>       Print issues[<n>] as JSON (empty record
+//                                    if absent).
+//
 // State path can be overridden via --state-file <path> for tests; defaults to
-// state.mjs's DEFAULT_STATE_PATH. The save is atomic (temp file + rename).
+// state.mjs's DEFAULT_STATE_PATH for support subcommands and to
+// factory-state.mjs's DEFAULT_FACTORY_STATE_PATH for `factory:*` subcommands.
+// The save is atomic (temp file + rename).
 //
 // **Callers must serialize.** loadState → mutate → saveState is atomic per
 // write but NOT a transaction. Two concurrent invocations would each load
@@ -51,14 +91,44 @@
 // Exit non-zero with a single-line JSON {"error": "..."} to stderr on failure.
 
 import { loadState, saveState, DEFAULT_STATE_PATH } from "./state.mjs";
+import {
+  loadFactoryState,
+  saveFactoryState,
+  DEFAULT_FACTORY_STATE_PATH,
+  pauseFactory,
+  resumeFactory,
+  isFactoryPaused,
+  acquireSlot,
+  releaseSlot,
+  getSlot,
+  isSlotFree,
+  bumpIssueAttempts,
+  resetIssueAttempts,
+  getIssue,
+  setIssueField,
+} from "./factory-state.mjs";
 import { bumpNotification, bumpCounters } from "./policy.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 import { isMainModule } from "./is-main.mjs";
 
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // ESRCH = no such process; EPERM = process exists but we can't signal it
+    // (still counts as alive for liveness purposes).
+    return err.code === "EPERM";
+  }
+}
+
 async function main(argv) {
   const [sub, ...rest] = argv;
   const { flags, positional } = parseFlags(rest);
-  const file = flags["state-file"] ?? DEFAULT_STATE_PATH;
+  const isFactorySub = typeof sub === "string" && sub.startsWith("factory:");
+  const defaultStatePath = isFactorySub ? DEFAULT_FACTORY_STATE_PATH : DEFAULT_STATE_PATH;
+  const file = flags["state-file"] ?? defaultStatePath;
   const now = flags.now ?? new Date().toISOString();
 
   switch (sub) {
@@ -155,6 +225,117 @@ async function main(argv) {
       process.stdout.write(email);
       return null;
     }
+    case "factory:pause": {
+      const reason = positional[0] ?? null;
+      const state = await loadFactoryState(file);
+      pauseFactory(state, { reason, now });
+      await saveFactoryState(state, file);
+      return { ok: true, paused: true, pausedAt: now, pausedReason: state.pausedReason };
+    }
+    case "factory:resume": {
+      const state = await loadFactoryState(file);
+      resumeFactory(state);
+      await saveFactoryState(state, file);
+      return { ok: true, paused: false };
+    }
+    case "factory:status": {
+      const state = await loadFactoryState(file);
+      return state;
+    }
+    case "factory:paused?": {
+      const state = await loadFactoryState(file);
+      // Exit 0 if paused, 1 if not — bash-friendly. Don't print anything.
+      process.exit(isFactoryPaused(state) ? 0 : 1);
+      return null;
+    }
+    case "factory:slot-acquire": {
+      const slot = positional[0];
+      const issueNumber = positional[1];
+      const pidStr = positional[2];
+      if (slot == null || issueNumber == null) {
+        throw new Error("factory:slot-acquire requires <slot> <issue> [<pid>]");
+      }
+      const pid = pidStr ? Number(pidStr) : null;
+      const force = flags.force != null && flags.force !== "false";
+      const state = await loadFactoryState(file);
+      if (!force && !isSlotFree(state, slot, { isPidAlive })) {
+        const occupied = getSlot(state, slot);
+        return {
+          ok: false,
+          reason: "slot-occupied",
+          slot: Number(slot),
+          occupiedBy: occupied,
+        };
+      }
+      acquireSlot(state, slot, { issueNumber, pid, now });
+      await saveFactoryState(state, file);
+      return {
+        ok: true,
+        slot: Number(slot),
+        issueNumber: String(issueNumber),
+        pid,
+        acquiredAt: now,
+      };
+    }
+    case "factory:slot-release": {
+      const slot = positional[0];
+      if (slot == null) throw new Error("factory:slot-release requires <slot>");
+      const state = await loadFactoryState(file);
+      releaseSlot(state, slot);
+      await saveFactoryState(state, file);
+      return { ok: true, slot: Number(slot) };
+    }
+    case "factory:slot-status": {
+      const slot = positional[0];
+      const state = await loadFactoryState(file);
+      if (slot == null) {
+        return { slots: state.slots };
+      }
+      return { slot: Number(slot), ...getSlot(state, slot) };
+    }
+    case "factory:bump-attempts": {
+      const issueNumber = positional[0];
+      if (!issueNumber) throw new Error("factory:bump-attempts requires <issue>");
+      const state = await loadFactoryState(file);
+      const attempts = bumpIssueAttempts(state, issueNumber);
+      await saveFactoryState(state, file);
+      return { ok: true, issueNumber: String(issueNumber), attempts };
+    }
+    case "factory:reset-attempts": {
+      const issueNumber = positional[0];
+      if (!issueNumber) throw new Error("factory:reset-attempts requires <issue>");
+      const state = await loadFactoryState(file);
+      resetIssueAttempts(state, issueNumber);
+      await saveFactoryState(state, file);
+      return { ok: true, issueNumber: String(issueNumber), attempts: 0 };
+    }
+    case "factory:get-attempts": {
+      const issueNumber = positional[0];
+      if (!issueNumber) throw new Error("factory:get-attempts requires <issue>");
+      const state = await loadFactoryState(file);
+      const issue = state.issues?.[String(issueNumber)] ?? {};
+      // Print bare integer (no JSON, no newline) so bash can capture directly.
+      process.stdout.write(String(Number.isInteger(issue.attempts) ? issue.attempts : 0));
+      return null;
+    }
+    case "factory:set-issue-field": {
+      const issueNumber = positional[0];
+      const field = positional[1];
+      const value = positional[2];
+      if (!issueNumber || !field) {
+        throw new Error("factory:set-issue-field requires <issue> <field> <value>");
+      }
+      const state = await loadFactoryState(file);
+      const newValue = setIssueField(state, issueNumber, field, value);
+      await saveFactoryState(state, file);
+      return { ok: true, issueNumber: String(issueNumber), field, value: newValue };
+    }
+    case "factory:get-issue": {
+      const issueNumber = positional[0];
+      if (!issueNumber) throw new Error("factory:get-issue requires <issue>");
+      const state = await loadFactoryState(file);
+      return getIssue(state, issueNumber);
+    }
     case "--help":
     case "-h":
     case undefined:
@@ -164,7 +345,19 @@ async function main(argv) {
           "set-issue-cursor <issue-number> <cursor-iso>|" +
           "set-issue-state <issue-number> <state> [<state-reason>]|" +
           "record-filed-issue <issue-number> <sender-email>|" +
-          "get-reporter-email <issue-number>> " +
+          "get-reporter-email <issue-number>|" +
+          "factory:pause [<reason>]|" +
+          "factory:resume|" +
+          "factory:status|" +
+          "factory:paused?|" +
+          "factory:slot-acquire <slot> <issue> [<pid>] [--force]|" +
+          "factory:slot-release <slot>|" +
+          "factory:slot-status [<slot>]|" +
+          "factory:bump-attempts <issue>|" +
+          "factory:reset-attempts <issue>|" +
+          "factory:get-attempts <issue>|" +
+          "factory:set-issue-field <issue> <field> <value>|" +
+          "factory:get-issue <issue>> " +
           "[--state-file <path>] [--now <iso>]\n",
       );
       return null;
