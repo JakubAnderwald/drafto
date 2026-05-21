@@ -8,7 +8,7 @@ jest.mock("@/lib/supabase", () => ({
 }));
 
 jest.mock("@drafto/shared", () => ({
-  MAX_FILE_SIZE: 25 * 1024 * 1024,
+  MAX_FILE_SIZE: 50 * 1024 * 1024,
   BUCKET_NAME: "attachments",
   SIGNED_URL_EXPIRY_SECONDS: 604800,
 }));

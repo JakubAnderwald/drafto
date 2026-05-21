@@ -680,7 +680,7 @@ describe("Security Audit", () => {
       expect(filenameInPath).not.toContain('"');
     });
 
-    it("accepts file at exact 25MB boundary", async () => {
+    it("accepts file at exact 50MB boundary", async () => {
       mockApprovedWithNotes();
 
       const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
@@ -689,8 +689,8 @@ describe("Security Audit", () => {
         {
           method: "POST",
           body: JSON.stringify({
-            fileName: "exact25mb.bin",
-            fileSize: 26214400,
+            fileName: "exact50mb.bin",
+            fileSize: 52428800,
             mimeType: "application/octet-stream",
           }),
           headers: { "content-type": "application/json" },
@@ -701,7 +701,7 @@ describe("Security Audit", () => {
       expect(response.status).toBe(200);
     });
 
-    it("rejects files exceeding 25MB limit", async () => {
+    it("rejects files exceeding 50MB limit", async () => {
       mockApprovedWithNotes();
 
       const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
@@ -711,7 +711,7 @@ describe("Security Audit", () => {
           method: "POST",
           body: JSON.stringify({
             fileName: "huge.bin",
-            fileSize: 26214401,
+            fileSize: 52428801,
             mimeType: "application/octet-stream",
           }),
           headers: { "content-type": "application/json" },

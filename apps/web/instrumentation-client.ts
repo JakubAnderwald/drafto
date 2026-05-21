@@ -11,6 +11,8 @@ Sentry.init({
   replaysOnErrorSampleRate: 1.0,
   integrations: [Sentry.replayIntegration()],
   debug: process.env.NODE_ENV === "development",
+  // Expected user-input validation, not bugs — keep these out of Sentry.
+  ignoreErrors: ["File size exceeds 50MB limit", "File is empty"],
 });
 
 export const onRouterTransitionStart = Sentry.captureRouterTransitionStart;

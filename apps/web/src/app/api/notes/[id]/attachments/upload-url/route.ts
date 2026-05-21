@@ -30,7 +30,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     return errorResponse("fileSize must be a positive number", 400);
   }
   if (fileSize > MAX_FILE_SIZE) {
-    return errorResponse("File size exceeds 25MB limit", 413);
+    return errorResponse("File size exceeds 50MB limit", 413);
   }
   if (typeof mimeType !== "string" || mimeType.length === 0) {
     return errorResponse("mimeType is required", 400);

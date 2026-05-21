@@ -61,7 +61,7 @@ export async function queueAttachment(
   file: PickedFile,
 ): Promise<Attachment> {
   if (file.fileSize > MAX_FILE_SIZE) {
-    throw new Error("File size exceeds 25MB limit");
+    throw new Error("File size exceeds 50MB limit");
   }
 
   const fileName = sanitizeFileName(file.fileName);

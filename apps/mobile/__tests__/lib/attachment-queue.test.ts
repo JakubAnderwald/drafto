@@ -29,7 +29,7 @@ jest.mock("expo-file-system", () => {
 });
 
 jest.mock("@drafto/shared", () => ({
-  MAX_FILE_SIZE: 25 * 1024 * 1024,
+  MAX_FILE_SIZE: 50 * 1024 * 1024,
   BUCKET_NAME: "attachments",
 }));
 

@@ -219,7 +219,7 @@ describe("NoteEditor", () => {
   it("throws when upload-url API returns an error", async () => {
     mockFetch.mockResolvedValue({
       ok: false,
-      json: () => Promise.resolve({ error: "File size exceeds 25MB limit" }),
+      json: () => Promise.resolve({ error: "File size exceeds 50MB limit" }),
     });
 
     await act(async () => {
@@ -227,7 +227,27 @@ describe("NoteEditor", () => {
     });
 
     const file = new File(["test"], "large.bin", { type: "application/octet-stream" });
-    await expect(capturedUploadFile!(file)).rejects.toThrow("File size exceeds 25MB limit");
+    await expect(capturedUploadFile!(file)).rejects.toThrow("File size exceeds 50MB limit");
+  });
+
+  it("shows inline upload error alert after a failed upload", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      json: () => Promise.resolve({ error: "File size exceeds 50MB limit" }),
+    });
+
+    await act(async () => {
+      render(<NoteEditor noteId="note-42" />);
+    });
+
+    const file = new File(["test"], "large.bin", { type: "application/octet-stream" });
+    await act(async () => {
+      await expect(capturedUploadFile!(file)).rejects.toThrow("File size exceeds 50MB limit");
+    });
+
+    const alert = screen.getByTestId("note-editor-upload-error");
+    expect(alert).toHaveTextContent("File size exceeds 50MB limit");
+    expect(alert).toHaveAttribute("role", "alert");
   });
 
   it("throws when direct upload to Supabase fails", async () => {
