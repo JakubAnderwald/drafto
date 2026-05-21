@@ -6,7 +6,13 @@ import { BlockNoteView } from "@blocknote/mantine";
 import type { Block } from "@blocknote/core";
 import "@blocknote/mantine/style.css";
 import { useTheme } from "@/hooks/use-theme";
-import { toAttachmentUrl, MAX_FILE_SIZE, BUCKET_NAME } from "@drafto/shared";
+import {
+  toAttachmentUrl,
+  MAX_FILE_SIZE,
+  BUCKET_NAME,
+  FILE_TOO_LARGE_MESSAGE,
+  FILE_EMPTY_MESSAGE,
+} from "@drafto/shared";
 import { useAttachmentUrlResolver } from "@/components/editor/use-attachment-url-resolver";
 import { createClient } from "@/lib/supabase/client";
 
@@ -24,10 +30,10 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
       setUploadError(null);
       try {
         if (file.size === 0) {
-          throw new Error("File is empty");
+          throw new Error(FILE_EMPTY_MESSAGE);
         }
         if (file.size > MAX_FILE_SIZE) {
-          throw new Error("File size exceeds 50MB limit");
+          throw new Error(FILE_TOO_LARGE_MESSAGE);
         }
 
         // Step 1: Request a signed upload URL from the server

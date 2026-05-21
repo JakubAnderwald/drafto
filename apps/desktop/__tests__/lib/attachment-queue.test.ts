@@ -18,6 +18,7 @@ jest.mock("react-native-fs", () => ({
 jest.mock("@drafto/shared", () => ({
   MAX_FILE_SIZE: 50 * 1024 * 1024,
   BUCKET_NAME: "attachments",
+  FILE_TOO_LARGE_MESSAGE: "File size exceeds 50MB limit",
 }));
 
 jest.mock("@/db", () => ({

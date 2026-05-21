@@ -294,6 +294,22 @@ describe("POST /api/notes/[id]/attachments/confirm", () => {
     expect(response.status).toBe(404);
   });
 
+  it("returns 413 when fileSize exceeds 50MB limit", async () => {
+    authenticateAs("user-1");
+    mockNoteExists();
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
+    const request = createConfirmRequest({
+      filePath: "user-1/note-1/huge.bin",
+      fileSize: 52428801,
+      mimeType: "application/octet-stream",
+    });
+    const response = await POST(request, { params });
+    expect(response.status).toBe(413);
+    const body = await response.json();
+    expect(body.error).toBe("File size exceeds 50MB limit");
+  });
+
   it("returns 403 when filePath does not match user/note", async () => {
     authenticateAs("user-1");
     mockNoteExists();

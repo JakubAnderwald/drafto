@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/nextjs";
+import { FILE_TOO_LARGE_MESSAGE, FILE_EMPTY_MESSAGE } from "@drafto/shared";
 
 Sentry.init({
   dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
@@ -12,7 +13,7 @@ Sentry.init({
   integrations: [Sentry.replayIntegration()],
   debug: process.env.NODE_ENV === "development",
   // Expected user-input validation, not bugs — keep these out of Sentry.
-  ignoreErrors: ["File size exceeds 50MB limit", "File is empty"],
+  ignoreErrors: [FILE_TOO_LARGE_MESSAGE, FILE_EMPTY_MESSAGE],
 });
 
 export const onRouterTransitionStart = Sentry.captureRouterTransitionStart;
