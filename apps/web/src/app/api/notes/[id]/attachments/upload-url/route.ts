@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedNoteOwner, errorResponse, successResponse } from "@/lib/api/utils";
 import { sanitizeAndBuildPath } from "@/lib/api/sanitize-filename";
-import { MAX_FILE_SIZE, BUCKET_NAME } from "@drafto/shared";
+import { MAX_FILE_SIZE, BUCKET_NAME, FILE_TOO_LARGE_MESSAGE } from "@drafto/shared";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -30,7 +30,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     return errorResponse("fileSize must be a positive number", 400);
   }
   if (fileSize > MAX_FILE_SIZE) {
-    return errorResponse("File size exceeds 25MB limit", 413);
+    return errorResponse(FILE_TOO_LARGE_MESSAGE, 413);
   }
   if (typeof mimeType !== "string" || mimeType.length === 0) {
     return errorResponse("mimeType is required", 400);

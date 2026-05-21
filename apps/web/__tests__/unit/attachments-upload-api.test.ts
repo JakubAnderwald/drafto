@@ -189,14 +189,14 @@ describe("POST /api/notes/[id]/attachments/upload-url", () => {
     expect(response.status).toBe(400);
   });
 
-  it("returns 413 when fileSize exceeds 25MB limit", async () => {
+  it("returns 413 when fileSize exceeds 50MB limit", async () => {
     authenticateAs("user-1");
     mockNoteExists();
 
     const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
     const request = createUploadUrlRequest({
       fileName: "large.bin",
-      fileSize: 26214401,
+      fileSize: 52428801,
       mimeType: "application/octet-stream",
     });
     const response = await POST(request, { params });
@@ -292,6 +292,22 @@ describe("POST /api/notes/[id]/attachments/confirm", () => {
     });
     const response = await POST(request, { params });
     expect(response.status).toBe(404);
+  });
+
+  it("returns 413 when fileSize exceeds 50MB limit", async () => {
+    authenticateAs("user-1");
+    mockNoteExists();
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
+    const request = createConfirmRequest({
+      filePath: "user-1/note-1/huge.bin",
+      fileSize: 52428801,
+      mimeType: "application/octet-stream",
+    });
+    const response = await POST(request, { params });
+    expect(response.status).toBe(413);
+    const body = await response.json();
+    expect(body.error).toBe("File size exceeds 50MB limit");
   });
 
   it("returns 403 when filePath does not match user/note", async () => {

@@ -1,7 +1,7 @@
 import RNFS from "react-native-fs";
 import { Q } from "@nozbe/watermelondb";
 
-import { MAX_FILE_SIZE, BUCKET_NAME } from "@drafto/shared";
+import { MAX_FILE_SIZE, BUCKET_NAME, FILE_TOO_LARGE_MESSAGE } from "@drafto/shared";
 
 import { database, Attachment } from "@/db";
 import { supabase } from "@/lib/supabase";
@@ -39,7 +39,7 @@ export async function queueAttachment(
   file: PickedFile,
 ): Promise<Attachment> {
   if (file.fileSize > MAX_FILE_SIZE) {
-    throw new Error("File size exceeds 25MB limit");
+    throw new Error(FILE_TOO_LARGE_MESSAGE);
   }
 
   const fileName = sanitizeFileName(file.fileName);
