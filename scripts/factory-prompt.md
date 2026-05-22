@@ -213,7 +213,7 @@ origin factory/issue-<n>`.
 8. **Emit the directive line.** Last line of your output (no trailing text),
    strict format:
 
-   ```
+   ```text
    issue=<n> action=<implemented|noop|blocked> pr=<url|->
    ```
 

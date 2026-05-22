@@ -200,7 +200,7 @@ Constraints:
 6. **Emit the directive line.** Last line of your output (no trailing text),
    strict format:
 
-   ```
+   ```text
    issue=<n> action=<planned|blocked|noop> plan-comment=<url|->
    ```
 
@@ -212,7 +212,7 @@ Constraints:
 
    Examples:
 
-   ```
+   ```text
    issue=412 action=planned plan-comment=https://github.com/JakubAnderwald/drafto/issues/412#issuecomment-9876543210
    issue=412 action=blocked plan-comment=https://github.com/JakubAnderwald/drafto/issues/412#issuecomment-9876543211
    issue=412 action=noop plan-comment=-
