@@ -34,7 +34,7 @@ The board has one custom Status field with eleven values:
 | Done        | human / support-agent | Final acceptance; issue closed.                                       |
 | Blocked     | factory               | Spec incomplete, retry budget exhausted, parity violation, hard gate. |
 
-Each Status maps 1:1 to a `status:*` label via `.github/workflows/factory-status-mirror.yml`. The factory agent reads labels, not Project v2 fields.
+The factory agent reads the Status field directly via the GitHub GraphQL API on each 5-min tick. It also writes a matching `status:*` label as a transition side-effect (for filtering on the Issues list); the labels are observability, not the agent's queue.
 
 ## Label glossary
 
@@ -42,15 +42,15 @@ The full set is created idempotently by `scripts/setup-factory-labels.sh`. Refer
 
 | Label                 | Set by               | Meaning                                                          |
 | --------------------- | -------------------- | ---------------------------------------------------------------- |
-| `status:ready`        | mirror workflow      | Spec accepted; factory may plan.                                 |
+| `status:ready`        | human (via board)    | Spec accepted; factory may plan.                                 |
 | `status:planning`     | factory              | Plan in progress.                                                |
 | `status:plan-review`  | factory              | Awaiting plan approval.                                          |
-| `status:in-progress`  | mirror / factory     | Implementation in progress.                                      |
+| `status:in-progress`  | human / factory      | Implementation in progress.                                      |
 | `status:in-review`    | factory              | PR open, CI / review comments active.                            |
 | `status:in-test`      | factory              | Vercel preview ready, awaiting ship approval.                    |
-| `status:approved`     | mirror / factory     | Approved for release; merge + dispatch authorised.               |
+| `status:approved`     | human / factory      | Approved for release; merge + dispatch authorised.               |
 | `status:released`     | factory              | Merged + beta dispatched.                                        |
-| `status:done`         | mirror / support     | Final acceptance.                                                |
+| `status:done`         | human / support      | Final acceptance.                                                |
 | `status:blocked`      | factory              | Hard stop — see comment on issue.                                |
 | `factory-pause`       | operator             | Global kill switch on this issue (factory ignores).              |
 | `migration-approved`  | operator             | Authorises factory to merge a PR with `supabase/migrations` SQL. |
@@ -70,7 +70,7 @@ Use the **Factory feature spec** template (`.github/ISSUE_TEMPLATE/factory-featu
 5. **UI?** — screenshot / Figma URL if applicable.
 6. **Out of scope** — explicit non-goals.
 
-After filing, drag the card to **Ready** on the board. The mirror workflow applies `status:ready` within seconds; the factory picks it up on its next 5-min tick.
+After filing, drag the card to **Ready** on the board. The factory picks it up on its next 5-min tick — it queries the board's Status field directly, then applies the `status:ready` label as a side-effect for filtering on the Issues list.
 
 ## Kill switches
 
@@ -82,9 +82,9 @@ After filing, drag the card to **Ready** on the board. The mirror workflow appli
 
 ### "I dragged a card but the factory didn't pick it up"
 
-1. Check the workflow ran: GitHub → Actions → "Factory Status Mirror". Look for a successful run within the last minute.
-2. If the workflow ran but the issue's labels didn't change: check the run's "Apply label" step output. Common causes: PAT expired (`FACTORY_PROJECT_TOKEN` secret), or the Status value isn't in the workflow's case statement (typo on a Status rename — update both `setup-factory-board.sh` and the workflow case).
-3. If the label IS correct but the factory doesn't act: check `logs/factory-*.log` on the Mac mini. The agent might be paused (`factory-pause` global flag), out of retry budget for that issue, or holding both worktree slots on other issues.
+1. The factory polls every 5 minutes; wait one tick. Confirm the launchd job is alive on the Mac mini: `launchctl list | grep eu.drafto.factory`. PID column `-` with exit `0` is normal between ticks; a non-zero exit means the last tick failed — check `logs/launchd-factory-stderr.log`.
+2. Check the agent saw the card on its latest tick: `logs/launchd-factory-stdout.log` (or `logs/factory-plan-*.log`) should mention the board fetch. A `factory-project find-project failed` warning means the `gh` token on the Mac mini is missing the `project` scope — run `gh auth refresh -s project`.
+3. If the tick ran and the card was in scope but ignored: check the issue for a `factory-pause` label, or `logs/factory-state.json` for a global `paused: true` flag, or the issue's retry budget under `issues[<n>].attempts`.
 
 ### "The plan comment looks wrong / Claude misread the issue"
 
@@ -115,5 +115,4 @@ Check `logs/support/support-agent-*.log` for the per-thread classification line.
 - [`docs/dark-factory-proposal.md`](../dark-factory-proposal.md) — original proposal (lifecycle table, household autopilot details, implementation waves).
 - [`scripts/setup-factory-labels.sh`](../../scripts/setup-factory-labels.sh) — label bootstrap.
 - [`scripts/setup-factory-board.sh`](../../scripts/setup-factory-board.sh) — Project v2 board bootstrap.
-- [`.github/workflows/factory-status-mirror.yml`](../../.github/workflows/factory-status-mirror.yml) — Status field → label mirror.
 - [`.github/ISSUE_TEMPLATE/factory-feature.yml`](../../.github/ISSUE_TEMPLATE/factory-feature.yml) — spec contract template.

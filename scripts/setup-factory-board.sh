@@ -47,8 +47,8 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 # Status options must match the labels created by setup-factory-labels.sh
-# AND the parser in .github/workflows/factory-status-mirror.yml. Keep all
-# three in sync.
+# AND the status-name → label mapping in scripts/lib/factory-project.mjs.
+# Keep all three in sync.
 STATUS_OPTIONS=(
   "Backlog"
   "Ready"
@@ -232,5 +232,5 @@ echo "Done."
 echo "Project URL: $PROJECT_URL"
 echo
 echo "Next steps:"
-echo "  1. Add to repo secrets:  FACTORY_PROJECT_TOKEN  (classic PAT, scopes: repo, project)."
-echo "  2. Smoke test: file an issue (use Factory feature spec template), add to project, drag to Ready, watch Actions for 'Factory Status Mirror'."
+echo "  1. On the Mac mini, ensure 'gh auth status' lists the 'project' scope (run 'gh auth refresh -s project' if not)."
+echo "  2. Install the factory launchd job per docs/operations/factory-runbook.md, then smoke-test by filing an issue (Factory feature spec template), dragging the card to Ready, and tailing logs/launchd-factory-stdout.log."

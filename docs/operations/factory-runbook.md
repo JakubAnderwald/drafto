@@ -31,46 +31,51 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
 
    Without this, issues filed in the repo don't auto-add to the board.
 
-4. **Create a PAT for the mirror workflow.**
+4. **Grant `gh` the `project` scope on the Mac mini.**
 
-   Use a **classic PAT** rather than a fine-grained one. Projects v2 access via fine-grained PATs is gated on an Account-tab "Projects" permission that is unreliably surfaced for personal accounts (search filters return "No items available"). Classic PATs cover Projects v2 out of the box.
-   - GitHub → Settings → Developer settings → Personal access tokens → **Tokens (classic)** → Generate new token (classic).
-   - Note: name it something like "drafto factory mirror".
-   - Scopes:
-     - `repo` (full) — covers issue label edits on `JakubAnderwald/drafto`.
-     - `project` — Projects v2 read.
-   - Expiration: 90 days (set a calendar reminder to rotate; rotation is in this runbook).
+   The agent reads and writes the Project v2 board directly via the GitHub GraphQL API — there is no Action mirror. Refresh the existing token on the Mac mini to add Projects v2 read+write:
 
-   Classic PATs are user-wide rather than repo-scoped, which is a slightly larger blast radius than fine-grained — for a single-user, single-repo project this is an acceptable tradeoff for "always works". If you'd rather use fine-grained, the equivalent is **Repositories → Issues: Read+Write, Metadata: Read-only** plus **Account → Projects: Read-only** — the Account permission only appears in the search if your account context exposes it.
+   ```bash
+   gh auth refresh -s project
+   ```
 
-5. **Add the PAT to repo secrets.**
-   - Repo → Settings → Secrets and variables → Actions → New repository secret.
-   - Name: `FACTORY_PROJECT_TOKEN`.
-   - Value: the PAT from step 4.
+   Verify with `gh auth status` — the listed scopes should include `project`. Without it the agent's first board read fails on every tick with a `factory-project find-project failed` warning.
 
-6. **Smoke test the mirror.**
-   - File any issue. Add it to the board. Drag the card to **Ready**.
-   - Within ~30 s, the issue should gain `status:ready`. Confirm via Actions tab → "Factory Status Mirror" → most recent run.
-   - If it doesn't, see "Mirror workflow failing" below.
+5. **Install the factory launchd job.**
 
-7. **Install the factory launchd job.** (Wave 4 — does not apply at Phase A until the agent code lands.)
+   On the Mac mini, drop a plist at `~/Library/LaunchAgents/eu.drafto.factory.plist` modelled on `eu.drafto.support-agent.plist` with:
+   - `Label = eu.drafto.factory`
+   - `ProgramArguments = [/bin/bash, /Users/jakub/code/drafto/scripts/factory-agent-loop.sh]`
+   - `StartInterval = 300` (5 min)
+   - `EnvironmentVariables.FACTORY_PHASE = A`
+   - Stdout/stderr paths under `logs/launchd-factory-*.log`
+
+   Then load and smoke-test:
+
+   ```bash
+   launchctl load -w ~/Library/LaunchAgents/eu.drafto.factory.plist
+   launchctl kickstart -k "gui/$(id -u)/eu.drafto.factory"
+   tail -f /Users/jakub/code/drafto/logs/launchd-factory-stdout.log
+   ```
+
+   The first tick should log `=== factory-agent --plan run started (phase=A …) ===` followed by `=== factory-agent --plan completed in <N>s ===`. Subsequent ticks fire every 5 min.
 
 ## Phase progression criteria
 
 | Promote from → to | Required signals before promotion                                                                                                                                                                                                                                                                                                                                                                   |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| (initial) → A     | Setup steps 1–6 above complete. `factory-status-mirror.yml` mirrors a manual board move within 30 s.                                                                                                                                                                                                                                                                                                |
+| (initial) → A     | Setup steps 1–5 above complete. `launchctl list \| grep eu.drafto.factory` shows the job registered, and a manual `launchctl kickstart` logs a clean `--plan` tick (board fetched, no `factory-failure` issue filed).                                                                                                                                                                               |
 | A → B             | ≥5 successful `--plan` runs (Ready → Planning → Plan Review with a usable plan comment). Zero `factory-failure` issues. Operator has read at least 3 plans and judges they were accurate enough to act on. `--implement` no-op confirmed: dragging Plan Review → In Progress in Phase A logs a "phase=A; implementation skipped" comment and leaves the card in In Progress without further action. |
 | B → C             | ≥5 successful end-to-end web-only runs (Ready → Plan Review → In Progress → In Review → In Test → Approved → Released → Done). Zero parity violations. SonarCloud quality gate green on all factory-authored PRs.                                                                                                                                                                                   |
 | C → D             | ≥5 successful runs that include mobile or desktop changes. Operator manually fired beta dispatches (TestFlight, Play internal) per Phase C — confirms the dispatch payloads work before the factory automates them.                                                                                                                                                                                 |
 | D → (steady)      | ≥10 successful Released cards in Phase D. Beta dispatch path validated for both iOS and Android. Mac TestFlight lane runs locally on the Mac mini per the existing release pattern.                                                                                                                                                                                                                 |
 
-Promote by editing the launchd plist's `--phase` argument and reloading:
+Promote by editing the `FACTORY_PHASE` env var in the launchd plist and reloading:
 
 ```bash
 launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist
-# edit plist, change --phase A → --phase B (or B → C, etc.)
-launchctl load ~/Library/LaunchAgents/eu.drafto.factory.plist
+# edit plist: EnvironmentVariables → FACTORY_PHASE: A → B (or B → C, etc.)
+launchctl load -w ~/Library/LaunchAgents/eu.drafto.factory.plist
 ```
 
 There is no "auto-promote". The phase change is always a deliberate operator action so a regression at one phase can't silently unlock the next.
@@ -113,19 +118,6 @@ The factory's `cleanup()` trap files a `factory-failure`-labelled GitHub issue w
 4. **Close the failure issue** once resolved. The trap doesn't auto-close; that's intentional so the issue is visible until acknowledged.
 
 If the same failure mode files >3 issues in 24h, pause the factory globally (`factory:pause`) and open a regular bug to fix the root cause.
-
-## PAT rotation
-
-The `FACTORY_PROJECT_TOKEN` PAT expires every 90 days (per setup step 4). When it expires, the mirror workflow fails — board moves stop translating to labels and the factory queue silently empties.
-
-To rotate:
-
-1. Generate a new classic PAT with the same scopes as setup step 4 (`repo`, `project`).
-2. Update the `FACTORY_PROJECT_TOKEN` secret value in repo settings.
-3. Smoke-test by dragging a Backlog card to Ready and back; the workflow should run twice and the labels should toggle.
-4. Set a new 90-day calendar reminder.
-
-The launchd plist on the Mac mini does **not** use this PAT — `gh` on the Mac mini authenticates separately via `gh auth login`. Don't confuse the two.
 
 ## Coexistence with `nightly-support.sh` Phase 3
 
