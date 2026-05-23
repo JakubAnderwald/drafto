@@ -58,10 +58,9 @@ function rowToItem(row: string[], columnIndex: Map<string, number>): TickTickIte
 
   const isCheckList =
     parseBoolean(get("Is Check list")) || get("Kind").toUpperCase() === "CHECKLIST";
-  const createdRaw = get("Created Time");
-  const updatedRaw = get("Modified Time") || createdRaw;
-  const created = parseTickTickDate(createdRaw);
-  const updated = parseTickTickDate(updatedRaw) || created;
+  const created = parseTickTickDate(get("Created Time"));
+  const modifiedRaw = get("Modified Time");
+  const updated = modifiedRaw ? parseTickTickDate(modifiedRaw) : created;
 
   return {
     folderName: get("Folder Name"),

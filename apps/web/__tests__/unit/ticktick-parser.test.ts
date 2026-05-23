@@ -118,7 +118,7 @@ describe("parseTickTickCsv", () => {
 
     const groups = parseTickTickCsv(csv);
 
-    expect(() => new Date(groups[0].items[0].created)).not.toThrow();
+    expect(Number.isNaN(Date.parse(groups[0].items[0].created))).toBe(false);
   });
 
   it("skips metadata preamble lines before the header", () => {
