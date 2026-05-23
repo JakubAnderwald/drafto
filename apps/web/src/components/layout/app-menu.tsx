@@ -13,6 +13,7 @@ import { ThemeToggle } from "@/components/ui/theme-toggle";
 
 interface AppMenuProps {
   onImportEvernote: () => void;
+  onImportTickTick: () => void;
   isAdmin?: boolean;
 }
 
@@ -35,7 +36,7 @@ function EllipsisIcon() {
   );
 }
 
-export function AppMenu({ onImportEvernote, isAdmin = false }: AppMenuProps) {
+export function AppMenu({ onImportEvernote, onImportTickTick, isAdmin = false }: AppMenuProps) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
@@ -74,6 +75,15 @@ export function AppMenu({ onImportEvernote, isAdmin = false }: AppMenuProps) {
           data-testid="import-evernote-button"
         >
           Import from Evernote
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => {
+            setOpen(false);
+            onImportTickTick();
+          }}
+          data-testid="import-ticktick-button"
+        >
+          Import from TickTick
         </DropdownMenuItem>
         <DropdownMenuItem
           onClick={() => {

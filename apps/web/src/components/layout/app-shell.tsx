@@ -10,6 +10,7 @@ import { IconButton } from "@/components/ui/icon-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AppMenu } from "@/components/layout/app-menu";
 import { ImportEvernoteDialog } from "@/components/import/import-evernote-dialog";
+import { ImportTickTickDialog } from "@/components/import/import-ticktick-dialog";
 import { SearchOverlay } from "@/components/search/search-overlay";
 import { usePaneCollapse } from "@/hooks/use-pane-collapse";
 
@@ -212,6 +213,7 @@ export function AppShell({
   const [viewingTrash, setViewingTrash] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
+  const [showTickTickImportDialog, setShowTickTickImportDialog] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const { notebooksCollapsed, notesCollapsed, togglePane } = usePaneCollapse();
   const [lastNoteUpdate, setLastNoteUpdate] = useState<{
@@ -464,7 +466,11 @@ export function AppShell({
           initialNotebooks={initialNotebooks}
         />
         <div className="flex items-center justify-end p-2">
-          <AppMenu onImportEvernote={() => setShowImportDialog(true)} isAdmin={isAdmin} />
+          <AppMenu
+            onImportEvernote={() => setShowImportDialog(true)}
+            onImportTickTick={() => setShowTickTickImportDialog(true)}
+            isAdmin={isAdmin}
+          />
         </div>
       </aside>
 
@@ -609,6 +615,19 @@ export function AppShell({
           onClose={() => setShowImportDialog(false)}
           onComplete={(notebookId) => {
             setShowImportDialog(false);
+            setRefreshTrigger((prev) => prev + 1);
+            setSelectedNotebookId(notebookId);
+            setSelectedNoteId(null);
+            setViewingTrash(false);
+          }}
+        />
+      )}
+
+      {showTickTickImportDialog && (
+        <ImportTickTickDialog
+          onClose={() => setShowTickTickImportDialog(false)}
+          onComplete={(notebookId) => {
+            setShowTickTickImportDialog(false);
             setRefreshTrigger((prev) => prev + 1);
             setSelectedNotebookId(notebookId);
             setSelectedNoteId(null);
