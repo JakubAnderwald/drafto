@@ -1,6 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // Regression test for issue #414. The `--implement` block in
 // scripts/factory-agent.sh used `for IDX in $(seq 0 $((INPROG_COUNT - 1)))`
@@ -10,6 +13,8 @@ import { spawnSync } from "node:child_process";
 // "null". This locks in the C-style for-loop form that handles count=0
 // correctly across platforms.
 
+const scriptPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "factory-agent.sh");
+
 function runBash(snippet) {
   const result = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
   assert.equal(result.status, 0, `bash exited non-zero: ${result.stderr}`);
@@ -17,6 +22,33 @@ function runBash(snippet) {
 }
 
 describe("factory-agent --implement loop construct", () => {
+  it("factory-agent.sh uses C-style loops and guards the zero-count case", () => {
+    const script = readFileSync(scriptPath, "utf8");
+    // --implement: C-style loop + early-return guard for empty In Progress
+    assert.match(
+      script,
+      /for\s*\(\(IDX=0;\s*IDX<INPROG_COUNT;\s*IDX\+\+\)\)/,
+      "expected C-style for-loop over INPROG_COUNT",
+    );
+    assert.match(
+      script,
+      /if\s+\[\[\s*"\$INPROG_COUNT"\s+-eq\s+0\s*\]\]/,
+      "expected zero-count guard before the --implement loop",
+    );
+    // --plan: same C-style form (sibling loop fixed in the same change)
+    assert.match(
+      script,
+      /for\s*\(\(IDX=0;\s*IDX<READY_COUNT;\s*IDX\+\+\)\)/,
+      "expected C-style for-loop over READY_COUNT",
+    );
+    // The BSD-seq form that caused #414 must not reappear.
+    assert.doesNotMatch(
+      script,
+      /for\s+IDX\s+in\s+\$\(seq\s+0\s+\$\(\((INPROG|READY)_COUNT\s*-\s*1\)\)\)/,
+      "seq-based loop form must not be reintroduced",
+    );
+  });
+
   it("C-style for-loop does not iterate when count is 0", () => {
     const lines = runBash('COUNT=0; for ((IDX=0; IDX<COUNT; IDX++)); do echo "$IDX"; done');
     assert.deepEqual(lines, [], "loop must not run when COUNT=0");
