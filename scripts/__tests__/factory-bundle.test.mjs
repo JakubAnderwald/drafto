@@ -199,6 +199,60 @@ describe("buildFactoryPlanBundle", () => {
     assert.equal(bundle.comments.length, 1);
     assert.equal(bundle.nowIso, "2026-05-21T08:00:00.000Z");
   });
+
+  it("omits the replan key when no replan input is provided", () => {
+    const bundle = buildFactoryPlanBundle({
+      issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "A" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    assert.ok(!("replan" in bundle), "first-plan bundle should not carry a replan key");
+  });
+
+  it("includes the replan key when planCommentId is supplied", () => {
+    const bundle = buildFactoryPlanBundle({
+      issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "A" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+      replan: {
+        planCommentId: "111",
+        planCommentUrl: "https://github.com/x/y/issues/1#issuecomment-111",
+        planCommentBody: "## Plan\n\nbody text",
+        triggerCommentIds: ["222", "333"],
+      },
+    });
+    assert.equal(bundle.replan.planCommentId, "111");
+    assert.deepEqual(bundle.replan.triggerCommentIds, ["222", "333"]);
+    // The prior plan body is envelope-wrapped to neutralise embedded
+    // instructions, same defence as the issue/comment envelopes.
+    assert.match(bundle.replan.planCommentBodyEnveloped, /^<prior-plan>/);
+    assert.match(bundle.replan.planCommentBodyEnveloped, /<\/prior-plan>$/);
+    assert.match(bundle.replan.planCommentBodyEnveloped, /body text/);
+  });
+
+  it("treats a replan input with missing planCommentId as no-replan", () => {
+    const bundle = buildFactoryPlanBundle({
+      issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "A" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+      replan: { triggerCommentIds: ["222"] },
+    });
+    assert.ok(!("replan" in bundle));
+  });
+
+  it("filters falsy entries out of triggerCommentIds", () => {
+    const bundle = buildFactoryPlanBundle({
+      issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "A" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+      replan: {
+        planCommentId: "111",
+        planCommentBody: "x",
+        triggerCommentIds: ["222", null, "", undefined, "333"],
+      },
+    });
+    assert.deepEqual(bundle.replan.triggerCommentIds, ["222", "333"]);
+  });
 });
 
 describe("buildFactoryImplementBundle", () => {
@@ -275,6 +329,24 @@ describe("factory-bundle CLI", () => {
     const bundle = JSON.parse(r.stdout);
     assert.equal(bundle.kind, "factory_plan");
     assert.equal(bundle.issue.number, 42);
+  });
+
+  it("forwards the replan field on a factory_plan run", () => {
+    const r = run({
+      kind: "factory_plan",
+      issue: { number: 42, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "A" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+      replan: {
+        planCommentId: "999",
+        planCommentBody: "prior plan",
+        triggerCommentIds: ["888"],
+      },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const bundle = JSON.parse(r.stdout);
+    assert.equal(bundle.replan.planCommentId, "999");
+    assert.deepEqual(bundle.replan.triggerCommentIds, ["888"]);
   });
 
   it("emits a factory_implement bundle", () => {
