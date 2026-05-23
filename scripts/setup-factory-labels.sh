@@ -9,7 +9,7 @@
 #
 # These labels back the dark-factory state machine documented in
 # docs/features/dark-factory.md and ADR-0026. The status:* set mirrors the
-# Project v2 Status field (see .github/workflows/factory-status-mirror.yml);
+# Project v2 Status field (the agent writes them as transition side-effects);
 # parity:* and migration-approved are operator gates; factory-pause and
 # factory-failure are kill-switch / failure-trap signals.
 
