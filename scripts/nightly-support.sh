@@ -240,9 +240,11 @@ for IDX in $(seq 0 $((SUPPORT_COUNT - 1))); do
       # has commas at both ends so the pattern `*,<email>,*` matches at any
       # position. state-cli stores reporterEmail already lower-cased; we lower
       # the allowlist here too so user-edited support-env.sh casing doesn't
-      # leak through.
-      SUPPORT_ALLOWLIST_LC="${SUPPORT_ALLOWLIST,,}"
-      REPORTER_EMAIL_LC="${REPORTER_EMAIL,,}"
+      # leak through. Use `tr` (POSIX) instead of `${VAR,,}` (bash 4+) so the
+      # script keeps working under macOS's stock /bin/bash 3.2 — launchd
+      # invokes that interpreter on the Mac mini.
+      SUPPORT_ALLOWLIST_LC=$(printf '%s' "$SUPPORT_ALLOWLIST" | tr '[:upper:]' '[:lower:]')
+      REPORTER_EMAIL_LC=$(printf '%s' "$REPORTER_EMAIL" | tr '[:upper:]' '[:lower:]')
       if [[ ",${SUPPORT_ALLOWLIST_LC}," != *",${REPORTER_EMAIL_LC},"* ]]; then
         GATE_REASON="not-allowlisted"
       fi
