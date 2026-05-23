@@ -19,13 +19,16 @@ vi.mock("@/lib/supabase/client", () => ({
 
 describe("AppMenu", () => {
   const mockOnImportEvernote = vi.fn();
+  const mockOnImportTickTick = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it("renders the menu trigger and theme toggle", () => {
-    render(<AppMenu onImportEvernote={mockOnImportEvernote} />);
+    render(
+      <AppMenu onImportEvernote={mockOnImportEvernote} onImportTickTick={mockOnImportTickTick} />,
+    );
 
     expect(screen.getByTestId("app-menu-trigger")).toBeInTheDocument();
     expect(screen.getByTestId("theme-toggle")).toBeInTheDocument();
@@ -33,7 +36,9 @@ describe("AppMenu", () => {
 
   it("opens dropdown when trigger is clicked", async () => {
     const user = userEvent.setup();
-    render(<AppMenu onImportEvernote={mockOnImportEvernote} />);
+    render(
+      <AppMenu onImportEvernote={mockOnImportEvernote} onImportTickTick={mockOnImportTickTick} />,
+    );
 
     await user.click(screen.getByTestId("app-menu-trigger"));
 
@@ -43,7 +48,9 @@ describe("AppMenu", () => {
 
   it("calls onImportEvernote when import button is clicked", async () => {
     const user = userEvent.setup();
-    render(<AppMenu onImportEvernote={mockOnImportEvernote} />);
+    render(
+      <AppMenu onImportEvernote={mockOnImportEvernote} onImportTickTick={mockOnImportTickTick} />,
+    );
 
     await user.click(screen.getByTestId("app-menu-trigger"));
     await user.click(screen.getByTestId("import-evernote-button"));
@@ -51,16 +58,36 @@ describe("AppMenu", () => {
     expect(mockOnImportEvernote).toHaveBeenCalled();
   });
 
+  it("calls onImportTickTick when TickTick import button is clicked", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppMenu onImportEvernote={mockOnImportEvernote} onImportTickTick={mockOnImportTickTick} />,
+    );
+
+    await user.click(screen.getByTestId("app-menu-trigger"));
+    await user.click(screen.getByTestId("import-ticktick-button"));
+
+    expect(mockOnImportTickTick).toHaveBeenCalled();
+  });
+
   it("does not render Admin link when isAdmin is false", async () => {
     const user = userEvent.setup();
-    render(<AppMenu onImportEvernote={mockOnImportEvernote} />);
+    render(
+      <AppMenu onImportEvernote={mockOnImportEvernote} onImportTickTick={mockOnImportTickTick} />,
+    );
     await user.click(screen.getByTestId("app-menu-trigger"));
     expect(screen.queryByTestId("admin-button")).not.toBeInTheDocument();
   });
 
   it("renders Admin link and navigates when isAdmin is true", async () => {
     const user = userEvent.setup();
-    render(<AppMenu onImportEvernote={mockOnImportEvernote} isAdmin />);
+    render(
+      <AppMenu
+        onImportEvernote={mockOnImportEvernote}
+        onImportTickTick={mockOnImportTickTick}
+        isAdmin
+      />,
+    );
     await user.click(screen.getByTestId("app-menu-trigger"));
 
     const adminButton = screen.getByTestId("admin-button");
@@ -80,7 +107,9 @@ describe("AppMenu", () => {
       writable: true,
     });
 
-    render(<AppMenu onImportEvernote={mockOnImportEvernote} />);
+    render(
+      <AppMenu onImportEvernote={mockOnImportEvernote} onImportTickTick={mockOnImportTickTick} />,
+    );
 
     await user.click(screen.getByTestId("app-menu-trigger"));
     await user.click(screen.getByTestId("logout-button"));
