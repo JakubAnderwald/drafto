@@ -25,8 +25,15 @@
 //     "issue":    { "number", "title", "body", "state", "labels": ["status:ready", ...] },
 //     "comments": [ { "id", "user":{"login"}, "body", "createdAt" }, ... ],
 //     "config":   { "phase": "A"|"B"|"C"|"D", "allowlist"?, "oauthUserEmail"? },
-//     "repo":     { "nameWithOwner", "headRef" }
+//     "repo":     { "nameWithOwner", "headRef" },
+//     "replan"?:  { "planCommentId", "planCommentUrl", "planCommentBody",
+//                   "triggerCommentIds": [<id>, ...] }
 //   }
+//
+// `replan` is set only when the bash side detected unacked OWNER comments
+// newer than the plan marker on a `status:plan-review` card. When present,
+// the planner edits the existing plan comment in place instead of posting a
+// new one. When absent, the bundle is identical to a first-plan run.
 //
 // Stdin shape (factory_implement):
 //   {
@@ -225,11 +232,46 @@ function shapeRepo(repo) {
   };
 }
 
-export function buildFactoryPlanBundle({ issue, comments = [], config, repo, nowIso } = {}) {
+// Marker the prompt appends to the (edited) plan comment body to record
+// which OWNER comment IDs have already been incorporated into the plan. The
+// bash detector treats a Plan Review card as "needs replan" only if there
+// is at least one OWNER comment newer than the plan whose ID is NOT yet
+// present as an ack marker — stops the factory from looping on the same
+// trigger comment after a successful replan.
+export const FACTORY_REPLAN_ACK_PREFIX = "<!-- drafto-factory-replan-ack:";
+
+function shapeReplan(replan) {
+  if (!replan || typeof replan !== "object") return null;
+  const planCommentId = replan.planCommentId ?? replan.commentId ?? null;
+  if (planCommentId === null || planCommentId === undefined || planCommentId === "") {
+    return null;
+  }
+  const triggerIds = Array.isArray(replan.triggerCommentIds)
+    ? replan.triggerCommentIds.filter((id) => id !== null && id !== undefined && id !== "")
+    : [];
+  return {
+    planCommentId,
+    planCommentUrl: replan.planCommentUrl ?? "",
+    // The plan body is enveloped so any injected instructions inside the
+    // prior plan (e.g. an operator-supplied snippet that quotes a fake plan
+    // directive) can't escape into the model's instruction stream.
+    planCommentBodyEnveloped: envelopeBody(replan.planCommentBody ?? "", "prior-plan"),
+    triggerCommentIds: triggerIds,
+  };
+}
+
+export function buildFactoryPlanBundle({
+  issue,
+  comments = [],
+  config,
+  repo,
+  nowIso,
+  replan,
+} = {}) {
   if (!issue || !Number.isInteger(issue.number)) {
     throw new Error("buildFactoryPlanBundle: issue.number is required");
   }
-  return {
+  const bundle = {
     kind: "factory_plan",
     issue: shapeIssue(issue),
     spec: parseSpec(issue.body ?? ""),
@@ -240,6 +282,9 @@ export function buildFactoryPlanBundle({ issue, comments = [], config, repo, now
     repo: shapeRepo(repo),
     nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
   };
+  const replanShape = shapeReplan(replan);
+  if (replanShape) bundle.replan = replanShape;
+  return bundle;
 }
 
 export function buildFactoryImplementBundle({
@@ -314,6 +359,7 @@ async function main() {
       config: input.config,
       repo: input.repo,
       nowIso: input.nowIso,
+      replan: input.replan,
     });
   } else if (input.kind === "factory_implement") {
     bundle = buildFactoryImplementBundle({

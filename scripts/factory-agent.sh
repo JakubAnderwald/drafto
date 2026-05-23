@@ -381,14 +381,20 @@ spec_missing_section() {
 
 # Build the per-issue context bundle by piping a JSON envelope into
 # factory-bundle.mjs (mirrors how support-agent.sh uses build-bundle.mjs).
+#
+# When $3 is a non-empty JSON object, it's forwarded as the `replan` field —
+# factory-bundle.mjs envelopes the prior plan body and drops it through to
+# the planner so it can edit-in-place instead of posting a new comment.
 build_plan_bundle() {
   local issue_entry="$1"
   local comments_json="$2"
+  local replan_json="${3:-null}"
   local repo_head_ref
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   jq -n \
     --argjson issue "$issue_entry" \
     --argjson comments "$comments_json" \
+    --argjson replan "$replan_json" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
     --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
     --arg phase "$PHASE" \
@@ -404,7 +410,8 @@ build_plan_bundle() {
          oauthUserEmail: $oauthUserEmail
        },
        repo: { nameWithOwner: $repoNwo, headRef: $headRef }
-     }' \
+     }
+     + (if $replan == null then {} else { replan: $replan } end)' \
     | node "$SCRIPT_DIR/lib/factory-bundle.mjs"
 }
 
@@ -426,6 +433,10 @@ fetch_issue_record() {
 }
 
 # Fetch issue comments via the API (gh issue view truncates to 100).
+# `authorAssociation` is required by the replan detector — only OWNER comments
+# newer than the plan marker count as a revision trigger. Without it, a
+# customer reply forwarded by the support agent would still be OWNER (the
+# Mac mini's gh identity), so we cannot use the login alone.
 fetch_issue_comments() {
   local issue_num="$1"
   gh api --paginate "repos/JakubAnderwald/drafto/issues/$issue_num/comments" 2>>"$LOG_FILE" \
@@ -433,7 +444,8 @@ fetch_issue_comments() {
         id: .id,
         user: { login: .user.login },
         body: (.body // ""),
-        createdAt: .created_at
+        createdAt: .created_at,
+        authorAssociation: (.author_association // "NONE")
       } ]'
 }
 
@@ -449,6 +461,64 @@ issue_already_planned() {
     return 0
   fi
   return 1
+}
+
+# Extract the (most recent) factory-plan comment as a JSON object with id,
+# url-suffix, body, and createdAt. Prints "null" if no plan comment exists.
+# Newest-first match — if the operator manually re-posted a plan, we edit the
+# most recent one.
+extract_plan_comment() {
+  local comments_json="$1"
+  echo "$comments_json" | jq -c '
+    map(select(.body | test("<!-- drafto-factory-plan -->")))
+    | sort_by(.createdAt)
+    | .[-1] // null
+  '
+}
+
+# Pull out the comment IDs that the planner has already acknowledged via
+# `<!-- drafto-factory-replan-ack:<id> -->` markers inside the plan body. The
+# detector skips any OWNER comment whose ID is in this set, so a successful
+# replan doesn't re-trigger on the same comment next tick.
+extract_acked_comment_ids() {
+  local plan_body="$1"
+  # Use python via node to avoid bash regex traps with large IDs / weird
+  # whitespace. The IDs are numeric GitHub comment ids (int64), which jq
+  # would round when crossing 2^53 — we want them as strings.
+  echo "$plan_body" | node -e '
+    let buf = "";
+    process.stdin.on("data", (d) => { buf += d; });
+    process.stdin.on("end", () => {
+      const re = /<!--\s*drafto-factory-replan-ack:([^\s>]+)\s*-->/g;
+      const ids = [];
+      let m;
+      while ((m = re.exec(buf)) !== null) ids.push(m[1]);
+      process.stdout.write(JSON.stringify(ids));
+    });
+  '
+}
+
+# Compute the list of OWNER-association comment IDs that are NEWER than the
+# plan comment AND not present in the acked-ids set. The result is a JSON
+# array of stringified comment IDs (kept as strings to dodge int64 rounding).
+# Bots and non-owner commenters are ignored — a customer reply forwarded by
+# support-agent step 4.5 IS posted under the Mac mini's gh identity (OWNER),
+# so the email-replan path still works without a separate check.
+unacked_owner_comments() {
+  local comments_json="$1"
+  local plan_created_at="$2"
+  local acked_json="$3"
+  echo "$comments_json" | jq -c \
+    --arg planAt "$plan_created_at" \
+    --argjson acked "$acked_json" \
+    '
+      map(select(
+        (.authorAssociation == "OWNER")
+        and ((.createdAt) > $planAt)
+        and (((.id | tostring)) as $id | ($acked | index($id)) | not)
+      ))
+      | map(.id | tostring)
+    '
 }
 
 # Has the issue already received the Phase A implement-stub comment? Used so
@@ -648,6 +718,186 @@ and drag the card back to **Ready** to retry.
         ;;
       *)
         log "WARNING: unrecognised action '$ACTION' from claude for #$ISSUE_NUM --plan"
+        ;;
+    esac
+  done
+
+  # ── Plan Review sweep: in-place replan on new OWNER comments ──────────────
+  # The Ready sweep handled first-time planning. Now scan Plan Review cards
+  # for operator feedback. Any new comment from an OWNER (which includes
+  # email replies forwarded by support-agent step 4.5 — those land via the
+  # Mac mini's gh identity, also OWNER) triggers a re-invocation that edits
+  # the existing plan comment in place. Acked comment IDs are stamped into
+  # the plan body so a successful replan doesn't loop.
+  if ! REVIEW_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
+      --status "Plan Review" 2>>"$LOG_FILE"); then
+    log "WARNING: query-status-items 'Plan Review' failed (transient?); skipping replan sweep this tick"
+    log "=== factory-agent --plan completed in $(( $(date +%s) - START_TIME ))s ==="
+    exit 0
+  fi
+  REVIEW_COUNT=$(echo "$REVIEW_JSON" | jq 'length' 2>/dev/null || echo "0")
+  if ! [[ "$REVIEW_COUNT" =~ ^[0-9]+$ ]]; then
+    log "ERROR: unexpected non-numeric REVIEW_COUNT='$REVIEW_COUNT'"
+    exit 1
+  fi
+  log "--plan replan sweep: $REVIEW_COUNT Plan Review item(s) on the board"
+
+  for ((IDX=0; IDX<REVIEW_COUNT; IDX++)); do
+    ITEM=$(echo "$REVIEW_JSON" | jq ".[${IDX}]")
+    ITEM_ID=$(echo "$ITEM" | jq -r '.itemId')
+    ISSUE_NUM=$(echo "$ITEM" | jq -r '.issueNumber')
+    ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
+
+    if [[ ",$ITEM_LABELS," == *",factory-pause,"* ]]; then
+      continue
+    fi
+
+    if ! ISSUE_RECORD=$(fetch_issue_record "$ISSUE_NUM"); then
+      log "WARNING: fetch_issue_record failed for #$ISSUE_NUM (replan sweep); skipping"
+      continue
+    fi
+    if ! COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM"); then
+      log "WARNING: fetch_issue_comments failed for #$ISSUE_NUM (replan sweep); skipping"
+      continue
+    fi
+
+    PLAN_COMMENT_JSON=$(extract_plan_comment "$COMMENTS_JSON")
+    if [[ -z "$PLAN_COMMENT_JSON" || "$PLAN_COMMENT_JSON" == "null" ]]; then
+      # Card sits in Plan Review with no plan comment — likely operator-driven
+      # state (e.g. moved manually without ever running --plan). Skip; the
+      # Ready sweep is the right place to (re-)plan from scratch.
+      continue
+    fi
+    PLAN_COMMENT_ID=$(echo "$PLAN_COMMENT_JSON" | jq -r '.id | tostring')
+    PLAN_CREATED_AT=$(echo "$PLAN_COMMENT_JSON" | jq -r '.createdAt')
+    PLAN_BODY=$(echo "$PLAN_COMMENT_JSON" | jq -r '.body')
+
+    ACKED_JSON=$(extract_acked_comment_ids "$PLAN_BODY")
+    if [[ -z "$ACKED_JSON" ]]; then ACKED_JSON='[]'; fi
+    UNACKED_JSON=$(unacked_owner_comments "$COMMENTS_JSON" "$PLAN_CREATED_AT" "$ACKED_JSON")
+    UNACKED_COUNT=$(echo "$UNACKED_JSON" | jq 'length' 2>/dev/null || echo "0")
+    if [[ "$UNACKED_COUNT" -eq 0 ]]; then
+      continue
+    fi
+
+    log "Issue #$ISSUE_NUM: $UNACKED_COUNT unacked OWNER comment(s) → replanning in place"
+
+    REPLAN_JSON=$(jq -n \
+      --arg id "$PLAN_COMMENT_ID" \
+      --arg issueNum "$ISSUE_NUM" \
+      --arg body "$PLAN_BODY" \
+      --argjson triggers "$UNACKED_JSON" \
+      '{
+         planCommentId: $id,
+         planCommentUrl: ("https://github.com/JakubAnderwald/drafto/issues/" + $issueNum + "#issuecomment-" + $id),
+         planCommentBody: $body,
+         triggerCommentIds: $triggers
+       }')
+
+    if ! BUNDLE=$(build_plan_bundle "$ISSUE_RECORD" "$COMMENTS_JSON" "$REPLAN_JSON"); then
+      log "ERROR: build_plan_bundle (replan) failed for #$ISSUE_NUM"
+      continue
+    fi
+
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "DRY-RUN: replan bundle for #$ISSUE_NUM (printed to stdout only; not logged)"
+      echo "$BUNDLE"
+      continue
+    fi
+
+    # Transition to Planning so an observer can see in-flight work, just like
+    # the Ready path. If it fails we still try — claude can edit the comment
+    # without a status hop, but the board state would be confusing without it.
+    if ! transition_status "$ITEM_ID" "$ISSUE_NUM" "Planning"; then
+      log "WARNING: failed to transition #$ISSUE_NUM Plan Review → Planning for replan; continuing anyway"
+    fi
+
+    CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
+      "$PROMPT_TEXT" "$BUNDLE")
+    log "Invoking claude for #$ISSUE_NUM (--plan replan, phase=$PHASE)"
+    CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
+    EXIT_CODE=0
+    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
+        >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
+
+    if [[ $EXIT_CODE -eq 124 ]]; then
+      log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC}s) for #$ISSUE_NUM --plan replan — skipping; next tick retries"
+      rm -f "$CLAUDE_OUTPUT_FILE"
+      # Restore Plan Review status so the operator's card doesn't appear stuck
+      # in Planning forever.
+      transition_status "$ITEM_ID" "$ISSUE_NUM" "Plan Review" || true
+      continue
+    elif [[ $EXIT_CODE -ne 0 ]]; then
+      log "ERROR: claude exited non-zero ($EXIT_CODE) for #$ISSUE_NUM --plan replan"
+      cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
+      rm -f "$CLAUDE_OUTPUT_FILE"
+      transition_status "$ITEM_ID" "$ISSUE_NUM" "Plan Review" || true
+      ATTEMPTS=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
+        --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.attempts // 0' || echo "0")
+      if [[ "$ATTEMPTS" -ge 5 ]]; then
+        log "Issue #$ISSUE_NUM: replan retry budget exhausted ($ATTEMPTS attempts); advancing to Blocked"
+        gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+          --body "🏭 **Replan retry budget exhausted ($ATTEMPTS attempts).**
+
+The factory tried to revise the plan $ATTEMPTS times and each invocation \
+of claude failed. Investigate via \`logs/factory/factory-agent-plan-*.log\` \
+on the Mac mini, then run \`node scripts/lib/state-cli.mjs factory:reset-attempts $ISSUE_NUM\` \
+and drag the card back to **Plan Review** (or **Ready** for a full restart).
+
+<!-- drafto-factory-retry-exhausted -->" >>"$LOG_FILE" 2>&1 || true
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+      fi
+      continue
+    fi
+
+    cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE"
+    SUMMARY_LINE=$(grep -E '^issue=[0-9]+ action=[a-z]+ plan-comment=[^ ]+$' "$CLAUDE_OUTPUT_FILE" | tail -1 || true)
+    rm -f "$CLAUDE_OUTPUT_FILE"
+    if [[ -z "$SUMMARY_LINE" ]]; then
+      log "WARNING: no well-formed summary line returned by claude for #$ISSUE_NUM --plan replan"
+      transition_status "$ITEM_ID" "$ISSUE_NUM" "Plan Review" || true
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
+        --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      continue
+    fi
+    log "Claude summary (replan): $SUMMARY_LINE"
+    ACTION=$(echo "$SUMMARY_LINE" | sed -E 's/.*action=([^ ]+).*/\1/')
+
+    case "$ACTION" in
+      replanned)
+        # Claude edited the existing comment in place and appended ack markers.
+        # Card returns to Plan Review for the operator to look again.
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Plan Review" || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field \
+          "$ISSUE_NUM" lastReplanAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" \
+          --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        ;;
+      blocked)
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field \
+          "$ISSUE_NUM" lastError "replanner returned blocked" \
+          --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        ;;
+      noop)
+        # Claude decided no plan change was warranted (e.g. the operator's
+        # comment was a thank-you). The prompt contract still required Claude
+        # to PATCH the plan comment with the ack markers appended, so the
+        # next tick will not re-trigger on the same comments. If Claude
+        # skipped the PATCH we'd loop — surface that loudly.
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Plan Review" || true
+        ;;
+      planned)
+        # Tolerated: a planner that posted a fresh comment instead of editing.
+        # Treat like first-plan completion.
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Plan Review" || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" \
+          --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        ;;
+      *)
+        log "WARNING: unrecognised replan action '$ACTION' for #$ISSUE_NUM"
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Plan Review" || true
         ;;
     esac
   done

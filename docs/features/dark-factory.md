@@ -88,7 +88,12 @@ After filing, drag the card to **Ready** on the board. The factory picks it up o
 
 ### "The plan comment looks wrong / Claude misread the issue"
 
-This is exactly what the Plan Review gate catches. Don't drag to In Progress. Instead, comment on the issue with the correction (or have the allowlisted reporter reply with rejection in email — the factory will re-plan on its next cycle). If you want the factory to forget and start over, drag the card back to **Ready** and the next tick will replan.
+This is exactly what the Plan Review gate catches. Don't drag to In Progress. Two paths:
+
+- **Tweak (preferred).** Comment on the issue with your correction — keep the rest of the plan intact. On the next 5-min tick the factory re-invokes the planner with your comment in the bundle and **edits the existing plan comment in place** (GitHub shows the "edited" badge; the comment ID stays stable). Allowlisted reporters can do the same by replying to the planning email — `support-agent.sh`'s `--auto-classify` step 4.5 forwards the reply as a GitHub comment with `OWNER` association, which the factory detects identically.
+- **Full restart.** If you want the factory to discard the plan and start fresh, delete the bot's `<!-- drafto-factory-plan -->` comment, then drag the card back to **Ready**. The next tick will plan from scratch.
+
+How the in-place replan stays idempotent: after a successful replan, the edited plan body carries one `<!-- drafto-factory-replan-ack:<comment-id> -->` marker per trigger comment. The next tick only re-fires if there's a newer OWNER comment whose ID isn't in the ack set — a thank-you reply that produces `action=noop` still gets ack-stamped, so it doesn't loop.
 
 ### "PR opened but CI keeps failing"
 
