@@ -491,7 +491,7 @@ if [[ "$MODE_PLAN" -eq 1 ]]; then
   PROMPT_TEXT=""
   if [[ "$DRY_RUN" -eq 0 ]]; then PROMPT_TEXT=$(cat "$PROMPT_FILE"); fi
 
-  for IDX in $(seq 0 $((READY_COUNT - 1))); do
+  for ((IDX=0; IDX<READY_COUNT; IDX++)); do
     ITEM=$(echo "$READY_JSON" | jq ".[${IDX}]")
     ITEM_ID=$(echo "$ITEM" | jq -r '.itemId')
     ISSUE_NUM=$(echo "$ITEM" | jq -r '.issueNumber')
@@ -673,7 +673,12 @@ if [[ "$MODE_IMPLEMENT" -eq 1 ]]; then
   fi
   log "--implement (Phase A): $INPROG_COUNT In Progress item(s)"
 
-  for IDX in $(seq 0 $((INPROG_COUNT - 1))); do
+  if [[ "$INPROG_COUNT" -eq 0 ]]; then
+    log "=== factory-agent --implement (Phase A stub) completed in $(( $(date +%s) - START_TIME ))s ==="
+    exit 0
+  fi
+
+  for ((IDX=0; IDX<INPROG_COUNT; IDX++)); do
     ITEM=$(echo "$INPROG_JSON" | jq ".[${IDX}]")
     ISSUE_NUM=$(echo "$ITEM" | jq -r '.issueNumber')
     ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
