@@ -553,11 +553,10 @@ if [[ "$MODE_PLAN" -eq 1 ]]; then
   fi
   log "--plan: $READY_COUNT Ready item(s) on the board"
 
-  if [[ "$READY_COUNT" -eq 0 ]]; then
-    log "=== factory-agent --plan completed in $(( $(date +%s) - START_TIME ))s ==="
-    exit 0
-  fi
-
+  # PROMPT_TEXT is needed by BOTH the Ready loop and the Plan Review replan
+  # sweep below. Load it once up front so the replan sweep still runs even
+  # when there are zero Ready cards (an early-exit here would skip replans
+  # entirely on a board that has only Plan Review work).
   PROMPT_TEXT=""
   if [[ "$DRY_RUN" -eq 0 ]]; then PROMPT_TEXT=$(cat "$PROMPT_FILE"); fi
 
