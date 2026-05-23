@@ -307,6 +307,16 @@ async function main(argv) {
         state.threads[normalised].linkedIssue = String(issueNumber);
         const email = state.issues[issueNumber].reporterEmail;
         if (email) state.threads[normalised].fromAddress = email;
+      } else if (field === "reporterEmail") {
+        // Keep state.threads[<id>].fromAddress in sync with the new
+        // reporterEmail; the threads side is documented as a joinless mirror
+        // and operators should not have to remember to update both.
+        const existingThreadId = state.issues[issueNumber].zohoThreadId;
+        if (existingThreadId) {
+          state.threads ??= {};
+          state.threads[existingThreadId] ??= {};
+          state.threads[existingThreadId].fromAddress = normalised;
+        }
       }
       await saveState(state, file);
       return { ok: true, issueNumber, field, value: normalised };

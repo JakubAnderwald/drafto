@@ -76,7 +76,7 @@ describe("state-cli set-issue-field (issue #422)", () => {
     });
   });
 
-  it("writes reporterEmail lower-cased + trimmed and does NOT touch threads", async () => {
+  it("writes reporterEmail lower-cased + trimmed and does NOT touch threads when no linkage exists", async () => {
     await withTempState(async (file) => {
       const w = run(["set-issue-field", "603", "reporterEmail", "  Customer@Example.COM  "], {
         stateFile: file,
@@ -85,6 +85,26 @@ describe("state-cli set-issue-field (issue #422)", () => {
       const raw = JSON.parse(await fs.readFile(file, "utf8"));
       assert.equal(raw.issues["603"].reporterEmail, "customer@example.com");
       assert.equal(Object.keys(raw.threads ?? {}).length, 0);
+    });
+  });
+
+  it("updates threads[<id>].fromAddress when reporterEmail changes on a linked issue", async () => {
+    await withTempState(async (file) => {
+      // Seed a fully-linked record (record-filed-issue 3-arg form mirrors
+      // fromAddress onto the thread side at filing time).
+      const seed = run(["record-filed-issue", "606", "old@example.com", "thread-606"], {
+        stateFile: file,
+      });
+      assert.equal(seed.status, 0, seed.stderr);
+      // Now override the email — the threads mirror should follow.
+      const w = run(["set-issue-field", "606", "reporterEmail", "  New@Example.COM  "], {
+        stateFile: file,
+      });
+      assert.equal(w.status, 0, w.stderr);
+      const raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["606"].reporterEmail, "new@example.com");
+      assert.equal(raw.threads["thread-606"].fromAddress, "new@example.com");
+      assert.equal(raw.threads["thread-606"].linkedIssue, "606");
     });
   });
 
