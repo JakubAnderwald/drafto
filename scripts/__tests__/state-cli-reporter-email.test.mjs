@@ -99,3 +99,91 @@ describe("state-cli record-filed-issue / get-reporter-email (ADR-0025)", () => {
     });
   });
 });
+
+describe("state-cli record-filed-issue 3-arg form (issue #422)", () => {
+  it("persists zohoThreadId on the issue and mirrors onto the thread entry", async () => {
+    await withTempState(async (file) => {
+      const w = run(["record-filed-issue", "500", "customer@example.com", "1234567890"], {
+        stateFile: file,
+      });
+      assert.equal(w.status, 0, w.stderr);
+      const raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["500"].reporterEmail, "customer@example.com");
+      assert.equal(raw.issues["500"].zohoThreadId, "1234567890");
+      assert.equal(raw.threads["1234567890"].linkedIssue, "500");
+      assert.equal(raw.threads["1234567890"].fromAddress, "customer@example.com");
+    });
+  });
+
+  it("treats an explicit empty 3rd arg as no-linkage (singleton path)", async () => {
+    await withTempState(async (file) => {
+      const w = run(["record-filed-issue", "501", "customer@example.com", ""], { stateFile: file });
+      assert.equal(w.status, 0, w.stderr);
+      const raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["501"].reporterEmail, "customer@example.com");
+      assert.equal(raw.issues["501"].zohoThreadId, undefined);
+      assert.equal(Object.keys(raw.threads ?? {}).length, 0);
+    });
+  });
+
+  it("treats the literal string 'null' as no-linkage", async () => {
+    await withTempState(async (file) => {
+      const w = run(["record-filed-issue", "502", "customer@example.com", "null"], {
+        stateFile: file,
+      });
+      assert.equal(w.status, 0, w.stderr);
+      const raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["502"].zohoThreadId, undefined);
+      assert.equal(Object.keys(raw.threads ?? {}).length, 0);
+    });
+  });
+
+  it("2-arg form (backward compat) still works; zohoThreadId stays absent", async () => {
+    await withTempState(async (file) => {
+      const w = run(["record-filed-issue", "503", "customer@example.com"], {
+        stateFile: file,
+      });
+      assert.equal(w.status, 0, w.stderr);
+      const raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["503"].reporterEmail, "customer@example.com");
+      assert.equal(raw.issues["503"].zohoThreadId, undefined);
+    });
+  });
+
+  it("preserves pre-existing thread fields when mirroring linkage", async () => {
+    await withTempState(async (file) => {
+      // Seed a thread entry the way policy.mjs would.
+      await fs.writeFile(
+        file,
+        JSON.stringify({
+          threads: {
+            1234567890: {
+              autoReplies: ["2026-05-20T10:00:00.000Z"],
+              lastAdminNotificationAt: "2026-05-20T11:00:00.000Z",
+            },
+          },
+        }),
+      );
+      const w = run(["record-filed-issue", "504", "customer@example.com", "1234567890"], {
+        stateFile: file,
+      });
+      assert.equal(w.status, 0, w.stderr);
+      const raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.deepEqual(raw.threads["1234567890"].autoReplies, ["2026-05-20T10:00:00.000Z"]);
+      assert.equal(raw.threads["1234567890"].lastAdminNotificationAt, "2026-05-20T11:00:00.000Z");
+      assert.equal(raw.threads["1234567890"].linkedIssue, "504");
+      assert.equal(raw.threads["1234567890"].fromAddress, "customer@example.com");
+    });
+  });
+
+  it("normalises the email when mirroring onto the thread entry", async () => {
+    await withTempState(async (file) => {
+      const w = run(["record-filed-issue", "505", "  Customer@Example.COM  ", "999"], {
+        stateFile: file,
+      });
+      assert.equal(w.status, 0, w.stderr);
+      const raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.threads["999"].fromAddress, "customer@example.com");
+    });
+  });
+});

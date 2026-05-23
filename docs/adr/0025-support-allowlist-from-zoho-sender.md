@@ -70,12 +70,25 @@ The existing `SUPPORT_ALLOWLIST` env variable (sourced by both `support-agent.sh
 - **Strengthen the prompt's "MUST end with footer" instruction.** Prompts are best-effort. Even if hardened to ~100% inclusion, the spoof window remains.
 - **Add a label-based gate.** Apply a `reporter-allowlisted` label to the issue at filing time. Equivalent to the chosen approach in expressiveness but loses the `reporterEmail` value (useful for triage logs and future audits) and adds a label-management code path. The state-file approach carries the address, not just a boolean.
 
+## Update — issue #422 (2026-05-23)
+
+The decision above retained the issue-body footer as the source of truth for `zoho-thread-id` routing in `--comment-sync` (point 3, "Keep the footer in the issue body, but only for `zoho-thread-id`"). That footer field turned out to be unreliable for singleton-first-contact tickets: it is initialised with `zoho-thread-id: null` and the LLM does not always patch it once the auto-reply gives Zoho a real `ackThreadId`. Result: progress comments stopped reaching the customer's inbox (confirmed for issues #360 and #409).
+
+The fix moves the `zoho-thread-id` source of truth off the LLM-written footer and onto state, matching the pattern this ADR established for `reporterEmail`:
+
+- `record-filed-issue` now takes an optional third positional `<zoho-thread-id>`. When the inbound Zoho bundle carries a real threadId (reply to an existing thread), bash passes it through; for singletons (empty inbound threadId) bash re-reads the GitHub issue body footer immediately after Claude's filing action and mirrors the patched `ackThreadId` into state via the new `set-issue-field` allowlisted setter.
+- `--comment-sync` now reads `state.issues[<n>].zohoThreadId` via the new `get-issue-zoho-thread-id` subcommand. The footer is no longer parsed at sync time.
+- The footer remains in the issue body as human-readable provenance but is no longer load-bearing for any code path.
+
+Pre-fix open issues need a one-off `state-cli set-issue-field <n> zohoThreadId <id>` to route through state. The allowlist gate from this ADR's main decision is untouched.
+
 ## Related
 
-- `scripts/lib/state-cli.mjs` — `record-filed-issue` and `get-reporter-email` subcommands.
-- `scripts/lib/state.mjs` — `issues.<n>.reporterEmail` schema field.
-- `scripts/support-agent.sh` — `filed-issue` action handler invokes `record-filed-issue` after Claude exits.
-- `scripts/nightly-support.sh` — gate replaced with `get-reporter-email` lookup + comma-bounded match against `$SUPPORT_ALLOWLIST`.
-- `scripts/lib/parse-issue-footer.mjs` — `evaluateAllowlist` removed; `parseIssueFooter` retained for `zoho-thread-id` routing in comment-sync.
-- `scripts/support-agent-prompt.md` — step 8 narrative updated; the footer block remains in the issue body but the `reporter-allowlisted` claim is informational.
-- [`docs/adr/0024-realtime-support-agent.md`](./0024-realtime-support-agent.md) — narrows section "State storage" point 2; the footer-as-allowlist-gate aspect is replaced by this ADR. The footer itself remains for `zoho-thread-id` routing.
+- `scripts/lib/state-cli.mjs` — `record-filed-issue` (now optional 3rd positional `<zoho-thread-id>`), `get-reporter-email`, `get-issue-zoho-thread-id` and the allowlisted `set-issue-field` subcommands (the last three added by issue #422).
+- `scripts/lib/state.mjs` — `issues.<n>.reporterEmail`, `issues.<n>.zohoThreadId`, plus `threads.<zohoThreadId>.linkedIssue` + `.fromAddress` mirror fields.
+- `scripts/support-agent.sh` — `filed-issue` action handler invokes `record-filed-issue` with the inbound threadId (when present) and, for singletons, re-reads the patched footer post-filing and calls `set-issue-field zohoThreadId`. `--comment-sync` reads `state.issues[<n>].zohoThreadId` via `get-issue-zoho-thread-id` (not the footer).
+- `scripts/nightly-support.sh` — gate uses `get-reporter-email` lookup + comma-bounded match against `$SUPPORT_ALLOWLIST` (unchanged by #422).
+- `scripts/lib/parse-issue-footer.mjs` — `evaluateAllowlist` removed; `parseIssueFooter` retained, used only by `support-agent.sh`'s singleton post-filing footer re-read. No longer called at sync time.
+- `scripts/support-agent-prompt.md` — step 8 narrative updated for the allowlist move; step 11 notes that bash re-reads the patched footer immediately after filing and mirrors `<ackThreadId>` into state.
+- Pre-fix issues whose linkage was never recorded can be patched manually via `node scripts/lib/state-cli.mjs set-issue-field <n> zohoThreadId <id>`. The footer is now human-readable provenance only — no code path reads it at sync time.
+- [`docs/adr/0024-realtime-support-agent.md`](./0024-realtime-support-agent.md) — narrows section "State storage" point 2; the footer-as-allowlist-gate aspect is replaced by this ADR's main decision, and the footer-as-comment-sync-routing aspect is replaced by the issue #422 update above.
