@@ -313,6 +313,13 @@ it as new mail or file a duplicate issue. Instead:
        (the footer already has the real id). Skip if `ackThreadId` came
        back null too (rare; log and continue — comment-sync just won't
        work for this issue, but filing succeeded).
+     - **Important (issue #422):** the bash runner re-reads this patched
+       footer immediately after the `filed-issue` action returns and
+       mirrors `<ackThreadId>` into `logs/support-state.json` so
+       `--comment-sync` can route progress updates. If you skip this
+       patch (or write `null`), comment-sync will log a WARNING and
+       progress updates won't reach the customer until an operator runs
+       `state-cli set-issue-field <n> zohoThreadId <id>` manually.
    - `move-to-folder <threadId> Drafto/Support/Resolved` (skip when the
      original `threadId` is null — folder moves require a thread id).
    - **No admin notification** for allowlisted senders.

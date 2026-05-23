@@ -70,6 +70,18 @@ The existing `SUPPORT_ALLOWLIST` env variable (sourced by both `support-agent.sh
 - **Strengthen the prompt's "MUST end with footer" instruction.** Prompts are best-effort. Even if hardened to ~100% inclusion, the spoof window remains.
 - **Add a label-based gate.** Apply a `reporter-allowlisted` label to the issue at filing time. Equivalent to the chosen approach in expressiveness but loses the `reporterEmail` value (useful for triage logs and future audits) and adds a label-management code path. The state-file approach carries the address, not just a boolean.
 
+## Update — issue #422 (2026-05-23)
+
+The decision above retained the issue-body footer as the source of truth for `zoho-thread-id` routing in `--comment-sync` (point 3, "Keep the footer in the issue body, but only for `zoho-thread-id`"). That footer field turned out to be unreliable for singleton-first-contact tickets: it is initialised with `zoho-thread-id: null` and the LLM does not always patch it once the auto-reply gives Zoho a real `ackThreadId`. Result: progress comments stopped reaching the customer's inbox (confirmed for issues #360 and #409).
+
+The fix moves the `zoho-thread-id` source of truth off the LLM-written footer and onto state, matching the pattern this ADR established for `reporterEmail`:
+
+- `record-filed-issue` now takes an optional third positional `<zoho-thread-id>`. When the inbound Zoho bundle carries a real threadId (reply to an existing thread), bash passes it through; for singletons (empty inbound threadId) bash re-reads the GitHub issue body footer immediately after Claude's filing action and mirrors the patched `ackThreadId` into state via the new `set-issue-field` allowlisted setter.
+- `--comment-sync` now reads `state.issues[<n>].zohoThreadId` via the new `get-issue-zoho-thread-id` subcommand. The footer is no longer parsed at sync time.
+- The footer remains in the issue body as human-readable provenance but is no longer load-bearing for any code path.
+
+Pre-fix open issues need a one-off `state-cli set-issue-field <n> zohoThreadId <id>` to route through state. The allowlist gate from this ADR's main decision is untouched.
+
 ## Related
 
 - `scripts/lib/state-cli.mjs` — `record-filed-issue` and `get-reporter-email` subcommands.

@@ -13,6 +13,15 @@
 //                                                    // successful filed-issue. nightly-support.sh
 //                                                    // reads this to gate auto-implementation
 //                                                    // — see ADR-0025.
+//         zohoThreadId:            string,           // canonical link to the Zoho thread the
+//                                                    // customer reads. Written by
+//                                                    // record-filed-issue (3rd positional) or by
+//                                                    // set-issue-field (singleton post-filing
+//                                                    // backfill in support-agent.sh). Read by
+//                                                    // --comment-sync to route progress
+//                                                    // updates. Replaces the unreliable
+//                                                    // issue-body footer source — see issue
+//                                                    // #422.
 //         lastGithubCommentSyncAt: ISO-8601,        // cursor for comment-sync
 //         lastIssueStateSync:      ISO-8601,        // cursor for state-sync
 //         lastKnownState: {
@@ -24,7 +33,15 @@
 //     threads: {
 //       "<zohoThreadId>": {
 //         autoReplies:              [ISO-8601, ...],   // last 24h, for ≤3 cap
-//         lastAdminNotificationAt:  ISO-8601 | null     // for 24h cooldown
+//         lastAdminNotificationAt:  ISO-8601 | null,   // for 24h cooldown
+//         linkedIssue:              string,            // GH issue number — mirror of
+//                                                       // issues[<n>].zohoThreadId for joinless
+//                                                       // lookup. Written alongside zohoThreadId
+//                                                       // by record-filed-issue / set-issue-field
+//                                                       // (issue #422).
+//         fromAddress:              string             // lower-cased customer email — mirror of
+//                                                       // reporterEmail for joinless lookup
+//                                                       // (issue #422).
 //       }
 //     },
 //     senders: {

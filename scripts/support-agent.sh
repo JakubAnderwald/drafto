@@ -335,11 +335,17 @@ if [[ "$COMMENT_SYNC" -eq 1 ]]; then
     ISSUE_NUMBER=$(echo "$ISSUE_ENTRY" | jq -r '.number')
     ISSUE_BODY=$(echo "$ISSUE_ENTRY" | jq -r '.body // ""')
 
-    # Find the linked Zoho thread via the issue body's agent footer. If the
-    # issue lacks the footer (e.g. an older Apps-Script-era issue) we have
-    # no way to reach the customer — skip silently. This is correct: those
-    # threads are decommissioned in Phase H anyway.
-    THREAD_ID=$(printf '%s' "$ISSUE_BODY" | node "$SCRIPT_DIR/lib/parse-issue-footer.mjs" --field zoho-thread-id 2>>"$LOG_FILE" || echo "")
+    # Find the linked Zoho thread via state.issues[<n>].zohoThreadId. This is
+    # written by record-filed-issue at filing time (and by set-issue-field for
+    # singletons whose ackThreadId only exists after Claude's auto-reply has
+    # gone out). Before issue #422 this came from the issue body's agent
+    # footer, but that field was unreliable for singleton-first-contact
+    # tickets (initialised with `null` and not always patched), so state.json
+    # is now the source of truth. Issues with no linkage (older Apps-Script-
+    # era, or pre-fix singletons that need a one-off `set-issue-field`) are
+    # skipped silently — same behaviour as before.
+    THREAD_ID=$(node "$SCRIPT_DIR/lib/state-cli.mjs" get-issue-zoho-thread-id "$ISSUE_NUMBER" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "")
     if [[ -z "$THREAD_ID" ]]; then
       continue
     fi
@@ -985,16 +991,37 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
       # customer in-thread, applied the Drafto/Support/Issue/<n> label, and
       # moved the thread to Drafto/Support/Resolved.
       #
-      # Persist the inbound sender against the issue number (ADR-0025). The
-      # bash runner extracted SENDER from the Zoho bundle BEFORE invoking
-      # Claude — that's the authoritative source for the allowlist gate.
-      # nightly-support.sh reads this at gate time instead of parsing an
-      # LLM-written footer in the issue body.
+      # Persist the inbound sender against the issue number (ADR-0025) and —
+      # when Zoho gave us a real threadId on the inbound side — the linkage
+      # too (issue #422). Both are extracted from the Zoho bundle BEFORE
+      # invoking Claude, so they are the authoritative source. The empty-arg
+      # form (third positional `""`) is the singleton path: state-cli persists
+      # the email only, and the post-filing footer re-read below mirrors the
+      # ackThreadId Claude has just written.
       ISSUE_NUM=$(echo "$SUMMARY_LINE" | sed -E 's/.*issue=([^ ]+).*/\1/')
       if [[ -n "$ISSUE_NUM" && "$ISSUE_NUM" != "-" && -n "$SENDER" ]]; then
-        if ! node "$SCRIPT_DIR/lib/state-cli.mjs" record-filed-issue "$ISSUE_NUM" "$SENDER" \
+        if ! node "$SCRIPT_DIR/lib/state-cli.mjs" record-filed-issue "$ISSUE_NUM" "$SENDER" "${THREAD_ID:-}" \
             --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
           log "WARNING: state-cli record-filed-issue failed for issue $ISSUE_NUM ($TRACK_ID)"
+        fi
+        # Singleton path (issue #422): the inbound message had no Zoho
+        # threadId, so record-filed-issue couldn't persist the linkage. Claude
+        # has now sent the auto-reply and patched the GitHub issue body
+        # footer with the ackThreadId. Re-read the footer once and mirror the
+        # value into state.json so --comment-sync can route progress updates
+        # back to the customer's thread. Costs one extra `gh issue view` per
+        # singleton filed-issue action (~1/day typical).
+        if [[ -z "${THREAD_ID:-}" ]]; then
+          ACK_TID=$(gh issue view "$ISSUE_NUM" --json body --jq .body 2>>"$LOG_FILE" \
+            | node "$SCRIPT_DIR/lib/parse-issue-footer.mjs" --field zoho-thread-id 2>>"$LOG_FILE" || echo "")
+          if [[ -n "$ACK_TID" && "$ACK_TID" != "null" ]]; then
+            if ! node "$SCRIPT_DIR/lib/state-cli.mjs" set-issue-field "$ISSUE_NUM" zohoThreadId "$ACK_TID" \
+                --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+              log "WARNING: set-issue-field zohoThreadId failed for issue $ISSUE_NUM"
+            fi
+          else
+            log "WARNING: singleton issue $ISSUE_NUM has no zoho-thread-id in footer after filing — comment-sync will skip until an operator runs set-issue-field"
+          fi
         fi
       else
         log "WARNING: filed-issue but cannot record sender (issue=$ISSUE_NUM sender=${SENDER:-<empty>})"

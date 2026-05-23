@@ -24,7 +24,7 @@
 //                                    after handling (or bootstrapping) a
 //                                    transition. <state-reason> may be
 //                                    empty/"null" to record an explicit null.
-//   record-filed-issue <issue> <sender-email>
+//   record-filed-issue <issue> <sender-email> [<zoho-thread-id>]
 //                                    Persist state.issues[<issue>].reporterEmail
 //                                    = sender-email (lower-cased, trimmed). Called
 //                                    by support-agent.sh after Claude reports
@@ -32,10 +32,31 @@
 //                                    is the authoritative sender (captured before
 //                                    the LLM ran) — nightly-support.sh reads it to
 //                                    gate auto-implementation. See ADR-0025.
+//
+//                                    Optional 3rd positional <zoho-thread-id> also
+//                                    writes state.issues[<issue>].zohoThreadId and
+//                                    mirrors onto state.threads[<id>] (linkedIssue
+//                                    + fromAddress). Empty/"null" 3rd arg is
+//                                    treated as "no linkage yet" and skips the
+//                                    thread-side write. Read back by `--comment-sync`
+//                                    via get-issue-zoho-thread-id. See issue #422.
 //   get-reporter-email <issue>      Print state.issues[<issue>].reporterEmail (or
 //                                    empty string if absent / unknown). Exit 0
 //                                    regardless — callers branch on the printed
 //                                    value. Used by nightly-support.sh's gate.
+//   get-issue-zoho-thread-id <issue>
+//                                    Print state.issues[<issue>].zohoThreadId (or
+//                                    empty string if absent / unknown). Exit 0
+//                                    regardless — used by --comment-sync to decide
+//                                    routing. See issue #422.
+//   set-issue-field <issue> <field> <value>
+//                                    Allowlisted setter for support-side issue
+//                                    fields. <field> ∈ {zohoThreadId, reporterEmail,
+//                                    lastGithubCommentSyncAt}. Empty/whitespace
+//                                    values are rejected. Writes to zohoThreadId
+//                                    also mirror onto state.threads[<value>]
+//                                    (linkedIssue + fromAddress when the issue has
+//                                    a reporterEmail). See issue #422.
 //
 // Dark-factory subcommands (all prefixed with `factory:`). These mutate
 // logs/factory-state.json (separate file from support-state.json) via
@@ -199,19 +220,37 @@ async function main(argv) {
     case "record-filed-issue": {
       const issueNumber = positional[0];
       const senderEmail = positional[1];
+      const zohoThreadIdRaw = positional[2];
       if (!issueNumber || !senderEmail) {
-        throw new Error("record-filed-issue requires <issue-number> <sender-email>");
+        throw new Error(
+          "record-filed-issue requires <issue-number> <sender-email> [<zoho-thread-id>]",
+        );
       }
       const normalised = String(senderEmail).trim().toLowerCase();
       if (!normalised) {
         throw new Error("record-filed-issue: sender-email is empty after trim");
       }
+      // Empty string or the literal "null" (case-insensitive) → singleton path:
+      // no Zoho linkage yet, persist email only. support-agent.sh re-reads the
+      // patched footer post-filing and calls set-issue-field to fill it in.
+      const zohoThreadIdTrimmed = zohoThreadIdRaw == null ? "" : String(zohoThreadIdRaw).trim();
+      const zohoThreadId =
+        zohoThreadIdTrimmed === "" || zohoThreadIdTrimmed.toLowerCase() === "null"
+          ? null
+          : zohoThreadIdTrimmed;
       const state = await loadState(file);
       state.issues ??= {};
       state.issues[issueNumber] ??= {};
       state.issues[issueNumber].reporterEmail = normalised;
+      if (zohoThreadId != null) {
+        state.issues[issueNumber].zohoThreadId = zohoThreadId;
+        state.threads ??= {};
+        state.threads[zohoThreadId] ??= {};
+        state.threads[zohoThreadId].linkedIssue = String(issueNumber);
+        state.threads[zohoThreadId].fromAddress = normalised;
+      }
       await saveState(state, file);
-      return { ok: true, issueNumber, reporterEmail: normalised };
+      return { ok: true, issueNumber, reporterEmail: normalised, zohoThreadId };
     }
     case "get-reporter-email": {
       const issueNumber = positional[0];
@@ -224,6 +263,53 @@ async function main(argv) {
       // can `REPORTER_EMAIL=$(node ... get-reporter-email "$N")` directly.
       process.stdout.write(email);
       return null;
+    }
+    case "get-issue-zoho-thread-id": {
+      const issueNumber = positional[0];
+      if (!issueNumber) {
+        throw new Error("get-issue-zoho-thread-id requires <issue-number>");
+      }
+      const state = await loadState(file);
+      const id = state.issues?.[issueNumber]?.zohoThreadId ?? "";
+      // Bare value, no JSON, no trailing newline — bash callers capture directly.
+      process.stdout.write(id);
+      return null;
+    }
+    case "set-issue-field": {
+      // Allowlist guards against typos clobbering structured fields like
+      // lastKnownState (a nested object) or lastIssueStateSync (an audit
+      // timestamp set by --state-sync). Keep this set narrow; widen only when
+      // there is a real operator need.
+      const ALLOWED = new Set(["zohoThreadId", "reporterEmail", "lastGithubCommentSyncAt"]);
+      const issueNumber = positional[0];
+      const field = positional[1];
+      const value = positional[2];
+      if (!issueNumber || !field || value == null) {
+        throw new Error("set-issue-field requires <issue-number> <field> <value>");
+      }
+      if (!ALLOWED.has(field)) {
+        throw new Error(
+          `set-issue-field: field '${field}' not in allowlist (${[...ALLOWED].join(", ")})`,
+        );
+      }
+      let normalised = String(value).trim();
+      if (!normalised) {
+        throw new Error("set-issue-field: value is empty after trim");
+      }
+      if (field === "reporterEmail") normalised = normalised.toLowerCase();
+      const state = await loadState(file);
+      state.issues ??= {};
+      state.issues[issueNumber] ??= {};
+      state.issues[issueNumber][field] = normalised;
+      if (field === "zohoThreadId") {
+        state.threads ??= {};
+        state.threads[normalised] ??= {};
+        state.threads[normalised].linkedIssue = String(issueNumber);
+        const email = state.issues[issueNumber].reporterEmail;
+        if (email) state.threads[normalised].fromAddress = email;
+      }
+      await saveState(state, file);
+      return { ok: true, issueNumber, field, value: normalised };
     }
     case "factory:pause": {
       const reason = positional[0] ?? null;
@@ -344,8 +430,10 @@ async function main(argv) {
           "bump-counters <track-key> <sender>|" +
           "set-issue-cursor <issue-number> <cursor-iso>|" +
           "set-issue-state <issue-number> <state> [<state-reason>]|" +
-          "record-filed-issue <issue-number> <sender-email>|" +
+          "record-filed-issue <issue-number> <sender-email> [<zoho-thread-id>]|" +
           "get-reporter-email <issue-number>|" +
+          "get-issue-zoho-thread-id <issue-number>|" +
+          "set-issue-field <issue-number> <field> <value>|" +
           "factory:pause [<reason>]|" +
           "factory:resume|" +
           "factory:status|" +
