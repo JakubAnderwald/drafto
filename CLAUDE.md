@@ -143,6 +143,7 @@ Common CI failure patterns:
 - Pre-commit hooks run lint-staged (ESLint + Prettier)
 - **Never commit or push directly to `main`** unless the user explicitly requests it. All work goes through feature branches and PRs.
 - **All pushes must use the `/push` command** — this ensures commits are pushed, CI/CD checks are polled until green, review comments are addressed, and failures are fixed automatically
+- **Before `/push`, run `/code-review` on the pending diff** for any non-trivial change (anything beyond typos, comment edits, or pure renames). Fix or explicitly explain its findings before opening the PR — this catches the same class of issues CodeRabbit catches (mirror-invariant violations, stale doc references, missed edge cases), locally, and saves the post-PR round-trip
 
 ## Release Authorization
 
