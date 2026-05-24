@@ -18,6 +18,16 @@
 > the Approved drag while plan→implement→preview quality is validated.
 > Promotion to Phase B is the operator flipping `FACTORY_PHASE` on the plist.
 >
+> **In Test iteration (this update)**: a reporter comment on an In Test card
+> rolls it back to In Progress; the factory revises on the **same** PR branch
+> (the slot/worktree now persist across In Progress↔In Review↔In Test) and it
+> flows back to In Test. The implementer bundle gained `revisionComments` (the
+> new owner comments since a `lastFeedbackAt` high-water mark), pure
+> approval/noise comments are ignored, and approval stays the explicit Approved
+> drag. Lets a reporter who dislikes the preview request changes without
+> touching GitHub internals — the realistic "even if the plan looked fine"
+> path.
+>
 > **What's landed**:
 >
 > - **Wave 1 — Foundations** (PR #386, merged 2026-05-06): all 16 labels

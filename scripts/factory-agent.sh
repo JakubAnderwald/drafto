@@ -559,6 +559,7 @@ build_implement_bundle() {
   local approved_plan="${2:-null}"
   local prior_pr="${3:-null}"
   local attempts="${4:-0}"
+  local revision_comments="${5:-[]}"
   local repo_head_ref
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   jq -n \
@@ -566,6 +567,7 @@ build_implement_bundle() {
     --argjson plan "$approved_plan" \
     --argjson priorPr "$prior_pr" \
     --arg attempts "$attempts" \
+    --argjson revisionComments "$revision_comments" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
     --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
     --arg phase "$PHASE" \
@@ -583,6 +585,7 @@ build_implement_bundle() {
        priorPr: $priorPr,
        attempts: ($attempts | tonumber? // 0),
        comments: [],
+       revisionComments: $revisionComments,
        config: {
          phase: $phase,
          allowlist: ($allowlist | split(",") | map(ascii_downcase | sub("^\\s+";"") | sub("\\s+$";""))),
@@ -591,6 +594,40 @@ build_implement_bundle() {
        repo: { nameWithOwner: $repoNwo, headRef: $headRef }
      }' \
     | node "$SCRIPT_DIR/lib/factory-bundle.mjs"
+}
+
+# OWNER comments strictly newer than <since-iso>, excluding the factory's own
+# marker comments (so a "revising"/"in-test" comment we posted can't be read
+# back as fresh feedback). Customer replies forwarded by support-agent land
+# under the Mac mini's gh identity (OWNER) with no factory marker, so they're
+# included. Prints a JSON array of {id,user,body,createdAt}; "[]" if since is
+# empty (no baseline yet → nothing counts as feedback).
+owner_comments_since() {
+  local comments_json="$1"
+  local since="$2"
+  if [[ -z "$since" || "$since" == "null" ]]; then echo "[]"; return 0; fi
+  echo "$comments_json" | jq -c --arg since "$since" \
+    '[ .[] | select(
+         (.authorAssociation == "OWNER")
+         and ((.createdAt) > $since)
+         and (((.body // "") | test("<!-- drafto-factory")) | not)
+       ) ]'
+}
+
+# Is a comment body pure approval / acknowledgement noise (so it must NOT
+# trigger a code revision)? Strips to lowercase alphanumerics and matches a
+# small set of approving words; emoji-only / ≤2-char comments are noise too.
+# Per the agreed model, approval is the Approved drag — these are skipped, not
+# treated as ship signals.
+is_noise_comment() {
+  local norm
+  norm=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')
+  case "$norm" in
+    ""|thanks|thankyou|ty|thx|lgtm|looksgood|looksgreat|great|greatwork|perfect|nice|cool|\
+ship|shipit|approved|approve|done|ok|okay|okthanks|yes|yep|yeah|awesome|love|loveit)
+      return 0 ;;
+  esac
+  [[ ${#norm} -le 2 ]]
 }
 
 # Build the factory_watch bundle. $2 approved-plan obj|null, $3 prior-PR obj,
@@ -1321,14 +1358,33 @@ Drag it back to **Ready** so the factory can plan it first.
 
     PRIOR_PR=$(find_prior_pr "$ISSUE_NUM"); [[ -n "$PRIOR_PR" ]] || PRIOR_PR="null"
 
-    # Acquire a slot (reuse the issue's own slot on a retry).
+    # Revision feedback: when a PR already exists, new OWNER comments since the
+    # last consumed feedback are change requests from the In Test preview to
+    # apply on the same branch. Fresh implementations have none — the approved
+    # plan is the source of truth there.
+    REVISION_COMMENTS="[]"
+    IS_REVISION=0
+    if [[ "$PRIOR_PR" != "null" ]]; then
+      FEEDBACK_HWM=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
+        --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.lastFeedbackAt // ""' 2>/dev/null || echo "")
+      REVISION_COMMENTS=$(owner_comments_since "$COMMENTS_JSON" "$FEEDBACK_HWM")
+      [[ -n "$REVISION_COMMENTS" ]] || REVISION_COMMENTS="[]"
+      REV_COUNT=$(echo "$REVISION_COMMENTS" | jq 'length' 2>/dev/null || echo "0")
+      [[ "$REV_COUNT" =~ ^[0-9]+$ ]] || REV_COUNT=0
+      if [[ "$REV_COUNT" -gt 0 ]]; then
+        IS_REVISION=1
+        log "Issue #$ISSUE_NUM: revision run ($REV_COUNT new feedback comment(s) on the open PR)"
+      fi
+    fi
+
+    # Acquire a slot (reuse the issue's own slot on a retry / revision).
     SLOT=$(slot_for_issue "$ISSUE_NUM")
     if [[ -z "$SLOT" ]]; then
       log "Issue #$ISSUE_NUM: both worktree slots busy; deferring to a later tick"
       break
     fi
 
-    if ! BUNDLE=$(build_implement_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PRIOR_PR" "$ATTEMPTS"); then
+    if ! BUNDLE=$(build_implement_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PRIOR_PR" "$ATTEMPTS" "$REVISION_COMMENTS"); then
       log "ERROR: build_implement_bundle failed for #$ISSUE_NUM"; continue
     fi
     AFFECTED=$(echo "$BUNDLE" | jq -r '.spec.affectedPlatforms // [] | join(",")')
@@ -1401,11 +1457,12 @@ Drag it back to **Ready** so the factory can plan it first.
     ACTION=$(echo "$SUMMARY_LINE" | sed -E 's/.*action=([^ ]+).*/\1/')
     PR_URL=$(echo "$SUMMARY_LINE" | sed -E 's/.*pr=([^ ]+).*/\1/')
 
+    NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     case "$ACTION" in
-      implemented|noop)
+      implemented)
         PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
         if [[ -z "$PR_OBJ" || "$PR_OBJ" == "null" ]]; then
-          log "WARNING: #$ISSUE_NUM action=$ACTION but no PR on head factory/issue-$ISSUE_NUM; keeping slot for retry"
+          log "WARNING: #$ISSUE_NUM action=implemented but no PR on head factory/issue-$ISSUE_NUM; keeping slot for retry"
           node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
           continue
         fi
@@ -1436,10 +1493,47 @@ drag the card back to **In Progress**.
           continue
         fi
         # Happy path: advance to In Review. KEEP slot + worktree for --watch.
+        # Advancing lastFeedbackAt = now marks every comment up to this point as
+        # consumed, so a revision we just applied can't re-trigger next tick.
         transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review" || true
-        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastImplementAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastImplementAt "$NOW_ISO" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$NOW_ISO" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-        log "Issue #$ISSUE_NUM: advanced to In Review (PR $PR_URL; slot $SLOT retained for --watch)"
+        if [[ "$IS_REVISION" -eq 1 ]]; then
+          log "Issue #$ISSUE_NUM: revision pushed → In Review (PR $PR_URL; slot $SLOT retained)"
+        else
+          log "Issue #$ISSUE_NUM: advanced to In Review (PR $PR_URL; slot $SLOT retained for --watch)"
+        fi
+        ;;
+      noop)
+        if [[ "$IS_REVISION" -eq 1 ]]; then
+          # The feedback needed no code change. The existing PR + preview are
+          # still valid, so re-present in In Test instead of re-running CI.
+          transition_status "$ITEM_ID" "$ISSUE_NUM" "In Test" || true
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$NOW_ISO" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+            --body "🏭 **No code change was needed for that.**
+
+The preview is unchanged. Drag to **Approved** to ship it, or comment a more \
+specific change.
+
+<!-- drafto-factory-revise-noop -->" >>"$LOG_FILE" 2>&1 || true
+          log "Issue #$ISSUE_NUM: revision no-op; returned to In Test"
+        else
+          # Fresh idempotency hit: a PR already exists from a prior attempt.
+          PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
+          if [[ -z "$PR_OBJ" || "$PR_OBJ" == "null" ]]; then
+            log "WARNING: #$ISSUE_NUM action=noop but no PR found; keeping slot for retry"
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+            continue
+          fi
+          PR_URL=$(echo "$PR_OBJ" | jq -r '.url')
+          transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review" || true
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$NOW_ISO" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          log "Issue #$ISSUE_NUM: noop (PR $PR_URL already open); advanced to In Review"
+        fi
         ;;
       blocked)
         transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
@@ -1495,7 +1589,7 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
       continue
     fi
     STILL_ACTIVE=$(echo "$ISSUE_META" | jq -r \
-      '((.state == "OPEN") and ((.labels | map(.name)) | any(. == "status:in-review" or . == "status:in-test")))')
+      '((.state == "OPEN") and ((.labels | map(.name)) | any(. == "status:in-progress" or . == "status:in-review" or . == "status:in-test")))')
     if [[ "$STILL_ACTIVE" != "true" ]]; then
       log "Slot $SLOT: issue #$SLOT_ISSUE left In Review/In Test; releasing slot + worktree"
       if [[ "$DRY_RUN" -eq 0 ]]; then
@@ -1704,6 +1798,88 @@ Review it, then drag the card to **Approved** to merge (the operator merges \
 the PR by hand in this staged Phase B rollout).
 
 <!-- drafto-factory-in-test -->" >>"$LOG_FILE" 2>&1 || true
+  done
+
+  # ── In Test feedback sweep: a reporter comment requests a revision ──────────
+  # A reporter testing the preview asks for changes by commenting. A new OWNER
+  # comment (newer than the consumed-feedback high-water mark) that isn't pure
+  # approval/noise rolls the card back to In Progress; the next --implement tick
+  # revises on the same PR branch and it flows back to In Test. Approval stays
+  # explicit (drag to Approved / email accept-signal), so a "looks good" comment
+  # is treated as noise here — never a ship signal.
+  if ! INTEST_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
+      --status "In Test" 2>>"$LOG_FILE"); then
+    log "WARNING: query-status-items 'In Test' failed (transient?); skipping feedback sweep this tick"
+    log "=== factory-agent --watch completed in $(( $(date +%s) - START_TIME ))s ==="
+    exit 0
+  fi
+  INTEST_COUNT=$(echo "$INTEST_JSON" | jq 'length' 2>/dev/null || echo "0")
+  [[ "$INTEST_COUNT" =~ ^[0-9]+$ ]] || INTEST_COUNT=0
+  log "--watch In Test feedback sweep: $INTEST_COUNT item(s)"
+
+  for ((IDX=0; IDX<INTEST_COUNT; IDX++)); do
+    ITEM=$(echo "$INTEST_JSON" | jq ".[${IDX}]")
+    ITEM_ID=$(echo "$ITEM" | jq -r '.itemId')
+    ISSUE_NUM=$(echo "$ITEM" | jq -r '.issueNumber')
+    ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
+    [[ ",$ITEM_LABELS," == *",factory-pause,"* ]] && continue
+
+    if ! COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM"); then
+      log "WARNING: fetch_issue_comments failed for #$ISSUE_NUM (feedback sweep); skipping"; continue
+    fi
+    HWM=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.lastFeedbackAt // ""' 2>/dev/null || echo "")
+    if [[ -z "$HWM" || "$HWM" == "null" ]]; then
+      # No baseline yet (e.g. a card that reached In Test before this feature).
+      # Establish it now so only comments posted AFTER this count as feedback.
+      log "Issue #$ISSUE_NUM: establishing In Test feedback baseline"
+      if [[ "$DRY_RUN" -eq 0 ]]; then
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" \
+          lastFeedbackAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      fi
+      continue
+    fi
+
+    NEW_COMMENTS=$(owner_comments_since "$COMMENTS_JSON" "$HWM")
+    NEW_COUNT=$(echo "$NEW_COMMENTS" | jq 'length' 2>/dev/null || echo "0")
+    [[ "$NEW_COUNT" =~ ^[0-9]+$ ]] || NEW_COUNT=0
+    [[ "$NEW_COUNT" -eq 0 ]] && continue
+
+    # Actionable = at least one non-noise comment among the new ones.
+    ACTIONABLE=0
+    for ((CIDX=0; CIDX<NEW_COUNT; CIDX++)); do
+      CBODY=$(echo "$NEW_COMMENTS" | jq -r ".[${CIDX}].body")
+      if ! is_noise_comment "$CBODY"; then ACTIONABLE=1; break; fi
+    done
+    NEWEST=$(echo "$NEW_COMMENTS" | jq -r 'sort_by(.createdAt) | .[-1].createdAt')
+
+    if [[ "$ACTIONABLE" -eq 0 ]]; then
+      # Only approval/thanks since the preview: advance the mark so we don't
+      # re-scan them; leave the card in In Test for the operator to approve.
+      log "Issue #$ISSUE_NUM: only non-actionable comments on In Test; advancing feedback mark"
+      if [[ "$DRY_RUN" -eq 0 ]]; then
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" \
+          lastFeedbackAt "$NEWEST" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      fi
+      continue
+    fi
+
+    log "Issue #$ISSUE_NUM: new feedback on In Test card → returning to In Progress for revision"
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "DRY-RUN: would move #$ISSUE_NUM In Test → In Progress (revision)"; continue
+    fi
+    # Do NOT advance lastFeedbackAt here — the next --implement tick consumes the
+    # comments and advances the mark, so the feedback actually reaches the
+    # implementer. Reset attempts so the revision gets a fresh budget.
+    transition_status "$ITEM_ID" "$ISSUE_NUM" "In Progress" || true
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+      --body "🏭 **Revising — picking up your feedback.**
+
+I'll update the open PR on the same branch and redeploy the preview. (To ship \
+as-is instead, drag the card to **Approved**.)
+
+<!-- drafto-factory-revising -->" >>"$LOG_FILE" 2>&1 || true
   done
 
   log "=== factory-agent --watch completed in $(( $(date +%s) - START_TIME ))s ==="

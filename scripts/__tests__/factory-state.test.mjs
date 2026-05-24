@@ -244,6 +244,13 @@ describe("per-issue counters", () => {
     assert.throws(() => setIssueField(s, 1, "arbitraryField", "x"), /unknown field/);
   });
 
+  it("tracks lastFeedbackAt (In Test iteration high-water mark)", () => {
+    const s = emptyFactoryState();
+    assert.equal(s.issues["1"] === undefined || s.issues["1"].lastFeedbackAt == null, true);
+    setIssueField(s, 7, "lastFeedbackAt", "2026-05-24T13:00:00.000Z");
+    assert.equal(s.issues["7"].lastFeedbackAt, "2026-05-24T13:00:00.000Z");
+  });
+
   it("setIssueField clears the field on empty/null/'null' sentinels", () => {
     const s = emptyFactoryState();
     setIssueField(s, 1, "lastError", "boom");

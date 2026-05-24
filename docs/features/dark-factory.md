@@ -11,7 +11,7 @@ A "vibe-kanban-style" pipeline where moving a card on a GitHub Projects v2 board
 The runtime phase is set by `FACTORY_PHASE` on the launchd plist (see the runbook). The phases:
 
 - **Phase A (Plan-only).** `--plan` watches `status:ready` issues, posts a structured plan comment, and stops at `status:plan-review`. `--implement` posts a one-time "implementation skipped" stub; `--watch` / `--release` are no-ops.
-- **Phase B (Web-only, staged).** Approving a plan (drag Plan Review → In Progress) runs the real engine: `--implement` takes a worktree slot, implements the approved plan in `worktrees/factory-issue-<n>`, opens a PR, and runs the parity post-check (mobile/desktop changes are auto-blocked — Phase B is web-only). `--watch` then drives the PR: it runs a `/push`-style fix loop on failing CI / unresolved review comments and, once CI is green and the Vercel preview is reachable, advances the card to **In Test** and posts the preview URL. **`--release` (auto-merge on Approved) is deliberately deferred in this staged rollout** — the operator merges the PR by hand at the Approved drag while plan→implement→preview quality is proven. Promote per phase only after ≥5 clean runs without human intervention.
+- **Phase B (Web-only, staged).** Approving a plan (drag Plan Review → In Progress) runs the real engine: `--implement` takes a worktree slot, implements the approved plan in `worktrees/factory-issue-<n>`, opens a PR, and runs the parity post-check (mobile/desktop changes are auto-blocked — Phase B is web-only). `--watch` then drives the PR: it runs a `/push`-style fix loop on failing CI / unresolved review comments and, once CI is green and the Vercel preview is reachable, advances the card to **In Test** and posts the preview URL. **In Test iteration:** while a card sits in In Test, commenting on the issue with a change request rolls it back to **In Progress**; the factory revises on the **same** PR branch (reusing the slot, worktree, and preview URL) and it flows back to In Test. Repeat until you're happy. A pure "thanks/looks good" comment is treated as noise (no rework); approval stays explicit — drag to **Approved** (or, household, reply "ship it"). **`--release` (auto-merge on Approved) is deliberately deferred in this staged rollout** — the operator merges the PR by hand at the Approved drag while plan→implement→preview quality is proven. Promote per phase only after ≥5 clean runs without human intervention.
 
 ## The board
 
@@ -109,6 +109,10 @@ The factory's `--watch` mode loops `/push`-style: it reads CI failures and revie
 ### "Vercel preview never appeared in In Test"
 
 The factory advances In Review → In Test only when (a) CI is green AND (b) the Vercel bot has commented with a preview URL on the PR. If CI is green but Vercel hasn't run, check the Vercel project's GitHub integration is wired up; sometimes the bot misses a push and a force-push to bump the PR head re-triggers it.
+
+### "I tested the preview and want changes"
+
+Comment the change on the **issue** while the card is in **In Test** (e.g. "the close button overlaps the title — move it left"). On the next `--watch` tick the factory rolls the card back to **In Progress** and posts "🏭 revising…"; the next `--implement` tick applies your feedback on the **same** PR branch (the approved plan still bounds scope — a request outside it is Blocked for a re-plan), and the card flows back through In Review → In Test with the preview redeployed. Iterate as many rounds as you like. To stop and ship instead, drag the card to **Approved** (a "looks good"/"thanks" comment is treated as noise, not a ship signal — approval is always the explicit drag). The factory only acts on comments posted _after_ the preview it last showed you, so older discussion doesn't re-trigger work.
 
 ### "Allowlisted reporter's email reply didn't move the card"
 

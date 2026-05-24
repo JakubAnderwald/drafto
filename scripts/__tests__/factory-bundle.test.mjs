@@ -297,6 +297,32 @@ describe("buildFactoryImplementBundle", () => {
     assert.equal(bundle.priorPr.headRef, "factory/issue-1");
     assert.equal(bundle.attempts, 2);
   });
+
+  it("envelopes revisionComments (In Test feedback) and defaults to []", () => {
+    const fresh = buildFactoryImplementBundle({
+      issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "B" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    assert.deepEqual(
+      fresh.revisionComments,
+      [],
+      "first implementation carries no revision comments",
+    );
+
+    const revision = buildFactoryImplementBundle({
+      issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+      priorPr: { number: 7, url: "u", headRef: "factory/issue-1", state: "OPEN" },
+      revisionComments: [{ id: 3, user: { login: "jane" }, body: "move the button top-right" }],
+      config: { phase: "B" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    assert.equal(revision.revisionComments.length, 1);
+    assert.match(
+      revision.revisionComments[0].body,
+      /<comment>move the button top-right<\/comment>/,
+    );
+  });
 });
 
 describe("buildFactoryWatchBundle", () => {

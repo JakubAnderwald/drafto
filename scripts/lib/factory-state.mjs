@@ -76,6 +76,11 @@ function emptyIssue() {
     lastProd: null,
     lastStatus: null,
     lastError: null,
+    // High-water mark: the createdAt of the newest reporter feedback comment
+    // the factory has already consumed. The In Test feedback sweep only treats
+    // comments newer than this as new change requests, so a handled comment
+    // never re-triggers a revision.
+    lastFeedbackAt: null,
   };
 }
 
@@ -252,6 +257,7 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   "lastProd",
   "lastStatus",
   "lastError",
+  "lastFeedbackAt",
 ]);
 
 export function setIssueField(state, issueNumber, field, value) {
