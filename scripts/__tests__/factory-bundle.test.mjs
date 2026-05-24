@@ -8,6 +8,7 @@ import {
   FACTORY_PLAN_MARKER,
   buildFactoryPlanBundle,
   buildFactoryImplementBundle,
+  buildFactoryWatchBundle,
   parseSpec,
   parsePlatformCheckboxes,
   parityOverrideFrom,
@@ -298,6 +299,39 @@ describe("buildFactoryImplementBundle", () => {
   });
 });
 
+describe("buildFactoryWatchBundle", () => {
+  it("envelopes the CI summary and unresolved review comments", () => {
+    const bundle = buildFactoryWatchBundle({
+      issue: { number: 9, title: "x", body: SAMPLE_BODY, labels: [] },
+      approvedPlan: {
+        commentId: 1,
+        url: "u",
+        body: `${FACTORY_PLAN_MARKER}\nplan`,
+        createdAt: "t",
+      },
+      priorPr: { number: 7, url: "https://x/y/pull/7", headRef: "factory/issue-9", state: "OPEN" },
+      ciSummary: "build (web) — failed: type error in note.ts",
+      unresolvedComments: [{ id: 5, user: { login: "coderabbitai" }, body: "missing test" }],
+      attempts: 1,
+      config: { phase: "B" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+      nowIso: "2026-05-24T08:00:00.000Z",
+    });
+    assert.equal(bundle.kind, "factory_watch");
+    assert.match(bundle.ciSummaryEnveloped, /<ci-summary>[\s\S]*type error[\s\S]*<\/ci-summary>/);
+    assert.equal(bundle.unresolvedComments.length, 1);
+    assert.match(bundle.unresolvedComments[0].body, /<comment>missing test<\/comment>/);
+    assert.equal(bundle.priorPr.number, 7);
+    assert.equal(bundle.attempts, 1);
+    // Plan marker is stripped from the enveloped plan body, same as implement.
+    assert.ok(!bundle.approvedPlan.bodyEnveloped.includes(FACTORY_PLAN_MARKER));
+  });
+
+  it("requires issue.number", () => {
+    assert.throws(() => buildFactoryWatchBundle({ issue: { title: "x" } }), /issue\.number/);
+  });
+});
+
 describe("factory-bundle CLI", () => {
   function run(input) {
     return spawnSync("node", [CLI], {
@@ -362,5 +396,24 @@ describe("factory-bundle CLI", () => {
     const bundle = JSON.parse(r.stdout);
     assert.equal(bundle.kind, "factory_implement");
     assert.equal(bundle.attempts, 1);
+  });
+
+  it("emits a factory_watch bundle", () => {
+    const r = run({
+      kind: "factory_watch",
+      issue: { number: 42, title: "x", body: SAMPLE_BODY, labels: [] },
+      approvedPlan: { commentId: 1, url: "u", body: "p", createdAt: "t" },
+      priorPr: { number: 7, url: "https://x/y/pull/7", headRef: "factory/issue-42", state: "OPEN" },
+      ciSummary: "lint — failed",
+      unresolvedComments: [{ id: 5, user: { login: "x" }, body: "fix this" }],
+      attempts: 1,
+      config: { phase: "B" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const bundle = JSON.parse(r.stdout);
+    assert.equal(bundle.kind, "factory_watch");
+    assert.match(bundle.ciSummaryEnveloped, /lint — failed/);
+    assert.equal(bundle.unresolvedComments.length, 1);
   });
 });

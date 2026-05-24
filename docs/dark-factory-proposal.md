@@ -1,9 +1,22 @@
 # Drafto Dark Factory — Unattended Development Pipeline
 
-> **Status (2026-05-06)**: Phase A rollout in progress. ADR-0026 records the
+> **Status (2026-05-24)**: Phase B engine landed (staged). ADR-0026 records the
 > decision; operator docs live at `docs/features/dark-factory.md` and
 > `docs/operations/factory-runbook.md`. This proposal stays as the canonical
-> wave-by-wave breakdown until Phase B lands and the doc is archived.
+> wave-by-wave breakdown until the full pipeline (incl. `--release`) lands and
+> the doc is archived.
+>
+> **Phase B engine (this update)**: `--implement` and `--watch` are now real
+> for Phase B+ (`scripts/lib/worktree-cli.mjs` + Phase B bodies in
+> `scripts/factory-agent.sh` + `scripts/factory-watch-prompt.md`).
+> `--implement` takes a worktree slot, implements the approved plan, opens a
+> PR, and runs the parity post-check (mobile/desktop changes auto-blocked at
+> Phase B). `--watch` runs the `/push`-style fix loop on failing CI / review
+> comments and advances PRs to **In Test** once CI is green and the Vercel
+> preview is reachable. **`--release` (auto-merge on Approved + beta dispatch)
+> is deliberately deferred** — the operator merges the approved PR by hand at
+> the Approved drag while plan→implement→preview quality is validated.
+> Promotion to Phase B is the operator flipping `FACTORY_PHASE` on the plist.
 >
 > **What's landed**:
 >
