@@ -9,23 +9,31 @@
 #
 #   --implement  Pick up Status=In Progress items. Phase A: post a stub
 #                "phase=A; implementation skipped" comment per card and
-#                stop. Phase B+: claim a worktree slot, invoke Claude
-#                against the approved plan, push a PR, advance to
-#                In Review. (Phase B+ NOT YET IMPLEMENTED in Wave 3 —
-#                logs and exits 0.)
+#                stop. Phase B+: claim a worktree slot, create the worktree
+#                from origin/main, invoke Claude against the approved plan,
+#                run the parity post-check on the opened PR, advance to
+#                In Review. The slot + worktree persist for --watch.
+#
+#   --watch      In Review → In Test. For each open factory PR: poll CI and
+#                unresolved review comments; when something is failing,
+#                resume the worktree and invoke Claude (factory-watch-prompt)
+#                to push a fix; when CI is green AND a Vercel preview is
+#                reachable, advance the card to In Test and post the preview
+#                URL. Also runs a cleanup sweep that releases slots +
+#                removes worktrees for cards that have left In Review/In Test.
 #
 #   --release    Approved → Released. Migration gate, squash-merge,
-#                beta-channel dispatch. (Phase B+ NOT YET IMPLEMENTED in
-#                Wave 3 — logs and exits 0.)
-#
-#   --watch      In Review → In Test. Poll CI, resolve review comments,
-#                detect Vercel preview, advance card. (Phase B+ NOT YET
-#                IMPLEMENTED in Wave 3 — logs and exits 0.)
+#                beta-channel dispatch. DEFERRED in the staged Phase B
+#                rollout (--implement + --watch ship first; the operator
+#                merges the PR by hand at the Approved drag). Logs and
+#                exits 0 in every phase until --release is built.
 #
 # Each mode acquires its own PID-file lock so multiple modes can run
-# back-to-back in one launchd tick without contending. --implement also
-# claims a per-slot lock (slot0|slot1) for the worktree it owns; the
-# other modes are I/O-bound and use a single mode-wide lock.
+# back-to-back in one launchd tick without contending. --implement and
+# --watch additionally track per-issue worktree slots (slot0|slot1) in
+# logs/factory-state.json; because only one --implement and one --watch
+# process can run at a time (the mode-wide lock), the state file is the
+# slot source of truth and no separate per-slot flock is needed.
 #
 # Phase gate: --phase A|B|C|D. Refusing to operate outside the requested
 # phase is the prompt's job (the bundle includes config.phase); bash
@@ -54,6 +62,18 @@ export LC_ALL=en_US.UTF-8
 # wrapper's enforced cap in sync.
 export CLAUDE_CALL_TIMEOUT_SEC="${CLAUDE_CALL_TIMEOUT_SEC:-180}"
 
+# --plan is read-only and quick (180s is plenty). --implement and --watch run
+# Claude through edits + the verification matrix (lint/typecheck/test), which
+# is minutes of work — they override the cap per-call. run-claude.mjs reads
+# CLAUDE_CALL_TIMEOUT_SEC from the env at spawn time, so an inline prefix on
+# the node invocation is enough.
+IMPLEMENT_TIMEOUT_SEC="${FACTORY_IMPLEMENT_TIMEOUT_SEC:-1800}"
+WATCH_TIMEOUT_SEC="${FACTORY_WATCH_TIMEOUT_SEC:-900}"
+
+# Retry budget shared by --plan / --implement / --watch. After this many failed
+# Claude invocations on one issue, the card is parked in Blocked for a human.
+FACTORY_MAX_ATTEMPTS="${FACTORY_MAX_ATTEMPTS:-5}"
+
 # ── Args ────────────────────────────────────────────────────────────────────
 MODE_PLAN=0
 MODE_IMPLEMENT=0
@@ -69,9 +89,9 @@ Exactly one of --plan, --implement, --release, --watch is required.
 
   --plan       Ready → Plan Review (or Blocked). Real work in every phase.
   --implement  In Progress → In Review. Phase A: stub comment only.
-               Phase B+ NOT YET IMPLEMENTED in Wave 3.
-  --release    Approved → Released. Phase B+ NOT YET IMPLEMENTED in Wave 3.
-  --watch      In Review → In Test. Phase B+ NOT YET IMPLEMENTED in Wave 3.
+               Phase B+: worktree + Claude + PR + parity post-check.
+  --watch      In Review → In Test. Phase B+: CI/preview poll + fix loop.
+  --release    Approved → Released. DEFERRED (staged Phase B); no-op for now.
   --phase X    Override the phase advertised to Claude (default: A).
   --dry-run    Build context bundles and print them; no board / issue
                mutations and no Claude invocation. Useful for golden-run
@@ -237,24 +257,21 @@ if node "$SCRIPT_DIR/lib/state-cli.mjs" factory:paused? --state-file "$STATE_FIL
   exit 0
 fi
 
-# ── Phase A skip-modes ──────────────────────────────────────────────────────
-# Phase B+ work for --release / --watch isn't part of Wave 3. The script
-# accepts the flags so the launchd plist stays stable across waves, but the
-# bodies are no-ops in Phase A.
+# ── Phase / mode gates ──────────────────────────────────────────────────────
+# Phase A: --release and --watch are no-ops (plan-only observation phase).
+# --implement falls through to its Phase A stub body below.
 if [[ "$PHASE" == "A" && ( "$MODE_RELEASE" -eq 1 || "$MODE_WATCH" -eq 1 ) ]]; then
   log "Phase A: --$MODE_NAME is a no-op (gated until Phase B)"
   log "=== factory-agent --$MODE_NAME completed in $(( $(date +%s) - START_TIME ))s ==="
   exit 0
 fi
-# Phase B+ work for --implement isn't part of Wave 3 either. Phase A
-# --implement (the stub comment) IS implemented below.
-if [[ "$PHASE" != "A" && "$MODE_IMPLEMENT" -eq 1 ]]; then
-  log "Phase $PHASE --implement is NOT YET IMPLEMENTED (Wave 3 ships Phase A only); exiting 0"
-  log "=== factory-agent --$MODE_NAME completed in $(( $(date +%s) - START_TIME ))s ==="
-  exit 0
-fi
-if [[ "$PHASE" != "A" && ( "$MODE_RELEASE" -eq 1 || "$MODE_WATCH" -eq 1 ) ]]; then
-  log "Phase $PHASE --$MODE_NAME is NOT YET IMPLEMENTED (Wave 3 ships Phase A only); exiting 0"
+# --release is DEFERRED in the staged Phase B rollout: --implement and --watch
+# ship first so plan→implement→preview quality can be proven on real web issues
+# before the factory is granted autonomous merge-to-main. Until --release is
+# built, the operator merges the PR by hand at the Approved drag. No-op here in
+# every phase so the launchd loop can keep the flag wired without effect.
+if [[ "$MODE_RELEASE" -eq 1 ]]; then
+  log "--release is deferred (staged Phase B ships --implement + --watch first); exiting 0"
   log "=== factory-agent --$MODE_NAME completed in $(( $(date +%s) - START_TIME ))s ==="
   exit 0
 fi
@@ -530,6 +547,183 @@ issue_already_impl_stubbed() {
     return 0
   fi
   return 1
+}
+
+# ── Phase B+ helpers (implement / watch) ────────────────────────────────────
+
+# Build the factory_implement bundle. $2 is the approved-plan comment object
+# (from extract_plan_comment: {id,user,body,createdAt}) or "null"; $3 is the
+# prior-PR object or "null"; $4 is the attempts counter.
+build_implement_bundle() {
+  local issue_entry="$1"
+  local approved_plan="${2:-null}"
+  local prior_pr="${3:-null}"
+  local attempts="${4:-0}"
+  local repo_head_ref
+  repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+  jq -n \
+    --argjson issue "$issue_entry" \
+    --argjson plan "$approved_plan" \
+    --argjson priorPr "$prior_pr" \
+    --arg attempts "$attempts" \
+    --arg allowlist "$SUPPORT_ALLOWLIST" \
+    --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
+    --arg phase "$PHASE" \
+    --arg repoNwo "JakubAnderwald/drafto" \
+    --arg headRef "$repo_head_ref" \
+    '{
+       kind: "factory_implement",
+       issue: $issue,
+       approvedPlan: (if $plan == null then null else {
+         commentId: ($plan.id),
+         url: ("https://github.com/JakubAnderwald/drafto/issues/" + ($issue.number|tostring) + "#issuecomment-" + ($plan.id|tostring)),
+         body: ($plan.body // ""),
+         createdAt: ($plan.createdAt // null)
+       } end),
+       priorPr: $priorPr,
+       attempts: ($attempts | tonumber? // 0),
+       comments: [],
+       config: {
+         phase: $phase,
+         allowlist: ($allowlist | split(",") | map(ascii_downcase | sub("^\\s+";"") | sub("\\s+$";""))),
+         oauthUserEmail: $oauthUserEmail
+       },
+       repo: { nameWithOwner: $repoNwo, headRef: $headRef }
+     }' \
+    | node "$SCRIPT_DIR/lib/factory-bundle.mjs"
+}
+
+# Build the factory_watch bundle. $2 approved-plan obj|null, $3 prior-PR obj,
+# $4 CI summary text, $5 unresolved-comments JSON array, $6 attempts.
+build_watch_bundle() {
+  local issue_entry="$1"
+  local approved_plan="${2:-null}"
+  local prior_pr="${3:-null}"
+  local ci_summary="${4:-}"
+  local unresolved="${5:-[]}"
+  local attempts="${6:-0}"
+  local repo_head_ref
+  repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+  jq -n \
+    --argjson issue "$issue_entry" \
+    --argjson plan "$approved_plan" \
+    --argjson priorPr "$prior_pr" \
+    --arg ciSummary "$ci_summary" \
+    --argjson unresolved "$unresolved" \
+    --arg attempts "$attempts" \
+    --arg allowlist "$SUPPORT_ALLOWLIST" \
+    --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
+    --arg phase "$PHASE" \
+    --arg repoNwo "JakubAnderwald/drafto" \
+    --arg headRef "$repo_head_ref" \
+    '{
+       kind: "factory_watch",
+       issue: $issue,
+       approvedPlan: (if $plan == null then null else {
+         commentId: ($plan.id),
+         url: ("https://github.com/JakubAnderwald/drafto/issues/" + ($issue.number|tostring) + "#issuecomment-" + ($plan.id|tostring)),
+         body: ($plan.body // ""),
+         createdAt: ($plan.createdAt // null)
+       } end),
+       priorPr: $priorPr,
+       ciSummary: $ciSummary,
+       unresolvedComments: $unresolved,
+       comments: [],
+       attempts: ($attempts | tonumber? // 0),
+       config: {
+         phase: $phase,
+         allowlist: ($allowlist | split(",") | map(ascii_downcase | sub("^\\s+";"") | sub("\\s+$";""))),
+         oauthUserEmail: $oauthUserEmail
+       },
+       repo: { nameWithOwner: $repoNwo, headRef: $headRef }
+     }' \
+    | node "$SCRIPT_DIR/lib/factory-bundle.mjs"
+}
+
+# Find the factory PR for an issue (head branch factory/issue-<n>). Prints the
+# {number,url,headRef,state} object or "null". Looks at all states so a retry
+# can find an existing OPEN PR (or a CLOSED one to reopen-by-push).
+find_prior_pr() {
+  local issue_num="$1"
+  gh pr list --repo JakubAnderwald/drafto --head "factory/issue-$issue_num" \
+    --state all --json number,url,headRefName,state --limit 1 2>>"$LOG_FILE" \
+    | jq -c '(.[0] // null) | if . == null then null else
+        { number: .number, url: .url, headRef: .headRefName, state: .state } end'
+}
+
+# Copy the gitignored env files CLAUDE.md lists into a fresh worktree. Phase B
+# is web-only so the mobile/desktop envs are usually absent — copy what exists,
+# never fail the run on a missing optional file.
+copy_worktree_env() {
+  local wt="$1"
+  local f
+  for f in \
+    apps/web/.env.local apps/web/.env.production \
+    apps/mobile/.env apps/mobile/.env.production \
+    apps/desktop/.env apps/desktop/.env.production; do
+    if [[ -f "$REPO_ROOT/$f" ]]; then
+      mkdir -p "$wt/$(dirname "$f")"
+      cp "$REPO_ROOT/$f" "$wt/$f" 2>>"$LOG_FILE" || log "WARNING: failed to copy $f into worktree"
+    fi
+  done
+  if [[ -f "$REPO_ROOT/apps/mobile/android/local.properties" ]]; then
+    mkdir -p "$wt/apps/mobile/android"
+    cp "$REPO_ROOT/apps/mobile/android/local.properties" \
+      "$wt/apps/mobile/android/local.properties" 2>>"$LOG_FILE" || true
+  fi
+}
+
+# Pick the slot index (0|1) to use for <issue>: the slot already assigned to it
+# (retry/continuation) if any, else the first free slot. Prints "" if both
+# slots are taken by other issues.
+slot_for_issue() {
+  local issue_num="$1"
+  local status_all
+  status_all=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-status \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo '{"slots":{}}')
+  local existing
+  existing=$(echo "$status_all" | jq -r --arg i "$issue_num" \
+    '.slots | to_entries | map(select(.value.issueNumber == $i)) | (.[0].key // "")')
+  if [[ -n "$existing" ]]; then echo "$existing"; return 0; fi
+  echo "$status_all" | jq -r \
+    '.slots | to_entries | map(select(.value.issueNumber == null)) | (.[0].key // "")'
+}
+
+# Parity / phase post-check on a PR's changed files. Args:
+#   $1 affected-platforms CSV (e.g. "web,mobile")
+#   $2 parity override ("web-only"|"mobile-only"|"desktop-only"|"")
+#   $3 newline-separated changed file paths (gh pr diff --name-only)
+# Prints a violation reason, or "" when the diff satisfies the mandate.
+parity_violation() {
+  local platforms_csv="$1"
+  local override="$2"
+  local diff_files="$3"
+  # Phase B hard rule: web only. Any mobile/desktop file is a violation,
+  # regardless of what platforms the spec claimed.
+  if [[ "$PHASE" == "B" ]] && echo "$diff_files" | grep -qE '^apps/(mobile|desktop)/'; then
+    echo "Phase B is web-only but the PR changes files under apps/mobile or apps/desktop"
+    return 0
+  fi
+  # A parity:*-only override authorises a single-platform PR — skip the
+  # cross-platform mandate entirely.
+  if [[ -n "$override" ]]; then echo ""; return 0; fi
+  local plat
+  IFS=',' read -ra _plats <<< "$platforms_csv"
+  for plat in "${_plats[@]}"; do
+    [[ -z "$plat" ]] && continue
+    case "$plat" in
+      web)
+        echo "$diff_files" | grep -qE '^apps/web/' \
+          || { echo "claimed platform 'web' has no apps/web changes"; return 0; } ;;
+      mobile)
+        echo "$diff_files" | grep -qE '^apps/mobile/' \
+          || { echo "claimed platform 'mobile' has no apps/mobile changes"; return 0; } ;;
+      desktop)
+        echo "$diff_files" | grep -qE '^apps/desktop/' \
+          || { echo "claimed platform 'desktop' has no apps/desktop changes"; return 0; } ;;
+    esac
+  done
+  echo ""
 }
 
 # ── --plan mode ─────────────────────────────────────────────────────────────
@@ -999,11 +1193,11 @@ and drag the card back to **Plan Review** (or **Ready** for a full restart).
   exit 0
 fi
 
-# ── --implement mode (Phase A only in Wave 3) ───────────────────────────────
+# ── --implement mode ────────────────────────────────────────────────────────
+# Phase A: post a one-time stub comment per In Progress card (observation
+# mode). Phase B+: the real engine — slot → worktree → Claude → PR → parity
+# post-check → In Review, with the slot + worktree persisting for --watch.
 if [[ "$MODE_IMPLEMENT" -eq 1 ]]; then
-  # Phase B+ falls through to the "NOT YET IMPLEMENTED" guard above and never
-  # reaches here. By this point PHASE == "A".
-
   if ! INPROG_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
       --status "In Progress" 2>>"$LOG_FILE"); then
     log "WARNING: query-status-items In Progress failed (transient?); skipping this --implement tick"
@@ -1014,15 +1208,32 @@ if [[ "$MODE_IMPLEMENT" -eq 1 ]]; then
     log "ERROR: unexpected non-numeric INPROG_COUNT='$INPROG_COUNT'"
     exit 1
   fi
-  log "--implement (Phase A): $INPROG_COUNT In Progress item(s)"
-
+  log "--implement (phase=$PHASE): $INPROG_COUNT In Progress item(s)"
   if [[ "$INPROG_COUNT" -eq 0 ]]; then
-    log "=== factory-agent --implement (Phase A stub) completed in $(( $(date +%s) - START_TIME ))s ==="
+    log "=== factory-agent --implement completed in $(( $(date +%s) - START_TIME ))s ==="
     exit 0
+  fi
+
+  # Phase B+ needs the implementer prompt + the claude / pnpm / git toolchain.
+  PROMPT_TEXT=""
+  if [[ "$PHASE" != "A" ]]; then
+    PROMPT_FILE="$SCRIPT_DIR/factory-prompt.md"
+    if [[ "$DRY_RUN" -eq 0 && ! -f "$PROMPT_FILE" ]]; then
+      log "ERROR: prompt file missing: $PROMPT_FILE"; exit 1
+    fi
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+      for required in claude pnpm git; do
+        if ! command -v "$required" >/dev/null 2>&1; then
+          log "ERROR: --implement (Phase B+) requires '$required' on PATH"; exit 1
+        fi
+      done
+      PROMPT_TEXT=$(cat "$PROMPT_FILE")
+    fi
   fi
 
   for ((IDX=0; IDX<INPROG_COUNT; IDX++)); do
     ITEM=$(echo "$INPROG_JSON" | jq ".[${IDX}]")
+    ITEM_ID=$(echo "$ITEM" | jq -r '.itemId')
     ISSUE_NUM=$(echo "$ITEM" | jq -r '.issueNumber')
     ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
     if [[ ",$ITEM_LABELS," == *",factory-pause,"* ]]; then
@@ -1030,22 +1241,19 @@ if [[ "$MODE_IMPLEMENT" -eq 1 ]]; then
       continue
     fi
 
-    if ! COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM"); then
-      log "WARNING: fetch_issue_comments failed for #$ISSUE_NUM; skipping"
-      continue
-    fi
-    if issue_already_impl_stubbed "$COMMENTS_JSON"; then
-      # Comment already posted on a prior tick — nothing more to do in Phase A.
-      continue
-    fi
-
-    log "Issue #$ISSUE_NUM: posting Phase A implement-stub comment"
-    if [[ "$DRY_RUN" -eq 1 ]]; then
-      log "DRY-RUN: would post implement-stub comment on #$ISSUE_NUM"
-      continue
-    fi
-    if ! gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
-        --body "🏭 **Phase A: implementation skipped.**
+    # ── Phase A: one-time stub comment ──
+    if [[ "$PHASE" == "A" ]]; then
+      if ! COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM"); then
+        log "WARNING: fetch_issue_comments failed for #$ISSUE_NUM; skipping"
+        continue
+      fi
+      if issue_already_impl_stubbed "$COMMENTS_JSON"; then continue; fi
+      log "Issue #$ISSUE_NUM: posting Phase A implement-stub comment"
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        log "DRY-RUN: would post implement-stub comment on #$ISSUE_NUM"; continue
+      fi
+      if ! gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+          --body "🏭 **Phase A: implementation skipped.**
 
 The Drafto factory is running in observation mode (Phase A — plan-only). \
 Your approved plan was recorded, but no code will be written until the \
@@ -1054,15 +1262,451 @@ factory is promoted to Phase B.
 See \`docs/operations/factory-runbook.md\` for phase-promotion criteria.
 
 <!-- drafto-factory-impl-phase-a -->" >>"$LOG_FILE" 2>&1; then
-      log "WARNING: gh issue comment failed for #$ISSUE_NUM"
+        log "WARNING: gh issue comment failed for #$ISSUE_NUM"; continue
+      fi
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field \
+        "$ISSUE_NUM" lastImplementAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       continue
     fi
-    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field \
-      "$ISSUE_NUM" lastImplementAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+
+    # ── Phase B+: real implementation ──
+    log "Issue #$ISSUE_NUM: implementing (phase=$PHASE)"
+
+    # Retry budget — park over-budget cards in Blocked for a human.
+    ATTEMPTS=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-attempts "$ISSUE_NUM" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "0")
+    [[ "$ATTEMPTS" =~ ^[0-9]+$ ]] || ATTEMPTS=0
+    if [[ "$ATTEMPTS" -ge "$FACTORY_MAX_ATTEMPTS" ]]; then
+      log "Issue #$ISSUE_NUM: retry budget exhausted ($ATTEMPTS); advancing to Blocked"
+      if [[ "$DRY_RUN" -eq 0 ]]; then
+        gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+          --body "🏭 **Implementation retry budget exhausted ($ATTEMPTS attempts).**
+
+Each attempt to implement the approved plan failed. Investigate via \
+\`logs/factory/factory-agent-implement-*.log\` on the Mac mini, then run \
+\`node scripts/lib/state-cli.mjs factory:reset-attempts $ISSUE_NUM\` and drag \
+the card back to **In Progress** to retry.
+
+<!-- drafto-factory-retry-exhausted -->" >>"$LOG_FILE" 2>&1 || true
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+      fi
+      continue
+    fi
+
+    if ! ISSUE_RECORD=$(fetch_issue_record "$ISSUE_NUM"); then
+      log "ERROR: fetch_issue_record failed for #$ISSUE_NUM"; continue
+    fi
+    if ! COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM"); then
+      log "ERROR: fetch_issue_comments failed for #$ISSUE_NUM"; continue
+    fi
+
+    # The approved plan must be present — In Progress means a human (or an
+    # allowlisted reporter's email) approved it. No plan → Blocked.
+    PLAN_COMMENT_JSON=$(extract_plan_comment "$COMMENTS_JSON")
+    if [[ -z "$PLAN_COMMENT_JSON" || "$PLAN_COMMENT_JSON" == "null" ]]; then
+      log "Issue #$ISSUE_NUM: no approved plan comment; advancing to Blocked"
+      if [[ "$DRY_RUN" -eq 0 ]]; then
+        gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+          --body "🏭 **No approved plan found.**
+
+This card is In Progress but has no factory plan comment to implement from. \
+Drag it back to **Ready** so the factory can plan it first.
+
+<!-- drafto-factory-no-plan -->" >>"$LOG_FILE" 2>&1 || true
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+      fi
+      continue
+    fi
+
+    PRIOR_PR=$(find_prior_pr "$ISSUE_NUM"); [[ -n "$PRIOR_PR" ]] || PRIOR_PR="null"
+
+    # Acquire a slot (reuse the issue's own slot on a retry).
+    SLOT=$(slot_for_issue "$ISSUE_NUM")
+    if [[ -z "$SLOT" ]]; then
+      log "Issue #$ISSUE_NUM: both worktree slots busy; deferring to a later tick"
+      break
+    fi
+
+    if ! BUNDLE=$(build_implement_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PRIOR_PR" "$ATTEMPTS"); then
+      log "ERROR: build_implement_bundle failed for #$ISSUE_NUM"; continue
+    fi
+    AFFECTED=$(echo "$BUNDLE" | jq -r '.spec.affectedPlatforms // [] | join(",")')
+    PARITY_OVERRIDE=$(echo "$BUNDLE" | jq -r '.parityOverride // ""')
+
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "DRY-RUN: implement bundle for #$ISSUE_NUM (slot $SLOT; printed to stdout only)"
+      echo "$BUNDLE"
+      continue
+    fi
+
+    # Claim the slot, create the worktree, copy env, install deps.
+    if ! node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-acquire "$SLOT" "$ISSUE_NUM" "$$" \
+        --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+      log "WARNING: slot-acquire $SLOT for #$ISSUE_NUM failed; deferring"; continue
+    fi
+    if ! WT_JSON=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" add --issue "$ISSUE_NUM" \
+        --root "$REPO_ROOT" --base origin/main 2>>"$LOG_FILE"); then
+      log "ERROR: worktree add failed for #$ISSUE_NUM; releasing slot $SLOT"
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      continue
+    fi
+    WT_PATH=$(echo "$WT_JSON" | jq -r '.path')
+    copy_worktree_env "$WT_PATH"
+
+    log "Issue #$ISSUE_NUM: pnpm install in worktree (slot $SLOT)"
+    if ! ( cd "$WT_PATH" && pnpm install --frozen-lockfile >>"$LOG_FILE" 2>&1 ); then
+      log "WARNING: frozen-lockfile install failed for #$ISSUE_NUM; retrying unfrozen"
+      if ! ( cd "$WT_PATH" && pnpm install >>"$LOG_FILE" 2>&1 ); then
+        log "ERROR: pnpm install failed for #$ISSUE_NUM; releasing slot + worktree"
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$ISSUE_NUM" --root "$REPO_ROOT" --force >>"$LOG_FILE" 2>&1 || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        continue
+      fi
+    fi
+
+    # Invoke claude inside the worktree with the implementer prompt + bundle.
+    CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
+      "$PROMPT_TEXT" "$BUNDLE")
+    log "Invoking claude for #$ISSUE_NUM (--implement, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s)"
+    CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
+    EXIT_CODE=0
+    ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$IMPLEMENT_TIMEOUT_SEC" \
+        node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions ) \
+        >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
+
+    if [[ $EXIT_CODE -eq 124 ]]; then
+      log "WARNING: claude timed out (>${IMPLEMENT_TIMEOUT_SEC}s) for #$ISSUE_NUM; keeping slot for retry"
+      rm -f "$CLAUDE_OUTPUT_FILE"
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      continue
+    elif [[ $EXIT_CODE -ne 0 ]]; then
+      log "ERROR: claude exited non-zero ($EXIT_CODE) for #$ISSUE_NUM --implement"
+      cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
+      rm -f "$CLAUDE_OUTPUT_FILE"
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      continue
+    fi
+
+    cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE"
+    SUMMARY_LINE=$(grep -E '^issue=[0-9]+ action=[a-z]+ pr=[^ ]+$' "$CLAUDE_OUTPUT_FILE" | tail -1 || true)
+    rm -f "$CLAUDE_OUTPUT_FILE"
+    if [[ -z "$SUMMARY_LINE" ]]; then
+      log "WARNING: no well-formed summary line from claude for #$ISSUE_NUM; keeping slot for retry"
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      continue
+    fi
+    log "Claude summary: $SUMMARY_LINE"
+    ACTION=$(echo "$SUMMARY_LINE" | sed -E 's/.*action=([^ ]+).*/\1/')
+    PR_URL=$(echo "$SUMMARY_LINE" | sed -E 's/.*pr=([^ ]+).*/\1/')
+
+    case "$ACTION" in
+      implemented|noop)
+        PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
+        if [[ -z "$PR_OBJ" || "$PR_OBJ" == "null" ]]; then
+          log "WARNING: #$ISSUE_NUM action=$ACTION but no PR on head factory/issue-$ISSUE_NUM; keeping slot for retry"
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          continue
+        fi
+        PR_NUM=$(echo "$PR_OBJ" | jq -r '.number')
+        # Parity / phase post-check. A transient `gh pr diff` failure must not
+        # masquerade as a violation, so we only enforce when we got the list.
+        if DIFF_FILES=$(gh pr diff "$PR_NUM" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE"); then
+          VIOLATION=$(parity_violation "$AFFECTED" "$PARITY_OVERRIDE" "$DIFF_FILES")
+        else
+          log "WARNING: gh pr diff failed for PR #$PR_NUM; skipping parity post-check this tick"
+          VIOLATION=""
+        fi
+        if [[ -n "$VIOLATION" ]]; then
+          log "Issue #$ISSUE_NUM: parity post-check failed: $VIOLATION → Blocked"
+          gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+            --body "🏭 **Parity post-check failed.**
+
+$VIOLATION
+
+The PR is left open for inspection. Correct the platform coverage, or for \
+legitimate single-platform work apply a \`parity:<platform>-only\` label and \
+drag the card back to **In Progress**.
+
+<!-- drafto-factory-parity-violation -->" >>"$LOG_FILE" 2>&1 || true
+          transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$ISSUE_NUM" --root "$REPO_ROOT" --force >>"$LOG_FILE" 2>&1 || true
+          continue
+        fi
+        # Happy path: advance to In Review. KEEP slot + worktree for --watch.
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review" || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastImplementAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        log "Issue #$ISSUE_NUM: advanced to In Review (PR $PR_URL; slot $SLOT retained for --watch)"
+        ;;
+      blocked)
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastError "implementer returned blocked" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$ISSUE_NUM" --root "$REPO_ROOT" --force >>"$LOG_FILE" 2>&1 || true
+        log "Issue #$ISSUE_NUM: implementer blocked; slot $SLOT released"
+        ;;
+      *)
+        log "WARNING: unrecognised action '$ACTION' from claude for #$ISSUE_NUM; keeping slot for retry"
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        ;;
+    esac
   done
 
-  log "=== factory-agent --implement (Phase A stub) completed in $(( $(date +%s) - START_TIME ))s ==="
+  log "=== factory-agent --implement completed in $(( $(date +%s) - START_TIME ))s ==="
+  exit 0
+fi
+
+# ── --watch mode (Phase B+) ─────────────────────────────────────────────────
+# Two responsibilities each tick:
+#   1. Cleanup sweep — release slots + remove worktrees for any issue that has
+#      left the In Review / In Test states (merged by the operator, Blocked,
+#      Done, or closed). Without this the two slots would leak.
+#   2. In Review → In Test — for each open factory PR: if CI is failing or
+#      review comments are unresolved, resume the worktree and invoke Claude
+#      (factory-watch-prompt) to push one fix; once CI is green AND a Vercel
+#      preview is reachable, advance the card to In Test and post the URL.
+# PHASE is guaranteed != "A" here (Phase A --watch no-op'd at the gate above).
+if [[ "$MODE_WATCH" -eq 1 ]]; then
+  WATCH_PROMPT_FILE="$SCRIPT_DIR/factory-watch-prompt.md"
+  if [[ "$DRY_RUN" -eq 0 && ! -f "$WATCH_PROMPT_FILE" ]]; then
+    log "ERROR: prompt file missing: $WATCH_PROMPT_FILE"; exit 1
+  fi
+  if [[ "$DRY_RUN" -eq 0 ]]; then
+    for required in claude pnpm git; do
+      if ! command -v "$required" >/dev/null 2>&1; then
+        log "ERROR: --watch (Phase B+) requires '$required' on PATH"; exit 1
+      fi
+    done
+  fi
+
+  # ── 1. Cleanup sweep ──
+  SLOTS_JSON=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-status \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo '{"slots":{}}')
+  for SLOT in 0 1; do
+    SLOT_ISSUE=$(echo "$SLOTS_JSON" | jq -r --arg s "$SLOT" '.slots[$s].issueNumber // ""')
+    [[ -z "$SLOT_ISSUE" || "$SLOT_ISSUE" == "null" ]] && continue
+    ISSUE_META=$(gh issue view "$SLOT_ISSUE" --repo JakubAnderwald/drafto \
+      --json state,labels 2>>"$LOG_FILE" || echo "")
+    if [[ -z "$ISSUE_META" ]]; then
+      log "WARNING: slot $SLOT issue #$SLOT_ISSUE: gh issue view failed; leaving slot for next tick"
+      continue
+    fi
+    STILL_ACTIVE=$(echo "$ISSUE_META" | jq -r \
+      '((.state == "OPEN") and ((.labels | map(.name)) | any(. == "status:in-review" or . == "status:in-test")))')
+    if [[ "$STILL_ACTIVE" != "true" ]]; then
+      log "Slot $SLOT: issue #$SLOT_ISSUE left In Review/In Test; releasing slot + worktree"
+      if [[ "$DRY_RUN" -eq 0 ]]; then
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$SLOT_ISSUE" --root "$REPO_ROOT" --force --delete-branch >>"$LOG_FILE" 2>&1 || true
+      fi
+    fi
+  done
+
+  # ── 2. In Review → In Test ──
+  if ! REVIEW_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
+      --status "In Review" 2>>"$LOG_FILE"); then
+    log "WARNING: query-status-items In Review failed (transient?); skipping --watch this tick"
+    exit 0
+  fi
+  REVIEW_COUNT=$(echo "$REVIEW_JSON" | jq 'length' 2>/dev/null || echo "0")
+  if ! [[ "$REVIEW_COUNT" =~ ^[0-9]+$ ]]; then
+    log "ERROR: unexpected non-numeric REVIEW_COUNT='$REVIEW_COUNT'"; exit 1
+  fi
+  log "--watch (phase=$PHASE): $REVIEW_COUNT In Review item(s)"
+
+  WATCH_PROMPT_TEXT=""
+  if [[ "$DRY_RUN" -eq 0 && "$REVIEW_COUNT" -gt 0 ]]; then WATCH_PROMPT_TEXT=$(cat "$WATCH_PROMPT_FILE"); fi
+
+  for ((IDX=0; IDX<REVIEW_COUNT; IDX++)); do
+    ITEM=$(echo "$REVIEW_JSON" | jq ".[${IDX}]")
+    ITEM_ID=$(echo "$ITEM" | jq -r '.itemId')
+    ISSUE_NUM=$(echo "$ITEM" | jq -r '.issueNumber')
+    ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
+    if [[ ",$ITEM_LABELS," == *",factory-pause,"* ]]; then
+      log "Issue #$ISSUE_NUM: skipping (factory-pause label set)"; continue
+    fi
+
+    PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
+    if [[ -z "$PR_OBJ" || "$PR_OBJ" == "null" ]]; then
+      log "Issue #$ISSUE_NUM: In Review but no factory PR found; skipping (implement may not have completed)"
+      continue
+    fi
+    PR_NUM=$(echo "$PR_OBJ" | jq -r '.number')
+    PR_URL=$(echo "$PR_OBJ" | jq -r '.url')
+
+    # Pull CI rollup + the Vercel preview URL from the PR in one call.
+    PR_VIEW=$(gh pr view "$PR_NUM" --repo JakubAnderwald/drafto \
+      --json state,mergeable,statusCheckRollup,comments 2>>"$LOG_FILE" || echo "")
+    if [[ -z "$PR_VIEW" ]]; then
+      log "WARNING: gh pr view #$PR_NUM failed (transient?); skipping this tick"; continue
+    fi
+
+    # statusCheckRollup mixes CheckRun (.status + .conclusion) and StatusContext
+    # (.state) entries, so normalise: a check's outcome is `.conclusion //
+    # .state`, and "pending" is a CheckRun still QUEUED/IN_PROGRESS or a
+    # StatusContext in PENDING/EXPECTED.
+    FAILING=$(echo "$PR_VIEW" | jq -r '
+      [ .statusCheckRollup[]? | (.conclusion // .state // "") as $c
+        | select($c == "FAILURE" or $c == "TIMED_OUT" or $c == "CANCELLED"
+                 or $c == "ACTION_REQUIRED" or $c == "ERROR" or $c == "STARTUP_FAILURE") ] | length')
+    PENDING=$(echo "$PR_VIEW" | jq -r '
+      [ .statusCheckRollup[]? | select(
+          (.status // "") == "QUEUED" or (.status // "") == "IN_PROGRESS"
+          or (.state // "") == "PENDING" or (.state // "") == "EXPECTED") ] | length')
+    [[ "$FAILING" =~ ^[0-9]+$ ]] || FAILING=0
+    [[ "$PENDING" =~ ^[0-9]+$ ]] || PENDING=0
+
+    # Vercel preview URL: the Vercel bot posts a comment with the preview link,
+    # and the deployment also surfaces as a rollup target URL. Search both.
+    PREVIEW_URL=$(echo "$PR_VIEW" | jq -r '
+      ([ .comments[]? | select((.author.login // "") | test("vercel"; "i")) | .body ] | last // "")
+      + " " +
+      ([ .statusCheckRollup[]? | select(((.context // .name // "") | test("vercel"; "i")))
+         | (.targetUrl // .detailsUrl // "") ] | join(" "))' \
+      | grep -oE 'https://[a-zA-Z0-9._-]*vercel\.app[^ )]*' | head -1 || true)
+
+    if [[ "$FAILING" -gt 0 ]]; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM has $FAILING failing check(s) → fix loop"
+
+      # Retry budget for the fix loop.
+      ATTEMPTS=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-attempts "$ISSUE_NUM" \
+        --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "0")
+      [[ "$ATTEMPTS" =~ ^[0-9]+$ ]] || ATTEMPTS=0
+      if [[ "$ATTEMPTS" -ge "$FACTORY_MAX_ATTEMPTS" ]]; then
+        log "Issue #$ISSUE_NUM: watch retry budget exhausted ($ATTEMPTS); advancing to Blocked"
+        if [[ "$DRY_RUN" -eq 0 ]]; then
+          gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+            --body "🏭 **CI fix retry budget exhausted ($ATTEMPTS attempts).**
+
+The factory could not get CI green on PR #$PR_NUM after $ATTEMPTS fix passes. \
+A human should take a look. Reset with \
+\`node scripts/lib/state-cli.mjs factory:reset-attempts $ISSUE_NUM\` once fixed.
+
+<!-- drafto-factory-retry-exhausted -->" >>"$LOG_FILE" 2>&1 || true
+          transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+        fi
+        continue
+      fi
+
+      # Build the watch bundle: approved plan + PR + CI summary + unresolved comments.
+      if ! ISSUE_RECORD=$(fetch_issue_record "$ISSUE_NUM"); then
+        log "WARNING: fetch_issue_record failed for #$ISSUE_NUM; skipping"; continue
+      fi
+      if ! COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM"); then
+        log "WARNING: fetch_issue_comments failed for #$ISSUE_NUM; skipping"; continue
+      fi
+      PLAN_COMMENT_JSON=$(extract_plan_comment "$COMMENTS_JSON")
+      [[ -n "$PLAN_COMMENT_JSON" ]] || PLAN_COMMENT_JSON="null"
+      CI_SUMMARY=$(echo "$PR_VIEW" | jq -r '
+        [ .statusCheckRollup[]? | (.conclusion // .state // "") as $c
+          | select($c == "FAILURE" or $c == "TIMED_OUT" or $c == "CANCELLED"
+                   or $c == "ACTION_REQUIRED" or $c == "ERROR" or $c == "STARTUP_FAILURE")
+          | ((.name // .context // "check") + " — " + $c
+             + (if (.detailsUrl // .targetUrl) then " (" + (.detailsUrl // .targetUrl) + ")" else "" end)) ]
+        | join("\n")')
+      UNRESOLVED=$(echo "$PR_VIEW" | jq -c '
+        [ .comments[]? | select((.author.login // "") | test("vercel|github-actions"; "i") | not)
+          | { id: .id, user: { login: (.author.login // "") }, body: (.body // "") } ]')
+      [[ -n "$UNRESOLVED" ]] || UNRESOLVED="[]"
+
+      if ! BUNDLE=$(build_watch_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PR_OBJ" "$CI_SUMMARY" "$UNRESOLVED" "$ATTEMPTS"); then
+        log "ERROR: build_watch_bundle failed for #$ISSUE_NUM"; continue
+      fi
+
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        log "DRY-RUN: watch bundle for #$ISSUE_NUM (printed to stdout only)"
+        echo "$BUNDLE"; continue
+      fi
+
+      # Resume the worktree (recreate if a prior cleanup removed it).
+      SLOT=$(slot_for_issue "$ISSUE_NUM")
+      if [[ -z "$SLOT" ]]; then
+        log "Issue #$ISSUE_NUM: no slot free to resume the fix; deferring"; continue
+      fi
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-acquire "$SLOT" "$ISSUE_NUM" "$$" \
+        --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      if ! WT_JSON=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" add --issue "$ISSUE_NUM" \
+          --root "$REPO_ROOT" --base origin/main 2>>"$LOG_FILE"); then
+        log "ERROR: worktree resume failed for #$ISSUE_NUM"; continue
+      fi
+      WT_PATH=$(echo "$WT_JSON" | jq -r '.path')
+      copy_worktree_env "$WT_PATH"
+      ( cd "$WT_PATH" && pnpm install --frozen-lockfile >>"$LOG_FILE" 2>&1 ) \
+        || ( cd "$WT_PATH" && pnpm install >>"$LOG_FILE" 2>&1 ) || true
+
+      CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
+        "$WATCH_PROMPT_TEXT" "$BUNDLE")
+      log "Invoking claude for #$ISSUE_NUM (--watch fix, slot $SLOT, cap ${WATCH_TIMEOUT_SEC}s)"
+      CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
+      EXIT_CODE=0
+      ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$WATCH_TIMEOUT_SEC" \
+          node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions ) \
+          >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
+
+      if [[ $EXIT_CODE -ne 0 ]]; then
+        [[ $EXIT_CODE -eq 124 ]] && log "WARNING: claude timed out for #$ISSUE_NUM --watch fix" \
+          || log "ERROR: claude exited $EXIT_CODE for #$ISSUE_NUM --watch fix"
+        cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
+        rm -f "$CLAUDE_OUTPUT_FILE"
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        continue
+      fi
+      cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE"
+      SUMMARY_LINE=$(grep -E '^issue=[0-9]+ action=[a-z]+ pr=[^ ]+$' "$CLAUDE_OUTPUT_FILE" | tail -1 || true)
+      rm -f "$CLAUDE_OUTPUT_FILE"
+      WACTION=$(echo "${SUMMARY_LINE:-}" | sed -E 's/.*action=([^ ]+).*/\1/')
+      case "$WACTION" in
+        fixed)
+          log "Issue #$ISSUE_NUM: pushed a fix; leaving In Review for CI re-check next tick"
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastWatchAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          ;;
+        noop)
+          log "Issue #$ISSUE_NUM: watcher found nothing actionable (transient CI?); leaving In Review"
+          ;;
+        blocked)
+          transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastError "watcher returned blocked" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          ;;
+        *)
+          log "WARNING: no/unknown watcher action for #$ISSUE_NUM; bumping attempts"
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          ;;
+      esac
+      continue
+    fi
+
+    if [[ "$PENDING" -gt 0 ]]; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM has $PENDING check(s) still running; waiting"
+      continue
+    fi
+
+    # CI green. Need a reachable Vercel preview before advancing to In Test.
+    if [[ -z "$PREVIEW_URL" ]]; then
+      log "Issue #$ISSUE_NUM: CI green but no Vercel preview URL yet; waiting"
+      continue
+    fi
+    log "Issue #$ISSUE_NUM: CI green + preview $PREVIEW_URL → In Test"
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "DRY-RUN: would advance #$ISSUE_NUM to In Test and post preview URL"; continue
+    fi
+    transition_status "$ITEM_ID" "$ISSUE_NUM" "In Test" || true
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastWatchAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+      --body "🏭 **Preview ready — In Test.**
+
+CI is green and the Vercel preview is live: $PREVIEW_URL
+
+Review it, then drag the card to **Approved** to merge (the operator merges \
+the PR by hand in this staged Phase B rollout).
+
+<!-- drafto-factory-in-test -->" >>"$LOG_FILE" 2>&1 || true
+  done
+
+  log "=== factory-agent --watch completed in $(( $(date +%s) - START_TIME ))s ==="
   exit 0
 fi
 

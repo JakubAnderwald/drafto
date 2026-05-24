@@ -1,6 +1,6 @@
 # Dark factory
 
-**Status:** rolling out (Phase A) **Updated:** 2026-05-06
+**Status:** rolling out (Phase B engine built; runtime phase set on the plist) **Updated:** 2026-05-24
 
 ## What it is
 
@@ -8,7 +8,10 @@ A "vibe-kanban-style" pipeline where moving a card on a GitHub Projects v2 board
 
 ## Current state
 
-**Phase A (Plan-only).** The factory's `--plan` mode is wired up: it watches `status:ready` issues, posts a structured plan as an issue comment, and stops at `status:plan-review`. The `--implement` mode is a no-op at this phase. Promote past A only after ≥5 clean runs without human intervention.
+The runtime phase is set by `FACTORY_PHASE` on the launchd plist (see the runbook). The phases:
+
+- **Phase A (Plan-only).** `--plan` watches `status:ready` issues, posts a structured plan comment, and stops at `status:plan-review`. `--implement` posts a one-time "implementation skipped" stub; `--watch` / `--release` are no-ops.
+- **Phase B (Web-only, staged).** Approving a plan (drag Plan Review → In Progress) runs the real engine: `--implement` takes a worktree slot, implements the approved plan in `worktrees/factory-issue-<n>`, opens a PR, and runs the parity post-check (mobile/desktop changes are auto-blocked — Phase B is web-only). `--watch` then drives the PR: it runs a `/push`-style fix loop on failing CI / unresolved review comments and, once CI is green and the Vercel preview is reachable, advances the card to **In Test** and posts the preview URL. **`--release` (auto-merge on Approved) is deliberately deferred in this staged rollout** — the operator merges the PR by hand at the Approved drag while plan→implement→preview quality is proven. Promote per phase only after ≥5 clean runs without human intervention.
 
 ## The board
 

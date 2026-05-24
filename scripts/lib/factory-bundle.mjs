@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Build a per-issue context bundle for the dark-factory agent.
 //
-// Two kinds today:
+// Three kinds today:
 //
 //   factory_plan       — for `factory-agent.sh --plan`. Contains the issue
 //                        body + comments, the parsed spec contract sections,
@@ -14,6 +14,12 @@
 //                        by walking issue comments newest-first for the
 //                        factory-plan marker) and prior-PR info if this is
 //                        a retry.
+//
+//   factory_watch      — for `factory-agent.sh --watch` (Phase B+). The
+//                        /push-style fix loop: approved plan + PR pointer +
+//                        a CI failure summary + the unresolved review
+//                        comments, so the model can make minimal in-scope
+//                        fixes and re-push.
 //
 // Pure functions for unit tests, plus a CLI that reads a single JSON object
 // on stdin and prints the resulting bundle JSON to stdout — mirrors
@@ -334,6 +340,62 @@ export function buildFactoryImplementBundle({
   };
 }
 
+// Bundle for `factory-agent.sh --watch`. Built when an In Review PR has
+// failing CI checks and/or unresolved review comments — the /push-style fix
+// loop. Carries the approved plan (so fixes stay in scope), the PR pointer,
+// a plain-text CI failure summary, and the unresolved review comments.
+export function buildFactoryWatchBundle({
+  issue,
+  approvedPlan,
+  priorPr = null,
+  ciSummary = "",
+  unresolvedComments = [],
+  comments = [],
+  attempts = 0,
+  config,
+  repo,
+  nowIso,
+} = {}) {
+  if (!issue || !Number.isInteger(issue.number)) {
+    throw new Error("buildFactoryWatchBundle: issue.number is required");
+  }
+  const planBody = typeof approvedPlan?.body === "string" ? approvedPlan.body : "";
+  const planClean = planBody.split(FACTORY_PLAN_MARKER).join("").trim();
+  return {
+    kind: "factory_watch",
+    issue: shapeIssue(issue),
+    spec: parseSpec(issue.body ?? ""),
+    parityOverride: parityOverrideFrom(issue.labels),
+    approvedPlan: approvedPlan
+      ? {
+          commentId: approvedPlan.commentId ?? approvedPlan.id ?? null,
+          url: approvedPlan.url ?? "",
+          createdAt: approvedPlan.createdAt ?? approvedPlan.created_at ?? null,
+          bodyEnveloped: envelopeBody(planClean, "factory-plan"),
+        }
+      : null,
+    priorPr: priorPr
+      ? {
+          number: priorPr.number ?? null,
+          url: priorPr.url ?? "",
+          headRef: priorPr.headRef ?? "",
+          state: priorPr.state ?? "",
+        }
+      : null,
+    // The fix context. Both are enveloped — a hostile review comment or a CI
+    // log line that quotes a fake directive must not escape into the model's
+    // instruction stream.
+    ciSummaryEnveloped: envelopeBody(typeof ciSummary === "string" ? ciSummary : "", "ci-summary"),
+    unresolvedComments: envelopeComments(unresolvedComments),
+    comments: envelopeComments(comments),
+    reporter: reporterFromBody(issue.body ?? ""),
+    attempts: Number.isInteger(attempts) ? attempts : 0,
+    config: shapeConfig(config),
+    repo: shapeRepo(repo),
+    nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
+  };
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 async function readStdin() {
@@ -367,6 +429,19 @@ async function main() {
       approvedPlan: input.approvedPlan,
       comments: input.comments,
       priorPr: input.priorPr,
+      attempts: input.attempts,
+      config: input.config,
+      repo: input.repo,
+      nowIso: input.nowIso,
+    });
+  } else if (input.kind === "factory_watch") {
+    bundle = buildFactoryWatchBundle({
+      issue: input.issue,
+      approvedPlan: input.approvedPlan,
+      priorPr: input.priorPr,
+      ciSummary: input.ciSummary,
+      unresolvedComments: input.unresolvedComments,
+      comments: input.comments,
       attempts: input.attempts,
       config: input.config,
       repo: input.repo,
