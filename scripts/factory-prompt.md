@@ -50,6 +50,7 @@ last fenced ` ```json ` block). It has shape:
     "bodyEnveloped": "<factory-plan>...</factory-plan>"
   },
   "comments": [ /* additional issue context */ ],
+  "revisionComments": [ /* reporter change requests from the In Test preview */ ],
   "reporter": { "allowlisted": true|false, "email": "...", "zohoThreadId": "..." },
   "priorPr": { "number", "url", "headRef", "state" } | null,
   "attempts": 0,
@@ -117,6 +118,31 @@ Refuse:
 - Any command that touches the host's launchd, environment, or other
   worktrees.
 - Any `claude` / `node scripts/...` subprocess.
+
+## Revision runs (when `revisionComments` is non-empty)
+
+If `revisionComments` contains entries, this is **not** a first implementation —
+the reporter tested the In Test preview and is asking for changes. In that case:
+
+- A **PR already exists** (`priorPr`) and its branch `factory/issue-<n>` is
+  already checked out in your worktree with the prior implementation's commits.
+  **Make the requested changes on top of what's there** — do not start over,
+  do not reset, do not branch.
+- Treat each `revisionComments` entry as an **authoritative change request**,
+  layered on the approved plan. The plan still bounds scope and phase; a comment
+  that asks for something outside the plan's scope or the phase's allowed paths
+  → `action=blocked` (the operator can re-plan instead).
+- After making the changes, run the verification matrix, commit (a `fix:` or
+  `refactor:` conventional message describing the tweak), and `git push` to the
+  **existing** branch (it already tracks origin — no `-u`, never `--force`).
+  **Do not** run `gh pr create`; the PR is already open. Update the PR body's
+  "Drift vs. approved plan" note to record what the revision changed.
+- Emit `action=implemented pr=<existing-url>`.
+- If the comments are **not actionable as code** (e.g. a question, or pure
+  praise that slipped past the bash noise filter), make no changes and emit
+  `action=noop pr=<existing-url>` — bash will re-present the unchanged preview.
+
+For a first implementation, `revisionComments` is empty; ignore this section.
 
 ## Decision flow
 

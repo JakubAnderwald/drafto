@@ -297,6 +297,7 @@ export function buildFactoryImplementBundle({
   issue,
   approvedPlan,
   comments = [],
+  revisionComments = [],
   priorPr = null,
   attempts = 0,
   config,
@@ -324,6 +325,9 @@ export function buildFactoryImplementBundle({
         }
       : null,
     comments: envelopeComments(comments),
+    // Reporter change requests from the In Test preview, to apply on top of the
+    // approved plan, on the existing PR branch. Empty on a first implementation.
+    revisionComments: envelopeComments(revisionComments),
     reporter: reporterFromBody(issue.body ?? ""),
     priorPr: priorPr
       ? {
@@ -428,6 +432,7 @@ async function main() {
       issue: input.issue,
       approvedPlan: input.approvedPlan,
       comments: input.comments,
+      revisionComments: input.revisionComments,
       priorPr: input.priorPr,
       attempts: input.attempts,
       config: input.config,
