@@ -540,6 +540,99 @@ if [[ "$MODE_PLAN" -eq 1 ]]; then
     exit 1
   fi
 
+  # ── Orphaned-Planning rescue sweep ──────────────────────────────────────────
+  # "Planning" is a transient, factory-owned status: both the Ready sweep and
+  # the replan sweep below park a card there only for the span of a single
+  # claude invocation, then move it on (→ Plan Review, or → Blocked). Every
+  # --plan tick holds the per-mode lock (logs/factory-plan.lock), so no other
+  # planner can be mid-flight when this tick begins — which means ANY card
+  # already sitting in Planning right now is an orphan a previous tick left
+  # behind after dying between "→ Planning" and its follow-up move. That
+  # happens when the tick is killed mid-transition (a launchd SIGTERM during
+  # the set-status write stranded #418 this way), or when a claude call times
+  # out / errors and the card is left parked at Planning. Planning is in
+  # neither the Ready queue nor the Plan Review queue, so nothing else would
+  # ever pick these up — we rescue them here, BEFORE the Ready sweep parks any
+  # fresh card in Planning, which guarantees we only ever touch real orphans.
+  #
+  #   • plan comment present → the plan was produced; only the Planning →
+  #     Plan Review hop is missing. Re-emit it. The replan sweep later in THIS
+  #     same tick then handles any operator feedback already waiting on it.
+  #   • no plan comment      → the planner never posted. Send the card back to
+  #     Ready so this tick's Ready sweep re-plans from scratch, bumping the
+  #     attempts counter (claude timeouts don't, so this is what bounds a
+  #     persistently-dying card) so it ends up Blocked rather than looping.
+  if RESCUE_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
+      --status Planning 2>>"$LOG_FILE"); then
+    RESCUE_COUNT=$(echo "$RESCUE_JSON" | jq 'length' 2>/dev/null || echo "0")
+    if ! [[ "$RESCUE_COUNT" =~ ^[0-9]+$ ]]; then RESCUE_COUNT=0; fi
+    if [[ "$RESCUE_COUNT" -gt 0 ]]; then
+      log "--plan rescue sweep: $RESCUE_COUNT orphaned Planning item(s) on the board"
+    fi
+    for ((IDX=0; IDX<RESCUE_COUNT; IDX++)); do
+      ITEM=$(echo "$RESCUE_JSON" | jq ".[${IDX}]")
+      ITEM_ID=$(echo "$ITEM" | jq -r '.itemId')
+      ISSUE_NUM=$(echo "$ITEM" | jq -r '.issueNumber')
+      ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
+
+      if [[ ",$ITEM_LABELS," == *",factory-pause,"* ]]; then
+        log "Issue #$ISSUE_NUM: skipping rescue (factory-pause label set)"
+        continue
+      fi
+
+      if ! COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM"); then
+        log "WARNING: fetch_issue_comments failed for #$ISSUE_NUM (rescue sweep); skipping"
+        continue
+      fi
+
+      if issue_already_planned "$COMMENTS_JSON"; then
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+          log "DRY-RUN: would rescue orphaned #$ISSUE_NUM (plan comment present) → Plan Review"
+          continue
+        fi
+        log "Issue #$ISSUE_NUM: orphaned in Planning with a plan comment → restoring to Plan Review"
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Plan Review" || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" \
+          --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        continue
+      fi
+
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        log "DRY-RUN: would rescue orphaned #$ISSUE_NUM (no plan comment) → Ready"
+        continue
+      fi
+      ATTEMPTS=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
+        --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.attempts // 0' || echo "0")
+      if [[ "$ATTEMPTS" -ge 5 ]]; then
+        log "Issue #$ISSUE_NUM: orphaned in Planning, no plan comment, retry budget exhausted ($ATTEMPTS) → Blocked"
+        # Idempotent: post the exhaustion notice at most once. If a prior tick
+        # already posted it but the → Blocked transition then failed (leaving
+        # the card in Planning with attempts still ≥5), this guard stops every
+        # subsequent rescue tick re-posting the same comment. Same marker-based
+        # check the issue_already_* helpers use.
+        if ! echo "$COMMENTS_JSON" | jq -e \
+            'any(.[]; .body | test("<!-- drafto-factory-retry-exhausted -->"))' >/dev/null 2>&1; then
+          gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+            --body "🏭 **Planning stalled ($ATTEMPTS attempts).**
+
+The factory kept starting to plan this issue but never managed to post a plan — \
+claude timed out or the tick was killed mid-flight each time. Investigate via \
+\`logs/factory/factory-agent-plan-*.log\` on the Mac mini, then run \
+\`node scripts/lib/state-cli.mjs factory:reset-attempts $ISSUE_NUM\` and drag the \
+card back to **Ready**.
+
+<!-- drafto-factory-retry-exhausted -->" >>"$LOG_FILE" 2>&1 || true
+        fi
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+      else
+        log "Issue #$ISSUE_NUM: orphaned in Planning with no plan comment → returning to Ready for a fresh plan"
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Ready" || true
+      fi
+    done
+  else
+    log "WARNING: query-status-items Planning failed (transient?); skipping rescue sweep this tick"
+  fi
+
   # Pull the Ready queue from the board. Transient lookup → skip this tick.
   if ! READY_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
       --status Ready 2>>"$LOG_FILE"); then
@@ -653,7 +746,8 @@ See \`docs/features/dark-factory.md\` for the spec contract.
     if [[ $EXIT_CODE -eq 124 ]]; then
       log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC}s) for #$ISSUE_NUM --plan — skipping; next tick retries"
       rm -f "$CLAUDE_OUTPUT_FILE"
-      # Leave card at Planning so next tick picks it up.
+      # Leave card at Planning; the next tick's rescue sweep (top of --plan)
+      # returns it to Ready — it has no plan comment yet — so planning restarts.
       continue
     elif [[ $EXIT_CODE -ne 0 ]]; then
       log "ERROR: claude exited non-zero ($EXIT_CODE) for #$ISSUE_NUM --plan"

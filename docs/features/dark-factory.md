@@ -86,6 +86,10 @@ After filing, drag the card to **Ready** on the board. The factory picks it up o
 2. Check the agent saw the card on its latest tick: `logs/launchd-factory-stdout.log` (or `logs/factory-plan-*.log`) should mention the board fetch. A `factory-project find-project failed` warning means the `gh` token on the Mac mini is missing the `project` scope — run `gh auth refresh -s project`.
 3. If the tick ran and the card was in scope but ignored: check the issue for a `factory-pause` label, or `logs/factory-state.json` for a global `paused: true` flag, or the issue's retry budget under `issues[<n>].attempts`.
 
+### "A card is stuck in Planning"
+
+`Planning` is a transient, factory-owned status — a card should only sit there for the seconds a planner runs. If one is parked there across ticks, an earlier `--plan` tick died between moving the card to Planning and its follow-up transition (e.g. a launchd SIGTERM during the board write, which stranded #418, or a claude timeout). You don't need to do anything: the **rescue sweep** at the top of every `--plan` tick re-floats orphaned Planning cards automatically — if the plan comment was already posted it goes back to **Plan Review**, otherwise it returns to **Ready** to be re-planned (bounded by the `attempts` budget, so a card that keeps dying ends up **Blocked**). To recover immediately instead of waiting for the next tick, drag the card to **Plan Review** (plan comment present) or **Ready** (no plan comment) by hand.
+
 ### "The plan comment looks wrong / Claude misread the issue"
 
 This is exactly what the Plan Review gate catches. Don't drag to In Progress. Two paths:
