@@ -605,8 +605,15 @@ if [[ "$MODE_PLAN" -eq 1 ]]; then
         --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.attempts // 0' || echo "0")
       if [[ "$ATTEMPTS" -ge 5 ]]; then
         log "Issue #$ISSUE_NUM: orphaned in Planning, no plan comment, retry budget exhausted ($ATTEMPTS) → Blocked"
-        gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
-          --body "🏭 **Planning stalled ($ATTEMPTS attempts).**
+        # Idempotent: post the exhaustion notice at most once. If a prior tick
+        # already posted it but the → Blocked transition then failed (leaving
+        # the card in Planning with attempts still ≥5), this guard stops every
+        # subsequent rescue tick re-posting the same comment. Same marker-based
+        # check the issue_already_* helpers use.
+        if ! echo "$COMMENTS_JSON" | jq -e \
+            'any(.[]; .body | test("<!-- drafto-factory-retry-exhausted -->"))' >/dev/null 2>&1; then
+          gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+            --body "🏭 **Planning stalled ($ATTEMPTS attempts).**
 
 The factory kept starting to plan this issue but never managed to post a plan — \
 claude timed out or the tick was killed mid-flight each time. Investigate via \
@@ -615,6 +622,7 @@ claude timed out or the tick was killed mid-flight each time. Investigate via \
 card back to **Ready**.
 
 <!-- drafto-factory-retry-exhausted -->" >>"$LOG_FILE" 2>&1 || true
+        fi
         transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
       else
         log "Issue #$ISSUE_NUM: orphaned in Planning with no plan comment → returning to Ready for a fresh plan"

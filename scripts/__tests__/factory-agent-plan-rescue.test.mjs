@@ -73,6 +73,10 @@ describe("factory-agent --plan orphaned-Planning rescue sweep", () => {
     assert.match(block, /transition_status "\$ITEM_ID" "\$ISSUE_NUM" "Ready"/);
     // exhausted retry budget → Blocked (bounds a persistently-dying card).
     assert.match(block, /transition_status "\$ITEM_ID" "\$ISSUE_NUM" "Blocked"/);
+    // the exhaustion notice is idempotency-guarded so a stuck → Blocked
+    // transition can't make every subsequent tick re-post the same comment.
+    assert.match(block, /jq -e/);
+    assert.match(block, /test\("<!-- drafto-factory-retry-exhausted -->"\)/);
     // honours the per-card kill switch.
     assert.match(block, /factory-pause/);
   });
