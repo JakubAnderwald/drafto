@@ -97,7 +97,7 @@ There is no "auto-promote". The phase change is always a deliberate operator act
 
 The factory's blast radius is bounded by:
 
-1. **Pre-merge.** Worst case, a PR is opened with bad code. Closing the PR (and removing its `factory/issue-<n>` branch) reverts to zero side effects.
+1. **Pre-merge.** Worst case, a PR is opened with bad code. Closing the PR (and removing its `factory/issue-<n>` branch) reverts to zero side effects. For a salvageable PR sitting in In Test, prefer the **In Test iteration loop** — comment the change you want and the factory revises the same PR in place — over closing and re-filing.
 2. **Post-merge but pre-release.** Vercel auto-deploys main → prod on merge. If the factory merged something bad, follow the standard web rollback: `vercel rollback <previous-deployment-id>` from the Vercel dashboard. The web app is back in <60 s.
 3. **Post-merge and post-beta-dispatch (Phase D only).** TestFlight / Play internal builds are pre-authorised and reversible — the next build supersedes the bad one. No store-public users are affected (production app-store submissions stay manual; see CLAUDE.md "Release Authorization").
 4. **Schema migration.** The migration gate refuses to merge a PR with `supabase/migrations/**` files unless `migration-approved` is on the PR. If a bad migration _did_ land, follow [`docs/operations/migrations.md`](./migrations.md) → "Rolling back a migration".
@@ -115,7 +115,7 @@ The factory's `cleanup()` trap files a `factory-failure`-labelled GitHub issue w
 2. **Check `logs/factory-*.log` on the Mac mini** for the full context.
 3. **Common causes** (in approximate order of frequency):
    - Network blip during `gh` call (transient — usually resolves on the next tick).
-   - Worktree slot leaked (a previous run died without releasing it). `node scripts/lib/state-cli.mjs factory:slot-status` shows each slot's PID + issue; if the PID is dead, `node scripts/lib/state-cli.mjs factory:slot-release <slot>` then `node scripts/lib/worktree-cli.mjs remove --issue <n> --force`. (`--watch`'s cleanup sweep also auto-releases slots whose issue has left In Review/In Test.)
+   - Worktree slot leaked (a previous run died without releasing it). `node scripts/lib/state-cli.mjs factory:slot-status` shows each slot's PID + issue; if the PID is dead, `node scripts/lib/state-cli.mjs factory:slot-release <slot>` then `node scripts/lib/worktree-cli.mjs remove --issue <n> --force`. (`--watch`'s cleanup sweep also auto-releases slots whose issue has left the active In Progress/In Review/In Test states — e.g. merged, Blocked, or closed.)
    - Disk full under `worktrees/` — clean up via `git worktree prune` (and `node scripts/lib/worktree-cli.mjs list` to see the factory's worktrees).
    - Claude wall-time cap hit on every retry (the prompt or context bundle is too large). Inspect the bundle in the log; truncate prior PR threads if needed.
 4. **Close the failure issue** once resolved. The trap doesn't auto-close; that's intentional so the issue is visible until acknowledged.
