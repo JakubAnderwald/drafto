@@ -166,7 +166,7 @@ export async function updateNote(
 
   const { data, error } = await supabase
     .from("notes")
-    .update(update)
+    .update(update as Database["public"]["Tables"]["notes"]["Update"])
     .eq("id", noteId)
     .eq("user_id", userId)
     .select("id, title, updated_at")

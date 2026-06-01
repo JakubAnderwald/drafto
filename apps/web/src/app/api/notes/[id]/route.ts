@@ -8,6 +8,9 @@ import {
   SIGNED_URL_EXPIRY_SECONDS,
 } from "@drafto/shared";
 import type { BlockNoteBlock } from "@drafto/shared";
+import type { Database } from "@/lib/supabase/database.types";
+
+type NoteUpdate = Database["public"]["Tables"]["notes"]["Update"];
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -120,7 +123,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
 
   const { data: note, error } = await supabase
     .from("notes")
-    .update(updates)
+    .update(updates as NoteUpdate)
     .eq("id", id)
     .eq("user_id", user.id)
     .select()
