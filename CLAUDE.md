@@ -37,28 +37,54 @@ If a feature genuinely requires paid infrastructure, surface that explicitly as 
 Never work directly on `main`. For every new task (feature, fix, chore, docs):
 
 1. Use the `/worktree` command to create an isolated branch and worktree
-2. **Immediately run `pnpm install`** in the new worktree — worktrees do not share `node_modules`, so all tooling (`turbo`, `tsc`, etc.) will fail without this step
+2. **Immediately run `pnpm install`** in the new worktree — worktrees do not share `node_modules`, so all tooling (`turbo`, `tsc`, etc.) will fail without this step, then run `bash scripts/worktree-bootstrap.sh` to copy the gitignored env/config files (see below)
 3. Do all work (commits, edits, tests) in that worktree
 4. Open a PR to merge into `main` — never push directly to `main`
 
 **Only exception:** The user explicitly asks to work on or push to `main` directly. Without that explicit request, always use a branch + PR.
 
-**Worktree setup for mobile/desktop development:**
+**Worktree setup for web/mobile/desktop development:**
 
-Git worktrees do not copy gitignored files. When working on mobile or desktop code in a worktree, copy these files from the main repo before building or running tests:
+Git worktrees do not copy gitignored files, so a fresh worktree is missing the
+`.env*` files (and a couple of other local config files) needed to build and test
+the web, mobile, and desktop apps. Without the web `.env.local`, even
+`pnpm --filter @drafto/web build` fails at "Collecting page data" with
+`Invalid environment variables` for `NEXT_PUBLIC_SUPABASE_URL` / `_ANON_KEY`.
+
+The one-step fix — run this right after `pnpm install`:
 
 ```bash
-# Required for mobile builds and Maestro E2E tests
+bash scripts/worktree-bootstrap.sh
+```
+
+It copies every known gitignored env/config file from the main repo
+(`/Users/jakub/code/drafto`, override with `DRAFTO_MAIN_REPO`) into the current
+worktree, and is safe to re-run. If you'd rather copy by hand, the full set is:
+
+```bash
+# Web (Supabase + Sentry keys; clears the NEXT_PUBLIC_SUPABASE_* env-validation errors)
+cp /Users/jakub/code/drafto/apps/web/.env.local apps/web/.env.local
+cp /Users/jakub/code/drafto/apps/web/.env.local.vercel apps/web/.env.local.vercel
+
+# Mobile (required for mobile builds and Maestro E2E tests)
 cp /Users/jakub/code/drafto/apps/mobile/.env apps/mobile/.env
 cp /Users/jakub/code/drafto/apps/mobile/.env.production apps/mobile/.env.production
 
-# Required for desktop builds
+# Desktop (required for desktop builds)
 cp /Users/jakub/code/drafto/apps/desktop/.env apps/desktop/.env
 cp /Users/jakub/code/drafto/apps/desktop/.env.production apps/desktop/.env.production
 
 # Required after expo prebuild (regenerates android/ without local.properties)
 echo "sdk.dir=/Users/jakub/Library/Android/sdk" > apps/mobile/android/local.properties
 ```
+
+> Note: a full production `pnpm --filter @drafto/web build` additionally needs the
+> server-only secrets in `turbo.json`'s `passThroughEnv` (`APP_URL`,
+> `SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY`, …). Those are injected by Vercel
+> at deploy time, not stored in any local file, so a full local build fails on
+> `APP_URL` in the main repo too. For local work use `pnpm dev`, or
+> `SKIP_ENV_VALIDATION=true pnpm --filter @drafto/web build` for a compile-only
+> sanity check. The bootstrap script only handles the gitignored _files_.
 
 **Metro port conflicts:** The main repo may have Metro running on port 8081. In a worktree, start Metro on a different port (`pnpm start --port 8082`) and use `adb reverse tcp:8081 tcp:8082` to redirect the app.
 
