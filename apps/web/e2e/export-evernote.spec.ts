@@ -17,7 +17,7 @@ test.describe("Evernote export", () => {
     await expect(page.getByTestId("export-deselect-all")).toBeVisible();
   });
 
-  test("select all then export triggers a .enex download", async ({ page }) => {
+  test("selecting a notebook and exporting triggers a .enex download", async ({ page }) => {
     // Ensure at least one notebook exists so the export has something to ship.
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible();
@@ -53,7 +53,13 @@ test.describe("Evernote export", () => {
     // once the GET /api/export/evernote response is in.
     await expect(page.getByTestId("export-loading")).toBeHidden({ timeout: 10_000 });
 
-    await page.getByTestId("export-select-all").click();
+    // The dialog pre-selects every notebook that has notes. On the shared dev
+    // Supabase project this can include hundreds of accumulated notebooks,
+    // and exporting all of them takes far longer than the test's download
+    // timeout. Scope the export to just the notebook this test created so the
+    // assertion stays fast and deterministic.
+    await page.getByTestId("export-deselect-all").click();
+    await page.getByRole("checkbox", { name: new RegExp(notebookName) }).check();
 
     const downloadPromise = page.waitForEvent("download", { timeout: 15_000 });
     await page.getByTestId("export-start-button").click();
