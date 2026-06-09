@@ -178,10 +178,13 @@ export function ExportEvernoteDialog({ onClose }: ExportEvernoteDialogProps) {
                           onChange={() => toggle(nb.id)}
                           disabled={isProcessing}
                           data-testid={`export-checkbox-${nb.id}`}
+                          aria-label={nb.name}
                           className="accent-primary-600"
                         />
                         <span className="text-fg flex-1 truncate text-sm">{nb.name}</span>
-                        <span className="text-fg-muted text-xs">{nb.noteCount}</span>
+                        <span className="text-fg-muted text-xs" aria-hidden="true">
+                          {nb.noteCount}
+                        </span>
                       </label>
                     </li>
                   ))}
