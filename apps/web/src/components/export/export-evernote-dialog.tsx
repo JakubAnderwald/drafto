@@ -252,7 +252,14 @@ function defaultFilename(selected: Set<string>, notebooks: ExportNotebookSummary
     const id = Array.from(selected)[0];
     const nb = notebooks.find((n) => n.id === id);
     if (nb) {
-      const safe = nb.name.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+      // Bounded input + single-char replace + split/join collapse — avoids the
+      // greedy-quantifier regex pattern that SonarCloud's S5852 heuristic trips on.
+      const safe = nb.name
+        .slice(0, 200)
+        .replaceAll(/[^A-Za-z0-9._-]/g, "-")
+        .split("-")
+        .filter(Boolean)
+        .join("-");
       return `${safe || "drafto-export"}.enex`;
     }
   }

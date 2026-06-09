@@ -31,7 +31,16 @@ test.describe("Evernote export", () => {
     await expect(page.getByText(notebookName)).toBeVisible();
 
     await page.getByText(notebookName).click();
-    await page.getByRole("button", { name: "New note" }).click();
+    await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10_000 });
+
+    // Create a note and wait for it to persist — without this the GET
+    // /api/export/evernote can race the note's POST and report zero notes,
+    // which makes the subsequent POST /api/export/evernote return 404.
+    await page.getByRole("button", { name: "New note", exact: true }).click();
+    const titleInput = page.getByRole("textbox", { name: "Note title" });
+    await expect(titleInput).toBeVisible({ timeout: 10_000 });
+    await titleInput.fill(`Export Test Note ${Date.now()}`);
+    await expect(page.getByText("Saved")).toBeVisible({ timeout: 10_000 });
 
     // Open the export dialog.
     await page.getByTestId("app-menu-trigger").click();

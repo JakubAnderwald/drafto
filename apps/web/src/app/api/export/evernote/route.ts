@@ -47,7 +47,7 @@ interface NotebookRow {
   name: string;
 }
 
-const SAFE_FILENAME_RE = /[^A-Za-z0-9._-]+/g;
+const MAX_FILENAME_INPUT = 200;
 
 export async function GET(request: NextRequest): Promise<Response> {
   const { data: auth, error: authError } = await getAuthenticatedUserFast(request);
@@ -238,7 +238,9 @@ async function loadAttachmentResource(
   if (error || !data) return null;
 
   const buffer = Buffer.from(await data.arrayBuffer());
-  const hash = createHash("md5").update(buffer).digest("hex");
+  // MD5 is the wire format for ENEX <en-media hash="…"> — it is content
+  // addressing for the resource block, not a security primitive. NOSONAR
+  const hash = createHash("md5").update(buffer).digest("hex"); // NOSONAR(typescript:S4790)
 
   return {
     hash,
@@ -277,9 +279,20 @@ function isBlockLike(value: unknown): boolean {
 
 function pickFileName(notebooks: NotebookRow[]): string {
   if (notebooks.length === 1) {
-    const safe = notebooks[0].name.replace(SAFE_FILENAME_RE, "-").replace(/^-+|-+$/g, "");
+    const safe = safeFilenameStem(notebooks[0].name);
     return `${safe || "drafto-export"}.enex`;
   }
   const today = new Date().toISOString().slice(0, 10);
   return `drafto-export-${today}.enex`;
+}
+
+function safeFilenameStem(raw: string): string {
+  // Bounded input + single-char replacement + split/join collapse — avoids the
+  // greedy-quantifier regex pattern that SonarCloud's S5852 heuristic trips on.
+  return raw
+    .slice(0, MAX_FILENAME_INPUT)
+    .replaceAll(/[^A-Za-z0-9._-]/g, "-")
+    .split("-")
+    .filter(Boolean)
+    .join("-");
 }
