@@ -68,6 +68,21 @@ describe("blocksToEnml", () => {
     expect(out).toContain("<ol><li>1</li></ol>");
   });
 
+  it("groups consecutive list items of the same type into one container", () => {
+    const blocks: BlockNoteBlock[] = [
+      { type: "bulletListItem", content: [{ type: "text", text: "a", styles: {} }] },
+      { type: "bulletListItem", content: [{ type: "text", text: "b", styles: {} }] },
+      { type: "bulletListItem", content: [{ type: "text", text: "c", styles: {} }] },
+      { type: "numberedListItem", content: [{ type: "text", text: "1", styles: {} }] },
+      { type: "numberedListItem", content: [{ type: "text", text: "2", styles: {} }] },
+    ];
+    const out = blocksToEnml(blocks, NO_MEDIA);
+    expect(out).toContain("<ul><li>a</li><li>b</li><li>c</li></ul>");
+    expect(out).toContain("<ol><li>1</li><li>2</li></ol>");
+    expect(out).not.toContain("</ul><ul>");
+    expect(out).not.toContain("</ol><ol>");
+  });
+
   it("emits check list items with <en-todo>", () => {
     const blocks: BlockNoteBlock[] = [
       {

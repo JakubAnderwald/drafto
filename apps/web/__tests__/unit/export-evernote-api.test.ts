@@ -136,6 +136,63 @@ describe("POST /api/export/evernote", () => {
     expect(res.status).toBe(404);
   });
 
+  it("returns 404 when only some requested notebooks are owned", async () => {
+    // Defence-in-depth: RLS already hides foreign rows, but a mixed selection
+    // must fail rather than silently exporting just the owned subset.
+    tableState = {
+      notebooks: { data: [{ id: "nb-owned", name: "Owned" }], error: null },
+    };
+    const req = new NextRequest("http://localhost/api/export/evernote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notebookIds: ["nb-owned", "nb-foreign"] }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 500 when a storage attachment download fails", async () => {
+    downloadMock.mockResolvedValueOnce({ data: null, error: { message: "storage offline" } });
+
+    tableState = {
+      notebooks: { data: [{ id: "nb-1", name: "Photos" }], error: null },
+      notes: {
+        data: [
+          {
+            id: "note-1",
+            notebook_id: "nb-1",
+            title: "Photo",
+            content: [{ type: "image", props: { url: "attachment://user-1/note-1/photo.png" } }],
+            created_at: "2026-06-08T14:02:14Z",
+            updated_at: "2026-06-08T14:02:14Z",
+          },
+        ],
+        error: null,
+      },
+      attachments: {
+        data: [
+          {
+            id: "att-1",
+            note_id: "note-1",
+            file_name: "photo.png",
+            file_path: "user-1/note-1/photo.png",
+            file_size: 5,
+            mime_type: "image/png",
+          },
+        ],
+        error: null,
+      },
+    };
+
+    const req = new NextRequest("http://localhost/api/export/evernote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notebookIds: ["nb-1"] }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(500);
+  });
+
   it("returns 404 when notebooks exist but contain no notes", async () => {
     tableState = {
       notebooks: { data: [{ id: "nb-1", name: "Inbox" }], error: null },

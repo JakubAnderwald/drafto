@@ -21,8 +21,34 @@ const HEADING_TAGS: Record<number, string> = {
 };
 
 export function blocksToEnml(blocks: BlockNoteBlock[], mediaIndex: MediaIndex): string {
-  const body = blocks.map((block) => blockToEnml(block, mediaIndex)).join("");
-  return `<en-note>${body}</en-note>`;
+  return `<en-note>${renderBlockSequence(blocks, mediaIndex)}</en-note>`;
+}
+
+function renderBlockSequence(blocks: BlockNoteBlock[], mediaIndex: MediaIndex): string {
+  let out = "";
+  let i = 0;
+  while (i < blocks.length) {
+    const block = blocks[i];
+    if (block.type === "bulletListItem" || block.type === "numberedListItem") {
+      const tag = block.type === "bulletListItem" ? "ul" : "ol";
+      const items: string[] = [];
+      while (i < blocks.length && blocks[i].type === block.type) {
+        items.push(renderListItem(blocks[i], mediaIndex));
+        i += 1;
+      }
+      out += `<${tag}>${items.join("")}</${tag}>`;
+      continue;
+    }
+    out += blockToEnml(block, mediaIndex);
+    i += 1;
+  }
+  return out;
+}
+
+function renderListItem(block: BlockNoteBlock, mediaIndex: MediaIndex): string {
+  const inner = renderInline(block.content) || "&#xA0;";
+  const nested = renderChildren(block.children, mediaIndex);
+  return `<li>${inner}${nested}</li>`;
 }
 
 function blockToEnml(block: BlockNoteBlock, mediaIndex: MediaIndex): string {
@@ -38,10 +64,13 @@ function blockToEnml(block: BlockNoteBlock, mediaIndex: MediaIndex): string {
     }
 
     case "bulletListItem":
-      return renderList(block, "ul", mediaIndex);
-
-    case "numberedListItem":
-      return renderList(block, "ol", mediaIndex);
+    case "numberedListItem": {
+      // A list item reached blockToEnml only via nested-children traversal that
+      // bypassed the run grouper — render it in its own one-item list as a
+      // defensive fallback. Top-level sequences flow through renderBlockSequence.
+      const tag = block.type === "bulletListItem" ? "ul" : "ol";
+      return `<${tag}>${renderListItem(block, mediaIndex)}</${tag}>`;
+    }
 
     case "checkListItem": {
       const checked = block.props?.checked === true;
@@ -73,15 +102,9 @@ function blockToEnml(block: BlockNoteBlock, mediaIndex: MediaIndex): string {
   }
 }
 
-function renderList(block: BlockNoteBlock, tag: "ul" | "ol", mediaIndex: MediaIndex): string {
-  const inner = renderInline(block.content) || "&#xA0;";
-  const nested = renderChildren(block.children, mediaIndex);
-  return `<${tag}><li>${inner}${nested}</li></${tag}>`;
-}
-
 function renderChildren(children: BlockNoteBlock[] | undefined, mediaIndex: MediaIndex): string {
   if (!children || children.length === 0) return "";
-  return children.map((child) => blockToEnml(child, mediaIndex)).join("");
+  return renderBlockSequence(children, mediaIndex);
 }
 
 function renderMedia(block: BlockNoteBlock, mediaIndex: MediaIndex): string {

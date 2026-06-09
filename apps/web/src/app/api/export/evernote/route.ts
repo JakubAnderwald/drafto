@@ -133,6 +133,14 @@ export async function POST(request: NextRequest): Promise<Response> {
     return errorResponse("No notebooks found", 404);
   }
 
+  // Reject mixed owned/foreign selections rather than silently exporting the
+  // owned subset — RLS already filters the read, but a missing id should be a
+  // hard 404 so callers don't get a partial export they didn't ask for.
+  const uniqueRequestedIds = new Set(notebookIds);
+  if (notebooks.length !== uniqueRequestedIds.size) {
+    return errorResponse("One or more selected notebooks not found", 404);
+  }
+
   const ownedIds = notebooks.map((n) => n.id);
   const notebookNameById = new Map(notebooks.map((n) => [n.id, n.name]));
 
@@ -190,31 +198,37 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
 
   const exportedNotes: ExportedNote[] = [];
-  for (const note of notes) {
-    const noteAttachments = attachmentsByNote.get(note.id) ?? [];
-    const resources: ExportedResource[] = [];
-    const mediaIndex: MediaIndex = new Map();
+  try {
+    for (const note of notes) {
+      const noteAttachments = attachmentsByNote.get(note.id) ?? [];
+      const resources: ExportedResource[] = [];
+      const mediaIndex: MediaIndex = new Map();
 
-    for (const attachment of noteAttachments) {
-      const resource = await loadAttachmentResource(supabase, attachment);
-      if (!resource) continue;
-      resources.push(resource);
+      for (const attachment of noteAttachments) {
+        const resource = await loadAttachmentResource(supabase, attachment);
+        resources.push(resource);
 
-      const entry: EnmlMediaEntry = { hash: resource.hash, mime: resource.mime };
-      registerAttachmentUrls(mediaIndex, attachment, entry);
+        const entry: EnmlMediaEntry = { hash: resource.hash, mime: resource.mime };
+        registerAttachmentUrls(mediaIndex, attachment, entry);
+      }
+
+      const blocks = parseNoteContent(note.content);
+      const enmlContent = blocksToEnml(blocks, mediaIndex);
+
+      exportedNotes.push({
+        title: note.title,
+        enmlContent,
+        created: note.created_at,
+        updated: note.updated_at,
+        notebook: notebookNameById.get(note.notebook_id),
+        resources,
+      });
     }
-
-    const blocks = parseNoteContent(note.content);
-    const enmlContent = blocksToEnml(blocks, mediaIndex);
-
-    exportedNotes.push({
-      title: note.title,
-      enmlContent,
-      created: note.created_at,
-      updated: note.updated_at,
-      notebook: notebookNameById.get(note.notebook_id),
-      resources,
-    });
+  } catch (err) {
+    // A failed attachment download aborts the export — silently dropping the
+    // resource would produce a "successful" ENEX missing data the user expects.
+    const message = err instanceof Error ? err.message : "Failed to load attachments";
+    return errorResponse(message, 500);
   }
 
   const xml = buildEnex({ notes: exportedNotes });
@@ -233,9 +247,11 @@ export async function POST(request: NextRequest): Promise<Response> {
 async function loadAttachmentResource(
   supabase: Supabase,
   attachment: AttachmentRow,
-): Promise<ExportedResource | null> {
+): Promise<ExportedResource> {
   const { data, error } = await supabase.storage.from(BUCKET_NAME).download(attachment.file_path);
-  if (error || !data) return null;
+  if (error || !data) {
+    throw new Error(`Failed to download attachment ${attachment.file_name || attachment.id}`);
+  }
 
   const buffer = Buffer.from(await data.arrayBuffer());
   // MD5 is the wire format for ENEX <en-media hash="…"> — it is content

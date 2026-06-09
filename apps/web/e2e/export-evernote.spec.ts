@@ -59,7 +59,7 @@ test.describe("Evernote export", () => {
     // timeout. Scope the export to just the notebook this test created so the
     // assertion stays fast and deterministic.
     await page.getByTestId("export-deselect-all").click();
-    await page.getByRole("checkbox", { name: new RegExp(notebookName) }).check();
+    await page.getByRole("checkbox", { name: notebookName, exact: true }).check();
 
     const downloadPromise = page.waitForEvent("download", { timeout: 15_000 });
     await page.getByTestId("export-start-button").click();

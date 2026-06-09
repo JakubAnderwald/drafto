@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import * as Sentry from "@sentry/nextjs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { handleAuthError } from "@/lib/handle-auth-error";
@@ -40,6 +41,7 @@ export function ExportEvernoteDialog({ onClose }: ExportEvernoteDialogProps) {
         setSelectedIds(new Set(body.notebooks.filter((n) => n.noteCount > 0).map((n) => n.id)));
         setStatus("ready");
       } catch (err) {
+        Sentry.captureException(err, { tags: { feature: "export-evernote", op: "load" } });
         if (!cancelled) {
           setStatus("error");
           setErrorMessage(err instanceof Error ? err.message : "Network error");
@@ -100,6 +102,7 @@ export function ExportEvernoteDialog({ onClose }: ExportEvernoteDialogProps) {
       downloadBlob(blob, filename);
       setStatus("done");
     } catch (err) {
+      Sentry.captureException(err, { tags: { feature: "export-evernote", op: "export" } });
       setStatus("error");
       setErrorMessage(err instanceof Error ? err.message : "Network error");
     }
