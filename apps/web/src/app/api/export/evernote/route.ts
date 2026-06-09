@@ -66,16 +66,31 @@ export async function GET(request: NextRequest): Promise<Response> {
     return errorResponse("Failed to load notebooks", 500);
   }
 
-  const summaries: ExportNotebookSummary[] = [];
-  for (const nb of notebooks ?? []) {
-    const { count } = await supabase
-      .from("notes")
-      .select("id", { count: "exact", head: true })
-      .eq("user_id", user.id)
-      .eq("notebook_id", nb.id)
-      .eq("is_trashed", false);
-    summaries.push({ id: nb.id, name: nb.name, noteCount: count ?? 0 });
+  // Count notes per notebook in a single query rather than N+1 head counts —
+  // sequential per-notebook counts were enough to stall the export dialog
+  // (and its E2E tests) when a user had many notebooks.
+  const { data: noteRows, error: countError } = await supabase
+    .from("notes")
+    .select("notebook_id")
+    .eq("user_id", user.id)
+    .eq("is_trashed", false);
+
+  if (countError) {
+    return errorResponse("Failed to load note counts", 500);
   }
+
+  const noteCounts = new Map<string, number>();
+  for (const row of noteRows ?? []) {
+    const id = (row as { notebook_id: string | null }).notebook_id;
+    if (!id) continue;
+    noteCounts.set(id, (noteCounts.get(id) ?? 0) + 1);
+  }
+
+  const summaries: ExportNotebookSummary[] = (notebooks ?? []).map((nb) => ({
+    id: nb.id,
+    name: nb.name,
+    noteCount: noteCounts.get(nb.id) ?? 0,
+  }));
 
   const body: ExportNotebookListResponse = { notebooks: summaries };
   return NextResponse.json(body, { status: 200 });

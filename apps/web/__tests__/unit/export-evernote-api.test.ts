@@ -18,6 +18,8 @@ interface TableState {
   notebooksHead?: { count: number };
 }
 
+const tableCalls: Record<string, Array<{ method: string; args: unknown[] }>> = {};
+
 let tableState: TableState = {};
 const downloadMock = vi.fn();
 
@@ -28,8 +30,9 @@ function makeQueryBuilder(table: string) {
     attachments: tableState.attachments ?? { data: [], error: null },
   };
 
+  const calls = (tableCalls[table] ??= []);
   const builder: Record<string, unknown> = {
-    _calls: [] as Array<{ method: string; args: unknown[] }>,
+    _calls: calls,
     _isHead: false,
   };
 
@@ -80,6 +83,7 @@ describe("POST /api/export/evernote", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     tableState = {};
+    for (const key of Object.keys(tableCalls)) delete tableCalls[key];
 
     mockErrorResponse.mockImplementation(
       (msg: string, status: number) => new Response(JSON.stringify({ error: msg }), { status }),
@@ -281,6 +285,29 @@ describe("POST /api/export/evernote", () => {
     expect(res.status).toBe(413);
   });
 
+  it("returns 500 when the notebooks query errors", async () => {
+    tableState = {
+      notebooks: { data: null, error: { message: "db down" } },
+    };
+    const req = new NextRequest("http://localhost/api/export/evernote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notebookIds: ["nb-1"] }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(500);
+  });
+
+  it("returns 400 when the body is not valid JSON", async () => {
+    const req = new NextRequest("http://localhost/api/export/evernote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not json",
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+  });
+
   it("falls back to drafto-export-<date>.enex for multi-notebook exports", async () => {
     tableState = {
       notebooks: {
@@ -314,5 +341,95 @@ describe("POST /api/export/evernote", () => {
     const res = await POST(req);
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Disposition")).toMatch(/drafto-export-\d{4}-\d{2}-\d{2}\.enex/);
+  });
+});
+
+describe("GET /api/export/evernote", () => {
+  let GET: (request: NextRequest) => Promise<Response>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    tableState = {};
+    for (const key of Object.keys(tableCalls)) delete tableCalls[key];
+
+    mockErrorResponse.mockImplementation(
+      (msg: string, status: number) => new Response(JSON.stringify({ error: msg }), { status }),
+    );
+    mockGetAuthenticatedUser.mockResolvedValue({
+      data: { user: { id: "user-1", email: "test@test.com" }, supabase: mockSupabase },
+      error: null,
+    });
+
+    vi.resetModules();
+    const mod = await import("@/app/api/export/evernote/route");
+    GET = mod.GET;
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    mockGetAuthenticatedUser.mockResolvedValue({
+      data: null,
+      error: new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
+    });
+    const req = new NextRequest("http://localhost/api/export/evernote");
+    const res = await GET(req);
+    expect(res.status).toBe(401);
+  });
+
+  it("returns notebooks with note counts derived from a single notes query", async () => {
+    tableState = {
+      notebooks: {
+        data: [
+          { id: "nb-1", name: "Inbox" },
+          { id: "nb-2", name: "Empty" },
+          { id: "nb-3", name: "Archive" },
+        ],
+        error: null,
+      },
+      notes: {
+        data: [
+          { notebook_id: "nb-1" },
+          { notebook_id: "nb-1" },
+          { notebook_id: "nb-1" },
+          { notebook_id: "nb-3" },
+        ],
+        error: null,
+      },
+    };
+
+    const req = new NextRequest("http://localhost/api/export/evernote");
+    const res = await GET(req);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      notebooks: Array<{ id: string; name: string; noteCount: number }>;
+    };
+    expect(body.notebooks).toEqual([
+      { id: "nb-1", name: "Inbox", noteCount: 3 },
+      { id: "nb-2", name: "Empty", noteCount: 0 },
+      { id: "nb-3", name: "Archive", noteCount: 1 },
+    ]);
+
+    // Single notes query, not one per notebook — guards against an N+1 regression.
+    const notesQueries = (tableCalls.notes ?? []).filter((c) => c.method === "select");
+    expect(notesQueries).toHaveLength(1);
+  });
+
+  it("returns 500 when the notebooks query errors", async () => {
+    tableState = {
+      notebooks: { data: null, error: { message: "db down" } },
+    };
+    const req = new NextRequest("http://localhost/api/export/evernote");
+    const res = await GET(req);
+    expect(res.status).toBe(500);
+  });
+
+  it("returns 500 when the notes count query errors", async () => {
+    tableState = {
+      notebooks: { data: [{ id: "nb-1", name: "Inbox" }], error: null },
+      notes: { data: null, error: { message: "boom" } },
+    };
+    const req = new NextRequest("http://localhost/api/export/evernote");
+    const res = await GET(req);
+    expect(res.status).toBe(500);
   });
 });
