@@ -365,12 +365,15 @@ describe("POST /api/export/evernote", () => {
     expect(res.status).toBe(400);
   });
 
-  it("falls back to drafto-export-<date>.enex for multi-notebook exports", async () => {
+  it("returns a zip containing one .enex per notebook for multi-notebook exports", async () => {
+    // Evernote's ENEX format is single-notebook on import. To preserve notebook
+    // boundaries we ship a zip of per-notebook .enex files for multi-notebook
+    // selections, mirroring what Evernote itself produces.
     tableState = {
       notebooks: {
         data: [
-          { id: "nb-1", name: "A" },
-          { id: "nb-2", name: "B" },
+          { id: "nb-1", name: "Alpha" },
+          { id: "nb-2", name: "Beta" },
         ],
         error: null,
       },
@@ -380,7 +383,19 @@ describe("POST /api/export/evernote", () => {
             id: "note-1",
             notebook_id: "nb-1",
             title: "n1",
-            content: [],
+            content: [
+              { type: "paragraph", content: [{ type: "text", text: "from-alpha", styles: {} }] },
+            ],
+            created_at: "2026-06-08T14:02:14Z",
+            updated_at: "2026-06-08T14:02:14Z",
+          },
+          {
+            id: "note-2",
+            notebook_id: "nb-2",
+            title: "n2",
+            content: [
+              { type: "paragraph", content: [{ type: "text", text: "from-beta", styles: {} }] },
+            ],
             created_at: "2026-06-08T14:02:14Z",
             updated_at: "2026-06-08T14:02:14Z",
           },
@@ -397,7 +412,61 @@ describe("POST /api/export/evernote", () => {
     });
     const res = await POST(req);
     expect(res.status).toBe(200);
-    expect(res.headers.get("Content-Disposition")).toMatch(/drafto-export-\d{4}-\d{2}-\d{2}\.enex/);
+    expect(res.headers.get("Content-Type")).toBe("application/zip");
+    expect(res.headers.get("Content-Disposition")).toMatch(/drafto-export-\d{4}-\d{2}-\d{2}\.zip/);
+
+    const buffer = new Uint8Array(await res.arrayBuffer());
+    // ZIP local-file-header signature ("PK\x03\x04") at offset 0.
+    expect(buffer[0]).toBe(0x50);
+    expect(buffer[1]).toBe(0x4b);
+    expect(buffer[2]).toBe(0x03);
+    expect(buffer[3]).toBe(0x04);
+
+    // Filenames in local-file headers — assert one entry per notebook.
+    const decoded = new TextDecoder("latin1").decode(buffer);
+    expect(decoded).toContain("Alpha.enex");
+    expect(decoded).toContain("Beta.enex");
+    // Each ENEX body must include its own note's content (notes weren't merged).
+    expect(decoded).toContain("from-alpha");
+    expect(decoded).toContain("from-beta");
+  });
+
+  it("skips selected notebooks that have no notes when packaging the zip", async () => {
+    tableState = {
+      notebooks: {
+        data: [
+          { id: "nb-1", name: "Has notes" },
+          { id: "nb-2", name: "Empty" },
+        ],
+        error: null,
+      },
+      notes: {
+        data: [
+          {
+            id: "note-1",
+            notebook_id: "nb-1",
+            title: "n1",
+            content: [{ type: "paragraph", content: [{ type: "text", text: "x", styles: {} }] }],
+            created_at: "2026-06-08T14:02:14Z",
+            updated_at: "2026-06-08T14:02:14Z",
+          },
+        ],
+        error: null,
+      },
+      attachments: { data: [], error: null },
+    };
+
+    const req = new NextRequest("http://localhost/api/export/evernote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notebookIds: ["nb-1", "nb-2"] }),
+    });
+    const res = await POST(req);
+    // Only one notebook ends up with notes → fall back to a single .enex
+    // instead of a one-entry zip, so the file extension matches the content.
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("application/enex+xml");
+    expect(res.headers.get("Content-Disposition")).toContain("Has-notes.enex");
   });
 });
 

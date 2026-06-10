@@ -1,4 +1,9 @@
-import type { BlockNoteBlock, BlockNoteInlineContent, BlockNoteTableContent } from "./types";
+import {
+  getTableCellInline,
+  type BlockNoteBlock,
+  type BlockNoteInlineContent,
+  type BlockNoteTableContent,
+} from "./types";
 
 export interface EnmlMediaEntry {
   hash: string;
@@ -137,7 +142,9 @@ function renderTable(block: BlockNoteBlock, mediaIndex: MediaIndex): string {
   }
   const rows = tableContent.rows
     .map((row) => {
-      const cells = row.cells.map((cell) => `<td>${renderInline(cell) || "&#xA0;"}</td>`).join("");
+      const cells = row.cells
+        .map((cell) => `<td>${renderInline(getTableCellInline(cell)) || "&#xA0;"}</td>`)
+        .join("");
       return `<tr>${cells}</tr>`;
     })
     .join("");

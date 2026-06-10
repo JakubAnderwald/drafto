@@ -214,6 +214,38 @@ describe("blocksToEnml", () => {
     );
   });
 
+  it("emits tables when cells are stored in the wrapped {type:'tableCell', content} shape", () => {
+    // BlockNote v0.47+ persists table cells as { type: "tableCell", content }.
+    // The walker must read `.content` instead of treating the cell as an
+    // InlineContent[] (the legacy shape).
+    const block: BlockNoteBlock = {
+      type: "table",
+      content: {
+        type: "tableContent",
+        rows: [
+          {
+            cells: [
+              {
+                type: "tableCell",
+                props: { textAlignment: "left" },
+                content: [{ type: "text", text: "wrapped", styles: {} }],
+              },
+              {
+                type: "tableCell",
+                props: {},
+                content: [{ type: "text", text: "cell", styles: { bold: true } }],
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const out = blocksToEnml([block], NO_MEDIA);
+    expect(out).toContain("<td>wrapped</td>");
+    expect(out).toContain("<td><b>cell</b></td>");
+    expect(out).not.toContain("<td>&#xA0;</td>");
+  });
+
   it("renders nested children under list items", () => {
     const block: BlockNoteBlock = {
       type: "bulletListItem",

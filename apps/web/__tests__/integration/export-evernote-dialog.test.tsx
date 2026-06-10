@@ -203,7 +203,9 @@ describe("ExportEvernoteDialog", () => {
     expect(filename).toBe("Inbox-Today.enex");
   });
 
-  it("falls back to drafto-export-<date>.enex for a multi-notebook export", async () => {
+  it("falls back to drafto-export-<date>.zip for a multi-notebook export", async () => {
+    // Multi-notebook exports ship as a zip of per-notebook .enex files because
+    // ENEX is single-notebook on import. The fallback filename must match.
     const user = userEvent.setup();
     const blob = new Blob([]);
 
@@ -225,7 +227,11 @@ describe("ExportEvernoteDialog", () => {
 
     await waitFor(() => expect(downloadBlob).toHaveBeenCalled());
     const [, filename] = downloadBlob.mock.calls[0];
-    expect(filename).toMatch(/^drafto-export-\d{4}-\d{2}-\d{2}\.enex$/);
+    expect(filename).toMatch(/^drafto-export-\d{4}-\d{2}-\d{2}\.zip$/);
+    // Done state reflects the zip output.
+    expect(
+      screen.getByText("Your .zip (one .enex per notebook) has been downloaded."),
+    ).toBeInTheDocument();
   });
 
   it("surfaces the server error message when the POST fails with a JSON body", async () => {

@@ -142,6 +142,78 @@ describe("normalizeBlocks", () => {
     expect(normalizeBlocks([])).toEqual([]);
   });
 
+  it("normalises wrapped {type:'tableCell', content} cells without throwing", () => {
+    // Regression: BlockNote v0.47+ may persist cells as TableCell objects.
+    // Walking `cell.map` would TypeError on a non-array, crashing the editor
+    // load. The walker must handle both shapes.
+    const blocks: BlockNoteBlock[] = [
+      {
+        type: "table",
+        content: {
+          type: "tableContent",
+          rows: [
+            {
+              cells: [
+                {
+                  type: "tableCell",
+                  props: { textAlignment: "left" },
+                  content: [
+                    { type: "link", text: "x", href: "https://x.test", styles: { bold: true } },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ];
+
+    const out = normalizeBlocks(blocks);
+    const tableContent = out[0].content as {
+      rows: {
+        cells: Array<{ type: string; content: Array<{ content: Array<{ text: string }> }> }>;
+      }[];
+    };
+    const cell = tableContent.rows[0].cells[0];
+    expect(cell.type).toBe("tableCell");
+    expect(cell.content[0].content[0].text).toBe("x");
+  });
+
+  it("supports tables that mix wrapped and legacy cell shapes in one row", () => {
+    const blocks: BlockNoteBlock[] = [
+      {
+        type: "table",
+        content: {
+          type: "tableContent",
+          rows: [
+            {
+              cells: [
+                [{ type: "link", text: "legacy", href: "https://l.test", styles: {} }],
+                {
+                  type: "tableCell",
+                  content: [{ type: "link", text: "wrapped", href: "https://w.test", styles: {} }],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ];
+
+    const out = normalizeBlocks(blocks);
+    const row = (
+      out[0].content as {
+        rows: {
+          cells: Array<unknown>;
+        }[];
+      }
+    ).rows[0];
+    const legacyCell = row.cells[0] as Array<{ content: Array<{ text: string }> }>;
+    const wrappedCell = row.cells[1] as { content: Array<{ content: Array<{ text: string }> }> };
+    expect(legacyCell[0].content[0].text).toBe("legacy");
+    expect(wrappedCell.content[0].content[0].text).toBe("wrapped");
+  });
+
   it("leaves non-link inline items untouched", () => {
     const blocks: BlockNoteBlock[] = [
       {

@@ -221,7 +221,11 @@ export function ExportEvernoteDialog({ onClose }: ExportEvernoteDialogProps) {
             {status === "done" && (
               <div className="mt-3 flex items-center gap-2" data-testid="export-status">
                 <Badge variant="success">Complete</Badge>
-                <span className="text-fg-muted text-sm">Your .enex file has been downloaded.</span>
+                <span className="text-fg-muted text-sm">
+                  {selectedIds.size > 1
+                    ? "Your .zip (one .enex per notebook) has been downloaded."
+                    : "Your .enex file has been downloaded."}
+                </span>
               </div>
             )}
 
@@ -269,5 +273,9 @@ function defaultFilename(selected: Set<string>, notebooks: ExportNotebookSummary
       return `${safe || "drafto-export"}.enex`;
     }
   }
-  return `drafto-export-${new Date().toISOString().slice(0, 10)}.enex`;
+  // Multi-notebook exports ship as a zip (one .enex per notebook) because
+  // Evernote's ENEX format is single-notebook on import. The server sets
+  // Content-Disposition; this is only the fallback when that header is
+  // missing.
+  return `drafto-export-${new Date().toISOString().slice(0, 10)}.zip`;
 }

@@ -19,6 +19,7 @@ import {
   type ExportNotebookListResponse,
   type ExportNotebookSummary,
 } from "@/lib/api/export-types";
+import { createZip, type ZipEntry } from "@/lib/export/zip-store";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 
@@ -197,7 +198,13 @@ export async function POST(request: NextRequest): Promise<Response> {
     attachmentsByNote.set(attachment.note_id, list);
   }
 
-  const exportedNotes: ExportedNote[] = [];
+  // Group exported notes by notebook so each notebook can be serialised to
+  // its own ENEX file. Evernote's ENEX format is single-notebook — the
+  // importer ignores `<note-attributes><notebook>` and dumps everything into
+  // one notebook on import — so multi-notebook exports are shipped as a zip
+  // of one ENEX per notebook, mirroring what Evernote itself produces on
+  // multi-notebook export.
+  const notesByNotebook = new Map<string, ExportedNote[]>();
   try {
     for (const note of notes) {
       const noteAttachments = attachmentsByNote.get(note.id) ?? [];
@@ -215,7 +222,8 @@ export async function POST(request: NextRequest): Promise<Response> {
       const blocks = parseNoteContent(note.content);
       const enmlContent = blocksToEnml(blocks, mediaIndex);
 
-      exportedNotes.push({
+      const bucket = notesByNotebook.get(note.notebook_id) ?? [];
+      bucket.push({
         title: note.title,
         enmlContent,
         created: note.created_at,
@@ -223,6 +231,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         notebook: notebookNameById.get(note.notebook_id),
         resources,
       });
+      notesByNotebook.set(note.notebook_id, bucket);
     }
   } catch (err) {
     // A failed attachment download aborts the export — silently dropping the
@@ -231,14 +240,45 @@ export async function POST(request: NextRequest): Promise<Response> {
     return errorResponse(message, 500);
   }
 
-  const xml = buildEnex({ notes: exportedNotes });
-  const fileName = pickFileName(notebooks);
+  // Keep notebooks in the order the user sees in the dialog (alphabetical).
+  const notebooksWithNotes = notebooks
+    .filter((nb) => (notesByNotebook.get(nb.id) ?? []).length > 0)
+    .map((nb) => ({ notebook: nb, notes: notesByNotebook.get(nb.id) ?? [] }));
 
-  return new NextResponse(xml, {
+  if (notebooksWithNotes.length === 1) {
+    const { notebook, notes: notebookNotes } = notebooksWithNotes[0];
+    const xml = buildEnex({ notes: notebookNotes });
+    const fileName = `${safeFilenameStem(notebook.name) || "drafto-export"}.enex`;
+    return new NextResponse(xml, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/enex+xml; charset=utf-8",
+        "Content-Disposition": `attachment; filename="${fileName}"`,
+        "Cache-Control": "no-store",
+      },
+    });
+  }
+
+  const usedNames = new Set<string>();
+  const zipEntries: ZipEntry[] = notebooksWithNotes.map(({ notebook, notes: notebookNotes }) => {
+    const xml = buildEnex({ notes: notebookNotes });
+    const stem = safeFilenameStem(notebook.name) || "notebook";
+    const name = dedupeName(usedNames, `${stem}.enex`);
+    usedNames.add(name);
+    return { name, data: new TextEncoder().encode(xml) };
+  });
+  const archive = createZip(zipEntries);
+  const today = new Date().toISOString().slice(0, 10);
+  const zipName = `drafto-export-${today}.zip`;
+
+  // Returning a typed-array body is the documented way to send binary data
+  // from a Next.js route; the underlying ArrayBuffer is what NextResponse
+  // forwards to the runtime.
+  return new NextResponse(archive as BodyInit, {
     status: 200,
     headers: {
-      "Content-Type": "application/enex+xml; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${fileName}"`,
+      "Content-Type": "application/zip",
+      "Content-Disposition": `attachment; filename="${zipName}"`,
       "Cache-Control": "no-store",
     },
   });
@@ -293,13 +333,16 @@ function isBlockLike(value: unknown): boolean {
   return typeof type === "string" && type.length > 0;
 }
 
-function pickFileName(notebooks: NotebookRow[]): string {
-  if (notebooks.length === 1) {
-    const safe = safeFilenameStem(notebooks[0].name);
-    return `${safe || "drafto-export"}.enex`;
+function dedupeName(used: Set<string>, candidate: string): string {
+  if (!used.has(candidate)) return candidate;
+  const dot = candidate.lastIndexOf(".");
+  const stem = dot > 0 ? candidate.slice(0, dot) : candidate;
+  const ext = dot > 0 ? candidate.slice(dot) : "";
+  for (let i = 2; i < 1000; i++) {
+    const next = `${stem}-${i}${ext}`;
+    if (!used.has(next)) return next;
   }
-  const today = new Date().toISOString().slice(0, 10);
-  return `drafto-export-${today}.enex`;
+  return `${stem}-${Date.now()}${ext}`;
 }
 
 function safeFilenameStem(raw: string): string {
