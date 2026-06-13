@@ -84,14 +84,15 @@ There is no "auto-promote". The phase change is always a deliberate operator act
 
 ## Kill switches
 
-| Severity                     | Action                                                                                                                                                                                                                                                                                                                                             |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| One bad card                 | Drag to **Blocked**, or apply `factory-pause` to the issue. Factory skips it next tick.                                                                                                                                                                                                                                                            |
-| Stop all factory work        | `node scripts/lib/state-cli.mjs factory:pause` (Wave 2+). Resume with `factory:resume`.                                                                                                                                                                                                                                                            |
-| Stop the launchd job         | `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist`. Reload to resume.                                                                                                                                                                                                                                                               |
-| Active Claude session hangs  | `node scripts/lib/state-cli.mjs factory:slot-status` shows the PID + issue for each implement/watch slot; `kill -TERM <pid>`. The wall-time wrapper (`run-claude.mjs`) caps each invocation (180 s for `--plan`, `FACTORY_IMPLEMENT_TIMEOUT_SEC`/`FACTORY_WATCH_TIMEOUT_SEC` for the engines — default 1800/900 s) so a true hang is rare.         |
-| Stuck PR with a wrong commit | `gh pr close <n> --delete-branch`. Drag the card back to Ready. Factory will re-plan on the next tick.                                                                                                                                                                                                                                             |
-| Plan needs a single tweak    | Comment on the issue with the correction; on the next tick the factory edits the existing plan comment in place (preserves the rest, stamps `<!-- drafto-factory-replan-ack:<id> -->` so the same comment doesn't loop). Drag back to Ready only if you want a full restart. See `docs/features/dark-factory.md` → "The plan comment looks wrong". |
+| Severity                     | Action                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One bad card                 | Drag to **Blocked**, or apply `factory-pause` to the issue. Factory skips it next tick.                                                                                                                                                                                                                                                                                           |
+| Stop all factory work        | `node scripts/lib/state-cli.mjs factory:pause` (Wave 2+). Resume with `factory:resume`.                                                                                                                                                                                                                                                                                           |
+| Stop the launchd job         | `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist`. Reload to resume.                                                                                                                                                                                                                                                                                              |
+| Active Claude session hangs  | `node scripts/lib/state-cli.mjs factory:slot-status` shows the PID + issue for each implement/watch slot; `kill -TERM <pid>`. The wall-time wrapper (`run-claude.mjs`) caps each invocation (180 s for `--plan`, `FACTORY_IMPLEMENT_TIMEOUT_SEC`/`FACTORY_WATCH_TIMEOUT_SEC` for the engines — default 1800/900 s) so a true hang is rare.                                        |
+| Worktree install hangs       | Each `pnpm install` is wrapped by `run-with-timeout.mjs` and capped at `FACTORY_INSTALL_TIMEOUT_SEC` (default 600 s); on cap, `--implement` releases the slot + worktree and bumps the card's attempt budget, while `--watch` logs a warning and proceeds. A cold install should take seconds (clonefile seed + offline reconcile), not minutes — see "Worktree installs & disk". |
+| Stuck PR with a wrong commit | `gh pr close <n> --delete-branch`. Drag the card back to Ready. Factory will re-plan on the next tick.                                                                                                                                                                                                                                                                            |
+| Plan needs a single tweak    | Comment on the issue with the correction; on the next tick the factory edits the existing plan comment in place (preserves the rest, stamps `<!-- drafto-factory-replan-ack:<id> -->` so the same comment doesn't loop). Drag back to Ready only if you want a full restart. See `docs/features/dark-factory.md` → "The plan comment looks wrong".                                |
 
 ## Rollback drills
 
@@ -116,7 +117,7 @@ The factory's `cleanup()` trap files a `factory-failure`-labelled GitHub issue w
 3. **Common causes** (in approximate order of frequency):
    - Network blip during `gh` call (transient — usually resolves on the next tick).
    - Worktree slot leaked (a previous run died without releasing it). `node scripts/lib/state-cli.mjs factory:slot-status` shows each slot's PID + issue; if the PID is dead, `node scripts/lib/state-cli.mjs factory:slot-release <slot>` then `node scripts/lib/worktree-cli.mjs remove --issue <n> --force`. (`--watch`'s cleanup sweep also auto-releases slots whose issue has left the active In Progress/In Review/In Test states — e.g. merged, Blocked, or closed.)
-   - Disk full under `worktrees/` — clean up via `git worktree prune` (and `node scripts/lib/worktree-cli.mjs list` to see the factory's worktrees).
+   - Disk full under `worktrees/` — the factory now refuses to start an implement when free space is below `FACTORY_MIN_FREE_DISK_GB` (it parks the card in Blocked with a `disk-low` comment), so a mid-build ENOSPC should be rare. Reclaim space via `git worktree prune` (and `node scripts/lib/worktree-cli.mjs list` to see the factory's worktrees); see "Worktree installs & disk" for the full reclamation runbook.
    - Claude wall-time cap hit on every retry (the prompt or context bundle is too large). Inspect the bundle in the log; truncate prior PR threads if needed.
 4. **Close the failure issue** once resolved. The trap doesn't auto-close; that's intentional so the issue is visible until acknowledged.
 
@@ -134,6 +135,35 @@ Phase 3 (existing midnight implementation pass) and the factory's `--implement` 
 | D             | Phase 3 code removed.                                                                                                                                                                                                                                                        |
 
 If both the factory and Phase 3 ever try to implement the same issue (a misconfiguration), the factory takes priority — its worktree-slot lock will block Phase 3's attempt. Both will log; Phase 3's log will say "issue #N already has a factory worktree".
+
+## Worktree installs & disk
+
+The factory implements each card in a throwaway git worktree that needs its own `node_modules`. The pnpm store lives on an external volume (`/Volumes/Zewnętrzny/pnpm-store`), so a cold `pnpm install` can't hardlink and cross-device-copies ~2000 packages — on #451 this ran **3.5+ hours** and silently held the implement lock, starving every other card. Two mitigations are built in:
+
+- **Clonefile seed.** Before installing, `seed_worktree_node_modules` clones the main checkout's `node_modules` (repo root + `apps/*` + `packages/*`) into the worktree with APFS `cp -c` (O(1), copy-on-write, ~0 bytes). The subsequent install is a fast **offline reconcile** (`pnpm install --frozen-lockfile --offline`), falling back to frozen-online then unfrozen-online for genuine lockfile drift. A cold install now takes seconds.
+- **Bounded install + disk guard.** Every install is wrapped by `run-with-timeout.mjs` and capped at `FACTORY_INSTALL_TIMEOUT_SEC`. Before starting, the factory checks free space and parks the card in **Blocked** with a `disk-low` comment if it's below `FACTORY_MIN_FREE_DISK_GB`.
+
+**Env knobs** (set in the launchd plist's `EnvironmentVariables`, alongside `FACTORY_PHASE`):
+
+| Var                           | Default | Purpose                                                           |
+| ----------------------------- | ------- | ----------------------------------------------------------------- |
+| `FACTORY_INSTALL_TIMEOUT_SEC` | `600`   | Wall-clock cap per worktree `pnpm install`.                       |
+| `FACTORY_MIN_FREE_DISK_GB`    | `3`     | Free-disk floor below which a card is Blocked instead of started. |
+
+**Reclaiming disk:**
+
+```bash
+git worktree prune                       # drop metadata for removed worktrees
+node scripts/lib/worktree-cli.mjs list   # show the factory's live worktrees
+rm -rf ~/Library/Developer/Xcode/DerivedData/* ~/.gradle/caches/*
+xcrun simctl delete unavailable
+# stale Claude Code worktrees (verify the branch is merged first):
+#   git worktree remove --force .claude/worktrees/<name>
+# or strip just the (reinstallable) node_modules to keep unmerged work:
+#   rm -rf .claude/worktrees/<name>/node_modules .claude/worktrees/<name>/{apps,packages}/*/node_modules
+```
+
+**Durable fix (optional):** move the pnpm store onto the internal volume so installs hardlink in seconds even without the clonefile seed — `pnpm config set store-dir ~/Library/pnpm/store && pnpm store prune && pnpm install` at the repo root (needs free internal space first). The clonefile seed then remains a cheap safety net regardless of store location.
 
 ## Related
 
