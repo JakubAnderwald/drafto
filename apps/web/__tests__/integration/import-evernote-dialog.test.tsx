@@ -2,24 +2,59 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ImportEvernoteDialog } from "@/components/import/import-evernote-dialog";
+import type { EnexNote } from "@/lib/import/types";
 
-// Mock enex parser
-vi.mock("@/lib/import/enex-parser", () => ({
-  parseEnexFile: vi.fn(() => [
-    {
-      title: "Test Note",
-      content: "<en-note><p>Hello</p></en-note>",
-      created: "2023-01-01T00:00:00.000Z",
-      updated: "2023-01-01T00:00:00.000Z",
-      resources: [],
-    },
-  ]),
+const mockParseEnexStream = vi.fn();
+
+vi.mock("@/lib/import/enex-stream-parser", () => ({
+  parseEnexStream: (...args: unknown[]) => mockParseEnexStream(...args),
 }));
 
-// Mock handle-auth-error
 vi.mock("@/lib/handle-auth-error", () => ({
   handleAuthError: vi.fn(() => false),
 }));
+
+const mockUploadToSignedUrl = vi.fn().mockResolvedValue({ error: null });
+vi.mock("@/lib/supabase/client", () => ({
+  createClient: vi.fn(() => ({
+    storage: { from: () => ({ uploadToSignedUrl: mockUploadToSignedUrl }) },
+  })),
+}));
+
+function note(overrides: Partial<EnexNote> = {}): EnexNote {
+  return {
+    title: "Test Note",
+    content: "<en-note><p>Hello</p></en-note>",
+    created: "2023-01-01T00:00:00.000Z",
+    updated: "2023-01-01T00:00:00.000Z",
+    resources: [],
+    tasks: [],
+    ...overrides,
+  };
+}
+
+async function* streamOf(...notes: EnexNote[]): AsyncGenerator<EnexNote> {
+  for (const n of notes) yield n;
+}
+
+function jsonOk(body: unknown) {
+  return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+}
+
+function routeFetch(overrides: Record<string, () => Promise<unknown>> = {}) {
+  return vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/api/import/evernote/note")) {
+      return (overrides.note ?? (() => jsonOk({ notebookId: "nb-1", noteId: "note-1" })))();
+    }
+    if (url.includes("/api/import/evernote/finalize")) {
+      return (overrides.finalize ?? (() => jsonOk({ noteId: "note-1", blockCount: 1 })))();
+    }
+    if (url.includes("/upload-url")) return jsonOk({ token: "t", filePath: "user-1/note-1/f.png" });
+    if (url.includes("/confirm")) return jsonOk({ file_path: "user-1/note-1/f.png" });
+    return jsonOk({}); // DELETE /api/notes/[id], etc.
+  });
+}
 
 describe("ImportEvernoteDialog", () => {
   const mockOnClose = vi.fn();
@@ -27,12 +62,12 @@ describe("ImportEvernoteDialog", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    global.fetch = vi.fn();
+    mockParseEnexStream.mockImplementation(() => streamOf(note()));
+    global.fetch = routeFetch() as unknown as typeof fetch;
   });
 
   it("renders the dialog with file input and notebook name", () => {
     render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
-
     expect(screen.getByText("Import from Evernote")).toBeInTheDocument();
     expect(screen.getByTestId("notebook-name-input")).toBeInTheDocument();
     expect(screen.getByTestId("file-input")).toBeInTheDocument();
@@ -41,15 +76,12 @@ describe("ImportEvernoteDialog", () => {
 
   it("disables import button when no file selected", () => {
     render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
-
-    const button = screen.getByTestId("start-import-button");
-    expect(button).toBeDisabled();
+    expect(screen.getByTestId("start-import-button")).toBeDisabled();
   });
 
   it("calls onClose when cancel is clicked", async () => {
     const user = userEvent.setup();
     render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
-
     await user.click(screen.getByRole("button", { name: /cancel/i }));
     expect(mockOnClose).toHaveBeenCalled();
   });
@@ -57,67 +89,65 @@ describe("ImportEvernoteDialog", () => {
   it("sets notebook name from filename when file is selected", async () => {
     const user = userEvent.setup();
     render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
-
-    const file = new File(["<en-export></en-export>"], "My Notes.enex", {
-      type: "text/xml",
-    });
-
-    const fileInput = screen.getByTestId("file-input");
-    await user.upload(fileInput, file);
-
-    const nameInput = screen.getByTestId("notebook-name-input") as HTMLInputElement;
-    expect(nameInput.value).toBe("My Notes");
+    const file = new File(["<en-export></en-export>"], "My Notes.enex", { type: "text/xml" });
+    await user.upload(screen.getByTestId("file-input"), file);
+    expect((screen.getByTestId("notebook-name-input") as HTMLInputElement).value).toBe("My Notes");
   });
 
-  it("shows success status after successful import", async () => {
+  it("imports notes and reports success", async () => {
     const user = userEvent.setup();
-
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: () =>
-        Promise.resolve({
-          notebookId: "nb-1",
-          notesImported: 1,
-          notesFailed: 0,
-          errors: [],
-        }),
-    });
-
     render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
 
-    const file = new File(
-      [
-        '<?xml version="1.0"?><en-export><note><title>Test</title><content>test</content><created>20230101T000000Z</created></note></en-export>',
-      ],
-      "notes.enex",
-      { type: "text/xml" },
-    );
-
-    const fileInput = screen.getByTestId("file-input");
-    await user.upload(fileInput, file);
+    const file = new File(["<en-export/>"], "notes.enex", { type: "text/xml" });
+    await user.upload(screen.getByTestId("file-input"), file);
     await user.click(screen.getByTestId("start-import-button"));
 
-    // Wait for import to finish
     const statusEl = await screen.findByTestId("import-status");
     expect(statusEl.textContent).toContain("1 notes imported");
     expect(mockOnComplete).toHaveBeenCalledWith("nb-1");
   });
 
-  it("shows error when parsing fails", async () => {
+  it("isolates a failed note and offers retry without dropping the rest", async () => {
     const user = userEvent.setup();
+    // Two notes; the first note's finalize fails once, the second succeeds.
+    mockParseEnexStream.mockImplementation(() =>
+      streamOf(note({ title: "Bad" }), note({ title: "Good" })),
+    );
+    let finalizeCalls = 0;
+    global.fetch = routeFetch({
+      finalize: () => {
+        finalizeCalls += 1;
+        return finalizeCalls === 1
+          ? Promise.resolve({
+              ok: false,
+              status: 500,
+              json: () => Promise.resolve({ error: "boom" }),
+            })
+          : jsonOk({ noteId: "note-1" });
+      },
+    }) as unknown as typeof fetch;
 
-    // Override the mock to throw
-    const { parseEnexFile } = await import("@/lib/import/enex-parser");
-    (parseEnexFile as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+    render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+    await user.upload(screen.getByTestId("file-input"), new File(["x"], "n.enex"));
+    await user.click(screen.getByTestId("start-import-button"));
+
+    const failedList = await screen.findByTestId("import-failed-list");
+    expect(failedList.textContent).toContain("Bad");
+    // The good note still imported despite the bad one failing.
+    expect((await screen.findByTestId("import-status")).textContent).toContain(
+      "1 imported, 1 failed",
+    );
+    expect(screen.getByTestId("retry-failed-button")).toBeInTheDocument();
+  });
+
+  it("shows a fatal error when the stream cannot be parsed", async () => {
+    const user = userEvent.setup();
+    mockParseEnexStream.mockImplementation(async function* () {
       throw new Error("XML parsing failed");
     });
 
     render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
-
-    const file = new File(["bad xml"], "broken.enex", { type: "text/xml" });
-    const fileInput = screen.getByTestId("file-input");
-    await user.upload(fileInput, file);
+    await user.upload(screen.getByTestId("file-input"), new File(["bad"], "broken.enex"));
     await user.click(screen.getByTestId("start-import-button"));
 
     const errorEl = await screen.findByTestId("import-error");
