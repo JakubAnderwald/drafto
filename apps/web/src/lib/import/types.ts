@@ -1,7 +1,6 @@
 export interface EnexResource {
   data: string; // base64-encoded
   mime: string;
-  hash: string; // MD5 hash for en-media matching
   fileName: string;
 }
 
