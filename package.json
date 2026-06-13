@@ -56,9 +56,9 @@
     "@commitlint/config-conventional": "^20.5.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
-    "prettier": "^3.8.3",
+    "prettier": "^3.8.4",
     "prettier-plugin-tailwindcss": "^0.8.0",
     "tsx": "^4.22.3",
-    "turbo": "^2.9.14"
+    "turbo": "^2.9.18"
   }
 }
