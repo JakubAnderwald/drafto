@@ -28,9 +28,21 @@ export async function POST(request: NextRequest) {
     return errorResponse("title is required", 400);
   }
 
-  // Resolve or create the target notebook.
+  // Resolve or create the target notebook. A client-supplied notebookId must
+  // belong to this user — otherwise a tampered request could write a note into
+  // someone else's notebook.
   let notebookId = body.notebookId;
-  if (!notebookId) {
+  if (notebookId) {
+    const { data: owned, error: lookupError } = await supabase
+      .from("notebooks")
+      .select("id")
+      .eq("id", notebookId)
+      .eq("user_id", user.id)
+      .single();
+    if (lookupError || !owned) {
+      return errorResponse("Notebook not found", 404);
+    }
+  } else {
     const name = body.notebookName?.trim() || "Evernote Import";
     const { data: notebook, error: nbError } = await supabase
       .from("notebooks")

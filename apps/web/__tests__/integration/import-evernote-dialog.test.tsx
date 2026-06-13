@@ -137,7 +137,12 @@ describe("ImportEvernoteDialog", () => {
     expect((await screen.findByTestId("import-status")).textContent).toContain(
       "1 imported, 1 failed",
     );
-    expect(screen.getByTestId("retry-failed-button")).toBeInTheDocument();
+
+    // Retry resumes the same note row (finalize call #3 succeeds) — no duplicate.
+    await user.click(screen.getByTestId("retry-failed-button"));
+    const finalStatus = await screen.findByTestId("import-status");
+    expect(finalStatus.textContent).toContain("2 notes imported");
+    expect(screen.queryByTestId("retry-failed-button")).not.toBeInTheDocument();
   });
 
   it("shows a fatal error when the stream cannot be parsed", async () => {
@@ -152,5 +157,62 @@ describe("ImportEvernoteDialog", () => {
 
     const errorEl = await screen.findByTestId("import-error");
     expect(errorEl.textContent).toContain("XML parsing failed");
+  });
+
+  it("uploads a note's attachment directly and references it in finalize", async () => {
+    const user = userEvent.setup();
+    const finalizeBodies: Array<{ attachments: Array<{ url: string }> }> = [];
+    mockParseEnexStream.mockImplementation(() =>
+      streamOf(note({ resources: [{ data: "aGVsbG8=", mime: "image/png", fileName: "pic.png" }] })),
+    );
+    global.fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/import/evernote/note"))
+        return jsonOk({ notebookId: "nb-1", noteId: "note-1" });
+      if (url.includes("/api/import/evernote/finalize")) {
+        finalizeBodies.push(JSON.parse(String(init?.body)));
+        return jsonOk({ noteId: "note-1" });
+      }
+      if (url.includes("/upload-url"))
+        return jsonOk({ token: "t", filePath: "user-1/note-1/pic.png" });
+      if (url.includes("/confirm")) return jsonOk({ file_path: "user-1/note-1/pic.png" });
+      return jsonOk({});
+    }) as unknown as typeof fetch;
+
+    render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+    await user.upload(screen.getByTestId("file-input"), new File(["x"], "n.enex"));
+    await user.click(screen.getByTestId("start-import-button"));
+
+    expect((await screen.findByTestId("import-status")).textContent).toContain("1 notes imported");
+    expect(mockUploadToSignedUrl).toHaveBeenCalled();
+    expect(finalizeBodies[0].attachments).toHaveLength(1);
+    expect(finalizeBodies[0].attachments[0].url).toBe("attachment://user-1/note-1/pic.png");
+  });
+
+  it("skips a failed attachment but still imports the note's text", async () => {
+    const user = userEvent.setup();
+    mockParseEnexStream.mockImplementation(() =>
+      streamOf(note({ resources: [{ data: "aGVsbG8=", mime: "image/png", fileName: "pic.png" }] })),
+    );
+    mockUploadToSignedUrl.mockResolvedValueOnce({ error: { message: "network down" } });
+
+    render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+    await user.upload(screen.getByTestId("file-input"), new File(["x"], "n.enex"));
+    await user.click(screen.getByTestId("start-import-button"));
+
+    const skipped = await screen.findByTestId("import-skipped-list");
+    expect(skipped.textContent).toContain("pic.png");
+    expect((await screen.findByTestId("import-status")).textContent).toContain("1 notes imported");
+  });
+
+  it("shows 'No notes found' for an empty .enex", async () => {
+    const user = userEvent.setup();
+    mockParseEnexStream.mockImplementation(() => streamOf());
+
+    render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+    await user.upload(screen.getByTestId("file-input"), new File(["x"], "empty.enex"));
+    await user.click(screen.getByTestId("start-import-button"));
+
+    expect((await screen.findByTestId("import-error")).textContent).toContain("No notes found");
   });
 });

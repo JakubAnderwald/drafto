@@ -107,6 +107,19 @@ describe("POST /api/import/evernote/finalize", () => {
     expect(mockErrorResponse).toHaveBeenCalledWith("noteId is required", 400);
   });
 
+  it("returns 400 (not 500) when tasks has an invalid shape", async () => {
+    await POST(
+      makeRequest({
+        noteId: "note-1",
+        content: "<en-note></en-note>",
+        attachments: [],
+        tasks: "nope",
+      }),
+    );
+    expect(mockErrorResponse).toHaveBeenCalledWith("tasks must be a valid task array", 400);
+    expect(mockConvert).not.toHaveBeenCalled();
+  });
+
   it("returns the auth/ownership error when the note is not owned", async () => {
     mockGetNoteOwner.mockResolvedValue({
       data: null,

@@ -12,17 +12,33 @@ vi.mock("@/lib/api/utils", () => ({
   successResponse: (...args: unknown[]) => mockSuccessResponse(...args),
 }));
 
+// A chainable query builder whose .single() resolves queued results in order,
+// so it can serve both the ownership lookup (select→eq→eq→single) and the
+// inserts (insert→select→single).
+const singleResults: Array<{ data: unknown; error: unknown }> = [];
 const mockInsert = vi.fn();
 const mockSelect = vi.fn();
-const mockSingle = vi.fn();
-
-const mockSupabase = {
-  from: vi.fn(() => ({
-    insert: mockInsert.mockReturnValue({
-      select: mockSelect.mockReturnValue({ single: mockSingle }),
-    }),
-  })),
+const mockEq = vi.fn();
+const builder = {
+  insert: (...a: unknown[]) => {
+    mockInsert(...a);
+    return builder;
+  },
+  select: (...a: unknown[]) => {
+    mockSelect(...a);
+    return builder;
+  },
+  eq: (...a: unknown[]) => {
+    mockEq(...a);
+    return builder;
+  },
+  single: () =>
+    Promise.resolve(
+      singleResults.shift() ?? { data: null, error: { message: "no result queued" } },
+    ),
 };
+const mockFrom = vi.fn(() => builder);
+const mockSupabase = { from: mockFrom };
 
 function makeRequest(body: unknown): NextRequest {
   return new NextRequest("http://localhost/api/import/evernote/note", {
@@ -37,6 +53,7 @@ describe("POST /api/import/evernote/note", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    singleResults.length = 0;
     mockErrorResponse.mockImplementation(
       (msg: string, status: number) => new Response(JSON.stringify({ error: msg }), { status }),
     );
@@ -60,13 +77,13 @@ describe("POST /api/import/evernote/note", () => {
   };
 
   it("creates the notebook then the note, preserving title and timestamps", async () => {
-    mockSingle.mockResolvedValueOnce({ data: { id: "nb-1" }, error: null }); // notebook
-    mockSingle.mockResolvedValueOnce({ data: { id: "note-1" }, error: null }); // note
+    singleResults.push({ data: { id: "nb-1" }, error: null }); // notebook insert
+    singleResults.push({ data: { id: "note-1" }, error: null }); // note insert
 
     await POST(makeRequest(noteBody));
 
-    expect(mockSupabase.from).toHaveBeenCalledWith("notebooks");
-    expect(mockSupabase.from).toHaveBeenCalledWith("notes");
+    expect(mockFrom).toHaveBeenCalledWith("notebooks");
+    expect(mockFrom).toHaveBeenCalledWith("notes");
     expect(mockInsert).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "My Note",
@@ -77,16 +94,28 @@ describe("POST /api/import/evernote/note", () => {
     expect(mockSuccessResponse).toHaveBeenCalledWith({ notebookId: "nb-1", noteId: "note-1" }, 201);
   });
 
-  it("reuses an existing notebookId without creating a notebook", async () => {
-    mockSingle.mockResolvedValueOnce({ data: { id: "note-1" }, error: null }); // note only
+  it("reuses an existing OWNED notebookId without creating a notebook", async () => {
+    singleResults.push({ data: { id: "existing-nb" }, error: null }); // ownership lookup
+    singleResults.push({ data: { id: "note-1" }, error: null }); // note insert
 
     await POST(makeRequest({ ...noteBody, notebookId: "existing-nb", notebookName: undefined }));
 
-    expect(mockSupabase.from).not.toHaveBeenCalledWith("notebooks");
+    // The ownership lookup ran, but no notebook was inserted (only the note).
+    expect(mockInsert).toHaveBeenCalledTimes(1);
+    expect(mockEq).toHaveBeenCalledWith("user_id", "user-1");
     expect(mockSuccessResponse).toHaveBeenCalledWith(
       { notebookId: "existing-nb", noteId: "note-1" },
       201,
     );
+  });
+
+  it("rejects a notebookId not owned by the user (no note written)", async () => {
+    singleResults.push({ data: null, error: { message: "not found" } }); // ownership lookup fails
+
+    await POST(makeRequest({ ...noteBody, notebookId: "foreign-nb", notebookName: undefined }));
+
+    expect(mockErrorResponse).toHaveBeenCalledWith("Notebook not found", 404);
+    expect(mockInsert).not.toHaveBeenCalled();
   });
 
   it("returns 400 when title is missing", async () => {
@@ -95,8 +124,8 @@ describe("POST /api/import/evernote/note", () => {
   });
 
   it("returns 500 when note insert fails", async () => {
-    mockSingle.mockResolvedValueOnce({ data: { id: "nb-1" }, error: null });
-    mockSingle.mockResolvedValueOnce({ data: null, error: { message: "boom" } });
+    singleResults.push({ data: { id: "nb-1" }, error: null }); // notebook insert ok
+    singleResults.push({ data: null, error: { message: "boom" } }); // note insert fails
 
     await POST(makeRequest(noteBody));
     expect(mockErrorResponse).toHaveBeenCalledWith(

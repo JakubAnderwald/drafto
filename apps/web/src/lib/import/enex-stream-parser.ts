@@ -28,57 +28,57 @@ export class NoteSplitter {
 
   /** Return the next complete note fragment, or null if more data is needed. */
   next(): string | null {
-    for (;;) {
-      if (this.noteStart === -1) {
-        const i = this.buffer.indexOf(NOTE_OPEN);
-        if (i === -1) {
-          // Drop the consumed preamble/whitespace, keeping only enough tail to
-          // detect a `<note>` split across the chunk boundary.
-          if (this.buffer.length > NOTE_OPEN.length) {
-            this.buffer = this.buffer.slice(-(NOTE_OPEN.length - 1));
-          }
-          return null;
+    if (this.noteStart === -1) {
+      const i = this.buffer.indexOf(NOTE_OPEN);
+      if (i === -1) {
+        // Drop the consumed preamble/whitespace, keeping only enough tail to
+        // detect a `<note>` split across the chunk boundary.
+        if (this.buffer.length > NOTE_OPEN.length) {
+          this.buffer = this.buffer.slice(-(NOTE_OPEN.length - 1));
         }
-        this.noteStart = i;
-        this.scanPos = i + NOTE_OPEN.length;
-        this.inCDATA = false;
-      }
-
-      for (;;) {
-        if (this.inCDATA) {
-          const close = this.buffer.indexOf(CDATA_CLOSE, this.scanPos);
-          if (close === -1) {
-            this.scanPos = Math.max(this.scanPos, this.buffer.length - (CDATA_CLOSE.length - 1));
-            return null;
-          }
-          this.scanPos = close + CDATA_CLOSE.length;
-          this.inCDATA = false;
-          continue;
-        }
-
-        const cdata = this.buffer.indexOf(CDATA_OPEN, this.scanPos);
-        const end = this.buffer.indexOf(NOTE_CLOSE, this.scanPos);
-
-        if (end !== -1 && (cdata === -1 || end < cdata)) {
-          const stop = end + NOTE_CLOSE.length;
-          const noteXml = this.buffer.slice(this.noteStart, stop);
-          this.buffer = this.buffer.slice(stop);
-          this.noteStart = -1;
-          this.scanPos = 0;
-          return noteXml;
-        }
-
-        if (cdata !== -1 && (end === -1 || cdata < end)) {
-          this.scanPos = cdata + CDATA_OPEN.length;
-          this.inCDATA = true;
-          continue;
-        }
-
-        // Neither a complete `</note>` nor `<![CDATA[` is present yet. Retain a
-        // small tail in case a token straddles the next chunk.
-        this.scanPos = Math.max(this.scanPos, this.buffer.length - (MAX_TOKEN_LEN - 1));
         return null;
       }
+      this.noteStart = i;
+      this.scanPos = i + NOTE_OPEN.length;
+      this.inCDATA = false;
+    }
+
+    // Scan from scanPos for this note's end, stepping over CDATA sections so a
+    // literal `</note>` inside one is not mistaken for the boundary.
+    for (;;) {
+      if (this.inCDATA) {
+        const close = this.buffer.indexOf(CDATA_CLOSE, this.scanPos);
+        if (close === -1) {
+          this.scanPos = Math.max(this.scanPos, this.buffer.length - (CDATA_CLOSE.length - 1));
+          return null;
+        }
+        this.scanPos = close + CDATA_CLOSE.length;
+        this.inCDATA = false;
+        continue;
+      }
+
+      const cdata = this.buffer.indexOf(CDATA_OPEN, this.scanPos);
+      const end = this.buffer.indexOf(NOTE_CLOSE, this.scanPos);
+
+      if (end !== -1 && (cdata === -1 || end < cdata)) {
+        const stop = end + NOTE_CLOSE.length;
+        const noteXml = this.buffer.slice(this.noteStart, stop);
+        this.buffer = this.buffer.slice(stop);
+        this.noteStart = -1;
+        this.scanPos = 0;
+        return noteXml;
+      }
+
+      if (cdata !== -1 && (end === -1 || cdata < end)) {
+        this.scanPos = cdata + CDATA_OPEN.length;
+        this.inCDATA = true;
+        continue;
+      }
+
+      // Neither a complete `</note>` nor `<![CDATA[` is present yet. Retain a
+      // small tail in case a token straddles the next chunk.
+      this.scanPos = Math.max(this.scanPos, this.buffer.length - (MAX_TOKEN_LEN - 1));
+      return null;
     }
   }
 }

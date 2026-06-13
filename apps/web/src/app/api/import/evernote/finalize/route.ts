@@ -28,6 +28,22 @@ export async function POST(request: NextRequest) {
   if (typeof content !== "string") {
     return errorResponse("content is required", 400);
   }
+  // Validate the (untrusted) tasks shape up front so a malformed payload yields
+  // a deterministic 400 rather than crashing convertEnmlToBlocks into a 500.
+  if (tasks !== undefined) {
+    const valid =
+      Array.isArray(tasks) &&
+      tasks.every(
+        (t) =>
+          typeof t?.title === "string" &&
+          typeof t?.checked === "boolean" &&
+          typeof t?.groupId === "string" &&
+          (t.sortWeight === undefined || typeof t.sortWeight === "string"),
+      );
+    if (!valid) {
+      return errorResponse("tasks must be a valid task array", 400);
+    }
+  }
 
   const { data: auth, error: authError } = await getAuthenticatedNoteOwner(noteId, request);
   if (authError) return authError;
