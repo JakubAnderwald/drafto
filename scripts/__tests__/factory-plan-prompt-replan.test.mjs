@@ -69,6 +69,11 @@ describe("factory-plan-prompt replan section (#451)", () => {
       /Do NOT mention the feedback, the comment, the operator, or the\s+reviewer/i,
       "replan must forbid referencing the reviewer/feedback in the plan body",
     );
+    // Lock the representative banned examples too, so a regression that drops
+    // the explicit list (not just the sentence) still fails.
+    assert.match(section, /as requested/i, 'replan must ban "as requested" framing');
+    assert.match(section, /per your comment/i, 'replan must ban "per your comment" framing');
+    assert.match(section, /now uses/i, 'replan must ban "now uses" delta framing');
   });
 
   it("keeps the anti-churn guardrail", () => {
