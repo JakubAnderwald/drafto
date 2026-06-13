@@ -80,12 +80,25 @@ FACTORY_MAX_ATTEMPTS="${FACTORY_MAX_ATTEMPTS:-5}"
 # store volume vanished). Bounding it stops a stuck install from holding the
 # implement lock for hours and starving every other card (#451).
 INSTALL_TIMEOUT_SEC="${FACTORY_INSTALL_TIMEOUT_SEC:-600}"
+# Validate before use: a non-numeric override would make every run-with-timeout
+# call exit on the usage path, churning attempts. (log() isn't defined this
+# early in the script, so warn on stderr — it lands in the launchd log.)
+if ! [[ "$INSTALL_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_INSTALL_TIMEOUT_SEC='$INSTALL_TIMEOUT_SEC'; defaulting to 600" >&2
+  INSTALL_TIMEOUT_SEC=600
+fi
 
 # Minimum free disk (whole GiB) on the worktree volume before the factory will
 # start implementing a card. Below this, the card is parked in Blocked with a
 # comment rather than failing mid-build on a full disk (#451). The clonefile
 # seed adds ~0 bytes, so this mainly protects the build/test phase.
 FACTORY_MIN_FREE_DISK_GB="${FACTORY_MIN_FREE_DISK_GB:-3}"
+# Validate: a non-numeric override silently disables the guard (arithmetic
+# context treats garbage as 0, so nothing is ever below threshold).
+if ! [[ "$FACTORY_MIN_FREE_DISK_GB" =~ ^[0-9]+$ ]]; then
+  echo "WARNING: invalid FACTORY_MIN_FREE_DISK_GB='$FACTORY_MIN_FREE_DISK_GB'; defaulting to 3" >&2
+  FACTORY_MIN_FREE_DISK_GB=3
+fi
 
 # ── Args ────────────────────────────────────────────────────────────────────
 MODE_PLAN=0
@@ -741,7 +754,11 @@ seed_worktree_node_modules() {
     mkdir -p "$wt/$(dirname "$rel")"
     if ! cp -c -R "$src" "$wt/$rel" 2>>"$LOG_FILE"; then
       log "WARNING: clonefile seed of $rel failed; pnpm install will repopulate it"
-      rm -rf "$wt/$rel" 2>/dev/null || true
+      # Guard the cleanup: only remove a non-empty, worktree-relative path so a
+      # malformed $wt / $rel can never expand toward / (shellcheck SC2115).
+      if [[ -n "$wt" && -d "$wt" && -n "$rel" ]]; then
+        rm -rf -- "$wt/$rel" 2>/dev/null || true
+      fi
     fi
   done
 }
