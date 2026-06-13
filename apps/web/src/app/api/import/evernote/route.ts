@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
 import { convertEnmlToBlocks } from "@/lib/import/enml-to-blocknote";
+import { sanitizeAndBuildPath } from "@/lib/api/sanitize-filename";
 import type {
   ImportBatchRequest,
   ImportBatchResult,
@@ -9,7 +10,8 @@ import type {
 } from "@/lib/import/types";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/supabase/database.types";
-import { BUCKET_NAME, SIGNED_URL_EXPIRY_SECONDS } from "@drafto/shared";
+import { createHash } from "node:crypto";
+import { BUCKET_NAME, toAttachmentUrl } from "@drafto/shared";
 
 export async function POST(request: NextRequest) {
   const { data: auth, error: authError } = await getAuthenticatedUserFast(request);
@@ -93,14 +95,20 @@ async function importNote(
     throw new Error(`Failed to create note: ${noteError?.message || "unknown"}`);
   }
 
-  // Upload attachments and build hash→URL map
-  const attachmentUrlMap = new Map<string, string>();
+  // Upload attachments and build an en-media hash → attachment map. The
+  // `<en-media hash="...">` value is the MD5 of the resource binary, so key the
+  // map by exactly that — computed server-side, where Node crypto has MD5.
+  // Identical-content resources share an MD5 and therefore one entry, matching
+  // Evernote's content-addressed en-media semantics.
+  const attachmentUrlMap = new Map<string, { url: string; name: string }>();
 
   for (const resource of note.resources) {
     try {
-      const url = await uploadResource(supabase, userId, noteRow.id, resource);
-      if (url) {
-        attachmentUrlMap.set(resource.hash, url);
+      const bytes = decodeBase64(resource.data);
+      const md5 = createHash("md5").update(bytes).digest("hex");
+      const uploaded = await uploadResource(supabase, userId, noteRow.id, resource, bytes);
+      if (uploaded) {
+        attachmentUrlMap.set(md5, uploaded);
       }
     } catch {
       // Skip failed attachments — partial import is acceptable
@@ -121,27 +129,26 @@ async function importNote(
   }
 }
 
+function decodeBase64(data: string): Uint8Array {
+  const binaryString = atob(data);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
 async function uploadResource(
   supabase: SupabaseClient<Database>,
   userId: string,
   noteId: string,
   resource: EnexResource,
-): Promise<string | null> {
-  // Decode base64 to buffer
-  const binaryString = atob(resource.data);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-
-  // Sanitize filename
-  const fileName = resource.fileName
-    .replace(/[/\\]/g, "_")
-    .replace(/\.\./g, "_")
-    .replace(/[<>:"|?*\x00-\x1f]/g, "_")
-    .slice(0, 255);
-
-  const filePath = `${userId}/${noteId}/${fileName}`;
+  bytes: Uint8Array,
+): Promise<{ url: string; name: string } | null> {
+  // Reuse the shared path builder so imported attachments get the same
+  // collision-safe, sanitized storage path as native uploads (a timestamp+UUID
+  // suffix keeps two same-named resources in one note from clobbering each other).
+  const { fileName, filePath } = sanitizeAndBuildPath(resource.fileName, userId, noteId);
 
   // Upload to storage
   const { error: uploadError } = await supabase.storage.from(BUCKET_NAME).upload(filePath, bytes, {
@@ -172,14 +179,9 @@ async function uploadResource(
     return null;
   }
 
-  // Generate signed URL
-  const { data: urlData, error: urlError } = await supabase.storage
-    .from(BUCKET_NAME)
-    .createSignedUrl(filePath, SIGNED_URL_EXPIRY_SECONDS);
-
-  if (urlError || !urlData?.signedUrl) {
-    return null;
-  }
-
-  return urlData.signedUrl;
+  // Store the durable attachment:// reference, not a signed URL. GET
+  // /api/notes/[id] resolves a fresh signed URL at read time, so the note never
+  // holds an expiring URL. The block's display name keeps the original Evernote
+  // filename; the storage path (and DB file_name) carries the uniqueness suffix.
+  return { url: toAttachmentUrl(filePath), name: resource.fileName };
 }

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { convertEnmlToBlocks } from "@/lib/import/enml-to-blocknote";
 
 describe("convertEnmlToBlocks", () => {
-  const emptyMap = new Map<string, string>();
+  const emptyMap = new Map<string, { url: string; name: string }>();
 
   it("converts a simple paragraph", () => {
     const enml = "<en-note><p>Hello world</p></en-note>";
@@ -116,14 +116,26 @@ describe("convertEnmlToBlocks", () => {
     expect(content[0].text).toBe("Task done");
   });
 
-  it("converts en-media images with URL from map", () => {
-    const urlMap = new Map([["abc123", "https://storage.example.com/image.png"]]);
+  it("converts en-media images with the durable attachment:// URL from the map", () => {
+    const urlMap = new Map([
+      ["abc123", { url: "attachment://user/note/image.png", name: "image.png" }],
+    ]);
     const enml = '<en-note><en-media type="image/png" hash="abc123"/></en-note>';
     const blocks = convertEnmlToBlocks(enml, urlMap);
 
     const image = blocks.find((b) => b.type === "image");
     expect(image).toBeDefined();
-    expect(image?.props?.url).toBe("https://storage.example.com/image.png");
+    expect(image?.props?.url).toBe("attachment://user/note/image.png");
+    // `width` is not a valid BlockNote image prop and must not be emitted.
+    expect(image?.props && "width" in image.props).toBe(false);
+  });
+
+  it("matches the en-media hash case-insensitively", () => {
+    const urlMap = new Map([["abc123def", { url: "attachment://user/note/i.png", name: "i.png" }]]);
+    const enml = '<en-note><en-media type="image/png" hash="ABC123DEF"/></en-note>';
+    const blocks = convertEnmlToBlocks(enml, urlMap);
+
+    expect(blocks.find((b) => b.type === "image")?.props?.url).toBe("attachment://user/note/i.png");
   });
 
   it("shows placeholder for en-media without URL", () => {
@@ -132,6 +144,63 @@ describe("convertEnmlToBlocks", () => {
 
     expect(blocks).toHaveLength(1);
     expect(blocks[0].type).toBe("paragraph");
+  });
+
+  it("keeps content that FOLLOWS an inline en-media (RC1 regression)", () => {
+    // linkedom parses <en-media/> as non-void; before the fix it swallowed all
+    // following siblings, silently dropping every block after the first image.
+    const urlMap = new Map([["img", { url: "attachment://u/n/i.png", name: "i.png" }]]);
+    const enml =
+      '<en-note><en-media type="image/png" hash="img"/><div>A1 - T/T</div><div>A2 - T/?</div></en-note>';
+    const blocks = convertEnmlToBlocks(enml, urlMap);
+
+    expect(blocks[0].type).toBe("image");
+    const paraTexts = blocks
+      .filter((b) => b.type === "paragraph")
+      .map((b) => (b.content as Array<{ text: string }>).map((c) => c.text).join(""));
+    expect(paraTexts).toContain("A1 - T/T");
+    expect(paraTexts).toContain("A2 - T/?");
+  });
+
+  it("keeps a list and a paragraph that follow an inline en-media", () => {
+    const enml =
+      '<en-note><en-media type="image/png" hash="missing"/><ul><li>one</li><li>two</li></ul><p>tail</p></en-note>';
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    expect(blocks.filter((b) => b.type === "bulletListItem")).toHaveLength(2);
+    expect(
+      blocks.some(
+        (b) =>
+          b.type === "paragraph" &&
+          (b.content as Array<{ text: string }>).some((c) => c.text === "tail"),
+      ),
+    ).toBe(true);
+  });
+
+  it("handles multiple en-media in sequence without dropping the text between them", () => {
+    const enml =
+      '<en-note><en-media type="image/png" hash="a"/><p>between</p><en-media type="image/png" hash="b"/><p>after</p></en-note>';
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    const paraTexts = blocks
+      .filter((b) => b.type === "paragraph")
+      .map((b) => (b.content as Array<{ text: string }>).map((c) => c.text).join(""));
+    expect(paraTexts).toContain("between");
+    expect(paraTexts).toContain("after");
+  });
+
+  it("recovers child content inside a paired <en-media></en-media> element", () => {
+    // A paired (non-self-closed) en-media is left untouched by normalization and
+    // reaches convertElement with real children — the recovery path must surface
+    // that text rather than dropping it.
+    const enml =
+      '<en-note><en-media type="image/png" hash="missing"><div>caption text</div></en-media></en-note>';
+    const blocks = convertEnmlToBlocks(enml, emptyMap);
+
+    const texts = blocks
+      .filter((b) => b.type === "paragraph")
+      .map((b) => (b.content as Array<{ text: string }>).map((c) => c.text).join(""));
+    expect(texts).toContain("caption text");
   });
 
   it("converts tables", () => {
@@ -259,21 +328,17 @@ describe("convertEnmlToBlocks", () => {
     expect(content[0].styles.italic).toBe(true);
   });
 
-  it("converts non-image attachment as canonical link when URL exists", () => {
-    const urlMap = new Map([["def456", "https://storage.example.com/doc.pdf"]]);
+  it("converts a non-image attachment to a native file block with the durable URL", () => {
+    const urlMap = new Map([
+      ["def456", { url: "attachment://user/note/doc.pdf", name: "doc.pdf" }],
+    ]);
     const enml = '<en-note><en-media type="application/pdf" hash="def456"/></en-note>';
     const blocks = convertEnmlToBlocks(enml, urlMap);
 
     expect(blocks).toHaveLength(1);
-    expect(blocks[0].type).toBe("paragraph");
-    const content = blocks[0].content as Array<{
-      type: string;
-      href?: string;
-      content?: Array<{ text: string }>;
-    }>;
-    expect(content[0].type).toBe("link");
-    expect(content[0].href).toBe("https://storage.example.com/doc.pdf");
-    expect(content[0].content?.[0]?.text).toContain("application/pdf");
+    expect(blocks[0].type).toBe("file");
+    expect(blocks[0].props?.url).toBe("attachment://user/note/doc.pdf");
+    expect(blocks[0].props?.name).toBe("doc.pdf");
   });
 
   it("converts hr to paragraph with ---", () => {
@@ -367,13 +432,16 @@ describe("convertEnmlToBlocks", () => {
     expect(blocks[0].type).toBe("paragraph");
   });
 
-  it("handles image with width attribute", () => {
-    const urlMap = new Map([["img123", "https://storage.example.com/photo.jpg"]]);
+  it("ignores the legacy width attribute (not a valid BlockNote prop)", () => {
+    const urlMap = new Map([
+      ["img123", { url: "attachment://user/note/photo.jpg", name: "photo.jpg" }],
+    ]);
     const enml = '<en-note><en-media type="image/jpeg" hash="img123" width="400"/></en-note>';
     const blocks = convertEnmlToBlocks(enml, urlMap);
 
     const image = blocks.find((b) => b.type === "image");
-    expect(image?.props?.width).toBe(400);
+    expect(image?.props?.url).toBe("attachment://user/note/photo.jpg");
+    expect(image?.props && "width" in image.props).toBe(false);
   });
 
   it("handles del and strike tags for strikethrough", () => {

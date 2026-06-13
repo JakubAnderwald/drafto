@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createHash } from "node:crypto";
 import { NextRequest } from "next/server";
 import type { ImportBatchRequest } from "@/lib/import/types";
 
@@ -26,7 +27,6 @@ const mockSingle = vi.fn();
 const mockUpdate = vi.fn();
 const mockEq = vi.fn();
 const mockUpload = vi.fn();
-const mockCreateSignedUrl = vi.fn();
 const mockRemove = vi.fn();
 
 const mockSupabase = {
@@ -43,7 +43,6 @@ const mockSupabase = {
   storage: {
     from: vi.fn(() => ({
       upload: mockUpload,
-      createSignedUrl: mockCreateSignedUrl,
       remove: mockRemove,
     })),
   },
@@ -295,7 +294,7 @@ describe("POST /api/import/evernote", () => {
     expect(mockErrorResponse).toHaveBeenCalledWith("Failed to create notebook", 500);
   });
 
-  it("uploads attachments and maps them for ENML conversion", async () => {
+  it("uploads attachments and maps them by MD5 to a durable attachment:// URL", async () => {
     // Notebook creation
     mockSingle.mockResolvedValueOnce({
       data: { id: "nb-1" },
@@ -313,10 +312,6 @@ describe("POST /api/import/evernote", () => {
     });
 
     mockUpload.mockResolvedValue({ error: null });
-    mockCreateSignedUrl.mockResolvedValue({
-      data: { signedUrl: "https://storage.example.com/file.png" },
-      error: null,
-    });
 
     const body: ImportBatchRequest = {
       notebookName: "Import",
@@ -330,7 +325,6 @@ describe("POST /api/import/evernote", () => {
             {
               data: "aGVsbG8=", // base64 "hello"
               mime: "image/png",
-              hash: "abc123",
               fileName: "photo.png",
             },
           ],
@@ -348,8 +342,19 @@ describe("POST /api/import/evernote", () => {
     await POST(req);
 
     expect(mockUpload).toHaveBeenCalled();
-    expect(mockCreateSignedUrl).toHaveBeenCalled();
-    expect(mockConvertEnmlToBlocks).toHaveBeenCalledWith(expect.any(String), expect.any(Map), []);
+    // The map must be keyed by the MD5 of the decoded binary (what en-media's
+    // `hash` references), with a durable attachment:// URL as the value — never
+    // an expiring signed URL.
+    const md5Hello = createHash("md5").update(Buffer.from("hello")).digest("hex");
+    const mapArg = mockConvertEnmlToBlocks.mock.calls[0][1] as Map<
+      string,
+      { url: string; name: string }
+    >;
+    const entry = mapArg.get(md5Hello);
+    // Display name keeps the original filename; the storage path gets a
+    // collision-safe timestamp+UUID suffix from sanitizeAndBuildPath.
+    expect(entry?.name).toBe("photo.png");
+    expect(entry?.url).toMatch(/^attachment:\/\/user-1\/note-1\/photo-\d+-[0-9a-f]{8}\.png$/);
     expect(mockSuccessResponse).toHaveBeenCalledWith(
       expect.objectContaining({ notesImported: 1 }),
       200,
@@ -382,7 +387,6 @@ describe("POST /api/import/evernote", () => {
             {
               data: "aGVsbG8=",
               mime: "image/png",
-              hash: "abc",
               fileName: "bad.png",
             },
           ],
@@ -438,7 +442,6 @@ describe("POST /api/import/evernote", () => {
             {
               data: "aGVsbG8=",
               mime: "image/png",
-              hash: "abc",
               fileName: "file.png",
             },
           ],
