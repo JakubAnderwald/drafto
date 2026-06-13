@@ -23,6 +23,23 @@ export function parseEnexFile(xmlString: string): EnexNote[] {
   return notes;
 }
 
+/**
+ * Parse a single `<note>…</note>` XML fragment (as produced by the streaming
+ * splitter) into an EnexNote. Used by parseEnexStream so very large .enex files
+ * never have to be held in memory all at once.
+ */
+export function parseNoteFragment(noteXml: string): EnexNote {
+  const doc = new DOMParser().parseFromString(noteXml, "text/xml");
+  if (doc.querySelector("parsererror")) {
+    throw new Error("Invalid .enex note: XML parsing failed");
+  }
+  const noteEl = doc.querySelector("note");
+  if (!noteEl) {
+    throw new Error("Invalid .enex note: <note> element missing");
+  }
+  return parseNoteElement(noteEl);
+}
+
 function parseNoteElement(noteEl: Element): EnexNote {
   const title = noteEl.querySelector("title")?.textContent?.trim() || "Untitled";
   const content = noteEl.querySelector("content")?.textContent?.trim() || "";

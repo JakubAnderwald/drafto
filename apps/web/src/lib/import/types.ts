@@ -20,15 +20,31 @@ export interface EnexNote {
   tasks: EnexTask[];
 }
 
-export interface ImportBatchRequest {
-  notebookName?: string;
+/** Request to create one note (and, on first call, its notebook). */
+export interface ImportNoteRequest {
   notebookId?: string;
-  notes: EnexNote[];
+  notebookName?: string;
+  title: string;
+  created: string; // ISO timestamp
+  updated: string; // ISO timestamp
 }
 
-export interface ImportBatchResult {
+export interface ImportNoteResult {
   notebookId: string;
-  notesImported: number;
-  notesFailed: number;
-  errors: string[];
+  noteId: string;
+}
+
+/** An attachment already uploaded to Storage, ready to match an en-media tag. */
+export interface ImportAttachmentRef {
+  md5: string; // MD5 of the binary — matches the <en-media hash> value
+  url: string; // durable attachment:// URL
+  name: string; // original display filename
+}
+
+/** Request to convert a note's ENML and write its content. */
+export interface ImportFinalizeRequest {
+  noteId: string;
+  content: string; // raw ENML
+  attachments: ImportAttachmentRef[];
+  tasks?: EnexTask[];
 }
