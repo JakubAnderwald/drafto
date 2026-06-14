@@ -219,3 +219,76 @@ export async function trashNote(
   if (error) return err(`Error: ${error.message}`);
   return ok(`Note "${data.title}" moved to trash.`);
 }
+
+export async function renameNotebook(
+  supabase: SupabaseClient<Database>,
+  userId: string,
+  notebookId: string,
+  name: string,
+): Promise<ToolResult> {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) return err("Error: Notebook name cannot be empty");
+
+  // Owner-scoped existence check first: an UPDATE on a missing/not-owned row
+  // affects 0 rows without raising a Supabase error, so check explicitly to
+  // return a clear structured error rather than a misleading success.
+  const { data: existing, error: lookupError } = await supabase
+    .from("notebooks")
+    .select("id")
+    .eq("id", notebookId)
+    .eq("user_id", userId)
+    .single();
+
+  if (lookupError || !existing) return err("Error: Notebook not found");
+
+  const { data, error } = await supabase
+    .from("notebooks")
+    .update({ name: trimmed })
+    .eq("id", notebookId)
+    .eq("user_id", userId)
+    .select("id, name")
+    .single();
+
+  if (error) return err(`Error: ${error.message}`);
+  return ok(JSON.stringify(data, null, 2));
+}
+
+export async function deleteNotebook(
+  supabase: SupabaseClient<Database>,
+  userId: string,
+  notebookId: string,
+): Promise<ToolResult> {
+  // Owner-scoped existence check first: a DELETE on a missing/not-owned row
+  // affects 0 rows without raising a Supabase error, so check explicitly to
+  // return a clear structured error rather than a misleading success.
+  const { data: existing, error: lookupError } = await supabase
+    .from("notebooks")
+    .select("id, name")
+    .eq("id", notebookId)
+    .eq("user_id", userId)
+    .single();
+
+  if (lookupError || !existing) return err("Error: Notebook not found");
+
+  // Mirror DELETE /api/notebooks/[id]: refuse if the notebook still holds
+  // non-trashed notes, so an agent gets a clear refusal instead of a 500.
+  const { count, error: countError } = await supabase
+    .from("notes")
+    .select("id", { count: "exact", head: true })
+    .eq("notebook_id", notebookId)
+    .eq("user_id", userId)
+    .eq("is_trashed", false);
+
+  if (countError) return err(`Error: ${countError.message}`);
+  if (count && count > 0)
+    return err("Error: Cannot delete notebook with notes. Move or trash its notes first.");
+
+  const { error } = await supabase
+    .from("notebooks")
+    .delete()
+    .eq("id", notebookId)
+    .eq("user_id", userId);
+
+  if (error) return err(`Error: ${error.message}`);
+  return ok(`Notebook "${existing.name}" deleted.`);
+}
