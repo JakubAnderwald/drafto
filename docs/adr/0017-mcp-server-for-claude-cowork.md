@@ -22,7 +22,7 @@ Key design choices:
 - **Stateless transport**: Each request is independent — fits Vercel serverless functions perfectly
 - **Markdown conversion**: BlockNote JSONB content is converted to/from Markdown for Claude to read and write
 
-Nine MCP tools are exposed: list_notebooks, list_notes, read_note, search_notes, create_notebook, create_note, update_note, move_note, trash_note. Permanent delete and attachment upload are intentionally excluded.
+Eleven MCP tools are exposed: list_notebooks, list_notes, read_note, search_notes, create_notebook, create_note, update_note, move_note, trash_note, rename_notebook, delete_notebook. Permanent note delete and attachment upload are intentionally excluded.
 
 ## Consequences
 
