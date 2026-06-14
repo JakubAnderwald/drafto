@@ -4,7 +4,7 @@
 
 ## What it is
 
-Cross-notebook search over the user's notes by title, body text, and notebook name. A keyboard-triggered overlay on web and desktop, a dedicated tab on mobile. Results include trashed notes, with title matches ranked first.
+Cross-notebook search over the user's notes by title, body text, and notebook name. A keyboard-triggered overlay on web and desktop, a dedicated search screen on mobile (`apps/mobile/app/search.tsx`) opened from the tab header's search button. Results include trashed notes, with title matches ranked first.
 
 ## Current state
 

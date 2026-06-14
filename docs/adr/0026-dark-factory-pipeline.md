@@ -20,7 +20,7 @@ The goal: a "vibe-kanban-style" pipeline where dragging a card on a GitHub Proje
 Build a **dark factory** as a fourth Mac-mini agent that extends the same skeleton as `support-agent.sh` (PID locks, atomic state via `state-cli.mjs`, phase-gated rollout, `factory-failure` issue trap). State lives in three already-free layers:
 
 1. **GitHub Projects v2 board** — UI surface. Free, native to issues, mobile-friendly. The Status field's value is the source of truth for where each card sits in the lifecycle.
-2. **Repository labels** (`status:*`, `factory-pause`, `migration-approved`, `factory-failure`, `parity:*`) — what the agent reads. A GitHub Action (`factory-status-mirror.yml`) mirrors Status changes onto labels within seconds of a drag, so the agent (which polls labels) sees Project field changes without itself needing a Project v2 PAT.
+2. **Repository labels** (`status:*`, `factory-pause`, `migration-approved`, `factory-failure`, `parity:*`) — what the agent reads. A GitHub Action (`factory-status-mirror.yml`) mirrors Status changes onto labels within seconds of a drag, so the agent (which polls labels) sees Project field changes without itself needing a Project v2 PAT. (This workflow was retired in the Path-A pivot — the board is now read directly via `scripts/lib/factory-project.mjs`; see `docs/dark-factory-proposal.md:45-47`.)
 3. **`logs/factory-state.json`** (gitignored, mode 0600) — atomic via the same `state-cli.mjs` pattern as the support agent. Tracks worktree-slot ownership, per-issue retry budgets, and the global pause flag.
 
 ### Two human gates
@@ -92,6 +92,6 @@ The factory does not replace `support-agent.sh` or `nightly-support.sh`. It inte
 - `docs/operations/factory-runbook.md` — phase progression criteria, kill switches, rollback drills.
 - `docs/dark-factory-proposal.md` — the proposal document this ADR finalises (kept for the lifecycle table and implementation-wave breakdown).
 - `scripts/setup-factory-labels.sh`, `scripts/setup-factory-board.sh` — one-shot bootstrap.
-- `.github/workflows/factory-status-mirror.yml` — Status-field → label bridge.
+- `scripts/lib/factory-project.mjs` — Status-field → label bridge (Path-A replacement for the retired `factory-status-mirror.yml` workflow).
 - `.github/ISSUE_TEMPLATE/factory-feature.yml` — spec contract enforcement.
 - [ADR-0024](./0024-realtime-support-agent.md) and [ADR-0025](./0025-support-allowlist-from-zoho-sender.md) — the support pipeline this ADR extends, not replaces.
