@@ -74,6 +74,32 @@ WATCH_TIMEOUT_SEC="${FACTORY_WATCH_TIMEOUT_SEC:-900}"
 # Claude invocations on one issue, the card is parked in Blocked for a human.
 FACTORY_MAX_ATTEMPTS="${FACTORY_MAX_ATTEMPTS:-5}"
 
+# pnpm install in a fresh worktree. node_modules is seeded from the main
+# checkout by clonefile first (seed_worktree_node_modules), so this is a near-
+# instant offline reconcile; the cap only fires on a pathological hang (e.g. the
+# store volume vanished). Bounding it stops a stuck install from holding the
+# implement lock for hours and starving every other card (#451).
+INSTALL_TIMEOUT_SEC="${FACTORY_INSTALL_TIMEOUT_SEC:-600}"
+# Validate before use: a non-numeric override would make every run-with-timeout
+# call exit on the usage path, churning attempts. (log() isn't defined this
+# early in the script, so warn on stderr — it lands in the launchd log.)
+if ! [[ "$INSTALL_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_INSTALL_TIMEOUT_SEC='$INSTALL_TIMEOUT_SEC'; defaulting to 600" >&2
+  INSTALL_TIMEOUT_SEC=600
+fi
+
+# Minimum free disk (whole GiB) on the worktree volume before the factory will
+# start implementing a card. Below this, the card is parked in Blocked with a
+# comment rather than failing mid-build on a full disk (#451). The clonefile
+# seed adds ~0 bytes, so this mainly protects the build/test phase.
+FACTORY_MIN_FREE_DISK_GB="${FACTORY_MIN_FREE_DISK_GB:-3}"
+# Validate: a non-numeric override silently disables the guard (arithmetic
+# context treats garbage as 0, so nothing is ever below threshold).
+if ! [[ "$FACTORY_MIN_FREE_DISK_GB" =~ ^[0-9]+$ ]]; then
+  echo "WARNING: invalid FACTORY_MIN_FREE_DISK_GB='$FACTORY_MIN_FREE_DISK_GB'; defaulting to 3" >&2
+  FACTORY_MIN_FREE_DISK_GB=3
+fi
+
 # ── Args ────────────────────────────────────────────────────────────────────
 MODE_PLAN=0
 MODE_IMPLEMENT=0
@@ -710,6 +736,57 @@ copy_worktree_env() {
   fi
 }
 
+# Seed a fresh worktree's node_modules from the main checkout via APFS clonefile
+# (`cp -c`: O(1), copy-on-write, same volume). The pnpm store lives on an
+# external volume on the Mac mini, so a cold `pnpm install` cross-device-copies
+# ~2000 packages and ran for 3.5+ hours on #451. Cloning the main checkout's
+# already-materialized trees turns the subsequent install into a fast offline
+# reconcile that adds ~0 bytes. Best-effort: on any failure the partial dir is
+# removed and `pnpm install` repopulates it normally. Only the pnpm workspace
+# roots (repo root + apps/* + packages/*) are seeded — never the factory's own
+# worktrees/ checkouts.
+seed_worktree_node_modules() {
+  local wt="$1" src rel
+  for src in "$REPO_ROOT"/node_modules "$REPO_ROOT"/apps/*/node_modules "$REPO_ROOT"/packages/*/node_modules; do
+    [[ -d "$src" ]] || continue
+    rel="${src#"$REPO_ROOT"/}"
+    [[ -e "$wt/$rel" ]] && continue
+    mkdir -p "$wt/$(dirname "$rel")"
+    if ! cp -c -R "$src" "$wt/$rel" 2>>"$LOG_FILE"; then
+      log "WARNING: clonefile seed of $rel failed; pnpm install will repopulate it"
+      # Guard the cleanup: only remove a non-empty, worktree-relative path so a
+      # malformed $wt / $rel can never expand toward / (shellcheck SC2115).
+      if [[ -n "$wt" && -d "$wt" && -n "$rel" ]]; then
+        rm -rf -- "$wt/$rel" 2>/dev/null || true
+      fi
+    fi
+  done
+}
+
+# Install deps in a worktree with a wall-clock cap (run-with-timeout.mjs, exit
+# 124 on cap) so a hung install can't hold the implement lock for hours (#451).
+# Ladder: fast offline reconcile (node_modules already seeded) → frozen online
+# (fetch only drifted tarballs, keep the lockfile) → unfrozen online as a last
+# resort for genuine lockfile drift. Returns 0 on the first attempt that
+# succeeds, non-zero if all fail / time out.
+run_pnpm_install() {
+  local wt="$1"
+  ( cd "$wt" && node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$INSTALL_TIMEOUT_SEC" \
+      pnpm install --frozen-lockfile --offline --prefer-offline >>"$LOG_FILE" 2>&1 ) && return 0
+  log "WARNING: offline reconcile failed/timed out; retrying frozen online"
+  ( cd "$wt" && node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$INSTALL_TIMEOUT_SEC" \
+      pnpm install --frozen-lockfile >>"$LOG_FILE" 2>&1 ) && return 0
+  log "WARNING: frozen install failed/timed out; retrying unfrozen online"
+  ( cd "$wt" && node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$INSTALL_TIMEOUT_SEC" \
+      pnpm install >>"$LOG_FILE" 2>&1 )
+}
+
+# Free space (whole GiB) on the volume backing the repo/worktrees. POSIX
+# `df -Pk` guarantees a single data row in 1024-byte blocks; $4 is available.
+free_disk_gb() {
+  df -Pk "$REPO_ROOT" 2>/dev/null | awk 'NR==2 { print int($4 / 1024 / 1024) }'
+}
+
 # Pick the slot index (0|1) to use for <issue>: the slot already assigned to it
 # (retry/continuation) if any, else the first free slot. Prints "" if both
 # slots are taken by other issues.
@@ -1338,6 +1415,29 @@ the card back to **In Progress** to retry.
       log "ERROR: fetch_issue_comments failed for #$ISSUE_NUM"; continue
     fi
 
+    # Free-disk guard — don't start disk-heavy implementation we can't finish.
+    # The clonefile seed adds ~0 bytes, but the build/test phase needs headroom;
+    # on a near-full disk, park the card in Blocked with a comment rather than
+    # fail mid-build (#451). Recover by reclaiming space and dragging the card
+    # back to In Progress.
+    FREE_GB=$(free_disk_gb)
+    if [[ "$FREE_GB" =~ ^[0-9]+$ ]] && [[ "$FREE_GB" -lt "$FACTORY_MIN_FREE_DISK_GB" ]]; then
+      log "Issue #$ISSUE_NUM: only ${FREE_GB}GB free (< ${FACTORY_MIN_FREE_DISK_GB}GB threshold); advancing to Blocked"
+      if [[ "$DRY_RUN" -eq 0 ]]; then
+        if ! echo "$COMMENTS_JSON" | jq -e 'any(.[]?; (.body // "") | contains("drafto-factory-disk-low"))' >/dev/null 2>&1; then
+          gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+            --body "🏭 **Paused — low disk on the build machine.**
+
+Only ${FREE_GB} GB free on the factory volume (need ≥ ${FACTORY_MIN_FREE_DISK_GB} GB). \
+Reclaim space on the Mac mini, then drag this card back to **In Progress** to retry.
+
+<!-- drafto-factory-disk-low -->" >>"$LOG_FILE" 2>&1 || true
+        fi
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+      fi
+      continue
+    fi
+
     # The approved plan must be present — In Progress means a human (or an
     # allowlisted reporter's email) approved it. No plan → Blocked.
     PLAN_COMMENT_JSON=$(extract_plan_comment "$COMMENTS_JSON")
@@ -1409,17 +1509,15 @@ Drag it back to **Ready** so the factory can plan it first.
     fi
     WT_PATH=$(echo "$WT_JSON" | jq -r '.path')
     copy_worktree_env "$WT_PATH"
+    seed_worktree_node_modules "$WT_PATH"
 
-    log "Issue #$ISSUE_NUM: pnpm install in worktree (slot $SLOT)"
-    if ! ( cd "$WT_PATH" && pnpm install --frozen-lockfile >>"$LOG_FILE" 2>&1 ); then
-      log "WARNING: frozen-lockfile install failed for #$ISSUE_NUM; retrying unfrozen"
-      if ! ( cd "$WT_PATH" && pnpm install >>"$LOG_FILE" 2>&1 ); then
-        log "ERROR: pnpm install failed for #$ISSUE_NUM; releasing slot + worktree"
-        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-        node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$ISSUE_NUM" --root "$REPO_ROOT" --force >>"$LOG_FILE" 2>&1 || true
-        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-        continue
-      fi
+    log "Issue #$ISSUE_NUM: seeding node_modules (clonefile) + reconciling deps (slot $SLOT, cap ${INSTALL_TIMEOUT_SEC}s)"
+    if ! run_pnpm_install "$WT_PATH"; then
+      log "ERROR: pnpm install failed/timed out for #$ISSUE_NUM; releasing slot + worktree"
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$ISSUE_NUM" --root "$REPO_ROOT" --force >>"$LOG_FILE" 2>&1 || true
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      continue
     fi
 
     # Invoke claude inside the worktree with the implementer prompt + bundle.
@@ -1728,8 +1826,9 @@ A human should take a look. Reset with \
       fi
       WT_PATH=$(echo "$WT_JSON" | jq -r '.path')
       copy_worktree_env "$WT_PATH"
-      ( cd "$WT_PATH" && pnpm install --frozen-lockfile >>"$LOG_FILE" 2>&1 ) \
-        || ( cd "$WT_PATH" && pnpm install >>"$LOG_FILE" 2>&1 ) || true
+      seed_worktree_node_modules "$WT_PATH"
+      log "Issue #$ISSUE_NUM: seeding node_modules (clonefile) + reconciling deps (--watch, slot $SLOT, cap ${INSTALL_TIMEOUT_SEC}s)"
+      run_pnpm_install "$WT_PATH" || log "WARNING: install failed/timed out for #$ISSUE_NUM --watch; proceeding"
 
       CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
         "$WATCH_PROMPT_TEXT" "$BUNDLE")

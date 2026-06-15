@@ -26,40 +26,43 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
       }
 
       savingRef.current = true;
-      setSaveStatus("saving");
-
       try {
-        const res = await fetch(`/api/notes/${noteId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(data),
-        });
+        // Drain queued data iteratively so we never re-enter `save` recursively
+        let toSave: Record<string, unknown> | null = data;
+        while (toSave) {
+          setSaveStatus("saving");
 
-        if (handleAuthError(res)) {
-          setSaveStatus("error");
-          return;
-        }
+          try {
+            const res = await fetch(`/api/notes/${noteId}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(toSave),
+            });
 
-        if (res.ok) {
-          setSaveStatus("saved");
-          const updated = await res.json();
-          if (updated?.updated_at) {
-            setLastSavedAt(updated.updated_at);
+            if (handleAuthError(res)) {
+              setSaveStatus("error");
+              return;
+            }
+
+            if (res.ok) {
+              setSaveStatus("saved");
+              const updated = await res.json();
+              if (updated?.updated_at) {
+                setLastSavedAt(updated.updated_at);
+              }
+            } else {
+              setSaveStatus("error");
+            }
+          } catch {
+            setSaveStatus("error");
           }
-        } else {
-          setSaveStatus("error");
+
+          // If data accumulated while we were saving, save it now
+          toSave = pendingData.current;
+          pendingData.current = null;
         }
-      } catch {
-        setSaveStatus("error");
       } finally {
         savingRef.current = false;
-      }
-
-      // If data accumulated while we were saving, save it now
-      if (pendingData.current) {
-        const queued = pendingData.current;
-        pendingData.current = null;
-        save(queued);
       }
     },
     [noteId],
