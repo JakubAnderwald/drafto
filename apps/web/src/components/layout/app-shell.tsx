@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AppMenu } from "@/components/layout/app-menu";
 import { ImportEvernoteDialog } from "@/components/import/import-evernote-dialog";
 import { ImportTickTickDialog } from "@/components/import/import-ticktick-dialog";
+import { ExportEvernoteDialog } from "@/components/export/export-evernote-dialog";
 import { SearchOverlay } from "@/components/search/search-overlay";
 import { usePaneCollapse } from "@/hooks/use-pane-collapse";
 
@@ -214,6 +215,7 @@ export function AppShell({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [showTickTickImportDialog, setShowTickTickImportDialog] = useState(false);
+  const [showExportDialog, setShowExportDialog] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const { notebooksCollapsed, notesCollapsed, togglePane } = usePaneCollapse();
   const [lastNoteUpdate, setLastNoteUpdate] = useState<{
@@ -469,6 +471,7 @@ export function AppShell({
           <AppMenu
             onImportEvernote={() => setShowImportDialog(true)}
             onImportTickTick={() => setShowTickTickImportDialog(true)}
+            onExportEvernote={() => setShowExportDialog(true)}
             isAdmin={isAdmin}
           />
         </div>
@@ -635,6 +638,8 @@ export function AppShell({
           }}
         />
       )}
+
+      {showExportDialog && <ExportEvernoteDialog onClose={() => setShowExportDialog(false)} />}
 
       {searchOpen && (
         <SearchOverlay

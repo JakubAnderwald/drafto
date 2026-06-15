@@ -1,4 +1,9 @@
-import type { BlockNoteBlock, BlockNoteInlineContent, BlockNoteTableContent } from "./types";
+import type {
+  BlockNoteBlock,
+  BlockNoteInlineContent,
+  BlockNoteTableContent,
+  BlockNoteTableRowCell,
+} from "./types";
 
 /**
  * Normalize a BlockNote block tree so it conforms to the canonical inline
@@ -25,7 +30,7 @@ function normalizeBlock(block: BlockNoteBlock): BlockNoteBlock {
       next.content = {
         ...block.content,
         rows: block.content.rows.map((row) => ({
-          cells: row.cells.map((cell) => cell.map(normalizeInline)),
+          cells: row.cells.map(normalizeTableCell),
         })),
       };
     }
@@ -57,4 +62,17 @@ function isTableContent(
   content: BlockNoteInlineContent[] | BlockNoteTableContent,
 ): content is BlockNoteTableContent {
   return !Array.isArray(content) && content.type === "tableContent";
+}
+
+function normalizeTableCell(cell: BlockNoteTableRowCell): BlockNoteTableRowCell {
+  // BlockNote v0.47+ wraps cells in { type: "tableCell", content }. Older
+  // content keeps the raw InlineContent[] shape. Branch on shape so the
+  // walker doesn't blow up calling .map on a plain object.
+  if (Array.isArray(cell)) {
+    return cell.map(normalizeInline);
+  }
+  if (cell && typeof cell === "object" && Array.isArray(cell.content)) {
+    return { ...cell, content: cell.content.map(normalizeInline) };
+  }
+  return cell;
 }
