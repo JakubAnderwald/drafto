@@ -28,7 +28,7 @@
     "@nozbe/with-observables": "^1.6.0",
     "@react-native-community/netinfo": "^11.5.2",
     "@react-native-google-signin/google-signin": "^16.1.2",
-    "@supabase/supabase-js": "^2.108.1",
+    "@supabase/supabase-js": "^2.108.2",
     "expo": "~55.0.11",
     "expo-apple-authentication": "^55.0.13",
     "expo-constants": "~55.0.11",
