@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 
 import { getAuthenticatedUserFast, errorResponse } from "@/lib/api/utils";
 import {
@@ -236,6 +237,9 @@ export async function POST(request: NextRequest): Promise<Response> {
   } catch (err) {
     // A failed attachment download aborts the export — silently dropping the
     // resource would produce a "successful" ENEX missing data the user expects.
+    // Surface it to Sentry too; converting to an errorResponse would otherwise
+    // swallow the exception before our instrumentation sees it.
+    Sentry.captureException(err, { tags: { feature: "export-evernote", op: "build" } });
     const message = err instanceof Error ? err.message : "Failed to load attachments";
     return errorResponse(message, 500);
   }
