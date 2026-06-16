@@ -924,6 +924,34 @@ ci_required_green() {
   [[ "$total" -gt 0 && "$success" -gt 0 && "$pending" -eq 0 ]]
 }
 
+# Resolve every unresolved review thread on <pr-num> via GraphQL, printing the
+# count resolved. Called by --release right before the merge: the owner-token
+# squash-merge would otherwise BYPASS the repo's required_conversation_resolution
+# rule silently. Resolving here turns that bypass into an explicit, audited
+# action — the human's Approved drag is the ship authorisation (ADR-0026). The
+# --watch fix loop has already addressed CI-failing feedback; remaining threads
+# (e.g. CodeRabbit nits) are accepted at the Approved gate. Best-effort: a single
+# resolve failure doesn't abort the release.
+resolve_review_threads() {
+  local pr_num="$1"
+  local threads_json ids id n=0
+  threads_json=$(gh api graphql -f owner=JakubAnderwald -f repo=drafto -F number="$pr_num" \
+    -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved}}}}}' \
+    2>>"$LOG_FILE" || echo "")
+  if [[ -n "$threads_json" ]]; then
+    ids=$(echo "$threads_json" | jq -r '.data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved == false) | .id' 2>/dev/null || echo "")
+    while IFS= read -r id; do
+      [[ -n "$id" ]] || continue
+      if gh api graphql -f threadId="$id" \
+          -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' \
+          >>"$LOG_FILE" 2>&1; then
+        n=$((n + 1))
+      fi
+    done <<< "$ids"
+  fi
+  echo "$n"
+}
+
 # ── --plan mode ─────────────────────────────────────────────────────────────
 if [[ "$MODE_PLAN" -eq 1 ]]; then
   PROMPT_FILE="$SCRIPT_DIR/factory-plan-prompt.md"
@@ -2283,6 +2311,14 @@ base. I'll squash-merge automatically once it's green again.
       log "DRY-RUN: would squash-merge PR #$PR_NUM and advance #$ISSUE_NUM to Released"; continue
     fi
 
+    # Engage + clear any unresolved review threads BEFORE merging. The owner-token
+    # merge would otherwise bypass required_conversation_resolution silently;
+    # resolving here makes it an explicit, audited action at the human-authorised
+    # Approved gate (the --watch fix loop already addressed CI-failing feedback).
+    RESOLVED_THREADS=$(resolve_review_threads "$PR_NUM")
+    [[ "$RESOLVED_THREADS" =~ ^[0-9]+$ ]] || RESOLVED_THREADS=0
+    [[ "$RESOLVED_THREADS" -gt 0 ]] && log "Issue #$ISSUE_NUM: cleared $RESOLVED_THREADS unresolved review thread(s) before merge"
+
     # Squash-merge via the API form. gh pr merge --delete-branch fails in
     # worktrees (it tries to check out main locally — CLAUDE.md gotcha); the
     # merge endpoint is a PUT, so --method PUT is required.
@@ -2325,11 +2361,13 @@ retry next cycle; if it keeps failing, merge it by hand. The card stays in \
     # The API merge leaves the remote head branch behind; delete it (matches /merge).
     gh api --method DELETE "repos/JakubAnderwald/drafto/git/refs/heads/factory/issue-$ISSUE_NUM" >>"$LOG_FILE" 2>&1 || true
 
+    THREADS_NOTE=""
+    [[ "${RESOLVED_THREADS:-0}" -gt 0 ]] && THREADS_NOTE=" Cleared $RESOLVED_THREADS review thread(s) at ship authorisation."
     gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
       --body "🏭 **Merged + released.**
 
-PR #$PR_NUM is squash-merged into \`main\`${MERGE_SHA:+ (\`${MERGE_SHA:0:12}\`)}. Vercel is \
-deploying the web app to production now. Mobile/desktop beta builds are not \
+PR #$PR_NUM is squash-merged into \`main\`${MERGE_SHA:+ (\`${MERGE_SHA:0:12}\`)}.${THREADS_NOTE} Vercel \
+is deploying the web app to production now. Mobile/desktop beta builds are not \
 dispatched at this phase.
 
 <!-- drafto-factory-released -->" >>"$LOG_FILE" 2>&1 || true

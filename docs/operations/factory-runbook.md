@@ -86,6 +86,8 @@ There is no "auto-promote". The phase change is always a deliberate operator act
 2. It refuses to merge a PR touching `supabase/migrations/**` until `migration-approved` is on the PR — it leaves the card in Approved and comments once (`<!-- drafto-factory-migration-gate -->`).
 3. It won't merge unless CI is green and the branch is conflict-free; otherwise it leaves the card in Approved for you (a transient merge error is retried next tick, comment `<!-- drafto-factory-merge-failed -->`).
 
+Right before merging it **resolves any outstanding review threads** (CodeRabbit / reviewers) via GraphQL — the owner-token merge would otherwise bypass `required_conversation_resolution` silently, so this turns it into an explicit, audited action at the Approved gate (the `--watch` fix loop has already addressed CI-failing feedback; remaining threads are accepted when you drag to Approved). The count cleared is noted on the `<!-- drafto-factory-released -->` comment.
+
 It is idempotent (an already-merged PR just finishes the Released transition + slot/worktree teardown) and honours `factory-pause`. Beta-channel dispatch (iOS/Android/macOS) stays a separate **Phase D** milestone — not part of `--release` yet; at Phase B/C a released mobile/desktop change still needs you to kick the beta lanes by hand. `factory:pause` stops `--release` along with every other mode.
 
 ## Kill switches

@@ -201,6 +201,30 @@ describe("--release engine wiring", () => {
   });
 });
 
+describe("review-thread resolution at ship (gap 2)", () => {
+  it("defines resolve_review_threads using GraphQL reviewThreads + resolveReviewThread", () => {
+    assert.match(script, /resolve_review_threads\(\) \{/);
+    assert.match(script, /reviewThreads\(first:100\)/);
+    assert.match(script, /resolveReviewThread\(input:\{threadId:/);
+  });
+
+  it("resolves threads before merging (engages conversation-resolution, not silent bypass)", () => {
+    assert.match(releaseBlock, /RESOLVED_THREADS=\$\(resolve_review_threads "\$PR_NUM"\)/);
+    const resolveIdx = releaseBlock.indexOf('resolve_review_threads "$PR_NUM"');
+    const mergeIdx = releaseBlock.indexOf("pulls/$PR_NUM/merge");
+    assert.ok(
+      resolveIdx !== -1 && mergeIdx !== -1 && resolveIdx < mergeIdx,
+      "resolve_review_threads must run before the merge call",
+    );
+  });
+
+  it("only resolves on a real merge (after the dry-run guard)", () => {
+    const dryIdx = releaseBlock.indexOf("DRY-RUN: would squash-merge");
+    const resolveIdx = releaseBlock.indexOf('resolve_review_threads "$PR_NUM"');
+    assert.ok(dryIdx !== -1 && resolveIdx > dryIdx, "resolve must be after the dry-run guard");
+  });
+});
+
 describe("ci_required_green (extracted from factory-agent.sh)", () => {
   // Run ci_required_green with a given REQUIRED_CONTEXTS_JSON + PR_VIEW.
   function ciGreen(reqContexts, prView) {
