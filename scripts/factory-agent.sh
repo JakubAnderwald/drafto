@@ -22,11 +22,12 @@
 #                URL. Also runs a cleanup sweep that releases slots +
 #                removes worktrees for cards that have left In Review/In Test.
 #
-#   --release    Approved → Released. Migration gate, squash-merge,
-#                beta-channel dispatch. DEFERRED in the staged Phase B
-#                rollout (--implement + --watch ship first; the operator
-#                merges the PR by hand at the Approved drag). Logs and
-#                exits 0 in every phase until --release is built.
+#   --release    Approved → Released. For each card a human dragged to
+#                Approved: enforce the migration gate, squash-merge the
+#                green PR via the GitHub API, advance the card to Released
+#                (Vercel auto-deploys main → prod for web), and release the
+#                slot + worktree. Phase A: no-op. Beta-channel dispatch
+#                (iOS/Android/macOS) is a Phase D concern, not built here.
 #
 # Each mode acquires its own PID-file lock so multiple modes can run
 # back-to-back in one launchd tick without contending. --implement and
@@ -117,7 +118,7 @@ Exactly one of --plan, --implement, --release, --watch is required.
   --implement  In Progress → In Review. Phase A: stub comment only.
                Phase B+: worktree + Claude + PR + parity post-check.
   --watch      In Review → In Test. Phase B+: CI/preview poll + fix loop.
-  --release    Approved → Released. DEFERRED (staged Phase B); no-op for now.
+  --release    Approved → Released. Phase B+: migration gate + squash-merge.
   --phase X    Override the phase advertised to Claude (default: A).
   --dry-run    Build context bundles and print them; no board / issue
                mutations and no Claude invocation. Useful for golden-run
@@ -291,16 +292,10 @@ if [[ "$PHASE" == "A" && ( "$MODE_RELEASE" -eq 1 || "$MODE_WATCH" -eq 1 ) ]]; th
   log "=== factory-agent --$MODE_NAME completed in $(( $(date +%s) - START_TIME ))s ==="
   exit 0
 fi
-# --release is DEFERRED in the staged Phase B rollout: --implement and --watch
-# ship first so plan→implement→preview quality can be proven on real web issues
-# before the factory is granted autonomous merge-to-main. Until --release is
-# built, the operator merges the PR by hand at the Approved drag. No-op here in
-# every phase so the launchd loop can keep the flag wired without effect.
-if [[ "$MODE_RELEASE" -eq 1 ]]; then
-  log "--release is deferred (staged Phase B ships --implement + --watch first); exiting 0"
-  log "=== factory-agent --$MODE_NAME completed in $(( $(date +%s) - START_TIME ))s ==="
-  exit 0
-fi
+# --release runs at Phase B+ (the real engine lives further down). At Phase A it
+# already no-op'd at the gate above. The factory's merge autonomy stays bounded
+# by the human Approved drag (ADR-0026): --release only ever acts on cards a
+# human (or an allowlisted reporter) has already moved to Approved.
 
 # ── Project board lookup ────────────────────────────────────────────────────
 # Cache the projectId in the env so child `factory-project.mjs` invocations
@@ -838,6 +833,123 @@ parity_violation() {
     esac
   done
   echo ""
+}
+
+# Migration gate (hard stop) for the Approved → Released merge. A PR that touches
+# supabase/migrations/** may only be merged once the `migration-approved` label
+# is on it. Args:
+#   $1 newline-separated changed file paths (from gh pr view --json files)
+#   $2 PR labels CSV
+# Prints a violation reason, or "" when the gate passes. Enforces the CLAUDE.md /
+# ADR-0026 migration mandate: a supabase/migrations/** change may only merge once
+# the migration-approved label is on the PR. (This is the label gate — distinct
+# from check-migration-safety.sh, which scans migration SQL for destructive
+# statements; the two are unrelated checks.)
+migration_violation() {
+  local diff_files="$1"
+  local pr_labels_csv="$2"
+  if echo "$diff_files" | grep -qE '^supabase/migrations/'; then
+    if [[ ",$pr_labels_csv," != *",migration-approved,"* ]]; then
+      echo "PR touches supabase/migrations/** without the migration-approved label"
+      return 0
+    fi
+  fi
+  echo ""
+}
+
+# Slot index (0|1) currently assigned to <issue>, or "" if none. Unlike
+# slot_for_issue (which falls back to the first FREE slot for acquisition), this
+# only ever returns a slot the issue actually holds — safe for teardown.
+slot_held_by_issue() {
+  local issue_num="$1"
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-status \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE" \
+    | jq -r --arg i "$issue_num" \
+      '.slots | to_entries | map(select(.value.issueNumber == $i)) | (.[0].key // "")'
+}
+
+# Release the worktree slot + remove the worktree/branch for <issue>. Mirrors
+# the --watch cleanup-sweep teardown; safe when no slot is held (a card may have
+# reached Approved after its slot was already reclaimed). Best-effort throughout.
+release_slot_and_worktree() {
+  local issue_num="$1"
+  local slot
+  slot=$(slot_held_by_issue "$issue_num")
+  if [[ -n "$slot" ]]; then
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$slot" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  fi
+  node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$issue_num" --root "$REPO_ROOT" --force --delete-branch >>"$LOG_FILE" 2>&1 || true
+}
+
+# Has <issue> already received a comment carrying <marker>? Idempotency guard so
+# a re-tick on a parked Approved card doesn't re-post the same notice every cycle.
+# Fails CLOSED: on a transient comment-fetch failure (empty output) it returns
+# success ("treat as already marked") so the caller SKIPS posting rather than
+# spamming the issue every tick during a GitHub hiccup.
+issue_has_marker() {
+  local issue_num="$1"
+  local marker="$2"
+  local comments
+  if ! comments=$(fetch_issue_comments "$issue_num" 2>/dev/null) || [[ -z "$comments" ]]; then
+    return 0
+  fi
+  echo "$comments" | jq -e --arg m "$marker" 'any(.[]; .body | test($m))' >/dev/null 2>&1
+}
+
+# True (exit 0) when the PR's CI is genuinely green: every branch-protection
+# *required* status context is SUCCESS in the rollup. With no required contexts
+# configured, falls back to "rollup non-empty, ≥1 SUCCESS, nothing pending". An
+# empty/partial rollup (checks never ran) therefore can NOT pass — "no checks" is
+# not "green". Reads REQUIRED_CONTEXTS_JSON (fetched once per --release run).
+ci_required_green() {
+  local pr_view="$1"
+  local req_total green_req total success pending
+  req_total=$(echo "${REQUIRED_CONTEXTS_JSON:-[]}" | jq 'length' 2>/dev/null || echo 0)
+  [[ "$req_total" =~ ^[0-9]+$ ]] || req_total=0
+  if [[ "$req_total" -gt 0 ]]; then
+    green_req=$(echo "$pr_view" | jq --argjson req "${REQUIRED_CONTEXTS_JSON:-[]}" '
+      [ .statusCheckRollup[]? | select((.conclusion // .state // "") == "SUCCESS")
+        | (.name // .context // "") ] as $green
+      | [ $req[] | select(. as $r | $green | index($r)) ] | length' 2>/dev/null || echo 0)
+    [[ "$green_req" =~ ^[0-9]+$ ]] || green_req=0
+    [[ "$green_req" -ge "$req_total" ]]
+    return
+  fi
+  total=$(echo "$pr_view" | jq '[.statusCheckRollup[]?] | length' 2>/dev/null || echo 0)
+  success=$(echo "$pr_view" | jq '[.statusCheckRollup[]? | select((.conclusion // .state // "") == "SUCCESS")] | length' 2>/dev/null || echo 0)
+  pending=$(echo "$pr_view" | jq '[.statusCheckRollup[]? | select((.status // "") == "QUEUED" or (.status // "") == "IN_PROGRESS" or (.state // "") == "PENDING" or (.state // "") == "EXPECTED")] | length' 2>/dev/null || echo 0)
+  [[ "$total" =~ ^[0-9]+$ ]] || total=0
+  [[ "$success" =~ ^[0-9]+$ ]] || success=0
+  [[ "$pending" =~ ^[0-9]+$ ]] || pending=0
+  [[ "$total" -gt 0 && "$success" -gt 0 && "$pending" -eq 0 ]]
+}
+
+# Resolve every unresolved review thread on <pr-num> via GraphQL, printing the
+# count resolved. Called by --release right before the merge: the owner-token
+# squash-merge would otherwise BYPASS the repo's required_conversation_resolution
+# rule silently. Resolving here turns that bypass into an explicit, audited
+# action — the human's Approved drag is the ship authorisation (ADR-0026). The
+# --watch fix loop has already addressed CI-failing feedback; remaining threads
+# (e.g. CodeRabbit nits) are accepted at the Approved gate. Best-effort: a single
+# resolve failure doesn't abort the release.
+resolve_review_threads() {
+  local pr_num="$1"
+  local threads_json ids id n=0
+  threads_json=$(gh api graphql -f owner=JakubAnderwald -f repo=drafto -F number="$pr_num" \
+    -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved}}}}}' \
+    2>>"$LOG_FILE" || echo "")
+  if [[ -n "$threads_json" ]]; then
+    ids=$(echo "$threads_json" | jq -r '.data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved == false) | .id' 2>/dev/null || echo "")
+    while IFS= read -r id; do
+      [[ -n "$id" ]] || continue
+      if gh api graphql -f threadId="$id" \
+          -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' \
+          >>"$LOG_FILE" 2>&1; then
+        n=$((n + 1))
+      fi
+    done <<< "$ids"
+  fi
+  echo "$n"
 }
 
 # ── --plan mode ─────────────────────────────────────────────────────────────
@@ -1982,6 +2094,317 @@ as-is instead, drag the card to **Approved**.)
   done
 
   log "=== factory-agent --watch completed in $(( $(date +%s) - START_TIME ))s ==="
+  exit 0
+fi
+
+# ── --release mode (Phase B+) ───────────────────────────────────────────────
+# Approved → Released. For each card a human (or an allowlisted reporter) has
+# dragged to Approved: confirm the open factory PR is green + mergeable, enforce
+# the migration gate (supabase/migrations/** requires the migration-approved
+# label), squash-merge via the GitHub API (gh pr merge --delete-branch is broken
+# in worktrees — CLAUDE.md), advance the card to Released, and release the slot +
+# worktree. Vercel auto-deploys main → prod for web. Beta-channel dispatch
+# (iOS/Android/macOS) is a Phase D concern and is NOT done here.
+#
+# The Approved drag is the human merge-authorisation gate (ADR-0026); --release
+# only ever acts on a card a human already moved. Anything that can't merge
+# cleanly (failing CI, conflicts, missing migration approval, no PR) is left in
+# Approved for the operator — the factory never regresses an approved card.
+# PHASE is guaranteed != "A" here (Phase A --release no-op'd at the gate above).
+if [[ "$MODE_RELEASE" -eq 1 ]]; then
+  if ! APPROVED_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
+      --status "Approved" 2>>"$LOG_FILE"); then
+    log "WARNING: query-status-items Approved failed (transient?); skipping --release this tick"
+    exit 0
+  fi
+  APPROVED_COUNT=$(echo "$APPROVED_JSON" | jq 'length' 2>/dev/null || echo "0")
+  if ! [[ "$APPROVED_COUNT" =~ ^[0-9]+$ ]]; then
+    log "ERROR: unexpected non-numeric APPROVED_COUNT='$APPROVED_COUNT'"; exit 1
+  fi
+  log "--release (phase=$PHASE): $APPROVED_COUNT Approved item(s)"
+
+  # Branch-protection required status contexts (fetched once). The CI gate below
+  # requires every one of these to be SUCCESS before merging, so an empty/partial
+  # check rollup can't masquerade as green. Falls back to "[]" (any-success) if
+  # protection isn't readable.
+  REQUIRED_CONTEXTS_JSON=$(gh api "repos/JakubAnderwald/drafto/branches/main/protection/required_status_checks" \
+    --jq '[.contexts[]?]' 2>>"$LOG_FILE" || echo "[]")
+  [[ -n "$REQUIRED_CONTEXTS_JSON" ]] || REQUIRED_CONTEXTS_JSON="[]"
+  log "--release: required CI contexts: $(echo "$REQUIRED_CONTEXTS_JSON" | jq -c . 2>/dev/null || echo '[]')"
+
+  for ((IDX=0; IDX<APPROVED_COUNT; IDX++)); do
+    ITEM=$(echo "$APPROVED_JSON" | jq ".[${IDX}]")
+    ITEM_ID=$(echo "$ITEM" | jq -r '.itemId')
+    ISSUE_NUM=$(echo "$ITEM" | jq -r '.issueNumber')
+    ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
+    if [[ ",$ITEM_LABELS," == *",factory-pause,"* ]]; then
+      log "Issue #$ISSUE_NUM: skipping (factory-pause label set)"; continue
+    fi
+
+    PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
+    if [[ -z "$PR_OBJ" || "$PR_OBJ" == "null" ]]; then
+      log "Issue #$ISSUE_NUM: Approved but no factory PR found; leaving for the operator"
+      continue
+    fi
+    PR_NUM=$(echo "$PR_OBJ" | jq -r '.number')
+    PR_STATE=$(echo "$PR_OBJ" | jq -r '.state')
+
+    # Idempotency: a prior tick may have merged the PR but failed to advance the
+    # card (e.g. a transient board-write error). Never re-merge — just finish the
+    # Released transition + teardown.
+    if [[ "$PR_STATE" == "MERGED" ]]; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM already merged; finishing Released transition"
+      if [[ "$DRY_RUN" -eq 0 ]]; then
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Released" || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastReleaseAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        release_slot_and_worktree "$ISSUE_NUM"
+      fi
+      continue
+    fi
+    if [[ "$PR_STATE" == "CLOSED" ]]; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM is closed (unmerged); leaving for the operator"
+      continue
+    fi
+
+    # Fresh PR snapshot: CI rollup, mergeability, branch-protection merge state,
+    # draft/base, and labels. (Changed files come from `gh pr diff --name-only`
+    # below — unlike `--json files`, it is NOT capped at 100 files, so a migration
+    # sorting past file #100 can't slip through the gate.)
+    PR_VIEW=$(gh pr view "$PR_NUM" --repo JakubAnderwald/drafto \
+      --json state,mergeable,mergeStateStatus,isDraft,baseRefName,statusCheckRollup,labels 2>>"$LOG_FILE" || echo "")
+    if [[ -z "$PR_VIEW" ]]; then
+      log "WARNING: gh pr view #$PR_NUM failed (transient?); skipping this tick"; continue
+    fi
+
+    # TOCTOU: the PR may have merged/closed out-of-band between find_prior_pr and
+    # now (a human clicking Merge, or a prior tick racing). Trust the fresh state.
+    PR_VIEW_STATE=$(echo "$PR_VIEW" | jq -r '.state // ""')
+    if [[ "$PR_VIEW_STATE" == "MERGED" ]]; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM merged out-of-band; finishing Released transition"
+      if [[ "$DRY_RUN" -eq 0 ]]; then
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Released" || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastReleaseAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        release_slot_and_worktree "$ISSUE_NUM"
+      fi
+      continue
+    fi
+    if [[ "$PR_VIEW_STATE" == "CLOSED" ]]; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM closed (unmerged); leaving for the operator"; continue
+    fi
+
+    # Never merge a draft or a PR that doesn't target main.
+    if [[ "$(echo "$PR_VIEW" | jq -r '.isDraft // false')" == "true" ]]; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM is a draft; leaving for the operator"; continue
+    fi
+    PR_BASE=$(echo "$PR_VIEW" | jq -r '.baseRefName // ""')
+    if [[ "$PR_BASE" != "main" ]]; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM targets '$PR_BASE', not main; refusing to merge"; continue
+    fi
+
+    # Changed files (uncapped) for the migration + parity gates.
+    if ! DIFF_FILES=$(gh pr diff "$PR_NUM" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE"); then
+      log "WARNING: gh pr diff #$PR_NUM failed (transient?); skipping this tick"; continue
+    fi
+    PR_LABELS=$(echo "$PR_VIEW" | jq -r '(.labels // []) | map(.name) | join(",")')
+
+    # Migration gate — hard stop. Leave the card in Approved (a human adds the
+    # label); comment once so the operator knows why it's parked.
+    MIG_VIOLATION=$(migration_violation "$DIFF_FILES" "$PR_LABELS")
+    if [[ -n "$MIG_VIOLATION" ]]; then
+      log "Issue #$ISSUE_NUM: migration gate held PR #$PR_NUM — $MIG_VIOLATION"
+      if [[ "$DRY_RUN" -eq 0 ]] && ! issue_has_marker "$ISSUE_NUM" "drafto-factory-migration-gate"; then
+        gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+          --body "🏭 **Hold — database migration needs sign-off.**
+
+PR #$PR_NUM changes files under \`supabase/migrations/\`, so the factory won't \
+merge it until the **\`migration-approved\`** label is on the PR. Review the \
+migration, add the label, and the next cycle merges automatically. The card \
+stays in **Approved**.
+
+<!-- drafto-factory-migration-gate -->" >>"$LOG_FILE" 2>&1 || true
+      fi
+      continue
+    fi
+
+    # Parity gate — re-assert phase scope at merge time (the implement-time check
+    # can be stale if the diff changed). parity_violation's Phase-B clause blocks
+    # any apps/mobile|desktop file at Phase B; it's a no-op for that clause at C/D.
+    # Empty platforms/override args exercise only that phase-scope guard.
+    PARITY_VIOLATION=$(parity_violation "" "" "$DIFF_FILES")
+    if [[ -n "$PARITY_VIOLATION" ]]; then
+      log "Issue #$ISSUE_NUM: parity gate held PR #$PR_NUM — $PARITY_VIOLATION"
+      if [[ "$DRY_RUN" -eq 0 ]] && ! issue_has_marker "$ISSUE_NUM" "drafto-factory-parity-violation"; then
+        gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+          --body "🏭 **Hold — out of phase scope.**
+
+PR #$PR_NUM $PARITY_VIOLATION, which this phase doesn't allow. The card stays in \
+**Approved**; an operator can re-scope the phase or the PR.
+
+<!-- drafto-factory-parity-violation -->" >>"$LOG_FILE" 2>&1 || true
+      fi
+      continue
+    fi
+
+    # CI gate. Any failing check parks the card; then every branch-protection
+    # *required* context must be SUCCESS (ci_required_green). An empty/partial
+    # rollup (checks never ran) can't pass — "no checks" is not "green".
+    FAILING=$(echo "$PR_VIEW" | jq -r '
+      [ .statusCheckRollup[]? | (.conclusion // .state // "") as $c
+        | select($c == "FAILURE" or $c == "TIMED_OUT" or $c == "CANCELLED"
+                 or $c == "ACTION_REQUIRED" or $c == "ERROR" or $c == "STARTUP_FAILURE") ] | length')
+    [[ "$FAILING" =~ ^[0-9]+$ ]] || FAILING=0
+    if [[ "$FAILING" -gt 0 ]]; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM has $FAILING failing check(s); not merging (left in Approved)"
+      continue
+    fi
+    if ! ci_required_green "$PR_VIEW"; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM required checks not all green yet; waiting"
+      continue
+    fi
+
+    MERGEABLE=$(echo "$PR_VIEW" | jq -r '.mergeable // ""')
+    if [[ "$MERGEABLE" == "CONFLICTING" ]]; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM has merge conflicts; leaving for the operator"
+      if [[ "$DRY_RUN" -eq 0 ]] && ! issue_has_marker "$ISSUE_NUM" "drafto-factory-merge-conflict"; then
+        gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+          --body "🏭 **Can't merge — the branch has conflicts.**
+
+PR #$PR_NUM no longer merges cleanly into \`main\`. Rebase/resolve it (or comment \
+a change request to have the factory revise it), then it merges on the next \
+cycle. The card stays in **Approved**.
+
+<!-- drafto-factory-merge-conflict -->" >>"$LOG_FILE" 2>&1 || true
+      fi
+      continue
+    fi
+    if [[ "$MERGEABLE" != "MERGEABLE" ]]; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM mergeable=$MERGEABLE (GitHub still computing?); waiting"
+      continue
+    fi
+
+    # Branch-protection merge state. With strict mode on, a PR whose checks ran
+    # against an out-of-date base reports BEHIND: update it and let CI re-run, then
+    # merge on a later tick once it's current — never squash a stale base into main.
+    MERGE_STATE=$(echo "$PR_VIEW" | jq -r '.mergeStateStatus // ""')
+    if [[ "$MERGE_STATE" == "BEHIND" ]]; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM is behind main; updating branch (merges once CI re-runs green)"
+      if [[ "$DRY_RUN" -eq 0 ]]; then
+        if gh api --method PUT "repos/JakubAnderwald/drafto/pulls/$PR_NUM/update-branch" >>"$LOG_FILE" 2>&1; then
+          if ! issue_has_marker "$ISSUE_NUM" "drafto-factory-branch-updated"; then
+            gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+              --body "🏭 **Updating the branch with latest \`main\`.**
+
+PR #$PR_NUM was behind \`main\`; I've updated it so CI re-runs against the current \
+base. I'll squash-merge automatically once it's green again.
+
+<!-- drafto-factory-branch-updated -->" >>"$LOG_FILE" 2>&1 || true
+          fi
+        else
+          log "WARNING: update-branch failed for PR #$PR_NUM (conflict?); leaving for the operator"
+        fi
+      fi
+      continue
+    fi
+
+    log "Issue #$ISSUE_NUM: PR #$PR_NUM green + mergeable → squash-merging"
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "DRY-RUN: would squash-merge PR #$PR_NUM and advance #$ISSUE_NUM to Released"; continue
+    fi
+
+    # Engage + clear any unresolved review threads BEFORE merging. The owner-token
+    # merge would otherwise bypass required_conversation_resolution silently;
+    # resolving here makes it an explicit, audited action at the human-authorised
+    # Approved gate (the --watch fix loop already addressed CI-failing feedback).
+    RESOLVED_THREADS=$(resolve_review_threads "$PR_NUM")
+    [[ "$RESOLVED_THREADS" =~ ^[0-9]+$ ]] || RESOLVED_THREADS=0
+    [[ "$RESOLVED_THREADS" -gt 0 ]] && log "Issue #$ISSUE_NUM: cleared $RESOLVED_THREADS unresolved review thread(s) before merge"
+
+    # Squash-merge via the API form. gh pr merge --delete-branch fails in
+    # worktrees (it tries to check out main locally — CLAUDE.md gotcha); the
+    # merge endpoint is a PUT, so --method PUT is required.
+    MERGE_OK=0
+    if MERGE_OUT=$(gh api --method PUT "repos/JakubAnderwald/drafto/pulls/$PR_NUM/merge" \
+        -f merge_method=squash 2>>"$LOG_FILE"); then
+      if [[ "$(echo "$MERGE_OUT" | jq -r '.merged // false')" == "true" ]]; then MERGE_OK=1; fi
+    else
+      # The merge may have landed even if the HTTP response was lost (network
+      # drop): the endpoint commits server-side before replying. Re-check the PR
+      # state before crying failure, to avoid a false "merge failed" comment.
+      RECHECK_STATE=$(gh pr view "$PR_NUM" --repo JakubAnderwald/drafto --json state --jq '.state' 2>>"$LOG_FILE" || echo "")
+      if [[ "$RECHECK_STATE" == "MERGED" ]]; then
+        log "Issue #$ISSUE_NUM: merge response lost but PR #$PR_NUM is MERGED; finishing"
+        MERGE_OK=1
+        MERGE_OUT=""
+      fi
+    fi
+    if [[ "$MERGE_OK" -ne 1 ]]; then
+      log "ERROR: squash-merge of PR #$PR_NUM failed; leaving card in Approved for the operator"
+      if ! issue_has_marker "$ISSUE_NUM" "drafto-factory-merge-failed"; then
+        gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+          --body "🏭 **Automatic merge failed.**
+
+The factory couldn't squash-merge PR #$PR_NUM (it was green and conflict-free, \
+so this is likely a transient GitHub error or a branch-protection rule). I'll \
+retry next cycle; if it keeps failing, merge it by hand. The card stays in \
+**Approved**.
+
+<!-- drafto-factory-merge-failed -->" >>"$LOG_FILE" 2>&1 || true
+      fi
+      continue
+    fi
+    MERGE_SHA=$(echo "${MERGE_OUT:-}" | jq -r '.sha // ""' 2>/dev/null || echo "")
+    log "Issue #$ISSUE_NUM: PR #$PR_NUM squash-merged${MERGE_SHA:+ (${MERGE_SHA:0:12})}"
+
+    transition_status "$ITEM_ID" "$ISSUE_NUM" "Released" || true
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastReleaseAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    release_slot_and_worktree "$ISSUE_NUM"
+    # The API merge leaves the remote head branch behind; delete it (matches /merge).
+    gh api --method DELETE "repos/JakubAnderwald/drafto/git/refs/heads/factory/issue-$ISSUE_NUM" >>"$LOG_FILE" 2>&1 || true
+
+    # Phase D: dispatch beta builds for the changed native platforms via the local
+    # Fastlane lanes (the CI release workflows are non-functional — see
+    # builds-and-releases.md). Fire-and-forget; the Fastlane post-hook posts the
+    # "now live" notice. Dormant at Phase B/C. Marker-guarded so a re-tick (e.g.
+    # if the Released transition raced) can't re-trigger a build.
+    BETA_NOTE="Mobile/desktop beta builds are not dispatched at this phase."
+    if [[ "$PHASE" == "D" ]] && ! issue_has_marker "$ISSUE_NUM" "drafto-factory-beta-dispatched"; then
+      # Local Fastlane lanes build from $REPO_ROOT (the main checkout), so bring
+      # it up to the just-merged commit first. Best-effort ff-only — never clobber
+      # local state; if it can't fast-forward, log and let the operator's C→D
+      # validation catch a stale build rather than forcing.
+      git -C "$REPO_ROOT" fetch origin main >>"$LOG_FILE" 2>&1 \
+        && git -C "$REPO_ROOT" merge --ff-only origin/main >>"$LOG_FILE" 2>&1 \
+        || log "WARNING: could not fast-forward $REPO_ROOT to merged main; beta lanes may build stale code"
+      DISPATCH_JSON=$(printf '%s\n' "$DIFF_FILES" | node "$SCRIPT_DIR/lib/dispatch-release.mjs" dispatch --diff-file - --repo-root "$REPO_ROOT" 2>>"$LOG_FILE" || echo "")
+      DISPATCHED=$(echo "$DISPATCH_JSON" | jq -r '[.dispatched[]?.id] | join(", ")' 2>/dev/null || echo "")
+      if [[ -n "$DISPATCHED" ]]; then
+        log "Issue #$ISSUE_NUM: dispatched beta lane(s): $DISPATCHED"
+        BETA_NOTE="Dispatched beta builds for: $DISPATCHED (TestFlight / Play internal). You'll get a \"now live\" note when each build lands."
+        gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+          --body "🏭 **Beta builds dispatching.**
+
+Kicked off beta builds for: **$DISPATCHED**. They run as local Fastlane lanes on \
+the Mac mini; a \"now live in version X\" note follows when each build is up. \
+(Production store submission stays a separate manual step.)
+
+<!-- drafto-factory-beta-dispatched -->" >>"$LOG_FILE" 2>&1 || true
+      else
+        BETA_NOTE="No mobile/desktop changes — nothing to dispatch (web deploys via Vercel)."
+      fi
+    fi
+
+    THREADS_NOTE=""
+    [[ "${RESOLVED_THREADS:-0}" -gt 0 ]] && THREADS_NOTE=" Cleared $RESOLVED_THREADS review thread(s) at ship authorisation."
+    gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+      --body "🏭 **Merged + released.**
+
+PR #$PR_NUM is squash-merged into \`main\`${MERGE_SHA:+ (\`${MERGE_SHA:0:12}\`)}.${THREADS_NOTE} Vercel \
+is deploying the web app to production now. ${BETA_NOTE}
+
+<!-- drafto-factory-released -->" >>"$LOG_FILE" 2>&1 || true
+  done
+
+  log "=== factory-agent --release completed in $(( $(date +%s) - START_TIME ))s ==="
   exit 0
 fi
 

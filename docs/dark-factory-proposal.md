@@ -13,10 +13,30 @@
 > PR, and runs the parity post-check (mobile/desktop changes auto-blocked at
 > Phase B). `--watch` runs the `/push`-style fix loop on failing CI / review
 > comments and advances PRs to **In Test** once CI is green and the Vercel
-> preview is reachable. **`--release` (auto-merge on Approved + beta dispatch)
-> is deliberately deferred** — the operator merges the approved PR by hand at
-> the Approved drag while plan→implement→preview quality is validated.
-> Promotion to Phase B is the operator flipping `FACTORY_PHASE` on the plist.
+> preview is reachable. Promotion to Phase B is the operator flipping
+> `FACTORY_PHASE` on the plist.
+>
+> **`--release` auto-merge (this update)**: the Approved → Released engine has
+> landed (Phase B+). Each tick `--release` scans the **Approved** column and,
+> for a card a human dragged there, squash-merges the green PR via the GitHub
+> API (`gh api --method PUT …/merge`) and advances it to **Released** (Vercel
+> auto-deploys main → prod). Hard rules: it only acts on a human-dragged
+> Approved card (the merge-authorisation gate), the migration gate is enforced
+> in code (`supabase/migrations/**` requires `migration-approved`, else the card
+> is parked in Approved), and it won't merge unless CI is green + conflict-free.
+> The launchd loop (`factory-agent-loop.sh`, now tracked) runs `--release` after
+> `--watch` each tick. Before merging, `--release` also resolves any open review
+> threads (CodeRabbit / reviewers) so the owner-token merge engages
+> `required_conversation_resolution` explicitly instead of bypassing it silently.
+>
+> **Phase-D beta dispatch (this update)**: `scripts/lib/dispatch-release.mjs` has
+> landed. At Phase D, after a Released merge that touched a native platform,
+> `--release` derives the changed platforms from the diff and spawns the **local
+> Fastlane beta lanes** on the Mac mini (`pnpm release:beta:all`,
+> `cd apps/desktop && pnpm release:beta`) — detached, fire-and-forget. It uses
+> local lanes, NOT `gh workflow run`, because the CI release workflows are
+> non-functional (builds-and-releases.md). Beta channels only (production lanes
+> are denylisted); dormant at Phase B/C; marker-guarded against re-dispatch.
 >
 > **In Test iteration (this update)**: a reporter comment on an In Test card
 > rolls it back to In Progress; the factory revises on the **same** PR branch
@@ -269,7 +289,7 @@ Promote after ≥5 clean runs without human intervention at the current phase.
      **In Test iteration loop** — the card returns to In Progress and the
      factory revises the same PR in place, then flows back to In Test. The
      reporter iterates until satisfied, then approves. (Built in the staged
-     Phase B rollout; `--release` below stays deferred.)
+     Phase B rollout.)
 2. `factory-agent.sh --release` runs migration gate (refuses if `supabase/migrations/**`
    files present without `migration-approved` label). On pass:
    - Squash-merges the PR via `gh api` (per CLAUDE.md worktree gotcha — uses the

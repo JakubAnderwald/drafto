@@ -301,6 +301,8 @@ Known issues:
 
 Do not use CI builds until these issues are resolved. All builds run locally via Fastlane.
 
+> The dark factory's Phase-D beta dispatch (`scripts/lib/dispatch-release.mjs`) honours this: it spawns the **local** `pnpm release:beta:*` lanes on the Mac mini, not `gh workflow run`. If/when the CI workflows are fixed, that module's `dispatchLanes` is the single place to switch to `gh workflow run`.
+
 ### Required GitHub Secrets (for when CI is fixed)
 
 | Secret                            | Purpose                                  |
