@@ -341,8 +341,10 @@ describe("launchd loop wrapper", () => {
   it("invokes --release after --watch each tick", () => {
     assert.match(loop, /--watch\s+--phase "\$PHASE"/);
     assert.match(loop, /--release\s+--phase "\$PHASE"/);
-    const watchIdx = loop.indexOf("--watch");
-    const releaseIdx = loop.indexOf("--release");
+    // Anchor on the actual invocations, not the header comments that also
+    // mention --watch / --release.
+    const watchIdx = loop.indexOf('/bin/bash "$AGENT" --watch');
+    const releaseIdx = loop.indexOf('/bin/bash "$AGENT" --release');
     assert.ok(releaseIdx > watchIdx, "--release should run after --watch");
   });
 });
