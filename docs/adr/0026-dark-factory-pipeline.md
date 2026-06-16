@@ -40,12 +40,12 @@ Up to **2 parallel worktrees** for `--implement`, slot-locked separately. `--pla
 
 The factory rolls out in four phases, each gated on ≥5 clean runs at the previous phase:
 
-| Phase | Behaviour                                                                                    |
-| ----- | -------------------------------------------------------------------------------------------- |
-| A     | Plan-only. `--implement` is a no-op; pure observation of plan quality.                       |
-| B     | Web implementation enabled. Mobile/desktop changes auto-blocked at the post-check.           |
-| C     | Mobile + desktop implementation enabled. Approved still merges + Vercel prod only.           |
-| D     | Approved also dispatches iOS / Android beta + local Mac TestFlight. macOS prod stays manual. |
+| Phase | Behaviour                                                                                                                                                                                         |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A     | Plan-only. `--implement` is a no-op; pure observation of plan quality.                                                                                                                            |
+| B     | Web implementation enabled. Mobile/desktop changes auto-blocked at the post-check. `--release` auto-merges on the Approved drag (CI-green + migration gate enforced); Vercel deploys main → prod. |
+| C     | Mobile + desktop implementation enabled. Approved still merges + Vercel prod only.                                                                                                                |
+| D     | Approved also dispatches iOS / Android beta + local Mac TestFlight. macOS prod stays manual.                                                                                                      |
 
 ### Coexistence with existing pipelines
 
