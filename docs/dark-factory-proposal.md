@@ -25,8 +25,18 @@
 > in code (`supabase/migrations/**` requires `migration-approved`, else the card
 > is parked in Approved), and it won't merge unless CI is green + conflict-free.
 > The launchd loop (`factory-agent-loop.sh`, now tracked) runs `--release` after
-> `--watch` each tick. **Beta-channel dispatch (iOS/Android/macOS) stays
-> deferred** to Phase D — `dispatch-release.mjs` is still unbuilt.
+> `--watch` each tick. Before merging, `--release` also resolves any open review
+> threads (CodeRabbit / reviewers) so the owner-token merge engages
+> `required_conversation_resolution` explicitly instead of bypassing it silently.
+>
+> **Phase-D beta dispatch (this update)**: `scripts/lib/dispatch-release.mjs` has
+> landed. At Phase D, after a Released merge that touched a native platform,
+> `--release` derives the changed platforms from the diff and spawns the **local
+> Fastlane beta lanes** on the Mac mini (`pnpm release:beta:all`,
+> `cd apps/desktop && pnpm release:beta`) — detached, fire-and-forget. It uses
+> local lanes, NOT `gh workflow run`, because the CI release workflows are
+> non-functional (builds-and-releases.md). Beta channels only (production lanes
+> are denylisted); dormant at Phase B/C; marker-guarded against re-dispatch.
 >
 > **In Test iteration (this update)**: a reporter comment on an In Test card
 > rolls it back to In Progress; the factory revises on the **same** PR branch

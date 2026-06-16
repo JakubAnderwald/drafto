@@ -201,6 +201,40 @@ describe("--release engine wiring", () => {
   });
 });
 
+describe("Phase-D beta dispatch (gap 1)", () => {
+  it("is gated to Phase D and marker-guarded", () => {
+    assert.match(
+      releaseBlock,
+      /if \[\[ "\$PHASE" == "D" \]\] && ! issue_has_marker "\$ISSUE_NUM" "drafto-factory-beta-dispatched"; then/,
+    );
+  });
+
+  it("calls dispatch-release.mjs reusing the already-computed diff (no second pr diff)", () => {
+    assert.match(
+      releaseBlock,
+      /printf '%s\\n' "\$DIFF_FILES" \| node "\$SCRIPT_DIR\/lib\/dispatch-release\.mjs" dispatch --diff-file - --repo-root "\$REPO_ROOT"/,
+    );
+    // exactly one actual diff fetch (the merge-time files) — the dispatch step
+    // reuses $DIFF_FILES rather than re-running `gh pr diff`
+    assert.equal(releaseBlock.match(/DIFF_FILES=\$\(gh pr diff/g)?.length, 1);
+  });
+
+  it("runs after teardown and never references a production lane/workflow", () => {
+    const teardownIdx = releaseBlock.indexOf('release_slot_and_worktree "$ISSUE_NUM"');
+    const dispatchIdx = releaseBlock.indexOf("dispatch-release.mjs");
+    assert.ok(dispatchIdx > teardownIdx, "dispatch must run after slot/worktree teardown");
+    assert.doesNotMatch(
+      releaseBlock,
+      /production-release\.yml|release:prod:|fastlane \w+ production/,
+    );
+  });
+
+  it("the released comment is phase-aware (uses BETA_NOTE, not a hardcoded line)", () => {
+    assert.match(releaseBlock, /\$\{BETA_NOTE\}/);
+    assert.match(releaseBlock, /drafto-factory-beta-dispatched/);
+  });
+});
+
 describe("review-thread resolution at ship (gap 2)", () => {
   it("defines resolve_review_threads using GraphQL reviewThreads + resolveReviewThread", () => {
     assert.match(script, /resolve_review_threads\(\) \{/);

@@ -2361,14 +2361,45 @@ retry next cycle; if it keeps failing, merge it by hand. The card stays in \
     # The API merge leaves the remote head branch behind; delete it (matches /merge).
     gh api --method DELETE "repos/JakubAnderwald/drafto/git/refs/heads/factory/issue-$ISSUE_NUM" >>"$LOG_FILE" 2>&1 || true
 
+    # Phase D: dispatch beta builds for the changed native platforms via the local
+    # Fastlane lanes (the CI release workflows are non-functional — see
+    # builds-and-releases.md). Fire-and-forget; the Fastlane post-hook posts the
+    # "now live" notice. Dormant at Phase B/C. Marker-guarded so a re-tick (e.g.
+    # if the Released transition raced) can't re-trigger a build.
+    BETA_NOTE="Mobile/desktop beta builds are not dispatched at this phase."
+    if [[ "$PHASE" == "D" ]] && ! issue_has_marker "$ISSUE_NUM" "drafto-factory-beta-dispatched"; then
+      # Local Fastlane lanes build from $REPO_ROOT (the main checkout), so bring
+      # it up to the just-merged commit first. Best-effort ff-only — never clobber
+      # local state; if it can't fast-forward, log and let the operator's C→D
+      # validation catch a stale build rather than forcing.
+      git -C "$REPO_ROOT" fetch origin main >>"$LOG_FILE" 2>&1 \
+        && git -C "$REPO_ROOT" merge --ff-only origin/main >>"$LOG_FILE" 2>&1 \
+        || log "WARNING: could not fast-forward $REPO_ROOT to merged main; beta lanes may build stale code"
+      DISPATCH_JSON=$(printf '%s\n' "$DIFF_FILES" | node "$SCRIPT_DIR/lib/dispatch-release.mjs" dispatch --diff-file - --repo-root "$REPO_ROOT" 2>>"$LOG_FILE" || echo "")
+      DISPATCHED=$(echo "$DISPATCH_JSON" | jq -r '[.dispatched[]?.id] | join(", ")' 2>/dev/null || echo "")
+      if [[ -n "$DISPATCHED" ]]; then
+        log "Issue #$ISSUE_NUM: dispatched beta lane(s): $DISPATCHED"
+        BETA_NOTE="Dispatched beta builds for: $DISPATCHED (TestFlight / Play internal). You'll get a \"now live\" note when each build lands."
+        gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+          --body "🏭 **Beta builds dispatching.**
+
+Kicked off beta builds for: **$DISPATCHED**. They run as local Fastlane lanes on \
+the Mac mini; a \"now live in version X\" note follows when each build is up. \
+(Production store submission stays a separate manual step.)
+
+<!-- drafto-factory-beta-dispatched -->" >>"$LOG_FILE" 2>&1 || true
+      else
+        BETA_NOTE="No mobile/desktop changes — nothing to dispatch (web deploys via Vercel)."
+      fi
+    fi
+
     THREADS_NOTE=""
     [[ "${RESOLVED_THREADS:-0}" -gt 0 ]] && THREADS_NOTE=" Cleared $RESOLVED_THREADS review thread(s) at ship authorisation."
     gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
       --body "🏭 **Merged + released.**
 
 PR #$PR_NUM is squash-merged into \`main\`${MERGE_SHA:+ (\`${MERGE_SHA:0:12}\`)}.${THREADS_NOTE} Vercel \
-is deploying the web app to production now. Mobile/desktop beta builds are not \
-dispatched at this phase.
+is deploying the web app to production now. ${BETA_NOTE}
 
 <!-- drafto-factory-released -->" >>"$LOG_FILE" 2>&1 || true
   done
