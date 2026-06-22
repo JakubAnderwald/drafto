@@ -1276,6 +1276,7 @@ and drag the card back to **Ready** to retry.
     fi
 
     if [[ ",$ITEM_LABELS," == *",support,"* ]]; then
+      log "Issue #$ISSUE_NUM: skipping (support label — nightly-support.sh owns these)"
       continue
     fi
 
@@ -2057,7 +2058,9 @@ the PR by hand in this staged Phase B rollout).
     ISSUE_NUM=$(echo "$ITEM" | jq -r '.issueNumber')
     ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
     [[ ",$ITEM_LABELS," == *",factory-pause,"* ]] && continue
-    [[ ",$ITEM_LABELS," == *",support,"* ]] && continue
+    if [[ ",$ITEM_LABELS," == *",support,"* ]]; then
+      log "Issue #$ISSUE_NUM: skipping (support label — nightly-support.sh owns these)"; continue
+    fi
 
     if ! COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM"); then
       log "WARNING: fetch_issue_comments failed for #$ISSUE_NUM (feedback sweep); skipping"; continue

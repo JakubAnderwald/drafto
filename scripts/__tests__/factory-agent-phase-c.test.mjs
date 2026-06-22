@@ -37,8 +37,13 @@ describe("support-label skip guard (nightly-support.sh coexistence)", () => {
     );
   });
 
-  it("documents that nightly-support.sh owns support issues", () => {
-    assert.match(script, /support label — nightly-support\.sh owns these/);
+  it("logs nightly-support.sh ownership at every support skip (all 7, none silent)", () => {
+    const owned = script.match(/support label — nightly-support\.sh owns these/g) || [];
+    assert.equal(
+      owned.length,
+      7,
+      `every support guard should log nightly ownership; found ${owned.length}/7`,
+    );
   });
 
   it("pairs each support skip with the factory-pause kill switch", () => {
