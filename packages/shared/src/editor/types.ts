@@ -9,9 +9,35 @@ export interface BlockNoteInlineContent {
   content?: BlockNoteInlineContent[];
 }
 
+/**
+ * Wrapped table-cell shape emitted by BlockNote v0.47+. Older content rows
+ * persist a cell as `BlockNoteInlineContent[]` directly; newer content wraps
+ * it in `{ type: "tableCell", content }`. Code that walks `rows[].cells[]`
+ * must handle both shapes — reading `cell.content` for the wrapped form and
+ * the array directly for the legacy form.
+ */
+export interface BlockNoteTableCell {
+  type: "tableCell";
+  props?: Record<string, unknown>;
+  content: BlockNoteInlineContent[];
+}
+
+export type BlockNoteTableRowCell = BlockNoteInlineContent[] | BlockNoteTableCell;
+
 export interface BlockNoteTableContent {
   type: "tableContent";
-  rows: { cells: BlockNoteInlineContent[][] }[];
+  rows: { cells: BlockNoteTableRowCell[] }[];
+}
+
+/**
+ * Return the inline content carried by a table-row cell regardless of whether
+ * the cell is stored in BlockNote's legacy `InlineContent[]` shape or the
+ * newer wrapped `{ type: "tableCell", content }` shape.
+ */
+export function getTableCellInline(cell: BlockNoteTableRowCell): BlockNoteInlineContent[] {
+  if (Array.isArray(cell)) return cell;
+  if (cell && typeof cell === "object" && Array.isArray(cell.content)) return cell.content;
+  return [];
 }
 
 export interface BlockNoteBlock {

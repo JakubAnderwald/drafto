@@ -102,7 +102,7 @@ describe("POST /api/mcp", () => {
     expect(mockTransportClose).toHaveBeenCalled();
   });
 
-  it("registers 9 MCP tools", async () => {
+  it("registers 11 MCP tools", async () => {
     const mockFrom = vi.fn();
     vi.mocked(authenticateMcpRequest).mockResolvedValue({
       userId: "user-1",
@@ -120,7 +120,7 @@ describe("POST /api/mcp", () => {
 
     await POST(request);
 
-    // Verify all 9 tools are registered
+    // Verify all 11 tools are registered
     const toolNames = mockTool.mock.calls.map((call: unknown[]) => call[0]);
     expect(toolNames).toContain("list_notebooks");
     expect(toolNames).toContain("list_notes");
@@ -131,7 +131,9 @@ describe("POST /api/mcp", () => {
     expect(toolNames).toContain("update_note");
     expect(toolNames).toContain("move_note");
     expect(toolNames).toContain("trash_note");
-    expect(toolNames).toHaveLength(9);
+    expect(toolNames).toContain("rename_notebook");
+    expect(toolNames).toContain("delete_notebook");
+    expect(toolNames).toHaveLength(11);
   });
 
   it("calls close on server and transport after processing", async () => {

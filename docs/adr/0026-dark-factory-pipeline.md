@@ -40,12 +40,12 @@ Up to **2 parallel worktrees** for `--implement`, slot-locked separately. `--pla
 
 The factory rolls out in four phases, each gated on ≥5 clean runs at the previous phase:
 
-| Phase | Behaviour                                                                                    |
-| ----- | -------------------------------------------------------------------------------------------- |
-| A     | Plan-only. `--implement` is a no-op; pure observation of plan quality.                       |
-| B     | Web implementation enabled. Mobile/desktop changes auto-blocked at the post-check.           |
-| C     | Mobile + desktop implementation enabled. Approved still merges + Vercel prod only.           |
-| D     | Approved also dispatches iOS / Android beta + local Mac TestFlight. macOS prod stays manual. |
+| Phase | Behaviour                                                                                                                                                                                         |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A     | Plan-only. `--implement` is a no-op; pure observation of plan quality.                                                                                                                            |
+| B     | Web implementation enabled. Mobile/desktop changes auto-blocked at the post-check. `--release` auto-merges on the Approved drag (CI-green + migration gate enforced); Vercel deploys main → prod. |
+| C     | Mobile + desktop implementation enabled. Approved still merges + Vercel prod only.                                                                                                                |
+| D     | Approved also dispatches iOS / Android beta + local Mac TestFlight. macOS prod stays manual.                                                                                                      |
 
 ### Coexistence with existing pipelines
 
@@ -53,6 +53,20 @@ The factory does not replace `support-agent.sh` or `nightly-support.sh`. It inte
 
 - `support-agent.sh` gains an "auto-Ready for allowlisted reporters" behaviour and an "accept-signal classifier" that maps email replies (`go ahead`, `ship it`, `thanks`) onto card transitions via `state-cli.mjs factory:advance`.
 - `nightly-support.sh` Phase 3 (the existing midnight implementation pass) is deprecated **in stages** — it stays running while Phase A/B prove out the factory, gets disabled at Phase C cutover, and is removed at Phase D.
+
+> **Update (2026-06-21):** the two coexistence bullets above are amended. The
+> `nightly-support.sh` Phase 3 deprecation is **reversed** — Phase 3 stays
+> running unchanged across all factory phases (not disabled at C, not removed at
+> D). The factory and the nightly agent run as two independent tracks; mutual
+> exclusion is enforced factory-side (the `--implement` queue skips
+> `support`-labelled issues), so the nightly script is untouched. Consequently
+> the support-agent **"auto-Ready for allowlisted" behaviour is dropped** (it
+> would have fed nightly's issues onto the board); the accept-signal classifier
+> applies only to issues deliberately routed to the board. The core decision
+> (kanban-driven factory, two human gates, phased rollout) is unchanged, so this
+> is an amendment rather than a superseding ADR. See the status header of
+> `docs/dark-factory-proposal.md` and the coexistence section of
+> `docs/operations/factory-runbook.md` for the current model.
 
 ## Consequences
 

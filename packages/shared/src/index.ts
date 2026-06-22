@@ -34,6 +34,10 @@ export {
 export { extractTextFromContent } from "./editor/extract-text";
 export { normalizeBlocks } from "./editor/normalize-blocks";
 export { blockNoteToMarkdown, markdownToBlockNote } from "./editor/markdown-converter";
+export { blocksToEnml, escapeXml, escapeAttr } from "./editor/blocknote-to-enml";
+export type { EnmlMediaEntry, MediaIndex } from "./editor/blocknote-to-enml";
+export { buildEnex, formatEvernoteDate } from "./editor/enex-builder";
+export type { ExportedNote, ExportedResource, BuildEnexInput } from "./editor/enex-builder";
 export {
   toAttachmentUrl,
   isAttachmentUrl,

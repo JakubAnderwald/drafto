@@ -20,6 +20,7 @@ vi.mock("@/lib/supabase/client", () => ({
 describe("AppMenu", () => {
   const mockOnImportEvernote = vi.fn();
   const mockOnImportTickTick = vi.fn();
+  const mockOnExportEvernote = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -27,7 +28,11 @@ describe("AppMenu", () => {
 
   it("renders the menu trigger and theme toggle", () => {
     render(
-      <AppMenu onImportEvernote={mockOnImportEvernote} onImportTickTick={mockOnImportTickTick} />,
+      <AppMenu
+        onImportEvernote={mockOnImportEvernote}
+        onImportTickTick={mockOnImportTickTick}
+        onExportEvernote={mockOnExportEvernote}
+      />,
     );
 
     expect(screen.getByTestId("app-menu-trigger")).toBeInTheDocument();
@@ -37,7 +42,11 @@ describe("AppMenu", () => {
   it("opens dropdown when trigger is clicked", async () => {
     const user = userEvent.setup();
     render(
-      <AppMenu onImportEvernote={mockOnImportEvernote} onImportTickTick={mockOnImportTickTick} />,
+      <AppMenu
+        onImportEvernote={mockOnImportEvernote}
+        onImportTickTick={mockOnImportTickTick}
+        onExportEvernote={mockOnExportEvernote}
+      />,
     );
 
     await user.click(screen.getByTestId("app-menu-trigger"));
@@ -49,7 +58,11 @@ describe("AppMenu", () => {
   it("calls onImportEvernote when import button is clicked", async () => {
     const user = userEvent.setup();
     render(
-      <AppMenu onImportEvernote={mockOnImportEvernote} onImportTickTick={mockOnImportTickTick} />,
+      <AppMenu
+        onImportEvernote={mockOnImportEvernote}
+        onImportTickTick={mockOnImportTickTick}
+        onExportEvernote={mockOnExportEvernote}
+      />,
     );
 
     await user.click(screen.getByTestId("app-menu-trigger"));
@@ -61,7 +74,11 @@ describe("AppMenu", () => {
   it("calls onImportTickTick when TickTick import button is clicked", async () => {
     const user = userEvent.setup();
     render(
-      <AppMenu onImportEvernote={mockOnImportEvernote} onImportTickTick={mockOnImportTickTick} />,
+      <AppMenu
+        onImportEvernote={mockOnImportEvernote}
+        onImportTickTick={mockOnImportTickTick}
+        onExportEvernote={mockOnExportEvernote}
+      />,
     );
 
     await user.click(screen.getByTestId("app-menu-trigger"));
@@ -70,10 +87,30 @@ describe("AppMenu", () => {
     expect(mockOnImportTickTick).toHaveBeenCalled();
   });
 
+  it("calls onExportEvernote when export button is clicked", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppMenu
+        onImportEvernote={mockOnImportEvernote}
+        onImportTickTick={mockOnImportTickTick}
+        onExportEvernote={mockOnExportEvernote}
+      />,
+    );
+
+    await user.click(screen.getByTestId("app-menu-trigger"));
+    await user.click(screen.getByTestId("export-evernote-button"));
+
+    expect(mockOnExportEvernote).toHaveBeenCalled();
+  });
+
   it("does not render Admin link when isAdmin is false", async () => {
     const user = userEvent.setup();
     render(
-      <AppMenu onImportEvernote={mockOnImportEvernote} onImportTickTick={mockOnImportTickTick} />,
+      <AppMenu
+        onImportEvernote={mockOnImportEvernote}
+        onImportTickTick={mockOnImportTickTick}
+        onExportEvernote={mockOnExportEvernote}
+      />,
     );
     await user.click(screen.getByTestId("app-menu-trigger"));
     expect(screen.queryByTestId("admin-button")).not.toBeInTheDocument();
@@ -85,6 +122,7 @@ describe("AppMenu", () => {
       <AppMenu
         onImportEvernote={mockOnImportEvernote}
         onImportTickTick={mockOnImportTickTick}
+        onExportEvernote={mockOnExportEvernote}
         isAdmin
       />,
     );
@@ -108,7 +146,11 @@ describe("AppMenu", () => {
     });
 
     render(
-      <AppMenu onImportEvernote={mockOnImportEvernote} onImportTickTick={mockOnImportTickTick} />,
+      <AppMenu
+        onImportEvernote={mockOnImportEvernote}
+        onImportTickTick={mockOnImportTickTick}
+        onExportEvernote={mockOnExportEvernote}
+      />,
     );
 
     await user.click(screen.getByTestId("app-menu-trigger"));

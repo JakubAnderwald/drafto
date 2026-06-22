@@ -13,10 +13,30 @@
 > PR, and runs the parity post-check (mobile/desktop changes auto-blocked at
 > Phase B). `--watch` runs the `/push`-style fix loop on failing CI / review
 > comments and advances PRs to **In Test** once CI is green and the Vercel
-> preview is reachable. **`--release` (auto-merge on Approved + beta dispatch)
-> is deliberately deferred** — the operator merges the approved PR by hand at
-> the Approved drag while plan→implement→preview quality is validated.
-> Promotion to Phase B is the operator flipping `FACTORY_PHASE` on the plist.
+> preview is reachable. Promotion to Phase B is the operator flipping
+> `FACTORY_PHASE` on the plist.
+>
+> **`--release` auto-merge (this update)**: the Approved → Released engine has
+> landed (Phase B+). Each tick `--release` scans the **Approved** column and,
+> for a card a human dragged there, squash-merges the green PR via the GitHub
+> API (`gh api --method PUT …/merge`) and advances it to **Released** (Vercel
+> auto-deploys main → prod). Hard rules: it only acts on a human-dragged
+> Approved card (the merge-authorisation gate), the migration gate is enforced
+> in code (`supabase/migrations/**` requires `migration-approved`, else the card
+> is parked in Approved), and it won't merge unless CI is green + conflict-free.
+> The launchd loop (`factory-agent-loop.sh`, now tracked) runs `--release` after
+> `--watch` each tick. Before merging, `--release` also resolves any open review
+> threads (CodeRabbit / reviewers) so the owner-token merge engages
+> `required_conversation_resolution` explicitly instead of bypassing it silently.
+>
+> **Phase-D beta dispatch (this update)**: `scripts/lib/dispatch-release.mjs` has
+> landed. At Phase D, after a Released merge that touched a native platform,
+> `--release` derives the changed platforms from the diff and spawns the **local
+> Fastlane beta lanes** on the Mac mini (`pnpm release:beta:all`,
+> `cd apps/desktop && pnpm release:beta`) — detached, fire-and-forget. It uses
+> local lanes, NOT `gh workflow run`, because the CI release workflows are
+> non-functional (builds-and-releases.md). Beta channels only (production lanes
+> are denylisted); dormant at Phase B/C; marker-guarded against re-dispatch.
 >
 > **In Test iteration (this update)**: a reporter comment on an In Test card
 > rolls it back to In Progress; the factory revises on the **same** PR branch
@@ -27,6 +47,25 @@
 > drag. Lets a reporter who dislikes the preview request changes without
 > touching GitHub internals — the realistic "even if the plan looked fine"
 > path.
+>
+> **Plan revision — Phase C leaves the nightly agent untouched (2026-06-21)**:
+> The earlier plan retired `nightly-support.sh` Phase 3 (the midnight
+> support-issue auto-implementation that also self-merges and auto-ships
+> Android / iOS / macOS **beta** builds) at the Phase C cutover and removed it at
+> Phase D. That is **reversed.** Phase 3 now stays running **unchanged across all
+> factory phases**. The factory and the nightly agent run as two independent
+> tracks: the factory is the **board-driven** track (human-curated cards, gated
+> by Plan Review + Approved), while the nightly agent remains the **autonomous
+> email→implement→beta-ship** track for allowlisted `support`-labelled issues.
+> Phase C's only behavioural change stays the original web-only relaxation (the
+> factory may now implement mobile/desktop). Mutual exclusion is enforced
+> **factory-side** — the `--implement` queue skips `support`-labelled issues, so
+> it never poaches nightly's domain and the nightly script needs no edits. To
+> route a support issue through the factory deliberately, a human removes the
+> `support` label (the factory then treats it as an ordinary board card).
+> Consequence: the planned **"auto-Ready for allowlisted" promotion is dropped**
+> (it would have fed nightly's issues onto the board), and the email-driven
+> factory gates apply only to issues deliberately placed on the board.
 >
 > **What's landed**:
 >
@@ -125,8 +164,8 @@ Mac-mini launchd  →  scripts/factory-agent.sh  (every 5 min)
        +-- failure trap files factory-failure issue
 
 Labels (`status:*`) are written by the agent as transition side-effects, for
-human filtering on the Issues list and for the legacy `nightly-support.sh`
-Phase-3 deprecation window — they're observability, not the agent's queue.
+human filtering on the Issues list — they're observability, not the agent's
+queue.
 ```
 
 ## State machine (Project v2 Status field)
@@ -169,7 +208,7 @@ Notes:
 | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | A     | **Plan-only.** `--plan` mode runs (Ready → Planning → Plan Review). Even if you approve a plan and drag the card to In Progress, `--implement` is a no-op. Pure observation of the planning quality before any code is written. |
 | B     | Web-only. Plan-and-review proceeds end-to-end: approved plan → Implement → In Review → In Test (Vercel preview). Approved auto-merges PR; mobile/desktop changes auto-blocked at the implementation post-check.                 |
-| C     | Web + mobile/desktop changes allowed end-to-end. Approved still merges + Vercel prod only. No mobile/desktop dispatch yet — human kicks beta lanes manually.                                                                    |
+| C     | Web + mobile/desktop changes allowed end-to-end. Approved still merges + Vercel prod only. No mobile/desktop dispatch yet — human kicks beta lanes manually. `nightly-support.sh` Phase 3 stays running unchanged (no cutover). |
 | D     | Approved → factory merges PR AND dispatches iOS / Android / macOS beta workflows automatically. macOS prod app-store submission stays manual (CI broken per CLAUDE.md).                                                         |
 
 Promote after ≥5 clean runs without human intervention at the current phase.
@@ -269,7 +308,7 @@ Promote after ≥5 clean runs without human intervention at the current phase.
      **In Test iteration loop** — the card returns to In Progress and the
      factory revises the same PR in place, then flows back to In Test. The
      reporter iterates until satisfied, then approves. (Built in the staged
-     Phase B rollout; `--release` below stays deferred.)
+     Phase B rollout.)
 2. `factory-agent.sh --release` runs migration gate (refuses if `supabase/migrations/**`
    files present without `migration-approved` label). On pass:
    - Squash-merges the PR via `gh api` (per CLAUDE.md worktree gotcha — uses the
@@ -475,13 +514,13 @@ Manual checks per phase promotion:
 
 The factory does not replace the support pipeline; it integrates with it.
 
-| Existing job                                                | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `support-agent.sh` (every 5 min)                            | Real-time email→issue role unchanged. Two new behaviours:<br/>1. **Auto-Ready for allowlisted**: when filing from an allowlisted reporter (per `$SUPPORT_ALLOWLIST` in `logs/support-state.json` — Jakub and his wife), auto-applies `status:ready` and adds the issue to the Projects v2 board. Non-allowlisted reports land in Backlog as today.<br/>2. **Accept-signal classifier**: when an allowlisted reporter replies on a thread linked to a factory issue with positive intent ("go ahead", "ship it", "thanks"), support-agent runs `state-cli.mjs factory:advance <issue>`. The script reads the issue's current `status:*` label and dispatches: Plan Review → In Progress (plan approved), Released → Done (final acceptance). Other states ignore the signal and post the reply as a normal comment. |
-| `nightly-support.sh` Phase 2 (Dependabot)                   | Unchanged. Dependabot PRs aren't feature work; kanban abstraction doesn't fit. Existing conditional auto-merge stays.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `nightly-support.sh` Phase 3 (support-issue implementation) | **Deprecated in stages.** Factory phase A/B: Phase 3 keeps running; factory only touches `status:ready` issues set by a human. Factory phase C cutover: Phase 3 disabled — factory handles all support-issue implementation; allowlisted reporters auto-promoted to Ready by support-agent. Factory phase D: Phase 3 code removed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `nightly-audit.sh` (05:00)                                  | Adds a check: factory launchd job alive AND `factory.paused != true` in state file. Otherwise files a `nightly-audit` issue as today.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `comment-released-issues.mjs` (post-fastlane hook)          | Unchanged. Already posts release announcements on linked support issues — works for factory-released issues without modification.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Existing job                                                | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `support-agent.sh` (every 5 min)                            | Real-time email→issue role unchanged. Two new behaviours:<br/>1. **Auto-Ready for allowlisted — dropped (revised 2026-06-21).** Originally support-agent would auto-apply `status:ready` to allowlisted reports and add them to the board. That is dropped: allowlisted `support` issues stay on the nightly track (`nightly-support.sh` Phase 3 implements + beta-ships them as today). support-agent's email→issue role is otherwise unchanged.<br/>2. **Accept-signal classifier — applies to board-routed work only (revised 2026-06-21).** Only relevant once an issue is deliberately on the factory board (its `support` label removed). For those cards, an allowlisted reporter reply with positive intent ("go ahead", "ship it", "thanks") runs `state-cli.mjs factory:advance <issue>`, which reads the card's `status:*` and dispatches Plan Review → In Progress / Released → Done. Support issues left on the nightly track never reach this path. |
+| `nightly-support.sh` Phase 2 (Dependabot)                   | Unchanged. Dependabot PRs aren't feature work; kanban abstraction doesn't fit. Existing conditional auto-merge stays.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `nightly-support.sh` Phase 3 (support-issue implementation) | **Unchanged across all factory phases (revised 2026-06-21 — no longer deprecated).** Phase 3 keeps running at A/B/C/D; it is **not** disabled at C or removed at D. The factory and Phase 3 are two independent tracks: the factory implements only human-curated board cards (`status:ready`) and **skips `support`-labelled issues**, so it never poaches Phase 3's queue (`support`-labelled, no `status:*`). The two label sets stay disjoint by construction; to hand a support issue to the factory instead, a human removes the `support` label.                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `nightly-audit.sh` (05:00)                                  | Adds a check: factory launchd job alive AND `factory.paused != true` in state file. Otherwise files a `nightly-audit` issue as today.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `comment-released-issues.mjs` (post-fastlane hook)          | Unchanged. Already posts release announcements on linked support issues — works for factory-released issues without modification.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 Net effect for the household reporters: end-to-end via email. Email a bug to
 support@drafto.eu → receive a plan email → reply "go ahead" → receive progress

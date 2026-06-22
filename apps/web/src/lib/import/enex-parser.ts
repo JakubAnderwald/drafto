@@ -23,6 +23,23 @@ export function parseEnexFile(xmlString: string): EnexNote[] {
   return notes;
 }
 
+/**
+ * Parse a single `<note>…</note>` XML fragment (as produced by the streaming
+ * splitter) into an EnexNote. Used by parseEnexStream so very large .enex files
+ * never have to be held in memory all at once.
+ */
+export function parseNoteFragment(noteXml: string): EnexNote {
+  const doc = new DOMParser().parseFromString(noteXml, "text/xml");
+  if (doc.querySelector("parsererror")) {
+    throw new Error("Invalid .enex note: XML parsing failed");
+  }
+  const noteEl = doc.querySelector("note");
+  if (!noteEl) {
+    throw new Error("Invalid .enex note: <note> element missing");
+  }
+  return parseNoteElement(noteEl);
+}
+
 function parseNoteElement(noteEl: Element): EnexNote {
   const title = noteEl.querySelector("title")?.textContent?.trim() || "Untitled";
   const content = noteEl.querySelector("content")?.textContent?.trim() || "";
@@ -71,17 +88,13 @@ function parseResourceElement(resEl: Element): EnexResource | null {
 
   const mime = resEl.querySelector("mime")?.textContent?.trim() || "application/octet-stream";
 
-  // Hash from recognition or resource-attributes
-  const hash =
-    resEl.querySelector("recognition")?.textContent?.match(/hash="([^"]+)"/)?.[1] ||
-    resEl.querySelector("resource-attributes > source-url")?.textContent?.trim() ||
-    generateSimpleHash(data);
-
+  // en-media matching is done server-side by the MD5 of the decoded binary (see
+  // the import route), so the parser intentionally does not compute a hash here.
   const fileName =
     resEl.querySelector("resource-attributes > file-name")?.textContent?.trim() ||
     `attachment.${mimeToExtension(mime)}`;
 
-  return { data, mime, hash, fileName };
+  return { data, mime, fileName };
 }
 
 /**
@@ -117,16 +130,4 @@ function mimeToExtension(mime: string): string {
     "audio/wav": "wav",
   };
   return map[mime] || "bin";
-}
-
-/**
- * Generate a simple hash from base64 data for en-media matching.
- * Not cryptographic — just enough to match resources to en-media tags.
- */
-function generateSimpleHash(data: string): string {
-  let hash = 0;
-  for (let i = 0; i < Math.min(data.length, 1000); i++) {
-    hash = (hash * 31 + data.charCodeAt(i)) | 0;
-  }
-  return Math.abs(hash).toString(16).padStart(8, "0");
 }

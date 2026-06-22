@@ -105,6 +105,17 @@ describe("blockNoteToMarkdown", () => {
     expect(blockNoteToMarkdown(blocks)).toBe("![A photo](https://example.com/img.png)");
   });
 
+  it("converts file blocks to a durable attachment link", () => {
+    const blocks: BlockNoteBlock[] = [
+      {
+        type: "file",
+        props: { url: "attachment://user/note/doc.pdf", name: "doc.pdf", caption: "" },
+        children: [],
+      },
+    ];
+    expect(blockNoteToMarkdown(blocks)).toBe("[doc.pdf](attachment://user/note/doc.pdf)");
+  });
+
   it("converts tables", () => {
     const tableContent: BlockNoteTableContent = {
       type: "tableContent",
@@ -304,5 +315,15 @@ describe("round-trip", () => {
     const md = "- [x] Done";
     const result = blockNoteToMarkdown(markdownToBlockNote(md));
     expect(result).toBe(md);
+  });
+
+  it("preserves attachment file blocks through round-trip", () => {
+    const md = "[doc.pdf](attachment://user/note/doc.pdf)";
+    const blocks = markdownToBlockNote(md);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe("file");
+    expect(blocks[0].props?.url).toBe("attachment://user/note/doc.pdf");
+    expect(blocks[0].props?.name).toBe("doc.pdf");
+    expect(blockNoteToMarkdown(blocks)).toBe(md);
   });
 });
