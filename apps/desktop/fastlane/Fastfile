@@ -103,14 +103,16 @@ platform :mac do
       UI.user_error!(".env.production must point at the prod Supabase project (#{known_prod_ref}); found #{prod_env_ref.inspect} — refusing to build")
     end
 
-    env_backup = File.exist?(dev_env) ? File.read(dev_env) : nil
-    FileUtils.cp(prod_env, dev_env)
+    # Also require the anon key to be present, so a build can't ship with a valid prod
+    # URL but an empty key (the bundle guard below only checks the project ref). The
+    # value itself is never logged.
+    prod_anon_key = File.read(prod_env)[/^SUPABASE_ANON_KEY=(.+)$/, 1]
+    if prod_anon_key.nil? || prod_anon_key.strip.empty?
+      UI.user_error!(".env.production is missing SUPABASE_ANON_KEY — refusing to build")
+    end
 
-    # Clear Metro/babel caches so react-native-dotenv re-inlines the prod `.env` instead
-    # of reusing a stale dev transform left over from a prior debug build.
-    Dir.glob(File.join(Dir.tmpdir, "metro-*")).each { |f| FileUtils.rm_rf(f) }
-    Dir.glob(File.join(Dir.tmpdir, "haste-map-*")).each { |f| FileUtils.rm_rf(f) }
-    FileUtils.rm_rf(File.join(PROJECT_ROOT, "node_modules", ".cache"))
+    # Capture the current `.env` so it can be restored after bundling (see the ensure block).
+    env_backup = File.exist?(dev_env) ? File.read(dev_env) : nil
 
     # Install CocoaPods dependencies
     cocoapods(
@@ -215,11 +217,21 @@ platform :mac do
       end
     )
 
-    # Build and export .app (skip .pkg — we create it separately with the installer cert).
-    # Wrapped in begin/ensure so the prod-credential `.env` swap is ALWAYS reverted,
-    # even if the build or the bundle guard fails — otherwise a failed release would
-    # leave `.env` pointing at prod and silently send local debug builds to prod.
+    # Swap in the prod `.env`, build, verify, and ALWAYS restore `.env` via ensure.
+    # The swap happens here — immediately before bundling — rather than earlier, so a
+    # CocoaPods/match/signing failure above never clobbers `.env`; only the JS bundle
+    # phase inside build_mac_app actually reads it. Without the restore, a failed or
+    # dev-pointed release would leave `.env` as prod and silently send local debug builds there.
     begin
+      FileUtils.cp(prod_env, dev_env)
+
+      # Clear Metro/babel caches so react-native-dotenv re-inlines the prod `.env`
+      # instead of reusing a stale dev transform left over from a prior debug build.
+      Dir.glob(File.join(Dir.tmpdir, "metro-*")).each { |f| FileUtils.rm_rf(f) }
+      Dir.glob(File.join(Dir.tmpdir, "haste-map-*")).each { |f| FileUtils.rm_rf(f) }
+      FileUtils.rm_rf(File.join(PROJECT_ROOT, "node_modules", ".cache"))
+
+      # Build and export .app (skip .pkg — we create it separately with the installer cert).
       build_mac_app(
         workspace: File.join(PROJECT_ROOT, "macos", "Drafto.xcworkspace"),
         scheme: "Drafto-macOS",
