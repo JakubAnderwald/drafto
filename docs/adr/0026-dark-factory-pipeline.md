@@ -54,6 +54,20 @@ The factory does not replace `support-agent.sh` or `nightly-support.sh`. It inte
 - `support-agent.sh` gains an "auto-Ready for allowlisted reporters" behaviour and an "accept-signal classifier" that maps email replies (`go ahead`, `ship it`, `thanks`) onto card transitions via `state-cli.mjs factory:advance`.
 - `nightly-support.sh` Phase 3 (the existing midnight implementation pass) is deprecated **in stages** — it stays running while Phase A/B prove out the factory, gets disabled at Phase C cutover, and is removed at Phase D.
 
+> **Update (2026-06-21):** the two coexistence bullets above are amended. The
+> `nightly-support.sh` Phase 3 deprecation is **reversed** — Phase 3 stays
+> running unchanged across all factory phases (not disabled at C, not removed at
+> D). The factory and the nightly agent run as two independent tracks; mutual
+> exclusion is enforced factory-side (the `--implement` queue skips
+> `support`-labelled issues), so the nightly script is untouched. Consequently
+> the support-agent **"auto-Ready for allowlisted" behaviour is dropped** (it
+> would have fed nightly's issues onto the board); the accept-signal classifier
+> applies only to issues deliberately routed to the board. The core decision
+> (kanban-driven factory, two human gates, phased rollout) is unchanged, so this
+> is an amendment rather than a superseding ADR. See the status header of
+> `docs/dark-factory-proposal.md` and the coexistence section of
+> `docs/operations/factory-runbook.md` for the current model.
+
 ## Consequences
 
 **Positive**

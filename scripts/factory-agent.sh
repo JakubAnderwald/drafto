@@ -1005,6 +1005,11 @@ if [[ "$MODE_PLAN" -eq 1 ]]; then
         continue
       fi
 
+      if [[ ",$ITEM_LABELS," == *",support,"* ]]; then
+        log "Issue #$ISSUE_NUM: skipping rescue (support label — nightly-support.sh owns these)"
+        continue
+      fi
+
       if ! COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM"); then
         log "WARNING: fetch_issue_comments failed for #$ISSUE_NUM (rescue sweep); skipping"
         continue
@@ -1088,6 +1093,11 @@ card back to **Ready**.
     # The global pause flag covers the whole agent; this is the per-card knob.
     if [[ ",$ITEM_LABELS," == *",factory-pause,"* ]]; then
       log "Issue #$ISSUE_NUM: skipping (factory-pause label set)"
+      continue
+    fi
+
+    if [[ ",$ITEM_LABELS," == *",support,"* ]]; then
+      log "Issue #$ISSUE_NUM: skipping (support label — nightly-support.sh owns these)"
       continue
     fi
 
@@ -1267,6 +1277,11 @@ and drag the card back to **Ready** to retry.
     ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
 
     if [[ ",$ITEM_LABELS," == *",factory-pause,"* ]]; then
+      continue
+    fi
+
+    if [[ ",$ITEM_LABELS," == *",support,"* ]]; then
+      log "Issue #$ISSUE_NUM: skipping (support label — nightly-support.sh owns these)"
       continue
     fi
 
@@ -1469,6 +1484,11 @@ if [[ "$MODE_IMPLEMENT" -eq 1 ]]; then
     ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
     if [[ ",$ITEM_LABELS," == *",factory-pause,"* ]]; then
       log "Issue #$ISSUE_NUM: skipping (factory-pause label set)"
+      continue
+    fi
+
+    if [[ ",$ITEM_LABELS," == *",support,"* ]]; then
+      log "Issue #$ISSUE_NUM: skipping (support label — nightly-support.sh owns these)"
       continue
     fi
 
@@ -1838,6 +1858,10 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
       log "Issue #$ISSUE_NUM: skipping (factory-pause label set)"; continue
     fi
 
+    if [[ ",$ITEM_LABELS," == *",support,"* ]]; then
+      log "Issue #$ISSUE_NUM: skipping (support label — nightly-support.sh owns these)"; continue
+    fi
+
     PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
     if [[ -z "$PR_OBJ" || "$PR_OBJ" == "null" ]]; then
       log "Issue #$ISSUE_NUM: In Review but no factory PR found; skipping (implement may not have completed)"
@@ -2039,6 +2063,9 @@ the PR by hand in this staged Phase B rollout).
     ISSUE_NUM=$(echo "$ITEM" | jq -r '.issueNumber')
     ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
     [[ ",$ITEM_LABELS," == *",factory-pause,"* ]] && continue
+    if [[ ",$ITEM_LABELS," == *",support,"* ]]; then
+      log "Issue #$ISSUE_NUM: skipping (support label — nightly-support.sh owns these)"; continue
+    fi
 
     if ! COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM"); then
       log "WARNING: fetch_issue_comments failed for #$ISSUE_NUM (feedback sweep); skipping"; continue
@@ -2144,6 +2171,10 @@ if [[ "$MODE_RELEASE" -eq 1 ]]; then
     ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
     if [[ ",$ITEM_LABELS," == *",factory-pause,"* ]]; then
       log "Issue #$ISSUE_NUM: skipping (factory-pause label set)"; continue
+    fi
+
+    if [[ ",$ITEM_LABELS," == *",support,"* ]]; then
+      log "Issue #$ISSUE_NUM: skipping (support label — nightly-support.sh owns these)"; continue
     fi
 
     PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
