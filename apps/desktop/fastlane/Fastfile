@@ -88,31 +88,36 @@ platform :mac do
 
     # Bundle PROD Supabase credentials into this release.
     #
-    # react-native-dotenv inlines values from `.env` at bundle time (babel.config.js,
-    # path: ".env"), so a release must temporarily replace `.env` with `.env.production`.
-    # Fail-fast: require `.env.production` and verify it actually points at the prod
-    # project — this guards against a dev/prod swap, the cause of 0.3.2 build 28 shipping
-    # dev credentials. Non-destructive: the original `.env` is restored after the bundle
-    # phase (see the ensure block around build_mac_app) so local debug builds keep using dev.
+    # react-native-dotenv gives `process.env` the HIGHEST precedence over the `.env` file
+    # (see undefObjectAssign in the plugin), so we inject `.env.production` into the
+    # environment here — the same approach mobile uses (load_production_env) — rather than
+    # copying it onto `.env`. The copy approach was silently overridden by the environment,
+    # which is why 0.3.2 build 28 shipped DEV credentials. Injecting via the environment
+    # also leaves `.env` (dev) untouched, so local debug builds keep using dev.
+    #
+    # Fail-fast: require `.env.production` and verify it points at the prod project (URL +
+    # anon key). The bundle guard after build_mac_app then double-checks the compiled
+    # output. Credential values are never logged.
     prod_env = File.join(PROJECT_ROOT, ".env.production")
-    dev_env = File.join(PROJECT_ROOT, ".env")
     UI.user_error!("Missing apps/desktop/.env.production — cannot bundle prod credentials") unless File.exist?(prod_env)
 
-    prod_env_ref = File.read(prod_env)[%r{^SUPABASE_URL=https://([a-z0-9]+)\.supabase\.co}, 1]
+    prod_env_contents = File.read(prod_env)
+    prod_env_ref = prod_env_contents[%r{^SUPABASE_URL=https://([a-z0-9]+)\.supabase\.co}, 1]
     unless prod_env_ref == known_prod_ref
       UI.user_error!(".env.production must point at the prod Supabase project (#{known_prod_ref}); found #{prod_env_ref.inspect} — refusing to build")
     end
-
-    # Also require the anon key to be present, so a build can't ship with a valid prod
-    # URL but an empty key (the bundle guard below only checks the project ref). The
-    # value itself is never logged.
-    prod_anon_key = File.read(prod_env)[/^SUPABASE_ANON_KEY=(.+)$/, 1]
-    if prod_anon_key.nil? || prod_anon_key.strip.empty?
+    if prod_env_contents[/^SUPABASE_ANON_KEY=(.+)$/, 1].to_s.strip.empty?
       UI.user_error!(".env.production is missing SUPABASE_ANON_KEY — refusing to build")
     end
 
-    # Capture the current `.env` so it can be restored after bundling (see the ensure block).
-    env_backup = File.exist?(dev_env) ? File.read(dev_env) : nil
+    # Inject every key from .env.production into the environment so react-native-dotenv
+    # inlines the prod values during bundling (process.env overrides the .env file).
+    prod_env_contents.each_line do |line|
+      line = line.strip
+      next if line.empty? || line.start_with?("#")
+      key, value = line.split("=", 2)
+      ENV[key] = value if key && value
+    end
 
     # Install CocoaPods dependencies
     cocoapods(
@@ -217,57 +222,35 @@ platform :mac do
       end
     )
 
-    # Swap in the prod `.env`, build, verify, and ALWAYS restore `.env` via ensure.
-    # The swap happens here — immediately before bundling — rather than earlier, so a
-    # CocoaPods/match/signing failure above never clobbers `.env`; only the JS bundle
-    # phase inside build_mac_app actually reads it. Without the restore, a failed or
-    # dev-pointed release would leave `.env` as prod and silently send local debug builds there.
-    begin
-      FileUtils.cp(prod_env, dev_env)
-
-      # Clear Metro/babel caches so react-native-dotenv re-inlines the prod `.env`
-      # instead of reusing a stale dev transform left over from a prior debug build.
-      Dir.glob(File.join(Dir.tmpdir, "metro-*")).each { |f| FileUtils.rm_rf(f) }
-      Dir.glob(File.join(Dir.tmpdir, "haste-map-*")).each { |f| FileUtils.rm_rf(f) }
-      FileUtils.rm_rf(File.join(PROJECT_ROOT, "node_modules", ".cache"))
-
-      # Build and export .app (skip .pkg — we create it separately with the installer cert).
-      build_mac_app(
-        workspace: File.join(PROJECT_ROOT, "macos", "Drafto.xcworkspace"),
-        scheme: "Drafto-macOS",
-        export_method: "app-store",
-        output_directory: File.join(PROJECT_ROOT, "macos", "build"),
-        skip_package_pkg: true,
-        export_options: {
-          signingStyle: "manual",
-          provisioningProfiles: {
-            BUNDLE_ID => "match AppStore eu.drafto.mobile macos"
-          }
+    # Build and export .app (skip .pkg — we create it separately with the installer cert).
+    build_mac_app(
+      workspace: File.join(PROJECT_ROOT, "macos", "Drafto.xcworkspace"),
+      scheme: "Drafto-macOS",
+      export_method: "app-store",
+      output_directory: File.join(PROJECT_ROOT, "macos", "build"),
+      skip_package_pkg: true,
+      export_options: {
+        signingStyle: "manual",
+        provisioningProfiles: {
+          BUNDLE_ID => "match AppStore eu.drafto.mobile macos"
         }
-      )
+      }
+    )
 
-      # Keystone guard: verify the COMPILED bundle points at the prod Supabase project
-      # and contains no dev reference, before anything is uploaded. This is what makes it
-      # structurally impossible to ship a dev-pointed build again (the cause of 0.3.2
-      # build 28). Matches only the public project ref/URL — never the anon key.
-      js_bundle = File.join(PROJECT_ROOT, "macos", "build", "Drafto.app", "Contents", "Resources", "main.jsbundle")
-      UI.user_error!("Built bundle not found at #{js_bundle}") unless File.exist?(js_bundle)
-      bundle_strings = `strings -a "#{js_bundle}"`
-      unless bundle_strings.include?(known_prod_ref)
-        UI.user_error!("Release bundle does not reference the prod Supabase project (#{known_prod_ref}) — aborting upload")
-      end
-      if bundle_strings.include?(known_dev_ref)
-        UI.user_error!("Release bundle references the DEV Supabase project (#{known_dev_ref}) — aborting upload")
-      end
-      UI.success("Verified release bundle points at prod Supabase project #{known_prod_ref}")
-    ensure
-      # Restore the original `.env` (dev). It is only consumed during the bundle phase above.
-      if env_backup
-        File.write(dev_env, env_backup)
-      else
-        FileUtils.rm_f(dev_env)
-      end
+    # Keystone guard: verify the COMPILED bundle points at the prod Supabase project and
+    # contains no dev reference, before anything is uploaded. Makes it structurally
+    # impossible to ship a dev-pointed build again (the cause of 0.3.2 build 28). Matches
+    # only the public project ref/URL — never the anon key.
+    js_bundle = File.join(PROJECT_ROOT, "macos", "build", "Drafto.app", "Contents", "Resources", "main.jsbundle")
+    UI.user_error!("Built bundle not found at #{js_bundle}") unless File.exist?(js_bundle)
+    bundle_strings = `strings -a "#{js_bundle}"`
+    unless bundle_strings.include?(known_prod_ref)
+      UI.user_error!("Release bundle does not reference the prod Supabase project (#{known_prod_ref}) — aborting upload")
     end
+    if bundle_strings.include?(known_dev_ref)
+      UI.user_error!("Release bundle references the DEV Supabase project (#{known_dev_ref}) — aborting upload")
+    end
+    UI.success("Verified release bundle points at prod Supabase project #{known_prod_ref}")
 
     # Create .pkg with the "3rd Party Mac Developer Installer" cert (created via Xcode)
     app_path = File.join(PROJECT_ROOT, "macos", "build", "Drafto.app")
