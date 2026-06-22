@@ -502,7 +502,7 @@ export function AppShell({
         data-testid="notes-pane"
         className={`${
           mobileView === "notes" ? "flex" : "hidden"
-        } bg-bg w-full flex-col overflow-hidden sm:flex sm:w-[300px] sm:shrink-0 ${
+        } bg-bg min-h-0 w-full flex-col overflow-hidden sm:flex sm:w-[300px] sm:shrink-0 ${
           notesCollapsed ? "lg:hidden" : ""
         }`}
       >

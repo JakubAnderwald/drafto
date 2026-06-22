@@ -136,7 +136,7 @@ export function NoteList({
   const otherNotebooks = notebooks.filter((nb) => nb.id !== notebookId);
 
   return (
-    <div className="flex flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center justify-between p-3">
         <h2 className="text-fg-muted text-xs font-semibold tracking-wide uppercase">Notes</h2>
         <IconButton size="sm" variant="ghost" onClick={onCreateNote} aria-label="New note">
