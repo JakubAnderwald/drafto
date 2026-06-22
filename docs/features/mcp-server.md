@@ -91,7 +91,7 @@ PRIVATE_KEY="$(openssl pkey -in ~/drafto-secrets/mcp-registry-key.pem -noout -te
 ~/bin/mcp-publisher login dns --domain "drafto.eu" --private-key "${PRIVATE_KEY}"
 ```
 
-See the "MCP Registry" section of `CLAUDE.md` for the authoritative reference.
+See the "MCP Server (Claude Cowork Integration)" section of `CLAUDE.md` for the authoritative reference.
 
 ## Cross-platform notes
 

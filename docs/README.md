@@ -41,7 +41,7 @@ One brief per functional area. Each brief lists the current state, code paths on
 
 ## ADRs
 
-See [`adr/README.md`](./adr/README.md) for the full index. Twenty decisions, append-only.
+See [`adr/README.md`](./adr/README.md) for the full index. An append-only decision log.
 
 ## Conventions for agents writing docs
 
