@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 
+import { database } from "@/db";
 import { getCachedApproval, setCachedApproval, clearCachedApproval } from "@/lib/approval-cache";
 import { supabase } from "@/lib/supabase";
 
@@ -71,6 +72,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsApproved(false);
     if (userId) {
       await clearCachedApproval(userId);
+    }
+    // Wipe the offline cache so a different account/environment starts clean and stale
+    // notes can't carry across logins. Best-effort: a reset failure must not block sign-out.
+    try {
+      await database.write(() => database.unsafeResetDatabase());
+    } catch (error) {
+      console.error("Failed to reset local database on sign-out:", error);
     }
   }, [session?.user?.id]);
 

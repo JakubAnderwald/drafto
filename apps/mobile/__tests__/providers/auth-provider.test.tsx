@@ -2,6 +2,7 @@ import React from "react";
 import { renderHook, act, waitFor } from "@testing-library/react-native";
 import type { User } from "@supabase/supabase-js";
 
+import { database } from "@/db";
 import { AuthProvider, useAuth } from "@/providers/auth-provider";
 import { supabase } from "@/lib/supabase";
 import * as approvalCache from "@/lib/approval-cache";
@@ -21,8 +22,19 @@ jest.mock("@/lib/supabase", () => ({
 
 jest.mock("@/lib/approval-cache");
 
+jest.mock("@/db", () => ({
+  database: {
+    write: jest.fn((work: () => Promise<void>) => work()),
+    unsafeResetDatabase: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+
 const mockSupabase = supabase as jest.Mocked<typeof supabase>;
 const mockApprovalCache = approvalCache as jest.Mocked<typeof approvalCache>;
+const mockDatabase = database as unknown as {
+  write: jest.Mock;
+  unsafeResetDatabase: jest.Mock;
+};
 
 function wrapper({ children }: { children: React.ReactNode }) {
   return <AuthProvider>{children}</AuthProvider>;
@@ -162,6 +174,30 @@ describe("AuthProvider", () => {
     });
 
     expect(mockApprovalCache.clearCachedApproval).toHaveBeenCalledWith("user-123");
+    expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
     expect(result.current.isApproved).toBe(false);
+  });
+
+  it("completes sign out even if the local database reset fails", async () => {
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+      data: { session: { user: TEST_USER } },
+    });
+    mockProfileQuery({ is_approved: true }, null);
+    (mockSupabase.auth.signOut as jest.Mock).mockResolvedValue({});
+    mockDatabase.unsafeResetDatabase.mockRejectedValueOnce(new Error("reset failed"));
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    await act(async () => {
+      await expect(result.current.signOut()).resolves.toBeUndefined();
+    });
+
+    expect(result.current.isApproved).toBe(false);
+    errorSpy.mockRestore();
   });
 });
