@@ -195,7 +195,9 @@ This configures the certificate repository and creates distribution certificates
 cd apps/desktop && pnpm release:beta
 ```
 
-What it does: CocoaPods install → `match` (fetch macOS signing creds) → sync version from `package.json` → `build_mac_app` (signed `.pkg`) → `upload_to_testflight` → post release notes.
+What it does: validate `apps/desktop/.env.production` points at the prod Supabase project (URL + anon key) → **inject `.env.production` into the build environment** (`process.env` overrides the `.env` file in react-native-dotenv, the same approach mobile uses) → CocoaPods install → `match` (fetch macOS signing creds) → sync version from `package.json` → `build_mac_app` (signed `.app`; `skip_package_pkg: true`) → **verify the compiled JS bundle references the prod Supabase project and not dev** → sign the `.pkg` via `productbuild` → `upload_to_testflight` → post release notes.
+
+> The lane aborts before upload if `.env.production` is missing or doesn't point at prod, or if the compiled bundle still references the dev project. This is what prevents shipping a dev-pointed "production" build (the cause of 0.3.2 build 28 connecting to the dev Supabase project — the old `.env`-copy approach was silently overridden by the environment). `mac production` shares the same checks.
 
 ### Release to Mac App Store
 

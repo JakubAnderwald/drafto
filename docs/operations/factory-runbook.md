@@ -137,16 +137,16 @@ If the same failure mode files >3 issues in 24h, pause the factory globally (`fa
 
 ## Coexistence with `nightly-support.sh` Phase 3
 
-Phase 3 (existing midnight implementation pass) and the factory's `--implement` mode operate on overlapping issue sets. The deprecation schedule is:
+Phase 3 (existing midnight implementation pass) and the factory's `--implement` mode could operate on overlapping issue sets. **Revised 2026-06-21: Phase 3 is no longer deprecated** — it stays running unchanged across all factory phases, and the factory is kept off its queue by a factory-side guard. The coexistence model is:
 
-| Factory phase | Phase 3 status                                                                                                                                                                                                                                                               |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A             | Phase 3 keeps running. Factory only `--plan`s; no overlap.                                                                                                                                                                                                                   |
-| B             | Phase 3 keeps running. Factory `--implement`s only `status:ready` cards set by humans; Phase 3 still picks up `support`-labelled issues without `status:*`. Operator monitors logs to ensure they don't both pick up the same issue (label set is disjoint by construction). |
-| C             | Phase 3 disabled at cutover. Factory takes over support-issue implementation.                                                                                                                                                                                                |
-| D             | Phase 3 code removed.                                                                                                                                                                                                                                                        |
+| Factory phase | Phase 3 status                                                                                                                                                                                 |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A             | Phase 3 keeps running. Factory only `--plan`s; no overlap.                                                                                                                                     |
+| B             | Phase 3 keeps running. Factory `--implement`s only `status:ready` cards set by humans; Phase 3 still picks up `support`-labelled issues without `status:*`.                                    |
+| C             | Phase 3 keeps running, **unchanged (no cutover)**. The factory may now implement mobile/desktop, but its `--implement` queue skips `support`-labelled issues, so the two tracks stay disjoint. |
+| D             | Phase 3 keeps running, **unchanged (not removed)**.                                                                                                                                            |
 
-If both the factory and Phase 3 ever try to implement the same issue (a misconfiguration), the factory takes priority — its worktree-slot lock will block Phase 3's attempt. Both will log; Phase 3's log will say "issue #N already has a factory worktree".
+Collision avoidance is **factory-side**: the `--implement` queue excludes `support`-labelled issues, so the factory never claims an issue Phase 3 owns and the nightly script needs no edits. To hand a support issue to the factory deliberately, a human removes the `support` label — the factory then sees it as an ordinary board card. (Belt-and-braces: if both ever target the same issue, the factory's worktree-slot lock blocks Phase 3's attempt and Phase 3 logs "issue #N already has a factory worktree".)
 
 ## Worktree installs & disk
 
