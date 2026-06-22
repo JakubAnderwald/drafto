@@ -396,14 +396,21 @@ describe("launchd loop wrapper", () => {
     assert.match(loop, /git -C "\$SCRIPT_DIR" fetch --quiet origin main/);
     assert.match(loop, /git -C "\$SCRIPT_DIR" reset --hard --quiet origin\/main/);
     const lockIdx = loop.indexOf('echo "$$" > "$LOCK_PID_FILE"');
+    const fetchIdx = loop.indexOf("fetch --quiet origin main");
     const syncIdx = loop.indexOf("reset --hard --quiet origin/main");
     const firstMode = loop.indexOf('/bin/bash "$AGENT" --plan');
+    assert.ok(lockIdx !== -1 && fetchIdx > lockIdx, "fetch must run after lock acquisition");
     assert.ok(lockIdx !== -1 && syncIdx > lockIdx, "sync must run after lock acquisition");
-    assert.ok(syncIdx < firstMode, "sync must run before the first agent mode");
+    assert.ok(fetchIdx < firstMode && syncIdx < firstMode, "sync must run before the first agent mode");
   });
 
   it("is escapable via FACTORY_AUTOPULL=0 and re-execs on its own change", () => {
-    assert.match(loop, /FACTORY_AUTOPULL:-1/);
+    // Assert fetch/reset are actually gated by the FACTORY_AUTOPULL guard, not
+    // merely that the token appears somewhere in the file.
+    assert.match(
+      loop,
+      /if \[\[ "\$\{FACTORY_AUTOPULL:-1\}" == "1" \]\]; then[\s\S]*git -C "\$SCRIPT_DIR" fetch --quiet origin main[\s\S]*git -C "\$SCRIPT_DIR" reset --hard --quiet origin\/main[\s\S]*fi/,
+    );
     // Re-exec guard: prevents running a stale wrapper after it changes in the
     // sync, with an env guard against an infinite re-exec loop.
     assert.match(loop, /FACTORY_LOOP_REEXECED/);

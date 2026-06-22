@@ -55,6 +55,7 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
 
    ```bash
    cd /Users/jakub/code/drafto
+   git fetch origin main
    git worktree add --detach /Users/jakub/code/drafto-factory origin/main
    cd /Users/jakub/code/drafto-factory
    pnpm install                       # worktrees don't share node_modules
