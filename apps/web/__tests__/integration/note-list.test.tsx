@@ -662,4 +662,42 @@ describe("NoteList", () => {
       expect(mockFetch).toHaveBeenCalledWith("/api/notebooks/nb-refresh/notes");
     });
   });
+
+  // Regression guard for #536: a long note list must scroll. The scrollable
+  // `<nav>` carries `overflow-y-auto`, but it only gains a constrained height
+  // to scroll within if its flex ancestors can shrink below their content
+  // height. The root container must therefore keep `min-h-0` (its default
+  // `min-height: auto` would otherwise force it to grow to the list's
+  // intrinsic height and the inner scroll would never engage).
+  it("keeps the height-constraining classes so the list can scroll", async () => {
+    const trigger = nextTrigger();
+
+    const { container } = await act(async () => {
+      return render(
+        <Suspense fallback={<Skeleton height="2.5rem" />}>
+          <NoteList
+            notebookId="nb-scroll"
+            selectedNoteId={null}
+            onSelectNote={vi.fn()}
+            onCreateNote={vi.fn()}
+            refreshTrigger={trigger}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("First Note")).toBeInTheDocument();
+    });
+
+    const root = container.firstElementChild as HTMLElement;
+    expect(root).not.toBeNull();
+    expect(root.className).toContain("min-h-0");
+    expect(root.className).toContain("flex-1");
+
+    const scrollContainer = container.querySelector("nav");
+    expect(scrollContainer).not.toBeNull();
+    expect(scrollContainer?.className).toContain("overflow-y-auto");
+    expect(scrollContainer?.className).toContain("flex-1");
+  });
 });
