@@ -84,6 +84,47 @@ describe("migration_violation (extracted from factory-agent.sh)", () => {
   });
 });
 
+describe("parity_violation (extracted from factory-agent.sh)", () => {
+  // parity_violation reads the $PHASE global; the extracted snippet must set it
+  // or `set -u` trips before the function body even runs.
+  const callAt = (phase, platforms, override, diff) =>
+    withFn(
+      "parity_violation",
+      `PHASE=${phase}\nparity_violation ${JSON.stringify(platforms)} ${JSON.stringify(override)} ${JSON.stringify(diff)}`,
+    );
+
+  it("does not crash on the --release call site's empty platforms (bash 3.2 set -u regression)", () => {
+    // The --release gate invokes `parity_violation "" "" "$DIFF_FILES"` to
+    // exercise only the phase-scope guard. An empty platforms CSV used to
+    // expand an empty array under `set -u`, aborting the whole --release run
+    // with "unbound variable" on bash 3.2 (the Mac mini's /bin/bash) — which
+    // crash-looped the release engine and spammed failure issues. withFn runs
+    // the snippet under `set -euo pipefail`, so any recurrence fails the test.
+    const out = callAt("C", "", "", "docs/README.md\nCLAUDE.md");
+    assert.equal(out, "", "empty platforms must yield no violation, not a crash");
+  });
+
+  it("holds a Phase B PR that touches mobile/desktop (web-only rule)", () => {
+    const out = callAt("B", "", "", "apps/mobile/src/x.ts");
+    assert.match(out, /Phase B is web-only/);
+  });
+
+  it("flags a claimed platform that has no matching diff", () => {
+    const out = callAt("C", "web", "", "docs/README.md");
+    assert.match(out, /claimed platform 'web' has no apps\/web changes/);
+  });
+
+  it("passes when the claimed platform is present in the diff", () => {
+    const out = callAt("C", "web", "", "apps/web/src/x.ts");
+    assert.equal(out, "");
+  });
+
+  it("skips the cross-platform mandate when a parity override is set", () => {
+    const out = callAt("C", "", "web-only", "apps/web/src/x.ts");
+    assert.equal(out, "");
+  });
+});
+
 describe("--release engine wiring", () => {
   it("queries the Approved board column", () => {
     assert.match(releaseBlock, /query-status-items \\?\s*\n?\s*--status "Approved"/);

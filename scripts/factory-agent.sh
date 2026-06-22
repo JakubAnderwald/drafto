@@ -816,6 +816,11 @@ parity_violation() {
   # A parity:*-only override authorises a single-platform PR — skip the
   # cross-platform mandate entirely.
   if [[ -n "$override" ]]; then echo ""; return 0; fi
+  # No platform claims to check (e.g. the --release call site passes "" to
+  # exercise only the phase-scope guard above) — nothing to enforce. Returning
+  # here also avoids expanding an empty array below, which trips
+  # `set -u` ("unbound variable") on bash 3.2 (the Mac mini's /bin/bash).
+  if [[ -z "$platforms_csv" ]]; then echo ""; return 0; fi
   local plat
   IFS=',' read -ra _plats <<< "$platforms_csv"
   for plat in "${_plats[@]}"; do
