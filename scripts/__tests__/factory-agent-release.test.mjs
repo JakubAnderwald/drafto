@@ -388,4 +388,25 @@ describe("launchd loop wrapper", () => {
     const releaseIdx = loop.indexOf('/bin/bash "$AGENT" --release');
     assert.ok(releaseIdx > watchIdx, "--release should run after --watch");
   });
+
+  it("self-updates to origin/main before running any mode", () => {
+    // The factory must only ever execute reviewed, CI-gated code. The sync
+    // must happen before the agent invocations, and inside the mutex (after the
+    // lock is acquired) so two ticks can't reset the tree concurrently.
+    assert.match(loop, /git -C "\$SCRIPT_DIR" fetch --quiet origin main/);
+    assert.match(loop, /git -C "\$SCRIPT_DIR" reset --hard --quiet origin\/main/);
+    const lockIdx = loop.indexOf('echo "$$" > "$LOCK_PID_FILE"');
+    const syncIdx = loop.indexOf("reset --hard --quiet origin/main");
+    const firstMode = loop.indexOf('/bin/bash "$AGENT" --plan');
+    assert.ok(lockIdx !== -1 && syncIdx > lockIdx, "sync must run after lock acquisition");
+    assert.ok(syncIdx < firstMode, "sync must run before the first agent mode");
+  });
+
+  it("is escapable via FACTORY_AUTOPULL=0 and re-execs on its own change", () => {
+    assert.match(loop, /FACTORY_AUTOPULL:-1/);
+    // Re-exec guard: prevents running a stale wrapper after it changes in the
+    // sync, with an env guard against an infinite re-exec loop.
+    assert.match(loop, /FACTORY_LOOP_REEXECED/);
+    assert.match(loop, /exec \/bin\/bash "\$\{BASH_SOURCE\[0\]\}"/);
+  });
 });
