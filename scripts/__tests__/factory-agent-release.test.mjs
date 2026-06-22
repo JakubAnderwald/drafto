@@ -401,7 +401,10 @@ describe("launchd loop wrapper", () => {
     const firstMode = loop.indexOf('/bin/bash "$AGENT" --plan');
     assert.ok(lockIdx !== -1 && fetchIdx > lockIdx, "fetch must run after lock acquisition");
     assert.ok(lockIdx !== -1 && syncIdx > lockIdx, "sync must run after lock acquisition");
-    assert.ok(fetchIdx < firstMode && syncIdx < firstMode, "sync must run before the first agent mode");
+    assert.ok(
+      fetchIdx < firstMode && syncIdx < firstMode,
+      "sync must run before the first agent mode",
+    );
   });
 
   it("is escapable via FACTORY_AUTOPULL=0 and re-execs on its own change", () => {
