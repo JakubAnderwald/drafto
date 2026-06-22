@@ -41,11 +41,39 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
 
    Verify with `gh auth status` — the listed scopes should include `project`. Without it the agent's first board read fails on every tick with a `factory-project find-project failed` warning.
 
-5. **Install the factory launchd job.**
+5. **Create the dedicated factory checkout (Deployment).**
+
+   The factory runs from its **own git worktree pinned to `main`**, never from your
+   everyday dev checkout. This guarantees it only ever executes reviewed,
+   CI-gated code, and keeps its tick-start `git reset --hard` from ever touching
+   uncommitted work in your dev tree. (History: the factory once ran straight
+   from a feature branch in the dev checkout and shipped an unmerged `--release`
+   crash to production — the dedicated tree exists to make that impossible.)
+
+   Create it once as a **detached** worktree at `origin/main` (detached so it
+   doesn't collide with `main` being checked out in the primary repo):
+
+   ```bash
+   cd /Users/jakub/code/drafto
+   git fetch origin main
+   git worktree add --detach /Users/jakub/code/drafto-factory origin/main
+   cd /Users/jakub/code/drafto-factory
+   pnpm install                       # worktrees don't share node_modules
+   bash scripts/worktree-bootstrap.sh # gitignored env/config files
+   ```
+
+   Each tick, `factory-agent-loop.sh` runs `git fetch origin main` +
+   `git reset --hard origin/main` before the agent modes (guarded by
+   `FACTORY_AUTOPULL=1`, the default), so a merged PR — or a revert — goes live
+   on the next 5-min cycle with no manual pull. If the wrapper itself changed in
+   that sync, it re-execs the fresh copy once. Set `FACTORY_AUTOPULL=0` only for
+   ad-hoc manual runs against a dirty tree.
+
+6. **Install the factory launchd job.**
 
    On the Mac mini, drop a plist at `~/Library/LaunchAgents/eu.drafto.factory.plist` modelled on `eu.drafto.support-agent.plist` with:
    - `Label = eu.drafto.factory`
-   - `ProgramArguments = [/bin/bash, /Users/jakub/code/drafto/scripts/factory-agent-loop.sh]`
+   - `ProgramArguments = [/bin/bash, /Users/jakub/code/drafto-factory/scripts/factory-agent-loop.sh]` (the **dedicated** checkout from step 5, not the dev tree)
    - `StartInterval = 300` (5 min)
    - `EnvironmentVariables.FACTORY_PHASE = A`
    - Stdout/stderr paths under `logs/launchd-factory-*.log`
@@ -58,13 +86,15 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
    tail -f /Users/jakub/code/drafto/logs/launchd-factory-stdout.log
    ```
 
-   The first tick should log `=== factory-agent --plan run started (phase=A …) ===` followed by `=== factory-agent --plan completed in <N>s ===`. Subsequent ticks fire every 5 min.
+   The first tick should log `self-update: synced to origin/main @ <sha>` then
+   `=== factory-agent --plan run started (phase=A …) ===` followed by
+   `=== factory-agent --plan completed in <N>s ===`. Subsequent ticks fire every 5 min.
 
 ## Phase progression criteria
 
 | Promote from → to | Required signals before promotion                                                                                                                                                                                                                                                                                                                                                                   |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| (initial) → A     | Setup steps 1–5 above complete. `launchctl list \| grep eu.drafto.factory` shows the job registered, and a manual `launchctl kickstart` logs a clean `--plan` tick (board fetched, no `factory-failure` issue filed).                                                                                                                                                                               |
+| (initial) → A     | Setup steps 1–6 above complete. `launchctl list \| grep eu.drafto.factory` shows the job registered, and a manual `launchctl kickstart` logs a clean `--plan` tick (board fetched, no `factory-failure` issue filed).                                                                                                                                                                               |
 | A → B             | ≥5 successful `--plan` runs (Ready → Planning → Plan Review with a usable plan comment). Zero `factory-failure` issues. Operator has read at least 3 plans and judges they were accurate enough to act on. `--implement` no-op confirmed: dragging Plan Review → In Progress in Phase A logs a "phase=A; implementation skipped" comment and leaves the card in In Progress without further action. |
 | B → C             | ≥5 successful end-to-end web-only runs (Ready → Plan Review → In Progress → In Review → In Test → **auto-merged + Released** after the operator drags to Approved), each with green CI, a reachable Vercel preview, and zero parity violations. SonarCloud quality gate green on all factory-authored PRs.                                                                                          |
 | C → D             | ≥5 successful runs that include mobile or desktop changes. Operator manually fired beta dispatches (TestFlight, Play internal) per Phase C — confirms the dispatch payloads work before the factory automates them.                                                                                                                                                                                 |
@@ -137,16 +167,16 @@ If the same failure mode files >3 issues in 24h, pause the factory globally (`fa
 
 ## Coexistence with `nightly-support.sh` Phase 3
 
-Phase 3 (existing midnight implementation pass) and the factory's `--implement` mode operate on overlapping issue sets. The deprecation schedule is:
+Phase 3 (existing midnight implementation pass) and the factory's `--implement` mode could operate on overlapping issue sets. **Revised 2026-06-21: Phase 3 is no longer deprecated** — it stays running unchanged across all factory phases, and the factory is kept off its queue by a factory-side guard. The coexistence model is:
 
-| Factory phase | Phase 3 status                                                                                                                                                                                                                                                               |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A             | Phase 3 keeps running. Factory only `--plan`s; no overlap.                                                                                                                                                                                                                   |
-| B             | Phase 3 keeps running. Factory `--implement`s only `status:ready` cards set by humans; Phase 3 still picks up `support`-labelled issues without `status:*`. Operator monitors logs to ensure they don't both pick up the same issue (label set is disjoint by construction). |
-| C             | Phase 3 disabled at cutover. Factory takes over support-issue implementation.                                                                                                                                                                                                |
-| D             | Phase 3 code removed.                                                                                                                                                                                                                                                        |
+| Factory phase | Phase 3 status                                                                                                                                                                                 |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A             | Phase 3 keeps running. Factory only `--plan`s; no overlap.                                                                                                                                     |
+| B             | Phase 3 keeps running. Factory `--implement`s only `status:ready` cards set by humans; Phase 3 still picks up `support`-labelled issues without `status:*`.                                    |
+| C             | Phase 3 keeps running, **unchanged (no cutover)**. The factory may now implement mobile/desktop, but its `--implement` queue skips `support`-labelled issues, so the two tracks stay disjoint. |
+| D             | Phase 3 keeps running, **unchanged (not removed)**.                                                                                                                                            |
 
-If both the factory and Phase 3 ever try to implement the same issue (a misconfiguration), the factory takes priority — its worktree-slot lock will block Phase 3's attempt. Both will log; Phase 3's log will say "issue #N already has a factory worktree".
+Collision avoidance is **factory-side**: the `--implement` queue excludes `support`-labelled issues, so the factory never claims an issue Phase 3 owns and the nightly script needs no edits. To hand a support issue to the factory deliberately, a human removes the `support` label — the factory then sees it as an ordinary board card. (Belt-and-braces: if both ever target the same issue, the factory's worktree-slot lock blocks Phase 3's attempt and Phase 3 logs "issue #N already has a factory worktree".)
 
 ## Worktree installs & disk
 

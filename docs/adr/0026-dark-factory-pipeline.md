@@ -20,7 +20,7 @@ The goal: a "vibe-kanban-style" pipeline where dragging a card on a GitHub Proje
 Build a **dark factory** as a fourth Mac-mini agent that extends the same skeleton as `support-agent.sh` (PID locks, atomic state via `state-cli.mjs`, phase-gated rollout, `factory-failure` issue trap). State lives in three already-free layers:
 
 1. **GitHub Projects v2 board** — UI surface. Free, native to issues, mobile-friendly. The Status field's value is the source of truth for where each card sits in the lifecycle.
-2. **Repository labels** (`status:*`, `factory-pause`, `migration-approved`, `factory-failure`, `parity:*`) — what the agent reads. A GitHub Action (`factory-status-mirror.yml`) mirrors Status changes onto labels within seconds of a drag, so the agent (which polls labels) sees Project field changes without itself needing a Project v2 PAT.
+2. **Repository labels** (`status:*`, `factory-pause`, `migration-approved`, `factory-failure`, `parity:*`) — what the agent reads. A GitHub Action (`factory-status-mirror.yml`) mirrors Status changes onto labels within seconds of a drag, so the agent (which polls labels) sees Project field changes without itself needing a Project v2 PAT. (This workflow was retired in the Path-A pivot — the board is now read directly via `scripts/lib/factory-project.mjs`; see `docs/dark-factory-proposal.md:45-47`.)
 3. **`logs/factory-state.json`** (gitignored, mode 0600) — atomic via the same `state-cli.mjs` pattern as the support agent. Tracks worktree-slot ownership, per-issue retry budgets, and the global pause flag.
 
 ### Two human gates
@@ -53,6 +53,20 @@ The factory does not replace `support-agent.sh` or `nightly-support.sh`. It inte
 
 - `support-agent.sh` gains an "auto-Ready for allowlisted reporters" behaviour and an "accept-signal classifier" that maps email replies (`go ahead`, `ship it`, `thanks`) onto card transitions via `state-cli.mjs factory:advance`.
 - `nightly-support.sh` Phase 3 (the existing midnight implementation pass) is deprecated **in stages** — it stays running while Phase A/B prove out the factory, gets disabled at Phase C cutover, and is removed at Phase D.
+
+> **Update (2026-06-21):** the two coexistence bullets above are amended. The
+> `nightly-support.sh` Phase 3 deprecation is **reversed** — Phase 3 stays
+> running unchanged across all factory phases (not disabled at C, not removed at
+> D). The factory and the nightly agent run as two independent tracks; mutual
+> exclusion is enforced factory-side (the `--implement` queue skips
+> `support`-labelled issues), so the nightly script is untouched. Consequently
+> the support-agent **"auto-Ready for allowlisted" behaviour is dropped** (it
+> would have fed nightly's issues onto the board); the accept-signal classifier
+> applies only to issues deliberately routed to the board. The core decision
+> (kanban-driven factory, two human gates, phased rollout) is unchanged, so this
+> is an amendment rather than a superseding ADR. See the status header of
+> `docs/dark-factory-proposal.md` and the coexistence section of
+> `docs/operations/factory-runbook.md` for the current model.
 
 ## Consequences
 
@@ -92,6 +106,6 @@ The factory does not replace `support-agent.sh` or `nightly-support.sh`. It inte
 - `docs/operations/factory-runbook.md` — phase progression criteria, kill switches, rollback drills.
 - `docs/dark-factory-proposal.md` — the proposal document this ADR finalises (kept for the lifecycle table and implementation-wave breakdown).
 - `scripts/setup-factory-labels.sh`, `scripts/setup-factory-board.sh` — one-shot bootstrap.
-- `.github/workflows/factory-status-mirror.yml` — Status-field → label bridge.
+- `scripts/lib/factory-project.mjs` — Status-field → label bridge (Path-A replacement for the retired `factory-status-mirror.yml` workflow).
 - `.github/ISSUE_TEMPLATE/factory-feature.yml` — spec contract enforcement.
 - [ADR-0024](./0024-realtime-support-agent.md) and [ADR-0025](./0025-support-allowlist-from-zoho-sender.md) — the support pipeline this ADR extends, not replaces.

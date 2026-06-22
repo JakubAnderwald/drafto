@@ -101,7 +101,7 @@ When planning, fan out independent actions into a single batched message — don
 **High-yield cases in this repo:**
 
 - **Cross-platform mirror edits**: `apps/mobile/src/db/` and `apps/desktop/src/db/` must stay in sync (schema, migrations, models). Batch all 6 file edits in one message — never edit one platform, then the other.
-- **Cross-platform UI**: files like `attachment-list.tsx` on desktop and mobile are different files with no dependency — batch, don't serialise.
+- **Cross-platform UI**: files like `note-editor.tsx` on desktop and mobile are different files with no dependency — batch, don't serialise.
 - **Verification sweep**: `pnpm lint`, `pnpm typecheck`, `pnpm format:check`, per-app `pnpm --filter … test`, and `pnpm --filter=@drafto/shared test` are independent — fan out in one message.
 - **Exploration**: Launch multiple `Explore` subagents in one message when scoping work across separate areas.
 

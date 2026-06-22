@@ -84,6 +84,47 @@ describe("migration_violation (extracted from factory-agent.sh)", () => {
   });
 });
 
+describe("parity_violation (extracted from factory-agent.sh)", () => {
+  // parity_violation reads the $PHASE global; the extracted snippet must set it
+  // or `set -u` trips before the function body even runs.
+  const callAt = (phase, platforms, override, diff) =>
+    withFn(
+      "parity_violation",
+      `PHASE=${phase}\nparity_violation ${JSON.stringify(platforms)} ${JSON.stringify(override)} ${JSON.stringify(diff)}`,
+    );
+
+  it("does not crash on the --release call site's empty platforms (bash 3.2 set -u regression)", () => {
+    // The --release gate invokes `parity_violation "" "" "$DIFF_FILES"` to
+    // exercise only the phase-scope guard. An empty platforms CSV used to
+    // expand an empty array under `set -u`, aborting the whole --release run
+    // with "unbound variable" on bash 3.2 (the Mac mini's /bin/bash) — which
+    // crash-looped the release engine and spammed failure issues. withFn runs
+    // the snippet under `set -euo pipefail`, so any recurrence fails the test.
+    const out = callAt("C", "", "", "docs/README.md\nCLAUDE.md");
+    assert.equal(out, "", "empty platforms must yield no violation, not a crash");
+  });
+
+  it("holds a Phase B PR that touches mobile/desktop (web-only rule)", () => {
+    const out = callAt("B", "", "", "apps/mobile/src/x.ts");
+    assert.match(out, /Phase B is web-only/);
+  });
+
+  it("flags a claimed platform that has no matching diff", () => {
+    const out = callAt("C", "web", "", "docs/README.md");
+    assert.match(out, /claimed platform 'web' has no apps\/web changes/);
+  });
+
+  it("passes when the claimed platform is present in the diff", () => {
+    const out = callAt("C", "web", "", "apps/web/src/x.ts");
+    assert.equal(out, "");
+  });
+
+  it("skips the cross-platform mandate when a parity override is set", () => {
+    const out = callAt("C", "", "web-only", "apps/web/src/x.ts");
+    assert.equal(out, "");
+  });
+});
+
 describe("--release engine wiring", () => {
   it("queries the Approved board column", () => {
     assert.match(releaseBlock, /query-status-items \\?\s*\n?\s*--status "Approved"/);
@@ -346,5 +387,36 @@ describe("launchd loop wrapper", () => {
     const watchIdx = loop.indexOf('/bin/bash "$AGENT" --watch');
     const releaseIdx = loop.indexOf('/bin/bash "$AGENT" --release');
     assert.ok(releaseIdx > watchIdx, "--release should run after --watch");
+  });
+
+  it("self-updates to origin/main before running any mode", () => {
+    // The factory must only ever execute reviewed, CI-gated code. The sync
+    // must happen before the agent invocations, and inside the mutex (after the
+    // lock is acquired) so two ticks can't reset the tree concurrently.
+    assert.match(loop, /git -C "\$SCRIPT_DIR" fetch --quiet origin main/);
+    assert.match(loop, /git -C "\$SCRIPT_DIR" reset --hard --quiet origin\/main/);
+    const lockIdx = loop.indexOf('echo "$$" > "$LOCK_PID_FILE"');
+    const fetchIdx = loop.indexOf("fetch --quiet origin main");
+    const syncIdx = loop.indexOf("reset --hard --quiet origin/main");
+    const firstMode = loop.indexOf('/bin/bash "$AGENT" --plan');
+    assert.ok(lockIdx !== -1 && fetchIdx > lockIdx, "fetch must run after lock acquisition");
+    assert.ok(lockIdx !== -1 && syncIdx > lockIdx, "sync must run after lock acquisition");
+    assert.ok(
+      fetchIdx < firstMode && syncIdx < firstMode,
+      "sync must run before the first agent mode",
+    );
+  });
+
+  it("is escapable via FACTORY_AUTOPULL=0 and re-execs on its own change", () => {
+    // Assert fetch/reset are actually gated by the FACTORY_AUTOPULL guard, not
+    // merely that the token appears somewhere in the file.
+    assert.match(
+      loop,
+      /if \[\[ "\$\{FACTORY_AUTOPULL:-1\}" == "1" \]\]; then[\s\S]*git -C "\$SCRIPT_DIR" fetch --quiet origin main[\s\S]*git -C "\$SCRIPT_DIR" reset --hard --quiet origin\/main[\s\S]*fi/,
+    );
+    // Re-exec guard: prevents running a stale wrapper after it changes in the
+    // sync, with an env guard against an infinite re-exec loop.
+    assert.match(loop, /FACTORY_LOOP_REEXECED/);
+    assert.match(loop, /exec \/bin\/bash "\$\{BASH_SOURCE\[0\]\}"/);
   });
 });
