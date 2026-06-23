@@ -110,6 +110,14 @@ launchctl load -w ~/Library/LaunchAgents/eu.drafto.factory.plist
 
 There is no "auto-promote". The phase change is always a deliberate operator action so a regression at one phase can't silently unlock the next.
 
+### Promotion log
+
+A dated record of actual phase changes so the current operating phase is auditable from the repo (the plist itself is a local, untracked file).
+
+| Date       | Change | Operator | Rationale                                                                                                                                                                                                                                                         |
+| ---------- | ------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-06-23 | B → C  | Jakub    | Unblock native (mobile/desktop) parity work — notably #537 (forgot-password parity), which the Phase-B web-only scope had blocked at plan time. Phase C implementation code (#535) was already merged. Beta dispatch stays dormant until a later C → D promotion. |
+
 **`--release` runs at Phase B+.** The A→B→C→D phases control implementation _scope_ (web → web+mobile/desktop → beta dispatch); `--release` is the merge step layered on top. Each tick it scans the **Approved** column and, for a card a human dragged there, squash-merges the green PR via the GitHub API (`gh api --method PUT …/merge -f merge_method=squash`) and advances it to **Released** (Vercel auto-deploys main → prod for web). It is bounded by three hard rules:
 
 1. It only ever acts on a card a human (or an allowlisted reporter) moved to **Approved** — the Approved drag _is_ the merge-authorisation gate (ADR-0026); the factory never moves a card to Approved itself.
