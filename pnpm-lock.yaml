@@ -213,8 +213,8 @@ importers:
         specifier: ^55.0.12
         version: 55.0.12(expo@55.0.11)
       expo-document-picker:
-        specifier: ^55.0.11
-        version: 55.0.11(expo@55.0.11)
+        specifier: ^56.0.4
+        version: 56.0.4(expo@55.0.11)
       expo-file-system:
         specifier: ~55.0.14
         version: 55.0.14(expo@55.0.11)(react-native@0.86.0(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/jest-preset@0.86.0(@babel/core@7.29.7)(react@19.2.6))(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.6))
@@ -5139,8 +5139,8 @@ packages:
     peerDependencies:
       expo: '*'
 
-  expo-document-picker@55.0.11:
-    resolution: {integrity: sha512-0po1UceUMKzHOOppXN5y35KXhF2zQN91cje/yxyoJaTgZPPFM7VZ+0Z4xd1JiO1WTbB+w6mb21RaPWriit/67w==}
+  expo-document-picker@56.0.4:
+    resolution: {integrity: sha512-75Apf74XNkYYohObIH19VZw42xpe0gmEnPccuzGXKVAzlvTYCfibSgW17F+6vt4paOfZEnAoZ1QFZM6dmaujRA==}
     peerDependencies:
       expo: '*'
 
@@ -14443,7 +14443,7 @@ snapshots:
     dependencies:
       expo: 55.0.11(@babel/core@7.29.7)(@expo/dom-webview@55.0.3)(@expo/metro-runtime@55.0.6)(expo-router@55.0.10)(react-dom@19.2.7(react@19.2.6))(react-native-webview@13.16.1(react-native@0.86.0(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/jest-preset@0.86.0(@babel/core@7.29.7)(react@19.2.6))(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.6))(react@19.2.6))(react-native@0.86.0(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/jest-preset@0.86.0(@babel/core@7.29.7)(react@19.2.6))(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.6))(react@19.2.6)(typescript@6.0.3)
 
-  expo-document-picker@55.0.11(expo@55.0.11):
+  expo-document-picker@56.0.4(expo@55.0.11):
     dependencies:
       expo: 55.0.11(@babel/core@7.29.7)(@expo/dom-webview@55.0.3)(@expo/metro-runtime@55.0.6)(expo-router@55.0.10)(react-dom@19.2.7(react@19.2.6))(react-native-webview@13.16.1(react-native@0.86.0(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/jest-preset@0.86.0(@babel/core@7.29.7)(react@19.2.6))(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.6))(react@19.2.6))(react-native@0.86.0(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/jest-preset@0.86.0(@babel/core@7.29.7)(react@19.2.6))(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.6))(react@19.2.6)(typescript@6.0.3)
 
