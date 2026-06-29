@@ -818,12 +818,13 @@ parity_violation() {
     echo "Phase B is web-only but the PR changes files under apps/mobile or apps/desktop"
     return 0
   fi
-  # parity:infra-only authorises a change that touches NO app platform (factory
-  # internals under scripts/, docs, CI). If it changes apps/**, the label is
+  # parity:infra-only authorises a change that touches NO app runtime (factory
+  # internals under scripts/, docs, CI). App code under apps/** OR the shared
+  # package packages/shared/** (compiled into every platform) means the label is
   # wrong — block so non-infra work can't masquerade as infra-only.
   if [[ "$override" == "infra-only" ]]; then
-    if echo "$diff_files" | grep -qE '^apps/(web|mobile|desktop)/'; then
-      echo "parity:infra-only but the PR changes files under apps/"
+    if echo "$diff_files" | grep -qE '^(apps/|packages/shared/)'; then
+      echo "parity:infra-only but the PR changes app code (apps/ or packages/shared/)"
       return 0
     fi
     echo ""; return 0

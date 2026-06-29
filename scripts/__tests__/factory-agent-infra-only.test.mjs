@@ -90,7 +90,17 @@ docs/features/dark-factory.md"`,
   it("blocks when an infra-only PR sneaks in apps/** changes", () => {
     assert.equal(
       withFn("parity_violation", `PHASE=C; parity_violation "" "infra-only" "apps/web/src/x.ts"`),
-      "parity:infra-only but the PR changes files under apps/",
+      "parity:infra-only but the PR changes app code (apps/ or packages/shared/)",
+    );
+  });
+
+  it("blocks when an infra-only PR touches packages/shared (compiled into all platforms)", () => {
+    assert.equal(
+      withFn(
+        "parity_violation",
+        `PHASE=C; parity_violation "" "infra-only" "packages/shared/src/editor/markdown-converter.ts"`,
+      ),
+      "parity:infra-only but the PR changes app code (apps/ or packages/shared/)",
     );
   });
 
