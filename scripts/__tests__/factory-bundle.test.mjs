@@ -13,6 +13,7 @@ import {
   parsePlatformCheckboxes,
   parityOverrideFrom,
   reporterFromBody,
+  extractScreenshots,
 } from "../lib/factory-bundle.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -138,6 +139,140 @@ describe("reporterFromBody", () => {
   });
 });
 
+describe("extractScreenshots", () => {
+  // The real shape of issue #551: an HTML <img> attachment in the body.
+  const HTML_IMG = `Issue: macOS app didn't load note data. see screenshots.
+
+<img width="1745" height="1184" alt="blank editor" src="https://github.com/user-attachments/assets/85cac475-e59a-48cf-b0a2-d541136174b2" />
+<img width="1745" height="1184" alt="web works" src="https://github.com/user-attachments/assets/f23fbc0b-8665-4a10-b40c-cf09537e996d" />`;
+
+  it("extracts GitHub <img> attachments with their alt text", () => {
+    const shots = extractScreenshots(HTML_IMG);
+    assert.equal(shots.length, 2);
+    assert.equal(
+      shots[0].url,
+      "https://github.com/user-attachments/assets/85cac475-e59a-48cf-b0a2-d541136174b2",
+    );
+    assert.equal(shots[0].alt, "blank editor");
+    assert.equal(shots[1].alt, "web works");
+  });
+
+  it("extracts Markdown images from GitHub user-images host", () => {
+    const body = `![screenshot](https://user-images.githubusercontent.com/1/abc.png)`;
+    const shots = extractScreenshots(body);
+    assert.equal(shots.length, 1);
+    assert.equal(shots[0].url, "https://user-images.githubusercontent.com/1/abc.png");
+    assert.equal(shots[0].alt, "screenshot");
+  });
+
+  it("extracts a bare GitHub attachment URL and strips trailing punctuation", () => {
+    // URL immediately followed by `.` so stripUrlTrailers is actually exercised
+    // (a trailing space would let the regex stop short and make the strip a no-op).
+    const body = `Here it is: https://github.com/user-attachments/assets/deadbeef-0000.png. Done.`;
+    const shots = extractScreenshots(body);
+    assert.equal(shots.length, 1);
+    assert.equal(shots[0].url, "https://github.com/user-attachments/assets/deadbeef-0000.png");
+  });
+
+  it("rejects the backslash host-confusion bypass (curl vs WHATWG differential)", () => {
+    // `new URL()` reads the host as the GitHub CDN, but curl would connect to
+    // evil.com after the '@'. Must be rejected outright.
+    const body = `<img src="https://user-images.githubusercontent.com\\@evil.com/exfil.png" />`;
+    assert.deepEqual(extractScreenshots(body), []);
+  });
+
+  it("rejects URLs carrying userinfo (credentials before @)", () => {
+    const body = `![x](https://user-images.githubusercontent.com@evil.com/x.png)`;
+    assert.deepEqual(extractScreenshots(body), []);
+  });
+
+  it("never binds a data-alt/data-src decoy's caption to the real src", () => {
+    const body = `<img data-src="https://raw.githubusercontent.com/o/r/m/decoy.png" data-alt="injected" src="https://raw.githubusercontent.com/o/r/m/real.png" alt="real caption">`;
+    const shots = extractScreenshots(body);
+    const real = shots.find((s) => s.url.endsWith("/real.png"));
+    assert.ok(real, "the real src must be surfaced");
+    assert.equal(real.alt, "real caption");
+    // The attacker-controlled decoy caption must never attach to any entry.
+    assert.ok(
+      !shots.some((s) => s.alt === "injected"),
+      "data-alt decoy must not become an entry's alt",
+    );
+  });
+
+  it("drops bare non-image GitHub links but keeps bare attachments/images", () => {
+    const body = `config: https://raw.githubusercontent.com/o/r/main/turbo.json
+shot: https://github.com/user-attachments/assets/aaa
+pic: https://raw.githubusercontent.com/o/r/main/diagram.png`;
+    const shots = extractScreenshots(body);
+    assert.deepEqual(
+      shots.map((s) => s.url),
+      [
+        "https://github.com/user-attachments/assets/aaa",
+        "https://raw.githubusercontent.com/o/r/main/diagram.png",
+      ],
+    );
+  });
+
+  it("rejects non-GitHub hosts (SSRF/exfil control)", () => {
+    const body = `![x](https://evil.example.com/pixel.png) <img src="http://internal/admin" />
+![ok](https://raw.githubusercontent.com/o/r/main/a.png)`;
+    const shots = extractScreenshots(body);
+    assert.deepEqual(
+      shots.map((s) => s.url),
+      ["https://raw.githubusercontent.com/o/r/main/a.png"],
+    );
+  });
+
+  it("rejects http (non-https) GitHub URLs", () => {
+    const shots = extractScreenshots(
+      `<img src="http://github.com/user-attachments/assets/x.png" />`,
+    );
+    assert.deepEqual(shots, []);
+  });
+
+  it("only allows github.com under /user-attachments/", () => {
+    const body = `![a](https://github.com/JakubAnderwald/drafto/blob/main/x.png)
+![b](https://github.com/user-attachments/assets/ok.png)`;
+    const shots = extractScreenshots(body);
+    assert.deepEqual(
+      shots.map((s) => s.url),
+      ["https://github.com/user-attachments/assets/ok.png"],
+    );
+  });
+
+  it("dedupes repeated URLs and pulls from comments too", () => {
+    const body = `<img src="https://user-images.githubusercontent.com/1/a.png" />`;
+    const comments = [
+      { body: `again https://user-images.githubusercontent.com/1/a.png` },
+      { body: `<img src="https://user-images.githubusercontent.com/1/b.png" />` },
+      { body: null },
+    ];
+    const shots = extractScreenshots(body, comments);
+    assert.deepEqual(
+      shots.map((s) => s.url),
+      [
+        "https://user-images.githubusercontent.com/1/a.png",
+        "https://user-images.githubusercontent.com/1/b.png",
+      ],
+    );
+  });
+
+  it("caps at 12 screenshots", () => {
+    const body = Array.from(
+      { length: 20 },
+      (_, i) => `<img src="https://user-images.githubusercontent.com/1/img-${i}.png" />`,
+    ).join("\n");
+    const shots = extractScreenshots(body);
+    assert.equal(shots.length, 12);
+  });
+
+  it("returns [] for a body with no images", () => {
+    assert.deepEqual(extractScreenshots("just text, no images"), []);
+    assert.deepEqual(extractScreenshots(""), []);
+    assert.deepEqual(extractScreenshots(null), []);
+  });
+});
+
 describe("buildFactoryPlanBundle", () => {
   it("rejects an issue with no number", () => {
     assert.throws(
@@ -199,6 +334,45 @@ describe("buildFactoryPlanBundle", () => {
     assert.equal(bundle.repo.headRef, "abc1234");
     assert.equal(bundle.comments.length, 1);
     assert.equal(bundle.nowIso, "2026-05-21T08:00:00.000Z");
+  });
+
+  it("surfaces host-validated screenshots from the body and comments", () => {
+    const bundle = buildFactoryPlanBundle({
+      issue: {
+        number: 551,
+        title: "desktop app doesn't load note data",
+        body: `see screenshots\n<img src="https://github.com/user-attachments/assets/aaa.png" alt="blank" />`,
+        labels: [],
+      },
+      comments: [
+        {
+          id: 1,
+          user: { login: "jane" },
+          body: "and on web: ![web](https://user-images.githubusercontent.com/1/web.png)",
+        },
+        { id: 2, user: { login: "spam" }, body: "![evil](https://evil.example.com/x.png)" },
+      ],
+      config: { phase: "C" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    assert.deepEqual(
+      bundle.screenshots.map((s) => s.url),
+      [
+        "https://github.com/user-attachments/assets/aaa.png",
+        "https://user-images.githubusercontent.com/1/web.png",
+      ],
+      "non-GitHub hosts must be dropped",
+    );
+    assert.equal(bundle.screenshots[0].alt, "blank");
+  });
+
+  it("defaults screenshots to [] when the body carries no images", () => {
+    const bundle = buildFactoryPlanBundle({
+      issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "A" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    assert.deepEqual(bundle.screenshots, []);
   });
 
   it("omits the replan key when no replan input is provided", () => {

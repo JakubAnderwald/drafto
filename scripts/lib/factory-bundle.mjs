@@ -74,6 +74,110 @@ function envelopeBody(raw, tag = "issue-body") {
   return `<${tag}>${safe}</${tag}>`;
 }
 
+// Hosts GitHub serves issue/PR image attachments and repo raw images from. The
+// planner is permitted to fetch ONLY URLs whose host is in this set (and, for
+// github.com, only under the /user-attachments/ path). This allowlist is the
+// SSRF/exfil control: it lives in code, not in the prompt, so a prompt-injected
+// link to an arbitrary origin in the (enveloped, treated-as-data) issue body can
+// never become an outbound fetch — only code-extracted, GitHub-hosted URLs ever
+// reach `bundle.screenshots`, and the prompt tells the planner to fetch nothing
+// else.
+const SCREENSHOT_HOSTS = new Set([
+  "user-images.githubusercontent.com",
+  "private-user-images.githubusercontent.com",
+  "raw.githubusercontent.com",
+  "objects.githubusercontent.com",
+  "camo.githubusercontent.com",
+]);
+
+// Cap the number of screenshots surfaced so a comment stuffed with image links
+// can't balloon the bundle or the planner's fetch budget.
+const MAX_SCREENSHOTS = 12;
+
+function isAllowedScreenshotUrl(raw) {
+  // curl and the WHATWG URL parser disagree on backslashes: `new URL` treats
+  // "\" as an authority terminator while curl does not. So a string like
+  // "https://user-images.githubusercontent.com\@evil.com/x" parses to a GitHub
+  // host HERE but fetches evil.com UNDER curl — a parser-differential SSRF /
+  // image-injection vector. Reject backslashes (and any embedded credentials)
+  // outright so the host we validate is the host curl will reach.
+  if (typeof raw !== "string" || raw.includes("\\")) return false;
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "https:") return false;
+  if (u.username || u.password) return false; // no userinfo — host must be the real target
+  const host = u.hostname.toLowerCase();
+  if (SCREENSHOT_HOSTS.has(host)) return true;
+  // github.com itself only serves attachments under /user-attachments/<…>.
+  return host === "github.com" && u.pathname.startsWith("/user-attachments/");
+}
+
+// An <img>/Markdown image is image-by-construction, but a BARE link is not —
+// raw.githubusercontent.com/objects.githubusercontent.com serve arbitrary repo
+// files too. Gate the bare-URL branch so a linked `turbo.json` isn't surfaced as
+// a "screenshot" the planner then fetches and tries to Read as an image.
+// github.com/user-attachments uploads are always media (and usually
+// extension-less), so trust those regardless of extension.
+const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|bmp|svg|avif|heic)(?:[?#]|$)/i;
+function isLikelyImageUrl(url) {
+  if (/^https:\/\/github\.com\/user-attachments\//i.test(url)) return true;
+  return IMAGE_EXT_RE.test(url);
+}
+
+// Strip trailing markdown/sentence punctuation a greedy bare-URL match can grab
+// (e.g. a URL at the end of a sentence, or wrapped in parens).
+function stripUrlTrailers(raw) {
+  return String(raw).replace(/[)\].,;:'"]+$/, "");
+}
+
+function altFromImgTag(tag) {
+  // `(?<![-\w])` so `data-alt=`/`x-alt=` don't masquerade as the real `alt`.
+  const m = /(?<![-\w])alt\s*=\s*["']([^"']*)["']/i.exec(tag);
+  return m ? m[1].trim() : "";
+}
+
+// Pure: collect image URLs the planner can actually look at. Scans the issue
+// body and every comment for Markdown images, HTML <img> tags, and bare links,
+// then keeps only GitHub-hosted URLs (see isAllowedScreenshotUrl), deduped in
+// first-seen order and capped. Surfacing screenshots as a first-class field —
+// rather than leaving them buried in the enveloped body the planner is told to
+// treat as inert data — is what makes a screenshot-driven spec inspectable
+// instead of invisible. Some specs ("see screenshots") carry their entire
+// signal in images the planner would otherwise never see.
+export function extractScreenshots(body, comments = []) {
+  const sources = [typeof body === "string" ? body : ""];
+  for (const c of Array.isArray(comments) ? comments : []) {
+    if (typeof c?.body === "string") sources.push(c.body);
+  }
+  const seen = new Set();
+  const out = [];
+  const push = (rawUrl, alt) => {
+    if (out.length >= MAX_SCREENSHOTS) return;
+    const url = stripUrlTrailers(rawUrl);
+    if (!isAllowedScreenshotUrl(url) || seen.has(url)) return;
+    seen.add(url);
+    out.push({ url, alt: typeof alt === "string" ? alt.trim() : "" });
+  };
+  const mdImg = /!\[([^\]]*)\]\(\s*([^)\s]+)/g;
+  // `(?<![-\w])src` so `data-src=` (a decoy attr) can't be read as the real src.
+  const htmlImg = /<img\b[^>]*?(?<![-\w])src\s*=\s*["']([^"']+)["'][^>]*>/gi;
+  const bareUrl = /https:\/\/[^\s"'<>)]+/gi;
+  for (const text of sources) {
+    for (const m of text.matchAll(mdImg)) push(m[2], m[1]);
+    for (const m of text.matchAll(htmlImg)) push(m[1], altFromImgTag(m[0]));
+    // Bare links aren't necessarily images — gate on image-likeness (above).
+    for (const m of text.matchAll(bareUrl)) {
+      if (isLikelyImageUrl(stripUrlTrailers(m[0]))) push(m[0], "");
+    }
+    if (out.length >= MAX_SCREENSHOTS) break;
+  }
+  return out;
+}
+
 // Pure: pull the structured sections out of a factory-feature.yml issue body.
 // The template renders each field under a `### <label>` heading and a blank
 // line, with bullet lists for the checkbox group. We don't need a Markdown
@@ -282,6 +386,9 @@ export function buildFactoryPlanBundle({
     issue: shapeIssue(issue),
     spec: parseSpec(issue.body ?? ""),
     parityOverride: parityOverrideFrom(issue.labels),
+    // GitHub-hosted image URLs (host-validated) pulled from the body + comments
+    // so the planner can fetch and actually look at screenshot-driven specs.
+    screenshots: extractScreenshots(issue.body ?? "", comments),
     comments: envelopeComments(comments),
     reporter: reporterFromBody(issue.body ?? ""),
     config: shapeConfig(config),
