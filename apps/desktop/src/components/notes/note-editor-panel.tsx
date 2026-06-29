@@ -11,7 +11,6 @@ import {
   formatRelativeTime,
   tiptapToBlocknote,
   toAttachmentUrl,
-  resolveTipTapImageUrls,
   migrateSignedUrlsToAttachmentUrls,
 } from "@drafto/shared";
 import type { TipTapDoc, TipTapNode } from "@drafto/shared";
@@ -25,6 +24,10 @@ import { ClockIcon } from "@/components/ui/icons/clock-icon";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { isCatastrophicEraseSave } from "@/components/notes/erase-tripwire";
+import {
+  classifyNoteContent,
+  resolveImageUrlsOrFallback,
+} from "@/components/notes/note-content-loader";
 
 type SaveStatusKey = "saving" | "saved" | "error";
 
@@ -164,20 +167,25 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   });
   editorRef.current = editor;
 
+  // Gate content loads on tentap's real readiness signal instead of polling
+  // editor.getJSON(). A resolved getJSON() only proves the WebView bridge can
+  // round-trip a message — NOT that the ProseMirror view is mounted and able to
+  // accept setContent. On macOS that gap left the very first setContent silently
+  // dropped, so notes opened blank even though their content was present and
+  // valid in the DB (issue #551). `isReady` flips true off the web editor's
+  // onCreate state update, which is the first instant setContent is honoured.
+  // (This is the same signal the library's own useBridgeState hook reads; we
+  // subscribe directly and unsubscribe once ready to avoid re-rendering the
+  // panel on every keystroke.)
   useEffect(() => {
     if (editorReady) return;
-    const interval = setInterval(() => {
-      try {
-        editor
-          .getJSON()
-          .then(() => {
-            setEditorReady(true);
-            clearInterval(interval);
-          })
-          .catch(() => {});
-      } catch {}
-    }, 200);
-    return () => clearInterval(interval);
+    if (editor.getEditorState().isReady) {
+      setEditorReady(true);
+      return;
+    }
+    return editor._subscribeToEditorStateUpdate((state) => {
+      if (state.isReady) setEditorReady(true);
+    });
   }, [editor, editorReady]);
 
   // Sync local state when a different note is loaded.
@@ -211,42 +219,21 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
 
       (async () => {
         try {
-          if (!rawContent) {
+          const load = classifyNoteContent(rawContent);
+          if (load.kind === "empty") {
             editor.setContent("");
             markLoaded();
             return;
           }
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(rawContent);
-          } catch {
-            // Not JSON — treat as plain text
-            const htmlContent = rawContent
-              .split("\n")
-              .map((line: string) => `<p>${escapeHtml(line) || "<br>"}</p>`)
-              .join("");
-            editor.setContent(htmlContent);
+          if (load.kind === "html") {
+            editor.setContent(load.html);
             markLoaded();
             return;
           }
-          const isBlockNote =
-            Array.isArray(parsed) && parsed.length > 0 && (parsed[0] as { type?: string })?.type;
-          const isTipTap =
-            parsed &&
-            typeof parsed === "object" &&
-            !Array.isArray(parsed) &&
-            (parsed as { type?: string }).type === "doc";
-          if (!isBlockNote && !isTipTap) {
-            const htmlContent = rawContent
-              .split("\n")
-              .map((line: string) => `<p>${escapeHtml(line) || "<br>"}</p>`)
-              .join("");
-            editor.setContent(htmlContent);
-            markLoaded();
-            return;
-          }
-          const tiptapDoc = contentToTiptap(parsed);
-          const resolved = await resolveTipTapImageUrls(tiptapDoc, getSignedUrl);
+          const tiptapDoc = contentToTiptap(load.value);
+          // Resolve image URLs defensively: a resolution failure degrades images
+          // to placeholders rather than blanking the whole (otherwise valid) note.
+          const resolved = await resolveImageUrlsOrFallback(tiptapDoc, getSignedUrl);
           if (cancelled || noteIdRef.current !== targetNoteId) return;
           editor.setContent(resolved);
           markLoaded();
@@ -404,15 +391,6 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
       {noteId && <AttachmentPicker noteId={noteId} onAttachmentReady={handleAttachmentReady} />}
     </View>
   );
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
 }
 
 const createStyles = (semantic: SemanticColors) =>
