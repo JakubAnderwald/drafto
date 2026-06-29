@@ -73,6 +73,16 @@ describe("spec_missing_section + parity:infra-only", () => {
       "",
     );
   });
+
+  it("blocks infra-only combined with a ticked platform (contradiction)", () => {
+    assert.equal(
+      withFn(
+        "spec_missing_section",
+        `spec_missing_section ${JSON.stringify(webSpec)} "infra-only"`,
+      ),
+      "Affected platforms (infra-only can't be combined with a platform box)",
+    );
+  });
 });
 
 describe("parity_violation + parity:infra-only", () => {

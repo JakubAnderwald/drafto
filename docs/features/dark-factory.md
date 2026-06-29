@@ -69,7 +69,7 @@ Use the **Factory feature spec** template (`.github/ISSUE_TEMPLATE/factory-featu
 
 1. **What** — one paragraph user-facing description.
 2. **Acceptance criteria** — bulleted, testable.
-3. **Affected platforms** — checkboxes (web / iOS+Android / macOS).
+3. **Affected platforms** — checkboxes (web / iOS+Android / macOS), or **None** for a factory-internal / docs / CI change that touches no app platform.
 4. **Schema changes?** — yes/no. If yes, the factory adds `needs-migration-review`.
 5. **UI?** — screenshot / Figma URL if applicable.
 6. **Out of scope** — explicit non-goals.

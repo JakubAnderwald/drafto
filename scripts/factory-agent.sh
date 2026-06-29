@@ -409,15 +409,20 @@ spec_missing_section() {
   fi
   # Affected platforms requires at least one checkbox — UNLESS this is an
   # infra-only change (factory internals under scripts/, docs, CI) that touches
-  # no app platform, declared via the parity:infra-only override label.
+  # no app platform. infra-only is signalled by the parity:infra-only label OR a
+  # ticked "None" box; both surface as parityOverride="infra-only" in the bundle.
   local parity_override="${2:-}"
-  if [[ "$parity_override" != "infra-only" ]]; then
-    local platforms_count
-    platforms_count=$(echo "$spec_json" | jq '.affectedPlatforms | length')
-    if [[ "$platforms_count" == "0" ]]; then
-      echo "Affected platforms"
+  local platforms_count
+  platforms_count=$(echo "$spec_json" | jq '.affectedPlatforms | length')
+  if [[ "$parity_override" == "infra-only" ]]; then
+    # Mutually exclusive with the platform boxes — a ticked platform contradicts it.
+    if [[ "$platforms_count" != "0" ]]; then
+      echo "Affected platforms (infra-only can't be combined with a platform box)"
       return 0
     fi
+  elif [[ "$platforms_count" == "0" ]]; then
+    echo "Affected platforms"
+    return 0
   fi
   echo ""
 }

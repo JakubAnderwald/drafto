@@ -187,16 +187,19 @@ export function parseSpec(body) {
     what: "",
     acceptance: "",
     affectedPlatforms: [],
+    infraOnly: false,
     schemaChanges: null,
     ui: "",
     outOfScope: "",
   };
   if (typeof body !== "string" || body.length === 0) return empty;
   const sections = splitSections(body);
+  const platformsSection = pickSection(sections, ["Affected platforms"]);
   return {
     what: pickSection(sections, ["What"]),
     acceptance: pickSection(sections, ["Acceptance criteria"]),
-    affectedPlatforms: parsePlatformCheckboxes(pickSection(sections, ["Affected platforms"])),
+    affectedPlatforms: parsePlatformCheckboxes(platformsSection),
+    infraOnly: parseInfraOnlyCheckbox(platformsSection),
     schemaChanges: parseSchemaAnswer(pickSection(sections, ["Schema changes?"])),
     ui: pickSection(sections, ["UI design (if applicable)", "UI"]),
     outOfScope: pickSection(sections, ["Out of scope"]),
@@ -262,6 +265,19 @@ export function parsePlatformCheckboxes(section) {
   return [...new Set(out)].sort();
 }
 
+// Pure: was the "None — no app platform" box ticked in the Affected platforms
+// section? A ticked None box marks the issue infra-only (factory internals,
+// docs, CI) — the form-native equivalent of the parity:infra-only label.
+export function parseInfraOnlyCheckbox(section) {
+  if (typeof section !== "string" || section.length === 0) return false;
+  for (const line of section.split(/\r?\n/)) {
+    const m = line.match(/^\s*[-*]\s*\[([ xX])\]\s*(.+?)\s*$/);
+    if (!m || m[1] === " ") continue;
+    if (m[2].toLowerCase().startsWith("none")) return true;
+  }
+  return false;
+}
+
 function parseSchemaAnswer(section) {
   if (typeof section !== "string" || section.length === 0) return null;
   const s = section.toLowerCase().trim();
@@ -285,6 +301,13 @@ export function parityOverrideFrom(labels) {
     if (name === "parity:infra-only") return "infra-only";
   }
   return null;
+}
+
+// Pure: the effective parity override for an issue — an explicit parity:* label
+// wins; otherwise a ticked "None" box in the Affected platforms section implies
+// infra-only. Same return vocabulary as parityOverrideFrom (plus null).
+export function effectiveParityOverride(labels, spec) {
+  return parityOverrideFrom(labels) ?? (spec?.infraOnly ? "infra-only" : null);
 }
 
 // Pure: distil the support-agent footer into the fields the factory needs.
@@ -384,11 +407,12 @@ export function buildFactoryPlanBundle({
   if (!issue || !Number.isInteger(issue.number)) {
     throw new Error("buildFactoryPlanBundle: issue.number is required");
   }
+  const spec = parseSpec(issue.body ?? "");
   const bundle = {
     kind: "factory_plan",
     issue: shapeIssue(issue),
-    spec: parseSpec(issue.body ?? ""),
-    parityOverride: parityOverrideFrom(issue.labels),
+    spec,
+    parityOverride: effectiveParityOverride(issue.labels, spec),
     // GitHub-hosted image URLs (host-validated) pulled from the body + comments
     // so the planner can fetch and actually look at screenshot-driven specs.
     screenshots: extractScreenshots(issue.body ?? "", comments),
@@ -421,11 +445,12 @@ export function buildFactoryImplementBundle({
   // need to see it, and downstream forwarding (if any) shouldn't surface it.
   const planBody = typeof approvedPlan?.body === "string" ? approvedPlan.body : "";
   const planClean = planBody.split(FACTORY_PLAN_MARKER).join("").trim();
+  const spec = parseSpec(issue.body ?? "");
   return {
     kind: "factory_implement",
     issue: shapeIssue(issue),
-    spec: parseSpec(issue.body ?? ""),
-    parityOverride: parityOverrideFrom(issue.labels),
+    spec,
+    parityOverride: effectiveParityOverride(issue.labels, spec),
     approvedPlan: approvedPlan
       ? {
           commentId: approvedPlan.commentId ?? approvedPlan.id ?? null,
@@ -475,11 +500,12 @@ export function buildFactoryWatchBundle({
   }
   const planBody = typeof approvedPlan?.body === "string" ? approvedPlan.body : "";
   const planClean = planBody.split(FACTORY_PLAN_MARKER).join("").trim();
+  const spec = parseSpec(issue.body ?? "");
   return {
     kind: "factory_watch",
     issue: shapeIssue(issue),
-    spec: parseSpec(issue.body ?? ""),
-    parityOverride: parityOverrideFrom(issue.labels),
+    spec,
+    parityOverride: effectiveParityOverride(issue.labels, spec),
     approvedPlan: approvedPlan
       ? {
           commentId: approvedPlan.commentId ?? approvedPlan.id ?? null,
