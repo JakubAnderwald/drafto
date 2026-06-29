@@ -181,6 +181,15 @@ Production / public-store releases (`pnpm release:prod:*`, `pnpm release:product
 
 Drafto runs an unattended development pipeline on the Mac mini ("dark factory") that watches a GitHub Projects v2 board and drives issues through plan → implement → preview → ship. State lives in `status:*` labels mirrored from the board's Status field, plus `logs/factory-state.json`. See [`docs/features/dark-factory.md`](./docs/features/dark-factory.md) for the operator manual, [`docs/operations/factory-runbook.md`](./docs/operations/factory-runbook.md) for phase promotion + rollback, and [ADR-0026](./docs/adr/0026-dark-factory-pipeline.md) for the decision.
 
+**Creating factory issues:** Issues are **not** auto-added to the board — neither `gh issue create` nor the web issue form adds them. Always pass `--project "Drafto Factory"` when creating one via the CLI so the card lands on the [board](https://github.com/users/JakubAnderwald/projects/1) and the factory can pick it up:
+
+```bash
+gh issue create --project "Drafto Factory" \
+  --template factory-feature.yml --title "feat: ..." --body "..."
+```
+
+(Requires the `gh` token to carry `project` scope — run `gh auth refresh -s project` once if `--project` errors with a missing-scope message.)
+
 **Two human gates** the factory will never bypass: Plan Review → In Progress (plan-approval) and In Test → Approved (merge + ship). Both are reachable via the kanban board for any reporter, and via email reply for allowlisted reporters (Jakub + his wife). The migration gate (`migration-approved` label required when a PR touches `supabase/migrations/**`) is a hard stop on the Approved transition for everyone.
 
 **Kill switches**: per-card via `factory-pause` label or dragging to **Blocked**; global via `node scripts/lib/state-cli.mjs factory:pause`; emergency via `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist`.
