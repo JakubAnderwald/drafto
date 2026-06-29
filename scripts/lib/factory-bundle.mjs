@@ -271,7 +271,9 @@ function parseSchemaAnswer(section) {
 }
 
 // Pure: which parity:* override label is present on the issue (if any).
-// Returns "web-only" | "mobile-only" | "desktop-only" | null.
+// Returns "web-only" | "mobile-only" | "desktop-only" | "infra-only" | null.
+// "infra-only" marks a change that touches no app platform (factory internals
+// under scripts/, docs, CI); the others authorise single-platform app work.
 export function parityOverrideFrom(labels) {
   const list = Array.isArray(labels) ? labels : [];
   for (const lbl of list) {
@@ -280,6 +282,7 @@ export function parityOverrideFrom(labels) {
     if (name === "parity:web-only") return "web-only";
     if (name === "parity:mobile-only") return "mobile-only";
     if (name === "parity:desktop-only") return "desktop-only";
+    if (name === "parity:infra-only") return "infra-only";
   }
   return null;
 }
