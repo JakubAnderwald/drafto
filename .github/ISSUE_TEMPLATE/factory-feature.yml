@@ -39,8 +39,11 @@ body:
       label: Affected platforms
       description: |
         Drives the parity check. The factory's plan-vs-diff post-check fails the
-        card if a checked platform has no corresponding code changes. Use one
-        of the parity:* labels to override for legitimate single-platform work.
+        card if a checked platform has no corresponding code changes. Use one of
+        the parity:*-only labels to override for legitimate single-platform work.
+        A change that touches no app platform at all (factory internals under
+        scripts/, docs, CI) is filed via the CLI with the parity:infra-only
+        label and no boxes ticked — the spec gate skips this requirement for it.
       options:
         - label: web (`apps/web`)
         - label: iOS / Android (`apps/mobile`)

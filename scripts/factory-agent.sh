@@ -407,12 +407,17 @@ spec_missing_section() {
     echo "Schema changes?"
     return 0
   fi
-  # Affected platforms requires at least one checkbox.
-  local platforms_count
-  platforms_count=$(echo "$spec_json" | jq '.affectedPlatforms | length')
-  if [[ "$platforms_count" == "0" ]]; then
-    echo "Affected platforms"
-    return 0
+  # Affected platforms requires at least one checkbox — UNLESS this is an
+  # infra-only change (factory internals under scripts/, docs, CI) that touches
+  # no app platform, declared via the parity:infra-only override label.
+  local parity_override="${2:-}"
+  if [[ "$parity_override" != "infra-only" ]]; then
+    local platforms_count
+    platforms_count=$(echo "$spec_json" | jq '.affectedPlatforms | length')
+    if [[ "$platforms_count" == "0" ]]; then
+      echo "Affected platforms"
+      return 0
+    fi
   fi
   echo ""
 }
@@ -813,6 +818,17 @@ parity_violation() {
     echo "Phase B is web-only but the PR changes files under apps/mobile or apps/desktop"
     return 0
   fi
+  # parity:infra-only authorises a change that touches NO app runtime (factory
+  # internals under scripts/, docs, CI). App code under apps/** OR the shared
+  # package packages/shared/** (compiled into every platform) means the label is
+  # wrong — block so non-infra work can't masquerade as infra-only.
+  if [[ "$override" == "infra-only" ]]; then
+    if echo "$diff_files" | grep -qE '^(apps/|packages/shared/)'; then
+      echo "parity:infra-only but the PR changes app code (apps/ or packages/shared/)"
+      return 0
+    fi
+    echo ""; return 0
+  fi
   # A parity:*-only override authorises a single-platform PR — skip the
   # cross-platform mandate entirely.
   if [[ -n "$override" ]]; then echo ""; return 0; fi
@@ -1126,9 +1142,12 @@ card back to **Ready**.
       continue
     fi
 
-    # Structural spec check before mutating board state.
+    # Structural spec check before mutating board state. The parity override
+    # (parity:infra-only) lets a no-app-platform change skip the
+    # Affected-platforms requirement.
     SPEC=$(echo "$BUNDLE" | jq '.spec')
-    MISSING=$(spec_missing_section "$SPEC")
+    SPEC_PARITY_OVERRIDE=$(echo "$BUNDLE" | jq -r '.parityOverride // ""')
+    MISSING=$(spec_missing_section "$SPEC" "$SPEC_PARITY_OVERRIDE")
     if [[ -n "$MISSING" ]]; then
       log "Issue #$ISSUE_NUM: spec incomplete (missing: $MISSING)"
       if [[ "$DRY_RUN" -eq 0 ]]; then

@@ -43,24 +43,25 @@ The factory agent reads the Status field directly via the GitHub GraphQL API on 
 
 The full set is created idempotently by `scripts/setup-factory-labels.sh`. Reference:
 
-| Label                 | Set by               | Meaning                                                          |
-| --------------------- | -------------------- | ---------------------------------------------------------------- |
-| `status:ready`        | human (via board)    | Spec accepted; factory may plan.                                 |
-| `status:planning`     | factory              | Plan in progress.                                                |
-| `status:plan-review`  | factory              | Awaiting plan approval.                                          |
-| `status:in-progress`  | human / factory      | Implementation in progress.                                      |
-| `status:in-review`    | factory              | PR open, CI / review comments active.                            |
-| `status:in-test`      | factory              | Vercel preview ready, awaiting ship approval.                    |
-| `status:approved`     | human / factory      | Approved for release; merge + dispatch authorised.               |
-| `status:released`     | factory              | Merged + beta dispatched.                                        |
-| `status:done`         | human / support      | Final acceptance.                                                |
-| `status:blocked`      | factory              | Hard stop — see comment on issue.                                |
-| `factory-pause`       | operator             | Global kill switch on this issue (factory ignores).              |
-| `migration-approved`  | operator             | Authorises factory to merge a PR with `supabase/migrations` SQL. |
-| `factory-failure`     | factory failure trap | Filed by `cleanup()` when a factory run errors out.              |
-| `parity:web-only`     | operator             | Skip cross-platform parity check (legitimate web-only work).     |
-| `parity:mobile-only`  | operator             | Skip cross-platform parity check (legitimate mobile-only work).  |
-| `parity:desktop-only` | operator             | Skip cross-platform parity check (legitimate desktop-only work). |
+| Label                 | Set by               | Meaning                                                              |
+| --------------------- | -------------------- | -------------------------------------------------------------------- |
+| `status:ready`        | human (via board)    | Spec accepted; factory may plan.                                     |
+| `status:planning`     | factory              | Plan in progress.                                                    |
+| `status:plan-review`  | factory              | Awaiting plan approval.                                              |
+| `status:in-progress`  | human / factory      | Implementation in progress.                                          |
+| `status:in-review`    | factory              | PR open, CI / review comments active.                                |
+| `status:in-test`      | factory              | Vercel preview ready, awaiting ship approval.                        |
+| `status:approved`     | human / factory      | Approved for release; merge + dispatch authorised.                   |
+| `status:released`     | factory              | Merged + beta dispatched.                                            |
+| `status:done`         | human / support      | Final acceptance.                                                    |
+| `status:blocked`      | factory              | Hard stop — see comment on issue.                                    |
+| `factory-pause`       | operator             | Global kill switch on this issue (factory ignores).                  |
+| `migration-approved`  | operator             | Authorises factory to merge a PR with `supabase/migrations` SQL.     |
+| `factory-failure`     | factory failure trap | Filed by `cleanup()` when a factory run errors out.                  |
+| `parity:web-only`     | operator             | Skip cross-platform parity check (legitimate web-only work).         |
+| `parity:mobile-only`  | operator             | Skip cross-platform parity check (legitimate mobile-only work).      |
+| `parity:desktop-only` | operator             | Skip cross-platform parity check (legitimate desktop-only work).     |
+| `parity:infra-only`   | operator             | Skip parity check; change touches no app platform (scripts/docs/CI). |
 
 ## How to file an issue for the factory
 

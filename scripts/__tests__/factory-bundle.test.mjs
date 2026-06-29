@@ -108,6 +108,7 @@ describe("parityOverrideFrom", () => {
     assert.equal(parityOverrideFrom(["parity:web-only", "status:ready"]), "web-only");
     assert.equal(parityOverrideFrom([{ name: "parity:mobile-only" }]), "mobile-only");
     assert.equal(parityOverrideFrom(["parity:desktop-only"]), "desktop-only");
+    assert.equal(parityOverrideFrom(["parity:infra-only"]), "infra-only");
   });
 
   it("returns null when no parity:* label is present", () => {
