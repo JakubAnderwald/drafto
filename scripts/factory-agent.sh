@@ -409,18 +409,27 @@ spec_missing_section() {
   fi
   # Affected platforms requires at least one checkbox — UNLESS this is an
   # infra-only change (factory internals under scripts/, docs, CI) that touches
-  # no app platform. infra-only is signalled by the parity:infra-only label OR a
-  # ticked "None" box; both surface as parityOverride="infra-only" in the bundle.
+  # no app platform. infra-only is signalled by a ticked "None" box
+  # (spec.infraOnly) OR the parity:infra-only label (both surface as
+  # parityOverride="infra-only"). None / infra-only is mutually exclusive with
+  # the platform boxes AND with a single-platform parity:<x>-only label.
   local parity_override="${2:-}"
-  local platforms_count
+  local platforms_count infra_box
   platforms_count=$(echo "$spec_json" | jq '.affectedPlatforms | length')
-  if [[ "$parity_override" == "infra-only" ]]; then
-    # Mutually exclusive with the platform boxes — a ticked platform contradicts it.
+  infra_box=$(echo "$spec_json" | jq -r '.infraOnly')
+  if [[ "$infra_box" == "true" || "$parity_override" == "infra-only" ]]; then
+    # None / infra-only with a ticked platform box is contradictory.
     if [[ "$platforms_count" != "0" ]]; then
-      echo "Affected platforms (infra-only can't be combined with a platform box)"
+      echo "Affected platforms (None / infra-only can't be combined with a platform box)"
       return 0
     fi
-  elif [[ "$platforms_count" == "0" ]]; then
+  fi
+  if [[ "$infra_box" == "true" && -n "$parity_override" && "$parity_override" != "infra-only" ]]; then
+    # A ticked None box plus a single-platform parity:<x>-only label conflicts.
+    echo "Affected platforms (None box conflicts with the $parity_override label)"
+    return 0
+  fi
+  if [[ "$infra_box" != "true" && "$parity_override" != "infra-only" && "$platforms_count" == "0" ]]; then
     echo "Affected platforms"
     return 0
   fi
@@ -1157,9 +1166,9 @@ card back to **Ready**.
       log "Issue #$ISSUE_NUM: spec incomplete (missing: $MISSING)"
       if [[ "$DRY_RUN" -eq 0 ]]; then
         gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
-          --body "🏭 **Spec incomplete: \`$MISSING\` is empty.**
+          --body "🏭 **Spec problem: \`$MISSING\`.**
 
-Please fill in the missing section using the [factory-feature template]\
+Please fix it using the [factory-feature template]\
 (https://github.com/JakubAnderwald/drafto/issues/new?template=factory-feature.yml) \
 and drag the card back to **Ready**.
 

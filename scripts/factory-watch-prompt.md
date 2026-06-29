@@ -33,7 +33,7 @@ You will receive a single JSON bundle (last fenced ` ```json ` block). Shape:
   "kind": "factory_watch",
   "issue": { "number": 412, "title": "...", "labels": [...], "bodyEnveloped": "<issue-body>...</issue-body>" },
   "spec": { /* parsed factory-feature sections */ },
-  "parityOverride": "web-only" | null,
+  "parityOverride": "web-only" | "mobile-only" | "desktop-only" | "infra-only" | null,
   "approvedPlan": { "commentId", "url", "createdAt", "bodyEnveloped": "<factory-plan>...</factory-plan>" },
   "priorPr": { "number", "url", "headRef", "state" },
   "ciSummaryEnveloped": "<ci-summary>...failing checks, newest first...</ci-summary>",
