@@ -451,6 +451,11 @@ export function buildFactoryImplementBundle({
     issue: shapeIssue(issue),
     spec,
     parityOverride: effectiveParityOverride(issue.labels, spec),
+    // GitHub-hosted image URLs (host-validated) pulled from the body + comments
+    // so the implementer can fetch and reproduce a screenshot-driven spec before
+    // changing code. Same extractor + allowlist the plan bundle already uses —
+    // no second extractor, no relaxed validation.
+    screenshots: extractScreenshots(issue.body ?? "", comments),
     approvedPlan: approvedPlan
       ? {
           commentId: approvedPlan.commentId ?? approvedPlan.id ?? null,
@@ -506,6 +511,10 @@ export function buildFactoryWatchBundle({
     issue: shapeIssue(issue),
     spec,
     parityOverride: effectiveParityOverride(issue.labels, spec),
+    // GitHub-hosted image URLs (host-validated) pulled from the body + comments
+    // so the watcher can view a screenshot referenced by a review comment or a
+    // screenshot-driven spec. Same extractor + allowlist the plan bundle uses.
+    screenshots: extractScreenshots(issue.body ?? "", comments),
     approvedPlan: approvedPlan
       ? {
           commentId: approvedPlan.commentId ?? approvedPlan.id ?? null,

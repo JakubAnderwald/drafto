@@ -530,6 +530,38 @@ describe("buildFactoryImplementBundle", () => {
       /<comment>move the button top-right<\/comment>/,
     );
   });
+
+  it("surfaces host-validated screenshots from the body and comments", () => {
+    const bundle = buildFactoryImplementBundle({
+      issue: {
+        number: 551,
+        title: "x",
+        body: `see screenshots\n<img src="https://github.com/user-attachments/assets/aaa.png" alt="blank" />`,
+        labels: [],
+      },
+      comments: [
+        { id: 2, user: { login: "spam" }, body: "![evil](https://evil.example.com/x.png)" },
+      ],
+      approvedPlan: { commentId: 1, url: "u", body: "p", createdAt: "t" },
+      config: { phase: "C" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    assert.deepEqual(
+      bundle.screenshots.map((s) => s.url),
+      ["https://github.com/user-attachments/assets/aaa.png"],
+      "non-GitHub hosts must be dropped",
+    );
+    assert.equal(bundle.screenshots[0].alt, "blank");
+  });
+
+  it("defaults screenshots to [] when the body carries no images", () => {
+    const bundle = buildFactoryImplementBundle({
+      issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "B" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    assert.deepEqual(bundle.screenshots, []);
+  });
 });
 
 describe("buildFactoryWatchBundle", () => {
@@ -562,6 +594,42 @@ describe("buildFactoryWatchBundle", () => {
 
   it("requires issue.number", () => {
     assert.throws(() => buildFactoryWatchBundle({ issue: { title: "x" } }), /issue\.number/);
+  });
+
+  it("surfaces host-validated screenshots from the body and comments", () => {
+    const bundle = buildFactoryWatchBundle({
+      issue: {
+        number: 551,
+        title: "x",
+        body: `see screenshots\n<img src="https://github.com/user-attachments/assets/aaa.png" alt="blank" />`,
+        labels: [],
+      },
+      approvedPlan: {
+        commentId: 1,
+        url: "u",
+        body: `${FACTORY_PLAN_MARKER}\nplan`,
+        createdAt: "t",
+      },
+      comments: [
+        { id: 2, user: { login: "spam" }, body: "![evil](https://evil.example.com/x.png)" },
+      ],
+      config: { phase: "C" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    assert.deepEqual(
+      bundle.screenshots.map((s) => s.url),
+      ["https://github.com/user-attachments/assets/aaa.png"],
+      "non-GitHub hosts must be dropped",
+    );
+  });
+
+  it("defaults screenshots to [] when the body carries no images", () => {
+    const bundle = buildFactoryWatchBundle({
+      issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "B" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    assert.deepEqual(bundle.screenshots, []);
   });
 });
 
