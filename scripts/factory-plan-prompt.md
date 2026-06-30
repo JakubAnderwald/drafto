@@ -18,12 +18,12 @@ The bundle's `config.phase` tells you which actions are enabled in this run.
 `--plan` mode itself runs in every phase — but the **content** of your plan
 must respect the phase contract:
 
-| Phase | Plans you may produce                                                                                                                                                        |
-| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `A`   | Any plan is fine — implementation will be skipped at the next stage regardless. Treat this as observation-quality runs.                                                      |
-| `B`   | Plan must touch only `apps/web/**`, `packages/shared/**`, `supabase/**`, root-level configs. If the spec requires mobile/desktop changes, mark the plan as **out-of-phase**. |
-| `C`   | Plan may touch every app and shared package end-to-end.                                                                                                                      |
-| `D`   | Same as Phase C — Phase D unlocks beta-channel auto-dispatch but doesn't change planning scope.                                                                              |
+| Phase | Plans you may produce                                                                                                                                                                                                           |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `A`   | Any plan is fine — implementation will be skipped at the next stage regardless. Treat this as observation-quality runs.                                                                                                         |
+| `B`   | Plan must touch only `apps/web/**`, `packages/shared/**`, `supabase/**`, root-level configs, or infra-only paths (`scripts/**`, `docs/**`, CI). If the spec requires mobile/desktop changes, mark the plan as **out-of-phase**. |
+| `C`   | Plan may touch every app and shared package end-to-end.                                                                                                                                                                         |
+| `D`   | Same as Phase C — Phase D unlocks beta-channel auto-dispatch but doesn't change planning scope.                                                                                                                                 |
 
 If the requested work exceeds the current phase's scope, **still post a plan**
 — the operator wants to see what the work would look like — but mark
