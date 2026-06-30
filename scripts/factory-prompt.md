@@ -42,7 +42,7 @@ last fenced ` ```json ` block). It has shape:
     "bodyEnveloped": "<issue-body>...</issue-body>"
   },
   "spec": { /* same shape as factory_plan */ },
-  "parityOverride": "web-only" | "mobile-only" | "desktop-only" | null,
+  "parityOverride": "web-only" | "mobile-only" | "desktop-only" | "infra-only" | null,
   "approvedPlan": {
     "commentId": "...",
     "url": "https://github.com/...#issuecomment-...",
@@ -275,7 +275,11 @@ When the plan's "Affected platforms" lists more than one platform, every
 platform must see actual code changes — the bash post-check diffs the PR
 against the platform set and fails the run if anything is missing.
 `parity:<x>-only` labels override this for legitimate single-platform
-work; the bundle surfaces these via `parityOverride`.
+work; the bundle surfaces these via `parityOverride`. When `parityOverride`
+is `"infra-only"` (a ticked "None" box / `parity:infra-only` label) the change
+touches NO app platform — keep the diff entirely within `scripts/`, docs, or
+CI; the post-check blocks the run if it touches `apps/**` or
+`packages/shared/**`.
 
 The `apps/mobile/src/db/` and `apps/desktop/src/db/` directories share
 schema + migrations + models. If the plan touches either, edit both in

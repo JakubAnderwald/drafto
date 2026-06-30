@@ -18,12 +18,12 @@ The bundle's `config.phase` tells you which actions are enabled in this run.
 `--plan` mode itself runs in every phase — but the **content** of your plan
 must respect the phase contract:
 
-| Phase | Plans you may produce                                                                                                                                                        |
-| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `A`   | Any plan is fine — implementation will be skipped at the next stage regardless. Treat this as observation-quality runs.                                                      |
-| `B`   | Plan must touch only `apps/web/**`, `packages/shared/**`, `supabase/**`, root-level configs. If the spec requires mobile/desktop changes, mark the plan as **out-of-phase**. |
-| `C`   | Plan may touch every app and shared package end-to-end.                                                                                                                      |
-| `D`   | Same as Phase C — Phase D unlocks beta-channel auto-dispatch but doesn't change planning scope.                                                                              |
+| Phase | Plans you may produce                                                                                                                                                                                                           |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `A`   | Any plan is fine — implementation will be skipped at the next stage regardless. Treat this as observation-quality runs.                                                                                                         |
+| `B`   | Plan must touch only `apps/web/**`, `packages/shared/**`, `supabase/**`, root-level configs, or infra-only paths (`scripts/**`, `docs/**`, CI). If the spec requires mobile/desktop changes, mark the plan as **out-of-phase**. |
+| `C`   | Plan may touch every app and shared package end-to-end.                                                                                                                                                                         |
+| `D`   | Same as Phase C — Phase D unlocks beta-channel auto-dispatch but doesn't change planning scope.                                                                                                                                 |
 
 If the requested work exceeds the current phase's scope, **still post a plan**
 — the operator wants to see what the work would look like — but mark
@@ -49,11 +49,12 @@ last fenced ` ```json ` block). It has shape:
     "what": "...",
     "acceptance": "...",
     "affectedPlatforms": ["web", "mobile", "desktop"],
+    "infraOnly": true | false,
     "schemaChanges": true | false | null,
     "ui": "...",
     "outOfScope": "..."
   },
-  "parityOverride": "web-only" | "mobile-only" | "desktop-only" | null,
+  "parityOverride": "web-only" | "mobile-only" | "desktop-only" | "infra-only" | null,
   // GitHub-hosted image URLs pulled from the issue body + comments (host-
   // validated in code — only github.com/user-attachments and *.githubusercontent.com
   // ever appear here). These are the screenshots referenced by the spec. You may
@@ -207,7 +208,11 @@ here let the operator catch issues before approval rather than after.>
 
 <For each platform in `spec.affectedPlatforms`, list the specific code path
 that needs to change on that platform. If `parityOverride` is set, note it
-and limit the checklist to the allowed platform. Name the actual path on each
+and limit the checklist to the allowed platform. When `parityOverride` is
+`"infra-only"` (a ticked "None" box / `parity:infra-only` label) the change
+touches NO app platform — `spec.affectedPlatforms` is legitimately empty; list
+the `scripts/` / docs / CI paths instead and keep the plan out of `apps/**` and
+`packages/shared/**`. Name the actual path on each
 platform — never assert behavioural parity from shared `db/`. `apps/desktop`
 and `apps/mobile` share `src/db/` (schema, models, sync), but their editors,
 screens, and render paths are SEPARATE files that can and do diverge; verify
@@ -259,7 +264,10 @@ Constraints:
 2. **Check phase scope.** Compare `spec.affectedPlatforms` (modulated by
    `parityOverride`) against the table above for `config.phase`. If the work
    exceeds the phase, emit `action=blocked` and explain in the plan body's
-   "Risks" section.
+   "Risks" section. A `parityOverride` of `"infra-only"` with an empty
+   `spec.affectedPlatforms` is a VALID no-app-platform change (factory internals
+   under `scripts/`, docs, CI) — do NOT block it for "no affected platforms";
+   just confirm the plan stays out of `apps/**` and `packages/shared/**`.
 
 3. **Ground the plan.** Skim enough to ground "Files to touch" in reality — a
    plan that names non-existent files is worse than no plan. Specifically:

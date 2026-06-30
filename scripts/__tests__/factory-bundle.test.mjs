@@ -11,7 +11,9 @@ import {
   buildFactoryWatchBundle,
   parseSpec,
   parsePlatformCheckboxes,
+  parseInfraOnlyCheckbox,
   parityOverrideFrom,
+  effectiveParityOverride,
   reporterFromBody,
   extractScreenshots,
 } from "../lib/factory-bundle.mjs";
@@ -62,6 +64,7 @@ describe("parseSpec", () => {
     assert.equal(spec.schemaChanges, false);
     assert.match(spec.ui, /figma\.com/);
     assert.match(spec.outOfScope, /bulk-duplicate/);
+    assert.equal(spec.infraOnly, false);
   });
 
   it("returns empty defaults for a body with no headings", () => {
@@ -69,6 +72,13 @@ describe("parseSpec", () => {
     assert.equal(spec.what, "");
     assert.deepEqual(spec.affectedPlatforms, []);
     assert.equal(spec.schemaChanges, null);
+  });
+
+  it("flags infraOnly when the 'None' box is ticked", () => {
+    const body = `### Affected platforms\n\n- [ ] web (\`apps/web\`)\n- [x] None — factory internals / docs / CI (no app platform)`;
+    const spec = parseSpec(body);
+    assert.equal(spec.infraOnly, true);
+    assert.deepEqual(spec.affectedPlatforms, []);
   });
 
   it("accepts 'UI' as a synonym for 'UI design (if applicable)'", () => {
@@ -103,6 +113,15 @@ describe("parsePlatformCheckboxes", () => {
   });
 });
 
+describe("parseInfraOnlyCheckbox", () => {
+  it("returns true only when a ticked box starts with 'None'", () => {
+    assert.equal(parseInfraOnlyCheckbox("- [x] None — factory internals / docs / CI"), true);
+    assert.equal(parseInfraOnlyCheckbox("- [ ] None — factory internals"), false);
+    assert.equal(parseInfraOnlyCheckbox("- [x] web (`apps/web`)"), false);
+    assert.equal(parseInfraOnlyCheckbox(""), false);
+  });
+});
+
 describe("parityOverrideFrom", () => {
   it("returns the override kind when a parity:* label is present", () => {
     assert.equal(parityOverrideFrom(["parity:web-only", "status:ready"]), "web-only");
@@ -115,6 +134,19 @@ describe("parityOverrideFrom", () => {
     assert.equal(parityOverrideFrom(["status:ready"]), null);
     assert.equal(parityOverrideFrom([]), null);
     assert.equal(parityOverrideFrom(null), null);
+  });
+});
+
+describe("effectiveParityOverride", () => {
+  it("prefers an explicit parity:* label over the None box", () => {
+    assert.equal(effectiveParityOverride(["parity:web-only"], { infraOnly: true }), "web-only");
+  });
+  it("falls back to infra-only when the None box is ticked", () => {
+    assert.equal(effectiveParityOverride([], { infraOnly: true }), "infra-only");
+  });
+  it("returns null when neither a label nor the None box is present", () => {
+    assert.equal(effectiveParityOverride([], { infraOnly: false }), null);
+    assert.equal(effectiveParityOverride(null, null), null);
   });
 });
 

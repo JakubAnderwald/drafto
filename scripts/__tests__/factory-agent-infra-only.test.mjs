@@ -34,6 +34,7 @@ const noPlatformSpec = JSON.stringify({
   what: "internal change",
   acceptance: "tests pass",
   affectedPlatforms: [],
+  infraOnly: false,
   schemaChanges: false,
   ui: "",
   outOfScope: "nothing",
@@ -44,6 +45,29 @@ const webSpec = JSON.stringify({
   what: "web change",
   acceptance: "tests pass",
   affectedPlatforms: ["web"],
+  infraOnly: false,
+  schemaChanges: false,
+  ui: "",
+  outOfScope: "nothing",
+});
+
+// A spec from a ticked "None" box (parseSpec sets infraOnly true).
+const infraOnlyBoxSpec = JSON.stringify({
+  what: "scripts change",
+  acceptance: "tests pass",
+  affectedPlatforms: [],
+  infraOnly: true,
+  schemaChanges: false,
+  ui: "",
+  outOfScope: "nothing",
+});
+
+// Contradiction: the None box ticked AND a platform box ticked.
+const infraOnlyBoxWithPlatformSpec = JSON.stringify({
+  what: "scripts change",
+  acceptance: "tests pass",
+  affectedPlatforms: ["web"],
+  infraOnly: true,
   schemaChanges: false,
   ui: "",
   outOfScope: "nothing",
@@ -71,6 +95,46 @@ describe("spec_missing_section + parity:infra-only", () => {
     assert.equal(
       withFn("spec_missing_section", `spec_missing_section ${JSON.stringify(webSpec)} ""`),
       "",
+    );
+  });
+
+  it("blocks the parity:infra-only label combined with a ticked platform box", () => {
+    assert.equal(
+      withFn(
+        "spec_missing_section",
+        `spec_missing_section ${JSON.stringify(webSpec)} "infra-only"`,
+      ),
+      "Affected platforms (None / infra-only can't be combined with a platform box)",
+    );
+  });
+
+  it("blocks a ticked None box combined with a ticked platform box", () => {
+    assert.equal(
+      withFn(
+        "spec_missing_section",
+        `spec_missing_section ${JSON.stringify(infraOnlyBoxWithPlatformSpec)} "infra-only"`,
+      ),
+      "Affected platforms (None / infra-only can't be combined with a platform box)",
+    );
+  });
+
+  it("accepts a ticked None box with no platform (infra-only resolved)", () => {
+    assert.equal(
+      withFn(
+        "spec_missing_section",
+        `spec_missing_section ${JSON.stringify(infraOnlyBoxSpec)} "infra-only"`,
+      ),
+      "",
+    );
+  });
+
+  it("blocks a ticked None box combined with a single-platform parity label", () => {
+    assert.equal(
+      withFn(
+        "spec_missing_section",
+        `spec_missing_section ${JSON.stringify(infraOnlyBoxSpec)} "web-only"`,
+      ),
+      "Affected platforms (None box conflicts with the web-only label)",
     );
   });
 });
