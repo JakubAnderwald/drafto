@@ -1,11 +1,10 @@
 import {
   classifyNoteContent,
   escapeHtml,
-  hasAttachmentUrls,
   resolveImageUrlsOrFallback,
   textToHtml,
 } from "@/components/notes/note-content-loader";
-import type { TipTapDoc, TipTapNode } from "@drafto/shared";
+import type { TipTapDoc } from "@drafto/shared";
 
 describe("classifyNoteContent", () => {
   it("treats empty content as empty", () => {
@@ -75,79 +74,6 @@ describe("textToHtml / escapeHtml", () => {
 
   it("escapes all five HTML-sensitive characters", () => {
     expect(escapeHtml(`&<>"'`)).toBe("&amp;&lt;&gt;&quot;&#039;");
-  });
-});
-
-describe("hasAttachmentUrls", () => {
-  it("returns false for a doc with no images", () => {
-    const nodes: TipTapNode[] = [{ type: "paragraph", content: [{ type: "text", text: "hello" }] }];
-    expect(hasAttachmentUrls(nodes)).toBe(false);
-  });
-
-  it("detects a top-level image still pointing at attachment://", () => {
-    const nodes: TipTapNode[] = [{ type: "image", attrs: { src: "attachment://photo.png" } }];
-    expect(hasAttachmentUrls(nodes)).toBe(true);
-  });
-
-  it("ignores images that are already signed/remote URLs", () => {
-    const nodes: TipTapNode[] = [{ type: "image", attrs: { src: "https://signed.example/x" } }];
-    expect(hasAttachmentUrls(nodes)).toBe(false);
-  });
-
-  it("detects a file node pointing at attachment://", () => {
-    const nodes: TipTapNode[] = [{ type: "file", attrs: { src: "attachment://doc.pdf" } }];
-    expect(hasAttachmentUrls(nodes)).toBe(true);
-  });
-
-  it("detects an inline link mark with an attachment:// href (non-image attachment)", () => {
-    const nodes: TipTapNode[] = [
-      {
-        type: "paragraph",
-        content: [
-          {
-            type: "text",
-            text: "report.pdf",
-            marks: [{ type: "link", attrs: { href: "attachment://report.pdf" } }],
-          },
-        ],
-      },
-    ];
-    expect(hasAttachmentUrls(nodes)).toBe(true);
-  });
-
-  it("ignores link marks with a normal https href", () => {
-    const nodes: TipTapNode[] = [
-      {
-        type: "paragraph",
-        content: [
-          {
-            type: "text",
-            text: "site",
-            marks: [{ type: "link", attrs: { href: "https://example.com" } }],
-          },
-        ],
-      },
-    ];
-    expect(hasAttachmentUrls(nodes)).toBe(false);
-  });
-
-  it("recurses into nested content", () => {
-    const nodes: TipTapNode[] = [
-      {
-        type: "blockquote",
-        content: [{ type: "image", attrs: { src: "attachment://nested.png" } }],
-      },
-    ];
-    expect(hasAttachmentUrls(nodes)).toBe(true);
-  });
-
-  it("returns false for an image node missing a src", () => {
-    const nodes: TipTapNode[] = [{ type: "image", attrs: {} }];
-    expect(hasAttachmentUrls(nodes)).toBe(false);
-  });
-
-  it("returns false for an empty node list", () => {
-    expect(hasAttachmentUrls([])).toBe(false);
   });
 });
 

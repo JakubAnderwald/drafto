@@ -1,5 +1,5 @@
-import { isAttachmentUrl, resolveTipTapImageUrls } from "@drafto/shared";
-import type { TipTapDoc, TipTapNode } from "@drafto/shared";
+import { resolveTipTapImageUrls } from "@drafto/shared";
+import type { TipTapDoc } from "@drafto/shared";
 
 // Pure, side-effect-free helpers for the note editor's content-load path.
 // Splitting this branch logic out of `note-editor-panel.tsx` keeps it unit
@@ -55,9 +55,8 @@ export function classifyNoteContent(rawContent: string): NoteContentLoad {
   }
 
   // An empty array is an empty BlockNote document — render an empty editor, not
-  // the literal text "[]". `"[]"` is a real stored value (web persists it for a
-  // legacy-empty doc, which then syncs to desktop); contentToTiptap([]) on
-  // mobile/web maps it to an empty doc, so do the same here.
+  // the literal text "[]". "[]" is a real stored value (web persists it for a
+  // legacy-empty doc, which then syncs to desktop).
   if (Array.isArray(parsed) && parsed.length === 0) return { kind: "empty" };
 
   const isBlockNote =
@@ -76,50 +75,6 @@ export function classifyNoteContent(rawContent: string): NoteContentLoad {
   }
 
   return { kind: "structured", value: parsed };
-}
-
-// Node types that carry an attachment in attrs.src (mirrors the shared resolver
-// resolveTipTapImageUrls, which handles both image and file nodes).
-const ATTACHMENT_NODE_TYPES = new Set(["image", "file"]);
-
-/**
- * Whether a TipTap node tree contains any `attachment://` URL that must be
- * resolved to a signed URL before the editor can display/open it. Drives whether
- * the editor surface waits on URL resolution before mounting (so it hydrates
- * with resolved URLs in one shot) rather than mounting with unresolved
- * `attachment://` references.
- *
- * This MUST stay in lockstep with what `resolveTipTapImageUrls` actually
- * resolves — image AND file nodes (via `attrs.src`) and inline link marks (via
- * `attrs.href`, the form a non-image attachment is stored as). A narrower gate
- * would skip resolution and leave those references dead.
- */
-export function hasAttachmentUrls(nodes: TipTapNode[]): boolean {
-  for (const node of nodes) {
-    if (
-      typeof node.type === "string" &&
-      ATTACHMENT_NODE_TYPES.has(node.type) &&
-      typeof node.attrs?.src === "string" &&
-      isAttachmentUrl(node.attrs.src)
-    ) {
-      return true;
-    }
-    if (Array.isArray(node.marks)) {
-      for (const mark of node.marks) {
-        if (
-          mark?.type === "link" &&
-          typeof mark.attrs?.href === "string" &&
-          isAttachmentUrl(mark.attrs.href)
-        ) {
-          return true;
-        }
-      }
-    }
-    if (node.content && hasAttachmentUrls(node.content)) {
-      return true;
-    }
-  }
-  return false;
 }
 
 /**
