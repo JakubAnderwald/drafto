@@ -60,7 +60,9 @@ export function classifyNoteContent(rawContent: string): NoteContentLoad {
   if (Array.isArray(parsed) && parsed.length === 0) return { kind: "empty" };
 
   const isBlockNote =
-    Array.isArray(parsed) && parsed.length > 0 && Boolean((parsed[0] as { type?: string })?.type);
+    Array.isArray(parsed) &&
+    parsed.length > 0 &&
+    typeof (parsed[0] as { type?: unknown })?.type === "string";
   const isTipTap =
     typeof parsed === "object" &&
     parsed !== null &&

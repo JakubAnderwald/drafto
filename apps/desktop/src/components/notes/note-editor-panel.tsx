@@ -154,6 +154,10 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   // content is set into the editor — so the previous note's stale body is never
   // visible during the swap. The editor/WebView itself is never unmounted.
   const [contentLoading, setContentLoading] = useState(false);
+  // Set when a note's content fails to load; drives an error overlay so a load
+  // failure shows an error instead of revealing the previous note's stale body
+  // under the new note's header (autosave stays gated via loadedNoteIdRef).
+  const [loadFailed, setLoadFailed] = useState(false);
 
   const handleEditorChange = useCallback(() => {
     const editor = editorRef.current;
@@ -231,6 +235,7 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
       noteIdRef.current = note.id;
       loadedNoteIdRef.current = null; // gate autosave until setContent completes
       setContentLoading(true); // overlay the editor until setContent() lands
+      setLoadFailed(false);
       setTitle(note.title || "");
 
       const rawContent = note.content || "";
@@ -288,9 +293,13 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
             `noteId=${targetNoteId}`,
             err,
           );
-          // Hide the overlay even on failure (show the editor as-is); the
-          // autosave stays gated above so a stale/empty doc can't persist.
-          if (!cancelled && noteIdRef.current === targetNoteId) setContentLoading(false);
+          // Swap the loading spinner for an error overlay (not the editor "as
+          // is") so a load failure never reveals the previous note's body under
+          // the new note's header. The autosave stays gated above.
+          if (!cancelled && noteIdRef.current === targetNoteId) {
+            setContentLoading(false);
+            setLoadFailed(true);
+          }
         }
       })();
 
@@ -303,6 +312,7 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
       noteIdRef.current = undefined;
       loadedNoteIdRef.current = null;
       setContentLoading(false);
+      setLoadFailed(false);
       setTitle("");
       try {
         editorRef.current?.setContent("");
@@ -443,6 +453,16 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
       {noteId && !loading && !note && (
         <View style={styles.overlay}>
           <EmptyState icon="🔍" title="Note not found" subtitle="This note may have been deleted" />
+        </View>
+      )}
+
+      {noteId && !loading && note && loadFailed && (
+        <View style={styles.overlay}>
+          <EmptyState
+            icon="⚠️"
+            title="Couldn't load this note"
+            subtitle="Switch away and back to retry"
+          />
         </View>
       )}
     </View>

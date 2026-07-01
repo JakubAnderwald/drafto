@@ -95,10 +95,16 @@ describe("resolveImageUrlsOrFallback", () => {
 
   it("falls back to the input doc when resolution throws (never blanks the note)", async () => {
     const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
-    // A malformed doc with no `content` array makes resolveTipTapImageUrls throw.
-    const malformed = { type: "doc" } as unknown as TipTapDoc;
-    const out = await resolveImageUrlsOrFallback(malformed, async () => "https://signed.example/x");
-    expect(out).toBe(malformed);
-    warn.mockRestore();
+    try {
+      // A malformed doc with no `content` array makes resolveTipTapImageUrls throw.
+      const malformed = { type: "doc" } as unknown as TipTapDoc;
+      const out = await resolveImageUrlsOrFallback(
+        malformed,
+        async () => "https://signed.example/x",
+      );
+      expect(out).toBe(malformed);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
