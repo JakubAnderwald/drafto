@@ -22,9 +22,7 @@ type UrlResolver = (filePath: string) => Promise<string>;
  * has content (the 2026-04-24 / 2026-04-27 incident class).
  */
 export type NoteContentLoad =
-  | { kind: "empty" }
-  | { kind: "html"; html: string }
-  | { kind: "structured"; value: unknown };
+  { kind: "empty" } | { kind: "html"; html: string } | { kind: "structured"; value: unknown };
 
 export function escapeHtml(text: string): string {
   return text
