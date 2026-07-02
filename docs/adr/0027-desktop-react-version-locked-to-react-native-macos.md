@@ -19,7 +19,7 @@ The version lag matters because each React Native release pins a specific **Reac
 | **0.83**–0.86 | **19.2.x**     |
 
 RN 0.83 is the boundary where React moved 19.1 → 19.2. Desktop is on rnm **0.81** (React 19.1);
-mobile is on RN **0.86** (React 19.2.3).
+mobile is on RN **0.86** (React 19.2, currently pinned to 19.2.6; RN 0.86 peers `^19.2.3`).
 
 **React must be a single shared instance across the monorepo.** This was established the hard way
 (issue #558): forcing a per-app React split makes pnpm nest a separate React copy under each
@@ -36,7 +36,7 @@ reinstalled; a clean `pnpm install` pulls React 19.2 and produces a crashing/bla
 ## Decision
 
 1. **Do not force a monorepo-wide React downgrade** to 19.1.4. It would make desktop reproducible but
-   drag mobile/web back a React version (RN 0.86 genuinely needs React 19.2.3). Mobile and web stay
+   drag mobile/web back a React version (RN 0.86 genuinely needs React 19.2). Mobile and web stay
    current (React 19.2 + RN 0.86).
 2. **Do not pin/materialise the desktop "fossil island"** in version control. Reproducing the old set
    package-by-package is fragile and, because React can't be split, cannot be made to work cleanly

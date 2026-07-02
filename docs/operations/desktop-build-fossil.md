@@ -1,8 +1,9 @@
 # ⚠️ macOS desktop build — do NOT reinstall main's `node_modules`
 
 **Status:** the working macOS desktop build is a **fossil**. `apps/desktop` only builds and runs
-correctly from the `node_modules` already present in the primary checkout (`/Users/jakub/code/drafto`),
-which was installed months ago and **must not be reinstalled**. This is resolved for good by upgrading
+correctly from the `node_modules` already present in the build machine's primary checkout
+(`/Users/jakub/code/drafto` on the current release machine), which was installed months ago and
+**must not be reinstalled**. This is resolved for good by upgrading
 desktop to `react-native-macos@0.83` (React 19.2) once it ships — see
 [ADR-0027](../adr/0027-desktop-react-version-locked-to-react-native-macos.md) and
 [#558](https://github.com/JakubAnderwald/drafto/issues/558).
@@ -18,8 +19,9 @@ each layer is pinned). Full analysis: [#558](https://github.com/JakubAnderwald/d
 
 ## The rule
 
-- **Do NOT run `pnpm install` in `/Users/jakub/code/drafto`** (the primary checkout) until desktop is
-  upgraded to `react-native-macos@0.83`. It overwrites the working set and destroys the only shippable
+- **Do NOT run `pnpm install` in the build machine's primary checkout**
+  (`/Users/jakub/code/drafto` on the current release machine) until desktop is upgraded to
+  `react-native-macos@0.83`. It overwrites the working set and destroys the only shippable
   desktop build.
 - Build desktop releases from that checkout's existing `node_modules`:
   `cd apps/desktop && pnpm release:beta`.
