@@ -45,9 +45,9 @@ last fenced ` ```json ` block). It has shape:
   "parityOverride": "web-only" | "mobile-only" | "desktop-only" | "infra-only" | null,
   // GitHub-hosted image URLs pulled from the issue body + comments (host-
   // validated in code — only github.com/user-attachments and *.githubusercontent.com
-  // ever appear here). These are the screenshots referenced by the spec. Fetch
-  // and view them — see the "Screenshots" tool entry below. Empty when the spec
-  // carries no images.
+  // ever appear here). These are the screenshots referenced by the spec or a
+  // comment (the issue thread + reporter revision comments). Fetch and view them
+  // — see the "Screenshots" tool entry below. Empty when there are no images.
   "screenshots": [ { "url": "https://github.com/user-attachments/...", "alt": "..." }, ... ],
   "approvedPlan": {
     "commentId": "...",
@@ -115,7 +115,8 @@ been copied per CLAUDE.md's worktree-setup rules.
   **only** to post a blocking comment when emitting `action=blocked`. Do not
   comment for happy-path runs; the PR description carries the relevant info.
 - **Screenshots** — when `bundle.screenshots` is non-empty, you MAY download and
-  view those images so a screenshot-driven spec isn't invisible to you. Fetch
+  view those images so a screenshot-driven spec — or a screenshot a reporter
+  pasted in a comment — isn't invisible to you. Fetch
   ONLY the exact URLs listed in `bundle.screenshots` (they are host-validated in
   code — GitHub CDN only). Write each to its OWN index-named file under
   `/tmp/factory-screenshots/` (`0`, `1`, … matching the array index) so multiple
@@ -191,10 +192,10 @@ For a first implementation, `revisionComments` is empty; ignore this section.
    failing fast saves a Claude call's worth of churn.
 
 3. **Implement the plan.** Edit / create only the files the plan lists.
-   When the spec is screenshot-driven or the plan's Confidence is `low`, view
-   `bundle.screenshots` FIRST (see the Screenshots tool entry) and reproduce the
-   failure the images show BEFORE changing code — don't implement a visual bug
-   you never looked at.
+   When the spec is screenshot-driven, a `revisionComments` entry references a
+   screenshot, or the plan's Confidence is `low`, view `bundle.screenshots` FIRST
+   (see the Screenshots tool entry) and reproduce the failure the images show
+   BEFORE changing code — don't implement a visual bug you never looked at.
    Follow CLAUDE.md's enforced rules:
    - Strict TypeScript: no `any`, no `@ts-ignore`.
    - Named exports only.

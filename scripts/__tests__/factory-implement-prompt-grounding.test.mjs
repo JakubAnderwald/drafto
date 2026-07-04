@@ -45,4 +45,10 @@ describe("implementer prompt — screenshots", () => {
     assert.match(flat, /view `bundle\.screenshots` FIRST/);
     assert.match(flat, /BEFORE changing code/);
   });
+
+  it("names a comment (not just the body) as a screenshot source", () => {
+    // The implement bundle now surfaces screenshots from the issue thread and
+    // reporter revision comments, not just the body — the prompt must say so.
+    assert.match(flat, /a reporter pasted in a comment/);
+  });
 });

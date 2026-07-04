@@ -45,4 +45,10 @@ describe("watcher prompt — screenshots", () => {
     // Bash allow-list, or the two sections contradict each other.
     assert.match(flat, /factory-screenshots\/` downloads of `bundle\.screenshots`/);
   });
+
+  it("names a review comment as a screenshot source", () => {
+    // The watch bundle surfaces screenshots from review / PR-conversation
+    // comments and the issue thread, not just the body — the prompt must say so.
+    assert.match(flat, /referenced by a review comment/);
+  });
 });

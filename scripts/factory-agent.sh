@@ -600,6 +600,7 @@ build_implement_bundle() {
   local prior_pr="${3:-null}"
   local attempts="${4:-0}"
   local revision_comments="${5:-[]}"
+  local screenshot_sources="${6:-[]}"
   local repo_head_ref
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   jq -n \
@@ -608,6 +609,7 @@ build_implement_bundle() {
     --argjson priorPr "$prior_pr" \
     --arg attempts "$attempts" \
     --argjson revisionComments "$revision_comments" \
+    --argjson screenshotSources "$screenshot_sources" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
     --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
     --arg phase "$PHASE" \
@@ -626,6 +628,7 @@ build_implement_bundle() {
        attempts: ($attempts | tonumber? // 0),
        comments: [],
        revisionComments: $revisionComments,
+       screenshotSources: $screenshotSources,
        config: {
          phase: $phase,
          allowlist: ($allowlist | split(",") | map(ascii_downcase | sub("^\\s+";"") | sub("\\s+$";""))),
@@ -671,7 +674,8 @@ ship|shipit|approved|approve|done|ok|okay|okthanks|yes|yep|yeah|awesome|love|lov
 }
 
 # Build the factory_watch bundle. $2 approved-plan obj|null, $3 prior-PR obj,
-# $4 CI summary text, $5 unresolved-comments JSON array, $6 attempts.
+# $4 CI summary text, $5 unresolved-comments JSON array, $6 attempts,
+# $7 screenshot-sources (full issue-comment thread) JSON array.
 build_watch_bundle() {
   local issue_entry="$1"
   local approved_plan="${2:-null}"
@@ -679,6 +683,7 @@ build_watch_bundle() {
   local ci_summary="${4:-}"
   local unresolved="${5:-[]}"
   local attempts="${6:-0}"
+  local screenshot_sources="${7:-[]}"
   local repo_head_ref
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   jq -n \
@@ -687,6 +692,7 @@ build_watch_bundle() {
     --argjson priorPr "$prior_pr" \
     --arg ciSummary "$ci_summary" \
     --argjson unresolved "$unresolved" \
+    --argjson screenshotSources "$screenshot_sources" \
     --arg attempts "$attempts" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
     --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
@@ -706,6 +712,7 @@ build_watch_bundle() {
        ciSummary: $ciSummary,
        unresolvedComments: $unresolved,
        comments: [],
+       screenshotSources: $screenshotSources,
        attempts: ($attempts | tonumber? // 0),
        config: {
          phase: $phase,
@@ -1654,7 +1661,7 @@ Drag it back to **Ready** so the factory can plan it first.
       break
     fi
 
-    if ! BUNDLE=$(build_implement_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PRIOR_PR" "$ATTEMPTS" "$REVISION_COMMENTS"); then
+    if ! BUNDLE=$(build_implement_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PRIOR_PR" "$ATTEMPTS" "$REVISION_COMMENTS" "$COMMENTS_JSON"); then
       log "ERROR: build_implement_bundle failed for #$ISSUE_NUM"; continue
     fi
     AFFECTED=$(echo "$BUNDLE" | jq -r '.spec.affectedPlatforms // [] | join(",")')
@@ -1978,7 +1985,7 @@ A human should take a look. Reset with \
           | { id: .id, user: { login: (.author.login // "") }, body: (.body // "") } ]')
       [[ -n "$UNRESOLVED" ]] || UNRESOLVED="[]"
 
-      if ! BUNDLE=$(build_watch_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PR_OBJ" "$CI_SUMMARY" "$UNRESOLVED" "$ATTEMPTS"); then
+      if ! BUNDLE=$(build_watch_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PR_OBJ" "$CI_SUMMARY" "$UNRESOLVED" "$ATTEMPTS" "$COMMENTS_JSON"); then
         log "ERROR: build_watch_bundle failed for #$ISSUE_NUM"; continue
       fi
 
