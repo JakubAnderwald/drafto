@@ -41,6 +41,12 @@ describe("planner prompt — screenshots (item 1)", () => {
     // screenshot downloads, or the two sections contradict each other.
     assert.match(flat, /factory-screenshots\/` downloads of `bundle\.screenshots`/);
   });
+
+  it("namespaces the screenshot download dir per issue (concurrent-slot safety)", () => {
+    // Two factory slots run concurrently; a shared /tmp/factory-screenshots/
+    // would let them overwrite one another's images.
+    assert.match(flat, /factory-screenshots\/issue-<n>/);
+  });
 });
 
 describe("planner prompt — working-platform grounding (item 2)", () => {

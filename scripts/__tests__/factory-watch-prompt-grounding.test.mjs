@@ -51,4 +51,10 @@ describe("watcher prompt — screenshots", () => {
     // comments and the issue thread, not just the body — the prompt must say so.
     assert.match(flat, /referenced by a review comment/);
   });
+
+  it("namespaces the screenshot download dir per issue (concurrent-slot safety)", () => {
+    // Two factory slots run concurrently; a shared /tmp/factory-screenshots/
+    // would let them overwrite one another's images.
+    assert.match(flat, /factory-screenshots\/issue-<n>/);
+  });
 });

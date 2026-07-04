@@ -51,4 +51,10 @@ describe("implementer prompt — screenshots", () => {
     // reporter revision comments, not just the body — the prompt must say so.
     assert.match(flat, /a reporter pasted in a comment/);
   });
+
+  it("namespaces the screenshot download dir per issue (concurrent-slot safety)", () => {
+    // Two factory slots run concurrently; a shared /tmp/factory-screenshots/
+    // would let them overwrite one another's images.
+    assert.match(flat, /factory-screenshots\/issue-<n>/);
+  });
 });
