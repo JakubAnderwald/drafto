@@ -126,8 +126,8 @@ importers:
         specifier: ^7.29.7
         version: 7.29.7(@babel/core@7.29.7)
       '@babel/runtime':
-        specifier: ^7.29.7
-        version: 7.29.7
+        specifier: ^8.0.0
+        version: 8.0.0
       '@react-native-community/cli':
         specifier: 18.0.0
         version: 18.0.0(typescript@6.0.3)
@@ -166,7 +166,7 @@ importers:
         version: 29.7.0(@types/node@24.13.2)
       react-native-dotenv:
         specifier: ^3.4.11
-        version: 3.4.11(@babel/runtime@7.29.7)
+        version: 3.4.11(@babel/runtime@8.0.0)
       typescript:
         specifier: ~6.0.3
         version: 6.0.3
@@ -995,6 +995,9 @@ packages:
   '@babel/runtime@7.29.7':
     resolution: {integrity: sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw==}
     engines: {node: '>=6.9.0'}
+
+  '@babel/runtime@8.0.0':
+    resolution: {integrity: sha512-sL6cvO2IfkSu/iU+zs2S/w01B7A8V7suXSIKEN4hPFFdZoiPGxrj5pAG0lCaqLWiEIrjKzdznIWuaLcxPR53qw==}
 
   '@babel/template@7.29.7':
     resolution: {integrity: sha512-puq+Gf35oI24FeN11LkoUQFqv9uwNeWpxXZi/Ji3rRIoKAzKnxRaZ+Gkj0vKS9ZCiTESfng1N9LyOyXvo+m+Gg==}
@@ -9515,6 +9518,8 @@ snapshots:
 
   '@babel/runtime@7.29.7': {}
 
+  '@babel/runtime@8.0.0': {}
+
   '@babel/template@7.29.7':
     dependencies:
       '@babel/code-frame': 7.29.7
@@ -17195,9 +17200,9 @@ snapshots:
       react-native: 0.86.0(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/jest-preset@0.86.0(@babel/core@7.29.7)(react@19.2.6))(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.6)
       react-native-macos: 0.81.8(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.17)(react-native@0.86.0(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/jest-preset@0.86.0(@babel/core@7.29.7)(react@19.2.6))(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.6))(react@19.2.6)
 
-  react-native-dotenv@3.4.11(@babel/runtime@7.29.7):
+  react-native-dotenv@3.4.11(@babel/runtime@8.0.0):
     dependencies:
-      '@babel/runtime': 7.29.7
+      '@babel/runtime': 8.0.0
       dotenv: 16.6.1
 
   react-native-fs@2.20.0(react-native@0.86.0(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/jest-preset@0.86.0(@babel/core@7.29.7)(react@19.2.6))(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.6)):
