@@ -9,3 +9,21 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # Expo-SDK-aligned packages must track the pinned Expo SDK (~55); the SDK is bumped
+      # deliberately as one coordinated step. Major bumps ahead of the SDK break the React
+      # Native / Expo build and can never merge, so Dependabot retries them forever — the
+      # dominant source of nightly-audit false positives. Suppress semver-major bumps for the
+      # whole Expo family: bare `expo`, `expo-*`, scoped `@expo/*` (e.g. @expo/vector-icons),
+      # and the Expo tooling packages that lack an `expo` prefix. Minor/patch updates still
+      # flow through the minor-and-patch group above.
+      - dependency-name: "expo"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "expo-*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@expo/*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "eslint-config-expo"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "jest-expo"
+        update-types: ["version-update:semver-major"]
