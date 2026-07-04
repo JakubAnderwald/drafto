@@ -530,6 +530,84 @@ describe("buildFactoryImplementBundle", () => {
       /<comment>move the button top-right<\/comment>/,
     );
   });
+
+  it("surfaces host-validated screenshots from the body and every comment slice", () => {
+    const bundle = buildFactoryImplementBundle({
+      issue: {
+        number: 551,
+        title: "x",
+        body: `see screenshots\n<img src="https://github.com/user-attachments/assets/aaa.png" alt="blank" />`,
+        labels: [],
+      },
+      // Runtime shape: the driver passes comments:[] and threads the full issue
+      // thread through screenshotSources; reporter change requests arrive as
+      // revisionComments. Both must contribute screenshots.
+      revisionComments: [
+        {
+          id: 3,
+          user: { login: "jane" },
+          body: "match ![rev](https://user-images.githubusercontent.com/1/rev.png)",
+        },
+      ],
+      screenshotSources: [
+        {
+          id: 4,
+          user: { login: "reporter" },
+          body: "repro ![thread](https://user-images.githubusercontent.com/1/thread.png)",
+        },
+        { id: 5, user: { login: "spam" }, body: "![evil](https://evil.example.com/x.png)" },
+      ],
+      approvedPlan: { commentId: 1, url: "u", body: "p", createdAt: "t" },
+      config: { phase: "C" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    const urls = bundle.screenshots.map((s) => s.url);
+    assert.ok(
+      urls.includes("https://github.com/user-attachments/assets/aaa.png"),
+      "body attachment kept",
+    );
+    assert.ok(
+      urls.includes("https://user-images.githubusercontent.com/1/rev.png"),
+      "revision-comment screenshot surfaced",
+    );
+    assert.ok(
+      urls.includes("https://user-images.githubusercontent.com/1/thread.png"),
+      "issue-thread (screenshotSources) screenshot surfaced",
+    );
+    assert.ok(
+      !urls.some((u) => u.includes("evil.example.com")),
+      "non-GitHub hosts must be dropped",
+    );
+    assert.equal(bundle.screenshots[0].alt, "blank");
+    // Widening the screenshot source must NOT dump the thread into the bundle
+    // text — the enveloped comments field stays as the driver sets it.
+    assert.deepEqual(bundle.comments, [], "comments text field stays slim");
+  });
+
+  it("drops the backslash host-confusion bypass in a screenshot source", () => {
+    const bundle = buildFactoryImplementBundle({
+      issue: { number: 1, title: "x", body: "no images", labels: [] },
+      screenshotSources: [
+        {
+          id: 9,
+          user: { login: "attacker" },
+          body: `<img src="https://user-images.githubusercontent.com\\@evil.com/exfil.png" />`,
+        },
+      ],
+      config: { phase: "C" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    assert.deepEqual(bundle.screenshots, [], "curl-vs-WHATWG backslash bypass must be dropped");
+  });
+
+  it("defaults screenshots to [] when the body carries no images", () => {
+    const bundle = buildFactoryImplementBundle({
+      issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "B" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    assert.deepEqual(bundle.screenshots, []);
+  });
 });
 
 describe("buildFactoryWatchBundle", () => {
@@ -562,6 +640,69 @@ describe("buildFactoryWatchBundle", () => {
 
   it("requires issue.number", () => {
     assert.throws(() => buildFactoryWatchBundle({ issue: { title: "x" } }), /issue\.number/);
+  });
+
+  it("surfaces host-validated screenshots from the body and every comment slice", () => {
+    const bundle = buildFactoryWatchBundle({
+      issue: {
+        number: 551,
+        title: "x",
+        body: `see screenshots\n<img src="https://github.com/user-attachments/assets/aaa.png" alt="blank" />`,
+        labels: [],
+      },
+      approvedPlan: {
+        commentId: 1,
+        url: "u",
+        body: `${FACTORY_PLAN_MARKER}\nplan`,
+        createdAt: "t",
+      },
+      // Runtime shape: the driver passes comments:[], the unresolved
+      // PR-conversation comments as unresolvedComments, and the full issue
+      // thread as screenshotSources. Both comment slices must contribute.
+      unresolvedComments: [
+        {
+          id: 5,
+          user: { login: "coderabbitai" },
+          body: "see ![review](https://user-images.githubusercontent.com/1/review.png)",
+        },
+      ],
+      screenshotSources: [
+        {
+          id: 6,
+          user: { login: "reporter" },
+          body: "![thread](https://user-images.githubusercontent.com/1/thread.png) ![evil](https://evil.example.com/x.png)",
+        },
+      ],
+      config: { phase: "C" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    const urls = bundle.screenshots.map((s) => s.url);
+    assert.ok(
+      urls.includes("https://github.com/user-attachments/assets/aaa.png"),
+      "body attachment kept",
+    );
+    assert.ok(
+      urls.includes("https://user-images.githubusercontent.com/1/review.png"),
+      "review-comment screenshot surfaced",
+    );
+    assert.ok(
+      urls.includes("https://user-images.githubusercontent.com/1/thread.png"),
+      "issue-thread (screenshotSources) screenshot surfaced",
+    );
+    assert.ok(
+      !urls.some((u) => u.includes("evil.example.com")),
+      "non-GitHub hosts must be dropped",
+    );
+    assert.deepEqual(bundle.comments, [], "comments text field stays slim");
+  });
+
+  it("defaults screenshots to [] when the body carries no images", () => {
+    const bundle = buildFactoryWatchBundle({
+      issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "B" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    assert.deepEqual(bundle.screenshots, []);
   });
 });
 
@@ -616,12 +757,15 @@ describe("factory-bundle CLI", () => {
     assert.deepEqual(bundle.replan.triggerCommentIds, ["888"]);
   });
 
-  it("emits a factory_implement bundle", () => {
+  it("emits a factory_implement bundle and forwards screenshotSources", () => {
     const r = run({
       kind: "factory_implement",
       issue: { number: 42, title: "x", body: SAMPLE_BODY, labels: [] },
       approvedPlan: { commentId: 1, url: "u", body: "p", createdAt: "t" },
       attempts: 1,
+      screenshotSources: [
+        { id: 1, body: "![s](https://user-images.githubusercontent.com/1/a.png)" },
+      ],
       config: { phase: "B" },
       repo: { nameWithOwner: "JakubAnderwald/drafto" },
     });
@@ -629,9 +773,16 @@ describe("factory-bundle CLI", () => {
     const bundle = JSON.parse(r.stdout);
     assert.equal(bundle.kind, "factory_implement");
     assert.equal(bundle.attempts, 1);
+    // The driver→CLI→builder contract that shipped broken: screenshotSources
+    // must reach the screenshot extractor, and the comments text stays slim.
+    assert.deepEqual(
+      bundle.screenshots.map((s) => s.url),
+      ["https://user-images.githubusercontent.com/1/a.png"],
+    );
+    assert.deepEqual(bundle.comments, []);
   });
 
-  it("emits a factory_watch bundle", () => {
+  it("emits a factory_watch bundle and forwards screenshotSources", () => {
     const r = run({
       kind: "factory_watch",
       issue: { number: 42, title: "x", body: SAMPLE_BODY, labels: [] },
@@ -639,6 +790,9 @@ describe("factory-bundle CLI", () => {
       priorPr: { number: 7, url: "https://x/y/pull/7", headRef: "factory/issue-42", state: "OPEN" },
       ciSummary: "lint — failed",
       unresolvedComments: [{ id: 5, user: { login: "x" }, body: "fix this" }],
+      screenshotSources: [
+        { id: 2, body: "![s](https://user-images.githubusercontent.com/1/b.png)" },
+      ],
       attempts: 1,
       config: { phase: "B" },
       repo: { nameWithOwner: "JakubAnderwald/drafto" },
@@ -648,5 +802,9 @@ describe("factory-bundle CLI", () => {
     assert.equal(bundle.kind, "factory_watch");
     assert.match(bundle.ciSummaryEnveloped, /lint — failed/);
     assert.equal(bundle.unresolvedComments.length, 1);
+    assert.deepEqual(
+      bundle.screenshots.map((s) => s.url),
+      ["https://user-images.githubusercontent.com/1/b.png"],
+    );
   });
 });

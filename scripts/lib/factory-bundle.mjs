@@ -178,6 +178,18 @@ export function extractScreenshots(body, comments = []) {
   return out;
 }
 
+// Concat any number of comment arrays into one screenshot-source list, skipping
+// non-array args. Lets a bundle scan several curated comment slices (the issue
+// thread, reporter revision comments, PR-conversation comments) in a single
+// extractScreenshots pass — without dumping their text into the bundle.
+function collectCommentSources(...arrays) {
+  const out = [];
+  for (const a of arrays) {
+    if (Array.isArray(a)) out.push(...a);
+  }
+  return out;
+}
+
 // Pure: pull the structured sections out of a factory-feature.yml issue body.
 // The template renders each field under a `### <label>` heading and a blank
 // line, with bullet lists for the checkbox group. We don't need a Markdown
@@ -432,6 +444,7 @@ export function buildFactoryImplementBundle({
   approvedPlan,
   comments = [],
   revisionComments = [],
+  screenshotSources = [],
   priorPr = null,
   attempts = 0,
   config,
@@ -451,6 +464,19 @@ export function buildFactoryImplementBundle({
     issue: shapeIssue(issue),
     spec,
     parityOverride: effectiveParityOverride(issue.labels, spec),
+    // GitHub-hosted image URLs (host-validated) pulled from the body + every
+    // comment slice this stage has: the full issue thread (screenshotSources)
+    // and reporter revision comments (plus any forwarded comments). Lets the
+    // implementer fetch and reproduce a screenshot-driven spec — or a screenshot
+    // a reporter pasted in a comment — before changing code. Body is scanned
+    // first, so spec/body images win the 12-shot cap. Same extractor + allowlist
+    // the plan bundle already uses — no second extractor, no relaxed validation.
+    // Only the screenshot source widens here; the enveloped `comments` field
+    // below stays exactly as the driver sets it (slim).
+    screenshots: extractScreenshots(
+      issue.body ?? "",
+      collectCommentSources(comments, revisionComments, screenshotSources),
+    ),
     approvedPlan: approvedPlan
       ? {
           commentId: approvedPlan.commentId ?? approvedPlan.id ?? null,
@@ -490,6 +516,7 @@ export function buildFactoryWatchBundle({
   ciSummary = "",
   unresolvedComments = [],
   comments = [],
+  screenshotSources = [],
   attempts = 0,
   config,
   repo,
@@ -506,6 +533,17 @@ export function buildFactoryWatchBundle({
     issue: shapeIssue(issue),
     spec,
     parityOverride: effectiveParityOverride(issue.labels, spec),
+    // GitHub-hosted image URLs (host-validated) pulled from the body + every
+    // comment slice this stage has: the issue thread (screenshotSources) and the
+    // unresolved PR-conversation comments (plus any forwarded comments). Lets the
+    // watcher view a screenshot referenced by a review comment or a
+    // screenshot-driven spec. Body is scanned first, so it wins the 12-shot cap.
+    // Same extractor + allowlist the plan bundle uses; only the screenshot source
+    // widens — the enveloped `comments` field below stays slim.
+    screenshots: extractScreenshots(
+      issue.body ?? "",
+      collectCommentSources(comments, unresolvedComments, screenshotSources),
+    ),
     approvedPlan: approvedPlan
       ? {
           commentId: approvedPlan.commentId ?? approvedPlan.id ?? null,
@@ -569,6 +607,7 @@ async function main() {
       approvedPlan: input.approvedPlan,
       comments: input.comments,
       revisionComments: input.revisionComments,
+      screenshotSources: input.screenshotSources,
       priorPr: input.priorPr,
       attempts: input.attempts,
       config: input.config,
@@ -583,6 +622,7 @@ async function main() {
       ciSummary: input.ciSummary,
       unresolvedComments: input.unresolvedComments,
       comments: input.comments,
+      screenshotSources: input.screenshotSources,
       attempts: input.attempts,
       config: input.config,
       repo: input.repo,

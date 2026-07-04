@@ -138,6 +138,20 @@ jobs:
       - name: Run desktop tests
         run: cd apps/desktop && pnpm test
 
+  scripts-tests:
+    name: Scripts Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - name: Run scripts tests
+        run: cd scripts && node --test __tests__/*.test.mjs
+
   sonarcloud:
     name: SonarCloud
     runs-on: ubuntu-latest
