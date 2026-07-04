@@ -203,7 +203,14 @@ fi
 # `cancelled` is treated as healthy on purpose: ci.yml sets concurrency cancel-in-progress, so a
 # superseded run is expected, not a breakage. `none` (no CI run in the window, or the workflow was
 # renamed away from "CI") is logged rather than flagged, to avoid false positives in quiet periods.
-WORKFLOW_RUNS=$(gh run list --repo "$REPO" --branch main --limit 30 --status completed --json conclusion,workflowName,createdAt 2>/dev/null) || WORKFLOW_RUNS="[]"
+# Distinguish a genuine "no CI run in the window" (LATEST_CI_CONCLUSION="none", treated as healthy)
+# from a failure of `gh run list` itself (auth expiry, rate limit, network blip on the Mac mini):
+# the latter gets its own WARNING so a breakage of the audit's own tooling is visible in the log
+# rather than silently folded into the healthy "none" path.
+if ! WORKFLOW_RUNS=$(gh run list --repo "$REPO" --branch main --limit 30 --status completed --json conclusion,workflowName,createdAt 2>/dev/null); then
+  log "WARNING: 'gh run list --branch main' failed; CI health on main could not be determined this run"
+  WORKFLOW_RUNS="[]"
+fi
 LATEST_CI_CONCLUSION=$(echo "$WORKFLOW_RUNS" | jq -r '[.[] | select(.workflowName == "CI")] | (max_by(.createdAt).conclusion) // "none"' 2>/dev/null) || LATEST_CI_CONCLUSION="none"
 case "$LATEST_CI_CONCLUSION" in
   failure | timed_out | startup_failure)
