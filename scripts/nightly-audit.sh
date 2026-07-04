@@ -187,17 +187,33 @@ else
   log "drafto.eu health check: OK (HTTP $HTTP_CODE)"
 fi
 
-# GitHub Actions CI on main
-WORKFLOW_RUNS=$(gh run list --repo "$REPO" --branch main --limit 5 --json conclusion,name 2>/dev/null) || WORKFLOW_RUNS="[]"
-FAILED_RUNS=$(echo "$WORKFLOW_RUNS" | jq '[.[] | select(.conclusion == "failure")]')
-FAILED_RUN_COUNT=$(echo "$FAILED_RUNS" | jq 'length')
-if [[ "$FAILED_RUN_COUNT" -gt 0 ]]; then
-  FAILED_NAMES=$(echo "$FAILED_RUNS" | jq -r '[.[].name] | unique | join(", ")')
-  PROBLEMS+=("### App: Failed CI workflows on main"$'\n\n'"Failing: $FAILED_NAMES")
-  log "WARNING: $FAILED_RUN_COUNT failed workflows on main"
-else
-  log "GitHub Actions on main: all passing"
-fi
+# GitHub Actions CI on main. Report only when the latest completed run of the app's own `CI`
+# workflow ended in a red state. Two bugs in the old check produced daily false-positive audit
+# issues:
+#   1. `gh run list --branch main` also returns Dependabot's background "Dependabot Updates"
+#      runs (event=dynamic) and other push-triggered workflows — their failures are not main-CI
+#      health. Selecting workflowName == "CI" is both sound (excludes Dependabot + unrelated or
+#      since-deleted workflows) and complete (CI runs are named "CI" whether triggered by push,
+#      pull_request, or workflow_dispatch).
+#   2. Counting "any failure in the window" kept flagging main after an older failure had already
+#      been fixed by a newer green run. We take the most recent CI run by createdAt (max_by, so
+#      correctness doesn't rely on gh's default ordering) and check only that run. --limit 30
+#      keeps a CI run in the window even when a burst of same-second Dependabot runs floods the
+#      top; --status completed skips in-progress runs whose conclusion is still null.
+# `cancelled` is treated as healthy on purpose: ci.yml sets concurrency cancel-in-progress, so a
+# superseded run is expected, not a breakage. `none` (no CI run in the window, or the workflow was
+# renamed away from "CI") is logged rather than flagged, to avoid false positives in quiet periods.
+WORKFLOW_RUNS=$(gh run list --repo "$REPO" --branch main --limit 30 --status completed --json conclusion,workflowName,createdAt 2>/dev/null) || WORKFLOW_RUNS="[]"
+LATEST_CI_CONCLUSION=$(echo "$WORKFLOW_RUNS" | jq -r '[.[] | select(.workflowName == "CI")] | (max_by(.createdAt).conclusion) // "none"' 2>/dev/null) || LATEST_CI_CONCLUSION="none"
+case "$LATEST_CI_CONCLUSION" in
+  failure | timed_out | startup_failure)
+    PROBLEMS+=("### App: Failed CI workflows on main"$'\n\n'"The latest \`CI\` run on \`main\` ended in \`$LATEST_CI_CONCLUSION\`.")
+    log "WARNING: latest CI run on main ended in '$LATEST_CI_CONCLUSION'"
+    ;;
+  *)
+    log "GitHub Actions on main: latest CI run is '$LATEST_CI_CONCLUSION'"
+    ;;
+esac
 
 # ── Report ──
 log "=== Audit complete ==="
