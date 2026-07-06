@@ -129,6 +129,9 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
   const loadedNoteIdRef = useRef<string | null>(null);
   // Tracks the last-handled findSignal so the effect fires once per menu press.
   const lastFindNonceRef = useRef(0);
+  // Debounces find-as-you-type so a full ProseMirror tree-walk (the injected
+  // engine re-scans every text node per search) doesn't run on every keystroke.
+  const findDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleSaveTitle = useCallback(async (payload: TitleSavePayload) => {
     // Don't persist an empty/whitespace title over a real one (a transient clear,
@@ -250,6 +253,7 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
   // Used on note switch / no-note (highlights point at the outgoing note's DOM)
   // and on explicit close.
   const resetFind = useCallback(() => {
+    if (findDebounceRef.current) clearTimeout(findDebounceRef.current);
     setFindVisible(false);
     setFindQuery("");
     setFindMatch({ current: 0, total: 0 });
@@ -411,6 +415,7 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
     return () => {
       titleAutoSaveRef.current?.flush();
       contentAutoSaveRef.current?.flush();
+      if (findDebounceRef.current) clearTimeout(findDebounceRef.current);
     };
   }, []);
 
@@ -433,7 +438,9 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
   const handleFindChange = useCallback(
     (query: string) => {
       setFindQuery(query);
-      injectFind(findSearchJS(query));
+      // Debounce the (full-document) search; the input stays responsive.
+      if (findDebounceRef.current) clearTimeout(findDebounceRef.current);
+      findDebounceRef.current = setTimeout(() => injectFind(findSearchJS(query)), 150);
     },
     [injectFind],
   );
