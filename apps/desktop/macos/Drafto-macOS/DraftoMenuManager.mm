@@ -152,6 +152,40 @@ RCT_EXPORT_MODULE();
   [menu addItem:[self standardItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"]];
   [menu addItem:[self standardItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"]];
 
+  [menu addItem:[NSMenuItem separatorItem]];
+
+  // Find submenu.
+  //
+  // These items MUST be bound here (target = self, via the onMenuAction bridge),
+  // not left to AppKit's default Edit ▸ Find. `setupMenus` replaces the ENTIRE
+  // main menu, so the storyboard's built-in Find item is gone. Without a menu
+  // key-equivalent for Cmd+F, the key is no longer absorbed by the menu and
+  // instead leaks to the focused tentap WKWebView, whose unhandled-key forward
+  // up the responder chain crashes react-native-macos with an
+  // NSInvalidArgumentException (nil inserted into NSArray). Using a concrete
+  // target keeps each item enabled so its key-equivalent always fires and the
+  // key never reaches the WebView. See docs/adr/0028-desktop-find-in-note.md.
+  NSMenuItem *findParent = [[NSMenuItem alloc] initWithTitle:@"Find" action:nil keyEquivalent:@""];
+  NSMenu *findMenu = [[NSMenu alloc] initWithTitle:@"Find"];
+
+  [findMenu addItem:[self menuItemWithTitle:@"Find…"
+                                     action:@"findInNote"
+                              keyEquivalent:@"f"
+                              modifierMask:NSEventModifierFlagCommand]];
+
+  [findMenu addItem:[self menuItemWithTitle:@"Find Next"
+                                     action:@"findNext"
+                              keyEquivalent:@"g"
+                              modifierMask:NSEventModifierFlagCommand]];
+
+  [findMenu addItem:[self menuItemWithTitle:@"Find Previous"
+                                     action:@"findPrevious"
+                              keyEquivalent:@"g"
+                              modifierMask:NSEventModifierFlagCommand | NSEventModifierFlagShift]];
+
+  findParent.submenu = findMenu;
+  [menu addItem:findParent];
+
   return menu;
 }
 
