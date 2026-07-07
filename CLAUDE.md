@@ -4,18 +4,19 @@ Note-taking app at drafto.eu. Monorepo with pnpm workspaces + Turborepo. Web (Ne
 
 ## Where to find things
 
-| Need                                              | Start at                                                                             |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| What a feature does and where it lives in code    | [`docs/features/`](./docs/features/)                                                 |
-| System shape, data flow, platform parity          | [`docs/architecture/`](./docs/architecture/)                                         |
-| Testing matrix (commands per platform)            | [`docs/architecture/testing.md`](./docs/architecture/testing.md)                     |
-| Environments, Supabase refs, migration workflow   | [`docs/architecture/environments.md`](./docs/architecture/environments.md)           |
-| Local machine setup                               | [`docs/operations/local-dev-setup.md`](./docs/operations/local-dev-setup.md)         |
-| Builds, Fastlane, App Store / Play / Mac releases | [`docs/operations/builds-and-releases.md`](./docs/operations/builds-and-releases.md) |
-| Supabase migration safety workflow                | [`docs/operations/migrations.md`](./docs/operations/migrations.md)                   |
-| Why a tech / pattern was chosen                   | [`docs/adr/`](./docs/adr/README.md)                                                  |
-| Dark factory pipeline (kanban-driven autopilot)   | [`docs/features/dark-factory.md`](./docs/features/dark-factory.md)                   |
-| Full index                                        | [`docs/README.md`](./docs/README.md)                                                 |
+| Need                                                                        | Start at                                                                                                                                      |
+| --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| What a feature does and where it lives in code                              | [`docs/features/`](./docs/features/)                                                                                                          |
+| System shape, data flow, platform parity                                    | [`docs/architecture/`](./docs/architecture/)                                                                                                  |
+| Testing matrix (commands per platform)                                      | [`docs/architecture/testing.md`](./docs/architecture/testing.md)                                                                              |
+| Environments, Supabase refs, migration workflow                             | [`docs/architecture/environments.md`](./docs/architecture/environments.md)                                                                    |
+| Local machine setup                                                         | [`docs/operations/local-dev-setup.md`](./docs/operations/local-dev-setup.md)                                                                  |
+| Builds, Fastlane, App Store / Play / Mac releases                           | [`docs/operations/builds-and-releases.md`](./docs/operations/builds-and-releases.md)                                                          |
+| ⚠️ Desktop build is a fossil — never `pnpm install` in the primary checkout | [`docs/operations/desktop-build-fossil.md`](./docs/operations/desktop-build-fossil.md) · [`apps/desktop/CLAUDE.md`](./apps/desktop/CLAUDE.md) |
+| Supabase migration safety workflow                                          | [`docs/operations/migrations.md`](./docs/operations/migrations.md)                                                                            |
+| Why a tech / pattern was chosen                                             | [`docs/adr/`](./docs/adr/README.md)                                                                                                           |
+| Dark factory pipeline (kanban-driven autopilot)                             | [`docs/features/dark-factory.md`](./docs/features/dark-factory.md)                                                                            |
+| Full index                                                                  | [`docs/README.md`](./docs/README.md)                                                                                                          |
 
 Historical plans live in [`docs/archive/`](./docs/archive/) — do not treat as source of truth.
 
@@ -37,7 +38,7 @@ If a feature genuinely requires paid infrastructure, surface that explicitly as 
 Never work directly on `main`. For every new task (feature, fix, chore, docs):
 
 1. Use the `/worktree` command to create an isolated branch and worktree
-2. **Immediately run `pnpm install`** in the new worktree — worktrees do not share `node_modules`, so all tooling (`turbo`, `tsc`, etc.) will fail without this step, then run `bash scripts/worktree-bootstrap.sh` to copy the gitignored env/config files (see below)
+2. **Immediately run `pnpm install`** in the new worktree — worktrees do not share `node_modules`, so all tooling (`turbo`, `tsc`, etc.) will fail without this step, then run `bash scripts/worktree-bootstrap.sh` to copy the gitignored env/config files (see below). **Exception — never build or release the macOS desktop app from a worktree:** a worktree's fresh install resolves React 19.2, which the `react-native-macos@0.81` fossil cannot run (it compiles, then crashes at runtime). Desktop releases run **only** from the primary checkout's fossil `node_modules` — see [Release Authorization](#release-authorization) and [`apps/desktop/CLAUDE.md`](./apps/desktop/CLAUDE.md).
 3. Do all work (commits, edits, tests) in that worktree
 4. Open a PR to merge into `main` — never push directly to `main`
 
@@ -107,7 +108,7 @@ When planning, fan out independent actions into a single batched message — don
 
 **Worktree gotcha**: `Edit`/`Write` require a prior `Read` of the _exact_ path. Reading `/Users/…/drafto/foo.ts` does NOT satisfy an edit against `/Users/…/drafto-worktree/foo.ts`. Pattern when starting work in a worktree: one batched `Read` for every worktree file you'll touch, then one batched `Edit`/`Write` for all the changes.
 
-**Plan structure**: Multi-PR or multi-step plans should also exploit parallelism — group independent work into "waves" (Wave 1 fully parallel, Wave 2 after Wave 1, etc.) and assign each independent unit to its own subagent. End any plan that ships a cross-platform release with the explicit per-platform release commands as a final wave: web (Vercel auto-deploys on merge), `cd apps/mobile && pnpm release:prod:android`, `pnpm release:prod:ios`, `cd apps/desktop && pnpm release:production`. The three store releases run concurrently in their own subagents. Note any required version bumps (`pnpm version:mobile|desktop patch|minor|major`) before the release wave.
+**Plan structure**: Multi-PR or multi-step plans should also exploit parallelism — group independent work into "waves" (Wave 1 fully parallel, Wave 2 after Wave 1, etc.) and assign each independent unit to its own subagent. End any plan that ships a cross-platform release with the explicit per-platform release commands as a final wave: web (Vercel auto-deploys on merge), `cd apps/mobile && pnpm release:prod:android`, `pnpm release:prod:ios`, `cd apps/desktop && pnpm release:production` (⚠️ desktop builds **only** from the primary checkout's fossil `node_modules` — never a worktree; see [Release Authorization](#release-authorization)). The three store releases run concurrently in their own subagents. Note any required version bumps (`pnpm version:mobile|desktop patch|minor|major`) before the release wave.
 
 ## SOLID Principles (Enforced)
 
@@ -176,6 +177,14 @@ Common CI failure patterns:
 Beta TestFlight builds (Mac App Store Connect, iOS, Android internal track) are **pre-authorized** — ship them without asking. Communicate what's going out (version + build number, what's in it) but don't gate on permission. A bad TestFlight build is reversible: the next build supersedes it, and old builds can be expired in App Store Connect.
 
 Production / public-store releases (`pnpm release:prod:*`, `pnpm release:production`, App Store / Play Store submission) still require explicit user approval — those affect non-tester users.
+
+### ⚠️ Desktop (macOS) builds ONLY from the primary checkout's fossil `node_modules`
+
+The macOS desktop app is a **fossil build**. `react-native-macos@0.81` needs **React 19.1.4**, but the monorepo's declared React is **19.2.6** (mobile needs it; React must be one shared instance). The only working desktop `node_modules` lives in the **primary checkout** (`/Users/jakub/code/drafto`), installed before the React bump and **never reinstalled**. A clean `pnpm install` — including any **fresh worktree** or CI checkout — pulls React 19.2 and produces a build that **compiles fine but crashes at runtime** (Hermes `EXC_BAD_ACCESS` / blank screen). **A green compile is not proof the app works — only a TestFlight build that opens a note is.**
+
+- **NEVER** `pnpm install` in the primary checkout, and **never build/release desktop from a worktree, fresh install, or CI.**
+- Build/ship desktop **only** from the primary checkout: `cd /Users/jakub/code/drafto && git pull && cd apps/desktop && pnpm release:beta` (source via `git pull`, **never** `pnpm install`).
+- Full rules: [`docs/operations/desktop-build-fossil.md`](./docs/operations/desktop-build-fossil.md) · [ADR-0027](./docs/adr/0027-desktop-react-version-locked-to-react-native-macos.md) · [`apps/desktop/CLAUDE.md`](./apps/desktop/CLAUDE.md).
 
 ## Dark Factory
 
