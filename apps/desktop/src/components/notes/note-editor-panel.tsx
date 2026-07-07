@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { View, Text, TextInput, StyleSheet, ActivityIndicator } from "react-native";
 import { useEditorBridge, TenTapStartKit } from "@10play/tentap-editor";
+import type { WebViewMessageEvent } from "react-native-webview";
 
 import { useNote } from "@/hooks/use-note";
 import { useAutoSave } from "@/hooks/use-auto-save";
@@ -22,6 +23,14 @@ import { Badge, type BadgeVariant } from "@/components/ui/badge";
 import { CalendarIcon } from "@/components/ui/icons/calendar-icon";
 import { ClockIcon } from "@/components/ui/icons/clock-icon";
 import { NoteEditor } from "@/components/editor/note-editor";
+import { FindBar } from "@/components/editor/find-bar";
+import {
+  findSearchJS,
+  findStepJS,
+  findClearJS,
+  parseFindResult,
+  type FindResult,
+} from "@/components/editor/find-engine";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { isCatastrophicEraseSave } from "@/components/notes/erase-tripwire";
 import {
@@ -91,11 +100,19 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
   });
 }
 
-interface NoteEditorPanelProps {
-  noteId: string | undefined;
+/** Imperative signal from the native Find menu items (Cmd+F / Cmd+G / Cmd+Shift+G). */
+export interface FindSignal {
+  command: "open" | "next" | "prev";
+  /** Incremented on each menu invocation so repeats re-trigger the panel. */
+  nonce: number;
 }
 
-export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
+interface NoteEditorPanelProps {
+  noteId: string | undefined;
+  findSignal?: FindSignal;
+}
+
+export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
   const { note, loading } = useNote(noteId);
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
@@ -110,6 +127,11 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   // the previous note's content into the newly-switched-to row.
   const noteIdRef = useRef<string | undefined>(undefined);
   const loadedNoteIdRef = useRef<string | null>(null);
+  // Tracks the last-handled findSignal so the effect fires once per menu press.
+  const lastFindNonceRef = useRef(0);
+  // Debounces find-as-you-type so a full ProseMirror tree-walk (the injected
+  // engine re-scans every text node per search) doesn't run on every keystroke.
+  const findDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleSaveTitle = useCallback(async (payload: TitleSavePayload) => {
     // Don't persist an empty/whitespace title over a real one (a transient clear,
@@ -158,6 +180,12 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   // failure shows an error instead of revealing the previous note's stale body
   // under the new note's header (autosave stays gated via loadedNoteIdRef).
   const [loadFailed, setLoadFailed] = useState(false);
+
+  // Find-in-note UI state. The WebView (via the injected engine) is the source of
+  // truth for matches; findMatch just mirrors the counts it posts back.
+  const [findVisible, setFindVisible] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findMatch, setFindMatch] = useState<FindResult>({ current: 0, total: 0 });
 
   const handleEditorChange = useCallback(() => {
     const editor = editorRef.current;
@@ -221,6 +249,17 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
     });
   }, [editor, editorReady]);
 
+  // Full find reset — clears the bar, query, counts, and WebView highlights.
+  // Used on note switch / no-note (highlights point at the outgoing note's DOM)
+  // and on explicit close.
+  const resetFind = useCallback(() => {
+    if (findDebounceRef.current) clearTimeout(findDebounceRef.current);
+    setFindVisible(false);
+    setFindQuery("");
+    setFindMatch({ current: 0, total: 0 });
+    editorRef.current?.webviewRef.current?.injectJavaScript(findClearJS());
+  }, []);
+
   // Sync local state when a different note is loaded.
   useEffect(() => {
     if (!editorReady) return;
@@ -231,6 +270,8 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
       // (which already carries that note's id, so it lands on the right row).
       titleAutoSaveRef.current?.flush();
       contentAutoSaveRef.current?.flush();
+
+      resetFind(); // highlights point at the outgoing note's DOM
 
       noteIdRef.current = note.id;
       loadedNoteIdRef.current = null; // gate autosave until setContent completes
@@ -309,6 +350,7 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
     } else if (!note) {
       titleAutoSaveRef.current?.flush();
       contentAutoSaveRef.current?.flush();
+      resetFind();
       noteIdRef.current = undefined;
       loadedNoteIdRef.current = null;
       setContentLoading(false);
@@ -326,7 +368,7 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
     // `cancelled = true`) and stranding the loading overlay for notes whose
     // resolution didn't finish within a single microtask (attachment notes). The
     // live editor is read through editorRef.current instead.
-  }, [note?.id, editorReady]);
+  }, [note?.id, editorReady, resetFind]);
 
   const handleAttachmentReady = useCallback(
     async (attachment: Attachment) => {
@@ -373,6 +415,7 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
     return () => {
       titleAutoSaveRef.current?.flush();
       contentAutoSaveRef.current?.flush();
+      if (findDebounceRef.current) clearTimeout(findDebounceRef.current);
     };
   }, []);
 
@@ -382,6 +425,54 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
     if (!active || active !== noteIdRef.current) return;
     titleAutoSaveRef.current?.trigger({ noteId: active, title: text });
   }, []);
+
+  // --- Find in note ---------------------------------------------------------
+  // Cmd+F is captured natively (DraftoMenuManager) and forwarded here as a
+  // findSignal. Highlight/scroll is driven by injecting the find engine into the
+  // tentap WebView; match counts come back via handleEditorMessage. Nothing here
+  // mutates note content — the CSS Custom Highlight overlay leaves the DOM alone.
+  const injectFind = useCallback((js: string) => {
+    editorRef.current?.webviewRef.current?.injectJavaScript(js);
+  }, []);
+
+  const handleFindChange = useCallback(
+    (query: string) => {
+      setFindQuery(query);
+      // Debounce the (full-document) search; the input stays responsive.
+      if (findDebounceRef.current) clearTimeout(findDebounceRef.current);
+      findDebounceRef.current = setTimeout(() => injectFind(findSearchJS(query)), 150);
+    },
+    [injectFind],
+  );
+
+  const handleFindNext = useCallback(() => {
+    injectFind(findStepJS("next"));
+  }, [injectFind]);
+
+  const handleFindPrev = useCallback(() => {
+    injectFind(findStepJS("prev"));
+  }, [injectFind]);
+
+  const handleFindClose = useCallback(() => {
+    resetFind();
+  }, [resetFind]);
+
+  const handleEditorMessage = useCallback((event: WebViewMessageEvent) => {
+    const result = parseFindResult(event);
+    if (result) setFindMatch(result);
+  }, []);
+
+  // React to native Find menu commands. Every command opens the bar (only when a
+  // note is loaded); next/prev also step. Refocus on repeated Cmd+F is handled by
+  // FindBar via focusSignal (the nonce).
+  useEffect(() => {
+    if (!findSignal || findSignal.nonce === lastFindNonceRef.current) return;
+    lastFindNonceRef.current = findSignal.nonce;
+    if (!noteIdRef.current) return; // no note selected — nothing to find
+    setFindVisible(true);
+    if (findSignal.command === "next") handleFindNext();
+    else if (findSignal.command === "prev") handleFindPrev();
+  }, [findSignal, handleFindNext, handleFindPrev]);
 
   const saveStatusKey: SaveStatusKey | null =
     titleAutoSave.status === "saving" || contentAutoSave.status === "saving"
@@ -429,7 +520,18 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
       )}
 
       <View style={styles.editorContainer}>
-        <NoteEditor editor={editor} />
+        <NoteEditor editor={editor} onMessage={handleEditorMessage} />
+        {findVisible && note && (
+          <FindBar
+            query={findQuery}
+            match={findMatch}
+            onChangeQuery={handleFindChange}
+            onNext={handleFindNext}
+            onPrev={handleFindPrev}
+            onClose={handleFindClose}
+            focusSignal={findSignal?.nonce ?? 0}
+          />
+        )}
       </View>
 
       {note && <AttachmentPicker noteId={note.id} onAttachmentReady={handleAttachmentReady} />}

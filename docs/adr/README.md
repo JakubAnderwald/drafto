@@ -60,3 +60,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0025](./0025-support-allowlist-from-zoho-sender.md)                 | Support Allowlist Gate from Zoho Sender            | Accepted           | 2026-05-03 |
 | [0026](./0026-dark-factory-pipeline.md)                              | Dark Factory Unattended Development Pipeline       | Accepted           | 2026-05-06 |
 | [0027](./0027-desktop-react-version-locked-to-react-native-macos.md) | Desktop React Version Locked to react-native-macos | Accepted           | 2026-07-02 |
+| [0028](./0028-desktop-find-in-note.md)                               | Desktop Find-in-Note (and the macOS Cmd+F crash)   | Accepted           | 2026-07-06 |

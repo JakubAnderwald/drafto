@@ -9,7 +9,7 @@ import { generateId } from "@/lib/generate-id";
 import type { SemanticColors } from "@/theme/tokens";
 import { NotebooksSidebar } from "@/components/sidebar/notebooks-sidebar";
 import { NoteList } from "@/components/notes/note-list";
-import { NoteEditorPanel } from "@/components/notes/note-editor-panel";
+import { NoteEditorPanel, type FindSignal } from "@/components/notes/note-editor-panel";
 import { TrashList } from "@/components/notes/trash-list";
 import { SearchOverlay } from "@/components/search/search-overlay";
 import { OfflineBanner } from "@/components/offline-banner";
@@ -28,6 +28,8 @@ export function MainScreen() {
   const [searchVisible, setSearchVisible] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [triggerNewNotebook, setTriggerNewNotebook] = useState(false);
+  // Bumped by the native Find menu items; NoteEditorPanel reacts to nonce changes.
+  const [findSignal, setFindSignal] = useState<FindSignal>({ command: "open", nonce: 0 });
 
   // Clear note selection when switching notebooks
   const handleSelectNotebook = useCallback((id: string) => {
@@ -85,12 +87,27 @@ export function MainScreen() {
     setSidebarVisible((prev) => !prev);
   }, []);
 
+  const handleFindInNote = useCallback(() => {
+    setFindSignal((prev) => ({ command: "open", nonce: prev.nonce + 1 }));
+  }, []);
+
+  const handleFindNext = useCallback(() => {
+    setFindSignal((prev) => ({ command: "next", nonce: prev.nonce + 1 }));
+  }, []);
+
+  const handleFindPrevious = useCallback(() => {
+    setFindSignal((prev) => ({ command: "prev", nonce: prev.nonce + 1 }));
+  }, []);
+
   useMenuActions({
     newNote: handleNewNote,
     newNotebook: handleNewNotebook,
     openSearch: handleOpenSearch,
     toggleSidebar: handleToggleSidebar,
     showTrash: handleToggleTrash,
+    findInNote: handleFindInNote,
+    findNext: handleFindNext,
+    findPrevious: handleFindPrevious,
   });
 
   return (
@@ -128,7 +145,7 @@ export function MainScreen() {
 
         {/* Right: editor */}
         <View style={styles.editor}>
-          {showTrash ? null : <NoteEditorPanel noteId={selectedNoteId} />}
+          {showTrash ? null : <NoteEditorPanel noteId={selectedNoteId} findSignal={findSignal} />}
         </View>
       </View>
 
