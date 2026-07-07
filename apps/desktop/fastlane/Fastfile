@@ -286,5 +286,26 @@ platform :mac do
     track_label =
       destination == "appstore" ? "the macOS App Store (build #{new_build_number})" : "TestFlight macOS (build #{new_build_number})"
     comment_released_issues(build: new_build_number, track: track_label)
+
+    # Tag this release (e.g. desktop@0.3.2+45) so generate-release-notes.sh scopes
+    # the NEXT build's "What to Test" to the delta since this build, instead of
+    # dumping the whole history. There were no desktop@ tags at all because
+    # desktop ships manually from the primary-checkout fossil (see
+    # docs/operations/desktop-build-fossil.md), so the desktop-*-release.yml CI
+    # tag job never runs — tag here instead. `-v:refname` orders the +build suffix
+    # numerically (verified). Non-fatal: a tag/push failure must not fail an
+    # already-shipped release.
+    begin
+      release_tag = "desktop@#{version}+#{new_build_number}"
+      if `git tag -l "#{release_tag}"`.strip.empty?
+        sh("git", "tag", release_tag)
+        sh("git", "push", "origin", release_tag)
+        UI.success("Tagged release #{release_tag}")
+      else
+        UI.message("Release tag #{release_tag} already exists — skipping")
+      end
+    rescue StandardError => e
+      UI.important("Release tagging failed (non-fatal): #{e.message}")
+    end
   end
 end
