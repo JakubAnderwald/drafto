@@ -35,7 +35,7 @@
     "react-native-screens": "^4.26.0",
     "react-native-svg": "^15.15.5",
     "react-native-url-polyfill": "^3.0.0",
-    "react-native-webview": "^13.12.5"
+    "react-native-webview": "^14.0.1"
   },
   "devDependencies": {
     "@babel/core": "^7.29.7",
