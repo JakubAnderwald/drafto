@@ -1,5 +1,6 @@
 import React from "react";
 import { Alert } from "react-native";
+import { Q } from "@nozbe/watermelondb";
 
 import { render, fireEvent, waitFor } from "../helpers/test-utils";
 import NotebooksScreen from "../../app/(tabs)/index";
@@ -139,5 +140,132 @@ describe("NotebooksScreen", () => {
     await waitFor(() => {
       expect(mockDatabaseWrite).toHaveBeenCalled();
     });
+  });
+
+  it("blocks deleting a notebook with non-trashed notes (filtered) and writes nothing", async () => {
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    mockNotebooks.push({ id: "nb-1", name: "Work Notes", updatedAt: new Date() });
+    const notesQuery = jest.fn(() => ({
+      fetchCount: jest.fn().mockResolvedValue(2),
+      fetch: jest.fn().mockResolvedValue([]),
+    }));
+    mockDatabaseGet.mockImplementation((table: string) => {
+      if (table === "notes") return { query: notesQuery };
+      return {};
+    });
+
+    const { getByTestId } = render(<NotebooksScreen />);
+    fireEvent.press(getByTestId("action-trash"));
+
+    await waitFor(() =>
+      expect(alertSpy).toHaveBeenCalledWith(
+        "Cannot Delete Notebook",
+        "Cannot delete notebook with notes. Move or delete notes first.",
+      ),
+    );
+    // The guard must count NON-trashed notes only, not all notes.
+    expect(notesQuery).toHaveBeenCalledWith(
+      Q.where("notebook_id", "nb-1"),
+      Q.where("is_trashed", false),
+    );
+    expect(mockDatabaseWrite).not.toHaveBeenCalled();
+  });
+
+  it("deletes an empty notebook and cascades its trashed notes after the user confirms", async () => {
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    const notebookMarkAsDeleted = jest.fn();
+    const trashedNoteMarkAsDeleted = jest.fn();
+    mockNotebooks.push({ id: "nb-1", name: "Empty NB", updatedAt: new Date() });
+    mockDatabaseWrite.mockImplementation(async (fn: () => Promise<void>) => {
+      await fn();
+    });
+    mockDatabaseGet.mockImplementation((table: string) => {
+      if (table === "notes") {
+        return {
+          query: () => ({
+            fetchCount: jest.fn().mockResolvedValue(0),
+            fetch: jest
+              .fn()
+              .mockResolvedValue([
+                { id: "t1", isTrashed: true, markAsDeleted: trashedNoteMarkAsDeleted },
+              ]),
+          }),
+        };
+      }
+      if (table === "notebooks") {
+        return { find: jest.fn().mockResolvedValue({ markAsDeleted: notebookMarkAsDeleted }) };
+      }
+      if (table === "attachments") {
+        return { query: () => ({ fetch: jest.fn().mockResolvedValue([]) }) };
+      }
+      return {};
+    });
+
+    const { getByTestId } = render(<NotebooksScreen />);
+    fireEvent.press(getByTestId("action-trash"));
+
+    await waitFor(() =>
+      expect(alertSpy).toHaveBeenCalledWith(
+        "Delete Notebook",
+        expect.stringContaining("permanently deleted"),
+        expect.any(Array),
+      ),
+    );
+    // Nothing is deleted until the user confirms.
+    expect(mockDatabaseWrite).not.toHaveBeenCalled();
+
+    const buttons = alertSpy.mock.calls.at(-1)?.[2] as Array<{
+      text: string;
+      onPress?: () => void | Promise<void>;
+    }>;
+    await buttons.find((b) => b.text === "Delete")?.onPress?.();
+
+    await waitFor(() => expect(notebookMarkAsDeleted).toHaveBeenCalled());
+    expect(trashedNoteMarkAsDeleted).toHaveBeenCalled();
+    expect(mockDatabaseWrite).toHaveBeenCalled();
+  });
+
+  it("aborts at confirm time if a note raced into the notebook after the guard passed", async () => {
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    const notebookMarkAsDeleted = jest.fn();
+    mockNotebooks.push({ id: "nb-1", name: "Empty NB", updatedAt: new Date() });
+    mockDatabaseWrite.mockImplementation(async (fn: () => Promise<void>) => {
+      await fn();
+    });
+    mockDatabaseGet.mockImplementation((table: string) => {
+      if (table === "notes") {
+        return {
+          query: () => ({
+            fetchCount: jest.fn().mockResolvedValue(0), // guard passes...
+            fetch: jest
+              .fn()
+              .mockResolvedValue([{ id: "n1", isTrashed: false, markAsDeleted: jest.fn() }]), // ...but a note raced in
+          }),
+        };
+      }
+      if (table === "notebooks") {
+        return { find: jest.fn().mockResolvedValue({ markAsDeleted: notebookMarkAsDeleted }) };
+      }
+      return {};
+    });
+
+    const { getByTestId } = render(<NotebooksScreen />);
+    fireEvent.press(getByTestId("action-trash"));
+    await waitFor(() => expect(alertSpy).toHaveBeenCalled());
+
+    const buttons = alertSpy.mock.calls.at(-1)?.[2] as Array<{
+      text: string;
+      onPress?: () => void | Promise<void>;
+    }>;
+    await buttons.find((b) => b.text === "Delete")?.onPress?.();
+
+    await waitFor(() =>
+      expect(alertSpy).toHaveBeenCalledWith(
+        "Cannot Delete Notebook",
+        "Cannot delete notebook with notes. Move or delete notes first.",
+      ),
+    );
+    expect(mockDatabaseWrite).not.toHaveBeenCalled();
+    expect(notebookMarkAsDeleted).not.toHaveBeenCalled();
   });
 });
