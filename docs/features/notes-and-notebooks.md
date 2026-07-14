@@ -13,7 +13,7 @@ Shipped on all four platforms: web, iOS, Android, macOS.
 - Notebooks are a single flat level (no nesting). Each note belongs to exactly one notebook.
 - Soft delete: `DELETE /api/notes/:id` sets `is_trashed = true` and stamps `trashed_at`. Trashed notes live in a dedicated trash view and are permanently purged after 30 days by a `pg_cron` job.
 - Permanent delete is available from trash via `DELETE /api/notes/:id/permanent`.
-- Deleting a notebook is blocked while it holds non-trashed notes. Web enforces this in the API (`DELETE /api/notebooks/:id` → 409 "Cannot delete notebook with notes. Move or delete notes first."); mobile and desktop enforce the same rule client-side before their WatermelonDB delete syncs (they never hit the API route). When an eligible notebook is deleted, its remaining trashed notes and attachments are cascade-removed locally so the client matches the server-side `on delete cascade` after sync.
+- Deleting a notebook is blocked while it holds non-trashed notes. Web enforces this in the API (`DELETE /api/notebooks/:id` → 409 "Cannot delete notebook with notes. Move or delete notes first."); mobile and desktop enforce the same rule client-side before their WatermelonDB delete syncs (they never hit the API route). When an eligible notebook is deleted, its remaining trashed notes and attachments are cascade-removed locally so the client matches the server-side `on delete cascade` after sync. The client guard is a point-in-time check against the local copy, so a note synced from another device between the check and the delete can still slip past it (unlike the web API's DB-backed 409); mobile additionally lacks server-deletion self-heal to clean up the resulting orphan row ([#462](https://github.com/JakubAnderwald/drafto/issues/462)).
 - The default notebook is provisioned server-side in the App Router layout if the user has zero notebooks.
 - Mobile and desktop hold a full local copy in WatermelonDB and sync via pull/push against Supabase; web reads/writes directly through the API.
 
@@ -64,7 +64,7 @@ Shipped on all four platforms: web, iOS, Android, macOS.
   - RLS requires `profiles.is_approved = true` for all reads/writes on notebooks, notes, attachments — unapproved users see nothing.
   - `notes.user_id` and `notes.notebook_id → notebooks.user_id` must match the authenticated user; enforced in RLS `WITH CHECK`.
   - Soft delete is the default for `DELETE /api/notes/:id`. Hard delete only goes through `/api/notes/:id/permanent`.
-  - `notebooks` delete rejects non-trashed children: web via a 409 in the API route, mobile/desktop via a client-side guard before the sync push issues the hard delete.
+  - `notebooks` delete rejects non-trashed children: web via a 409 in the API route, mobile/desktop via a client-side guard before the sync push issues the hard delete. Only the web 409 is race-free; the client guard is a point-in-time local check a cross-device sync can still race (#462).
   - `updated_at` is maintained by the `handle_updated_at` trigger; do not set it manually.
 - Tests that catch regressions:
   - `apps/web/__tests__/unit/notebooks-api.test.ts`, `notes-api.test.ts`, `trash-api.test.ts`, `trash-cleanup.test.ts`.

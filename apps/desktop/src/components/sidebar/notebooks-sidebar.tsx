@@ -160,6 +160,10 @@ export function NotebooksSidebar({
                 });
               } catch (err) {
                 console.error("Failed to delete notebook:", err);
+                Alert.alert(
+                  "Error",
+                  err instanceof Error ? err.message : "Failed to delete notebook",
+                );
               }
             },
           },
@@ -167,6 +171,7 @@ export function NotebooksSidebar({
       );
     } catch (err) {
       console.error("Failed to delete notebook:", err);
+      Alert.alert("Error", err instanceof Error ? err.message : "Failed to delete notebook");
     }
   }, []);
 

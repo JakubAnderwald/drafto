@@ -175,6 +175,7 @@ describe("NotebooksScreen", () => {
     const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
     const notebookMarkAsDeleted = jest.fn();
     const trashedNoteMarkAsDeleted = jest.fn();
+    const attachmentMarkAsDeleted = jest.fn();
     mockNotebooks.push({ id: "nb-1", name: "Empty NB", updatedAt: new Date() });
     mockDatabaseWrite.mockImplementation(async (fn: () => Promise<void>) => {
       await fn();
@@ -196,7 +197,13 @@ describe("NotebooksScreen", () => {
         return { find: jest.fn().mockResolvedValue({ markAsDeleted: notebookMarkAsDeleted }) };
       }
       if (table === "attachments") {
-        return { query: () => ({ fetch: jest.fn().mockResolvedValue([]) }) };
+        return {
+          query: () => ({
+            fetch: jest
+              .fn()
+              .mockResolvedValue([{ id: "a1", markAsDeleted: attachmentMarkAsDeleted }]),
+          }),
+        };
       }
       return {};
     });
@@ -222,6 +229,7 @@ describe("NotebooksScreen", () => {
 
     await waitFor(() => expect(notebookMarkAsDeleted).toHaveBeenCalled());
     expect(trashedNoteMarkAsDeleted).toHaveBeenCalled();
+    expect(attachmentMarkAsDeleted).toHaveBeenCalled();
     expect(mockDatabaseWrite).toHaveBeenCalled();
   });
 

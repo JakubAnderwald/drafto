@@ -103,11 +103,24 @@ describe("NotebooksSidebar — delete guard", () => {
   it("requires confirmation, then cascades trashed notes and deletes the notebook", async () => {
     const markAsDeleted = jest.fn();
     const trashedNoteMarkAsDeleted = jest.fn();
+    const attachmentMarkAsDeleted = jest.fn();
     mockNotebooks.push({ id: "nb-1", name: "Empty NB", markAsDeleted });
     mockNoteFetchCount.mockResolvedValue(0);
     mockNoteFetch.mockResolvedValue([
       { id: "t1", isTrashed: true, markAsDeleted: trashedNoteMarkAsDeleted },
     ]);
+    mockGet.mockImplementation((table: string) => {
+      if (table === "notes") return { query: mockNotesQuery };
+      if (table === "attachments")
+        return {
+          query: () => ({
+            fetch: jest
+              .fn()
+              .mockResolvedValue([{ id: "a1", markAsDeleted: attachmentMarkAsDeleted }]),
+          }),
+        };
+      return {};
+    });
 
     const { UNSAFE_root } = render(<NotebooksSidebar {...defaultProps} />);
     await findDeleteButton(UNSAFE_root).props.onPress();
@@ -129,6 +142,7 @@ describe("NotebooksSidebar — delete guard", () => {
     await waitFor(() => expect(markAsDeleted).toHaveBeenCalled());
     expect(mockWrite).toHaveBeenCalled();
     expect(trashedNoteMarkAsDeleted).toHaveBeenCalled();
+    expect(attachmentMarkAsDeleted).toHaveBeenCalled();
   });
 
   it("aborts at confirm time if a note raced into the notebook after the guard passed", async () => {
