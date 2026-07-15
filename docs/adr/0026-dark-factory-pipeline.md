@@ -4,6 +4,8 @@
 - **Date**: 2026-05-06
 - **Authors**: Jakub Anderwald
 
+> **Amended by [ADR-0029](./0029-factory-ultracode-effort.md)** (2026-07-15): the factory's Claude calls now run at explicit effort levels — ultracode on the code-writing stages (`--implement`/`--watch`), xhigh on planning (`--plan`/replan).
+
 ## Context
 
 After [ADR-0024](./0024-realtime-support-agent.md) (real-time support agent) and [ADR-0025](./0025-support-allowlist-from-zoho-sender.md) (sender-gated auto-implementation), Drafto already routes allowlisted bug reports through `support-agent.sh` (Phase 1 — file + acknowledge) and `nightly-support.sh` Phase 3 (Phase 2 — implement at midnight). What's missing is a way to:
