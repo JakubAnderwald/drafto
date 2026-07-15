@@ -49,6 +49,11 @@
 # Failure trap (exit code != 0): file a `factory-failure`-labelled GitHub
 # issue (mirrors the `nightly-failure` pattern in support-agent.sh /
 # nightly-support.sh).
+#
+# Claude effort: the code-writing stages (--implement/--watch) run at ultracode
+# (FACTORY_EFFORT — xhigh reasoning + dynamic multi-agent workflows); the read-
+# only planning stages (--plan/replan) run at xhigh (FACTORY_PLAN_EFFORT). See
+# the effort block below.
 
 set -euo pipefail
 
@@ -58,22 +63,63 @@ export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 
 # ── Claude call timeout ─────────────────────────────────────────────────────
-# Same single source of truth as support-agent.sh. scripts/lib/run-claude.mjs
-# reads this from the env. Defining it here keeps the bash log lines and the
-# wrapper's enforced cap in sync.
-export CLAUDE_CALL_TIMEOUT_SEC="${CLAUDE_CALL_TIMEOUT_SEC:-180}"
+# scripts/lib/run-claude.mjs reads CLAUDE_CALL_TIMEOUT_SEC from the env at spawn
+# time; defining it here keeps the bash log lines and the wrapper's enforced cap
+# in sync. --plan / replan run Claude read-only but at xhigh effort (see the
+# effort block below), which thinks longer than the old 180s cap allowed — so
+# raise the plan cap and make it a knob (FACTORY_PLAN_TIMEOUT_SEC). A legacy
+# CLAUDE_CALL_TIMEOUT_SEC override still wins for back-compat.
+export CLAUDE_CALL_TIMEOUT_SEC="${FACTORY_PLAN_TIMEOUT_SEC:-${CLAUDE_CALL_TIMEOUT_SEC:-360}}"
+if ! [[ "$CLAUDE_CALL_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid plan timeout ('$CLAUDE_CALL_TIMEOUT_SEC'); defaulting to 360" >&2
+  export CLAUDE_CALL_TIMEOUT_SEC=360
+fi
 
-# --plan is read-only and quick (180s is plenty). --implement and --watch run
-# Claude through edits + the verification matrix (lint/typecheck/test), which
-# is minutes of work — they override the cap per-call. run-claude.mjs reads
-# CLAUDE_CALL_TIMEOUT_SEC from the env at spawn time, so an inline prefix on
-# the node invocation is enough.
-IMPLEMENT_TIMEOUT_SEC="${FACTORY_IMPLEMENT_TIMEOUT_SEC:-1800}"
-WATCH_TIMEOUT_SEC="${FACTORY_WATCH_TIMEOUT_SEC:-900}"
+# --implement and --watch run Claude through edits + the verification matrix
+# (lint/typecheck/test) at ultracode effort (multi-agent workflows, materially
+# longer than a plain run), so they carry generous caps and override the plan
+# cap per-call via an inline env prefix on the node invocation (below).
+IMPLEMENT_TIMEOUT_SEC="${FACTORY_IMPLEMENT_TIMEOUT_SEC:-2700}"
+WATCH_TIMEOUT_SEC="${FACTORY_WATCH_TIMEOUT_SEC:-1800}"
+# Validate like the plan cap: a non-numeric override would flow to
+# run-claude.mjs, which then silently falls back to its own 180s default — a
+# premature kill mid-implement, not an obvious error. Guard both symmetrically.
+if ! [[ "$IMPLEMENT_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_IMPLEMENT_TIMEOUT_SEC='$IMPLEMENT_TIMEOUT_SEC'; defaulting to 2700" >&2
+  IMPLEMENT_TIMEOUT_SEC=2700
+fi
+if ! [[ "$WATCH_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_WATCH_TIMEOUT_SEC='$WATCH_TIMEOUT_SEC'; defaulting to 1800" >&2
+  WATCH_TIMEOUT_SEC=1800
+fi
 
 # Retry budget shared by --plan / --implement / --watch. After this many failed
 # Claude invocations on one issue, the card is parked in Blocked for a human.
 FACTORY_MAX_ATTEMPTS="${FACTORY_MAX_ATTEMPTS:-5}"
+
+# ── Claude effort levels ────────────────────────────────────────────────────
+# Code-writing stages (--implement / --watch) run at "ultracode": xhigh
+# reasoning + dynamic multi-agent workflow orchestration. Read-only planning
+# (--plan / replan) runs at plain "xhigh": deeper reasoning, no workflow fan-out
+# (cheaper on the shared subscription). Both are env knobs; run-claude.mjs
+# forwards --effort verbatim to `claude`. If the Workflows feature is disabled
+# on the account, ultracode degrades safely to xhigh (no error). Plain strings,
+# never arrays — expanding an empty array under `set -u` throws "unbound
+# variable" on the Mac mini's bash 3.2 (see the parity_violation note below).
+# The `case` allowlist doubles as the no-word-split / no-empty guard so
+# `--effort "$VAR"` is always a single safe token.
+FACTORY_EFFORT="${FACTORY_EFFORT:-ultracode}"          # --implement / --watch
+case "$FACTORY_EFFORT" in
+  ultracode|max|xhigh|high|medium|low) : ;;
+  *) echo "WARNING: invalid FACTORY_EFFORT='$FACTORY_EFFORT'; defaulting to ultracode" >&2
+     FACTORY_EFFORT="ultracode" ;;
+esac
+FACTORY_PLAN_EFFORT="${FACTORY_PLAN_EFFORT:-xhigh}"    # --plan / replan
+case "$FACTORY_PLAN_EFFORT" in
+  ultracode|max|xhigh|high|medium|low) : ;;
+  *) echo "WARNING: invalid FACTORY_PLAN_EFFORT='$FACTORY_PLAN_EFFORT'; defaulting to xhigh" >&2
+     FACTORY_PLAN_EFFORT="xhigh" ;;
+esac
 
 # pnpm install in a fresh worktree. node_modules is seeded from the main
 # checkout by clonefile first (seed_worktree_node_modules), so this is a near-
@@ -1212,10 +1258,10 @@ See \`docs/features/dark-factory.md\` for the spec contract.
 
     CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
       "$PROMPT_TEXT" "$BUNDLE")
-    log "Invoking claude for #$ISSUE_NUM (--plan, phase=$PHASE)"
+    log "Invoking claude for #$ISSUE_NUM (--plan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     EXIT_CODE=0
-    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
+    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
     if [[ $EXIT_CODE -eq 124 ]]; then
@@ -1387,10 +1433,10 @@ and drag the card back to **Ready** to retry.
 
     CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
       "$PROMPT_TEXT" "$BUNDLE")
-    log "Invoking claude for #$ISSUE_NUM (--plan replan, phase=$PHASE)"
+    log "Invoking claude for #$ISSUE_NUM (--plan replan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     EXIT_CODE=0
-    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
+    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
     if [[ $EXIT_CODE -eq 124 ]]; then
@@ -1700,11 +1746,11 @@ Drag it back to **Ready** so the factory can plan it first.
     # Invoke claude inside the worktree with the implementer prompt + bundle.
     CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
       "$PROMPT_TEXT" "$BUNDLE")
-    log "Invoking claude for #$ISSUE_NUM (--implement, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s)"
+    log "Invoking claude for #$ISSUE_NUM (--implement, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s, effort=$FACTORY_EFFORT)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     EXIT_CODE=0
     ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$IMPLEMENT_TIMEOUT_SEC" \
-        node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions ) \
+        node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" ) \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
     if [[ $EXIT_CODE -eq 124 ]]; then
@@ -2013,11 +2059,11 @@ A human should take a look. Reset with \
 
       CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
         "$WATCH_PROMPT_TEXT" "$BUNDLE")
-      log "Invoking claude for #$ISSUE_NUM (--watch fix, slot $SLOT, cap ${WATCH_TIMEOUT_SEC}s)"
+      log "Invoking claude for #$ISSUE_NUM (--watch fix, slot $SLOT, cap ${WATCH_TIMEOUT_SEC}s, effort=$FACTORY_EFFORT)"
       CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
       EXIT_CODE=0
       ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$WATCH_TIMEOUT_SEC" \
-          node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions ) \
+          node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" ) \
           >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
       if [[ $EXIT_CODE -ne 0 ]]; then

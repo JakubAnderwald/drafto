@@ -1,6 +1,6 @@
 # Dark factory
 
-**Status:** rolling out (Phase B engine + `--release` auto-merge built; runtime phase set on the plist) **Updated:** 2026-06-16
+**Status:** rolling out (Phase B engine + `--release` auto-merge built; runtime phase set on the plist) **Updated:** 2026-07-15
 
 ## What it is
 
@@ -12,6 +12,8 @@ The runtime phase is set by `FACTORY_PHASE` on the launchd plist (see the runboo
 
 - **Phase A (Plan-only).** `--plan` watches `status:ready` issues, posts a structured plan comment, and stops at `status:plan-review`. `--implement` posts a one-time "implementation skipped" stub; `--watch` / `--release` are no-ops.
 - **Phase B (Web-only, staged).** Approving a plan (drag Plan Review → In Progress) runs the real engine: `--implement` takes a worktree slot, implements the approved plan in `worktrees/factory-issue-<n>`, opens a PR, and runs the parity post-check (mobile/desktop changes are auto-blocked — Phase B is web-only). `--watch` then drives the PR: it runs a `/push`-style fix loop on failing CI / unresolved review comments and, once CI is green and the Vercel preview is reachable, advances the card to **In Test** and posts the preview URL. **In Test iteration:** while a card sits in In Test, commenting on the issue with a change request rolls it back to **In Progress**; the factory revises on the **same** PR branch (reusing the slot, worktree, and preview URL) and it flows back to In Test. Repeat until you're happy. A pure "thanks/looks good" comment is treated as noise (no rework); approval stays explicit — drag to **Approved** (or, household, reply "ship it"). **`--release` then auto-merges on Approved:** the Approved drag is the merge authorisation — the factory squash-merges the green PR via the GitHub API, advances the card to **Released**, and Vercel deploys main → prod. It refuses to merge a PR touching `supabase/migrations/**` until `migration-approved` is on the PR, and won't merge unless CI is green and conflict-free. Hard holds (missing migration approval, conflicts, a failed merge) leave the card in Approved **and post a one-time comment**; transient waits (CI still running, mergeability still computing) leave it in Approved silently and retry next tick. Just before merging it resolves any outstanding review threads (CodeRabbit / reviewers) so the merge engages `required_conversation_resolution` explicitly rather than bypassing it. Beta-channel dispatch (iOS/Android/macOS) stays a Phase D concern. Promote per phase only after ≥5 clean runs without human intervention.
+
+**Claude effort.** The two code-writing stages (`--implement`, `--watch`) invoke Claude at **ultracode** effort (xhigh reasoning + dynamic multi-agent workflow orchestration); the read-only planning stages (`--plan`, replan) run at **xhigh** to conserve the shared Claude subscription. Both are env knobs (`FACTORY_EFFORT`, `FACTORY_PLAN_EFFORT`) on the launchd plist, and ultracode degrades safely to plain xhigh if the Workflows feature is unavailable on the account. See [ADR-0029](../adr/0029-factory-ultracode-effort.md) and the runbook's "Claude effort & timeouts" knobs.
 
 ## The board
 
