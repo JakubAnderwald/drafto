@@ -33,14 +33,24 @@ function withIosModularHeaders(config) {
       }
 
       let contents = fs.readFileSync(podfilePath, "utf-8");
-      if (contents.includes(":modular_headers => true")) {
+
+      // Check for the exact declarations we need — not any `:modular_headers => true`
+      // entry — so an unrelated modular-headers pod can't make us skip the fix, and a
+      // partially-patched Podfile still gets the missing pod(s) added.
+      const requiredPods = [
+        "pod 'GoogleUtilities', :modular_headers => true",
+        "pod 'RecaptchaInterop', :modular_headers => true",
+      ];
+      const missingPods = requiredPods.filter((declaration) => !contents.includes(declaration));
+      if (missingPods.length === 0) {
         return config; // already patched
       }
 
       const modularPods = [
-        "  # Google Sign-In's AppCheckCore (Swift) requires these to expose Clang modules.",
-        "  pod 'GoogleUtilities', :modular_headers => true",
-        "  pod 'RecaptchaInterop', :modular_headers => true",
+        ...(missingPods.length === requiredPods.length
+          ? ["  # Google Sign-In's AppCheckCore (Swift) requires these to expose Clang modules."]
+          : []),
+        ...missingPods.map((declaration) => `  ${declaration}`),
       ].join("\n");
 
       // Insert just after `use_expo_modules!` inside the app target.
