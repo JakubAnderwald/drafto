@@ -29,14 +29,18 @@ import { pathToFileURL } from "node:url";
 
 const VALID_PLATFORMS = ["android", "ios", "all"];
 
-function parseArgs(argv) {
-  const platformIdx = argv.indexOf("--platform");
-  const notesIdx = argv.indexOf("--notes");
-  const buildIdx = argv.indexOf("--build");
+export function parseArgs(argv) {
+  // Return the token after `flag`, but treat a missing value or the next flag as
+  // absent — otherwise `--notes --build 29` would swallow `--build` as the notes.
+  const valueAfter = (flag) => {
+    const index = argv.indexOf(flag);
+    const value = index === -1 ? undefined : argv[index + 1];
+    return value && !value.startsWith("--") ? value : "";
+  };
   return {
-    platform: platformIdx !== -1 ? argv[platformIdx + 1] : "all",
-    notes: notesIdx !== -1 ? argv[notesIdx + 1] : "",
-    build: buildIdx !== -1 ? argv[buildIdx + 1] : "",
+    platform: valueAfter("--platform") || "all",
+    notes: valueAfter("--notes"),
+    build: valueAfter("--build"),
   };
 }
 
@@ -174,6 +178,12 @@ function generateAscJwt(keyId, issuerId, privateKeyP8) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Bound every App Store Connect request so a hung socket can't stall the release
+// step indefinitely (the retry cap only limits attempts, not a single request).
+const ASC_REQUEST_TIMEOUT_MS = 30_000;
+const ascFetch = (url, options = {}) =>
+  fetch(url, { ...options, signal: AbortSignal.timeout(ASC_REQUEST_TIMEOUT_MS) });
+
 /**
  * Flatten an App Store Connect `/builds` response (data + included) into
  * `{ id, version, uploadedDate, platform }` records. `platform` comes from the
@@ -291,7 +301,7 @@ async function postTestFlightNotes(releaseNotes, buildNumber) {
   const maxAttempts = buildNumber ? 15 : 1;
   let target = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const buildsRes = await fetch(buildsUrl, { headers });
+    const buildsRes = await ascFetch(buildsUrl, { headers });
     if (!buildsRes.ok) {
       throw new Error(`List builds failed: ${buildsRes.status} ${await buildsRes.text()}`);
     }
@@ -317,7 +327,7 @@ async function postTestFlightNotes(releaseNotes, buildNumber) {
   const buildId = target.id;
 
   // 2. Check if a betaBuildLocalization already exists for en-US
-  const locRes = await fetch(
+  const locRes = await ascFetch(
     `${baseUrl}/builds/${buildId}/betaBuildLocalizations?fields[betaBuildLocalizations]=locale,whatsNew`,
     { headers },
   );
@@ -331,7 +341,7 @@ async function postTestFlightNotes(releaseNotes, buildNumber) {
 
   if (existing) {
     // 3a. Update existing localization
-    const updateRes = await fetch(`${baseUrl}/betaBuildLocalizations/${existing.id}`, {
+    const updateRes = await ascFetch(`${baseUrl}/betaBuildLocalizations/${existing.id}`, {
       method: "PATCH",
       headers,
       body: JSON.stringify({
@@ -347,7 +357,7 @@ async function postTestFlightNotes(releaseNotes, buildNumber) {
     }
   } else {
     // 3b. Create new localization
-    const createRes = await fetch(`${baseUrl}/betaBuildLocalizations`, {
+    const createRes = await ascFetch(`${baseUrl}/betaBuildLocalizations`, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -377,6 +387,12 @@ async function main() {
   }
   if (!VALID_PLATFORMS.includes(platform)) {
     console.error(`Error: --platform must be one of: ${VALID_PLATFORMS.join(", ")}`);
+    process.exit(1);
+  }
+  // Require an explicit build for TestFlight so notes target THAT iOS build; the
+  // newest-iOS fallback could otherwise update an unintended build's metadata.
+  if ((platform === "ios" || platform === "all") && !build) {
+    console.error("Error: --build is required when posting TestFlight (iOS) notes");
     process.exit(1);
   }
 

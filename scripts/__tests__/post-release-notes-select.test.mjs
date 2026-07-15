@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   normalizeBuilds,
+  parseArgs,
   selectTestFlightBuild,
 } from "../../apps/mobile/scripts/post-release-notes.mjs";
 
@@ -62,6 +63,31 @@ const buildNumber29 = {
     { type: "preReleaseVersions", id: "pr-mac", attributes: { platform: "MAC_OS" } },
   ],
 };
+
+describe("parseArgs", () => {
+  it("parses a full invocation", () => {
+    assert.deepEqual(parseArgs(["--platform", "ios", "--notes", "Fixed things", "--build", "29"]), {
+      platform: "ios",
+      notes: "Fixed things",
+      build: "29",
+    });
+  });
+
+  it("does not consume the next flag as a value", () => {
+    // `--notes --build 29` must NOT treat "--build" as the notes text.
+    const parsed = parseArgs(["--platform", "ios", "--notes", "--build", "29"]);
+    assert.equal(parsed.notes, "");
+    assert.equal(parsed.build, "29");
+  });
+
+  it("defaults platform to all and leaves notes/build empty when absent", () => {
+    assert.deepEqual(parseArgs([]), { platform: "all", notes: "", build: "" });
+  });
+
+  it("treats a trailing flag with no value as empty", () => {
+    assert.equal(parseArgs(["--notes"]).notes, "");
+  });
+});
 
 describe("normalizeBuilds", () => {
   it("reads platform from the preReleaseVersion include", () => {
