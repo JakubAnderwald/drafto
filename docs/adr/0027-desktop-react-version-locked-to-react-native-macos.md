@@ -4,6 +4,15 @@
 - **Date**: 2026-07-02
 - **Authors**: Jakub Anderwald
 
+> **Update (2026-07-15)**: Mobile's `react-native` is pinned to **0.83.6** (the version Expo SDK 55
+> supports), not 0.86. Dependabot had bumped RN to 0.86 ahead of the Expo SDK — whose bundled
+> `@react-native/codegen` (0.83.x) can't compile RN 0.86 — which broke the mobile release-bundle
+> codegen. 0.83.6 is still React **19.2** (see the table below), so this ADR's core decision is
+> unchanged: desktop stays React 19.1 via the rnm-0.81 fossil; mobile and web stay React 19.2.
+> Dependabot now suppresses minor/major bumps for the RN family so it can't run ahead of the pinned
+> Expo SDK again (`.github/dependabot.yml`). References to "RN 0.86" below reflect the state when this
+> ADR was written.
+
 ## Context
 
 The macOS desktop app builds on **`react-native-macos`** — Microsoft's macOS fork of React Native.
