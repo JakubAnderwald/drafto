@@ -61,10 +61,18 @@ def run_in_project(*args)
   end
 end
 
-def post_release_notes(platform:, max_chars:)
+# `build` is the iOS build number (nil for android). It is forwarded to
+# post-release-notes.mjs as --build so TestFlight notes target that exact iOS
+# build — macOS + iOS share one App Store Connect app, so "the newest build"
+# alone can resolve to a macOS (desktop) build.
+def post_release_notes(platform:, max_chars:, build: nil)
   Dir.chdir(PROJECT_ROOT) do
     notes = sh("bash", "scripts/generate-release-notes.sh", "--max-chars", max_chars.to_s).strip
-    sh("node", "scripts/post-release-notes.mjs", "--platform", platform, "--notes", notes) unless notes.empty?
+    next if notes.empty?
+
+    cmd = ["node", "scripts/post-release-notes.mjs", "--platform", platform, "--notes", notes]
+    cmd += ["--build", build.to_s] unless build.nil? || build.to_s.empty?
+    sh(*cmd)
   end
 rescue StandardError => e
   UI.important("Release notes posting failed (non-fatal): #{e.message}")
@@ -249,8 +257,10 @@ platform :ios do
       )
     end
 
-    # Post release notes
-    post_release_notes(platform: "ios", max_chars: 4000)
+    # Post release notes for THIS iOS build (not just the newest build in the
+    # shared macOS+iOS ASC app). post-release-notes.mjs polls until the build is
+    # indexed, so the upload above needn't block on full processing.
+    post_release_notes(platform: "ios", max_chars: 4000, build: new_build_number)
 
     # Phase G: comment "Now live" on closed support issues for this build.
     # TestFlight (beta) and the App Store (production) ship the same build
