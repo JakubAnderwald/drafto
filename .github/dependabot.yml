@@ -27,3 +27,19 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "jest-expo"
         update-types: ["version-update:semver-major"]
+      # React Native and its native community modules are pinned by the Expo SDK
+      # (set via `expo install`), not Dependabot. In RN's 0.x line a *minor* bump is a
+      # breaking change: RN 0.83 → 0.86 ran ahead of Expo SDK 55 (whose bundled
+      # @react-native/codegen is 0.83.x) and broke the release-bundle codegen, which can
+      # never merge — so suppress minor + major for the RN family. Patch updates within
+      # the SDK's supported minor still flow through the minor-and-patch group.
+      - dependency-name: "react-native"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "react-native-safe-area-context"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "react-native-screens"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "react-native-svg"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "react-native-webview"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
