@@ -22,20 +22,20 @@
     "@nozbe/with-observables": "^1.6.0",
     "@react-native-async-storage/async-storage": "^3.1.1",
     "@react-native-community/netinfo": "^11.4.1",
-    "@react-navigation/native": "^7.3.8",
-    "@react-navigation/native-stack": "^7.17.10",
-    "@supabase/supabase-js": "^2.110.3",
+    "@react-navigation/native": "^7.3.12",
+    "@react-navigation/native-stack": "^7.18.4",
+    "@supabase/supabase-js": "^2.110.7",
     "react": "19.2.7",
-    "react-native": "0.86.0",
+    "react-native": "0.83.10",
     "react-native-document-picker-macos": "^1.0.0",
     "react-native-fs": "^2.20.0",
     "react-native-keychain": "^10.0.0",
-    "react-native-macos": "^0.81.8",
+    "react-native-macos": "^0.81.9",
     "react-native-safe-area-context": "^5.8.0",
     "react-native-screens": "^4.26.0",
     "react-native-svg": "^15.15.5",
     "react-native-url-polyfill": "^3.0.0",
-    "react-native-webview": "^13.12.5"
+    "react-native-webview": "^13.16.2"
   },
   "devDependencies": {
     "@babel/core": "^7.29.7",
@@ -55,6 +55,6 @@
     "jest": "^29.7.0",
     "react-native-dotenv": "^3.4.11",
     "typescript": "~6.0.3",
-    "typescript-eslint": "^8.63.0"
+    "typescript-eslint": "^8.64.0"
   }
 }
