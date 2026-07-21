@@ -263,7 +263,7 @@ export interface SyncResult {
   conflictCount: number;
 }
 
-export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
+async function runSync(db: WMDatabase): Promise<SyncResult> {
   let conflictCount = 0;
 
   try {
@@ -287,4 +287,24 @@ export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
   }
 
   return { conflictCount };
+}
+
+// Module-level in-flight coalesce. WatermelonDB forbids concurrent
+// synchronize() calls, and sign-out's best-effort final sync can run alongside
+// the DatabaseProvider's own sync. When a sync is already running, additional
+// callers await the same promise instead of starting a second synchronize().
+// This changes no pull/push/conflict behaviour — it only serialises re-entrant
+// callers.
+let inFlightSync: Promise<SyncResult> | null = null;
+
+export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
+  if (inFlightSync) {
+    return inFlightSync;
+  }
+  inFlightSync = runSync(db);
+  try {
+    return await inFlightSync;
+  } finally {
+    inFlightSync = null;
+  }
 }
