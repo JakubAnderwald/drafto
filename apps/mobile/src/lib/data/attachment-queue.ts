@@ -204,6 +204,24 @@ export async function processPendingUploads(): Promise<UploadResult> {
   return { uploaded, failed };
 }
 
+/**
+ * Delete the entire local attachments directory (and every cached file in it).
+ * Used on sign-out and on the cross-account identity guard so one account's
+ * downloaded/queued attachment files can't leak to the next account on the
+ * device. Best-effort: a deletion failure is logged and swallowed so it never
+ * blocks sign-out.
+ */
+export async function deleteAllLocalAttachments(): Promise<void> {
+  try {
+    const dir = getAttachmentsDir();
+    if (dir.exists) {
+      dir.delete();
+    }
+  } catch (error) {
+    console.warn("Failed to delete local attachments directory:", error);
+  }
+}
+
 export function cleanupOrphanedFiles(): void {
   try {
     const dir = getAttachmentsDir();

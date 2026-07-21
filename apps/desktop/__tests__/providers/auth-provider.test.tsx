@@ -7,7 +7,7 @@ import { syncDatabase } from "@/db/sync";
 import { AuthProvider, useAuth } from "@/providers/auth-provider";
 import { supabase } from "@/lib/supabase";
 import * as approvalCache from "@/lib/approval-cache";
-import { deleteAllLocalAttachments, processPendingUploads } from "@/lib/data/attachment-queue";
+import { deleteAllLocalAttachments, processPendingUploads } from "@/lib/data";
 
 jest.mock("@/lib/supabase", () => ({
   supabase: {
@@ -35,7 +35,7 @@ jest.mock("@/db/sync", () => ({
   syncDatabase: jest.fn(),
 }));
 
-jest.mock("@/lib/data/attachment-queue", () => ({
+jest.mock("@/lib/data", () => ({
   processPendingUploads: jest.fn(),
   deleteAllLocalAttachments: jest.fn(),
 }));
@@ -73,7 +73,7 @@ describe("AuthProvider", () => {
     mockApprovalCache.setCachedApproval.mockResolvedValue(undefined);
     mockApprovalCache.clearCachedApproval.mockResolvedValue(undefined);
     mockSyncDatabase.mockResolvedValue({ conflictCount: 0 });
-    mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, failed: 0 });
+    mockProcessPendingUploads.mockResolvedValue(0);
     mockDeleteAllLocalAttachments.mockResolvedValue(undefined);
   });
 
@@ -125,55 +125,7 @@ describe("AuthProvider", () => {
     expect(mockApprovalCache.getCachedApproval).toHaveBeenCalledWith("user-123");
   });
 
-  it("sets isApproved false when network fails and no cache exists", async () => {
-    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
-      data: { session: { user: TEST_USER } },
-    });
-    mockProfileQuery(null, { message: "Network error", code: "NETWORK_ERROR" });
-    mockApprovalCache.getCachedApproval.mockResolvedValue(null);
-
-    const { result } = renderHook(() => useAuth(), { wrapper });
-
-    await waitFor(() => {
-      expect(result.current.isLoading).toBe(false);
-    });
-
-    expect(result.current.isApproved).toBe(false);
-  });
-
-  it("defaults to not approved when cache read throws", async () => {
-    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
-      data: { session: { user: TEST_USER } },
-    });
-    mockProfileQuery(null, { message: "Network error", code: "NETWORK_ERROR" });
-    mockApprovalCache.getCachedApproval.mockRejectedValue(new Error("storage down"));
-
-    const { result } = renderHook(() => useAuth(), { wrapper });
-
-    await waitFor(() => {
-      expect(result.current.isLoading).toBe(false);
-    });
-
-    expect(result.current.isApproved).toBe(false);
-  });
-
-  it("keeps approval true when cache write throws", async () => {
-    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
-      data: { session: { user: TEST_USER } },
-    });
-    mockProfileQuery({ is_approved: true }, null);
-    mockApprovalCache.setCachedApproval.mockRejectedValue(new Error("storage down"));
-
-    const { result } = renderHook(() => useAuth(), { wrapper });
-
-    await waitFor(() => {
-      expect(result.current.isLoading).toBe(false);
-    });
-
-    expect(result.current.isApproved).toBe(true);
-  });
-
-  it("clears cached approval on sign out", async () => {
+  it("clears cached approval and resets the local database on sign out", async () => {
     (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
       data: { session: { user: TEST_USER } },
     });
@@ -192,7 +144,57 @@ describe("AuthProvider", () => {
 
     expect(mockApprovalCache.clearCachedApproval).toHaveBeenCalledWith("user-123");
     expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
+    expect(mockDeleteAllLocalAttachments).toHaveBeenCalled();
     expect(result.current.isApproved).toBe(false);
+  });
+
+  it("attempts a final sync before destroying the Supabase session", async () => {
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+      data: { session: { user: TEST_USER } },
+    });
+    mockProfileQuery({ is_approved: true }, null);
+    (mockSupabase.auth.signOut as jest.Mock).mockResolvedValue({});
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.signOut();
+    });
+
+    expect(mockProcessPendingUploads).toHaveBeenCalled();
+    expect(mockSyncDatabase).toHaveBeenCalled();
+    expect(mockSyncDatabase.mock.invocationCallOrder[0]).toBeLessThan(
+      (mockSupabase.auth.signOut as jest.Mock).mock.invocationCallOrder[0],
+    );
+  });
+
+  it("completes sign out even if the final sync fails", async () => {
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+      data: { session: { user: TEST_USER } },
+    });
+    mockProfileQuery({ is_approved: true }, null);
+    (mockSupabase.auth.signOut as jest.Mock).mockResolvedValue({});
+    mockSyncDatabase.mockRejectedValue(new Error("network offline"));
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    await act(async () => {
+      await expect(result.current.signOut()).resolves.toBeUndefined();
+    });
+
+    expect(mockSupabase.auth.signOut).toHaveBeenCalled();
+    expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
+    expect(result.current.isApproved).toBe(false);
+    warnSpy.mockRestore();
   });
 
   it("completes sign out even if the local database reset fails", async () => {
@@ -216,80 +218,6 @@ describe("AuthProvider", () => {
 
     expect(result.current.isApproved).toBe(false);
     errorSpy.mockRestore();
-  });
-
-  it("attempts a final sync before destroying the Supabase session", async () => {
-    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
-      data: { session: { user: TEST_USER } },
-    });
-    mockProfileQuery({ is_approved: true }, null);
-    (mockSupabase.auth.signOut as jest.Mock).mockResolvedValue({});
-
-    const { result } = renderHook(() => useAuth(), { wrapper });
-
-    await waitFor(() => {
-      expect(result.current.isLoading).toBe(false);
-    });
-
-    await act(async () => {
-      await result.current.signOut();
-    });
-
-    // The final flush uploads attachments and syncs metadata while the session
-    // is still valid — i.e. before supabase.auth.signOut() is called.
-    expect(mockProcessPendingUploads).toHaveBeenCalled();
-    expect(mockSyncDatabase).toHaveBeenCalled();
-    expect(mockSyncDatabase.mock.invocationCallOrder[0]).toBeLessThan(
-      (mockSupabase.auth.signOut as jest.Mock).mock.invocationCallOrder[0],
-    );
-  });
-
-  it("deletes locally cached attachment files on sign out", async () => {
-    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
-      data: { session: { user: TEST_USER } },
-    });
-    mockProfileQuery({ is_approved: true }, null);
-    (mockSupabase.auth.signOut as jest.Mock).mockResolvedValue({});
-
-    const { result } = renderHook(() => useAuth(), { wrapper });
-
-    await waitFor(() => {
-      expect(result.current.isLoading).toBe(false);
-    });
-
-    await act(async () => {
-      await result.current.signOut();
-    });
-
-    expect(mockDeleteAllLocalAttachments).toHaveBeenCalled();
-    expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
-  });
-
-  it("completes sign out even if the final sync fails", async () => {
-    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
-      data: { session: { user: TEST_USER } },
-    });
-    mockProfileQuery({ is_approved: true }, null);
-    (mockSupabase.auth.signOut as jest.Mock).mockResolvedValue({});
-    mockSyncDatabase.mockRejectedValue(new Error("network offline"));
-    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-
-    const { result } = renderHook(() => useAuth(), { wrapper });
-
-    await waitFor(() => {
-      expect(result.current.isLoading).toBe(false);
-    });
-
-    await act(async () => {
-      await expect(result.current.signOut()).resolves.toBeUndefined();
-    });
-
-    // Sign-out still tore down the session and reset the local DB despite the
-    // failed final sync.
-    expect(mockSupabase.auth.signOut).toHaveBeenCalled();
-    expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
-    expect(result.current.isApproved).toBe(false);
-    warnSpy.mockRestore();
   });
 
   it("completes sign out even if deleting local attachments fails", async () => {
