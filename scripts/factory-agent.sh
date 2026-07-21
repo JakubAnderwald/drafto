@@ -97,6 +97,16 @@ fi
 # Claude invocations on one issue, the card is parked in Blocked for a human.
 FACTORY_MAX_ATTEMPTS="${FACTORY_MAX_ATTEMPTS:-5}"
 
+# Fallback backoff (minutes) when a claude call dies on a session/usage limit
+# but the reset time can't be parsed from the transcript. The factory pauses
+# itself for this long, then re-checks. When the reset time IS parseable we
+# pause until then instead. See check_session_limit / pause_for_session_limit.
+FACTORY_LIMIT_FALLBACK_MIN="${FACTORY_LIMIT_FALLBACK_MIN:-30}"
+if ! [[ "$FACTORY_LIMIT_FALLBACK_MIN" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_LIMIT_FALLBACK_MIN='$FACTORY_LIMIT_FALLBACK_MIN'; defaulting to 30" >&2
+  FACTORY_LIMIT_FALLBACK_MIN=30
+fi
+
 # ── Claude effort levels ────────────────────────────────────────────────────
 # Code-writing stages (--implement / --watch) run at "ultracode": xhigh
 # reasoning + dynamic multi-agent workflow orchestration. Read-only planning
@@ -324,9 +334,10 @@ fi
 # doesn't file a bogus issue — pause is an explicit operator action, not a
 # fault.
 if node "$SCRIPT_DIR/lib/state-cli.mjs" factory:paused? --state-file "$STATE_FILE" 2>/dev/null; then
-  REASON=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:status --state-file "$STATE_FILE" 2>/dev/null \
-    | jq -r '.pausedReason // empty' 2>/dev/null || echo "")
-  log "Factory is paused${REASON:+ (reason: $REASON)}; exiting."
+  PAUSE_JSON=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:status --state-file "$STATE_FILE" 2>/dev/null || echo "{}")
+  REASON=$(echo "$PAUSE_JSON" | jq -r '.pausedReason // empty' 2>/dev/null || echo "")
+  UNTIL=$(echo "$PAUSE_JSON" | jq -r '.pausedUntil // empty' 2>/dev/null || echo "")
+  log "Factory is paused${REASON:+ (reason: $REASON)}${UNTIL:+ (until: $UNTIL)}; exiting."
   exit 0
 fi
 
@@ -969,6 +980,41 @@ release_slot_and_worktree() {
   node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$issue_num" --root "$REPO_ROOT" --force --delete-branch >>"$LOG_FILE" 2>&1 || true
 }
 
+# ── Session-limit detection ─────────────────────────────────────────────────
+# A `claude -p` call that dies because the shared subscription hit its session
+# usage limit exits non-zero with NOTHING on stdout/stderr — the only evidence
+# is the last assistant record of the claude session transcript. Rather than
+# bump the per-issue retry budget (which burned all 5 of #463's attempts in
+# 41 min against a limit that hadn't reset yet), detect the limit and pause the
+# whole factory until it resets. Since the loop runs plan→implement→watch→
+# release sequentially under one mutex, pausing here also stops the rest of the
+# tick at the top-of-script pause gate.
+#
+# check_session_limit <cwd> <since-iso>
+#   Exit 0 (and set SESSION_LIMIT_RESET_AT / SESSION_LIMIT_REASON) when the
+#   newest claude transcript for <cwd> ended in a limit error newer than
+#   <since-iso>. Exit 1 on anything else — fail-open to the normal retry path.
+check_session_limit() {
+  local cwd="$1" since="$2" out
+  SESSION_LIMIT_RESET_AT=""
+  SESSION_LIMIT_REASON=""
+  out=$(node "$SCRIPT_DIR/lib/session-limit.mjs" check --cwd "$cwd" --since "$since" \
+    --fallback-min "$FACTORY_LIMIT_FALLBACK_MIN" 2>>"$LOG_FILE") || return 1
+  SESSION_LIMIT_RESET_AT=$(echo "$out" | jq -r '.resetAt // empty' 2>/dev/null || echo "")
+  SESSION_LIMIT_REASON=$(echo "$out" | jq -r '.reason // empty' 2>/dev/null || echo "")
+  [[ -n "$SESSION_LIMIT_RESET_AT" ]]
+}
+
+# pause_for_session_limit — write the timed pause. The caller logs its mode's
+# `=== completed ===` line and exits 0 (exit 0 so the failure trap files no
+# bogus factory-failure issue). Attempts are intentionally NOT bumped.
+pause_for_session_limit() {
+  log "Claude session limit hit (${SESSION_LIMIT_REASON:-no detail}); pausing factory until $SESSION_LIMIT_RESET_AT (attempts NOT bumped)"
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:pause-until "$SESSION_LIMIT_RESET_AT" \
+    "claude session limit: ${SESSION_LIMIT_REASON:-unknown}" \
+    --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+}
+
 # Has <issue> already received a comment carrying <marker>? Idempotency guard so
 # a re-tick on a parked Approved card doesn't re-post the same notice every cycle.
 # Fails CLOSED: on a transient comment-fetch failure (empty output) it returns
@@ -1260,6 +1306,7 @@ See \`docs/features/dark-factory.md\` for the spec contract.
       "$PROMPT_TEXT" "$BUNDLE")
     log "Invoking claude for #$ISSUE_NUM (--plan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
+    CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
     node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
@@ -1273,6 +1320,16 @@ See \`docs/features/dark-factory.md\` for the spec contract.
     elif [[ $EXIT_CODE -ne 0 ]]; then
       log "ERROR: claude exited non-zero ($EXIT_CODE) for #$ISSUE_NUM --plan"
       cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
+      # Session limit? Pause until reset instead of burning the retry budget.
+      # Return the card to Ready first: a card left in Planning with no plan
+      # comment gets its attempts bumped by the next tick's rescue sweep.
+      if check_session_limit "$REPO_ROOT" "$CLAUDE_START_ISO"; then
+        rm -f "$CLAUDE_OUTPUT_FILE"
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Ready" || true
+        pause_for_session_limit
+        log "=== factory-agent --$MODE_NAME completed in $(( $(date +%s) - START_TIME ))s ==="
+        exit 0
+      fi
       rm -f "$CLAUDE_OUTPUT_FILE"
       # Bump the retry counter; if we exceed budget the next tick will refuse
       # to invoke claude.
@@ -1435,6 +1492,7 @@ and drag the card back to **Ready** to retry.
       "$PROMPT_TEXT" "$BUNDLE")
     log "Invoking claude for #$ISSUE_NUM (--plan replan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
+    CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
     node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
@@ -1449,8 +1507,16 @@ and drag the card back to **Ready** to retry.
     elif [[ $EXIT_CODE -ne 0 ]]; then
       log "ERROR: claude exited non-zero ($EXIT_CODE) for #$ISSUE_NUM --plan replan"
       cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
-      rm -f "$CLAUDE_OUTPUT_FILE"
       transition_status "$ITEM_ID" "$ISSUE_NUM" "Plan Review" || true
+      # Session limit? Pause until reset instead of burning the retry budget.
+      # Card is already restored to Plan Review above.
+      if check_session_limit "$REPO_ROOT" "$CLAUDE_START_ISO"; then
+        rm -f "$CLAUDE_OUTPUT_FILE"
+        pause_for_session_limit
+        log "=== factory-agent --$MODE_NAME completed in $(( $(date +%s) - START_TIME ))s ==="
+        exit 0
+      fi
+      rm -f "$CLAUDE_OUTPUT_FILE"
       ATTEMPTS=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
         --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.attempts // 0' || echo "0")
       if [[ "$ATTEMPTS" -ge 5 ]]; then
@@ -1748,6 +1814,7 @@ Drag it back to **Ready** so the factory can plan it first.
       "$PROMPT_TEXT" "$BUNDLE")
     log "Invoking claude for #$ISSUE_NUM (--implement, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s, effort=$FACTORY_EFFORT)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
+    CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
     ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$IMPLEMENT_TIMEOUT_SEC" \
         node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" ) \
@@ -1761,6 +1828,16 @@ Drag it back to **Ready** so the factory can plan it first.
     elif [[ $EXIT_CODE -ne 0 ]]; then
       log "ERROR: claude exited non-zero ($EXIT_CODE) for #$ISSUE_NUM --implement"
       cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
+      # Session limit? Pause until reset instead of burning the retry budget.
+      # Keep the slot + worktree (as the timeout branch does) so the resumed
+      # tick reuses the warm worktree; the card stays In Progress.
+      if check_session_limit "$WT_PATH" "$CLAUDE_START_ISO"; then
+        rm -f "$CLAUDE_OUTPUT_FILE"
+        log "Issue #$ISSUE_NUM: session limit — keeping slot $SLOT + worktree; card stays In Progress for resume"
+        pause_for_session_limit
+        log "=== factory-agent --$MODE_NAME completed in $(( $(date +%s) - START_TIME ))s ==="
+        exit 0
+      fi
       rm -f "$CLAUDE_OUTPUT_FILE"
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       continue
@@ -2061,6 +2138,7 @@ A human should take a look. Reset with \
         "$WATCH_PROMPT_TEXT" "$BUNDLE")
       log "Invoking claude for #$ISSUE_NUM (--watch fix, slot $SLOT, cap ${WATCH_TIMEOUT_SEC}s, effort=$FACTORY_EFFORT)"
       CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
+      CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
       EXIT_CODE=0
       ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$WATCH_TIMEOUT_SEC" \
           node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" ) \
@@ -2070,6 +2148,13 @@ A human should take a look. Reset with \
         [[ $EXIT_CODE -eq 124 ]] && log "WARNING: claude timed out for #$ISSUE_NUM --watch fix" \
           || log "ERROR: claude exited $EXIT_CODE for #$ISSUE_NUM --watch fix"
         cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
+        # Session limit (never a 124 timeout)? Pause until reset, don't bump.
+        if [[ $EXIT_CODE -ne 124 ]] && check_session_limit "$WT_PATH" "$CLAUDE_START_ISO"; then
+          rm -f "$CLAUDE_OUTPUT_FILE"
+          pause_for_session_limit
+          log "=== factory-agent --$MODE_NAME completed in $(( $(date +%s) - START_TIME ))s ==="
+          exit 0
+        fi
         rm -f "$CLAUDE_OUTPUT_FILE"
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         continue

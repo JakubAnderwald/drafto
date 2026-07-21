@@ -8,6 +8,9 @@
 //   {
 //     paused:        boolean,            // global kill switch
 //     pausedAt:      ISO-8601 | null,
+//     pausedUntil:   ISO-8601 | null,    // timed auto-resume (session-limit
+//                                        // backoff). null = manual pause that
+//                                        // never expires. See isFactoryPaused.
 //     pausedReason:  string | null,
 //     slots: {
 //       "0": { pid: number|null, issueNumber: string|null, acquiredAt: ISO|null },
@@ -52,6 +55,7 @@ export function emptyFactoryState() {
   return {
     paused: false,
     pausedAt: null,
+    pausedUntil: null,
     pausedReason: null,
     slots: {
       0: emptySlot(),
@@ -112,6 +116,10 @@ function mergeWithDefaults(parsed) {
   return {
     paused: Boolean(parsed.paused),
     pausedAt: typeof parsed.pausedAt === "string" ? parsed.pausedAt : null,
+    // Absent in legacy files → null, i.e. a plain never-expiring pause. This is
+    // the whole back-compat story: old state loads as a manual pause, and old
+    // code reading a new file simply drops the field (also a plain pause).
+    pausedUntil: typeof parsed.pausedUntil === "string" ? parsed.pausedUntil : null,
     pausedReason: typeof parsed.pausedReason === "string" ? parsed.pausedReason : null,
     slots: {
       0: mergeSlot(slotsIn["0"]),
@@ -138,6 +146,25 @@ function mergeSlot(slot) {
 export function pauseFactory(state, { reason = null, now = new Date().toISOString() } = {}) {
   state.paused = true;
   state.pausedAt = now;
+  // Manual pause overrides any timed pause and never auto-expires.
+  state.pausedUntil = null;
+  state.pausedReason = reason == null || reason === "" ? null : String(reason);
+  return state;
+}
+
+// Time-bounded pause: `paused?` reports not-paused once now >= <until> and the
+// next tick auto-resumes. Used for session-limit backoff — the factory parks
+// itself until the limit resets instead of burning per-issue retry attempts.
+export function pauseFactoryUntil(
+  state,
+  { until, reason = null, now = new Date().toISOString() } = {},
+) {
+  if (until == null || until === "") {
+    throw new Error("pauseFactoryUntil requires <until>");
+  }
+  state.paused = true;
+  state.pausedAt = now;
+  state.pausedUntil = String(until);
   state.pausedReason = reason == null || reason === "" ? null : String(reason);
   return state;
 }
@@ -145,12 +172,27 @@ export function pauseFactory(state, { reason = null, now = new Date().toISOStrin
 export function resumeFactory(state) {
   state.paused = false;
   state.pausedAt = null;
+  state.pausedUntil = null;
   state.pausedReason = null;
   return state;
 }
 
-export function isFactoryPaused(state) {
-  return Boolean(state?.paused);
+export function isFactoryPaused(state, now = new Date().toISOString()) {
+  if (!state?.paused) return false;
+  // A timed pause (pausedUntil set) is over once now has reached it; a manual
+  // pause (pausedUntil null) stays paused indefinitely.
+  if (state.pausedUntil == null) return true;
+  return now < state.pausedUntil;
+}
+
+// Auto-resume a timed pause whose deadline has passed. Returns true (and clears
+// the pause in place) only when an expired timed pause was cleared; a manual
+// pause or a still-pending timed pause is left untouched.
+export function clearExpiredPause(state, now = new Date().toISOString()) {
+  if (!state?.paused || state.pausedUntil == null) return false;
+  if (now < state.pausedUntil) return false;
+  resumeFactory(state);
+  return true;
 }
 
 // ── slot management ─────────────────────────────────────────────────────────

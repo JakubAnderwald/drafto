@@ -11,8 +11,10 @@ import {
   loadFactoryState,
   saveFactoryState,
   pauseFactory,
+  pauseFactoryUntil,
   resumeFactory,
   isFactoryPaused,
+  clearExpiredPause,
   acquireSlot,
   releaseSlot,
   getSlot,
@@ -45,6 +47,7 @@ describe("emptyFactoryState", () => {
     const s = emptyFactoryState();
     assert.equal(s.paused, false);
     assert.equal(s.pausedAt, null);
+    assert.equal(s.pausedUntil, null);
     assert.equal(s.pausedReason, null);
     assert.deepEqual(Object.keys(s.slots).sort(), ["0", "1"]);
     assert.deepEqual(s.issues, {});
@@ -138,6 +141,80 @@ describe("pause / resume", () => {
     assert.equal(isFactoryPaused(null), false);
     assert.equal(isFactoryPaused({}), false);
     assert.equal(isFactoryPaused({ paused: true }), true);
+  });
+});
+
+describe("timed pause (pause-until / auto-resume)", () => {
+  const T0 = "2026-07-21T08:00:00.000Z";
+  const T_UNTIL = "2026-07-21T10:30:00.000Z";
+  const BEFORE = "2026-07-21T09:00:00.000Z";
+  const AFTER = "2026-07-21T11:00:00.000Z";
+
+  it("pauseFactoryUntil sets paused + pausedUntil + reason", () => {
+    const s = emptyFactoryState();
+    pauseFactoryUntil(s, { until: T_UNTIL, reason: "claude session limit", now: T0 });
+    assert.equal(s.paused, true);
+    assert.equal(s.pausedAt, T0);
+    assert.equal(s.pausedUntil, T_UNTIL);
+    assert.equal(s.pausedReason, "claude session limit");
+  });
+
+  it("pauseFactoryUntil requires <until>", () => {
+    assert.throws(() => pauseFactoryUntil(emptyFactoryState(), {}), /requires <until>/);
+  });
+
+  it("isFactoryPaused honours the deadline: paused before, free at/after", () => {
+    const s = emptyFactoryState();
+    pauseFactoryUntil(s, { until: T_UNTIL, now: T0 });
+    assert.equal(isFactoryPaused(s, BEFORE), true);
+    assert.equal(isFactoryPaused(s, AFTER), false);
+    assert.equal(isFactoryPaused(s, T_UNTIL), false, "exactly at the deadline is no longer paused");
+  });
+
+  it("clearExpiredPause resumes only once the deadline has passed", () => {
+    const s = emptyFactoryState();
+    pauseFactoryUntil(s, { until: T_UNTIL, now: T0 });
+    assert.equal(clearExpiredPause(s, BEFORE), false, "not yet expired → untouched");
+    assert.equal(s.paused, true);
+    assert.equal(clearExpiredPause(s, AFTER), true, "expired → cleared");
+    assert.equal(s.paused, false);
+    assert.equal(s.pausedUntil, null);
+    assert.equal(s.pausedReason, null);
+  });
+
+  it("clearExpiredPause never clears a manual (never-expiring) pause", () => {
+    const s = emptyFactoryState();
+    pauseFactory(s, { reason: "manual", now: T0 });
+    assert.equal(clearExpiredPause(s, AFTER), false);
+    assert.equal(s.paused, true);
+    assert.equal(isFactoryPaused(s, AFTER), true, "manual pause stays paused indefinitely");
+  });
+
+  it("a manual pause clears any prior pausedUntil (cannot auto-expire)", () => {
+    const s = emptyFactoryState();
+    pauseFactoryUntil(s, { until: T_UNTIL, now: T0 });
+    pauseFactory(s, { reason: "operator stop", now: T0 });
+    assert.equal(s.pausedUntil, null);
+    assert.equal(isFactoryPaused(s, AFTER), true);
+  });
+
+  it("resumeFactory clears pausedUntil alongside the other pause fields", () => {
+    const s = emptyFactoryState();
+    pauseFactoryUntil(s, { until: T_UNTIL, now: T0 });
+    resumeFactory(s);
+    assert.equal(s.paused, false);
+    assert.equal(s.pausedUntil, null);
+  });
+
+  it("back-compat: a legacy state file without pausedUntil loads as null", async () => {
+    writeFileSync(stateFile, JSON.stringify({ paused: true, pausedAt: T0, pausedReason: "old" }));
+    const s = await loadFactoryState(stateFile);
+    assert.equal(s.pausedUntil, null);
+    // With pausedUntil null it behaves as a plain never-expiring pause.
+    assert.equal(isFactoryPaused(s, AFTER), true);
+    await saveFactoryState(s, stateFile);
+    const round = JSON.parse(readFileSync(stateFile, "utf8"));
+    assert.equal(round.pausedUntil, null);
   });
 });
 
