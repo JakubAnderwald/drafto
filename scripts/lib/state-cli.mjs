@@ -342,11 +342,16 @@ async function main(argv) {
       const until = positional[0];
       const reason = positional[1] ?? null;
       if (!until) throw new Error("factory:pause-until requires <until-iso> [<reason>]");
-      if (Number.isNaN(Date.parse(until))) {
+      const untilMs = Date.parse(until);
+      if (Number.isNaN(untilMs)) {
         throw new Error(`factory:pause-until: invalid <until-iso>: ${until}`);
       }
+      // Persist a canonical UTC ISO string. isFactoryPaused/clearExpiredPause
+      // compare pausedUntil lexicographically against a toISOString() `now`, so
+      // a zone-offset (…+02:00) or reduced-precision operator input would order
+      // incorrectly. Normalising here keeps the stored value comparable.
       const state = await loadFactoryState(file);
-      pauseFactoryUntil(state, { until, reason, now });
+      pauseFactoryUntil(state, { until: new Date(untilMs).toISOString(), reason, now });
       await saveFactoryState(state, file);
       return {
         ok: true,

@@ -60,8 +60,15 @@ const MAX_RESET_HORIZON_MS = 49 * 60 * 60 * 1000;
 // Deliberately not anchored on the "·" (U+00B7) separator — phrasing drifts.
 const LIMIT_RE = /\b(?:session|usage|weekly|\d+\s*-?\s*hour)\s+limit\b/i;
 
-const RESET_RE =
-  /resets\s+(?:(tomorrow)\s*(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([ap]m)\s*(?:\(([^)]+)\))?/i;
+// Parsing is anchored on the "reset(s)" keyword, then the time / "tomorrow" /
+// zone are read from the short clause that follows — order-independent, so
+// "resets 10:30am (Europe/Warsaw)", "resets tomorrow 10am", "Your limit will
+// reset at 3pm (UTC)", and "resets 3am tomorrow (UTC)" all parse.
+const RESET_RE = /reset(?:s)?\b/i;
+const RESET_CLAUSE_LEN = 60;
+const TIME_RE = /\b(\d{1,2})(?::(\d{2}))?\s*([ap]m)\b/i;
+const ZONE_RE = /\(([^)]+)\)/;
+const TOMORROW_RE = /\btomorrow\b/i;
 
 // The claude CLI names each cwd's transcript dir by replacing every
 // non-alphanumeric character with "-" (verified against real dirs, e.g.
@@ -160,24 +167,34 @@ function isValidTimeZone(tz) {
   }
 }
 
-// Parse "resets 10:30am (Europe/Warsaw)" / "resets 4pm" / "resets tomorrow
-// 10am (…)" into the next matching UTC instant after <now>, plus a 2-minute
-// safety margin. Returns null on any doubt — the caller then applies its
-// fixed fallback delay instead.
+// Parse the reset clause of a limit message — "resets 10:30am (Europe/Warsaw)",
+// "resets tomorrow 10am (…)", "resets 3am tomorrow (UTC)", "Your limit will
+// reset at 3pm (UTC)" — into the next matching UTC instant after <now>, plus a
+// 2-minute safety margin. Anchored on the "reset(s)" keyword, then time /
+// "tomorrow" / zone are read from the following clause independently of order.
+// Returns null on any doubt — the caller then applies its fixed fallback delay.
 export function parseResetTime(text, now = new Date()) {
-  const m = String(text).match(RESET_RE);
-  if (!m) return null;
-  const tomorrow = Boolean(m[1]);
-  const hour12 = Number.parseInt(m[2], 10);
-  const minute = m[3] == null ? 0 : Number.parseInt(m[3], 10);
-  const meridiem = m[4].toLowerCase();
+  const s = String(text);
+  const anchor = s.match(RESET_RE);
+  if (!anchor) return null;
+  // Only inspect the short clause after "reset(s)" so an unrelated time
+  // elsewhere in the message can't be mistaken for the reset time.
+  const clauseStart = anchor.index + anchor[0].length;
+  const clause = s.slice(clauseStart, clauseStart + RESET_CLAUSE_LEN);
+
+  const timeM = clause.match(TIME_RE);
+  if (!timeM) return null;
+  const hour12 = Number.parseInt(timeM[1], 10);
+  const minute = timeM[2] == null ? 0 : Number.parseInt(timeM[2], 10);
+  const meridiem = timeM[3].toLowerCase();
   if (!Number.isInteger(hour12) || hour12 < 1 || hour12 > 12) return null;
   if (!Number.isInteger(minute) || minute > 59) return null;
   const hour = meridiem === "am" ? hour12 % 12 : (hour12 % 12) + 12;
+  const tomorrow = TOMORROW_RE.test(clause);
 
   // The transcript was written on this same machine, so the host zone is the
   // right fallback when the zone is absent or unknown to ICU.
-  const zoneRaw = m[5]?.trim();
+  const zoneRaw = clause.match(ZONE_RE)?.[1]?.trim();
   const timeZone =
     zoneRaw && isValidTimeZone(zoneRaw)
       ? zoneRaw

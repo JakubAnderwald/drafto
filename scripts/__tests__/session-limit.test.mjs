@@ -59,12 +59,32 @@ describe("detectSessionLimit", () => {
     assert.equal(r.resetAt.toISOString(), "2026-07-21T08:32:00.000Z");
   });
 
-  it("does NOT flag a 401 auth error as the last assistant record", () => {
-    const jsonl = assistantText("Failed to authenticate. API Error: 401 Unauthorized", {
-      isApiErrorMessage: true,
-      timestamp: "2026-07-21T07:11:15.878Z",
-    });
-    assert.equal(detectSessionLimit(jsonl).limited, false);
+  it("flags the usage / weekly / N-hour limit wordings (all LIMIT_RE branches)", () => {
+    for (const text of [
+      "Claude AI usage limit reached · resets 10:30am (Europe/Warsaw)",
+      "You've reached your weekly limit.",
+      "You've hit your 5-hour limit. Please wait.",
+    ]) {
+      const jsonl = assistantText(text, {
+        isApiErrorMessage: true,
+        timestamp: "2026-07-21T07:11:15.878Z",
+      });
+      assert.equal(detectSessionLimit(jsonl).limited, true, `should flag: ${text}`);
+    }
+  });
+
+  it("does NOT flag a 401 auth / connection-closed / rate-limit error", () => {
+    for (const text of [
+      "Failed to authenticate. API Error: 401 Unauthorized",
+      "API Error: Connection closed mid-response",
+      "Please run /login to continue",
+    ]) {
+      const jsonl = assistantText(text, {
+        isApiErrorMessage: true,
+        timestamp: "2026-07-21T07:11:15.878Z",
+      });
+      assert.equal(detectSessionLimit(jsonl).limited, false, `should NOT flag: ${text}`);
+    }
   });
 
   it("does NOT flag a limit that the session later recovered from", () => {
@@ -177,8 +197,37 @@ describe("parseResetTime", () => {
     assert.ok(d instanceof Date, "must still return a Date via host-zone fallback");
   });
 
+  it("parses 'reset at <time>' phrasings (usage-limit family)", () => {
+    // "Your limit will reset at 3pm (UTC)" — no trailing 's', "at" without "tomorrow".
+    assert.equal(
+      at("Your limit will reset at 3pm (UTC)", "2026-07-21T09:00:00Z").toISOString(),
+      "2026-07-21T15:02:00.000Z",
+    );
+    assert.equal(
+      at("resets at 10am (UTC)", "2026-07-21T05:00:00Z").toISOString(),
+      "2026-07-21T10:02:00.000Z",
+    );
+  });
+
+  it("parses a trailing 'tomorrow' (word-order independent)", () => {
+    // "resets 3am tomorrow (UTC)" — tomorrow AFTER the time, zone still after that.
+    assert.equal(
+      at("resets 3am tomorrow (UTC)", "2026-07-21T01:00:00Z").toISOString(),
+      "2026-07-22T03:02:00.000Z",
+    );
+  });
+
+  it("anchors on 'reset' so an unrelated earlier time is ignored", () => {
+    // The 9am here is noise; only the clause after "resets" counts.
+    assert.equal(
+      at("Started at 9am; resets 3pm (UTC)", "2026-07-21T09:00:00Z").toISOString(),
+      "2026-07-21T15:02:00.000Z",
+    );
+  });
+
   it("returns null when there is no reset clause", () => {
     assert.equal(parseResetTime("some unrelated text"), null);
+    assert.equal(parseResetTime("You've hit your session limit."), null);
   });
 });
 
@@ -259,6 +308,46 @@ describe("findLatestTranscript + CLI", () => {
       assert.equal(out.limited, true);
       assert.equal(out.source, "parsed");
       assert.equal(out.resetAt, "2026-07-21T08:32:00.000Z");
+    });
+  });
+
+  it("CLI honours --since: a transcript older than --since is not flagged", async () => {
+    await withProjectsDir((base) => {
+      seed(base, [
+        {
+          name: "stale.jsonl",
+          content: assistantText(LIMIT_TEXT, {
+            isApiErrorMessage: true,
+            timestamp: "2026-07-21T06:00:00Z",
+          }),
+          mtime: new Date("2026-07-21T06:00:00Z"),
+        },
+      ]);
+      // --since a full hour after the record → treated as a stale prior-run
+      // transcript, not this invocation → fail-open exit 1.
+      const stale = runCli([
+        "check",
+        "--cwd",
+        cwd,
+        "--projects-dir",
+        base,
+        "--since",
+        "2026-07-21T07:00:00Z",
+      ]);
+      assert.equal(stale.status, 1, "stale transcript must not re-trigger a pause");
+      // --since before the record → this run → flagged.
+      const fresh = runCli([
+        "check",
+        "--cwd",
+        cwd,
+        "--projects-dir",
+        base,
+        "--since",
+        "2026-07-21T05:59:00Z",
+        "--now",
+        "2026-07-21T05:41:00Z",
+      ]);
+      assert.equal(fresh.status, 0, fresh.stderr);
     });
   });
 

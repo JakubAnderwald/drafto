@@ -128,6 +128,25 @@ describe("factory:pause-until (timed pause + auto-resume)", () => {
     assert.match(r.stderr, /invalid <until-iso>/);
   });
 
+  it("normalises a zone-offset <until-iso> to canonical UTC so comparisons hold", () => {
+    // 10:30+02:00 == 08:30Z. Stored raw it would sort after a 09:00Z `now`
+    // ("1" > "0") and wrongly read as still-paused; normalised it sorts before.
+    const r = run([
+      "factory:pause-until",
+      "2026-07-21T10:30:00+02:00",
+      "limit",
+      "--state-file",
+      stateFile,
+      "--now",
+      T0,
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(readState().pausedUntil, "2026-07-21T08:30:00.000Z");
+    // now = 09:00Z is past the real 08:30Z deadline → auto-resumes.
+    const p = run(["factory:paused?", "--state-file", stateFile, "--now", BEFORE]);
+    assert.equal(p.status, 1, "past the true UTC deadline → not paused");
+  });
+
   it("factory:paused? is 0 before the deadline and 1 (auto-cleared) after", () => {
     run(["factory:pause-until", UNTIL, "limit", "--state-file", stateFile, "--now", T0]);
 
