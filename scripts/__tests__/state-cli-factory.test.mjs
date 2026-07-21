@@ -97,6 +97,83 @@ describe("factory:pause / factory:resume / factory:status / factory:paused?", ()
   });
 });
 
+describe("factory:pause-until (timed pause + auto-resume)", () => {
+  const T0 = "2026-07-21T08:00:00.000Z";
+  const UNTIL = "2026-07-21T10:30:00.000Z";
+  const BEFORE = "2026-07-21T09:00:00.000Z";
+  const AFTER = "2026-07-21T11:00:00.000Z";
+
+  it("stamps paused + pausedUntil + reason", () => {
+    const r = run([
+      "factory:pause-until",
+      UNTIL,
+      "claude session limit",
+      "--state-file",
+      stateFile,
+      "--now",
+      T0,
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.paused, true);
+    assert.equal(out.pausedUntil, UNTIL);
+    assert.equal(out.pausedReason, "claude session limit");
+    const state = readState();
+    assert.equal(state.pausedUntil, UNTIL);
+  });
+
+  it("rejects an unparseable <until-iso>", () => {
+    const r = run(["factory:pause-until", "not-a-date", "--state-file", stateFile]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /invalid <until-iso>/);
+  });
+
+  it("normalises a zone-offset <until-iso> to canonical UTC so comparisons hold", () => {
+    // 10:30+02:00 == 08:30Z. Stored raw it would sort after a 09:00Z `now`
+    // ("1" > "0") and wrongly read as still-paused; normalised it sorts before.
+    const r = run([
+      "factory:pause-until",
+      "2026-07-21T10:30:00+02:00",
+      "limit",
+      "--state-file",
+      stateFile,
+      "--now",
+      T0,
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(readState().pausedUntil, "2026-07-21T08:30:00.000Z");
+    // now = 09:00Z is past the real 08:30Z deadline → auto-resumes.
+    const p = run(["factory:paused?", "--state-file", stateFile, "--now", BEFORE]);
+    assert.equal(p.status, 1, "past the true UTC deadline → not paused");
+  });
+
+  it("factory:paused? is 0 before the deadline and 1 (auto-cleared) after", () => {
+    run(["factory:pause-until", UNTIL, "limit", "--state-file", stateFile, "--now", T0]);
+
+    let r = run(["factory:paused?", "--state-file", stateFile, "--now", BEFORE]);
+    assert.equal(r.status, 0, "still paused before the deadline");
+
+    r = run(["factory:paused?", "--state-file", stateFile, "--now", AFTER]);
+    assert.equal(r.status, 1, "no longer paused after the deadline");
+    // Auto-resume must have persisted the cleared pause.
+    const state = readState();
+    assert.equal(state.paused, false);
+    assert.equal(state.pausedUntil, null);
+  });
+
+  it("a manual factory:pause never auto-expires", () => {
+    run(["factory:pause", "operator stop", "--state-file", stateFile, "--now", T0]);
+    const r = run([
+      "factory:paused?",
+      "--state-file",
+      stateFile,
+      "--now",
+      "2027-01-01T00:00:00.000Z",
+    ]);
+    assert.equal(r.status, 0, "manual pause stays paused indefinitely");
+  });
+});
+
 describe("factory:slot-acquire / slot-release / slot-status", () => {
   it("acquires an empty slot and records pid + issue + timestamp", () => {
     const now = "2026-05-21T09:00:00.000Z";

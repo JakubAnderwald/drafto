@@ -81,7 +81,8 @@ After filing, drag the card to **Ready** on the board. The factory picks it up o
 ## Kill switches
 
 - **Per-card**: drag the card to **Blocked**, or apply `factory-pause` to the issue. The factory ignores the card on the next tick.
-- **Global**: run `node scripts/lib/state-cli.mjs factory:pause` on the Mac mini. The agent reads the flag every cycle and exits early when set. `factory:resume` to unpause. (Available once Wave 2 lands; until then, unload the launchd plist.)
+- **Global**: run `node scripts/lib/state-cli.mjs factory:pause` on the Mac mini. The agent reads the flag every cycle and exits early when set. A manual pause never auto-expires; `factory:resume` to unpause. (Available once Wave 2 lands; until then, unload the launchd plist.)
+- **Automatic (self-healing)**: when a claude call dies on a Claude subscription _session usage_ limit, the factory pauses itself until the limit resets (`factory:pause-until`) instead of burning the card's retry budget, then auto-resumes on the first tick past the deadline. See [factory-runbook.md → "Automatic pause on a Claude session limit"](../operations/factory-runbook.md#automatic-pause-on-a-claude-session-limit-self-healing).
 - **Emergency stop**: `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist` on the Mac mini, or `kill` the active claude PID under `logs/factory.*.pid`.
 
 ## Troubleshooting

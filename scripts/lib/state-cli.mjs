@@ -64,13 +64,21 @@
 // targets the factory file for these subcommands; tests use it.
 //
 //   factory:pause [<reason>]        Set paused=true, pausedAt=now,
-//                                    pausedReason=<reason>. Agent exits early
-//                                    on every cycle while set.
-//   factory:resume                  Clear the pause flag.
+//                                    pausedReason=<reason>. Manual pause: never
+//                                    auto-expires. Agent exits early on every
+//                                    cycle while set.
+//   factory:pause-until <iso> [<reason>]
+//                                    Timed pause: paused until <iso>, then the
+//                                    next `factory:paused?` auto-resumes. Used
+//                                    for session-limit backoff (see
+//                                    factory-agent.sh check_session_limit).
+//   factory:resume                  Clear the pause flag (manual or timed).
 //   factory:status                  Print the full factory state JSON
 //                                    (paused, slots, issues).
 //   factory:paused?                 Exit 0 if paused, exit 1 otherwise. Bash-
-//                                    friendly: `if node ... factory:paused?; then echo paused; fi`
+//                                    friendly: `if node ... factory:paused?; then echo paused; fi`.
+//                                    Auto-resumes (and persists) an expired
+//                                    timed pause before reporting.
 //   factory:slot-acquire <slot> <issue> [<pid>]
 //                                    Record slot <slot> (0|1) as occupied by
 //                                    <issue> + <pid>. Caller still holds an
@@ -117,8 +125,10 @@ import {
   saveFactoryState,
   DEFAULT_FACTORY_STATE_PATH,
   pauseFactory,
+  pauseFactoryUntil,
   resumeFactory,
   isFactoryPaused,
+  clearExpiredPause,
   acquireSlot,
   releaseSlot,
   getSlot,
@@ -328,6 +338,29 @@ async function main(argv) {
       await saveFactoryState(state, file);
       return { ok: true, paused: true, pausedAt: now, pausedReason: state.pausedReason };
     }
+    case "factory:pause-until": {
+      const until = positional[0];
+      const reason = positional[1] ?? null;
+      if (!until) throw new Error("factory:pause-until requires <until-iso> [<reason>]");
+      const untilMs = Date.parse(until);
+      if (Number.isNaN(untilMs)) {
+        throw new Error(`factory:pause-until: invalid <until-iso>: ${until}`);
+      }
+      // Persist a canonical UTC ISO string. isFactoryPaused/clearExpiredPause
+      // compare pausedUntil lexicographically against a toISOString() `now`, so
+      // a zone-offset (…+02:00) or reduced-precision operator input would order
+      // incorrectly. Normalising here keeps the stored value comparable.
+      const state = await loadFactoryState(file);
+      pauseFactoryUntil(state, { until: new Date(untilMs).toISOString(), reason, now });
+      await saveFactoryState(state, file);
+      return {
+        ok: true,
+        paused: true,
+        pausedAt: now,
+        pausedUntil: state.pausedUntil,
+        pausedReason: state.pausedReason,
+      };
+    }
     case "factory:resume": {
       const state = await loadFactoryState(file);
       resumeFactory(state);
@@ -340,8 +373,14 @@ async function main(argv) {
     }
     case "factory:paused?": {
       const state = await loadFactoryState(file);
+      // Auto-resume an expired timed pause so `factory:status` stays truthful.
+      // Safe to persist here: modes run sequentially under the loop's mutex, so
+      // there's no concurrent writer, and a redundant clear is idempotent.
+      if (clearExpiredPause(state, now)) {
+        await saveFactoryState(state, file);
+      }
       // Exit 0 if paused, 1 if not — bash-friendly. Don't print anything.
-      process.exit(isFactoryPaused(state) ? 0 : 1);
+      process.exit(isFactoryPaused(state, now) ? 0 : 1);
       return null;
     }
     case "factory:slot-acquire": {
@@ -445,6 +484,7 @@ async function main(argv) {
           "get-issue-zoho-thread-id <issue-number>|" +
           "set-issue-field <issue-number> <field> <value>|" +
           "factory:pause [<reason>]|" +
+          "factory:pause-until <until-iso> [<reason>]|" +
           "factory:resume|" +
           "factory:status|" +
           "factory:paused?|" +
