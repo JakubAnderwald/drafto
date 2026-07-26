@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState, useCallback } from "rea
 import type { Session, User } from "@supabase/supabase-js";
 
 import { database } from "@/db";
-import { syncDatabase } from "@/db/sync";
+import { syncDatabase, resetSyncState } from "@/db/sync";
 import { getCachedApproval, setCachedApproval, clearCachedApproval } from "@/lib/approval-cache";
 import { deleteAllLocalAttachments, processPendingUploads } from "@/lib/data/attachment-queue";
 import { supabase } from "@/lib/supabase";
@@ -119,6 +119,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (userId) {
       await clearCachedApproval(userId);
     }
+
+    // Invalidate any in-flight sync (e.g. a final sync that timed out above but
+    // is still running) so the next signed-in user starts a fresh sync instead
+    // of coalescing onto this session's — which could otherwise write this
+    // user's pulled records into the freshly-reset database below.
+    resetSyncState();
 
     // Wipe the offline cache so a different account/environment starts clean and
     // stale notes can't carry across logins. Best-effort: a reset failure must

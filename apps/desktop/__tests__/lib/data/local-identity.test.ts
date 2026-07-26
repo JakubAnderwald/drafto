@@ -47,14 +47,17 @@ describe("ensureLocalIdentity", () => {
     expect(mockSetItem).not.toHaveBeenCalled();
   });
 
-  it("persists the new id but does not reset when a different user signs in on an empty DB", async () => {
+  it("cleans attachments (but does not reset the DB) when a different user signs in on an empty DB", async () => {
     mockGetItem.mockResolvedValue("user-1");
     mockFetchCount.mockResolvedValue(0);
 
     await ensureLocalIdentity("user-2");
 
+    // Empty DB → no reset needed, but attachment files can survive a prior
+    // sign-out's failed deletion independently of the DB, so they are always
+    // cleaned on a different-user sign-in (cross-account leak guard).
     expect(mockUnsafeReset).not.toHaveBeenCalled();
-    expect(mockDeleteAllLocalAttachments).not.toHaveBeenCalled();
+    expect(mockDeleteAllLocalAttachments).toHaveBeenCalled();
     expect(mockSetItem).toHaveBeenCalledWith(KEY, "user-2");
   });
 
@@ -104,14 +107,17 @@ describe("ensureLocalIdentity", () => {
     errorSpy.mockRestore();
   });
 
-  it("tolerates a persist failure without throwing", async () => {
+  it("logs (at error level) but does not throw when persisting the id fails", async () => {
     mockGetItem.mockResolvedValue("user-1");
     mockFetchCount.mockResolvedValue(0);
     mockSetItem.mockRejectedValue(new Error("write failed"));
-    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
 
     await expect(ensureLocalIdentity("user-2")).resolves.toBeUndefined();
 
-    warnSpy.mockRestore();
+    // Observable, not swallowed: a stale stored id re-triggers a destructive
+    // reset on this same user's next launch.
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 });

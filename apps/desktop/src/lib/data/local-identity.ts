@@ -1,7 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { database } from "@/db";
-import { deleteAllLocalAttachments } from "./attachment-queue";
+import { deleteAllLocalAttachments } from "@/lib/data/attachment-queue";
 
 const LAST_USER_ID_KEY = "drafto_last_user_id";
 
@@ -61,8 +61,12 @@ export async function ensureLocalIdentity(userId: string): Promise<void> {
     try {
       if (await localDatabaseHasData()) {
         await database.write(() => database.unsafeResetDatabase());
-        await deleteAllLocalAttachments();
       }
+      // Attachment files live on the filesystem, independent of the local DB.
+      // A prior sign-out may have reset the DB but failed to delete files,
+      // leaving an empty DB with orphaned attachments; always clean them on a
+      // different-user sign-in so that failure can't leak files across accounts.
+      await deleteAllLocalAttachments();
     } catch (error) {
       console.error("[local-identity] Failed to reset local data on user change:", error);
     }
@@ -71,6 +75,9 @@ export async function ensureLocalIdentity(userId: string): Promise<void> {
   try {
     await persistUserId(userId);
   } catch (error) {
-    console.warn("[local-identity] Failed to persist signed-in user id:", error);
+    // Escalated to error (not warn): a failed persist leaves the guard's stored
+    // identity stale, so the next launch for this same user re-triggers a
+    // destructive reset. Surface it rather than swallow it quietly.
+    console.error("[local-identity] Failed to persist signed-in user id:", error);
   }
 }

@@ -3,7 +3,7 @@ import { renderHook, act, waitFor } from "@testing-library/react-native";
 import type { User } from "@supabase/supabase-js";
 
 import { database } from "@/db";
-import { syncDatabase } from "@/db/sync";
+import { syncDatabase, resetSyncState } from "@/db/sync";
 import { AuthProvider, useAuth } from "@/providers/auth-provider";
 import { supabase } from "@/lib/supabase";
 import * as approvalCache from "@/lib/approval-cache";
@@ -33,6 +33,7 @@ jest.mock("@/db", () => ({
 
 jest.mock("@/db/sync", () => ({
   syncDatabase: jest.fn(),
+  resetSyncState: jest.fn(),
 }));
 
 jest.mock("@/lib/data", () => ({
@@ -47,6 +48,7 @@ const mockDatabase = database as unknown as {
   unsafeResetDatabase: jest.Mock;
 };
 const mockSyncDatabase = syncDatabase as jest.Mock;
+const mockResetSyncState = resetSyncState as jest.Mock;
 const mockProcessPendingUploads = processPendingUploads as jest.Mock;
 const mockDeleteAllLocalAttachments = deleteAllLocalAttachments as jest.Mock;
 
@@ -242,5 +244,68 @@ describe("AuthProvider", () => {
     expect(mockSupabase.auth.signOut).toHaveBeenCalled();
     expect(result.current.isApproved).toBe(false);
     errorSpy.mockRestore();
+  });
+
+  it("invalidates the in-flight sync on sign out", async () => {
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+      data: { session: { user: TEST_USER } },
+    });
+    mockProfileQuery({ is_approved: true }, null);
+    (mockSupabase.auth.signOut as jest.Mock).mockResolvedValue({});
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.signOut();
+    });
+
+    // Invalidated after the session is destroyed and before the DB reset, so a
+    // subsequently signed-in user can't coalesce onto this session's stale sync.
+    expect(mockResetSyncState).toHaveBeenCalled();
+    expect(mockResetSyncState.mock.invocationCallOrder[0]).toBeGreaterThan(
+      (mockSupabase.auth.signOut as jest.Mock).mock.invocationCallOrder[0],
+    );
+    expect(mockResetSyncState.mock.invocationCallOrder[0]).toBeLessThan(
+      mockDatabase.unsafeResetDatabase.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("completes sign out even when the final sync never settles (timeout path)", async () => {
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+      data: { session: { user: TEST_USER } },
+    });
+    mockProfileQuery({ is_approved: true }, null);
+    (mockSupabase.auth.signOut as jest.Mock).mockResolvedValue({});
+    mockProcessPendingUploads.mockResolvedValue(0);
+    // A flush that never settles must not wedge sign-out — withTimeout fires.
+    mockSyncDatabase.mockReturnValue(new Promise<never>(() => {}));
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    jest.useFakeTimers();
+    try {
+      await act(async () => {
+        const pending = result.current.signOut();
+        // Advance past FINAL_SYNC_TIMEOUT_MS (10s) so withTimeout rejects and
+        // sign-out proceeds to reset regardless of the hung flush.
+        await jest.advanceTimersByTimeAsync(10_000);
+        await pending;
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+
+    expect(mockSupabase.auth.signOut).toHaveBeenCalled();
+    expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });
