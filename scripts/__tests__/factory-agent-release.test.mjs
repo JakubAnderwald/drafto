@@ -136,8 +136,10 @@ describe("--release engine wiring", () => {
   });
 
   it("requires green CI before merging (failing parks; required contexts must be green)", () => {
-    assert.match(releaseBlock, /FAILING=\$\(echo "\$PR_VIEW" \| jq/);
-    assert.match(releaseBlock, /has \$FAILING failing check\(s\); not merging/);
+    // Advisory non-required reds (e.g. CodeRabbit) must not block the merge, so
+    // the park-check counts only required failures.
+    assert.match(releaseBlock, /FAILING=\$\(pr_failing_required "\$PR_VIEW"\)/);
+    assert.match(releaseBlock, /has \$FAILING failing required check\(s\); not merging/);
     assert.match(releaseBlock, /if ! ci_required_green "\$PR_VIEW"; then/);
   });
 

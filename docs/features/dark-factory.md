@@ -113,7 +113,7 @@ The factory's `--watch` mode loops `/push`-style: it reads CI failures and revie
 
 ### "Vercel preview never appeared in In Test"
 
-The factory advances In Review → In Test only when (a) CI is green AND (b) the Vercel bot has commented with a preview URL on the PR. If CI is green but Vercel hasn't run, check the Vercel project's GitHub integration is wired up; sometimes the bot misses a push and a force-push to bump the PR head re-triggers it.
+The factory advances In Review → In Test only when (a) every branch-protection **required** status context is green AND (b) the Vercel bot has commented with a preview URL on the PR. "CI is green" means the **required** contexts only — an advisory bot like CodeRabbit (including its "Review rate limited" status) is never a required context, so its red neither blocks the advance nor triggers the fix loop; it's surfaced in the In Test hand-off comment for the operator to glance at instead. If the required checks are green but Vercel hasn't run, check the Vercel project's GitHub integration is wired up; sometimes the bot misses a push and a force-push to bump the PR head re-triggers it.
 
 ### "I tested the preview and want changes"
 

@@ -1058,6 +1058,67 @@ ci_required_green() {
   [[ "$total" -gt 0 && "$success" -gt 0 && "$pending" -eq 0 ]]
 }
 
+# Fetch branch-protection required status contexts into REQUIRED_CONTEXTS_JSON (a
+# JSON array of context names). Falls back to "[]" when protection isn't
+# readable. Both --watch and --release call this once per run so their CI gates
+# agree on what "failing" and "green" mean.
+fetch_required_contexts() {
+  REQUIRED_CONTEXTS_JSON=$(gh api "repos/JakubAnderwald/drafto/branches/main/protection/required_status_checks" \
+    --jq '[.contexts[]?]' 2>>"$LOG_FILE" || echo "[]")
+  [[ -n "$REQUIRED_CONTEXTS_JSON" ]] || REQUIRED_CONTEXTS_JSON="[]"
+}
+
+# Count of *failing* rollup checks that are branch-protection required contexts.
+# Non-required checks — an advisory bot like CodeRabbit, including its "Review
+# rate limited" status — are ignored so they can never trigger the --watch fix
+# loop or block the --release merge. Falls back to counting ALL failing checks
+# when no required set is configured/readable (conservative: an unknown required
+# set must not silently pass a red PR). Reads REQUIRED_CONTEXTS_JSON; prints an
+# integer. Same rollup-normalisation + name/context matching as ci_required_green.
+pr_failing_required() {
+  local pr_view="$1"
+  echo "$pr_view" | jq -r --argjson req "${REQUIRED_CONTEXTS_JSON:-[]}" '
+    [ .statusCheckRollup[]? | (.conclusion // .state // "") as $c
+      | select($c == "FAILURE" or $c == "TIMED_OUT" or $c == "CANCELLED"
+               or $c == "ACTION_REQUIRED" or $c == "ERROR" or $c == "STARTUP_FAILURE")
+      | (.name // .context // "") ] as $failing
+    | if ($req | length) > 0
+      then [ $failing[] | select(. as $f | $req | index($f)) ] | length
+      else $failing | length
+      end' 2>/dev/null || echo 0
+}
+
+# Count of *pending* rollup checks among required contexts (fallback: all
+# pending). Used by --watch so a non-required check stuck pending (e.g. a bot
+# that never reports) can't wedge the In Test advance. Prints an integer.
+pr_pending_required() {
+  local pr_view="$1"
+  echo "$pr_view" | jq -r --argjson req "${REQUIRED_CONTEXTS_JSON:-[]}" '
+    [ .statusCheckRollup[]? | select(
+        (.status // "") == "QUEUED" or (.status // "") == "IN_PROGRESS"
+        or (.state // "") == "PENDING" or (.state // "") == "EXPECTED")
+      | (.name // .context // "") ] as $pending
+    | if ($req | length) > 0
+      then [ $pending[] | select(. as $p | $req | index($p)) ] | length
+      else $pending | length
+      end' 2>/dev/null || echo 0
+}
+
+# Comma-joined names of *failing* checks that are NOT required contexts (advisory
+# reds like CodeRabbit). Surfaced in the In Test hand-off so the operator can
+# glance at them before Approving, even though they don't block. Empty when the
+# required set is unknown (then everything is treated as blocking upstream).
+pr_failing_advisory() {
+  local pr_view="$1"
+  echo "$pr_view" | jq -r --argjson req "${REQUIRED_CONTEXTS_JSON:-[]}" '
+    [ .statusCheckRollup[]? | (.conclusion // .state // "") as $c
+      | select($c == "FAILURE" or $c == "TIMED_OUT" or $c == "CANCELLED"
+               or $c == "ACTION_REQUIRED" or $c == "ERROR" or $c == "STARTUP_FAILURE")
+      | (.name // .context // "check") ]
+    | ( if ($req | length) > 0 then [ .[] | select(. as $n | $req | index($n) | not) ] else [] end )
+    | unique | join(", ")' 2>/dev/null || echo ""
+}
+
 # Resolve every unresolved review thread on <pr-num> via GraphQL, printing the
 # count resolved. Called by --release right before the merge: the owner-token
 # squash-merge would otherwise BYPASS the repo's required_conversation_resolution
@@ -2008,6 +2069,8 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
     log "ERROR: unexpected non-numeric REVIEW_COUNT='$REVIEW_COUNT'"; exit 1
   fi
   log "--watch (phase=$PHASE): $REVIEW_COUNT In Review item(s)"
+  # CI gate reads branch-protection required contexts (advisory bots ignored).
+  fetch_required_contexts
 
   WATCH_PROMPT_TEXT=""
   if [[ "$DRY_RUN" -eq 0 && "$REVIEW_COUNT" -gt 0 ]]; then WATCH_PROMPT_TEXT=$(cat "$WATCH_PROMPT_FILE"); fi
@@ -2040,18 +2103,13 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
       log "WARNING: gh pr view #$PR_NUM failed (transient?); skipping this tick"; continue
     fi
 
-    # statusCheckRollup mixes CheckRun (.status + .conclusion) and StatusContext
-    # (.state) entries, so normalise: a check's outcome is `.conclusion //
-    # .state`, and "pending" is a CheckRun still QUEUED/IN_PROGRESS or a
-    # StatusContext in PENDING/EXPECTED.
-    FAILING=$(echo "$PR_VIEW" | jq -r '
-      [ .statusCheckRollup[]? | (.conclusion // .state // "") as $c
-        | select($c == "FAILURE" or $c == "TIMED_OUT" or $c == "CANCELLED"
-                 or $c == "ACTION_REQUIRED" or $c == "ERROR" or $c == "STARTUP_FAILURE") ] | length')
-    PENDING=$(echo "$PR_VIEW" | jq -r '
-      [ .statusCheckRollup[]? | select(
-          (.status // "") == "QUEUED" or (.status // "") == "IN_PROGRESS"
-          or (.state // "") == "PENDING" or (.state // "") == "EXPECTED") ] | length')
+    # Gate only on branch-protection *required* contexts: an advisory bot's red
+    # or pending check (e.g. CodeRabbit, including its "Review rate limited"
+    # status) must not trigger the fix loop or block the In Test advance. The
+    # helpers normalise the CheckRun/StatusContext rollup and fall back to
+    # counting all checks when the required set is unknown.
+    FAILING=$(pr_failing_required "$PR_VIEW")
+    PENDING=$(pr_pending_required "$PR_VIEW")
     [[ "$FAILING" =~ ^[0-9]+$ ]] || FAILING=0
     [[ "$PENDING" =~ ^[0-9]+$ ]] || PENDING=0
 
@@ -2096,12 +2154,16 @@ A human should take a look. Reset with \
       fi
       PLAN_COMMENT_JSON=$(extract_plan_comment "$COMMENTS_JSON")
       [[ -n "$PLAN_COMMENT_JSON" ]] || PLAN_COMMENT_JSON="null"
-      CI_SUMMARY=$(echo "$PR_VIEW" | jq -r '
+      # Only the required failures the fix agent can act on — never hand it an
+      # advisory bot's red (e.g. CodeRabbit) to "fix". Falls back to all reds
+      # when the required set is unknown.
+      CI_SUMMARY=$(echo "$PR_VIEW" | jq -r --argjson req "${REQUIRED_CONTEXTS_JSON:-[]}" '
         [ .statusCheckRollup[]? | (.conclusion // .state // "") as $c
           | select($c == "FAILURE" or $c == "TIMED_OUT" or $c == "CANCELLED"
                    or $c == "ACTION_REQUIRED" or $c == "ERROR" or $c == "STARTUP_FAILURE")
-          | ((.name // .context // "check") + " — " + $c
-             + (if (.detailsUrl // .targetUrl) then " (" + (.detailsUrl // .targetUrl) + ")" else "" end)) ]
+          | { name: (.name // .context // "check"), c: $c, url: (.detailsUrl // .targetUrl) } ]
+        | ( if ($req | length) > 0 then [ .[] | select(.name as $n | $req | index($n)) ] else . end )
+        | [ .[] | (.name + " — " + .c + (if .url then " (" + .url + ")" else "" end)) ]
         | join("\n")')
       UNRESOLVED=$(echo "$PR_VIEW" | jq -c '
         [ .comments[]? | select((.author.login // "") | test("vercel|github-actions"; "i") | not)
@@ -2184,29 +2246,44 @@ A human should take a look. Reset with \
     fi
 
     if [[ "$PENDING" -gt 0 ]]; then
-      log "Issue #$ISSUE_NUM: PR #$PR_NUM has $PENDING check(s) still running; waiting"
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM has $PENDING required check(s) still running; waiting"
       continue
     fi
 
-    # CI green. Need a reachable Vercel preview before advancing to In Test.
+    # Confirm required checks are actually green — a required context could be
+    # missing from the rollup (not failing, not pending, just absent). Advisory
+    # non-required reds (CodeRabbit) are intentionally ignored here.
+    if ! ci_required_green "$PR_VIEW"; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM required checks not all green yet; waiting"
+      continue
+    fi
+
+    # Required CI green. Need a reachable Vercel preview before advancing to In Test.
     if [[ -z "$PREVIEW_URL" ]]; then
       log "Issue #$ISSUE_NUM: CI green but no Vercel preview URL yet; waiting"
       continue
     fi
-    log "Issue #$ISSUE_NUM: CI green + preview $PREVIEW_URL → In Test"
+    log "Issue #$ISSUE_NUM: required CI green + preview $PREVIEW_URL → In Test"
     if [[ "$DRY_RUN" -eq 1 ]]; then
       log "DRY-RUN: would advance #$ISSUE_NUM to In Test and post preview URL"; continue
     fi
     transition_status "$ITEM_ID" "$ISSUE_NUM" "In Test" || true
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastWatchAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    # Surface any advisory (non-required) red checks — e.g. CodeRabbit — so the
+    # operator can glance before Approving, even though they didn't block advance.
+    ADVISORY=$(pr_failing_advisory "$PR_VIEW")
+    ADVISORY_NOTE=""
+    [[ -n "$ADVISORY" ]] && ADVISORY_NOTE="
+
+⚠️ Advisory (non-required) checks are not green: $ADVISORY. They don't block the merge, but are worth a glance before Approving."
     gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
       --body "🏭 **Preview ready — In Test.**
 
 CI is green and the Vercel preview is live: $PREVIEW_URL
 
 Review it, then drag the card to **Approved** to merge (the operator merges \
-the PR by hand in this staged Phase B rollout).
+the PR by hand in this staged Phase B rollout).$ADVISORY_NOTE
 
 <!-- drafto-factory-in-test -->" >>"$LOG_FILE" 2>&1 || true
   done
@@ -2330,9 +2407,7 @@ if [[ "$MODE_RELEASE" -eq 1 ]]; then
   # requires every one of these to be SUCCESS before merging, so an empty/partial
   # check rollup can't masquerade as green. Falls back to "[]" (any-success) if
   # protection isn't readable.
-  REQUIRED_CONTEXTS_JSON=$(gh api "repos/JakubAnderwald/drafto/branches/main/protection/required_status_checks" \
-    --jq '[.contexts[]?]' 2>>"$LOG_FILE" || echo "[]")
-  [[ -n "$REQUIRED_CONTEXTS_JSON" ]] || REQUIRED_CONTEXTS_JSON="[]"
+  fetch_required_contexts
   log "--release: required CI contexts: $(echo "$REQUIRED_CONTEXTS_JSON" | jq -c . 2>/dev/null || echo '[]')"
 
   for ((IDX=0; IDX<APPROVED_COUNT; IDX++)); do
@@ -2452,16 +2527,14 @@ PR #$PR_NUM $PARITY_VIOLATION, which this phase doesn't allow. The card stays in
       continue
     fi
 
-    # CI gate. Any failing check parks the card; then every branch-protection
-    # *required* context must be SUCCESS (ci_required_green). An empty/partial
-    # rollup (checks never ran) can't pass — "no checks" is not "green".
-    FAILING=$(echo "$PR_VIEW" | jq -r '
-      [ .statusCheckRollup[]? | (.conclusion // .state // "") as $c
-        | select($c == "FAILURE" or $c == "TIMED_OUT" or $c == "CANCELLED"
-                 or $c == "ACTION_REQUIRED" or $c == "ERROR" or $c == "STARTUP_FAILURE") ] | length')
+    # CI gate. A failing *required* check parks the card; then every branch-
+    # protection required context must be SUCCESS (ci_required_green). An
+    # empty/partial rollup (checks never ran) can't pass — "no checks" is not
+    # "green". Advisory non-required reds (CodeRabbit) never block the merge.
+    FAILING=$(pr_failing_required "$PR_VIEW")
     [[ "$FAILING" =~ ^[0-9]+$ ]] || FAILING=0
     if [[ "$FAILING" -gt 0 ]]; then
-      log "Issue #$ISSUE_NUM: PR #$PR_NUM has $FAILING failing check(s); not merging (left in Approved)"
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM has $FAILING failing required check(s); not merging (left in Approved)"
       continue
     fi
     if ! ci_required_green "$PR_VIEW"; then
