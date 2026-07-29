@@ -157,6 +157,13 @@ if ! [[ "$FACTORY_MIN_FREE_DISK_GB" =~ ^[0-9]+$ ]]; then
   FACTORY_MIN_FREE_DISK_GB=3
 fi
 
+# Checkout the macOS beta lane builds from. NOT this checkout: a normal install
+# resolves React 19.2, which react-native-macos@0.81 compiles against but
+# crashes on at runtime. Only a fossil checkout (React 19.1.x, never
+# reinstalled) produces a working app; dispatch-release.mjs asserts that before
+# spawning the lane. See docs/operations/desktop-build-fossil.md and ADR-0027.
+BETA_DESKTOP_ROOT="${DRAFTO_DESKTOP_BUILD_ROOT:-/Users/jakub/code/drafto}"
+
 # ── Args ────────────────────────────────────────────────────────────────────
 MODE_PLAN=0
 MODE_IMPLEMENT=0
@@ -2648,18 +2655,43 @@ retry next cycle; if it keeps failing, merge it by hand. The card stays in \
     # if the Released transition raced) can't re-trigger a build.
     BETA_NOTE="Mobile/desktop beta builds are not dispatched at this phase."
     if [[ "$PHASE" == "D" ]] && ! issue_has_marker "$ISSUE_NUM" "drafto-factory-beta-dispatched"; then
-      # Local Fastlane lanes build from $REPO_ROOT (the main checkout), so bring
-      # it up to the just-merged commit first. Best-effort ff-only — never clobber
-      # local state; if it can't fast-forward, log and let the operator's C→D
+      # The mobile lane builds from $REPO_ROOT (this checkout), so bring it up to
+      # the just-merged commit first. Best-effort ff-only — never clobber local
+      # state; if it can't fast-forward, log and let the operator's C→D
       # validation catch a stale build rather than forcing.
+      #
+      # The DESKTOP lane does NOT build from $REPO_ROOT: this checkout is a
+      # normal install carrying React 19.2, which compiles a macOS app that
+      # crashes at runtime. It builds from the fossil root instead, which the
+      # factory never fetches into or mutates — so verify by hand that it is
+      # already at the merged commit, and skip the lane rather than ship a build
+      # of the wrong code. See docs/operations/desktop-build-fossil.md.
       git -C "$REPO_ROOT" fetch origin main >>"$LOG_FILE" 2>&1 \
         && git -C "$REPO_ROOT" merge --ff-only origin/main >>"$LOG_FILE" 2>&1 \
         || log "WARNING: could not fast-forward $REPO_ROOT to merged main; beta lanes may build stale code"
-      DISPATCH_JSON=$(printf '%s\n' "$DIFF_FILES" | node "$SCRIPT_DIR/lib/dispatch-release.mjs" dispatch --diff-file - --repo-root "$REPO_ROOT" 2>>"$LOG_FILE" || echo "")
+      DESKTOP_SKIP_NOTE=""
+      DISPATCH_PLATFORMS=$(printf '%s\n' "$DIFF_FILES" | node "$SCRIPT_DIR/lib/dispatch-release.mjs" derive-platforms --diff-file - 2>>"$LOG_FILE" || echo "")
+      if [[ "$(echo "$DISPATCH_PLATFORMS" | jq -r '.desktop // false' 2>/dev/null)" == "true" ]] \
+        && [[ -n "$MERGE_SHA" ]] \
+        && ! git -C "$BETA_DESKTOP_ROOT" merge-base --is-ancestor "$MERGE_SHA" HEAD >>"$LOG_FILE" 2>&1; then
+        log "Issue #$ISSUE_NUM: desktop build root $BETA_DESKTOP_ROOT is not at the merged commit; skipping the desktop lane"
+        DESKTOP_SKIP_NOTE=" ⚠️ macOS beta skipped: the desktop build root (\`$BETA_DESKTOP_ROOT\`) is not at the merged commit — update it and run \`pnpm release:beta\` there by hand."
+        DISPATCH_PLATFORMS=$(echo "$DISPATCH_PLATFORMS" | jq -c '.desktop = false' 2>/dev/null || echo "$DISPATCH_PLATFORMS")
+      fi
+      DISPATCH_CSV=$(echo "$DISPATCH_PLATFORMS" | jq -r '[to_entries[] | select(.value) | .key] | join(",")' 2>/dev/null || echo "")
+      DISPATCH_JSON=$(node "$SCRIPT_DIR/lib/dispatch-release.mjs" dispatch --platforms "$DISPATCH_CSV" --repo-root "$REPO_ROOT" --desktop-root "$BETA_DESKTOP_ROOT" 2>>"$LOG_FILE" || echo "")
       DISPATCHED=$(echo "$DISPATCH_JSON" | jq -r '[.dispatched[]?.id] | join(", ")' 2>/dev/null || echo "")
+      # A lane refused by its guard (e.g. the desktop root lost its fossil) is
+      # reported, never silently dropped — a missing beta must be visible.
+      SKIPPED_LANES=$(echo "$DISPATCH_JSON" | jq -r '[.skipped[]?.id] | join(", ")' 2>/dev/null || echo "")
+      if [[ -n "$SKIPPED_LANES" ]]; then
+        SKIP_REASON=$(echo "$DISPATCH_JSON" | jq -r '[.skipped[]?.reason] | join("; ")' 2>/dev/null || echo "")
+        log "Issue #$ISSUE_NUM: beta lane(s) refused: $SKIPPED_LANES ($SKIP_REASON)"
+        DESKTOP_SKIP_NOTE="$DESKTOP_SKIP_NOTE ⚠️ Beta lane(s) refused: **$SKIPPED_LANES** — $SKIP_REASON"
+      fi
       if [[ -n "$DISPATCHED" ]]; then
         log "Issue #$ISSUE_NUM: dispatched beta lane(s): $DISPATCHED"
-        BETA_NOTE="Dispatched beta builds for: $DISPATCHED (TestFlight / Play internal). You'll get a \"now live\" note when each build lands."
+        BETA_NOTE="Dispatched beta builds for: $DISPATCHED (TestFlight / Play internal). You'll get a \"now live\" note when each build lands.$DESKTOP_SKIP_NOTE"
         gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
           --body "🏭 **Beta builds dispatching.**
 
@@ -2668,6 +2700,8 @@ the Mac mini; a \"now live in version X\" note follows when each build is up. \
 (Production store submission stays a separate manual step.)
 
 <!-- drafto-factory-beta-dispatched -->" >>"$LOG_FILE" 2>&1 || true
+      elif [[ -n "$DESKTOP_SKIP_NOTE" ]]; then
+        BETA_NOTE="No beta builds were dispatched.$DESKTOP_SKIP_NOTE"
       else
         BETA_NOTE="No mobile/desktop changes — nothing to dispatch (web deploys via Vercel)."
       fi

@@ -255,11 +255,42 @@ describe("Phase-D beta dispatch (gap 1)", () => {
   it("calls dispatch-release.mjs reusing the already-computed diff (no second pr diff)", () => {
     assert.match(
       releaseBlock,
-      /printf '%s\\n' "\$DIFF_FILES" \| node "\$SCRIPT_DIR\/lib\/dispatch-release\.mjs" dispatch --diff-file - --repo-root "\$REPO_ROOT"/,
+      /printf '%s\\n' "\$DIFF_FILES" \| node "\$SCRIPT_DIR\/lib\/dispatch-release\.mjs" derive-platforms --diff-file -/,
+    );
+    assert.match(
+      releaseBlock,
+      /node "\$SCRIPT_DIR\/lib\/dispatch-release\.mjs" dispatch --platforms "\$DISPATCH_CSV"/,
     );
     // exactly one actual diff fetch (the merge-time files) — the dispatch step
     // reuses $DIFF_FILES rather than re-running `gh pr diff`
     assert.equal(releaseBlock.match(/DIFF_FILES=\$\(gh pr diff/g)?.length, 1);
+  });
+
+  it("never builds desktop from the factory checkout (the fossil rule)", () => {
+    // $REPO_ROOT is a normal install carrying React 19.2: a macOS build from it
+    // compiles and then crashes at runtime. The desktop lane must be pointed at
+    // a fossil checkout instead.
+    assert.match(releaseBlock, /--desktop-root "\$BETA_DESKTOP_ROOT"/);
+    assert.match(script, /^BETA_DESKTOP_ROOT="\$\{DRAFTO_DESKTOP_BUILD_ROOT:-/m);
+  });
+
+  it("skips the desktop lane when its build root is not at the merged commit", () => {
+    assert.match(
+      releaseBlock,
+      /git -C "\$BETA_DESKTOP_ROOT" merge-base --is-ancestor "\$MERGE_SHA" HEAD/,
+    );
+    assert.match(
+      releaseBlock,
+      /DISPATCH_PLATFORMS=\$\(echo "\$DISPATCH_PLATFORMS" \| jq -c '\.desktop = false'/,
+    );
+  });
+
+  it("surfaces refused lanes in the released comment rather than dropping them", () => {
+    assert.match(
+      releaseBlock,
+      /SKIPPED_LANES=\$\(echo "\$DISPATCH_JSON" \| jq -r '\[\.skipped\[\]\?\.id\]/,
+    );
+    assert.match(releaseBlock, /DESKTOP_SKIP_NOTE/);
   });
 
   it("runs after teardown and never references a production lane/workflow", () => {
