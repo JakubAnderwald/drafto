@@ -62,9 +62,11 @@ platforms the diff touched, behind a **separate opt-in**
 
 **4. Builds run in dedicated, disposable roots** — `drafto-beta-mobile` and
 `drafto-beta-desktop` — detached at the PR head SHA, with `node_modules`
-clonefile-seeded (`cp -c -R`, O(1) space: the repo is `node-linker=hoisted` with
-a symlink-free tree, so a clone is byte-faithful). The desktop root is seeded
-from the fossil and **never installed into**.
+clonefile-seeded (`cp -c -R`, O(1) space). The copy is faithful because the repo
+is `node-linker=hoisted`, so packages are real directories rather than store
+symlinks; the only symlinks in the tree are the ~130 relative ones under `.bin/`
+(e.g. `../is-docker/cli.js`), which keep resolving inside the copied tree. The
+desktop root is seeded from the fossil and **never installed into**.
 
 **5. The fossil rule is narrowed to its actual invariant.** From _"only the
 primary checkout"_ to _"only a checkout whose hoisted `node_modules/react` is
