@@ -157,6 +157,15 @@ if ! [[ "$FACTORY_MIN_FREE_DISK_GB" =~ ^[0-9]+$ ]]; then
   FACTORY_MIN_FREE_DISK_GB=3
 fi
 
+# Wall-clock cap for the In Test scenario writer. It is a read-only stage (read
+# the diff, post one comment), so it needs far less than the code-writing modes.
+FACTORY_INTEST_TIMEOUT_SEC="${FACTORY_INTEST_TIMEOUT_SEC:-600}"
+if ! [[ "$FACTORY_INTEST_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_INTEST_TIMEOUT_SEC='$FACTORY_INTEST_TIMEOUT_SEC'; defaulting to 600" >&2
+  FACTORY_INTEST_TIMEOUT_SEC=600
+fi
+INTEST_TIMEOUT_SEC="$FACTORY_INTEST_TIMEOUT_SEC"
+
 # Checkout the macOS beta lane builds from. NOT this checkout: a normal install
 # resolves React 19.2, which react-native-macos@0.81 compiles against but
 # crashes on at runtime. Only a fossil checkout (React 19.1.x, never
@@ -788,6 +797,70 @@ build_watch_bundle() {
     | node "$SCRIPT_DIR/lib/factory-bundle.mjs"
 }
 
+# Build the factory_intest bundle for the In Review → In Test hand-off. $2
+# approved-plan obj|null, $3 prior-PR obj, $4 raw PR diff, $5 changed-file list,
+# $6 platforms JSON, $7 preview URL, $8 advisory text, $9 beta-dispatch JSON,
+# ${10} head SHA, ${11} full issue-comment thread JSON.
+build_intest_bundle() {
+  local issue_entry="$1"
+  local approved_plan="${2:-null}"
+  local prior_pr="${3:-null}"
+  local pr_diff="${4:-}"
+  local pr_files="${5:-}"
+  local platforms="${6:-{\}}"
+  local preview_url="${7:-}"
+  local advisory="${8:-}"
+  local beta_dispatch="${9:-null}"
+  local head_sha="${10:-}"
+  local comments="${11:-[]}"
+  local repo_head_ref
+  repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+  jq -n \
+    --argjson issue "$issue_entry" \
+    --argjson plan "$approved_plan" \
+    --argjson priorPr "$prior_pr" \
+    --arg prDiff "$pr_diff" \
+    --arg prFiles "$pr_files" \
+    --argjson platforms "$platforms" \
+    --arg previewUrl "$preview_url" \
+    --arg advisory "$advisory" \
+    --argjson betaDispatch "$beta_dispatch" \
+    --arg headSha "$head_sha" \
+    --argjson comments "$comments" \
+    --arg allowlist "$SUPPORT_ALLOWLIST" \
+    --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
+    --arg phase "$PHASE" \
+    --arg repoNwo "JakubAnderwald/drafto" \
+    --arg headRef "$repo_head_ref" \
+    '{
+       kind: "factory_intest",
+       issue: $issue,
+       approvedPlan: (if $plan == null then null else {
+         commentId: ($plan.id),
+         url: ("https://github.com/JakubAnderwald/drafto/issues/" + ($issue.number|tostring) + "#issuecomment-" + ($plan.id|tostring)),
+         body: ($plan.body // ""),
+         createdAt: ($plan.createdAt // null)
+       } end),
+       priorPr: $priorPr,
+       prDiff: $prDiff,
+       prFiles: $prFiles,
+       platforms: $platforms,
+       previewUrl: $previewUrl,
+       advisory: $advisory,
+       betaDispatch: $betaDispatch,
+       headSha: $headSha,
+       comments: [],
+       screenshotSources: $comments,
+       config: {
+         phase: $phase,
+         allowlist: ($allowlist | split(",") | map(ascii_downcase | sub("^\\s+";"") | sub("\\s+$";""))),
+         oauthUserEmail: $oauthUserEmail
+       },
+       repo: { nameWithOwner: $repoNwo, headRef: $headRef }
+     }' \
+    | node "$SCRIPT_DIR/lib/factory-bundle.mjs"
+}
+
 # Find the factory PR for an issue (head branch factory/issue-<n>). Prints the
 # {number,url,headRef,state} object or "null". Looks at all states so a retry
 # can find an existing OPEN PR (or a CLOSED one to reopen-by-push).
@@ -1124,6 +1197,143 @@ pr_failing_advisory() {
       | (.name // .context // "check") ]
     | ( if ($req | length) > 0 then [ .[] | select(. as $n | $req | index($n) | not) ] else [] end )
     | unique | join(", ")' 2>/dev/null || echo ""
+}
+
+# Deterministic In Test comment. Used when the scenario writer times out, is
+# blocked, or posts nothing — the card is already In Test by then, so the
+# reporter must still get something usable. Platform-aware for the same reason
+# the model's version is: a Vercel link on a native-only PR tests nothing.
+# $1 issue, $2 pr-num, $3 preview URL, $4 advisory, $5 head sha, $6 platforms JSON.
+intest_fallback_comment() {
+  local issue_num="$1" pr_num="$2" preview_url="$3" advisory="$4" head_sha="$5" platforms="$6"
+  local web mobile desktop build_note="" advisory_note=""
+  web=$(echo "$platforms" | jq -r '.web // false' 2>/dev/null || echo "false")
+  mobile=$(echo "$platforms" | jq -r '.mobile // false' 2>/dev/null || echo "false")
+  desktop=$(echo "$platforms" | jq -r '.desktop // false' 2>/dev/null || echo "false")
+  if [[ "$web" == "true" && -n "$preview_url" ]]; then
+    build_note="$build_note
+- **Web** — Vercel preview: $preview_url"
+  fi
+  if [[ "$mobile" == "true" ]]; then
+    build_note="$build_note
+- **iOS / Android** — run the branch locally: worktree \`factory/issue-$issue_num\`, \`pnpm install\`, \`bash scripts/worktree-bootstrap.sh\`, then \`cd apps/mobile && pnpm ios\` (or \`pnpm android\`)."
+  fi
+  if [[ "$desktop" == "true" ]]; then
+    build_note="$build_note
+- **macOS** — build ONLY from the primary checkout \`/Users/jakub/code/drafto\` (\`git checkout factory/issue-$issue_num\`, **never** \`pnpm install\` — the desktop fossil), then \`pnpm --filter @drafto/desktop start\`."
+  fi
+  [[ -n "$advisory" ]] && advisory_note="
+
+⚠️ Advisory (non-required) checks are not green: $advisory. They don't block the merge, but are worth a glance before Approving."
+  gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+    --body "🏭 **Ready to test — In Test.**
+
+CI is green on PR #$pr_num${head_sha:+ (\`${head_sha:0:12}\`)}. An automated test \
+scenario couldn't be generated this time — work from the PR diff.
+
+How to get a build:$build_note
+
+Then drag the card to **Approved** to merge and ship, or comment what you want \
+changed and the factory revises on the same branch.$advisory_note
+
+<!-- drafto-factory-in-test -->
+<!-- drafto-factory-test-scenario -->" >>"$LOG_FILE" 2>&1 || true
+}
+
+# In Test hand-off: write the human test scenario for a card that just reached
+# In Test (or whose head SHA changed since the last one) and post it as the
+# In Test comment.
+#
+# The card is ALREADY In Test when this runs — this is commentary, not a state
+# transition, so every failure path here degrades to the deterministic fallback
+# comment and NEVER bumps the retry budget or blocks the card. A card whose
+# scenario failed is still a green, testable card.
+#
+# $1 issue, $2 pr-num, $3 pr obj, $4 preview URL, $5 advisory, $6 head sha,
+# $7 changed files, $8 platforms JSON.
+intest_handoff() {
+  local issue_num="$1" pr_num="$2" pr_obj="$3" preview_url="$4" advisory="$5"
+  local head_sha="$6" diff_files="$7" platforms="$8"
+  local issue_record comments_json plan_json pr_diff bundle claude_input
+  local out_file start_iso exit_code=0 summary_line action
+
+  if [[ ! -f "$INTEST_PROMPT_FILE" ]]; then
+    log "WARNING: In Test prompt missing ($INTEST_PROMPT_FILE); posting fallback comment"
+    [[ "$DRY_RUN" -eq 0 ]] && intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms"
+    return 0
+  fi
+  if ! issue_record=$(fetch_issue_record "$issue_num"); then
+    log "WARNING: fetch_issue_record failed for #$issue_num (In Test hand-off); posting fallback"
+    [[ "$DRY_RUN" -eq 0 ]] && intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms"
+    return 0
+  fi
+  comments_json=$(fetch_issue_comments "$issue_num" 2>>"$LOG_FILE" || echo "[]")
+  [[ -n "$comments_json" ]] || comments_json="[]"
+  plan_json=$(extract_plan_comment "$comments_json")
+  [[ -n "$plan_json" ]] || plan_json="null"
+  # The diff is the scenario's ground truth. An empty one still produces a
+  # usable (if thinner) scenario, so a failure here is not fatal.
+  pr_diff=$(gh pr diff "$pr_num" --repo JakubAnderwald/drafto 2>>"$LOG_FILE" || echo "")
+
+  if ! bundle=$(build_intest_bundle "$issue_record" "$plan_json" "$pr_obj" "$pr_diff" \
+      "$diff_files" "$platforms" "$preview_url" "$advisory" "${INTEST_BETA_JSON:-null}" \
+      "$head_sha" "$comments_json"); then
+    log "ERROR: build_intest_bundle failed for #$issue_num; posting fallback"
+    [[ "$DRY_RUN" -eq 0 ]] && intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms"
+    return 0
+  fi
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    # Bundles carry the issue body + comments (PII): stdout only, never the log.
+    log "DRY-RUN: In Test bundle for #$issue_num (printed to stdout only); would post a scenario comment"
+    echo "$bundle"
+    return 0
+  fi
+
+  claude_input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
+    "$(cat "$INTEST_PROMPT_FILE")" "$bundle")
+  log "Invoking claude for #$issue_num (In Test scenario, cap ${INTEST_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT)"
+  out_file=$(mktemp -t factory-agent-intest.XXXXXX)
+  start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  # Read-only stage: runs in the factory checkout on main, no worktree, no slot.
+  ( cd "$REPO_ROOT" && CLAUDE_CALL_TIMEOUT_SEC="$INTEST_TIMEOUT_SEC" \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" ) \
+      >"$out_file" 2>>"$LOG_FILE" || exit_code=$?
+
+  if [[ $exit_code -ne 0 ]]; then
+    [[ $exit_code -eq 124 ]] && log "WARNING: claude timed out writing the In Test scenario for #$issue_num" \
+      || log "ERROR: claude exited $exit_code writing the In Test scenario for #$issue_num"
+    cat "$out_file" >>"$LOG_FILE" 2>/dev/null || true
+    # A session limit is worth pausing the whole factory for; anything else just
+    # falls back. Either way the retry budget is untouched — this is commentary.
+    if [[ $exit_code -ne 124 ]] && check_session_limit "$REPO_ROOT" "$start_iso"; then
+      rm -f "$out_file"
+      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms"
+      pause_for_session_limit
+      return 0
+    fi
+    rm -f "$out_file"
+    intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms"
+    return 0
+  fi
+  cat "$out_file" >>"$LOG_FILE"
+  summary_line=$(grep -E '^issue=[0-9]+ action=[a-z]+ comment=[^ ]+$' "$out_file" | tail -1 || true)
+  rm -f "$out_file"
+  action=$(echo "${summary_line:-}" | sed -E 's/.*action=([^ ]+).*/\1/')
+
+  # Trust the marker, not the directive line: the comment either exists or it
+  # doesn't. A model that claims `commented` without posting still gets a
+  # fallback, and one that posted without emitting a parseable line doesn't get
+  # a duplicate.
+  if issue_has_marker "$issue_num" "drafto-factory-test-scenario"; then
+    log "Issue #$issue_num: test scenario posted (action=${action:-unknown})"
+  else
+    log "Issue #$issue_num: no test-scenario comment found (action=${action:-none}); posting fallback"
+    intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms"
+  fi
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+    intestCommentSha "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  return 0
 }
 
 # Resolve every unresolved review thread on <pr-num> via GraphQL, printing the
@@ -2031,6 +2241,10 @@ fi
 # PHASE is guaranteed != "A" here (Phase A --watch no-op'd at the gate above).
 if [[ "$MODE_WATCH" -eq 1 ]]; then
   WATCH_PROMPT_FILE="$SCRIPT_DIR/factory-watch-prompt.md"
+  # The In Test scenario writer. A missing file degrades to the deterministic
+  # fallback comment (intest_handoff checks) rather than failing the whole mode —
+  # the fix loop must keep running even if this stage's prompt is absent.
+  INTEST_PROMPT_FILE="$SCRIPT_DIR/factory-intest-prompt.md"
   if [[ "$DRY_RUN" -eq 0 && ! -f "$WATCH_PROMPT_FILE" ]]; then
     log "ERROR: prompt file missing: $WATCH_PROMPT_FILE"; exit 1
   fi
@@ -2104,8 +2318,10 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
     PR_URL=$(echo "$PR_OBJ" | jq -r '.url')
 
     # Pull CI rollup + the Vercel preview URL from the PR in one call.
+    # headRefOid rides along (no extra API call): the In Test hand-off keys its
+    # scenario/beta idempotency on the exact commit that CI went green on.
     PR_VIEW=$(gh pr view "$PR_NUM" --repo JakubAnderwald/drafto \
-      --json state,mergeable,statusCheckRollup,comments 2>>"$LOG_FILE" || echo "")
+      --json state,mergeable,statusCheckRollup,comments,headRefOid 2>>"$LOG_FILE" || echo "")
     if [[ -z "$PR_VIEW" ]]; then
       log "WARNING: gh pr view #$PR_NUM failed (transient?); skipping this tick"; continue
     fi
@@ -2265,34 +2481,37 @@ A human should take a look. Reset with \
       continue
     fi
 
-    # Required CI green. Need a reachable Vercel preview before advancing to In Test.
-    if [[ -z "$PREVIEW_URL" ]]; then
+    # Required CI green. The changed files decide what "testable" even means
+    # here, so fetch them once and derive the platforms.
+    if ! INTEST_DIFF_FILES=$(gh pr diff "$PR_NUM" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE"); then
+      log "WARNING: gh pr diff #$PR_NUM failed (transient?); skipping this tick"; continue
+    fi
+    INTEST_PLATFORMS=$(printf '%s\n' "$INTEST_DIFF_FILES" | node "$SCRIPT_DIR/lib/dispatch-release.mjs" derive-platforms --diff-file - 2>>"$LOG_FILE" || echo '{}')
+    WEB_TOUCHED=$(echo "$INTEST_PLATFORMS" | jq -r '.web // false' 2>/dev/null || echo "false")
+
+    # A Vercel preview is the test artefact for a web change, so a web PR still
+    # waits for one. For a native-only PR the preview exercises nothing — gating
+    # on it would deadlock the card behind a URL that means nothing to the test.
+    if [[ "$WEB_TOUCHED" == "true" && -z "$PREVIEW_URL" ]]; then
       log "Issue #$ISSUE_NUM: CI green but no Vercel preview URL yet; waiting"
       continue
     fi
-    log "Issue #$ISSUE_NUM: required CI green + preview $PREVIEW_URL → In Test"
+    HEAD_SHA=$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')
+    log "Issue #$ISSUE_NUM: required CI green (platforms: $(echo "$INTEST_PLATFORMS" | jq -c . 2>/dev/null)) → In Test"
     if [[ "$DRY_RUN" -eq 1 ]]; then
-      log "DRY-RUN: would advance #$ISSUE_NUM to In Test and post preview URL"; continue
+      log "DRY-RUN: would advance #$ISSUE_NUM to In Test and post a test scenario"
+      intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$(pr_failing_advisory "$PR_VIEW")" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" || true
+      continue
     fi
+    # Advance FIRST: the card must reach In Test even if writing the scenario
+    # fails. The comment is commentary; the transition is the state machine.
     transition_status "$ITEM_ID" "$ISSUE_NUM" "In Test" || true
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastWatchAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     # Surface any advisory (non-required) red checks — e.g. CodeRabbit — so the
     # operator can glance before Approving, even though they didn't block advance.
     ADVISORY=$(pr_failing_advisory "$PR_VIEW")
-    ADVISORY_NOTE=""
-    [[ -n "$ADVISORY" ]] && ADVISORY_NOTE="
-
-⚠️ Advisory (non-required) checks are not green: $ADVISORY. They don't block the merge, but are worth a glance before Approving."
-    gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
-      --body "🏭 **Preview ready — In Test.**
-
-CI is green and the Vercel preview is live: $PREVIEW_URL
-
-Review it, then drag the card to **Approved** to merge (the operator merges \
-the PR by hand in this staged Phase B rollout).$ADVISORY_NOTE
-
-<!-- drafto-factory-in-test -->" >>"$LOG_FILE" 2>&1 || true
+    intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$ADVISORY" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" || true
   done
 
   # ── In Test feedback sweep: a reporter comment requests a revision ──────────
@@ -2325,8 +2544,40 @@ the PR by hand in this staged Phase B rollout).$ADVISORY_NOTE
     if ! COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM"); then
       log "WARNING: fetch_issue_comments failed for #$ISSUE_NUM (feedback sweep); skipping"; continue
     fi
-    HWM=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
-      --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.lastFeedbackAt // ""' 2>/dev/null || echo "")
+    ISSUE_STATE_JSON=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
+
+    # Scenario backfill / refresh. Keyed on the PR head SHA rather than a plain
+    # marker: a card that goes In Test → feedback → In Progress → In Test again
+    # is testing NEW code and needs a NEW scenario, while a card sitting still
+    # must not be re-commented every 5 minutes. Also catches cards that reached
+    # In Test before this stage existed (no recorded SHA at all).
+    SCENARIO_SHA=$(echo "$ISSUE_STATE_JSON" | jq -r '.intestCommentSha // ""' 2>/dev/null || echo "")
+    INTEST_PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
+    if [[ -n "$INTEST_PR_OBJ" && "$INTEST_PR_OBJ" != "null" ]]; then
+      INTEST_PR_NUM=$(echo "$INTEST_PR_OBJ" | jq -r '.number')
+      INTEST_PR_VIEW=$(gh pr view "$INTEST_PR_NUM" --repo JakubAnderwald/drafto \
+        --json statusCheckRollup,comments,headRefOid 2>>"$LOG_FILE" || echo "")
+      INTEST_HEAD_SHA=$(echo "${INTEST_PR_VIEW:-}" | jq -r '.headRefOid // ""' 2>/dev/null || echo "")
+      if [[ -n "$INTEST_HEAD_SHA" && "$INTEST_HEAD_SHA" != "$SCENARIO_SHA" ]]; then
+        log "Issue #$ISSUE_NUM: In Test with no current scenario (have '${SCENARIO_SHA:-none}', head $INTEST_HEAD_SHA); writing one"
+        INTEST_FILES=$(gh pr diff "$INTEST_PR_NUM" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE" || echo "")
+        INTEST_PLATS=$(printf '%s\n' "$INTEST_FILES" | node "$SCRIPT_DIR/lib/dispatch-release.mjs" derive-platforms --diff-file - 2>>"$LOG_FILE" || echo '{}')
+        INTEST_PREVIEW=$(echo "${INTEST_PR_VIEW:-}" | jq -r '
+          ([ .comments[]? | select((.author.login // "") | test("vercel"; "i")) | .body ] | last // "")
+          + " " +
+          ([ .statusCheckRollup[]? | select(((.context // .name // "") | test("vercel"; "i")))
+             | (.targetUrl // .detailsUrl // "") ] | join(" "))' 2>/dev/null \
+          | grep -oE 'https://[a-zA-Z0-9._-]*vercel\.app[^ )]*' | head -1 || true)
+        intest_handoff "$ISSUE_NUM" "$INTEST_PR_NUM" "$INTEST_PR_OBJ" "$INTEST_PREVIEW" \
+          "$(pr_failing_advisory "${INTEST_PR_VIEW:-}")" "$INTEST_HEAD_SHA" "$INTEST_FILES" "$INTEST_PLATS" || true
+        # The scenario we just posted carries a drafto-factory marker, so
+        # owner_comments_since ignores it — it can never look like feedback.
+        COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM" 2>>"$LOG_FILE" || echo "$COMMENTS_JSON")
+      fi
+    fi
+
+    HWM=$(echo "$ISSUE_STATE_JSON" | jq -r '.lastFeedbackAt // ""' 2>/dev/null || echo "")
     if [[ -z "$HWM" || "$HWM" == "null" ]]; then
       # No baseline yet (e.g. a card that reached In Test before this feature).
       # Establish it now so only comments posted AFTER this count as feedback.
