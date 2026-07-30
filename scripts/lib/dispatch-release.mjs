@@ -167,12 +167,12 @@ export function assertDesktopFossil(root, { readFile = readFileSync } = {}) {
 // Spawn a lane detached so a ~20-min Fastlane build never blocks the tick. The
 // child inherits the factory's env (Phase-D prereq: MATCH_PASSWORD / ASC keys /
 // keystore must be present in the Mac-mini launchd env — see the runbook).
-function realSpawnDetached(lane, { repoRoot }) {
+function realSpawnDetached(lane, { repoRoot, laneEnv }) {
   const child = spawn(lane.command, lane.args, {
     cwd: join(repoRoot, lane.cwd),
     detached: true,
     stdio: "ignore",
-    env: process.env,
+    env: { ...process.env, ...(laneEnv ?? {}) },
   });
   child.unref();
 }
@@ -184,6 +184,7 @@ export function dispatchLanes({
   platforms,
   dryRun = false,
   env,
+  laneEnv,
 } = {}) {
   const plats = platforms ?? derivePlatforms(diffFiles);
   const lanes = platformsToLanes(plats);
@@ -203,7 +204,7 @@ export function dispatchLanes({
         continue;
       }
     }
-    if (!dryRun) spawnFn(lane, { repoRoot: laneRoot });
+    if (!dryRun) spawnFn(lane, { repoRoot: laneRoot, laneEnv });
     dispatched.push({
       id: lane.id,
       cwd: lane.cwd,
@@ -243,7 +244,11 @@ function parsePlatforms(csv) {
 }
 
 async function main(argv) {
-  const [sub, ...rest] = argv;
+  const [sub, ...rawRest] = argv;
+  // parseFlags requires a value for every flag by design, so pull the one bare
+  // boolean out before handing it the rest.
+  const dryRun = rawRest.includes("--dry-run");
+  const rest = rawRest.filter((a) => a !== "--dry-run");
   const { flags } = parseFlags(rest);
   switch (sub) {
     case "derive-platforms":
@@ -256,7 +261,29 @@ async function main(argv) {
         desktopRoot: flags["desktop-root"],
         diffFiles,
         platforms,
-        dryRun: Boolean(flags["dry-run"]),
+        dryRun,
+      });
+    }
+    // Pre-merge dispatch from an In Test card's PR head. Same lanes and the same
+    // beta-only invariant; the extra flags become env vars for the Fastlane
+    // hooks so the resulting build is identifiable as a pre-merge test build
+    // (release-notes prefix + the "build N is up" comment on the issue).
+    case "dispatch-premerge": {
+      const platforms = flags.platforms ? parsePlatforms(flags.platforms) : undefined;
+      const diffFiles = platforms ? undefined : await readDiff(flags);
+      const issue = flags.issue;
+      if (!issue) throw new Error("dispatch-premerge requires --issue <n>");
+      return dispatchLanes({
+        repoRoot: flags["repo-root"] ?? DEFAULT_REPO_ROOT,
+        desktopRoot: flags["desktop-root"],
+        diffFiles,
+        platforms,
+        dryRun,
+        laneEnv: {
+          DRAFTO_INTEST_ISSUE: String(issue),
+          DRAFTO_INTEST_PR: String(flags.pr ?? ""),
+          DRAFTO_INTEST_SHA: String(flags.sha ?? ""),
+        },
       });
     }
     case "--help":
@@ -265,7 +292,8 @@ async function main(argv) {
       process.stdout.write(
         "Usage: dispatch-release.mjs <derive-platforms (--diff-file <path|-> | --diff <str>)|" +
           "dispatch (--diff-file <path|-> | --platforms mobile,desktop) [--repo-root <dir>] " +
-          "[--desktop-root <dir>] [--dry-run]>\n",
+          "[--desktop-root <dir>] [--dry-run]|" +
+          "dispatch-premerge (same flags) --issue <n> [--pr <n>] [--sha <sha>]>\n",
       );
       return null;
     default:

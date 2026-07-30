@@ -215,6 +215,215 @@ describe("In Test sweep — scenario backfill and refresh", () => {
   });
 });
 
+describe("intest_beta_gate (extracted from factory-agent.sh)", () => {
+  // Exercise the real function with the knob globals set per case. free_disk_gb
+  // is stubbed so the matrix doesn't depend on the machine's actual free space.
+  const gate = ({
+    platforms,
+    beta = "1",
+    desktop = "1",
+    phase = "C",
+    freeGb = "50",
+    minGb = "3",
+  }) => {
+    const snippet = `
+set -euo pipefail
+eval "$(awk '/^intest_beta_gate\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
+free_disk_gb() { echo "${freeGb}"; }
+FACTORY_INTEST_BETA=${beta}
+FACTORY_INTEST_BETA_DESKTOP=${desktop}
+PHASE=${phase}
+FACTORY_MIN_FREE_DISK_GB=${minGb}
+intest_beta_gate ${JSON.stringify(platforms)}
+`;
+    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+    assert.equal(r.status, 0, `bash failed: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+  const native = '{"mobile":true,"desktop":true,"web":false}';
+
+  it("dispatches nothing when the master knob is off", () => {
+    const out = gate({ platforms: native, beta: "0" });
+    assert.match(out, /^lanes= /);
+    assert.match(out, /mobile:FACTORY_INTEST_BETA=0/);
+    assert.match(out, /desktop:FACTORY_INTEST_BETA=0/);
+  });
+
+  it("dispatches mobile only while the desktop knob is off (fossil not yet validated)", () => {
+    const out = gate({ platforms: native, beta: "1", desktop: "0" });
+    assert.match(out, /lanes=mobile /);
+    assert.match(out, /desktop:FACTORY_INTEST_BETA_DESKTOP=0/);
+  });
+
+  it("dispatches both when both knobs are on", () => {
+    const out = gate({ platforms: native, beta: "1", desktop: "1" });
+    assert.match(out, /lanes=mobile,desktop/);
+    assert.match(out, /skipped=$/);
+  });
+
+  it("dispatches nothing at Phase B (web-only by contract)", () => {
+    const out = gate({ platforms: native, phase: "B" });
+    assert.match(out, /^lanes= /);
+    assert.match(out, /mobile:phase-B/);
+  });
+
+  it("skips on low disk rather than dying mid-build", () => {
+    const out = gate({ platforms: native, freeGb: "2", minGb: "3" });
+    assert.match(out, /^lanes= /);
+    assert.match(out, /mobile:low-disk-2GB/);
+  });
+
+  it("is a silent no-op for a web-only change", () => {
+    const out = gate({ platforms: '{"mobile":false,"desktop":false,"web":true}' });
+    assert.equal(out, "lanes= skipped=");
+  });
+
+  it("dispatches only the platform the diff touched", () => {
+    const out = gate({ platforms: '{"mobile":true,"desktop":false,"web":false}' });
+    assert.match(out, /lanes=mobile/);
+    assert.ok(!out.includes("desktop"), "must not dispatch a platform the diff didn't touch");
+  });
+});
+
+describe("ensure_beta_build_root — working-tree safety", () => {
+  const body = fnBody("ensure_beta_build_root");
+
+  it("refuses to use the factory checkout or the fossil as a build root", () => {
+    // It hard-resets and cleans the root. The fossil IS the operator's working
+    // tree (permanently dirty — the desktop lane mutates Info.plist and
+    // project.pbxproj), so resetting it would destroy real work.
+    assert.match(body, /canon_root" == "\$canon_repo" \|\| "\$canon_root" == "\$canon_fossil"/);
+    assert.match(body, /refusing to use \$root as a \$platform beta build root/);
+    assert.match(body, /return 1/);
+  });
+
+  it("resolves paths before comparing them (a symlink must not defeat the guard)", () => {
+    assert.match(body, /pwd -P/);
+  });
+
+  it("refuses an empty sha rather than resetting to something arbitrary", () => {
+    assert.match(body, /-n "\$sha" \]\] \|\| \{ logerr "ERROR: ensure_beta_build_root: empty sha"/);
+  });
+
+  it("logs to stderr, since the caller captures its stdout for the root path", () => {
+    // A log() line inside a captured function ends up inside the captured value.
+    assert.ok(!/(?<![\w])log "/.test(body), "must use logerr, not log");
+  });
+
+  it("checks out detached (the branch is already checked out in the issue worktree)", () => {
+    assert.match(body, /worktree add --detach "\$root" "\$sha"/);
+  });
+
+  it("keeps node_modules and the warm native build dirs when cleaning", () => {
+    assert.match(
+      body,
+      /clean -fdx \\?\s*\n?\s*-e node_modules -e macos\/Pods -e macos\/build -e ios -e android/,
+    );
+  });
+
+  it("seeds desktop from the fossil and never installs into it", () => {
+    assert.match(body, /desktop\) root="\$BETA_DESKTOP_ROOT"; src_root="\$DESKTOP_FOSSIL_ROOT"/);
+    // The install/bundle step is mobile-only.
+    const installIdx = body.indexOf("run_pnpm_install");
+    const mobileGuardIdx = body.indexOf('platform" == "mobile"');
+    assert.ok(
+      mobileGuardIdx !== -1 && mobileGuardIdx < installIdx,
+      "pnpm install must be gated to the mobile platform",
+    );
+  });
+});
+
+describe("intest_dispatch_betas — idempotency and reporting", () => {
+  const body = fnBody("intest_dispatch_betas");
+
+  it("keys idempotency on the head SHA, not a monotonic marker", () => {
+    assert.match(body, /intestBetaSha/);
+    assert.match(body, /"\$prior_sha" == "\$sha"/);
+    assert.match(body, /beta already dispatched for/);
+    // A marker would suppress forever and break the In Test iteration loop.
+    assert.ok(!body.includes("issue_has_marker"), "must not gate on a monotonic marker");
+  });
+
+  it("records what it dispatched, for triage", () => {
+    for (const field of ["intestBetaSha", "intestBetaAt", "intestBetaLanes"]) {
+      assert.ok(body.includes(field), `missing state field ${field}`);
+    }
+  });
+
+  it("passes the issue/PR/sha through so the build is identifiable", () => {
+    assert.match(body, /dispatch-premerge/);
+    assert.match(body, /--issue "\$issue_num" --pr "\$pr_num" --sha "\$sha"/);
+  });
+
+  it("emits manual commands for every lane it is not building", () => {
+    assert.match(body, /manualCommands/);
+    assert.match(body, /NEVER pnpm install here \(desktop fossil\)/);
+  });
+
+  it("merges node-side lane refusals with bash-side gate skips", () => {
+    // A fossil-assertion refusal must reach the comment, not vanish.
+    assert.match(body, /\$gateSkipped \+ \$laneSkipped/);
+  });
+
+  it("dispatches nothing under --dry-run", () => {
+    assert.match(body, /DRY_RUN" -eq 1/);
+    const dry = body.slice(body.indexOf('DRY_RUN" -eq 1'));
+    assert.match(dry.slice(0, 500), /would dispatch pre-merge beta lane/);
+  });
+
+  it("logs to stderr, since its stdout is the captured betaDispatch JSON", () => {
+    // Found by a real dry run: log() tees to stdout, so a log line inside this
+    // function landed inside beta_json and made the bundle build fail.
+    assert.ok(!/(?<![\w])log "/.test(body), "must use logerr, not log");
+  });
+
+  it("drops a lane whose build root could not be prepared", () => {
+    assert.match(body, /-z "\$\{mobile_root:-\}" \]\] && lanes=/);
+    assert.match(body, /-z "\$\{desktop_root:-\}" \]\] && lanes=/);
+  });
+});
+
+describe("pre-merge beta knobs", () => {
+  it("defaults both knobs off", () => {
+    assert.match(script, /FACTORY_INTEST_BETA="\$\{FACTORY_INTEST_BETA:-0\}"/);
+    assert.match(script, /FACTORY_INTEST_BETA_DESKTOP="\$\{FACTORY_INTEST_BETA_DESKTOP:-0\}"/);
+  });
+
+  it("points the build roots at dedicated paths, not the fossil or this checkout", () => {
+    assert.match(
+      script,
+      /BETA_MOBILE_ROOT="\$\{DRAFTO_BETA_MOBILE_ROOT:-\/Users\/jakub\/code\/drafto-beta-mobile\}"/,
+    );
+    assert.match(
+      script,
+      /BETA_DESKTOP_ROOT="\$\{DRAFTO_DESKTOP_BUILD_ROOT:-\/Users\/jakub\/code\/drafto-beta-desktop\}"/,
+    );
+    assert.match(
+      script,
+      /DESKTOP_FOSSIL_ROOT="\$\{DRAFTO_DESKTOP_FOSSIL_ROOT:-\/Users\/jakub\/code\/drafto\}"/,
+    );
+  });
+
+  it("dispatches betas before writing the scenario (the build takes 20-40 min)", () => {
+    const handoff = fnBody("intest_handoff");
+    const dispatchIdx = handoff.indexOf("intest_dispatch_betas");
+    const bundleIdx = handoff.indexOf("build_intest_bundle");
+    assert.ok(dispatchIdx !== -1 && dispatchIdx < bundleIdx, "dispatch must precede the bundle");
+  });
+
+  it("never lets a failed dispatch stop the scenario from being written", () => {
+    const handoff = fnBody("intest_handoff");
+    assert.match(
+      handoff,
+      /beta_json=\$\(intest_dispatch_betas[\s\S]{0,200}\|\| echo '\{"dispatched"/,
+    );
+  });
+
+  it("copies the Play service-account key into build roots (Android lane needs it)", () => {
+    assert.match(script, /apps\/mobile\/google-play-service-account\.json/);
+  });
+});
+
 describe("In Test knobs", () => {
   it("defines a validated timeout knob for the scenario stage", () => {
     assert.match(script, /FACTORY_INTEST_TIMEOUT_SEC="\$\{FACTORY_INTEST_TIMEOUT_SEC:-600\}"/);

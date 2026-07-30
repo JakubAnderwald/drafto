@@ -79,6 +79,14 @@ if [[ -z "$NOTES" ]]; then
   fi
 fi
 
+# Pre-merge test build (factory In Test dispatch): stamp the card it belongs to
+# so a tester can tell which build corresponds to which issue, and so nobody
+# mistakes an unmerged branch build for a release candidate. Prepended BEFORE the
+# trim so the identifier can't be cut off. No-op when unset.
+if [[ -n "${DRAFTO_INTEST_ISSUE:-}" ]]; then
+  NOTES="PRE-MERGE TEST BUILD — issue #${DRAFTO_INTEST_ISSUE} / PR #${DRAFTO_INTEST_PR:-?} (${DRAFTO_INTEST_SHA:0:12})"$'\n\n'"$NOTES"
+fi
+
 # Trim to max chars
 NOTES="${NOTES:0:$MAX_CHARS}"
 

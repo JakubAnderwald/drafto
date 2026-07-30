@@ -166,12 +166,31 @@ if ! [[ "$FACTORY_INTEST_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
 fi
 INTEST_TIMEOUT_SEC="$FACTORY_INTEST_TIMEOUT_SEC"
 
-# Checkout the macOS beta lane builds from. NOT this checkout: a normal install
-# resolves React 19.2, which react-native-macos@0.81 compiles against but
-# crashes on at runtime. Only a fossil checkout (React 19.1.x, never
-# reinstalled) produces a working app; dispatch-release.mjs asserts that before
-# spawning the lane. See docs/operations/desktop-build-fossil.md and ADR-0027.
-BETA_DESKTOP_ROOT="${DRAFTO_DESKTOP_BUILD_ROOT:-/Users/jakub/code/drafto}"
+# ── Pre-merge beta dispatch (In Test) ──────────────────────────────────────
+# Off by default. Deliberately separate from the Phase-D post-merge lane: a card
+# in In Test needs a testable native build BEFORE the merge gate, but enabling
+# that must not also switch on post-merge auto-dispatch (a much bigger blast
+# radius). Desktop carries its own knob because it builds from a clonefile
+# replica of the fossil, which needs one manual TestFlight build that opens a
+# note before it can be trusted — a green compile proves nothing there.
+# See ADR-0030 and docs/operations/factory-runbook.md.
+FACTORY_INTEST_BETA="${FACTORY_INTEST_BETA:-0}"
+FACTORY_INTEST_BETA_DESKTOP="${FACTORY_INTEST_BETA_DESKTOP:-0}"
+
+# Where the fossil lives (React 19.1.x, never reinstalled) and the dedicated,
+# persistent build roots the beta lanes run in. The mobile root is seeded from
+# this checkout; the desktop root is a clonefile replica of the fossil and must
+# NEVER be `pnpm install`ed — dispatch-release.mjs asserts React 19.1.x before it
+# will spawn the lane. See docs/operations/desktop-build-fossil.md and ADR-0027.
+#
+# The build roots are DEDICATED and disposable: the factory hard-resets them to
+# the commit under test. They must never be the fossil itself or this checkout —
+# ensure_beta_build_root refuses to touch either, because a `reset --hard` there
+# would destroy the operator's working tree (which is permanently dirty: the
+# desktop Fastlane lane mutates Info.plist and project.pbxproj on every run).
+DESKTOP_FOSSIL_ROOT="${DRAFTO_DESKTOP_FOSSIL_ROOT:-/Users/jakub/code/drafto}"
+BETA_MOBILE_ROOT="${DRAFTO_BETA_MOBILE_ROOT:-/Users/jakub/code/drafto-beta-mobile}"
+BETA_DESKTOP_ROOT="${DRAFTO_DESKTOP_BUILD_ROOT:-/Users/jakub/code/drafto-beta-desktop}"
 
 # ── Args ────────────────────────────────────────────────────────────────────
 MODE_PLAN=0
@@ -288,6 +307,10 @@ STATE_FILE="$REPO_ROOT/logs/factory-state.json"
 cd "$REPO_ROOT"
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
+# log() writes to stdout, so a function whose stdout is CAPTURED by the caller
+# (command substitution) must use this instead — otherwise its log lines end up
+# inside the captured value and corrupt it (e.g. a JSON payload).
+logerr() { log "$@" >&2; }
 
 # ── Failure notification (mirrors support-agent.sh) ─────────────────────────
 cleanup() {
@@ -878,9 +901,13 @@ find_prior_pr() {
 copy_worktree_env() {
   local wt="$1"
   local f
+  # google-play-service-account.json is required by the Android Fastlane lane
+  # (json_key_path defaults to it) — without it a beta build from any non-primary
+  # checkout fails at upload. worktree-bootstrap.sh copies it for humans.
   for f in \
     apps/web/.env.local apps/web/.env.production \
     apps/mobile/.env apps/mobile/.env.production \
+    apps/mobile/google-play-service-account.json \
     apps/desktop/.env apps/desktop/.env.production; do
     if [[ -f "$REPO_ROOT/$f" ]]; then
       mkdir -p "$wt/$(dirname "$f")"
@@ -904,10 +931,14 @@ copy_worktree_env() {
 # roots (repo root + apps/* + packages/*) are seeded — never the factory's own
 # worktrees/ checkouts.
 seed_worktree_node_modules() {
+  # $2 (optional) overrides the source checkout. The desktop beta root seeds
+  # from the FOSSIL checkout, not $REPO_ROOT — see the fossil note on
+  # BETA_DESKTOP_ROOT. Defaults to $REPO_ROOT so existing callers are unchanged.
   local wt="$1" src rel
-  for src in "$REPO_ROOT"/node_modules "$REPO_ROOT"/apps/*/node_modules "$REPO_ROOT"/packages/*/node_modules; do
+  local src_root="${2:-$REPO_ROOT}"
+  for src in "$src_root"/node_modules "$src_root"/apps/*/node_modules "$src_root"/packages/*/node_modules; do
     [[ -d "$src" ]] || continue
-    rel="${src#"$REPO_ROOT"/}"
+    rel="${src#"$src_root"/}"
     [[ -e "$wt/$rel" ]] && continue
     mkdir -p "$wt/$(dirname "$rel")"
     if ! cp -c -R "$src" "$wt/$rel" 2>>"$LOG_FILE"; then
@@ -1199,28 +1230,262 @@ pr_failing_advisory() {
     | unique | join(", ")' 2>/dev/null || echo ""
 }
 
+# Which beta lanes may be dispatched for an In Test card, given the platforms in
+# the diff. Prints `lanes=<csv> skipped=<id>:<reason>,...` — a pure string
+# function over its args + the knob globals, so it is unit-testable in isolation.
+#
+# Gating rationale: the post-merge lane stays Phase-D-only, but pre-merge betas
+# are a separate opt-in (FACTORY_INTEST_BETA) so turning them on doesn't also
+# switch on post-merge auto-dispatch. Desktop has its own knob because it builds
+# from a clonefile replica of the fossil, which must be validated by one manual
+# TestFlight build that opens a note before it can be trusted.
+# $1 platforms JSON.
+intest_beta_gate() {
+  local platforms="$1"
+  local mobile desktop lanes="" skipped="" free_gb
+  mobile=$(echo "$platforms" | jq -r '.mobile // false' 2>/dev/null || echo "false")
+  desktop=$(echo "$platforms" | jq -r '.desktop // false' 2>/dev/null || echo "false")
+
+  if [[ "$mobile" != "true" && "$desktop" != "true" ]]; then
+    echo "lanes= skipped="; return 0
+  fi
+  if [[ "$FACTORY_INTEST_BETA" != "1" ]]; then
+    [[ "$mobile" == "true" ]] && skipped="mobile:FACTORY_INTEST_BETA=0"
+    [[ "$desktop" == "true" ]] && skipped="${skipped:+$skipped,}desktop:FACTORY_INTEST_BETA=0"
+    echo "lanes= skipped=$skipped"; return 0
+  fi
+  # Phase B is web-only by contract (parity_violation), so a native dispatch
+  # there is incoherent; Phase A never gets this far.
+  if [[ "$PHASE" != "C" && "$PHASE" != "D" ]]; then
+    [[ "$mobile" == "true" ]] && skipped="mobile:phase-$PHASE"
+    [[ "$desktop" == "true" ]] && skipped="${skipped:+$skipped,}desktop:phase-$PHASE"
+    echo "lanes= skipped=$skipped"; return 0
+  fi
+  # A native build needs several GB of artefacts; refuse rather than die mid-build.
+  free_gb=$(free_disk_gb)
+  if [[ "$free_gb" =~ ^[0-9]+$ ]] && [[ "$free_gb" -lt "$FACTORY_MIN_FREE_DISK_GB" ]]; then
+    [[ "$mobile" == "true" ]] && skipped="mobile:low-disk-${free_gb}GB"
+    [[ "$desktop" == "true" ]] && skipped="${skipped:+$skipped,}desktop:low-disk-${free_gb}GB"
+    echo "lanes= skipped=$skipped"; return 0
+  fi
+
+  [[ "$mobile" == "true" ]] && lanes="mobile"
+  if [[ "$desktop" == "true" ]]; then
+    if [[ "$FACTORY_INTEST_BETA_DESKTOP" == "1" ]]; then
+      lanes="${lanes:+$lanes,}desktop"
+    else
+      skipped="desktop:FACTORY_INTEST_BETA_DESKTOP=0"
+    fi
+  fi
+  echo "lanes=$lanes skipped=$skipped"
+}
+
+# Prepare a dedicated, persistent build root checked out at <sha>, printing its
+# path (empty on failure).
+#
+# Why a dedicated root rather than the issue's worktree: that worktree is live
+# (the next --watch tick may pnpm install and let Claude edit files in it) and
+# the cleanup sweep deletes it the moment the card leaves In Test — either would
+# happen mid-build. A fixed root also keeps ios/Pods and the Gradle cache warm.
+#
+# Why detached: factory/issue-<n> is already checked out in the issue worktree
+# and git refuses a second checkout of the same branch. Pinning the SHA is also
+# more precise — it is exactly what CI went green on.
+#
+# The desktop root's node_modules is a clonefile replica of the FOSSIL checkout
+# and must NEVER be installed into; dispatch-release.mjs asserts React 19.1.x
+# before it will spawn the lane. $1 platform (mobile|desktop), $2 sha.
+ensure_beta_build_root() {
+  local platform="$1" sha="$2" root src_root
+  case "$platform" in
+    mobile)  root="$BETA_MOBILE_ROOT";  src_root="$REPO_ROOT" ;;
+    desktop) root="$BETA_DESKTOP_ROOT"; src_root="$DESKTOP_FOSSIL_ROOT" ;;
+    *) logerr "ERROR: ensure_beta_build_root: unknown platform '$platform'"; return 1 ;;
+  esac
+  [[ -n "$sha" ]] || { logerr "ERROR: ensure_beta_build_root: empty sha"; return 1; }
+
+  # Hard safety rail. This function hard-resets and cleans $root, so a
+  # misconfigured knob pointing it at the operator's checkout (or the fossil we
+  # clone FROM) would destroy real work. Refuse, loudly, rather than proceed.
+  local canon_root canon_repo canon_fossil
+  canon_root=$(cd "$root" 2>/dev/null && pwd -P || echo "$root")
+  canon_repo=$(cd "$REPO_ROOT" 2>/dev/null && pwd -P || echo "$REPO_ROOT")
+  canon_fossil=$(cd "$DESKTOP_FOSSIL_ROOT" 2>/dev/null && pwd -P || echo "$DESKTOP_FOSSIL_ROOT")
+  if [[ "$canon_root" == "$canon_repo" || "$canon_root" == "$canon_fossil" ]]; then
+    logerr "ERROR: refusing to use $root as a $platform beta build root — it is the factory checkout or the fossil, and this function resets it. Set DRAFTO_BETA_MOBILE_ROOT / DRAFTO_DESKTOP_BUILD_ROOT to a dedicated path."
+    return 1
+  fi
+
+  if [[ ! -d "$root/.git" && ! -f "$root/.git" ]]; then
+    logerr "Creating $platform beta build root at $root (detached at ${sha:0:12})"
+    if ! git -C "$REPO_ROOT" worktree add --detach "$root" "$sha" >>"$LOG_FILE" 2>&1; then
+      logerr "ERROR: could not create beta build root $root"; return 1
+    fi
+  else
+    git -C "$root" fetch origin >>"$LOG_FILE" 2>&1 || logerr "WARNING: fetch failed in $root"
+    if ! git -C "$root" reset --hard "$sha" >>"$LOG_FILE" 2>&1; then
+      logerr "ERROR: could not reset $root to ${sha:0:12}"; return 1
+    fi
+    # Keep node_modules and the warm native build dirs; drop everything else so
+    # a previous build's stray files can't leak into this one.
+    git -C "$root" clean -fdx \
+      -e node_modules -e macos/Pods -e macos/build -e ios -e android \
+      >>"$LOG_FILE" 2>&1 || logerr "WARNING: clean failed in $root"
+  fi
+
+  seed_worktree_node_modules "$root" "$src_root"
+  copy_worktree_env "$root"
+  if [[ "$platform" == "mobile" ]]; then
+    run_pnpm_install "$root" || logerr "WARNING: install failed/timed out in $root; the lane may fail"
+    # Ruby gems are global (no per-checkout bundle path), so this is a cheap
+    # reconcile. Restore Gemfile.lock if it drifted — the root must stay clean
+    # for the `git clean` guard above to mean anything.
+    ( cd "$root/apps/mobile" && ( bundle check >/dev/null 2>&1 || bundle install ) ) >>"$LOG_FILE" 2>&1 \
+      || logerr "WARNING: bundle install failed in $root/apps/mobile; the lane may fail"
+    git -C "$root" checkout -- apps/mobile/Gemfile.lock 2>/dev/null || true
+  fi
+  echo "$root"
+}
+
+# Dispatch pre-merge beta builds for an In Test card, so a native change is
+# testable BEFORE the merge gate rather than only after it.
+#
+# Idempotency is SHA-keyed (intestBetaSha), not marker-keyed: a marker is
+# monotonic, which is right post-merge (one merge, one build) but wrong here,
+# where In Test → feedback → In Test must produce a build of the new code.
+# Prints the betaDispatch JSON the In Test comment reports from.
+# $1 issue, $2 pr-num, $3 sha, $4 platforms JSON.
+intest_dispatch_betas() {
+  local issue_num="$1" pr_num="$2" sha="$3" platforms="$4"
+  local gate lanes skipped prior_sha root_flags="" mobile_root desktop_root
+  local dispatch_json="" dispatched skipped_json manual="[]"
+
+  gate=$(intest_beta_gate "$platforms")
+  lanes=$(echo "$gate" | sed -E 's/.*lanes=([^ ]*).*/\1/')
+  skipped=$(echo "$gate" | sed -E 's/.*skipped=([^ ]*).*/\1/')
+
+  # Manual commands for every lane we are NOT building, so the comment always
+  # tells the tester how to get that platform themselves.
+  manual=$(jq -nc --arg skipped "$skipped" --arg issue "$issue_num" '
+    [ ($skipped | split(",") | .[] | select(length > 0) | split(":")[0]) ]
+    | map(if . == "desktop" then
+            "cd /Users/jakub/code/drafto && git checkout factory/issue-" + $issue +
+            " && cd apps/desktop && pnpm release:beta   # NEVER pnpm install here (desktop fossil)"
+          else
+            "git worktree add ../drafto-" + $issue + " factory/issue-" + $issue +
+            " && cd ../drafto-" + $issue + " && pnpm install && bash scripts/worktree-bootstrap.sh" +
+            " && cd apps/mobile && pnpm release:beta:all"
+          end)' 2>/dev/null || echo "[]")
+
+  skipped_json=$(jq -nc --arg skipped "$skipped" '
+    [ ($skipped | split(",") | .[] | select(length > 0)
+        | split(":") | { id: .[0], reason: (.[1:] | join(":")) }) ]' 2>/dev/null || echo "[]")
+
+  if [[ -z "$lanes" ]]; then
+    [[ -n "$skipped" ]] && logerr "Issue #$issue_num: no pre-merge beta lanes ($skipped)"
+    jq -nc --argjson skipped "$skipped_json" --argjson manual "$manual" \
+      '{ dispatched: [], skipped: $skipped, manualCommands: $manual }'
+    return 0
+  fi
+
+  # Already built this exact commit? Don't burn another build number.
+  prior_sha=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.intestBetaSha // ""' 2>/dev/null || echo "")
+  if [[ -n "$sha" && "$prior_sha" == "$sha" ]]; then
+    logerr "Issue #$issue_num: beta already dispatched for ${sha:0:12}; not re-dispatching"
+    jq -nc --argjson skipped "$skipped_json" --argjson manual "$manual" \
+      '{ dispatched: [], skipped: $skipped, manualCommands: $manual }'
+    return 0
+  fi
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    logerr "DRY-RUN: would dispatch pre-merge beta lane(s) '$lanes' for #$issue_num at ${sha:0:12}"
+    jq -nc --arg lanes "$lanes" --argjson skipped "$skipped_json" --argjson manual "$manual" '
+      { dispatched: [ ($lanes | split(",") | .[] | select(length > 0) | { id: ., dryRun: true }) ],
+        skipped: $skipped, manualCommands: $manual }'
+    return 0
+  fi
+
+  if [[ ",$lanes," == *",mobile,"* ]]; then
+    mobile_root=$(ensure_beta_build_root mobile "$sha") || mobile_root=""
+    [[ -n "$mobile_root" ]] || logerr "WARNING: mobile beta build root unavailable for #$issue_num"
+  fi
+  if [[ ",$lanes," == *",desktop,"* ]]; then
+    desktop_root=$(ensure_beta_build_root desktop "$sha") || desktop_root=""
+    [[ -n "$desktop_root" ]] || logerr "WARNING: desktop beta build root unavailable for #$issue_num"
+  fi
+  if [[ -z "${mobile_root:-}" && -z "${desktop_root:-}" ]]; then
+    logerr "ERROR: no beta build root available for #$issue_num; skipping dispatch"
+    jq -nc --argjson skipped "$skipped_json" --argjson manual "$manual" \
+      '{ dispatched: [], skipped: $skipped, manualCommands: $manual }'
+    return 0
+  fi
+  # dispatch-premerge resolves each lane's root: mobile from --repo-root, desktop
+  # from --desktop-root (fossil-asserted). Only pass lanes whose root is ready.
+  [[ -z "${mobile_root:-}" ]] && lanes=$(echo "$lanes" | sed -E 's/(^|,)mobile(,|$)/\1\2/; s/^,|,$//')
+  [[ -z "${desktop_root:-}" ]] && lanes=$(echo "$lanes" | sed -E 's/(^|,)desktop(,|$)/\1\2/; s/^,|,$//')
+  root_flags="--repo-root ${mobile_root:-$REPO_ROOT}"
+  [[ -n "${desktop_root:-}" ]] && root_flags="$root_flags --desktop-root $desktop_root"
+
+  # shellcheck disable=SC2086 -- root_flags is a deliberately word-split flag list
+  dispatch_json=$(node "$SCRIPT_DIR/lib/dispatch-release.mjs" dispatch-premerge \
+    --platforms "$lanes" $root_flags \
+    --issue "$issue_num" --pr "$pr_num" --sha "$sha" 2>>"$LOG_FILE" || echo "")
+  dispatched=$(echo "$dispatch_json" | jq -r '[.dispatched[]?.id] | join(", ")' 2>/dev/null || echo "")
+  if [[ -n "$dispatched" ]]; then
+    logerr "Issue #$issue_num: dispatched pre-merge beta lane(s): $dispatched at ${sha:0:12}"
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+      intestBetaSha "$sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+      intestBetaAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+      intestBetaLanes "$dispatched" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  else
+    logerr "WARNING: pre-merge beta dispatch produced no lanes for #$issue_num"
+  fi
+  # Merge bash-side skips (gate) with node-side refusals (e.g. fossil assertion).
+  jq -nc --argjson d "$(echo "${dispatch_json:-{\}}" | jq -c '.dispatched // []' 2>/dev/null || echo '[]')" \
+    --argjson gateSkipped "$skipped_json" \
+    --argjson laneSkipped "$(echo "${dispatch_json:-{\}}" | jq -c '.skipped // []' 2>/dev/null || echo '[]')" \
+    --argjson manual "$manual" \
+    '{ dispatched: $d, skipped: ($gateSkipped + $laneSkipped), manualCommands: $manual }'
+}
+
 # Deterministic In Test comment. Used when the scenario writer times out, is
 # blocked, or posts nothing — the card is already In Test by then, so the
 # reporter must still get something usable. Platform-aware for the same reason
 # the model's version is: a Vercel link on a native-only PR tests nothing.
-# $1 issue, $2 pr-num, $3 preview URL, $4 advisory, $5 head sha, $6 platforms JSON.
+# $1 issue, $2 pr-num, $3 preview URL, $4 advisory, $5 head sha, $6 platforms JSON,
+# $7 betaDispatch JSON (optional).
 intest_fallback_comment() {
   local issue_num="$1" pr_num="$2" preview_url="$3" advisory="$4" head_sha="$5" platforms="$6"
-  local web mobile desktop build_note="" advisory_note=""
+  local beta="${7:-}"
+  local web mobile desktop dispatched build_note="" advisory_note=""
   web=$(echo "$platforms" | jq -r '.web // false' 2>/dev/null || echo "false")
   mobile=$(echo "$platforms" | jq -r '.mobile // false' 2>/dev/null || echo "false")
   desktop=$(echo "$platforms" | jq -r '.desktop // false' 2>/dev/null || echo "false")
+  dispatched=$(echo "${beta:-{\}}" | jq -r '[.dispatched[]?.id] | join(",")' 2>/dev/null || echo "")
   if [[ "$web" == "true" && -n "$preview_url" ]]; then
     build_note="$build_note
 - **Web** — Vercel preview: $preview_url"
   fi
   if [[ "$mobile" == "true" ]]; then
-    build_note="$build_note
+    if [[ ",$dispatched," == *",mobile,"* ]]; then
+      build_note="$build_note
+- **iOS / Android** — beta builds are building now from PR #$pr_num${head_sha:+ (\`${head_sha:0:12}\`)}; you'll get a follow-up comment with each build number (~20-40 min)."
+    else
+      build_note="$build_note
 - **iOS / Android** — run the branch locally: worktree \`factory/issue-$issue_num\`, \`pnpm install\`, \`bash scripts/worktree-bootstrap.sh\`, then \`cd apps/mobile && pnpm ios\` (or \`pnpm android\`)."
+    fi
   fi
   if [[ "$desktop" == "true" ]]; then
-    build_note="$build_note
+    if [[ ",$dispatched," == *",desktop,"* ]]; then
+      build_note="$build_note
+- **macOS** — a TestFlight build is building now from PR #$pr_num${head_sha:+ (\`${head_sha:0:12}\`)}; you'll get a follow-up comment with the build number (~20-40 min)."
+    else
+      build_note="$build_note
 - **macOS** — build ONLY from the primary checkout \`/Users/jakub/code/drafto\` (\`git checkout factory/issue-$issue_num\`, **never** \`pnpm install\` — the desktop fossil), then \`pnpm --filter @drafto/desktop start\`."
+    fi
   fi
   [[ -n "$advisory" ]] && advisory_note="
 
@@ -1254,32 +1519,40 @@ changed and the factory revises on the same branch.$advisory_note
 intest_handoff() {
   local issue_num="$1" pr_num="$2" pr_obj="$3" preview_url="$4" advisory="$5"
   local head_sha="$6" diff_files="$7" platforms="$8"
-  local issue_record comments_json plan_json pr_diff bundle claude_input
+  local issue_record comments_json plan_json pr_diff bundle claude_input beta_json
   local out_file start_iso exit_code=0 summary_line action
 
   if [[ ! -f "$INTEST_PROMPT_FILE" ]]; then
     log "WARNING: In Test prompt missing ($INTEST_PROMPT_FILE); posting fallback comment"
-    [[ "$DRY_RUN" -eq 0 ]] && intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms"
+    [[ "$DRY_RUN" -eq 0 ]] && intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
     return 0
   fi
   if ! issue_record=$(fetch_issue_record "$issue_num"); then
     log "WARNING: fetch_issue_record failed for #$issue_num (In Test hand-off); posting fallback"
-    [[ "$DRY_RUN" -eq 0 ]] && intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms"
+    [[ "$DRY_RUN" -eq 0 ]] && intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
     return 0
   fi
   comments_json=$(fetch_issue_comments "$issue_num" 2>>"$LOG_FILE" || echo "[]")
   [[ -n "$comments_json" ]] || comments_json="[]"
   plan_json=$(extract_plan_comment "$comments_json")
   [[ -n "$plan_json" ]] || plan_json="null"
+
+  # Kick off pre-merge beta builds BEFORE writing the scenario, so the comment
+  # can tell the tester a build is already on its way (a Fastlane lane takes
+  # 20-40 min; the scenario takes seconds). Best-effort: no build must ever stop
+  # the scenario from being written.
+  beta_json=$(intest_dispatch_betas "$issue_num" "$pr_num" "$head_sha" "$platforms" 2>>"$LOG_FILE" \
+    || echo '{"dispatched":[],"skipped":[],"manualCommands":[]}')
+  [[ -n "$beta_json" ]] || beta_json='{"dispatched":[],"skipped":[],"manualCommands":[]}'
   # The diff is the scenario's ground truth. An empty one still produces a
   # usable (if thinner) scenario, so a failure here is not fatal.
   pr_diff=$(gh pr diff "$pr_num" --repo JakubAnderwald/drafto 2>>"$LOG_FILE" || echo "")
 
   if ! bundle=$(build_intest_bundle "$issue_record" "$plan_json" "$pr_obj" "$pr_diff" \
-      "$diff_files" "$platforms" "$preview_url" "$advisory" "${INTEST_BETA_JSON:-null}" \
+      "$diff_files" "$platforms" "$preview_url" "$advisory" "$beta_json" \
       "$head_sha" "$comments_json"); then
     log "ERROR: build_intest_bundle failed for #$issue_num; posting fallback"
-    [[ "$DRY_RUN" -eq 0 ]] && intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms"
+    [[ "$DRY_RUN" -eq 0 ]] && intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
     return 0
   fi
 
@@ -1308,12 +1581,12 @@ intest_handoff() {
     # falls back. Either way the retry budget is untouched — this is commentary.
     if [[ $exit_code -ne 124 ]] && check_session_limit "$REPO_ROOT" "$start_iso"; then
       rm -f "$out_file"
-      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms"
+      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
       pause_for_session_limit
       return 0
     fi
     rm -f "$out_file"
-    intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms"
+    intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
     return 0
   fi
   cat "$out_file" >>"$LOG_FILE"
@@ -1329,7 +1602,7 @@ intest_handoff() {
     log "Issue #$issue_num: test scenario posted (action=${action:-unknown})"
   else
     log "Issue #$issue_num: no test-scenario comment found (action=${action:-none}); posting fallback"
-    intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms"
+    intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
   fi
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
     intestCommentSha "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
@@ -2921,16 +3194,23 @@ retry next cycle; if it keeps failing, merge it by hand. The card stays in \
         && git -C "$REPO_ROOT" merge --ff-only origin/main >>"$LOG_FILE" 2>&1 \
         || log "WARNING: could not fast-forward $REPO_ROOT to merged main; beta lanes may build stale code"
       DESKTOP_SKIP_NOTE=""
+      DESKTOP_ROOT_FLAG=""
       DISPATCH_PLATFORMS=$(printf '%s\n' "$DIFF_FILES" | node "$SCRIPT_DIR/lib/dispatch-release.mjs" derive-platforms --diff-file - 2>>"$LOG_FILE" || echo "")
-      if [[ "$(echo "$DISPATCH_PLATFORMS" | jq -r '.desktop // false' 2>/dev/null)" == "true" ]] \
-        && [[ -n "$MERGE_SHA" ]] \
-        && ! git -C "$BETA_DESKTOP_ROOT" merge-base --is-ancestor "$MERGE_SHA" HEAD >>"$LOG_FILE" 2>&1; then
-        log "Issue #$ISSUE_NUM: desktop build root $BETA_DESKTOP_ROOT is not at the merged commit; skipping the desktop lane"
-        DESKTOP_SKIP_NOTE=" ⚠️ macOS beta skipped: the desktop build root (\`$BETA_DESKTOP_ROOT\`) is not at the merged commit — update it and run \`pnpm release:beta\` there by hand."
-        DISPATCH_PLATFORMS=$(echo "$DISPATCH_PLATFORMS" | jq -c '.desktop = false' 2>/dev/null || echo "$DISPATCH_PLATFORMS")
+      if [[ "$(echo "$DISPATCH_PLATFORMS" | jq -r '.desktop // false' 2>/dev/null)" == "true" ]]; then
+        # Prepare the dedicated desktop build root at the merged commit. The
+        # factory can't update the fossil checkout itself (it's the operator's
+        # working tree), so it builds from a disposable clonefile replica of it.
+        if DESKTOP_ROOT_READY=$(ensure_beta_build_root desktop "${MERGE_SHA:-origin/main}") && [[ -n "$DESKTOP_ROOT_READY" ]]; then
+          DESKTOP_ROOT_FLAG="--desktop-root $DESKTOP_ROOT_READY"
+        else
+          log "Issue #$ISSUE_NUM: desktop beta build root unavailable; skipping the desktop lane"
+          DESKTOP_SKIP_NOTE=" ⚠️ macOS beta skipped: the desktop build root (\`$BETA_DESKTOP_ROOT\`) could not be prepared — run \`pnpm release:beta\` from a fossil checkout by hand."
+          DISPATCH_PLATFORMS=$(echo "$DISPATCH_PLATFORMS" | jq -c '.desktop = false' 2>/dev/null || echo "$DISPATCH_PLATFORMS")
+        fi
       fi
       DISPATCH_CSV=$(echo "$DISPATCH_PLATFORMS" | jq -r '[to_entries[] | select(.value) | .key] | join(",")' 2>/dev/null || echo "")
-      DISPATCH_JSON=$(node "$SCRIPT_DIR/lib/dispatch-release.mjs" dispatch --platforms "$DISPATCH_CSV" --repo-root "$REPO_ROOT" --desktop-root "$BETA_DESKTOP_ROOT" 2>>"$LOG_FILE" || echo "")
+      # shellcheck disable=SC2086 -- DESKTOP_ROOT_FLAG is a deliberately word-split flag pair
+      DISPATCH_JSON=$(node "$SCRIPT_DIR/lib/dispatch-release.mjs" dispatch --platforms "$DISPATCH_CSV" --repo-root "$REPO_ROOT" $DESKTOP_ROOT_FLAG 2>>"$LOG_FILE" || echo "")
       DISPATCHED=$(echo "$DISPATCH_JSON" | jq -r '[.dispatched[]?.id] | join(", ")' 2>/dev/null || echo "")
       # A lane refused by its guard (e.g. the desktop root lost its fossil) is
       # reported, never silently dropped — a missing beta must be visible.

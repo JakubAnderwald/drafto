@@ -269,20 +269,21 @@ describe("Phase-D beta dispatch (gap 1)", () => {
   it("never builds desktop from the factory checkout (the fossil rule)", () => {
     // $REPO_ROOT is a normal install carrying React 19.2: a macOS build from it
     // compiles and then crashes at runtime. The desktop lane must be pointed at
-    // a fossil checkout instead.
-    assert.match(releaseBlock, /--desktop-root "\$BETA_DESKTOP_ROOT"/);
+    // a fossil-derived build root instead.
+    assert.match(releaseBlock, /--repo-root "\$REPO_ROOT" \$DESKTOP_ROOT_FLAG/);
+    assert.match(releaseBlock, /DESKTOP_ROOT_FLAG="--desktop-root \$DESKTOP_ROOT_READY"/);
     assert.match(script, /^BETA_DESKTOP_ROOT="\$\{DRAFTO_DESKTOP_BUILD_ROOT:-/m);
   });
 
-  it("skips the desktop lane when its build root is not at the merged commit", () => {
-    assert.match(
-      releaseBlock,
-      /git -C "\$BETA_DESKTOP_ROOT" merge-base --is-ancestor "\$MERGE_SHA" HEAD/,
-    );
+  it("prepares the desktop build root at the merged commit, or skips the lane", () => {
+    // The factory can't update the fossil checkout itself (it is the operator's
+    // working tree), so it builds from a disposable replica reset to the merge.
+    assert.match(releaseBlock, /ensure_beta_build_root desktop "\$\{MERGE_SHA:-origin\/main\}"/);
     assert.match(
       releaseBlock,
       /DISPATCH_PLATFORMS=\$\(echo "\$DISPATCH_PLATFORMS" \| jq -c '\.desktop = false'/,
     );
+    assert.match(releaseBlock, /macOS beta skipped/);
   });
 
   it("surfaces refused lanes in the released comment rather than dropping them", () => {

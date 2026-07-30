@@ -1,8 +1,10 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   derivePlatforms,
   platformsToLanes,
@@ -108,6 +110,70 @@ describe("assertBetaOnly (prod-never invariant)", () => {
     assert.throws(
       () => assertBetaOnly({ command: "bundle", args: ["exec", "fastlane", "mac", "production"] }),
       /non-beta/,
+    );
+  });
+});
+
+describe("dispatch-premerge CLI", () => {
+  const CLI = fileURLToPath(new URL("../lib/dispatch-release.mjs", import.meta.url));
+  const run = (args) => spawnSync("node", [CLI, ...args], { encoding: "utf8" });
+
+  it("requires --issue (the card the build belongs to)", () => {
+    const r = run(["dispatch-premerge", "--platforms", "mobile", "--dry-run"]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /requires --issue/);
+  });
+
+  it("dry-runs a mobile lane without spawning anything", () => {
+    const r = run([
+      "dispatch-premerge",
+      "--platforms",
+      "mobile",
+      "--issue",
+      "463",
+      "--pr",
+      "591",
+      "--sha",
+      "abc123",
+      "--dry-run",
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.deepEqual(
+      out.dispatched.map((d) => d.id),
+      ["mobile"],
+    );
+    assert.deepEqual(out.skipped, []);
+  });
+
+  it("refuses a desktop lane whose root is not a fossil, even in the CLI", () => {
+    const stale = fakeCheckout("19.2.6");
+    try {
+      const r = run([
+        "dispatch-premerge",
+        "--platforms",
+        "desktop",
+        "--desktop-root",
+        stale,
+        "--issue",
+        "463",
+        "--dry-run",
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.deepEqual(out.dispatched, []);
+      assert.equal(out.skipped[0].id, "desktop");
+    } finally {
+      rmSync(stale, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the legacy `dispatch` subcommand working", () => {
+    const r = run(["dispatch", "--platforms", "mobile", "--dry-run"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(
+      JSON.parse(r.stdout).dispatched.map((d) => d.id),
+      ["mobile"],
     );
   });
 });
@@ -264,6 +330,18 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
       out.dispatched.map((d) => d.id),
       ["mobile"],
     );
+  });
+
+  it("injects laneEnv into the spawned lane (pre-merge build identification)", () => {
+    let seen = null;
+    _setSpawnForTests((lane, opts) => (seen = opts));
+    dispatchLanes({
+      repoRoot: "/repo",
+      diffFiles: "apps/mobile/x.ts",
+      laneEnv: { DRAFTO_INTEST_ISSUE: "463", DRAFTO_INTEST_PR: "591" },
+    });
+    assert.equal(seen.laneEnv.DRAFTO_INTEST_ISSUE, "463");
+    assert.equal(seen.laneEnv.DRAFTO_INTEST_PR, "591");
   });
 
   it("never constructs a production command", () => {
