@@ -99,7 +99,10 @@
 //                                    Set issues[<n>][<field>] = <value>.
 //                                    <field> ∈ {lastPlanAt, lastImplementAt,
 //                                    lastWatchAt, lastReleaseAt, lastBeta,
-//                                    lastProd, lastStatus, lastError}.
+//                                    lastProd, lastStatus, lastError,
+//                                    lastFeedbackAt, intestCommentSha,
+//                                    intestBetaSha, intestBetaAt,
+//                                    intestBetaLanes}.
 //                                    Empty/`null` clears the field.
 //   factory:get-issue <issue>       Print issues[<n>] as JSON (empty record
 //                                    if absent).

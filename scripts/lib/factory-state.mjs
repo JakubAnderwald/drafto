@@ -85,6 +85,14 @@ function emptyIssue() {
     // comments newer than this as new change requests, so a handled comment
     // never re-triggers a revision.
     lastFeedbackAt: null,
+    // In Test hand-off idempotency, keyed on the PR head SHA rather than a
+    // monotonic marker: silent while the SHA is unchanged, re-armed by new
+    // commits, so an In Test → feedback → In Test round trip gets a fresh
+    // scenario and a fresh beta build. See ADR-0030.
+    intestCommentSha: null, // head SHA the last In Test comment was written for
+    intestBetaSha: null, // head SHA beta lanes were last dispatched for
+    intestBetaAt: null,
+    intestBetaLanes: null,
   };
 }
 
@@ -300,6 +308,13 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   "lastStatus",
   "lastError",
   "lastFeedbackAt",
+  // In Test hand-off idempotency keys (ADR-0030). These MUST be writable: every
+  // bash write is `|| true`, so a rejected field fails silently and the factory
+  // would re-post the scenario comment and re-dispatch beta builds every tick.
+  "intestCommentSha",
+  "intestBetaSha",
+  "intestBetaAt",
+  "intestBetaLanes",
 ]);
 
 export function setIssueField(state, issueNumber, field, value) {

@@ -44,7 +44,7 @@ describe("buildBody", () => {
       pr: 591,
       sha: "a1b2c3d4e5f6a7b8c9",
     });
-    assert.match(body, /iOS beta build 147 is up/);
+    assert.match(body, /iOS beta build 147 uploaded/);
     assert.match(body, /TestFlight/);
     assert.match(body, /PR #591/);
     // sha is truncated to 12 chars for readability.
@@ -59,10 +59,19 @@ describe("buildBody", () => {
     assert.match(buildBody({ platform: "macos", build: 1, track: "t" }), /macOS beta build/);
   });
 
+  it("does not promise the build is installable yet", () => {
+    // The iOS lane uses skip_waiting_for_build_processing, so this hook fires
+    // while Apple may still be processing — "is live" would be a lie.
+    const body = buildBody({ platform: "ios", build: 9, track: "TestFlight" });
+    assert.match(body, /uploaded/);
+    assert.match(body, /installable once store-side processing finishes/);
+    assert.ok(!/is up|now live/i.test(body), "must not claim availability");
+  });
+
   it("omits the PR clause when no PR is known", () => {
     const body = buildBody({ platform: "ios", build: 9, track: "TestFlight" });
     assert.ok(!body.includes("from PR"));
-    assert.match(body, /iOS beta build 9 is up/);
+    assert.match(body, /iOS beta build 9 uploaded/);
   });
 });
 

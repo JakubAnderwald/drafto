@@ -56,12 +56,20 @@ export function fingerprintMarker(platform, build) {
 }
 
 // Pure: the customer-visible body.
+//
+// Deliberately says "uploaded", not "is live": the iOS lane runs
+// `upload_to_testflight` with `skip_waiting_for_build_processing: true`, so this
+// hook fires once the binary is uploaded, while Apple may still be processing it
+// — and a build is not installable until processing finishes. The Play internal
+// track has the same lag. Promising availability here would send the tester to
+// TestFlight before the build shows up.
 export function buildBody({ platform, build, track, pr, sha }) {
   const label = { ios: "iOS", android: "Android", macos: "macOS" }[platform] ?? platform;
   const from = pr ? ` from PR #${pr}${sha ? ` @ \`${String(sha).slice(0, 12)}\`` : ""}` : "";
   return (
-    `🏭 **${label} beta build ${build} is up** — ${track}, built${from} (pre-merge). ` +
-    `Test it with the scenario above.\n\n${fingerprintMarker(platform, build)}`
+    `🏭 **${label} beta build ${build} uploaded** — ${track}, built${from} (pre-merge). ` +
+    `It becomes installable once store-side processing finishes (usually a few minutes); ` +
+    `then test it with the scenario above.\n\n${fingerprintMarker(platform, build)}`
   );
 }
 

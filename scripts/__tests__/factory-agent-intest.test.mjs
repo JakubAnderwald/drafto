@@ -136,11 +136,38 @@ describe("intest_handoff — failure degrades, never escalates", () => {
     assert.match(body, /issue_has_marker "\$issue_num" "drafto-factory-test-scenario"/);
   });
 
-  it("records the head SHA it wrote the scenario for", () => {
-    assert.match(
-      body,
-      /factory:set-issue-field "\$issue_num" \\?\s*\n?\s*intestCommentSha "\$head_sha"/,
+  it("records the head SHA on EVERY path that posts a comment", () => {
+    // The watch refresh re-fires the hand-off whenever intestCommentSha !=
+    // headRefOid, so a posting path that returns without recording would
+    // re-post the same comment every 5-minute tick — issue spam.
+    const posts = (body.match(/intest_fallback_comment/g) || []).length;
+    const records = (body.match(/intest_record_comment_sha/g) || []).length;
+    assert.ok(posts >= 6, `expected a fallback on every failure path, got ${posts}`);
+    // Five early-return paths pair 1:1 with a recorder; the sixth (marker
+    // missing after a clean exit) falls through to the recorder at the tail,
+    // which also covers the success path.
+    assert.equal(
+      records,
+      posts,
+      `every posting path must record the SHA (${posts} posts vs ${records} records)`,
     );
+    // No `return 0` may sit between a fallback post and its recorder.
+    for (const seg of body.split("intest_fallback_comment").slice(1)) {
+      const window = seg.split("\n").slice(0, 3).join("\n");
+      if (/return 0/.test(window)) {
+        assert.match(
+          window,
+          /intest_record_comment_sha/,
+          "a posting path returns without recording",
+        );
+      }
+    }
+  });
+
+  it("the recorder writes intestCommentSha and no-ops on an empty SHA", () => {
+    const rec = fnBody("intest_record_comment_sha");
+    assert.match(rec, /intestCommentSha "\$head_sha"/);
+    assert.match(rec, /-n "\$head_sha" \]\] \|\| return 0/);
   });
 
   it("runs read-only in the factory checkout at the plan effort", () => {
@@ -308,6 +335,22 @@ describe("ensure_beta_build_root — working-tree safety", () => {
   it("logs to stderr, since the caller captures its stdout for the root path", () => {
     // A log() line inside a captured function ends up inside the captured value.
     assert.ok(!/(?<![\w])log "/.test(body), "must use logerr, not log");
+  });
+
+  it("pins the log()-writing helpers it calls to stderr too", () => {
+    // seed_worktree_node_modules / copy_worktree_env / run_pnpm_install all
+    // report via log() → stdout. Without >&2 a single warning (a failed
+    // clonefile seed, a missing .env) is captured as part of the returned path
+    // and reaches --repo-root as a mangled multi-word argument.
+    assert.match(body, /seed_worktree_node_modules "\$root" "\$src_root" >&2/);
+    assert.match(body, /copy_worktree_env "\$root" >&2/);
+    assert.match(body, /run_pnpm_install "\$root" >&2/);
+    // The ONLY unredirected stdout write must be the return value itself.
+    const echoes = (body.match(/^[ \t]*echo [^|>\n]*$/gm) || []).filter(
+      (l) => !/>&2/.test(l) && !/echo "\$root"$/.test(l.trim()),
+    );
+    assert.deepEqual(echoes, [], "no stdout write other than the returned path");
+    assert.match(body, /\n  echo "\$root"\n/);
   });
 
   it("checks out detached (the branch is already checked out in the issue worktree)", () => {

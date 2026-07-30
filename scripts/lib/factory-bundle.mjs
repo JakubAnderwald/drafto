@@ -600,8 +600,12 @@ export function truncateDiff(text, { maxBytes = 200_000, maxLines = 4000 } = {})
     // Cut on a line boundary so the tail isn't a mangled hunk.
     const clipped = Buffer.from(out, "utf8").subarray(0, maxBytes).toString("utf8");
     const lastNl = clipped.lastIndexOf("\n");
-    const kept = lastNl > 0 ? clipped.slice(0, lastNl) : clipped;
-    omittedLines += out.slice(kept.length).split("\n").filter(Boolean).length;
+    // No newline in the kept slice at all (one huge line — a minified bundle or
+    // a lockfile hunk): drop it entirely rather than ship a partial line that
+    // may also end in a U+FFFD from splitting a multi-byte character.
+    const kept = lastNl > 0 ? clipped.slice(0, lastNl) : "";
+    const dropped = out.slice(kept.length).split("\n").filter(Boolean).length;
+    omittedLines += dropped || 1;
     out = kept;
     truncated = true;
   }

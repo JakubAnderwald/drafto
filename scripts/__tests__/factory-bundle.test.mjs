@@ -639,6 +639,23 @@ describe("truncateDiff", () => {
     }
   });
 
+  it("drops a newline-free chunk rather than emitting a partial line", () => {
+    // A minified bundle or lockfile hunk can be one enormous line. Keeping a
+    // byte-slice of it would ship a mangled hunk, possibly ending mid-codepoint.
+    const out = truncateDiff("x".repeat(500), { maxBytes: 100 });
+    assert.equal(out.text, "");
+    assert.equal(out.truncated, true);
+    assert.ok(out.omittedLines >= 1, "truncated output must report omitted lines");
+  });
+
+  it("never reports truncated without omittedLines", () => {
+    for (const input of ["y".repeat(300), "a\nb\nc\n" + "z".repeat(300)]) {
+      const out = truncateDiff(input, { maxBytes: 50 });
+      if (out.truncated)
+        assert.ok(out.omittedLines >= 1, `contract broken for ${input.slice(0, 8)}`);
+    }
+  });
+
   it("treats a non-string as empty", () => {
     assert.equal(truncateDiff(undefined).text, "");
     assert.equal(truncateDiff(null).text, "");

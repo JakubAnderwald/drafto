@@ -1338,10 +1338,15 @@ ensure_beta_build_root() {
       >>"$LOG_FILE" 2>&1 || logerr "WARNING: clean failed in $root"
   fi
 
-  seed_worktree_node_modules "$root" "$src_root"
-  copy_worktree_env "$root"
+  # This function's stdout IS its return value (the root path), but these
+  # helpers report through log(), which writes to stdout — a single warning (a
+  # failed clonefile seed, a missing .env) would otherwise be captured as part of
+  # the path and passed to --repo-root as a mangled multi-word argument. Pin
+  # their output to stderr; it still reaches $LOG_FILE via log()'s tee.
+  seed_worktree_node_modules "$root" "$src_root" >&2
+  copy_worktree_env "$root" >&2
   if [[ "$platform" == "mobile" ]]; then
-    run_pnpm_install "$root" || logerr "WARNING: install failed/timed out in $root; the lane may fail"
+    run_pnpm_install "$root" >&2 || logerr "WARNING: install failed/timed out in $root; the lane may fail"
     # Ruby gems are global (no per-checkout bundle path), so this is a cheap
     # reconcile. Restore Gemfile.lock if it drifted — the root must stay clean
     # for the `git clean` guard above to mean anything.
@@ -1432,7 +1437,7 @@ intest_dispatch_betas() {
   root_flags="--repo-root ${mobile_root:-$REPO_ROOT}"
   [[ -n "${desktop_root:-}" ]] && root_flags="$root_flags --desktop-root $desktop_root"
 
-  # shellcheck disable=SC2086 -- root_flags is a deliberately word-split flag list
+  # shellcheck disable=SC2086 # root_flags is a deliberately word-split flag list
   dispatch_json=$(node "$SCRIPT_DIR/lib/dispatch-release.mjs" dispatch-premerge \
     --platforms "$lanes" $root_flags \
     --issue "$issue_num" --pr "$pr_num" --sha "$sha" 2>>"$LOG_FILE" || echo "")
@@ -1510,6 +1515,17 @@ changed and the factory revises on the same branch.$advisory_note
 <!-- drafto-factory-test-scenario -->" >>"$LOG_FILE" 2>&1 || true
 }
 
+# Record the head SHA the last In Test comment was written for. EVERY path that
+# posts a comment must call this: the watch refresh re-fires the hand-off
+# whenever intestCommentSha != headRefOid, so a path that posts and returns
+# without recording would re-post the same comment every 5-minute tick.
+intest_record_comment_sha() {
+  local issue_num="$1" head_sha="${2:-}"
+  [[ -n "$head_sha" ]] || return 0
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+    intestCommentSha "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+}
+
 # In Test hand-off: write the human test scenario for a card that just reached
 # In Test (or whose head SHA changed since the last one) and post it as the
 # In Test comment.
@@ -1529,12 +1545,18 @@ intest_handoff() {
 
   if [[ ! -f "$INTEST_PROMPT_FILE" ]]; then
     log "WARNING: In Test prompt missing ($INTEST_PROMPT_FILE); posting fallback comment"
-    [[ "$DRY_RUN" -eq 0 ]] && intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
+      intest_record_comment_sha "$issue_num" "$head_sha"
+    fi
     return 0
   fi
   if ! issue_record=$(fetch_issue_record "$issue_num"); then
     log "WARNING: fetch_issue_record failed for #$issue_num (In Test hand-off); posting fallback"
-    [[ "$DRY_RUN" -eq 0 ]] && intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
+      intest_record_comment_sha "$issue_num" "$head_sha"
+    fi
     return 0
   fi
   comments_json=$(fetch_issue_comments "$issue_num" 2>>"$LOG_FILE" || echo "[]")
@@ -1557,7 +1579,10 @@ intest_handoff() {
       "$diff_files" "$platforms" "$preview_url" "$advisory" "$beta_json" \
       "$head_sha" "$comments_json"); then
     log "ERROR: build_intest_bundle failed for #$issue_num; posting fallback"
-    [[ "$DRY_RUN" -eq 0 ]] && intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
+      intest_record_comment_sha "$issue_num" "$head_sha"
+    fi
     return 0
   fi
 
@@ -1587,11 +1612,13 @@ intest_handoff() {
     if [[ $exit_code -ne 124 ]] && check_session_limit "$REPO_ROOT" "$start_iso"; then
       rm -f "$out_file"
       intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
+      intest_record_comment_sha "$issue_num" "$head_sha"
       pause_for_session_limit
       return 0
     fi
     rm -f "$out_file"
     intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
+    intest_record_comment_sha "$issue_num" "$head_sha"
     return 0
   fi
   cat "$out_file" >>"$LOG_FILE"
@@ -1609,8 +1636,7 @@ intest_handoff() {
     log "Issue #$issue_num: no test-scenario comment found (action=${action:-none}); posting fallback"
     intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
   fi
-  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-    intestCommentSha "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  intest_record_comment_sha "$issue_num" "$head_sha"
   return 0
 }
 
@@ -3213,7 +3239,7 @@ retry next cycle; if it keeps failing, merge it by hand. The card stays in \
         fi
       fi
       DISPATCH_CSV=$(echo "$DISPATCH_PLATFORMS" | jq -r '[to_entries[] | select(.value) | .key] | join(",")' 2>/dev/null || echo "")
-      # shellcheck disable=SC2086 -- DESKTOP_ROOT_FLAG is a deliberately word-split flag pair
+      # shellcheck disable=SC2086 # DESKTOP_ROOT_FLAG is a deliberately word-split flag pair
       DISPATCH_JSON=$(node "$SCRIPT_DIR/lib/dispatch-release.mjs" dispatch --platforms "$DISPATCH_CSV" --repo-root "$REPO_ROOT" $DESKTOP_ROOT_FLAG 2>>"$LOG_FILE" || echo "")
       DISPATCHED=$(echo "$DISPATCH_JSON" | jq -r '[.dispatched[]?.id] | join(", ")' 2>/dev/null || echo "")
       # A lane refused by its guard (e.g. the desktop root lost its fossil) is
