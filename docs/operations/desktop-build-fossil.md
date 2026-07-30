@@ -19,14 +19,34 @@ each layer is pinned). Full analysis: [#558](https://github.com/JakubAnderwald/d
 
 ## The rule
 
+The invariant is about the **installed React version**, not about one blessed directory:
+
+> Build macOS **only** from a checkout whose hoisted `node_modules/react` is **19.1.x** — the
+> primary checkout, or a clonefile replica of it. Never from a fresh install, a worktree
+> install, or CI.
+
 - **Do NOT run `pnpm install` in the build machine's primary checkout**
   (`/Users/jakub/code/drafto` on the current release machine) until desktop is upgraded to
   `react-native-macos@0.83`. It overwrites the working set and destroys the only shippable
   desktop build.
 - Build desktop releases from that checkout's existing `node_modules`:
   `cd apps/desktop && pnpm release:beta`.
-- The factory's automated desktop builds (clean checkout) are currently **broken** for the same
-  reason — ship desktop manually from the primary checkout until the rnm 0.83 upgrade lands.
+- **Nor in `/Users/jakub/code/drafto-beta-desktop`** — the factory's desktop build root. Its
+  `node_modules` is a byte-faithful APFS clonefile copy of the fossil (the repo is
+  `node-linker=hoisted` with a symlink-free tree, so the clone is exact and costs ~0 bytes). The
+  factory hard-resets that worktree's _source_ to the commit under test but never reinstalls its
+  dependencies. Installing there recreates the 19.2 breakage.
+- **Enforced in code.** `assertDesktopFossil()` in `scripts/lib/dispatch-release.mjs` reads the
+  build root's `node_modules/react/package.json` and refuses to spawn the lane unless it is
+  19.1.x. This is the enforcement point for the rule above — it turns a silently-crashing build
+  into a loud refusal, reported on the issue. Bump `DESKTOP_REACT_RANGE` there (and ADR-0027)
+  when `react-native-macos` moves.
+- The factory previously built desktop from its own checkout, which is a normal install carrying
+  React 19.2 — that produced a compiling, crashing app and is fixed (ADR-0030). It now builds
+  from the fossil-derived root above.
+
+Reminder: **a green compile is not proof.** Only a TestFlight build that opens and renders a
+note validates a desktop build root — including after re-cloning the replica.
 
 ## The known-good version set (build 34 / build 40)
 

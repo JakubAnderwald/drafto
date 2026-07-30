@@ -92,13 +92,13 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
 
 ## Phase progression criteria
 
-| Promote from → to | Required signals before promotion                                                                                                                                                                                                                                                                                                                                                                   |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| (initial) → A     | Setup steps 1–6 above complete. `launchctl list \| grep eu.drafto.factory` shows the job registered, and a manual `launchctl kickstart` logs a clean `--plan` tick (board fetched, no `factory-failure` issue filed).                                                                                                                                                                               |
-| A → B             | ≥5 successful `--plan` runs (Ready → Planning → Plan Review with a usable plan comment). Zero `factory-failure` issues. Operator has read at least 3 plans and judges they were accurate enough to act on. `--implement` no-op confirmed: dragging Plan Review → In Progress in Phase A logs a "phase=A; implementation skipped" comment and leaves the card in In Progress without further action. |
-| B → C             | ≥5 successful end-to-end web-only runs (Ready → Plan Review → In Progress → In Review → In Test → **auto-merged + Released** after the operator drags to Approved), each with green CI, a reachable Vercel preview, and zero parity violations. SonarCloud quality gate green on all factory-authored PRs.                                                                                          |
-| C → D             | ≥5 successful runs that include mobile or desktop changes. Operator manually fired beta dispatches (TestFlight, Play internal) per Phase C — confirms the dispatch payloads work before the factory automates them.                                                                                                                                                                                 |
-| D → (steady)      | ≥10 successful Released cards in Phase D. Beta dispatch path validated for both iOS and Android. Mac TestFlight lane runs locally on the Mac mini per the existing release pattern.                                                                                                                                                                                                                 |
+| Promote from → to | Required signals before promotion                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| (initial) → A     | Setup steps 1–6 above complete. `launchctl list \| grep eu.drafto.factory` shows the job registered, and a manual `launchctl kickstart` logs a clean `--plan` tick (board fetched, no `factory-failure` issue filed).                                                                                                                                                                                                                        |
+| A → B             | ≥5 successful `--plan` runs (Ready → Planning → Plan Review with a usable plan comment). Zero `factory-failure` issues. Operator has read at least 3 plans and judges they were accurate enough to act on. `--implement` no-op confirmed: dragging Plan Review → In Progress in Phase A logs a "phase=A; implementation skipped" comment and leaves the card in In Progress without further action.                                          |
+| B → C             | ≥5 successful end-to-end web-only runs (Ready → Plan Review → In Progress → In Review → In Test → **auto-merged + Released** after the operator drags to Approved), each with green CI, a reachable Vercel preview, and zero parity violations. SonarCloud quality gate green on all factory-authored PRs.                                                                                                                                   |
+| C → D             | ≥5 successful runs that include mobile or desktop changes. Operator manually fired beta dispatches (TestFlight, Play internal) per Phase C — confirms the dispatch payloads work before the factory automates them. **Pre-merge beta dispatch (below) is the intended way to accumulate this evidence:** it runs at Phase C behind its own knob, so every native card exercises the real lanes before Phase D automates the post-merge ones. |
+| D → (steady)      | ≥10 successful Released cards in Phase D. Beta dispatch path validated for both iOS and Android. Mac TestFlight lane runs locally on the Mac mini per the existing release pattern.                                                                                                                                                                                                                                                          |
 
 Promote by editing the `FACTORY_PHASE` env var in the launchd plist and reloading:
 
@@ -132,7 +132,53 @@ It is idempotent (an already-merged PR just finishes the Released transition + s
 
 **Phase-D beta dispatch.** At **Phase D only**, after a Released merge that touched a native platform, `--release` auto-dispatches beta builds via `scripts/lib/dispatch-release.mjs`: it derives the changed platforms from the diff (`apps/mobile/`→mobile, `apps/desktop/`→desktop, `packages/shared/`→both; `apps/web/` deploys via Vercel, no dispatch) and spawns the **local Fastlane lanes** on the Mac mini — `pnpm release:beta:all` (iOS TestFlight + Android internal) and/or `cd apps/desktop && pnpm release:beta` (macOS TestFlight). It uses the local lanes, **not** `gh workflow run`, because the CI release workflows are non-functional (see [builds-and-releases.md](./builds-and-releases.md)). Lanes are spawned detached (fire-and-forget; the Fastlane post-hook `comment-released-issues.mjs` posts the "now live" notice). Production store lanes are never invoked (`assertBetaOnly` denylist). The step is dormant at Phase B/C and marker-guarded (`<!-- drafto-factory-beta-dispatched -->`) so a re-tick can't re-trigger a build.
 
-> **Phase-D prerequisites (operator):** the Mac-mini factory launchd env must carry the Fastlane secrets the lanes need (`MATCH_PASSWORD`, ASC API key, Android keystore + `google-play-service-account.json`), and the `$REPO_ROOT` main checkout must be clean enough to fast-forward (the engine best-effort `git merge --ff-only origin/main` before building so the lanes build the merged code). Validate both at the **C → D manual dispatch step** before promoting. Concurrency caveat: two simultaneous native releases would run overlapping lanes (version/tag contention) — rare at the factory's 1–2-slot cadence, but kick lanes by hand if it occurs.
+> **Phase-D prerequisites (operator):** the Mac-mini factory launchd env must carry the Fastlane secrets the lanes need (`MATCH_PASSWORD`, ASC API key, Android keystore + `google-play-service-account.json`), and the `$REPO_ROOT` main checkout must be clean enough to fast-forward (the engine best-effort `git merge --ff-only origin/main` before building so the mobile lane builds the merged code; the **desktop** lane builds from its own root — see below). Validate both at the **C → D manual dispatch step** before promoting. Concurrency caveat: two simultaneous native releases would run overlapping lanes (version/tag contention) — rare at the factory's 1–2-slot cadence, but kick lanes by hand if it occurs.
+
+## Pre-merge beta dispatch (In Test)
+
+A card in **In Test** needs a build a human can actually install. `--watch` therefore dispatches beta builds **from the PR head, before the merge**, for the native platforms the diff touched (ADR-0030). This is separate from the Phase-D post-merge lane above and has its own knobs — enabling pre-merge betas must not silently switch on post-merge auto-dispatch.
+
+| Var                           | Default                                 | Purpose                                                                                         |
+| ----------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `FACTORY_INTEST_BETA`         | `0`                                     | Master switch. `1` + Phase C/D dispatches the **mobile** lane (iOS TestFlight + Play internal). |
+| `FACTORY_INTEST_BETA_DESKTOP` | `0`                                     | Additionally dispatch the **macOS** lane. Only turn on after the fossil validation below.       |
+| `FACTORY_INTEST_TIMEOUT_SEC`  | `600`                                   | Wall-clock cap for the In Test scenario writer (read-only stage).                               |
+| `DRAFTO_BETA_MOBILE_ROOT`     | `/Users/jakub/code/drafto-beta-mobile`  | Dedicated mobile build root.                                                                    |
+| `DRAFTO_DESKTOP_BUILD_ROOT`   | `/Users/jakub/code/drafto-beta-desktop` | Dedicated macOS build root (clonefile replica of the fossil).                                   |
+| `DRAFTO_DESKTOP_FOSSIL_ROOT`  | `/Users/jakub/code/drafto`              | The fossil the desktop root is seeded **from**. Never built in.                                 |
+
+**The build roots.** Each is a detached git worktree that the factory hard-resets to the PR head SHA, with `node_modules` clonefile-seeded (`cp -c -R` — O(1) space). They are **dedicated and disposable**: `ensure_beta_build_root` refuses, by canonical path, to use the factory checkout or the fossil as a build root, because it resets what it is given and the fossil is your working tree. The issue's own worktree is deliberately not used either — the next `--watch` tick may install and edit files in it, and the cleanup sweep deletes it when the card leaves In Test.
+
+> ### ⚠️ NEVER `pnpm install` in `drafto-beta-desktop`
+>
+> Its `node_modules` is a byte-faithful clone of the fossil (React **19.1.x**). A `pnpm install` there resolves React 19.2 and produces a macOS app that **compiles green and crashes at runtime**. `assertDesktopFossil()` in `dispatch-release.mjs` checks the root's hoisted React version before spawning the lane and refuses loudly if it isn't 19.1.x — but don't rely on the net. See [desktop-build-fossil.md](./desktop-build-fossil.md) and [ADR-0027](../adr/0027-desktop-react-version-locked-to-react-native-macos.md).
+
+**One-time fossil validation before `FACTORY_INTEST_BETA_DESKTOP=1`.** A green compile is not proof; only an installed build that opens a note is.
+
+```bash
+git -C /Users/jakub/code/drafto worktree add --detach /Users/jakub/code/drafto-beta-desktop origin/main
+cd /Users/jakub/code/drafto-beta-desktop
+for d in node_modules apps/desktop/node_modules packages/*/node_modules; do
+  [ -d "/Users/jakub/code/drafto/$d" ] && cp -c -R "/Users/jakub/code/drafto/$d" "$d"
+done
+node -p "require('./node_modules/react/package.json').version"   # must print 19.1.x
+bash scripts/worktree-bootstrap.sh
+cd apps/desktop && pnpm release:beta        # ← NEVER `pnpm install` in this tree
+```
+
+Then install that TestFlight build and **open a note**. Confirm `git -C /Users/jakub/code/drafto status --porcelain` is unchanged before and after. Only then add the knob to the plist and reload.
+
+**Identifying a pre-merge build.** Release notes begin `PRE-MERGE TEST BUILD — issue #N / PR #M (sha)` (prepended before the char trim, so it survives Play's 500-char cap), and the Fastlane post-hook `comment-intest-build.mjs` posts the build number on the card when the lane lands.
+
+**Triage.**
+
+```bash
+node scripts/lib/state-cli.mjs factory:get-issue <n>     # intestBetaSha / intestBetaAt / intestBetaLanes
+                                                         # intestCommentSha = scenario's SHA
+node scripts/lib/state-cli.mjs factory:set-issue-field <n> intestBetaSha ""   # force a re-dispatch
+```
+
+Dispatch is idempotent per head SHA (no 5-minute re-fire) but re-arms on new commits, so an In Test → feedback → In Test round trip produces a fresh build. Lanes are skipped — with the reason reported in the In Test comment — when a knob is off, the phase is B, free disk is below `FACTORY_MIN_FREE_DISK_GB`, a build root can't be prepared, or the fossil assertion fails.
 
 ## Kill switches
 
@@ -222,6 +268,14 @@ The factory implements each card in a throwaway git worktree that needs its own 
 
 - **Clonefile seed.** Before installing, `seed_worktree_node_modules` clones the main checkout's `node_modules` (repo root + `apps/*` + `packages/*`) into the worktree with APFS `cp -c` (O(1), copy-on-write, ~0 bytes). The subsequent install is a fast **offline reconcile** (`pnpm install --frozen-lockfile --offline`), falling back to frozen-online then unfrozen-online for genuine lockfile drift. A cold install now takes seconds.
 - **Bounded install + disk guard.** Every install is wrapped by `run-with-timeout.mjs` and capped at `FACTORY_INSTALL_TIMEOUT_SEC`. Before starting, the factory checks free space and parks the card in **Blocked** with a `disk-low` comment if it's below `FACTORY_MIN_FREE_DISK_GB`.
+
+> **Do not delete the beta build roots** (`drafto-beta-mobile`, `drafto-beta-desktop`) when reclaiming space. They live outside `<repoRoot>/worktrees/` and carry no `factory/issue-*` branch, so `worktree-cli.mjs list` never reports them — but a broad `rm -rf` would destroy the desktop fossil replica, which can only be rebuilt by re-cloning from `/Users/jakub/code/drafto` and re-validating with a TestFlight build. Their `node_modules` costs ~0 bytes (clonefile); the space is in **build artefacts**, so prune those instead:
+>
+> ```bash
+> rm -rf /Users/jakub/code/drafto-beta-desktop/apps/desktop/macos/build
+> rm -rf /Users/jakub/code/drafto-beta-mobile/apps/mobile/ios/build
+> rm -rf /Users/jakub/code/drafto-beta-mobile/apps/mobile/android/.gradle
+> ```
 
 **Env knobs** (set in the launchd plist's `EnvironmentVariables`, alongside `FACTORY_PHASE`):
 

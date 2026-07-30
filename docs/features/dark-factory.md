@@ -33,7 +33,7 @@ The board has one custom Status field with eleven values:
 | Plan Review | factory               | Plan posted as a comment; awaiting human approval.                    |
 | In Progress | human / allowlisted   | Plan approved; factory implements per the approved plan.              |
 | In Review   | factory               | PR open; factory monitors CI and review comments.                     |
-| In Test     | factory               | Vercel preview ready; awaiting human approval.                        |
+| In Test     | factory               | Testable build + test scenario posted; awaiting human approval.       |
 | Approved    | human / allowlisted   | Authorise prod release. Migration gate enforced.                      |
 | Released    | factory               | PR merged; beta channels dispatched (Phase D).                        |
 | Done        | human / support-agent | Final acceptance; issue closed.                                       |
@@ -52,7 +52,7 @@ The full set is created idempotently by `scripts/setup-factory-labels.sh`. Refer
 | `status:plan-review`  | factory              | Awaiting plan approval.                                              |
 | `status:in-progress`  | human / factory      | Implementation in progress.                                          |
 | `status:in-review`    | factory              | PR open, CI / review comments active.                                |
-| `status:in-test`      | factory              | Vercel preview ready, awaiting ship approval.                        |
+| `status:in-test`      | factory              | Testable build + scenario posted, awaiting ship approval.            |
 | `status:approved`     | human / factory      | Approved for release; merge + dispatch authorised.                   |
 | `status:released`     | factory              | Merged + beta dispatched.                                            |
 | `status:done`         | human / support      | Final acceptance.                                                    |
@@ -111,9 +111,27 @@ How the in-place replan stays idempotent: after a successful replan, the edited 
 
 The factory's `--watch` mode loops `/push`-style: it reads CI failures and review comments, re-invokes Claude to fix, re-pushes. Bounded by `factory.issues[<n>].attempts` in `logs/factory-state.json`. When the budget is exhausted the card moves to **Blocked** with a comment listing the unresolved items. Human must take over from there.
 
+### What you get at In Test
+
+When a card advances, the factory posts one comment (marker `<!-- drafto-factory-test-scenario -->`) containing:
+
+1. **A manual test scenario**, written by Claude from the **actual PR diff** — numbered steps per touched platform, each with an expected result, opening with a reproduction of the original bug so the fix is observable, plus what failure would look like and what is only covered by unit tests.
+2. **How to get a build**, per platform. The platforms come from the diff (not the issue's "Affected platforms" checkboxes, which can be stale), so a mobile-only PR never tells you to open a web preview:
+   - **web** — the Vercel preview URL.
+   - **iOS / Android / macOS** — a beta build dispatched from the PR head if pre-merge dispatch is on (see the runbook), otherwise the exact commands to run the branch locally.
+3. Any **advisory** (non-required) red checks, for a glance before Approving.
+
+The scenario is refreshed whenever the PR head SHA changes, so an In Test → feedback → In Test round trip gets a new one. If Claude fails or times out, the factory posts a deterministic fallback comment instead — the card still advances, and this stage never consumes the retry budget.
+
 ### "Vercel preview never appeared in In Test"
 
-The factory advances In Review → In Test only when (a) every branch-protection **required** status context is green AND (b) the Vercel bot has commented with a preview URL on the PR. "CI is green" means the **required** contexts only — an advisory bot like CodeRabbit (including its "Review rate limited" status) is never a required context, so its red neither blocks the advance nor triggers the fix loop; it's surfaced in the In Test hand-off comment for the operator to glance at instead. If the required checks are green but Vercel hasn't run, check the Vercel project's GitHub integration is wired up; sometimes the bot misses a push and a force-push to bump the PR head re-triggers it.
+The factory advances In Review → In Test when every branch-protection **required** status context is green. It additionally waits for a Vercel preview URL **only when the PR touches `apps/web`** — for a native-only PR the preview exercises nothing, so requiring it would deadlock the card. "CI is green" means the **required** contexts only — an advisory bot like CodeRabbit (including its "Review rate limited" status) is never a required context, so its red neither blocks the advance nor triggers the fix loop; it's surfaced in the In Test hand-off comment for the operator to glance at instead. If a web PR's required checks are green but Vercel hasn't run, check the Vercel project's GitHub integration is wired up; sometimes the bot misses a push and a force-push to bump the PR head re-triggers it.
+
+### "My TestFlight / Play beta build never arrived"
+
+Pre-merge beta dispatch is **off by default** and has two knobs — `FACTORY_INTEST_BETA` for mobile, plus `FACTORY_INTEST_BETA_DESKTOP` for macOS. When either is off, the In Test comment says so and gives you the manual command instead. See the runbook's "Pre-merge beta dispatch" section for the knobs, the build roots, and triage (`factory:get-issue <n>` → `intestBetaSha` / `intestBetaLanes`).
+
+A dispatched lane is a detached local Fastlane build that takes 20-40 minutes; when it lands, a follow-up comment reports the build number. Its release notes begin `PRE-MERGE TEST BUILD — issue #N / PR #M (sha)` so you can tell which build belongs to which card, and that it is a build of **unmerged** code.
 
 ### "I tested the preview and want changes"
 
