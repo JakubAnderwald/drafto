@@ -279,6 +279,11 @@ OAUTH_USER_EMAIL="${OAUTH_USER_EMAIL:-support@drafto.eu}"
 # ── Paths, logs, lock ───────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# The In Test scenario writer's prompt. Defined here (not only inside --watch) so
+# intest_handoff can reference it without tripping `set -u`. A missing file
+# degrades to the deterministic fallback comment rather than failing the mode —
+# the CI fix loop must keep running even if this stage's prompt is absent.
+INTEST_PROMPT_FILE="$SCRIPT_DIR/factory-intest-prompt.md"
 umask 077
 LOG_DIR="$REPO_ROOT/logs/factory"
 mkdir -p "$LOG_DIR"
@@ -2514,10 +2519,9 @@ fi
 # PHASE is guaranteed != "A" here (Phase A --watch no-op'd at the gate above).
 if [[ "$MODE_WATCH" -eq 1 ]]; then
   WATCH_PROMPT_FILE="$SCRIPT_DIR/factory-watch-prompt.md"
-  # The In Test scenario writer. A missing file degrades to the deterministic
-  # fallback comment (intest_handoff checks) rather than failing the whole mode —
-  # the fix loop must keep running even if this stage's prompt is absent.
-  INTEST_PROMPT_FILE="$SCRIPT_DIR/factory-intest-prompt.md"
+  # Re-assert the In Test scenario prompt path for this mode. (It also has a
+  # top-level default, so intest_handoff can never trip `set -u` on it.)
+  INTEST_PROMPT_FILE="${INTEST_PROMPT_FILE:-$SCRIPT_DIR/factory-intest-prompt.md}"
   if [[ "$DRY_RUN" -eq 0 && ! -f "$WATCH_PROMPT_FILE" ]]; then
     log "ERROR: prompt file missing: $WATCH_PROMPT_FILE"; exit 1
   fi
