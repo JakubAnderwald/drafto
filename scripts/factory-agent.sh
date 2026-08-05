@@ -1333,8 +1333,19 @@ ensure_beta_build_root() {
     fi
     # Keep node_modules and the warm native build dirs; drop everything else so
     # a previous build's stray files can't leak into this one.
+    #
+    # The exclude paths must be the REAL ones. `-e` takes gitignore-style
+    # patterns: a pattern containing a slash is anchored to the repo root, so
+    # `-e macos/Pods` protects only `<root>/macos/Pods` — not
+    # `apps/desktop/macos/Pods`, which is where they actually live. Getting this
+    # wrong silently nukes Pods and DerivedData on every dispatch, forcing a full
+    # `pod install` + cold build each time (verified with `git clean -ndx`).
+    # `ios` / `android` have no slash so they match at any depth, but spell those
+    # out too rather than rely on the distinction.
     git -C "$root" clean -fdx \
-      -e node_modules -e macos/Pods -e macos/build -e ios -e android \
+      -e node_modules \
+      -e apps/desktop/macos/Pods -e apps/desktop/macos/build \
+      -e apps/mobile/ios -e apps/mobile/android \
       >>"$LOG_FILE" 2>&1 || logerr "WARNING: clean failed in $root"
   fi
 
@@ -1350,8 +1361,12 @@ ensure_beta_build_root() {
     # Ruby gems are global (no per-checkout bundle path), so this is a cheap
     # reconcile. Restore Gemfile.lock if it drifted — the root must stay clean
     # for the `git clean` guard above to mean anything.
-    ( cd "$root/apps/mobile" && ( bundle check >/dev/null 2>&1 || bundle install ) ) >>"$LOG_FILE" 2>&1 \
-      || logerr "WARNING: bundle install failed in $root/apps/mobile; the lane may fail"
+    # Bounded like the pnpm install above: intest_dispatch_betas runs
+    # SYNCHRONOUSLY inside the --watch tick, so an unbounded `bundle install`
+    # hanging on RubyGems would block the whole tick and stall every other card.
+    ( cd "$root/apps/mobile" && ( bundle check >/dev/null 2>&1 \
+        || node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$INSTALL_TIMEOUT_SEC" bundle install ) ) >>"$LOG_FILE" 2>&1 \
+      || logerr "WARNING: bundle install failed/timed out in $root/apps/mobile; the lane may fail"
     git -C "$root" checkout -- apps/mobile/Gemfile.lock 2>/dev/null || true
   fi
   echo "$root"
@@ -1376,15 +1391,24 @@ intest_dispatch_betas() {
 
   # Manual commands for every lane we are NOT building, so the comment always
   # tells the tester how to get that platform themselves.
-  manual=$(jq -nc --arg skipped "$skipped" --arg issue "$issue_num" '
+  # Keyed by platform: with both natives skipped an unkeyed list leaves the
+  # scenario writer guessing which command belongs to which platform.
+  #
+  # The desktop command targets the dedicated fossil replica, NOT the primary
+  # checkout: telling a human to `git checkout` there would move the operator's
+  # working tree (and the fossil we clone from) onto a PR branch.
+  manual=$(jq -nc --arg skipped "$skipped" --arg issue "$issue_num" \
+    --arg desktopRoot "$BETA_DESKTOP_ROOT" '
     [ ($skipped | split(",") | .[] | select(length > 0) | split(":")[0]) ]
     | map(if . == "desktop" then
-            "cd /Users/jakub/code/drafto && git checkout factory/issue-" + $issue +
-            " && cd apps/desktop && pnpm release:beta   # NEVER pnpm install here (desktop fossil)"
+            { id: ., command:
+              ("cd " + $desktopRoot + " && git fetch origin && git checkout --detach origin/factory/issue-" + $issue +
+               " && cd apps/desktop && pnpm release:beta   # NEVER pnpm install here (desktop fossil)") }
           else
-            "git worktree add ../drafto-" + $issue + " factory/issue-" + $issue +
-            " && cd ../drafto-" + $issue + " && pnpm install && bash scripts/worktree-bootstrap.sh" +
-            " && cd apps/mobile && pnpm release:beta:all"
+            { id: ., command:
+              ("git worktree add ../drafto-" + $issue + " factory/issue-" + $issue +
+               " && cd ../drafto-" + $issue + " && pnpm install && bash scripts/worktree-bootstrap.sh" +
+               " && cd apps/mobile && pnpm release:beta:all") }
           end)' 2>/dev/null || echo "[]")
 
   skipped_json=$(jq -nc --arg skipped "$skipped" '
@@ -1512,7 +1536,8 @@ Then drag the card to **Approved** to merge and ship, or comment what you want \
 changed and the factory revises on the same branch.$advisory_note
 
 <!-- drafto-factory-in-test -->
-<!-- drafto-factory-test-scenario -->" >>"$LOG_FILE" 2>&1 || true
+<!-- drafto-factory-test-scenario -->
+<!-- drafto-factory-scenario-sha:$head_sha -->" >>"$LOG_FILE" 2>&1 || true
 }
 
 # Record the head SHA the last In Test comment was written for. EVERY path that

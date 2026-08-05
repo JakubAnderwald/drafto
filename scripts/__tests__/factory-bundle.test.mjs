@@ -736,6 +736,43 @@ describe("buildFactoryInTestBundle", () => {
     assert.deepEqual(bundle.betaDispatch, { dispatched: [], skipped: [], manualCommands: [] });
   });
 
+  it("keeps manualCommands keyed by platform when both natives are skipped", () => {
+    // Unkeyed strings would leave the scenario writer unable to tell which
+    // command belongs to which platform.
+    const bundle = buildFactoryInTestBundle({
+      ...base,
+      platforms: { mobile: true, desktop: true },
+      betaDispatch: {
+        dispatched: [],
+        skipped: [
+          { id: "mobile", reason: "FACTORY_INTEST_BETA=0" },
+          { id: "desktop", reason: "FACTORY_INTEST_BETA_DESKTOP=0" },
+        ],
+        manualCommands: [
+          { id: "mobile", command: "pnpm release:beta:all" },
+          { id: "desktop", command: "pnpm release:beta" },
+        ],
+      },
+    });
+    assert.deepEqual(
+      bundle.betaDispatch.manualCommands.map((c) => c.id),
+      ["mobile", "desktop"],
+    );
+    const byId = Object.fromEntries(
+      bundle.betaDispatch.manualCommands.map((c) => [c.id, c.command]),
+    );
+    assert.equal(byId.desktop, "pnpm release:beta");
+    assert.equal(byId.mobile, "pnpm release:beta:all");
+  });
+
+  it("coerces legacy string manualCommands rather than dropping them", () => {
+    const bundle = buildFactoryInTestBundle({
+      ...base,
+      betaDispatch: { dispatched: [], skipped: [], manualCommands: ["some old command"] },
+    });
+    assert.deepEqual(bundle.betaDispatch.manualCommands, [{ id: "", command: "some old command" }]);
+  });
+
   it("requires issue.number", () => {
     assert.throws(() => buildFactoryInTestBundle({ issue: { title: "x" } }), /issue\.number/);
   });

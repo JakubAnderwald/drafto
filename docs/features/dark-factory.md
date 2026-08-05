@@ -129,7 +129,7 @@ The factory advances In Review → In Test when every branch-protection **requir
 
 ### "My TestFlight / Play beta build never arrived"
 
-Pre-merge beta dispatch is **off by default** and has two knobs — `FACTORY_INTEST_BETA` for mobile, plus `FACTORY_INTEST_BETA_DESKTOP` for macOS. When either is off, the In Test comment says so and gives you the manual command instead. See the runbook's "Pre-merge beta dispatch" section for the knobs, the build roots, and triage (`factory:get-issue <n>` → `intestBetaSha` / `intestBetaLanes`).
+Pre-merge beta dispatch is **off by default** and has two knobs. `FACTORY_INTEST_BETA` is the **master switch**: while it is `0`, no lane is dispatched at all — not mobile, not macOS. With it on, mobile dispatches, and macOS _additionally_ requires `FACTORY_INTEST_BETA_DESKTOP=1` (setting only the desktop knob gets you nothing). When a lane is gated off, the In Test comment says so and gives you the manual command instead. See the runbook's "Pre-merge beta dispatch" section for the knobs, the build roots, and triage (`factory:get-issue <n>` → `intestBetaSha` / `intestBetaLanes`).
 
 A dispatched lane is a detached local Fastlane build that takes 20-40 minutes; when it lands, a follow-up comment reports the build number. Its release notes begin `PRE-MERGE TEST BUILD — issue #N / PR #M (sha)` so you can tell which build belongs to which card, and that it is a build of **unmerged** code.
 

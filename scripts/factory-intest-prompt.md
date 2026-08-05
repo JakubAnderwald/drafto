@@ -54,7 +54,8 @@ You will receive a single JSON bundle (last fenced ` ```json ` block). Shape:
   "betaDispatch": {
     "dispatched": [ { "id": "mobile", "command": "pnpm release:beta:all" } ],
     "skipped":    [ { "id": "desktop", "reason": "..." } ],
-    "manualCommands": [ "cd /Users/jakub/code/drafto-beta-desktop && ..." ]
+    // Keyed by platform — match on `id`, never on list order.
+    "manualCommands": [ { "id": "desktop", "command": "cd /Users/jakub/code/drafto-beta-desktop && ..." } ]
   },
   "config": { "phase": "C", ... },
   "repo": { "nameWithOwner": "JakubAnderwald/drafto", "headRef": "main" },
@@ -174,14 +175,24 @@ Compose it in Markdown from the bundle's facts. Structure:
     from PR #`<n>` at `<first 12 chars of headSha>`, and that a follow-up comment
     reports the build number when it lands (~20-40 min).
   - each entry in `betaDispatch.skipped` → say that platform was **not**
-    auto-built, give the reason, and include the matching entry from
-    `betaDispatch.manualCommands` if there is one.
+    auto-built, give the reason, and include the command from the
+    `betaDispatch.manualCommands` entry whose `id` matches that platform.
+    Match on `id` — never assume list order, and never show a mobile command
+    under a macOS heading.
   - if a native platform is in `platforms` but appears in neither list, say it
-    must be run locally from the branch, and give the commands: mobile via a
-    worktree + `pnpm install` + `pnpm ios` / `pnpm android`; macOS **only** from
-    the primary checkout `/Users/jakub/code/drafto` with `git checkout` of the
-    branch and **never** `pnpm install` (the desktop fossil — see
-    `docs/operations/desktop-build-fossil.md`).
+    must be run locally from the branch. For **mobile**, give: a worktree +
+    `pnpm install` + `bash scripts/worktree-bootstrap.sh` + `pnpm ios` /
+    `pnpm android`.
+
+    For **macOS**, do **NOT** tell anyone to `git checkout` in
+    `/Users/jakub/code/drafto`. That is the operator's working tree and the
+    fossil every desktop build root is cloned from; moving it to a PR branch can
+    disrupt in-flight work and leave the fossil stranded. Say instead that macOS
+    needs either a dispatched beta (ask the operator to enable
+    `FACTORY_INTEST_BETA_DESKTOP`) or a build from the dedicated desktop build
+    root, and point at
+    [`docs/operations/factory-runbook.md`](docs/operations/factory-runbook.md)
+    → "Pre-merge beta dispatch (In Test)" rather than inventing a command.
 - `## Test scenario` — the numbered, per-platform steps.
 - What isn't manually testable (only if there is something).
 - When `advisory` is non-empty: a one-line ⚠️ note that advisory (non-required)
@@ -192,14 +203,19 @@ Compose it in Markdown from the bundle's facts. Structure:
 - When `prDiffTruncated` is true and you did not expand it with `gh pr diff`,
   say the scenario was written from a partial diff.
 
-The body **must** end with both markers, on their own lines:
+The body **must** end with all three markers, on their own lines — the third
+carries the **full** `bundle.headSha` verbatim (not the 12-char short form):
 
 ```text
 <!-- drafto-factory-in-test -->
 <!-- drafto-factory-test-scenario -->
+<!-- drafto-factory-scenario-sha:<full headSha> -->
 ```
 
-Both are required. `drafto-factory-in-test` is the long-standing In Test marker;
+All three are required. The SHA marker is what makes the `noop` rule below
+exact: without it, "a scenario already exists" is a judgement call, and a later
+commit whose steps look similar could suppress a refresh that was genuinely
+needed. `drafto-factory-in-test` is the long-standing In Test marker;
 `drafto-factory-test-scenario` is what bash checks to know a current scenario
 exists. A comment carrying a `<!-- drafto-factory` marker is also excluded from
 the In Test feedback sweep, so posting it cannot be misread as a change request
@@ -215,11 +231,12 @@ that rolls the card back to In Progress.
 4. Write the scenario and post it with a single `gh issue comment`.
 5. Emit the directive line.
 
-If a **current** scenario already exists on the issue — a comment carrying
-`<!-- drafto-factory-test-scenario -->` whose steps already describe this
-`headSha`'s change — post nothing and emit `action=noop`. Bash re-invokes this
-stage after a revision precisely so the scenario is refreshed, so only skip when
-the existing one is genuinely still accurate.
+Post nothing and emit `action=noop` **only** when an existing comment carries
+`<!-- drafto-factory-scenario-sha:<X> -->` where `<X>` is byte-for-byte equal to
+`bundle.headSha`. Anything else — a scenario for a different SHA, or one with no
+SHA marker at all — means the scenario is stale: write a fresh one. Do not judge
+staleness by reading the steps. Bash re-invokes this stage after a revision
+precisely so the scenario is refreshed.
 
 ## Directive line
 

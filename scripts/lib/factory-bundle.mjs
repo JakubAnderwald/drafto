@@ -692,9 +692,14 @@ export function buildFactoryInTestBundle({
       ? {
           dispatched: Array.isArray(betaDispatch.dispatched) ? betaDispatch.dispatched : [],
           skipped: Array.isArray(betaDispatch.skipped) ? betaDispatch.skipped : [],
-          manualCommands: Array.isArray(betaDispatch.manualCommands)
+          // Always [{id, command}] — a bare string list leaves the scenario
+          // writer unable to say which command belongs to which platform when
+          // both natives are skipped. Legacy string entries are coerced rather
+          // than dropped, but they carry no id.
+          manualCommands: (Array.isArray(betaDispatch.manualCommands)
             ? betaDispatch.manualCommands
-            : [],
+            : []
+          ).map((c) => (typeof c === "string" ? { id: "", command: c } : c)),
         }
       : { dispatched: [], skipped: [], manualCommands: [] },
     comments: envelopeComments(comments),

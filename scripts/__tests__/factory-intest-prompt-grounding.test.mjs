@@ -90,18 +90,47 @@ describe("In Test prompt — scenario quality rules", () => {
     assert.match(flat, /do not mention the preview at all/);
   });
 
-  it("carries the desktop fossil rule into the local-build instructions", () => {
-    assert.match(flat, /never\*\* `pnpm install`/);
-    assert.match(prompt, /docs\/operations\/desktop-build-fossil\.md/);
+  it("routes macOS testing away from ad-hoc local builds", () => {
+    // The prompt used to hand out a primary-checkout build command carrying the
+    // "never pnpm install" caveat. It now refuses to send anyone into the
+    // fossil at all and points at the runbook instead — the caveat is moot
+    // because no macOS build command is offered.
+    assert.match(flat, /needs either a dispatched beta/);
+    assert.match(prompt, /docs\/operations\/factory-runbook\.md/);
+    assert.ok(
+      !/git checkout` of the branch/.test(flat),
+      "must not hand out a fossil-checkout build recipe",
+    );
   });
 });
 
 describe("In Test prompt — machine contract", () => {
-  it("requires BOTH markers on the posted comment", () => {
+  it("requires all three markers on the posted comment", () => {
     // drafto-factory-in-test is the long-standing marker; -test-scenario is what
-    // bash keys the backfill/refresh check on. Losing either breaks a consumer.
+    // bash keys the backfill/refresh check on; -scenario-sha makes the model's
+    // own noop decision exact. Losing any one breaks a consumer.
     assert.match(prompt, /<!-- drafto-factory-in-test -->/);
     assert.match(prompt, /<!-- drafto-factory-test-scenario -->/);
+    assert.match(prompt, /<!-- drafto-factory-scenario-sha:<full headSha> -->/);
+    assert.match(flat, /the \*\*full\*\* `bundle\.headSha` verbatim/);
+  });
+
+  it("allows noop ONLY on an exact full-SHA match, never on judgement", () => {
+    assert.match(flat, /byte-for-byte equal to `bundle\.headSha`/);
+    assert.match(flat, /Do not judge staleness by reading the steps/);
+  });
+
+  it("keys manual build commands by platform id, not list order", () => {
+    assert.match(flat, /whose `id` matches that platform/);
+    assert.match(flat, /never assume list order/);
+  });
+
+  it("forbids directing a human to git-checkout the fossil checkout", () => {
+    assert.match(
+      flat,
+      /do \*\*NOT\*\* tell anyone to `git checkout` in `\/Users\/jakub\/code\/drafto`/,
+    );
+    assert.match(flat, /operator's working tree and the fossil/);
   });
 
   it("pins the directive line and the exact bash regex", () => {

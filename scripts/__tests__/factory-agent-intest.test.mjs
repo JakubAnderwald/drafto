@@ -357,11 +357,23 @@ describe("ensure_beta_build_root — working-tree safety", () => {
     assert.match(body, /worktree add --detach "\$root" "\$sha"/);
   });
 
-  it("keeps node_modules and the warm native build dirs when cleaning", () => {
-    assert.match(
-      body,
-      /clean -fdx \\?\s*\n?\s*-e node_modules -e macos\/Pods -e macos\/build -e ios -e android/,
+  it("anchors the clean excludes at the paths the build dirs actually live in", () => {
+    // `-e` takes gitignore-style patterns: one containing a slash is anchored to
+    // the repo root, so `-e macos/Pods` protects <root>/macos/Pods and NOT
+    // apps/desktop/macos/Pods — silently nuking Pods and DerivedData on every
+    // dispatch. Verified with `git clean -ndx` against a real checkout.
+    assert.match(body, /-e apps\/desktop\/macos\/Pods -e apps\/desktop\/macos\/build/);
+    assert.match(body, /-e apps\/mobile\/ios -e apps\/mobile\/android/);
+    // The root-anchored form must be gone. Match the literal " -e macos/" so
+    // the apps/desktop-prefixed excludes above don't satisfy it by substring.
+    assert.ok(
+      !/ -e macos\//.test(body),
+      "root-anchored macos/* excludes do not protect apps/desktop/macos/*",
     );
+  });
+
+  it("bounds bundle install — it runs synchronously inside the watch tick", () => {
+    assert.match(body, /run-with-timeout\.mjs" "\$INSTALL_TIMEOUT_SEC" bundle install/);
   });
 
   it("seeds desktop from the fossil and never installs into it", () => {
@@ -398,9 +410,21 @@ describe("intest_dispatch_betas — idempotency and reporting", () => {
     assert.match(body, /--issue "\$issue_num" --pr "\$pr_num" --sha "\$sha"/);
   });
 
-  it("emits manual commands for every lane it is not building", () => {
+  it("emits manual commands keyed by platform, for every lane it is not building", () => {
+    // Unkeyed strings leave the scenario writer unable to say which command
+    // belongs to which platform when both natives are skipped.
     assert.match(body, /manualCommands/);
+    assert.match(body, /\{ id: \., command:/);
     assert.match(body, /NEVER pnpm install here \(desktop fossil\)/);
+  });
+
+  it("never sends a human to git-checkout the fossil / operator working tree", () => {
+    // The desktop manual command targets the dedicated build root, detached.
+    assert.match(body, /\$desktopRoot/);
+    assert.ok(
+      !/cd \/Users\/jakub\/code\/drafto && git checkout/.test(body),
+      "must not move the operator's working tree onto a PR branch",
+    );
   });
 
   it("merges node-side lane refusals with bash-side gate skips", () => {

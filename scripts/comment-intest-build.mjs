@@ -38,6 +38,10 @@ import { parseFlags } from "./lib/parse-flags.mjs";
 
 const execFileP = promisify(execFile);
 const REPO = "JakubAnderwald/drafto";
+// Bound every gh call. This runs as a Fastlane post-hook AFTER the binary is
+// uploaded, so a hung `gh` would leave the lane blocked indefinitely — the
+// non-fatal catch in main() can't run until the child exits.
+const GH_TIMEOUT_MS = 60_000;
 
 let _execFileForTests = null;
 export function _setExecFileForTests(impl) {
@@ -45,7 +49,11 @@ export function _setExecFileForTests(impl) {
 }
 async function run(cmd, args) {
   const fn = _execFileForTests ?? execFileP;
-  const { stdout } = await fn(cmd, args, { maxBuffer: 16 * 1024 * 1024 });
+  const { stdout } = await fn(cmd, args, {
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: GH_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+  });
   return stdout;
 }
 
