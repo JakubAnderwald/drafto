@@ -29,10 +29,17 @@ describe("factory-agent install: clonefile seed + bounded reconcile (#451)", () 
   it("seeds via APFS clonefile from the pnpm workspace roots only", () => {
     assert.match(script, /cp -c -R "\$src" "\$wt\/\$rel"/, "must clone with `cp -c -R`");
     // root + apps/* + packages/* — never the factory's own worktrees/ checkouts.
+    // The source root is a parameter (defaulting to $REPO_ROOT) because the
+    // desktop beta build root must seed from the FOSSIL checkout instead.
     assert.match(
       script,
-      /"\$REPO_ROOT"\/node_modules "\$REPO_ROOT"\/apps\/\*\/node_modules "\$REPO_ROOT"\/packages\/\*\/node_modules/,
+      /"\$src_root"\/node_modules "\$src_root"\/apps\/\*\/node_modules "\$src_root"\/packages\/\*\/node_modules/,
       "must enumerate root + apps/* + packages/* node_modules",
+    );
+    assert.match(
+      script,
+      /local src_root="\$\{2:-\$REPO_ROOT\}"/,
+      "the source root must default to $REPO_ROOT so existing callers are unchanged",
     );
     assert.match(
       script,

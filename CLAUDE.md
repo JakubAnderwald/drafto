@@ -182,9 +182,12 @@ Production / public-store releases (`pnpm release:prod:*`, `pnpm release:product
 
 The macOS desktop app is a **fossil build**. `react-native-macos@0.81` needs **React 19.1.4**, but the monorepo's declared React is **19.2.6** (mobile needs it; React must be one shared instance). The only working desktop `node_modules` lives in the **primary checkout** (`/Users/jakub/code/drafto`), installed before the React bump and **never reinstalled**. A clean `pnpm install` — including any **fresh worktree** or CI checkout — pulls React 19.2 and produces a build that **compiles fine but crashes at runtime** (Hermes `EXC_BAD_ACCESS` / blank screen). **A green compile is not proof the app works — only a TestFlight build that opens a note is.**
 
+The invariant is the installed React version, not one blessed directory: **build macOS only from a checkout whose hoisted `node_modules/react` is 19.1.x** — the primary checkout, or a clonefile replica of it that is never reinstalled.
+
 - **NEVER** `pnpm install` in the primary checkout, and **never build/release desktop from a worktree, fresh install, or CI.**
 - Build/ship desktop **only** from the primary checkout: `cd /Users/jakub/code/drafto && git pull && cd apps/desktop && pnpm release:beta` (source via `git pull`, **never** `pnpm install`).
-- Full rules: [`docs/operations/desktop-build-fossil.md`](./docs/operations/desktop-build-fossil.md) · [ADR-0027](./docs/adr/0027-desktop-react-version-locked-to-react-native-macos.md) · [`apps/desktop/CLAUDE.md`](./apps/desktop/CLAUDE.md).
+- The factory's desktop build root `/Users/jakub/code/drafto-beta-desktop` is a clonefile replica of that fossil and is under the same **never `pnpm install`** rule. `assertDesktopFossil()` in `scripts/lib/dispatch-release.mjs` enforces the 19.1.x check before any lane is spawned.
+- Full rules: [`docs/operations/desktop-build-fossil.md`](./docs/operations/desktop-build-fossil.md) · [ADR-0027](./docs/adr/0027-desktop-react-version-locked-to-react-native-macos.md) · [ADR-0030](./docs/adr/0030-in-test-scenarios-and-pre-merge-betas.md) · [`apps/desktop/CLAUDE.md`](./apps/desktop/CLAUDE.md).
 
 ## Dark Factory
 

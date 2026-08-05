@@ -24,13 +24,32 @@
 //        internal); desktop → apps/desktop `pnpm release:beta` (macOS TestFlight).
 //   assertBetaOnly(lane)
 //        Throws if the lane resolves to a production command.
-//   dispatchLanes({repoRoot, diffFiles|platforms, dryRun}) → {dispatched[], platforms}
+//   resolveLaneRoot(lane, {repoRoot, desktopRoot, env})   (pure)
+//        The checkout a lane builds from. Desktop does NOT build from repoRoot —
+//        see the fossil rule below.
+//   assertDesktopFossil(root)
+//        Throws unless <root>/node_modules/react is 19.1.x.
+//   dispatchLanes({repoRoot, desktopRoot, diffFiles|platforms, dryRun})
+//        → {dispatched[], skipped[], platforms}
 //        Derive → assert → spawn each lane detached. dryRun records without
-//        spawning. Returns the dispatched lane descriptors (JSON-serialisable).
+//        spawning. Returns the dispatched lane descriptors (JSON-serialisable);
+//        a lane that fails its guard lands in skipped[] and never suppresses the
+//        other lane.
+//
+// ⚠️  THE DESKTOP FOSSIL. react-native-macos@0.81 needs React 19.1.x, but the
+// monorepo declares 19.2.x (mobile needs it; React must be one instance). A
+// desktop build from a checkout carrying 19.2 COMPILES FINE AND CRASHES AT
+// RUNTIME (Hermes EXC_BAD_ACCESS / blank screen), so a green build is no proof.
+// The factory's own checkout is a normal install and therefore carries 19.2 —
+// dispatching the desktop lane under repoRoot ships a broken build. Desktop
+// lanes resolve to DESKTOP_FOSSIL_ROOT_DEFAULT (or DRAFTO_DESKTOP_BUILD_ROOT)
+// instead, and assertDesktopFossil() enforces the invariant at dispatch time.
+// See docs/operations/desktop-build-fossil.md and ADR-0027.
 //
 // CLI (called from scripts/factory-agent.sh --release):
 //   derive-platforms (--diff-file <path|-> | --diff <str>)
 //   dispatch (--diff-file <path|-> | --platforms mobile,desktop) [--repo-root <dir>]
+//           [--desktop-root <dir>]
 //
 // Prints JSON to stdout and exits 0; errors print {"error": "..."} to stderr and
 // exit non-zero — same shape as factory-project.mjs / state-cli.mjs.
@@ -42,6 +61,17 @@ import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 
 export const DEFAULT_REPO_ROOT = ".";
+
+// The only checkout whose node_modules can build a working macOS app: the
+// primary checkout, installed before the React 19.2 bump and never reinstalled.
+// Override with DRAFTO_DESKTOP_BUILD_ROOT (e.g. a clonefile replica of it).
+export const DESKTOP_FOSSIL_ROOT_DEFAULT = "/Users/jakub/code/drafto";
+
+// react-native-macos@0.81 pairs with React 19.1.x. Hardcoded because the repo
+// has no declared source of truth for it — package.json's override pins 19.2.6
+// for mobile, and the working desktop version exists only in the fossil
+// node_modules on disk. Bump this (and ADR-0027) when react-native-macos moves.
+export const DESKTOP_REACT_RANGE = /^19\.1\./;
 
 // Production lanes the factory must NEVER auto-invoke (beta channels only —
 // production store submission stays a manual, explicitly-approved step per
@@ -99,39 +129,90 @@ export function assertBetaOnly(lane) {
   }
 }
 
+// Pure: which checkout a lane builds from. Everything builds from repoRoot
+// except desktop, which must come from a fossil checkout (see the header note).
+export function resolveLaneRoot(lane, { repoRoot = DEFAULT_REPO_ROOT, desktopRoot, env } = {}) {
+  if (lane?.id !== "desktop") return repoRoot;
+  const e = env ?? process.env;
+  return desktopRoot || e.DRAFTO_DESKTOP_BUILD_ROOT || DESKTOP_FOSSIL_ROOT_DEFAULT;
+}
+
+// Throw unless `root` is a fossil checkout. This is the enforcement point for
+// the rule in docs/operations/desktop-build-fossil.md: a `pnpm install` in the
+// build root (or building from a fresh checkout / worktree / CI) silently
+// replaces React 19.1 with 19.2 and produces a crashing app. Refuse loudly
+// instead of shipping it.
+export function assertDesktopFossil(root, { readFile = readFileSync } = {}) {
+  const pkgPath = join(root, "node_modules", "react", "package.json");
+  let version;
+  try {
+    version = JSON.parse(readFile(pkgPath, "utf8")).version;
+  } catch (err) {
+    throw new Error(
+      `desktop build root ${root} has no readable ${pkgPath} (${err.message}); ` +
+        `expected a fossil checkout with React ${DESKTOP_REACT_RANGE.source}`,
+    );
+  }
+  if (!DESKTOP_REACT_RANGE.test(String(version))) {
+    throw new Error(
+      `refusing to build desktop from ${root}: React ${version} is not 19.1.x. ` +
+        `react-native-macos@0.81 compiles against 19.2 but crashes at runtime — ` +
+        `build from the fossil checkout and never 'pnpm install' it ` +
+        `(docs/operations/desktop-build-fossil.md).`,
+    );
+  }
+  return version;
+}
+
 // Spawn a lane detached so a ~20-min Fastlane build never blocks the tick. The
 // child inherits the factory's env (Phase-D prereq: MATCH_PASSWORD / ASC keys /
 // keystore must be present in the Mac-mini launchd env — see the runbook).
-function realSpawnDetached(lane, { repoRoot }) {
+function realSpawnDetached(lane, { repoRoot, laneEnv }) {
   const child = spawn(lane.command, lane.args, {
     cwd: join(repoRoot, lane.cwd),
     detached: true,
     stdio: "ignore",
-    env: process.env,
+    env: { ...process.env, ...(laneEnv ?? {}) },
   });
   child.unref();
 }
 
 export function dispatchLanes({
   repoRoot = DEFAULT_REPO_ROOT,
+  desktopRoot,
   diffFiles,
   platforms,
   dryRun = false,
+  env,
+  laneEnv,
 } = {}) {
   const plats = platforms ?? derivePlatforms(diffFiles);
   const lanes = platformsToLanes(plats);
   const spawnFn = _spawnForTests ?? realSpawnDetached;
   const dispatched = [];
+  const skipped = [];
   for (const lane of lanes) {
     assertBetaOnly(lane);
-    if (!dryRun) spawnFn(lane, { repoRoot });
+    const laneRoot = resolveLaneRoot(lane, { repoRoot, desktopRoot, env });
+    // A failed guard skips only its own lane: a desktop checkout that lost its
+    // fossil must not stop the mobile beta from shipping.
+    if (lane.id === "desktop") {
+      try {
+        assertDesktopFossil(laneRoot);
+      } catch (err) {
+        skipped.push({ id: lane.id, root: laneRoot, reason: err.message });
+        continue;
+      }
+    }
+    if (!dryRun) spawnFn(lane, { repoRoot: laneRoot, laneEnv });
     dispatched.push({
       id: lane.id,
       cwd: lane.cwd,
+      root: laneRoot,
       command: `${lane.command} ${lane.args.join(" ")}`,
     });
   }
-  return { dispatched, platforms: plats };
+  return { dispatched, skipped, platforms: plats };
 }
 
 function readStdin() {
@@ -163,7 +244,11 @@ function parsePlatforms(csv) {
 }
 
 async function main(argv) {
-  const [sub, ...rest] = argv;
+  const [sub, ...rawRest] = argv;
+  // parseFlags requires a value for every flag by design, so pull the one bare
+  // boolean out before handing it the rest.
+  const dryRun = rawRest.includes("--dry-run");
+  const rest = rawRest.filter((a) => a !== "--dry-run");
   const { flags } = parseFlags(rest);
   switch (sub) {
     case "derive-platforms":
@@ -173,8 +258,32 @@ async function main(argv) {
       const diffFiles = platforms ? undefined : await readDiff(flags);
       return dispatchLanes({
         repoRoot: flags["repo-root"] ?? DEFAULT_REPO_ROOT,
+        desktopRoot: flags["desktop-root"],
         diffFiles,
         platforms,
+        dryRun,
+      });
+    }
+    // Pre-merge dispatch from an In Test card's PR head. Same lanes and the same
+    // beta-only invariant; the extra flags become env vars for the Fastlane
+    // hooks so the resulting build is identifiable as a pre-merge test build
+    // (release-notes prefix + the "build N is up" comment on the issue).
+    case "dispatch-premerge": {
+      const platforms = flags.platforms ? parsePlatforms(flags.platforms) : undefined;
+      const diffFiles = platforms ? undefined : await readDiff(flags);
+      const issue = flags.issue;
+      if (!issue) throw new Error("dispatch-premerge requires --issue <n>");
+      return dispatchLanes({
+        repoRoot: flags["repo-root"] ?? DEFAULT_REPO_ROOT,
+        desktopRoot: flags["desktop-root"],
+        diffFiles,
+        platforms,
+        dryRun,
+        laneEnv: {
+          DRAFTO_INTEST_ISSUE: String(issue),
+          DRAFTO_INTEST_PR: String(flags.pr ?? ""),
+          DRAFTO_INTEST_SHA: String(flags.sha ?? ""),
+        },
       });
     }
     case "--help":
@@ -182,7 +291,9 @@ async function main(argv) {
     case undefined:
       process.stdout.write(
         "Usage: dispatch-release.mjs <derive-platforms (--diff-file <path|-> | --diff <str>)|" +
-          "dispatch (--diff-file <path|-> | --platforms mobile,desktop) [--repo-root <dir>]>\n",
+          "dispatch (--diff-file <path|-> | --platforms mobile,desktop) [--repo-root <dir>] " +
+          "[--desktop-root <dir>] [--dry-run]|" +
+          "dispatch-premerge (same flags) --issue <n> [--pr <n>] [--sha <sha>]>\n",
       );
       return null;
     default:

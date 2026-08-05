@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Build a per-issue context bundle for the dark-factory agent.
 //
-// Three kinds today:
+// Four kinds today:
 //
 //   factory_plan       — for `factory-agent.sh --plan`. Contains the issue
 //                        body + comments, the parsed spec contract sections,
@@ -20,6 +20,14 @@
 //                        a CI failure summary + the unresolved review
 //                        comments, so the model can make minimal in-scope
 //                        fixes and re-push.
+//
+//   factory_intest     — for `factory-agent.sh --watch` at the In Review →
+//                        In Test hand-off (any phase). Read-only: the issue,
+//                        the approved plan, the actual PR diff and the
+//                        platforms derived from it, plus the facts bash
+//                        already knows (preview URL, dispatched beta lanes,
+//                        advisory checks). The model writes the human test
+//                        scenario and posts the In Test comment.
 //
 // Pure functions for unit tests, plus a CLI that reads a single JSON object
 // on stdin and prints the resulting bundle JSON to stdout — mirrors
@@ -574,6 +582,134 @@ export function buildFactoryWatchBundle({
   };
 }
 
+// Cap a unified diff so a large PR can't blow the model's context. Trims by
+// line count first (keeps whole lines readable) then by bytes, and reports what
+// was dropped so the prompt can tell the model its view is partial rather than
+// letting it silently reason about half a change.
+export function truncateDiff(text, { maxBytes = 200_000, maxLines = 4000 } = {}) {
+  const raw = typeof text === "string" ? text : "";
+  const lines = raw.split("\n");
+  let omittedLines = 0;
+  let out = raw;
+  if (lines.length > maxLines) {
+    omittedLines = lines.length - maxLines;
+    out = lines.slice(0, maxLines).join("\n");
+  }
+  let truncated = omittedLines > 0;
+  if (Buffer.byteLength(out, "utf8") > maxBytes) {
+    // Cut on a line boundary so the tail isn't a mangled hunk.
+    const clipped = Buffer.from(out, "utf8").subarray(0, maxBytes).toString("utf8");
+    const lastNl = clipped.lastIndexOf("\n");
+    // No newline in the kept slice at all (one huge line — a minified bundle or
+    // a lockfile hunk): drop it entirely rather than ship a partial line that
+    // may also end in a U+FFFD from splitting a multi-byte character.
+    const kept = lastNl > 0 ? clipped.slice(0, lastNl) : "";
+    const dropped = out.slice(kept.length).split("\n").filter(Boolean).length;
+    omittedLines += dropped || 1;
+    out = kept;
+    truncated = true;
+  }
+  return { text: out, truncated, omittedLines };
+}
+
+// Bundle for the In Test hand-off (`factory-agent.sh --watch`, In Review → In
+// Test). Read-only stage: the model writes a human test scenario for the card
+// and posts it as the In Test comment. It gets the issue (what the reporter
+// asked for), the approved plan (what was meant to change), the actual PR diff
+// (what DID change — the ground truth for the scenario), the platforms derived
+// from that diff, and the facts bash already knows (preview URL, dispatched
+// beta lanes, advisory checks) so the model never invents a URL or build number.
+export function buildFactoryInTestBundle({
+  issue,
+  approvedPlan,
+  priorPr = null,
+  prDiff = "",
+  prFiles = "",
+  platforms = {},
+  previewUrl = "",
+  advisory = "",
+  betaDispatch = null,
+  headSha = "",
+  comments = [],
+  screenshotSources = [],
+  config,
+  repo,
+  nowIso,
+} = {}) {
+  if (!issue || !Number.isInteger(issue.number)) {
+    throw new Error("buildFactoryInTestBundle: issue.number is required");
+  }
+  const planBody = typeof approvedPlan?.body === "string" ? approvedPlan.body : "";
+  const planClean = planBody.split(FACTORY_PLAN_MARKER).join("").trim();
+  const spec = parseSpec(issue.body ?? "");
+  const diff = truncateDiff(prDiff);
+  return {
+    kind: "factory_intest",
+    issue: shapeIssue(issue),
+    spec,
+    parityOverride: effectiveParityOverride(issue.labels, spec),
+    screenshots: extractScreenshots(
+      issue.body ?? "",
+      collectCommentSources(comments, screenshotSources),
+    ),
+    approvedPlan: approvedPlan
+      ? {
+          commentId: approvedPlan.commentId ?? approvedPlan.id ?? null,
+          url: approvedPlan.url ?? "",
+          createdAt: approvedPlan.createdAt ?? approvedPlan.created_at ?? null,
+          bodyEnveloped: envelopeBody(planClean, "factory-plan"),
+        }
+      : null,
+    priorPr: priorPr
+      ? {
+          number: priorPr.number ?? null,
+          url: priorPr.url ?? "",
+          headRef: priorPr.headRef ?? "",
+          state: priorPr.state ?? "",
+        }
+      : null,
+    headSha: typeof headSha === "string" ? headSha : "",
+    // The diff is enveloped like every other untrusted input: a PR may touch a
+    // file whose contents quote a directive, and a hunk must never be read as
+    // an instruction.
+    prDiffEnveloped: envelopeBody(diff.text, "pr-diff"),
+    prDiffTruncated: diff.truncated,
+    prDiffOmittedLines: diff.omittedLines,
+    prFiles: String(prFiles ?? "")
+      .split("\n")
+      .map((f) => f.trim())
+      .filter(Boolean),
+    // Derived from the diff, NOT from the issue's "Affected platforms"
+    // checkboxes: the scenario must cover what actually changed.
+    platforms: {
+      mobile: Boolean(platforms?.mobile),
+      desktop: Boolean(platforms?.desktop),
+      web: Boolean(platforms?.web),
+    },
+    previewUrl: typeof previewUrl === "string" ? previewUrl : "",
+    advisory: typeof advisory === "string" ? advisory : "",
+    betaDispatch: betaDispatch
+      ? {
+          dispatched: Array.isArray(betaDispatch.dispatched) ? betaDispatch.dispatched : [],
+          skipped: Array.isArray(betaDispatch.skipped) ? betaDispatch.skipped : [],
+          // Always [{id, command}] — a bare string list leaves the scenario
+          // writer unable to say which command belongs to which platform when
+          // both natives are skipped. Legacy string entries are coerced rather
+          // than dropped, but they carry no id.
+          manualCommands: (Array.isArray(betaDispatch.manualCommands)
+            ? betaDispatch.manualCommands
+            : []
+          ).map((c) => (typeof c === "string" ? { id: "", command: c } : c)),
+        }
+      : { dispatched: [], skipped: [], manualCommands: [] },
+    comments: envelopeComments(comments),
+    reporter: reporterFromBody(issue.body ?? ""),
+    config: shapeConfig(config),
+    repo: shapeRepo(repo),
+    nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
+  };
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 async function readStdin() {
@@ -624,6 +760,24 @@ async function main() {
       comments: input.comments,
       screenshotSources: input.screenshotSources,
       attempts: input.attempts,
+      config: input.config,
+      repo: input.repo,
+      nowIso: input.nowIso,
+    });
+  } else if (input.kind === "factory_intest") {
+    bundle = buildFactoryInTestBundle({
+      issue: input.issue,
+      approvedPlan: input.approvedPlan,
+      priorPr: input.priorPr,
+      prDiff: input.prDiff,
+      prFiles: input.prFiles,
+      platforms: input.platforms,
+      previewUrl: input.previewUrl,
+      advisory: input.advisory,
+      betaDispatch: input.betaDispatch,
+      headSha: input.headSha,
+      comments: input.comments,
+      screenshotSources: input.screenshotSources,
       config: input.config,
       repo: input.repo,
       nowIso: input.nowIso,

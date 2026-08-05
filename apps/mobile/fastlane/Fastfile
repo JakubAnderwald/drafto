@@ -101,6 +101,32 @@ rescue StandardError => e
   UI.important("Released-issue comments failed (non-fatal): #{e.message}")
 end
 
+# Pre-merge (factory In Test) dispatch only: report the actual build number on
+# the card, since the In Test comment could only promise a build was coming.
+# DRAFTO_INTEST_ISSUE is set by scripts/lib/dispatch-release.mjs
+# dispatch-premerge; unset for every normal/post-merge release, where this is a
+# no-op. Best-effort — a comment must never fail a build that already shipped.
+def comment_intest_build(platform:, build:, track:)
+  issue = ENV["DRAFTO_INTEST_ISSUE"]
+  return if issue.nil? || issue.empty?
+  return if build.nil? || build.to_s.empty?
+  Dir.chdir(PROJECT_ROOT) do
+    repo_root = `git rev-parse --show-toplevel`.strip
+    script = File.join(repo_root, "scripts", "comment-intest-build.mjs")
+    next unless File.exist?(script)
+    cmd = ["node", script,
+           "--issue", issue,
+           "--platform", platform,
+           "--build", build.to_s,
+           "--track", track]
+    cmd += ["--pr", ENV["DRAFTO_INTEST_PR"]] unless ENV["DRAFTO_INTEST_PR"].to_s.empty?
+    cmd += ["--sha", ENV["DRAFTO_INTEST_SHA"]] unless ENV["DRAFTO_INTEST_SHA"].to_s.empty?
+    sh(*cmd)
+  end
+rescue StandardError => e
+  UI.important("In Test build comment failed (non-fatal): #{e.message}")
+end
+
 # ---------- Android ----------
 
 platform :android do
@@ -169,6 +195,7 @@ platform :android do
     track_label =
       track == "production" ? "Google Play (build #{next_code})" : "Google Play internal track (build #{next_code})"
     comment_released_issues(platform: "android", build: next_code, track: track_label)
+    comment_intest_build(platform: "android", build: next_code, track: track_label)
   end
 end
 
@@ -268,5 +295,6 @@ platform :ios do
     track_label =
       destination == "appstore" ? "the App Store (build #{new_build_number})" : "TestFlight (build #{new_build_number})"
     comment_released_issues(platform: "ios", build: new_build_number, track: track_label)
+    comment_intest_build(platform: "ios", build: new_build_number, track: track_label)
   end
 end

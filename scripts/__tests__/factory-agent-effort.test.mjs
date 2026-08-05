@@ -15,17 +15,17 @@ const scriptPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "facto
 const script = readFileSync(scriptPath, "utf8");
 
 describe("factory-agent Claude effort", () => {
-  it("passes --effort at all four Claude call sites", () => {
-    // Two plan sites (plan + replan) use the plan effort; two coding sites
-    // (implement + watch) use the coding effort. Four total.
+  it("passes --effort at all five Claude call sites", () => {
+    // Three read-only sites (plan + replan + In Test scenario) use the plan
+    // effort; two coding sites (implement + watch) use the coding effort.
     const planFlags =
       script.match(/--dangerously-skip-permissions --effort "\$FACTORY_PLAN_EFFORT"/g) || [];
     const codeFlags =
       script.match(/--dangerously-skip-permissions --effort "\$FACTORY_EFFORT"/g) || [];
     assert.equal(
       planFlags.length,
-      2,
-      'expected --effort "$FACTORY_PLAN_EFFORT" at the plan + replan sites',
+      3,
+      'expected --effort "$FACTORY_PLAN_EFFORT" at the plan + replan + In Test sites',
     );
     assert.equal(
       codeFlags.length,
@@ -34,9 +34,17 @@ describe("factory-agent Claude effort", () => {
     );
     assert.equal(
       planFlags.length + codeFlags.length,
-      4,
+      5,
       "every factory Claude call must carry an effort flag",
     );
+  });
+
+  it("runs the In Test scenario writer at the read-only (plan) effort", () => {
+    // It reads a diff and posts a comment — no code is written, so it must not
+    // burn the coding-tier effort budget.
+    const block = script.match(/Invoking claude for #\$issue_num \(In Test scenario[\s\S]{0,800}/);
+    assert.ok(block, "In Test claude invocation not found");
+    assert.match(block[0], /--effort "\$FACTORY_PLAN_EFFORT"/);
   });
 
   it("defaults FACTORY_EFFORT to ultracode and FACTORY_PLAN_EFFORT to xhigh", () => {

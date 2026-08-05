@@ -37,7 +37,7 @@ describe("factory-agent required-context gating: static wiring", () => {
     // the "→ In Test" log. ci_required_green must gate the advance so a missing
     // required context can't slip through, while advisory reds are ignored.
     const block = script.match(
-      /FAILING=\$\(pr_failing_required "\$PR_VIEW"\)[\s\S]*?required CI green \+ preview/,
+      /FAILING=\$\(pr_failing_required "\$PR_VIEW"\)[\s\S]*?required CI green \(platforms/,
     );
     assert.ok(block, "watch advance block not found");
     assert.match(block[0], /if ! ci_required_green "\$PR_VIEW"; then/);
@@ -52,8 +52,11 @@ describe("factory-agent required-context gating: static wiring", () => {
   });
 
   it("surfaces advisory (non-required) reds in the In Test hand-off comment", () => {
+    // The advisory list is computed at the advance and threaded into the
+    // hand-off, which passes it to the scenario writer (bundle.advisory) and
+    // renders it in the deterministic fallback comment.
     assert.match(script, /ADVISORY=\$\(pr_failing_advisory "\$PR_VIEW"\)/);
-    assert.match(script, /Advisory \(non-required\) checks are not green: \$ADVISORY/);
+    assert.match(script, /Advisory \(non-required\) checks are not green: \$advisory/);
   });
 
   it("hands the fix agent only required failures (CI_SUMMARY filtered by \\$req)", () => {
