@@ -209,6 +209,40 @@ describe("intest_fallback_comment — always usable", () => {
   });
 });
 
+describe("In Test sweep — dispatch and scenario are independent", () => {
+  it("evaluates beta dispatch on every tick, not only when the scenario is stale", () => {
+    // Regression: dispatch used to live INSIDE intest_handoff, which the sweep
+    // gated on intestCommentSha != headRefOid. A lane blocked by a transient
+    // condition (low disk, knob off) was therefore never retried — once the
+    // scenario existed for that SHA the hand-off never ran again. Observed live
+    // on #463: freeing disk changed nothing until the key was cleared by hand.
+    const dispatchIdx = sweepBlock.indexOf("intest_dispatch_betas");
+    const staleGuardIdx = sweepBlock.indexOf('"$INTEST_HEAD_SHA" != "$SCENARIO_SHA"');
+    assert.ok(dispatchIdx !== -1, "sweep must dispatch");
+    assert.ok(staleGuardIdx !== -1, "sweep must still gate the scenario on its own key");
+    assert.ok(
+      dispatchIdx < staleGuardIdx,
+      "dispatch must be evaluated BEFORE (and outside) the scenario-staleness guard",
+    );
+  });
+
+  it("passes the dispatch result into the scenario writer rather than re-dispatching", () => {
+    assert.match(sweepBlock, /intest_handoff[\s\S]{0,200}"\$INTEST_BETA"/);
+    const handoff = fnBody("intest_handoff");
+    // No *call* — a comment naming the function is fine.
+    assert.ok(
+      !/\$\(\s*intest_dispatch_betas/.test(handoff),
+      "the scenario writer must not dispatch — it receives the result",
+    );
+  });
+
+  it("still keys each half on its own recorded SHA", () => {
+    assert.match(sweepBlock, /\.intestCommentSha/);
+    const dispatch = fnBody("intest_dispatch_betas");
+    assert.match(dispatch, /\.intestBetaSha/);
+  });
+});
+
 describe("In Test sweep — scenario backfill and refresh", () => {
   it("keys the refresh on the PR head SHA, not a monotonic marker", () => {
     // Idempotent within a SHA (no 5-minute comment spam) but re-armed by new
@@ -479,15 +513,32 @@ describe("pre-merge beta knobs", () => {
   });
 
   it("never lets a failed dispatch stop the scenario from being written", () => {
+    // The property moved to the call sites when dispatch was decoupled: each one
+    // falls back to an empty betaDispatch payload, and intest_handoff defaults
+    // the parameter, so a failed dispatch still yields a usable comment.
+    const sites = script.match(/INTEST_BETA=\$\(intest_dispatch_betas[\s\S]{0,240}?\)\n/g) || [];
+    assert.ok(sites.length >= 2, "both the advance path and the sweep must dispatch");
+    for (const site of sites) {
+      assert.match(site, /\|\| echo '\{"dispatched":\[\],"skipped":\[\],"manualCommands":\[\]\}'/);
+    }
     const handoff = fnBody("intest_handoff");
-    assert.match(
-      handoff,
-      /beta_json=\$\(intest_dispatch_betas[\s\S]{0,200}\|\| echo '\{"dispatched"/,
-    );
+    assert.match(handoff, /local beta_json="\$\{9:-/, "handoff must default the payload");
   });
 
   it("copies the Play service-account key into build roots (Android lane needs it)", () => {
     assert.match(script, /apps\/mobile\/google-play-service-account\.json/);
+  });
+});
+
+describe("logerr", () => {
+  it("writes only to stderr — log() tees into $LOG_FILE and callers redirect there too", () => {
+    const m = script.match(/^logerr\(\) \{.*$/m);
+    assert.ok(m, "logerr not found");
+    assert.ok(
+      !/\blog\b/.test(m[0]),
+      "logerr must not route through log() — that double-writes the file",
+    );
+    assert.match(m[0], />&2/);
   });
 });
 

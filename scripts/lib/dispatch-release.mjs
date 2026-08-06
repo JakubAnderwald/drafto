@@ -55,7 +55,8 @@
 // exit non-zero — same shape as factory-project.mjs / state-cli.mjs.
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, openSync, appendFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
@@ -167,14 +168,55 @@ export function assertDesktopFossil(root, { readFile = readFileSync } = {}) {
 // Spawn a lane detached so a ~20-min Fastlane build never blocks the tick. The
 // child inherits the factory's env (Phase-D prereq: MATCH_PASSWORD / ASC keys /
 // keystore must be present in the Mac-mini launchd env — see the runbook).
-function realSpawnDetached(lane, { repoRoot, laneEnv }) {
+// Where a lane's combined stdout/stderr goes. Overridable so tests don't write
+// into the repo. Falls back to the system temp dir if the log dir is unusable —
+// losing the log is bad, but failing the dispatch over it is worse.
+function laneLogPath(lane, { logDir } = {}) {
+  const dir = logDir || join(process.cwd(), "logs", "factory");
+  try {
+    mkdirSync(dir, { recursive: true });
+    return join(dir, `beta-lane-${lane.id}.log`);
+  } catch {
+    return join(tmpdir(), `drafto-beta-lane-${lane.id}.log`);
+  }
+}
+
+// Spawn a lane detached so a ~20-40 min Fastlane build never blocks the tick.
+//
+// Output goes to a per-lane log file, NOT `stdio: "ignore"`. It was ignored
+// originally, which made a lane that died on startup indistinguishable from one
+// running for 40 minutes: the caller recorded a successful dispatch, the SHA
+// key then suppressed every retry, and there was no output anywhere to say why.
+// Observed on #463 — the lane vanished and the only evidence was the absence of
+// a process. A log file is the difference between "diagnosable" and "gone".
+function realSpawnDetached(lane, { repoRoot, laneEnv, logDir }) {
+  const logPath = laneLogPath(lane, { logDir });
+  let out;
+  try {
+    out = openSync(logPath, "a");
+  } catch {
+    out = "ignore";
+  }
   const child = spawn(lane.command, lane.args, {
     cwd: join(repoRoot, lane.cwd),
     detached: true,
-    stdio: "ignore",
+    stdio: ["ignore", out, out],
     env: { ...process.env, ...(laneEnv ?? {}) },
   });
+  // spawn() reports "couldn't start at all" (missing binary, bad cwd) via an
+  // ASYNC 'error' event. With no listener Node rethrows it and takes the whole
+  // dispatcher down mid-loop — so one unlaunchable lane would abort the other
+  // one too, and the caller would see a crash rather than a skipped lane.
+  // Record it into the lane log instead; the process stays alive.
+  child.on("error", (err) => {
+    try {
+      appendFileSync(logPath, `lane ${lane.id} failed to start: ${err.message}\n`);
+    } catch {
+      process.stderr.write(`lane ${lane.id} failed to start: ${err.message}\n`);
+    }
+  });
   child.unref();
+  return { pid: child.pid, logPath };
 }
 
 export function dispatchLanes({
@@ -185,6 +227,7 @@ export function dispatchLanes({
   dryRun = false,
   env,
   laneEnv,
+  logDir,
 } = {}) {
   const plats = platforms ?? derivePlatforms(diffFiles);
   const lanes = platformsToLanes(plats);
@@ -204,12 +247,16 @@ export function dispatchLanes({
         continue;
       }
     }
-    if (!dryRun) spawnFn(lane, { repoRoot: laneRoot, laneEnv });
+    const spawned = dryRun ? null : spawnFn(lane, { repoRoot: laneRoot, laneEnv, logDir });
     dispatched.push({
       id: lane.id,
       cwd: lane.cwd,
       root: laneRoot,
       command: `${lane.command} ${lane.args.join(" ")}`,
+      // Present when the spawn helper reports them — the log path is what makes
+      // a dead lane diagnosable after the fact.
+      ...(spawned?.pid ? { pid: spawned.pid } : {}),
+      ...(spawned?.logPath ? { logPath: spawned.logPath } : {}),
     });
   }
   return { dispatched, skipped, platforms: plats };
@@ -279,6 +326,7 @@ async function main(argv) {
         diffFiles,
         platforms,
         dryRun,
+        logDir: flags["log-dir"],
         laneEnv: {
           DRAFTO_INTEST_ISSUE: String(issue),
           DRAFTO_INTEST_PR: String(flags.pr ?? ""),

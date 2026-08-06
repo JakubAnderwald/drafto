@@ -315,7 +315,10 @@ log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 # log() writes to stdout, so a function whose stdout is CAPTURED by the caller
 # (command substitution) must use this instead — otherwise its log lines end up
 # inside the captured value and corrupt it (e.g. a JSON payload).
-logerr() { log "$@" >&2; }
+# Write ONLY to stderr — deliberately not via log(), which tees into $LOG_FILE.
+# Every caller of a logerr-using function redirects that stderr into $LOG_FILE,
+# so routing through log() put each line in the file twice.
+logerr() { echo "[$(date '+%H:%M:%S')] $*" >&2; }
 
 # ── Failure notification (mirrors support-agent.sh) ─────────────────────────
 cleanup() {
@@ -1464,10 +1467,13 @@ intest_dispatch_betas() {
   # shellcheck disable=SC2086 # root_flags is a deliberately word-split flag list
   dispatch_json=$(node "$SCRIPT_DIR/lib/dispatch-release.mjs" dispatch-premerge \
     --platforms "$lanes" $root_flags \
-    --issue "$issue_num" --pr "$pr_num" --sha "$sha" 2>>"$LOG_FILE" || echo "")
+    --issue "$issue_num" --pr "$pr_num" --sha "$sha" --log-dir "$LOG_DIR" 2>>"$LOG_FILE" || echo "")
   dispatched=$(echo "$dispatch_json" | jq -r '[.dispatched[]?.id] | join(", ")' 2>/dev/null || echo "")
   if [[ -n "$dispatched" ]]; then
-    logerr "Issue #$issue_num: dispatched pre-merge beta lane(s): $dispatched at ${sha:0:12}"
+    # Log the pid + per-lane log path. A detached lane that dies on startup used
+    # to be invisible (stdio was discarded), and since the SHA key is recorded
+    # right below, that made the failure permanent AND undiagnosable.
+    logerr "Issue #$issue_num: dispatched pre-merge beta lane(s): $dispatched at ${sha:0:12} — $(echo "$dispatch_json" | jq -r '[.dispatched[]? | "\(.id) pid=\(.pid // "?") log=\(.logPath // "?")"] | join("; ")' 2>/dev/null)"
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
       intestBetaSha "$sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
@@ -1565,7 +1571,11 @@ intest_record_comment_sha() {
 intest_handoff() {
   local issue_num="$1" pr_num="$2" pr_obj="$3" preview_url="$4" advisory="$5"
   local head_sha="$6" diff_files="$7" platforms="$8"
-  local issue_record comments_json plan_json pr_diff bundle claude_input beta_json
+  # $9: the betaDispatch JSON from intest_dispatch_betas. Passed IN rather than
+  # computed here, so a dispatch blocked by a transient condition can be retried
+  # on a later tick without also rewriting the scenario. See the sweep.
+  local beta_json="${9:-{\"dispatched\":[],\"skipped\":[],\"manualCommands\":[]\}}"
+  local issue_record comments_json plan_json pr_diff bundle claude_input
   local out_file start_iso exit_code=0 summary_line action
 
   if [[ ! -f "$INTEST_PROMPT_FILE" ]]; then
@@ -1589,12 +1599,6 @@ intest_handoff() {
   plan_json=$(extract_plan_comment "$comments_json")
   [[ -n "$plan_json" ]] || plan_json="null"
 
-  # Kick off pre-merge beta builds BEFORE writing the scenario, so the comment
-  # can tell the tester a build is already on its way (a Fastlane lane takes
-  # 20-40 min; the scenario takes seconds). Best-effort: no build must ever stop
-  # the scenario from being written.
-  beta_json=$(intest_dispatch_betas "$issue_num" "$pr_num" "$head_sha" "$platforms" 2>>"$LOG_FILE" \
-    || echo '{"dispatched":[],"skipped":[],"manualCommands":[]}')
   [[ -n "$beta_json" ]] || beta_json='{"dispatched":[],"skipped":[],"manualCommands":[]}'
   # The diff is the scenario's ground truth. An empty one still produces a
   # usable (if thinner) scenario, so a failure here is not fatal.
@@ -2828,7 +2832,8 @@ A human should take a look. Reset with \
     log "Issue #$ISSUE_NUM: required CI green (platforms: $(echo "$INTEST_PLATFORMS" | jq -c . 2>/dev/null)) → In Test"
     if [[ "$DRY_RUN" -eq 1 ]]; then
       log "DRY-RUN: would advance #$ISSUE_NUM to In Test and post a test scenario"
-      intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$(pr_failing_advisory "$PR_VIEW")" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" || true
+      INTEST_BETA=$(intest_dispatch_betas "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "$INTEST_PLATFORMS" 2>>"$LOG_FILE" || echo '{"dispatched":[],"skipped":[],"manualCommands":[]}')
+      intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$(pr_failing_advisory "$PR_VIEW")" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" "$INTEST_BETA" || true
       continue
     fi
     # Advance FIRST: the card must reach In Test even if writing the scenario
@@ -2839,7 +2844,10 @@ A human should take a look. Reset with \
     # Surface any advisory (non-required) red checks — e.g. CodeRabbit — so the
     # operator can glance before Approving, even though they didn't block advance.
     ADVISORY=$(pr_failing_advisory "$PR_VIEW")
-    intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$ADVISORY" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" || true
+    # Dispatch is its own step with its own SHA key, so a lane gated off here
+    # (low disk, knob off) can still fire on a later tick.
+    INTEST_BETA=$(intest_dispatch_betas "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "$INTEST_PLATFORMS" 2>>"$LOG_FILE" || echo '{"dispatched":[],"skipped":[],"manualCommands":[]}')
+    intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$ADVISORY" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" "$INTEST_BETA" || true
   done
 
   # ── In Test feedback sweep: a reporter comment requests a revision ──────────
@@ -2875,11 +2883,16 @@ A human should take a look. Reset with \
     ISSUE_STATE_JSON=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
       --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
 
-    # Scenario backfill / refresh. Keyed on the PR head SHA rather than a plain
-    # marker: a card that goes In Test → feedback → In Progress → In Test again
-    # is testing NEW code and needs a NEW scenario, while a card sitting still
-    # must not be re-commented every 5 minutes. Also catches cards that reached
-    # In Test before this stage existed (no recorded SHA at all).
+    # Beta dispatch and scenario refresh are evaluated INDEPENDENTLY, each keyed
+    # on its own recorded SHA. They used to be nested — dispatch happened only
+    # inside the scenario hand-off — which meant a dispatch blocked by a
+    # transient condition (low disk, a knob still off, an unavailable build
+    # root) was never retried: once the scenario existed for that SHA, the
+    # hand-off never ran again and no build was ever produced for the card.
+    # Splitting them lets the blocked half retry on any later tick while the
+    # already-written scenario stays put. (Observed for #463: the disk guard
+    # skipped both lanes, the scenario was written, and freeing disk changed
+    # nothing until the state key was cleared by hand.)
     SCENARIO_SHA=$(echo "$ISSUE_STATE_JSON" | jq -r '.intestCommentSha // ""' 2>/dev/null || echo "")
     INTEST_PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
     if [[ -n "$INTEST_PR_OBJ" && "$INTEST_PR_OBJ" != "null" ]]; then
@@ -2887,21 +2900,32 @@ A human should take a look. Reset with \
       INTEST_PR_VIEW=$(gh pr view "$INTEST_PR_NUM" --repo JakubAnderwald/drafto \
         --json statusCheckRollup,comments,headRefOid 2>>"$LOG_FILE" || echo "")
       INTEST_HEAD_SHA=$(echo "${INTEST_PR_VIEW:-}" | jq -r '.headRefOid // ""' 2>/dev/null || echo "")
-      if [[ -n "$INTEST_HEAD_SHA" && "$INTEST_HEAD_SHA" != "$SCENARIO_SHA" ]]; then
-        log "Issue #$ISSUE_NUM: In Test with no current scenario (have '${SCENARIO_SHA:-none}', head $INTEST_HEAD_SHA); writing one"
+      if [[ -n "$INTEST_HEAD_SHA" ]]; then
         INTEST_FILES=$(gh pr diff "$INTEST_PR_NUM" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE" || echo "")
         INTEST_PLATS=$(printf '%s\n' "$INTEST_FILES" | node "$SCRIPT_DIR/lib/dispatch-release.mjs" derive-platforms --diff-file - 2>>"$LOG_FILE" || echo '{}')
-        INTEST_PREVIEW=$(echo "${INTEST_PR_VIEW:-}" | jq -r '
-          ([ .comments[]? | select((.author.login // "") | test("vercel"; "i")) | .body ] | last // "")
-          + " " +
-          ([ .statusCheckRollup[]? | select(((.context // .name // "") | test("vercel"; "i")))
-             | (.targetUrl // .detailsUrl // "") ] | join(" "))' 2>/dev/null \
-          | grep -oE 'https://[a-zA-Z0-9._-]*vercel\.app[^ )]*' | head -1 || true)
-        intest_handoff "$ISSUE_NUM" "$INTEST_PR_NUM" "$INTEST_PR_OBJ" "$INTEST_PREVIEW" \
-          "$(pr_failing_advisory "${INTEST_PR_VIEW:-}")" "$INTEST_HEAD_SHA" "$INTEST_FILES" "$INTEST_PLATS" || true
-        # The scenario we just posted carries a drafto-factory marker, so
-        # owner_comments_since ignores it — it can never look like feedback.
-        COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM" 2>>"$LOG_FILE" || echo "$COMMENTS_JSON")
+
+        # Dispatch first: it is idempotent on its own key (intestBetaSha), so
+        # calling it every tick costs one state read and re-fires only when the
+        # head SHA changed or a previous attempt was gated off.
+        INTEST_BETA=$(intest_dispatch_betas "$ISSUE_NUM" "$INTEST_PR_NUM" "$INTEST_HEAD_SHA" "$INTEST_PLATS" 2>>"$LOG_FILE" \
+          || echo '{"dispatched":[],"skipped":[],"manualCommands":[]}')
+        [[ -n "$INTEST_BETA" ]] || INTEST_BETA='{"dispatched":[],"skipped":[],"manualCommands":[]}'
+
+        if [[ "$INTEST_HEAD_SHA" != "$SCENARIO_SHA" ]]; then
+          log "Issue #$ISSUE_NUM: In Test with no current scenario (have '${SCENARIO_SHA:-none}', head $INTEST_HEAD_SHA); writing one"
+          INTEST_PREVIEW=$(echo "${INTEST_PR_VIEW:-}" | jq -r '
+            ([ .comments[]? | select((.author.login // "") | test("vercel"; "i")) | .body ] | last // "")
+            + " " +
+            ([ .statusCheckRollup[]? | select(((.context // .name // "") | test("vercel"; "i")))
+               | (.targetUrl // .detailsUrl // "") ] | join(" "))' 2>/dev/null \
+            | grep -oE 'https://[a-zA-Z0-9._-]*vercel\.app[^ )]*' | head -1 || true)
+          intest_handoff "$ISSUE_NUM" "$INTEST_PR_NUM" "$INTEST_PR_OBJ" "$INTEST_PREVIEW" \
+            "$(pr_failing_advisory "${INTEST_PR_VIEW:-}")" "$INTEST_HEAD_SHA" "$INTEST_FILES" "$INTEST_PLATS" \
+            "$INTEST_BETA" || true
+          # The scenario we just posted carries a drafto-factory marker, so
+          # owner_comments_since ignores it — it can never look like feedback.
+          COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM" 2>>"$LOG_FILE" || echo "$COMMENTS_JSON")
+        fi
       fi
     fi
 

@@ -1,7 +1,7 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -330,6 +330,54 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
       out.dispatched.map((d) => d.id),
       ["mobile"],
     );
+  });
+
+  it("captures lane output to a log instead of discarding it", () => {
+    // Regression: stdio was "ignore", so a lane that died on startup was
+    // indistinguishable from one building for 40 minutes — and since the caller
+    // records the SHA key on dispatch, that made the failure permanent and
+    // undiagnosable. Observed live on #463.
+    let seen = null;
+    _setSpawnForTests((lane, opts) => {
+      seen = opts;
+      return { pid: 4242, logPath: "/tmp/beta-lane-mobile.log" };
+    });
+    const out = dispatchLanes({
+      repoRoot: "/repo",
+      diffFiles: "apps/mobile/x.ts",
+      logDir: "/tmp/does-not-matter",
+    });
+    assert.equal(seen.logDir, "/tmp/does-not-matter", "logDir must reach the spawner");
+    assert.equal(out.dispatched[0].pid, 4242);
+    assert.equal(out.dispatched[0].logPath, "/tmp/beta-lane-mobile.log");
+  });
+
+  it("survives a lane that cannot start at all, and records why", async () => {
+    // spawn() reports "couldn't start" via an ASYNC 'error' event; unhandled, it
+    // rethrows and takes the dispatcher down mid-loop, so one unlaunchable lane
+    // would abort the other and the caller would see a crash, not a skip.
+    // Uses the REAL spawner against a command that cannot resolve.
+    const dir = mkdtempSync(join(tmpdir(), "drafto-lanelog-"));
+    try {
+      const out = dispatchLanes({
+        repoRoot: "/definitely/not/a/real/root",
+        platforms: { mobile: true },
+        logDir: dir,
+      });
+      assert.equal(out.dispatched.length, 1, "dispatcher must survive");
+      await new Promise((r) => setTimeout(r, 300));
+      const log = readFileSync(out.dispatched[0].logPath, "utf8");
+      assert.match(log, /failed to start/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("omits pid/logPath under dryRun (nothing was spawned)", () => {
+    _setSpawnForTests(() => ({ pid: 1, logPath: "/x" }));
+    const out = dispatchLanes({ diffFiles: "apps/mobile/x.ts", dryRun: true });
+    assert.equal(out.dispatched[0].pid, undefined);
+    assert.equal(out.dispatched[0].logPath, undefined);
   });
 
   it("injects laneEnv into the spawned lane (pre-merge build identification)", () => {
