@@ -1,8 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { readFileSync, mkdtempSync, writeFileSync, rmSync, utimesSync } from "node:fs";
+import { dirname, resolve, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 // Tests for the In Review → In Test hand-off: the stage that writes the human
@@ -425,12 +426,38 @@ describe("ensure_beta_build_root — working-tree safety", () => {
 describe("intest_dispatch_betas — idempotency and reporting", () => {
   const body = fnBody("intest_dispatch_betas");
 
-  it("keys idempotency on the head SHA, not a monotonic marker", () => {
+  it("keys idempotency PER LANE on the head SHA, not a monotonic marker", () => {
+    // A single shared SHA used to suppress every lane: mobile succeeding hid a
+    // desktop failure completely. `intestBetaLanes` is now the set of lanes
+    // confirmed started for `intestBetaSha`, and only those are suppressed.
     assert.match(body, /intestBetaSha/);
-    assert.match(body, /"\$prior_sha" == "\$sha"/);
-    assert.match(body, /beta already dispatched for/);
+    assert.match(body, /intestBetaLanes/);
+    assert.match(body, /"\$prior_sha" == "\$sha"\s*\]\]\s*\|\|\s*prior_lanes=""/);
+    assert.match(body, /already dispatched for/);
     // A marker would suppress forever and break the In Test iteration loop.
     assert.ok(!body.includes("issue_has_marker"), "must not gate on a monotonic marker");
+  });
+
+  it("re-dispatches only the lanes missing from the confirmed set", () => {
+    assert.match(body, /to_dispatch="\$\{to_dispatch:\+\$to_dispatch,\}\$want"/);
+    assert.match(body, /re-dispatching only the missing lane\(s\)/);
+    assert.match(body, /--only "\$lanes"/);
+  });
+
+  it("records ONLY lanes whose start was confirmed, and unions with prior", () => {
+    // .dispatched is confirmed-started; .failed never suppresses a retry.
+    assert.match(body, /\.dispatched\[\]\?\.id/);
+    assert.match(body, /\[\.failed\[\]\?\.id\]/);
+    assert.match(body, /merged_lanes=/);
+    assert.match(body, /sort -u/);
+  });
+
+  it("records no SHA at all when nothing started, leaving the retry armed", () => {
+    assert.match(body, /started no lanes for #\$issue_num; leaving retry armed/);
+    // The state writes must sit inside the `dispatched non-empty` branch.
+    const elseIdx = body.indexOf("leaving retry armed");
+    const shaWrite = body.indexOf('intestBetaSha "$sha"');
+    assert.ok(shaWrite !== -1 && shaWrite < elseIdx, "the SHA write must be in the success branch");
   });
 
   it("records what it dispatched, for triage", () => {
@@ -484,6 +511,159 @@ describe("intest_dispatch_betas — idempotency and reporting", () => {
   });
 });
 
+describe("intest_check_lane_outcomes (extracted, real bash)", () => {
+  // Runs the REAL function against a temp log dir and a temp state file, so the
+  // .exit-file contract is exercised rather than pattern-matched.
+  const run = ({
+    exitContent,
+    lanes = "mobile",
+    sha = "abc123",
+    stateSha = "abc123",
+    dryRun = 0,
+    logAgeMin = 0,
+  }) => {
+    const dir = mkdtempSync(join(tmpdir(), "drafto-outcome-"));
+    const stateFile = join(dir, "state.json");
+    writeFileSync(
+      stateFile,
+      JSON.stringify({ issues: { 463: { intestBetaSha: stateSha, intestBetaLanes: lanes } } }),
+    );
+    const base = join(dir, `beta-lane-mobile-463-${sha.slice(0, 12)}.log`);
+    writeFileSync(base, "build output\n");
+    if (logAgeMin > 0) {
+      const old = new Date(Date.now() - logAgeMin * 60_000);
+      utimesSync(base, old, old);
+    }
+    if (exitContent !== undefined) writeFileSync(`${base}.exit`, exitContent);
+    const snippet = `
+set -uo pipefail
+eval "$(awk '/^intest_check_lane_outcomes\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
+log() { echo "[log] $*"; }
+issue_has_marker() { return 1; }
+SCRIPT_DIR="${resolve(HERE, "..", "lib")}/.."
+STATE_FILE=${JSON.stringify(stateFile)}
+LOG_DIR=${JSON.stringify(dir)}
+LOG_FILE=/dev/null
+FACTORY_LANE_STALE_MIN=120
+DRY_RUN=${dryRun}
+intest_check_lane_outcomes 463 ${JSON.stringify(sha)} 591
+cat "$STATE_FILE"
+`;
+    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+    const out = { status: r.status, stdout: r.stdout, stderr: r.stderr, dir, stateFile };
+    return out;
+  };
+
+  it("leaves a still-building lane alone (no .exit yet)", () => {
+    const r = run({ exitContent: undefined });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!/re-arming/.test(r.stdout), "a lane with no .exit must not be re-armed");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("leaves a succeeded lane suppressed (.exit = 0)", () => {
+    const r = run({ exitContent: "0\n" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!/re-arming/.test(r.stdout), "exit 0 must stay suppressed");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("re-arms a failed lane (.exit non-zero)", () => {
+    const r = run({ exitContent: "70\n" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /beta lane 'mobile' exited 70/);
+    assert.match(r.stdout, /re-arming a retry/);
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("ACTUALLY WRITES the re-armed lane set when not dry-running", () => {
+    // The other cases run DRY_RUN=1, which short-circuits the state write —
+    // so without this the re-arm itself had zero coverage.
+    const r = run({ exitContent: "1\n", lanes: "mobile,desktop", dryRun: 0 });
+    assert.equal(r.status, 0, r.stderr);
+    const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
+    assert.equal(
+      state.issues["463"].intestBetaLanes,
+      "desktop",
+      "the failed lane must be dropped and the healthy sibling kept",
+    );
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("declares a lane dead when its log went silent and no .exit ever arrived", () => {
+    // A wrapper killed by SIGKILL/reboot never writes .exit; without a staleness
+    // timeout the lane is suppressed forever.
+    const r = run({ exitContent: undefined, logAgeMin: 500, dryRun: 0 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /never recorded an exit code/);
+    const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
+    // state-cli normalises an empty value to null.
+    assert.ok(
+      !state.issues["463"].intestBetaLanes,
+      "a dead lane must be re-armed (lane set cleared)",
+    );
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("treats an unreadable .exit as a failure, not a success", () => {
+    const r = run({ exitContent: "not-a-number\n", dryRun: 0 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /unreadable/);
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("reads only ITS OWN dispatch's outcome, not another card's", () => {
+    // The path is scoped by issue+sha. A stray file for a different commit must
+    // be invisible — previously every dispatch shared beta-lane-<id>.log.exit.
+    const r = run({ exitContent: undefined, dryRun: 0 });
+    writeFileSync(join(r.dir, "beta-lane-mobile.log.exit"), "1\n");
+    writeFileSync(join(r.dir, "beta-lane-mobile-999-deadbeef1234.log.exit"), "1\n");
+    const r2 = run({ exitContent: undefined, dryRun: 0 });
+    assert.ok(!/re-arming/.test(r2.stdout), "another dispatch's .exit must not be read");
+    rmSync(r.dir, { recursive: true, force: true });
+    rmSync(r2.dir, { recursive: true, force: true });
+  });
+
+  it("ignores outcomes recorded for a different commit", () => {
+    // A .exit from an older SHA must not re-arm the current one.
+    const r = run({ exitContent: "1\n", sha: "newsha", stateSha: "oldsha" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!/re-arming/.test(r.stdout), "a stale SHA's outcome must be ignored");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("tolerates a garbage .exit file without crashing", () => {
+    const r = run({ exitContent: "not-a-number\n" });
+    assert.equal(r.status, 0, r.stderr);
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+});
+
+describe("intest_check_lane_outcomes — wiring and reporting", () => {
+  const body = fnBody("intest_check_lane_outcomes");
+
+  it("runs BEFORE the dispatch decision in the sweep", () => {
+    const checkIdx = sweepBlock.indexOf("intest_check_lane_outcomes");
+    const dispatchIdx = sweepBlock.indexOf("intest_dispatch_betas");
+    assert.ok(checkIdx !== -1, "the sweep must check outcomes");
+    assert.ok(
+      checkIdx < dispatchIdx,
+      "outcomes must be learned before deciding what to dispatch, or the re-arm lands a tick late",
+    );
+  });
+
+  it("posts a marker-guarded failure comment naming the log", () => {
+    assert.match(body, /drafto-factory-beta-failed:\$\{lane\}:\$\{sha:0:12\}/);
+    assert.match(body, /issue_has_marker/);
+    assert.match(body, /beta-lane-\$\{lane\}-\$\{issue_num\}-\$\{sha:0:12\}\.log/);
+  });
+
+  it("writes nothing under --dry-run", () => {
+    assert.match(body, /DRY_RUN" -eq 0 \]\][\s\S]{0,20}issue_has_marker/);
+    assert.match(body, /changed" -eq 1 && "\$DRY_RUN" -eq 0/);
+  });
+});
+
 describe("pre-merge beta knobs", () => {
   it("defaults both knobs off", () => {
     assert.match(script, /FACTORY_INTEST_BETA="\$\{FACTORY_INTEST_BETA:-0\}"/);
@@ -531,14 +711,19 @@ describe("pre-merge beta knobs", () => {
 });
 
 describe("logerr", () => {
-  it("writes only to stderr — log() tees into $LOG_FILE and callers redirect there too", () => {
+  it("writes to $LOG_FILE only — never via log(), never to bare stderr", () => {
+    // log() tees to stdout, which corrupted values the caller captures. Bare
+    // stderr was double-logged where the caller redirects it into $LOG_FILE and
+    // LOST entirely where it doesn't — --release's ensure_beta_build_root call
+    // had no redirect, so those lines vanished from the factory log.
     const m = script.match(/^logerr\(\) \{.*$/m);
     assert.ok(m, "logerr not found");
     assert.ok(
       !/\blog\b/.test(m[0]),
       "logerr must not route through log() — that double-writes the file",
     );
-    assert.match(m[0], />&2/);
+    assert.match(m[0], />>"\$LOG_FILE"/);
+    assert.ok(!/>&2/.test(m[0]), "bare stderr loses messages at non-redirecting call sites");
   });
 });
 

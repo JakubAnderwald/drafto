@@ -85,6 +85,22 @@ deterministic platform-aware comment, and none of them bumps the retry budget �
 this stage is commentary, not code, and a green card must not be marched toward
 Blocked because a comment couldn't be written.
 
+## Revision (2026-08-06, after the first live runs)
+
+The first real runs on #463 exposed one mistake repeated across the dispatch path: **it recorded success for work it had not confirmed, and keyed retries off that record.** Three instances, all now closed:
+
+- A dispatch blocked by a transient condition was never retried, because dispatch was nested inside the scenario hand-off and the scenario's SHA had already been recorded. Freeing disk changed nothing. **Dispatch and scenario are now evaluated independently, each on its own key.**
+- A lane's output was discarded, so a lane that died on startup looked identical to one building for 40 minutes. **Lanes now write to `logs/factory/beta-lane-<id>.log`.**
+- The dispatcher returned before the OS could report a failed start, so an unstartable lane still counted as dispatched. **`dispatchLanes` is now async and returns `failed[]` separately; only a confirmed start suppresses a retry.**
+
+Two further properties follow from the same principle:
+
+- **Retry state is per lane.** `intestBetaLanes` is the set of lanes _confirmed started_ for `intestBetaSha`; a healthy sibling no longer hides a failed lane. Previously a mobile success suppressed a desktop retry entirely.
+- **Lane artefacts are scoped per dispatch** (`beta-lane-<lane>-<issue>-<sha12>.log`). Keying them on the lane alone let a re-dispatch after a new commit read the still-running previous lane's exit code as its own, let two In Test cards clobber each other, and let the post-merge `--release` lane write the very file a pre-merge card was waiting on.
+- **Outcomes are tracked, not assumed.** Each lane's shell wrapper writes its exit code to `<log>.exit`; the sweep reads it and, on a non-zero code, drops the lane from the confirmed set (re-arming a retry) and says so on the issue once. Without this, a lane that fails at minute 20 is indistinguishable from one that shipped — which is exactly how #463's iOS lane failed on an Apple `HTTP 500` with nobody told. A wrapper killed outright never writes the file at all, so a lane whose log has been silent for `FACTORY_LANE_STALE_MIN` is declared dead rather than suppressed forever. Retries are deliberately uncapped — a transient store outage should keep being retried — at the cost of a deterministically-broken lane rebuilding quietly until an operator intervenes.
+
+Also settled: **the clonefile fossil replica is validated.** macOS build 48 was built from `/Users/jakub/code/drafto-beta-desktop`, uploaded to TestFlight, installed, and opens a note — the runtime proof this ADR said a green compile could not provide. `apps/desktop/scripts/verify-testflight-build.sh` is now in the repo and launches the app rather than only inspecting its bundle, so the hard-crash case is caught automatically; a blank screen still needs a human, and the script says so.
+
 ## Consequences
 
 - **Positive**: the In Test gate is usable for native changes for the first time.

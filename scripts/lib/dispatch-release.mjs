@@ -29,12 +29,14 @@
 //        see the fossil rule below.
 //   assertDesktopFossil(root)
 //        Throws unless <root>/node_modules/react is 19.1.x.
-//   dispatchLanes({repoRoot, desktopRoot, diffFiles|platforms, dryRun})
-//        → {dispatched[], skipped[], platforms}
-//        Derive → assert → spawn each lane detached. dryRun records without
-//        spawning. Returns the dispatched lane descriptors (JSON-serialisable);
-//        a lane that fails its guard lands in skipped[] and never suppresses the
-//        other lane.
+//   dispatchLanes({repoRoot, desktopRoot, diffFiles|platforms, dryRun, only})
+//        → {dispatched[], failed[], skipped[], platforms}   (ASYNC)
+//        Derive → assert → spawn each lane detached, resolving only once the OS
+//        confirms the process started. dryRun records without spawning.
+//        dispatched[] = confirmed started (carries pid, logPath, exitPath);
+//        failed[] = could not start (must not suppress a retry);
+//        skipped[] = a guard refused it. `only` restricts to a subset of lane
+//        ids so a caller can re-dispatch just the missing ones.
 //
 // ⚠️  THE DESKTOP FOSSIL. react-native-macos@0.81 needs React 19.1.x, but the
 // monorepo declares 19.2.x (mobile needs it; React must be one instance). A
@@ -55,7 +57,7 @@
 // exit non-zero — same shape as factory-project.mjs / state-cli.mjs.
 
 import { spawn } from "node:child_process";
-import { readFileSync, mkdirSync, openSync, appendFileSync } from "node:fs";
+import { readFileSync, mkdirSync, openSync, appendFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isMainModule } from "./is-main.mjs";
@@ -165,61 +167,120 @@ export function assertDesktopFossil(root, { readFile = readFileSync } = {}) {
   return version;
 }
 
-// Spawn a lane detached so a ~20-min Fastlane build never blocks the tick. The
-// child inherits the factory's env (Phase-D prereq: MATCH_PASSWORD / ASC keys /
-// keystore must be present in the Mac-mini launchd env — see the runbook).
 // Where a lane's combined stdout/stderr goes. Overridable so tests don't write
 // into the repo. Falls back to the system temp dir if the log dir is unusable —
 // losing the log is bad, but failing the dispatch over it is worse.
-function laneLogPath(lane, { logDir } = {}) {
+// `logKey` scopes the file to ONE dispatch. Keying on lane.id alone made every
+// dispatch of a platform share one path, so: a re-dispatch after a new commit
+// read the still-running old lane's exit code as its own; two In Test cards in
+// the same tick clobbered each other; and the post-merge --release lane wrote
+// the very file a pre-merge card was waiting on. Callers pass
+// `<issue>-<sha12>` (pre-merge) or `release-<sha12>` (post-merge).
+export function laneLogPath(lane, { logDir, logKey } = {}) {
   const dir = logDir || join(process.cwd(), "logs", "factory");
+  const suffix = logKey ? `-${String(logKey).replace(/[^A-Za-z0-9._-]/g, "_")}` : "";
+  const name = `beta-lane-${lane.id}${suffix}.log`;
   try {
     mkdirSync(dir, { recursive: true });
-    return join(dir, `beta-lane-${lane.id}.log`);
+    return join(dir, name);
   } catch {
-    return join(tmpdir(), `drafto-beta-lane-${lane.id}.log`);
+    return join(tmpdir(), `drafto-${name}`);
   }
 }
 
-// Spawn a lane detached so a ~20-40 min Fastlane build never blocks the tick.
+// Single-quote a string for `sh -c`. The lane command is built in code (never
+// from user input), but the log path comes from a caller-supplied directory.
+function shQuote(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+// Pure: the `sh -c` script for a lane. The lane's own exit code is written to
+// <logPath>.exit the moment it finishes.
 //
-// Output goes to a per-lane log file, NOT `stdio: "ignore"`. It was ignored
-// originally, which made a lane that died on startup indistinguishable from one
-// running for 40 minutes: the caller recorded a successful dispatch, the SHA
-// key then suppressed every retry, and there was no output anywhere to say why.
-// Observed on #463 — the lane vanished and the only evidence was the absence of
-// a process. A log file is the difference between "diagnosable" and "gone".
-function realSpawnDetached(lane, { repoRoot, laneEnv, logDir }) {
-  const logPath = laneLogPath(lane, { logDir });
+// Why a shell wrapper rather than an 'exit' listener: the dispatcher exits
+// within milliseconds of spawning, and the lane runs detached for 20-40 minutes
+// after that — there is no parent left to observe the exit. Without this file,
+// a lane that fails at minute 20 is indistinguishable from one that succeeded,
+// which is exactly how #463's iOS lane failed silently on an Apple HTTP 500.
+export function laneShellScript(lane, logPath) {
+  const cmd = [lane.command, ...(lane.args ?? [])].join(" ");
+  return `${cmd}; echo $? > ${shQuote(`${logPath}.exit`)}`;
+}
+
+// Spawn a lane detached so a ~20-40 min Fastlane build never blocks the tick,
+// and RESOLVE ONLY once the OS confirms the process actually started.
+//
+// Two failure modes this closes, both observed on #463:
+//   - Output was `stdio: "ignore"`, so a lane that died on startup looked
+//     identical to one building for 40 minutes.
+//   - The function returned before the async 'error' event could fire, so an
+//     unstartable lane was still reported as dispatched — and since the caller
+//     records a retry-suppressing SHA off that report, the failure became
+//     permanent.
+// Now: 'spawn' → {ok:true}; 'error' → {ok:false, reason}. The caller can tell
+// the difference, and only a confirmed start suppresses a retry.
+async function realSpawnDetached(lane, { repoRoot, laneEnv, logDir, logKey }) {
+  const logPath = laneLogPath(lane, { logDir, logKey });
+  const exitPath = `${logPath}.exit`;
+  // A stale .exit from a previous run would be read as this run's outcome.
+  try {
+    rmSync(exitPath, { force: true });
+  } catch {
+    // Best-effort. With logKey scoping the path to this dispatch there is no
+    // other writer, so a leftover file here would have to be our own from a
+    // retry of the same commit — which this rm is exactly what clears.
+  }
   let out;
   try {
     out = openSync(logPath, "a");
   } catch {
     out = "ignore";
   }
-  const child = spawn(lane.command, lane.args, {
+  const child = spawn("sh", ["-c", laneShellScript(lane, logPath)], {
     cwd: join(repoRoot, lane.cwd),
     detached: true,
     stdio: ["ignore", out, out],
     env: { ...process.env, ...(laneEnv ?? {}) },
   });
-  // spawn() reports "couldn't start at all" (missing binary, bad cwd) via an
-  // ASYNC 'error' event. With no listener Node rethrows it and takes the whole
-  // dispatcher down mid-loop — so one unlaunchable lane would abort the other
-  // one too, and the caller would see a crash rather than a skipped lane.
-  // Record it into the lane log instead; the process stays alive.
+
+  const outcome = await new Promise((resolve) => {
+    child.once("spawn", () => resolve({ ok: true }));
+    child.once("error", (err) => resolve({ ok: false, reason: err.message }));
+  });
+
+  // Keep a listener attached for the rest of the child's life: an 'error' after
+  // a successful spawn would otherwise be rethrown and kill the dispatcher.
   child.on("error", (err) => {
     try {
-      appendFileSync(logPath, `lane ${lane.id} failed to start: ${err.message}\n`);
+      appendFileSync(logPath, `lane ${lane.id} error after start: ${err.message}\n`);
     } catch {
-      process.stderr.write(`lane ${lane.id} failed to start: ${err.message}\n`);
+      process.stderr.write(`lane ${lane.id} error after start: ${err.message}\n`);
     }
   });
+
+  if (!outcome.ok) {
+    try {
+      appendFileSync(logPath, `lane ${lane.id} failed to start: ${outcome.reason}\n`);
+    } catch {
+      process.stderr.write(`lane ${lane.id} failed to start: ${outcome.reason}\n`);
+    }
+    return { ok: false, reason: outcome.reason, logPath };
+  }
   child.unref();
-  return { pid: child.pid, logPath };
+  return { ok: true, pid: child.pid, logPath, exitPath };
 }
 
-export function dispatchLanes({
+// Async because a lane is only counted as dispatched once the OS confirms it
+// started. Returns three disjoint buckets:
+//
+//   dispatched — 'spawn' fired; the process exists and its exit code will land
+//                in <logPath>.exit
+//   failed     — the lane could not start at all; it must NOT suppress a retry
+//   skipped    — a guard refused it before any spawn (fossil assertion)
+//
+// `only` restricts the run to a subset of lane ids, so a caller can re-dispatch
+// just the lanes that are missing rather than re-running a successful one.
+export async function dispatchLanes({
   repoRoot = DEFAULT_REPO_ROOT,
   desktopRoot,
   diffFiles,
@@ -228,11 +289,15 @@ export function dispatchLanes({
   env,
   laneEnv,
   logDir,
+  logKey,
+  only,
 } = {}) {
   const plats = platforms ?? derivePlatforms(diffFiles);
-  const lanes = platformsToLanes(plats);
+  const onlySet = only ? new Set(only) : null;
+  const lanes = platformsToLanes(plats).filter((l) => !onlySet || onlySet.has(l.id));
   const spawnFn = _spawnForTests ?? realSpawnDetached;
   const dispatched = [];
+  const failed = [];
   const skipped = [];
   for (const lane of lanes) {
     assertBetaOnly(lane);
@@ -247,19 +312,33 @@ export function dispatchLanes({
         continue;
       }
     }
-    const spawned = dryRun ? null : spawnFn(lane, { repoRoot: laneRoot, laneEnv, logDir });
+    const spawned = dryRun
+      ? null
+      : await spawnFn(lane, { repoRoot: laneRoot, laneEnv, logDir, logKey });
+    // A spawn helper that reports {ok:false} did not start the lane. Anything
+    // else — including a legacy test mock returning nothing — counts as started.
+    if (spawned && spawned.ok === false) {
+      failed.push({
+        id: lane.id,
+        root: laneRoot,
+        reason: spawned.reason ?? "failed to start",
+        ...(spawned.logPath ? { logPath: spawned.logPath } : {}),
+      });
+      continue;
+    }
     dispatched.push({
       id: lane.id,
       cwd: lane.cwd,
       root: laneRoot,
       command: `${lane.command} ${lane.args.join(" ")}`,
       // Present when the spawn helper reports them — the log path is what makes
-      // a dead lane diagnosable after the fact.
+      // a dead lane diagnosable, and .exit is how its outcome is learned later.
       ...(spawned?.pid ? { pid: spawned.pid } : {}),
       ...(spawned?.logPath ? { logPath: spawned.logPath } : {}),
+      ...(spawned?.exitPath ? { exitPath: spawned.exitPath } : {}),
     });
   }
-  return { dispatched, skipped, platforms: plats };
+  return { dispatched, failed, skipped, platforms: plats };
 }
 
 function readStdin() {
@@ -309,6 +388,8 @@ async function main(argv) {
         diffFiles,
         platforms,
         dryRun,
+        logDir: flags["log-dir"],
+        logKey: flags["log-key"],
       });
     }
     // Pre-merge dispatch from an In Test card's PR head. Same lanes and the same
@@ -327,6 +408,13 @@ async function main(argv) {
         platforms,
         dryRun,
         logDir: flags["log-dir"],
+        logKey: flags["log-key"],
+        only: flags.only
+          ? flags.only
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : undefined,
         laneEnv: {
           DRAFTO_INTEST_ISSUE: String(issue),
           DRAFTO_INTEST_PR: String(flags.pr ?? ""),

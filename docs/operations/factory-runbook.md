@@ -166,19 +166,48 @@ bash scripts/worktree-bootstrap.sh
 cd apps/desktop && pnpm release:beta        # ← NEVER `pnpm install` in this tree
 ```
 
-Then install that TestFlight build and **open a note**. Confirm `git -C /Users/jakub/code/drafto status --porcelain` is unchanged before and after. Only then add the knob to the plist and reload.
+Then install that TestFlight build and run the verifier, which now launches the app rather than only inspecting its bundle:
+
+```bash
+apps/desktop/scripts/verify-testflight-build.sh <email> <password>
+```
+
+Test 6 is the fossil check: it opens the app, requires it to survive 15 s, and fails on any new crash report. Everything before it passes on a build that dies instantly, because the "login" test is a `curl` against Supabase rather than the app signing in.
+
+**It still cannot prove the app renders** — a blank window is a healthy process — so finish by opening the app and **opening a note** yourself. Confirm `git -C /Users/jakub/code/drafto status --porcelain` is unchanged before and after. Only then add the knob to the plist and reload.
+
+> Validated on **2026-08-06**: macOS build 48, built from `drafto-beta-desktop`, installs and opens a note. The replica is proven.
 
 **Identifying a pre-merge build.** Release notes begin `PRE-MERGE TEST BUILD — issue #N / PR #M (sha)` (prepended before the char trim, so it survives Play's 500-char cap), and the Fastlane post-hook `comment-intest-build.mjs` posts the build number on the card when the lane lands.
 
 **Triage.**
 
 ```bash
-node scripts/lib/state-cli.mjs factory:get-issue <n>     # intestBetaSha / intestBetaAt / intestBetaLanes
+node scripts/lib/state-cli.mjs factory:get-issue <n>     # intestBetaSha  = commit the lanes were dispatched for
+                                                         # intestBetaLanes = lanes CONFIRMED STARTED for it
                                                          # intestCommentSha = scenario's SHA
-node scripts/lib/state-cli.mjs factory:set-issue-field <n> intestBetaSha ""   # force a re-dispatch
+# Lane logs are scoped per dispatch: beta-lane-<lane>-<issue>-<sha12>.log
+tail -f logs/factory/beta-lane-mobile-463-b243d8196fa2.log        # what it's doing
+cat  logs/factory/beta-lane-mobile-463-b243d8196fa2.log.exit      # its exit code, once done
 ```
 
-Dispatch is idempotent per head SHA (no 5-minute re-fire) but re-arms on new commits, so an In Test → feedback → In Test round trip produces a fresh build. Lanes are skipped — with the reason reported in the In Test comment — when a knob is off, the phase is B, free disk is below `FACTORY_MIN_FREE_DISK_GB`, a build root can't be prepared, or the fossil assertion fails.
+**Dispatch is idempotent per lane, not per card.** `intestBetaLanes` holds only the lanes whose process the OS confirmed started for `intestBetaSha`. Each tick re-dispatches whatever is missing from that set, so a lane that was gated off (low disk, knob off), that failed to start, or that has since failed is picked up automatically — while a healthy sibling is left alone. A new commit invalidates the whole set.
+
+**A failed lane re-arms itself.** Every lane's shell wrapper writes its exit code to `<log>.exit`. Before deciding what to dispatch, the sweep reads it:
+
+| `<log>.exit` | meaning        | what happens                                                                                                                             |
+| ------------ | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| absent       | still building | left alone                                                                                                                               |
+| `0`          | succeeded      | stays suppressed                                                                                                                         |
+| non-zero     | failed         | dropped from `intestBetaLanes`, retried next tick, and reported once on the issue (`<!-- drafto-factory-beta-failed:<lane>:<sha12> -->`) |
+
+So a build that dies at minute 20 — an expired cert, an Apple 5xx — no longer needs a manual state clear. If you _do_ want to force everything to rebuild:
+
+```bash
+node scripts/lib/state-cli.mjs factory:set-issue-field <n> intestBetaLanes ""   # re-dispatch every lane
+```
+
+Lanes are still skipped up front — with the reason in the In Test comment — when a knob is off, the phase is B, free disk is below `FACTORY_MIN_FREE_DISK_GB`, a build root can't be prepared, or the fossil assertion fails.
 
 ## Kill switches
 

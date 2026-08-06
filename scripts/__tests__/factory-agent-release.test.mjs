@@ -286,11 +286,16 @@ describe("Phase-D beta dispatch (gap 1)", () => {
     assert.match(releaseBlock, /macOS beta skipped/);
   });
 
+  it("surfaces lanes that could not START, not just guard-refused ones", () => {
+    // dispatchLanes now separates `failed` (could not start) from `skipped`
+    // (a guard refused it). Reporting only `skipped` would let a post-merge
+    // lane vanish silently — the exact bug family this change set closes.
+    assert.match(releaseBlock, /\(\.skipped\[\]\?, \.failed\[\]\?\) \| \.id/);
+    assert.match(releaseBlock, /\(\.skipped\[\]\?, \.failed\[\]\?\) \| \.reason/);
+  });
+
   it("surfaces refused lanes in the released comment rather than dropping them", () => {
-    assert.match(
-      releaseBlock,
-      /SKIPPED_LANES=\$\(echo "\$DISPATCH_JSON" \| jq -r '\[\.skipped\[\]\?\.id\]/,
-    );
+    assert.match(releaseBlock, /SKIPPED_LANES=\$\(echo "\$DISPATCH_JSON" \| jq -r/);
     assert.match(releaseBlock, /DESKTOP_SKIP_NOTE/);
   });
 

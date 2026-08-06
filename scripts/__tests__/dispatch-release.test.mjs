@@ -1,7 +1,7 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,7 @@ import {
   assertBetaOnly,
   resolveLaneRoot,
   assertDesktopFossil,
+  laneShellScript,
   dispatchLanes,
   DESKTOP_FOSSIL_ROOT_DEFAULT,
   _setSpawnForTests,
@@ -240,10 +241,10 @@ describe("assertDesktopFossil", () => {
 });
 
 describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
-  it("spawns the mobile lane in apps/mobile under repoRoot", () => {
+  it("spawns the mobile lane in apps/mobile under repoRoot", async () => {
     const calls = [];
     _setSpawnForTests((lane, opts) => calls.push({ lane, opts }));
-    const out = dispatchLanes({ repoRoot: "/repo", diffFiles: "apps/mobile/x.ts" });
+    const out = await dispatchLanes({ repoRoot: "/repo", diffFiles: "apps/mobile/x.ts" });
     assert.equal(calls.length, 1);
     assert.equal(calls[0].lane.id, "mobile");
     assert.deepEqual(calls[0].lane.args, ["release:beta:all"]);
@@ -254,12 +255,12 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
     );
   });
 
-  it("dispatches both native lanes for packages/shared changes", () => {
+  it("dispatches both native lanes for packages/shared changes", async () => {
     const fossil = fakeCheckout("19.1.4");
     try {
       const calls = [];
       _setSpawnForTests((lane) => calls.push(lane.id));
-      const out = dispatchLanes({
+      const out = await dispatchLanes({
         repoRoot: ".",
         desktopRoot: fossil,
         diffFiles: "packages/shared/x.ts",
@@ -272,12 +273,12 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
     }
   });
 
-  it("builds desktop from the fossil root, mobile from repoRoot", () => {
+  it("builds desktop from the fossil root, mobile from repoRoot", async () => {
     const fossil = fakeCheckout("19.1.4");
     try {
       const roots = {};
       _setSpawnForTests((lane, opts) => (roots[lane.id] = opts.repoRoot));
-      dispatchLanes({
+      await dispatchLanes({
         repoRoot: "/factory-checkout",
         desktopRoot: fossil,
         diffFiles: "packages/shared/x.ts",
@@ -289,12 +290,12 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
     }
   });
 
-  it("skips only the desktop lane when its root lost the fossil", () => {
+  it("skips only the desktop lane when its root lost the fossil", async () => {
     const stale = fakeCheckout("19.2.6");
     try {
       const calls = [];
       _setSpawnForTests((lane) => calls.push(lane.id));
-      const out = dispatchLanes({
+      const out = await dispatchLanes({
         repoRoot: "/repo",
         desktopRoot: stale,
         diffFiles: "packages/shared/x.ts",
@@ -313,18 +314,18 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
     }
   });
 
-  it("dispatches nothing for a web-only change", () => {
+  it("dispatches nothing for a web-only change", async () => {
     const calls = [];
     _setSpawnForTests(() => calls.push(1));
-    const out = dispatchLanes({ diffFiles: "apps/web/x.ts" });
+    const out = await dispatchLanes({ diffFiles: "apps/web/x.ts" });
     assert.equal(calls.length, 0);
     assert.deepEqual(out.dispatched, []);
   });
 
-  it("dryRun records the lanes without spawning", () => {
+  it("dryRun records the lanes without spawning", async () => {
     const calls = [];
     _setSpawnForTests(() => calls.push(1));
-    const out = dispatchLanes({ diffFiles: "apps/mobile/x.ts", dryRun: true });
+    const out = await dispatchLanes({ diffFiles: "apps/mobile/x.ts", dryRun: true });
     assert.equal(calls.length, 0);
     assert.deepEqual(
       out.dispatched.map((d) => d.id),
@@ -332,7 +333,7 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
     );
   });
 
-  it("captures lane output to a log instead of discarding it", () => {
+  it("captures lane output to a log instead of discarding it", async () => {
     // Regression: stdio was "ignore", so a lane that died on startup was
     // indistinguishable from one building for 40 minutes — and since the caller
     // records the SHA key on dispatch, that made the failure permanent and
@@ -342,7 +343,7 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
       seen = opts;
       return { pid: 4242, logPath: "/tmp/beta-lane-mobile.log" };
     });
-    const out = dispatchLanes({
+    const out = await dispatchLanes({
       repoRoot: "/repo",
       diffFiles: "apps/mobile/x.ts",
       logDir: "/tmp/does-not-matter",
@@ -352,38 +353,89 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
     assert.equal(out.dispatched[0].logPath, "/tmp/beta-lane-mobile.log");
   });
 
-  it("survives a lane that cannot start at all, and records why", async () => {
-    // spawn() reports "couldn't start" via an ASYNC 'error' event; unhandled, it
-    // rethrows and takes the dispatcher down mid-loop, so one unlaunchable lane
-    // would abort the other and the caller would see a crash, not a skip.
-    // Uses the REAL spawner against a command that cannot resolve.
+  it("reports an unstartable lane as failed, NOT dispatched", async () => {
+    // The whole point: `dispatched` is what suppresses a retry, so a lane that
+    // never started must not appear there. Previously it did — the function
+    // returned before the async 'error' could fire — which made the failure
+    // permanent. Uses the REAL spawner against a cwd that cannot resolve.
     const dir = mkdtempSync(join(tmpdir(), "drafto-lanelog-"));
     try {
-      const out = dispatchLanes({
+      const out = await dispatchLanes({
         repoRoot: "/definitely/not/a/real/root",
         platforms: { mobile: true },
         logDir: dir,
       });
-      assert.equal(out.dispatched.length, 1, "dispatcher must survive");
-      await new Promise((r) => setTimeout(r, 300));
-      const log = readFileSync(out.dispatched[0].logPath, "utf8");
+      assert.deepEqual(out.dispatched, [], "an unstartable lane must not count as dispatched");
+      assert.equal(out.failed.length, 1, "it must be reported as failed");
+      assert.equal(out.failed[0].id, "mobile");
+      assert.match(out.failed[0].reason, /ENOENT|spawn/i);
+      // The reason must also reach the lane log. Poll rather than sleep — a
+      // fixed delay can lose the race on a loaded CI worker.
+      const logPath = out.failed[0].logPath;
+      const deadline = Date.now() + 5000;
+      let log = "";
+      while (Date.now() < deadline) {
+        log = readFileSync(logPath, "utf8");
+        if (/failed to start/.test(log)) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
       assert.match(log, /failed to start/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("omits pid/logPath under dryRun (nothing was spawned)", () => {
+  it("records a lane's real exit code next to its log", async () => {
+    // A lane runs detached long after the dispatcher exits, so its outcome can
+    // only be learned from a file it writes itself.
+    const dir = mkdtempSync(join(tmpdir(), "drafto-laneexit-"));
+    try {
+      _setSpawnForTests(null);
+      const out = await dispatchLanes({
+        repoRoot: "/",
+        // A lane whose command exits non-zero immediately.
+        platforms: { mobile: true },
+        logDir: dir,
+      });
+      // `pnpm` is absent under this cwd in CI, present locally — either way the
+      // lane must end up with an outcome recorded somewhere.
+      const started = out.dispatched.length === 1;
+      if (!started) {
+        assert.equal(out.failed.length, 1);
+        return;
+      }
+      const exitPath = out.dispatched[0].exitPath;
+      assert.ok(exitPath, "a started lane must report where its exit code lands");
+      const deadline = Date.now() + 15000;
+      while (Date.now() < deadline && !existsSync(exitPath)) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      assert.ok(existsSync(exitPath), "the lane wrapper must write <log>.exit");
+      assert.match(readFileSync(exitPath, "utf8").trim(), /^\d+$/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("laneShellScript captures $? immediately after the lane command", () => {
+    const script = laneShellScript(
+      { id: "mobile", command: "pnpm", args: ["release:beta:all"] },
+      "/tmp/x.log",
+    );
+    assert.match(script, /^pnpm release:beta:all; echo \$\? > '\/tmp\/x\.log\.exit'$/);
+  });
+
+  it("omits pid/logPath under dryRun (nothing was spawned)", async () => {
     _setSpawnForTests(() => ({ pid: 1, logPath: "/x" }));
-    const out = dispatchLanes({ diffFiles: "apps/mobile/x.ts", dryRun: true });
+    const out = await dispatchLanes({ diffFiles: "apps/mobile/x.ts", dryRun: true });
     assert.equal(out.dispatched[0].pid, undefined);
     assert.equal(out.dispatched[0].logPath, undefined);
   });
 
-  it("injects laneEnv into the spawned lane (pre-merge build identification)", () => {
+  it("injects laneEnv into the spawned lane (pre-merge build identification)", async () => {
     let seen = null;
     _setSpawnForTests((lane, opts) => (seen = opts));
-    dispatchLanes({
+    await dispatchLanes({
       repoRoot: "/repo",
       diffFiles: "apps/mobile/x.ts",
       laneEnv: { DRAFTO_INTEST_ISSUE: "463", DRAFTO_INTEST_PR: "591" },
@@ -392,12 +444,12 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
     assert.equal(seen.laneEnv.DRAFTO_INTEST_PR, "591");
   });
 
-  it("never constructs a production command", () => {
+  it("never constructs a production command", async () => {
     const fossil = fakeCheckout("19.1.4");
     try {
       const cmds = [];
       _setSpawnForTests((lane) => cmds.push(`${lane.command} ${lane.args.join(" ")}`));
-      dispatchLanes({
+      await dispatchLanes({
         desktopRoot: fossil,
         diffFiles: "apps/mobile/x.ts\napps/desktop/y.ts",
       });
