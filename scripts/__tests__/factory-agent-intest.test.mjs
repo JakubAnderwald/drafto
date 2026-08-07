@@ -683,10 +683,28 @@ cat "$STATE_FILE"
     rmSync(r.dir, { recursive: true, force: true });
   });
 
-  it("treats an unreadable .exit as a failure, not a success", () => {
-    const r = run({ exitContent: "not-a-number\n", dryRun: 0 });
+  it("treats an empty or non-numeric .exit as STILL BUILDING, not as a failure", () => {
+    // The wrapper writes the code with `echo $? > file`; a reader can catch it
+    // mid-write. An empty read is not evidence of failure — declaring one would
+    // re-dispatch a healthy build. The staleness timeout still catches a file
+    // that never resolves.
+    for (const content of ["", "not-a-number\n", "\n"]) {
+      const r = run({ exitContent: content, dryRun: 0 });
+      assert.equal(r.status, 0, r.stderr);
+      assert.ok(
+        !/re-arming|giving up/.test(r.stdout),
+        `content ${JSON.stringify(content)} must not be read as a failure`,
+      );
+      const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
+      assert.equal(state.issues["463"].intestBetaLanes, "mobile", "lane stays pending");
+      rmSync(r.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a readable non-zero .exit as a failure", () => {
+    const r = run({ exitContent: "70\n", dryRun: 0 });
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /unreadable/);
+    assert.match(r.stdout, /exited 70/);
     rmSync(r.dir, { recursive: true, force: true });
   });
 

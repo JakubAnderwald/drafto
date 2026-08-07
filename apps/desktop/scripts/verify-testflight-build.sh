@@ -3,16 +3,34 @@
 # Checks that the installed app uses the production Supabase backend
 # and that login works with production credentials.
 #
-# Usage: ./verify-testflight-build.sh <email> <password>
+# Usage: ./verify-testflight-build.sh <email>
+#        (the password is read from $DRAFTO_VERIFY_PASSWORD, or prompted for)
+#
+# This authenticates against PRODUCTION, so it asks before doing so unless
+# DRAFTO_VERIFY_YES=1 is set.
 
 set -euo pipefail
 
 EMAIL="${1:-}"
-PASSWORD="${2:-}"
+# NOT an argv: process arguments are world-readable via `ps` and land in shell
+# history. Env var for automation, silent prompt for humans.
+PASSWORD="${DRAFTO_VERIFY_PASSWORD:-}"
 
-if [[ -z "$EMAIL" || -z "$PASSWORD" ]]; then
-  echo "Usage: $0 <email> <password>"
+if [[ -z "$EMAIL" ]]; then
+  echo "Usage: $0 <email>   (password via \$DRAFTO_VERIFY_PASSWORD or prompt)"
   exit 1
+fi
+if [[ -z "$PASSWORD" ]]; then
+  read -r -s -p "Password for $EMAIL (production): " PASSWORD
+  echo ""
+fi
+if [[ -z "$PASSWORD" ]]; then
+  echo "No password supplied — aborting."
+  exit 1
+fi
+if [[ "${DRAFTO_VERIFY_YES:-}" != "1" ]]; then
+  read -r -p "This will sign in to PRODUCTION as $EMAIL. Continue? [y/N] " REPLY
+  [[ "$REPLY" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
 fi
 
 PROD_URL="https://tbmjbxxseonkciqovnpl.supabase.co"
@@ -72,8 +90,8 @@ fi
 
 # --- Test 3: Production Supabase auth endpoint responds ---
 echo "3. Testing production Supabase auth endpoint..."
-HEALTH=$(curl -s -o /dev/null -w "%{http_code}" "$PROD_URL/auth/v1/health" \
-  -H "apikey: $PROD_ANON_KEY" 2>/dev/null)
+HEALTH=$(curl -s --max-time 15 -o /dev/null -w "%{http_code}" "$PROD_URL/auth/v1/health" \
+  -H "apikey: $PROD_ANON_KEY" 2>/dev/null || echo "000")
 if [[ "$HEALTH" == "200" ]]; then
   check "Production auth endpoint healthy (HTTP $HEALTH)" "pass"
 else
@@ -82,17 +100,27 @@ fi
 
 # --- Test 4: Login with production credentials ---
 echo "4. Testing login with provided credentials..."
-LOGIN_RESPONSE=$(curl -s "$PROD_URL/auth/v1/token?grant_type=password" \
+# Serialise with a real JSON encoder — a quote or backslash in the password
+# would otherwise produce malformed JSON (or worse). The body goes in on stdin
+# via @-, so the password never appears in this process's argv either.
+LOGIN_BODY=$(EMAIL="$EMAIL" PASSWORD="$PASSWORD" python3 -c \
+  'import json,os; print(json.dumps({"email": os.environ["EMAIL"], "password": os.environ["PASSWORD"]}))')
+LOGIN_RESPONSE=$(printf '%s' "$LOGIN_BODY" | curl -s --max-time 20 \
+  "$PROD_URL/auth/v1/token?grant_type=password" \
   -H "apikey: $PROD_ANON_KEY" \
   -H "Content-Type: application/json" \
-  -d "{\"email\": \"$EMAIL\", \"password\": \"$PASSWORD\"}" 2>/dev/null)
+  --data-binary @- 2>/dev/null || echo "")
+unset LOGIN_BODY
 
-if echo "$LOGIN_RESPONSE" | grep -q "access_token"; then
+if [[ -n "$LOGIN_RESPONSE" ]] && printf '%s' "$LOGIN_RESPONSE" | grep -q "access_token"; then
   check "Login succeeded on production backend" "pass"
-  USER_ID=$(echo "$LOGIN_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['user']['id'])" 2>/dev/null || echo "unknown")
+  USER_ID=$(printf '%s' "$LOGIN_RESPONSE" | python3 -c \
+    'import sys,json; print(json.load(sys.stdin)["user"]["id"])' 2>/dev/null || echo "unknown")
   echo "       User ID: $USER_ID"
 else
-  ERROR_MSG=$(echo "$LOGIN_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error_description', json.load(sys.stdin).get('msg', 'unknown')))" 2>/dev/null || echo "$LOGIN_RESPONSE")
+  ERROR_MSG=$(printf '%s' "$LOGIN_RESPONSE" | python3 -c \
+    'import sys,json; d=json.load(sys.stdin); print(d.get("error_description") or d.get("msg") or "unknown")' \
+    2>/dev/null || echo "no/unparseable response")
   check "Login succeeded on production backend (error: $ERROR_MSG)" "fail"
 fi
 
@@ -120,6 +148,24 @@ echo "6. Launching the app (fossil smoke test)..."
 CRASH_DIR="$HOME/Library/Logs/DiagnosticReports"
 CRASHES_BEFORE=$(ls -1 "$CRASH_DIR" 2>/dev/null | grep -c -i "drafto" || true)
 
+# The app must NOT already be running: `open -a` on a running app just focuses
+# it, so every check below would pass against the previous build without the new
+# one ever starting — a false pass of the exact kind this script exists to stop.
+if pgrep -f "$APP_PATH/Contents/MacOS/" >/dev/null 2>&1; then
+  echo "       Drafto is already running — quitting it so this tests the INSTALLED build."
+  osascript -e 'quit app "Drafto"' >/dev/null 2>&1 || true
+  for _ in $(seq 1 10); do
+    pgrep -f "$APP_PATH/Contents/MacOS/" >/dev/null 2>&1 || break
+    sleep 1
+  done
+  if pgrep -f "$APP_PATH/Contents/MacOS/" >/dev/null 2>&1; then
+    check "Drafto could be closed before the launch test" "fail"
+    echo "       Still running — quit it by hand and re-run; test 6 was skipped."
+    LAUNCH_SKIPPED=1
+  fi
+fi
+
+if [[ "${LAUNCH_SKIPPED:-0}" -eq 0 ]]; then
 open -a "$APP_PATH" 2>/dev/null || true
 
 # Wait for the app to appear before judging it. `open -a` returns immediately,
@@ -148,6 +194,7 @@ else
     fi
   done
   check "App still running 15s after launch (did not crash)" "$LAUNCH_OK"
+fi
 fi
 
 CRASHES_AFTER=$(ls -1 "$CRASH_DIR" 2>/dev/null | grep -c -i "drafto" || true)

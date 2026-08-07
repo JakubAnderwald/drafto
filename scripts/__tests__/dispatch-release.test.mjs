@@ -426,6 +426,34 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
     }
   });
 
+  it("rejects a logKey that isn't path-safe rather than silently rewriting it", () => {
+    // bash reconstructs this path from the same inputs, so a sanitising rewrite
+    // (or a tmpdir relocation) would leave it reading a file that never exists.
+    assert.throws(
+      () => laneLogPath({ id: "mobile" }, { logDir: "/tmp/x", logKey: "463-a/../b" }),
+      /unsafe logKey/,
+    );
+    assert.throws(
+      () => laneLogPath({ id: "mobile" }, { logDir: "/tmp/x", logKey: "463 abc" }),
+      /unsafe logKey/,
+    );
+  });
+
+  it("turns an unusable log location into a FAILED lane, never a relocated one", async () => {
+    // A relocated log means the outcome check reads a path that will never
+    // exist — "still building" for ever. Failing retries instead.
+    _setSpawnForTests(null);
+    const out = await dispatchLanes({
+      repoRoot: "/tmp",
+      platforms: { mobile: true },
+      logDir: "/dev/null/cannot-mkdir-here",
+      logKey: "463-abc123-a1",
+    });
+    assert.deepEqual(out.dispatched, []);
+    assert.equal(out.failed.length, 1);
+    assert.match(out.failed[0].reason, /cannot place lane log/);
+  });
+
   it("scopes artefacts per ATTEMPT, so a retry never shares a path", () => {
     const a1 = laneLogPath({ id: "mobile" }, { logDir: "/tmp/x", logKey: "463-abc123-a1" });
     const a2 = laneLogPath({ id: "mobile" }, { logDir: "/tmp/x", logKey: "463-abc123-a2" });

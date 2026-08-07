@@ -58,7 +58,6 @@
 
 import { spawn } from "node:child_process";
 import { readFileSync, mkdirSync, openSync, appendFileSync, rmSync, closeSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
@@ -178,14 +177,21 @@ export function assertDesktopFossil(root, { readFile = readFileSync } = {}) {
 // `<issue>-<sha12>` (pre-merge) or `release-<sha12>` (post-merge).
 export function laneLogPath(lane, { logDir, logKey } = {}) {
   const dir = logDir || join(process.cwd(), "logs", "factory");
-  const suffix = logKey ? `-${String(logKey).replace(/[^A-Za-z0-9._-]/g, "_")}` : "";
-  const name = `beta-lane-${lane.id}${suffix}.log`;
-  try {
-    mkdirSync(dir, { recursive: true });
-    return join(dir, name);
-  } catch {
-    return join(tmpdir(), `drafto-${name}`);
+  const key = String(logKey ?? "");
+  // The consumer (intest_check_lane_outcomes, in bash) reconstructs this path
+  // from the same inputs rather than reading it back, so BOTH transformations
+  // that used to live here were invisible to it: a silent tmpdir() relocation
+  // and a character-sanitising rewrite. Neither is tolerable in a path that two
+  // programs must agree on. The key is now REJECTED if it isn't already
+  // path-safe, and a missing log dir is a hard failure — the caller turns both
+  // into a failed lane, which retries, instead of a lane whose outcome file
+  // nobody can find.
+  if (key && !/^[A-Za-z0-9._-]+$/.test(key)) {
+    throw new Error(`laneLogPath: unsafe logKey ${JSON.stringify(key)}`);
   }
+  const name = `beta-lane-${lane.id}${key ? `-${key}` : ""}.log`;
+  mkdirSync(dir, { recursive: true });
+  return join(dir, name);
 }
 
 // The parent's copy of the log fd: spawn() dups it into the child, so nothing
@@ -231,7 +237,15 @@ export function laneShellScript(lane, logPath) {
 // Now: 'spawn' → {ok:true}; 'error' → {ok:false, reason}. The caller can tell
 // the difference, and only a confirmed start suppresses a retry.
 async function realSpawnDetached(lane, { repoRoot, laneEnv, logDir, logKey }) {
-  const logPath = laneLogPath(lane, { logDir, logKey });
+  let logPath;
+  try {
+    logPath = laneLogPath(lane, { logDir, logKey });
+  } catch (err) {
+    // Unusable log dir or an unsafe key: fail the lane loudly. Relocating the
+    // file would leave the bash-side outcome check reading a path that will
+    // never exist, i.e. "still building" for ever.
+    return { ok: false, reason: `cannot place lane log: ${err.message}` };
+  }
   const exitPath = `${logPath}.exit`;
   // A stale .exit from a previous run would be read as this run's outcome.
   try {
@@ -458,8 +472,8 @@ async function main(argv) {
       process.stdout.write(
         "Usage: dispatch-release.mjs <derive-platforms (--diff-file <path|-> | --diff <str>)|" +
           "dispatch (--diff-file <path|-> | --platforms mobile,desktop) [--repo-root <dir>] " +
-          "[--desktop-root <dir>] [--log-dir <dir>] [--log-key <key>] [--only <ids>] [--dry-run]|" +
-          "dispatch-premerge (same flags) --issue <n> [--pr <n>] [--sha <sha>]>\n",
+          "[--desktop-root <dir>] [--log-dir <dir>] [--log-key <key>] [--dry-run]|" +
+          "dispatch-premerge (same flags) --issue <n> [--pr <n>] [--sha <sha>] [--only <ids>]>\n",
       );
       return null;
     default:

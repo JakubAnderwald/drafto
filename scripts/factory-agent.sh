@@ -301,7 +301,8 @@ find "$LOG_DIR" -type f -name 'factory-agent-*.log' -mtime +30 -delete 2>/dev/nu
 # succeeded build into a failure and rebuild it.
 find "$LOG_DIR" -type f -name 'beta-lane-*.log' -mtime +30 -delete 2>/dev/null || true
 find "$LOG_DIR" -type f -name 'beta-lane-*.log.exit' -mtime +90 -delete 2>/dev/null || true
-find "$LOG_DIR" -type f -name 'beta-lane-*.lock' -mtime +7 -delete 2>/dev/null || true
+# (Build-root locks live at "<root>.lock" beside the root itself, not in
+# $LOG_DIR, and are reaped by the pid check in ensure_beta_build_root.)
 
 # Per-mode lock. Portable PID-file lock (macOS does not ship flock). Stale
 # locks (PID no longer alive) are reaped automatically — matches the pattern
@@ -1460,7 +1461,7 @@ fi
 # parsed (an unparseable stamp must not read as "just dispatched" and suppress a
 # lane for ever). BSD date on macOS; -j -f parses rather than sets.
 iso_age_min() {
-  local iso="$1" then now
+  local iso="$1" epoch now
   # Validate the shape OURSELVES rather than relying on date(1) to reject
   # garbage: BSD and GNU disagree about what they will accept, so delegating
   # the check made the result platform-dependent.
@@ -1469,11 +1470,11 @@ iso_age_min() {
   # BSD (macOS, where the factory runs) then GNU (ubuntu, where CI runs): `-j`
   # does not exist in coreutils, so a BSD-only form returned the sentinel for
   # EVERY timestamp on Linux.
-  then=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$iso" "+%s" 2>/dev/null \
+  epoch=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$iso" "+%s" 2>/dev/null \
     || date -u -d "$iso" "+%s" 2>/dev/null || echo "")
-  [[ -n "$then" ]] || { echo 999999; return 0; }
+  [[ -n "$epoch" ]] || { echo 999999; return 0; }
   now=$(date -u "+%s")
-  echo $(( (now - then) / 60 ))
+  echo $(( (now - epoch) / 60 ))
 }
 
 # Attempt count for <lane> from an "a:1,b:2" CSV; 0 when absent.
@@ -1556,8 +1557,14 @@ intest_check_lane_outcomes() {
         kept="${kept:+$kept,}$lane"          # succeeded — stay suppressed
         continue
       fi
-      # An empty/garbled .exit is a failure of a different kind, not a success.
-      reason="exited ${code:-<unreadable>}"
+      if [[ -z "$code" ]]; then
+        # Present but empty: the wrapper is mid-write, or the write was cut
+        # short. Neither is evidence of failure — look again next tick, and let
+        # the staleness timeout catch it if it never resolves.
+        kept="${kept:+$kept,}$lane"
+        continue
+      fi
+      reason="exited $code"
     fi
 
     changed=1
