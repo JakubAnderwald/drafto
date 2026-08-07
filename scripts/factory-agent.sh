@@ -1403,6 +1403,24 @@ ensure_beta_build_root() {
       || logerr "WARNING: bundle install failed/timed out in $root/apps/mobile; the lane may fail"
     git -C "$root" checkout -- apps/mobile/Gemfile.lock 2>/dev/null || true
   fi
+
+  # Every file that ends up inside a .app must be readable by non-root users, or
+  # App Store Connect rejects the whole upload (ITMS-90255, see laneShellScript).
+  # Setting umask on the lane fixes what the BUILD generates; this fixes what the
+  # build COPIES IN. git, pnpm and CocoaPods all ran under the factory's
+  # `umask 077`, so the checked-out fonts/assets and the Pods resource bundles are
+  # mode 600 on disk and land in the bundle that way.
+  #
+  # Normalising the inputs here — rather than chmod-ing the built .app later —
+  # keeps the fix clear of the code signature: build_mac_app signs the bundle, and
+  # mutating a signed .app is a good way to trade one upload rejection for
+  # another. `go+rX` adds read for group/other and directory-traverse only where
+  # execute already exists, so it never makes a data file executable.
+  chmod -R go+rX "$root" 2>/dev/null || true
+  # …but not the env files. copy_worktree_env seeds real credentials here (the
+  # web .env.local carries SUPABASE_SERVICE_ROLE_KEY), and none of them belong in
+  # an .app anyway, so exempt them rather than widening a secret to 644.
+  find "$root" -type f -name '.env*' -exec chmod go-rwx {} + 2>/dev/null || true
   echo "$root"
 }
 
@@ -1503,7 +1521,7 @@ intest_check_lane_outcomes() {
   local issue_num="$1" sha="$2" pr_num="${3:-}"
   local state_json prior_sha prior_lanes prior_attempts dispatched_at lane exit_file
   local log_file_path code lane_attempt kept="" changed=0 give_up
-  local reason
+  local reason new_attempts attempts_changed=0
 
   state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
@@ -1511,6 +1529,7 @@ intest_check_lane_outcomes() {
   prior_lanes=$(echo "$state_json" | jq -r '.intestBetaLanes // ""' 2>/dev/null || echo "")
   dispatched_at=$(echo "$state_json" | jq -r '.intestBetaAt // ""' 2>/dev/null || echo "")
   prior_attempts=$(echo "$state_json" | jq -r '.intestBetaAttempts // ""' 2>/dev/null || echo "")
+  new_attempts="$prior_attempts"
   # Only meaningful for the commit currently under test.
   [[ -n "$sha" && "$prior_sha" == "$sha" && -n "$prior_lanes" ]] || return 0
 
@@ -1522,7 +1541,17 @@ intest_check_lane_outcomes() {
     # (the check is a timeout, not a death certificate) and would otherwise
     # write its exit code over the retry that replaced it.
     lane_attempt=$(lane_attempt_of "$prior_attempts" "$lane")
-    [[ "$lane_attempt" -ge 1 ]] || lane_attempt=1
+    if [[ "$lane_attempt" -lt 1 ]]; then
+      # No recorded attempt — state written before intestBetaAttempts existed.
+      # Treat it as attempt 1 and PERSIST that, because intest_dispatch_betas
+      # derives the next attempt number from this same field. Left unwritten it
+      # computes 0+1=1 and re-uses the artefact paths of the attempt that just
+      # failed, while this function has already logged "re-arming attempt 2" —
+      # one lane, two numbers, and a stale .exit the next check would misread.
+      lane_attempt=1
+      new_attempts=$(lane_attempt_set "$new_attempts" "$lane" 1)
+      attempts_changed=1
+    fi
     log_file_path="$LOG_DIR/beta-lane-${lane}-${issue_num}-${sha:0:12}-a${lane_attempt}.log"
     exit_file="${log_file_path}.exit"
     reason=""
@@ -1555,6 +1584,22 @@ intest_check_lane_outcomes() {
       code="${code:0:4}"
       if [[ "$code" == "0" ]]; then
         kept="${kept:+$kept,}$lane"          # succeeded — stay suppressed
+        # A retry that succeeds must retract its own failure notice. GitHub
+        # comments are append-only, so an earlier "the mobile beta build failed"
+        # stays the last word on the issue unless something supersedes it — which
+        # is precisely what a tester read on #463 while a working build sat on
+        # TestFlight. Marker-guarded, so it posts once per lane per commit.
+        if [[ "$DRY_RUN" -eq 0 ]] \
+          && issue_has_marker "$issue_num" "drafto-factory-beta-failed:${lane}:${sha:0:12}" \
+          && ! issue_has_marker "$issue_num" "drafto-factory-beta-recovered:${lane}:${sha:0:12}"; then
+          gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+            --body "🏭 **The \`$lane\` beta build succeeded on retry.**
+
+Disregard the earlier \`$lane\` failure notice for \`${sha:0:12}\` — a later attempt \
+completed and the build has been uploaded to its beta channel.
+
+<!-- drafto-factory-beta-recovered:${lane}:${sha:0:12} -->" >>"$LOG_FILE" 2>&1 || true
+        fi
         continue
       fi
       if [[ -z "$code" ]]; then
@@ -1603,6 +1648,13 @@ Log on the build machine: \`$log_file_path\`
     # Dropping the lane from the confirmed set is what re-arms the retry.
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
       intestBetaLanes "$kept" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  fi
+  # Backfilled legacy attempt numbers, so the dispatcher agrees with what was
+  # logged above. Written even when nothing was re-armed: a lane still building
+  # needs the same backfill before ITS outcome is read.
+  if [[ "$attempts_changed" -eq 1 && "$DRY_RUN" -eq 0 ]]; then
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+      intestBetaAttempts "$new_attempts" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   fi
   return 0
 }
