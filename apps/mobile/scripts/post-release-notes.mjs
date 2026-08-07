@@ -181,8 +181,49 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // Bound every App Store Connect request so a hung socket can't stall the release
 // step indefinitely (the retry cap only limits attempts, not a single request).
 const ASC_REQUEST_TIMEOUT_MS = 30_000;
-const ascFetch = (url, options = {}) =>
-  fetch(url, { ...options, signal: AbortSignal.timeout(ASC_REQUEST_TIMEOUT_MS) });
+
+// …and retry the request ITSELF on a transient failure.
+//
+// The "build not indexed yet" loop below only retries a *successful* response
+// that lacks the build. A thrown network error escaped it entirely, bubbled up
+// to Fastlane's non-fatal rescue, and shipped a build with empty "What to Test".
+// Seen on iOS build 32, whose TestFlight email reached the tester with no notes
+// at all:
+//   [17:54:16] TestFlight error: fetch failed
+//   [17:54:28] Release notes posting failed (non-fatal)
+// One dropped socket should not cost a release its notes; only a sustained
+// outage should.
+//
+// Retries cover mutations too. PATCH is idempotent, and a duplicated
+// localization POST is rejected by ASC with a 409 that surfaces as a hard error
+// — noisy, but never silent corruption, which is the failure mode that matters.
+const ASC_RETRY_ATTEMPTS = 4;
+// Read per call, not at import time, so a test can shorten the backoff without
+// depending on how the runner was invoked.
+const ascRetryBaseMs = () => Number(process.env.DRAFTO_ASC_RETRY_BASE_MS || 2_000);
+const isTransientStatus = (status) => status === 408 || status === 429 || status >= 500;
+
+export const ascFetch = async (url, options = {}) => {
+  let lastError;
+  for (let attempt = 1; attempt <= ASC_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(url, {
+        ...options,
+        signal: AbortSignal.timeout(ASC_REQUEST_TIMEOUT_MS),
+      });
+      if (isTransientStatus(res.status) && attempt < ASC_RETRY_ATTEMPTS) {
+        await sleep(ascRetryBaseMs() * 2 ** (attempt - 1));
+        continue;
+      }
+      return res;
+    } catch (err) {
+      lastError = err;
+      if (attempt === ASC_RETRY_ATTEMPTS) break;
+      await sleep(ascRetryBaseMs() * 2 ** (attempt - 1));
+    }
+  }
+  throw lastError;
+};
 
 /**
  * Flatten an App Store Connect `/builds` response (data + included) into

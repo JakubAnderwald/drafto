@@ -1,9 +1,15 @@
-import { describe, it } from "node:test";
+import { describe, it, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
 import {
   normalizeBuilds,
   parseArgs,
   selectTestFlightBuild,
+  ascFetch,
 } from "../../apps/mobile/scripts/post-release-notes.mjs";
 
 // Newest-builds fixture (the `sort=-uploadedDate` query): macOS (desktop) and iOS
@@ -204,4 +210,134 @@ describe("selectTestFlightBuild", () => {
     });
     assert.equal(selectTestFlightBuild(macOnly, { buildNumber: "29" }), null);
   });
+});
+
+// --- transient-failure retries ---------------------------------------------
+//
+// iOS build 32 shipped to a tester with an EMPTY "What to Test". The cause was
+// not the "build not indexed yet" poll (which retries a good response lacking
+// the build) but a thrown network error, which escaped that loop entirely:
+//   [17:54:16] TestFlight error: fetch failed
+//   [17:54:28] Release notes posting failed (non-fatal)
+// Fastlane rescues that as non-fatal, so nothing failed and the notes were
+// simply never written. One dropped socket must not cost a release its notes.
+
+describe("ascFetch (transient-failure retries)", () => {
+  const realFetch = globalThis.fetch;
+  const realBackoff = process.env.DRAFTO_ASC_RETRY_BASE_MS;
+  // Shorten the backoff here rather than relying on the runner's environment,
+  // so `node --test` alone exercises the same paths without a ~14s sleep.
+  process.env.DRAFTO_ASC_RETRY_BASE_MS = "1";
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+  after(() => {
+    if (realBackoff === undefined) delete process.env.DRAFTO_ASC_RETRY_BASE_MS;
+    else process.env.DRAFTO_ASC_RETRY_BASE_MS = realBackoff;
+  });
+
+  const ok = (status = 200) => ({ status, ok: status < 400 });
+
+  it("retries a thrown network error and succeeds — the build-32 failure", async () => {
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      if (calls === 1) throw new TypeError("fetch failed");
+      return ok();
+    };
+    const res = await ascFetch("https://example.test/builds");
+    assert.equal(res.status, 200);
+    assert.equal(calls, 2, "must retry after a network error, not give up");
+  });
+
+  it("retries 5xx / 429 / 408 but NOT a 4xx the caller must see", async () => {
+    for (const [status, expectedCalls] of [
+      [500, 2],
+      [503, 2],
+      [429, 2],
+      [408, 2],
+      [401, 1],
+      [404, 1],
+      [409, 1],
+    ]) {
+      let calls = 0;
+      globalThis.fetch = async () => {
+        calls += 1;
+        return calls === 1 ? ok(status) : ok(200);
+      };
+      const res = await ascFetch("https://example.test/builds");
+      assert.equal(
+        calls,
+        expectedCalls,
+        `status ${status}: expected ${expectedCalls} call(s), got ${calls}`,
+      );
+      if (expectedCalls === 1) assert.equal(res.status, status, "a 4xx must reach the caller");
+    }
+  });
+
+  it("gives up after the attempt cap and rethrows, rather than hanging forever", async () => {
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      throw new TypeError("fetch failed");
+    };
+    await assert.rejects(() => ascFetch("https://example.test/builds"), /fetch failed/);
+    assert.equal(calls, 4, "a sustained outage must still terminate");
+  });
+
+  it("passes caller options through (headers/method must survive the retry wrapper)", async () => {
+    let seen = null;
+    globalThis.fetch = async (_url, opts) => {
+      seen = opts;
+      return ok();
+    };
+    await ascFetch("https://example.test/x", { method: "PATCH", headers: { A: "b" } });
+    assert.equal(seen.method, "PATCH");
+    assert.deepEqual(seen.headers, { A: "b" });
+    assert.ok(seen.signal, "the per-request timeout must still be applied");
+  });
+});
+
+describe("mobile/desktop mirror invariant", () => {
+  // These two copies had silently diverged: desktop's had no timeout and no
+  // retry at all, and its release-notes generator kept a `--grep` classifier
+  // that mobile's fix never reached. CLAUDE.md requires the platforms stay in
+  // sync; assert the properties rather than trusting a future edit to remember.
+  const read = (p) => readFileSync(resolve(HERE, "..", "..", p), "utf8");
+
+  for (const p of [
+    "apps/mobile/scripts/post-release-notes.mjs",
+    "apps/desktop/scripts/post-release-notes.mjs",
+  ]) {
+    it(`${p} bounds and retries its App Store Connect requests`, () => {
+      const src = read(p);
+      assert.match(src, /AbortSignal\.timeout\(ASC_REQUEST_TIMEOUT_MS\)/, "no per-request timeout");
+      assert.match(src, /ASC_RETRY_ATTEMPTS/, "no retry cap");
+      // Scoped to App Store Connect. The Google Play calls in the mobile copy
+      // deliberately use raw fetch: they form an edit/commit transaction, where
+      // a blind retry could re-run a step against an already-invalidated edit.
+      for (const asc of [
+        /await fetch\([^\n]*betaBuildLocalizations/,
+        /await fetch\([^\n]*\/builds\?/,
+      ]) {
+        assert.ok(!asc.test(src), `an ASC request bypasses the retry wrapper: ${asc}`);
+      }
+      assert.ok(src.includes("await ascFetch("), "ASC requests must go through ascFetch");
+    });
+  }
+
+  for (const p of [
+    "apps/mobile/scripts/generate-release-notes.sh",
+    "apps/desktop/scripts/generate-release-notes.sh",
+  ]) {
+    it(`${p} classifies from the subject, never via --grep`, () => {
+      const src = read(p);
+      assert.ok(
+        !/--grep="\^(feat|fix)"/.test(src),
+        "--grep matches the whole message; a body line starting with 'fix' miscategorises the commit",
+      );
+      assert.match(src, /sed -nE 's\/\^feat/, "feat must be filtered+stripped in one pass");
+      assert.match(src, /sed -nE 's\/\^fix/, "fix must be filtered+stripped in one pass");
+    });
+  }
 });
