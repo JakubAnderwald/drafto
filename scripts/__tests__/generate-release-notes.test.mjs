@@ -143,3 +143,49 @@ for (const { id, script } of PLATFORMS) {
     });
   });
 }
+
+// Release tags anchor the range: without one, notes dump the whole history.
+// mobile shipped with NO tagging at all, so its newest tag was `mobile@1.1.7`
+// while the app was on 1.3.x and every build listed ~15 features back to #265.
+describe("generate-release-notes.sh (mobile) — tag anchoring", () => {
+  let d;
+
+  const g = (...args) => {
+    const r = spawnSync("git", args, { cwd: d, encoding: "utf8" });
+    assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
+    return r.stdout;
+  };
+  const c = (msg) => {
+    mkdirSync(join(d, "apps/mobile"), { recursive: true });
+    writeFileSync(join(d, "apps/mobile/f.txt"), msg);
+    g("add", "-A");
+    g("commit", "-m", msg, "--no-verify");
+  };
+
+  before(() => {
+    d = mkdtempSync(join(tmpdir(), "drafto-relnotes-tag-"));
+    g("init", "-q", "-b", "main");
+    g("config", "user.email", "t@example.com");
+    g("config", "user.name", "T");
+    c("fix: ancient thing nobody is testing");
+    // Older release, tagged FIRST and named so that a refname sort would rank
+    // it above "android" — the trap this ordering has to avoid.
+    g("tag", "mobile@1.3.0+ios.32");
+    c("fix: shipped in the last release");
+    g("tag", "mobile@1.3.0+android.41");
+    c("fix: the only genuinely new change");
+  });
+
+  after(() => d && rmSync(d, { recursive: true, force: true }));
+
+  it("anchors on the LATEST release, not the one refname sort happens to favour", () => {
+    const r = spawnSync("bash", [PLATFORMS[0].script], { cwd: d, encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /the only genuinely new change/);
+    assert.ok(
+      !/shipped in the last release/.test(r.stdout),
+      `notes reached past the newest tag:\n${r.stdout}`,
+    );
+    assert.ok(!/ancient thing/.test(r.stdout), "notes reached back to the older tag");
+  });
+});

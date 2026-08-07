@@ -326,6 +326,21 @@ describe("mobile/desktop mirror invariant", () => {
     });
   }
 
+  for (const p of ["apps/mobile/fastlane/Fastfile", "apps/desktop/fastlane/Fastfile"]) {
+    it(`${p} never tags a pre-merge build`, () => {
+      const src = read(p);
+      // A pre-merge lane builds the PR head. Tagging it publishes a release tag
+      // on an unmerged commit that a rebase can orphan, and starts the next real
+      // release's range on an abandoned branch. Both happened: desktop@0.3.2+49
+      // and +50 were pushed to origin for #463's test builds.
+      const tagIdx = src.indexOf('sh("git", "tag"');
+      assert.ok(tagIdx !== -1, "expected a release-tagging step");
+      const guardIdx = src.indexOf('ENV["DRAFTO_INTEST_ISSUE"].to_s.empty?');
+      assert.ok(guardIdx !== -1, "no pre-merge guard on the tagging step");
+      assert.ok(guardIdx < tagIdx, "the guard must be evaluated BEFORE the tag is created");
+    });
+  }
+
   for (const p of [
     "apps/mobile/scripts/generate-release-notes.sh",
     "apps/desktop/scripts/generate-release-notes.sh",

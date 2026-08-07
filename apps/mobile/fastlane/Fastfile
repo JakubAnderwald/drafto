@@ -101,6 +101,46 @@ rescue StandardError => e
   UI.important("Released-issue comments failed (non-fatal): #{e.message}")
 end
 
+def package_json_version
+  require "json"
+  JSON.parse(File.read(File.join(PROJECT_ROOT, "package.json")))["version"]
+end
+
+# Tag a shipped mobile release, so generate-release-notes.sh scopes the NEXT
+# build's "What to Test" to the delta since this one. Without it the newest
+# `mobile@` tag was `mobile@1.1.7` while the app shipped 1.3.x, so every build's
+# notes dumped ~15 features going back to #265 — desktop had this and mobile
+# never did.
+#
+# The tag carries the PLATFORM because iOS and Android ship the same version
+# under two independent build counters (1.3.0 was iOS build 32 and Android build
+# 41). A bare `mobile@<version>+<build>` would be ambiguous between them, and
+# ordering two such tags by refname is meaningless — which is why the generator
+# picks the newest `mobile@` tag by CREATION DATE rather than by version sort.
+#
+# NEVER tag a pre-merge test build. Those lanes build the PR head, which is
+# unmerged and may be rebased away, leaving a published tag as the only thing
+# keeping a dead commit alive — and starting the next real release's range on an
+# abandoned branch. Both happened to desktop before this guard existed.
+def tag_release(platform:, build:)
+  if !ENV["DRAFTO_INTEST_ISSUE"].to_s.empty?
+    UI.message("Pre-merge test build (issue ##{ENV['DRAFTO_INTEST_ISSUE']}) — not tagging an unmerged commit")
+    return
+  end
+  return if build.nil? || build.to_s.empty?
+
+  release_tag = "mobile@#{package_json_version}+#{platform}.#{build}"
+  if `git tag -l "#{release_tag}"`.strip.empty?
+    sh("git", "tag", release_tag)
+    sh("git", "push", "origin", release_tag)
+    UI.success("Tagged release #{release_tag}")
+  else
+    UI.message("Release tag #{release_tag} already exists — skipping")
+  end
+rescue StandardError => e
+  UI.important("Release tagging failed (non-fatal): #{e.message}")
+end
+
 # Pre-merge (factory In Test) dispatch only: report the actual build number on
 # the card, since the In Test comment could only promise a build was coming.
 # DRAFTO_INTEST_ISSUE is set by scripts/lib/dispatch-release.mjs
@@ -196,6 +236,7 @@ platform :android do
       track == "production" ? "Google Play (build #{next_code})" : "Google Play internal track (build #{next_code})"
     comment_released_issues(platform: "android", build: next_code, track: track_label)
     comment_intest_build(platform: "android", build: next_code, track: track_label)
+    tag_release(platform: "android", build: next_code)
   end
 end
 
@@ -296,5 +337,6 @@ platform :ios do
       destination == "appstore" ? "the App Store (build #{new_build_number})" : "TestFlight (build #{new_build_number})"
     comment_released_issues(platform: "ios", build: new_build_number, track: track_label)
     comment_intest_build(platform: "ios", build: new_build_number, track: track_label)
+    tag_release(platform: "ios", build: new_build_number)
   end
 end
