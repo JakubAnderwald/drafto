@@ -367,26 +367,49 @@ describe("ensure_beta_build_root — working-tree safety", () => {
     // The factory runs at umask 077, so git/pnpm/CocoaPods write mode 600 here.
     // Those files are copied verbatim into the .app, and App Store Connect
     // rejects the pkg with ITMS-90255. Three macOS uploads died this way on #463.
-    assert.match(body, /chmod -R go\+rX "\$root"/);
+    assert.match(body, /-exec chmod go\+rX \{\} \+/);
   });
 
   it("normalises AFTER the install, not before it", () => {
     // pnpm/bundle create files too; chmod-ing first would leave the newest — and
     // largest — set of files still owner-only.
-    const chmodIdx = body.indexOf("chmod -R go+rX");
+    const chmodIdx = body.indexOf("chmod go+rX");
     const installIdx = body.indexOf("run_pnpm_install");
     assert.ok(installIdx !== -1 && chmodIdx > installIdx, "chmod must run after the installs");
   });
 
-  it("does NOT widen the env files it just seeded", () => {
-    // copy_worktree_env brings real credentials into the root (the web
-    // .env.local carries SUPABASE_SERVICE_ROLE_KEY). A blanket go+rX would
-    // publish them to every account on the machine, and none of them belong in
-    // an .app anyway.
-    assert.match(body, /-name '\.env\*' -exec chmod go-rwx/);
-    const chmodIdx = body.indexOf("chmod -R go+rX");
-    const envIdx = body.indexOf("chmod go-rwx");
-    assert.ok(envIdx > chmodIdx, "the env re-restriction must come after the blanket chmod");
+  it("PRUNES credentials from the traversal rather than widening then restoring", () => {
+    // A build root is ~100k files. "chmod -R, then put the secrets back" leaves
+    // them world-readable for the length of the walk — a window, on a machine
+    // that also runs unattended agents. They must never be widened at all.
+    const pruneIdx = body.indexOf("-prune");
+    const widenIdx = body.indexOf("chmod go+rX");
+    assert.ok(pruneIdx !== -1, "credentials must be pruned from the traversal");
+    assert.ok(pruneIdx < widenIdx, "the prune must be evaluated BEFORE the chmod action");
+  });
+
+  it("covers every credential seeded into the root, not just .env*", () => {
+    // worktree-bootstrap.sh also seeds google-play-service-account.json — a Play
+    // publishing credential. Matching only `.env*` would leave it at 644
+    // permanently, which is worse than the window this guard closes.
+    for (const pat of [
+      "'.env\\*'",
+      "'google-play-service-account.json'",
+      "'*.keystore'",
+      "'*.p12'",
+    ]) {
+      assert.ok(
+        body.includes(`-name ${pat}`.replace("\\*", "*")),
+        `the credential set must cover ${pat}`,
+      );
+    }
+  });
+
+  it("still forces the credentials owner-only afterwards (defence in depth)", () => {
+    assert.match(body, /-exec chmod go-rwx \{\} \+/);
+    const widenIdx = body.indexOf("chmod go+rX");
+    const restrictIdx = body.indexOf("chmod go-rwx");
+    assert.ok(restrictIdx > widenIdx, "the restrictive pass must come last");
   });
 
   it("refuses an empty sha rather than resetting to something arbitrary", () => {

@@ -1416,11 +1416,23 @@ ensure_beta_build_root() {
   # mutating a signed .app is a good way to trade one upload rejection for
   # another. `go+rX` adds read for group/other and directory-traverse only where
   # execute already exists, so it never makes a data file executable.
-  chmod -R go+rX "$root" 2>/dev/null || true
-  # …but not the env files. copy_worktree_env seeds real credentials here (the
-  # web .env.local carries SUPABASE_SERVICE_ROLE_KEY), and none of them belong in
-  # an .app anyway, so exempt them rather than widening a secret to 644.
-  find "$root" -type f -name '.env*' -exec chmod go-rwx {} + 2>/dev/null || true
+  #
+  # The credentials seeded into this root are PRUNED FROM THE TRAVERSAL, not
+  # widened and then re-restricted: a build root is ~100k files, so "widen
+  # everything, put the secrets back" leaves them world-readable for as long as
+  # the walk takes. Never make a secret readable at all, not even briefly.
+  # `.env*` alone is not the whole set — google-play-service-account.json is a
+  # Play publishing credential, and the signing material is matched here too so
+  # that adding a keystore later can't silently start leaking it.
+  local -a secrets=(
+    -name '.env*'
+    -o -name 'google-play-service-account.json'
+    -o -name '*.keystore' -o -name '*.jks' -o -name '*.p12'
+    -o -name '*.mobileprovision' -o -name '*.cer' -o -name '*.pem'
+  )
+  find "$root" \( "${secrets[@]}" \) -prune -o -exec chmod go+rX {} + 2>/dev/null || true
+  # Defence in depth: whatever the traversal did, the secrets end up owner-only.
+  find "$root" -type f \( "${secrets[@]}" \) -exec chmod go-rwx {} + 2>/dev/null || true
   echo "$root"
 }
 
