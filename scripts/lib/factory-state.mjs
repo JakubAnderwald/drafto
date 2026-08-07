@@ -93,6 +93,10 @@ function emptyIssue() {
     intestBetaSha: null, // head SHA beta lanes were last dispatched for
     intestBetaAt: null,
     intestBetaLanes: null,
+    // Per-lane attempt counters, "mobile:2,desktop:1". Drives both the retry
+    // cap and the per-ATTEMPT artefact path — keying the log/.exit on the
+    // commit alone let a retry share files with the attempt it replaced.
+    intestBetaAttempts: null,
   };
 }
 
@@ -315,6 +319,7 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   "intestBetaSha",
   "intestBetaAt",
   "intestBetaLanes",
+  "intestBetaAttempts",
 ]);
 
 export function setIssueField(state, issueNumber, field, value) {

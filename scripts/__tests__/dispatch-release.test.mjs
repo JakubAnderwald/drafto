@@ -12,6 +12,7 @@ import {
   resolveLaneRoot,
   assertDesktopFossil,
   laneShellScript,
+  laneLogPath,
   dispatchLanes,
   DESKTOP_FOSSIL_ROOT_DEFAULT,
   _setSpawnForTests,
@@ -386,35 +387,49 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
   });
 
   it("records a lane's real exit code next to its log", async () => {
-    // A lane runs detached long after the dispatcher exits, so its outcome can
-    // only be learned from a file it writes itself.
+    // Previously this passed repoRoot:"/" so the lane's cwd was /apps/mobile,
+    // which exists nowhere — spawn failed, the test took an early return and
+    // asserted nothing. Use a REAL cwd and a REAL command with a known exit.
     const dir = mkdtempSync(join(tmpdir(), "drafto-laneexit-"));
+    const root = mkdtempSync(join(tmpdir(), "drafto-laneroot-"));
+    mkdirSync(join(root, "apps", "mobile"), { recursive: true });
     try {
       _setSpawnForTests(null);
+      // `pnpm` may be absent (CI); shim it so the lane's exit code is ours.
+      const bin = join(root, "bin");
+      mkdirSync(bin, { recursive: true });
+      writeFileSync(join(bin, "pnpm"), "#!/bin/sh\necho lane ran\nexit 7\n", { mode: 0o755 });
       const out = await dispatchLanes({
-        repoRoot: "/",
-        // A lane whose command exits non-zero immediately.
+        repoRoot: root,
         platforms: { mobile: true },
         logDir: dir,
+        logKey: "463-abc123-a1",
+        laneEnv: { PATH: `${bin}:${process.env.PATH}` },
       });
-      // `pnpm` is absent under this cwd in CI, present locally — either way the
-      // lane must end up with an outcome recorded somewhere.
-      const started = out.dispatched.length === 1;
-      if (!started) {
-        assert.equal(out.failed.length, 1);
-        return;
-      }
+      assert.equal(out.failed.length, 0, `lane should start: ${JSON.stringify(out.failed)}`);
+      assert.equal(out.dispatched.length, 1);
       const exitPath = out.dispatched[0].exitPath;
       assert.ok(exitPath, "a started lane must report where its exit code lands");
-      const deadline = Date.now() + 15000;
+      const deadline = Date.now() + 20000;
       while (Date.now() < deadline && !existsSync(exitPath)) {
         await new Promise((r) => setTimeout(r, 50));
       }
-      assert.ok(existsSync(exitPath), "the lane wrapper must write <log>.exit");
-      assert.match(readFileSync(exitPath, "utf8").trim(), /^\d+$/);
+      assert.ok(existsSync(exitPath), "the wrapper must write <log>.exit");
+      assert.equal(
+        readFileSync(exitPath, "utf8").trim(),
+        "7",
+        "the lane's OWN exit code must be recorded, not the wrapper's",
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("scopes artefacts per ATTEMPT, so a retry never shares a path", () => {
+    const a1 = laneLogPath({ id: "mobile" }, { logDir: "/tmp/x", logKey: "463-abc123-a1" });
+    const a2 = laneLogPath({ id: "mobile" }, { logDir: "/tmp/x", logKey: "463-abc123-a2" });
+    assert.notEqual(a1, a2, "a retry of the SAME commit must not reuse the path");
   });
 
   it("laneShellScript captures $? immediately after the lane command", () => {

@@ -169,6 +169,7 @@ cd apps/desktop && pnpm release:beta        # ← NEVER `pnpm install` in this t
 Then install that TestFlight build and run the verifier, which now launches the app rather than only inspecting its bundle:
 
 ```bash
+cd /Users/jakub/code/drafto            # the preceding block leaves you in apps/desktop
 apps/desktop/scripts/verify-testflight-build.sh <email> <password>
 ```
 

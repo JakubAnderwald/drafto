@@ -57,7 +57,7 @@
 // exit non-zero — same shape as factory-project.mjs / state-cli.mjs.
 
 import { spawn } from "node:child_process";
-import { readFileSync, mkdirSync, openSync, appendFileSync, rmSync } from "node:fs";
+import { readFileSync, mkdirSync, openSync, appendFileSync, rmSync, closeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isMainModule } from "./is-main.mjs";
@@ -188,6 +188,17 @@ export function laneLogPath(lane, { logDir, logKey } = {}) {
   }
 }
 
+// The parent's copy of the log fd: spawn() dups it into the child, so nothing
+// else ever closes ours. Leaked once per lane on every path without this.
+function closeLaneFd(fd) {
+  if (typeof fd !== "number") return;
+  try {
+    closeSync(fd);
+  } catch {
+    /* already closed / never opened */
+  }
+}
+
 // Single-quote a string for `sh -c`. The lane command is built in code (never
 // from user input), but the log path comes from a caller-supplied directory.
 function shQuote(s) {
@@ -226,9 +237,10 @@ async function realSpawnDetached(lane, { repoRoot, laneEnv, logDir, logKey }) {
   try {
     rmSync(exitPath, { force: true });
   } catch {
-    // Best-effort. With logKey scoping the path to this dispatch there is no
-    // other writer, so a leftover file here would have to be our own from a
-    // retry of the same commit — which this rm is exactly what clears.
+    // Best-effort. Callers include an ATTEMPT number in logKey precisely so a
+    // retry never shares a path with the attempt it replaces — a lane declared
+    // stale may still be alive (the check is a timeout, not a death
+    // certificate) and would otherwise write its exit code over the retry's.
   }
   let out;
   try {
@@ -236,12 +248,28 @@ async function realSpawnDetached(lane, { repoRoot, laneEnv, logDir, logKey }) {
   } catch {
     out = "ignore";
   }
-  const child = spawn("sh", ["-c", laneShellScript(lane, logPath)], {
-    cwd: join(repoRoot, lane.cwd),
-    detached: true,
-    stdio: ["ignore", out, out],
-    env: { ...process.env, ...(laneEnv ?? {}) },
-  });
+  // Node converts only a SUBSET of uv_spawn errnos (ENOENT, EACCES, EAGAIN,
+  // EMFILE, ENFILE, ENOSYS, EPERM) into the async 'error' event; the rest
+  // (ENOTDIR, ELOOP, ENAMETOOLONG, EIO) are THROWN from spawn() itself. Unguarded
+  // that escapes dispatchLanes, discarding lanes already confirmed started and
+  // emitting no JSON at all — the caller sees a crash rather than a failed lane.
+  let child;
+  try {
+    child = spawn("sh", ["-c", laneShellScript(lane, logPath)], {
+      cwd: join(repoRoot, lane.cwd),
+      detached: true,
+      stdio: ["ignore", out, out],
+      env: { ...process.env, ...(laneEnv ?? {}) },
+    });
+  } catch (err) {
+    closeLaneFd(out);
+    try {
+      appendFileSync(logPath, `lane ${lane.id} failed to start: ${err.message}\n`);
+    } catch {
+      process.stderr.write(`lane ${lane.id} failed to start: ${err.message}\n`);
+    }
+    return { ok: false, reason: err.message, logPath };
+  }
 
   const outcome = await new Promise((resolve) => {
     child.once("spawn", () => resolve({ ok: true }));
@@ -259,6 +287,7 @@ async function realSpawnDetached(lane, { repoRoot, laneEnv, logDir, logKey }) {
   });
 
   if (!outcome.ok) {
+    closeLaneFd(out);
     try {
       appendFileSync(logPath, `lane ${lane.id} failed to start: ${outcome.reason}\n`);
     } catch {
@@ -266,6 +295,7 @@ async function realSpawnDetached(lane, { repoRoot, laneEnv, logDir, logKey }) {
     }
     return { ok: false, reason: outcome.reason, logPath };
   }
+  closeLaneFd(out);
   child.unref();
   return { ok: true, pid: child.pid, logPath, exitPath };
 }
@@ -428,7 +458,7 @@ async function main(argv) {
       process.stdout.write(
         "Usage: dispatch-release.mjs <derive-platforms (--diff-file <path|-> | --diff <str>)|" +
           "dispatch (--diff-file <path|-> | --platforms mobile,desktop) [--repo-root <dir>] " +
-          "[--desktop-root <dir>] [--dry-run]|" +
+          "[--desktop-root <dir>] [--log-dir <dir>] [--log-key <key>] [--only <ids>] [--dry-run]|" +
           "dispatch-premerge (same flags) --issue <n> [--pr <n>] [--sha <sha>]>\n",
       );
       return null;
