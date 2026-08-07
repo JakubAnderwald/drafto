@@ -841,10 +841,21 @@ describe("iso_age_min (extracted, real bash)", () => {
     assert.ok(m >= 179 && m <= 181, `expected ~180, got ${m}`);
   });
 
-  it("returns a huge number for an unparseable or empty stamp", () => {
-    // Must NOT read as "just dispatched" — that would suppress the lane for ever.
-    assert.ok(age("not-a-date") > 100000);
-    assert.ok(age("") > 100000);
+  it("returns a huge number for anything not a well-formed UTC stamp", () => {
+    // Must NOT read as "just dispatched" — that would suppress the lane for
+    // ever. The shape is validated in-shell rather than delegated to date(1),
+    // because BSD and GNU disagree about what they accept: relying on the tool
+    // to reject garbage made this platform-dependent and it failed on CI.
+    for (const bad of [
+      "not-a-date",
+      "",
+      "12345",
+      "2026-08-07T04:00:00", // no trailing Z
+      "2026-08-07 04:00:00Z", // space instead of T
+      "2026-13-99T99:99:99Z", // right shape, impossible values
+    ]) {
+      assert.ok(age(bad) > 100000, `"${bad}" must not read as recent`);
+    }
   });
 });
 

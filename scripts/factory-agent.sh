@@ -1461,9 +1461,14 @@ fi
 # lane for ever). BSD date on macOS; -j -f parses rather than sets.
 iso_age_min() {
   local iso="$1" then now
-  # BSD (macOS, where the factory runs) then GNU (ubuntu, where CI runs). `-j`
-  # does not exist in coreutils, so a BSD-only form silently returned the
-  # sentinel for EVERY timestamp on Linux.
+  # Validate the shape OURSELVES rather than relying on date(1) to reject
+  # garbage: BSD and GNU disagree about what they will accept, so delegating
+  # the check made the result platform-dependent.
+  [[ "$iso" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+    || { echo 999999; return 0; }
+  # BSD (macOS, where the factory runs) then GNU (ubuntu, where CI runs): `-j`
+  # does not exist in coreutils, so a BSD-only form returned the sentinel for
+  # EVERY timestamp on Linux.
   then=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$iso" "+%s" 2>/dev/null \
     || date -u -d "$iso" "+%s" 2>/dev/null || echo "")
   [[ -n "$then" ]] || { echo 999999; return 0; }
