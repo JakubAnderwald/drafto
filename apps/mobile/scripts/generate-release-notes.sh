@@ -24,13 +24,20 @@ cd "$(git rev-parse --show-toplevel)"
 # Find the latest mobile release tag.
 # If the latest tag points to HEAD (just created by the tag job), use the
 # previous tag so the range covers the actual changes in this release.
-LAST_TAG=$(git tag --list 'mobile@*' --sort=-v:refname | head -1)
+# Newest by date, not by version sort. iOS and Android ship the same version
+# under two independent build counters, so the tags are `mobile@1.3.0+ios.32`
+# and `mobile@1.3.0+android.41` — ordering those by refname compares the string
+# "android" against "ios" and picks a winner unrelated to which shipped last.
+# (These are lightweight tags, so `creatordate` resolves to the TAGGED COMMIT's
+# date — which is exactly the ordering we want: whichever release is later in
+# history wins.)
+LAST_TAG=$(git tag --list 'mobile@*' --sort=-creatordate | head -1)
 
 if [[ -n "$LAST_TAG" ]]; then
   TAG_COMMIT=$(git rev-parse "$LAST_TAG" 2>/dev/null || true)
   HEAD_COMMIT=$(git rev-parse HEAD)
   if [[ "$TAG_COMMIT" == "$HEAD_COMMIT" ]]; then
-    LAST_TAG=$(git tag --list 'mobile@*' --sort=-v:refname | sed -n '2p')
+    LAST_TAG=$(git tag --list 'mobile@*' --sort=-creatordate | sed -n '2p')
   fi
 fi
 
@@ -40,9 +47,30 @@ else
   RANGE="${LAST_TAG}..HEAD"
 fi
 
-# Extract conventional commit subjects, grouped by type
-FEATURES=$(git log "$RANGE" --oneline --no-merges --grep="^feat" --format="%s" -- apps/mobile/ packages/shared/ | sed 's/^feat[:(]//' | sed 's/^[^)]*) //' | sed 's/^: //')
-FIXES=$(git log "$RANGE" --oneline --no-merges --grep="^fix" --format="%s" -- apps/mobile/ packages/shared/ | sed 's/^fix[:(]//' | sed 's/^[^)]*) //' | sed 's/^: //')
+# Extract conventional commit subjects, grouped by type.
+#
+# Classify from the SUBJECT ONLY, in one pass per bucket. Two bugs this closes,
+# both seen in real TestFlight notes:
+#
+#   1. `git log --grep` matches the WHOLE commit message, and `^` anchors at the
+#      start of every line in the body — not the subject. A commit whose body
+#      merely wrapped onto a line beginning "fix" was pulled into Bug fixes:
+#      d951b75 ("feat(factory): …") appeared in BOTH lists because line 39 of its
+#      body wrapped to "fix is observable, plus what failure looks like…".
+#      Filtering the subjects here makes the buckets mutually exclusive — a
+#      subject can only start with one prefix.
+#
+#   2. The old three-`sed` pipeline mangled every scoped commit:
+#      `feat(web): export notebooks` → `web): export notebooks`, because the
+#      second sed needed ") " (paren-space) and the real text has "): ".
+#      `feat: add X` kept its leading space. One anchored regex handles both.
+#
+# `sed -n …p` filters and strips together, so a line can never be emitted with
+# its prefix intact — the failure mode that put "feat(factory): …" under
+# "Bug fixes" in build 32's notes.
+SUBJECTS=$(git log "$RANGE" --no-merges --format="%s" -- apps/mobile/ packages/shared/)
+FEATURES=$(printf '%s\n' "$SUBJECTS" | sed -nE 's/^feat(\([^)]+\))?!?:[[:space:]]*//p')
+FIXES=$(printf '%s\n' "$SUBJECTS" | sed -nE 's/^fix(\([^)]+\))?!?:[[:space:]]*//p')
 
 NOTES=""
 

@@ -322,17 +322,32 @@ platform :mac do
     # tag job never runs — tag here instead. `-v:refname` orders the +build suffix
     # numerically (verified). Non-fatal: a tag/push failure must not fail an
     # already-shipped release.
-    begin
-      release_tag = "desktop@#{version}+#{new_build_number}"
-      if `git tag -l "#{release_tag}"`.strip.empty?
-        sh("git", "tag", release_tag)
-        sh("git", "push", "origin", release_tag)
-        UI.success("Tagged release #{release_tag}")
-      else
-        UI.message("Release tag #{release_tag} already exists — skipping")
+    #
+    # NEVER tag a pre-merge test build. Those lanes build the PR head, which is
+    # unmerged and may be rebased away entirely — tagging it publishes a release
+    # tag pointing at a commit that is on no branch, and the tag is then the only
+    # thing keeping that commit alive. It also poisons this very mechanism: the
+    # next real release starts its range at the newest tag, which would sit on an
+    # abandoned branch.
+    #
+    # Both happened. `desktop@0.3.2+49` → b243d819 and `desktop@0.3.2+50` →
+    # 0d1fa723 were pushed to origin for issue #463's pre-merge builds, and
+    # b243d819 was orphaned when the branch was rebased.
+    if ENV["DRAFTO_INTEST_ISSUE"].to_s.empty?
+      begin
+        release_tag = "desktop@#{version}+#{new_build_number}"
+        if `git tag -l "#{release_tag}"`.strip.empty?
+          sh("git", "tag", release_tag)
+          sh("git", "push", "origin", release_tag)
+          UI.success("Tagged release #{release_tag}")
+        else
+          UI.message("Release tag #{release_tag} already exists — skipping")
+        end
+      rescue StandardError => e
+        UI.important("Release tagging failed (non-fatal): #{e.message}")
       end
-    rescue StandardError => e
-      UI.important("Release tagging failed (non-fatal): #{e.message}")
+    else
+      UI.message("Pre-merge test build (issue ##{ENV['DRAFTO_INTEST_ISSUE']}) — not tagging an unmerged commit")
     end
   end
 end

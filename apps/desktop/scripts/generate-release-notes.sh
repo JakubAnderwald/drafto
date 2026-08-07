@@ -46,9 +46,23 @@ else
   RANGE="${LAST_TAG}..HEAD"
 fi
 
-# Extract conventional commit subjects, grouped by type
-FEATURES=$(git log "$RANGE" --oneline --no-merges --grep="^feat" --format="%s" -- apps/desktop/ packages/shared/ | sed -E 's/^feat(\([^)]+\))?!?:[[:space:]]*//')
-FIXES=$(git log "$RANGE" --oneline --no-merges --grep="^fix" --format="%s" -- apps/desktop/ packages/shared/ | sed -E 's/^fix(\([^)]+\))?!?:[[:space:]]*//')
+# Extract conventional commit subjects, grouped by type.
+#
+# Classify from the SUBJECT ONLY. `git log --grep` matches the WHOLE commit
+# message and `^` anchors at the start of every line in the body, not the
+# subject — so a commit whose body merely wrapped onto a line beginning "fix"
+# was pulled into Bug fixes. Observed in build 50's notes: d951b75
+# ("feat(factory): …") appeared in BOTH lists because line 39 of its body
+# wrapped to "fix is observable, plus what failure looks like…", and since the
+# strip below only removes a `fix:` prefix, it was rendered with its
+# `feat(factory):` prefix intact.
+#
+# Filtering subjects makes the buckets mutually exclusive — a subject can only
+# start with one prefix — and `sed -n …p` filters and strips in one pass, so a
+# line can never be emitted with its prefix still attached.
+SUBJECTS=$(git log "$RANGE" --no-merges --format="%s" -- apps/desktop/ packages/shared/)
+FEATURES=$(printf '%s\n' "$SUBJECTS" | sed -nE 's/^feat(\([^)]+\))?!?:[[:space:]]*//p')
+FIXES=$(printf '%s\n' "$SUBJECTS" | sed -nE 's/^fix(\([^)]+\))?!?:[[:space:]]*//p')
 
 NOTES=""
 

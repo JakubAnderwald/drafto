@@ -187,6 +187,12 @@ Test 6 is the fossil check: it opens the app, requires it to survive 15 s, and f
 
 **Identifying a pre-merge build.** Release notes begin `PRE-MERGE TEST BUILD — issue #N / PR #M (sha)` (prepended before the char trim, so it survives Play's 500-char cap), and the Fastlane post-hook `comment-intest-build.mjs` posts the build number on the card when the lane lands.
 
+> Both only apply to a PR branched **after** they landed (`d951b75`). Lanes build the PR head, so an older branch runs its own older copy of `generate-release-notes.sh` and Fastfile and produces neither. If a card's build arrives without the banner, rebase its branch onto `main` — that also re-triggers the scenario and both lanes off the new SHA.
+
+**A pre-merge build never creates a release tag.** The desktop lane tags `desktop@<version>+<build>` after shipping, so the next build's notes start from that tag rather than dumping the whole history — but a pre-merge lane builds an **unmerged** commit. Tagging it publishes a release tag on a commit that is on no branch (and which a rebase can orphan, leaving the tag as the only thing keeping it alive), and it poisons the very range the tag exists to scope: the next real release would start from a tag on an abandoned branch. The tag step is therefore skipped whenever `DRAFTO_INTEST_ISSUE` is set. Both failure modes were observed before the guard — `desktop@0.3.2+49` and `+50` were pushed to origin for #463's pre-merge builds, and `+49`'s commit was orphaned by a rebase.
+
+Mobile tags the same way, as `mobile@<version>+<platform>.<build>` — the platform segment is required because iOS and Android ship one version under two independent build counters (1.3.0 was iOS build 32 and Android build 41). Because those two counters make a version sort meaningless, `apps/mobile/scripts/generate-release-notes.sh` picks its anchor with `--sort=-creatordate` rather than `-v:refname`; desktop, with a single counter, keeps the version sort.
+
 **Triage.**
 
 ```bash
