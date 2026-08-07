@@ -143,6 +143,8 @@ A card in **In Test** needs a build a human can actually install. `--watch` ther
 | `FACTORY_INTEST_BETA`         | `0`                                     | Master switch. `1` + Phase C/D dispatches the **mobile** lane (iOS TestFlight + Play internal). |
 | `FACTORY_INTEST_BETA_DESKTOP` | `0`                                     | Additionally dispatch the **macOS** lane. Only turn on after the fossil validation below.       |
 | `FACTORY_INTEST_TIMEOUT_SEC`  | `600`                                   | Wall-clock cap for the In Test scenario writer (read-only stage).                               |
+| `FACTORY_LANE_STALE_MIN`      | `120`                                   | A lane silent this long with no exit code is declared dead and retried.                         |
+| `FACTORY_LANE_MAX_ATTEMPTS`   | `3`                                     | Retry budget per lane per commit; a new commit resets it.                                       |
 | `DRAFTO_BETA_MOBILE_ROOT`     | `/Users/jakub/code/drafto-beta-mobile`  | Dedicated mobile build root.                                                                    |
 | `DRAFTO_DESKTOP_BUILD_ROOT`   | `/Users/jakub/code/drafto-beta-desktop` | Dedicated macOS build root (clonefile replica of the fossil).                                   |
 | `DRAFTO_DESKTOP_FOSSIL_ROOT`  | `/Users/jakub/code/drafto`              | The fossil the desktop root is seeded **from**. Never built in.                                 |
@@ -170,7 +172,9 @@ Then install that TestFlight build and run the verifier, which now launches the 
 
 ```bash
 cd /Users/jakub/code/drafto            # the preceding block leaves you in apps/desktop
-apps/desktop/scripts/verify-testflight-build.sh <email> <password>
+# The password is NOT an argument (argv is world-readable via `ps`): supply it
+# via the env var, or omit it and the script prompts silently.
+DRAFTO_VERIFY_PASSWORD='...' apps/desktop/scripts/verify-testflight-build.sh <email>
 ```
 
 Test 6 is the fossil check: it opens the app, requires it to survive 15 s, and fails on any new crash report. Everything before it passes on a build that dies instantly, because the "login" test is a `curl` against Supabase rather than the app signing in.
@@ -196,13 +200,19 @@ cat  logs/factory/beta-lane-mobile-463-b243d8196fa2.log.exit      # its exit cod
 
 **A failed lane re-arms itself.** Every lane's shell wrapper writes its exit code to `<log>.exit`. Before deciding what to dispatch, the sweep reads it:
 
-| `<log>.exit` | meaning        | what happens                                                                                                                             |
-| ------------ | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| absent       | still building | left alone                                                                                                                               |
-| `0`          | succeeded      | stays suppressed                                                                                                                         |
-| non-zero     | failed         | dropped from `intestBetaLanes`, retried next tick, and reported once on the issue (`<!-- drafto-factory-beta-failed:<lane>:<sha12> -->`) |
+| `<log>.exit`                                                     | meaning                                  | what happens                                                                                                                      |
+| ---------------------------------------------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| absent, log written recently                                     | still building                           | left alone                                                                                                                        |
+| absent, log silent > `FACTORY_LANE_STALE_MIN`                    | wrapper killed before it could record    | treated as failed, retried                                                                                                        |
+| absent, **no log at all**, dispatched > `FACTORY_LANE_STALE_MIN` | killed before it could even open its log | treated as failed, retried (judged against `intestBetaAt`)                                                                        |
+| present but empty / non-numeric                                  | caught mid-write                         | left alone; the staleness rows above are the backstop                                                                             |
+| `0`                                                              | succeeded                                | stays suppressed                                                                                                                  |
+| non-zero, attempt < `FACTORY_LANE_MAX_ATTEMPTS`                  | failed, budget remaining                 | dropped from `intestBetaLanes`, retried next tick, reported once (`<!-- drafto-factory-beta-failed:<lane>:<sha12> -->`)           |
+| non-zero, attempt = `FACTORY_LANE_MAX_ATTEMPTS`                  | failed, budget spent                     | **stops** — stays in `intestBetaLanes` so nothing re-dispatches it; the comment says the budget is spent. A new commit resets it. |
 
-So a build that dies at minute 20 — an expired cert, an Apple 5xx — no longer needs a manual state clear. If you _do_ want to force everything to rebuild:
+So a build that dies at minute 20 — an Apple 5xx, a dropped connection — no longer needs a manual state clear, and a deterministically-broken one stops after `FACTORY_LANE_MAX_ATTEMPTS` instead of rebuilding every tick. Lane artefacts are scoped per attempt: `beta-lane-<lane>-<issue>-<sha12>-a<attempt>.log`.
+
+If you _do_ want to force everything to rebuild:
 
 ```bash
 node scripts/lib/state-cli.mjs factory:set-issue-field <n> intestBetaLanes ""   # re-dispatch every lane

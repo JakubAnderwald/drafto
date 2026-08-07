@@ -29,8 +29,17 @@ if [[ -z "$PASSWORD" ]]; then
   exit 1
 fi
 if [[ "${DRAFTO_VERIFY_YES:-}" != "1" ]]; then
-  read -r -p "This will sign in to PRODUCTION as $EMAIL. Continue? [y/N] " REPLY
-  [[ "$REPLY" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
+  # Name the exact target and operation, and require an unambiguous answer: a
+  # bare "y" is too easy to hit reflexively for a real sign-in against prod.
+  echo ""
+  echo "  ⚠️  About to perform a REAL password sign-in against PRODUCTION:"
+  echo "        project:   tbmjbxxseonkciqovnpl (drafto.eu production Supabase)"
+  echo "        operation: POST /auth/v1/token?grant_type=password"
+  echo "        account:   $EMAIL"
+  echo "        using the password supplied via \$DRAFTO_VERIFY_PASSWORD / prompt"
+  echo ""
+  read -r -p "  Type 'sign in to production' to continue: " REPLY
+  [[ "$REPLY" == "sign in to production" ]] || { echo "Aborted."; exit 1; }
 fi
 
 PROD_URL="https://tbmjbxxseonkciqovnpl.supabase.co"
