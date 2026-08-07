@@ -102,7 +102,7 @@
 //                                    lastProd, lastStatus, lastError,
 //                                    lastFeedbackAt, intestCommentSha,
 //                                    intestBetaSha, intestBetaAt,
-//                                    intestBetaLanes}.
+//                                    intestBetaLanes, intestBetaAttempts}.
 //                                    Empty/`null` clears the field.
 //   factory:get-issue <issue>       Print issues[<n>] as JSON (empty record
 //                                    if absent).

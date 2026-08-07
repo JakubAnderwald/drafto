@@ -1,8 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { readFileSync, mkdtempSync, writeFileSync, rmSync, utimesSync } from "node:fs";
+import { dirname, resolve, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 // Tests for the In Review → In Test hand-off: the stage that writes the human
@@ -209,6 +210,40 @@ describe("intest_fallback_comment — always usable", () => {
   });
 });
 
+describe("In Test sweep — dispatch and scenario are independent", () => {
+  it("evaluates beta dispatch on every tick, not only when the scenario is stale", () => {
+    // Regression: dispatch used to live INSIDE intest_handoff, which the sweep
+    // gated on intestCommentSha != headRefOid. A lane blocked by a transient
+    // condition (low disk, knob off) was therefore never retried — once the
+    // scenario existed for that SHA the hand-off never ran again. Observed live
+    // on #463: freeing disk changed nothing until the key was cleared by hand.
+    const dispatchIdx = sweepBlock.indexOf("intest_dispatch_betas");
+    const staleGuardIdx = sweepBlock.indexOf('"$INTEST_HEAD_SHA" != "$SCENARIO_SHA"');
+    assert.ok(dispatchIdx !== -1, "sweep must dispatch");
+    assert.ok(staleGuardIdx !== -1, "sweep must still gate the scenario on its own key");
+    assert.ok(
+      dispatchIdx < staleGuardIdx,
+      "dispatch must be evaluated BEFORE (and outside) the scenario-staleness guard",
+    );
+  });
+
+  it("passes the dispatch result into the scenario writer rather than re-dispatching", () => {
+    assert.match(sweepBlock, /intest_handoff[\s\S]{0,200}"\$INTEST_BETA"/);
+    const handoff = fnBody("intest_handoff");
+    // No *call* — a comment naming the function is fine.
+    assert.ok(
+      !/\$\(\s*intest_dispatch_betas/.test(handoff),
+      "the scenario writer must not dispatch — it receives the result",
+    );
+  });
+
+  it("still keys each half on its own recorded SHA", () => {
+    assert.match(sweepBlock, /\.intestCommentSha/);
+    const dispatch = fnBody("intest_dispatch_betas");
+    assert.match(dispatch, /\.intestBetaSha/);
+  });
+});
+
 describe("In Test sweep — scenario backfill and refresh", () => {
   it("keys the refresh on the PR head SHA, not a monotonic marker", () => {
     // Idempotent within a SHA (no 5-minute comment spam) but re-armed by new
@@ -228,7 +263,7 @@ describe("In Test sweep — scenario backfill and refresh", () => {
   it("re-reads the comments after posting so the feedback baseline is not stale", () => {
     const handoffIdx = sweepBlock.indexOf("intest_handoff");
     const refetchIdx = sweepBlock.indexOf("COMMENTS_JSON=$(fetch_issue_comments", handoffIdx);
-    const hwmIdx = sweepBlock.indexOf('HWM=$(echo "$ISSUE_STATE_JSON"');
+    const hwmIdx = sweepBlock.indexOf('\n    HWM=$(echo "$ISSUE_STATE_JSON"');
     assert.ok(
       handoffIdx !== -1 && refetchIdx > handoffIdx,
       "comments must be re-read after posting",
@@ -391,12 +426,41 @@ describe("ensure_beta_build_root — working-tree safety", () => {
 describe("intest_dispatch_betas — idempotency and reporting", () => {
   const body = fnBody("intest_dispatch_betas");
 
-  it("keys idempotency on the head SHA, not a monotonic marker", () => {
+  it("keys idempotency PER LANE on the head SHA, not a monotonic marker", () => {
+    // A single shared SHA used to suppress every lane: mobile succeeding hid a
+    // desktop failure completely. `intestBetaLanes` is now the set of lanes
+    // confirmed started for `intestBetaSha`, and only those are suppressed.
     assert.match(body, /intestBetaSha/);
-    assert.match(body, /"\$prior_sha" == "\$sha"/);
-    assert.match(body, /beta already dispatched for/);
+    assert.match(body, /intestBetaLanes/);
+    // A different commit invalidates both the confirmed lanes and the budget.
+    assert.match(body, /-z "\$sha" \|\| "\$prior_sha" != "\$sha"/);
+    assert.match(body, /prior_lanes=""/);
+    assert.match(body, /prior_attempts=""/);
+    assert.match(body, /already dispatched for/);
     // A marker would suppress forever and break the In Test iteration loop.
     assert.ok(!body.includes("issue_has_marker"), "must not gate on a monotonic marker");
+  });
+
+  it("re-dispatches only the lanes missing from the confirmed set", () => {
+    assert.match(body, /to_dispatch="\$\{to_dispatch:\+\$to_dispatch,\}\$want"/);
+    assert.match(body, /re-dispatching only the missing lane\(s\)/);
+    assert.match(body, /--only "\$lanes"/);
+  });
+
+  it("records ONLY lanes whose start was confirmed, and unions with prior", () => {
+    // .dispatched is confirmed-started; .failed never suppresses a retry.
+    assert.match(body, /\.dispatched\[\]\?\.id/);
+    assert.match(body, /\[\.failed\[\]\?\.id\]/);
+    assert.match(body, /merged_lanes=/);
+    assert.match(body, /sort -u/);
+  });
+
+  it("records no SHA at all when nothing started, leaving the retry armed", () => {
+    assert.match(body, /started no lanes for #\$issue_num; leaving retry armed/);
+    // The state writes must sit inside the `dispatched non-empty` branch.
+    const elseIdx = body.indexOf("leaving retry armed");
+    const shaWrite = body.indexOf('intestBetaSha "$sha"');
+    assert.ok(shaWrite !== -1 && shaWrite < elseIdx, "the SHA write must be in the success branch");
   });
 
   it("records what it dispatched, for triage", () => {
@@ -450,6 +514,268 @@ describe("intest_dispatch_betas — idempotency and reporting", () => {
   });
 });
 
+describe("intest_check_lane_outcomes (extracted, real bash)", () => {
+  // Runs the REAL function against a temp log dir and a temp state file, so the
+  // .exit-file contract is exercised rather than pattern-matched.
+  const run = ({
+    exitContent,
+    lanes = "mobile",
+    sha = "abc123",
+    stateSha = "abc123",
+    dryRun = 0,
+    logAgeMin = 0,
+    writeLog = true,
+    dispatchedAgoMin = null,
+    attempts = "mobile:1",
+    attempt = 1,
+    decoys = null,
+  }) => {
+    const dir = mkdtempSync(join(tmpdir(), "drafto-outcome-"));
+    const stateFile = join(dir, "state.json");
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        issues: {
+          463: {
+            intestBetaSha: stateSha,
+            intestBetaLanes: lanes,
+            intestBetaAttempts: attempts,
+            ...(dispatchedAgoMin === null
+              ? {}
+              : {
+                  intestBetaAt: new Date(Date.now() - dispatchedAgoMin * 60_000)
+                    .toISOString()
+                    .replace(/\.\d+Z$/, "Z"),
+                }),
+          },
+        },
+      }),
+    );
+    const base = join(dir, `beta-lane-mobile-463-${sha.slice(0, 12)}-a${attempt}.log`);
+    if (writeLog) writeFileSync(base, "build output\n");
+    if (writeLog && logAgeMin > 0) {
+      const old = new Date(Date.now() - logAgeMin * 60_000);
+      utimesSync(base, old, old);
+    }
+    if (exitContent !== undefined) writeFileSync(`${base}.exit`, exitContent);
+    for (const [name, body] of Object.entries(decoys ?? {})) writeFileSync(join(dir, name), body);
+    const snippet = `
+set -uo pipefail
+eval "$(awk '/^iso_age_min\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
+eval "$(awk '/^lane_attempt_of\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
+eval "$(awk '/^lane_attempt_set\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
+eval "$(awk '/^intest_check_lane_outcomes\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
+log() { echo "[log] $*"; }
+issue_has_marker() { return 1; }
+# HARD STUB: these tests run with DRY_RUN=0 to exercise the state writes, which
+# also reaches the gh-issue-comment call. Without this stub that hits the real
+# GitHub API and posts to a live issue - it did, 464 times, before this landed.
+# Any real network or gh use from a unit test is a bug.
+gh() { echo "[gh-stub] $*"; return 0; }
+node() { command node "$@"; }
+SCRIPT_DIR="${resolve(HERE, "..", "lib")}/.."
+STATE_FILE=${JSON.stringify(stateFile)}
+LOG_DIR=${JSON.stringify(dir)}
+LOG_FILE=/dev/null
+FACTORY_LANE_STALE_MIN=120
+FACTORY_LANE_MAX_ATTEMPTS=3
+FACTORY_INTEST_BETA=1
+DRY_RUN=${dryRun}
+intest_check_lane_outcomes 463 ${JSON.stringify(sha)} 591
+cat "$STATE_FILE"
+`;
+    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+    const out = { status: r.status, stdout: r.stdout, stderr: r.stderr, dir, stateFile };
+    return out;
+  };
+
+  it("leaves a still-building lane alone (no .exit yet)", () => {
+    const r = run({ exitContent: undefined });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!/re-arming/.test(r.stdout), "a lane with no .exit must not be re-armed");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("leaves a succeeded lane suppressed (.exit = 0)", () => {
+    const r = run({ exitContent: "0\n" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!/re-arming/.test(r.stdout), "exit 0 must stay suppressed");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("re-arms a failed lane (.exit non-zero)", () => {
+    const r = run({ exitContent: "70\n" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /beta lane 'mobile' exited 70/);
+    assert.match(r.stdout, /re-arming attempt 2/);
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("ACTUALLY WRITES the re-armed lane set when not dry-running", () => {
+    // The other cases run DRY_RUN=1, which short-circuits the state write —
+    // so without this the re-arm itself had zero coverage.
+    const r = run({ exitContent: "1\n", lanes: "mobile,desktop", dryRun: 0 });
+    assert.equal(r.status, 0, r.stderr);
+    const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
+    assert.equal(
+      state.issues["463"].intestBetaLanes,
+      "desktop",
+      "the failed lane must be dropped and the healthy sibling kept",
+    );
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("declares a lane dead when its log went silent and no .exit ever arrived", () => {
+    // A wrapper killed by SIGKILL/reboot never writes .exit; without a staleness
+    // timeout the lane is suppressed forever.
+    const r = run({ exitContent: undefined, logAgeMin: 500, dryRun: 0 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /never recorded an exit code/);
+    const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
+    // state-cli normalises an empty value to null.
+    assert.ok(
+      !state.issues["463"].intestBetaLanes,
+      "a dead lane must be re-armed (lane set cleared)",
+    );
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("declares a lane dead when it left NO log and NO exit code (openSync fell back)", () => {
+    // Log missing AND wrapper killed: without the intestBetaAt fallback this
+    // lane would be "still building" for ever — the same silent non-delivery
+    // the whole mechanism exists to end.
+    const r = run({ exitContent: undefined, writeLog: false, dispatchedAgoMin: 300, dryRun: 0 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /left no log and no exit code/);
+    const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
+    assert.ok(!state.issues["463"].intestBetaLanes, "a traceless lane must be re-armed");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("does NOT declare a traceless lane dead while it is still young", () => {
+    const r = run({ exitContent: undefined, writeLog: false, dispatchedAgoMin: 5, dryRun: 0 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!/re-arming/.test(r.stdout), "a 5-minute-old dispatch is still building");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("stops retrying once the attempt cap is reached, and says so", () => {
+    // Without a cap a deterministically-broken lane rebuilds every 5 minutes
+    // for ever while the marker keeps the issue quiet about it.
+    const r = run({ exitContent: "1\n", attempts: "mobile:3", attempt: 3, dryRun: 0 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /attempt 3 of 3 — giving up/);
+    const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
+    assert.equal(
+      state.issues["463"].intestBetaLanes,
+      "mobile",
+      "a spent lane stays in the confirmed set so nothing re-dispatches it",
+    );
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("still retries while under the cap", () => {
+    const r = run({ exitContent: "1\n", attempts: "mobile:2", attempt: 2, dryRun: 0 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /re-arming attempt 3/);
+    const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
+    assert.ok(!state.issues["463"].intestBetaLanes, "an under-cap failure must re-arm");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("treats an empty or non-numeric .exit as STILL BUILDING, not as a failure", () => {
+    // The wrapper writes the code with `echo $? > file`; a reader can catch it
+    // mid-write. An empty read is not evidence of failure — declaring one would
+    // re-dispatch a healthy build. The staleness timeout still catches a file
+    // that never resolves.
+    for (const content of ["", "not-a-number\n", "\n"]) {
+      const r = run({ exitContent: content, dryRun: 0 });
+      assert.equal(r.status, 0, r.stderr);
+      assert.ok(
+        !/re-arming|giving up/.test(r.stdout),
+        `content ${JSON.stringify(content)} must not be read as a failure`,
+      );
+      const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
+      assert.equal(state.issues["463"].intestBetaLanes, "mobile", "lane stays pending");
+      rmSync(r.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a readable non-zero .exit as a failure", () => {
+    const r = run({ exitContent: "70\n", dryRun: 0 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /exited 70/);
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("reads only ITS OWN attempt's outcome, not another card's or another attempt's", () => {
+    // Decoys must land in the SAME dir the run reads from — an earlier version
+    // of this test made a fresh temp dir for the second run, so it asserted
+    // nothing at all. `decoys` writes them into that run's own directory.
+    const r = run({
+      exitContent: undefined,
+      dryRun: 0,
+      decoys: {
+        // old unscoped name, another card, another commit, another ATTEMPT
+        "beta-lane-mobile.log.exit": "1\n",
+        "beta-lane-mobile-999-deadbeef1234-a1.log.exit": "1\n",
+        "beta-lane-mobile-463-ffffffffffff-a1.log.exit": "1\n",
+        "beta-lane-mobile-463-abc123-a9.log.exit": "1\n",
+      },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(
+      !/re-arming|giving up/.test(r.stdout),
+      `no other dispatch's .exit may be read; stdout was: ${r.stdout}`,
+    );
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("ignores outcomes recorded for a different commit", () => {
+    // A .exit from an older SHA must not re-arm the current one.
+    const r = run({ exitContent: "1\n", sha: "newsha", stateSha: "oldsha" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!/re-arming/.test(r.stdout), "a stale SHA's outcome must be ignored");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("tolerates a garbage .exit file without crashing", () => {
+    const r = run({ exitContent: "not-a-number\n" });
+    assert.equal(r.status, 0, r.stderr);
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+});
+
+describe("intest_check_lane_outcomes — wiring and reporting", () => {
+  const body = fnBody("intest_check_lane_outcomes");
+
+  it("runs BEFORE the dispatch decision in the sweep", () => {
+    const checkIdx = sweepBlock.indexOf("intest_check_lane_outcomes");
+    const dispatchIdx = sweepBlock.indexOf("intest_dispatch_betas");
+    assert.ok(checkIdx !== -1, "the sweep must check outcomes");
+    assert.ok(
+      checkIdx < dispatchIdx,
+      "outcomes must be learned before deciding what to dispatch, or the re-arm lands a tick late",
+    );
+  });
+
+  it("posts a marker-guarded failure comment naming the log", () => {
+    assert.match(body, /drafto-factory-beta-failed:\$\{lane\}:\$\{sha:0:12\}/);
+    assert.match(body, /issue_has_marker/);
+    // Per ATTEMPT: a retry must never share artefacts with the attempt it
+    // replaces — a lane declared stale may still be alive and writing.
+    assert.match(
+      body,
+      /beta-lane-\$\{lane\}-\$\{issue_num\}-\$\{sha:0:12\}-a\$\{lane_attempt\}\.log/,
+    );
+  });
+
+  it("writes nothing under --dry-run", () => {
+    assert.match(body, /DRY_RUN" -eq 0 \]\][\s\S]{0,20}issue_has_marker/);
+    assert.match(body, /changed" -eq 1 && "\$DRY_RUN" -eq 0/);
+  });
+});
+
 describe("pre-merge beta knobs", () => {
   it("defaults both knobs off", () => {
     assert.match(script, /FACTORY_INTEST_BETA="\$\{FACTORY_INTEST_BETA:-0\}"/);
@@ -479,15 +805,75 @@ describe("pre-merge beta knobs", () => {
   });
 
   it("never lets a failed dispatch stop the scenario from being written", () => {
+    // The property moved to the call sites when dispatch was decoupled: each one
+    // falls back to an empty betaDispatch payload, and intest_handoff defaults
+    // the parameter, so a failed dispatch still yields a usable comment.
+    const sites = script.match(/INTEST_BETA=\$\(intest_dispatch_betas[\s\S]{0,240}?\)\n/g) || [];
+    assert.ok(sites.length >= 2, "both the advance path and the sweep must dispatch");
+    for (const site of sites) {
+      assert.match(site, /\|\| echo '\{"dispatched":\[\],"skipped":\[\],"manualCommands":\[\]\}'/);
+    }
     const handoff = fnBody("intest_handoff");
-    assert.match(
-      handoff,
-      /beta_json=\$\(intest_dispatch_betas[\s\S]{0,200}\|\| echo '\{"dispatched"/,
-    );
+    assert.match(handoff, /local beta_json="\$\{9:-/, "handoff must default the payload");
   });
 
   it("copies the Play service-account key into build roots (Android lane needs it)", () => {
     assert.match(script, /apps\/mobile\/google-play-service-account\.json/);
+  });
+});
+
+describe("logerr", () => {
+  it("writes to $LOG_FILE only — never via log(), never to bare stderr", () => {
+    // log() tees to stdout, which corrupted values the caller captures. Bare
+    // stderr was double-logged where the caller redirects it into $LOG_FILE and
+    // LOST entirely where it doesn't — --release's ensure_beta_build_root call
+    // had no redirect, so those lines vanished from the factory log.
+    const m = script.match(/^logerr\(\) \{.*$/m);
+    assert.ok(m, "logerr not found");
+    assert.ok(
+      !/\blog\b/.test(m[0]),
+      "logerr must not route through log() — that double-writes the file",
+    );
+    assert.match(m[0], />>"\$LOG_FILE"/);
+    assert.ok(!/>&2/.test(m[0]), "bare stderr loses messages at non-redirecting call sites");
+  });
+});
+
+describe("iso_age_min (extracted, real bash)", () => {
+  const age = (iso) => {
+    const r = spawnSync(
+      "bash",
+      [
+        "-c",
+        `eval "$(awk '/^iso_age_min\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"\niso_age_min ${JSON.stringify(iso)}`,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(r.status, 0, r.stderr);
+    return Number(r.stdout.trim());
+  };
+
+  it("measures whole minutes since an ISO-8601 UTC stamp", () => {
+    const threeHoursAgo = new Date(Date.now() - 180 * 60_000).toISOString().replace(/\.\d+Z$/, "Z");
+    const m = age(threeHoursAgo);
+    assert.ok(m >= 179 && m <= 181, `expected ~180, got ${m}`);
+  });
+
+  it("returns a huge number for anything not a well-formed UTC stamp", () => {
+    // Must NOT read as "just dispatched" — that would suppress the lane for
+    // ever. The shape is validated in-shell rather than delegated to date(1),
+    // because BSD and GNU disagree about what they accept: relying on the tool
+    // to reject garbage made this platform-dependent and it failed on CI.
+    for (const bad of [
+      "not-a-date",
+      "",
+      "12345",
+      "2026-08-07T04:00:00", // no trailing Z
+      "2026-08-07 04:00:00Z", // space instead of T
+      "2026-13-99T99:99:99Z", // right shape, impossible values
+    ]) {
+      assert.ok(age(bad) > 100000, `"${bad}" must not read as recent`);
+    }
   });
 });
 

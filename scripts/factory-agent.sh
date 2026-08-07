@@ -291,6 +291,18 @@ LOG_FILE="$LOG_DIR/factory-agent-$MODE_NAME-$(date +%Y-%m-%d).log"
 touch "$LOG_FILE"
 chmod 600 "$LOG_FILE"
 find "$LOG_DIR" -type f -name 'factory-agent-*.log' -mtime +30 -delete 2>/dev/null || true
+# Beta-lane artefacts are scoped per dispatch (beta-lane-<lane>-<issue>-<sha12>.log
+# and its .exit), so a new pair appears for every commit of every card and they
+# would otherwise accumulate without bound. Rotated on the same 30-day window —
+# well beyond FACTORY_LANE_STALE_MIN, so a live lane's files are never reaped.
+# Reap the bulky logs at 30 days but keep the tiny .exit markers for 90: the
+# outcome check reads "no .exit" as "still building / died", so deleting one out
+# from under a lane still listed in intestBetaLanes would retroactively turn a
+# succeeded build into a failure and rebuild it.
+find "$LOG_DIR" -type f -name 'beta-lane-*.log' -mtime +30 -delete 2>/dev/null || true
+find "$LOG_DIR" -type f -name 'beta-lane-*.log.exit' -mtime +90 -delete 2>/dev/null || true
+# (Build-root locks live at "<root>.lock" beside the root itself, not in
+# $LOG_DIR, and are reaped by the pid check in ensure_beta_build_root.)
 
 # Per-mode lock. Portable PID-file lock (macOS does not ship flock). Stale
 # locks (PID no longer alive) are reaped automatically — matches the pattern
@@ -315,7 +327,15 @@ log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 # log() writes to stdout, so a function whose stdout is CAPTURED by the caller
 # (command substitution) must use this instead — otherwise its log lines end up
 # inside the captured value and corrupt it (e.g. a JSON payload).
-logerr() { log "$@" >&2; }
+# For functions whose STDOUT is captured by the caller: write straight to
+# $LOG_FILE and nowhere else.
+#
+# Not log() — that tees to stdout, so its output landed inside the captured
+# value (a JSON payload, a path) and corrupted it. Not stderr either: call sites
+# vary in whether they redirect stderr into $LOG_FILE, so anything written there
+# is double-logged at some and lost entirely at others (--release's
+# ensure_beta_build_root had no redirect at all). One destination, always.
+logerr() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" >>"$LOG_FILE" 2>/dev/null || true; }
 
 # ── Failure notification (mirrors support-agent.sh) ─────────────────────────
 cleanup() {
@@ -1321,6 +1341,20 @@ ensure_beta_build_root() {
     return 1
   fi
 
+  # The roots are single fixed paths shared by every card and every mode, and
+  # this function hard-resets + cleans them. Resetting one while a detached lane
+  # is still building there corrupts that build. Hold a pid-file lock for the
+  # lifetime of the lane; a stale lock (pid gone) is reaped.
+  local lock="$root.lock" lock_pid=""
+  if [[ -f "$lock" ]]; then
+    lock_pid=$(cat "$lock" 2>/dev/null || echo "")
+    if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+      logerr "ERROR: $platform beta build root $root is in use by pid $lock_pid; refusing to reset it"
+      return 1
+    fi
+    rm -f "$lock" 2>/dev/null || true
+  fi
+
   if [[ ! -d "$root/.git" && ! -f "$root/.git" ]]; then
     logerr "Creating $platform beta build root at $root (detached at ${sha:0:12})"
     if ! git -C "$REPO_ROOT" worktree add --detach "$root" "$sha" >>"$LOG_FILE" 2>&1; then
@@ -1370,6 +1404,207 @@ ensure_beta_build_root() {
     git -C "$root" checkout -- apps/mobile/Gemfile.lock 2>/dev/null || true
   fi
   echo "$root"
+}
+
+# Claim a build root for a lane's lifetime. Written after the spawn succeeds so
+# a refused/failed dispatch never leaves a lock behind.
+claim_beta_build_root() {
+  local platform="$1" pid="$2" root
+  case "$platform" in
+    mobile)  root="$BETA_MOBILE_ROOT" ;;
+    desktop) root="$BETA_DESKTOP_ROOT" ;;
+    *) return 0 ;;
+  esac
+  [[ -n "$pid" && "$pid" != "?" ]] || return 0
+  echo "$pid" > "$root.lock" 2>/dev/null || true
+}
+
+# Learn how already-dispatched lanes actually ENDED, and re-arm the ones that
+# failed.
+#
+# A lane runs detached for 20-40 minutes; the dispatcher is long gone by the
+# time it finishes, so the lane's shell wrapper writes its exit code to
+# <log>.exit (see laneShellScript in dispatch-release.mjs). This reads that:
+#
+#   absent    → still building; leave it alone, UNLESS the log has been silent
+#               for FACTORY_LANE_STALE_MIN, which means the wrapper was killed
+#               before it could record anything
+#   0         → succeeded; stay suppressed
+#   non-zero  → failed; drop the lane from intestBetaLanes so the next dispatch
+#               retries it, and say so on the issue exactly once
+#
+# Without this a lane that starts fine and dies at minute 20 is indistinguishable
+# from one that shipped — which is how #463's iOS build failed on an Apple HTTP
+# 500 with nobody told and no retry ever attempted.
+#
+# A lane whose wrapper is killed outright (SIGKILL, reboot, launchd restart)
+# never writes .exit at all. Treating "absent" as "still building" forever would
+# suppress that lane permanently — the same silent non-delivery this whole
+# mechanism exists to end — so a lane with no outcome after this long is
+# declared dead and retried. Comfortably above a cold iOS+Android build.
+# Give up on a lane after this many attempts for one commit. Without a cap a
+# deterministically-broken lane (expired cert, genuine build break) rebuilds
+# every 5 minutes for ever while the marker keeps the issue quiet about it.
+FACTORY_LANE_MAX_ATTEMPTS="${FACTORY_LANE_MAX_ATTEMPTS:-3}"
+if ! [[ "$FACTORY_LANE_MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_LANE_MAX_ATTEMPTS='$FACTORY_LANE_MAX_ATTEMPTS'; defaulting to 3" >&2
+  FACTORY_LANE_MAX_ATTEMPTS=3
+fi
+
+FACTORY_LANE_STALE_MIN="${FACTORY_LANE_STALE_MIN:-120}"
+if ! [[ "$FACTORY_LANE_STALE_MIN" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_LANE_STALE_MIN='$FACTORY_LANE_STALE_MIN'; defaulting to 120" >&2
+  FACTORY_LANE_STALE_MIN=120
+fi
+
+# Whole minutes since an ISO-8601 UTC timestamp, or a huge number if it can't be
+# parsed (an unparseable stamp must not read as "just dispatched" and suppress a
+# lane for ever). BSD date on macOS; -j -f parses rather than sets.
+iso_age_min() {
+  local iso="$1" epoch now
+  # Validate the shape OURSELVES rather than relying on date(1) to reject
+  # garbage: BSD and GNU disagree about what they will accept, so delegating
+  # the check made the result platform-dependent.
+  [[ "$iso" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+    || { echo 999999; return 0; }
+  # BSD (macOS, where the factory runs) then GNU (ubuntu, where CI runs): `-j`
+  # does not exist in coreutils, so a BSD-only form returned the sentinel for
+  # EVERY timestamp on Linux.
+  epoch=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$iso" "+%s" 2>/dev/null \
+    || date -u -d "$iso" "+%s" 2>/dev/null || echo "")
+  [[ -n "$epoch" ]] || { echo 999999; return 0; }
+  now=$(date -u "+%s")
+  echo $(( (now - epoch) / 60 ))
+}
+
+# Attempt count for <lane> from an "a:1,b:2" CSV; 0 when absent.
+lane_attempt_of() {
+  local csv="$1" lane="$2" pair
+  for pair in $(echo "$csv" | tr ',' ' '); do
+    case "$pair" in "${lane}:"*) echo "${pair#*:}"; return 0 ;; esac
+  done
+  echo 0
+}
+
+# Set <lane> to <n> in an "a:1,b:2" CSV, preserving the other entries.
+lane_attempt_set() {
+  local csv="$1" lane="$2" n="$3" pair out=""
+  for pair in $(echo "$csv" | tr ',' ' '); do
+    case "$pair" in
+      ""|"${lane}:"*) ;;
+      *) out="${out:+$out,}$pair" ;;
+    esac
+  done
+  echo "${out:+$out,}${lane}:${n}"
+}
+
+# $1 issue, $2 head sha, $3 pr number.
+intest_check_lane_outcomes() {
+  local issue_num="$1" sha="$2" pr_num="${3:-}"
+  local state_json prior_sha prior_lanes prior_attempts dispatched_at lane exit_file
+  local log_file_path code lane_attempt kept="" changed=0 give_up
+  local reason
+
+  state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
+  prior_sha=$(echo "$state_json" | jq -r '.intestBetaSha // ""' 2>/dev/null || echo "")
+  prior_lanes=$(echo "$state_json" | jq -r '.intestBetaLanes // ""' 2>/dev/null || echo "")
+  dispatched_at=$(echo "$state_json" | jq -r '.intestBetaAt // ""' 2>/dev/null || echo "")
+  prior_attempts=$(echo "$state_json" | jq -r '.intestBetaAttempts // ""' 2>/dev/null || echo "")
+  # Only meaningful for the commit currently under test.
+  [[ -n "$sha" && "$prior_sha" == "$sha" && -n "$prior_lanes" ]] || return 0
+
+  for lane in $(echo "$prior_lanes" | tr ',' ' '); do
+    [[ -n "$lane" ]] || continue
+    # Same scoping key the dispatcher used, so we read OUR dispatch's outcome
+    # and never a concurrent card's or a post-merge lane's.
+    # Per ATTEMPT, not per commit: a lane declared stale may still be alive
+    # (the check is a timeout, not a death certificate) and would otherwise
+    # write its exit code over the retry that replaced it.
+    lane_attempt=$(lane_attempt_of "$prior_attempts" "$lane")
+    [[ "$lane_attempt" -ge 1 ]] || lane_attempt=1
+    log_file_path="$LOG_DIR/beta-lane-${lane}-${issue_num}-${sha:0:12}-a${lane_attempt}.log"
+    exit_file="${log_file_path}.exit"
+    reason=""
+    if [[ ! -f "$exit_file" ]]; then
+      # No outcome yet. Still building, or dead without a trace?
+      #
+      # Judge by the LOG's mtime, i.e. silence rather than elapsed time — a real
+      # build chatters constantly (the observed ones ran 4-10 min), so 120 min of
+      # nothing means the wrapper is gone. If the log is missing entirely (the
+      # openSync fell back to "ignore"), fall back to how long ago the dispatch
+      # was recorded; otherwise a lane with neither artefact would be suppressed
+      # for ever — the exact silent non-delivery this mechanism exists to end.
+      if [[ -f "$log_file_path" ]]; then
+        if [[ -n "$(find "$log_file_path" -mmin "+$FACTORY_LANE_STALE_MIN" 2>/dev/null)" ]]; then
+          reason="produced no output for over ${FACTORY_LANE_STALE_MIN} min and never recorded an exit code (killed?)"
+        else
+          kept="${kept:+$kept,}$lane"        # still building
+          continue
+        fi
+      elif [[ -n "$dispatched_at" ]] && [[ "$(iso_age_min "$dispatched_at")" -gt "$FACTORY_LANE_STALE_MIN" ]]; then
+        reason="left no log and no exit code ${FACTORY_LANE_STALE_MIN}+ min after dispatch (killed before it could write?)"
+      else
+        kept="${kept:+$kept,}$lane"          # too early to call
+        continue
+      fi
+    else
+      # No pipe: `tr | head` hands tr SIGPIPE once head has its bytes, so the
+      # pipeline exits 141 and `set -o pipefail` would kill the whole tick.
+      code=$(tr -cd '0-9' <"$exit_file" 2>/dev/null || true)
+      code="${code:0:4}"
+      if [[ "$code" == "0" ]]; then
+        kept="${kept:+$kept,}$lane"          # succeeded — stay suppressed
+        continue
+      fi
+      if [[ -z "$code" ]]; then
+        # Present but empty: the wrapper is mid-write, or the write was cut
+        # short. Neither is evidence of failure — look again next tick, and let
+        # the staleness timeout catch it if it never resolves.
+        kept="${kept:+$kept,}$lane"
+        continue
+      fi
+      reason="exited $code"
+    fi
+
+    changed=1
+    give_up=0
+    [[ "$lane_attempt" -ge "$FACTORY_LANE_MAX_ATTEMPTS" ]] && give_up=1
+    if [[ "$give_up" -eq 1 ]]; then
+      log "Issue #$issue_num: beta lane '$lane' $reason for ${sha:0:12}; attempt $lane_attempt of $FACTORY_LANE_MAX_ATTEMPTS — giving up"
+      # Keep it in the confirmed set so nothing re-dispatches it: the retry
+      # budget for this commit is spent. A new commit clears the slate.
+      kept="${kept:+$kept,}$lane"
+    else
+      log "Issue #$issue_num: beta lane '$lane' $reason for ${sha:0:12}; re-arming attempt $((lane_attempt + 1))"
+    fi
+    if [[ "$DRY_RUN" -eq 0 ]] \
+      && ! issue_has_marker "$issue_num" "drafto-factory-beta-failed:${lane}:${sha:0:12}"; then
+      gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+        --body "🏭 **The \`$lane\` beta build failed.**
+
+It $reason while building PR #${pr_num:-?} at \`${sha:0:12}\` (attempt $lane_attempt of \
+$FACTORY_LANE_MAX_ATTEMPTS), so the build promised above never landed. \
+$(if [[ "$give_up" -eq 1 ]]; then \
+    printf '%s' "The retry budget for this commit is now spent — no further attempts will run. Push a fix, or build it by hand."; \
+  elif [[ "$FACTORY_INTEST_BETA" != "1" ]]; then \
+    printf '%s' "Pre-merge beta dispatch is currently switched off, so no retry will run until an operator re-enables it."; \
+  else \
+    printf '%s' "The factory will retry on the next cycle, subject to the same disk / knob gates as the first attempt."; \
+  fi)
+
+Log on the build machine: \`$log_file_path\`
+
+<!-- drafto-factory-beta-failed:${lane}:${sha:0:12} -->" >>"$LOG_FILE" 2>&1 || true
+    fi
+  done
+
+  if [[ "$changed" -eq 1 && "$DRY_RUN" -eq 0 ]]; then
+    # Dropping the lane from the confirmed set is what re-arms the retry.
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+      intestBetaLanes "$kept" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  fi
+  return 0
 }
 
 # Dispatch pre-merge beta builds for an In Test card, so a native change is
@@ -1422,15 +1657,45 @@ intest_dispatch_betas() {
     return 0
   fi
 
-  # Already built this exact commit? Don't burn another build number.
-  prior_sha=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
-    --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.intestBetaSha // ""' 2>/dev/null || echo "")
-  if [[ -n "$sha" && "$prior_sha" == "$sha" ]]; then
-    logerr "Issue #$issue_num: beta already dispatched for ${sha:0:12}; not re-dispatching"
-    jq -nc --argjson skipped "$skipped_json" --argjson manual "$manual" \
-      '{ dispatched: [], skipped: $skipped, manualCommands: $manual }'
+  # PER-LANE idempotency. `intestBetaLanes` is the set of lanes CONFIRMED
+  # STARTED for `intestBetaSha` — so a lane that never started, or that started
+  # and later failed (see intest_check_lane_outcomes, which removes it), is
+  # re-dispatched while a healthy sibling is left alone. A single shared SHA
+  # used to suppress both: mobile succeeding hid a desktop failure entirely.
+  local prior_lanes="" prior_attempts="" state_json="" want to_dispatch="" new_attempts=""
+  local lane_attempt log_key
+  state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
+  prior_sha=$(echo "$state_json" | jq -r '.intestBetaSha // ""' 2>/dev/null || echo "")
+  prior_lanes=$(echo "$state_json" | jq -r '.intestBetaLanes // ""' 2>/dev/null || echo "")
+  prior_attempts=$(echo "$state_json" | jq -r '.intestBetaAttempts // ""' 2>/dev/null || echo "")
+  # A different commit invalidates every prior lane AND its retry budget.
+  if [[ -z "$sha" || "$prior_sha" != "$sha" ]]; then
+    prior_lanes=""
+    prior_attempts=""
+  fi
+
+  for want in $(echo "$lanes" | tr ',' ' '); do
+    [[ -n "$want" ]] || continue
+    case ",$prior_lanes," in
+      *",$want,"*) ;;                                   # already started for this SHA
+      *) to_dispatch="${to_dispatch:+$to_dispatch,}$want" ;;
+    esac
+  done
+
+  if [[ -z "$to_dispatch" ]]; then
+    logerr "Issue #$issue_num: beta lane(s) '$lanes' already dispatched for ${sha:0:12}; nothing to do"
+    # Report them as dispatched, not as an empty list: a scenario written on a
+    # later tick would otherwise tell the tester to build locally when a beta
+    # has in fact already shipped.
+    jq -nc --arg lanes "$prior_lanes" --argjson skipped "$skipped_json" --argjson manual "$manual" '
+      { dispatched: [ ($lanes | split(",") | .[] | select(length > 0) | { id: ., alreadyRunning: true }) ],
+        skipped: $skipped, manualCommands: $manual }'
     return 0
   fi
+  [[ "$to_dispatch" == "$lanes" ]] \
+    || logerr "Issue #$issue_num: re-dispatching only the missing lane(s) '$to_dispatch' (already started: '${prior_lanes:-none}')"
+  lanes="$to_dispatch"
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     logerr "DRY-RUN: would dispatch pre-merge beta lane(s) '$lanes' for #$issue_num at ${sha:0:12}"
@@ -1461,26 +1726,66 @@ intest_dispatch_betas() {
   root_flags="--repo-root ${mobile_root:-$REPO_ROOT}"
   [[ -n "${desktop_root:-}" ]] && root_flags="$root_flags --desktop-root $desktop_root"
 
+  # One dispatch = one attempt number, and the artefact path carries it. All
+  # lanes in a single dispatch share a key; that is fine because a lane is only
+  # ever re-dispatched alone, after being dropped from the confirmed set.
+  lane_attempt=0
+  for want in $(echo "$to_dispatch" | tr ',' ' '); do
+    [[ -n "$want" ]] || continue
+    local n; n=$(lane_attempt_of "$prior_attempts" "$want")
+    [[ "$n" -gt "$lane_attempt" ]] && lane_attempt="$n"
+  done
+  lane_attempt=$((lane_attempt + 1))
+  log_key="${issue_num}-${sha:0:12}-a${lane_attempt}"
+
   # shellcheck disable=SC2086 # root_flags is a deliberately word-split flag list
   dispatch_json=$(node "$SCRIPT_DIR/lib/dispatch-release.mjs" dispatch-premerge \
-    --platforms "$lanes" $root_flags \
-    --issue "$issue_num" --pr "$pr_num" --sha "$sha" 2>>"$LOG_FILE" || echo "")
+    --platforms "$lanes" --only "$lanes" $root_flags \
+    --issue "$issue_num" --pr "$pr_num" --sha "$sha" \
+    --log-dir "$LOG_DIR" --log-key "$log_key" 2>>"$LOG_FILE" || echo "")
+  # Only lanes whose process the OS CONFIRMED started land in .dispatched; a
+  # lane that could not start is in .failed and must not suppress its retry.
   dispatched=$(echo "$dispatch_json" | jq -r '[.dispatched[]?.id] | join(", ")' 2>/dev/null || echo "")
+  local lane_failed confirmed_csv merged_lanes
+  lane_failed=$(echo "$dispatch_json" | jq -r '[.failed[]?.id] | join(", ")' 2>/dev/null || echo "")
+  if [[ -n "$lane_failed" ]]; then
+    logerr "WARNING: Issue #$issue_num: beta lane(s) failed to start: $(echo "$dispatch_json" | jq -r '[.failed[]? | "\(.id) (\(.reason)) log=\(.logPath // "?")"] | join("; ")' 2>/dev/null)"
+  fi
   if [[ -n "$dispatched" ]]; then
-    logerr "Issue #$issue_num: dispatched pre-merge beta lane(s): $dispatched at ${sha:0:12}"
+    # Log pid + per-lane log path so a lane that dies later is traceable; its
+    # exit code lands in <log>.exit and intest_check_lane_outcomes reads it.
+    logerr "Issue #$issue_num: dispatched pre-merge beta lane(s): $dispatched at ${sha:0:12} — $(echo "$dispatch_json" | jq -r '[.dispatched[]? | "\(.id) pid=\(.pid // "?") log=\(.logPath // "?")"] | join("; ")' 2>/dev/null)"
+    # Union with lanes already confirmed for this SHA, so re-dispatching one
+    # missing lane doesn't drop the sibling that is already building.
+    confirmed_csv=$(echo "$dispatch_json" | jq -r '[.dispatched[]?.id] | join(",")' 2>/dev/null || echo "")
+    # Mark each root busy for the lane's lifetime so a concurrent card (or the
+    # post-merge lane) can't reset the tree out from under a running build.
+    while IFS=$'\t' read -r lid lpid; do
+      [[ -n "$lid" ]] && claim_beta_build_root "$lid" "$lpid"
+    done < <(echo "$dispatch_json" | jq -r '.dispatched[]? | "\(.id)\t\(.pid // "")"' 2>/dev/null || true)
+    merged_lanes=$(printf '%s\n%s\n' "${prior_lanes//,/$'\n'}" "${confirmed_csv//,/$'\n'}" \
+      | grep -v '^$' | sort -u | paste -sd, -)
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
       intestBetaSha "$sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
       intestBetaAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-      intestBetaLanes "$dispatched" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      intestBetaLanes "$merged_lanes" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    new_attempts="$prior_attempts"
+    for want in $(echo "$confirmed_csv" | tr ',' ' '); do
+      [[ -n "$want" ]] || continue
+      new_attempts=$(lane_attempt_set "$new_attempts" "$want" "$lane_attempt")
+    done
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+      intestBetaAttempts "$new_attempts" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   else
-    logerr "WARNING: pre-merge beta dispatch produced no lanes for #$issue_num"
+    # Nothing started — deliberately record NO SHA, so the next tick retries.
+    logerr "WARNING: pre-merge beta dispatch started no lanes for #$issue_num; leaving retry armed"
   fi
   # Merge bash-side skips (gate) with node-side refusals (e.g. fossil assertion).
   jq -nc --argjson d "$(echo "${dispatch_json:-{\}}" | jq -c '.dispatched // []' 2>/dev/null || echo '[]')" \
     --argjson gateSkipped "$skipped_json" \
-    --argjson laneSkipped "$(echo "${dispatch_json:-{\}}" | jq -c '.skipped // []' 2>/dev/null || echo '[]')" \
+    --argjson laneSkipped "$(echo "${dispatch_json:-{\}}" | jq -c '(.skipped // []) + [ (.failed // [])[] | { id: .id, reason: ("failed to start: " + .reason) } ]' 2>/dev/null || echo '[]')" \
     --argjson manual "$manual" \
     '{ dispatched: $d, skipped: ($gateSkipped + $laneSkipped), manualCommands: $manual }'
 }
@@ -1565,7 +1870,15 @@ intest_record_comment_sha() {
 intest_handoff() {
   local issue_num="$1" pr_num="$2" pr_obj="$3" preview_url="$4" advisory="$5"
   local head_sha="$6" diff_files="$7" platforms="$8"
-  local issue_record comments_json plan_json pr_diff bundle claude_input beta_json
+  # $9: the betaDispatch JSON from intest_dispatch_betas. Passed IN rather than
+  # computed here, so a dispatch blocked by a transient condition can be retried
+  # on a later tick without also rewriting the scenario. See the sweep.
+  local beta_json="${9:-}"
+  # Default here rather than in the expansion: a `}` inside ${..:-..} has to be
+  # escaped, and the escape leaks a literal backslash into the value — which
+  # produced INVALID JSON for the designated fallback payload.
+  [[ -n "$beta_json" ]] || beta_json='{"dispatched":[],"skipped":[],"manualCommands":[]}'
+  local issue_record comments_json plan_json pr_diff bundle claude_input
   local out_file start_iso exit_code=0 summary_line action
 
   if [[ ! -f "$INTEST_PROMPT_FILE" ]]; then
@@ -1589,12 +1902,6 @@ intest_handoff() {
   plan_json=$(extract_plan_comment "$comments_json")
   [[ -n "$plan_json" ]] || plan_json="null"
 
-  # Kick off pre-merge beta builds BEFORE writing the scenario, so the comment
-  # can tell the tester a build is already on its way (a Fastlane lane takes
-  # 20-40 min; the scenario takes seconds). Best-effort: no build must ever stop
-  # the scenario from being written.
-  beta_json=$(intest_dispatch_betas "$issue_num" "$pr_num" "$head_sha" "$platforms" 2>>"$LOG_FILE" \
-    || echo '{"dispatched":[],"skipped":[],"manualCommands":[]}')
   [[ -n "$beta_json" ]] || beta_json='{"dispatched":[],"skipped":[],"manualCommands":[]}'
   # The diff is the scenario's ground truth. An empty one still produces a
   # usable (if thinner) scenario, so a failure here is not fatal.
@@ -2828,7 +3135,8 @@ A human should take a look. Reset with \
     log "Issue #$ISSUE_NUM: required CI green (platforms: $(echo "$INTEST_PLATFORMS" | jq -c . 2>/dev/null)) → In Test"
     if [[ "$DRY_RUN" -eq 1 ]]; then
       log "DRY-RUN: would advance #$ISSUE_NUM to In Test and post a test scenario"
-      intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$(pr_failing_advisory "$PR_VIEW")" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" || true
+      INTEST_BETA=$(intest_dispatch_betas "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "$INTEST_PLATFORMS" 2>>"$LOG_FILE" || echo '{"dispatched":[],"skipped":[],"manualCommands":[]}')
+      intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$(pr_failing_advisory "$PR_VIEW")" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" "$INTEST_BETA" || true
       continue
     fi
     # Advance FIRST: the card must reach In Test even if writing the scenario
@@ -2839,7 +3147,10 @@ A human should take a look. Reset with \
     # Surface any advisory (non-required) red checks — e.g. CodeRabbit — so the
     # operator can glance before Approving, even though they didn't block advance.
     ADVISORY=$(pr_failing_advisory "$PR_VIEW")
-    intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$ADVISORY" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" || true
+    # Dispatch is its own step with its own SHA key, so a lane gated off here
+    # (low disk, knob off) can still fire on a later tick.
+    INTEST_BETA=$(intest_dispatch_betas "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "$INTEST_PLATFORMS" 2>>"$LOG_FILE" || echo '{"dispatched":[],"skipped":[],"manualCommands":[]}')
+    intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$ADVISORY" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" "$INTEST_BETA" || true
   done
 
   # ── In Test feedback sweep: a reporter comment requests a revision ──────────
@@ -2875,11 +3186,16 @@ A human should take a look. Reset with \
     ISSUE_STATE_JSON=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
       --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
 
-    # Scenario backfill / refresh. Keyed on the PR head SHA rather than a plain
-    # marker: a card that goes In Test → feedback → In Progress → In Test again
-    # is testing NEW code and needs a NEW scenario, while a card sitting still
-    # must not be re-commented every 5 minutes. Also catches cards that reached
-    # In Test before this stage existed (no recorded SHA at all).
+    # Beta dispatch and scenario refresh are evaluated INDEPENDENTLY, each keyed
+    # on its own recorded SHA. They used to be nested — dispatch happened only
+    # inside the scenario hand-off — which meant a dispatch blocked by a
+    # transient condition (low disk, a knob still off, an unavailable build
+    # root) was never retried: once the scenario existed for that SHA, the
+    # hand-off never ran again and no build was ever produced for the card.
+    # Splitting them lets the blocked half retry on any later tick while the
+    # already-written scenario stays put. (Observed for #463: the disk guard
+    # skipped both lanes, the scenario was written, and freeing disk changed
+    # nothing until the state key was cleared by hand.)
     SCENARIO_SHA=$(echo "$ISSUE_STATE_JSON" | jq -r '.intestCommentSha // ""' 2>/dev/null || echo "")
     INTEST_PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
     if [[ -n "$INTEST_PR_OBJ" && "$INTEST_PR_OBJ" != "null" ]]; then
@@ -2887,21 +3203,60 @@ A human should take a look. Reset with \
       INTEST_PR_VIEW=$(gh pr view "$INTEST_PR_NUM" --repo JakubAnderwald/drafto \
         --json statusCheckRollup,comments,headRefOid 2>>"$LOG_FILE" || echo "")
       INTEST_HEAD_SHA=$(echo "${INTEST_PR_VIEW:-}" | jq -r '.headRefOid // ""' 2>/dev/null || echo "")
-      if [[ -n "$INTEST_HEAD_SHA" && "$INTEST_HEAD_SHA" != "$SCENARIO_SHA" ]]; then
-        log "Issue #$ISSUE_NUM: In Test with no current scenario (have '${SCENARIO_SHA:-none}', head $INTEST_HEAD_SHA); writing one"
+      if [[ -n "$INTEST_HEAD_SHA" ]]; then
         INTEST_FILES=$(gh pr diff "$INTEST_PR_NUM" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE" || echo "")
         INTEST_PLATS=$(printf '%s\n' "$INTEST_FILES" | node "$SCRIPT_DIR/lib/dispatch-release.mjs" derive-platforms --diff-file - 2>>"$LOG_FILE" || echo '{}')
-        INTEST_PREVIEW=$(echo "${INTEST_PR_VIEW:-}" | jq -r '
-          ([ .comments[]? | select((.author.login // "") | test("vercel"; "i")) | .body ] | last // "")
-          + " " +
-          ([ .statusCheckRollup[]? | select(((.context // .name // "") | test("vercel"; "i")))
-             | (.targetUrl // .detailsUrl // "") ] | join(" "))' 2>/dev/null \
-          | grep -oE 'https://[a-zA-Z0-9._-]*vercel\.app[^ )]*' | head -1 || true)
-        intest_handoff "$ISSUE_NUM" "$INTEST_PR_NUM" "$INTEST_PR_OBJ" "$INTEST_PREVIEW" \
-          "$(pr_failing_advisory "${INTEST_PR_VIEW:-}")" "$INTEST_HEAD_SHA" "$INTEST_FILES" "$INTEST_PLATS" || true
-        # The scenario we just posted carries a drafto-factory marker, so
-        # owner_comments_since ignores it — it can never look like feedback.
-        COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM" 2>>"$LOG_FILE" || echo "$COMMENTS_JSON")
+
+        # Is this card about to roll back to In Progress on the reporter's
+        # feedback? If so, spend nothing on it: dispatching a 40-minute native
+        # build for a commit that is about to be superseded burns a build number
+        # and a build slot for nothing. (The rollback itself still happens below,
+        # from the same comment set.)
+        INTEST_HWM=$(echo "$ISSUE_STATE_JSON" | jq -r '.lastFeedbackAt // ""' 2>/dev/null || echo "")
+        INTEST_PENDING_FEEDBACK=0
+        if [[ -n "$INTEST_HWM" && "$INTEST_HWM" != "null" ]]; then
+          INTEST_NEW=$(owner_comments_since "$COMMENTS_JSON" "$INTEST_HWM")
+          INTEST_NEW_N=$(echo "$INTEST_NEW" | jq 'length' 2>/dev/null || echo "0")
+          [[ "$INTEST_NEW_N" =~ ^[0-9]+$ ]] || INTEST_NEW_N=0
+          for ((FIDX=0; FIDX<INTEST_NEW_N; FIDX++)); do
+            if ! is_noise_comment "$(echo "$INTEST_NEW" | jq -r ".[${FIDX}].body")"; then
+              INTEST_PENDING_FEEDBACK=1; break
+            fi
+          done
+        fi
+
+        # Learn how previously-dispatched lanes ended BEFORE deciding what to
+        # dispatch: a lane that failed is dropped from the confirmed set here,
+        # which is what lets the dispatch below pick it up again.
+        intest_check_lane_outcomes "$ISSUE_NUM" "$INTEST_HEAD_SHA" "$INTEST_PR_NUM" || true
+
+        # Dispatch is idempotent per lane (intestBetaSha + intestBetaLanes), so
+        # calling it every tick costs one state read and re-fires only for lanes
+        # that are missing, were gated off, or have just been re-armed.
+        if [[ "$INTEST_PENDING_FEEDBACK" -eq 1 ]]; then
+          log "Issue #$ISSUE_NUM: actionable feedback pending; not dispatching a beta for a commit about to be superseded"
+          INTEST_BETA='{"dispatched":[],"skipped":[],"manualCommands":[]}'
+        else
+          INTEST_BETA=$(intest_dispatch_betas "$ISSUE_NUM" "$INTEST_PR_NUM" "$INTEST_HEAD_SHA" "$INTEST_PLATS" 2>>"$LOG_FILE" \
+            || echo '{"dispatched":[],"skipped":[],"manualCommands":[]}')
+        fi
+        [[ -n "$INTEST_BETA" ]] || INTEST_BETA='{"dispatched":[],"skipped":[],"manualCommands":[]}'
+
+        if [[ "$INTEST_HEAD_SHA" != "$SCENARIO_SHA" ]]; then
+          log "Issue #$ISSUE_NUM: In Test with no current scenario (have '${SCENARIO_SHA:-none}', head $INTEST_HEAD_SHA); writing one"
+          INTEST_PREVIEW=$(echo "${INTEST_PR_VIEW:-}" | jq -r '
+            ([ .comments[]? | select((.author.login // "") | test("vercel"; "i")) | .body ] | last // "")
+            + " " +
+            ([ .statusCheckRollup[]? | select(((.context // .name // "") | test("vercel"; "i")))
+               | (.targetUrl // .detailsUrl // "") ] | join(" "))' 2>/dev/null \
+            | grep -oE 'https://[a-zA-Z0-9._-]*vercel\.app[^ )]*' | head -1 || true)
+          intest_handoff "$ISSUE_NUM" "$INTEST_PR_NUM" "$INTEST_PR_OBJ" "$INTEST_PREVIEW" \
+            "$(pr_failing_advisory "${INTEST_PR_VIEW:-}")" "$INTEST_HEAD_SHA" "$INTEST_FILES" "$INTEST_PLATS" \
+            "$INTEST_BETA" || true
+          # The scenario we just posted carries a drafto-factory marker, so
+          # owner_comments_since ignores it — it can never look like feedback.
+          COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM" 2>>"$LOG_FILE" || echo "$COMMENTS_JSON")
+        fi
       fi
     fi
 
@@ -3255,7 +3610,7 @@ retry next cycle; if it keeps failing, merge it by hand. The card stays in \
         # Prepare the dedicated desktop build root at the merged commit. The
         # factory can't update the fossil checkout itself (it's the operator's
         # working tree), so it builds from a disposable clonefile replica of it.
-        if DESKTOP_ROOT_READY=$(ensure_beta_build_root desktop "${MERGE_SHA:-origin/main}") && [[ -n "$DESKTOP_ROOT_READY" ]]; then
+        if DESKTOP_ROOT_READY=$(ensure_beta_build_root desktop "${MERGE_SHA:-origin/main}" 2>>"$LOG_FILE") && [[ -n "$DESKTOP_ROOT_READY" ]]; then
           DESKTOP_ROOT_FLAG="--desktop-root $DESKTOP_ROOT_READY"
         else
           log "Issue #$ISSUE_NUM: desktop beta build root unavailable; skipping the desktop lane"
@@ -3265,13 +3620,17 @@ retry next cycle; if it keeps failing, merge it by hand. The card stays in \
       fi
       DISPATCH_CSV=$(echo "$DISPATCH_PLATFORMS" | jq -r '[to_entries[] | select(.value) | .key] | join(",")' 2>/dev/null || echo "")
       # shellcheck disable=SC2086 # DESKTOP_ROOT_FLAG is a deliberately word-split flag pair
-      DISPATCH_JSON=$(node "$SCRIPT_DIR/lib/dispatch-release.mjs" dispatch --platforms "$DISPATCH_CSV" --repo-root "$REPO_ROOT" $DESKTOP_ROOT_FLAG 2>>"$LOG_FILE" || echo "")
+      DISPATCH_JSON=$(node "$SCRIPT_DIR/lib/dispatch-release.mjs" dispatch --platforms "$DISPATCH_CSV" --repo-root "$REPO_ROOT" $DESKTOP_ROOT_FLAG \
+        --log-dir "$LOG_DIR" --log-key "release-${MERGE_SHA:0:12}" 2>>"$LOG_FILE" || echo "")
       DISPATCHED=$(echo "$DISPATCH_JSON" | jq -r '[.dispatched[]?.id] | join(", ")' 2>/dev/null || echo "")
-      # A lane refused by its guard (e.g. the desktop root lost its fossil) is
-      # reported, never silently dropped — a missing beta must be visible.
-      SKIPPED_LANES=$(echo "$DISPATCH_JSON" | jq -r '[.skipped[]?.id] | join(", ")' 2>/dev/null || echo "")
+      # A lane refused by its guard (e.g. the desktop root lost its fossil) OR
+      # one that could not start at all is reported, never silently dropped — a
+      # missing beta must be visible. `.failed` is folded in here for the same
+      # reason it exists at all: an unreported non-delivery is the bug family
+      # this whole change set is closing.
+      SKIPPED_LANES=$(echo "$DISPATCH_JSON" | jq -r '[(.skipped[]?, .failed[]?) | .id] | join(", ")' 2>/dev/null || echo "")
       if [[ -n "$SKIPPED_LANES" ]]; then
-        SKIP_REASON=$(echo "$DISPATCH_JSON" | jq -r '[.skipped[]?.reason] | join("; ")' 2>/dev/null || echo "")
+        SKIP_REASON=$(echo "$DISPATCH_JSON" | jq -r '[(.skipped[]?, .failed[]?) | .reason] | join("; ")' 2>/dev/null || echo "")
         log "Issue #$ISSUE_NUM: beta lane(s) refused: $SKIPPED_LANES ($SKIP_REASON)"
         DESKTOP_SKIP_NOTE="$DESKTOP_SKIP_NOTE ⚠️ Beta lane(s) refused: **$SKIPPED_LANES** — $SKIP_REASON"
       fi

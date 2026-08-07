@@ -143,6 +143,8 @@ A card in **In Test** needs a build a human can actually install. `--watch` ther
 | `FACTORY_INTEST_BETA`         | `0`                                     | Master switch. `1` + Phase C/D dispatches the **mobile** lane (iOS TestFlight + Play internal). |
 | `FACTORY_INTEST_BETA_DESKTOP` | `0`                                     | Additionally dispatch the **macOS** lane. Only turn on after the fossil validation below.       |
 | `FACTORY_INTEST_TIMEOUT_SEC`  | `600`                                   | Wall-clock cap for the In Test scenario writer (read-only stage).                               |
+| `FACTORY_LANE_STALE_MIN`      | `120`                                   | A lane silent this long with no exit code is declared dead and retried.                         |
+| `FACTORY_LANE_MAX_ATTEMPTS`   | `3`                                     | Retry budget per lane per commit; a new commit resets it.                                       |
 | `DRAFTO_BETA_MOBILE_ROOT`     | `/Users/jakub/code/drafto-beta-mobile`  | Dedicated mobile build root.                                                                    |
 | `DRAFTO_DESKTOP_BUILD_ROOT`   | `/Users/jakub/code/drafto-beta-desktop` | Dedicated macOS build root (clonefile replica of the fossil).                                   |
 | `DRAFTO_DESKTOP_FOSSIL_ROOT`  | `/Users/jakub/code/drafto`              | The fossil the desktop root is seeded **from**. Never built in.                                 |
@@ -166,19 +168,59 @@ bash scripts/worktree-bootstrap.sh
 cd apps/desktop && pnpm release:beta        # ← NEVER `pnpm install` in this tree
 ```
 
-Then install that TestFlight build and **open a note**. Confirm `git -C /Users/jakub/code/drafto status --porcelain` is unchanged before and after. Only then add the knob to the plist and reload.
+Then install that TestFlight build and run the verifier, which now launches the app rather than only inspecting its bundle:
+
+```bash
+cd /Users/jakub/code/drafto            # the preceding block leaves you in apps/desktop
+# The password is NOT an argument (argv is world-readable via `ps`): supply it
+# via the env var, or omit it and the script prompts silently.
+DRAFTO_VERIFY_PASSWORD='...' apps/desktop/scripts/verify-testflight-build.sh <email>
+# It signs in to PRODUCTION, so it asks you to type "sign in to production".
+# Unattended: also set DRAFTO_VERIFY_CONFIRM='sign in to production'.
+```
+
+Test 6 is the fossil check: it opens the app, requires it to survive 15 s, and fails on any new crash report. Everything before it passes on a build that dies instantly, because the "login" test is a `curl` against Supabase rather than the app signing in.
+
+**It still cannot prove the app renders** — a blank window is a healthy process — so finish by opening the app and **opening a note** yourself. Confirm `git -C /Users/jakub/code/drafto status --porcelain` is unchanged before and after. Only then add the knob to the plist and reload.
+
+> Validated on **2026-08-06**: macOS build 48, built from `drafto-beta-desktop`, installs and opens a note. The replica is proven.
 
 **Identifying a pre-merge build.** Release notes begin `PRE-MERGE TEST BUILD — issue #N / PR #M (sha)` (prepended before the char trim, so it survives Play's 500-char cap), and the Fastlane post-hook `comment-intest-build.mjs` posts the build number on the card when the lane lands.
 
 **Triage.**
 
 ```bash
-node scripts/lib/state-cli.mjs factory:get-issue <n>     # intestBetaSha / intestBetaAt / intestBetaLanes
+node scripts/lib/state-cli.mjs factory:get-issue <n>     # intestBetaSha  = commit the lanes were dispatched for
+                                                         # intestBetaLanes = lanes CONFIRMED STARTED for it
                                                          # intestCommentSha = scenario's SHA
-node scripts/lib/state-cli.mjs factory:set-issue-field <n> intestBetaSha ""   # force a re-dispatch
+# Lane logs are scoped per dispatch: beta-lane-<lane>-<issue>-<sha12>.log
+tail -f logs/factory/beta-lane-mobile-463-b243d8196fa2.log        # what it's doing
+cat  logs/factory/beta-lane-mobile-463-b243d8196fa2.log.exit      # its exit code, once done
 ```
 
-Dispatch is idempotent per head SHA (no 5-minute re-fire) but re-arms on new commits, so an In Test → feedback → In Test round trip produces a fresh build. Lanes are skipped — with the reason reported in the In Test comment — when a knob is off, the phase is B, free disk is below `FACTORY_MIN_FREE_DISK_GB`, a build root can't be prepared, or the fossil assertion fails.
+**Dispatch is idempotent per lane, not per card.** `intestBetaLanes` holds only the lanes whose process the OS confirmed started for `intestBetaSha`. Each tick re-dispatches whatever is missing from that set, so a lane that was gated off (low disk, knob off), that failed to start, or that has since failed is picked up automatically — while a healthy sibling is left alone. A new commit invalidates the whole set.
+
+**A failed lane re-arms itself.** Every lane's shell wrapper writes its exit code to `<log>.exit`. Before deciding what to dispatch, the sweep reads it:
+
+| `<log>.exit`                                                     | meaning                                  | what happens                                                                                                                      |
+| ---------------------------------------------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| absent, log written recently                                     | still building                           | left alone                                                                                                                        |
+| absent, log silent > `FACTORY_LANE_STALE_MIN`                    | wrapper killed before it could record    | treated as failed, retried                                                                                                        |
+| absent, **no log at all**, dispatched > `FACTORY_LANE_STALE_MIN` | killed before it could even open its log | treated as failed, retried (judged against `intestBetaAt`)                                                                        |
+| present but empty / non-numeric                                  | caught mid-write                         | left alone; the staleness rows above are the backstop                                                                             |
+| `0`                                                              | succeeded                                | stays suppressed                                                                                                                  |
+| non-zero, attempt < `FACTORY_LANE_MAX_ATTEMPTS`                  | failed, budget remaining                 | dropped from `intestBetaLanes`, retried next tick, reported once (`<!-- drafto-factory-beta-failed:<lane>:<sha12> -->`)           |
+| non-zero, attempt = `FACTORY_LANE_MAX_ATTEMPTS`                  | failed, budget spent                     | **stops** — stays in `intestBetaLanes` so nothing re-dispatches it; the comment says the budget is spent. A new commit resets it. |
+
+So a build that dies at minute 20 — an Apple 5xx, a dropped connection — no longer needs a manual state clear, and a deterministically-broken one stops after `FACTORY_LANE_MAX_ATTEMPTS` instead of rebuilding every tick. Lane artefacts are scoped per attempt: `beta-lane-<lane>-<issue>-<sha12>-a<attempt>.log`.
+
+If you _do_ want to force everything to rebuild:
+
+```bash
+node scripts/lib/state-cli.mjs factory:set-issue-field <n> intestBetaLanes ""   # re-dispatch every lane
+```
+
+Lanes are still skipped up front — with the reason in the In Test comment — when a knob is off, the phase is B, free disk is below `FACTORY_MIN_FREE_DISK_GB`, a build root can't be prepared, or the fossil assertion fails.
 
 ## Kill switches
 
