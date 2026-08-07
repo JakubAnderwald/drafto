@@ -6,8 +6,9 @@
 # Usage: ./verify-testflight-build.sh <email>
 #        (the password is read from $DRAFTO_VERIFY_PASSWORD, or prompted for)
 #
-# This authenticates against PRODUCTION, so it asks before doing so unless
-# DRAFTO_VERIFY_YES=1 is set.
+# This authenticates against PRODUCTION. It requires the confirmation phrase
+# "sign in to production" — typed at the prompt, or supplied unattended via
+# $DRAFTO_VERIFY_CONFIRM.
 
 set -euo pipefail
 
@@ -28,7 +29,21 @@ if [[ -z "$PASSWORD" ]]; then
   echo "No password supplied — aborting."
   exit 1
 fi
-if [[ "${DRAFTO_VERIFY_YES:-}" != "1" ]]; then
+# One confirmation phrase, required on BOTH paths. A generic boolean flag
+# (DRAFTO_VERIFY_YES=1) is too easy to set once in a shell profile and forget,
+# after which unattended runs authenticate against production with no explicit
+# acknowledgement of what they are doing.
+PROD_CONFIRM_PHRASE="sign in to production"
+if [[ "${DRAFTO_VERIFY_CONFIRM:-}" != "$PROD_CONFIRM_PHRASE" ]]; then
+  if [[ -n "${DRAFTO_VERIFY_CONFIRM:-}" ]]; then
+    echo "DRAFTO_VERIFY_CONFIRM is set but does not match the required phrase — aborting."
+    exit 1
+  fi
+  if [[ ! -t 0 ]]; then
+    echo "Refusing to sign in to production non-interactively."
+    echo "Set DRAFTO_VERIFY_CONFIRM='$PROD_CONFIRM_PHRASE' to run unattended."
+    exit 1
+  fi
   # Name the exact target and operation, and require an unambiguous answer: a
   # bare "y" is too easy to hit reflexively for a real sign-in against prod.
   echo ""
@@ -38,8 +53,8 @@ if [[ "${DRAFTO_VERIFY_YES:-}" != "1" ]]; then
   echo "        account:   $EMAIL"
   echo "        using the password supplied via \$DRAFTO_VERIFY_PASSWORD / prompt"
   echo ""
-  read -r -p "  Type 'sign in to production' to continue: " REPLY
-  [[ "$REPLY" == "sign in to production" ]] || { echo "Aborted."; exit 1; }
+  read -r -p "  Type '$PROD_CONFIRM_PHRASE' to continue: " REPLY
+  [[ "$REPLY" == "$PROD_CONFIRM_PHRASE" ]] || { echo "Aborted."; exit 1; }
 fi
 
 PROD_URL="https://tbmjbxxseonkciqovnpl.supabase.co"

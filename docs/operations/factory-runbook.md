@@ -175,6 +175,8 @@ cd /Users/jakub/code/drafto            # the preceding block leaves you in apps/
 # The password is NOT an argument (argv is world-readable via `ps`): supply it
 # via the env var, or omit it and the script prompts silently.
 DRAFTO_VERIFY_PASSWORD='...' apps/desktop/scripts/verify-testflight-build.sh <email>
+# It signs in to PRODUCTION, so it asks you to type "sign in to production".
+# Unattended: also set DRAFTO_VERIFY_CONFIRM='sign in to production'.
 ```
 
 Test 6 is the fossil check: it opens the app, requires it to survive 15 s, and fails on any new crash report. Everything before it passes on a build that dies instantly, because the "login" test is a `curl` against Supabase rather than the app signing in.
