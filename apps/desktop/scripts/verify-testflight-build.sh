@@ -175,7 +175,10 @@ CRASHES_BEFORE=$(ls -1 "$CRASH_DIR" 2>/dev/null | grep -c -i "drafto" || true)
 # The app must NOT already be running: `open -a` on a running app just focuses
 # it, so every check below would pass against the previous build without the new
 # one ever starting — a false pass of the exact kind this script exists to stop.
+WE_STARTED_IT=0
+WAS_RUNNING_BEFORE=0
 if pgrep -f "$APP_PATH/Contents/MacOS/" >/dev/null 2>&1; then
+  WAS_RUNNING_BEFORE=1
   echo "       Drafto is already running — quitting it so this tests the INSTALLED build."
   osascript -e 'quit app "Drafto"' >/dev/null 2>&1 || true
   for _ in $(seq 1 10); do
@@ -207,6 +210,7 @@ if [[ "$APPEARED" -eq 0 ]]; then
   check "App appeared in the process table within 20s" "fail"
 else
   check "App appeared in the process table" "pass"
+  WE_STARTED_IT=1
   # Now the real test: does it STAY up? A fossil break dies within seconds of
   # launch, so require it to survive a continuous window.
   LAUNCH_OK="pass"
@@ -229,8 +233,17 @@ else
   check "No new crash report" "pass"
 fi
 
-# Leave the machine as we found it.
-osascript -e 'quit app "Drafto"' >/dev/null 2>&1 || true
+# Only quit what WE started. Quitting unconditionally would close an instance
+# the operator had open — and the script has no way to restore it, so a
+# "verification" run would silently take their editor away.
+if [[ "${WE_STARTED_IT:-0}" -eq 1 ]]; then
+  osascript -e 'quit app "Drafto"' >/dev/null 2>&1 || true
+fi
+if [[ "${WAS_RUNNING_BEFORE:-0}" -eq 1 ]]; then
+  echo ""
+  echo "ℹ️  Drafto was running before this script started; it was closed so the test"
+  echo "    would exercise the installed build. Reopen it if you were using it."
+fi
 
 # --- Summary ---
 echo ""
