@@ -101,6 +101,17 @@ Three further properties follow from the same principle:
 
   This applies to **pre-merge** lanes only. The post-merge `--release` lane writes an `.exit` too, but nothing reads it — there is no retry loop after a merge, and the Fastlane post-hook already reports the outcome. The file is kept purely for diagnosis.
 
+## Revision (2026-08-07, first lanes the factory ran unaided)
+
+With outcome tracking live, the factory dispatched its own lanes for the first time — and both failed instantly. The mechanism worked exactly as intended: the traceless-lane check re-armed the very lane that had vanished the day before, and the new per-lane log named the cause in one line. What it exposed was that **the factory had never successfully run a Fastlane lane at all**; the earlier "silent death" was this, unlogged. Two environment defects, neither in the dispatch logic:
+
+- **`bundle` resolved to system Ruby 2.6.** The launchd `PATH` carried no `~/.rbenv/shims`, so every lane died on `Could not find 'bundler'`. Operator-side fix; the failure is now visible in the lane log instead of being invisible.
+- **The build inherited `umask 077`.** `factory-agent.sh` sets it so its token-bearing logs stay owner-only, but it reached the build: xcodebuild emitted a mode-700 `.app`, `productbuild` copied those modes into the pkg, and App Store Connect rejected all three attempts with **ITMS-90255**. **The lane wrapper now sets `umask 022`, and `ensure_beta_build_root` normalises the checkout with a `go+rX` pass that prunes the seeded credentials rather than widening and restoring them** — the build's own output and the resources it copies in are separate halves of the same problem, and the checked-out fonts/assets were mode 600 too. Normalising the _inputs_ rather than chmod-ing the signed `.app` keeps the fix clear of the code signature.
+
+This class of bug is invisible to a manual test: an interactive shell runs at umask 022, so building by hand — the exact thing done to validate build 48 — cannot reproduce it. The macOS lane had genuinely never been exercised under the environment it actually runs in.
+
+One reporting gap surfaced with it: **a failure comment is never retracted.** #463 carried "the `mobile` beta build failed" as the last word on the issue while a working build sat on TestFlight, because a later success said nothing. A lane that succeeds after having announced a failure for the same commit now posts a one-time retraction.
+
 Also settled: **the clonefile fossil replica is validated.** macOS build 48 was built from `/Users/jakub/code/drafto-beta-desktop`, uploaded to TestFlight, installed, and opens a note — the runtime proof this ADR said a green compile could not provide. `apps/desktop/scripts/verify-testflight-build.sh` is now in the repo and launches the app rather than only inspecting its bundle, so the hard-crash case is caught automatically; a blank screen still needs a human, and the script says so.
 
 ## Consequences

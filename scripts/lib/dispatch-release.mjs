@@ -219,9 +219,19 @@ function shQuote(s) {
 // after that — there is no parent left to observe the exit. Without this file,
 // a lane that fails at minute 20 is indistinguishable from one that succeeded,
 // which is exactly how #463's iOS lane failed silently on an Apple HTTP 500.
+// The `umask 022` is load-bearing, not hygiene. factory-agent.sh sets `umask
+// 077` so its own logs (which carry GitHub tokens) stay owner-only — but that
+// umask is inherited all the way down into the build, where xcodebuild then
+// emits an .app whose every file is mode 700/600. productbuild copies those
+// modes verbatim into the pkg payload, and App Store Connect rejects it:
+//   ERROR ITMS-90255: "The installer package includes files that are only
+//   readable by the root user. This will prevent verification of the
+//   application's code signature when your app is run."
+// Observed on #463: three consecutive macOS uploads rejected, while the
+// byte-identical build made by hand at umask 022 shipped fine.
 export function laneShellScript(lane, logPath) {
   const cmd = [lane.command, ...(lane.args ?? [])].join(" ");
-  return `${cmd}; echo $? > ${shQuote(`${logPath}.exit`)}`;
+  return `umask 022; ${cmd}; echo $? > ${shQuote(`${logPath}.exit`)}`;
 }
 
 // Spawn a lane detached so a ~20-40 min Fastlane build never blocks the tick,

@@ -465,7 +465,27 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
       { id: "mobile", command: "pnpm", args: ["release:beta:all"] },
       "/tmp/x.log",
     );
-    assert.match(script, /^pnpm release:beta:all; echo \$\? > '\/tmp\/x\.log\.exit'$/);
+    assert.match(script, /^umask 022; pnpm release:beta:all; echo \$\? > '\/tmp\/x\.log\.exit'$/);
+  });
+
+  it("laneShellScript relaxes the umask so the build is not owner-only", () => {
+    const script = laneShellScript(
+      { id: "desktop", command: "pnpm", args: ["release:beta"] },
+      "/tmp/d.log",
+    );
+    // The factory runs at umask 077 for its token-bearing logs. Inherited into a
+    // macOS build it yields a mode-700 .app, which productbuild bakes into the
+    // pkg and App Store Connect rejects with ITMS-90255. Three uploads on #463
+    // died this way, so pin both the value and its position.
+    assert.ok(script.startsWith("umask 022; "), "umask must be set BEFORE the lane runs");
+  });
+
+  it("umask does not disturb the exit code the .exit file records", () => {
+    // `umask` is a prefix statement, not part of the pipeline, so `$?` must still
+    // be the LANE's status. If it ever moved after the command, every lane would
+    // report success and the whole outcome-tracking mechanism would go blind.
+    const script = laneShellScript({ id: "mobile", command: "false", args: [] }, "/tmp/e.log");
+    assert.match(script, /false; echo \$\?/);
   });
 
   it("omits pid/logPath under dryRun (nothing was spawned)", async () => {

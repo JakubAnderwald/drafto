@@ -363,6 +363,55 @@ describe("ensure_beta_build_root — working-tree safety", () => {
     assert.match(body, /pwd -P/);
   });
 
+  it("normalises modes so the tree it hands the build is not owner-only", () => {
+    // The factory runs at umask 077, so git/pnpm/CocoaPods write mode 600 here.
+    // Those files are copied verbatim into the .app, and App Store Connect
+    // rejects the pkg with ITMS-90255. Three macOS uploads died this way on #463.
+    assert.match(body, /-exec chmod go\+rX \{\} \+/);
+  });
+
+  it("normalises AFTER the install, not before it", () => {
+    // pnpm/bundle create files too; chmod-ing first would leave the newest — and
+    // largest — set of files still owner-only.
+    const chmodIdx = body.indexOf("chmod go+rX");
+    const installIdx = body.indexOf("run_pnpm_install");
+    assert.ok(installIdx !== -1 && chmodIdx > installIdx, "chmod must run after the installs");
+  });
+
+  it("PRUNES credentials from the traversal rather than widening then restoring", () => {
+    // A build root is ~100k files. "chmod -R, then put the secrets back" leaves
+    // them world-readable for the length of the walk — a window, on a machine
+    // that also runs unattended agents. They must never be widened at all.
+    const pruneIdx = body.indexOf("-prune");
+    const widenIdx = body.indexOf("chmod go+rX");
+    assert.ok(pruneIdx !== -1, "credentials must be pruned from the traversal");
+    assert.ok(pruneIdx < widenIdx, "the prune must be evaluated BEFORE the chmod action");
+  });
+
+  it("covers every credential seeded into the root, not just .env*", () => {
+    // worktree-bootstrap.sh also seeds google-play-service-account.json — a Play
+    // publishing credential. Matching only `.env*` would leave it at 644
+    // permanently, which is worse than the window this guard closes.
+    for (const pat of [
+      "'.env\\*'",
+      "'google-play-service-account.json'",
+      "'*.keystore'",
+      "'*.p12'",
+    ]) {
+      assert.ok(
+        body.includes(`-name ${pat}`.replace("\\*", "*")),
+        `the credential set must cover ${pat}`,
+      );
+    }
+  });
+
+  it("still forces the credentials owner-only afterwards (defence in depth)", () => {
+    assert.match(body, /-exec chmod go-rwx \{\} \+/);
+    const widenIdx = body.indexOf("chmod go+rX");
+    const restrictIdx = body.indexOf("chmod go-rwx");
+    assert.ok(restrictIdx > widenIdx, "the restrictive pass must come last");
+  });
+
   it("refuses an empty sha rather than resetting to something arbitrary", () => {
     assert.match(body, /-n "\$sha" \]\] \|\| \{ logerr "ERROR: ensure_beta_build_root: empty sha"/);
   });
@@ -529,6 +578,7 @@ describe("intest_check_lane_outcomes (extracted, real bash)", () => {
     attempts = "mobile:1",
     attempt = 1,
     decoys = null,
+    markers = [],
   }) => {
     const dir = mkdtempSync(join(tmpdir(), "drafto-outcome-"));
     const stateFile = join(dir, "state.json");
@@ -566,7 +616,13 @@ eval "$(awk '/^lane_attempt_of\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")
 eval "$(awk '/^lane_attempt_set\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 eval "$(awk '/^intest_check_lane_outcomes\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 log() { echo "[log] $*"; }
-issue_has_marker() { return 1; }
+# Models markers already on the issue ($2 is the marker). Default: none present.
+issue_has_marker() {
+  case "$2" in
+${markers.map((m) => `    ${JSON.stringify(m)}) return 0 ;;`).join("\n") || "    __none__) return 0 ;;"}
+  esac
+  return 1
+}
 # HARD STUB: these tests run with DRY_RUN=0 to exercise the state writes, which
 # also reaches the gh-issue-comment call. Without this stub that hits the real
 # GitHub API and posts to a live issue - it did, 464 times, before this landed.
@@ -576,7 +632,7 @@ node() { command node "$@"; }
 SCRIPT_DIR="${resolve(HERE, "..", "lib")}/.."
 STATE_FILE=${JSON.stringify(stateFile)}
 LOG_DIR=${JSON.stringify(dir)}
-LOG_FILE=/dev/null
+LOG_FILE=${JSON.stringify(join(dir, "agent.log"))}
 FACTORY_LANE_STALE_MIN=120
 FACTORY_LANE_MAX_ATTEMPTS=3
 FACTORY_INTEST_BETA=1
@@ -585,8 +641,16 @@ intest_check_lane_outcomes 463 ${JSON.stringify(sha)} 591
 cat "$STATE_FILE"
 `;
     const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
-    const out = { status: r.status, stdout: r.stdout, stderr: r.stderr, dir, stateFile };
-    return out;
+    // gh output is redirected into $LOG_FILE, so comment assertions must read it
+    // there — pointing LOG_FILE at /dev/null (as this harness used to) silently
+    // discards every comment the function makes.
+    let agentLog = "";
+    try {
+      agentLog = readFileSync(join(dir, "agent.log"), "utf8");
+    } catch {
+      agentLog = "";
+    }
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr, agentLog, dir, stateFile };
   };
 
   it("leaves a still-building lane alone (no .exit yet)", () => {
@@ -600,6 +664,58 @@ cat "$STATE_FILE"
     const r = run({ exitContent: "0\n" });
     assert.equal(r.status, 0, r.stderr);
     assert.ok(!/re-arming/.test(r.stdout), "exit 0 must stay suppressed");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("retracts its own failure notice when the retry succeeds", () => {
+    // GitHub comments are append-only. #463 ended up with "the mobile beta build
+    // failed" as the last word on the issue while a working build sat on
+    // TestFlight — the tester had no way to know.
+    const r = run({ exitContent: "0\n", markers: ["drafto-factory-beta-failed:mobile:abc123"] });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.agentLog, /issue comment/, "a recovery notice must be posted");
+    assert.match(r.agentLog, /succeeded on retry/);
+    assert.match(r.agentLog, /drafto-factory-beta-recovered:mobile:abc123/);
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("stays silent on success when no failure was ever announced", () => {
+    // The common case. A recovery notice here would be noise retracting nothing.
+    const r = run({ exitContent: "0\n", markers: [] });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!/issue comment/.test(r.agentLog), "nothing to retract, so nothing to say");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("posts the recovery notice at most once", () => {
+    // Every tick re-reads the same exit=0; without the marker guard the issue
+    // would collect one retraction per 5 minutes, forever.
+    const r = run({
+      exitContent: "0\n",
+      markers: [
+        "drafto-factory-beta-failed:mobile:abc123",
+        "drafto-factory-beta-recovered:mobile:abc123",
+      ],
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!/issue comment/.test(r.agentLog), "the recovery notice must not repeat");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("backfills a missing attempt number so the dispatcher agrees with the log", () => {
+    // State predating intestBetaAttempts. This function clamped to 1 and logged
+    // "re-arming attempt 2", but left the field unset — so the dispatcher read 0,
+    // computed 0+1=1, and re-used the artefact paths of the attempt that had just
+    // failed, where a stale .exit was waiting to be misread as the retry's result.
+    const r = run({ exitContent: "1\n", attempts: "", dryRun: 0 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /re-arming attempt 2/);
+    const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
+    assert.equal(
+      state.issues["463"].intestBetaAttempts,
+      "mobile:1",
+      "the attempt the log just referred to must be persisted",
+    );
     rmSync(r.dir, { recursive: true, force: true });
   });
 
