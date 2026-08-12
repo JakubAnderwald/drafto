@@ -63,3 +63,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0028](./0028-desktop-find-in-note.md)                               | Desktop Find-in-Note (and the macOS Cmd+F crash)     | Accepted           | 2026-07-06 |
 | [0029](./0029-factory-ultracode-effort.md)                           | Dark Factory Claude Effort (ultracode coding stages) | Accepted           | 2026-07-15 |
 | [0030](./0030-in-test-scenarios-and-pre-merge-betas.md)              | In Test Scenarios and Pre-Merge Beta Builds          | Accepted           | 2026-07-30 |
+| [0031](./0031-personal-skills-in-cloud-sessions.md)                  | Personal Skills in Cloud Sessions                    | Accepted           | 2026-08-12 |

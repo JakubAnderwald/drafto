@@ -36,6 +36,7 @@ One brief per functional area. Each brief lists the current state, code paths on
 ## Operations
 
 - [`operations/local-dev-setup.md`](./operations/local-dev-setup.md) — first-time machine setup
+- [`operations/cloud-sessions.md`](./operations/cloud-sessions.md) — claude.ai/code and mobile sessions: what carries over, personal skills
 - [`operations/builds-and-releases.md`](./operations/builds-and-releases.md) — Fastlane for iOS / Android / macOS, versioning, release notes
 - [`operations/migrations.md`](./operations/migrations.md) — Supabase migration workflow, production safety rails
 
