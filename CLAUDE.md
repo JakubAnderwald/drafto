@@ -93,7 +93,7 @@ echo "sdk.dir=/Users/jakub/Library/Android/sdk" > apps/mobile/android/local.prop
 **Worktree git gotchas:**
 
 - **Cannot checkout `main`**: In a worktree, `main` is already checked out by the original repo. To create a new branch from latest main, use: `git fetch origin main && git checkout -b <branch> origin/main`
-- **Cannot merge PRs with `--delete-branch`**: `gh pr merge --delete-branch` fails because it tries to switch to `main` locally. Instead use the GitHub API: `gh api repos/{owner}/{repo}/pulls/{number}/merge -f merge_method=squash`
+- **Cannot merge PRs with `--delete-branch`**: `gh pr merge --delete-branch` fails because it tries to switch to `main` locally. Instead use the GitHub API — `--method PUT` is required, because the merge endpoint is a PUT while `gh api` switches to POST as soon as any `-f` field is present, and a POST there returns a bare `404 Not Found`: `gh api --method PUT repos/{owner}/{repo}/pulls/{number}/merge -f merge_method=squash`. Delete the remote branch afterwards with `gh api -X DELETE repos/{owner}/{repo}/git/refs/heads/<branch>`.
 - **Fastlane in worktrees**: Worktrees do not share Ruby gems. Run `bundle install` in the worktree's `apps/mobile/` (or `apps/desktop/`) directory before using Fastlane commands. Also copy `google-play-service-account.json` if needed for store submissions.
 
 ## Parallel Tool Execution
