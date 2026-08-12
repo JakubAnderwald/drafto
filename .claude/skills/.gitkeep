@@ -1,0 +1,9 @@
+# Intentionally tracked, intentionally empty.
+#
+# .claude/hooks/sync-cloud-skills.sh clones personal skills into this directory
+# at the start of every cloud session. Claude Code only watches a top-level
+# skills directory that existed when the session started, so this placeholder
+# makes the directory part of the clone — without it, skills dropped in by the
+# hook would need a restart to be discovered.
+#
+# Everything else in here is gitignored. See docs/operations/cloud-sessions.md.
