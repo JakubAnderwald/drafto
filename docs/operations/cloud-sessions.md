@@ -34,9 +34,11 @@ Two supporting pieces are easy to break:
 - **`.claude/skills/.gitkeep` is tracked on purpose.** Claude Code only watches a top-level skills directory that existed when the session started. Without the placeholder, skills the hook drops in would need a session restart to be discovered.
 - **`.gitignore` keeps `.claude/skills/*` ignored.** `/push` runs `git add -A`, so an un-ignored clone would end up committed into this repo.
 
-### Required once: make the skills repo reachable
+### Reachability: the skills repo is public
 
-The session VM's git credential is proxied and scoped to repositories attached to the session, so a private `claude-skills` is not clonable by default. Pick one:
+**Current state: `claude-skills` is public, so no token is configured and none is needed.** If it ever goes private again, the hook stops finding it and every cloud session prints the failure note until a token is added.
+
+The session VM's git credential is proxied and scoped to repositories attached to the session, so a private `claude-skills` is not clonable by default. The two options:
 
 | Option                                 | How                                                                                                                                                                       |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
