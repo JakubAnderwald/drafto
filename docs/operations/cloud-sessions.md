@@ -6,12 +6,12 @@ Cloud sessions run Claude Code on an Anthropic-managed VM instead of this Mac. T
 
 A cloud session starts from a fresh clone of this repo. Everything it knows comes from that clone, from plugins declared in the repo's `.claude/settings.json`, or from skills enabled on your claude.ai account. Nothing from `~/.claude/` on a local machine travels with it.
 
-| Carried over                                                        | Not carried over                                          |
-| ------------------------------------------------------------------- | --------------------------------------------------------- |
-| `CLAUDE.md`, `.claude/settings.json` hooks, `.mcp.json`             | `~/.claude/CLAUDE.md`                                     |
-| `.claude/skills/`, `.claude/agents/`, `.claude/commands/` (tracked) | `~/.claude/skills/` — including the symlinked skills repo |
-| Plugins declared in the repo's `.claude/settings.json`              | Plugins enabled only in user settings                     |
-| —                                                                   | Local secrets (`~/drafto-secrets/`), SSO, MDM settings    |
+| Carried over                                                                  | Not carried over                                          |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `CLAUDE.md`, `.claude/settings.json` hooks, `.mcp.json`                       | `~/.claude/CLAUDE.md`                                     |
+| Tracked files under `.claude/skills/`, `.claude/agents/`, `.claude/commands/` | `~/.claude/skills/` — including the symlinked skills repo |
+| Plugins declared in the repo's `.claude/settings.json`                        | Plugins enabled only in user settings                     |
+| —                                                                             | Local secrets (`~/drafto-secrets/`), SSO, MDM settings    |
 
 Full reference: [What carries over from your setup](https://code.claude.com/docs/en/cloud-environments#what-carries-over-from-your-setup).
 
@@ -23,8 +23,9 @@ Full reference: [What carries over from your setup](https://code.claude.com/docs
 
 1. Exits immediately unless `CLAUDE_CODE_REMOTE=true`, so local sessions are untouched (the symlink already serves them, and personal skills override project ones).
 2. Shallow-clones `claude-skills` and copies `push/` and `merge/` into `.claude/skills/`. `watch/` is excluded — it needs ffmpeg and a local whisper.cpp model the VM does not have.
-3. Adds `disable-model-invocation: true` to each copied `SKILL.md`. Project skills are model-invocable, and an autonomous cloud session (auto-fix PR, routine, factory job) could otherwise load `/merge` on its own and merge past the human gate. Typing `/push` or `/merge` still works.
-4. Exits 0 no matter what. A non-zero hook would not block the session, but a clone failure prints a one-line explanation instead of failing silently.
+3. Forces `disable-model-invocation: true` into each copied `SKILL.md`'s frontmatter, overwriting any value the source set. Project skills are model-invocable, and an autonomous cloud session (auto-fix PR, routine, factory job) could otherwise load `/merge` on its own and merge past the human gate. Typing `/push` or `/merge` still works.
+4. Reports honestly. A skill counts as installed only once its guarded `SKILL.md` is verified in place; anything that fails to copy or rewrite is named as unavailable rather than silently claimed. A skill deleted or renamed upstream is cleared from `.claude/skills/` even when the replacement cannot be installed, so a resumed session never keeps a stale copy.
+5. Exits 0 no matter what. A non-zero hook would not block the session, but a clone failure prints a one-line explanation instead of failing silently.
 
 Because the clone happens on every session, cloud sessions always get the latest committed skills with no sync step.
 

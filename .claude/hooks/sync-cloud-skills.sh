@@ -53,22 +53,55 @@ if ! CLONE_ERR=$(git ${GIT_ARGS[@]+"${GIT_ARGS[@]}"} clone --depth 1 --quiet \
   exit 0
 fi
 
-mkdir -p "$DEST"
+if ! mkdir -p "$DEST" 2>/dev/null; then
+  echo "Could not create $DEST, so /push and /merge are not available in this session. Carry on without them."
+  exit 0
+fi
+
 INSTALLED=""
+FAILED=""
 for skill in $SKILLS; do
-  [ -f "$TMP/skills/$skill/SKILL.md" ] || continue
+  # Clear first, unconditionally: a skill deleted or renamed upstream must not
+  # survive in a resumed session as a stale copy of what it used to be.
   rm -rf "$DEST/$skill"
-  cp -R "$TMP/skills/$skill" "$DEST/$skill"
-  # Project skills are model-invocable, so an autonomous cloud session (an
-  # auto-fix PR run, a routine, a factory job) could load /merge on its own and
-  # merge past the human gate. Require an explicit /push or /merge instead.
-  if ! grep -q '^disable-model-invocation:' "$DEST/$skill/SKILL.md"; then
-    awk 'NR==1 && $0 == "---" { print; print "disable-model-invocation: true"; next } { print }' \
-      "$DEST/$skill/SKILL.md" >"$DEST/$skill/SKILL.md.tmp" &&
-      mv "$DEST/$skill/SKILL.md.tmp" "$DEST/$skill/SKILL.md"
+  if [ ! -f "$TMP/skills/$skill/SKILL.md" ]; then
+    # Named, not skipped: this means the list above has gone stale.
+    FAILED="$FAILED /$skill"
+    continue
   fi
-  INSTALLED="$INSTALLED /$skill"
+
+  # Force disable-model-invocation: true, overwriting whatever value the source
+  # set. Project skills are model-invocable, so an autonomous cloud session (an
+  # auto-fix PR run, a routine, a factory job) could load /merge on its own and
+  # merge past the human gate. Explicit /push and /merge still work.
+  #
+  # The rewrite happens in the clone, not in .claude/skills/, so no half-built
+  # directory is ever visible to Claude Code's skill watcher.
+  SRC="$TMP/skills/$skill"
+  if awk '
+      NR == 1 {
+        if ($0 == "---") { print; print "disable-model-invocation: true"; in_fm = 1 }
+        else { print "---"; print "disable-model-invocation: true"; print "---"; print }
+        next
+      }
+      in_fm && $0 == "---" { in_fm = 0; print; next }
+      in_fm && /^disable-model-invocation:/ { next }
+      { print }
+    ' "$SRC/SKILL.md" >"$SRC/SKILL.md.guarded" &&
+    mv "$SRC/SKILL.md.guarded" "$SRC/SKILL.md" &&
+    cp -R "$SRC" "$DEST/$skill" 2>/dev/null &&
+    grep -q '^disable-model-invocation: true$' "$DEST/$skill/SKILL.md"; then
+    INSTALLED="$INSTALLED /$skill"
+  else
+    # Never report a skill as installed unless its guarded SKILL.md is in place.
+    rm -rf "$DEST/$skill"
+    FAILED="$FAILED /$skill"
+  fi
 done
+
+if [ -n "$FAILED" ]; then
+  echo "Personal skills that could not be installed in this cloud session:$FAILED (from $SKILLS_REPO — missing SKILL.md, or a filesystem error). Do not use them here."
+fi
 
 [ -n "$INSTALLED" ] || exit 0
 

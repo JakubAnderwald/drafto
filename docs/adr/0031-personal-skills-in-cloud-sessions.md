@@ -19,7 +19,9 @@ Claude Code offers three documented ways into a cloud session: files in the repo
 
 Clone the wanted skills into `.claude/skills/` at the start of every cloud session, from a `SessionStart` hook committed to this repo (`.claude/hooks/sync-cloud-skills.sh`, matcher `startup|resume`).
 
-The hook is cloud-only: it exits immediately unless `CLAUDE_CODE_REMOTE=true`, so local sessions keep using the symlink. It copies `push/` and `merge/` (not `watch/`, which needs ffmpeg and a local whisper.cpp model), stamps `disable-model-invocation: true` onto each copy so an autonomous cloud session cannot auto-load `/merge` and merge past the human gate, and always exits 0 — a clone failure prints a one-line diagnosis and the session continues.
+The hook is cloud-only: it exits immediately unless `CLAUDE_CODE_REMOTE=true`, so local sessions keep using the symlink. It copies `push/` and `merge/` (not `watch/`, which needs ffmpeg and a local whisper.cpp model) and forces `disable-model-invocation: true` into each copy's frontmatter — overwriting any value the source set, rather than only filling in a missing field — so an autonomous cloud session cannot auto-load `/merge` and merge past the human gate. It always exits 0: a clone failure prints a one-line diagnosis and the session continues.
+
+The guard is only worth as much as its reporting, so a skill counts as installed only after its guarded `SKILL.md` is verified in place, and each destination is cleared before the copy so a skill deleted upstream cannot survive as a stale copy in a resumed session.
 
 Two supporting commitments come with it: `.claude/skills/.gitkeep` is tracked so the directory exists at launch and the watcher picks up what the hook adds, and `.gitignore` keeps `.claude/skills/*` ignored so `/push`'s `git add -A` never commits the clone.
 
