@@ -9,7 +9,7 @@ overrides:
   serialize-javascript: 7.0.4
   react: 19.2.6
   react-dom: 19.2.6
-  react-test-renderer: 19.2.6
+  react-test-renderer: 19.2.8
   '@asamuzakjp/css-color>lru-cache': 11.2.7
   '@asamuzakjp/dom-selector>lru-cache': 11.2.7
 
@@ -232,7 +232,7 @@ importers:
         version: 55.0.16(expo@55.0.28)(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6))(react@19.2.6)
       expo-router:
         specifier: ~55.0.17
-        version: 55.0.17(26a5aaabc506b2574e25510b4846eaf9)
+        version: 55.0.17(2971935a80caf6ad096748e46d482bbe)
       expo-secure-store:
         specifier: ^55.0.16
         version: 55.0.16(expo@55.0.28)
@@ -269,10 +269,10 @@ importers:
         version: 0.86.2(@babel/core@7.29.7)(react@19.2.6)
       '@testing-library/jest-native':
         specifier: ^5.4.3
-        version: 5.4.3(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6))(react-test-renderer@19.2.6(react@19.2.6))(react@19.2.6)
+        version: 5.4.3(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6))(react-test-renderer@19.2.8(react@19.2.6))(react@19.2.6)
       '@testing-library/react-native':
         specifier: ^13.3.3
-        version: 13.3.3(jest@29.7.0(@types/node@26.2.0))(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6))(react-test-renderer@19.2.6(react@19.2.6))(react@19.2.6)
+        version: 13.3.3(jest@29.7.0(@types/node@26.2.0))(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6))(react-test-renderer@19.2.8(react@19.2.6))(react@19.2.6)
       '@types/jest':
         specifier: ^29.5.14
         version: 29.5.14
@@ -301,8 +301,8 @@ importers:
         specifier: ^55.0.20
         version: 55.0.20(@babel/core@7.29.7)(expo@55.0.28)(jest@29.7.0(@types/node@26.2.0))(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6))(react@19.2.6)(typescript@6.0.3)
       react-test-renderer:
-        specifier: 19.2.6
-        version: 19.2.6(react@19.2.6)
+        specifier: 19.2.8
+        version: 19.2.8(react@19.2.6)
       typescript:
         specifier: ~6.0.3
         version: 6.0.3
@@ -3348,7 +3348,7 @@ packages:
     peerDependencies:
       react: 19.2.6
       react-native: '>=0.59'
-      react-test-renderer: 19.2.6
+      react-test-renderer: 19.2.8
 
   '@testing-library/react-native@13.3.3':
     resolution: {integrity: sha512-k6Mjsd9dbZgvY4Bl7P1NIpePQNi+dfYtlJ5voi9KQlynxSyQkfOgJmYGCYmw/aSgH/rUcFvG8u5gd4npzgRDyg==}
@@ -3357,7 +3357,7 @@ packages:
       jest: '>=29.0.0'
       react: 19.2.6
       react-native: '>=0.71'
-      react-test-renderer: 19.2.6
+      react-test-renderer: 19.2.8
     peerDependenciesMeta:
       jest:
         optional: true
@@ -7954,8 +7954,8 @@ packages:
       '@types/react':
         optional: true
 
-  react-test-renderer@19.2.6:
-    resolution: {integrity: sha512-GbS6V23YduFTPiWJ5xICbKEjRcqx1Z90js/V5miqhz7qp/d6xSe9Dd6NjSQODFRdzdsqRMPW82E/sFpPRbY5Mw==}
+  react-test-renderer@19.2.8:
+    resolution: {integrity: sha512-GHKPaDRaNYU24PHTLG8Bx8VMY9t+qNfxQbt/Yjp7aMWBkKU6766SR0n6TnYu7P5I1MfEuAMUadqiyDHyI4Yy9Q==}
     peerDependencies:
       react: 19.2.6
 
@@ -10503,7 +10503,7 @@ snapshots:
       ws: 8.21.3
       zod: 3.25.76
     optionalDependencies:
-      expo-router: 55.0.17(26a5aaabc506b2574e25510b4846eaf9)
+      expo-router: 55.0.17(2971935a80caf6ad096748e46d482bbe)
       react-native: 0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6)
     transitivePeerDependencies:
       - '@expo/dom-webview'
@@ -10785,7 +10785,7 @@ snapshots:
       react: 19.2.6
     optionalDependencies:
       '@expo/metro-runtime': 55.0.6(@expo/dom-webview@55.0.3)(expo@55.0.28)(react-dom@19.2.8(react@19.2.6))(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6))(react@19.2.6)
-      expo-router: 55.0.17(26a5aaabc506b2574e25510b4846eaf9)
+      expo-router: 55.0.17(2971935a80caf6ad096748e46d482bbe)
       react-dom: 19.2.8(react@19.2.6)
     transitivePeerDependencies:
       - supports-color
@@ -12800,7 +12800,7 @@ snapshots:
       picocolors: 1.1.1
       redent: 3.0.0
 
-  '@testing-library/jest-native@5.4.3(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6))(react-test-renderer@19.2.6(react@19.2.6))(react@19.2.6)':
+  '@testing-library/jest-native@5.4.3(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6))(react-test-renderer@19.2.8(react@19.2.6))(react@19.2.6)':
     dependencies:
       chalk: 4.1.2
       jest-diff: 29.7.0
@@ -12808,17 +12808,17 @@ snapshots:
       pretty-format: 29.7.0
       react: 19.2.6
       react-native: 0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6)
-      react-test-renderer: 19.2.6(react@19.2.6)
+      react-test-renderer: 19.2.8(react@19.2.6)
       redent: 3.0.0
 
-  '@testing-library/react-native@13.3.3(jest@29.7.0(@types/node@26.2.0))(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6))(react-test-renderer@19.2.6(react@19.2.6))(react@19.2.6)':
+  '@testing-library/react-native@13.3.3(jest@29.7.0(@types/node@26.2.0))(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6))(react-test-renderer@19.2.8(react@19.2.6))(react@19.2.6)':
     dependencies:
       jest-matcher-utils: 30.2.0
       picocolors: 1.1.1
       pretty-format: 30.2.0
       react: 19.2.6
       react-native: 0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6)
-      react-test-renderer: 19.2.6(react@19.2.6)
+      react-test-renderer: 19.2.8(react@19.2.6)
       redent: 3.0.0
     optionalDependencies:
       jest: 29.7.0(@types/node@26.2.0)
@@ -12875,7 +12875,7 @@ snapshots:
       '@tiptap/pm': 3.30.1
     optional: true
 
-  '@tiptap/extension-bullet-list@3.20.1(@tiptap/extension-list@3.20.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))(@tiptap/pm@3.30.1))':
+  '@tiptap/extension-bullet-list@3.20.1(@tiptap/extension-list@3.20.1(@tiptap/core@3.20.0(@tiptap/pm@3.20.0))(@tiptap/pm@3.20.0))':
     dependencies:
       '@tiptap/extension-list': 3.20.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))(@tiptap/pm@3.30.1)
 
@@ -12985,11 +12985,11 @@ snapshots:
       '@tiptap/pm': 3.30.1
       linkifyjs: 4.3.2
 
-  '@tiptap/extension-list-item@3.20.1(@tiptap/extension-list@3.20.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))(@tiptap/pm@3.30.1))':
+  '@tiptap/extension-list-item@3.20.1(@tiptap/extension-list@3.20.1(@tiptap/core@3.20.0(@tiptap/pm@3.20.0))(@tiptap/pm@3.20.0))':
     dependencies:
       '@tiptap/extension-list': 3.20.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))(@tiptap/pm@3.30.1)
 
-  '@tiptap/extension-list-keymap@3.20.1(@tiptap/extension-list@3.20.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))(@tiptap/pm@3.30.1))':
+  '@tiptap/extension-list-keymap@3.20.1(@tiptap/extension-list@3.20.1(@tiptap/core@3.20.0(@tiptap/pm@3.20.0))(@tiptap/pm@3.20.0))':
     dependencies:
       '@tiptap/extension-list': 3.20.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))(@tiptap/pm@3.30.1)
 
@@ -13003,7 +13003,7 @@ snapshots:
       '@tiptap/core': 3.30.1(@tiptap/pm@3.30.1)
       '@tiptap/pm': 3.30.1
 
-  '@tiptap/extension-ordered-list@3.20.1(@tiptap/extension-list@3.20.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))(@tiptap/pm@3.30.1))':
+  '@tiptap/extension-ordered-list@3.20.1(@tiptap/extension-list@3.20.1(@tiptap/core@3.20.0(@tiptap/pm@3.20.0))(@tiptap/pm@3.20.0))':
     dependencies:
       '@tiptap/extension-list': 3.20.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))(@tiptap/pm@3.30.1)
 
@@ -13121,7 +13121,7 @@ snapshots:
       '@tiptap/core': 3.30.1(@tiptap/pm@3.30.1)
       '@tiptap/extension-blockquote': 3.20.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))
       '@tiptap/extension-bold': 3.30.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))
-      '@tiptap/extension-bullet-list': 3.20.1(@tiptap/extension-list@3.20.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))(@tiptap/pm@3.30.1))
+      '@tiptap/extension-bullet-list': 3.20.1(@tiptap/extension-list@3.20.1(@tiptap/core@3.20.0(@tiptap/pm@3.20.0))(@tiptap/pm@3.20.0))
       '@tiptap/extension-code': 3.30.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))
       '@tiptap/extension-code-block': 3.20.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))(@tiptap/pm@3.30.1)
       '@tiptap/extension-document': 3.20.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))
@@ -13133,9 +13133,9 @@ snapshots:
       '@tiptap/extension-italic': 3.30.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))
       '@tiptap/extension-link': 3.21.0(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))(@tiptap/pm@3.30.1)
       '@tiptap/extension-list': 3.20.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))(@tiptap/pm@3.30.1)
-      '@tiptap/extension-list-item': 3.20.1(@tiptap/extension-list@3.20.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))(@tiptap/pm@3.30.1))
-      '@tiptap/extension-list-keymap': 3.20.1(@tiptap/extension-list@3.20.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))(@tiptap/pm@3.30.1))
-      '@tiptap/extension-ordered-list': 3.20.1(@tiptap/extension-list@3.20.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))(@tiptap/pm@3.30.1))
+      '@tiptap/extension-list-item': 3.20.1(@tiptap/extension-list@3.20.1(@tiptap/core@3.20.0(@tiptap/pm@3.20.0))(@tiptap/pm@3.20.0))
+      '@tiptap/extension-list-keymap': 3.20.1(@tiptap/extension-list@3.20.1(@tiptap/core@3.20.0(@tiptap/pm@3.20.0))(@tiptap/pm@3.20.0))
+      '@tiptap/extension-ordered-list': 3.20.1(@tiptap/extension-list@3.20.1(@tiptap/core@3.20.0(@tiptap/pm@3.20.0))(@tiptap/pm@3.20.0))
       '@tiptap/extension-paragraph': 3.26.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))
       '@tiptap/extension-strike': 3.30.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))
       '@tiptap/extension-text': 3.30.1(@tiptap/core@3.30.1(@tiptap/pm@3.30.1))
@@ -14885,7 +14885,7 @@ snapshots:
       eslint: 9.39.5(jiti@2.7.0)
       eslint-import-resolver-node: 0.3.10
       eslint-import-resolver-typescript: 3.10.1(eslint-plugin-import@2.32.0(eslint@9.39.5(jiti@2.7.0)))(eslint@9.39.5(jiti@2.7.0))
-      eslint-plugin-import: 2.32.0(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.5(jiti@2.7.0))
+      eslint-plugin-import: 2.32.0(eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0(eslint@9.39.5(jiti@2.7.0)))(eslint@9.39.5(jiti@2.7.0)))(eslint@9.39.5(jiti@2.7.0))
       eslint-plugin-jsx-a11y: 6.10.2(eslint@9.39.5(jiti@2.7.0))
       eslint-plugin-react: 7.37.5(eslint@9.39.5(jiti@2.7.0))
       eslint-plugin-react-hooks: 7.1.1(eslint@9.39.5(jiti@2.7.0))
@@ -14922,7 +14922,7 @@ snapshots:
       tinyglobby: 0.2.17
       unrs-resolver: 1.12.2
     optionalDependencies:
-      eslint-plugin-import: 2.32.0(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.5(jiti@2.7.0))
+      eslint-plugin-import: 2.32.0(eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0(eslint@9.39.5(jiti@2.7.0)))(eslint@9.39.5(jiti@2.7.0)))(eslint@9.39.5(jiti@2.7.0))
     transitivePeerDependencies:
       - supports-color
 
@@ -15000,7 +15000,7 @@ snapshots:
       - eslint-import-resolver-webpack
       - supports-color
 
-  eslint-plugin-import@2.32.0(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.5(jiti@2.7.0)):
+  eslint-plugin-import@2.32.0(eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0(eslint@9.39.5(jiti@2.7.0)))(eslint@9.39.5(jiti@2.7.0)))(eslint@9.39.5(jiti@2.7.0)):
     dependencies:
       '@rtsao/scc': 1.1.0
       array-includes: 3.1.9
@@ -15307,7 +15307,7 @@ snapshots:
       react: 19.2.6
       react-native: 0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6)
 
-  expo-router@55.0.17(26a5aaabc506b2574e25510b4846eaf9):
+  expo-router@55.0.17(2971935a80caf6ad096748e46d482bbe):
     dependencies:
       '@expo/log-box': 55.0.13(@expo/dom-webview@55.0.3)(expo@55.0.28)(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6))(react@19.2.6)
       '@expo/metro-runtime': 55.0.6(@expo/dom-webview@55.0.3)(expo@55.0.28)(react-dom@19.2.8(react@19.2.6))(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6))(react@19.2.6)
@@ -15344,7 +15344,7 @@ snapshots:
       use-latest-callback: 0.2.6(react@19.2.6)
       vaul: 1.1.2(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.6))(react@19.2.6)
     optionalDependencies:
-      '@testing-library/react-native': 13.3.3(jest@29.7.0(@types/node@26.2.0))(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6))(react-test-renderer@19.2.6(react@19.2.6))(react@19.2.6)
+      '@testing-library/react-native': 13.3.3(jest@29.7.0(@types/node@26.2.0))(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6))(react-test-renderer@19.2.8(react@19.2.6))(react@19.2.6)
       react-dom: 19.2.8(react@19.2.6)
     transitivePeerDependencies:
       - '@react-native-masked-view/masked-view'
@@ -16346,7 +16346,7 @@ snapshots:
       json5: 2.2.3
       lodash: 4.18.1
       react-native: 0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.0(typescript@6.0.3))(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.6)
-      react-test-renderer: 19.2.6(react@19.2.6)
+      react-test-renderer: 19.2.8(react@19.2.6)
       server-only: 0.0.1
       stacktrace-js: 2.0.2
     transitivePeerDependencies:
@@ -18497,7 +18497,7 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.18
 
-  react-test-renderer@19.2.6(react@19.2.6):
+  react-test-renderer@19.2.8(react@19.2.6):
     dependencies:
       react: 19.2.6
       react-is: 19.2.8
