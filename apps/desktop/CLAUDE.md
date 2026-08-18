@@ -3,12 +3,12 @@
 ## ⚠️ The desktop build is a FOSSIL — do not reinstall, do not build from a worktree
 
 `react-native-macos@0.81` (the macOS RN fork this app uses) requires **React 19.1.x**. The monorepo's
-_declared_ React is **19.2.6** — mobile's `react-native@0.86` needs it, and React must be a single
+_declared_ React is **19.2.x** — mobile's `react-native@0.86` needs it, and React must be a single
 shared instance across the monorepo ([ADR-0027], [#558]). The **only** working desktop build is the
 **fossil `node_modules` in the primary checkout** (`/Users/jakub/code/drafto`), installed before the
 React bump and **never reinstalled**.
 
-A clean `pnpm install` — **including any fresh git worktree** — pulls React **19.2.6**, which the 0.81
+A clean `pnpm install` — **including any fresh git worktree** — pulls React **19.2.x**, which the 0.81
 fork cannot run: the app **compiles green but crashes at runtime** (Hermes `EXC_BAD_ACCESS`, blank
 screen, crash-on-note-open). **A green native build is NOT proof it works — only a TestFlight build
 that opens a note is.**
