@@ -24,7 +24,7 @@
     "@react-native-community/netinfo": "^11.4.1",
     "@react-navigation/native": "^7.3.16",
     "@react-navigation/native-stack": "^7.18.8",
-    "@supabase/supabase-js": "^2.112.2",
+    "@supabase/supabase-js": "^2.112.3",
     "react": "19.2.8",
     "react-native": "0.86.2",
     "react-native-document-picker-macos": "^1.0.0",
@@ -55,6 +55,6 @@
     "jest": "^29.7.0",
     "react-native-dotenv": "^3.4.12",
     "typescript": "~6.0.3",
-    "typescript-eslint": "^8.66.0"
+    "typescript-eslint": "^8.67.0"
   }
 }

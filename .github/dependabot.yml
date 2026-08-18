@@ -43,3 +43,15 @@ updates:
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
       - dependency-name: "react-native-webview"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # The scoped `@react-native/*` build tooling (babel-preset, metro-config,
+      # typescript-config, jest-preset) is part of the same 0.x train and must stay aligned
+      # with the React Native version each app is pinned to — a minor bump silently changes
+      # how the app's JS is compiled. 0.86 → 0.87 flipped the babel preset's default
+      # transform profile from `default` to `hermes-stable`, which drops
+      # @babel/plugin-transform-class-properties and so breaks the legacy decorators that
+      # WatermelonDB models depend on (`@field("remote_id") remoteId!: string`). That fails
+      # desktop's Jest run outright, and would change the bundle the fossil
+      # react-native-macos 0.81 app ships (see docs/operations/desktop-build-fossil.md),
+      # which CI cannot verify. Suppress minor + major; patches still flow through the group.
+      - dependency-name: "@react-native/*"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
