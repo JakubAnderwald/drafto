@@ -11,7 +11,7 @@ desktop to `react-native-macos@0.83` (React 19.2) once it ships — see
 ## Why
 
 `react-native-macos@0.81.6` requires **React 19.1.x** and crashes at runtime on React **19.2.x**. The
-monorepo's _declared_ versions have since drifted forward (React 19.2.6, newer native modules — via
+monorepo's _declared_ versions have since drifted forward (React 19.2.x, newer native modules — via
 Dependabot) because mobile's `react-native@0.86` needs React 19.2. Main's `node_modules` was never
 reinstalled, so it kept the working React-19.1.x set. A clean `pnpm install` pulls the current
 versions → **crashing / blank build** (crash on note-open, then crash on launch, then empty screen as
@@ -64,5 +64,5 @@ If the fossil is ever lost, this is the working set to reconstruct:
 | `@react-native-async-storage/async-storage`   | `3.0.2`         |
 | `react-native-screens`                        | `4.24.0`        |
 
-Mobile and web use React `19.2.6` and newer native modules — that is correct and unaffected. Only the
+Mobile and web use React `19.2.x` and newer native modules — that is correct and unaffected. Only the
 macOS desktop app is pinned to this older, `react-native-macos`-compatible set.

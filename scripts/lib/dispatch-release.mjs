@@ -70,8 +70,8 @@ export const DEFAULT_REPO_ROOT = ".";
 export const DESKTOP_FOSSIL_ROOT_DEFAULT = "/Users/jakub/code/drafto";
 
 // react-native-macos@0.81 pairs with React 19.1.x. Hardcoded because the repo
-// has no declared source of truth for it — package.json's override pins 19.2.6
-// for mobile, and the working desktop version exists only in the fossil
+// has no declared source of truth for it — package.json's override pins the
+// 19.2.x line for mobile, and the working desktop version exists only in the fossil
 // node_modules on disk. Bump this (and ADR-0027) when react-native-macos moves.
 export const DESKTOP_REACT_RANGE = /^19\.1\./;
 

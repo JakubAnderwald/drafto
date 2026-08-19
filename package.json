@@ -39,9 +39,9 @@
     "overrides": {
       "minimatch": "10.2.4",
       "serialize-javascript": "7.0.4",
-      "react": "19.2.6",
-      "react-dom": "19.2.6",
-      "react-test-renderer": "19.2.6",
+      "react": "19.2.8",
+      "react-dom": "19.2.8",
+      "react-test-renderer": "19.2.8",
       "@asamuzakjp/css-color>lru-cache": "11.2.7",
       "@asamuzakjp/dom-selector>lru-cache": "11.2.7"
     },
