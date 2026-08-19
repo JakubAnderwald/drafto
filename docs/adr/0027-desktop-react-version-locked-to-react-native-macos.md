@@ -13,6 +13,18 @@
 > Expo SDK again (`.github/dependabot.yml`). References to "RN 0.86" below reflect the state when this
 > ADR was written.
 
+> **Update (2026-08-19)**: Dependabot no longer proposes React bumps at all (`react`, `react-dom`,
+> `react-test-renderer` are in `.github/dependabot.yml`'s ignore list). React's version lives in the
+> root `package.json`'s `pnpm.overrides` — the mechanism that enforces the single shared instance
+> this ADR requires — and Dependabot cannot edit that key. It can only rewrite `pnpm-lock.yaml`'s
+> `overrides:` block, so its React PRs were either inert (bumping `apps/*/package.json` while the
+> override silently overruled them, #593) or unmergeable (a lockfile-only override edit that aborts
+> every install with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` and failed the Vercel preview deployment,
+> #609). This does **not** contradict decision 5 below: 5 forbids freezing React so it silently
+> rots, whereas this suppresses a mechanism structurally incapable of moving it correctly. The
+> deliberate coordinated bump — edit `pnpm.overrides`, regenerate the lockfile, verify — remains the
+> way React moves (#441, #610), and is still the prerequisite for adopting `react-native-macos@0.83`.
+
 ## Context
 
 The macOS desktop app builds on **`react-native-macos`** — Microsoft's macOS fork of React Native.
