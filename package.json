@@ -59,6 +59,6 @@
     "prettier": "^3.9.6",
     "prettier-plugin-tailwindcss": "^0.8.1",
     "tsx": "^4.23.12",
-    "turbo": "^2.10.10"
+    "turbo": "^2.10.11"
   }
 }
