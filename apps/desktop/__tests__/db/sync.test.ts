@@ -13,7 +13,7 @@ jest.mock("@/lib/supabase", () => ({
   },
 }));
 
-import { syncDatabase, SyncNetworkError } from "@/db/sync";
+import { syncDatabase, SyncNetworkError, resetSyncState } from "@/db/sync";
 
 describe("syncDatabase", () => {
   const mockDb = {
@@ -98,6 +98,72 @@ describe("syncDatabase", () => {
 
       await expect(syncDatabase(mockDb)).rejects.not.toThrow(SyncNetworkError);
     });
+  });
+});
+
+describe("in-flight sync coalescing + resetSyncState", () => {
+  const mockDb = {
+    get: () => ({ query: () => ({ fetch: () => Promise.resolve([]) }) }),
+  } as unknown as Parameters<typeof syncDatabase>[0];
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // clearAllMocks resets call records but NOT implementations, so an earlier
+    // suite's persistent mockRejectedValue would leak in; restore the resolve
+    // default explicitly. Also leave the module-level latch clean between tests.
+    mockSynchronize.mockReset();
+    mockSynchronize.mockResolvedValue(undefined);
+    resetSyncState();
+  });
+
+  it("coalesces concurrent callers onto a single synchronize() run", async () => {
+    let release!: () => void;
+    mockSynchronize.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (release = () => resolve(undefined))),
+    );
+
+    const p1 = syncDatabase(mockDb);
+    const p2 = syncDatabase(mockDb);
+    release();
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(mockSynchronize).toHaveBeenCalledTimes(1);
+    expect(r1).toBe(r2); // same SyncResult — second caller awaited the first run
+  });
+
+  it("starts a fresh synchronize() once the previous run has settled", async () => {
+    await syncDatabase(mockDb);
+    await syncDatabase(mockDb);
+    expect(mockSynchronize).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears the latch after a failed sync so a later call retries", async () => {
+    mockSynchronize.mockRejectedValueOnce(new Error("Some database error"));
+    await expect(syncDatabase(mockDb)).rejects.toThrow();
+
+    await expect(syncDatabase(mockDb)).resolves.toEqual({ conflictCount: 0 });
+    expect(mockSynchronize).toHaveBeenCalledTimes(2);
+  });
+
+  it("resetSyncState stops the next caller coalescing onto a stale in-flight sync", async () => {
+    let releaseStale!: () => void;
+    mockSynchronize.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (releaseStale = () => resolve(undefined))),
+    );
+
+    const stale = syncDatabase(mockDb); // in-flight, not yet settled
+    resetSyncState(); // sign-out invalidates it
+
+    const fresh = await syncDatabase(mockDb); // must run its own synchronize()
+    expect(mockSynchronize).toHaveBeenCalledTimes(2);
+    expect(fresh).toEqual({ conflictCount: 0 });
+
+    // The stale sync settling afterwards must not clobber the (now clear) latch:
+    // a subsequent call still starts its own run.
+    releaseStale();
+    await stale;
+    await syncDatabase(mockDb);
+    expect(mockSynchronize).toHaveBeenCalledTimes(3);
   });
 });
 

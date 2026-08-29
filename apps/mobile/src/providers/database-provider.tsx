@@ -9,6 +9,7 @@ import { database } from "@/db";
 import { syncDatabase, SyncNetworkError } from "@/db/sync";
 import { processPendingUploads } from "@/lib/data/attachment-queue";
 import type { UploadResult } from "@/lib/data/attachment-queue";
+import { ensureLocalIdentity } from "@/lib/data/local-identity";
 import { measureAsync } from "@/lib/performance";
 import { useAuth } from "@/providers/auth-provider";
 import { useToast } from "@/components/toast";
@@ -34,6 +35,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   const retryCountRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const periodicTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const identityReadyRef = useRef(false);
   const [hasPendingChanges, setHasPendingChanges] = useState(false);
   const [pendingChangesCount, setPendingChangesCount] = useState(0);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
@@ -107,13 +109,25 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
     return uploadResult;
   }, [checkPendingChanges, showToast]);
 
-  // Initial sync when user logs in
+  // Initial sync when user logs in. The cross-account identity guard runs first
+  // (and may reset the local DB) so the initial sync — and the periodic /
+  // foreground / reconnect syncs, which wait on identityReadyRef — never push or
+  // surface another user's local data.
   useEffect(() => {
+    let cancelled = false;
     if (user) {
       retryCountRef.current = 0;
-      sync();
+      identityReadyRef.current = false;
+      ensureLocalIdentity(user.id).finally(() => {
+        if (cancelled) return;
+        identityReadyRef.current = true;
+        sync();
+      });
+    } else {
+      identityReadyRef.current = false;
     }
     return () => {
+      cancelled = true;
       if (retryTimerRef.current) {
         clearTimeout(retryTimerRef.current);
         retryTimerRef.current = null;
@@ -124,7 +138,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   // Periodic sync for pending changes
   useEffect(() => {
     periodicTimerRef.current = setInterval(async () => {
-      if (!user) return;
+      if (!user || !identityReadyRef.current) return;
       const pending = await hasUnsyncedChanges({ database }).catch(() => false);
       if (pending) {
         sync();
@@ -142,7 +156,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   // Sync when app comes to foreground
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active" && user) {
+      if (state === "active" && user && identityReadyRef.current) {
         sync();
       }
     });
@@ -156,7 +170,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       const isConnected = state.isConnected ?? false;
       if (!isConnected) {
         wasDisconnected = true;
-      } else if (wasDisconnected && user) {
+      } else if (wasDisconnected && user && identityReadyRef.current) {
         wasDisconnected = false;
         retryCountRef.current = 0;
         sync();

@@ -263,7 +263,7 @@ export interface SyncResult {
   conflictCount: number;
 }
 
-export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
+async function runSync(db: WMDatabase): Promise<SyncResult> {
   let conflictCount = 0;
 
   try {
@@ -287,4 +287,50 @@ export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
   }
 
   return { conflictCount };
+}
+
+// Module-level in-flight coalesce. WatermelonDB forbids concurrent
+// synchronize() calls, and sign-out's best-effort final sync can run alongside
+// the DatabaseProvider's own sync. When a sync is already running, additional
+// callers await the same promise instead of starting a second synchronize().
+// This changes no pull/push/conflict behaviour — it only serialises re-entrant
+// callers.
+let inFlightSync: Promise<SyncResult> | null = null;
+// Bumped whenever the in-flight sync is invalidated (sign-out). A sync captures
+// the generation it started under; only a settling sync of the current
+// generation is allowed to clear the latch — so a stale sync can't null out a
+// newer session's sync. See resetSyncState.
+let syncGeneration = 0;
+
+/**
+ * Invalidate any in-flight sync so the NEXT `syncDatabase()` starts its own
+ * `synchronize()` instead of awaiting a prior session's. Sign-out calls this
+ * after destroying the Supabase session: a final sync that timed out but is
+ * still running must not be handed to the next signed-in user, whose initial
+ * sync would otherwise await the previous user's `runSync()` and write that
+ * user's pulled records into the freshly-reset local database. The stale sync
+ * is left to settle in the background; the generation guard below stops its
+ * cleanup from clobbering the next session's latch.
+ */
+export function resetSyncState(): void {
+  syncGeneration += 1;
+  inFlightSync = null;
+}
+
+export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
+  if (inFlightSync) {
+    return inFlightSync;
+  }
+  const generation = syncGeneration;
+  const pending = runSync(db);
+  inFlightSync = pending;
+  try {
+    return await pending;
+  } finally {
+    // Only clear the latch if it still points at THIS run and no reset (or
+    // newer sync) superseded us — otherwise we'd null out a live sync.
+    if (syncGeneration === generation && inFlightSync === pending) {
+      inFlightSync = null;
+    }
+  }
 }
