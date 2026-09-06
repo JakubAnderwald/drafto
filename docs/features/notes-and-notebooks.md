@@ -16,6 +16,7 @@ Shipped on all four platforms: web, iOS, Android, macOS.
 - Deleting a notebook is blocked while it holds non-trashed notes. Web enforces this in the API (`DELETE /api/notebooks/:id` → 409 "Cannot delete notebook with notes. Move or delete notes first."); mobile and desktop enforce the same rule client-side before their WatermelonDB delete syncs (they never hit the API route). When an eligible notebook is deleted, its remaining trashed notes and attachments are cascade-removed locally so the client matches the server-side `on delete cascade` after sync. The client guard is a point-in-time check against the local copy, so a note synced from another device between the check and the delete can still slip past it (unlike the web API's DB-backed 409); mobile additionally lacks server-deletion self-heal to clean up the resulting orphan row ([#462](https://github.com/JakubAnderwald/drafto/issues/462)).
 - The default notebook is provisioned server-side in the App Router layout if the user has zero notebooks.
 - Mobile and desktop hold a full local copy in WatermelonDB and sync via pull/push against Supabase; web reads/writes directly through the API.
+- The web editor watches the open note for changes made elsewhere (another device, another tab): a Supabase Realtime subscription filtered to that note, plus a re-check when the tab regains focus. When the editor has no unsaved edits the fresh content is applied in place; when it does, an inline banner offers "Discard mine" / "Keep mine" rather than overwriting. An external trash or permanent delete is surfaced the same way. See [ADR-0032](../adr/0032-web-realtime-note-sync.md).
 
 ## Code paths
 
@@ -29,6 +30,8 @@ Shipped on all four platforms: web, iOS, Android, macOS.
 | Notebook rename + delete                 | `apps/web/src/app/api/notebooks/[id]/route.ts`                                                                                                 |
 | Notes list + create (scoped to notebook) | `apps/web/src/app/api/notebooks/[id]/notes/route.ts`                                                                                           |
 | Note read / update / soft-delete         | `apps/web/src/app/api/notes/[id]/route.ts`                                                                                                     |
+| Web external-change sync (open note)     | `apps/web/src/hooks/use-note-sync.ts`, `apps/web/src/lib/timestamps.ts`, `apps/web/src/components/notes/note-sync-banner.tsx`                  |
+| Enable Realtime on `notes`               | `supabase/migrations/20260906000001_enable_notes_realtime.sql`                                                                                 |
 | Trash list                               | `apps/web/src/app/api/notes/trash/route.ts`                                                                                                    |
 | Permanent delete                         | `apps/web/src/app/api/notes/[id]/permanent/route.ts`                                                                                           |
 | Default notebook provisioning            | `apps/web/src/app/(app)/layout.tsx`                                                                                                            |
@@ -41,7 +44,7 @@ Shipped on all four platforms: web, iOS, Android, macOS.
 | Mobile routes (notebook + note screens)  | `apps/mobile/app/notebooks/[id].tsx`, `apps/mobile/app/notes/[id].tsx`, `app/(tabs)/trash.tsx`                                                 |
 | Desktop screens                          | `apps/desktop/src/screens/main.tsx`, `apps/desktop/src/components/notes/`, `components/sidebar/`                                               |
 | API unit tests                           | `apps/web/__tests__/unit/notebooks-api.test.ts`, `notebooks-id-api.test.ts`, `notes-api.test.ts`, `trash-api.test.ts`, `trash-cleanup.test.ts` |
-| Web E2E                                  | `apps/web/e2e/notebooks.spec.ts`, `apps/web/e2e/notes.spec.ts`, `apps/web/e2e/cross-platform-sync.spec.ts`                                     |
+| Web E2E                                  | `apps/web/e2e/notebooks.spec.ts`, `apps/web/e2e/notes.spec.ts`, `apps/web/e2e/cross-platform-sync.spec.ts`, `apps/web/e2e/note-sync.spec.ts`   |
 | Mobile E2E                               | `apps/mobile/e2e/02-create-notebook.yaml`, `03-create-edit-note.yaml`, `04-trash-restore.yaml`                                                 |
 
 ## Related ADRs
@@ -49,6 +52,7 @@ Shipped on all four platforms: web, iOS, Android, macOS.
 - [0001 — Data Model and RLS Strategy](../adr/0001-data-model-and-rls-strategy.md)
 - [0002 — API Route Conventions](../adr/0002-api-route-conventions.md)
 - [0010 — Offline Sync Strategy](../adr/0010-offline-sync-strategy.md)
+- [0032 — Web Real-Time Sync for Externally Modified Notes](../adr/0032-web-realtime-note-sync.md)
 
 ## Cross-platform notes
 

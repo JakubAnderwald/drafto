@@ -157,6 +157,47 @@ describe("Notes API", () => {
       const body = await response.json();
       expect(body.content[0].props.url).toBe("https://signed.test/url");
     });
+
+    it("returns is_trashed so the editor can see a note trashed on another device", async () => {
+      // Deliberately selected rather than filtered on: the web editor keeps a trashed
+      // note open (its edits are still recoverable) and needs to say so.
+      authenticateAs("user-1");
+      const selectedColumns = vi.fn();
+      const note = {
+        id: "note-1",
+        title: "Trashed elsewhere",
+        content: null,
+        is_trashed: true,
+        created_at: "2026-09-06T10:00:00.000+00:00",
+        updated_at: "2026-09-06T12:05:00.000+00:00",
+      };
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {
+          select: (columns: string) => {
+            selectedColumns(columns);
+            return {
+              eq: () => ({
+                eq: () => ({
+                  single: () => Promise.resolve({ data: note, error: null }),
+                }),
+              }),
+            };
+          },
+        };
+      });
+
+      const { GET } = await import("@/app/api/notes/[id]/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1");
+      const response = await GET(request, { params });
+
+      expect(response.status).toBe(200);
+      expect(selectedColumns).toHaveBeenCalledWith(expect.stringContaining("is_trashed"));
+      expect(await response.json()).toMatchObject({
+        is_trashed: true,
+        updated_at: note.updated_at,
+      });
+    });
   });
 
   describe("PATCH /api/notes/[id]", () => {

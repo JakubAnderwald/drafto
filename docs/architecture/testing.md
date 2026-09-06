@@ -60,6 +60,14 @@ The response lists each metric (coverage %, duplication %, etc.) and which condi
 
 Write tests concurrently with new code and check coverage locally (`cd apps/web && pnpm test:coverage`) before pushing — iterating via CI is slow.
 
+## Manual-only coverage
+
+Some behaviour cannot be scripted deterministically and is verified by hand. Note it here rather than leaving a silent gap.
+
+- **Realtime push for externally modified notes** (web, [ADR-0032](../adr/0032-web-realtime-note-sync.md)). `apps/web/e2e/note-sync.spec.ts` covers the `visibilitychange` / `focus` half of the feature — an edit made by a second HTTP client surfaces in the open editor with no page reload. The Supabase `postgres_changes` push itself needs two live authenticated clients and a websocket round-trip, so it is checked manually: open the same note on the web and on a phone, edit on the phone, and confirm the web editor updates within a second or two without touching the tab. Both signals funnel into one reconciliation handler, so the E2E test does cover the shared apply path.
+- **No-clobber conflict prompt.** The dirty window is one 500 ms autosave debounce wide, which is too tight to hit reliably from Playwright. It is covered deterministically instead in `apps/web/__tests__/integration/note-sync-reconciliation.test.tsx`.
+- **Applying the Realtime migration.** `supabase/migrations/20260906000001_enable_notes_realtime.sql` must be applied to dev before the push path can be exercised at all; the `visibilitychange` E2E tests pass without it.
+
 ## Common failure patterns
 
 - **Missing test coverage** — new files with no tests drag coverage below the gate. Add tests in the same PR.

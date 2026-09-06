@@ -25,7 +25,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 
   const { data: note, error } = await supabase
     .from("notes")
-    .select("id, title, content, created_at, updated_at")
+    // `is_trashed` is returned rather than filtered on: the web editor needs to be
+    // able to tell that the note it has open was trashed on another device.
+    .select("id, title, content, is_trashed, created_at, updated_at")
     .eq("id", id)
     .eq("user_id", user.id)
     .single();
