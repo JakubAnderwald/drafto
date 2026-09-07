@@ -112,14 +112,24 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   // Initial sync when user logs in. The cross-account identity guard runs first
   // (and may reset the local DB) so the initial sync — and the periodic /
   // foreground / reconnect syncs, which wait on identityReadyRef — never push or
-  // surface another user's local data.
+  // surface another user's local data. If the guard reports "unsafe" it could not
+  // clear the previous user's records, so every sync trigger stays parked until a
+  // later launch retries the guard successfully.
   useEffect(() => {
     let cancelled = false;
     if (user) {
       retryCountRef.current = 0;
       identityReadyRef.current = false;
-      ensureLocalIdentity(user.id).finally(() => {
+      ensureLocalIdentity(user.id).then((status) => {
         if (cancelled) return;
+        if (status !== "ready") {
+          // The previous user's records are still on disk. Syncing now would push
+          // them under this session (RLS rejects them and wedges sync) and surface
+          // them in this user's UI, so leave identityReadyRef false and wait for a
+          // later launch to retry the guard.
+          console.error("[DatabaseProvider] Local data belongs to another user — skipping sync");
+          return;
+        }
         identityReadyRef.current = true;
         sync();
       });

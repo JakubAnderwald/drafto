@@ -22,6 +22,7 @@ export {
 } from "./attachment-queue";
 
 export { ensureLocalIdentity } from "./local-identity";
+export type { LocalIdentityStatus } from "./local-identity";
 
 export { openAttachment } from "./open-attachment";
 export type { OpenAttachmentParams, OpenAttachmentResult } from "./open-attachment";

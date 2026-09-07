@@ -40,7 +40,7 @@ describe("ensureLocalIdentity", () => {
   it("no-ops when the same user signs in again", async () => {
     mockGetItem.mockResolvedValue("user-1");
 
-    await ensureLocalIdentity("user-1");
+    await expect(ensureLocalIdentity("user-1")).resolves.toBe("ready");
 
     expect(mockUnsafeReset).not.toHaveBeenCalled();
     expect(mockDeleteAllLocalAttachments).not.toHaveBeenCalled();
@@ -51,7 +51,7 @@ describe("ensureLocalIdentity", () => {
     mockGetItem.mockResolvedValue("user-1");
     mockFetchCount.mockResolvedValue(0);
 
-    await ensureLocalIdentity("user-2");
+    await expect(ensureLocalIdentity("user-2")).resolves.toBe("ready");
 
     // Empty DB → no reset needed, but attachment files can survive a prior
     // sign-out's failed deletion independently of the DB, so they are always
@@ -66,7 +66,7 @@ describe("ensureLocalIdentity", () => {
     // First table (notebooks) is non-empty → short-circuits to true.
     mockFetchCount.mockResolvedValueOnce(3);
 
-    await ensureLocalIdentity("user-2");
+    await expect(ensureLocalIdentity("user-2")).resolves.toBe("ready");
 
     expect(mockUnsafeReset).toHaveBeenCalled();
     expect(mockDeleteAllLocalAttachments).toHaveBeenCalled();
@@ -77,7 +77,7 @@ describe("ensureLocalIdentity", () => {
     mockGetItem.mockResolvedValue(null);
     mockFetchCount.mockResolvedValue(5);
 
-    await ensureLocalIdentity("user-1");
+    await expect(ensureLocalIdentity("user-1")).resolves.toBe("ready");
 
     expect(mockUnsafeReset).not.toHaveBeenCalled();
     expect(mockDeleteAllLocalAttachments).not.toHaveBeenCalled();
@@ -88,22 +88,37 @@ describe("ensureLocalIdentity", () => {
     mockGetItem.mockRejectedValue(new Error("storage down"));
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
 
-    await expect(ensureLocalIdentity("user-1")).resolves.toBeUndefined();
+    await expect(ensureLocalIdentity("user-1")).resolves.toBe("ready");
 
     expect(mockUnsafeReset).not.toHaveBeenCalled();
     expect(mockSetItem).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 
-  it("still persists the new id when the reset fails", async () => {
+  it("reports unsafe and keeps the previous id when the reset fails", async () => {
     mockGetItem.mockResolvedValue("user-1");
     mockFetchCount.mockResolvedValueOnce(2);
     mockUnsafeReset.mockRejectedValueOnce(new Error("reset boom"));
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
 
-    await expect(ensureLocalIdentity("user-2")).resolves.toBeUndefined();
+    await expect(ensureLocalIdentity("user-2")).resolves.toBe("unsafe");
 
-    expect(mockSetItem).toHaveBeenCalledWith(KEY, "user-2");
+    // Persisting the new id here would make the next launch take the same-user
+    // early return and permanently disarm the guard while user-1's rows are
+    // still on disk, so the previous id must survive for the retry.
+    expect(mockSetItem).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it("reports unsafe and keeps the previous id when the attachment wipe fails", async () => {
+    mockGetItem.mockResolvedValue("user-1");
+    mockFetchCount.mockResolvedValueOnce(2);
+    mockDeleteAllLocalAttachments.mockRejectedValueOnce(new Error("unlink boom"));
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(ensureLocalIdentity("user-2")).resolves.toBe("unsafe");
+
+    expect(mockSetItem).not.toHaveBeenCalled();
     errorSpy.mockRestore();
   });
 
@@ -113,7 +128,7 @@ describe("ensureLocalIdentity", () => {
     mockSetItem.mockRejectedValue(new Error("write failed"));
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
 
-    await expect(ensureLocalIdentity("user-2")).resolves.toBeUndefined();
+    await expect(ensureLocalIdentity("user-2")).resolves.toBe("ready");
 
     // Observable, not swallowed: a stale stored id re-triggers a destructive
     // reset on this same user's next launch.
