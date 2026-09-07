@@ -14,6 +14,7 @@ import { ImportTickTickDialog } from "@/components/import/import-ticktick-dialog
 import { ExportEvernoteDialog } from "@/components/export/export-evernote-dialog";
 import { SearchOverlay } from "@/components/search/search-overlay";
 import { usePaneCollapse } from "@/hooks/use-pane-collapse";
+import type { NoteListPatch } from "@/lib/note-patch";
 
 interface NotebookInfo {
   id: string;
@@ -218,10 +219,7 @@ export function AppShell({
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const { notebooksCollapsed, notesCollapsed, togglePane } = usePaneCollapse();
-  const [lastNoteUpdate, setLastNoteUpdate] = useState<{
-    noteId: string;
-    updatedAt: string;
-  } | null>(null);
+  const [lastNoteUpdate, setLastNoteUpdate] = useState<NoteListPatch | null>(null);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -247,8 +245,18 @@ export function AppShell({
     setRefreshTrigger((prev) => prev + 1);
   }, []);
 
-  const handleNoteUpdated = useCallback((noteId: string, updatedAt: string) => {
-    setLastNoteUpdate({ noteId, updatedAt });
+  const handleNoteUpdated = useCallback((patch: NoteListPatch) => {
+    setLastNoteUpdate(patch);
+  }, []);
+
+  // The open note was trashed or deleted on another device and the user dismissed
+  // the notice. Distinct from handleDeleteNote, which *performs* a delete — here the
+  // write already happened elsewhere, so re-issuing it would be a redundant race.
+  const handleNoteClosed = useCallback((noteId: string) => {
+    setSelectedNoteId((current) => (current === noteId ? null : current));
+    // Safe to bump here: React batches both updates, so the panel unmounts in the
+    // same commit rather than re-suspending on a changed cache key.
+    setRefreshTrigger((prev) => prev + 1);
   }, []);
 
   const handleSearchSelect = useCallback(
@@ -606,6 +614,7 @@ export function AppShell({
               noteId={selectedNoteId}
               refreshTrigger={refreshTrigger}
               onNoteUpdated={handleNoteUpdated}
+              onNoteClosed={handleNoteClosed}
             />
           </Suspense>
         ) : (

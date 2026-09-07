@@ -31,11 +31,27 @@ vi.mock("@blocknote/mantine/style.css", () => ({}));
 
 // Mock useAutoSave to avoid real fetch calls from the hook
 const mockDebouncedSave = vi.fn();
+const mockCancelPendingSave = vi.fn();
 let mockSaveStatus = "idle";
 vi.mock("@/hooks/use-auto-save", () => ({
   useAutoSave: () => ({
     saveStatus: mockSaveStatus,
     debouncedSave: mockDebouncedSave,
+    lastSavedAt: null,
+    hasPendingChanges: false,
+    cancelPendingSave: mockCancelPendingSave,
+  }),
+}));
+
+// Keep the realtime subscription off the wire. The reconciliation behaviour it drives
+// has its own suite in `note-sync-reconciliation.test.tsx`.
+vi.mock("@/lib/supabase/client", () => ({
+  createClient: () => ({
+    channel(topic: string) {
+      const channel = { topic, on: () => channel, subscribe: () => channel };
+      return channel;
+    },
+    removeChannel: () => {},
   }),
 }));
 

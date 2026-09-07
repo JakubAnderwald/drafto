@@ -4,6 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { act, Suspense } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 
+import type { NoteListPatch } from "@/lib/note-patch";
+
 vi.mock("@/env", () => ({
   env: {
     NEXT_PUBLIC_SUPABASE_URL: "https://test.supabase.co",
@@ -579,6 +581,102 @@ describe("NoteList", () => {
 
     await waitFor(() => {
       expect(screen.getByText("just now")).toBeInTheDocument();
+    });
+  });
+
+  // The list is patched in place rather than refetched, because the open editor
+  // shares `refreshTrigger` with it and a refetch would re-suspend the editor.
+  describe("external-change patches", () => {
+    function renderList(trigger: number, lastNoteUpdate: NoteListPatch | null) {
+      return (
+        <Suspense fallback={<Skeleton height="2.5rem" />}>
+          <NoteList
+            notebookId="nb-1"
+            selectedNoteId={null}
+            onSelectNote={vi.fn()}
+            onCreateNote={vi.fn()}
+            refreshTrigger={trigger}
+            lastNoteUpdate={lastNoteUpdate}
+          />
+        </Suspense>
+      );
+    }
+
+    async function mountWith(notes: { id: string; title: string; updated_at: string }[]) {
+      const trigger = nextTrigger();
+      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(notes) });
+      const { rerender } = await act(async () => render(renderList(trigger, null)));
+      return {
+        trigger,
+        patch: async (update: NoteListPatch) => {
+          await act(async () => {
+            rerender(renderList(trigger, update));
+          });
+        },
+      };
+    }
+
+    it("renames a row when an external edit changed the title", async () => {
+      const { patch } = await mountWith([
+        {
+          id: "note-x",
+          title: "Old title",
+          updated_at: new Date(Date.now() - 3600_000).toISOString(),
+        },
+      ]);
+      await waitFor(() => expect(screen.getByText("Old title")).toBeInTheDocument());
+
+      await patch({
+        noteId: "note-x",
+        updatedAt: new Date().toISOString(),
+        title: "Renamed elsewhere",
+      });
+
+      await waitFor(() => expect(screen.getByText("Renamed elsewhere")).toBeInTheDocument());
+      expect(screen.queryByText("Old title")).not.toBeInTheDocument();
+    });
+
+    it("keeps the locally-typed title when a save patch omits it", async () => {
+      // A local save leaves `title` undefined — the list already shows what the user
+      // typed, and overwriting it with a stale value would make the row flicker back.
+      const { patch } = await mountWith([
+        {
+          id: "note-y",
+          title: "Locally typed",
+          updated_at: new Date(Date.now() - 3600_000).toISOString(),
+        },
+      ]);
+      await waitFor(() => expect(screen.getByText("1h ago")).toBeInTheDocument());
+
+      await patch({ noteId: "note-y", updatedAt: new Date().toISOString() });
+
+      await waitFor(() => expect(screen.getByText("just now")).toBeInTheDocument());
+      expect(screen.getByText("Locally typed")).toBeInTheDocument();
+    });
+
+    it("drops a row that was trashed or deleted elsewhere", async () => {
+      const now = new Date().toISOString();
+      const { patch } = await mountWith([
+        { id: "note-gone", title: "Removed elsewhere", updated_at: now },
+        { id: "note-stays", title: "Still here", updated_at: now },
+      ]);
+      await waitFor(() => expect(screen.getByText("Removed elsewhere")).toBeInTheDocument());
+
+      await patch({ noteId: "note-gone", removed: true });
+
+      await waitFor(() => expect(screen.queryByText("Removed elsewhere")).not.toBeInTheDocument());
+      expect(screen.getByText("Still here")).toBeInTheDocument();
+    });
+
+    it("ignores a patch for a note that is not in this notebook", async () => {
+      const { patch } = await mountWith([
+        { id: "note-here", title: "Only note", updated_at: new Date().toISOString() },
+      ]);
+      await waitFor(() => expect(screen.getByText("Only note")).toBeInTheDocument());
+
+      await patch({ noteId: "note-elsewhere", removed: true });
+
+      expect(screen.getByText("Only note")).toBeInTheDocument();
     });
   });
 
