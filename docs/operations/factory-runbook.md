@@ -288,6 +288,25 @@ The factory's `cleanup()` trap files a `factory-failure`-labelled GitHub issue w
 
 If the same failure mode files >3 issues in 24h, pause the factory globally (`factory:pause`) and open a regular bug to fix the root cause.
 
+## Tool denies
+
+Each Claude stage runs with a `--disallowedTools` deny set built in `scripts/factory-agent.sh` next to the effort block (`FACTORY_DENY_CORE` plus a per-stage layer). See [ADR-0034](../adr/0034-factory-tool-denies.md) for why it is a deny-list and not an allow-list, and for what it deliberately cannot cover.
+
+**Reading it.** Every invocation logs the set it passed, immediately after the `Invoking claude` line:
+
+```
+[hh:mm:ss] Invoking claude for #463 (--implement, slot 0, cap 2700s, effort=ultracode)
+[hh:mm:ss] Tool denies (1843 chars, 54 patterns): Bash(claude:*),Bash(launchctl:*),...
+```
+
+That line exists because **a malformed pattern is silently ignored** — no error, no enforcement. If enforcement seems absent, compare the logged set against `scripts/__tests__/factory-deny-grounding.test.mjs`, which validates every pattern's syntax.
+
+**Symptoms of a wrong pattern.** A stage that suddenly cannot do something it did yesterday: the agent emits `action=blocked` citing a denied tool, or produces no summary line at all and bumps attempts until the card lands in Blocked at `FACTORY_MAX_ATTEMPTS`. Check the logged deny set first — the failure looks like a model problem but is a config one.
+
+**Adding a new `scripts/lib/*.mjs` CLI.** The deny list enumerates dangerous CLIs by name, so a new one is _permitted by default_. `factory-deny-grounding.test.mjs` fails when a file under `scripts/lib/` is neither denied nor listed as a pure module — add it to `FACTORY_DENY_CORE` if it has a CLI, or to `PURE_MODULES` in the test if it does not.
+
+**What the coding stages must keep.** `git push` (plain), `pnpm`, `gh pr create|view|edit`, `gh issue comment`, `curl` and `mkdir` for the screenshot carve-out, and `Task`. The test's `UNSAFE` table pins these; do not deny them to tighten things up, or `--implement` cannot land its work.
+
 ## Recovering a card whose feedback was falsely consumed
 
 Applies to cards worked before [ADR-0033](../adr/0033-factory-branch-safety-and-implement-verification.md). Symptom: an open PR, a reporter comment asking for a change, and a factory log line saying "revision pushed" — but the PR head never moved and `--watch` keeps re-presenting the same preview.

@@ -18,10 +18,11 @@ describe("factory-agent Claude effort", () => {
   it("passes --effort at all five Claude call sites", () => {
     // Three read-only sites (plan + replan + In Test scenario) use the plan
     // effort; two coding sites (implement + watch) use the coding effort.
-    const planFlags =
-      script.match(/--dangerously-skip-permissions --effort "\$FACTORY_PLAN_EFFORT"/g) || [];
-    const codeFlags =
-      script.match(/--dangerously-skip-permissions --effort "\$FACTORY_EFFORT"/g) || [];
+    // Matched per invocation line rather than as adjacent flags: the deny set
+    // (--disallowedTools, ADR-0034) now sits between the two.
+    const callLines = script.match(/run-claude\.mjs[^\n]*/g) || [];
+    const planFlags = callLines.filter((l) => l.includes('--effort "$FACTORY_PLAN_EFFORT"'));
+    const codeFlags = callLines.filter((l) => l.includes('--effort "$FACTORY_EFFORT"'));
     assert.equal(
       planFlags.length,
       3,

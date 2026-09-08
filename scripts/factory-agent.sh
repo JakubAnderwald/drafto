@@ -279,6 +279,84 @@ OAUTH_USER_EMAIL="${OAUTH_USER_EMAIL:-support@drafto.eu}"
 # ── Paths, logs, lock ───────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# ── Tool denies ─────────────────────────────────────────────────────────────
+# Each prompt carries a prose "Refuse:" list. Until now nothing enforced it —
+# every stage runs `claude --dangerously-skip-permissions`, so compliance was
+# the model's alone. `--disallowedTools` composes with that flag and removes a
+# tool (or one command prefix) outright, so the load-bearing refusals are
+# mechanized here while the prompts keep explaining *why*.
+#
+# Measured behaviour of the matcher (see ADR-0034 for the probe transcript):
+#   - Deny works under --dangerously-skip-permissions; --allowedTools does not
+#     (it is ignored under bypass and merely additive without it).
+#   - Multi-word prefixes match: Bash(git log:*) denies `git log`, not `git status`.
+#   - Compound commands are matched per clause: `cd x && ls` trips Bash(ls:*).
+#   - Task subagents INHERIT the deny set, so this is not bypassable by
+#     delegating the command to a subagent.
+#   - `:*` does NOT span a colon-suffixed token: Bash(pnpm release:*) does NOT
+#     match `pnpm release:beta`. Script-name lanes are therefore inexpressible;
+#     the chokepoint is one level down at fastlane/xcodebuild/gradlew, which are
+#     invoked name-first.
+#   - A MALFORMED pattern is silently ignored — no error, no enforcement. That
+#     is why factory-deny-grounding.test.mjs validates the syntax of every
+#     pattern, and why each stage logs its deny set before invoking Claude.
+#
+# This is defence-in-depth against drift and mistakes, NOT a sandbox: `gh api`
+# can mutate with no method flag, argument-value and cardinality constraints
+# are inexpressible, and `env`/`xargs` style indirection is not covered. The
+# controls that actually hold are architectural — bash validates the summary
+# line, bash owns every board write and the merge.
+#
+# Plain strings, never arrays: expanding an empty array under `set -u` throws
+# "unbound variable" on the Mac mini's bash 3.2 (same rule as FACTORY_EFFORT).
+
+# Shared by every stage. Deny the sibling scripts/lib CLIs by name so an agent
+# cannot reset its own retry budget (state-cli), rewrite its own board Status
+# (factory-project), tear down worktrees (worktree-cli), or dispatch a release
+# (dispatch-release). Both the bare and $REPO_ROOT-absolute spellings.
+FACTORY_DENY_CORE="Bash(claude:*),Bash(launchctl:*),Bash(sudo:*),Bash(defaults write:*)"
+FACTORY_DENY_CORE="$FACTORY_DENY_CORE,Bash(bash -c:*),Bash(sh -c:*),Bash(zsh -c:*)"
+FACTORY_DENY_CORE="$FACTORY_DENY_CORE,Bash(fastlane:*),Bash(bundle exec fastlane:*)"
+FACTORY_DENY_CORE="$FACTORY_DENY_CORE,Bash(xcodebuild:*),Bash(gradlew:*),Bash(./gradlew:*)"
+FACTORY_DENY_CORE="$FACTORY_DENY_CORE,Bash(vercel:*),Bash(supabase:*),Bash(eas:*)"
+FACTORY_DENY_CORE="$FACTORY_DENY_CORE,Bash(gh workflow run:*),Bash(gh release create:*)"
+FACTORY_DENY_CORE="$FACTORY_DENY_CORE,Bash(gh pr merge:*),Bash(gh auth:*),Bash(gh secret:*)"
+FACTORY_DENY_CORE="$FACTORY_DENY_CORE,Bash(gh repo delete:*),Bash(gh project:*)"
+FACTORY_DENY_CORE="$FACTORY_DENY_CORE,WebFetch,WebSearch"
+for _cli in state-cli worktree-cli factory-project dispatch-release github-sync \
+            zoho-cli setup-zoho-oauth run-claude build-bundle; do
+  FACTORY_DENY_CORE="$FACTORY_DENY_CORE,Bash(node scripts/lib/${_cli}.mjs:*)"
+  FACTORY_DENY_CORE="$FACTORY_DENY_CORE,Bash(node $REPO_ROOT/scripts/lib/${_cli}.mjs:*)"
+done
+unset _cli
+
+# --implement / --watch write code, so they keep git + pnpm. Only the history
+# rewriting and release verbs are denied. NOTE: plain `git push` must stay
+# allowed — it is how the implementation lands.
+FACTORY_DENY_CODING="$FACTORY_DENY_CORE"
+FACTORY_DENY_CODING="$FACTORY_DENY_CODING,Bash(git push --force:*),Bash(git push -f:*)"
+FACTORY_DENY_CODING="$FACTORY_DENY_CODING,Bash(git reset:*),Bash(git checkout:*)"
+FACTORY_DENY_CODING="$FACTORY_DENY_CODING,Bash(git rebase:*),Bash(git config:*)"
+FACTORY_DENY_CODING="$FACTORY_DENY_CODING,Bash(git worktree:*),Bash(git remote:*)"
+FACTORY_DENY_CODING="$FACTORY_DENY_CODING,Bash(git clean:*),Bash(git commit --amend:*)"
+FACTORY_DENY_CODING="$FACTORY_DENY_CODING,Bash(git filter-branch:*),Bash(gh pr close:*)"
+FACTORY_DENY_IMPLEMENT="$FACTORY_DENY_CODING"
+# The PR already exists by --watch; a second `gh pr create` is only ever a slip.
+FACTORY_DENY_WATCH="$FACTORY_DENY_CODING,Bash(gh pr create:*)"
+
+# --plan / replan and the In Test scenario writer are read-only: they grep, read
+# and post exactly one comment. They can therefore deny git and pnpm wholesale,
+# which would brick the coding stages. Note `Write` stays ALLOWED on plan (it
+# writes /tmp/factory-replan-body.md) but is denied on In Test, whose prompt
+# says "you post one comment; that is your entire write surface".
+FACTORY_DENY_READONLY="$FACTORY_DENY_CORE,Bash(git:*),Bash(pnpm:*),Bash(npm:*)"
+FACTORY_DENY_READONLY="$FACTORY_DENY_READONLY,Bash(npx:*),Bash(yarn:*),Bash(node:*)"
+FACTORY_DENY_READONLY="$FACTORY_DENY_READONLY,Bash(gh issue edit:*),Bash(gh issue create:*)"
+FACTORY_DENY_READONLY="$FACTORY_DENY_READONLY,Bash(gh issue close:*),Edit,NotebookEdit"
+FACTORY_DENY_PLAN="$FACTORY_DENY_READONLY,Bash(gh pr:*)"
+FACTORY_DENY_INTEST="$FACTORY_DENY_READONLY,Write,Bash(gh pr edit:*),Bash(gh pr close:*)"
+FACTORY_DENY_INTEST="$FACTORY_DENY_INTEST,Bash(gh pr review:*),Bash(gh pr comment:*)"
 # The In Test scenario writer's prompt. Defined here (not only inside --watch) so
 # intest_handoff can reference it without tripping `set -u`. A missing file
 # degrades to the deterministic fallback comment rather than failing the mode —
@@ -2049,11 +2127,12 @@ intest_handoff() {
   claude_input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
     "$(cat "$INTEST_PROMPT_FILE")" "$bundle")
   log "Invoking claude for #$issue_num (In Test scenario, cap ${INTEST_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT)"
+  log "Tool denies (${#FACTORY_DENY_INTEST} chars, $(echo "$FACTORY_DENY_INTEST" | tr "," "\n" | wc -l | tr -d " ") patterns): $FACTORY_DENY_INTEST"
   out_file=$(mktemp -t factory-agent-intest.XXXXXX)
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   # Read-only stage: runs in the factory checkout on main, no worktree, no slot.
   ( cd "$REPO_ROOT" && CLAUDE_CALL_TIMEOUT_SEC="$INTEST_TIMEOUT_SEC" \
-      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" ) \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --disallowedTools "$FACTORY_DENY_INTEST" --effort "$FACTORY_PLAN_EFFORT" ) \
       >"$out_file" 2>>"$LOG_FILE" || exit_code=$?
 
   if [[ $exit_code -ne 0 ]]; then
@@ -2340,10 +2419,11 @@ See \`docs/features/dark-factory.md\` for the spec contract.
     CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
       "$PROMPT_TEXT" "$BUNDLE")
     log "Invoking claude for #$ISSUE_NUM (--plan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT)"
+    log "Tool denies (${#FACTORY_DENY_PLAN} chars, $(echo "$FACTORY_DENY_PLAN" | tr "," "\n" | wc -l | tr -d " ") patterns): $FACTORY_DENY_PLAN"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
-    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" \
+    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --disallowedTools "$FACTORY_DENY_PLAN" --effort "$FACTORY_PLAN_EFFORT" \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
     if [[ $EXIT_CODE -eq 124 ]]; then
@@ -2526,10 +2606,11 @@ and drag the card back to **Ready** to retry.
     CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
       "$PROMPT_TEXT" "$BUNDLE")
     log "Invoking claude for #$ISSUE_NUM (--plan replan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT)"
+    log "Tool denies (${#FACTORY_DENY_PLAN} chars, $(echo "$FACTORY_DENY_PLAN" | tr "," "\n" | wc -l | tr -d " ") patterns): $FACTORY_DENY_PLAN"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
-    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" \
+    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --disallowedTools "$FACTORY_DENY_PLAN" --effort "$FACTORY_PLAN_EFFORT" \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
     if [[ $EXIT_CODE -eq 124 ]]; then
@@ -2876,11 +2957,12 @@ Drag it back to **Ready** so the factory can plan it first.
     CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
       "$PROMPT_TEXT" "$BUNDLE")
     log "Invoking claude for #$ISSUE_NUM (--implement, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s, effort=$FACTORY_EFFORT)"
+    log "Tool denies (${#FACTORY_DENY_IMPLEMENT} chars, $(echo "$FACTORY_DENY_IMPLEMENT" | tr "," "\n" | wc -l | tr -d " ") patterns): $FACTORY_DENY_IMPLEMENT"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
     ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$IMPLEMENT_TIMEOUT_SEC" \
-        node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" ) \
+        node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --disallowedTools "$FACTORY_DENY_IMPLEMENT" --effort "$FACTORY_EFFORT" ) \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
     if [[ $EXIT_CODE -eq 124 ]]; then
@@ -3274,11 +3356,12 @@ A human should take a look. Reset with \
       CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
         "$WATCH_PROMPT_TEXT" "$BUNDLE")
       log "Invoking claude for #$ISSUE_NUM (--watch fix, slot $SLOT, cap ${WATCH_TIMEOUT_SEC}s, effort=$FACTORY_EFFORT)"
+      log "Tool denies (${#FACTORY_DENY_WATCH} chars, $(echo "$FACTORY_DENY_WATCH" | tr "," "\n" | wc -l | tr -d " ") patterns): $FACTORY_DENY_WATCH"
       CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
       CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
       EXIT_CODE=0
       ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$WATCH_TIMEOUT_SEC" \
-          node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" ) \
+          node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --disallowedTools "$FACTORY_DENY_WATCH" --effort "$FACTORY_EFFORT" ) \
           >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
       if [[ $EXIT_CODE -ne 0 ]]; then

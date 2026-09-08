@@ -71,8 +71,11 @@ already handled.
 - `Read`, `Write`, `Edit`, `Grep`, `Glob` inside the worktree.
 - `Bash` for: `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm --filter <app> …`,
   `pnpm format:check`, `pnpm migration:check`, `git add`, `git commit`,
-  `git push`, `git status`, `git diff`, `git log`. Refuse `git push --force`,
-  `git reset --hard`, `git checkout <branch>`, `git rebase`, `git config`.
+  `git push`, `git status`, `git diff`, `git log`, `git restore`,
+  `git restore --staged`. Refuse `git push --force`, `git reset`,
+  `git checkout`, `git rebase`, `git config` — these are blocked at the tool
+  layer, so use `git restore` / `git restore --staged` to discard an edit or
+  unstage a file.
 - `gh pr view <n> --repo JakubAnderwald/drafto --json ...` — inspect PR / checks.
 - `gh pr comment <n> --repo JakubAnderwald/drafto --body "..."` — only to post a
   one-line note when emitting `action=blocked`.

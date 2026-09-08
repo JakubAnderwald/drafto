@@ -108,13 +108,19 @@ been copied per CLAUDE.md's worktree-setup rules.
 - `Bash` for: `pnpm install`, `pnpm lint`, `pnpm typecheck`, `pnpm test`,
   `pnpm --filter <app> test`, `pnpm format:check`, `pnpm migration:check`,
   `git add`, `git commit`, `git push`, `git status`, `git diff`,
-  `git log`. Refuse `git push --force`, `git reset --hard`, `git checkout`,
-  `git rebase`, `git config`, or any non-pnpm/non-git shell command — except the
-  `bundle.screenshots` fetch described under **Screenshots** below.
+  `git log`, `git restore`, `git restore --staged`. Refuse `git push --force`,
+  `git reset`, `git checkout`, `git rebase`, `git config`, or any
+  non-pnpm/non-git shell command — except the `bundle.screenshots` fetch
+  described under **Screenshots** below. To discard a bad edit or unstage a
+  file, use `git restore` / `git restore --staged`, not `git checkout --` or
+  `git reset` — those two are blocked at the tool layer because they are also
+  the verbs that rewrite history.
 - `gh pr create --repo JakubAnderwald/drafto --base main --head factory/issue-<n> --title "..." --body "..."` —
   used **once**, after the implementation is pushed.
 - `gh pr view <n> --repo JakubAnderwald/drafto --json ...` — read PR state if
   needed.
+- `gh pr edit <n> --repo JakubAnderwald/drafto --body "..."` — used on revision
+  runs to refresh the PR body (see **Revision runs** below, which requires it).
 - `gh issue comment <n> --repo JakubAnderwald/drafto --body "..."` — used
   **only** to post a blocking comment when emitting `action=blocked`. Do not
   comment for happy-path runs; the PR description carries the relevant info.
