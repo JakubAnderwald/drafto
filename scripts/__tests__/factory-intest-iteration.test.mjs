@@ -134,7 +134,17 @@ describe("factory-agent.sh structural wiring (In Test iteration)", () => {
 
   it("a revision no-op re-presents the existing preview (back to In Test)", () => {
     assert.match(script, /drafto-factory-revise-noop/);
-    assert.match(script, /IS_REVISION" -eq 1 \]\]; then\n\s*# The feedback needed no code change/);
+    // Slice the noop arm rather than pinning line adjacency: the revision arm
+    // now opens with the committed-but-unlanded guard before this comment.
+    const noopArm = (() => {
+      const start = script.indexOf('      noop)\n        if [[ "$IS_REVISION" -eq 1 ]]; then');
+      assert.ok(start !== -1, "could not find the implement noop arm");
+      const end = script.indexOf("      blocked)", start);
+      assert.ok(end !== -1, "could not find the end of the noop arm");
+      return script.slice(start, end);
+    })();
+    assert.match(noopArm, /# The feedback needed no code change/);
+    assert.match(noopArm, /transition_status "\$ITEM_ID" "\$ISSUE_NUM" "In Test"/);
   });
 
   it("advances the feedback high-water mark only after consuming comments", () => {

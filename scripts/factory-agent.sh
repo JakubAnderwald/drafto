@@ -920,6 +920,14 @@ find_prior_pr() {
         { number: .number, url: .url, headRef: .headRefName, state: .state } end'
 }
 
+# Head commit OID of PR <n>, or "" on any failure. Deliberately separate from
+# find_prior_pr, whose {number,url,headRef,state} shape is consumed by the
+# implement bundle and pinned by factory-bundle tests. Callers treat "" as
+# "unknown" and fail closed.
+pr_head_oid() {
+  gh pr view "$1" --repo JakubAnderwald/drafto --json headRefOid --jq '.headRefOid' 2>>"$LOG_FILE" || echo ""
+}
+
 # Copy the gitignored env files CLAUDE.md lists into a fresh worktree. Phase B
 # is web-only so the mobile/desktop envs are usually absent — copy what exists,
 # never fail the run on a missing optional file.
@@ -1103,17 +1111,66 @@ slot_held_by_issue() {
       '.slots | to_entries | map(select(.value.issueNumber == $i)) | (.[0].key // "")'
 }
 
-# Release the worktree slot + remove the worktree/branch for <issue>. Mirrors
-# the --watch cleanup-sweep teardown; safe when no slot is held (a card may have
-# reached Approved after its slot was already reclaimed). Best-effort throughout.
+# Reason the local branch factory/issue-<n> must be KEPT, or "" when deleting
+# it is safe. $2 optionally supplies a PR state the caller already knows, to
+# skip a redundant API call.
+#
+# FAILS CLOSED: any doubt — a lookup failure, an unrecognised state — keeps the
+# branch. A stray branch ref costs 40 bytes; deleting one that still backs an
+# open PR strands every commit on it, because addWorktree then rebuilds the
+# worktree from origin/main and the agent silently edits pre-PR files.
+#
+# STDOUT IS CAPTURED by the caller, so this must never call log().
+branch_keep_reason() {
+  local issue_num="$1"
+  local known_state="${2:-}"
+  if [[ "$known_state" == "MERGED" ]]; then echo ""; return 0; fi
+  local pr state
+  pr=$(find_prior_pr "$issue_num") || { echo "PR lookup failed"; return 0; }
+  [[ -n "$pr" ]] || { echo "PR lookup returned nothing"; return 0; }
+  if [[ "$pr" == "null" ]]; then echo ""; return 0; fi
+  state=$(echo "$pr" | jq -r '.state // ""' 2>/dev/null || echo "")
+  case "$state" in
+    MERGED) echo "" ;;
+    # A CLOSED factory PR is reopen-by-push (see find_prior_pr); dropping the
+    # branch would destroy that path.
+    OPEN|CLOSED) echo "PR #$(echo "$pr" | jq -r '.number') is $state" ;;
+    *) echo "unknown PR state '${state:-<empty>}'" ;;
+  esac
+}
+
+# Remove the worktree for <issue>, deleting the local branch only when it no
+# longer backs a live PR. $2 optionally passes a known PR state.
+remove_worktree_for() {
+  local issue_num="$1"
+  local known_state="${2:-}"
+  local keep out
+  keep=$(branch_keep_reason "$issue_num" "$known_state")
+  if [[ -n "$keep" ]]; then
+    log "Issue #$issue_num: keeping branch factory/issue-$issue_num ($keep); removing worktree only"
+    node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$issue_num" --root "$REPO_ROOT" --force >>"$LOG_FILE" 2>&1 || true
+    return 0
+  fi
+  out=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$issue_num" --root "$REPO_ROOT" --force --delete-branch 2>>"$LOG_FILE" || echo "")
+  [[ -n "$out" ]] || out='{}'
+  # branchHead is the pre-deletion tip: enough to undo a mistaken teardown with
+  # `git branch factory/issue-<n> <oid>`.
+  log "Issue #$issue_num: worktree teardown $(echo "$out" | jq -c '{removed,branchDeleted,branchHead}' 2>/dev/null || echo '{}')"
+}
+
+# Release the worktree slot + remove the worktree for <issue>, deleting the
+# branch only when no live PR still points at it. Safe when no slot is held (a
+# card may have reached Approved after its slot was already reclaimed). $2
+# optionally passes a PR state the caller already knows. Best-effort throughout.
 release_slot_and_worktree() {
   local issue_num="$1"
+  local known_state="${2:-}"
   local slot
   slot=$(slot_held_by_issue "$issue_num")
   if [[ -n "$slot" ]]; then
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$slot" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   fi
-  node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$issue_num" --root "$REPO_ROOT" --force --delete-branch >>"$LOG_FILE" 2>&1 || true
+  remove_worktree_for "$issue_num" "$known_state"
 }
 
 # ── Session-limit detection ─────────────────────────────────────────────────
@@ -2671,6 +2728,10 @@ the card back to **In Progress** to retry.
 
 <!-- drafto-factory-retry-exhausted -->" >>"$LOG_FILE" 2>&1 || true
         transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+        # A slot retained from an earlier tick would otherwise survive into
+        # status:blocked, and the next --watch sweep would tear down a worktree
+        # whose PR is still open. Release it here instead.
+        release_slot_and_worktree "$ISSUE_NUM"
       fi
       continue
     fi
@@ -2701,6 +2762,7 @@ Reclaim space on the Mac mini, then drag this card back to **In Progress** to re
 <!-- drafto-factory-disk-low -->" >>"$LOG_FILE" 2>&1 || true
         fi
         transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+        release_slot_and_worktree "$ISSUE_NUM"
       fi
       continue
     fi
@@ -2719,6 +2781,7 @@ Drag it back to **Ready** so the factory can plan it first.
 
 <!-- drafto-factory-no-plan -->" >>"$LOG_FILE" 2>&1 || true
         transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+        release_slot_and_worktree "$ISSUE_NUM"
       fi
       continue
     fi
@@ -2769,12 +2832,13 @@ Drag it back to **Ready** so the factory can plan it first.
       log "WARNING: slot-acquire $SLOT for #$ISSUE_NUM failed; deferring"; continue
     fi
     if ! WT_JSON=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" add --issue "$ISSUE_NUM" \
-        --root "$REPO_ROOT" --base origin/main 2>>"$LOG_FILE"); then
+        --root "$REPO_ROOT" --base origin/main --fetch 2>>"$LOG_FILE"); then
       log "ERROR: worktree add failed for #$ISSUE_NUM; releasing slot $SLOT"
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       continue
     fi
     WT_PATH=$(echo "$WT_JSON" | jq -r '.path')
+    log "Issue #$ISSUE_NUM: worktree $WT_PATH (branchReused=$(echo "$WT_JSON" | jq -r '.branchReused // false'), fromRemote=$(echo "$WT_JSON" | jq -r '.fromRemote // false'), base=$(echo "$WT_JSON" | jq -r '.base // ""'))"
     copy_worktree_env "$WT_PATH"
     seed_worktree_node_modules "$WT_PATH"
 
@@ -2785,6 +2849,27 @@ Drag it back to **Ready** so the factory can plan it first.
       node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$ISSUE_NUM" --root "$REPO_ROOT" --force >>"$LOG_FILE" 2>&1 || true
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       continue
+    fi
+
+    # Record the PR head before handing over, so a claimed `implemented` can be
+    # checked against what GitHub actually received. Captured after the install
+    # (which takes minutes) to keep the TOCTOU window small. Empty on a fresh
+    # implementation — there is no prior PR to compare against, and the
+    # "no PR on head" check below already covers that case.
+    # PRE_HEAD_KNOWN distinguishes "nothing to verify" from "couldn't find out".
+    # Collapsing both into an empty PRE_HEAD_OID would silently skip the guard
+    # on a revision run whose `gh pr view` hit a transient error — the exact
+    # failure this guard exists to catch.
+    PRE_HEAD_OID=""
+    PRE_HEAD_KNOWN=1
+    if [[ "$PRIOR_PR" != "null" ]]; then
+      PRE_HEAD_OID=$(pr_head_oid "$(echo "$PRIOR_PR" | jq -r '.number')")
+      if [[ -z "$PRE_HEAD_OID" ]]; then
+        PRE_HEAD_KNOWN=0
+        log "WARNING: #$ISSUE_NUM: could not read the PR head before this run; a success claim cannot be verified this tick"
+      else
+        log "Issue #$ISSUE_NUM: PR head before this run: $PRE_HEAD_OID"
+      fi
     fi
 
     # Invoke claude inside the worktree with the implementer prompt + bundle.
@@ -2843,6 +2928,40 @@ Drag it back to **Ready** so the factory can plan it first.
           continue
         fi
         PR_NUM=$(echo "$PR_OBJ" | jq -r '.number')
+        # Did the work actually land? An agent whose worktree does not descend
+        # from the PR head gets its push rejected, and has historically still
+        # reported action=implemented — which advanced the card AND marked the
+        # reporter's feedback consumed, losing the change request silently.
+        # Trust GitHub's head OID, not the agent's self-report.
+        if [[ "$PRE_HEAD_KNOWN" -eq 0 ]]; then
+          log "WARNING: #$ISSUE_NUM: the PR head before this run is unknown, so action=implemented cannot be verified; not advancing this tick"
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          continue
+        fi
+        if [[ -n "$PRE_HEAD_OID" ]]; then
+          POST_HEAD_OID=$(pr_head_oid "$PR_NUM")
+          if [[ -z "$POST_HEAD_OID" ]]; then
+            log "WARNING: #$ISSUE_NUM: could not read PR #$PR_NUM head OID; not advancing this tick"
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+            continue
+          fi
+          if [[ "$POST_HEAD_OID" == "$PRE_HEAD_OID" ]]; then
+            log "ERROR: #$ISSUE_NUM claimed action=implemented but PR #$PR_NUM head is unchanged (${PRE_HEAD_OID:0:12}); treating as a failed attempt"
+            if ! echo "$COMMENTS_JSON" | jq -e 'any(.[]?; (.body // "") | contains("drafto-factory-head-unchanged"))' >/dev/null 2>&1; then
+              gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+                --body "🏭 **A revision run reported success but pushed nothing.**
+
+PR #$PR_NUM is still at \`${PRE_HEAD_OID:0:12}\`, so the requested change is *not* on the \
+PR. The card stays In Progress and your feedback is left unconsumed, so the next attempt \
+still sees it. If this repeats until the retry budget is exhausted, the card moves to \
+**Blocked** for a human.
+
+<!-- drafto-factory-head-unchanged -->" >>"$LOG_FILE" 2>&1 || true
+            fi
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+            continue
+          fi
+        fi
         # Parity / phase post-check. A transient `gh pr diff` failure must not
         # masquerade as a violation, so we only enforce when we got the list.
         if DIFF_FILES=$(gh pr diff "$PR_NUM" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE"); then
@@ -2883,6 +3002,26 @@ drag the card back to **In Progress**.
         ;;
       noop)
         if [[ "$IS_REVISION" -eq 1 ]]; then
+          # A genuine no-op commits nothing, so the worktree must still sit on
+          # the PR head. If it has moved, work WAS committed and simply never
+          # landed — the same false success as a bogus action=implemented, and
+          # indistinguishable from it by PR head alone (unchanged either way).
+          if [[ "$PRE_HEAD_KNOWN" -eq 0 ]]; then
+            log "WARNING: #$ISSUE_NUM: the PR head before this run is unknown, so action=noop cannot be verified; not advancing this tick"
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+            continue
+          fi
+          LOCAL_HEAD=$(git -C "$WT_PATH" rev-parse HEAD 2>>"$LOG_FILE" || echo "")
+          # Only "ahead of / diverged from" the PR head means work was committed
+          # and never landed. A worktree merely BEHIND the PR head (someone else
+          # pushed) is not this failure, and treating it as one would burn the
+          # retry budget on a run that correctly did nothing.
+          if [[ -n "$PRE_HEAD_OID" && -n "$LOCAL_HEAD" && "$LOCAL_HEAD" != "$PRE_HEAD_OID" ]] \
+             && ! git -C "$WT_PATH" merge-base --is-ancestor "$LOCAL_HEAD" "$PRE_HEAD_OID" 2>>"$LOG_FILE"; then
+            log "ERROR: #$ISSUE_NUM returned action=noop but the worktree HEAD (${LOCAL_HEAD:0:12}) differs from the PR head (${PRE_HEAD_OID:0:12}) — work was committed and not landed; treating as a failed attempt"
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+            continue
+          fi
           # The feedback needed no code change. The existing PR + preview are
           # still valid, so re-present in In Test instead of re-running CI.
           transition_status "$ITEM_ID" "$ISSUE_NUM" "In Test" || true
@@ -2973,7 +3112,10 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
       log "Slot $SLOT: issue #$SLOT_ISSUE left In Review/In Test; releasing slot + worktree"
       if [[ "$DRY_RUN" -eq 0 ]]; then
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-        node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$SLOT_ISSUE" --root "$REPO_ROOT" --force --delete-branch >>"$LOG_FILE" 2>&1 || true
+        # Not necessarily done with the issue: a card relabelled status:blocked
+        # by a retry-exhausted path still has an OPEN PR, so the branch is only
+        # deleted once no live PR points at it.
+        remove_worktree_for "$SLOT_ISSUE"
       fi
     fi
   done
@@ -3063,6 +3205,10 @@ A human should take a look. Reset with \
 
 <!-- drafto-factory-retry-exhausted -->" >>"$LOG_FILE" 2>&1 || true
           transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+          # The slot is still held from the --implement run that opened this PR.
+          # Leaving it held is what armed the sweep to delete a branch backing an
+          # open PR — the #463 failure. Release it, keeping the branch.
+          release_slot_and_worktree "$ISSUE_NUM"
         fi
         continue
       fi
@@ -3109,10 +3255,17 @@ A human should take a look. Reset with \
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-acquire "$SLOT" "$ISSUE_NUM" "$$" \
         --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       if ! WT_JSON=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" add --issue "$ISSUE_NUM" \
-          --root "$REPO_ROOT" --base origin/main 2>>"$LOG_FILE"); then
-        log "ERROR: worktree resume failed for #$ISSUE_NUM"; continue
+          --root "$REPO_ROOT" --base origin/main --fetch 2>>"$LOG_FILE"); then
+        # Release the slot we just acquired, mirroring the --implement site: an
+        # unreachable origin now fails the add instead of silently branching
+        # from base, and holding both slots through a network fault would
+        # starve --implement for as long as it lasts.
+        log "ERROR: worktree resume failed for #$ISSUE_NUM; releasing slot $SLOT"
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        continue
       fi
       WT_PATH=$(echo "$WT_JSON" | jq -r '.path')
+      log "Issue #$ISSUE_NUM: worktree $WT_PATH (branchReused=$(echo "$WT_JSON" | jq -r '.branchReused // false'), fromRemote=$(echo "$WT_JSON" | jq -r '.fromRemote // false'), base=$(echo "$WT_JSON" | jq -r '.base // ""'))"
       copy_worktree_env "$WT_PATH"
       seed_worktree_node_modules "$WT_PATH"
       log "Issue #$ISSUE_NUM: seeding node_modules (clonefile) + reconciling deps (--watch, slot $SLOT, cap ${INSTALL_TIMEOUT_SEC}s)"
@@ -3444,7 +3597,7 @@ if [[ "$MODE_RELEASE" -eq 1 ]]; then
       if [[ "$DRY_RUN" -eq 0 ]]; then
         transition_status "$ITEM_ID" "$ISSUE_NUM" "Released" || true
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastReleaseAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-        release_slot_and_worktree "$ISSUE_NUM"
+        release_slot_and_worktree "$ISSUE_NUM" "MERGED"
       fi
       continue
     fi
@@ -3471,7 +3624,7 @@ if [[ "$MODE_RELEASE" -eq 1 ]]; then
       if [[ "$DRY_RUN" -eq 0 ]]; then
         transition_status "$ITEM_ID" "$ISSUE_NUM" "Released" || true
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastReleaseAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-        release_slot_and_worktree "$ISSUE_NUM"
+        release_slot_and_worktree "$ISSUE_NUM" "MERGED"
       fi
       continue
     fi
@@ -3642,7 +3795,7 @@ retry next cycle; if it keeps failing, merge it by hand. The card stays in \
 
     transition_status "$ITEM_ID" "$ISSUE_NUM" "Released" || true
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastReleaseAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-    release_slot_and_worktree "$ISSUE_NUM"
+    release_slot_and_worktree "$ISSUE_NUM" "MERGED"
     # The API merge leaves the remote head branch behind; delete it (matches /merge).
     gh api --method DELETE "repos/JakubAnderwald/drafto/git/refs/heads/factory/issue-$ISSUE_NUM" >>"$LOG_FILE" 2>&1 || true
 
