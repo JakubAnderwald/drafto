@@ -6,6 +6,8 @@ const mockDatabaseGet = jest.fn();
 const mockFileBytes = jest.fn();
 const mockFileDelete = jest.fn();
 const mockFileCopy = jest.fn();
+const mockDirDelete = jest.fn();
+const mockDirExists = jest.fn(() => true);
 
 jest.mock("expo-file-system", () => {
   const mockFile = jest.fn().mockImplementation((...args: unknown[]) => ({
@@ -17,8 +19,11 @@ jest.mock("expo-file-system", () => {
     bytes: mockFileBytes,
   }));
   const mockDirectory = jest.fn().mockImplementation(() => ({
-    exists: true,
+    get exists() {
+      return mockDirExists();
+    },
     create: jest.fn(),
+    delete: mockDirDelete,
     list: jest.fn().mockReturnValue([]),
   }));
   return {
@@ -58,10 +63,11 @@ jest.mock("@/lib/generate-id", () => ({
   generateId: () => "mock-id-123",
 }));
 
-import { processPendingUploads } from "@/lib/data/attachment-queue";
+import { processPendingUploads, deleteAllLocalAttachments } from "@/lib/data/attachment-queue";
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockDirExists.mockReturnValue(true);
 });
 
 describe("processPendingUploads", () => {
@@ -189,5 +195,35 @@ describe("processPendingUploads", () => {
     const result = await processPendingUploads();
 
     expect(result).toEqual({ uploaded: 0, failed: 0 });
+  });
+});
+
+describe("deleteAllLocalAttachments", () => {
+  it("deletes the attachments directory when it exists", async () => {
+    mockDirExists.mockReturnValue(true);
+
+    await deleteAllLocalAttachments();
+
+    expect(mockDirDelete).toHaveBeenCalled();
+  });
+
+  it("does nothing when the attachments directory does not exist", async () => {
+    mockDirExists.mockReturnValue(false);
+
+    await deleteAllLocalAttachments();
+
+    expect(mockDirDelete).not.toHaveBeenCalled();
+  });
+
+  it("swallows deletion errors so sign-out is not blocked", async () => {
+    mockDirExists.mockReturnValue(true);
+    mockDirDelete.mockImplementationOnce(() => {
+      throw new Error("delete failed");
+    });
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(deleteAllLocalAttachments()).resolves.toBeUndefined();
+
+    warnSpy.mockRestore();
   });
 });
