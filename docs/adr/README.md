@@ -65,3 +65,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0030](./0030-in-test-scenarios-and-pre-merge-betas.md)              | In Test Scenarios and Pre-Merge Beta Builds          | Accepted           | 2026-07-30 |
 | [0031](./0031-personal-skills-in-cloud-sessions.md)                  | Personal Skills in Cloud Sessions                    | Accepted           | 2026-08-12 |
 | [0032](./0032-web-realtime-note-sync.md)                             | Web Real-Time Sync for Externally Modified Notes     | Accepted           | 2026-09-06 |
+| [0033](./0033-factory-branch-safety-and-implement-verification.md)   | Factory Branch Safety and Implement Verification     | Accepted           | 2026-09-08 |

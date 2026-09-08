@@ -281,12 +281,43 @@ The factory's `cleanup()` trap files a `factory-failure`-labelled GitHub issue w
 2. **Check `logs/factory-*.log` on the Mac mini** for the full context.
 3. **Common causes** (in approximate order of frequency):
    - Network blip during `gh` call (transient — usually resolves on the next tick).
-   - Worktree slot leaked (a previous run died without releasing it). `node scripts/lib/state-cli.mjs factory:slot-status` shows each slot's PID + issue; if the PID is dead, `node scripts/lib/state-cli.mjs factory:slot-release <slot>` then `node scripts/lib/worktree-cli.mjs remove --issue <n> --force`. (`--watch`'s cleanup sweep also auto-releases slots whose issue has left the active In Progress/In Review/In Test states — e.g. merged, Blocked, or closed.)
+   - Worktree slot leaked (a previous run died without releasing it). `node scripts/lib/state-cli.mjs factory:slot-status` shows each slot's PID + issue; if the PID is dead, `node scripts/lib/state-cli.mjs factory:slot-release <slot>` then `node scripts/lib/worktree-cli.mjs remove --issue <n> --force`. (`--watch`'s cleanup sweep also auto-releases slots whose issue has left the active In Progress/In Review/In Test states — e.g. merged, Blocked, or closed. Since ADR-0033 that sweep removes the worktree but **keeps** the local branch whenever a PR still points at it, so a card dragged back to In Progress resumes on its own commits.)
    - Disk full under `worktrees/` — the factory now refuses to start an implement when free space is below `FACTORY_MIN_FREE_DISK_GB` (it parks the card in Blocked with a `disk-low` comment), so a mid-build ENOSPC should be rare. Reclaim space via `git worktree prune` (and `node scripts/lib/worktree-cli.mjs list` to see the factory's worktrees); see "Worktree installs & disk" for the full reclamation runbook.
    - Claude wall-time cap hit on every retry (the prompt or context bundle is too large). Inspect the bundle in the log; truncate prior PR threads if needed. (A Claude _session usage_ limit is handled separately — the factory auto-pauses until reset instead of failing; see "Automatic pause on a Claude session limit".)
 4. **Close the failure issue** once resolved. The trap doesn't auto-close; that's intentional so the issue is visible until acknowledged.
 
 If the same failure mode files >3 issues in 24h, pause the factory globally (`factory:pause`) and open a regular bug to fix the root cause.
+
+## Recovering a card whose feedback was falsely consumed
+
+Applies to cards worked before [ADR-0033](../adr/0033-factory-branch-safety-and-implement-verification.md). Symptom: an open PR, a reporter comment asking for a change, and a factory log line saying "revision pushed" — but the PR head never moved and `--watch` keeps re-presenting the same preview.
+
+The feedback high-water mark was advanced past the comment, so no future tick will read it. Rewind it, clear the retry counter, and make sure the branch is present:
+
+```bash
+# 1. The comment's own createdAt, minus a second, from:
+#    gh issue view <n> --json comments --jq '.comments[] | "\(.createdAt) \(.author.login)"'
+node scripts/lib/state-cli.mjs factory:set-issue-field <n> lastFeedbackAt "<iso-just-before-the-comment>"
+node scripts/lib/state-cli.mjs factory:reset-attempts <n>
+
+# 2. Restore the local branch if the old sweep deleted it. --fetch now does this
+#    automatically on the next tick, but doing it by hand is instant and safe.
+git fetch origin factory/issue-<n>
+git branch factory/issue-<n> origin/factory/issue-<n> 2>/dev/null || true
+```
+
+Then drag the card to **In Progress**. The next `--implement` tick re-reads the comment, resumes on the PR's own commits, and — if it still fails to push — now stops instead of claiming success.
+
+To find stray branches and stale remote-tracking refs left by the old behaviour:
+
+```bash
+git fetch --prune origin                       # --release deletes remote branches without pruning
+git branch --list 'factory/issue-*'
+gh pr list --state open --json headRefName --jq '.[].headRefName'
+node scripts/lib/worktree-cli.mjs list
+```
+
+Delete any local `factory/issue-*` that has no open PR and no worktree. A branch backing an open PR is now kept deliberately — don't prune those.
 
 ## Coexistence with `nightly-support.sh` Phase 3
 

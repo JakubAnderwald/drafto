@@ -151,6 +151,14 @@ Check `logs/support/support-agent-*.log` for the per-thread classification line.
 
 Before starting an implementation the factory checks free space on the build volume and, if it's below `FACTORY_MIN_FREE_DISK_GB` (default 3 GB), parks the card in **Blocked** with a `<!-- drafto-factory-disk-low -->` comment instead of failing mid-build. Reclaim space on the Mac mini (`git worktree prune`; clear Xcode `DerivedData`, old simulators, and `~/.gradle/caches`; strip `node_modules` from stale `.claude/worktrees/*` and `worktrees/*`), then drag the card back to **In Progress**. See [`docs/operations/factory-runbook.md`](../operations/factory-runbook.md) → "Worktree installs & disk" for the full reclamation + pnpm-store runbook.
 
+### "I asked for a change, the factory said it did it, and nothing changed"
+
+Fixed in [ADR-0033](../adr/0033-factory-branch-safety-and-implement-verification.md); this is what it looked like. The factory used to delete the local `factory/issue-<n>` branch whenever a card was moved to Blocked while still holding a worktree slot — even with the PR open. The next revision run then found no local branch and rebuilt the worktree from `origin/main`, so the agent edited pre-PR files, its push was rejected as non-fast-forward, and the prompt told it to report success anyway. Bash believed the report, advanced the card, and marked your comments consumed, so the request could never be replayed.
+
+Now: the branch is kept whenever a live PR points at it, a missing branch is recovered from `origin`, and a run that claims success without moving the PR head is treated as a failed attempt — your feedback stays unconsumed and the card stays put. If it repeats until the retry budget is exhausted, the card lands in **Blocked** with a `<!-- drafto-factory-head-unchanged -->` comment rather than looking done.
+
+If you hit the old behaviour on a card that predates the fix, the recovery is in [`docs/operations/factory-runbook.md`](../operations/factory-runbook.md) → "Recovering a card whose feedback was falsely consumed".
+
 ## Related
 
 - [ADR-0026](../adr/0026-dark-factory-pipeline.md) — decision record.

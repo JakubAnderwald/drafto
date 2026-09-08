@@ -15,14 +15,29 @@
 //   - worktree: <repoRoot>/worktrees/factory-issue-<n>
 //
 // Commands (each prints a single JSON object, or an array for `list`):
-//   add    --issue <n> [--base <ref>] [--root <repoRoot>]
+//   add    --issue <n> [--base <ref>] [--root <repoRoot>] [--fetch]
 //   remove --issue <n> [--root <repoRoot>] [--force] [--delete-branch]
 //   path   --issue <n> [--root <repoRoot>]
 //   list   [--root <repoRoot>]
 //
-// `add` is idempotent: if the worktree is already registered it's reused; if
-// only the branch exists (a retry after a crashed run) the branch is
-// re-attached to a fresh worktree so the prior commits / PR head carry over.
+// `add` is idempotent, resolving the branch in four tiers so a revision run
+// always lands on the PR's own commits:
+//   1. the worktree is already registered  → reuse it as-is
+//   2. the local branch exists             → re-attach it (with --fetch, first
+//                                            reconciled against origin: behind
+//                                            defers to tier 3, ahead is kept,
+//                                            diverged throws)
+//   3. --fetch and origin has the branch   → fetch + branch from origin/<b>
+//   4. otherwise                           → create it from <base>
+//
+// Tier 3 exists because factory-agent.sh deletes the local branch when a card
+// leaves its active states, which used to silently drop the factory to tier 4
+// and branch a revision run off origin/main — producing a worktree with none
+// of the open PR's commits. `git ls-remote` is the liveness probe (it asks the
+// remote directly, so a stale remote-tracking ref can't fool it), and an
+// unreachable remote is fatal rather than falling through to <base>: branching
+// from the wrong base is the data-loss path, and factory-agent.sh handles an
+// `add` failure by releasing the slot without burning retry budget.
 
 import { spawnSync } from "node:child_process";
 import path from "node:path";
@@ -55,11 +70,41 @@ export function worktreePathForIssue(root, issueNumber) {
   return path.join(root, "worktrees", `factory-issue-${issueNumber}`);
 }
 
+// Cap on the git calls that touch the network. Without it a black-holed
+// connection blocks spawnSync forever, and because factory-agent-loop.sh only
+// reaps a lock whose owning PID is dead, a hung tick stops the entire pipeline
+// silently — every later tick exits on the still-held mutex.
+const NETWORK_TIMEOUT_MS = Number(process.env.FACTORY_GIT_NETWORK_TIMEOUT_MS ?? 60000);
+
 // Run git in `cwd`. Throws on non-zero unless allowFail is set, in which case
 // the raw result (status + stdout + stderr) is returned for the caller to
-// inspect. spawn failures (git missing) always throw.
-function git(args, { cwd, allowFail = false } = {}) {
-  const res = spawnSync("git", args, { cwd, encoding: "utf8" });
+// inspect. spawn failures (git missing) always throw. Pass timeoutMs for any
+// call that reaches the network.
+function git(args, { cwd, allowFail = false, timeoutMs } = {}) {
+  const opts = { cwd, encoding: "utf8" };
+  if (timeoutMs) {
+    opts.timeout = timeoutMs;
+    // launchd gives the factory no tty, so a credential or host-key prompt
+    // would hang until the timeout instead of failing fast. Refuse to prompt.
+    opts.env = {
+      ...process.env,
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? "ssh -oBatchMode=yes",
+    };
+  }
+  const res = spawnSync("git", args, opts);
+  // A timeout kills the child and reports through res.error. Surface it as an
+  // ordinary failure for allowFail callers so they can classify it (the remote
+  // probe maps it to "unreachable", which fails closed) rather than having it
+  // throw straight past their handling.
+  if (res.error && allowFail) {
+    return {
+      ...res,
+      status: typeof res.status === "number" ? res.status : 128,
+      stdout: res.stdout ?? "",
+      stderr: res.stderr ?? String(res.error.message ?? res.error),
+    };
+  }
   if (res.error) throw new Error(`git ${args.join(" ")} failed to spawn: ${res.error.message}`);
   if (res.status !== 0 && !allowFail) {
     throw new Error(`git ${args.join(" ")} exited ${res.status}: ${(res.stderr || "").trim()}`);
@@ -115,7 +160,40 @@ function branchExists(root, branch) {
   );
 }
 
-export function addWorktree({ root = DEFAULT_ROOT, issueNumber, base = "origin/main" } = {}) {
+// Does origin carry <branch> right now? Asks the remote rather than trusting
+// refs/remotes/origin/<branch>, which `git branch -D` leaves behind and which
+// --release's server-side branch delete never prunes. git ls-remote exits 2
+// when the ref matches nothing, and non-zero-non-2 when the remote is
+// unreachable — a distinction the caller depends on.
+function remoteBranchState(root, branch) {
+  const res = git(["ls-remote", "--exit-code", "--heads", "origin", `refs/heads/${branch}`], {
+    cwd: root,
+    allowFail: true,
+    timeoutMs: NETWORK_TIMEOUT_MS,
+  });
+  if (res.status === 0) return "present";
+  if (res.status === 2) return "absent";
+  return "unreachable";
+}
+
+function revParse(root, ref) {
+  const res = git(["rev-parse", "--verify", "--quiet", ref], { cwd: root, allowFail: true });
+  return res.status === 0 ? res.stdout.trim() : null;
+}
+
+function isAncestor(root, maybeAncestor, descendant) {
+  return (
+    git(["merge-base", "--is-ancestor", maybeAncestor, descendant], { cwd: root, allowFail: true })
+      .status === 0
+  );
+}
+
+export function addWorktree({
+  root = DEFAULT_ROOT,
+  issueNumber,
+  base = "origin/main",
+  fetchRemote = false,
+} = {}) {
   if (issueNumber == null || issueNumber === "") {
     throw new Error("addWorktree requires issueNumber");
   }
@@ -143,15 +221,107 @@ export function addWorktree({ root = DEFAULT_ROOT, issueNumber, base = "origin/m
     );
   }
 
+  // Ask origin once, up front, and reuse the answer for both the local-branch
+  // and no-branch paths below. Skipped entirely without --fetch, which keeps
+  // `add` a purely local operation for callers that want it that way.
+  let remote = null;
+  if (fetchRemote) {
+    remote = remoteBranchState(root, branch);
+    if (remote === "unreachable") {
+      throw new Error(
+        `could not reach origin to check for ${branch}; refusing to branch from ${base} ` +
+          `and orphan a possible open PR`,
+      );
+    }
+    if (remote === "present") {
+      git(["fetch", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`], {
+        cwd: root,
+        timeoutMs: NETWORK_TIMEOUT_MS,
+      });
+    }
+  }
+
   if (branchExists(root, branch)) {
-    // Branch survived a prior run (commits / open PR). Re-attach it to a fresh
-    // worktree rather than branching again — keeps the PR head ref continuous.
-    git(["worktree", "add", wtPath, branch], { cwd: root });
-    return { path: wtPath, branch, reused: false, created: true, branchReused: true };
+    // Branch survived a prior run (commits / open PR). Re-attaching it keeps
+    // the PR head ref continuous — but only if it is not BEHIND origin. Since
+    // the factory now deliberately keeps branches while a PR is open, anything
+    // that pushes to the PR in the meantime (a review suggestion, a human)
+    // would otherwise leave this worktree on a stale tip, and the agent's push
+    // would be rejected with no sanctioned way to recover.
+    const localSha = remote === "present" ? revParse(root, `refs/heads/${branch}`) : null;
+    const remoteSha = remote === "present" ? revParse(root, `refs/remotes/origin/${branch}`) : null;
+    let dropLocal = false;
+    if (localSha && remoteSha && localSha !== remoteSha) {
+      if (isAncestor(root, localSha, remoteSha)) {
+        // Strictly behind: the local ref carries nothing origin doesn't have,
+        // so drop it and take origin's below. update-ref (not branch -D) so a
+        // branch checked out in some other worktree fails loudly rather than
+        // being silently skipped.
+        dropLocal =
+          git(["update-ref", "-d", `refs/heads/${branch}`], {
+            cwd: root,
+            allowFail: true,
+          }).status === 0;
+      } else if (!isAncestor(root, remoteSha, localSha)) {
+        throw new Error(
+          `local ${branch} (${localSha.slice(0, 12)}) has diverged from ` +
+            `origin/${branch} (${remoteSha.slice(0, 12)}); refusing to guess which is right — ` +
+            `reconcile the branch by hand`,
+        );
+      }
+      // else: strictly ahead (unpushed commits from a crashed run) — keep it.
+    }
+    if (!dropLocal) {
+      git(["worktree", "add", wtPath, branch], { cwd: root });
+      return {
+        path: wtPath,
+        branch,
+        reused: false,
+        created: true,
+        branchReused: true,
+        fromRemote: false,
+        base: branch,
+      };
+    }
+  }
+
+  // No usable local branch. If origin still carries it, an open PR is almost
+  // certainly built on it and branching from <base> would orphan its commits.
+  if (remote === "present") {
+    git(["worktree", "add", "--track", "-b", branch, wtPath, `origin/${branch}`], { cwd: root });
+    return {
+      path: wtPath,
+      branch,
+      reused: false,
+      created: true,
+      branchReused: true,
+      fromRemote: true,
+      base: `origin/${branch}`,
+    };
+  }
+
+  if (fetchRemote) {
+    // Absent on origin: drop any stale remote-tracking ref so a later run can't
+    // mistake it for live work, then branch fresh from <base>.
+    git(["update-ref", "-d", `refs/remotes/origin/${branch}`], { cwd: root, allowFail: true });
+    // Refresh <base> too — --implement and --watch never fetch, so origin/main
+    // would otherwise be as old as the last release. Best-effort: a stale base
+    // is an annoyance, while an unreachable origin above is data loss.
+    if (base.startsWith("origin/")) {
+      git(["fetch", "origin", base.slice("origin/".length)], { cwd: root, allowFail: true });
+    }
   }
 
   git(["worktree", "add", "-b", branch, wtPath, base], { cwd: root });
-  return { path: wtPath, branch, reused: false, created: true, branchReused: false };
+  return {
+    path: wtPath,
+    branch,
+    reused: false,
+    created: true,
+    branchReused: false,
+    fromRemote: false,
+    base,
+  };
 }
 
 export function removeWorktree({
@@ -175,7 +345,17 @@ export function removeWorktree({
   git(["worktree", "prune"], { cwd: root, allowFail: true });
 
   let branchDeleted = false;
+  let branchHead = null;
   if (deleteBranch) {
+    // Record the tip before deleting so the log carries enough to undo a
+    // mistaken teardown (`git branch factory/issue-<n> <oid>`). Deciding
+    // whether deletion is safe is factory-agent.sh's job — it owns the `gh`
+    // call that knows if a PR still points here (see branch_keep_reason).
+    const head = git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], {
+      cwd: root,
+      allowFail: true,
+    });
+    branchHead = head.status === 0 ? head.stdout.trim() : null;
     // -D (not -d): the factory deletes the branch only when it's done with the
     // issue, and the PR has its own copy of the commits, so an "unmerged"
     // warning from -d is noise here.
@@ -188,6 +368,7 @@ export function removeWorktree({
     path: wtPath,
     branch,
     branchDeleted,
+    branchHead,
   };
 }
 
@@ -198,7 +379,7 @@ export function removeWorktree({
 // directly here.
 function parseArgs(argv) {
   const flags = {};
-  const bools = new Set(["force", "delete-branch"]);
+  const bools = new Set(["force", "delete-branch", "fetch"]);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (!arg.startsWith("--")) continue;
@@ -221,7 +402,12 @@ function main(argv) {
   const root = flags.root ?? DEFAULT_ROOT;
   switch (sub) {
     case "add":
-      return addWorktree({ root, issueNumber: flags.issue, base: flags.base ?? "origin/main" });
+      return addWorktree({
+        root,
+        issueNumber: flags.issue,
+        base: flags.base ?? "origin/main",
+        fetchRemote: Boolean(flags.fetch),
+      });
     case "remove":
       return removeWorktree({
         root,
@@ -238,7 +424,7 @@ function main(argv) {
     case "-h":
     case undefined:
       process.stdout.write(
-        "Usage: worktree-cli.mjs <add --issue <n> [--base <ref>] [--root <dir>]|" +
+        "Usage: worktree-cli.mjs <add --issue <n> [--base <ref>] [--root <dir>] [--fetch]|" +
           "remove --issue <n> [--root <dir>] [--force] [--delete-branch]|" +
           "path --issue <n> [--root <dir>]|list [--root <dir>]>\n",
       );
