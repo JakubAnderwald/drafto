@@ -308,4 +308,32 @@ describe("AuthProvider", () => {
     expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
     warnSpy.mockRestore();
   });
+
+  it("still resets local data when clearing the approval cache fails", async () => {
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+      data: { session: { user: TEST_USER } },
+    });
+    mockProfileQuery({ is_approved: true }, null);
+    (mockSupabase.auth.signOut as jest.Mock).mockResolvedValue({});
+    mockApprovalCache.clearCachedApproval.mockRejectedValue(new Error("keychain locked"));
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    await act(async () => {
+      await expect(result.current.signOut()).resolves.toBeUndefined();
+    });
+
+    // The cache clear is best-effort: its failure must not skip the sync
+    // invalidation, database reset, and attachment wipe that follow it — those
+    // are the actual cross-account guarantees.
+    expect(mockResetSyncState).toHaveBeenCalled();
+    expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
+    expect(mockDeleteAllLocalAttachments).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
 });

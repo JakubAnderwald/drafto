@@ -62,6 +62,13 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const sync = useCallback(async () => {
+    // The cross-account identity guard gates every sync, not just the automatic
+    // triggers below: this callback is what the UI drives (the manual sync
+    // button, the attachment picker), and screens are interactive while
+    // ensureLocalIdentity is still resolving. Syncing before it reports "ready"
+    // would push the previous user's rows under this session — the leak the
+    // guard exists to prevent.
+    if (!identityReadyRef.current) return;
     if (syncingRef.current) return;
     syncingRef.current = true;
     setIsSyncing(true);
@@ -108,11 +115,13 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   }, [checkPendingChanges]);
 
   // Initial sync when user logs in. The cross-account identity guard runs first
-  // (and may reset the local DB) so the initial sync — and the periodic /
-  // foreground / reconnect syncs, which wait on identityReadyRef — never push or
-  // surface another user's local data. If the guard reports "unsafe" it could not
-  // clear the previous user's records, so every sync trigger stays parked until a
-  // later launch retries the guard successfully.
+  // (and may reset the local DB) so no sync — the initial one, the periodic /
+  // foreground / reconnect triggers, or the context-exposed sync() the UI calls
+  // — ever pushes or surfaces another user's local data. sync() checks
+  // identityReadyRef itself, which is what covers the UI callers that are
+  // already interactive while the guard is resolving. If the guard reports
+  // "unsafe" it could not clear the previous user's records, so every sync
+  // trigger stays parked until a later launch retries the guard successfully.
   useEffect(() => {
     let cancelled = false;
     if (user) {

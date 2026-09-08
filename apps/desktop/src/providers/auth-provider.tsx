@@ -117,7 +117,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setSession(null);
     setIsApproved(false);
     if (userId) {
-      await clearCachedApproval(userId);
+      // Best-effort: a cache-clear failure must not skip the sync invalidation,
+      // database reset, and attachment wipe below — those are the actual
+      // cross-account guarantees — nor reject out of signOut().
+      try {
+        await clearCachedApproval(userId);
+      } catch (error) {
+        console.error("Failed to clear cached approval on sign-out:", error);
+      }
     }
 
     // Invalidate any in-flight sync (e.g. a final sync that timed out above but
