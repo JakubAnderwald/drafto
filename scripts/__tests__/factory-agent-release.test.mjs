@@ -405,10 +405,32 @@ describe("slot teardown helper", () => {
   it("resolves only the slot the issue actually holds (safe for teardown)", () => {
     assert.match(script, /slot_held_by_issue\(\) \{/);
     assert.match(script, /release_slot_and_worktree\(\) \{/);
-    assert.match(
-      script,
-      /worktree-cli\.mjs" remove --issue "\$issue_num" --root "\$REPO_ROOT" --force --delete-branch/,
+  });
+
+  it("tears down through the PR-gated helper, never a raw --delete-branch", () => {
+    // The teardown must go through remove_worktree_for, which refuses to delete
+    // a branch that still backs a live PR. Asserting the old literal call
+    // string would pass by accident, since that string survives inside the
+    // helper — so assert the guard instead.
+    assert.match(script, /remove_worktree_for\(\) \{/);
+    assert.match(script, /branch_keep_reason\(\) \{/);
+    assert.match(script, /remove_worktree_for "\$issue_num" "\$known_state"/);
+    const deleteBranchCalls = script.match(/worktree-cli\.mjs" remove[^\n]*--delete-branch/g) ?? [];
+    assert.equal(
+      deleteBranchCalls.length,
+      1,
+      "exactly one --delete-branch call should remain, inside remove_worktree_for",
     );
+  });
+
+  it("skips the PR lookup when the caller already knows the PR merged", () => {
+    // --release only tears down after confirming MERGED, so it passes the state
+    // through rather than paying for another gh call.
+    const releaseCalls = releaseBlock.match(/release_slot_and_worktree "\$ISSUE_NUM"[^\n]*/g) ?? [];
+    assert.equal(releaseCalls.length, 3, "expected the three --release teardown sites");
+    for (const call of releaseCalls) {
+      assert.match(call, /"MERGED"/, `--release teardown should pass MERGED: ${call}`);
+    }
   });
 });
 
