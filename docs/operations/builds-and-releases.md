@@ -143,6 +143,41 @@ cd apps/mobile && pnpm release:prod:android
 - Signing config injected via Expo config plugin (`plugins/with-android-signing.js`)
 - Build numbers auto-incremented from Google Play's latest version code
 
+#### Google Sign-In (Android OAuth client)
+
+`@react-native-google-signin/google-signin` uses the legacy Google Sign-In for Android API, which
+authenticates the caller by **package name + signing-certificate SHA-1** rather than by any value
+baked into the build. A build can therefore be green, correctly configured in-repo, and still fail
+at runtime — the symptom is `ApiException` status **10** (`DEVELOPER_ERROR`), surfaced in the app as
+`Google Sign-In failed (code 10): this build is not registered with Google…`.
+
+- An **OAuth 2.0 Client ID of type Android** must exist in GCP project `235950201348`
+  (APIs & Services → Credentials) with package name `eu.drafto.mobile`.
+- The SHA-1 to register is the **Play App Signing** certificate's (Play Console → Test and release →
+  Setup → App signing → "App signing key certificate"). The beta and production lanes upload an
+  **AAB**, so Play re-signs the artefact — the SHA-1 the GMS layer sees on device is Play's app
+  signing key, not the local upload key.
+- Register the **upload keystore's** SHA-1 as a second Android client so locally-installed release
+  builds (the `### Release APK` lane) work too.
+- `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` stays as-is — the **Web** client is what `requestIdToken()` and
+  Supabase's Google provider consume. The Android client is registration-only; it is never named in
+  the app config.
+- There is **no** `google-services.json`, no Google Services Gradle plugin, and no
+  `default_web_client_id` resource in this repo — none are needed with this library.
+- `androidClientId` is **not** a valid `GoogleSignin.configure()` parameter in v16 (the library
+  `console.error`s on it). `apps/mobile/src/lib/oauth.ts` correctly passes only `webClientId` and
+  `iosClientId`.
+
+Field diagnostic on a connected device:
+
+```bash
+adb logcat -c && adb logcat | grep -iE "GoogleSign|ApiException|DEVELOPER_ERROR|ReactNativeJS"
+```
+
+Look for `Status{statusCode=DEVELOPER_ERROR}`. The app also logs every native failure as
+`[oauth][google] sign-in failed` (visible via `adb logcat -s ReactNativeJS:V`), and the on-screen
+banner carries the status code, so a cable is not strictly required.
+
 ## iOS
 
 - App Store Connect App ID: `6760675784`

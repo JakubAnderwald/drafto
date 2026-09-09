@@ -75,19 +75,25 @@ jest.mock("@expo/vector-icons", () => {
 });
 
 // Mock @react-native-google-signin/google-signin
+// Mirrors the real v16 contract: `signIn()` resolves a tagged response (`success` / `cancelled`)
+// instead of throwing on cancel, and `statusCodes` carries the values the Android native module
+// exports from `getTypedExportedConstants()` — not the constant names.
 jest.mock("@react-native-google-signin/google-signin", () => ({
   GoogleSignin: {
     configure: jest.fn(),
     hasPlayServices: jest.fn().mockResolvedValue(true),
-    signIn: jest.fn().mockResolvedValue({ data: { idToken: "mock-id-token" } }),
+    signIn: jest.fn().mockResolvedValue({ type: "success", data: { idToken: "mock-id-token" } }),
     signOut: jest.fn().mockResolvedValue(null),
   },
   statusCodes: {
-    SIGN_IN_CANCELLED: "SIGN_IN_CANCELLED",
-    IN_PROGRESS: "IN_PROGRESS",
+    SIGN_IN_CANCELLED: "12501",
+    IN_PROGRESS: "ASYNC_OP_IN_PROGRESS",
     PLAY_SERVICES_NOT_AVAILABLE: "PLAY_SERVICES_NOT_AVAILABLE",
+    SIGN_IN_REQUIRED: "4",
+    NULL_PRESENTER: "NULL_PRESENTER",
   },
-  isErrorWithCode: jest.fn(() => false),
+  isErrorWithCode: (error) =>
+    (error instanceof Error || (typeof error === "object" && error !== null)) && "code" in error,
 }));
 
 // Mock expo-apple-authentication

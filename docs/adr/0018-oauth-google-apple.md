@@ -52,3 +52,31 @@ Use Supabase automatic linking (default behavior). When a user signs up with ema
 2. **Native SDKs on desktop too**: macOS does not have well-supported React Native bindings for Google Sign-In. `Linking.openURL` with URL scheme callback is the standard macOS approach. Rejected as unnecessary complexity.
 
 3. **Skip Apple, only add Google**: Violates App Store Guideline 4.8 — any app offering third-party login must also offer Sign in with Apple. Rejected.
+
+## Clarification (2026-09-09) — the native Android Google leg needs a registered Android OAuth client
+
+Append-only note. The status stays **Accepted** and the decision above is unchanged; this records a
+runtime prerequisite the original text left implicit.
+
+`@react-native-google-signin/google-signin` uses the legacy Google Sign-In for Android API. That API
+authenticates the calling app by **package name + signing-certificate SHA-1** registered as an
+**Android**-type OAuth 2.0 client in the Cloud project — not by any client ID compiled into the
+build. `GoogleSignin.configure()` takes only `webClientId` and `iosClientId`; there is deliberately
+no `androidClientId` parameter (v16 `console.error`s if one is passed), so nothing in the repo can
+express the Android registration.
+
+The consequence: if the Android client is missing, or its SHA-1 does not match the certificate the
+installed build was signed with, the app **compiles, installs, and runs**, and only fails when a
+user taps "Google" — with `ApiException` status **10** (`DEVELOPER_ERROR`). Because the beta and
+production lanes upload an AAB and Play re-signs it, the SHA-1 that matters for store builds is the
+**Play App Signing** key's, not the local upload key's. Green CI is therefore not evidence that
+Android Google sign-in works.
+
+Two things follow for anyone touching this code path:
+
+- The registration steps live in
+  [`docs/operations/builds-and-releases.md`](../operations/builds-and-releases.md#google-sign-in-android-oauth-client)
+  and are Google-Cloud-Console work — they cannot be done from this repo.
+- `signInWithGoogle()` (`apps/mobile/src/lib/oauth.ts`) surfaces the native status code in its
+  error message and logs it under `[oauth][google] sign-in failed`, so this failure mode is
+  identifiable from a screenshot rather than only from `adb logcat`.

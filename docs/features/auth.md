@@ -55,7 +55,12 @@ Available on all four platforms: web, iOS, Android, and macOS. The web app uses 
 
 - **Web** is the only platform with a session-refresh middleware; it also enforces the `is_approved` gate server-side before any page renders. This is the canonical gate — it cannot be bypassed by client-side tampering.
 - **Mobile and desktop** run in an offline-first model and cannot rely on a middleware. They check `profiles.is_approved` via `AuthProvider` on sign-in, app resume, and pull-to-refresh. A cached approval flag (`approval-cache`) lets the app continue to work offline once a user has been approved at least once.
-- **OAuth redirects** go through the web callback (`/auth/callback`) on all platforms; mobile and desktop open the provider flow in a system browser and hand the code back to the app via deep link.
+- **OAuth flows differ per platform and provider** — the web `/auth/callback` route is used by the **web app only**:
+  - **Web (both providers)** — `signInWithOAuth()` PKCE redirect, returning to `/auth/callback`, which calls `exchangeCodeForSession()`.
+  - **Google on iOS and Android** — the native Google Sign-In SDK; the returned ID token goes straight to `supabase.auth.signInWithIdToken()` (`apps/mobile/src/lib/oauth.ts`). No browser, no callback route. This leg additionally requires an Android-type OAuth client registered by package name + signing-cert SHA-1 — see [builds and releases](../operations/builds-and-releases.md#google-sign-in-android-oauth-client).
+  - **Apple on iOS** — `expo-apple-authentication`'s system sheet, then `signInWithIdToken()`. Also browser-free.
+  - **Apple on Android** — `signInWithOAuth()` opened via `expo-web-browser`, handed back to the app through the `drafto://auth/callback` deep link and exchanged in-app.
+  - **macOS (both providers)** — `signInWithOAuth()` opened in the system browser, handed back through the `eu.drafto.desktop://auth/callback` deep link (`apps/desktop/src/lib/oauth.ts`) and exchanged in-app.
 - **Shared invariant:** RLS in Postgres is the single source of truth. Every platform uses the same `profiles.is_approved` column and the same RLS policies — if a user bypasses a client check, the database still refuses the query.
 
 ## Modifying safely
