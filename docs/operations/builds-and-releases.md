@@ -151,22 +151,86 @@ baked into the build. A build can therefore be green, correctly configured in-re
 at runtime — the symptom is `ApiException` status **10** (`DEVELOPER_ERROR`), surfaced in the app as
 `Google Sign-In failed (code 10): this build is not registered with Google…`.
 
-- An **OAuth 2.0 Client ID of type Android** must exist in GCP project `235950201348`
-  (APIs & Services → Credentials) with package name `eu.drafto.mobile`.
-- The SHA-1 to register is the **Play App Signing** certificate's (Play Console → Test and release →
-  Setup → App signing → "App signing key certificate"). The beta and production lanes upload an
-  **AAB**, so Play re-signs the artefact — the SHA-1 the GMS layer sees on device is Play's app
-  signing key, not the local upload key.
-- Register the **upload keystore's** SHA-1 as a second Android client so locally-installed release
-  builds (the `### Release APK` lane) work too.
+Background facts that shape the fix:
+
 - `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` stays as-is — the **Web** client is what `requestIdToken()` and
   Supabase's Google provider consume. The Android client is registration-only; it is never named in
-  the app config.
+  the app config, has no client secret, and its ID is not copied anywhere.
+- Because the app embeds nothing about the Android client, **no rebuild and no new Play upload are
+  needed** to fix status 10. The check happens Google-side against the (package name, SHA-1) pairs
+  registered in the project, so the already-installed build starts working once the registration
+  exists.
+- Google matches **one Android client per (package name, SHA-1) pair**. Store builds and
+  locally-installed release APKs are signed by different keys, so both need their own client.
 - There is **no** `google-services.json`, no Google Services Gradle plugin, and no
   `default_web_client_id` resource in this repo — none are needed with this library.
 - `androidClientId` is **not** a valid `GoogleSignin.configure()` parameter in v16 (the library
   `console.error`s on it). `apps/mobile/src/lib/oauth.ts` correctly passes only `webClientId` and
   `iosClientId`.
+
+##### Fix procedure (operator, one-time)
+
+All of this is Google Cloud Console / Play Console work — it cannot be done from this repo, and no
+code change makes Android Google sign-in succeed without it.
+
+1. **Collect the Play App Signing SHA-1** (covers every build installed from Play — internal track,
+   closed testing, production). Play Console → the Drafto app → **Test and release → Setup → App
+   signing** → copy the SHA-1 under **"App signing key certificate"**. This is the key Play re-signs
+   with; because `pnpm release:beta:android` / `release:prod:android` upload an **AAB**
+   (`fastlane/Fastfile`, `upload_to_play_store`), it — not the local upload key — is the certificate
+   the GMS layer sees on device.
+
+2. **Collect the upload-key SHA-1** (covers `pnpm android:release-local` APKs installed by hand):
+
+   ```bash
+   keytool -list -v -keystore "${ANDROID_KEYSTORE_PATH:-$HOME/drafto-secrets/drafto-release.keystore}" \
+     | grep -E "Alias name|SHA1:"
+   ```
+
+   Or read it straight off a built artefact, which is the more reliable check because it reports the
+   certificate actually used:
+
+   ```bash
+   apksigner verify --print-certs \
+     apps/mobile/android/app/build/outputs/apk/release/app-release.apk | grep -i "SHA-1"
+   ```
+
+   As of `versionCode` 41 this was `D0:2C:9C:C9:A5:44:3E:61:62:9F:D8:5B:FC:8D:19:89:3F:CA:A5:3B`
+   (blank DN, exported from EAS when builds moved local — see
+   [ADR-0016](../adr/0016-local-fastlane-builds.md)). Re-derive
+   it rather than trusting that value if the keystore is ever rotated.
+
+3. **Register each SHA-1 as its own Android OAuth client.** Google Cloud Console → project
+   `235950201348` → **APIs & Services → Credentials → Create credentials → OAuth client ID** →
+   application type **Android**, then:
+   - Package name: `eu.drafto.mobile` (must match `android.package` in `apps/mobile/app.config.ts`).
+   - SHA-1 certificate fingerprint: the value from step 1.
+   - Name it something like `Drafto Android (Play app signing)`.
+
+   Repeat for the step-2 upload-key SHA-1, named e.g. `Drafto Android (upload key)`.
+
+   The client **must live in project `235950201348`** — the same project as the Web client in
+   `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`. `requestIdToken(webClientId)` only honours an Android
+   registration from the Web client's own project; an Android client in a different project is
+   silently ignored and status 10 persists.
+
+4. **Do not touch anything else.** Leave the Web client, the OAuth consent screen, and the Supabase
+   Google provider alone — web sign-in already works, which proves all three are correct. The ID
+   token's audience stays the Web client either way.
+
+##### Verifying the fix
+
+Registration propagates Google-side in minutes (Google documents up to a few hours). Then, on the
+device that failed, **without reinstalling**:
+
+1. Reopen Drafto and tap **Google** on the login screen.
+2. Success = the account picker completes and the app signs in. Failure = the banner still names a
+   code.
+3. If the banner still says `code 10` after an hour, the mismatch is real: re-check the package name
+   for typos, confirm the client is in project `235950201348`, and re-read the SHA-1 off the exact
+   artefact under test (step 2's `apksigner` command) rather than the keystore. Clearing Google Play
+   services' cache on the device (Settings → Apps → Google Play services → Storage → Clear cache)
+   rules out a stale local GMS cache.
 
 Field diagnostic on a connected device:
 
