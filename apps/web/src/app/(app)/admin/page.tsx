@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { redirect } from "next/navigation";
 import { AdminUserList, type PendingUser } from "@/app/(app)/admin/admin-user-list";
 import { AdminFlashMessage } from "@/app/(app)/admin/admin-flash-message";
+import { AdminCloseButton } from "@/app/(app)/admin/admin-close-button";
 
 interface AdminPageProps {
   searchParams: Promise<{ approved?: string; error?: string }>;
@@ -55,7 +56,10 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
     <div className="mx-auto max-w-2xl p-8">
       <div className="mb-6 flex items-baseline justify-between">
         <h1 className="text-fg text-2xl font-bold">Admin — User Approval</h1>
-        <span className="text-fg-muted text-sm">{pendingUsers.length} pending</span>
+        <div className="flex items-center gap-3">
+          <span className="text-fg-muted text-sm">{pendingUsers.length} pending</span>
+          <AdminCloseButton />
+        </div>
       </div>
       <AdminFlashMessage approved={params.approved} error={params.error} />
       <AdminUserList initialUsers={pendingUsers} />
