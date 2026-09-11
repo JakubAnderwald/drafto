@@ -22,9 +22,20 @@ jest.mock("@/screens/main", () => ({
   },
 }));
 jest.mock("@/screens/login", () => ({
-  LoginScreen: ({ onNavigateToForgotPassword }: { onNavigateToForgotPassword?: () => void }) => {
+  LoginScreen: ({
+    onNavigateToForgotPassword,
+    onNavigateToSignup,
+  }: {
+    onNavigateToForgotPassword?: () => void;
+    onNavigateToSignup?: () => void;
+  }) => {
     const { Text: RNText } = require("react-native");
-    return <RNText onPress={onNavigateToForgotPassword}>LOGIN</RNText>;
+    return (
+      <>
+        <RNText onPress={onNavigateToForgotPassword}>LOGIN</RNText>
+        <RNText onPress={onNavigateToSignup}>TO-SIGNUP</RNText>
+      </>
+    );
   },
 }));
 jest.mock("@/screens/signup", () => ({
@@ -143,6 +154,56 @@ describe("RootNavigator", () => {
     const { getByText, queryByText } = render(<RootNavigator />);
 
     expect(getByText("RESET")).toBeTruthy();
+    expect(queryByText("LOGIN")).toBeNull();
+  });
+
+  it("lands on login after signing out from a session reached via forgot-password", () => {
+    // The reporter's regression: the auth route is state on a component that
+    // never unmounts, so after a reset round-trip a sign-out re-rendered the
+    // forgot-password screen instead of login.
+    const { getByText, queryByText, rerender } = render(<RootNavigator />);
+
+    fireEvent.press(getByText("LOGIN"));
+    expect(getByText("FORGOT")).toBeTruthy();
+
+    // The recovery link lands, the password is reset, and the session goes live.
+    mockUseAuth.mockReturnValue(authState({ user: APPROVED_USER, isApproved: true }));
+    rerender(<RootNavigator />);
+    expect(getByText("MAIN")).toBeTruthy();
+
+    mockUseAuth.mockReturnValue(authState());
+    rerender(<RootNavigator />);
+
+    expect(getByText("LOGIN")).toBeTruthy();
+    expect(queryByText("FORGOT")).toBeNull();
+  });
+
+  it("lands on login after signing out from a session reached via signup", () => {
+    const { getByText, queryByText, rerender } = render(<RootNavigator />);
+
+    fireEvent.press(getByText("TO-SIGNUP"));
+    expect(getByText("SIGNUP")).toBeTruthy();
+
+    mockUseAuth.mockReturnValue(authState({ user: APPROVED_USER, isApproved: true }));
+    rerender(<RootNavigator />);
+    expect(getByText("MAIN")).toBeTruthy();
+
+    mockUseAuth.mockReturnValue(authState());
+    rerender(<RootNavigator />);
+
+    expect(getByText("LOGIN")).toBeTruthy();
+    expect(queryByText("SIGNUP")).toBeNull();
+  });
+
+  it("keeps a signed-out user on the forgot-password screen they opened", () => {
+    // The rewind must only fire on a session — it must not yank a signed-out
+    // user off the screen they are actively using.
+    const { getByText, queryByText, rerender } = render(<RootNavigator />);
+
+    fireEvent.press(getByText("LOGIN"));
+    rerender(<RootNavigator />);
+
+    expect(getByText("FORGOT")).toBeTruthy();
     expect(queryByText("LOGIN")).toBeNull();
   });
 

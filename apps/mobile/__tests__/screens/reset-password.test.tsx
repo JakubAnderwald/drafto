@@ -220,4 +220,31 @@ describe("ResetPasswordScreen", () => {
     });
     expect(mockSignOut).not.toHaveBeenCalled();
   });
+  it("shows a sign-out state rather than the verifying spinner while backing out", async () => {
+    // signOut flushes pending changes and wipes the local database, so it can run
+    // for seconds. A hanging signOut pins the screen in that window: it must name
+    // what it is doing rather than sit on the form or flash the recovery spinner.
+    mockSignOut.mockReturnValue(new Promise(() => {}));
+
+    const { getByTestId, getByText, queryByText } = render(<ResetPasswordScreen />);
+
+    fireEvent.press(getByTestId("reset-password-back-to-login"));
+
+    await waitFor(() => {
+      expect(getByText("Signing out\u2026")).toBeTruthy();
+    });
+    expect(queryByText("Verifying your reset link\u2026")).toBeNull();
+    expect(queryByText("Reset Password")).toBeNull();
+  });
+
+  it("clears the sign-out state once backing out completes", async () => {
+    const { getByTestId, queryByText } = render(<ResetPasswordScreen />);
+
+    fireEvent.press(getByTestId("reset-password-back-to-login"));
+
+    await waitFor(() => {
+      expect(mockReplace).toHaveBeenCalledWith("/(auth)/login");
+    });
+    expect(queryByText("Signing out\u2026")).toBeNull();
+  });
 });

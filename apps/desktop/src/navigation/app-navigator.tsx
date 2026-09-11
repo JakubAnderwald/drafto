@@ -39,6 +39,22 @@ export function RootNavigator() {
     return () => subscription.remove();
   }, []);
 
+  // The auth stack's route is local state on a component that never unmounts, so
+  // it outlives the session: without this, signing out drops the user back on
+  // whichever auth screen they last used — Forgot Password, say — instead of the
+  // login screen. Rewinding on the sign-in edge covers every way a session can
+  // end, including an involuntary one (revoked refresh token), and can never yank
+  // a signed-out user off a screen they chose. It does not cover the recovery
+  // link that never yields a session — that exit still runs through the
+  // `onNavigateToLogin` handed to ResetPasswordScreen below, which must stay.
+  const isSignedIn = Boolean(user);
+
+  useEffect(() => {
+    if (isSignedIn) {
+      setAuthRoute("Login");
+    }
+  }, [isSignedIn]);
+
   if (isLoading || isCheckingApproval) {
     return (
       <View style={[styles.loadingContainer, { backgroundColor: semantic.bg }]}>

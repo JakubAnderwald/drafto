@@ -95,6 +95,19 @@ export function ResetPasswordScreen({ onNavigateToLogin }: ResetPasswordScreenPr
     }
   };
 
+  // Signing out flushes pending changes and wipes the local database, which can
+  // take seconds. Without a state of its own the screen would sit frozen on the
+  // form and then flash the "verifying your reset link" spinner below as the
+  // session clears mid-flight — both of which read as the app having hung.
+  if (leaving) {
+    return (
+      <View style={styles.container}>
+        <ActivityIndicator size="large" color={colors.primary[600]} />
+        <Text style={styles.messageText}>Signing out…</Text>
+      </View>
+    );
+  }
+
   if (recoveryError) {
     return (
       <View style={styles.container}>
