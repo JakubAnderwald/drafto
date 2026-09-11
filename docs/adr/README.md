@@ -66,3 +66,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0031](./0031-personal-skills-in-cloud-sessions.md)                  | Personal Skills in Cloud Sessions                    | Accepted           | 2026-08-12 |
 | [0032](./0032-web-realtime-note-sync.md)                             | Web Real-Time Sync for Externally Modified Notes     | Accepted           | 2026-09-06 |
 | [0033](./0033-factory-branch-safety-and-implement-verification.md)   | Factory Branch Safety and Implement Verification     | Accepted           | 2026-09-08 |
+| [0034](./0034-password-recovery-deep-links-on-mobile-and-desktop.md) | Password Recovery via Custom-Scheme Deep Links       | Accepted           | 2026-09-11 |

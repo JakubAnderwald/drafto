@@ -1,5 +1,6 @@
 import { Linking } from "react-native";
 
+import { isRecoveryUrl } from "./auth-recovery";
 import { supabase } from "./supabase";
 
 const REDIRECT_URL = "eu.drafto.desktop://auth/callback";
@@ -33,6 +34,13 @@ export function handleOAuthCallback(url: string): void {
   try {
     // URL schemes are case-insensitive per RFC 3986 — normalize before match.
     if (!url.toLowerCase().startsWith("eu.drafto.desktop:")) {
+      return;
+    }
+
+    // Password-recovery callbacks arrive over the same scheme but belong to
+    // `auth-recovery.ts`. Exchanging the code here as well would burn it and
+    // drop the user into a plain signed-in session instead of the reset screen.
+    if (isRecoveryUrl(url)) {
       return;
     }
 

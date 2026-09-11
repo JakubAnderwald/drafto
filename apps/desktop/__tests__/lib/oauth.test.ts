@@ -45,4 +45,23 @@ describe("handleOAuthCallback", () => {
     expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
     expect(mockSetSession).not.toHaveBeenCalled();
   });
+
+  it("leaves a password-recovery callback for the recovery handler", () => {
+    // Both handlers listen on the same scheme. If this one also exchanged the
+    // code, the single-use code would be burned and the user would land in the
+    // app signed in rather than on the reset screen.
+    handleOAuthCallback("eu.drafto.desktop://auth/recovery?code=recovery-code");
+
+    expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
+    expect(mockSetSession).not.toHaveBeenCalled();
+  });
+
+  it("leaves a type=recovery callback alone even on the OAuth path", () => {
+    handleOAuthCallback(
+      "eu.drafto.desktop://auth/callback#access_token=AAA&refresh_token=RRR&type=recovery",
+    );
+
+    expect(mockSetSession).not.toHaveBeenCalled();
+    expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
+  });
 });
