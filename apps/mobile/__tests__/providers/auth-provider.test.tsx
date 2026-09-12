@@ -1,4 +1,5 @@
 import React from "react";
+import { Linking } from "react-native";
 import { renderHook, act, waitFor } from "@testing-library/react-native";
 import type { User } from "@supabase/supabase-js";
 
@@ -17,6 +18,8 @@ jest.mock("@/lib/supabase", () => ({
         data: { subscription: { unsubscribe: jest.fn() } },
       })),
       signOut: jest.fn(),
+      setSession: jest.fn(),
+      exchangeCodeForSession: jest.fn(),
     },
     from: jest.fn(),
   },
@@ -407,5 +410,189 @@ describe("AuthProvider", () => {
     expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
     expect(mockDeleteAllLocalAttachments).toHaveBeenCalled();
     errorSpy.mockRestore();
+  });
+});
+
+const RECOVERY_LINK = "drafto://reset-password#access_token=AAA&refresh_token=RRR&type=recovery";
+const OAUTH_LINK = "drafto://auth/callback?code=oauth-code";
+const EXPIRED_LINK =
+  "drafto://reset-password#error_description=Email+link+is+invalid+or+has+expired";
+
+describe("AuthProvider — password recovery", () => {
+  let linkHandler: ((event: { url: string }) => void) | null = null;
+  let initialUrl: string | null = null;
+
+  /** Replays an auth event through the listener the provider registered. */
+  function emitAuthEvent(event: string) {
+    const handler = (mockSupabase.auth.onAuthStateChange as jest.Mock).mock.calls[0][0] as (
+      event: string,
+      session: unknown,
+    ) => void;
+    handler(event, null);
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockApprovalCache.getCachedApproval.mockResolvedValue(null);
+    mockApprovalCache.setCachedApproval.mockResolvedValue(undefined);
+    mockApprovalCache.clearCachedApproval.mockResolvedValue(undefined);
+    mockSyncDatabase.mockResolvedValue({ conflictCount: 0 });
+    mockProcessPendingUploads.mockResolvedValue(0);
+    mockDeleteAllLocalAttachments.mockResolvedValue(undefined);
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({ data: { session: null } });
+    (mockSupabase.auth.signOut as jest.Mock).mockResolvedValue({});
+    (mockSupabase.auth.setSession as jest.Mock).mockResolvedValue({ data: {}, error: null });
+    (mockSupabase.auth.exchangeCodeForSession as jest.Mock).mockResolvedValue({
+      data: {},
+      error: null,
+    });
+    mockProfileQuery({ is_approved: true }, null);
+
+    linkHandler = null;
+    initialUrl = null;
+    jest.spyOn(Linking, "addEventListener").mockImplementation((_type, handler) => {
+      linkHandler = handler as (event: { url: string }) => void;
+      return { remove: jest.fn() } as unknown as ReturnType<typeof Linking.addEventListener>;
+    });
+    jest.spyOn(Linking, "getInitialURL").mockImplementation(() => Promise.resolve(initialUrl));
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("is not recovering by default", async () => {
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    expect(result.current.isRecovering).toBe(false);
+    expect(result.current.recoveryError).toBeNull();
+  });
+
+  it("enters recovery on a PASSWORD_RECOVERY auth event", async () => {
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    act(() => {
+      emitAuthEvent("PASSWORD_RECOVERY");
+    });
+
+    expect(result.current.isRecovering).toBe(true);
+  });
+
+  it("leaves an ordinary sign-in out of recovery mode", async () => {
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    act(() => {
+      emitAuthEvent("SIGNED_IN");
+    });
+
+    expect(result.current.isRecovering).toBe(false);
+  });
+
+  it("enters recovery and establishes the session from a deep link", async () => {
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    await act(async () => {
+      linkHandler?.({ url: RECOVERY_LINK });
+    });
+
+    expect(result.current.isRecovering).toBe(true);
+    expect(result.current.recoveryError).toBeNull();
+    expect(mockSupabase.auth.setSession as jest.Mock).toHaveBeenCalled();
+  });
+
+  it("handles a recovery link the app was cold-started with", async () => {
+    initialUrl = RECOVERY_LINK;
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isRecovering).toBe(true);
+    });
+  });
+
+  it("ignores a deep link that is not a recovery callback", async () => {
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    await act(async () => {
+      linkHandler?.({ url: OAUTH_LINK });
+    });
+
+    expect(result.current.isRecovering).toBe(false);
+    expect(mockSupabase.auth.setSession as jest.Mock).not.toHaveBeenCalled();
+  });
+
+  it("surfaces an expired recovery link as a recovery error", async () => {
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    await act(async () => {
+      linkHandler?.({ url: EXPIRED_LINK });
+    });
+
+    // Still "recovering" — the reset screen is what shows the message, so the
+    // guard must keep the user there rather than bouncing them to login.
+    expect(result.current.isRecovering).toBe(true);
+    expect(result.current.recoveryError).toBe("Email link is invalid or has expired");
+  });
+
+  it("leaves recovery mode when endRecovery is called", async () => {
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    await act(async () => {
+      linkHandler?.({ url: EXPIRED_LINK });
+    });
+
+    act(() => {
+      result.current.endRecovery();
+    });
+
+    expect(result.current.isRecovering).toBe(false);
+    expect(result.current.recoveryError).toBeNull();
+  });
+
+  it("leaves recovery mode on sign-out, so no orphaned recovery state survives", async () => {
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    await act(async () => {
+      linkHandler?.({ url: RECOVERY_LINK });
+    });
+
+    await act(async () => {
+      await result.current.signOut();
+    });
+
+    expect(result.current.isRecovering).toBe(false);
+    expect(result.current.recoveryError).toBeNull();
   });
 });

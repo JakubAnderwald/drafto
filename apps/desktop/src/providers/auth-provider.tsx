@@ -1,9 +1,11 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { Linking } from "react-native";
 import type { Session, User } from "@supabase/supabase-js";
 
 import { database } from "@/db";
 import { syncDatabase, resetSyncState } from "@/db/sync";
 import { getCachedApproval, setCachedApproval, clearCachedApproval } from "@/lib/approval-cache";
+import { completeRecoveryFromUrl } from "@/lib/auth-recovery";
 import { deleteAllLocalAttachments, processPendingUploads } from "@/lib/data";
 import { supabase } from "@/lib/supabase";
 
@@ -47,6 +49,18 @@ interface AuthContextValue {
   isApproved: boolean;
   isLoading: boolean;
   isCheckingApproval: boolean;
+  /**
+   * True from the moment a password-recovery deep link is recognised until the
+   * new password is saved (or the user backs out). A recovery link produces a
+   * real session, so without this flag the route guard would drop the user into
+   * the app — or the approval screen — and the reset screen would be
+   * unreachable.
+   */
+  isRecovering: boolean;
+  /** Why a recovery link could not be used (expired, already consumed, malformed). */
+  recoveryError: string | null;
+  /** Leaves recovery mode; called once the password has actually been changed. */
+  endRecovery: () => void;
   signOut: () => Promise<void>;
   refreshApprovalStatus: () => Promise<boolean>;
 }
@@ -58,6 +72,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isApproved, setIsApproved] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isCheckingApproval, setIsCheckingApproval] = useState(false);
+  const [isRecovering, setIsRecovering] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+
+  const startRecovery = useCallback(() => {
+    setIsRecovering(true);
+    setRecoveryError(null);
+  }, []);
+
+  const failRecovery = useCallback((message: string) => {
+    setIsRecovering(true);
+    setRecoveryError(message);
+  }, []);
+
+  const endRecovery = useCallback(() => {
+    setIsRecovering(false);
+    setRecoveryError(null);
+  }, []);
 
   const checkApproval = useCallback(async (userId: string): Promise<boolean> => {
     setIsCheckingApproval(true);
@@ -116,6 +147,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await supabase.auth.signOut();
     setSession(null);
     setIsApproved(false);
+    setIsRecovering(false);
+    setRecoveryError(null);
     if (userId) {
       // Best-effort: a cache-clear failure must not skip the sync invalidation,
       // database reset, and attachment wipe below — those are the actual
@@ -151,6 +184,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [session?.user?.id]);
 
+  // Password-recovery deep links. The flag has to flip the moment the link is
+  // recognised — before the session lands — or the guard would route the user
+  // into the app during the round-trip and the reset screen would never render.
+  useEffect(() => {
+    let active = true;
+
+    const handleUrl = (url: string) => {
+      void completeRecoveryFromUrl(url, {
+        onRecoveryDetected: () => {
+          if (active) startRecovery();
+        },
+        onRecoveryError: (message) => {
+          if (active) failRecovery(message);
+        },
+      });
+    };
+
+    const subscription = Linking.addEventListener("url", ({ url }) => handleUrl(url));
+    Linking.getInitialURL()
+      .then((url) => {
+        if (url) handleUrl(url);
+      })
+      .catch((error) => {
+        console.error("Failed to read the initial deep link:", error);
+      });
+
+    return () => {
+      active = false;
+      subscription.remove();
+    };
+  }, [startRecovery, failRecovery]);
+
   useEffect(() => {
     let mounted = true;
 
@@ -174,8 +239,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, newSession) => {
+    } = supabase.auth.onAuthStateChange((event, newSession) => {
       if (!mounted) return;
+
+      // supabase-js only emits PASSWORD_RECOVERY when it parses the recovery URL
+      // itself (`detectSessionInUrl`), which is web-only here — the deep-link
+      // handler above is what normally flips the flag. Handled anyway so a
+      // future client-config change cannot silently bypass the reset screen.
+      if (event === "PASSWORD_RECOVERY") {
+        startRecovery();
+      }
+
       setSession(newSession);
       if (newSession?.user) {
         checkApproval(newSession.user.id);
@@ -188,7 +262,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       mounted = false;
       subscription.unsubscribe();
     };
-  }, [checkApproval]);
+  }, [checkApproval, startRecovery]);
 
   return (
     <AuthContext.Provider
@@ -198,6 +272,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isApproved,
         isLoading,
         isCheckingApproval,
+        isRecovering,
+        recoveryError,
+        endRecovery,
         signOut,
         refreshApprovalStatus,
       }}

@@ -10,9 +10,10 @@ import { Input } from "@/components/ui/input";
 
 interface LoginScreenProps {
   onNavigateToSignup?: () => void;
+  onNavigateToForgotPassword?: () => void;
 }
 
-export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
+export function LoginScreen({ onNavigateToSignup, onNavigateToForgotPassword }: LoginScreenProps) {
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
   const [email, setEmail] = useState("");
@@ -99,6 +100,14 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
             Don&apos;t have an account? <Text style={styles.link}>Sign up</Text>
           </Text>
         </Pressable>
+        <Pressable
+          onPress={onNavigateToForgotPassword}
+          disabled={!onNavigateToForgotPassword}
+          style={styles.forgotPassword}
+          testID="forgot-password-link"
+        >
+          <Text style={styles.link}>Forgot your password?</Text>
+        </Pressable>
       </View>
     </View>
   );
@@ -156,5 +165,9 @@ const createStyles = (semantic: SemanticColors) =>
     link: {
       color: colors.primary[600],
       fontWeight: "600",
+    },
+    forgotPassword: {
+      marginTop: spacing.md,
+      alignItems: "center",
     },
   });

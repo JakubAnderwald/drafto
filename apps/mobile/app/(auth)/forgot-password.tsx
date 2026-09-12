@@ -2,45 +2,82 @@ import { useState, useMemo } from "react";
 import { Text, View, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
 import { Link } from "expo-router";
 
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { useNetworkStatus } from "@/hooks/use-network-status";
+import { RECOVERY_REDIRECT_URL } from "@/lib/auth-recovery";
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
-import { OAuthButtons } from "@/components/auth/oauth-buttons";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 
-export default function LoginScreen() {
+const OFFLINE_MESSAGE = "You're offline. Reconnect to the internet and try again.";
+
+export default function ForgotPasswordScreen() {
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+  const { isConnected } = useNetworkStatus();
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [retryable, setRetryable] = useState(false);
+  const [sentTo, setSentTo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const handleLogin = async () => {
-    if (!email.trim() || !password) {
-      setError("Please enter your email and password.");
+  const handleSubmit = async () => {
+    const trimmed = email.trim();
+
+    if (!trimmed) {
+      setRetryable(false);
+      setError("Please enter your email address.");
+      return;
+    }
+
+    // Offline is a retry, not a failure — the request never left the device.
+    if (!isConnected) {
+      setRetryable(true);
+      setError(OFFLINE_MESSAGE);
       return;
     }
 
     setError(null);
+    setRetryable(false);
     setLoading(true);
 
     try {
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password,
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(trimmed, {
+        redirectTo: RECOVERY_REDIRECT_URL,
       });
 
-      if (signInError) {
-        setError(signInError.message);
+      if (resetError) {
+        setError(resetError.message);
+        return;
       }
-      // Navigation is handled by the auth provider via onAuthStateChange
+
+      setSentTo(trimmed);
+    } catch {
+      // A thrown request is a transport failure (DNS, timeout, dropped Wi-Fi) —
+      // offer the same retry rather than a dead end.
+      setRetryable(true);
+      setError(OFFLINE_MESSAGE);
     } finally {
       setLoading(false);
     }
   };
+
+  if (sentTo) {
+    return (
+      <View style={styles.confirmationContainer}>
+        <Text style={styles.title}>Check Your Email</Text>
+        <Text style={styles.confirmationText}>
+          We&apos;ve sent a password reset link to <Text style={styles.strong}>{sentTo}</Text>. Open
+          it on this device to set a new password.
+        </Text>
+        <Link href="/(auth)/login" style={styles.link}>
+          Back to login
+        </Link>
+      </View>
+    );
+  }
 
   return (
     <KeyboardAvoidingView
@@ -48,8 +85,8 @@ export default function LoginScreen() {
       behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-        <Text style={styles.title}>Log In</Text>
-        <Text style={styles.subtitle}>Sign in to your Drafto account</Text>
+        <Text style={styles.title}>Forgot Password</Text>
+        <Text style={styles.subtitle}>We&apos;ll email you a link to set a new password</Text>
 
         {error && (
           <View style={styles.errorContainer}>
@@ -68,52 +105,26 @@ export default function LoginScreen() {
             keyboardType="email-address"
             textContentType="emailAddress"
             editable={!loading}
-            containerStyle={styles.field}
-          />
-
-          <Input
-            label="Password"
-            placeholder="Your password"
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            autoCapitalize="none"
-            autoCorrect={false}
-            autoComplete="password"
-            textContentType="password"
-            editable={!loading}
-            onSubmitEditing={handleLogin}
+            onSubmitEditing={handleSubmit}
+            testID="forgot-password-email-input"
             containerStyle={styles.field}
           />
 
           <Button
-            title="Log in"
-            onPress={handleLogin}
+            title={retryable ? "Try again" : "Send reset link"}
+            onPress={handleSubmit}
             loading={loading}
             disabled={loading}
             fullWidth
             size="lg"
-            testID="login-button"
-            accessibilityLabel="Log in"
+            testID="forgot-password-submit"
             style={styles.submitButton}
           />
         </View>
 
-        <OAuthButtons onError={(msg) => setError(msg)} />
-
         <View style={styles.footer}>
-          <Text style={styles.footerText}>
-            Don&apos;t have an account?{" "}
-            <Link href="/(auth)/signup" style={styles.link}>
-              Sign up
-            </Link>
-          </Text>
-          <Link
-            href="/(auth)/forgot-password"
-            style={[styles.link, styles.forgotPasswordLink]}
-            testID="forgot-password-link"
-          >
-            Forgot your password?
+          <Link href="/(auth)/login" style={styles.link}>
+            Back to login
           </Link>
         </View>
       </ScrollView>
@@ -132,16 +143,34 @@ const createStyles = (semantic: SemanticColors) =>
       justifyContent: "center",
       padding: spacing["2xl"],
     },
+    confirmationContainer: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: spacing["2xl"],
+    },
     title: {
       fontSize: fontSizes["4xl"],
       fontWeight: "bold",
       marginBottom: spacing.sm,
       color: semantic.fg,
+      textAlign: "center",
     },
     subtitle: {
       fontSize: fontSizes.xl,
       color: semantic.fgMuted,
       marginBottom: spacing["2xl"],
+      textAlign: "center",
+    },
+    confirmationText: {
+      fontSize: fontSizes.base,
+      color: semantic.fgMuted,
+      textAlign: "center",
+      marginBottom: spacing["2xl"],
+    },
+    strong: {
+      color: semantic.fg,
+      fontWeight: "600",
     },
     errorContainer: {
       backgroundColor: semantic.errorBg,
@@ -169,16 +198,9 @@ const createStyles = (semantic: SemanticColors) =>
     footer: {
       marginTop: spacing["2xl"],
     },
-    footerText: {
-      fontSize: fontSizes.base,
-      color: semantic.fgMuted,
-    },
     link: {
       color: colors.primary[600],
       fontWeight: "600",
-    },
-    forgotPasswordLink: {
-      marginTop: spacing.md,
       fontSize: fontSizes.base,
     },
   });
