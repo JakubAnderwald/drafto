@@ -166,6 +166,16 @@ if ! [[ "$FACTORY_INTEST_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
 fi
 INTEST_TIMEOUT_SEC="$FACTORY_INTEST_TIMEOUT_SEC"
 
+# Wall-clock cap for the code-review stage. Also read-only, but it reads the
+# whole diff and reasons about cross-platform invariants, so it gets more room
+# than the scenario writer and less than the code-writing modes.
+FACTORY_REVIEW_TIMEOUT_SEC="${FACTORY_REVIEW_TIMEOUT_SEC:-900}"
+if ! [[ "$FACTORY_REVIEW_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_REVIEW_TIMEOUT_SEC='$FACTORY_REVIEW_TIMEOUT_SEC'; defaulting to 900" >&2
+  FACTORY_REVIEW_TIMEOUT_SEC=900
+fi
+REVIEW_TIMEOUT_SEC="$FACTORY_REVIEW_TIMEOUT_SEC"
+
 # ── Pre-merge beta dispatch (In Test) ──────────────────────────────────────
 # Off by default. Deliberately separate from the Phase-D post-merge lane: a card
 # in In Test needs a testable native build BEFORE the merge gate, but enabling
@@ -284,6 +294,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # degrades to the deterministic fallback comment rather than failing the mode —
 # the CI fix loop must keep running even if this stage's prompt is absent.
 INTEST_PROMPT_FILE="$SCRIPT_DIR/factory-intest-prompt.md"
+REVIEW_PROMPT_FILE="$SCRIPT_DIR/factory-review-prompt.md"
 umask 077
 LOG_DIR="$REPO_ROOT/logs/factory"
 mkdir -p "$LOG_DIR"
@@ -796,7 +807,8 @@ ship|shipit|approved|approve|done|ok|okay|okthanks|yes|yep|yeah|awesome|love|lov
 
 # Build the factory_watch bundle. $2 approved-plan obj|null, $3 prior-PR obj,
 # $4 CI summary text, $5 unresolved-comments JSON array, $6 attempts,
-# $7 screenshot-sources (full issue-comment thread) JSON array.
+# $7 screenshot-sources (full issue-comment thread) JSON array,
+# $8 unresolved review threads JSON array (from fetch_review_threads).
 build_watch_bundle() {
   local issue_entry="$1"
   local approved_plan="${2:-null}"
@@ -805,6 +817,7 @@ build_watch_bundle() {
   local unresolved="${5:-[]}"
   local attempts="${6:-0}"
   local screenshot_sources="${7:-[]}"
+  local review_threads="${8:-[]}"
   local repo_head_ref
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   jq -n \
@@ -813,6 +826,7 @@ build_watch_bundle() {
     --argjson priorPr "$prior_pr" \
     --arg ciSummary "$ci_summary" \
     --argjson unresolved "$unresolved" \
+    --argjson reviewThreads "$review_threads" \
     --argjson screenshotSources "$screenshot_sources" \
     --arg attempts "$attempts" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
@@ -832,9 +846,58 @@ build_watch_bundle() {
        priorPr: $priorPr,
        ciSummary: $ciSummary,
        unresolvedComments: $unresolved,
+       reviewThreads: $reviewThreads,
        comments: [],
        screenshotSources: $screenshotSources,
        attempts: ($attempts | tonumber? // 0),
+       config: {
+         phase: $phase,
+         allowlist: ($allowlist | split(",") | map(ascii_downcase | sub("^\\s+";"") | sub("\\s+$";""))),
+         oauthUserEmail: $oauthUserEmail
+       },
+       repo: { nameWithOwner: $repoNwo, headRef: $headRef }
+     }' \
+    | node "$SCRIPT_DIR/lib/factory-bundle.mjs"
+}
+
+# Build the factory_review bundle for the code-review stage. $2 approved-plan
+# obj|null, $3 prior-PR obj, $4 raw PR diff, $5 changed-file list, $6 head SHA.
+# Deliberately carries no comment thread — the reviewer judges the diff, not the
+# conversation about it.
+build_review_bundle() {
+  local issue_entry="$1"
+  local approved_plan="${2:-null}"
+  local prior_pr="${3:-null}"
+  local pr_diff="${4:-}"
+  local pr_files="${5:-}"
+  local head_sha="${6:-}"
+  local repo_head_ref
+  repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+  jq -n \
+    --argjson issue "$issue_entry" \
+    --argjson plan "$approved_plan" \
+    --argjson priorPr "$prior_pr" \
+    --arg prDiff "$pr_diff" \
+    --arg prFiles "$pr_files" \
+    --arg headSha "$head_sha" \
+    --arg allowlist "$SUPPORT_ALLOWLIST" \
+    --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
+    --arg phase "$PHASE" \
+    --arg repoNwo "JakubAnderwald/drafto" \
+    --arg headRef "$repo_head_ref" \
+    '{
+       kind: "factory_review",
+       issue: $issue,
+       approvedPlan: (if $plan == null then null else {
+         commentId: ($plan.id),
+         url: ("https://github.com/JakubAnderwald/drafto/issues/" + ($issue.number|tostring) + "#issuecomment-" + ($plan.id|tostring)),
+         body: ($plan.body // ""),
+         createdAt: ($plan.createdAt // null)
+       } end),
+       priorPr: $priorPr,
+       prDiff: $prDiff,
+       prFiles: $prFiles,
+       headSha: $headSha,
        config: {
          phase: $phase,
          allowlist: ($allowlist | split(",") | map(ascii_downcase | sub("^\\s+";"") | sub("\\s+$";""))),
@@ -2093,32 +2156,159 @@ intest_handoff() {
   return 0
 }
 
-# Resolve every unresolved review thread on <pr-num> via GraphQL, printing the
-# count resolved. Called by --release right before the merge: the owner-token
-# squash-merge would otherwise BYPASS the repo's required_conversation_resolution
-# rule silently. Resolving here turns that bypass into an explicit, audited
-# action — the human's Approved drag is the ship authorisation (ADR-0026). The
-# --watch fix loop has already addressed CI-failing feedback; remaining threads
-# (e.g. CodeRabbit nits) are accepted at the Approved gate. Best-effort: a single
-# resolve failure doesn't abort the release.
-resolve_review_threads() {
-  local pr_num="$1"
-  local threads_json ids id n=0
-  threads_json=$(gh api graphql -f owner=JakubAnderwald -f repo=drafto -F number="$pr_num" \
-    -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved}}}}}' \
-    2>>"$LOG_FILE" || echo "")
-  if [[ -n "$threads_json" ]]; then
-    ids=$(echo "$threads_json" | jq -r '.data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved == false) | .id' 2>/dev/null || echo "")
-    while IFS= read -r id; do
-      [[ -n "$id" ]] || continue
-      if gh api graphql -f threadId="$id" \
-          -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' \
-          >>"$LOG_FILE" 2>&1; then
-        n=$((n + 1))
-      fi
-    done <<< "$ids"
+# Code-review stage: review a green In Review PR and post each finding as an
+# inline review thread, plus one marked summary comment.
+#
+# Like intest_handoff this is COMMENTARY, not a state transition — the card is
+# still In Review when it runs and stays there. Every failure path degrades to
+# "no review this SHA" and NEVER bumps the retry budget or blocks the card: a PR
+# whose review failed is still a green, testable PR, and the next head SHA gets
+# another attempt. The SHA is recorded on both success and non-session-limit
+# failure so a persistently failing review can't re-run every tick forever.
+#
+# The summary comment carries `<!-- drafto-factory-code-review -->`, which
+# owner_comments_since() excludes — without that marker the In Test feedback
+# sweep would read the factory's own review as operator feedback (the Mac mini's
+# gh identity is OWNER) and roll the card back to In Progress on every pass.
+#
+# $1 issue, $2 pr-num, $3 pr obj, $4 head sha, $5 changed files.
+review_stage() {
+  local issue_num="$1" pr_num="$2" pr_obj="$3" head_sha="$4" diff_files="$5"
+  local issue_record comments_json plan_json pr_diff bundle claude_input
+  local out_file start_iso exit_code=0
+
+  if [[ ! -f "$REVIEW_PROMPT_FILE" ]]; then
+    log "WARNING: review prompt missing ($REVIEW_PROMPT_FILE); skipping review for #$issue_num"
+    return 0
   fi
-  echo "$n"
+  if ! issue_record=$(fetch_issue_record "$issue_num"); then
+    log "WARNING: fetch_issue_record failed for #$issue_num (review); skipping"
+    return 0
+  fi
+  comments_json=$(fetch_issue_comments "$issue_num" 2>>"$LOG_FILE" || echo "[]")
+  [[ -n "$comments_json" ]] || comments_json="[]"
+  plan_json=$(extract_plan_comment "$comments_json")
+  [[ -n "$plan_json" ]] || plan_json="null"
+  pr_diff=$(gh pr diff "$pr_num" --repo JakubAnderwald/drafto 2>>"$LOG_FILE" || echo "")
+  if [[ -z "$pr_diff" ]]; then
+    log "WARNING: empty diff for PR #$pr_num; skipping review"
+    review_record_sha "$issue_num" "$head_sha"
+    return 0
+  fi
+
+  if ! bundle=$(build_review_bundle "$issue_record" "$plan_json" "$pr_obj" "$pr_diff" \
+      "$diff_files" "$head_sha"); then
+    log "ERROR: build_review_bundle failed for #$issue_num; skipping review"
+    return 0
+  fi
+
+  claude_input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
+    "$(cat "$REVIEW_PROMPT_FILE")" "$bundle")
+  log "Invoking claude for #$issue_num (code review of PR #$pr_num @ ${head_sha:0:12}, cap ${REVIEW_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT)"
+  out_file=$(mktemp -t factory-agent-review.XXXXXX)
+  start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  # Read-only stage: runs in the factory checkout on main, no worktree, no slot.
+  ( cd "$REPO_ROOT" && CLAUDE_CALL_TIMEOUT_SEC="$REVIEW_TIMEOUT_SEC" \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" ) \
+      >"$out_file" 2>>"$LOG_FILE" || exit_code=$?
+
+  if [[ $exit_code -ne 0 ]]; then
+    [[ $exit_code -eq 124 ]] && log "WARNING: claude timed out reviewing PR #$pr_num for #$issue_num" \
+      || log "ERROR: claude exited $exit_code reviewing PR #$pr_num for #$issue_num"
+    cat "$out_file" >>"$LOG_FILE" 2>/dev/null || true
+    # A session limit pauses the whole factory and does NOT record the SHA, so
+    # the review is retried once the limit resets rather than skipped for good.
+    if [[ $exit_code -ne 124 ]] && check_session_limit "$REPO_ROOT" "$start_iso"; then
+      rm -f "$out_file"
+      pause_for_session_limit
+      return 0
+    fi
+    rm -f "$out_file"
+    review_record_sha "$issue_num" "$head_sha"
+    return 0
+  fi
+  cat "$out_file" >>"$LOG_FILE"
+  rm -f "$out_file"
+
+  # Trust the marker, not the model's word: the summary comment either exists or
+  # it doesn't. Without it we still record the SHA (no retry storm) but say so.
+  if pr_has_marker "$pr_num" "drafto-factory-code-review"; then
+    log "Issue #$issue_num: code review posted for PR #$pr_num @ ${head_sha:0:12}"
+  else
+    log "WARNING: issue #$issue_num: review run produced no summary comment on PR #$pr_num"
+  fi
+  review_record_sha "$issue_num" "$head_sha"
+  return 0
+}
+
+# Bound the review-thread fix loop.
+#
+# A CI-failure loop is self-limiting: `fixed` means the check should now pass, so
+# the loop ends when CI goes green. A THREAD loop has no such floor — the fix
+# pushes a new commit, the new head SHA earns a fresh review, that review can
+# find something new, and `fixed`/`noop` never bump the retry budget. Left alone
+# a card could cycle forever, spending a Claude call every five minutes.
+#
+# So: when this iteration was driven by open review threads (not failing CI),
+# spend one attempt. FACTORY_MAX_ATTEMPTS then caps the conversation and the
+# existing exhaustion path parks the card in Blocked for a human. Attempts reset
+# on the In Test promotion, so a card that converges pays nothing lasting.
+#
+# Reads THREAD_COUNT / FAILING / ISSUE_NUM from the enclosing --watch loop.
+watch_bound_thread_loop() {
+  [[ "${THREAD_COUNT:-0}" -gt 0 && "${FAILING:-0}" -eq 0 ]] || return 0
+  log "Issue #$ISSUE_NUM: review-thread fix pass; spending one attempt to bound the loop"
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
+    --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+}
+
+# Record the head SHA the review stage last ran against, so --watch reviews each
+# SHA exactly once. Silently no-ops on an empty SHA.
+review_record_sha() {
+  local issue_num="$1" head_sha="$2"
+  [[ -n "$head_sha" ]] || return 0
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+    lastReviewSha "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+}
+
+# Does PR <pr-num>'s conversation carry <marker>? The PR-comment analogue of
+# issue_has_marker (the review summary lands on the PR, not the issue).
+pr_has_marker() {
+  local pr_num="$1" marker="$2"
+  gh pr view "$pr_num" --repo JakubAnderwald/drafto --json comments \
+    --jq "[.comments[]? | select((.body // \"\") | contains(\"$marker\"))] | length" 2>/dev/null \
+    | grep -qE '^[1-9]'
+}
+
+# Print the UNRESOLVED review threads on <pr-num> as a JSON array of
+# {id, path, line, isOutdated, comments:[{body, author:{login}}]}; "[]" on any
+# failure (transient API error must not be read as "no findings" by a caller
+# that gates on emptiness — callers that block on this check for a query failure
+# separately via the exit status).
+#
+# This is the only place the factory reads review-comment TEXT. `gh pr view
+# --json comments` returns PR-conversation comments only, so before this every
+# inline finding — CodeRabbit's included — was invisible to the fix loop.
+#
+# Replaces the old resolve_review_threads(), which force-resolved every thread
+# without reading one, immediately before the merge. That silently defeated the
+# repo's required_conversation_resolution rule: findings were cleared, not
+# addressed. Threads are now answered and resolved by the watcher (see
+# factory-watch-prompt.md) and merely VERIFIED empty at the Approved gate.
+fetch_review_threads() {
+  local pr_num="$1"
+  local threads_json
+  threads_json=$(gh api graphql -f owner=JakubAnderwald -f repo=drafto -F number="$pr_num" \
+    -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved isOutdated path line comments(first:20){nodes{body author{login}}}}}}}}' \
+    2>>"$LOG_FILE") || return 1
+  [[ -n "$threads_json" ]] || return 1
+  echo "$threads_json" | jq -c '
+    [ .data.repository.pullRequest.reviewThreads.nodes[]?
+      | select(.isResolved == false)
+      | { id: .id, path: (.path // ""), line: .line,
+          isOutdated: (.isOutdated // false),
+          comments: [ .comments.nodes[]? | { body: (.body // ""), author: { login: (.author.login // "") } } ] } ]' \
+    2>/dev/null || return 1
 }
 
 # ── --plan mode ─────────────────────────────────────────────────────────────
@@ -3186,8 +3376,22 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
          | (.targetUrl // .detailsUrl // "") ] | join(" "))' \
       | grep -oE 'https://[a-zA-Z0-9._-]*vercel\.app[^ )]*' | head -1 || true)
 
-    if [[ "$FAILING" -gt 0 ]]; then
-      log "Issue #$ISSUE_NUM: PR #$PR_NUM has $FAILING failing check(s) → fix loop"
+    # Unresolved inline review threads are a fix-loop trigger in their own right.
+    # Before this, the whole fix path was gated on failing CI, so a green PR with
+    # ten findings sailed through to In Test and the findings were force-resolved
+    # unread at merge. A query failure yields "[]" and simply defers to the next
+    # tick — --release fails closed on the same query, so nothing merges blind.
+    REVIEW_THREADS=$(fetch_review_threads "$PR_NUM" 2>>"$LOG_FILE" || echo "[]")
+    [[ -n "$REVIEW_THREADS" ]] || REVIEW_THREADS="[]"
+    THREAD_COUNT=$(echo "$REVIEW_THREADS" | jq 'length' 2>/dev/null || echo "0")
+    [[ "$THREAD_COUNT" =~ ^[0-9]+$ ]] || THREAD_COUNT=0
+
+    if [[ "$FAILING" -gt 0 || "$THREAD_COUNT" -gt 0 ]]; then
+      if [[ "$FAILING" -gt 0 ]]; then
+        log "Issue #$ISSUE_NUM: PR #$PR_NUM has $FAILING failing check(s), $THREAD_COUNT open thread(s) → fix loop"
+      else
+        log "Issue #$ISSUE_NUM: PR #$PR_NUM is green but has $THREAD_COUNT open review thread(s) → fix loop"
+      fi
 
       # Retry budget for the fix loop.
       ATTEMPTS=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-attempts "$ISSUE_NUM" \
@@ -3197,9 +3401,10 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
         log "Issue #$ISSUE_NUM: watch retry budget exhausted ($ATTEMPTS); advancing to Blocked"
         if [[ "$DRY_RUN" -eq 0 ]]; then
           gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
-            --body "🏭 **CI fix retry budget exhausted ($ATTEMPTS attempts).**
+            --body "🏭 **Fix retry budget exhausted ($ATTEMPTS attempts).**
 
-The factory could not get CI green on PR #$PR_NUM after $ATTEMPTS fix passes. \
+The factory could not get PR #$PR_NUM to green CI with every review thread \
+answered after $ATTEMPTS fix passes. \
 A human should take a look. Reset with \
 \`node scripts/lib/state-cli.mjs factory:reset-attempts $ISSUE_NUM\` once fixed.
 
@@ -3238,7 +3443,7 @@ A human should take a look. Reset with \
           | { id: .id, user: { login: (.author.login // "") }, body: (.body // "") } ]')
       [[ -n "$UNRESOLVED" ]] || UNRESOLVED="[]"
 
-      if ! BUNDLE=$(build_watch_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PR_OBJ" "$CI_SUMMARY" "$UNRESOLVED" "$ATTEMPTS" "$COMMENTS_JSON"); then
+      if ! BUNDLE=$(build_watch_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PR_OBJ" "$CI_SUMMARY" "$UNRESOLVED" "$ATTEMPTS" "$COMMENTS_JSON" "$REVIEW_THREADS"); then
         log "ERROR: build_watch_bundle failed for #$ISSUE_NUM"; continue
       fi
 
@@ -3304,9 +3509,11 @@ A human should take a look. Reset with \
         fixed)
           log "Issue #$ISSUE_NUM: pushed a fix; leaving In Review for CI re-check next tick"
           node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastWatchAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          watch_bound_thread_loop
           ;;
         noop)
           log "Issue #$ISSUE_NUM: watcher found nothing actionable (transient CI?); leaving In Review"
+          watch_bound_thread_loop
           ;;
         blocked)
           transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
@@ -3349,6 +3556,26 @@ A human should take a look. Reset with \
       continue
     fi
     HEAD_SHA=$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')
+
+    # Code review, once per head SHA, on a fully-green PR. Reviewing earlier
+    # would burn a pass on code that is still moving; reviewing here means the
+    # diff is stable and this is the last stop before a human is asked to test.
+    # Any finding becomes an inline review thread, which the next tick picks up
+    # via the fix loop above — so we stop here and let the card come round again
+    # rather than promoting on the same tick (ADR-0035).
+    LAST_REVIEW_SHA=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.lastReviewSha // ""' 2>/dev/null || echo "")
+    if [[ -n "$HEAD_SHA" && "$LAST_REVIEW_SHA" != "$HEAD_SHA" ]]; then
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        log "DRY-RUN: would code-review #$ISSUE_NUM PR #$PR_NUM at ${HEAD_SHA:0:12}"
+      else
+        review_stage "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$HEAD_SHA" "$INTEST_DIFF_FILES" || true
+        continue
+      fi
+    fi
+
+    # Threads are guaranteed zero here: any open thread would have entered the
+    # fix loop above, which always `continue`s.
     log "Issue #$ISSUE_NUM: required CI green (platforms: $(echo "$INTEST_PLATFORMS" | jq -c . 2>/dev/null)) → In Test"
     if [[ "$DRY_RUN" -eq 1 ]]; then
       log "DRY-RUN: would advance #$ISSUE_NUM to In Test and post a test scenario"
@@ -3749,13 +3976,41 @@ base. I'll squash-merge automatically once it's green again.
       log "DRY-RUN: would squash-merge PR #$PR_NUM and advance #$ISSUE_NUM to Released"; continue
     fi
 
-    # Engage + clear any unresolved review threads BEFORE merging. The owner-token
-    # merge would otherwise bypass required_conversation_resolution silently;
-    # resolving here makes it an explicit, audited action at the human-authorised
-    # Approved gate (the --watch fix loop already addressed CI-failing feedback).
-    RESOLVED_THREADS=$(resolve_review_threads "$PR_NUM")
-    [[ "$RESOLVED_THREADS" =~ ^[0-9]+$ ]] || RESOLVED_THREADS=0
-    [[ "$RESOLVED_THREADS" -gt 0 ]] && log "Issue #$ISSUE_NUM: cleared $RESOLVED_THREADS unresolved review thread(s) before merge"
+    # VERIFY, don't clear. The owner-token merge bypasses the repo's
+    # required_conversation_resolution rule, so this is the only thing standing
+    # between an unanswered finding and main. Previously this call force-resolved
+    # every thread without reading one — the rule was satisfied on paper and the
+    # findings were thrown away. Now an open thread refuses the merge and hands
+    # the card back to --watch, which answers and resolves it (ADR-0035).
+    #
+    # A failed query is NOT "no threads": fail closed and retry next tick.
+    if ! OPEN_THREADS_JSON=$(fetch_review_threads "$PR_NUM"); then
+      log "WARNING: review-thread query failed for PR #$PR_NUM (transient?); not merging this tick"
+      continue
+    fi
+    OPEN_THREADS=$(echo "$OPEN_THREADS_JSON" | jq 'length' 2>/dev/null || echo "0")
+    [[ "$OPEN_THREADS" =~ ^[0-9]+$ ]] || OPEN_THREADS=0
+    if [[ "$OPEN_THREADS" -gt 0 ]]; then
+      log "Issue #$ISSUE_NUM: $OPEN_THREADS unresolved review thread(s) on PR #$PR_NUM; refusing to merge"
+      THREAD_LIST=$(echo "$OPEN_THREADS_JSON" | jq -r '.[] | "- `" + (.path // "?") + ":" + ((.line // 0)|tostring) + "`"' 2>/dev/null || echo "")
+      gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+        --body "🏭 **Not merging — $OPEN_THREADS unresolved review thread(s).**
+
+$THREAD_LIST
+
+Every review comment has to be answered and resolved before this ships. Moving the
+card back to **In Review** so the fix loop can address each one; it will come back
+to In Test for your approval once they are all answered.
+
+<!-- drafto-factory-threads-open -->" >>"$LOG_FILE" 2>&1 || true
+      # Hand the card back to --watch, which is the only mode that runs the fix
+      # loop. Leaving it in Approved would strand it: --release can't answer a
+      # review thread and --watch never looks at Approved cards. The operator's
+      # Approved drag is re-required afterwards — the diff changed after they
+      # authorised it, so the ship authorisation is genuinely stale (ADR-0026).
+      transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review" || true
+      continue
+    fi
 
     # Squash-merge via the API form. gh pr merge --delete-branch fails in
     # worktrees (it tries to check out main locally — CLAUDE.md gotcha); the
@@ -3869,8 +4124,9 @@ the Mac mini; a \"now live in version X\" note follows when each build is up. \
       fi
     fi
 
-    THREADS_NOTE=""
-    [[ "${RESOLVED_THREADS:-0}" -gt 0 ]] && THREADS_NOTE=" Cleared $RESOLVED_THREADS review thread(s) at ship authorisation."
+    # The merge only happens with zero open review threads (verified above), so
+    # this is a statement of fact rather than a tally of what we cleared.
+    THREADS_NOTE=" All review threads were answered and resolved before merge."
     gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
       --body "🏭 **Merged + released.**
 

@@ -152,7 +152,7 @@ describe("factory-agent.sh branch safety", () => {
     }
 
     it("releases the slot after the watch retry-exhausted Blocked transition", () => {
-      const at = script.indexOf("CI fix retry budget exhausted");
+      const at = script.indexOf("Fix retry budget exhausted");
       assert.ok(at !== -1, "could not locate the watch retry-exhausted path");
       const window = script.slice(at, at + 900);
       assert.match(window, /release_slot_and_worktree "\$ISSUE_NUM"/);

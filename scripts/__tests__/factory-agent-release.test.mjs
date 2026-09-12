@@ -315,27 +315,59 @@ describe("Phase-D beta dispatch (gap 1)", () => {
   });
 });
 
-describe("review-thread resolution at ship (gap 2)", () => {
-  it("defines resolve_review_threads using GraphQL reviewThreads + resolveReviewThread", () => {
-    assert.match(script, /resolve_review_threads\(\) \{/);
-    assert.match(script, /reviewThreads\(first:100\)/);
-    assert.match(script, /resolveReviewThread\(input:\{threadId:/);
+describe("review threads gate the merge (ADR-0035)", () => {
+  // The old behaviour — resolve_review_threads() force-resolving every thread
+  // unread right before the merge — satisfied required_conversation_resolution
+  // on paper while throwing the findings away. It must stay gone.
+  it("no longer defines or calls a blind bulk-resolver", () => {
+    // Matched as a definition / invocation, not as a word: the replacement
+    // function's comment names the removed one on purpose, so future readers
+    // know why the merge gate verifies instead of clears.
+    assert.doesNotMatch(script, /^\s*resolve_review_threads\(\)\s*\{/m);
+    assert.doesNotMatch(script, /\$\(\s*resolve_review_threads\b/);
+    assert.doesNotMatch(script, /resolveReviewThread\(input:\{threadId:/);
   });
 
-  it("resolves threads before merging (engages conversation-resolution, not silent bypass)", () => {
-    assert.match(releaseBlock, /RESOLVED_THREADS=\$\(resolve_review_threads "\$PR_NUM"\)/);
-    const resolveIdx = releaseBlock.indexOf('resolve_review_threads "$PR_NUM"');
+  it("reads thread bodies, not just ids", () => {
+    assert.match(script, /fetch_review_threads\(\) \{/);
+    assert.match(script, /reviewThreads\(first:100\)/);
+    // Bodies + author are what make a finding answerable rather than clearable.
+    assert.match(script, /comments\(first:20\)\{nodes\{body author\{login\}\}\}/);
+  });
+
+  it("refuses to merge while any thread is open", () => {
+    const checkIdx = releaseBlock.indexOf('fetch_review_threads "$PR_NUM"');
     const mergeIdx = releaseBlock.indexOf("pulls/$PR_NUM/merge");
     assert.ok(
-      resolveIdx !== -1 && mergeIdx !== -1 && resolveIdx < mergeIdx,
-      "resolve_review_threads must run before the merge call",
+      checkIdx !== -1 && mergeIdx !== -1 && checkIdx < mergeIdx,
+      "the thread check must run before the merge call",
     );
+    const window = releaseBlock.slice(checkIdx, mergeIdx);
+    assert.match(window, /OPEN_THREADS.*-gt 0/s, "expected a >0 open-threads guard");
+    assert.match(window, /continue/, "an open thread must skip the merge");
   });
 
-  it("only resolves on a real merge (after the dry-run guard)", () => {
+  it("fails closed when the thread query itself fails", () => {
+    // A transient API error must never read as "no findings".
+    const checkIdx = releaseBlock.indexOf("if ! OPEN_THREADS_JSON=$(fetch_review_threads");
+    assert.ok(checkIdx !== -1, "expected the query failure to be handled explicitly");
+    const window = releaseBlock.slice(checkIdx, checkIdx + 400);
+    assert.match(window, /not merging this tick/);
+    assert.match(window, /continue/);
+  });
+
+  it("hands the card back to --watch rather than stranding it in Approved", () => {
+    // --watch is the only mode that runs the fix loop, and it only looks at In
+    // Review cards. Leaving an open-threads card in Approved would strand it.
+    const checkIdx = releaseBlock.indexOf('fetch_review_threads "$PR_NUM"');
+    const window = releaseBlock.slice(checkIdx, checkIdx + 1600);
+    assert.match(window, /transition_status "\$ITEM_ID" "\$ISSUE_NUM" "In Review"/);
+  });
+
+  it("only checks on a real merge (after the dry-run guard)", () => {
     const dryIdx = releaseBlock.indexOf("DRY-RUN: would squash-merge");
-    const resolveIdx = releaseBlock.indexOf('resolve_review_threads "$PR_NUM"');
-    assert.ok(dryIdx !== -1 && resolveIdx > dryIdx, "resolve must be after the dry-run guard");
+    const checkIdx = releaseBlock.indexOf('fetch_review_threads "$PR_NUM"');
+    assert.ok(dryIdx !== -1 && checkIdx > dryIdx, "the check must be after the dry-run guard");
   });
 });
 

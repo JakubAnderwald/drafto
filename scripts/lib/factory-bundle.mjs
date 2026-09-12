@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Build a per-issue context bundle for the dark-factory agent.
 //
-// Four kinds today:
+// Five kinds today:
 //
 //   factory_plan       — for `factory-agent.sh --plan`. Contains the issue
 //                        body + comments, the parsed spec contract sections,
@@ -18,8 +18,15 @@
 //   factory_watch      — for `factory-agent.sh --watch` (Phase B+). The
 //                        /push-style fix loop: approved plan + PR pointer +
 //                        a CI failure summary + the unresolved review
-//                        comments, so the model can make minimal in-scope
-//                        fixes and re-push.
+//                        comments + the unresolved inline review threads, so
+//                        the model can make minimal in-scope fixes, answer
+//                        every thread and re-push.
+//
+//   factory_review     — for `factory-agent.sh --watch` on a green In Review
+//                        PR, once per head SHA. Read-only: issue + approved
+//                        plan + the diff. The model posts each finding as an
+//                        inline review thread (which blocks the merge until
+//                        answered) plus one marked summary comment.
 //
 //   factory_intest     — for `factory-agent.sh --watch` at the In Review →
 //                        In Test hand-off (any phase). Read-only: the issue,
@@ -362,6 +369,26 @@ function envelopeComments(comments) {
   }));
 }
 
+// Pure: shape unresolved PR review threads for the watch bundle. Each thread is
+// an inline finding anchored at path:line that GitHub's
+// required_conversation_resolution rule blocks the merge on until it is
+// resolved. Every body is envelope-wrapped: a review comment is attacker-
+// influencable (anyone can comment on a public PR), so it must never escape
+// into the model's instruction stream.
+function envelopeReviewThreads(threads) {
+  const list = Array.isArray(threads) ? threads : [];
+  return list.map((t) => ({
+    id: t?.id ?? null,
+    path: t?.path ?? "",
+    line: t?.line ?? null,
+    isOutdated: t?.isOutdated === true,
+    comments: (Array.isArray(t?.comments) ? t.comments : []).map((c) => ({
+      user: { login: c?.author?.login ?? c?.user?.login ?? "" },
+      body: envelopeBody(c?.body ?? "", "review-comment"),
+    })),
+  }));
+}
+
 function shapeIssue(issue) {
   return {
     number: issue?.number ?? null,
@@ -514,15 +541,17 @@ export function buildFactoryImplementBundle({
 }
 
 // Bundle for `factory-agent.sh --watch`. Built when an In Review PR has
-// failing CI checks and/or unresolved review comments — the /push-style fix
+// failing CI checks and/or unresolved review threads — the /push-style fix
 // loop. Carries the approved plan (so fixes stay in scope), the PR pointer,
-// a plain-text CI failure summary, and the unresolved review comments.
+// a plain-text CI failure summary, the unresolved PR-conversation comments,
+// and the unresolved inline review threads the watcher must answer and resolve.
 export function buildFactoryWatchBundle({
   issue,
   approvedPlan,
   priorPr = null,
   ciSummary = "",
   unresolvedComments = [],
+  reviewThreads = [],
   comments = [],
   screenshotSources = [],
   attempts = 0,
@@ -573,6 +602,10 @@ export function buildFactoryWatchBundle({
     // instruction stream.
     ciSummaryEnveloped: envelopeBody(typeof ciSummary === "string" ? ciSummary : "", "ci-summary"),
     unresolvedComments: envelopeComments(unresolvedComments),
+    // Unresolved inline review threads (CodeRabbit's findings, the factory's own
+    // review stage, and any human's). Each one blocks the merge until the
+    // watcher answers and resolves it — see factory-watch-prompt.md.
+    reviewThreads: envelopeReviewThreads(reviewThreads),
     comments: envelopeComments(comments),
     reporter: reporterFromBody(issue.body ?? ""),
     attempts: Number.isInteger(attempts) ? attempts : 0,
@@ -610,6 +643,62 @@ export function truncateDiff(text, { maxBytes = 200_000, maxLines = 4000 } = {})
     truncated = true;
   }
   return { text: out, truncated, omittedLines };
+}
+
+// Bundle for the code-review stage (`factory-agent.sh --watch`, In Review, once
+// per head SHA on a green PR). Read-only: the model reads the diff and posts
+// each finding as an inline review thread plus one marked summary comment. It
+// gets the issue (what was asked for), the approved plan (what was meant to
+// change) and the diff (what actually changed) — enough to catch scope drift as
+// well as defects. Deliberately NO comment thread: a reviewer should judge the
+// diff, not be primed by what people have already said about it.
+export function buildFactoryReviewBundle({
+  issue,
+  approvedPlan,
+  priorPr = null,
+  prDiff = "",
+  prFiles = "",
+  headSha = "",
+  config,
+  repo,
+  nowIso,
+} = {}) {
+  if (!issue || !Number.isInteger(issue.number)) {
+    throw new Error("buildFactoryReviewBundle: issue.number is required");
+  }
+  const planBody = typeof approvedPlan?.body === "string" ? approvedPlan.body : "";
+  const planClean = planBody.split(FACTORY_PLAN_MARKER).join("").trim();
+  const spec = parseSpec(issue.body ?? "");
+  return {
+    kind: "factory_review",
+    issue: shapeIssue(issue),
+    spec,
+    parityOverride: effectiveParityOverride(issue.labels, spec),
+    approvedPlan: approvedPlan
+      ? {
+          commentId: approvedPlan.commentId ?? approvedPlan.id ?? null,
+          url: approvedPlan.url ?? "",
+          createdAt: approvedPlan.createdAt ?? approvedPlan.created_at ?? null,
+          bodyEnveloped: envelopeBody(planClean, "factory-plan"),
+        }
+      : null,
+    priorPr: priorPr
+      ? {
+          number: priorPr.number ?? null,
+          url: priorPr.url ?? "",
+          headRef: priorPr.headRef ?? "",
+          state: priorPr.state ?? "",
+        }
+      : null,
+    headSha: typeof headSha === "string" ? headSha : "",
+    // Enveloped like every other untrusted input: a hunk may quote a directive
+    // and must never be read as an instruction.
+    prDiffEnveloped: envelopeBody(truncateDiff(prDiff), "pr-diff"),
+    prFiles: typeof prFiles === "string" ? prFiles : "",
+    config: shapeConfig(config),
+    repo: shapeRepo(repo),
+    nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
+  };
 }
 
 // Bundle for the In Test hand-off (`factory-agent.sh --watch`, In Review → In
@@ -757,6 +846,7 @@ async function main() {
       priorPr: input.priorPr,
       ciSummary: input.ciSummary,
       unresolvedComments: input.unresolvedComments,
+      reviewThreads: input.reviewThreads,
       comments: input.comments,
       screenshotSources: input.screenshotSources,
       attempts: input.attempts,
@@ -778,6 +868,18 @@ async function main() {
       headSha: input.headSha,
       comments: input.comments,
       screenshotSources: input.screenshotSources,
+      config: input.config,
+      repo: input.repo,
+      nowIso: input.nowIso,
+    });
+  } else if (input.kind === "factory_review") {
+    bundle = buildFactoryReviewBundle({
+      issue: input.issue,
+      approvedPlan: input.approvedPlan,
+      priorPr: input.priorPr,
+      prDiff: input.prDiff,
+      prFiles: input.prFiles,
+      headSha: input.headSha,
       config: input.config,
       repo: input.repo,
       nowIso: input.nowIso,

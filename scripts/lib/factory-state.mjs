@@ -97,6 +97,10 @@ function emptyIssue() {
     // cap and the per-ATTEMPT artefact path — keying the log/.exit on the
     // commit alone let a retry share files with the attempt it replaced.
     intestBetaAttempts: null,
+    // Head SHA the code-review stage last ran against, so --watch reviews each
+    // commit exactly once. Re-armed by every new push, which is what makes a
+    // fix-then-re-review cycle converge instead of repeating. See ADR-0035.
+    lastReviewSha: null,
   };
 }
 
@@ -320,6 +324,10 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   "intestBetaAt",
   "intestBetaLanes",
   "intestBetaAttempts",
+  // Code-review stage idempotency key (ADR-0035): the head SHA the review stage
+  // last ran against. Same silent-failure hazard as the In Test keys above — a
+  // rejected field would make --watch re-review (and re-comment on) every tick.
+  "lastReviewSha",
 ]);
 
 export function setIssueField(state, issueNumber, field, value) {
