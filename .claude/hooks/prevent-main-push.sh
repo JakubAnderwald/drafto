@@ -1,26 +1,20 @@
 #!/bin/bash
-# Hook: Block git push to main unless the user explicitly asked for it.
-# This prevents accidental pushes to main during iterative debugging sessions
-# where changes accumulate without being branched first.
+# Hook: Block a git push that would land on a protected branch (main/master),
+# unless the user explicitly asked for it. Enforces the worktree/branch workflow
+# required by CLAUDE.md.
+#
+# Thin wrapper on purpose. The judgement is in scripts/git-guard.mjs, which parses
+# the command instead of pattern-matching it — see docs/operations/claude-code-hooks.md.
+# Self-locating via "$0", so it does not care what $CLAUDE_PROJECT_DIR happens to be.
 
-# Read tool input from stdin
 INPUT=$(cat)
-COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
 
-# Only check git push commands
-if ! echo "$COMMAND" | grep -qE '^\s*(git push|git push )'; then
-  exit 0
-fi
+# Cheap prefilter: most Bash calls have nothing to do with git, and this keeps
+# node out of that path entirely.
+case "$INPUT" in
+  *git*) ;;
+  *) exit 0 ;;
+esac
 
-# Check if pushing to main/master
-BRANCH=$(git branch --show-current 2>/dev/null)
-if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
-  # Allow if explicitly pushing to a different branch (e.g., git push origin feature-branch)
-  if echo "$COMMAND" | grep -qE 'git push.*(origin|upstream)\s+[^-]' && ! echo "$COMMAND" | grep -qE 'git push.*(origin|upstream)\s+(main|master|HEAD)'; then
-    exit 0
-  fi
-  echo "Blocked: pushing to main. Create a branch first (CLAUDE.md requires worktree workflow). Use 'git checkout -b fix/description' or ask the user for permission." >&2
-  exit 2
-fi
-
-exit 0
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+printf '%s' "$INPUT" | node "$REPO_ROOT/scripts/git-guard.mjs" push
