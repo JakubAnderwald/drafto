@@ -310,7 +310,12 @@ export function analyze(
     // Follow `cd` so a command is judged where it actually runs.
     if (plain[0] && !plain[0].quoted && plain[0].text === "cd" && plain[1]) {
       const target = plain[1].text.replace(/^~(?=$|\/)/, process.env.HOME ?? "~");
-      dir = target.startsWith("/") ? target : `${dir}/${target}`;
+      // An unexpanded variable or substitution is not a path we can follow.
+      // Keep judging the directory we already know rather than walking into a
+      // made-up one, which would resolve to no branch at all and fail open.
+      if (!/[$`]/.test(target)) {
+        dir = target.startsWith("/") ? target : `${dir}/${target}`;
+      }
       continue;
     }
 

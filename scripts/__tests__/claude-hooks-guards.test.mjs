@@ -58,6 +58,12 @@ describe("git-guard: a command is judged where it actually runs", () => {
     [true, `git status && cd ${ON_MAIN} && git commit -m x`, ON_BRANCH],
     [true, `git -C ${ON_MAIN} commit -m x`, ON_BRANCH],
     [false, `cd ${ON_BRANCH} && git commit -m x`, ON_MAIN],
+    // A path we cannot expand is not a path we can follow. Keep judging the
+    // directory we already know rather than walking into a made-up one, which
+    // resolves to no branch at all and would fail open.
+    [true, "cd $TARGET && git commit -m x", ON_MAIN],
+    [false, "cd $TARGET && git commit -m x", ON_BRANCH],
+    [true, 'cd "$(mktemp -d)" && git commit -m x', ON_MAIN],
     [false, `git -C ${ON_BRANCH} commit -m x`, ON_MAIN],
   ]);
   table("push", [
