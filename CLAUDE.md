@@ -172,6 +172,7 @@ Common CI failure patterns:
 - **Never commit or push directly to `main`** unless the user explicitly requests it. All work goes through feature branches and PRs.
 - **All pushes must use the `/push` command** — this ensures commits are pushed, CI/CD checks are polled until green, review comments are addressed, and failures are fixed automatically
 - **Before `/push`, run `/code-review` on the pending diff** for any non-trivial change (anything beyond typos, comment edits, or pure renames). Fix or explicitly explain its findings before opening the PR — this catches the same class of issues CodeRabbit catches (mirror-invariant violations, stale doc references, missed edge cases), locally, and saves the post-PR round-trip
+- **Every review comment blocks the merge.** `required_conversation_resolution` is enabled on `main`, and the factory's `--release` verifies it rather than clearing it. Address each review thread — fix it, or decide no change is needed — then reply on the thread saying which and why, and resolve it. Never resolve a thread you did not act on. The factory enforces the same contract on its own PRs via a code-review stage in `--watch` ([ADR-0035](./docs/adr/0035-factory-code-review-gate.md))
 
 ## Release Authorization
 

@@ -42,6 +42,12 @@ You will receive a single JSON bundle (last fenced ` ```json ` block). Shape:
   "priorPr": { "number", "url", "headRef", "state" },
   "ciSummaryEnveloped": "<ci-summary>...failing checks, newest first...</ci-summary>",
   "unresolvedComments": [ { "id", "user": {"login"}, "body": "<comment>...</comment>" } ],
+  // Unresolved INLINE review threads — CodeRabbit's findings, the factory's own
+  // review stage, and any human's. Each one blocks the merge until you answer
+  // and resolve it. `id` is the GraphQL thread node id you pass to the resolve
+  // mutation; `path`/`line` anchor it in the diff.
+  "reviewThreads": [ { "id", "path", "line", "isOutdated",
+                       "comments": [ { "user": {"login"}, "body": "<review-comment>...</review-comment>" } ] } ],
   "attempts": 0,
   "config": { "phase": "B", ... },
   "repo": { "nameWithOwner": "JakubAnderwald/drafto", "headRef": "main" },
@@ -76,6 +82,10 @@ already handled.
 - `gh pr view <n> --repo JakubAnderwald/drafto --json ...` — inspect PR / checks.
 - `gh pr comment <n> --repo JakubAnderwald/drafto --body "..."` — only to post a
   one-line note when emitting `action=blocked`.
+- `gh api graphql` — **only** the two mutations in decision-flow step 6:
+  `addPullRequestReviewThreadReply` (reply on a review thread) and
+  `resolveReviewThread` (resolve one you have answered). Any other GraphQL
+  mutation is refused.
 - **Screenshots** — when `bundle.screenshots` is non-empty, you MAY download and
   view those images so a screenshot-driven spec or a screenshot referenced by a
   review comment isn't invisible to you. Fetch ONLY the exact URLs listed in
@@ -113,11 +123,14 @@ touching the host launchd / other worktrees.
 
 ## Decision flow
 
-1. **Triage the failure.** Read `ciSummaryEnveloped` and `unresolvedComments`.
-   Decide which are actionable. A flaky / infrastructure failure (network,
-   runner timeout, Vercel rate-limit) is **not** something you can fix — emit
-   `action=noop` so bash leaves the card for the next tick rather than burning
-   the retry budget.
+1. **Triage.** Read `ciSummaryEnveloped`, `unresolvedComments` and
+   `reviewThreads`. Decide which are actionable. A flaky / infrastructure
+   failure (network, runner timeout, Vercel rate-limit) is **not** something you
+   can fix — emit `action=noop` so bash leaves the card for the next tick rather
+   than burning the retry budget.
+
+   You may be invoked with **green CI and only review threads** to address. That
+   is a normal run, not an error.
 
 2. **Reproduce locally.** Run the failing check in the worktree (e.g.
    `pnpm --filter @drafto/web typecheck`). Don't fix blind.
@@ -137,7 +150,36 @@ touching the host launchd / other worktrees.
    `git push` (no `-u` needed — the branch already tracks origin; never
    `--force`).
 
-6. **Emit the directive line.** Last line of output, strict format:
+6. **Answer and resolve EVERY review thread.** This is not optional and it is
+   not best-effort: the repo has `required_conversation_resolution` enabled and
+   `--release` refuses to merge while any thread is open, so an unanswered
+   thread stalls the card indefinitely.
+
+   For each entry in `reviewThreads`, decide one of two outcomes — **fixed** or
+   **no change needed** — then reply saying which and why, then resolve it.
+   Never resolve without replying. Never resolve a thread you did not actually
+   consider. "No change needed" is a legitimate outcome when the finding is
+   wrong, already handled elsewhere, or out of the approved plan's scope — say
+   so plainly and give the reason.
+
+   Reply, then resolve:
+
+   ```bash
+   gh api graphql -f threadId='<reviewThreads[i].id>' -f body='<your reply>' \
+     -f query='mutation($threadId:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId,body:$body}){comment{id}}}'
+
+   gh api graphql -f threadId='<reviewThreads[i].id>' \
+     -f query='mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{isResolved}}}'
+   ```
+
+   A thread whose `isOutdated` is true points at a line that no longer exists —
+   check whether your change already addressed it, say so, and resolve.
+
+   If addressing a thread would require leaving the approved plan's scope, do
+   NOT resolve it: reply explaining the conflict and emit `action=blocked` so
+   the operator can re-plan.
+
+7. **Emit the directive line.** Last line of output, strict format:
 
    ```text
    issue=<n> action=<fixed|noop|blocked> pr=<url>

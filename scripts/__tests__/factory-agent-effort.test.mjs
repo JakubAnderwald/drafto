@@ -15,17 +15,18 @@ const scriptPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "facto
 const script = readFileSync(scriptPath, "utf8");
 
 describe("factory-agent Claude effort", () => {
-  it("passes --effort at all five Claude call sites", () => {
-    // Three read-only sites (plan + replan + In Test scenario) use the plan
-    // effort; two coding sites (implement + watch) use the coding effort.
+  it("passes --effort at all six Claude call sites", () => {
+    // Four read-only sites (plan + replan + In Test scenario + code review) use
+    // the plan effort; two coding sites (implement + watch) use the coding
+    // effort.
     const planFlags =
       script.match(/--dangerously-skip-permissions --effort "\$FACTORY_PLAN_EFFORT"/g) || [];
     const codeFlags =
       script.match(/--dangerously-skip-permissions --effort "\$FACTORY_EFFORT"/g) || [];
     assert.equal(
       planFlags.length,
-      3,
-      'expected --effort "$FACTORY_PLAN_EFFORT" at the plan + replan + In Test sites',
+      4,
+      'expected --effort "$FACTORY_PLAN_EFFORT" at the plan + replan + In Test + review sites',
     );
     assert.equal(
       codeFlags.length,
@@ -34,7 +35,7 @@ describe("factory-agent Claude effort", () => {
     );
     assert.equal(
       planFlags.length + codeFlags.length,
-      5,
+      6,
       "every factory Claude call must carry an effort flag",
     );
   });
