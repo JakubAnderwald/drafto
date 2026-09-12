@@ -5,7 +5,7 @@ import type { Session, User } from "@supabase/supabase-js";
 import { database } from "@/db";
 import { syncDatabase, resetSyncState } from "@/db/sync";
 import { getCachedApproval, setCachedApproval, clearCachedApproval } from "@/lib/approval-cache";
-import { completeRecoveryFromUrl } from "@/lib/auth-recovery";
+import { createRecoveryLinkHandler } from "@/lib/auth-recovery";
 import { deleteAllLocalAttachments, processPendingUploads } from "@/lib/data/attachment-queue";
 import { supabase } from "@/lib/supabase";
 
@@ -187,31 +187,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Password-recovery deep links. The flag has to flip the moment the link is
   // recognised — before the session lands — or the guard would route the user
   // into the app during the round-trip and the reset screen would never render.
+  // The initial URL and later `url` events share one handler so their Supabase
+  // session changes are serialized rather than racing each other.
   useEffect(() => {
-    let active = true;
+    const recoveryLinks = createRecoveryLinkHandler({
+      onRecoveryDetected: startRecovery,
+      onRecoveryError: failRecovery,
+    });
 
-    const handleUrl = (url: string) => {
-      void completeRecoveryFromUrl(url, {
-        onRecoveryDetected: () => {
-          if (active) startRecovery();
-        },
-        onRecoveryError: (message) => {
-          if (active) failRecovery(message);
-        },
-      });
-    };
-
-    const subscription = Linking.addEventListener("url", ({ url }) => handleUrl(url));
+    const subscription = Linking.addEventListener("url", ({ url }) => recoveryLinks.handle(url));
     Linking.getInitialURL()
       .then((url) => {
-        if (url) handleUrl(url);
+        if (url) recoveryLinks.handle(url);
       })
       .catch((error) => {
         console.error("Failed to read the initial deep link:", error);
       });
 
     return () => {
-      active = false;
+      recoveryLinks.cancel();
       subscription.remove();
     };
   }, [startRecovery, failRecovery]);

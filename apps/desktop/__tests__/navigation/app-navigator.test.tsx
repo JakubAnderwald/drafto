@@ -2,7 +2,7 @@ import React from "react";
 import { Text, Linking } from "react-native";
 
 import { render, fireEvent } from "../helpers/test-utils";
-import { RootNavigator } from "../../src/navigation/app-navigator";
+import { RootNavigator } from "@/navigation/app-navigator";
 
 const mockUseAuth = jest.fn();
 jest.mock("@/providers/auth-provider", () => ({

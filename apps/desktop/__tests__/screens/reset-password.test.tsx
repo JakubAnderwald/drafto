@@ -1,7 +1,7 @@
 import React from "react";
 
 import { render, fireEvent, waitFor } from "../helpers/test-utils";
-import { ResetPasswordScreen } from "../../src/screens/reset-password";
+import { ResetPasswordScreen } from "@/screens/reset-password";
 
 const mockUpdateUser = jest.fn();
 jest.mock("@/lib/supabase", () => ({
@@ -193,6 +193,26 @@ describe("ResetPasswordScreen", () => {
     expect(mockEndRecovery).toHaveBeenCalled();
     expect(onNavigateToLogin).toHaveBeenCalled();
   });
+
+  it("stays in recovery when sign-out fails, so the live session is not handed to the app", async () => {
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+    mockSignOut.mockRejectedValue(new Error("Network request failed"));
+    const onNavigateToLogin = jest.fn();
+
+    const { getByTestId, findByText } = render(
+      <ResetPasswordScreen onNavigateToLogin={onNavigateToLogin} />,
+    );
+
+    fireEvent.press(getByTestId("reset-password-cancel"));
+
+    expect(
+      await findByText("Couldn't sign out. Check your connection and try again."),
+    ).toBeTruthy();
+    expect(mockEndRecovery).not.toHaveBeenCalled();
+    expect(onNavigateToLogin).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
   it("shows a sign-out state rather than the verifying spinner while backing out", async () => {
     // signOut flushes pending changes and wipes the local database, so it can run
     // for seconds. A hanging signOut pins the screen in that window: it must name

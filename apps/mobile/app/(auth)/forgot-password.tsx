@@ -54,9 +54,10 @@ export default function ForgotPasswordScreen() {
       }
 
       setSentTo(trimmed);
-    } catch {
+    } catch (err) {
       // A thrown request is a transport failure (DNS, timeout, dropped Wi-Fi) —
       // offer the same retry rather than a dead end.
+      console.error("Password reset request failed:", err);
       setRetryable(true);
       setError(OFFLINE_MESSAGE);
     } finally {

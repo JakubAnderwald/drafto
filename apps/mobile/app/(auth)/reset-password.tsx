@@ -21,6 +21,7 @@ import type { SemanticColors } from "@/theme/tokens";
 
 const MIN_PASSWORD_LENGTH = 6;
 const OFFLINE_MESSAGE = "You're offline. Reconnect to the internet and try again.";
+const SIGN_OUT_FAILED_MESSAGE = "Couldn't sign out. Check your connection and try again.";
 const EXPIRED_MESSAGE =
   "This password reset link is invalid or has expired. Request a new one from the login screen.";
 
@@ -38,17 +39,23 @@ export default function ResetPasswordScreen() {
   const [leaving, setLeaving] = useState(false);
 
   // Backing out of a recovery session must not leave the user silently signed in
-  // with a password they never set.
+  // with a password they never set. If sign-out fails the recovery session is
+  // still live, so recovery mode must survive too — ending it would let the
+  // route guard hand that session straight to the main app.
   const handleBackToLogin = async () => {
     setLeaving(true);
     try {
       if (session) {
         await signOut();
       }
-    } finally {
       endRecovery();
-      setLeaving(false);
       router.replace("/(auth)/login");
+    } catch (err) {
+      console.error("Sign-out while leaving password recovery failed:", err);
+      setRetryable(false);
+      setError(SIGN_OUT_FAILED_MESSAGE);
+    } finally {
+      setLeaving(false);
     }
   };
 
@@ -95,7 +102,8 @@ export default function ResetPasswordScreen() {
       // Keep the (now fully valid) session and let the route guard take over —
       // the same landing behaviour as the web flow.
       endRecovery();
-    } catch {
+    } catch (err) {
+      console.error("Password update request failed:", err);
       setRetryable(true);
       setError(OFFLINE_MESSAGE);
     } finally {
