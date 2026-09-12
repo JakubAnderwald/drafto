@@ -13,6 +13,7 @@ jest.mock("@/lib/supabase", () => ({
 import {
   RECOVERY_REDIRECT_URL,
   completeRecoveryFromUrl,
+  createRecoveryLinkHandler,
   isRecoveryUrl,
   parseRecoveryLink,
 } from "@/lib/auth-recovery";
@@ -226,5 +227,152 @@ describe("completeRecoveryFromUrl", () => {
 
   it("does not require any callbacks", async () => {
     await expect(completeRecoveryFromUrl(IMPLICIT_LINK)).resolves.toBeUndefined();
+  });
+});
+
+describe("createRecoveryLinkHandler", () => {
+  const linkFor = (code: string) => `${RECOVERY_REDIRECT_URL}?code=${code}`;
+
+  /** Lets queued promise continuations run. */
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  function deferredExchange() {
+    let resolve!: (value: { data: object; error: { message: string } | null }) => void;
+    const promise = new Promise<{ data: object; error: { message: string } | null }>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockExchangeCodeForSession.mockResolvedValue({ data: {}, error: null });
+  });
+
+  it("ignores links that are not recovery callbacks", async () => {
+    const onRecoveryDetected = jest.fn();
+    const handler = createRecoveryLinkHandler({ onRecoveryDetected });
+
+    handler.handle("https://drafto.eu/somewhere?code=abc");
+    await flush();
+
+    expect(onRecoveryDetected).not.toHaveBeenCalled();
+    expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
+  });
+
+  it("flags recovery synchronously, before the link's turn in the queue", () => {
+    const onRecoveryDetected = jest.fn();
+    const handler = createRecoveryLinkHandler({ onRecoveryDetected });
+
+    handler.handle(linkFor("a"));
+
+    expect(onRecoveryDetected).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs session changes one at a time, so a late exchange cannot replace a newer session", async () => {
+    const first = deferredExchange();
+    mockExchangeCodeForSession.mockReturnValueOnce(first.promise);
+    const handler = createRecoveryLinkHandler();
+
+    handler.handle(linkFor("a"));
+    await flush();
+    handler.handle(linkFor("b"));
+    await flush();
+
+    expect(mockExchangeCodeForSession.mock.calls).toEqual([["a"]]);
+
+    first.resolve({ data: {}, error: null });
+    await flush();
+
+    expect(mockExchangeCodeForSession.mock.calls).toEqual([["a"], ["b"]]);
+  });
+
+  it("skips a superseded link that has not started yet", async () => {
+    // "a" is already exchanging when "b" and "c" arrive; "b" is overtaken while it waits.
+    const first = deferredExchange();
+    mockExchangeCodeForSession.mockReturnValueOnce(first.promise);
+    const handler = createRecoveryLinkHandler();
+
+    handler.handle(linkFor("a"));
+    await flush();
+    handler.handle(linkFor("b"));
+    handler.handle(linkFor("c"));
+    first.resolve({ data: {}, error: null });
+    await flush();
+
+    expect(mockExchangeCodeForSession.mock.calls).toEqual([["a"], ["c"]]);
+  });
+
+  it("drops the error of a link a newer one has superseded", async () => {
+    const first = deferredExchange();
+    mockExchangeCodeForSession.mockReturnValueOnce(first.promise);
+    const onRecoveryError = jest.fn();
+    const handler = createRecoveryLinkHandler({ onRecoveryError });
+
+    handler.handle(linkFor("a"));
+    await flush();
+    handler.handle(linkFor("b"));
+    first.resolve({ data: {}, error: { message: "stale link expired" } });
+    await flush();
+
+    expect(onRecoveryError).not.toHaveBeenCalled();
+  });
+
+  it("still reports an error from the most recent link", async () => {
+    mockExchangeCodeForSession.mockResolvedValue({ data: {}, error: { message: "code expired" } });
+    const onRecoveryError = jest.fn();
+    const handler = createRecoveryLinkHandler({ onRecoveryError });
+
+    handler.handle(linkFor("a"));
+    await flush();
+
+    expect(onRecoveryError).toHaveBeenCalledWith("code expired");
+  });
+
+  it("ignores a duplicate of a link still in flight, so a consumed code cannot mask success", async () => {
+    const first = deferredExchange();
+    mockExchangeCodeForSession.mockReturnValueOnce(first.promise);
+    const onRecoveryDetected = jest.fn();
+    const onRecoveryError = jest.fn();
+    const handler = createRecoveryLinkHandler({ onRecoveryDetected, onRecoveryError });
+
+    handler.handle(linkFor("a"));
+    handler.handle(linkFor("a"));
+    first.resolve({ data: {}, error: null });
+    await flush();
+
+    expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(1);
+    expect(onRecoveryDetected).toHaveBeenCalledTimes(1);
+    expect(onRecoveryError).not.toHaveBeenCalled();
+  });
+
+  it("accepts the same link again once its earlier attempt has settled", async () => {
+    const handler = createRecoveryLinkHandler();
+
+    handler.handle(linkFor("a"));
+    await flush();
+    handler.handle(linkFor("a"));
+    await flush();
+
+    expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("fires nothing once cancelled", async () => {
+    const first = deferredExchange();
+    mockExchangeCodeForSession.mockReturnValueOnce(first.promise);
+    const onRecoveryDetected = jest.fn();
+    const onRecoveryError = jest.fn();
+    const handler = createRecoveryLinkHandler({ onRecoveryDetected, onRecoveryError });
+
+    handler.handle(linkFor("a"));
+    await flush();
+    handler.cancel();
+    first.resolve({ data: {}, error: { message: "code expired" } });
+    handler.handle(linkFor("b"));
+    await flush();
+
+    expect(onRecoveryDetected).toHaveBeenCalledTimes(1);
+    expect(onRecoveryError).not.toHaveBeenCalled();
+    expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(1);
   });
 });

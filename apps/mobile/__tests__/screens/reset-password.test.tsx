@@ -208,6 +208,22 @@ describe("ResetPasswordScreen", () => {
     expect(mockReplace).toHaveBeenCalledWith("/(auth)/login");
   });
 
+  it("stays in recovery when sign-out fails, so the live session is not handed to the app", async () => {
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+    mockSignOut.mockRejectedValue(new Error("Network request failed"));
+
+    const { getByTestId, findByText } = render(<ResetPasswordScreen />);
+
+    fireEvent.press(getByTestId("reset-password-back-to-login"));
+
+    expect(
+      await findByText("Couldn't sign out. Check your connection and try again."),
+    ).toBeTruthy();
+    expect(mockEndRecovery).not.toHaveBeenCalled();
+    expect(mockReplace).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
   it("does not call signOut when backing out without a session", async () => {
     mockUseAuth.mockReturnValue(authState({ session: null, isRecovering: false }));
 

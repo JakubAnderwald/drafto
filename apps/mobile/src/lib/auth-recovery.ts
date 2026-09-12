@@ -1,4 +1,4 @@
-import { supabase } from "./supabase";
+import { supabase } from "@/lib/supabase";
 
 /**
  * Password-recovery deep links for the mobile app.
@@ -166,4 +166,64 @@ export async function completeRecoveryFromUrl(
       error instanceof Error ? error.message : "Could not open this password reset link.",
     );
   }
+}
+
+export interface RecoveryLinkHandler {
+  /** Queues a deep link for recovery. Non-recovery links are ignored. */
+  handle: (url: string) => void;
+  /** Silences every pending and future callback — call on unmount. */
+  cancel: () => void;
+}
+
+/**
+ * Funnels every incoming deep link through one queue so recovery attempts never
+ * overlap.
+ *
+ * Without it, two links (a second email tapped mid-exchange, or the cold-start
+ * URL arriving through both `getInitialURL` and the `url` event) race: a late
+ * `setSession` / `exchangeCodeForSession` can replace the newer session, and
+ * the stale link's error can overwrite the newer link's state. So:
+ *
+ * - Supabase session changes run strictly one after another.
+ * - Only the most recent link may report an error; a superseded link that has
+ *   not started yet is skipped outright.
+ * - A link identical to one still in flight is dropped — its one-time
+ *   credentials would fail a second exchange and mask a recovery that worked.
+ */
+export function createRecoveryLinkHandler(callbacks: RecoveryCallbacks = {}): RecoveryLinkHandler {
+  let queue: Promise<void> = Promise.resolve();
+  let latest = 0;
+  let cancelled = false;
+  const inFlight = new Set<string>();
+
+  const handle = (url: string) => {
+    if (cancelled || inFlight.has(url) || !isRecoveryUrl(url)) return;
+
+    const seq = ++latest;
+    const isCurrent = () => !cancelled && seq === latest;
+    inFlight.add(url);
+
+    // Flag recovery immediately, not when the link's turn in the queue comes —
+    // the route guard must hold the reset screen for the whole wait.
+    callbacks.onRecoveryDetected?.();
+
+    queue = queue
+      .then(() => {
+        if (!isCurrent()) return;
+        return completeRecoveryFromUrl(url, {
+          onRecoveryError: (message) => {
+            if (isCurrent()) callbacks.onRecoveryError?.(message);
+          },
+        });
+      })
+      .finally(() => {
+        inFlight.delete(url);
+      });
+  };
+
+  const cancel = () => {
+    cancelled = true;
+  };
+
+  return { handle, cancel };
 }

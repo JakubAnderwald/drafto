@@ -84,7 +84,7 @@ From [`CLAUDE.md`](../../CLAUDE.md) — authoritative source:
 - **ISP** — small, focused prop types.
 - **DIP** — import abstractions from `src/lib/`, never instantiate Supabase (or other) clients directly in components.
 - Strict TypeScript: no `any`, no `@ts-ignore`.
-- Named exports only (except Next.js pages/layouts).
+- Named exports only (except Next.js pages/layouts and Expo Router route modules under `apps/mobile/app/`, which must default-export their screen).
 - Kebab-case file names.
 - `@/` import alias for `src/` imports.
 - Design system tokens only — see [ADR 0004](../adr/0004-design-system-css-variables.md) and [ADR 0014](../adr/0014-digital-atelier-design-system.md).

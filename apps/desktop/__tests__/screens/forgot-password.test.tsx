@@ -1,7 +1,7 @@
 import React from "react";
 
 import { render, fireEvent, waitFor } from "../helpers/test-utils";
-import { ForgotPasswordScreen } from "../../src/screens/forgot-password";
+import { ForgotPasswordScreen } from "@/screens/forgot-password";
 
 const mockResetPasswordForEmail = jest.fn();
 jest.mock("@/lib/supabase", () => ({

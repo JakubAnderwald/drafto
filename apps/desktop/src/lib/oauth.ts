@@ -1,7 +1,7 @@
 import { Linking } from "react-native";
 
-import { isRecoveryUrl } from "./auth-recovery";
-import { supabase } from "./supabase";
+import { isRecoveryUrl } from "@/lib/auth-recovery";
+import { supabase } from "@/lib/supabase";
 
 const REDIRECT_URL = "eu.drafto.desktop://auth/callback";
 
