@@ -2166,10 +2166,18 @@ intest_handoff() {
 # another attempt. The SHA is recorded on both success and non-session-limit
 # failure so a persistently failing review can't re-run every tick forever.
 #
-# The summary comment carries `<!-- drafto-factory-code-review -->`, which
-# owner_comments_since() excludes — without that marker the In Test feedback
-# sweep would read the factory's own review as operator feedback (the Mac mini's
-# gh identity is OWNER) and roll the card back to In Progress on every pass.
+# The summary comment carries `<!-- drafto-factory-code-review -->`. That marker
+# is what pr_has_marker() checks to confirm the review actually posted — the
+# model's own directive line is not trusted for that.
+#
+# It also keeps the comment inside the `<!-- drafto-factory` family that
+# owner_comments_since() filters out. That exclusion is NOT load-bearing today:
+# owner_comments_since is only ever fed fetch_issue_comments (ISSUE comments),
+# while this summary is posted with `gh pr comment` onto the PR — different
+# number, the two never meet. It matters only if the summary ever moves to the
+# issue, or that helper is ever pointed at PR comments; the Mac mini's gh
+# identity is OWNER, so either change without the marker would make the In Test
+# sweep read the factory's own review as operator feedback.
 #
 # $1 issue, $2 pr-num, $3 pr obj, $4 head sha, $5 changed files.
 review_stage() {
@@ -2177,12 +2185,21 @@ review_stage() {
   local issue_record comments_json plan_json pr_diff bundle claude_input
   local out_file start_iso exit_code=0
 
+  # Every DETERMINISTIC failure below records the SHA before returning. Skipping
+  # the record would leave lastReviewSha != headRefOid forever: the caller
+  # `continue`s after every review attempt, so the card would retry the same
+  # doomed review every five minutes, never reach In Test, never bump attempts
+  # and never reach Blocked — a silent stall visible only as a WARNING in the
+  # log. Recording degrades to "this commit goes unreviewed", which is the right
+  # trade for a commentary stage. Only a session limit (transient) skips it.
   if [[ ! -f "$REVIEW_PROMPT_FILE" ]]; then
     log "WARNING: review prompt missing ($REVIEW_PROMPT_FILE); skipping review for #$issue_num"
+    review_record_sha "$issue_num" "$head_sha"
     return 0
   fi
   if ! issue_record=$(fetch_issue_record "$issue_num"); then
     log "WARNING: fetch_issue_record failed for #$issue_num (review); skipping"
+    review_record_sha "$issue_num" "$head_sha"
     return 0
   fi
   comments_json=$(fetch_issue_comments "$issue_num" 2>>"$LOG_FILE" || echo "[]")
@@ -2199,6 +2216,7 @@ review_stage() {
   if ! bundle=$(build_review_bundle "$issue_record" "$plan_json" "$pr_obj" "$pr_diff" \
       "$diff_files" "$head_sha"); then
     log "ERROR: build_review_bundle failed for #$issue_num; skipping review"
+    review_record_sha "$issue_num" "$head_sha"
     return 0
   fi
 
@@ -3381,10 +3399,22 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
     # ten findings sailed through to In Test and the findings were force-resolved
     # unread at merge. A query failure yields "[]" and simply defers to the next
     # tick — --release fails closed on the same query, so nothing merges blind.
-    REVIEW_THREADS=$(fetch_review_threads "$PR_NUM" 2>>"$LOG_FILE" || echo "[]")
-    [[ -n "$REVIEW_THREADS" ]] || REVIEW_THREADS="[]"
-    THREAD_COUNT=$(echo "$REVIEW_THREADS" | jq 'length' 2>/dev/null || echo "0")
-    [[ "$THREAD_COUNT" =~ ^[0-9]+$ ]] || THREAD_COUNT=0
+    #
+    # Only consult threads once CI has SETTLED. CodeRabbit posts its findings
+    # within a minute of the PR opening, long before CI finishes; triggering on
+    # them while checks are still queued would push a fix commit on top of an
+    # in-flight run, invalidate it, and — since watch_bound_thread_loop spends an
+    # attempt whenever FAILING is 0 — burn the retry budget toward Blocked while
+    # CI never gets a stable head to finish against. Failing CI is handled first
+    # on its own; threads are a green-PR concern.
+    REVIEW_THREADS="[]"
+    THREAD_COUNT=0
+    if [[ "$FAILING" -eq 0 && "$PENDING" -eq 0 ]] && ci_required_green "$PR_VIEW"; then
+      REVIEW_THREADS=$(fetch_review_threads "$PR_NUM" 2>>"$LOG_FILE" || echo "[]")
+      [[ -n "$REVIEW_THREADS" ]] || REVIEW_THREADS="[]"
+      THREAD_COUNT=$(echo "$REVIEW_THREADS" | jq 'length' 2>/dev/null || echo "0")
+      [[ "$THREAD_COUNT" =~ ^[0-9]+$ ]] || THREAD_COUNT=0
+    fi
 
     if [[ "$FAILING" -gt 0 || "$THREAD_COUNT" -gt 0 ]]; then
       if [[ "$FAILING" -gt 0 ]]; then
@@ -3992,9 +4022,13 @@ base. I'll squash-merge automatically once it's green again.
     [[ "$OPEN_THREADS" =~ ^[0-9]+$ ]] || OPEN_THREADS=0
     if [[ "$OPEN_THREADS" -gt 0 ]]; then
       log "Issue #$ISSUE_NUM: $OPEN_THREADS unresolved review thread(s) on PR #$PR_NUM; refusing to merge"
+      # Marker-guarded like every other hard hold in this block. Without it, a
+      # transient failure of the transition below (which swallows its own error)
+      # leaves the card in Approved and re-posts this comment on every tick.
       THREAD_LIST=$(echo "$OPEN_THREADS_JSON" | jq -r '.[] | "- `" + (.path // "?") + ":" + ((.line // 0)|tostring) + "`"' 2>/dev/null || echo "")
-      gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
-        --body "🏭 **Not merging — $OPEN_THREADS unresolved review thread(s).**
+      if ! issue_has_marker "$ISSUE_NUM" "drafto-factory-threads-open"; then
+        gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+          --body "🏭 **Not merging — $OPEN_THREADS unresolved review thread(s).**
 
 $THREAD_LIST
 
@@ -4003,6 +4037,7 @@ card back to **In Review** so the fix loop can address each one; it will come ba
 to In Test for your approval once they are all answered.
 
 <!-- drafto-factory-threads-open -->" >>"$LOG_FILE" 2>&1 || true
+      fi
       # Hand the card back to --watch, which is the only mode that runs the fix
       # loop. Leaving it in Approved would strand it: --release can't answer a
       # review thread and --watch never looks at Approved cards. The operator's

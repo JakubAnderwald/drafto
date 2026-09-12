@@ -360,7 +360,7 @@ describe("review threads gate the merge (ADR-0035)", () => {
     // --watch is the only mode that runs the fix loop, and it only looks at In
     // Review cards. Leaving an open-threads card in Approved would strand it.
     const checkIdx = releaseBlock.indexOf('fetch_review_threads "$PR_NUM"');
-    const window = releaseBlock.slice(checkIdx, checkIdx + 1600);
+    const window = releaseBlock.slice(checkIdx, checkIdx + 2600);
     assert.match(window, /transition_status "\$ITEM_ID" "\$ISSUE_NUM" "In Review"/);
   });
 

@@ -38,8 +38,12 @@ A JSON object follows this prompt:
 - `approvedPlan.bodyEnveloped` — the plan a human approved. What was _meant_ to
   change. Scope drift against this is a finding.
 - `priorPr` — `{number, url, headRef, state}`.
-- `prDiffEnveloped` — the unified diff. May be truncated; expand with
-  `gh pr diff` when you need more.
+- `prDiffEnveloped` — the unified diff.
+- `prDiffTruncated` / `prDiffOmittedLines` — when `prDiffTruncated` is true the
+  diff above is **incomplete** and `prDiffOmittedLines` says by how much. You
+  MUST expand it with `gh pr diff` before concluding anything about the parts you
+  cannot see; reviewing a partial diff and reporting "no findings" is worse than
+  not reviewing at all.
 - `prFiles` — newline-separated changed paths.
 - `headSha` — the commit you are reviewing.
 
@@ -165,10 +169,11 @@ EOF
 )"
 ```
 
-The `<!-- drafto-factory-code-review -->` marker is **mandatory**. Bash uses it
-to confirm the review ran, and `owner_comments_since()` uses it to keep your
-comment from being misread as the operator asking for a revision — without it
-the card rolls back to In Progress on every pass.
+The `<!-- drafto-factory-code-review -->` marker is **mandatory**: bash checks
+for it to confirm the review actually posted, and does not trust your directive
+line for that. It also keeps the comment inside the `<!-- drafto-factory` family
+the In Test feedback sweep filters out, so a factory comment can never be read
+back as the operator requesting a revision.
 
 Post the summary even when you find nothing. "No findings" is a result the
 pipeline needs to see.

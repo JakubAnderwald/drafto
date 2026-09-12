@@ -669,6 +669,11 @@ export function buildFactoryReviewBundle({
   const planBody = typeof approvedPlan?.body === "string" ? approvedPlan.body : "";
   const planClean = planBody.split(FACTORY_PLAN_MARKER).join("").trim();
   const spec = parseSpec(issue.body ?? "");
+  // truncateDiff returns {text, truncated, omittedLines} — NOT a string. Passing
+  // the object straight to envelopeBody silently yields an empty envelope (it
+  // coerces any non-string to ""), which would hand the reviewer a zero-byte
+  // diff and make the whole gate decorative.
+  const diff = truncateDiff(prDiff);
   return {
     kind: "factory_review",
     issue: shapeIssue(issue),
@@ -693,7 +698,11 @@ export function buildFactoryReviewBundle({
     headSha: typeof headSha === "string" ? headSha : "",
     // Enveloped like every other untrusted input: a hunk may quote a directive
     // and must never be read as an instruction.
-    prDiffEnveloped: envelopeBody(truncateDiff(prDiff), "pr-diff"),
+    prDiffEnveloped: envelopeBody(diff.text, "pr-diff"),
+    // The reviewer needs to know when it is looking at a partial diff, or it
+    // will review the first 4000 lines and call the PR clean.
+    prDiffTruncated: diff.truncated,
+    prDiffOmittedLines: diff.omittedLines,
     prFiles: typeof prFiles === "string" ? prFiles : "",
     config: shapeConfig(config),
     repo: shapeRepo(repo),

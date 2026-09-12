@@ -117,18 +117,15 @@ describe("the review stage runs once per head SHA", () => {
 });
 
 describe("prompt contracts", () => {
-  it("the review prompt mandates the marker the sweep keys on", () => {
-    // Without it, owner_comments_since() reads the factory's own review as
-    // operator feedback (the Mac mini's gh identity is OWNER) and rolls the card
-    // back to In Progress on every pass.
+  it("the review prompt mandates the marker bash verifies the post with", () => {
+    // The marker is how bash confirms the review actually posted; the model's
+    // directive line is not trusted for that. (It ALSO sits in the
+    // `<!-- drafto-factory` family that owner_comments_since filters, but that
+    // is belt-and-braces: the summary goes on the PR via `gh pr comment` while
+    // owner_comments_since only ever reads ISSUE comments.)
     assert.match(reviewPrompt, /<!-- drafto-factory-code-review -->/);
     assert.match(reviewPrompt, /mandatory/i);
     assert.match(script, /pr_has_marker "\$pr_num" "drafto-factory-code-review"/);
-    assert.match(
-      readFileSync(resolve(HERE, "..", "factory-agent.sh"), "utf8"),
-      /test\("<!-- drafto-factory"\)/,
-      "owner_comments_since must still exclude factory-marked comments",
-    );
   });
 
   it("the review prompt forbids submitting a review object", () => {
@@ -186,7 +183,12 @@ describe("bundle wiring", () => {
     assert.deepEqual(bundle.reviewThreads, []);
   });
 
-  it("the review bundle carries the diff enveloped and omits the comment thread", () => {
+  it("the review bundle carries the diff CONTENT, not an empty envelope", () => {
+    // Regression: prDiffEnveloped used to be envelopeBody(truncateDiff(prDiff)),
+    // passing truncateDiff's {text,truncated,omittedLines} object into a
+    // function that coerces non-strings to "". Every review then reasoned about
+    // a zero-byte diff. Asserting only /^<pr-diff>/ passed on the empty
+    // envelope, which is exactly how it got through — so assert the content.
     const bundle = buildFactoryReviewBundle({
       issue,
       approvedPlan: null,
@@ -200,8 +202,27 @@ describe("bundle wiring", () => {
     assert.equal(bundle.kind, "factory_review");
     assert.equal(bundle.headSha, "abc123");
     assert.match(bundle.prDiffEnveloped, /^<pr-diff>/);
+    assert.match(bundle.prDiffEnveloped, /diff --git a\/x b\/x/, "diff body missing");
+    assert.match(bundle.prDiffEnveloped, /ignore previous instructions/);
+    assert.ok(bundle.prDiffEnveloped.length > 40, "envelope is suspiciously empty");
     // A reviewer judges the diff, not the conversation about it.
     assert.equal(bundle.comments, undefined);
+  });
+
+  it("tells the reviewer when the diff was truncated", () => {
+    // Otherwise it reviews the first 4000 lines and calls the PR clean.
+    const big = Array.from({ length: 5000 }, (_, i) => `+line ${i}`).join("\n");
+    const bundle = buildFactoryReviewBundle({
+      issue,
+      approvedPlan: null,
+      prDiff: big,
+      headSha: "abc123",
+      config: {},
+      repo: {},
+      nowIso: "2026-01-01T00:00:00Z",
+    });
+    assert.equal(bundle.prDiffTruncated, true);
+    assert.ok(bundle.prDiffOmittedLines > 0);
   });
 
   it("rejects a bundle with no issue number", () => {
