@@ -39,6 +39,7 @@ One brief per functional area. Each brief lists the current state, code paths on
 - [`operations/cloud-sessions.md`](./operations/cloud-sessions.md) — claude.ai/code and mobile sessions: what carries over, personal skills
 - [`operations/builds-and-releases.md`](./operations/builds-and-releases.md) — Fastlane for iOS / Android / macOS, versioning, release notes
 - [`operations/migrations.md`](./operations/migrations.md) — Supabase migration workflow, production safety rails
+- [`operations/claude-code-hooks.md`](./operations/claude-code-hooks.md) — the five committed `.claude/hooks`, how they locate themselves, what the `main` guards match
 
 ## ADRs
 

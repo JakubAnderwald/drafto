@@ -9,7 +9,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/sync-cloud-skills.sh\"",
+            "command": "H=\"$CLAUDE_PROJECT_DIR/.claude/hooks\"; [ -f \"$H/sync-cloud-skills.sh\" ] || H=\"$(git rev-parse --show-toplevel 2>/dev/null)/.claude/hooks\"; bash \"$H/sync-cloud-skills.sh\"",
             "timeout": 60
           }
         ]
@@ -21,15 +21,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/prevent-main-commit.sh\""
+            "command": "H=\"$CLAUDE_PROJECT_DIR/.claude/hooks\"; [ -f \"$H/prevent-main-commit.sh\" ] || H=\"$(git rev-parse --show-toplevel 2>/dev/null)/.claude/hooks\"; bash \"$H/prevent-main-commit.sh\""
           },
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/prevent-main-push.sh\""
+            "command": "H=\"$CLAUDE_PROJECT_DIR/.claude/hooks\"; [ -f \"$H/prevent-main-push.sh\" ] || H=\"$(git rev-parse --show-toplevel 2>/dev/null)/.claude/hooks\"; bash \"$H/prevent-main-push.sh\""
           },
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/migration-stats-pre.sh\""
+            "command": "H=\"$CLAUDE_PROJECT_DIR/.claude/hooks\"; [ -f \"$H/migration-stats-pre.sh\" ] || H=\"$(git rev-parse --show-toplevel 2>/dev/null)/.claude/hooks\"; bash \"$H/migration-stats-pre.sh\""
           }
         ]
       }
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/migration-stats-post.sh\""
+            "command": "H=\"$CLAUDE_PROJECT_DIR/.claude/hooks\"; [ -f \"$H/migration-stats-post.sh\" ] || H=\"$(git rev-parse --show-toplevel 2>/dev/null)/.claude/hooks\"; bash \"$H/migration-stats-post.sh\""
           }
         ]
       }
