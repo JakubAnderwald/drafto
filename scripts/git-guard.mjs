@@ -12,6 +12,9 @@
  * targets main while `git push origin feat/x` does not, and a heredoc that
  * documents a command is not that command. A regex gets each of those wrong in a
  * different way.
+ *
+ * It errs toward blocking. Where the command cannot be resolved well enough to
+ * answer "does this land on a protected branch", the answer is yes.
  */
 
 import { execFileSync } from "node:child_process";
@@ -20,10 +23,12 @@ import { fileURLToPath } from "node:url";
 
 const PROTECTED = new Set(["main", "master"]);
 
+/** A directory we could not resolve. Anything that depends on it is blocked. */
+const UNKNOWN_DIR = Symbol("unknown-dir");
+
 /** Shell metacharacters that end one simple command and begin the next. */
 const SEPARATORS = new Set([";", "&&", "||", "|", "&", "\n", "(", ")", "{", "}"]);
 
-/** git subcommands whose options take a value in the FOLLOWING token. */
 const GIT_GLOBAL_VALUE_OPTS = new Set([
   "-C",
   "-c",
@@ -34,16 +39,72 @@ const GIT_GLOBAL_VALUE_OPTS = new Set([
 ]);
 const PUSH_VALUE_OPTS = new Set(["-o", "--push-option", "--repo", "--receive-pack", "--exec"]);
 
+/** `git push` modes that push every branch, not just the named refspecs. */
+const BULK_PUSH_OPTS = new Set(["--all", "--mirror", "--branches"]);
+
+const SHELL_COMMANDS = new Set(["sh", "bash", "zsh", "dash", "ksh", "eval"]);
+
+const MAX_DEPTH = 5;
+
+/**
+ * A command word identifies a program by its basename, and quoting does not stop
+ * it running: `/usr/bin/git`, `"git"` and `\git` all execute git.
+ */
+function commandName(token) {
+  if (!token) return "";
+  const text = token.text;
+  const slash = text.lastIndexOf("/");
+  return slash === -1 ? text : text.slice(slash + 1);
+}
+
+/**
+ * Pull the command substitutions out of a string that the shell would expand.
+ *
+ * Applies to double-quoted strings and to unquoted heredoc bodies — bash expands
+ * `$(...)` and backticks in both, so `cat <<EOF` … `$(git push origin main)` … `EOF`
+ * runs the push while the surrounding command is only `cat`.
+ */
+export function extractSubstitutions(text) {
+  const found = [];
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === "\\") {
+      i += 1;
+      continue;
+    }
+    if (text[i] === "`") {
+      const end = text.indexOf("`", i + 1);
+      if (end === -1) break;
+      found.push(text.slice(i + 1, end));
+      i = end;
+      continue;
+    }
+    // $( … ) but not $(( … )), which is arithmetic and runs nothing.
+    if (text[i] === "$" && text[i + 1] === "(" && text[i + 2] !== "(") {
+      let depth = 1;
+      let j = i + 2;
+      while (j < text.length && depth > 0) {
+        if (text[j] === "(") depth += 1;
+        else if (text[j] === ")") depth -= 1;
+        j += 1;
+      }
+      found.push(text.slice(i + 2, j - 1));
+      i = j - 1;
+    }
+  }
+  return found;
+}
+
 /**
  * Split a command string into simple commands, honouring quoting and dropping
  * heredoc bodies.
  *
- * Returns an array of segments; each segment is an array of
- * `{ text, quoted }` tokens. `quoted` marks a token that came from inside
- * quotes, so it can never be read as an operator or a command name.
+ * Each segment is an array of `{ text, quoted }` tokens. Commands hidden inside
+ * expandable strings and heredocs are parsed too and appended as further
+ * segments, because the shell will run them.
  */
-export function parseSegments(command) {
+export function parseSegments(command, depth = 0) {
   const segments = [];
+  const expandable = [];
   let segment = [];
   let token = null;
   const pendingHeredocs = [];
@@ -71,18 +132,27 @@ export function parseSegments(command) {
   while (i < command.length) {
     const ch = command[i];
 
-    // --- heredoc bodies: skip from the newline to the terminator line ---
     if (ch === "\n" && pendingHeredocs.length) {
       endSegment();
       i += 1;
       while (pendingHeredocs.length) {
-        const { delimiter, stripTabs } = pendingHeredocs.shift();
+        const { delimiter, stripTabs, expands } = pendingHeredocs.shift();
+        const bodyStart = i;
         for (;;) {
           const nl = command.indexOf("\n", i);
           const line = command.slice(i, nl === -1 ? command.length : nl);
           const candidate = stripTabs ? line.replace(/^\t+/, "") : line;
-          i = nl === -1 ? command.length : nl + 1;
-          if (candidate === delimiter || nl === -1) break;
+          if (candidate === delimiter) {
+            if (expands) expandable.push(command.slice(bodyStart, i));
+            i = nl === -1 ? command.length : nl + 1;
+            break;
+          }
+          if (nl === -1) {
+            if (expands) expandable.push(command.slice(bodyStart));
+            i = command.length;
+            break;
+          }
+          i = nl + 1;
         }
       }
       continue;
@@ -110,6 +180,7 @@ export function parseSegments(command) {
 
     if (ch === '"') {
       i += 1;
+      const start = i;
       if (token === null) token = { text: "", quoted: true };
       token.quoted = true;
       while (i < command.length && command[i] !== '"') {
@@ -121,11 +192,39 @@ export function parseSegments(command) {
           i += 1;
         }
       }
+      // The shell expands what is inside double quotes.
+      expandable.push(command.slice(start, i));
       i += 1;
       continue;
     }
 
-    // --- heredoc introducer: << or <<-, but never the <<< herestring ---
+    // Unquoted command substitutions. `$( … )` happens to split on the paren
+    // separator anyway, but backticks do not, so handle both explicitly rather
+    // than relying on that accident.
+    if (ch === "`") {
+      const end = command.indexOf("`", i + 1);
+      if (end !== -1) {
+        expandable.push(command.slice(i, end + 1));
+        endToken();
+        i = end + 1;
+        continue;
+      }
+    }
+    if (ch === "$" && command[i + 1] === "(" && command[i + 2] !== "(") {
+      let depth = 1;
+      let j = i + 2;
+      while (j < command.length && depth > 0) {
+        if (command[j] === "(") depth += 1;
+        else if (command[j] === ")") depth -= 1;
+        j += 1;
+      }
+      expandable.push(command.slice(i, j));
+      endToken();
+      i = j;
+      continue;
+    }
+
+    // Heredoc introducer: << or <<-, but never the <<< herestring.
     if (ch === "<" && command[i + 1] === "<" && command[i + 2] !== "<") {
       let j = i + 2;
       let stripTabs = false;
@@ -135,20 +234,26 @@ export function parseSegments(command) {
       }
       while (j < command.length && /\s/.test(command[j]) && command[j] !== "\n") j += 1;
       let delimiter = "";
+      // Any quoting of the delimiter turns expansion off for the whole body.
+      let expands = true;
       if (command[j] === "'" || command[j] === '"') {
         const q = command[j];
         const end = command.indexOf(q, j + 1);
         delimiter = command.slice(j + 1, end === -1 ? command.length : end);
+        expands = false;
         j = end === -1 ? command.length : end + 1;
       } else {
         while (j < command.length && /[^\s;&|<>()]/.test(command[j])) {
-          if (command[j] === "\\") j += 1;
+          if (command[j] === "\\") {
+            expands = false;
+            j += 1;
+          }
           delimiter += command[j];
           j += 1;
         }
       }
       if (delimiter) {
-        pendingHeredocs.push({ delimiter, stripTabs });
+        pendingHeredocs.push({ delimiter, stripTabs, expands });
         endToken();
         i = j;
         continue;
@@ -195,6 +300,15 @@ export function parseSegments(command) {
   }
 
   endSegment();
+
+  if (depth < MAX_DEPTH) {
+    for (const text of expandable) {
+      for (const inner of extractSubstitutions(text)) {
+        segments.push(...parseSegments(inner, depth + 1));
+      }
+    }
+  }
+
   return segments;
 }
 
@@ -203,12 +317,13 @@ function stripCommandPrefix(tokens) {
   let i = 0;
   for (;;) {
     const t = tokens[i];
-    if (!t || t.quoted) break;
+    if (!t) break;
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t.text)) {
       i += 1;
       continue;
     }
-    if (t.text === "env" || t.text === "command" || t.text === "nohup") {
+    const name = commandName(t);
+    if (name === "env" || name === "command" || name === "nohup") {
       i += 1;
       continue;
     }
@@ -218,12 +333,12 @@ function stripCommandPrefix(tokens) {
 }
 
 /**
- * If a segment is `git ...`, return its subcommand, its arguments, and any
+ * If a segment invokes git, return its subcommand, its arguments, and any
  * directory the `-C` global option redirects it to.
  */
 function asGitInvocation(tokens) {
   const rest = stripCommandPrefix(tokens);
-  if (!rest.length || rest[0].text !== "git" || rest[0].quoted) return null;
+  if (!rest.length || commandName(rest[0]) !== "git") return null;
 
   let i = 1;
   let dir = null;
@@ -255,20 +370,24 @@ function refspecDestination(refspec) {
   const colon = spec.indexOf(":");
   let dst = colon === -1 ? spec : spec.slice(colon + 1);
   if (!dst) return null;
-  dst = dst.replace(/^refs\/heads\//, "");
-  return dst;
+  return dst.replace(/^refs\/heads\//, "");
 }
 
-/** Split `git push` arguments into its option flags and positional arguments. */
+/** Split `git push` arguments into its flags and positional arguments. */
 function parsePushArgs(args) {
   const positionals = [];
   let deleting = false;
+  let bulk = false;
   for (let i = 0; i < args.length; i += 1) {
     const t = args[i].text;
-    if (t.startsWith("-") && !args[i].quoted) {
+    if (t.startsWith("-")) {
       const name = t.includes("=") ? t.slice(0, t.indexOf("=")) : t;
       if (name === "--delete" || name === "-d") {
         deleting = true;
+        continue;
+      }
+      if (BULK_PUSH_OPTS.has(name)) {
+        bulk = true;
         continue;
       }
       if (PUSH_VALUE_OPTS.has(name) && !t.includes("=")) i += 1;
@@ -276,7 +395,23 @@ function parsePushArgs(args) {
     }
     positionals.push(t);
   }
-  return { remote: positionals[0] ?? null, refspecs: positionals.slice(1), deleting };
+  return { remote: positionals[0] ?? null, refspecs: positionals.slice(1), deleting, bulk };
+}
+
+/**
+ * Resolve the directory a `cd` moves to.
+ *
+ * Returns UNKNOWN_DIR for anything we cannot follow: `cd -`, a target carrying an
+ * unexpanded variable or substitution, a missing operand, or extra operands.
+ * Guessing would resolve to no branch at all and let the command through.
+ */
+function resolveCd(tokens, dir) {
+  const operands = tokens.slice(1).filter((t) => !/^-[LPe@]+$/.test(t.text));
+  if (operands.length !== 1) return UNKNOWN_DIR;
+  const target = operands[0].text.replace(/^~(?=$|\/)/, process.env.HOME ?? "~");
+  if (target === "-" || /[$`]/.test(target)) return UNKNOWN_DIR;
+  if (dir === UNKNOWN_DIR) return target.startsWith("/") ? target : UNKNOWN_DIR;
+  return target.startsWith("/") ? target : `${dir}/${target}`;
 }
 
 function currentBranch(dir) {
@@ -291,39 +426,50 @@ function currentBranch(dir) {
   }
 }
 
+function localBranches(dir) {
+  try {
+    return execFileSync("git", ["branch", "--format=%(refname:short)"], {
+      cwd: dir,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .split("\n")
+      .map((b) => b.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 /**
- * Judge a command.
- *
- * `resolveBranch(dir)` is injectable so tests do not need real repositories.
- * Returns `{ blocked, reason }`.
+ * Judge a command. `resolveBranch` / `listBranches` are injectable so tests do
+ * not need real repositories. Returns `{ blocked, reason }`.
  */
 export function analyze(
   command,
-  { cwd = process.cwd(), resolveBranch = currentBranch, action } = {},
+  { cwd = process.cwd(), resolveBranch = currentBranch, listBranches = localBranches, action } = {},
 ) {
   const segments = parseSegments(command);
   let dir = cwd;
 
+  const where = (d) => (d === UNKNOWN_DIR ? "an unresolved directory" : d);
+  const branchOf = (d) => (d === UNKNOWN_DIR ? UNKNOWN_DIR : resolveBranch(d));
+
   for (const tokens of segments) {
     const plain = stripCommandPrefix(tokens);
 
-    // Follow `cd` so a command is judged where it actually runs.
-    if (plain[0] && !plain[0].quoted && plain[0].text === "cd" && plain[1]) {
-      const target = plain[1].text.replace(/^~(?=$|\/)/, process.env.HOME ?? "~");
-      // An unexpanded variable or substitution is not a path we can follow.
-      // Keep judging the directory we already know rather than walking into a
-      // made-up one, which would resolve to no branch at all and fail open.
-      if (!/[$`]/.test(target)) {
-        dir = target.startsWith("/") ? target : `${dir}/${target}`;
-      }
+    if (plain.length && commandName(plain[0]) === "cd") {
+      dir = resolveCd(plain, dir);
       continue;
     }
 
-    // `sh -c "…"` / `eval "…"` hide a command inside a string argument.
-    if (plain[0] && !plain[0].quoted && ["sh", "bash", "zsh", "eval"].includes(plain[0].text)) {
+    // `sh -c "…"` / `eval "…"` hide a command inside a string argument. The
+    // string itself is already parsed as an expandable, but an unquoted one is
+    // not, so analyse the argument directly too.
+    if (plain.length && SHELL_COMMANDS.has(commandName(plain[0]))) {
       for (const arg of plain.slice(1)) {
-        if (!arg.quoted && arg.text.startsWith("-")) continue;
-        const inner = analyze(arg.text, { cwd: dir, resolveBranch, action });
+        if (arg.text.startsWith("-")) continue;
+        const inner = analyze(arg.text, { cwd: dir, resolveBranch, listBranches, action });
         if (inner.blocked) return inner;
       }
       continue;
@@ -332,21 +478,53 @@ export function analyze(
     const git = asGitInvocation(tokens);
     if (!git) continue;
 
-    const target = git.dir ? (git.dir.startsWith("/") ? git.dir : `${dir}/${git.dir}`) : dir;
+    let target = dir;
+    if (git.dir) {
+      if (/[$`]/.test(git.dir)) target = UNKNOWN_DIR;
+      else if (git.dir.startsWith("/")) target = git.dir;
+      else target = dir === UNKNOWN_DIR ? UNKNOWN_DIR : `${dir}/${git.dir}`;
+    }
 
     if (action === "commit" && git.subcommand === "commit") {
-      const branch = resolveBranch(target);
+      const branch = branchOf(target);
+      if (branch === UNKNOWN_DIR) {
+        return {
+          blocked: true,
+          reason: `committing in ${where(target)}, so the branch cannot be checked`,
+        };
+      }
       if (PROTECTED.has(branch)) {
         return { blocked: true, reason: `committing on ${branch} in ${target}` };
       }
     }
 
     if (action === "push" && git.subcommand === "push") {
-      const { refspecs, deleting } = parsePushArgs(git.args);
+      const { refspecs, deleting, bulk } = parsePushArgs(git.args);
+
+      // --all / --mirror push every local branch, whichever one you are on.
+      if (bulk) {
+        if (target === UNKNOWN_DIR) {
+          return { blocked: true, reason: `pushing all branches from ${where(target)}` };
+        }
+        const protectedLocal = listBranches(target).filter((b) => PROTECTED.has(b));
+        if (protectedLocal.length) {
+          return {
+            blocked: true,
+            reason: `pushing all branches from ${target}, which includes ${protectedLocal.join(", ")}`,
+          };
+        }
+        continue;
+      }
 
       // With no refspec, git pushes the branch you are standing on.
       if (!refspecs.length) {
-        const branch = resolveBranch(target);
+        const branch = branchOf(target);
+        if (branch === UNKNOWN_DIR) {
+          return {
+            blocked: true,
+            reason: `pushing from ${where(target)}, so the branch cannot be checked`,
+          };
+        }
         if (PROTECTED.has(branch)) {
           return { blocked: true, reason: `pushing ${branch} from ${target}` };
         }
@@ -355,13 +533,19 @@ export function analyze(
 
       for (const spec of refspecs) {
         let dst = refspecDestination(spec);
-        if (dst === "HEAD" || (deleting && !spec.includes(":"))) {
-          // `--delete main` names the branch directly; HEAD means the current one.
-          dst = dst === "HEAD" ? resolveBranch(target) : dst;
+        if (dst === "HEAD") {
+          const branch = branchOf(target);
+          if (branch === UNKNOWN_DIR) {
+            return {
+              blocked: true,
+              reason: `pushing HEAD from ${where(target)}, so the branch cannot be checked`,
+            };
+          }
+          dst = branch;
         }
         if (dst && PROTECTED.has(dst)) {
           const verb = deleting ? "deleting remote" : "pushing to";
-          return { blocked: true, reason: `${verb} ${dst} from ${target}` };
+          return { blocked: true, reason: `${verb} ${dst} from ${where(target)}` };
         }
       }
     }
@@ -376,7 +560,7 @@ export function analyze(
 // /var/... while import.meta.url resolves to /private/var/..., and any symlinked
 // checkout does the same — a string compare then quietly decides this is not the
 // main module, the CLI never runs, and the hook exits 0. That is the exact
-// silent fail-open this whole change exists to remove.
+// silent fail-open this guard exists to remove.
 const invokedDirectly = (() => {
   if (!process.argv[1]) return false;
   try {
@@ -402,10 +586,17 @@ if (invokedDirectly) {
   }
   if (!command) process.exit(0);
 
-  const { blocked, reason } = analyze(command, { action });
-  if (!blocked) process.exit(0);
+  let result;
+  try {
+    result = analyze(command, { action });
+  } catch (err) {
+    // A guard that crashes must not wave the command through.
+    console.error(`Blocked: the ${action} guard failed to evaluate this command (${err.message}).`);
+    process.exit(2);
+  }
+  if (!result.blocked) process.exit(0);
   console.error(
-    `Blocked: ${reason}. CLAUDE.md requires the worktree/branch workflow. ` +
+    `Blocked: ${result.reason}. CLAUDE.md requires the worktree/branch workflow. ` +
       `Create a branch with 'git checkout -b fix/description', or ask the user to authorise this directly.`,
   );
   process.exit(2);

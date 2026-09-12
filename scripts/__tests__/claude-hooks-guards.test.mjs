@@ -1,7 +1,15 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, mkdirSync, cpSync, readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  mkdirSync,
+  cpSync,
+  readFileSync,
+  renameSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,14 +19,25 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const HOOKS = join(REPO_ROOT, ".claude", "hooks");
 const SETTINGS = join(REPO_ROOT, ".claude", "settings.json");
 
-// Hermetic branch resolution: any path containing "/feature" is on a branch,
-// everything else is on main. Keeps the bulk of the suite off the filesystem.
-const resolveBranch = (dir) => (String(dir).includes("/feature") ? "feat/x" : "main");
 const ON_MAIN = "/repo-on-main";
 const ON_BRANCH = "/feature-repo";
+const ON_BRANCH_SOLO = "/feature-only-repo";
+
+// Hermetic branch resolution. A path that is not one of these is not a repo, so
+// it has no branch — the same "" a real `git branch --show-current` returns.
+// Do NOT collapse this into "anything unknown is main": that is what hid two of
+// the fail-open cases below when they were first checked.
+const BRANCHES = { [ON_MAIN]: "main", [ON_BRANCH]: "feat/x", [ON_BRANCH_SOLO]: "feat/x" };
+const LOCAL = {
+  [ON_MAIN]: ["main", "feat/x"],
+  [ON_BRANCH]: ["main", "feat/x"],
+  [ON_BRANCH_SOLO]: ["feat/x"],
+};
+const resolveBranch = (dir) => BRANCHES[dir] ?? "";
+const listBranches = (dir) => LOCAL[dir] ?? [];
 
 const verdict = (action, command, cwd = ON_MAIN) =>
-  analyze(command, { cwd, resolveBranch, action }).blocked;
+  analyze(command, { cwd, resolveBranch, listBranches, action }).blocked;
 
 /** Declare a table of [shouldBlock, command, cwd?] cases. */
 function table(action, cases) {
@@ -58,11 +77,9 @@ describe("git-guard: a command is judged where it actually runs", () => {
     [true, `git status && cd ${ON_MAIN} && git commit -m x`, ON_BRANCH],
     [true, `git -C ${ON_MAIN} commit -m x`, ON_BRANCH],
     [false, `cd ${ON_BRANCH} && git commit -m x`, ON_MAIN],
-    // A path we cannot expand is not a path we can follow. Keep judging the
-    // directory we already know rather than walking into a made-up one, which
-    // resolves to no branch at all and would fail open.
+    // A path we cannot expand is not a path we can follow, and "no branch found"
+    // must not read as "not protected" — see the unresolvable-directory suite.
     [true, "cd $TARGET && git commit -m x", ON_MAIN],
-    [false, "cd $TARGET && git commit -m x", ON_BRANCH],
     [true, 'cd "$(mktemp -d)" && git commit -m x', ON_MAIN],
     [false, `git -C ${ON_BRANCH} commit -m x`, ON_MAIN],
   ]);
@@ -132,6 +149,69 @@ describe("git-guard: quoting and heredocs are not commands", () => {
   ]);
 });
 
+// Every case below is a bypass or fail-open that CodeRabbit found on PR #628
+// after it had already been merged. Each one is named so it cannot come back.
+describe("git-guard: a command word is a program, however it is spelled", () => {
+  table("push", [
+    [true, "/usr/bin/git push origin main"],
+    [true, '"git" push origin main'],
+    [true, "\\git push origin main"],
+    [true, '"/bin/sh" -c "git push origin main"'],
+    [true, "/usr/local/bin/git push"],
+  ]);
+  table("commit", [
+    [true, "/usr/bin/git commit -m x"],
+    [true, '"git" commit -m x'],
+    [false, "/usr/bin/git status"],
+  ]);
+});
+
+// --all and --mirror push every local branch, whichever one you are standing on,
+// so the current-branch fallback never saw them.
+describe("git-guard: bulk push modes", () => {
+  table("push", [
+    [true, "git push --all origin", ON_BRANCH],
+    [true, "git push --mirror origin", ON_BRANCH],
+    [true, "git push --branches origin", ON_BRANCH],
+    // nothing protected exists locally, so there is nothing to protect
+    [false, "git push --all origin", ON_BRANCH_SOLO],
+  ]);
+});
+
+// bash expands $( ) and backticks inside double quotes and inside an UNQUOTED
+// heredoc, so the guard saw only `cat` while the push ran.
+describe("git-guard: substitutions the shell would expand", () => {
+  table("push", [
+    [true, "cat <<EOF\n$(git push origin main)\nEOF"],
+    [true, "cat <<EOF\n`git push origin main`\nEOF"],
+    [true, 'echo "$(git push origin main)"'],
+    [true, "echo `git push origin main`"],
+    [true, "echo $(git push origin main)"],
+    // quoting the delimiter turns expansion off for the whole body
+    [false, "cat <<'EOF'\n$(git push origin main)\nEOF"],
+    [false, 'cat <<"EOF"\n$(git push origin main)\nEOF'],
+    [false, "echo 'git push origin main'"],
+  ]);
+});
+
+// An unresolvable directory used to resolve to no branch at all, which read as
+// "not protected" and let the command through.
+describe("git-guard: an unresolvable directory blocks what depends on it", () => {
+  table("commit", [
+    [true, "cd - && git commit -m x", ON_BRANCH],
+    [true, "cd $TARGET && git commit -m x", ON_BRANCH],
+    [true, 'cd "$(mktemp -d)" && git commit -m x', ON_BRANCH],
+    [true, "cd /a /b && git commit -m x", ON_BRANCH],
+    [true, "git -C $TARGET commit -m x", ON_BRANCH],
+  ]);
+  table("push", [
+    [true, "cd $TARGET && git push", ON_BRANCH],
+    // ...but a destination that is knowable without the directory still decides it
+    [false, "cd $TARGET && git push origin feat/x", ON_BRANCH],
+    [true, "cd $TARGET && git push origin main", ON_BRANCH],
+  ]);
+});
+
 describe("git-guard: parseSegments", () => {
   test("splits on unquoted separators only", () => {
     const segs = parseSegments('echo "a; b" && git push');
@@ -154,6 +234,7 @@ describe("git-guard: parseSegments", () => {
 });
 
 describe("hook path resolution", () => {
+  const GUARDS = ["prevent-main-commit.sh", "prevent-main-push.sh"];
   const commands = () => {
     const cfg = JSON.parse(readFileSync(SETTINGS, "utf8"));
     return Object.entries(cfg.hooks).flatMap(([event, groups]) =>
@@ -175,9 +256,41 @@ describe("hook path resolution", () => {
         `${event}: probes something other than ${script}`,
       );
       assert.ok(
-        command.includes('H="$(git rev-parse --show-toplevel 2>/dev/null)/.claude/hooks"'),
+        command.includes("git rev-parse --show-toplevel"),
         `${event}: has no git-toplevel fallback`,
       );
+    }
+  });
+
+  // Hooks run from the cwd, so an unconstrained fallback can pick an unrelated
+  // repository and execute ITS hook with the user's privileges (CWE-426).
+  test("the fallback is constrained to the project tree, with both paths canonicalised", () => {
+    for (const { event, command } of commands()) {
+      assert.ok(
+        command.includes('case "$T/" in "${P%/}"/*)'),
+        `${event}: fallback is not constrained`,
+      );
+      assert.ok(command.includes("pwd -P"), `${event}: does not canonicalise before comparing`);
+    }
+  });
+
+  // A guard that cannot be located must block. Claude Code treats only exit 2 as
+  // blocking, so exiting 127 for a missing script runs the command unguarded.
+  test("a guard that cannot be located exits 2; an observability hook does not", () => {
+    for (const { command } of commands()) {
+      const script = command.match(/bash "\$H\/([\w.-]+\.sh)"$/)[1];
+      if (GUARDS.includes(script)) {
+        assert.match(
+          command,
+          /refusing to run unguarded[^;]*; exit 2; \}/,
+          `${script} should fail closed`,
+        );
+      } else {
+        assert.ok(
+          command.includes("|| exit 0;"),
+          `${script} should fail open, not take the tool call down`,
+        );
+      }
     }
   });
 });
@@ -302,6 +415,92 @@ describe("hooks end to end", () => {
       env,
     });
     assert.equal(res.status, 2);
+  });
+
+  // Claude Code treats ONLY exit 2 as blocking. A missing dependency exits 127
+  // or 1, which reads as "allow" — so every one of these used to run the git
+  // command with no guard at all.
+  test("a missing node blocks instead of waving the command through", () => {
+    const bin = mkdtempSync(join(tmpdir(), "nonode-"));
+    // Everything the wrapper needs EXCEPT node, so `command -v node` is the only
+    // thing that fails. bash is invoked by absolute path because it would not be
+    // on this PATH either.
+    const bash =
+      spawnSync("sh", ["-c", "command -v bash"], { encoding: "utf8" }).stdout.trim() || "/bin/bash";
+    for (const tool of ["cat", "dirname", "pwd", "printf", "git"]) {
+      const real = spawnSync("sh", ["-c", `command -v ${tool}`], {
+        encoding: "utf8",
+      }).stdout.trim();
+      if (real) symlinkSync(real, join(bin, tool));
+    }
+    try {
+      const res = spawnSync(bash, [join(HOOKS, "prevent-main-commit.sh")], {
+        cwd: repos.onMain,
+        input: JSON.stringify({ tool_input: { command: "git commit -m x" } }),
+        encoding: "utf8",
+        env: { ...process.env, PATH: bin },
+      });
+      assert.equal(res.status, 2, `expected a block, got ${res.status}: ${res.stderr}`);
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
+  test("a missing git-guard.mjs blocks instead of waving the command through", () => {
+    const moved = join(repos.onMain, "scripts", "git-guard.mjs");
+    const stash = `${moved}.bak`;
+    renameSync(moved, stash);
+    try {
+      const res = spawnSync("bash", [join(HOOKS, "prevent-main-commit.sh")], {
+        cwd: repos.onMain,
+        input: JSON.stringify({ tool_input: { command: "git commit -m x" } }),
+        encoding: "utf8",
+      });
+      assert.equal(res.status, 2, `expected a block, got ${res.status}: ${res.stderr}`);
+    } finally {
+      renameSync(stash, moved);
+    }
+  });
+
+  test("a guard that cannot be located anywhere blocks", () => {
+    const bogus = mkdtempSync(join(tmpdir(), "no-project-"));
+    try {
+      assert.equal(
+        runSettingsCommand("prevent-main-commit.sh", bogus, "git commit -m x", {
+          CLAUDE_PROJECT_DIR: bogus,
+        }),
+        2,
+      );
+    } finally {
+      rmSync(bogus, { recursive: true, force: true });
+    }
+  });
+
+  // Hooks run from the cwd, so an unconstrained `git rev-parse --show-toplevel`
+  // would execute an unrelated repository's hook with the user's privileges.
+  test("the fallback refuses a repo outside CLAUDE_PROJECT_DIR rather than running its hook", () => {
+    const outside = mkdtempSync(join(tmpdir(), "outside-"));
+    try {
+      // cwd IS a repo with hooks, but it is not inside the declared project tree
+      assert.equal(
+        runSettingsCommand("prevent-main-commit.sh", repos.onMain, "git commit -m x", {
+          CLAUDE_PROJECT_DIR: outside,
+        }),
+        2,
+      );
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  // ...while the parent-of-the-repo case, which is the original bug, must still work.
+  test("the fallback accepts a repo inside CLAUDE_PROJECT_DIR even across a symlinked tmp path", () => {
+    assert.equal(
+      runSettingsCommand("prevent-main-commit.sh", repos.onMain, "git commit -m x", {
+        CLAUDE_PROJECT_DIR: tmp,
+      }),
+      2,
+    );
   });
 
   test("a payload with no command is not blocked", () => {
