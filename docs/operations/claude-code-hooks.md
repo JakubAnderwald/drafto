@@ -27,7 +27,10 @@ Two details that matter:
 - **It probes the script, not the directory.** `~/.claude/hooks/` exists on a normal dev machine, so a `[ -d "$H" ]` test is satisfied by a session launched from `$HOME` while still resolving to a tree containing none of these scripts.
 - **The fallback is the git toplevel**, which is correct inside a worktree too, since `.claude/hooks/` is tracked.
 
-If both fail, the hook errors and the tool call proceeds — a non-blocking failure, visible in the transcript but not enforced. That visibility is the only signal, which is why the regression test below exists.
+Two more rules, because Claude Code treats **only exit 2** as blocking — a hook that exits 127 or 1 reads as "allow":
+
+- **A guard that cannot run blocks.** If the script cannot be located, or `node` is missing, or `scripts/git-guard.mjs` is gone, the guards exit 2 and say so. Abstaining would run the git command unguarded, which is the failure this document exists to describe. The observability hooks do the opposite and exit 0 — they must never take a tool call down with them.
+- **The fallback is constrained to the project tree.** Hooks run from the current working directory, so an unconstrained `git rev-parse --show-toplevel` could land in an unrelated repository and execute _its_ hook with your privileges. The fallback root is accepted only if it is inside `$CLAUDE_PROJECT_DIR`, with both paths canonicalised first (`pwd -P`) — git reports `/private/var/...` where the environment may say `/var/...`, and a raw prefix compare rejects a root that really is inside the project.
 
 Scripts that need the repo root resolve it from their own location (`$0`), not from the environment — `migration-stats-*.sh` and both guards do this. The one exception is `sync-cloud-skills.sh`, which uses `${CLAUDE_PROJECT_DIR:-$(pwd)}`; it runs only on cloud session VMs (`CLAUDE_CODE_REMOTE=true`) and exits immediately everywhere else.
 
@@ -43,6 +46,11 @@ Judging a shell command with a regex gets the interesting cases wrong in a diffe
 - **Where it runs.** A `cd`, or `git -C <dir>`, moves the judgement to that directory. Judging the session's branch instead would be both wrong and unpredictable.
 - **Heredocs are not commands.** Writing a doc that quotes `git push origin main` is documentation. Bodies of `<<EOF`, `<<'EOF'`, `<<"EOF"` and `<<-EOF` are dropped; `<<<` is a herestring and is not.
 
+- **Expansion.** Bash expands `$( … )` and backticks inside double quotes and inside an _unquoted_ heredoc, so `cat <<EOF` / `$(git push origin main)` / `EOF` runs the push while the surrounding command is only `cat`. Those substitutions are parsed and judged too. Quoting the delimiter (`<<'EOF'`, `<<"EOF"`, `<<\EOF`) turns expansion off, and then the body really is inert.
+- **Spelling.** A command word names a program by its basename, and quoting does not stop it running: `/usr/bin/git`, `"git"` and `\git` are all git.
+- **Bulk modes.** `--all`, `--mirror` and `--branches` push every local branch whichever one you are standing on, so they are judged against the branch list, not the current branch.
+- **The unknown.** `cd -`, a `cd` target carrying an unexpanded variable, and extra operands all leave the directory unresolved. Anything whose answer depends on that directory is blocked; anything decidable without it (`git push origin feat/x`) still decides normally.
+
 Also handled: leading `VAR=value` assignments, an `env`/`command` prefix, `git -c k=v`, and a command hidden inside `sh -c "…"` / `bash -c "…"` / `eval`.
 
 ## Verifying
@@ -51,6 +59,12 @@ Also handled: leading `VAR=value` assignments, an `env`/`command` prefix, `git -
 cd scripts && node --test __tests__/claude-hooks-guards.test.mjs
 ```
 
-The suite pins the resolver chain in `settings.json`, the full block/allow matrix, every regression named above, and the launched-from-the-wrong-directory failure. It exercises `analyze()` directly with an injected branch resolver for speed, plus a handful of end-to-end runs through the real hook scripts against temporary repositories.
+The suite pins the resolver chain in `settings.json`, the full block/allow matrix, every regression named here, and the launched-from-the-wrong-directory failure. It exercises `analyze()` directly with injected branch resolution for speed, plus end-to-end runs through the real hook scripts against temporary repositories.
 
-To check the hooks are alive in a running session, run any Bash command and look for hook errors. Silence means they ran.
+**Silence does not prove a hook ran.** A hook that succeeds is silent and a hook that was never found used to be silent too — that is precisely how the failure above went unnoticed for a whole session. To check enforcement, provoke a block:
+
+```bash
+printf '%s' 'git commit -m x' | jq -Rs '{tool_input:{command:.}}' \
+  | bash .claude/hooks/prevent-main-commit.sh; echo "exit=$?"
+# On main: exit=2 with a "Blocked:" message. Anything else means it is not enforcing.
+```

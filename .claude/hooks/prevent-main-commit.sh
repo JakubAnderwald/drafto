@@ -17,4 +17,18 @@ case "$INPUT" in
 esac
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-printf '%s' "$INPUT" | node "$REPO_ROOT/scripts/git-guard.mjs" commit
+GUARD="$REPO_ROOT/scripts/git-guard.mjs"
+
+# Fail closed. Claude Code treats ONLY exit 2 as blocking: a missing node exits
+# 127 and a missing module exits 1, both of which would wave the command through
+# with no guard at all. A guard that cannot run must block, not abstain.
+if ! command -v node >/dev/null 2>&1; then
+  echo "Blocked: node not found, so the commit guard cannot run." >&2
+  exit 2
+fi
+if [ ! -f "$GUARD" ]; then
+  echo "Blocked: $GUARD is missing, so the commit guard cannot run." >&2
+  exit 2
+fi
+
+printf '%s' "$INPUT" | node "$GUARD" commit
