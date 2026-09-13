@@ -97,10 +97,12 @@ jobs:
           E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
           # Optional admin E2E: the chromium-admin project is only registered when all
           # three are set. /admin builds a service-role client on every render, so the
-          # web server needs the dev project's service-role key.
-          E2E_ADMIN_EMAIL: ${{ secrets.E2E_ADMIN_EMAIL }}
-          E2E_ADMIN_PASSWORD: ${{ secrets.E2E_ADMIN_PASSWORD }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # web server needs the dev project's service-role key. They're only passed on
+          # main (a push, or a manual run from main) — never to pull_request runs, which
+          # execute unmerged code, because the service-role key bypasses RLS.
+          E2E_ADMIN_EMAIL: ${{ github.ref == 'refs/heads/main' && secrets.E2E_ADMIN_EMAIL || '' }}
+          E2E_ADMIN_PASSWORD: ${{ github.ref == 'refs/heads/main' && secrets.E2E_ADMIN_PASSWORD || '' }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SUPABASE_SERVICE_ROLE_KEY || '' }}
       - uses: actions/upload-artifact@v4
         if: failure() && steps.check-secrets.outputs.has_secrets == 'true'
         with:
