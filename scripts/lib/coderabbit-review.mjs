@@ -533,6 +533,48 @@ const COVERAGE_REASONS = {
 // must not wait on it forever.
 const IN_FLIGHT_OVERRUN_MS = 80 * MINUTE_MS;
 
+// Did the factory's own CodeRabbit CLI lane review <headSha>, and how well?
+//
+// The lane records its verdict in factory state, but a PR merged by hand has no
+// card, so this reads what the lane stamped on the PR: the summary comment's
+// marker carries both the SHA and the coverage kind.
+//
+// It reads the kind rather than inferring it. An earlier version of this function
+// tried to recover it from the summary prose and was wrong in both directions: a
+// run where findings failed to parse renders identically to a clean one (so it
+// called an uncovered commit covered), while a finding legitimately routed to the
+// summary made it call a covered commit partial.
+//
+// Only the repo owner counts. The factory posts as the owner, and without that
+// check any PR author could paste the marker into a comment and manufacture
+// coverage for their own branch — the same reasoning as isTrustedBotItem.
+//
+// Unknown is not coverage. A marker with no kind predates this stamping, and the
+// most conservative kind wins when several comments carry the marker, so a later
+// comment quoting an older one can never upgrade the verdict.
+export function classifyCliCoverage({ comments = [], headSha, ownerLogin } = {}) {
+  const head = String(headSha ?? "").toLowerCase();
+  if (!SHA40.test(head) || !ownerLogin) return { state: "absent" };
+  const marker = new RegExp(
+    `<!--\\s*${SUMMARY_MARKER}\\s+sha=${head}(?:\\s+kind=([a-z-]+))?\\s*-->`,
+    "i",
+  );
+
+  let seen = false;
+  let best = null; // most conservative wins
+  for (const c of comments ?? []) {
+    if (c?.user?.login !== ownerLogin) continue;
+    const m = marker.exec(String(c?.body ?? ""));
+    if (!m) continue;
+    seen = true;
+    const kind = (m[1] ?? "").toLowerCase();
+    const state = kind === "cli" || kind === "cli-empty" ? "cli" : kind || "cli-partial";
+    if (state !== "cli") best = best ?? state;
+  }
+  if (!seen) return { state: "absent" };
+  return { state: best ?? "cli" };
+}
+
 export function coverageNote(coverage, sha) {
   if (coverage == null || coverage === "" || COVERED_KINDS.has(coverage)) return "";
   const why = COVERAGE_REASONS[coverage] ?? String(coverage);
@@ -1193,6 +1235,12 @@ export function renderSummary({
   inline = [],
   summary = [],
   stale = false,
+  // The coverage kind this run is recorded as. It goes in the marker because the
+  // prose cannot carry it: a run is "cli-partial" when the vendor reported more
+  // findings than survived parsing, and that fact appears nowhere in the rendered
+  // text. Anything reading coverage back off the PR (a PR with no factory card
+  // has only the PR) would otherwise have to guess, and guess wrong.
+  kind = null,
 } = {}) {
   const head = String(sha ?? "").toLowerCase();
   if (!SHA40.test(head)) throw new Error("renderSummary: sha must be a 40-hex commit");
@@ -1239,7 +1287,7 @@ export function renderSummary({
     "",
     "<sub>Automated, unverified vendor findings (CodeRabbit CLI, posted by the Drafto factory).</sub>",
     "",
-    `<!-- ${SUMMARY_MARKER} sha=${head} -->`,
+    `<!-- ${SUMMARY_MARKER} sha=${head}${/^[a-z-]+$/.test(String(kind ?? "")) ? ` kind=${kind}` : ""} -->`,
   );
   return lines.join("\n");
 }

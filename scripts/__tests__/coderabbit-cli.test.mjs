@@ -15,6 +15,8 @@ import {
   runGate,
   runHousekeeping,
   runFreePass,
+  runCoverage,
+  coverageKind,
   postFindings,
   pollRun,
   readKnobs,
@@ -1653,6 +1655,35 @@ describe("postFindings", () => {
     assert.equal(ghPosts(calls, "").length, 0);
   });
 
+  // The summary marker gained a `kind=` field. A summary posted before that
+  // existed must still suppress a duplicate, or a retry that dies between
+  // posting and recording posts the summary twice.
+  it("recognises a summary posted with the older, kind-less marker", async () => {
+    const { deps, calls } = makeDeps({
+      issueComments: [
+        {
+          user: { login: OWNER_LOGIN, type: "User" },
+          body: `<!-- ${SUMMARY_MARKER} sha=${SHA} -->`,
+        },
+      ],
+    });
+    await postFindings(postOpts(), deps);
+    assert.equal(ghPosts(calls, `issues/${PR}/comments`).length, 0);
+  });
+
+  it("recognises a summary posted with the current, kind-stamped marker", async () => {
+    const { deps, calls } = makeDeps({
+      issueComments: [
+        {
+          user: { login: OWNER_LOGIN, type: "User" },
+          body: `<!-- ${SUMMARY_MARKER} sha=${SHA} kind=cli -->`,
+        },
+      ],
+    });
+    await postFindings(postOpts(), deps);
+    assert.equal(ghPosts(calls, `issues/${PR}/comments`).length, 0);
+  });
+
   it("does not treat another SHA's summary as this one's", async () => {
     const { deps, calls } = makeDeps({
       issueComments: [
@@ -2142,5 +2173,127 @@ describe("pollRun", () => {
     );
     assert.equal(out.state, "done");
     assert.equal(out.exit.exitCode, 0);
+  });
+});
+
+// The gate /merge calls before it merges. Unlike every other subcommand here it
+// takes no state file: #628 and #630 were both merged by hand and had no card.
+describe("coverageKind", () => {
+  const ev = (n) => ({ findings: Array.from({ length: n }, (_, i) => ({ id: i })) });
+
+  it("is cli for a clean run with findings", () => {
+    assert.equal(coverageKind({ events: ev(3), partial: false, incomplete: false }), "cli");
+  });
+
+  it("is cli-empty only when the run genuinely found nothing", () => {
+    assert.equal(coverageKind({ events: ev(0), partial: false, incomplete: false }), "cli-empty");
+  });
+
+  // "Nothing was found" and "nothing survived parsing" both leave an empty
+  // findings array. Checking the count first called the second one cli-empty —
+  // which the coverage gate treats as covered — and waved through the exact
+  // commit whose findings nobody ever saw.
+  it("is cli-partial when every finding was lost to parsing", () => {
+    assert.equal(coverageKind({ events: ev(0), partial: false, incomplete: true }), "cli-partial");
+  });
+
+  it("is cli-partial when findings could not be threaded", () => {
+    assert.equal(coverageKind({ events: ev(2), partial: true, incomplete: false }), "cli-partial");
+  });
+});
+
+describe("runCoverage", () => {
+  const reviewed = (sha) => ({
+    user: BOT,
+    body: `**Actionable comments posted: 3**\n\nReview details: between ${BASE} and ${sha}`,
+  });
+  const cliSummary = (sha, kind = "cli") => ({
+    user: { login: OWNER_LOGIN },
+    body: `### CodeRabbit CLI review\n\nOpened 2 inline threads.\n<!-- drafto-factory-cr-cli sha=${sha} kind=${kind} -->`,
+  });
+
+  it("is covered when the bot reviewed the head commit", async () => {
+    const out = await runCoverage({ pr: PR }, makeDeps({ botReviews: [reviewed(SHA)] }).deps);
+    assert.equal(out.covered, true);
+    assert.equal(out.source, "bot");
+    assert.equal(out.headSha, SHA);
+    assert.equal(out.reason, "");
+  });
+
+  // #628: the bot's only review covered the PREVIOUS commit, and the entries at
+  // the head SHA were empty-bodied thread replies. Merged anyway; four bypasses
+  // reached main. This is the case the gate exists for.
+  it("is NOT covered when the bot only reviewed an earlier commit", async () => {
+    const deps = makeDeps({
+      botReviews: [reviewed(OTHER_SHA), { user: BOT, body: "" }, { user: BOT, body: "" }],
+    }).deps;
+    const out = await runCoverage({ pr: PR }, deps);
+    assert.equal(out.covered, false);
+    assert.equal(out.bot, "absent");
+    assert.match(out.reason, /nothing has reviewed/i);
+  });
+
+  // #630: the CodeRabbit check reported SUCCESS while this was true.
+  it("is NOT covered when the bot is rate-limited", async () => {
+    const deps = makeDeps({
+      botComments: [
+        {
+          user: BOT,
+          body: "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\n\n> Review limit reached",
+        },
+      ],
+    }).deps;
+    const out = await runCoverage({ pr: PR }, deps);
+    assert.equal(out.covered, false);
+    assert.equal(out.bot, "rate_limited");
+    assert.equal(out.retryable, false);
+    assert.match(out.reason, /rate-limited/i);
+  });
+
+  it("marks an in-progress review retryable rather than final", async () => {
+    const deps = makeDeps({
+      botComments: [
+        {
+          user: BOT,
+          body: "<!-- This is an auto-generated comment: review in progress by coderabbit.ai -->",
+        },
+      ],
+    }).deps;
+    const out = await runCoverage({ pr: PR }, deps);
+    assert.equal(out.covered, false);
+    assert.equal(out.retryable, true);
+  });
+
+  // The gap-fill lane's whole point: the bot being rate-limited must not block a
+  // PR the CLI actually reviewed.
+  it("is covered by the CLI when the bot is rate-limited", async () => {
+    const deps = makeDeps({
+      botComments: [
+        {
+          user: BOT,
+          body: "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->",
+        },
+      ],
+      issueComments: [cliSummary(SHA)],
+    }).deps;
+    const out = await runCoverage({ pr: PR }, deps);
+    assert.equal(out.covered, true);
+    assert.equal(out.source, "cli");
+  });
+
+  it("is NOT covered when the CLI run was partial", async () => {
+    const deps = makeDeps({ issueComments: [cliSummary(SHA, "cli-partial")] }).deps;
+    const out = await runCoverage({ pr: PR }, deps);
+    assert.equal(out.covered, false);
+    assert.equal(out.cli, "cli-partial");
+    assert.match(out.reason, /never became threads/i);
+  });
+
+  it("rejects a non-numeric --pr", async () => {
+    await assert.rejects(() => runCoverage({ pr: "7; rm -rf /" }, makeDeps().deps));
+  });
+
+  it("throws rather than answering when the PR cannot be read", async () => {
+    await assert.rejects(() => runCoverage({ pr: PR }, makeDeps({ prViewCode: 1 }).deps));
   });
 });

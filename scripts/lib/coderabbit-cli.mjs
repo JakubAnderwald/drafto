@@ -28,6 +28,14 @@
 //   note --issue N --sha S --state-file F
 //       → {note}. The In Test note for coverage already recorded for exactly
 //         this SHA ("" when covered, undecided or unreadable). Read-only.
+//   coverage --pr N
+//       → {covered, source, repo, pr, headSha, prState, bot, cli, retryable, reason}.
+//         "Has anything reviewed this exact commit?", for any PR in this repo —
+//         the only subcommand that needs no state file, because a PR merged by
+//         hand has no card. Read-only. This one exits 2 when it ran fine and the
+//         answer is no, keeping that distinct from exit 1 "could not answer": a
+//         caller that conflates them fails open on an outage. Every other
+//         subcommand still exits 0 on a decision and 1 only on error.
 //   _supervise --run-dir D                  (internal; spawned detached by gate)
 //
 // Why a detached supervisor rather than a synchronous call: a review takes
@@ -1036,6 +1044,7 @@ export async function runHousekeeping(opts, deps) {
               events,
               outcome,
               stale: !headSame,
+              incomplete: classified.incomplete === true,
             },
             deps,
           );
@@ -1051,12 +1060,15 @@ export async function runHousekeeping(opts, deps) {
               // "cli-partial" is an uncovered kind: a threaded-severity finding
               // that only made the summary is one nothing downstream acts on
               // (the fix loop reads threads), so the tester has to be told.
+              // Same value postFindings stamped into the summary marker, so the
+              // state and the PR can never disagree about this commit.
               const coverage =
-                events.findings.length === 0
-                  ? "cli-empty"
-                  : posted.partial || classified.incomplete
-                    ? "cli-partial"
-                    : "cli";
+                posted.kind ??
+                coverageKind({
+                  events,
+                  partial: posted.partial,
+                  incomplete: classified.incomplete === true,
+                });
               writes.push((s) => {
                 S.setIssueField(s, inFlight.issue, "crLastCoveredSha", inFlight.sha);
                 recordCoverage(S, s, inFlight.issue, inFlight.sha, coverage);
@@ -1237,6 +1249,19 @@ function toExistingComments(R, reviewComments, threads) {
 // Idempotent by construction: a finding whose fingerprint is already on the PR
 // is skipped by planFindings, and the summary is only posted when its SHA-scoped
 // marker is absent. A tick that dies mid-post re-runs this safely.
+// The one definition of a CLI run's coverage kind. It used to live only at the
+// state write, which meant anything reading coverage back off the PR had to
+// re-derive it — and re-derivation was wrong in both directions.
+export function coverageKind({ events, partial, incomplete }) {
+  // Order matters. A run that lost EVERY finding to parsing also has an empty
+  // findings array, so checking "no findings" first would call it cli-empty —
+  // which is coverage — and wave through the exact commit whose findings nobody
+  // ever saw. "Nothing was found" and "nothing survived" are not the same answer.
+  if (partial || incomplete) return "cli-partial";
+  if ((events?.findings?.length ?? 0) === 0) return "cli-empty";
+  return "cli";
+}
+
 export async function postFindings(opts, deps) {
   const { R } = await libs();
   const {
@@ -1248,6 +1273,10 @@ export async function postFindings(opts, deps) {
     events,
     outcome,
     stale = false,
+    // classifyOutcome's flag: the vendor reported more findings than survived
+    // parsing. It makes the run cli-partial and appears nowhere in the rendered
+    // summary, so it has to be carried here to be stamped into the marker.
+    incomplete = false,
   } = opts;
 
   const [reviewComments, issueComments] = await Promise.all([
@@ -1345,9 +1374,14 @@ export async function postFindings(opts, deps) {
 
   // Only the factory's own full marker counts: a stranger pasting it into a PR
   // comment must not be able to suppress the summary (and its findings).
-  const marker = `<!-- ${R.SUMMARY_MARKER} sha=${sha} -->`;
+  // Matches both marker shapes — with and without `kind=` — so a summary posted
+  // before this field existed still suppresses a duplicate on retry.
+  const marker = new RegExp(
+    `<!--\\s*${R.SUMMARY_MARKER}\\s+sha=${String(sha).toLowerCase()}(?:\\s+kind=[a-z-]+)?\\s*-->`,
+    "i",
+  );
   const summaryExists = issueComments.items.some(
-    (c) => c?.user?.login === OWNER_LOGIN && (c.body ?? "").includes(marker),
+    (c) => c?.user?.login === OWNER_LOGIN && marker.test(c.body ?? ""),
   );
   let summaryPosted = false;
   if (!summaryExists) {
@@ -1368,6 +1402,7 @@ export async function postFindings(opts, deps) {
       inline: posted.length + openedEarlier,
       summary,
       stale,
+      kind: coverageKind({ events, partial, incomplete }),
     });
     const r = await ghPost(deps, `repos/${REPO}/issues/${pr}/comments`, { body });
     if (r.code !== 0) return { ok: false, reason: "summary post failed" };
@@ -1379,6 +1414,7 @@ export async function postFindings(opts, deps) {
     summarized: summary.length,
     summaryPosted,
     partial,
+    kind: coverageKind({ events, partial, incomplete }),
     ...extra,
   };
 }
@@ -1418,12 +1454,88 @@ export async function runNote({ issue, sha, stateFile }) {
 
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
+// ── coverage (stateless) ────────────────────────────────────────────────────
+
+// "Has anything reviewed this exact commit?", for any PR in this repo.
+//
+// Every other subcommand answers that from factory state. A PR merged by hand
+// has no card — #628 and #630 both had none — so this reads only the PR itself.
+// It is what /merge calls before it merges.
+//
+// Strictly read-only: no ledger, no worktree, no CLI binary, no writes. It
+// reuses fetchBotActivity/readPrHead rather than re-deriving either, because the
+// coverage predicate is subtle enough that a second implementation would drift:
+// a bot review's commit_id says nothing about what it reviewed, and an
+// empty-bodied "review" is a thread reply.
+export async function runCoverage({ pr }, deps = createDeps()) {
+  const { R } = await libs();
+  const prNum = String(pr ?? "").trim();
+  if (!/^[0-9]+$/.test(prNum)) throw new UsageError(`--pr must be a number: ${JSON.stringify(pr)}`);
+
+  const head = await readPrHead(prNum, deps);
+  if (!head) throw new Error(`could not read PR #${prNum} from ${REPO}`);
+  const headSha = String(head.headRefOid).toLowerCase();
+
+  const activity = await fetchBotActivity(prNum, deps);
+  if (!activity.ok) throw new Error(`could not read PR #${prNum} activity: ${activity.error}`);
+
+  const bot = R.classifyBotCoverage({
+    comments: activity.comments,
+    reviews: activity.reviews,
+    headSha,
+  });
+  const cli = R.classifyCliCoverage({
+    comments: activity.comments,
+    headSha,
+    ownerLogin: OWNER_LOGIN,
+  });
+
+  // The factory's own COVERED_KINDS is {bot, cli, cli-empty}. "cli-partial" is
+  // deliberately absent: its thread-worthy findings never reached the fix loop.
+  const covered = bot.state === "covered" || cli.state === "cli";
+  const source = bot.state === "covered" ? "bot" : cli.state === "cli" ? "cli" : null;
+
+  const botReason =
+    {
+      in_progress: "CodeRabbit is reviewing this commit right now",
+      rate_limited: "CodeRabbit is rate-limited and has not reviewed this commit",
+      paused: "CodeRabbit auto-paused on this PR; `@coderabbitai resume` wakes it",
+      skipped: "CodeRabbit skipped this commit; `@coderabbitai review` triggers it",
+      absent: "nothing has reviewed this commit",
+    }[bot.state] ?? `CodeRabbit coverage is '${bot.state}'`;
+
+  // Order matters: a review that is running is the one thing worth waiting for,
+  // so it outranks a CLI verdict that is already final.
+  const reason = covered
+    ? ""
+    : bot.state === "in_progress"
+      ? botReason
+      : cli.state === "cli-partial"
+        ? "the CodeRabbit CLI reviewed this commit, but some findings never became threads (cli-partial)"
+        : botReason;
+
+  return {
+    covered,
+    source,
+    pr: Number(prNum),
+    repo: REPO,
+    headSha,
+    prState: head.state,
+    bot: bot.state,
+    cli: cli.state,
+    // The one non-covered state worth waiting on rather than reporting.
+    retryable: !covered && bot.state === "in_progress",
+    reason,
+  };
+}
+
 const USAGE =
   "Usage: coderabbit-cli.mjs <" +
   "gate --issue N --pr P --sha S --state-file F --repo-root R --run-root D|" +
   "housekeeping --state-file F --repo-root R --run-root D|" +
   "free-pass --issue N --state-file F (threads JSON on stdin)|" +
   "note --issue N --sha S --state-file F|" +
+  "coverage --pr N|" +
   "_supervise --run-dir D> [--dry-run 0|1] [--now ISO]";
 
 function readStdin() {
@@ -1506,6 +1618,9 @@ export async function main(argv, deps = createDeps()) {
     case "_supervise":
       required(flags, ["run-dir"]);
       return runSupervise({ runDir: flags["run-dir"] });
+    case "coverage":
+      required(flags, ["pr"]);
+      return await runCoverage({ pr: flags.pr }, deps);
     default:
       throw new UsageError(sub ? `unknown subcommand: ${sub}` : "missing subcommand");
   }
@@ -1515,6 +1630,9 @@ if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2)).then(
     (out) => {
       if (out != null) process.stdout.write(JSON.stringify(out) + "\n");
+      // 2 = "ran fine, the answer is no", distinct from 1 = "failed to answer".
+      // A gate that cannot tell those apart fails open on an outage.
+      if (out && out.covered === false) process.exit(2);
     },
     (err) => {
       process.stderr.write(JSON.stringify({ error: err.message, usage: USAGE }) + "\n");
