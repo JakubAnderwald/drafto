@@ -1,4 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
+import { getAdminCredentials } from "./e2e/helpers/admin-credentials";
+
+// Admin specs run as a separate admin account. Its project is only registered
+// when the admin E2E variables are set — otherwise the admin setup step is
+// skipped, no storage-state file is written, and the project would fail to load it.
+const hasAdminCredentials = getAdminCredentials() !== null;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -18,7 +24,7 @@ export default defineConfig({
       testMatch: /auth\.setup\.ts/,
     },
 
-    // Desktop — runs all tests except auth setup and responsive-only tests
+    // Desktop — runs all tests except auth setup, responsive-only and admin-only tests
     {
       name: "chromium",
       use: {
@@ -26,8 +32,23 @@ export default defineConfig({
         storageState: "e2e/.auth/user.json",
       },
       dependencies: ["setup"],
-      testIgnore: [/auth\.setup\.ts/, /responsive\.spec\.ts/],
+      testIgnore: [/auth\.setup\.ts/, /responsive\.spec\.ts/, /admin\.spec\.ts/],
     },
+
+    // Admin — only runs admin specs, signed in as the admin account
+    ...(hasAdminCredentials
+      ? [
+          {
+            name: "chromium-admin",
+            use: {
+              ...devices["Desktop Chrome"],
+              storageState: "e2e/.auth/admin.json",
+            },
+            dependencies: ["setup"],
+            testMatch: /admin\.spec\.ts/,
+          },
+        ]
+      : []),
 
     // Mobile — only runs responsive tests (desktop tests assume three-panel layout)
     {
