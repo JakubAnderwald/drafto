@@ -199,41 +199,65 @@ function isPidAlive(pid) {
   }
 }
 
-// Is the in-flight run's supervisor still running? "alive" only when the pid
-// exists, is not a zombie, and its command line carries the runId (a reused pid
-// is someone else's process: "gone"). "unknown" when ps itself fails for a pid
-// that kill(0) says exists — ownership can't be verified either way.
-function crCliSupervisorState(inFlight) {
+// Does anything in process group <pgid> still exist (zombies included)? EPERM
+// means it exists but isn't ours to signal.
+function processGroupExists(pgid) {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+
+// Is the in-flight run still running — the supervisor OR anything in its process
+// group? The supervisor leads its own group, and the CodeRabbit CLI it spawned
+// lives in that group and can outlive it (it may ignore SIGTERM, or be mid-
+// shutdown), so a dead supervisor alone doesn't prove the vendor connection is
+// gone. One process-table snapshot decides:
+//   - leader alive (not a zombie) → "alive" if its command carries the runId,
+//     else "gone" (a reused pid: POSIX never reuses a pid still in use as a
+//     process group id, so our group can't exist alongside it);
+//   - leader exited or an unreaped zombie → "alive" while any non-zombie process
+//     still has pgid == pid (the CLI it started), else "gone".
+// "unknown" when ps fails while the pid or its group still exists.
+function crCliRunState(inFlight) {
   const pid = inFlight?.pid;
-  if (!Number.isInteger(pid) || pid <= 0 || !isPidAlive(pid)) return "gone";
-  const ps = spawnSync("ps", ["-o", "stat=,command=", "-p", String(pid)], { encoding: "utf8" });
-  const line = String(ps.stdout ?? "").trim();
-  if (ps.status !== 0 || !line) return isPidAlive(pid) ? "unknown" : "gone";
-  // An exited child not yet reaped by its parent is a zombie: it can no longer
-  // do anything, so it counts as gone.
-  if (/^Z/.test(line)) return "gone";
-  return line.includes(inFlight.runId) ? "alive" : "gone";
+  if (!Number.isInteger(pid) || pid <= 0) return "gone";
+  const ps = spawnSync("ps", ["-axo", "pid=,pgid=,stat=,command="], { encoding: "utf8" });
+  if (ps.status !== 0) {
+    return isPidAlive(pid) || processGroupExists(pid) ? "unknown" : "gone";
+  }
+  const rows = String(ps.stdout ?? "")
+    .split("\n")
+    .map((line) => /^\s*(\d+)\s+(\d+)\s+(\S+)\s*(.*)$/.exec(line))
+    .filter(Boolean)
+    .map((m) => ({ pid: Number(m[1]), pgid: Number(m[2]), stat: m[3], command: m[4] }));
+  const live = (r) => !r.stat.startsWith("Z");
+  const leader = rows.find((r) => r.pid === pid);
+  if (leader && live(leader)) return leader.command.includes(inFlight.runId) ? "alive" : "gone";
+  return rows.some((r) => r.pgid === pid && live(r)) ? "alive" : "gone";
 }
 
 // Releasing a run in the ledger without stopping it would leave a vendor review
 // running that nothing collects, and the gate free to start a second one — which
 // the vendor refuses while the first is connected. So the release only happens
-// once the supervisor is verifiably gone: SIGTERM its process group (it was
-// spawned detached, so it leads its own group and -pid reaches the CLI too),
-// then wait, bounded, for it to exit. Returns {state, killed}.
+// once the run is verifiably gone: SIGTERM its process group (the supervisor was
+// spawned detached, so -pid reaches the CLI too), then wait, bounded, until no
+// live member of the group is left. Returns {state, killed}.
 async function stopCrCliSupervisor(inFlight, { waitMs }) {
-  const initial = crCliSupervisorState(inFlight);
+  const initial = crCliRunState(inFlight);
   if (initial !== "alive") return { state: initial, killed: false };
   try {
     process.kill(-inFlight.pid, "SIGTERM");
   } catch {
-    // Fall through to the wait: it reports whatever state the process is in.
+    // Fall through to the wait: it reports whatever state the group is in.
   }
   const deadline = Date.now() + waitMs;
-  let state = crCliSupervisorState(inFlight);
+  let state = crCliRunState(inFlight);
   while (state === "alive" && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
-    state = crCliSupervisorState(inFlight);
+    state = crCliRunState(inFlight);
   }
   return { state, killed: true };
 }

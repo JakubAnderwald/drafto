@@ -604,6 +604,47 @@ describe("factory:cr-cli-* (CodeRabbit CLI lane, ADR-0036)", () => {
     }
   });
 
+  it("factory:cr-cli-finish keeps the run in flight while a group member (the CLI) outlives the supervisor", async () => {
+    const runId = "42-eeeeeeeeeeee-20260912T210000Z";
+    // The leader stands in for the supervisor: it starts a SIGTERM-ignoring child
+    // in its own process group (the CLI), then exits on SIGTERM itself.
+    const leaderScript = [
+      "const { spawn } = require('node:child_process');",
+      "spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)\"], { stdio: 'ignore' });",
+      "process.on('SIGTERM', () => process.exit(0));",
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const leader = spawn(process.execPath, ["-e", leaderScript, runId], {
+      detached: true,
+      stdio: "ignore",
+    });
+    leader.unref();
+    try {
+      await new Promise((resolve) => leader.once("spawn", resolve));
+      await new Promise((resolve) => setTimeout(resolve, 500)); // child started, handlers installed
+      writeFileSync(
+        stateFile,
+        JSON.stringify({ crCli: { runs: [], inFlight: { ...inFlight, runId, pid: leader.pid } } }),
+      );
+      const r = spawnSync(
+        "node",
+        [CLI, "factory:cr-cli-finish", runId, "--wait-ms", "600", "--state-file", stateFile],
+        { encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.ok, false, r.stdout);
+      assert.equal(out.reason, "supervisor-still-running");
+      assert.equal(readState().crCli.inFlight.runId, runId);
+    } finally {
+      try {
+        process.kill(-leader.pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+  });
+
   it("factory:cr-cli-finish keeps the run in flight when the supervisor survives SIGTERM", async () => {
     const runId = "42-dddddddddddd-20260912T210000Z";
     const child = spawn(

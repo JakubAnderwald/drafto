@@ -316,12 +316,17 @@ A vendor rate-limit (`errorType:"rate_limit"`, with a `waitTime` such as "50 min
 - `logs/factory/cr-cli/<runId>/` — `meta.json` (binary, args, base commit, deadline), `events.ndjson` (the CLI's `--agent` event stream), `stderr.log`, and `exit.json` (`exitCode`, `signal`, `timedOut`, written when the run ends). Reaped after 30 days by the lane's housekeeping, which runs at the top of every `--watch` tick (the only retention rule for these dirs).
 - `worktrees/cr-cli-<issue>-<sha12>` — the detached checkout the CLI reviews. Removed when the run is processed; orphans are reaped by the next tick. A worktree is never reaped while a supervisor for it is still alive (a run dir's `meta.json` names the worktree, and a live process's command line carries that run id), even after its ledger entry was released; if the process table can't be read, every worktree a run dir claims is kept.
 
-**Killing a wedged run.** The supervisor runs the CLI in its own process group. `factory:cr-cli-finish` SIGTERMs that group itself — only when the recorded pid is alive and its command line carries the run id, so a reused pid is left alone — and waits up to `--wait-ms` (default 10 s) for it to exit. Only once the supervisor is verifiably gone does it release the ledger slot and report `killed:true|false`. If the supervisor ignores SIGTERM (or `ps` can't verify it), it changes nothing and prints `ok:false` with `supervisor-still-running` / `supervisor-unverifiable`, so the gate never starts a second, vendor-refused run on top of it: `kill -KILL -<pid>` and run the finish again. This is also the manual escape hatch when you can't wait for the next tick's housekeeping:
+**Killing a wedged run.** The supervisor runs the CLI in its own process group. `factory:cr-cli-finish` SIGTERMs that group itself — only when the run is still ours (the recorded pid is alive with the run id on its command line, or the supervisor has exited but members of its process group, i.e. the CLI, are still running; a reused pid is left alone) — and waits up to `--wait-ms` (default 10 s) until no live member of the group is left. Only then does it release the ledger slot and report `killed:true|false`. Otherwise it changes nothing and prints `ok:false`, so the gate never starts a second, vendor-refused run on top of a still-connected CLI:
+
+- `supervisor-still-running` — the group ignored SIGTERM. `kill -KILL -<pid>` (negative pid = the whole group) and run the finish again.
+- `supervisor-unverifiable` — `ps` failed, so ownership couldn't be checked. Do **not** kill a process group blind: inspect it first (`ps -axo pid,pgid,stat,command | awk '$2 == <pid>'`), fix whatever blocks `ps`, and retry.
+
+This is also the manual escape hatch when you can't wait for the next tick's housekeeping:
 
 ```bash
 node scripts/lib/state-cli.mjs factory:cr-cli-status           # note inFlight.pid, .runId, .worktree
 node scripts/lib/state-cli.mjs factory:cr-cli-finish <runId> --refund none   # SIGTERMs the group, waits, then frees the slot
-kill -KILL -<pid>                                              # only if finish says supervisor-still-running (negative pid = the whole group); then re-run finish
+kill -KILL -<pid>                                              # ONLY on supervisor-still-running (negative pid = the whole group); then re-run finish
 ```
 
 Leave the worktree to housekeeping: its reap skips a worktree until that run's supervisor has actually exited, then removes it.
