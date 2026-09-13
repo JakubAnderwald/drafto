@@ -1,0 +1,6 @@
+{"type":"review_context","reviewType":"all","currentBranch":"HEAD","baseBranch":"main","baseCommit":"e67dca38d4ac7d62759352655441b38d80ec372f","workingDirectory":"/tmp/wt"}
+{"type":"status","phase":"connecting","status":"connecting_to_review_service"}
+{"type":"status","phase":"setup","status":"setting_up"}
+{"type":"status","phase":"analyzing","status":"summarizing"}
+{"type":"status","phase":"analyzing","status":"reviewing"}
+{"type":"error","errorType":"connection","message":"Connection failed: WebSocket subscription completed unexpectedly","recoverable":true,"details":{}}

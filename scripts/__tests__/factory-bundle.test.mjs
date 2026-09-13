@@ -731,6 +731,24 @@ describe("buildFactoryInTestBundle", () => {
     assert.match(bundle.approvedPlan.bodyEnveloped, /the plan/);
   });
 
+  it("carries the CodeRabbit coverage note in its own field, apart from advisory", () => {
+    // ADR-0036: the note is not a check, so it never rides inside `advisory`.
+    const note = "CodeRabbit did not review a1b2c3d4e5f6 (the CodeRabbit CLI review failed)";
+    const bundle = buildFactoryInTestBundle({
+      ...base,
+      advisory: "SonarCloud",
+      crCoverageNote: note,
+    });
+    assert.equal(bundle.crCoverageNote, note);
+    assert.equal(bundle.advisory, "SonarCloud");
+  });
+
+  it("defaults the coverage note to empty and drops a non-string one", () => {
+    assert.equal(buildFactoryInTestBundle(base).crCoverageNote, "");
+    assert.equal(buildFactoryInTestBundle({ ...base, crCoverageNote: 42 }).crCoverageNote, "");
+    assert.equal(buildFactoryInTestBundle({ ...base, crCoverageNote: null }).crCoverageNote, "");
+  });
+
   it("normalises a missing betaDispatch to empty lists", () => {
     const bundle = buildFactoryInTestBundle(base);
     assert.deepEqual(bundle.betaDispatch, { dispatched: [], skipped: [], manualCommands: [] });
@@ -1009,6 +1027,7 @@ describe("factory-bundle CLI", () => {
       platforms: { mobile: true, desktop: true, web: false },
       previewUrl: "",
       advisory: "CodeRabbit",
+      crCoverageNote: "CodeRabbit coverage of a1b2c3d4e5f6 unknown (lane error)",
       headSha: "a1b2c3d4e5f6a7b8",
       config: { phase: "C" },
       repo: { nameWithOwner: "JakubAnderwald/drafto" },
@@ -1021,6 +1040,7 @@ describe("factory-bundle CLI", () => {
     assert.deepEqual(bundle.platforms, { mobile: true, desktop: true, web: false });
     assert.deepEqual(bundle.prFiles, ["apps/mobile/x.ts", "apps/desktop/y.ts"]);
     assert.equal(bundle.advisory, "CodeRabbit");
+    assert.equal(bundle.crCoverageNote, "CodeRabbit coverage of a1b2c3d4e5f6 unknown (lane error)");
     assert.equal(bundle.headSha, "a1b2c3d4e5f6a7b8");
   });
 });

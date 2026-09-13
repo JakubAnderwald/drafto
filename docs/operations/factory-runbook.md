@@ -90,6 +90,26 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
    `=== factory-agent --plan run started (phase=A …) ===` followed by
    `=== factory-agent --plan completed in <N>s ===`. Subsequent ticks fire every 5 min.
 
+7. **(Optional) Install the CodeRabbit CLI for the gap-fill lane.**
+
+   Only needed before turning on `FACTORY_CR_CLI=1` (see "CodeRabbit CLI gap-fill lane" below). On the Mac mini:
+
+   ```bash
+   brew install coderabbit
+   coderabbit auth login      # browser, one-time; the token lands in ~/.coderabbit/auth.json (0600)
+   coderabbit doctor          # expect "9 passed, 0 warnings, 0 failed"
+   coderabbit auth status     # expect "Plan : Free" (and "Seat : not assigned")
+   coderabbit usage           # expect "Usage billing : inactive"
+   ```
+
+   > **⚠️ Check `pnpm` afterwards.** On 2026-09-12 `brew install coderabbit` also upgraded Homebrew's `node` (23 → 26) as a side effect. Node 25+ no longer bundles corepack, so `/opt/homebrew/bin/pnpm` became a dangling symlink — and every factory `pnpm install` would have failed on the next `--implement`. If `pnpm --version` fails after any `brew install`/`upgrade`, remove the dangling corepack links and reinstall corepack:
+   >
+   > ```bash
+   > for l in /opt/homebrew/bin/{pnpm,pnpx,yarn,yarnpkg}; do [ -L "$l" ] && [ ! -e "$l" ] && rm "$l"; done
+   > npm install -g corepack && corepack enable pnpm
+   > pnpm --version   # run inside the repo: must print the packageManager pin (pnpm@10.30.1)
+   > ```
+
 ## Phase progression criteria
 
 | Promote from → to | Required signals before promotion                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -233,17 +253,123 @@ node scripts/lib/state-cli.mjs factory:set-issue-field <n> intestBetaLanes ""   
 
 Lanes are still skipped up front — with the reason in the In Test comment — when a knob is off, the phase is B, free disk is below `FACTORY_MIN_FREE_DISK_GB`, a build root can't be prepared, or the fossil assertion fails.
 
+## CodeRabbit CLI gap-fill lane
+
+CodeRabbit's PR bot runs on the free OSS tier and often doesn't review a factory commit: it is rate-limited (1–10 PR reviews/hr, scaled by the repo's stars), skipped, or auto-paused after two reviewed commits (`.coderabbit.yaml`). The **CodeRabbit CLI** has a separate free allowance of 3 reviews/hr. When the bot didn't cover a converged In Review card's head commit, `--watch` reviews that commit with the CLI on the Mac mini and posts the findings as review threads, which the ADR-0035 fix loop then answers. See [ADR-0036](../adr/0036-factory-coderabbit-cli-gap-fill.md).
+
+**How it runs.** The lane only acts once a card has converged: required CI green, the Claude review done for the head SHA, and no open threads. It then:
+
+1. **Waits for the bot.** It holds the card while the bot's review is in progress, or for `FACTORY_CR_BOT_GRACE_MIN` while the bot hasn't posted. Coverage is read from the bot's own review bodies and summary comment (REST, bot account only) — never from the `CodeRabbit` commit status, which reads SUCCESS even when rate-limited.
+2. **Starts one CLI run** if the bot didn't cover the commit. The run is a detached supervisor process in its own detached worktree, with a stripped environment (no `GH_TOKEN`, no support secrets). **At most one run is ever in flight** — two concurrent CLI reviews fail with a WebSocket `connection` error. The card keeps holding while it runs. If the PR's head moves on (a fix commit) or the PR closes while the run is still going, the next tick terminates it (SIGTERM to its process group), removes its worktree and frees the slot — its results could only be a stale summary. That run's hourly slot stays spent, but it doesn't count against the card's run cap, and no coverage is recorded.
+3. **Posts the findings** on a later tick, with no Claude call:
+   - Critical/major/minor findings become inline threads (critical/major only on an incremental re-review). If `gh pr diff` fails (e.g. a diff too large for the API — exactly the PR most likely to carry criticals), they open as **file-level** threads instead, which need no diff hunk.
+   - Everything else goes into one summary comment marked `<!-- drafto-factory-cr-cli sha=<sha> -->`: lower severities, findings outside the PR diff, anything past the per-run thread cap, and non-critical findings within 3 lines of an existing thread. That proximity check only counts comments by the owner or the CodeRabbit bot, in threads that are unresolved and not outdated (at the thread's current line), and never this run's own threads — a partial post must not demote the rest. A **critical** finding is never demoted for proximity. A thread-worthy finding that ends up only in the summary because of the thread cap, or because GitHub rejected its comment twice, makes the commit's coverage `cli-partial` (below): the fix loop reads threads, not the summary, so the tester is told.
+   - Each thread starts `**[CodeRabbit CLI · <severity>]**` and carries a disclaimer and a `drafto-factory-cr-finding` fingerprint marker, so re-posting is idempotent. Only the owner's and the bot's comments count for that de-duplication (resolved threads included), and only within 20 lines of the earlier comment — the same wording elsewhere in the file is a separate finding. The summary counts as already posted only if the owner's own comment carries the full marker — a public commenter can't suppress findings by pasting one.
+   - A failed post is retried on the next tick. If the post still hasn't succeeded more than 70 minutes past the run's deadline (the 10-minute overdue grace plus an hour), housekeeping gives up: it records `cli-failed` for the commit (unless the PR has closed or moved to a new head; a PR that can't be read at all is recorded anyway), removes the worktree and frees the slot, so the card promotes with a note instead of holding forever. Separately, the gate stops holding a card for its own run 80 minutes past that run's deadline and promotes it as `hold-expired`, even if housekeeping never manages to finish the run. If that run does finish later, housekeeping discards its results (`discarded: "already-decided"`) instead of posting threads onto a card that has moved on or overwriting the recorded coverage.
+4. **Promotes** the card once CodeRabbit covered the commit, or once the hold expires. In the latter case the In Test hand-off says "CodeRabbit did not review `<sha12>` (…)". The note is its own field in the In Test bundle (`crCoverageNote`, rendered on its own line — never listed among the advisory checks). When the In Test sweep re-writes a scenario for the same head with the lane on (e.g. the promoting tick died before its comment), it rebuilds the note from the recorded coverage. If the lane itself errors, the card promotes anyway (fail open) with "CodeRabbit coverage of `<sha12>` unknown (lane error)" — that note isn't recorded, so a re-written scenario can't repeat it — and a commit pushed while the card is already In Test gets no note at all.
+
+A thread-driven fix pass whose open threads are all CLI findings gets **one free pass per CLI run** (no retry attempt spent), and a card gets at most `FACTORY_CR_CLI_MAX_RUNS_PER_CARD` CLI runs per In Review stint, so CLI findings can't exhaust `FACTORY_MAX_ATTEMPTS` on their own. A missing binary, a failed `coderabbit doctor`, or an expired login never blocks a card — it promotes with a `cli-unavailable` note. A failed `doctor` pauses the lane for an hour and promotes the card in that same tick.
+
+**Knobs** (launchd plist `EnvironmentVariables`):
+
+| Var                                 | Default | Purpose                                                                                                                                                                                                                       |
+| ----------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FACTORY_CR_CLI`                    | `0`     | Master switch. Ships dark: dry-run first (see "Dry run" below), then set `1` in the plist. Setting it back to `0` is the kill switch.                                                                                         |
+| `FACTORY_CR_CLI_MAX_PER_HOUR`       | `3`     | Rolling hourly CLI budget (the vendor's free allowance). Consider `2` if you also use the CLI interactively.                                                                                                                  |
+| `FACTORY_CR_CLI_MAX_RUNS_PER_CARD`  | `2`     | CLI runs per card per In Review stint; reset when the card reaches In Test.                                                                                                                                                   |
+| `FACTORY_CR_CLI_TIMEOUT_MIN`        | `45`    | Supervisor kills a CLI run after this long (a large review takes 7–30+ min).                                                                                                                                                  |
+| `FACTORY_CR_BOT_GRACE_MIN`          | `15`    | How long to wait for the PR bot to post before treating the commit as a gap.                                                                                                                                                  |
+| `FACTORY_CR_HOLD_MAX_MIN`           | `60`    | Cap on holding a converged card waiting to start a run. Worst-case hold per head commit ≈ this + `FACTORY_CR_CLI_TIMEOUT_MIN` (up to 80 min more if collecting the run keeps failing); the clock restarts on each new commit. |
+| `FACTORY_CR_CLI_BIN`                | unset   | Explicit path to `coderabbit`. Otherwise PATH, then `/opt/homebrew/bin`, then `/usr/local/bin`.                                                                                                                               |
+| `FACTORY_CR_CLI_LIMIT_FALLBACK_MIN` | `60`    | Lane pause when the vendor rate-limits without a parseable `waitTime`.                                                                                                                                                        |
+
+The hold bound is per head commit, not per card. Normally one commit holds for at most `FACTORY_CR_HOLD_MAX_MIN` + `FACTORY_CR_CLI_TIMEOUT_MIN` (~105 min): a run started just before the hold cap, plus its timeout. If collecting that run keeps failing (the PR can't be read, posts keep failing, housekeeping throws), the card's hold on its own run ends 80 minutes past the run's deadline, so the absolute worst case is ~185 min. Each fix commit that converges starts a fresh `FACTORY_CR_HOLD_MAX_MIN` window, so a card that goes through two CLI rounds (`FACTORY_CR_CLI_MAX_RUNS_PER_CARD`) can sit in In Review for 3–4 h in total, plus the bot grace on any later commit.
+
+**Dry run.** Pass the phase explicitly. `factory-agent.sh` ignores `FACTORY_PHASE` in the environment (only `factory-agent-loop.sh` reads it) and defaults to Phase A, where `--watch` is a no-op that never reaches the lane:
+
+```bash
+FACTORY_CR_CLI=1 bash scripts/factory-agent.sh --watch --phase B --dry-run   # use the plist's current FACTORY_PHASE
+```
+
+Look for `CodeRabbit lane → promote (dry-run:<action>:<reason>)` lines. A dry run saves nothing, so the bot grace clock restarts on every tick: a commit with no CodeRabbit bot activity always reports `dry-run:hold:bot-grace`. `dry-run:start:gap:<state>` only shows for a commit where the bot left a rate-limit, skip or pause marker.
+
+**Inspecting and steering it:**
+
+```bash
+node scripts/lib/state-cli.mjs factory:cr-cli-status            # inFlight run, runs in the last hour, nextSlotAt, lane pause
+node scripts/lib/state-cli.mjs factory:cr-cli-pause-until <iso> "<reason>"  # pause the LANE only (not the factory)
+node scripts/lib/state-cli.mjs factory:cr-cli-resume            # lift a lane pause early (e.g. after re-auth)
+node scripts/lib/state-cli.mjs factory:get-issue <n>            # crCoverageSha / crCoverage / crLastCoveredSha / crCliRuns
+```
+
+A vendor rate-limit (`errorType:"rate_limit"`, with a `waitTime` such as "50 minutes") pauses **only this lane** until then. It never uses `factory:pause-until`, which would stop the whole factory.
+
+**What a lane pause does to cards.** A pause only stops new CLI runs. A converged card still holds for the bot (grace / in progress) and for a CLI run of its own that is already in flight; that run finishes and posts as usual. After that, the pause reason decides:
+
+- `rate_limited` / `action_required` (the pauses the lane sets itself on a vendor rate limit or billing-consent prompt): the card holds as `cli-paused` if the pause ends inside its `FACTORY_CR_HOLD_MAX_MIN` window, and otherwise promotes with coverage `budget`.
+- Anything else (`auth`, `doctor`, an operator's `factory:cr-cli-pause-until` reason, or a pause with no parseable end): the card promotes at once with coverage `cli-unavailable`.
+
+`factory:cr-cli-pause-until` is therefore not a way to stop cards holding. Use `FACTORY_CR_CLI=0` for that.
+
+**Where things live** (in the factory checkout, `/Users/jakub/code/drafto-factory`):
+
+- `logs/factory/cr-cli/<runId>/` — `meta.json` (binary, args, base commit, deadline), `events.ndjson` (the CLI's `--agent` event stream), `stderr.log`, and `exit.json` (`exitCode`, `signal`, `timedOut`, written when the run ends). Reaped after 30 days by the lane's housekeeping, which runs at the top of every `--watch` tick (the only retention rule for these dirs).
+- `worktrees/cr-cli-<issue>-<sha12>` — the detached checkout the CLI reviews. Removed when the run is processed; orphans are reaped by the next tick. A worktree is never reaped while a supervisor for it is still alive (a run dir's `meta.json` names the worktree, and a live process's command line carries that run id), even after its ledger entry was released; if the process table can't be read, every worktree a run dir claims is kept.
+
+**Killing a wedged run.** The supervisor runs the CLI in its own process group. `factory:cr-cli-finish` SIGTERMs that group itself — only when the run is still ours (the recorded pid is alive with the run id on its command line, or the supervisor has exited but members of its process group, i.e. the CLI, are still running; a reused pid is left alone) — and waits up to `--wait-ms` (default 10 s) until no live member of the group is left. Only then does it release the ledger slot and report `killed:true|false`. Otherwise it changes nothing and prints `ok:false`, so the gate never starts a second, vendor-refused run on top of a still-connected CLI:
+
+- `supervisor-still-running` — the group ignored SIGTERM. `kill -KILL -<pid>` (negative pid = the whole group) and run the finish again.
+- `supervisor-unverifiable` — `ps` failed, so ownership couldn't be checked. Do **not** kill a process group blind: inspect it first (`ps -axo pid,pgid,stat,command | awk '$2 == <pid>'`), fix whatever blocks `ps`, and retry.
+
+This is also the manual escape hatch when you can't wait for the next tick's housekeeping:
+
+```bash
+node scripts/lib/state-cli.mjs factory:cr-cli-status           # note inFlight.pid, .runId, .worktree
+node scripts/lib/state-cli.mjs factory:cr-cli-finish <runId> --refund none   # SIGTERMs the group, waits, then frees the slot
+kill -KILL -<pid>                                              # ONLY on supervisor-still-running (negative pid = the whole group); then re-run finish
+```
+
+Leave the worktree to housekeeping: its reap skips a worktree until that run's supervisor has actually exited, then removes it.
+
+**Coverage values** (`crCoverage`, recorded per head SHA). The first three produce no In Test note; the rest add "CodeRabbit did not review `<sha12>` (…)":
+
+| `crCoverage`      | Meaning                                                                                                                                                                                                                                                         | What to do                                                                                                   |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `bot`             | The PR bot reviewed this commit.                                                                                                                                                                                                                                | Nothing.                                                                                                     |
+| `cli`             | The CLI reviewed it and posted findings, every thread-worthy one as a thread (plus the summary).                                                                                                                                                                | Nothing — the fix loop answers the threads.                                                                  |
+| `cli-empty`       | The CLI reviewed it and found nothing (or skipped it because there were no changes).                                                                                                                                                                            | Nothing.                                                                                                     |
+| `cli-partial`     | The CLI reviewed it, but some thread-worthy findings only reached the summary comment (thread cap, or GitHub rejected the comment), or fewer findings could be parsed than the CLI reported.                                                                    | Read the CLI summary comment on the PR; nothing acted on those findings.                                     |
+| `cli-failed`      | The CLI run errored, timed out, or died; it reported a failed review, or skipped the review for any reason other than no changes; reported findings none of which could be parsed; or its findings still couldn't be posted 70 minutes past the run's deadline. | Read `logs/factory/cr-cli/<runId>/stderr.log` and `events.ndjson`, and the `--watch` log for the post error. |
+| `budget`          | No CLI slot (hourly budget, or the lane's own rate-limit / billing-consent pause) would open inside the hold window.                                                                                                                                            | Nothing, unless it's frequent — then lower interactive CLI use or raise `FACTORY_CR_HOLD_MAX_MIN`.           |
+| `hold-expired`    | The card waited `FACTORY_CR_HOLD_MAX_MIN` without coverage (e.g. another card's run was in flight), or its own run still wasn't collected 80 minutes past the run's deadline.                                                                                   | Nothing; review the commit by hand if it matters.                                                            |
+| `cap-reached`     | This card already used `FACTORY_CR_CLI_MAX_RUNS_PER_CARD` CLI runs this stint.                                                                                                                                                                                  | Nothing.                                                                                                     |
+| `cli-unavailable` | No `coderabbit` binary, `coderabbit doctor` failing, or the lane is paused for any reason but a vendor rate limit or billing-consent prompt (`auth`, `doctor`, an operator pause).                                                                              | See "Re-auth" below, or lift an operator pause with `factory:cr-cli-resume`.                                 |
+
+**Never `--use-credits`.** That flag bills usage-based reviews once the included allowance is spent. The factory never passes it (a test scans `scripts/` for the string, and the supervisor re-checks the command it is about to spawn), and an `action_required` (on-demand billing consent) result is treated as an exhausted budget. Note that the spike's rate-limit error reported "Usage-based reviews are enabled" for the organisation even though `coderabbit usage` shows "Usage billing : inactive" (the account has no assigned seat, so it can't be charged today). Belt and braces: in the CodeRabbit dashboard (Subscription and Billing), disable usage-based reviews or set a $0 spending cap.
+
+**Re-auth.** If a run fails with an auth error, the lane pauses itself for 6 h and cards promote with `cli-unavailable`. Fix it on the Mac mini:
+
+```bash
+coderabbit auth status        # "Signed in"? which organisation?
+coderabbit auth login         # browser; re-writes ~/.coderabbit/auth.json
+coderabbit doctor             # all checks must pass
+node scripts/lib/state-cli.mjs factory:cr-cli-resume
+```
+
+Auth is a file, not the Keychain, so it keeps working from launchd after a headless reboot. If `doctor` fails on `Backend reachable` / `WebSocket reachable`, it's the network or the vendor — the lane's 60-minute `doctor` pause retries on its own.
+
 ## Kill switches
 
-| Severity                     | Action                                                                                                                                                                                                                                                                                                                                                                                    |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| One bad card                 | Drag to **Blocked**, or apply `factory-pause` to the issue. Factory skips it next tick.                                                                                                                                                                                                                                                                                                   |
-| Stop all factory work        | `node scripts/lib/state-cli.mjs factory:pause` (Wave 2+). Manual pause never auto-expires. Resume with `factory:resume`.                                                                                                                                                                                                                                                                  |
-| Stop the launchd job         | `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist`. Reload to resume.                                                                                                                                                                                                                                                                                                      |
-| Active Claude session hangs  | `node scripts/lib/state-cli.mjs factory:slot-status` shows the PID + issue for each implement/watch slot; `kill -TERM <pid>`. The wall-time wrapper (`run-claude.mjs`) caps each invocation (`FACTORY_PLAN_TIMEOUT_SEC` — default 360 s — for `--plan`/replan, `FACTORY_IMPLEMENT_TIMEOUT_SEC`/`FACTORY_WATCH_TIMEOUT_SEC` for the engines — default 2700/1800 s) so a true hang is rare. |
-| Worktree install hangs       | Each `pnpm install` is wrapped by `run-with-timeout.mjs` and capped at `FACTORY_INSTALL_TIMEOUT_SEC` (default 600 s); on cap, `--implement` releases the slot + worktree and bumps the card's attempt budget, while `--watch` logs a warning and proceeds. A cold install should take seconds (clonefile seed + offline reconcile), not minutes — see "Worktree installs & disk".         |
-| Stuck PR with a wrong commit | `gh pr close <n> --delete-branch`. Drag the card back to Ready. Factory will re-plan on the next tick.                                                                                                                                                                                                                                                                                    |
-| Plan needs a single tweak    | Comment on the issue with the correction; on the next tick the factory edits the existing plan comment in place (preserves the rest, stamps `<!-- drafto-factory-replan-ack:<id> -->` so the same comment doesn't loop). Drag back to Ready only if you want a full restart. See `docs/features/dark-factory.md` → "The plan comment looks wrong".                                        |
+| Severity                        | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One bad card                    | Drag to **Blocked**, or apply `factory-pause` to the issue. Factory skips it next tick.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Stop all factory work           | `node scripts/lib/state-cli.mjs factory:pause` (Wave 2+). Manual pause never auto-expires. Resume with `factory:resume`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Stop the launchd job            | `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist`. Reload to resume.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Active Claude session hangs     | `node scripts/lib/state-cli.mjs factory:slot-status` shows the PID + issue for each implement/watch slot; `kill -TERM <pid>`. The wall-time wrapper (`run-claude.mjs`) caps each invocation (`FACTORY_PLAN_TIMEOUT_SEC` — default 360 s — for `--plan`/replan, `FACTORY_IMPLEMENT_TIMEOUT_SEC`/`FACTORY_WATCH_TIMEOUT_SEC` for the engines — default 2700/1800 s) so a true hang is rare.                                                                                                                                                                                                                                          |
+| Worktree install hangs          | Each `pnpm install` is wrapped by `run-with-timeout.mjs` and capped at `FACTORY_INSTALL_TIMEOUT_SEC` (default 600 s); on cap, `--implement` releases the slot + worktree and bumps the card's attempt budget, while `--watch` logs a warning and proceeds. A cold install should take seconds (clonefile seed + offline reconcile), not minutes — see "Worktree installs & disk".                                                                                                                                                                                                                                                  |
+| CodeRabbit CLI lane misbehaving | Set `FACTORY_CR_CLI=0` in the plist and reload. Cards then promote without waiting for CodeRabbit. Housekeeping keeps running with the lane off: it terminates an in-flight CLI run (SIGTERM to its process group) and discards any finished run's results — nothing is posted and no coverage is recorded — then removes the run's worktree and frees the slot. To do that by hand right away, see "Killing a wedged run". A lane pause (`factory:cr-cli-pause-until`) only stops new runs; cards still hold for the bot and their own in-flight run (see "What a lane pause does to cards"). See "CodeRabbit CLI gap-fill lane". |
+| Stuck PR with a wrong commit    | `gh pr close <n> --delete-branch`. Drag the card back to Ready. Factory will re-plan on the next tick.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Plan needs a single tweak       | Comment on the issue with the correction; on the next tick the factory edits the existing plan comment in place (preserves the rest, stamps `<!-- drafto-factory-replan-ack:<id> -->` so the same comment doesn't loop). Drag back to Ready only if you want a full restart. See `docs/features/dark-factory.md` → "The plan comment looks wrong".                                                                                                                                                                                                                                                                                 |
 
 ### Automatic pause on a Claude session limit (self-healing)
 
@@ -388,5 +514,6 @@ xcrun simctl delete unavailable
 
 - [`docs/features/dark-factory.md`](../features/dark-factory.md) — operator manual.
 - [ADR-0026](../adr/0026-dark-factory-pipeline.md) — decision record.
+- [ADR-0035](../adr/0035-factory-code-review-gate.md) / [ADR-0036](../adr/0036-factory-coderabbit-cli-gap-fill.md) — review-thread merge gate and the CodeRabbit CLI gap-fill lane.
 - [`docs/operations/migrations.md`](./migrations.md) — migration safety + rollback workflow.
 - [`docs/operations/builds-and-releases.md`](./builds-and-releases.md) — release commands, beta lanes.

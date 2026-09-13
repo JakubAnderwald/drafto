@@ -133,6 +133,20 @@ describe("intest_handoff — failure degrades, never escalates", () => {
     assert.match(body, /check_session_limit/);
   });
 
+  it("forwards its coverage-note argument to every fallback and to the bundle", () => {
+    assert.match(body, /local cr_note="\$\{10:-\}"/);
+    const calls = body.match(/intest_fallback_comment [^\n]*/g) || [];
+    assert.ok(calls.length >= 6);
+    for (const call of calls) {
+      assert.match(call, /"\$\{beta_json:-\}" "\$cr_note"$/, `fallback without the note: ${call}`);
+    }
+    assert.match(body, /"\$head_sha" "\$comments_json" "\$cr_note"\); then/);
+    const bundle = fnBody("build_intest_bundle");
+    assert.match(bundle, /local cr_coverage_note="\$\{12:-\}"/);
+    assert.match(bundle, /--arg crCoverageNote "\$cr_coverage_note"/);
+    assert.match(bundle, /crCoverageNote: \$crCoverageNote,/);
+  });
+
   it("trusts the posted marker over the model's directive line", () => {
     assert.match(body, /issue_has_marker "\$issue_num" "drafto-factory-test-scenario"/);
   });
@@ -207,6 +221,13 @@ describe("intest_fallback_comment — always usable", () => {
 
   it("surfaces advisory reds", () => {
     assert.match(body, /Advisory \(non-required\) checks are not green: \$advisory/);
+  });
+
+  it("takes the CodeRabbit coverage note as its own argument, never out of $advisory", () => {
+    // ADR-0036: the note is not a check. Rendering is covered behaviourally in
+    // factory-agent-cr-cli.test.mjs; this pins the signature every caller uses.
+    assert.match(body, /local beta="\$\{7:-\}" cr_note="\$\{8:-\}"/);
+    assert.doesNotMatch(body, /CodeRabbit did not review|CodeRabbit coverage of/);
   });
 });
 

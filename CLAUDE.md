@@ -31,6 +31,7 @@ Drafto runs on free / already-paid-for tiers. Before proposing any new paid serv
 - **Zoho Mail Forever Free** for inbound `support@drafto.eu` (EU data centre, MX `mx.zoho.eu`) — the dedicated `support@drafto.eu` user is OAuthed by `scripts/support-agent.sh`. See [`docs/features/support-agent.md`](./docs/features/support-agent.md) and [ADR-0024](./docs/adr/0024-realtime-support-agent.md).
 - **Mac mini** for scheduled agent work — already runs `scripts/support-agent.sh` (every 5 min, real-time support pipeline), `scripts/nightly-support.sh` (00:03), and `scripts/nightly-audit.sh` (05:00) via launchd, has `gh` CLI authenticated, and runs Claude Code with `--dangerously-skip-permissions` on an existing paid subscription.
 - **GoDaddy** registrar / DNS (don't assume Cloudflare; Cloudflare is not the DNS provider).
+- **CodeRabbit free tiers** — the PR bot runs on the free OSS tier (public repo), and the factory's gap-fill lane uses the free CodeRabbit CLI allowance (3 reviews/hr) on the Mac mini to review commits the bot skipped. No usage-based add-on; the factory never passes `--use-credits`. See [ADR-0036](./docs/adr/0036-factory-coderabbit-cli-gap-fill.md).
 
 If a feature genuinely requires paid infrastructure, surface that explicitly as a tradeoff and let the user decide. Don't silently introduce new monthly line items.
 

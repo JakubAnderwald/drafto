@@ -50,6 +50,10 @@ You will receive a single JSON bundle (last fenced ` ```json ` block). Shape:
   "platforms": { "mobile": true, "desktop": true, "web": false },
   "previewUrl": "https://drafto-git-....vercel.app",   // "" when Vercel had none
   "advisory": "CodeRabbit",                             // "" when advisory checks are green
+  // A note, NOT a check — "" when CodeRabbit reviewed this commit (or the lane is off).
+  // e.g. "CodeRabbit did not review a1b2c3d4e5f6 (hourly CLI budget spent)", or
+  // "CodeRabbit coverage of a1b2c3d4e5f6 unknown (lane error)" when the lane failed.
+  "crCoverageNote": "",
   // What bash already did about native builds. Report these facts; never invent them.
   "betaDispatch": {
     "dispatched": [ { "id": "mobile", "command": "pnpm release:beta:all" } ],
@@ -198,6 +202,14 @@ Compose it in Markdown from the bundle's facts. Structure:
 - When `advisory` is non-empty: a one-line ⚠️ note that advisory (non-required)
   checks are not green — naming them — and that they don't block the merge but
   are worth a glance.
+- When `crCoverageNote` is non-empty (a CodeRabbit review-coverage note:
+  "CodeRabbit did not review <sha12> (…)", or "CodeRabbit coverage of <sha12>
+  unknown (lane error)"): surface `crCoverageNote` **verbatim** as a one-line ℹ️
+  note of its own — it tells the tester this commit may have had no automated
+  CodeRabbit review, so it deserves a closer look. It is not a failing check:
+  never list it among the advisory checks or describe it as one, and never show
+  it when the field is empty. Take it only from `crCoverageNote`; `advisory`
+  never carries it.
 - A closing line: drag the card to **Approved** to merge and ship, or comment
   what you want changed and the factory revises on the same PR branch.
 - When `prDiffTruncated` is true and you did not expand it with `gh pr diff`,
