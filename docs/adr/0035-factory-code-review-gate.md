@@ -97,6 +97,9 @@ The review runs **on the Mac mini**, as a sixth `claude -p` call inside
   `FACTORY_MAX_ATTEMPTS` therefore caps the review conversation at five rounds,
   after which the existing exhaustion path parks the card in Blocked. Attempts
   reset on the In Test promotion, so a converging card pays nothing lasting.
+- **Follow-up**: the commits CodeRabbit's PR bot skips (rate limits, the star
+  threshold, auto-pause) are filled by the CodeRabbit CLI lane in
+  [ADR-0036](./0036-factory-coderabbit-cli-gap-fill.md).
 
 ## Alternatives Considered
 

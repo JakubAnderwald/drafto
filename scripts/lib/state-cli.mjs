@@ -103,10 +103,37 @@
 //                                    lastFeedbackAt, intestCommentSha,
 //                                    intestBetaSha, intestBetaAt,
 //                                    intestBetaLanes, intestBetaAttempts,
-//                                    lastReviewSha}.
+//                                    lastReviewSha, crConvergedSha,
+//                                    crConvergedAt, crCoverageSha, crCoverage,
+//                                    crLastCoveredSha, crCliRuns,
+//                                    crCliFreePassSha}.
 //                                    Empty/`null` clears the field.
 //   factory:get-issue <issue>       Print issues[<n>] as JSON (empty record
 //                                    if absent).
+//
+// CodeRabbit CLI lane (ADR-0036). The lane itself reserves/attaches runs via
+// factory-state.mjs directly (coderabbit-cli.mjs); these are the operator's
+// view and escape hatches.
+//
+//   factory:cr-cli-status           Print the crCli ledger plus derived
+//                                    usedLastHour, nextSlotAt and paused.
+//                                    Clears (and persists) an expired lane
+//                                    pause before reporting.
+//   factory:cr-cli-pause-until <iso> [<reason>]
+//                                    Pause ONLY the CodeRabbit lane until <iso>.
+//                                    Never touches the factory pause.
+//   factory:cr-cli-resume           Clear the lane pause.
+//   factory:cr-cli-finish <runId> [--refund none|spawn|card]
+//                                    Release a wedged in-flight run. Prints
+//                                    {ok:false, reason:"run-id-mismatch"} (exit
+//                                    0) when <runId> isn't the in-flight run.
+//                                    Otherwise SIGTERMs the run's supervisor
+//                                    process group first — only when its pid is
+//                                    alive AND its command line carries <runId>
+//                                    (a reused pid is left alone) — and reports
+//                                    killed:true|false. The worktree is left to
+//                                    housekeeping, whose reap skips it until the
+//                                    supervisor has actually exited.
 //
 // State path can be overridden via --state-file <path> for tests; defaults to
 // state.mjs's DEFAULT_STATE_PATH for support subcommands and to
@@ -123,6 +150,7 @@
 //
 // Exit non-zero with a single-line JSON {"error": "..."} to stderr on failure.
 
+import { spawnSync } from "node:child_process";
 import { loadState, saveState, DEFAULT_STATE_PATH } from "./state.mjs";
 import {
   loadFactoryState,
@@ -141,6 +169,13 @@ import {
   resetIssueAttempts,
   getIssue,
   setIssueField,
+  getCrCli,
+  crCliUsage,
+  isCrCliPaused,
+  clearExpiredCrCliPause,
+  pauseCrCli,
+  resumeCrCli,
+  finishCrCliRun,
 } from "./factory-state.mjs";
 import { bumpNotification, bumpCounters } from "./policy.mjs";
 import { parseFlags } from "./parse-flags.mjs";
@@ -155,6 +190,23 @@ function isPidAlive(pid) {
     // ESRCH = no such process; EPERM = process exists but we can't signal it
     // (still counts as alive for liveness purposes).
     return err.code === "EPERM";
+  }
+}
+
+// Releasing a run in the ledger without stopping it would leave a vendor review
+// running that nothing collects, and the gate free to start a second one — which
+// the vendor refuses while the first is connected. The supervisor was spawned
+// detached, so it leads its own process group and -pid reaches the CLI too.
+function killCrCliSupervisor(inFlight) {
+  const pid = inFlight?.pid;
+  if (!Number.isInteger(pid) || pid <= 0 || !isPidAlive(pid)) return false;
+  const ps = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+  if (ps.status !== 0 || !String(ps.stdout ?? "").includes(inFlight.runId)) return false;
+  try {
+    process.kill(-pid, "SIGTERM");
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -475,6 +527,53 @@ async function main(argv) {
       const state = await loadFactoryState(file);
       return getIssue(state, issueNumber);
     }
+    case "factory:cr-cli-status": {
+      const state = await loadFactoryState(file);
+      // Same auto-resume-on-read as factory:paused?, for the same reason: the
+      // status an operator sees should never report a pause that has expired.
+      if (clearExpiredCrCliPause(state, now)) {
+        await saveFactoryState(state, file);
+      }
+      const crCli = getCrCli(state);
+      return {
+        ...crCli,
+        ...crCliUsage(state, { now }),
+        paused: isCrCliPaused(state, now),
+      };
+    }
+    case "factory:cr-cli-pause-until": {
+      const until = positional[0];
+      const reason = positional[1] ?? null;
+      if (!until) throw new Error("factory:cr-cli-pause-until requires <until-iso> [<reason>]");
+      if (Number.isNaN(Date.parse(until))) {
+        throw new Error(`factory:cr-cli-pause-until: invalid <until-iso>: ${until}`);
+      }
+      const state = await loadFactoryState(file);
+      const crCli = pauseCrCli(state, { until, reason });
+      await saveFactoryState(state, file);
+      return { ok: true, pausedUntil: crCli.pausedUntil, pausedReason: crCli.pausedReason };
+    }
+    case "factory:cr-cli-resume": {
+      const state = await loadFactoryState(file);
+      resumeCrCli(state);
+      await saveFactoryState(state, file);
+      return { ok: true, paused: false };
+    }
+    case "factory:cr-cli-finish": {
+      const runId = positional[0];
+      if (!runId)
+        throw new Error("factory:cr-cli-finish requires <runId> [--refund none|spawn|card]");
+      const refund = flags.refund ?? "none";
+      const state = await loadFactoryState(file);
+      const inFlight = getCrCli(state).inFlight;
+      // Finish in memory first: it validates <runId> and --refund, so a bad
+      // invocation throws before anything is signalled.
+      const result = finishCrCliRun(state, runId, { refund, now });
+      if (!result.ok) return result;
+      const killed = killCrCliSupervisor(inFlight);
+      await saveFactoryState(state, file);
+      return { ...result, killed };
+    }
     case "--help":
     case "-h":
     case undefined:
@@ -499,7 +598,11 @@ async function main(argv) {
           "factory:reset-attempts <issue>|" +
           "factory:get-attempts <issue>|" +
           "factory:set-issue-field <issue> <field> <value>|" +
-          "factory:get-issue <issue>> " +
+          "factory:get-issue <issue>|" +
+          "factory:cr-cli-status|" +
+          "factory:cr-cli-pause-until <until-iso> [<reason>]|" +
+          "factory:cr-cli-resume|" +
+          "factory:cr-cli-finish <runId> [--refund none|spawn|card]> " +
           "[--state-file <path>] [--now <iso>]\n",
       );
       return null;

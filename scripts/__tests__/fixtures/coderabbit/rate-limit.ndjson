@@ -1,0 +1,4 @@
+{"type":"review_context","reviewType":"all","currentBranch":"HEAD","baseBranch":"main","baseCommit":"8e91dff82bbc8a089e6c8cffc73fbd565ac306d9","workingDirectory":"/tmp/wt"}
+{"type":"status","phase":"connecting","status":"connecting_to_review_service"}
+{"type":"status","phase":"setup","status":"setting_up"}
+{"type":"error","errorType":"rate_limit","message":"Rate limit exceeded","recoverable":true,"details":{},"metadata":{"isProUser":false,"waitTime":"50 minutes","policyGuidance":"**Limit details:** You’ve used all 3 included reviews currently available.\n\nUsage-based reviews are enabled, but this Git provider account isn't linked to an assigned seat for the selected organization. Link or assign the seat, or use an Agentic API key, then retry.\n\n[Check out review usage here](https://app.coderabbit.ai/dashboard/review-capacity).","onDemandReviewAvailable":false,"cliReviewPolicyMode":"normal"}}

@@ -716,7 +716,8 @@ export function buildFactoryReviewBundle({
 // asked for), the approved plan (what was meant to change), the actual PR diff
 // (what DID change — the ground truth for the scenario), the platforms derived
 // from that diff, and the facts bash already knows (preview URL, dispatched
-// beta lanes, advisory checks) so the model never invents a URL or build number.
+// beta lanes, advisory checks, CodeRabbit coverage note) so the model never
+// invents a URL or build number.
 export function buildFactoryInTestBundle({
   issue,
   approvedPlan,
@@ -726,6 +727,7 @@ export function buildFactoryInTestBundle({
   platforms = {},
   previewUrl = "",
   advisory = "",
+  crCoverageNote = "",
   betaDispatch = null,
   headSha = "",
   comments = [],
@@ -786,6 +788,13 @@ export function buildFactoryInTestBundle({
     },
     previewUrl: typeof previewUrl === "string" ? previewUrl : "",
     advisory: typeof advisory === "string" ? advisory : "",
+    // The CodeRabbit CLI lane's one-line coverage note (ADR-0036) — "CodeRabbit
+    // did not review <sha12> (…)", or "CodeRabbit coverage of <sha12> unknown
+    // (lane error)" when the lane failed open — "" when the commit was covered
+    // or the lane is off. A field of its own rather
+    // than a suffix on `advisory`: it is not a failing check, and a joined string
+    // could only be split back apart by guessing at the note's wording.
+    crCoverageNote: typeof crCoverageNote === "string" ? crCoverageNote : "",
     betaDispatch: betaDispatch
       ? {
           dispatched: Array.isArray(betaDispatch.dispatched) ? betaDispatch.dispatched : [],
@@ -873,6 +882,7 @@ async function main() {
       platforms: input.platforms,
       previewUrl: input.previewUrl,
       advisory: input.advisory,
+      crCoverageNote: input.crCoverageNote,
       betaDispatch: input.betaDispatch,
       headSha: input.headSha,
       comments: input.comments,

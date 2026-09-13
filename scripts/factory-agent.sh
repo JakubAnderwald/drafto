@@ -176,6 +176,43 @@ if ! [[ "$FACTORY_REVIEW_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
 fi
 REVIEW_TIMEOUT_SEC="$FACTORY_REVIEW_TIMEOUT_SEC"
 
+# ── CodeRabbit CLI gap-fill lane (ADR-0036) ────────────────────────────────
+# The CodeRabbit PR bot is on the free OSS tier and often doesn't review a head
+# SHA at all (rate-limited, auto-paused after 2 commits, <10-star skip). When it
+# didn't, --watch runs the CodeRabbit CLI (its own free 3/hour allowance) on the
+# converged PR in a detached background worktree and posts the findings as review
+# threads, which the ADR-0035 fix loop answers like any other. The card holds in
+# In Review while that is pending, bounded by FACTORY_CR_HOLD_MAX_MIN plus the
+# run timeout, and is promoted with a "not reviewed" note if coverage never
+# comes. Off by default; decisions live in scripts/lib/coderabbit-cli.mjs, which
+# reads these knobs from the environment (FACTORY_CR_CLI_BIN is passed through
+# as-is). See docs/adr/0036-factory-coderabbit-cli-gap-fill.md.
+FACTORY_CR_CLI="${FACTORY_CR_CLI:-0}"
+if [[ "$FACTORY_CR_CLI" != "0" && "$FACTORY_CR_CLI" != "1" ]]; then
+  echo "WARNING: invalid FACTORY_CR_CLI='$FACTORY_CR_CLI'; defaulting to 0" >&2
+  FACTORY_CR_CLI=0
+fi
+FACTORY_CR_CLI_MAX_PER_HOUR="${FACTORY_CR_CLI_MAX_PER_HOUR:-3}"
+FACTORY_CR_CLI_MAX_RUNS_PER_CARD="${FACTORY_CR_CLI_MAX_RUNS_PER_CARD:-2}"
+FACTORY_CR_CLI_TIMEOUT_MIN="${FACTORY_CR_CLI_TIMEOUT_MIN:-45}"
+FACTORY_CR_BOT_GRACE_MIN="${FACTORY_CR_BOT_GRACE_MIN:-15}"
+FACTORY_CR_HOLD_MAX_MIN="${FACTORY_CR_HOLD_MAX_MIN:-60}"
+# Validate before exporting, like the timeouts above: a garbage value would reach
+# coderabbit-cli.mjs as NaN, every comparison against NaN is false, and the
+# budget / hold caps would silently never fire.
+for _cr_knob in FACTORY_CR_CLI_MAX_PER_HOUR:3 FACTORY_CR_CLI_MAX_RUNS_PER_CARD:2 \
+    FACTORY_CR_CLI_TIMEOUT_MIN:45 FACTORY_CR_BOT_GRACE_MIN:15 FACTORY_CR_HOLD_MAX_MIN:60; do
+  _cr_name="${_cr_knob%%:*}"
+  _cr_default="${_cr_knob##*:}"
+  if ! [[ "${!_cr_name}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "WARNING: invalid $_cr_name='${!_cr_name}'; defaulting to $_cr_default" >&2
+    printf -v "$_cr_name" '%s' "$_cr_default"
+  fi
+done
+unset _cr_knob _cr_name _cr_default
+export FACTORY_CR_CLI FACTORY_CR_CLI_MAX_PER_HOUR FACTORY_CR_CLI_MAX_RUNS_PER_CARD \
+  FACTORY_CR_CLI_TIMEOUT_MIN FACTORY_CR_BOT_GRACE_MIN FACTORY_CR_HOLD_MAX_MIN
+
 # ── Pre-merge beta dispatch (In Test) ──────────────────────────────────────
 # Off by default. Deliberately separate from the Phase-D post-merge lane: a card
 # in In Test needs a testable native build BEFORE the merge gate, but enabling
@@ -312,6 +349,12 @@ find "$LOG_DIR" -type f -name 'factory-agent-*.log' -mtime +30 -delete 2>/dev/nu
 # succeeded build into a failure and rebuild it.
 find "$LOG_DIR" -type f -name 'beta-lane-*.log' -mtime +30 -delete 2>/dev/null || true
 find "$LOG_DIR" -type f -name 'beta-lane-*.log.exit' -mtime +90 -delete 2>/dev/null || true
+# CodeRabbit CLI run dirs (events, stderr, exit.json — one per background review,
+# ADR-0036). Deliberately NOT rotated here: coderabbit-cli.mjs housekeeping reaps
+# them on its own 30-day window every --watch tick, and it is the one place that
+# knows which dir still belongs to the in-flight run. A second sweep here would
+# be a second retention rule to keep in step with that one.
+CR_CLI_RUN_ROOT="$LOG_DIR/cr-cli"
 # (Build-root locks live at "<root>.lock" beside the root itself, not in
 # $LOG_DIR, and are reaped by the pid check in ensure_beta_build_root.)
 
@@ -911,7 +954,8 @@ build_review_bundle() {
 # Build the factory_intest bundle for the In Review → In Test hand-off. $2
 # approved-plan obj|null, $3 prior-PR obj, $4 raw PR diff, $5 changed-file list,
 # $6 platforms JSON, $7 preview URL, $8 advisory text, $9 beta-dispatch JSON,
-# ${10} head SHA, ${11} full issue-comment thread JSON.
+# ${10} head SHA, ${11} full issue-comment thread JSON, ${12} CodeRabbit coverage
+# note (ADR-0036; "" when the commit was covered or the lane is off).
 build_intest_bundle() {
   local issue_entry="$1"
   local approved_plan="${2:-null}"
@@ -924,6 +968,7 @@ build_intest_bundle() {
   local beta_dispatch="${9:-null}"
   local head_sha="${10:-}"
   local comments="${11:-[]}"
+  local cr_coverage_note="${12:-}"
   local repo_head_ref
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   jq -n \
@@ -935,6 +980,7 @@ build_intest_bundle() {
     --argjson platforms "$platforms" \
     --arg previewUrl "$preview_url" \
     --arg advisory "$advisory" \
+    --arg crCoverageNote "$cr_coverage_note" \
     --argjson betaDispatch "$beta_dispatch" \
     --arg headSha "$head_sha" \
     --argjson comments "$comments" \
@@ -958,6 +1004,7 @@ build_intest_bundle() {
        platforms: $platforms,
        previewUrl: $previewUrl,
        advisory: $advisory,
+       crCoverageNote: $crCoverageNote,
        betaDispatch: $betaDispatch,
        headSha: $headSha,
        comments: [],
@@ -1979,10 +2026,10 @@ intest_dispatch_betas() {
 # reporter must still get something usable. Platform-aware for the same reason
 # the model's version is: a Vercel link on a native-only PR tests nothing.
 # $1 issue, $2 pr-num, $3 preview URL, $4 advisory, $5 head sha, $6 platforms JSON,
-# $7 betaDispatch JSON (optional).
+# $7 betaDispatch JSON (optional), $8 CodeRabbit coverage note (optional).
 intest_fallback_comment() {
   local issue_num="$1" pr_num="$2" preview_url="$3" advisory="$4" head_sha="$5" platforms="$6"
-  local beta="${7:-}"
+  local beta="${7:-}" cr_note="${8:-}"
   local web mobile desktop dispatched build_note="" advisory_note=""
   web=$(echo "$platforms" | jq -r '.web // false' 2>/dev/null || echo "false")
   mobile=$(echo "$platforms" | jq -r '.mobile // false' 2>/dev/null || echo "false")
@@ -2013,6 +2060,14 @@ intest_fallback_comment() {
   [[ -n "$advisory" ]] && advisory_note="
 
 ⚠️ Advisory (non-required) checks are not green: $advisory. They don't block the merge, but are worth a glance before Approving."
+  # The CodeRabbit lane's coverage note (ADR-0036) arrives as its own argument,
+  # never inside $advisory: it is not a check, so it gets its own line and its
+  # own wording instead of being listed among the reds.
+  if [[ -n "$cr_note" ]]; then
+    advisory_note="$advisory_note
+
+ℹ️ $cr_note — not a failing check: this commit may have had no automated CodeRabbit review, so it deserves a closer look before Approving."
+  fi
   gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
     --body "🏭 **Ready to test — In Test.**
 
@@ -2058,6 +2113,11 @@ intest_handoff() {
   # computed here, so a dispatch blocked by a transient condition can be retried
   # on a later tick without also rewriting the scenario. See the sweep.
   local beta_json="${9:-}"
+  # ${10}: the CodeRabbit lane's one-line coverage note for $head_sha (ADR-0036),
+  # "" when there is none. Its own argument, never folded into $advisory: it is
+  # not a failing check, and both the scenario writer (bundle.crCoverageNote) and
+  # the fallback comment render it apart from the reds.
+  local cr_note="${10:-}"
   # Default here rather than in the expansion: a `}` inside ${..:-..} has to be
   # escaped, and the escape leaks a literal backslash into the value — which
   # produced INVALID JSON for the designated fallback payload.
@@ -2068,7 +2128,7 @@ intest_handoff() {
   if [[ ! -f "$INTEST_PROMPT_FILE" ]]; then
     log "WARNING: In Test prompt missing ($INTEST_PROMPT_FILE); posting fallback comment"
     if [[ "$DRY_RUN" -eq 0 ]]; then
-      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
+      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
       intest_record_comment_sha "$issue_num" "$head_sha"
     fi
     return 0
@@ -2076,7 +2136,7 @@ intest_handoff() {
   if ! issue_record=$(fetch_issue_record "$issue_num"); then
     log "WARNING: fetch_issue_record failed for #$issue_num (In Test hand-off); posting fallback"
     if [[ "$DRY_RUN" -eq 0 ]]; then
-      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
+      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
       intest_record_comment_sha "$issue_num" "$head_sha"
     fi
     return 0
@@ -2093,10 +2153,10 @@ intest_handoff() {
 
   if ! bundle=$(build_intest_bundle "$issue_record" "$plan_json" "$pr_obj" "$pr_diff" \
       "$diff_files" "$platforms" "$preview_url" "$advisory" "$beta_json" \
-      "$head_sha" "$comments_json"); then
+      "$head_sha" "$comments_json" "$cr_note"); then
     log "ERROR: build_intest_bundle failed for #$issue_num; posting fallback"
     if [[ "$DRY_RUN" -eq 0 ]]; then
-      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
+      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
       intest_record_comment_sha "$issue_num" "$head_sha"
     fi
     return 0
@@ -2127,13 +2187,13 @@ intest_handoff() {
     # falls back. Either way the retry budget is untouched — this is commentary.
     if [[ $exit_code -ne 124 ]] && check_session_limit "$REPO_ROOT" "$start_iso"; then
       rm -f "$out_file"
-      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
+      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
       intest_record_comment_sha "$issue_num" "$head_sha"
       pause_for_session_limit
       return 0
     fi
     rm -f "$out_file"
-    intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
+    intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
     intest_record_comment_sha "$issue_num" "$head_sha"
     return 0
   fi
@@ -2150,7 +2210,7 @@ intest_handoff() {
     log "Issue #$issue_num: test scenario posted (action=${action:-unknown})"
   else
     log "Issue #$issue_num: no test-scenario comment found (action=${action:-none}); posting fallback"
-    intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}"
+    intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
   fi
   intest_record_comment_sha "$issue_num" "$head_sha"
   return 0
@@ -2272,9 +2332,27 @@ review_stage() {
 # existing exhaustion path parks the card in Blocked for a human. Attempts reset
 # on the In Test promotion, so a card that converges pays nothing lasting.
 #
-# Reads THREAD_COUNT / FAILING / ISSUE_NUM from the enclosing --watch loop.
+# One exemption (ADR-0036): a pass whose open threads are ALL CodeRabbit CLI
+# findings from the latest CLI run is free. Without it the gap-fill lane would
+# eat the review budget — bot fix, Claude fix, CLI fix, re-review fix, CLI #2 fix
+# is five passes and a Blocked card for doing exactly what the lane exists for.
+# The exemption is itself bounded, so the termination guarantee above still
+# holds: coderabbit-cli.mjs grants at most ONE free pass per CLI run (keyed on
+# crLastCoveredSha, recorded as crCliFreePassSha), a card gets at most
+# FACTORY_CR_CLI_MAX_RUNS_PER_CARD runs, and a thread counts as a CLI finding only
+# when the owner identity posted it with the finding marker — a public commenter
+# can't forge one to dodge the budget. Any free-pass failure spends the attempt.
+#
+# Reads THREAD_COUNT / FAILING / ISSUE_NUM / REVIEW_THREADS from the enclosing
+# --watch loop.
 watch_bound_thread_loop() {
   [[ "${THREAD_COUNT:-0}" -gt 0 && "${FAILING:-0}" -eq 0 ]] || return 0
+  if echo "${REVIEW_THREADS:-[]}" | node "$SCRIPT_DIR/lib/coderabbit-cli.mjs" free-pass \
+      --issue "$ISSUE_NUM" --state-file "$STATE_FILE" 2>>"$LOG_FILE" \
+      | jq -e '.exempt == true' >/dev/null 2>&1; then
+    log "Issue #$ISSUE_NUM: all open threads are CodeRabbit CLI findings from the latest CLI run; free pass, no attempt spent"
+    return 0
+  fi
   log "Issue #$ISSUE_NUM: review-thread fix pass; spending one attempt to bound the loop"
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
     --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
@@ -2327,6 +2405,127 @@ fetch_review_threads() {
           isOutdated: (.isOutdated // false),
           comments: [ .comments.nodes[]? | { body: (.body // ""), author: { login: (.author.login // "") } } ] } ]' \
     2>/dev/null || return 1
+}
+
+# Collect a finished background CodeRabbit CLI review (ADR-0036): post its
+# findings as threads, record coverage, remove its worktree, free the ledger's
+# single in-flight slot. All of that lives in coderabbit-cli.mjs; this wrapper
+# only guarantees the lane can never take the tick down with it — any failure is
+# a WARNING and the in-flight run is simply looked at again next tick.
+#
+# Deliberately NOT gated on FACTORY_CR_CLI: a run started before the knob was
+# flipped off still owns a worktree and the in-flight slot, and must be reaped.
+# Switching the lane off is a kill switch, not a drain. coderabbit-cli.mjs reads
+# the exported FACTORY_CR_CLI itself and, when it isn't "1", terminates a
+# still-running run (SIGTERM to its process group) and discards a finished one's
+# results: nothing is posted, no coverage is recorded, the worktree is removed
+# and the slot freed. Posting anyway would open threads on a PR whose card may
+# already be In Test, and --release would bounce it back for a re-approval.
+#
+# The module's last stdout line is {state: idle|starting|running|overdue|done|
+# lost|terminated|error|…, …} ("terminated": a still-running run stopped because
+# its PR head moved on or the PR closed; logged below). It exits 0 even when it
+# caught its own exception (state "error"), so that case is flagged here; a
+# non-zero exit is a usage error or a hard crash.
+cr_cli_housekeeping() {
+  local out state reaped discarded
+  if ! out=$(node "$SCRIPT_DIR/lib/coderabbit-cli.mjs" housekeeping --state-file "$STATE_FILE" \
+      --repo-root "$REPO_ROOT" --run-root "$CR_CLI_RUN_ROOT" --dry-run "${DRY_RUN:-0}" 2>>"$LOG_FILE"); then
+    log "WARNING: CodeRabbit CLI housekeeping failed (non-fatal; retried next tick)"
+    return 0
+  fi
+  out=$(printf '%s\n' "$out" | tail -1)
+  [[ -n "$out" ]] || return 0
+  state=$(echo "$out" | jq -r '.state // ""' 2>/dev/null || echo "")
+  reaped=$(echo "$out" | jq -r '((.reaped.worktrees // []) + (.reaped.runDirs // [])) | length' 2>/dev/null || echo "0")
+  [[ -n "$reaped" ]] || reaped="0"
+  # The kill switch reports the run it just terminated under that run's poll
+  # state ("running"), marked discarded:"lane-off" — that tick must be logged.
+  discarded=$(echo "$out" | jq -r '.discarded // ""' 2>/dev/null || echo "")
+  case "$state" in
+    # This runs every 5-minute tick, lane on or off: idle and still-running ticks
+    # would otherwise write ~288 identical lines a day and bury the ones that
+    # matter. A tick that reaped or discarded something is still worth a line.
+    idle|starting|running)
+      if [[ "$reaped" == "0" && -z "$discarded" ]]; then
+        return 0
+      fi
+      ;;
+    error)
+      log "WARNING: CodeRabbit CLI housekeeping error (non-fatal; retried next tick): $out"
+      return 0
+      ;;
+  esac
+  # Anything else (a run collected, killed, lost, or output we can't parse) is
+  # logged as-is.
+  log "CodeRabbit CLI housekeeping: $out"
+  return 0
+}
+
+# Decide whether a converged In Review card may leave for In Test yet, as far as
+# CodeRabbit coverage of <head-sha> goes (ADR-0036). Returns 1 to HOLD the card
+# (the caller `continue`s) and 0 to PROMOTE, setting CR_NOTE to a one-line
+# "CodeRabbit did not review <sha>" note when the SHA goes out uncovered.
+#
+# Fails OPEN: a crash, a missing module or unparseable output promotes. The lane
+# adds coverage; it must never be the reason a green, reviewed card is stuck.
+# A fail-open promotion still sets CR_NOTE, to "CodeRabbit coverage of <sha12>
+# unknown (lane error)": nobody knows whether that commit was reviewed, and the
+# tester should be told. The wording matches the note coderabbit-cli.mjs returns
+# when its own gate throws, so both failure layers read the same.
+#
+# $1 issue, $2 pr-num, $3 head sha.
+cr_lane_gate() {
+  local issue_num="$1" pr_num="$2" head_sha="$3" out action reason
+  local lane_error_note="CodeRabbit coverage of ${head_sha:0:12} unknown (lane error)"
+  CR_NOTE=""
+  if ! out=$(node "$SCRIPT_DIR/lib/coderabbit-cli.mjs" gate --issue "$issue_num" --pr "$pr_num" \
+      --sha "$head_sha" --state-file "$STATE_FILE" --repo-root "$REPO_ROOT" \
+      --run-root "$CR_CLI_RUN_ROOT" --dry-run "${DRY_RUN:-0}" 2>>"$LOG_FILE"); then
+    log "WARNING: issue #$issue_num: CodeRabbit lane gate failed; promoting without it (fail open)"
+    CR_NOTE="$lane_error_note"
+    return 0
+  fi
+  out=$(printf '%s\n' "$out" | tail -1)
+  action=$(echo "$out" | jq -r '.action // ""' 2>/dev/null || echo "")
+  if [[ "$action" != "hold" && "$action" != "promote" ]]; then
+    log "WARNING: issue #$issue_num: CodeRabbit lane gate gave no usable decision; promoting (fail open)"
+    CR_NOTE="$lane_error_note"
+    return 0
+  fi
+  reason=$(echo "$out" | jq -r '.reason // ""' 2>/dev/null || echo "")
+  log "Issue #$issue_num: CodeRabbit lane → $action ($reason)"
+  [[ "$action" == "hold" ]] && return 1
+  CR_NOTE=$(echo "$out" | jq -r '.note // ""' 2>/dev/null || echo "")
+  return 0
+}
+
+# Print the CodeRabbit coverage note for <head-sha> as recorded in state
+# (ADR-0036), or nothing. For a hand-off that is NOT the promotion: the In Test
+# sweep re-writes a scenario whenever intestCommentSha lags the head — e.g. the
+# tick died between transition_status and the comment — and without this that
+# re-write would silently drop the "did not review" note the promotion carried.
+#
+# coderabbit-cli.mjs prints a note only when the recorded coverage is for exactly
+# this SHA and is an uncovered kind, and never writes state, so a commit pushed
+# after the promotion can't inherit an older commit's note. A fail-open "coverage
+# unknown (lane error)" note is never recorded and so can't be rebuilt here.
+#
+# Commentary, so it never fails the caller (whose stdout it is): a crash or
+# garbled output means no note, logged via logerr to keep the value clean.
+#
+# $1 issue, $2 head sha.
+cr_coverage_note() {
+  local issue_num="$1" head_sha="$2" out
+  [[ -n "$head_sha" ]] || return 0
+  if ! out=$(node "$SCRIPT_DIR/lib/coderabbit-cli.mjs" note --issue "$issue_num" --sha "$head_sha" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE"); then
+    logerr "WARNING: issue #$issue_num: CodeRabbit coverage note lookup failed; handing off without it"
+    return 0
+  fi
+  printf '%s\n' "$out" | tail -1 \
+    | jq -r 'if type == "object" and (.note | type) == "string" then .note else "" end' 2>/dev/null \
+    || true
 }
 
 # ── --plan mode ─────────────────────────────────────────────────────────────
@@ -3328,6 +3527,13 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
     fi
   done
 
+  # ── 1b. CodeRabbit CLI run housekeeping (ADR-0036) ──
+  # Collect a background CLI review that finished since the last tick BEFORE the
+  # In Review loop reads threads, so its findings enter this tick's fix loop.
+  # Runs whether or not FACTORY_CR_CLI is on (off, it only terminates and
+  # discards a leftover run, never posts); never fails the tick.
+  cr_cli_housekeeping
+
   # ── 2. In Review → In Test ──
   if ! REVIEW_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
       --status "In Review" 2>>"$LOG_FILE"); then
@@ -3468,8 +3674,19 @@ A human should take a look. Reset with \
         | ( if ($req | length) > 0 then [ .[] | select(.name as $n | $req | index($n)) ] else . end )
         | [ .[] | (.name + " — " + .c + (if .url then " (" + .url + ")" else "" end)) ]
         | join("\n")')
+      # Also drop the CodeRabbit CLI lane's PR-conversation summary (ADR-0036).
+      # It lists the findings that did NOT become threads (lower severities,
+      # outside the diff, next to an existing thread, past the thread cap,
+      # rejected by GitHub, or a run whose head moved on), in vendor prose phrased
+      # as orders; the lane records cli-partial when a serious one ends up there. A conversation comment can't be resolved, so it
+      # would reach every later fix pass as feedback and pull those findings back
+      # in. Only the owner identity posts it: the author check stops a public
+      # commenter hiding a comment by pasting the marker. The Claude review summary
+      # (drafto-factory-code-review) stays — it is meant to be acted on.
       UNRESOLVED=$(echo "$PR_VIEW" | jq -c '
         [ .comments[]? | select((.author.login // "") | test("vercel|github-actions"; "i") | not)
+          | select(((.author.login // "") == "JakubAnderwald"
+                    and ((.body // "") | contains("<!-- drafto-factory-cr-cli sha="))) | not)
           | { id: .id, user: { login: (.author.login // "") }, body: (.body // "") } ]')
       [[ -n "$UNRESOLVED" ]] || UNRESOLVED="[]"
 
@@ -3604,13 +3821,29 @@ A human should take a look. Reset with \
       fi
     fi
 
+    # CodeRabbit gap-fill lane (ADR-0036). This is the converged state — required
+    # CI green, preview present if needed, no open threads, Claude review already
+    # run for HEAD_SHA — so the diff is stable and a CLI run started here isn't
+    # wasted on a commit the fix loop is about to replace. A hold keeps the card in
+    # In Review only while CodeRabbit may still cover this SHA; coderabbit-cli.mjs
+    # bounds it (FACTORY_CR_HOLD_MAX_MIN plus the run timeout) and the gate fails
+    # open, so the lane can delay a card but never strand it.
+    CR_NOTE=""
+    if [[ "${FACTORY_CR_CLI:-0}" == "1" && -n "$HEAD_SHA" ]]; then
+      if ! cr_lane_gate "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA"; then
+        continue
+      fi
+    fi
+
     # Threads are guaranteed zero here: any open thread would have entered the
-    # fix loop above, which always `continue`s.
+    # fix loop above, which always `continue`s. The CodeRabbit lane doesn't break
+    # that — a finished CLI run's findings are posted by cr_cli_housekeeping at the
+    # top of the tick, before fetch_review_threads reads them.
     log "Issue #$ISSUE_NUM: required CI green (platforms: $(echo "$INTEST_PLATFORMS" | jq -c . 2>/dev/null)) → In Test"
     if [[ "$DRY_RUN" -eq 1 ]]; then
       log "DRY-RUN: would advance #$ISSUE_NUM to In Test and post a test scenario"
       INTEST_BETA=$(intest_dispatch_betas "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "$INTEST_PLATFORMS" 2>>"$LOG_FILE" || echo '{"dispatched":[],"skipped":[],"manualCommands":[]}')
-      intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$(pr_failing_advisory "$PR_VIEW")" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" "$INTEST_BETA" || true
+      intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$(pr_failing_advisory "$PR_VIEW")" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" "$INTEST_BETA" "$CR_NOTE" || true
       continue
     fi
     # Advance FIRST: the card must reach In Test even if writing the scenario
@@ -3618,13 +3851,20 @@ A human should take a look. Reset with \
     transition_status "$ITEM_ID" "$ISSUE_NUM" "In Test" || true
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastWatchAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    # Reset the per-card CodeRabbit CLI run cap alongside attempts: a revision
+    # round (In Test → feedback → In Review again) is new code and earns
+    # CodeRabbit coverage again, instead of inheriting a cap spent on the last one.
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" crCliRuns "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     # Surface any advisory (non-required) red checks — e.g. CodeRabbit — so the
     # operator can glance before Approving, even though they didn't block advance.
+    # The CodeRabbit lane's coverage note (CR_NOTE, "" when covered or the lane is
+    # off) travels as its own trailing argument, not inside ADVISORY: it is not a
+    # check and must never be rendered as one.
     ADVISORY=$(pr_failing_advisory "$PR_VIEW")
     # Dispatch is its own step with its own SHA key, so a lane gated off here
     # (low disk, knob off) can still fire on a later tick.
     INTEST_BETA=$(intest_dispatch_betas "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "$INTEST_PLATFORMS" 2>>"$LOG_FILE" || echo '{"dispatched":[],"skipped":[],"manualCommands":[]}')
-    intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$ADVISORY" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" "$INTEST_BETA" || true
+    intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$ADVISORY" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" "$INTEST_BETA" "$CR_NOTE" || true
   done
 
   # ── In Test feedback sweep: a reporter comment requests a revision ──────────
@@ -3724,9 +3964,16 @@ A human should take a look. Reset with \
             ([ .statusCheckRollup[]? | select(((.context // .name // "") | test("vercel"; "i")))
                | (.targetUrl // .detailsUrl // "") ] | join(" "))' 2>/dev/null \
             | grep -oE 'https://[a-zA-Z0-9._-]*vercel\.app[^ )]*' | head -1 || true)
+          # Rebuild the CodeRabbit coverage note from state for this exact head
+          # (ADR-0036): the promotion's CR_NOTE lived only in its own tick, and a
+          # re-write without it would hide that the commit had no CodeRabbit review.
+          INTEST_CR_NOTE=""
+          if [[ "${FACTORY_CR_CLI:-0}" == "1" ]]; then
+            INTEST_CR_NOTE=$(cr_coverage_note "$ISSUE_NUM" "$INTEST_HEAD_SHA")
+          fi
           intest_handoff "$ISSUE_NUM" "$INTEST_PR_NUM" "$INTEST_PR_OBJ" "$INTEST_PREVIEW" \
             "$(pr_failing_advisory "${INTEST_PR_VIEW:-}")" "$INTEST_HEAD_SHA" "$INTEST_FILES" "$INTEST_PLATS" \
-            "$INTEST_BETA" || true
+            "$INTEST_BETA" "$INTEST_CR_NOTE" || true
           # The scenario we just posted carries a drafto-factory marker, so
           # owner_comments_since ignores it — it can never look like feedback.
           COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM" 2>>"$LOG_FILE" || echo "$COMMENTS_JSON")

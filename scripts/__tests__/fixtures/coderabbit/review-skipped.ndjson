@@ -1,0 +1,3 @@
+{"type":"review_context","reviewType":"all","currentBranch":"HEAD","baseBranch":"main","baseCommit":"bd002e3bd3c9d894bb591593159a7da84c8f4e49","workingDirectory":"/tmp/wt"}
+{"type":"status","phase":"setup","status":"review_skipped","message":"No changes detected"}
+{"type":"complete","status":"review_skipped","findings":0,"message":"No changes detected"}
