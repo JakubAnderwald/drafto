@@ -16,6 +16,7 @@ import {
   runHousekeeping,
   runFreePass,
   runCoverage,
+  coverageKind,
   postFindings,
   pollRun,
   readKnobs,
@@ -1654,6 +1655,35 @@ describe("postFindings", () => {
     assert.equal(ghPosts(calls, "").length, 0);
   });
 
+  // The summary marker gained a `kind=` field. A summary posted before that
+  // existed must still suppress a duplicate, or a retry that dies between
+  // posting and recording posts the summary twice.
+  it("recognises a summary posted with the older, kind-less marker", async () => {
+    const { deps, calls } = makeDeps({
+      issueComments: [
+        {
+          user: { login: OWNER_LOGIN, type: "User" },
+          body: `<!-- ${SUMMARY_MARKER} sha=${SHA} -->`,
+        },
+      ],
+    });
+    await postFindings(postOpts(), deps);
+    assert.equal(ghPosts(calls, `issues/${PR}/comments`).length, 0);
+  });
+
+  it("recognises a summary posted with the current, kind-stamped marker", async () => {
+    const { deps, calls } = makeDeps({
+      issueComments: [
+        {
+          user: { login: OWNER_LOGIN, type: "User" },
+          body: `<!-- ${SUMMARY_MARKER} sha=${SHA} kind=cli -->`,
+        },
+      ],
+    });
+    await postFindings(postOpts(), deps);
+    assert.equal(ghPosts(calls, `issues/${PR}/comments`).length, 0);
+  });
+
   it("does not treat another SHA's summary as this one's", async () => {
     const { deps, calls } = makeDeps({
       issueComments: [
@@ -2148,6 +2178,30 @@ describe("pollRun", () => {
 
 // The gate /merge calls before it merges. Unlike every other subcommand here it
 // takes no state file: #628 and #630 were both merged by hand and had no card.
+describe("coverageKind", () => {
+  const ev = (n) => ({ findings: Array.from({ length: n }, (_, i) => ({ id: i })) });
+
+  it("is cli for a clean run with findings", () => {
+    assert.equal(coverageKind({ events: ev(3), partial: false, incomplete: false }), "cli");
+  });
+
+  it("is cli-empty only when the run genuinely found nothing", () => {
+    assert.equal(coverageKind({ events: ev(0), partial: false, incomplete: false }), "cli-empty");
+  });
+
+  // "Nothing was found" and "nothing survived parsing" both leave an empty
+  // findings array. Checking the count first called the second one cli-empty —
+  // which the coverage gate treats as covered — and waved through the exact
+  // commit whose findings nobody ever saw.
+  it("is cli-partial when every finding was lost to parsing", () => {
+    assert.equal(coverageKind({ events: ev(0), partial: false, incomplete: true }), "cli-partial");
+  });
+
+  it("is cli-partial when findings could not be threaded", () => {
+    assert.equal(coverageKind({ events: ev(2), partial: true, incomplete: false }), "cli-partial");
+  });
+});
+
 describe("runCoverage", () => {
   const reviewed = (sha) => ({
     user: BOT,

@@ -1253,8 +1253,13 @@ function toExistingComments(R, reviewComments, threads) {
 // state write, which meant anything reading coverage back off the PR had to
 // re-derive it — and re-derivation was wrong in both directions.
 export function coverageKind({ events, partial, incomplete }) {
+  // Order matters. A run that lost EVERY finding to parsing also has an empty
+  // findings array, so checking "no findings" first would call it cli-empty —
+  // which is coverage — and wave through the exact commit whose findings nobody
+  // ever saw. "Nothing was found" and "nothing survived" are not the same answer.
+  if (partial || incomplete) return "cli-partial";
   if ((events?.findings?.length ?? 0) === 0) return "cli-empty";
-  return partial || incomplete ? "cli-partial" : "cli";
+  return "cli";
 }
 
 export async function postFindings(opts, deps) {
@@ -1369,9 +1374,14 @@ export async function postFindings(opts, deps) {
 
   // Only the factory's own full marker counts: a stranger pasting it into a PR
   // comment must not be able to suppress the summary (and its findings).
-  const marker = `<!-- ${R.SUMMARY_MARKER} sha=${sha} -->`;
+  // Matches both marker shapes — with and without `kind=` — so a summary posted
+  // before this field existed still suppresses a duplicate on retry.
+  const marker = new RegExp(
+    `<!--\\s*${R.SUMMARY_MARKER}\\s+sha=${String(sha).toLowerCase()}(?:\\s+kind=[a-z-]+)?\\s*-->`,
+    "i",
+  );
   const summaryExists = issueComments.items.some(
-    (c) => c?.user?.login === OWNER_LOGIN && (c.body ?? "").includes(marker),
+    (c) => c?.user?.login === OWNER_LOGIN && marker.test(c.body ?? ""),
   );
   let summaryPosted = false;
   if (!summaryExists) {
