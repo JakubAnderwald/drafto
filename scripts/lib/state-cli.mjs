@@ -244,10 +244,12 @@ function crCliRunState(inFlight) {
 // the vendor refuses while the first is connected. So the release only happens
 // once the run is verifiably gone: SIGTERM its process group (the supervisor was
 // spawned detached, so -pid reaches the CLI too), then wait, bounded, until no
-// live member of the group is left. Returns {state, killed}.
+// live member of the group is left. Returns {state, signalled, killed}:
+// `signalled` = SIGTERM was sent; `killed` = sent AND the group is now gone, so
+// a group that shrugged off the signal never reads as killed.
 async function stopCrCliSupervisor(inFlight, { waitMs }) {
   const initial = crCliRunState(inFlight);
-  if (initial !== "alive") return { state: initial, killed: false };
+  if (initial !== "alive") return { state: initial, signalled: false, killed: false };
   try {
     process.kill(-inFlight.pid, "SIGTERM");
   } catch {
@@ -259,7 +261,7 @@ async function stopCrCliSupervisor(inFlight, { waitMs }) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     state = crCliRunState(inFlight);
   }
-  return { state, killed: true };
+  return { state, signalled: true, killed: state === "gone" };
 }
 
 async function main(argv) {
@@ -635,6 +637,7 @@ async function main(argv) {
           reason: stop.state === "alive" ? "supervisor-still-running" : "supervisor-unverifiable",
           runId,
           pid: inFlight?.pid ?? null,
+          signalled: stop.signalled,
           killed: stop.killed,
         };
       }

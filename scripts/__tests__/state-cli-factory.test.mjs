@@ -668,7 +668,9 @@ describe("factory:cr-cli-* (CodeRabbit CLI lane, ADR-0036)", () => {
       const out = JSON.parse(r.stdout);
       assert.equal(out.ok, false);
       assert.equal(out.reason, "supervisor-still-running");
-      assert.equal(out.killed, true);
+      // The signal went out, but the group survived it: not "killed".
+      assert.equal(out.signalled, true);
+      assert.equal(out.killed, false);
       assert.equal(out.pid, child.pid);
       // Nothing released: the gate must not start a second run meanwhile.
       assert.equal(readState().crCli.inFlight.runId, runId);
