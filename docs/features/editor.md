@@ -27,7 +27,7 @@ Shipped on all four platforms.
 | Web attachment URL resolver                    | `apps/web/src/components/editor/use-attachment-url-resolver.ts`                                       |
 | Mobile editor screen                           | `apps/mobile/app/notes/[id].tsx`                                                                      |
 | Mobile editor component                        | `apps/mobile/src/components/editor/note-editor.tsx`                                                   |
-| Mobile attachment picker + list                | `apps/mobile/src/components/editor/attachment-picker.tsx`, `attachment-list.tsx`                      |
+| Mobile attachment picker                       | `apps/mobile/src/components/editor/attachment-picker.tsx`                                             |
 | Mobile auto-save hook                          | `apps/mobile/src/hooks/use-auto-save.ts`                                                              |
 | Desktop editor component                       | `apps/desktop/src/components/editor/note-editor.tsx`                                                  |
 | Desktop editor panel                           | `apps/desktop/src/components/notes/note-editor-panel.tsx`                                             |

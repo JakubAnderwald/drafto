@@ -4,18 +4,20 @@ Note-taking app at drafto.eu. Monorepo with pnpm workspaces + Turborepo. Web (Ne
 
 ## Where to find things
 
-| Need                                              | Start at                                                                             |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| What a feature does and where it lives in code    | [`docs/features/`](./docs/features/)                                                 |
-| System shape, data flow, platform parity          | [`docs/architecture/`](./docs/architecture/)                                         |
-| Testing matrix (commands per platform)            | [`docs/architecture/testing.md`](./docs/architecture/testing.md)                     |
-| Environments, Supabase refs, migration workflow   | [`docs/architecture/environments.md`](./docs/architecture/environments.md)           |
-| Local machine setup                               | [`docs/operations/local-dev-setup.md`](./docs/operations/local-dev-setup.md)         |
-| Builds, Fastlane, App Store / Play / Mac releases | [`docs/operations/builds-and-releases.md`](./docs/operations/builds-and-releases.md) |
-| Supabase migration safety workflow                | [`docs/operations/migrations.md`](./docs/operations/migrations.md)                   |
-| Why a tech / pattern was chosen                   | [`docs/adr/`](./docs/adr/README.md)                                                  |
-| Dark factory pipeline (kanban-driven autopilot)   | [`docs/features/dark-factory.md`](./docs/features/dark-factory.md)                   |
-| Full index                                        | [`docs/README.md`](./docs/README.md)                                                 |
+| Need                                                                        | Start at                                                                                                                                      |
+| --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| What a feature does and where it lives in code                              | [`docs/features/`](./docs/features/)                                                                                                          |
+| System shape, data flow, platform parity                                    | [`docs/architecture/`](./docs/architecture/)                                                                                                  |
+| Testing matrix (commands per platform)                                      | [`docs/architecture/testing.md`](./docs/architecture/testing.md)                                                                              |
+| Environments, Supabase refs, migration workflow                             | [`docs/architecture/environments.md`](./docs/architecture/environments.md)                                                                    |
+| Local machine setup                                                         | [`docs/operations/local-dev-setup.md`](./docs/operations/local-dev-setup.md)                                                                  |
+| Cloud / mobile sessions — personal skills, what carries over                | [`docs/operations/cloud-sessions.md`](./docs/operations/cloud-sessions.md)                                                                    |
+| Builds, Fastlane, App Store / Play / Mac releases                           | [`docs/operations/builds-and-releases.md`](./docs/operations/builds-and-releases.md)                                                          |
+| ⚠️ Desktop build is a fossil — never `pnpm install` in the primary checkout | [`docs/operations/desktop-build-fossil.md`](./docs/operations/desktop-build-fossil.md) · [`apps/desktop/CLAUDE.md`](./apps/desktop/CLAUDE.md) |
+| Supabase migration safety workflow                                          | [`docs/operations/migrations.md`](./docs/operations/migrations.md)                                                                            |
+| Why a tech / pattern was chosen                                             | [`docs/adr/`](./docs/adr/README.md)                                                                                                           |
+| Dark factory pipeline (kanban-driven autopilot)                             | [`docs/features/dark-factory.md`](./docs/features/dark-factory.md)                                                                            |
+| Full index                                                                  | [`docs/README.md`](./docs/README.md)                                                                                                          |
 
 Historical plans live in [`docs/archive/`](./docs/archive/) — do not treat as source of truth.
 
@@ -29,6 +31,7 @@ Drafto runs on free / already-paid-for tiers. Before proposing any new paid serv
 - **Zoho Mail Forever Free** for inbound `support@drafto.eu` (EU data centre, MX `mx.zoho.eu`) — the dedicated `support@drafto.eu` user is OAuthed by `scripts/support-agent.sh`. See [`docs/features/support-agent.md`](./docs/features/support-agent.md) and [ADR-0024](./docs/adr/0024-realtime-support-agent.md).
 - **Mac mini** for scheduled agent work — already runs `scripts/support-agent.sh` (every 5 min, real-time support pipeline), `scripts/nightly-support.sh` (00:03), and `scripts/nightly-audit.sh` (05:00) via launchd, has `gh` CLI authenticated, and runs Claude Code with `--dangerously-skip-permissions` on an existing paid subscription.
 - **GoDaddy** registrar / DNS (don't assume Cloudflare; Cloudflare is not the DNS provider).
+- **CodeRabbit free tiers** — the PR bot runs on the free OSS tier (public repo), and the factory's gap-fill lane uses the free CodeRabbit CLI allowance (3 reviews/hr) on the Mac mini to review commits the bot skipped. No usage-based add-on; the factory never passes `--use-credits`. See [ADR-0036](./docs/adr/0036-factory-coderabbit-cli-gap-fill.md).
 
 If a feature genuinely requires paid infrastructure, surface that explicitly as a tradeoff and let the user decide. Don't silently introduce new monthly line items.
 
@@ -37,22 +40,40 @@ If a feature genuinely requires paid infrastructure, surface that explicitly as 
 Never work directly on `main`. For every new task (feature, fix, chore, docs):
 
 1. Use the `/worktree` command to create an isolated branch and worktree
-2. **Immediately run `pnpm install`** in the new worktree — worktrees do not share `node_modules`, so all tooling (`turbo`, `tsc`, etc.) will fail without this step
+2. **Immediately run `pnpm install`** in the new worktree — worktrees do not share `node_modules`, so all tooling (`turbo`, `tsc`, etc.) will fail without this step, then run `bash scripts/worktree-bootstrap.sh` to copy the gitignored env/config files (see below). **Exception — never build or release the macOS desktop app from a worktree:** a worktree's fresh install resolves React 19.2, which the `react-native-macos@0.81` fossil cannot run (it compiles, then crashes at runtime). Desktop releases run **only** from the primary checkout's fossil `node_modules` — see [Release Authorization](#release-authorization) and [`apps/desktop/CLAUDE.md`](./apps/desktop/CLAUDE.md).
 3. Do all work (commits, edits, tests) in that worktree
 4. Open a PR to merge into `main` — never push directly to `main`
 
 **Only exception:** The user explicitly asks to work on or push to `main` directly. Without that explicit request, always use a branch + PR.
 
-**Worktree setup for mobile/desktop development:**
+**Worktree setup for web/mobile/desktop development:**
 
-Git worktrees do not copy gitignored files. When working on mobile or desktop code in a worktree, copy these files from the main repo before building or running tests:
+Git worktrees do not copy gitignored files, so a fresh worktree is missing the
+`.env*` files (and a couple of other local config files) needed to build and test
+the web, mobile, and desktop apps. Without the web `.env.local`, even
+`pnpm --filter @drafto/web build` fails at "Collecting page data" with
+`Invalid environment variables` for `NEXT_PUBLIC_SUPABASE_URL` / `_ANON_KEY`.
+
+The one-step fix — run this right after `pnpm install`:
 
 ```bash
-# Required for mobile builds and Maestro E2E tests
+bash scripts/worktree-bootstrap.sh
+```
+
+It copies every known gitignored env/config file from the main repo
+(`/Users/jakub/code/drafto`, override with `DRAFTO_MAIN_REPO`) into the current
+worktree, and is safe to re-run. If you'd rather copy by hand, the full set is:
+
+```bash
+# Web (Supabase + Sentry keys; clears the NEXT_PUBLIC_SUPABASE_* env-validation errors)
+cp /Users/jakub/code/drafto/apps/web/.env.local apps/web/.env.local
+cp /Users/jakub/code/drafto/apps/web/.env.local.vercel apps/web/.env.local.vercel
+
+# Mobile (required for mobile builds and Maestro E2E tests)
 cp /Users/jakub/code/drafto/apps/mobile/.env apps/mobile/.env
 cp /Users/jakub/code/drafto/apps/mobile/.env.production apps/mobile/.env.production
 
-# Required for desktop builds
+# Desktop (required for desktop builds)
 cp /Users/jakub/code/drafto/apps/desktop/.env apps/desktop/.env
 cp /Users/jakub/code/drafto/apps/desktop/.env.production apps/desktop/.env.production
 
@@ -60,12 +81,20 @@ cp /Users/jakub/code/drafto/apps/desktop/.env.production apps/desktop/.env.produ
 echo "sdk.dir=/Users/jakub/Library/Android/sdk" > apps/mobile/android/local.properties
 ```
 
+> Note: a full production `pnpm --filter @drafto/web build` additionally needs the
+> server-only secrets in `turbo.json`'s `passThroughEnv` (`APP_URL`,
+> `SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY`, …). Those are injected by Vercel
+> at deploy time, not stored in any local file, so a full local build fails on
+> `APP_URL` in the main repo too. For local work use `pnpm dev`, or
+> `SKIP_ENV_VALIDATION=true pnpm --filter @drafto/web build` for a compile-only
+> sanity check. The bootstrap script only handles the gitignored _files_.
+
 **Metro port conflicts:** The main repo may have Metro running on port 8081. In a worktree, start Metro on a different port (`pnpm start --port 8082`) and use `adb reverse tcp:8081 tcp:8082` to redirect the app.
 
 **Worktree git gotchas:**
 
 - **Cannot checkout `main`**: In a worktree, `main` is already checked out by the original repo. To create a new branch from latest main, use: `git fetch origin main && git checkout -b <branch> origin/main`
-- **Cannot merge PRs with `--delete-branch`**: `gh pr merge --delete-branch` fails because it tries to switch to `main` locally. Instead use the GitHub API: `gh api repos/{owner}/{repo}/pulls/{number}/merge -f merge_method=squash`
+- **Cannot merge PRs with `--delete-branch`**: `gh pr merge --delete-branch` fails because it tries to switch to `main` locally. Instead use the GitHub API — `--method PUT` is required, because the merge endpoint is a PUT while `gh api` switches to POST as soon as any `-f` field is present, and a POST there returns a bare `404 Not Found`: `gh api --method PUT repos/{owner}/{repo}/pulls/{number}/merge -f merge_method=squash`. Delete the remote branch afterwards with `gh api -X DELETE repos/{owner}/{repo}/git/refs/heads/<branch>`.
 - **Fastlane in worktrees**: Worktrees do not share Ruby gems. Run `bundle install` in the worktree's `apps/mobile/` (or `apps/desktop/`) directory before using Fastlane commands. Also copy `google-play-service-account.json` if needed for store submissions.
 
 ## Parallel Tool Execution
@@ -75,13 +104,13 @@ When planning, fan out independent actions into a single batched message — don
 **High-yield cases in this repo:**
 
 - **Cross-platform mirror edits**: `apps/mobile/src/db/` and `apps/desktop/src/db/` must stay in sync (schema, migrations, models). Batch all 6 file edits in one message — never edit one platform, then the other.
-- **Cross-platform UI**: files like `attachment-list.tsx` on desktop and mobile are different files with no dependency — batch, don't serialise.
+- **Cross-platform UI**: files like `note-editor.tsx` on desktop and mobile are different files with no dependency — batch, don't serialise.
 - **Verification sweep**: `pnpm lint`, `pnpm typecheck`, `pnpm format:check`, per-app `pnpm --filter … test`, and `pnpm --filter=@drafto/shared test` are independent — fan out in one message.
 - **Exploration**: Launch multiple `Explore` subagents in one message when scoping work across separate areas.
 
 **Worktree gotcha**: `Edit`/`Write` require a prior `Read` of the _exact_ path. Reading `/Users/…/drafto/foo.ts` does NOT satisfy an edit against `/Users/…/drafto-worktree/foo.ts`. Pattern when starting work in a worktree: one batched `Read` for every worktree file you'll touch, then one batched `Edit`/`Write` for all the changes.
 
-**Plan structure**: Multi-PR or multi-step plans should also exploit parallelism — group independent work into "waves" (Wave 1 fully parallel, Wave 2 after Wave 1, etc.) and assign each independent unit to its own subagent. End any plan that ships a cross-platform release with the explicit per-platform release commands as a final wave: web (Vercel auto-deploys on merge), `cd apps/mobile && pnpm release:prod:android`, `pnpm release:prod:ios`, `cd apps/desktop && pnpm release:production`. The three store releases run concurrently in their own subagents. Note any required version bumps (`pnpm version:mobile|desktop patch|minor|major`) before the release wave.
+**Plan structure**: Multi-PR or multi-step plans should also exploit parallelism — group independent work into "waves" (Wave 1 fully parallel, Wave 2 after Wave 1, etc.) and assign each independent unit to its own subagent. End any plan that ships a cross-platform release with the explicit per-platform release commands as a final wave: web (Vercel auto-deploys on merge), `cd apps/mobile && pnpm release:prod:android`, `pnpm release:prod:ios`, `cd apps/desktop && pnpm release:production` (⚠️ desktop builds **only** from the primary checkout's fossil `node_modules` — never a worktree; see [Release Authorization](#release-authorization)). The three store releases run concurrently in their own subagents. Note any required version bumps (`pnpm version:mobile|desktop patch|minor|major`) before the release wave.
 
 ## SOLID Principles (Enforced)
 
@@ -97,7 +126,7 @@ Every module must follow SOLID:
 
 - Strict TypeScript — no `any`, no `@ts-ignore`
 - Prettier handles formatting (run `pnpm format:check` to verify)
-- Named exports only (no default exports except for Next.js pages/layouts)
+- Named exports only (no default exports except for Next.js pages/layouts and Expo Router route modules under `apps/mobile/app/`, which the router requires to default-export their screen)
 - Kebab-case file names (e.g., `user-profile.tsx`, not `UserProfile.tsx`)
 - Use `@/` import alias for all `src/` imports
 
@@ -141,9 +170,10 @@ Common CI failure patterns:
 - Conventional commits enforced by commitlint (e.g., `feat: add login page`)
 - Squash-merge PRs to keep main history clean
 - Pre-commit hooks run lint-staged (ESLint + Prettier)
-- **Never commit or push directly to `main`** unless the user explicitly requests it. All work goes through feature branches and PRs.
+- **Never commit or push directly to `main`** unless the user explicitly requests it. All work goes through feature branches and PRs. Two committed `PreToolUse` hooks enforce this — they parse the command and block anything that would land on `main`/`master`, including via `cd`, `git -C`, or a `HEAD:main` refspec ([claude-code-hooks.md](./docs/operations/claude-code-hooks.md))
 - **All pushes must use the `/push` command** — this ensures commits are pushed, CI/CD checks are polled until green, review comments are addressed, and failures are fixed automatically
 - **Before `/push`, run `/code-review` on the pending diff** for any non-trivial change (anything beyond typos, comment edits, or pure renames). Fix or explicitly explain its findings before opening the PR — this catches the same class of issues CodeRabbit catches (mirror-invariant violations, stale doc references, missed edge cases), locally, and saves the post-PR round-trip
+- **Every review comment blocks the merge.** `required_conversation_resolution` is enabled on `main`, and the factory's `--release` verifies it rather than clearing it. Address each review thread — fix it, or decide no change is needed — then reply on the thread saying which and why, and resolve it. Never resolve a thread you did not act on. The factory enforces the same contract on its own PRs via a code-review stage in `--watch` ([ADR-0035](./docs/adr/0035-factory-code-review-gate.md))
 
 ## Release Authorization
 
@@ -151,15 +181,35 @@ Beta TestFlight builds (Mac App Store Connect, iOS, Android internal track) are 
 
 Production / public-store releases (`pnpm release:prod:*`, `pnpm release:production`, App Store / Play Store submission) still require explicit user approval — those affect non-tester users.
 
+### ⚠️ Desktop (macOS) builds ONLY from the primary checkout's fossil `node_modules`
+
+The macOS desktop app is a **fossil build**. `react-native-macos@0.81` needs **React 19.1.4**, but the monorepo's declared React is **19.2.x** (mobile needs it; React must be one shared instance). The only working desktop `node_modules` lives in the **primary checkout** (`/Users/jakub/code/drafto`), installed before the React bump and **never reinstalled**. A clean `pnpm install` — including any **fresh worktree** or CI checkout — pulls React 19.2 and produces a build that **compiles fine but crashes at runtime** (Hermes `EXC_BAD_ACCESS` / blank screen). **A green compile is not proof the app works — only a TestFlight build that opens a note is.**
+
+The invariant is the installed React version, not one blessed directory: **build macOS only from a checkout whose hoisted `node_modules/react` is 19.1.x** — the primary checkout, or a clonefile replica of it that is never reinstalled.
+
+- **NEVER** `pnpm install` in the primary checkout, and **never build/release desktop from a worktree, fresh install, or CI.**
+- Build/ship desktop **only** from the primary checkout: `cd /Users/jakub/code/drafto && git pull && cd apps/desktop && pnpm release:beta` (source via `git pull`, **never** `pnpm install`).
+- The factory's desktop build root `/Users/jakub/code/drafto-beta-desktop` is a clonefile replica of that fossil and is under the same **never `pnpm install`** rule. `assertDesktopFossil()` in `scripts/lib/dispatch-release.mjs` enforces the 19.1.x check before any lane is spawned.
+- Full rules: [`docs/operations/desktop-build-fossil.md`](./docs/operations/desktop-build-fossil.md) · [ADR-0027](./docs/adr/0027-desktop-react-version-locked-to-react-native-macos.md) · [ADR-0030](./docs/adr/0030-in-test-scenarios-and-pre-merge-betas.md) · [`apps/desktop/CLAUDE.md`](./apps/desktop/CLAUDE.md).
+
 ## Dark Factory
 
 Drafto runs an unattended development pipeline on the Mac mini ("dark factory") that watches a GitHub Projects v2 board and drives issues through plan → implement → preview → ship. State lives in `status:*` labels mirrored from the board's Status field, plus `logs/factory-state.json`. See [`docs/features/dark-factory.md`](./docs/features/dark-factory.md) for the operator manual, [`docs/operations/factory-runbook.md`](./docs/operations/factory-runbook.md) for phase promotion + rollback, and [ADR-0026](./docs/adr/0026-dark-factory-pipeline.md) for the decision.
+
+**Creating factory issues:** Issues are **not** auto-added to the board — neither `gh issue create` nor the web issue form adds them. Always pass `--project "Drafto Factory"` when creating one via the CLI so the card lands on the [board](https://github.com/users/JakubAnderwald/projects/1) and the factory can pick it up:
+
+```bash
+gh issue create --project "Drafto Factory" \
+  --template factory-feature.yml --title "feat: ..." --body "..."
+```
+
+(Requires the `gh` token to carry `project` scope — run `gh auth refresh -s project` once if `--project` errors with a missing-scope message.)
 
 **Two human gates** the factory will never bypass: Plan Review → In Progress (plan-approval) and In Test → Approved (merge + ship). Both are reachable via the kanban board for any reporter, and via email reply for allowlisted reporters (Jakub + his wife). The migration gate (`migration-approved` label required when a PR touches `supabase/migrations/**`) is a hard stop on the Approved transition for everyone.
 
 **Kill switches**: per-card via `factory-pause` label or dragging to **Blocked**; global via `node scripts/lib/state-cli.mjs factory:pause`; emergency via `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist`.
 
-**Parity-mandate enforcement**: the factory's `--implement` post-check diffs the PR against the issue's "Affected platforms" checkboxes and blocks the card if a claimed platform has no code changes. To run a legitimate single-platform feature, apply `parity:web-only` / `parity:mobile-only` / `parity:desktop-only` to the issue.
+**Parity-mandate enforcement**: the factory's `--implement` post-check diffs the PR against the issue's "Affected platforms" checkboxes and blocks the card if a claimed platform has no code changes. To run a legitimate single-platform feature, apply `parity:web-only` / `parity:mobile-only` / `parity:desktop-only` to the issue. For a factory-internal change that touches no app platform (under `scripts/`, docs, CI), tick the **None** box in the issue form (or apply the `parity:infra-only` label) — the spec gate skips the "Affected platforms" requirement and the parity check passes as long as the PR stays out of `apps/` and `packages/shared/`.
 
 ## Cross-Platform Feature Workflow
 

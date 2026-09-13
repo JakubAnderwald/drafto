@@ -58,9 +58,10 @@ to Supabase directly through `apps/web/src/lib/supabase/`, so the only
 server-side sync contract is Postgres itself (no dedicated `/api/sync` route
 exists).
 
-Shared type source is `@drafto/shared` (`packages/shared/src/types/supabase.ts`)
+Shared type source is `@drafto/shared` (`packages/shared/src/types/database.ts`)
 — both sync drivers import `Database["public"]["Tables"]["<table>"]["Row"]` from
-it, so regenerating the Supabase types automatically propagates to both clients.
+it. This file is hand-maintained, not generated: when a column changes, update
+`database.ts` by hand so both clients stay in sync.
 
 ## Modifying safely
 
@@ -119,7 +120,7 @@ it, so regenerating the Supabase types automatically propagates to both clients.
 - `apps/mobile/src/db/{schema,migrations,sync}.ts`
 - `apps/desktop/src/db/{schema,migrations,sync}.ts`
 - `supabase/migrations/*` (when columns change)
-- `packages/shared/src/types/supabase.ts` (regenerated types)
+- `packages/shared/src/types/database.ts` (update by hand when columns change)
 
 ## Incident: note content erasure
 

@@ -1,6 +1,6 @@
 # Dark factory
 
-**Status:** rolling out (Phase B engine built; runtime phase set on the plist) **Updated:** 2026-05-24
+**Status:** rolling out (Phase B engine + `--release` auto-merge built; runtime phase set on the plist) **Updated:** 2026-07-15
 
 ## What it is
 
@@ -11,7 +11,9 @@ A "vibe-kanban-style" pipeline where moving a card on a GitHub Projects v2 board
 The runtime phase is set by `FACTORY_PHASE` on the launchd plist (see the runbook). The phases:
 
 - **Phase A (Plan-only).** `--plan` watches `status:ready` issues, posts a structured plan comment, and stops at `status:plan-review`. `--implement` posts a one-time "implementation skipped" stub; `--watch` / `--release` are no-ops.
-- **Phase B (Web-only, staged).** Approving a plan (drag Plan Review → In Progress) runs the real engine: `--implement` takes a worktree slot, implements the approved plan in `worktrees/factory-issue-<n>`, opens a PR, and runs the parity post-check (mobile/desktop changes are auto-blocked — Phase B is web-only). `--watch` then drives the PR: it runs a `/push`-style fix loop on failing CI / unresolved review comments and, once CI is green and the Vercel preview is reachable, advances the card to **In Test** and posts the preview URL. **`--release` (auto-merge on Approved) is deliberately deferred in this staged rollout** — the operator merges the PR by hand at the Approved drag while plan→implement→preview quality is proven. Promote per phase only after ≥5 clean runs without human intervention.
+- **Phase B (Web-only, staged).** Approving a plan (drag Plan Review → In Progress) runs the real engine: `--implement` takes a worktree slot, implements the approved plan in `worktrees/factory-issue-<n>`, opens a PR, and runs the parity post-check (mobile/desktop changes are auto-blocked — Phase B is web-only). `--watch` then drives the PR: it runs a `/push`-style fix loop on failing CI **and/or unresolved review threads**, and once CI is green it runs a **code review** of the PR (once per commit) before advancing. Findings are posted as inline review threads; the fix loop picks them up next tick, answers each one and resolves it. Only when CI is green, every thread is resolved and the Vercel preview is reachable does the card advance to **In Test** with the preview URL. See [ADR-0035](../adr/0035-factory-code-review-gate.md). When CodeRabbit's PR bot didn't review the head commit (rate-limited, auto-paused, or skipped), an opt-in **CodeRabbit CLI gap-fill lane** (`FACTORY_CR_CLI=1`) reviews it on the Mac mini instead and posts its findings as threads for the same fix loop; the card holds in In Review while that runs, for a bounded time. See [ADR-0036](../adr/0036-factory-coderabbit-cli-gap-fill.md). **In Test iteration:** while a card sits in In Test, commenting on the issue with a change request rolls it back to **In Progress**; the factory revises on the **same** PR branch (reusing the slot, worktree, and preview URL) and it flows back to In Test. Repeat until you're happy. A pure "thanks/looks good" comment is treated as noise (no rework); approval stays explicit — drag to **Approved** (or, household, reply "ship it"). **`--release` then auto-merges on Approved:** the Approved drag is the merge authorisation — the factory squash-merges the green PR via the GitHub API, advances the card to **Released**, and Vercel deploys main → prod. It refuses to merge a PR touching `supabase/migrations/**` until `migration-approved` is on the PR, and won't merge unless CI is green and conflict-free. Hard holds (missing migration approval, conflicts, a failed merge) leave the card in Approved **and post a one-time comment**; transient waits (CI still running, mergeability still computing) leave it in Approved silently and retry next tick. Just before merging it **verifies** every review thread (CodeRabbit / the factory's own review / yours) is resolved — it never clears one unread. An open thread refuses the merge and moves the card back to **In Review** so the fix loop can answer it; it then returns to In Test for your approval. Beta-channel dispatch (iOS/Android/macOS) stays a Phase D concern. Promote per phase only after ≥5 clean runs without human intervention.
+
+**Claude effort.** The two code-writing stages (`--implement`, `--watch`) invoke Claude at **ultracode** effort (xhigh reasoning + dynamic multi-agent workflow orchestration); the read-only planning stages (`--plan`, replan) run at **xhigh** to conserve the shared Claude subscription. Both are env knobs (`FACTORY_EFFORT`, `FACTORY_PLAN_EFFORT`) on the launchd plist, and ultracode degrades safely to plain xhigh if the Workflows feature is unavailable on the account. See [ADR-0029](../adr/0029-factory-ultracode-effort.md) and the runbook's "Claude effort & timeouts" knobs.
 
 ## The board
 
@@ -31,7 +33,7 @@ The board has one custom Status field with eleven values:
 | Plan Review | factory               | Plan posted as a comment; awaiting human approval.                    |
 | In Progress | human / allowlisted   | Plan approved; factory implements per the approved plan.              |
 | In Review   | factory               | PR open; factory monitors CI and review comments.                     |
-| In Test     | factory               | Vercel preview ready; awaiting human approval.                        |
+| In Test     | factory               | Testable build + test scenario posted; awaiting human approval.       |
 | Approved    | human / allowlisted   | Authorise prod release. Migration gate enforced.                      |
 | Released    | factory               | PR merged; beta channels dispatched (Phase D).                        |
 | Done        | human / support-agent | Final acceptance; issue closed.                                       |
@@ -43,24 +45,25 @@ The factory agent reads the Status field directly via the GitHub GraphQL API on 
 
 The full set is created idempotently by `scripts/setup-factory-labels.sh`. Reference:
 
-| Label                 | Set by               | Meaning                                                          |
-| --------------------- | -------------------- | ---------------------------------------------------------------- |
-| `status:ready`        | human (via board)    | Spec accepted; factory may plan.                                 |
-| `status:planning`     | factory              | Plan in progress.                                                |
-| `status:plan-review`  | factory              | Awaiting plan approval.                                          |
-| `status:in-progress`  | human / factory      | Implementation in progress.                                      |
-| `status:in-review`    | factory              | PR open, CI / review comments active.                            |
-| `status:in-test`      | factory              | Vercel preview ready, awaiting ship approval.                    |
-| `status:approved`     | human / factory      | Approved for release; merge + dispatch authorised.               |
-| `status:released`     | factory              | Merged + beta dispatched.                                        |
-| `status:done`         | human / support      | Final acceptance.                                                |
-| `status:blocked`      | factory              | Hard stop — see comment on issue.                                |
-| `factory-pause`       | operator             | Global kill switch on this issue (factory ignores).              |
-| `migration-approved`  | operator             | Authorises factory to merge a PR with `supabase/migrations` SQL. |
-| `factory-failure`     | factory failure trap | Filed by `cleanup()` when a factory run errors out.              |
-| `parity:web-only`     | operator             | Skip cross-platform parity check (legitimate web-only work).     |
-| `parity:mobile-only`  | operator             | Skip cross-platform parity check (legitimate mobile-only work).  |
-| `parity:desktop-only` | operator             | Skip cross-platform parity check (legitimate desktop-only work). |
+| Label                 | Set by               | Meaning                                                              |
+| --------------------- | -------------------- | -------------------------------------------------------------------- |
+| `status:ready`        | human (via board)    | Spec accepted; factory may plan.                                     |
+| `status:planning`     | factory              | Plan in progress.                                                    |
+| `status:plan-review`  | factory              | Awaiting plan approval.                                              |
+| `status:in-progress`  | human / factory      | Implementation in progress.                                          |
+| `status:in-review`    | factory              | PR open, CI / review comments active.                                |
+| `status:in-test`      | factory              | Testable build + scenario posted, awaiting ship approval.            |
+| `status:approved`     | human / factory      | Approved for release; merge + dispatch authorised.                   |
+| `status:released`     | factory              | Merged + beta dispatched.                                            |
+| `status:done`         | human / support      | Final acceptance.                                                    |
+| `status:blocked`      | factory              | Hard stop — see comment on issue.                                    |
+| `factory-pause`       | operator             | Global kill switch on this issue (factory ignores).                  |
+| `migration-approved`  | operator             | Authorises factory to merge a PR with `supabase/migrations` SQL.     |
+| `factory-failure`     | factory failure trap | Filed by `cleanup()` when a factory run errors out.                  |
+| `parity:web-only`     | operator             | Skip cross-platform parity check (legitimate web-only work).         |
+| `parity:mobile-only`  | operator             | Skip cross-platform parity check (legitimate mobile-only work).      |
+| `parity:desktop-only` | operator             | Skip cross-platform parity check (legitimate desktop-only work).     |
+| `parity:infra-only`   | operator             | Skip parity check; change touches no app platform (scripts/docs/CI). |
 
 ## How to file an issue for the factory
 
@@ -68,7 +71,7 @@ Use the **Factory feature spec** template (`.github/ISSUE_TEMPLATE/factory-featu
 
 1. **What** — one paragraph user-facing description.
 2. **Acceptance criteria** — bulleted, testable.
-3. **Affected platforms** — checkboxes (web / iOS+Android / macOS).
+3. **Affected platforms** — checkboxes (web / iOS+Android / macOS), or **None** for a factory-internal / docs / CI change that touches no app platform.
 4. **Schema changes?** — yes/no. If yes, the factory adds `needs-migration-review`.
 5. **UI?** — screenshot / Figma URL if applicable.
 6. **Out of scope** — explicit non-goals.
@@ -78,7 +81,8 @@ After filing, drag the card to **Ready** on the board. The factory picks it up o
 ## Kill switches
 
 - **Per-card**: drag the card to **Blocked**, or apply `factory-pause` to the issue. The factory ignores the card on the next tick.
-- **Global**: run `node scripts/lib/state-cli.mjs factory:pause` on the Mac mini. The agent reads the flag every cycle and exits early when set. `factory:resume` to unpause. (Available once Wave 2 lands; until then, unload the launchd plist.)
+- **Global**: run `node scripts/lib/state-cli.mjs factory:pause` on the Mac mini. The agent reads the flag every cycle and exits early when set. A manual pause never auto-expires; `factory:resume` to unpause. (Available once Wave 2 lands; until then, unload the launchd plist.)
+- **Automatic (self-healing)**: when a claude call dies on a Claude subscription _session usage_ limit, the factory pauses itself until the limit resets (`factory:pause-until`) instead of burning the card's retry budget, then auto-resumes on the first tick past the deadline. See [factory-runbook.md → "Automatic pause on a Claude session limit"](../operations/factory-runbook.md#automatic-pause-on-a-claude-session-limit-self-healing).
 - **Emergency stop**: `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist` on the Mac mini, or `kill` the active claude PID under `logs/factory.*.pid`.
 
 ## Troubleshooting
@@ -88,6 +92,7 @@ After filing, drag the card to **Ready** on the board. The factory picks it up o
 1. The factory polls every 5 minutes; wait one tick. Confirm the launchd job is alive on the Mac mini: `launchctl list | grep eu.drafto.factory`. PID column `-` with exit `0` is normal between ticks; a non-zero exit means the last tick failed — check `logs/launchd-factory-stderr.log`.
 2. Check the agent saw the card on its latest tick: `logs/launchd-factory-stdout.log` (or `logs/factory-plan-*.log`) should mention the board fetch. A `factory-project find-project failed` warning means the `gh` token on the Mac mini is missing the `project` scope — run `gh auth refresh -s project`.
 3. If the tick ran and the card was in scope but ignored: check the issue for a `factory-pause` label, or `logs/factory-state.json` for a global `paused: true` flag, or the issue's retry budget under `issues[<n>].attempts`.
+4. A card that _was_ picked up can still look idle during its first implement while dependencies install. The factory now seeds `node_modules` from the main checkout by clonefile and runs a fast offline reconcile (seconds — logged as `seeding node_modules (clonefile) + reconciling deps`); a multi-hour `pnpm install` was the old behavior (#451) and is no longer expected.
 
 ### "A card is stuck in Planning"
 
@@ -106,9 +111,50 @@ How the in-place replan stays idempotent: after a successful replan, the edited 
 
 The factory's `--watch` mode loops `/push`-style: it reads CI failures and review comments, re-invokes Claude to fix, re-pushes. Bounded by `factory.issues[<n>].attempts` in `logs/factory-state.json`. When the budget is exhausted the card moves to **Blocked** with a comment listing the unresolved items. Human must take over from there.
 
+### What you get at In Test
+
+When a card advances, the factory posts one comment (marker `<!-- drafto-factory-test-scenario -->`) containing:
+
+1. **A manual test scenario**, written by Claude from the **actual PR diff** — numbered steps per touched platform, each with an expected result, opening with a reproduction of the original bug so the fix is observable, plus what failure would look like and what is only covered by unit tests.
+2. **How to get a build**, per platform. The platforms come from the diff (not the issue's "Affected platforms" checkboxes, which can be stale), so a mobile-only PR never tells you to open a web preview:
+   - **web** — the Vercel preview URL.
+   - **iOS / Android / macOS** — a beta build dispatched from the PR head if pre-merge dispatch is on (see the runbook), otherwise the exact commands to run the branch locally.
+3. Any **advisory** (non-required) red checks, for a glance before Approving.
+4. When the CodeRabbit CLI lane is on and it promoted the commit without full CodeRabbit coverage, a note saying so ("CodeRabbit did not review `<sha>` (…)"), on its own line — it is not a check, and it travels to the scenario writer as its own bundle field (`crCoverageNote`), never inside the advisory list. If the lane itself errored, the card is promoted anyway and the note reads "CodeRabbit coverage of `<sha>` unknown (lane error)". When the scenario is re-written for the same head (e.g. the promoting tick died before posting it), the note is rebuilt from the recorded coverage; the lane-error note isn't recorded, so it can't be. A commit pushed while the card is already In Test gets no note.
+
+The scenario is refreshed whenever the PR head SHA changes, so an In Test → feedback → In Test round trip gets a new one. If Claude fails or times out, the factory posts a deterministic fallback comment instead — the card still advances, and this stage never consumes the retry budget.
+
 ### "Vercel preview never appeared in In Test"
 
-The factory advances In Review → In Test only when (a) CI is green AND (b) the Vercel bot has commented with a preview URL on the PR. If CI is green but Vercel hasn't run, check the Vercel project's GitHub integration is wired up; sometimes the bot misses a push and a force-push to bump the PR head re-triggers it.
+The factory advances In Review → In Test when every branch-protection **required** status context is green. It additionally waits for a Vercel preview URL **only when the PR touches `apps/web`** — for a native-only PR the preview exercises nothing, so requiring it would deadlock the card. "CI is green" means the **required** contexts only — an advisory bot like CodeRabbit (including its "Review rate limited" status) is never a required context, so its red neither blocks the advance nor triggers the fix loop; it's surfaced in the In Test hand-off comment for the operator to glance at instead. If a web PR's required checks are green but Vercel hasn't run, check the Vercel project's GitHub integration is wired up; sometimes the bot misses a push and a force-push to bump the PR head re-triggers it.
+
+### "A card sat in In Review for an hour or more before reaching In Test"
+
+With the CodeRabbit CLI lane on (`FACTORY_CR_CLI=1`), a card whose CI is green and whose threads are all resolved can still hold in **In Review** while CodeRabbit covers its head commit ([ADR-0036](../adr/0036-factory-coderabbit-cli-gap-fill.md)). The `--watch` log names the reason for the hold:
+
+- **bot-in-progress / bot-grace** — the PR bot is reviewing, or hasn't posted yet (grace `FACTORY_CR_BOT_GRACE_MIN`, default 15 min).
+- **cli-in-flight** — a CLI review of this commit is running (7–30+ min; capped by `FACTORY_CR_CLI_TIMEOUT_MIN`, default 45). If a fix commit moves the PR head (or the PR closes) while it runs, the next tick terminates that run and frees the lane for the new head; the terminated run doesn't count against the card's run cap.
+- **cli-busy / cli-budget-wait / cli-paused** — another card's CLI run is in flight, the 3-per-hour budget is spent, or the vendor rate-limited the lane and that pause ends inside the hold window.
+
+Every hold is bounded per head commit: after `FACTORY_CR_HOLD_MAX_MIN` (default 60) the card is promoted anyway, so one commit normally holds for at most roughly `HOLD_MAX` + the CLI timeout (~105 min). A hold on the card's own run ends 80 minutes past that run's deadline even if collecting the run keeps failing (worst case ~185 min), promoting as `hold-expired`. The clock restarts when a fix commit converges, so a card that goes through two CLI rounds can sit in In Review for 3–4 h. Check the lane with `node scripts/lib/state-cli.mjs factory:cr-cli-status`.
+
+To stop holding cards, set `FACTORY_CR_CLI=0` in the plist. That is also the kill switch: an in-flight CLI run is terminated and its results discarded, so nothing is posted. A lane pause (`factory:cr-cli-pause-until <iso> <reason>`) is not a substitute — it only stops new runs. Cards still hold for the bot and for their own in-flight run, then promote with `cli-unavailable`. See the runbook's "CodeRabbit CLI gap-fill lane".
+
+### "The In Test comment says CodeRabbit did not review `<sha>`"
+
+That commit got neither a PR-bot review nor a complete CLI review, so nothing but the factory's own Claude review fully read it — give it a closer look before Approving. The reason in parentheses maps to the card's recorded coverage (`factory:get-issue <n>` → `crCoverage`): the hourly CLI **budget** was spent, the **hold expired**, the per-card **cap** of CLI runs was reached, the CLI **failed** (an errored or failed review, a skip for any reason but "no changes", or findings that still couldn't be posted 70 minutes after the run's deadline), the CLI was **unavailable** (not installed, logged out, `coderabbit doctor` failing — the card then promotes in the same tick — or the lane paused by an operator), or the review was **partial**: the CLI did review it, but some thread-worthy findings could only go into the CLI summary comment on the PR (past the thread cap, or rejected by GitHub), where the fix loop never acts on them — read that comment. It never blocks the card. The runbook's "CodeRabbit CLI gap-fill lane" lists each value and the fix for the unavailable case.
+
+If the note instead says coverage is **unknown (lane error)**, the lane itself failed and the card was promoted anyway (the lane fails open); the `--watch` log shows why (a `gate-error` reason or a lane WARNING). The note comes from the lane's promotion decision (or, for a re-written scenario of the same head, from the coverage recorded for it), so a commit pushed while the card is already In Test gets none — if in doubt, check that `crCoverageSha` matches the PR head.
+
+### "My TestFlight / Play beta build never arrived"
+
+Pre-merge beta dispatch is **off by default** and has two knobs. `FACTORY_INTEST_BETA` is the **master switch**: while it is `0`, no lane is dispatched at all — not mobile, not macOS. With it on, mobile dispatches, and macOS _additionally_ requires `FACTORY_INTEST_BETA_DESKTOP=1` (setting only the desktop knob gets you nothing). When a lane is gated off, the In Test comment says so and gives you the manual command instead. See the runbook's "Pre-merge beta dispatch" section for the knobs, the build roots, and triage (`factory:get-issue <n>` → `intestBetaSha` / `intestBetaLanes`).
+
+A dispatched lane is a detached local Fastlane build that takes 20-40 minutes; when it lands, a follow-up comment reports the build number. Its release notes begin `PRE-MERGE TEST BUILD — issue #N / PR #M (sha)` so you can tell which build belongs to which card, and that it is a build of **unmerged** code.
+
+### "I tested the preview and want changes"
+
+Comment the change on the **issue** while the card is in **In Test** (e.g. "the close button overlaps the title — move it left"). On the next `--watch` tick the factory rolls the card back to **In Progress** and posts "🏭 revising…"; the next `--implement` tick applies your feedback on the **same** PR branch (the approved plan still bounds scope — a request outside it is Blocked for a re-plan), and the card flows back through In Review → In Test with the preview redeployed. Iterate as many rounds as you like. To stop and ship instead, drag the card to **Approved** (a "looks good"/"thanks" comment is treated as noise, not a ship signal — approval is always the explicit drag). The factory only acts on comments posted _after_ the preview it last showed you, so older discussion doesn't re-trigger work.
 
 ### "Allowlisted reporter's email reply didn't move the card"
 
@@ -119,6 +165,18 @@ The factory advances In Review → In Test only when (a) CI is green AND (b) the
 - The reply text reads as accept-intent ("go ahead", "ship it", "thanks", `[ACCEPT]`, `[GO]`).
 
 Check `logs/support/support-agent-*.log` for the per-thread classification line. If the classifier flagged the reply as non-accept-intent (e.g. it mentioned a new direction), the agent treated the reply as a fresh comment and the card stays where it is — drag it manually if needed.
+
+### "A card moved to Blocked saying 'low disk'"
+
+Before starting an implementation the factory checks free space on the build volume and, if it's below `FACTORY_MIN_FREE_DISK_GB` (default 3 GB), parks the card in **Blocked** with a `<!-- drafto-factory-disk-low -->` comment instead of failing mid-build. Reclaim space on the Mac mini (`git worktree prune`; clear Xcode `DerivedData`, old simulators, and `~/.gradle/caches`; strip `node_modules` from stale `.claude/worktrees/*` and `worktrees/*`), then drag the card back to **In Progress**. See [`docs/operations/factory-runbook.md`](../operations/factory-runbook.md) → "Worktree installs & disk" for the full reclamation + pnpm-store runbook.
+
+### "I asked for a change, the factory said it did it, and nothing changed"
+
+Fixed in [ADR-0033](../adr/0033-factory-branch-safety-and-implement-verification.md); this is what it looked like. The factory used to delete the local `factory/issue-<n>` branch whenever a card was moved to Blocked while still holding a worktree slot — even with the PR open. The next revision run then found no local branch and rebuilt the worktree from `origin/main`, so the agent edited pre-PR files, its push was rejected as non-fast-forward, and the prompt told it to report success anyway. Bash believed the report, advanced the card, and marked your comments consumed, so the request could never be replayed.
+
+Now: the branch is kept whenever a live PR points at it, a missing branch is recovered from `origin`, and a run that claims success without moving the PR head is treated as a failed attempt — your feedback stays unconsumed and the card stays put. If it repeats until the retry budget is exhausted, the card lands in **Blocked** with a `<!-- drafto-factory-head-unchanged -->` comment rather than looking done.
+
+If you hit the old behaviour on a card that predates the fix, the recovery is in [`docs/operations/factory-runbook.md`](../operations/factory-runbook.md) → "Recovering a card whose feedback was falsely consumed".
 
 ## Related
 

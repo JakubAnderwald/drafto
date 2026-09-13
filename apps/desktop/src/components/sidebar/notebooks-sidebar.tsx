@@ -1,10 +1,19 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
-import { View, Text, Pressable, TextInput, StyleSheet, ActivityIndicator } from "react-native";
+import {
+  View,
+  Text,
+  Pressable,
+  TextInput,
+  StyleSheet,
+  ActivityIndicator,
+  Alert,
+} from "react-native";
+import { Q } from "@nozbe/watermelondb";
 
 import { useNotebooks } from "@/hooks/use-notebooks";
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
-import { database, Notebook } from "@/db";
+import { database, Notebook, Note, Attachment } from "@/db";
 import { generateId } from "@/lib/generate-id";
 import { colors, fontFamily, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
@@ -95,11 +104,74 @@ export function NotebooksSidebar({
 
   const handleDelete = useCallback(async (notebook: Notebook) => {
     try {
-      await database.write(async () => {
-        await notebook.markAsDeleted();
-      });
+      // Fast pre-check: don't even offer deletion while non-trashed notes remain.
+      // Mirrors the web API's 409 guard (apps/web/src/app/api/notebooks/[id]/route.ts),
+      // which mobile/desktop bypass by writing straight to WatermelonDB + sync.
+      const activeNoteCount = await database
+        .get<Note>("notes")
+        .query(Q.where("notebook_id", notebook.id), Q.where("is_trashed", false))
+        .fetchCount();
+
+      if (activeNoteCount > 0) {
+        Alert.alert(
+          "Cannot Delete Notebook",
+          "Cannot delete notebook with notes. Move or delete notes first.",
+        );
+        return;
+      }
+
+      Alert.alert(
+        "Delete Notebook",
+        `Delete notebook "${notebook.name}"? Trashed notes inside will be permanently deleted.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Delete",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                // Re-read atomically at delete time: a background sync could have pulled
+                // a note into this notebook between the guard check and this confirmation.
+                const notes = await database
+                  .get<Note>("notes")
+                  .query(Q.where("notebook_id", notebook.id))
+                  .fetch();
+                if (notes.some((note) => !note.isTrashed)) {
+                  Alert.alert(
+                    "Cannot Delete Notebook",
+                    "Cannot delete notebook with notes. Move or delete notes first.",
+                  );
+                  return;
+                }
+                // Cascade the remaining (all trashed) notes and their attachments locally so
+                // the WatermelonDB state matches the server FK `on delete cascade` after sync.
+                await database.write(async () => {
+                  for (const note of notes) {
+                    const attachments = await database
+                      .get<Attachment>("attachments")
+                      .query(Q.where("note_id", note.id))
+                      .fetch();
+                    for (const attachment of attachments) {
+                      await attachment.markAsDeleted();
+                    }
+                    await note.markAsDeleted();
+                  }
+                  await notebook.markAsDeleted();
+                });
+              } catch (err) {
+                console.error("Failed to delete notebook:", err);
+                Alert.alert(
+                  "Error",
+                  err instanceof Error ? err.message : "Failed to delete notebook",
+                );
+              }
+            },
+          },
+        ],
+      );
     } catch (err) {
       console.error("Failed to delete notebook:", err);
+      Alert.alert("Error", err instanceof Error ? err.message : "Failed to delete notebook");
     }
   }, []);
 

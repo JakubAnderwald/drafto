@@ -36,13 +36,25 @@ interface TableContent {
   rows: { cells: InlineContent[][] }[];
 }
 
+/** A resolved attachment: its durable `attachment://` URL and display name. */
+interface AttachmentRef {
+  url: string;
+  name: string;
+}
+
+/**
+ * Maps an `<en-media hash="...">` value (the lowercase MD5 of the resource
+ * binary) to its uploaded attachment.
+ */
+type AttachmentMap = Map<string, AttachmentRef>;
+
 /**
  * Convert ENML (Evernote Markup Language) to BlockNote blocks.
  * Uses linkedom for server-side DOM parsing.
  */
 export function convertEnmlToBlocks(
   enml: string,
-  attachmentUrlMap: Map<string, string>,
+  attachmentUrlMap: AttachmentMap,
   tasks?: EnexTask[],
 ): Block[] {
   if (!enml.trim()) {
@@ -72,6 +84,14 @@ export function convertEnmlToBlocks(
   const cleaned = enml
     .replace(/<\?xml[^>]*\?>/g, "")
     .replace(/<!DOCTYPE[^>]*>/g, "")
+    // linkedom's parseHTML treats a self-closed hyphenated custom element
+    // (`<en-media .../>`) as NON-void, so it never closes and swallows every
+    // following sibling as a child — silently dropping all note content after
+    // the first inline image/PDF/audio. Expand only en-media into an explicit
+    // empty element so its siblings stay siblings. `<en-todo/>` is deliberately
+    // left self-closing: convertElement's en-todo case relies on that same
+    // swallow to capture its label text.
+    .replace(/<en-media(?=[\s/>])([^>]*?)\/>/g, "<en-media$1></en-media>")
     .trim();
 
   const { document } = parseHTML(`<body>${cleaned}</body>`);
@@ -93,7 +113,7 @@ export function convertEnmlToBlocks(
 
 function processChildren(
   parent: Element,
-  attachmentUrlMap: Map<string, string>,
+  attachmentUrlMap: AttachmentMap,
   taskMap: Map<string, EnexTask[]>,
 ): Block[] {
   const blocks: Block[] = [];
@@ -126,7 +146,7 @@ function processChildren(
 function convertElement(
   el: Element,
   tag: string,
-  attachmentUrlMap: Map<string, string>,
+  attachmentUrlMap: AttachmentMap,
   taskMap: Map<string, EnexTask[]>,
 ): Block | Block[] | null {
   switch (tag) {
@@ -188,8 +208,18 @@ function convertElement(
       };
     }
 
-    case "en-media":
-      return convertEnMedia(el, attachmentUrlMap);
+    case "en-media": {
+      // After the cleaning step en-media is an explicit empty element and
+      // normally has no children. Still process them as a safety net: if a
+      // self-closed en-media ever slips past normalization, linkedom will have
+      // nested the following siblings inside it and we must not drop them.
+      const media = convertEnMedia(el, attachmentUrlMap);
+      const recovered = processChildren(el, attachmentUrlMap, taskMap);
+      const out: Block[] = [];
+      if (media) out.push(media);
+      out.push(...recovered);
+      return out.length > 0 ? out : null;
+    }
 
     case "table": {
       const unwrapped = tryUnwrapLayoutTable(el, attachmentUrlMap, taskMap);
@@ -222,7 +252,7 @@ function convertElement(
 function convertList(
   listEl: Element,
   blockType: string,
-  attachmentUrlMap: Map<string, string>,
+  attachmentUrlMap: AttachmentMap,
   taskMap: Map<string, EnexTask[]>,
 ): Block[] {
   const items: Block[] = [];
@@ -245,7 +275,7 @@ function convertList(
 
 function processNestedLists(
   li: Element,
-  attachmentUrlMap: Map<string, string>,
+  attachmentUrlMap: AttachmentMap,
   taskMap: Map<string, EnexTask[]>,
 ): Block[] {
   const nested: Block[] = [];
@@ -313,30 +343,33 @@ function applyStyles(item: InlineContent, styles: Record<string, boolean>): Inli
   return { ...item, styles: { ...item.styles, ...styles } };
 }
 
-function convertEnMedia(el: Element, attachmentUrlMap: Map<string, string>): Block | null {
-  const hash = el.getAttribute("hash") || "";
+function convertEnMedia(el: Element, attachmentUrlMap: AttachmentMap): Block | null {
+  // `<en-media hash="...">` references the lowercase MD5 of the resource binary.
+  const hash = (el.getAttribute("hash") || "").toLowerCase();
   const type = el.getAttribute("type") || "";
-  const url = attachmentUrlMap.get(hash);
+  const attachment = attachmentUrlMap.get(hash);
 
-  if (!url) {
+  if (!attachment) {
     return createParagraph([
       { type: "text", text: `[Attachment: ${type || "unknown"}]`, styles: {} },
     ]);
   }
 
   if (type.startsWith("image/")) {
+    // `url` is a durable attachment:// reference; the note GET route resolves a
+    // fresh signed URL at read time. (`width` is not a valid BlockNote prop —
+    // the schema uses `previewWidth` — so we omit it rather than emit junk.)
     return {
       type: "image",
-      props: {
-        url,
-        caption: "",
-        width: parseInt(el.getAttribute("width") || "0", 10) || undefined,
-      },
+      props: { url: attachment.url, caption: "" },
     };
   }
 
-  // Non-image attachment — render as text link
-  return createParagraph([createLink(`[Attachment: ${type}]`, url)]);
+  // Non-image attachment — native file block (also a durable attachment:// URL).
+  return {
+    type: "file",
+    props: { url: attachment.url, name: attachment.name, caption: "" },
+  };
 }
 
 function convertTable(tableEl: Element): Block {
@@ -387,7 +420,7 @@ const BLOCK_TAGS = new Set([
  */
 function tryUnwrapLayoutTable(
   tableEl: Element,
-  attachmentUrlMap: Map<string, string>,
+  attachmentUrlMap: AttachmentMap,
   taskMap: Map<string, EnexTask[]>,
 ): Block[] | null {
   if (tableEl.querySelector("th")) return null;

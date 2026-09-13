@@ -5,6 +5,7 @@ import { formatRelativeTime } from "@drafto/shared";
 import { handleAuthError } from "@/lib/handle-auth-error";
 import { IconButton } from "@/components/ui/icon-button";
 import { DropdownMenu, DropdownMenuItem, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
+import type { NoteListPatch } from "@/lib/note-patch";
 
 interface NoteListItem {
   id: string;
@@ -17,11 +18,6 @@ interface NotebookOption {
   name: string;
 }
 
-interface NoteUpdate {
-  noteId: string;
-  updatedAt: string;
-}
-
 interface NoteListProps {
   notebookId: string;
   selectedNoteId: string | null;
@@ -31,7 +27,7 @@ interface NoteListProps {
   onDeleteNote?: (noteId: string) => void;
   notebooks?: NotebookOption[];
   refreshTrigger?: number;
-  lastNoteUpdate?: NoteUpdate | null;
+  lastNoteUpdate?: NoteListPatch | null;
   initialNotes?: NoteListItem[];
 }
 
@@ -92,13 +88,27 @@ export function NoteList({
     setNotes(initialNotes);
   }
 
-  // Update a single note's timestamp in-place after save (no re-fetch)
+  // Patch a single row in-place after a local save or an externally-observed change
+  // (no re-fetch — a refetch here would re-suspend the open editor too).
   if (lastNoteUpdate && lastNoteUpdate !== prevNoteUpdate) {
     setPrevNoteUpdate(lastNoteUpdate);
+    // Hoisted to a const because TypeScript drops the narrowing on a destructured
+    // parameter once it is referenced inside a closure.
+    const patch = lastNoteUpdate;
     setNotes((prev) =>
-      prev.map((n) =>
-        n.id === lastNoteUpdate.noteId ? { ...n, updated_at: lastNoteUpdate.updatedAt } : n,
-      ),
+      "removed" in patch
+        ? prev.filter((n) => n.id !== patch.noteId)
+        : prev.map((n) =>
+            n.id === patch.noteId
+              ? {
+                  ...n,
+                  updated_at: patch.updatedAt,
+                  // Only present for external edits; a local save leaves it undefined
+                  // because the list already shows the title the user just typed.
+                  ...(patch.title !== undefined && { title: patch.title }),
+                }
+              : n,
+          ),
     );
   }
 
@@ -136,7 +146,7 @@ export function NoteList({
   const otherNotebooks = notebooks.filter((nb) => nb.id !== notebookId);
 
   return (
-    <div className="flex flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center justify-between p-3">
         <h2 className="text-fg-muted text-xs font-semibold tracking-wide uppercase">Notes</h2>
         <IconButton size="sm" variant="ghost" onClick={onCreateNote} aria-label="New note">

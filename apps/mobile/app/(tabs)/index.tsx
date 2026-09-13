@@ -92,42 +92,79 @@ export default function NotebooksScreen() {
   };
 
   const handleDelete = useCallback(
-    (id: string, name: string) => {
-      Alert.alert("Delete Notebook", `Are you sure you want to delete "${name}"?`, [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              const notebook = await database.get<Notebook>("notebooks").find(id);
-              const notes = await database
-                .get<Note>("notes")
-                .query(Q.where("notebook_id", id))
-                .fetch();
-              await database.write(async () => {
-                for (const note of notes) {
-                  const attachments = await database
-                    .get<Attachment>("attachments")
-                    .query(Q.where("note_id", note.id))
-                    .fetch();
-                  for (const attachment of attachments) {
-                    await attachment.markAsDeleted();
-                  }
-                  await note.markAsDeleted();
+    async (id: string, name: string) => {
+      // Fast pre-check: don't even offer deletion while non-trashed notes remain.
+      // Mirrors the web API's 409 guard (apps/web/src/app/api/notebooks/[id]/route.ts),
+      // which mobile/desktop bypass by writing straight to WatermelonDB + sync.
+      let activeNoteCount: number;
+      try {
+        activeNoteCount = await database
+          .get<Note>("notes")
+          .query(Q.where("notebook_id", id), Q.where("is_trashed", false))
+          .fetchCount();
+      } catch (err) {
+        Alert.alert("Error", err instanceof Error ? err.message : "Failed to delete notebook");
+        return;
+      }
+
+      if (activeNoteCount > 0) {
+        Alert.alert(
+          "Cannot Delete Notebook",
+          "Cannot delete notebook with notes. Move or delete notes first.",
+        );
+        return;
+      }
+
+      Alert.alert(
+        "Delete Notebook",
+        `Delete notebook "${name}"? Trashed notes inside will be permanently deleted.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Delete",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                const notebook = await database.get<Notebook>("notebooks").find(id);
+                // Re-read atomically at delete time: a background sync could have pulled
+                // a note into this notebook between the guard check and this confirmation.
+                const notes = await database
+                  .get<Note>("notes")
+                  .query(Q.where("notebook_id", id))
+                  .fetch();
+                if (notes.some((note) => !note.isTrashed)) {
+                  Alert.alert(
+                    "Cannot Delete Notebook",
+                    "Cannot delete notebook with notes. Move or delete notes first.",
+                  );
+                  return;
                 }
-                await notebook.markAsDeleted();
-              });
-              sync();
-            } catch (err) {
-              Alert.alert(
-                "Error",
-                err instanceof Error ? err.message : "Failed to delete notebook",
-              );
-            }
+                // Cascade the remaining (all trashed) notes and their attachments locally so
+                // the WatermelonDB state matches the server FK `on delete cascade` after sync.
+                await database.write(async () => {
+                  for (const note of notes) {
+                    const attachments = await database
+                      .get<Attachment>("attachments")
+                      .query(Q.where("note_id", note.id))
+                      .fetch();
+                    for (const attachment of attachments) {
+                      await attachment.markAsDeleted();
+                    }
+                    await note.markAsDeleted();
+                  }
+                  await notebook.markAsDeleted();
+                });
+                sync();
+              } catch (err) {
+                Alert.alert(
+                  "Error",
+                  err instanceof Error ? err.message : "Failed to delete notebook",
+                );
+              }
+            },
           },
-        },
-      ]);
+        ],
+      );
     },
     [database, sync],
   );

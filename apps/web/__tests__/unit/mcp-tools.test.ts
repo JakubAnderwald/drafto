@@ -17,6 +17,8 @@ const {
   updateNote,
   moveNote,
   trashNote,
+  renameNotebook,
+  deleteNotebook,
 } = await import("@/lib/api/mcp-tools");
 
 type MockFn = ReturnType<typeof vi.fn>;
@@ -323,5 +325,142 @@ describe("trashNote", () => {
     const result = await trashNote(supabase, "user-1", "note-1");
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain("moved to trash");
+  });
+});
+
+describe("renameNotebook", () => {
+  it("renames a notebook and trims the name", async () => {
+    const updateSpy = vi.fn(() => ({
+      eq: () => ({
+        eq: () => ({
+          select: () => ({
+            single: () => Promise.resolve({ data: { id: "nb-1", name: "Renamed" }, error: null }),
+          }),
+        }),
+      }),
+    }));
+    const supabase = createMockSupabase(
+      vi.fn(() => ({
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              single: () => Promise.resolve({ data: { id: "nb-1" }, error: null }),
+            }),
+          }),
+        }),
+        update: updateSpy,
+      })),
+    );
+
+    const result = await renameNotebook(supabase, "user-1", "nb-1", "  Renamed  ");
+    expect(result.isError).toBeUndefined();
+    expect(updateSpy).toHaveBeenCalledWith({ name: "Renamed" });
+    expect(JSON.parse(result.content[0].text)).toEqual({ id: "nb-1", name: "Renamed" });
+  });
+
+  it("rejects an empty name", async () => {
+    const supabase = createMockSupabase(vi.fn());
+
+    const result = await renameNotebook(supabase, "user-1", "nb-1", "   ");
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("cannot be empty");
+  });
+
+  it("returns error when the notebook is not found or not owned", async () => {
+    const supabase = createMockSupabase(
+      vi.fn(() => ({
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              single: () => Promise.resolve({ data: null, error: { message: "not found" } }),
+            }),
+          }),
+        }),
+      })),
+    );
+
+    const result = await renameNotebook(supabase, "user-1", "bad-nb", "New");
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Notebook not found");
+  });
+});
+
+describe("deleteNotebook", () => {
+  function buildSupabase(opts: {
+    existing?: { id: string; name: string } | null;
+    existingError?: { message: string } | null;
+    count?: number;
+    countError?: { message: string } | null;
+    deleteError?: { message: string } | null;
+  }) {
+    const deleteSpy = vi.fn(() => ({
+      eq: () => ({
+        eq: () => Promise.resolve({ error: opts.deleteError ?? null }),
+      }),
+    }));
+    const mockFrom = vi.fn((table: string) => {
+      if (table === "notebooks") {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: () =>
+                  Promise.resolve({
+                    data: opts.existing ?? null,
+                    error: opts.existingError ?? null,
+                  }),
+              }),
+            }),
+          }),
+          delete: deleteSpy,
+        };
+      }
+      return {
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              eq: () => Promise.resolve({ count: opts.count ?? 0, error: opts.countError ?? null }),
+            }),
+          }),
+        }),
+      };
+    });
+    return { supabase: createMockSupabase(mockFrom), deleteSpy };
+  }
+
+  it("deletes an empty notebook", async () => {
+    const { supabase, deleteSpy } = buildSupabase({
+      existing: { id: "nb-1", name: "Empty" },
+      count: 0,
+    });
+
+    const result = await deleteNotebook(supabase, "user-1", "nb-1");
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("deleted");
+    expect(deleteSpy).toHaveBeenCalled();
+  });
+
+  it("returns error when the notebook is not found or not owned", async () => {
+    const { supabase, deleteSpy } = buildSupabase({
+      existing: null,
+      existingError: { message: "not found" },
+    });
+
+    const result = await deleteNotebook(supabase, "user-1", "bad-nb");
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Notebook not found");
+    expect(deleteSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses to delete a notebook that still has non-trashed notes", async () => {
+    const { supabase, deleteSpy } = buildSupabase({
+      existing: { id: "nb-1", name: "Full" },
+      count: 3,
+    });
+
+    const result = await deleteNotebook(supabase, "user-1", "nb-1");
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Cannot delete notebook with notes");
+    expect(deleteSpy).not.toHaveBeenCalled();
   });
 });

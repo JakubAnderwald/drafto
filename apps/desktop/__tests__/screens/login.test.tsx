@@ -79,4 +79,16 @@ describe("LoginScreen", () => {
 
     expect(onNavigateToSignup).toHaveBeenCalled();
   });
+
+  it("calls onNavigateToForgotPassword when the forgot-password link is pressed", () => {
+    const onNavigateToForgotPassword = jest.fn();
+    const { getByText, getByTestId } = render(
+      <LoginScreen onNavigateToForgotPassword={onNavigateToForgotPassword} />,
+    );
+
+    expect(getByText("Forgot your password?")).toBeTruthy();
+    fireEvent.press(getByTestId("forgot-password-link"));
+
+    expect(onNavigateToForgotPassword).toHaveBeenCalled();
+  });
 });

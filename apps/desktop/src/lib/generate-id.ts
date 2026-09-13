@@ -7,8 +7,7 @@ export function generateId(): string {
   const bytes = new Uint8Array(16);
 
   const crypto = (globalThis as Record<string, unknown>).crypto as
-    | { getRandomValues: (array: Uint8Array) => Uint8Array }
-    | undefined;
+    { getRandomValues: (array: Uint8Array) => Uint8Array } | undefined;
   if (typeof crypto?.getRandomValues === "function") {
     crypto.getRandomValues(bytes);
   } else {

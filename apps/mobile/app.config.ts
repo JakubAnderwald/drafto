@@ -80,5 +80,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     "./plugins/with-android-optimizations",
     "./plugins/with-android-signing",
     "./plugins/with-ios-swift-concurrency",
+    "./plugins/with-ios-modular-headers",
   ],
 });

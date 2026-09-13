@@ -46,6 +46,10 @@ test-results/
 playwright-report/
 blob-report/
 playwright/.cache/
+.playwright-mcp/
+
+# stray E2E capture artifacts written to the repo root
+/e2e-*.png
 **/e2e/.auth/
 
 # turbo
@@ -65,6 +69,11 @@ Thumbs.db
 !.claude/settings.json
 !.claude/hooks/
 !.claude/commands/
+# skills cloned per cloud session stay ignored; the placeholder keeps the
+# directory in the clone so Claude Code watches it (see cloud-sessions.md)
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/.gitkeep
 
 # nightly support logs
 logs/

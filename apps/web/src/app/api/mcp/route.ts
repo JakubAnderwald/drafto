@@ -12,13 +12,15 @@ import {
   updateNote,
   moveNote,
   trashNote,
+  renameNotebook,
+  deleteNotebook,
 } from "@/lib/api/mcp-tools";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 
 function createMcpServer(supabase: SupabaseClient<Database>, userId: string): McpServer {
   const server = new McpServer(
-    { name: "drafto", version: "1.0.0" },
+    { name: "drafto", version: "1.1.0" },
     { capabilities: { tools: {} } },
   );
 
@@ -93,6 +95,23 @@ function createMcpServer(supabase: SupabaseClient<Database>, userId: string): Mc
     "Move a note to trash (soft-delete, recoverable for 30 days)",
     { note_id: z.string().uuid().describe("The note ID to trash") },
     ({ note_id }) => trashNote(supabase, userId, note_id),
+  );
+
+  server.tool(
+    "rename_notebook",
+    "Rename a notebook (trims the name; rejects an empty name)",
+    {
+      notebook_id: z.string().uuid().describe("The notebook ID to rename"),
+      name: z.string().min(1).max(100).describe("New notebook name"),
+    },
+    ({ notebook_id, name }) => renameNotebook(supabase, userId, notebook_id, name),
+  );
+
+  server.tool(
+    "delete_notebook",
+    "Delete an empty notebook (refuses if it still holds non-trashed notes)",
+    { notebook_id: z.string().uuid().describe("The notebook ID to delete") },
+    ({ notebook_id }) => deleteNotebook(supabase, userId, notebook_id),
   );
 
   return server;

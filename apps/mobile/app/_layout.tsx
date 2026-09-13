@@ -17,10 +17,21 @@ import { markStartupBegin, markStartupEnd } from "@/lib/performance";
 markStartupBegin();
 configureGoogleSignIn();
 
-const PUBLIC_AUTH_SCREENS = new Set(["login", "signup"]);
+/**
+ * Screens an unauthenticated visitor may sit on without being bounced to login.
+ *
+ * `reset-password` is public because a recovery link cold-starts the app
+ * straight onto it: Expo Router renders the screen before the deep-link handler
+ * has established the session, and bouncing during that window would throw the
+ * link away. With no session and no recovery in flight the screen shows its own
+ * expired-link message.
+ */
+const PUBLIC_AUTH_SCREENS = new Set(["login", "signup", "forgot-password", "reset-password"]);
 
-function RouteGuard({ children }: { children: React.ReactNode }) {
-  const { user, isApproved, isLoading, isCheckingApproval } = useAuth();
+const RESET_PASSWORD_SCREEN = "reset-password";
+
+export function RouteGuard({ children }: { children: React.ReactNode }) {
+  const { user, isApproved, isLoading, isCheckingApproval, isRecovering } = useAuth();
   const segments = useSegments();
   const router = useRouter();
 
@@ -30,6 +41,17 @@ function RouteGuard({ children }: { children: React.ReactNode }) {
     const segmentArray = segments as string[];
     const inAuthGroup = segmentArray[0] === "(auth)";
     const isPublicAuthScreen = inAuthGroup && PUBLIC_AUTH_SCREENS.has(segmentArray[1]);
+
+    // A recovery session is a real session, so this has to win over both the
+    // approval gate and the signed-in redirect below — otherwise the reset
+    // screen is unreachable and the user lands in the app with a password they
+    // never chose.
+    if (isRecovering) {
+      if (segmentArray[1] !== RESET_PASSWORD_SCREEN) {
+        router.replace("/(auth)/reset-password");
+      }
+      return;
+    }
 
     if (!user) {
       if (!isPublicAuthScreen) {
@@ -44,7 +66,7 @@ function RouteGuard({ children }: { children: React.ReactNode }) {
         router.replace("/(tabs)");
       }
     }
-  }, [user, isApproved, isLoading, isCheckingApproval, segments, router]);
+  }, [user, isApproved, isLoading, isCheckingApproval, isRecovering, segments, router]);
 
   useEffect(() => {
     if (!isLoading && !isCheckingApproval) {
@@ -80,6 +102,11 @@ function ThemedStack() {
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="(auth)/login" options={{ title: "Log In" }} />
           <Stack.Screen name="(auth)/signup" options={{ title: "Sign Up" }} />
+          <Stack.Screen name="(auth)/forgot-password" options={{ title: "Forgot Password" }} />
+          <Stack.Screen
+            name="(auth)/reset-password"
+            options={{ title: "Reset Password", headerBackVisible: false }}
+          />
           <Stack.Screen
             name="(auth)/waiting-for-approval"
             options={{

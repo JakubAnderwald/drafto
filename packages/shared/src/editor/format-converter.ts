@@ -1,10 +1,11 @@
-import type {
-  BlockNoteBlock,
-  BlockNoteInlineContent,
-  BlockNoteTableContent,
-  TipTapDoc,
-  TipTapMark,
-  TipTapNode,
+import {
+  getTableCellInline,
+  type BlockNoteBlock,
+  type BlockNoteInlineContent,
+  type BlockNoteTableContent,
+  type TipTapDoc,
+  type TipTapMark,
+  type TipTapNode,
 } from "./types";
 import { isAttachmentUrl } from "./attachment-url";
 
@@ -183,15 +184,20 @@ function blockToTipTapNode(block: BlockNoteBlock): TipTapNode[] {
         return [{ type: "table", content: [] }];
       }
       const rows: TipTapNode[] = tableContent.rows.map((row) => {
-        const cells: TipTapNode[] = row.cells.map((cell) => ({
-          type: "tableCell",
-          content: [
-            {
-              type: "paragraph",
-              content: cell.length > 0 ? inlineContentToTipTap(cell) : undefined,
-            },
-          ],
-        }));
+        const cells: TipTapNode[] = row.cells.map((cell) => {
+          // Normalise both legacy InlineContent[] and v0.47+ wrapped
+          // { type: "tableCell", content } shapes via the helper.
+          const inline = getTableCellInline(cell);
+          return {
+            type: "tableCell",
+            content: [
+              {
+                type: "paragraph",
+                content: inline.length > 0 ? inlineContentToTipTap(inline) : undefined,
+              },
+            ],
+          };
+        });
         return { type: "tableRow", content: cells };
       });
       return [{ type: "table", content: rows }];

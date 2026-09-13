@@ -8,7 +8,8 @@ import { supabaseUrl, supabaseAnonKey } from "./config";
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error(
     "Missing Supabase configuration. " +
-      "Set SUPABASE_URL and SUPABASE_ANON_KEY in src/lib/config.ts.",
+      "Set SUPABASE_URL and SUPABASE_ANON_KEY in apps/desktop/.env (debug builds) " +
+      "or .env.production (release builds).",
   );
 }
 

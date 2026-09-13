@@ -41,11 +41,39 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
 
    Verify with `gh auth status` — the listed scopes should include `project`. Without it the agent's first board read fails on every tick with a `factory-project find-project failed` warning.
 
-5. **Install the factory launchd job.**
+5. **Create the dedicated factory checkout (Deployment).**
+
+   The factory runs from its **own git worktree pinned to `main`**, never from your
+   everyday dev checkout. This guarantees it only ever executes reviewed,
+   CI-gated code, and keeps its tick-start `git reset --hard` from ever touching
+   uncommitted work in your dev tree. (History: the factory once ran straight
+   from a feature branch in the dev checkout and shipped an unmerged `--release`
+   crash to production — the dedicated tree exists to make that impossible.)
+
+   Create it once as a **detached** worktree at `origin/main` (detached so it
+   doesn't collide with `main` being checked out in the primary repo):
+
+   ```bash
+   cd /Users/jakub/code/drafto
+   git fetch origin main
+   git worktree add --detach /Users/jakub/code/drafto-factory origin/main
+   cd /Users/jakub/code/drafto-factory
+   pnpm install                       # worktrees don't share node_modules
+   bash scripts/worktree-bootstrap.sh # gitignored env/config files
+   ```
+
+   Each tick, `factory-agent-loop.sh` runs `git fetch origin main` +
+   `git reset --hard origin/main` before the agent modes (guarded by
+   `FACTORY_AUTOPULL=1`, the default), so a merged PR — or a revert — goes live
+   on the next 5-min cycle with no manual pull. If the wrapper itself changed in
+   that sync, it re-execs the fresh copy once. Set `FACTORY_AUTOPULL=0` only for
+   ad-hoc manual runs against a dirty tree.
+
+6. **Install the factory launchd job.**
 
    On the Mac mini, drop a plist at `~/Library/LaunchAgents/eu.drafto.factory.plist` modelled on `eu.drafto.support-agent.plist` with:
    - `Label = eu.drafto.factory`
-   - `ProgramArguments = [/bin/bash, /Users/jakub/code/drafto/scripts/factory-agent-loop.sh]`
+   - `ProgramArguments = [/bin/bash, /Users/jakub/code/drafto-factory/scripts/factory-agent-loop.sh]` (the **dedicated** checkout from step 5, not the dev tree)
    - `StartInterval = 300` (5 min)
    - `EnvironmentVariables.FACTORY_PHASE = A`
    - Stdout/stderr paths under `logs/launchd-factory-*.log`
@@ -58,17 +86,39 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
    tail -f /Users/jakub/code/drafto/logs/launchd-factory-stdout.log
    ```
 
-   The first tick should log `=== factory-agent --plan run started (phase=A …) ===` followed by `=== factory-agent --plan completed in <N>s ===`. Subsequent ticks fire every 5 min.
+   The first tick should log `self-update: synced to origin/main @ <sha>` then
+   `=== factory-agent --plan run started (phase=A …) ===` followed by
+   `=== factory-agent --plan completed in <N>s ===`. Subsequent ticks fire every 5 min.
+
+7. **(Optional) Install the CodeRabbit CLI for the gap-fill lane.**
+
+   Only needed before turning on `FACTORY_CR_CLI=1` (see "CodeRabbit CLI gap-fill lane" below). On the Mac mini:
+
+   ```bash
+   brew install coderabbit
+   coderabbit auth login      # browser, one-time; the token lands in ~/.coderabbit/auth.json (0600)
+   coderabbit doctor          # expect "9 passed, 0 warnings, 0 failed"
+   coderabbit auth status     # expect "Plan : Free" (and "Seat : not assigned")
+   coderabbit usage           # expect "Usage billing : inactive"
+   ```
+
+   > **⚠️ Check `pnpm` afterwards.** On 2026-09-12 `brew install coderabbit` also upgraded Homebrew's `node` (23 → 26) as a side effect. Node 25+ no longer bundles corepack, so `/opt/homebrew/bin/pnpm` became a dangling symlink — and every factory `pnpm install` would have failed on the next `--implement`. If `pnpm --version` fails after any `brew install`/`upgrade`, remove the dangling corepack links and reinstall corepack:
+   >
+   > ```bash
+   > for l in /opt/homebrew/bin/{pnpm,pnpx,yarn,yarnpkg}; do [ -L "$l" ] && [ ! -e "$l" ] && rm "$l"; done
+   > npm install -g corepack && corepack enable pnpm
+   > pnpm --version   # run inside the repo: must print the packageManager pin (pnpm@10.30.1)
+   > ```
 
 ## Phase progression criteria
 
-| Promote from → to | Required signals before promotion                                                                                                                                                                                                                                                                                                                                                                   |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| (initial) → A     | Setup steps 1–5 above complete. `launchctl list \| grep eu.drafto.factory` shows the job registered, and a manual `launchctl kickstart` logs a clean `--plan` tick (board fetched, no `factory-failure` issue filed).                                                                                                                                                                               |
-| A → B             | ≥5 successful `--plan` runs (Ready → Planning → Plan Review with a usable plan comment). Zero `factory-failure` issues. Operator has read at least 3 plans and judges they were accurate enough to act on. `--implement` no-op confirmed: dragging Plan Review → In Progress in Phase A logs a "phase=A; implementation skipped" comment and leaves the card in In Progress without further action. |
-| B → C             | ≥5 successful end-to-end web-only runs (Ready → Plan Review → In Progress → In Review → In Test), each with green CI, a reachable Vercel preview, and zero parity violations, then merged by the operator at the Approved drag. SonarCloud quality gate green on all factory-authored PRs.                                                                                                          |
-| C → D             | ≥5 successful runs that include mobile or desktop changes. Operator manually fired beta dispatches (TestFlight, Play internal) per Phase C — confirms the dispatch payloads work before the factory automates them.                                                                                                                                                                                 |
-| D → (steady)      | ≥10 successful Released cards in Phase D. Beta dispatch path validated for both iOS and Android. Mac TestFlight lane runs locally on the Mac mini per the existing release pattern.                                                                                                                                                                                                                 |
+| Promote from → to | Required signals before promotion                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| (initial) → A     | Setup steps 1–6 above complete. `launchctl list \| grep eu.drafto.factory` shows the job registered, and a manual `launchctl kickstart` logs a clean `--plan` tick (board fetched, no `factory-failure` issue filed).                                                                                                                                                                                                                        |
+| A → B             | ≥5 successful `--plan` runs (Ready → Planning → Plan Review with a usable plan comment). Zero `factory-failure` issues. Operator has read at least 3 plans and judges they were accurate enough to act on. `--implement` no-op confirmed: dragging Plan Review → In Progress in Phase A logs a "phase=A; implementation skipped" comment and leaves the card in In Progress without further action.                                          |
+| B → C             | ≥5 successful end-to-end web-only runs (Ready → Plan Review → In Progress → In Review → In Test → **auto-merged + Released** after the operator drags to Approved), each with green CI, a reachable Vercel preview, and zero parity violations. SonarCloud quality gate green on all factory-authored PRs.                                                                                                                                   |
+| C → D             | ≥5 successful runs that include mobile or desktop changes. Operator manually fired beta dispatches (TestFlight, Play internal) per Phase C — confirms the dispatch payloads work before the factory automates them. **Pre-merge beta dispatch (below) is the intended way to accumulate this evidence:** it runs at Phase C behind its own knob, so every native card exercises the real lanes before Phase D automates the post-merge ones. |
+| D → (steady)      | ≥10 successful Released cards in Phase D. Beta dispatch path validated for both iOS and Android. Mac TestFlight lane runs locally on the Mac mini per the existing release pattern.                                                                                                                                                                                                                                                          |
 
 Promote by editing the `FACTORY_PHASE` env var in the launchd plist and reloading:
 
@@ -80,24 +130,287 @@ launchctl load -w ~/Library/LaunchAgents/eu.drafto.factory.plist
 
 There is no "auto-promote". The phase change is always a deliberate operator action so a regression at one phase can't silently unlock the next.
 
-**`--release` is deferred (staged Phase B).** The A→B→C→D phases control implementation _scope_ (web → web+mobile/desktop → beta dispatch). The `--release` mode (auto squash-merge on the Approved drag, then beta dispatch) is a separate, not-yet-built milestone: in every phase today the operator merges the approved PR by hand. `--implement` + `--watch` ship first so plan→implement→preview quality can be proven before the factory is granted autonomous merge-to-`main`. `factory-agent.sh --release` logs "deferred" and exits 0.
+### Promotion log
+
+A dated record of actual phase changes so the current operating phase is auditable from the repo (the plist itself is a local, untracked file).
+
+| Date       | Change | Operator | Rationale                                                                                                                                                                                                                                                         |
+| ---------- | ------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-06-23 | B → C  | Jakub    | Unblock native (mobile/desktop) parity work — notably #537 (forgot-password parity), which the Phase-B web-only scope had blocked at plan time. Phase C implementation code (#535) was already merged. Beta dispatch stays dormant until a later C → D promotion. |
+
+**`--release` runs at Phase B+.** The A→B→C→D phases control implementation _scope_ (web → web+mobile/desktop → beta dispatch); `--release` is the merge step layered on top. Each tick it scans the **Approved** column and, for a card a human dragged there, squash-merges the green PR via the GitHub API (`gh api --method PUT …/merge -f merge_method=squash`) and advances it to **Released** (Vercel auto-deploys main → prod for web). It is bounded by three hard rules:
+
+1. It only ever acts on a card a human (or an allowlisted reporter) moved to **Approved** — the Approved drag _is_ the merge-authorisation gate (ADR-0026); the factory never moves a card to Approved itself.
+2. It refuses to merge a PR touching `supabase/migrations/**` until `migration-approved` is on the PR — it leaves the card in Approved and comments once (`<!-- drafto-factory-migration-gate -->`).
+3. It won't merge unless CI is green and the branch is conflict-free; otherwise it leaves the card in Approved for you (a transient merge error is retried next tick, comment `<!-- drafto-factory-merge-failed -->`).
+
+**"CI is green" means the branch-protection _required_ contexts only** — both `--watch` (In Review → In Test) and `--release` (the merge gate) count only failing/pending checks whose context is in `required_status_checks`, fetched once per run (`fetch_required_contexts` → `pr_failing_required` / `pr_pending_required`). An advisory bot like **CodeRabbit** is never a required context, so its red — including its **"Review rate limited"** status when it can't review — never triggers the `--watch` fix loop, blocks the In Test advance, or blocks the merge. Advisory reds are instead surfaced in the In Test hand-off comment for the operator to glance at before Approving. **A review _comment_ is a different thing from a review _check_:** the check status stays advisory and never gates anything, but an unresolved review **thread** is a hard block on the merge (see `--release` below). (Before this, a rate-limited CodeRabbit check would loop `--watch`'s fix path to exhaustion and park the card in Blocked — the #463 failure of 2026-07-22.) When branch protection is unreadable/empty the helpers fall back to counting all checks, so an unknown required set can't silently pass a red PR.
+
+Right before merging it **verifies every review thread is resolved** (`fetch_review_threads`) — it does **not** resolve them for you. Until 2026-09-12 it did: `resolve_review_threads()` force-resolved every thread without reading one, which satisfied `required_conversation_resolution` on paper while discarding the findings (PR #601's five CodeRabbit threads are all `isResolved: true` for exactly that reason). Now an open thread **refuses the merge**, comments `<!-- drafto-factory-threads-open -->` listing `path:line`, and moves the card back to **In Review** — `--watch` is the only mode that runs the fix loop, so leaving it in Approved would strand it. The card returns to In Test for a fresh approval, because the diff changed after you authorised it. A failed thread query fails **closed** (no merge this tick). See [ADR-0035](../adr/0035-factory-code-review-gate.md).
+
+It is idempotent (an already-merged PR just finishes the Released transition + slot/worktree teardown) and honours `factory-pause`. `factory:pause` stops `--release` along with every other mode.
+
+**Phase-D beta dispatch.** At **Phase D only**, after a Released merge that touched a native platform, `--release` auto-dispatches beta builds via `scripts/lib/dispatch-release.mjs`: it derives the changed platforms from the diff (`apps/mobile/`→mobile, `apps/desktop/`→desktop, `packages/shared/`→both; `apps/web/` deploys via Vercel, no dispatch) and spawns the **local Fastlane lanes** on the Mac mini — `pnpm release:beta:all` (iOS TestFlight + Android internal) and/or `cd apps/desktop && pnpm release:beta` (macOS TestFlight). It uses the local lanes, **not** `gh workflow run`, because the CI release workflows are non-functional (see [builds-and-releases.md](./builds-and-releases.md)). Lanes are spawned detached (fire-and-forget; the Fastlane post-hook `comment-released-issues.mjs` posts the "now live" notice). Production store lanes are never invoked (`assertBetaOnly` denylist). The step is dormant at Phase B/C and marker-guarded (`<!-- drafto-factory-beta-dispatched -->`) so a re-tick can't re-trigger a build.
+
+> **Phase-D prerequisites (operator):** the Mac-mini factory launchd env must carry the Fastlane secrets the lanes need (`MATCH_PASSWORD`, ASC API key, Android keystore + `google-play-service-account.json`), and the `$REPO_ROOT` main checkout must be clean enough to fast-forward (the engine best-effort `git merge --ff-only origin/main` before building so the mobile lane builds the merged code; the **desktop** lane builds from its own root — see below). Validate both at the **C → D manual dispatch step** before promoting. Concurrency caveat: two simultaneous native releases would run overlapping lanes (version/tag contention) — rare at the factory's 1–2-slot cadence, but kick lanes by hand if it occurs.
+
+## Pre-merge beta dispatch (In Test)
+
+A card in **In Test** needs a build a human can actually install. `--watch` therefore dispatches beta builds **from the PR head, before the merge**, for the native platforms the diff touched (ADR-0030). This is separate from the Phase-D post-merge lane above and has its own knobs — enabling pre-merge betas must not silently switch on post-merge auto-dispatch.
+
+| Var                           | Default                                 | Purpose                                                                                         |
+| ----------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `FACTORY_INTEST_BETA`         | `0`                                     | Master switch. `1` + Phase C/D dispatches the **mobile** lane (iOS TestFlight + Play internal). |
+| `FACTORY_INTEST_BETA_DESKTOP` | `0`                                     | Additionally dispatch the **macOS** lane. Only turn on after the fossil validation below.       |
+| `FACTORY_INTEST_TIMEOUT_SEC`  | `600`                                   | Wall-clock cap for the In Test scenario writer (read-only stage).                               |
+| `FACTORY_LANE_STALE_MIN`      | `120`                                   | A lane silent this long with no exit code is declared dead and retried.                         |
+| `FACTORY_LANE_MAX_ATTEMPTS`   | `3`                                     | Retry budget per lane per commit; a new commit resets it.                                       |
+| `DRAFTO_BETA_MOBILE_ROOT`     | `/Users/jakub/code/drafto-beta-mobile`  | Dedicated mobile build root.                                                                    |
+| `DRAFTO_DESKTOP_BUILD_ROOT`   | `/Users/jakub/code/drafto-beta-desktop` | Dedicated macOS build root (clonefile replica of the fossil).                                   |
+| `DRAFTO_DESKTOP_FOSSIL_ROOT`  | `/Users/jakub/code/drafto`              | The fossil the desktop root is seeded **from**. Never built in.                                 |
+
+**The build roots.** Each is a detached git worktree that the factory hard-resets to the PR head SHA, with `node_modules` clonefile-seeded (`cp -c -R` — O(1) space). They are **dedicated and disposable**: `ensure_beta_build_root` refuses, by canonical path, to use the factory checkout or the fossil as a build root, because it resets what it is given and the fossil is your working tree. The issue's own worktree is deliberately not used either — the next `--watch` tick may install and edit files in it, and the cleanup sweep deletes it when the card leaves In Test.
+
+> ### ⚠️ NEVER `pnpm install` in `drafto-beta-desktop`
+>
+> Its `node_modules` is a byte-faithful clone of the fossil (React **19.1.x**). A `pnpm install` there resolves React 19.2 and produces a macOS app that **compiles green and crashes at runtime**. `assertDesktopFossil()` in `dispatch-release.mjs` checks the root's hoisted React version before spawning the lane and refuses loudly if it isn't 19.1.x — but don't rely on the net. See [desktop-build-fossil.md](./desktop-build-fossil.md) and [ADR-0027](../adr/0027-desktop-react-version-locked-to-react-native-macos.md).
+
+**One-time fossil validation before `FACTORY_INTEST_BETA_DESKTOP=1`.** A green compile is not proof; only an installed build that opens a note is.
+
+```bash
+git -C /Users/jakub/code/drafto worktree add --detach /Users/jakub/code/drafto-beta-desktop origin/main
+cd /Users/jakub/code/drafto-beta-desktop
+for d in node_modules apps/desktop/node_modules packages/*/node_modules; do
+  [ -d "/Users/jakub/code/drafto/$d" ] && cp -c -R "/Users/jakub/code/drafto/$d" "$d"
+done
+node -p "require('./node_modules/react/package.json').version"   # must print 19.1.x
+bash scripts/worktree-bootstrap.sh
+cd apps/desktop && pnpm release:beta        # ← NEVER `pnpm install` in this tree
+```
+
+Then install that TestFlight build and run the verifier, which now launches the app rather than only inspecting its bundle:
+
+```bash
+cd /Users/jakub/code/drafto            # the preceding block leaves you in apps/desktop
+# The password is NOT an argument (argv is world-readable via `ps`): supply it
+# via the env var, or omit it and the script prompts silently.
+DRAFTO_VERIFY_PASSWORD='...' apps/desktop/scripts/verify-testflight-build.sh <email>
+# It signs in to PRODUCTION, so it asks you to type "sign in to production".
+# Unattended: also set DRAFTO_VERIFY_CONFIRM='sign in to production'.
+```
+
+Test 6 is the fossil check: it opens the app, requires it to survive 15 s, and fails on any new crash report. Everything before it passes on a build that dies instantly, because the "login" test is a `curl` against Supabase rather than the app signing in.
+
+**It still cannot prove the app renders** — a blank window is a healthy process — so finish by opening the app and **opening a note** yourself. Confirm `git -C /Users/jakub/code/drafto status --porcelain` is unchanged before and after. Only then add the knob to the plist and reload.
+
+> Validated on **2026-08-06**: macOS build 48, built from `drafto-beta-desktop`, installs and opens a note. The replica is proven.
+
+**Identifying a pre-merge build.** Release notes begin `PRE-MERGE TEST BUILD — issue #N / PR #M (sha)` (prepended before the char trim, so it survives Play's 500-char cap), and the Fastlane post-hook `comment-intest-build.mjs` posts the build number on the card when the lane lands.
+
+> Both only apply to a PR branched **after** they landed (`d951b75`). Lanes build the PR head, so an older branch runs its own older copy of `generate-release-notes.sh` and Fastfile and produces neither. If a card's build arrives without the banner, rebase its branch onto `main` — that also re-triggers the scenario and both lanes off the new SHA.
+
+**A pre-merge build never creates a release tag.** The desktop lane tags `desktop@<version>+<build>` after shipping, so the next build's notes start from that tag rather than dumping the whole history — but a pre-merge lane builds an **unmerged** commit. Tagging it publishes a release tag on a commit that is on no branch (and which a rebase can orphan, leaving the tag as the only thing keeping it alive), and it poisons the very range the tag exists to scope: the next real release would start from a tag on an abandoned branch. The tag step is therefore skipped whenever `DRAFTO_INTEST_ISSUE` is set. Both failure modes were observed before the guard — `desktop@0.3.2+49` and `+50` were pushed to origin for #463's pre-merge builds, and `+49`'s commit was orphaned by a rebase.
+
+Mobile tags the same way, as `mobile@<version>+<platform>.<build>` — the platform segment is required because iOS and Android ship one version under two independent build counters (1.3.0 was iOS build 32 and Android build 41). Because those two counters make a version sort meaningless, `apps/mobile/scripts/generate-release-notes.sh` picks its anchor with `--sort=-creatordate` rather than `-v:refname`; desktop, with a single counter, keeps the version sort.
+
+**Triage.**
+
+```bash
+node scripts/lib/state-cli.mjs factory:get-issue <n>     # intestBetaSha  = commit the lanes were dispatched for
+                                                         # intestBetaLanes = lanes CONFIRMED STARTED for it
+                                                         # intestCommentSha = scenario's SHA
+# Lane logs are scoped per dispatch: beta-lane-<lane>-<issue>-<sha12>.log
+tail -f logs/factory/beta-lane-mobile-463-b243d8196fa2.log        # what it's doing
+cat  logs/factory/beta-lane-mobile-463-b243d8196fa2.log.exit      # its exit code, once done
+```
+
+**Dispatch is idempotent per lane, not per card.** `intestBetaLanes` holds only the lanes whose process the OS confirmed started for `intestBetaSha`. Each tick re-dispatches whatever is missing from that set, so a lane that was gated off (low disk, knob off), that failed to start, or that has since failed is picked up automatically — while a healthy sibling is left alone. A new commit invalidates the whole set.
+
+**A failed lane re-arms itself.** Every lane's shell wrapper writes its exit code to `<log>.exit`. Before deciding what to dispatch, the sweep reads it:
+
+| `<log>.exit`                                                     | meaning                                  | what happens                                                                                                                                             |
+| ---------------------------------------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| absent, log written recently                                     | still building                           | left alone                                                                                                                                               |
+| absent, log silent > `FACTORY_LANE_STALE_MIN`                    | wrapper killed before it could record    | treated as failed, retried                                                                                                                               |
+| absent, **no log at all**, dispatched > `FACTORY_LANE_STALE_MIN` | killed before it could even open its log | treated as failed, retried (judged against `intestBetaAt`)                                                                                               |
+| present but empty / non-numeric                                  | caught mid-write                         | left alone; the staleness rows above are the backstop                                                                                                    |
+| `0`                                                              | succeeded                                | stays suppressed; if a failure was announced for this lane+commit, a retraction is posted once (`<!-- drafto-factory-beta-recovered:<lane>:<sha12> -->`) |
+| non-zero, attempt < `FACTORY_LANE_MAX_ATTEMPTS`                  | failed, budget remaining                 | dropped from `intestBetaLanes`, retried next tick, reported once (`<!-- drafto-factory-beta-failed:<lane>:<sha12> -->`)                                  |
+| non-zero, attempt = `FACTORY_LANE_MAX_ATTEMPTS`                  | failed, budget spent                     | **stops** — stays in `intestBetaLanes` so nothing re-dispatches it; the comment says the budget is spent. A new commit resets it.                        |
+
+So a build that dies at minute 20 — an Apple 5xx, a dropped connection — no longer needs a manual state clear, and a deterministically-broken one stops after `FACTORY_LANE_MAX_ATTEMPTS` instead of rebuilding every tick. Lane artefacts are scoped per attempt: `beta-lane-<lane>-<issue>-<sha12>-a<attempt>.log`.
+
+**Two environment traps that make every attempt fail identically.** Both were hit on #463 and cost a day, because each looked like a mysterious process death rather than a one-line config error. Retries cannot help with either — only the operator can.
+
+- **`PATH` must contain `~/.rbenv/shims`.** The launchd agent does not read your shell profile, so a `PATH` that looks fine interactively can still be wrong for the job. Without the shims, `bundle` resolves to `/usr/bin/bundle` (system Ruby 2.6) and every lane dies within seconds on `Could not find 'bundler' (…) required by your Gemfile.lock`. Verify with `launchctl print "gui/$(id -u)/eu.drafto.factory" | grep 'PATH =>'` — not with `which bundle` in your terminal, which consults a different `PATH` and will happily tell you it works.
+- **The build must not inherit the factory's `umask 077`.** `factory-agent.sh` sets that so its logs (which carry GitHub tokens) stay owner-only. Inherited into a macOS build it produces a mode-700 `.app`; `productbuild` copies those modes verbatim into the pkg payload and App Store Connect rejects the upload with **ITMS-90255** — _"the installer package includes files that are only readable by the root user"_. The lane wrapper sets `umask 022` and `ensure_beta_build_root` normalises the tree with a `go+rX` pass, covering both what the build generates and what it copies in. Seeded credentials (`.env*`, `google-play-service-account.json`, signing material) are **pruned from that traversal**, never widened and restored — a build root is ~100k files, and "put the secrets back afterwards" leaves them world-readable for the length of the walk. **A macOS lane that compiles and signs cleanly but dies at `upload_to_testflight` is the signature of this regressing** — and note that a build made by hand will _not_ reproduce it, since an interactive shell runs at umask 022.
+
+If you _do_ want to force everything to rebuild:
+
+```bash
+node scripts/lib/state-cli.mjs factory:set-issue-field <n> intestBetaLanes ""   # re-dispatch every lane
+```
+
+Lanes are still skipped up front — with the reason in the In Test comment — when a knob is off, the phase is B, free disk is below `FACTORY_MIN_FREE_DISK_GB`, a build root can't be prepared, or the fossil assertion fails.
+
+## CodeRabbit CLI gap-fill lane
+
+CodeRabbit's PR bot runs on the free OSS tier and often doesn't review a factory commit: it is rate-limited (1–10 PR reviews/hr, scaled by the repo's stars), skipped, or auto-paused after two reviewed commits (`.coderabbit.yaml`). The **CodeRabbit CLI** has a separate free allowance of 3 reviews/hr. When the bot didn't cover a converged In Review card's head commit, `--watch` reviews that commit with the CLI on the Mac mini and posts the findings as review threads, which the ADR-0035 fix loop then answers. See [ADR-0036](../adr/0036-factory-coderabbit-cli-gap-fill.md).
+
+**How it runs.** The lane only acts once a card has converged: required CI green, the Claude review done for the head SHA, and no open threads. It then:
+
+1. **Waits for the bot.** It holds the card while the bot's review is in progress, or for `FACTORY_CR_BOT_GRACE_MIN` while the bot hasn't posted. Coverage is read from the bot's own review bodies and summary comment (REST, bot account only) — never from the `CodeRabbit` commit status, which reads SUCCESS even when rate-limited.
+2. **Starts one CLI run** if the bot didn't cover the commit. The run is a detached supervisor process in its own detached worktree, with a stripped environment (no `GH_TOKEN`, no support secrets). **At most one run is ever in flight** — two concurrent CLI reviews fail with a WebSocket `connection` error. The card keeps holding while it runs. If the PR's head moves on (a fix commit) or the PR closes while the run is still going, the next tick terminates it (SIGTERM to its process group), removes its worktree and frees the slot — its results could only be a stale summary. That run's hourly slot stays spent, but it doesn't count against the card's run cap, and no coverage is recorded.
+3. **Posts the findings** on a later tick, with no Claude call:
+   - Critical/major/minor findings become inline threads (critical/major only on an incremental re-review). If `gh pr diff` fails (e.g. a diff too large for the API — exactly the PR most likely to carry criticals), they open as **file-level** threads instead, which need no diff hunk.
+   - Everything else goes into one summary comment marked `<!-- drafto-factory-cr-cli sha=<sha> -->`: lower severities, findings outside the PR diff, anything past the per-run thread cap, and non-critical findings within 3 lines of an existing thread. That proximity check only counts comments by the owner or the CodeRabbit bot, in threads that are unresolved and not outdated (at the thread's current line), and never this run's own threads — a partial post must not demote the rest. A **critical** finding is never demoted for proximity. A thread-worthy finding that ends up only in the summary because of the thread cap, or because GitHub rejected its comment twice, makes the commit's coverage `cli-partial` (below): the fix loop reads threads, not the summary, so the tester is told.
+   - Each thread starts `**[CodeRabbit CLI · <severity>]**` and carries a disclaimer and a `drafto-factory-cr-finding` fingerprint marker, so re-posting is idempotent. Only the owner's and the bot's comments count for that de-duplication (resolved threads included), and only within 20 lines of the earlier comment — the same wording elsewhere in the file is a separate finding. The summary counts as already posted only if the owner's own comment carries the full marker — a public commenter can't suppress findings by pasting one.
+   - A failed post is retried on the next tick. If the post still hasn't succeeded more than 70 minutes past the run's deadline (the 10-minute overdue grace plus an hour), housekeeping gives up: it records `cli-failed` for the commit (unless the PR has closed or moved to a new head; a PR that can't be read at all is recorded anyway), removes the worktree and frees the slot, so the card promotes with a note instead of holding forever. Separately, the gate stops holding a card for its own run 80 minutes past that run's deadline and promotes it as `hold-expired`, even if housekeeping never manages to finish the run. If that run does finish later, housekeeping discards its results (`discarded: "already-decided"`) instead of posting threads onto a card that has moved on or overwriting the recorded coverage.
+4. **Promotes** the card once CodeRabbit covered the commit, or once the hold expires. In the latter case the In Test hand-off says "CodeRabbit did not review `<sha12>` (…)". The note is its own field in the In Test bundle (`crCoverageNote`, rendered on its own line — never listed among the advisory checks). When the In Test sweep re-writes a scenario for the same head with the lane on (e.g. the promoting tick died before its comment), it rebuilds the note from the recorded coverage. If the lane itself errors, the card promotes anyway (fail open) with "CodeRabbit coverage of `<sha12>` unknown (lane error)" — that note isn't recorded, so a re-written scenario can't repeat it — and a commit pushed while the card is already In Test gets no note at all.
+
+A thread-driven fix pass whose open threads are all CLI findings gets **one free pass per CLI run** (no retry attempt spent), and a card gets at most `FACTORY_CR_CLI_MAX_RUNS_PER_CARD` CLI runs per In Review stint, so CLI findings can't exhaust `FACTORY_MAX_ATTEMPTS` on their own. A missing binary, a failed `coderabbit doctor`, or an expired login never blocks a card — it promotes with a `cli-unavailable` note. A failed `doctor` pauses the lane for an hour and promotes the card in that same tick.
+
+**Knobs** (launchd plist `EnvironmentVariables`):
+
+| Var                                 | Default | Purpose                                                                                                                                                                                                                       |
+| ----------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FACTORY_CR_CLI`                    | `0`     | Master switch. Ships dark: dry-run first (see "Dry run" below), then set `1` in the plist. Setting it back to `0` is the kill switch.                                                                                         |
+| `FACTORY_CR_CLI_MAX_PER_HOUR`       | `3`     | Rolling hourly CLI budget (the vendor's free allowance). Consider `2` if you also use the CLI interactively.                                                                                                                  |
+| `FACTORY_CR_CLI_MAX_RUNS_PER_CARD`  | `2`     | CLI runs per card per In Review stint; reset when the card reaches In Test.                                                                                                                                                   |
+| `FACTORY_CR_CLI_TIMEOUT_MIN`        | `45`    | Supervisor kills a CLI run after this long (a large review takes 7–30+ min).                                                                                                                                                  |
+| `FACTORY_CR_BOT_GRACE_MIN`          | `15`    | How long to wait for the PR bot to post before treating the commit as a gap.                                                                                                                                                  |
+| `FACTORY_CR_HOLD_MAX_MIN`           | `60`    | Cap on holding a converged card waiting to start a run. Worst-case hold per head commit ≈ this + `FACTORY_CR_CLI_TIMEOUT_MIN` (up to 80 min more if collecting the run keeps failing); the clock restarts on each new commit. |
+| `FACTORY_CR_CLI_BIN`                | unset   | Explicit path to `coderabbit`. Otherwise PATH, then `/opt/homebrew/bin`, then `/usr/local/bin`.                                                                                                                               |
+| `FACTORY_CR_CLI_LIMIT_FALLBACK_MIN` | `60`    | Lane pause when the vendor rate-limits without a parseable `waitTime`.                                                                                                                                                        |
+
+The hold bound is per head commit, not per card. Normally one commit holds for at most `FACTORY_CR_HOLD_MAX_MIN` + `FACTORY_CR_CLI_TIMEOUT_MIN` (~105 min): a run started just before the hold cap, plus its timeout. If collecting that run keeps failing (the PR can't be read, posts keep failing, housekeeping throws), the card's hold on its own run ends 80 minutes past the run's deadline, so the absolute worst case is ~185 min. Each fix commit that converges starts a fresh `FACTORY_CR_HOLD_MAX_MIN` window, so a card that goes through two CLI rounds (`FACTORY_CR_CLI_MAX_RUNS_PER_CARD`) can sit in In Review for 3–4 h in total, plus the bot grace on any later commit.
+
+**Dry run.** Pass the phase explicitly. `factory-agent.sh` ignores `FACTORY_PHASE` in the environment (only `factory-agent-loop.sh` reads it) and defaults to Phase A, where `--watch` is a no-op that never reaches the lane:
+
+```bash
+FACTORY_CR_CLI=1 bash scripts/factory-agent.sh --watch --phase B --dry-run   # use the plist's current FACTORY_PHASE
+```
+
+Look for `CodeRabbit lane → promote (dry-run:<action>:<reason>)` lines. A dry run saves nothing, so the bot grace clock restarts on every tick: a commit with no CodeRabbit bot activity always reports `dry-run:hold:bot-grace`. `dry-run:start:gap:<state>` only shows for a commit where the bot left a rate-limit, skip or pause marker.
+
+**Inspecting and steering it:**
+
+```bash
+node scripts/lib/state-cli.mjs factory:cr-cli-status            # inFlight run, runs in the last hour, nextSlotAt, lane pause
+node scripts/lib/state-cli.mjs factory:cr-cli-pause-until <iso> "<reason>"  # pause the LANE only (not the factory)
+node scripts/lib/state-cli.mjs factory:cr-cli-resume            # lift a lane pause early (e.g. after re-auth)
+node scripts/lib/state-cli.mjs factory:get-issue <n>            # crCoverageSha / crCoverage / crLastCoveredSha / crCliRuns
+```
+
+A vendor rate-limit (`errorType:"rate_limit"`, with a `waitTime` such as "50 minutes") pauses **only this lane** until then. It never uses `factory:pause-until`, which would stop the whole factory.
+
+**What a lane pause does to cards.** A pause only stops new CLI runs. A converged card still holds for the bot (grace / in progress) and for a CLI run of its own that is already in flight; that run finishes and posts as usual. After that, the pause reason decides:
+
+- `rate_limited` / `action_required` (the pauses the lane sets itself on a vendor rate limit or billing-consent prompt): the card holds as `cli-paused` if the pause ends inside its `FACTORY_CR_HOLD_MAX_MIN` window, and otherwise promotes with coverage `budget`.
+- Anything else (`auth`, `doctor`, an operator's `factory:cr-cli-pause-until` reason, or a pause with no parseable end): the card promotes at once with coverage `cli-unavailable`.
+
+`factory:cr-cli-pause-until` is therefore not a way to stop cards holding. Use `FACTORY_CR_CLI=0` for that.
+
+**Where things live** (in the factory checkout, `/Users/jakub/code/drafto-factory`):
+
+- `logs/factory/cr-cli/<runId>/` — `meta.json` (binary, args, base commit, deadline), `events.ndjson` (the CLI's `--agent` event stream), `stderr.log`, and `exit.json` (`exitCode`, `signal`, `timedOut`, written when the run ends). Reaped after 30 days by the lane's housekeeping, which runs at the top of every `--watch` tick (the only retention rule for these dirs).
+- `worktrees/cr-cli-<issue>-<sha12>` — the detached checkout the CLI reviews. Removed when the run is processed; orphans are reaped by the next tick. A worktree is never reaped while a supervisor for it is still alive (a run dir's `meta.json` names the worktree, and a live process's command line carries that run id), even after its ledger entry was released; if the process table can't be read, every worktree a run dir claims is kept.
+
+**Killing a wedged run.** The supervisor runs the CLI in its own process group. `factory:cr-cli-finish` SIGTERMs that group itself — only when the run is still ours (the recorded pid is alive with the run id on its command line, or the supervisor has exited but members of its process group, i.e. the CLI, are still running; a reused pid is left alone) — and waits up to `--wait-ms` (default 10 s) until no live member of the group is left. Only then does it release the ledger slot and report `killed:true|false`. Otherwise it changes nothing and prints `ok:false`, so the gate never starts a second, vendor-refused run on top of a still-connected CLI:
+
+- `supervisor-still-running` — the group ignored SIGTERM. `kill -KILL -<pid>` (negative pid = the whole group) and run the finish again.
+- `supervisor-unverifiable` — `ps` failed, so ownership couldn't be checked. Do **not** kill a process group blind: inspect it first (`ps -axo pid,pgid,stat,command | awk '$2 == <pid>'`), fix whatever blocks `ps`, and retry.
+
+This is also the manual escape hatch when you can't wait for the next tick's housekeeping:
+
+```bash
+node scripts/lib/state-cli.mjs factory:cr-cli-status           # note inFlight.pid, .runId, .worktree
+node scripts/lib/state-cli.mjs factory:cr-cli-finish <runId> --refund none   # SIGTERMs the group, waits, then frees the slot
+kill -KILL -<pid>                                              # ONLY on supervisor-still-running (negative pid = the whole group); then re-run finish
+```
+
+Leave the worktree to housekeeping: its reap skips a worktree until that run's supervisor has actually exited, then removes it.
+
+**Coverage values** (`crCoverage`, recorded per head SHA). The first three produce no In Test note; the rest add "CodeRabbit did not review `<sha12>` (…)":
+
+| `crCoverage`      | Meaning                                                                                                                                                                                                                                                         | What to do                                                                                                   |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `bot`             | The PR bot reviewed this commit.                                                                                                                                                                                                                                | Nothing.                                                                                                     |
+| `cli`             | The CLI reviewed it and posted findings, every thread-worthy one as a thread (plus the summary).                                                                                                                                                                | Nothing — the fix loop answers the threads.                                                                  |
+| `cli-empty`       | The CLI reviewed it and found nothing (or skipped it because there were no changes).                                                                                                                                                                            | Nothing.                                                                                                     |
+| `cli-partial`     | The CLI reviewed it, but some thread-worthy findings only reached the summary comment (thread cap, or GitHub rejected the comment), or fewer findings could be parsed than the CLI reported.                                                                    | Read the CLI summary comment on the PR; nothing acted on those findings.                                     |
+| `cli-failed`      | The CLI run errored, timed out, or died; it reported a failed review, or skipped the review for any reason other than no changes; reported findings none of which could be parsed; or its findings still couldn't be posted 70 minutes past the run's deadline. | Read `logs/factory/cr-cli/<runId>/stderr.log` and `events.ndjson`, and the `--watch` log for the post error. |
+| `budget`          | No CLI slot (hourly budget, or the lane's own rate-limit / billing-consent pause) would open inside the hold window.                                                                                                                                            | Nothing, unless it's frequent — then lower interactive CLI use or raise `FACTORY_CR_HOLD_MAX_MIN`.           |
+| `hold-expired`    | The card waited `FACTORY_CR_HOLD_MAX_MIN` without coverage (e.g. another card's run was in flight), or its own run still wasn't collected 80 minutes past the run's deadline.                                                                                   | Nothing; review the commit by hand if it matters.                                                            |
+| `cap-reached`     | This card already used `FACTORY_CR_CLI_MAX_RUNS_PER_CARD` CLI runs this stint.                                                                                                                                                                                  | Nothing.                                                                                                     |
+| `cli-unavailable` | No `coderabbit` binary, `coderabbit doctor` failing, or the lane is paused for any reason but a vendor rate limit or billing-consent prompt (`auth`, `doctor`, an operator pause).                                                                              | See "Re-auth" below, or lift an operator pause with `factory:cr-cli-resume`.                                 |
+
+**Never `--use-credits`.** That flag bills usage-based reviews once the included allowance is spent. The factory never passes it (a test scans `scripts/` for the string, and the supervisor re-checks the command it is about to spawn), and an `action_required` (on-demand billing consent) result is treated as an exhausted budget. Note that the spike's rate-limit error reported "Usage-based reviews are enabled" for the organisation even though `coderabbit usage` shows "Usage billing : inactive" (the account has no assigned seat, so it can't be charged today). Belt and braces: in the CodeRabbit dashboard (Subscription and Billing), disable usage-based reviews or set a $0 spending cap.
+
+**Re-auth.** If a run fails with an auth error, the lane pauses itself for 6 h and cards promote with `cli-unavailable`. Fix it on the Mac mini:
+
+```bash
+coderabbit auth status        # "Signed in"? which organisation?
+coderabbit auth login         # browser; re-writes ~/.coderabbit/auth.json
+coderabbit doctor             # all checks must pass
+node scripts/lib/state-cli.mjs factory:cr-cli-resume
+```
+
+Auth is a file, not the Keychain, so it keeps working from launchd after a headless reboot. If `doctor` fails on `Backend reachable` / `WebSocket reachable`, it's the network or the vendor — the lane's 60-minute `doctor` pause retries on its own.
+
+### Asking whether a PR was reviewed
+
+The lane records coverage in factory state, but a PR merged by hand has no card. This answers
+the same question from the PR alone, for any PR in this repo:
+
+```bash
+node scripts/lib/coderabbit-cli.mjs coverage --pr 628
+# {"covered":false,"source":null,"bot":"absent","cli":"absent",…,"reason":"nothing has reviewed this commit"}
+```
+
+Exit `0` when covered, `2` when it ran fine and the answer is no, `1` when it could not answer
+at all — a caller that cannot tell those apart fails open on an outage. `covered` is true for a
+bot review of the head commit or a completed CLI run (`COVERED_KINDS`); `cli-partial` is not
+coverage, because findings that only reached the collapsed summary never went in front of the
+fix loop.
+
+It is read-only — no ledger, no worktree, no CLI binary — and it is what the `/merge` skill
+calls before merging. Two states are worth knowing apart: `retryable: true` means a review is
+running right now and is worth waiting for, while `rate_limited` means waiting needs the hour
+to roll over.
 
 ## Kill switches
 
-| Severity                     | Action                                                                                                                                                                                                                                                                                                                                             |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| One bad card                 | Drag to **Blocked**, or apply `factory-pause` to the issue. Factory skips it next tick.                                                                                                                                                                                                                                                            |
-| Stop all factory work        | `node scripts/lib/state-cli.mjs factory:pause` (Wave 2+). Resume with `factory:resume`.                                                                                                                                                                                                                                                            |
-| Stop the launchd job         | `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist`. Reload to resume.                                                                                                                                                                                                                                                               |
-| Active Claude session hangs  | `node scripts/lib/state-cli.mjs factory:slot-status` shows the PID + issue for each implement/watch slot; `kill -TERM <pid>`. The wall-time wrapper (`run-claude.mjs`) caps each invocation (180 s for `--plan`, `FACTORY_IMPLEMENT_TIMEOUT_SEC`/`FACTORY_WATCH_TIMEOUT_SEC` for the engines — default 1800/900 s) so a true hang is rare.         |
-| Stuck PR with a wrong commit | `gh pr close <n> --delete-branch`. Drag the card back to Ready. Factory will re-plan on the next tick.                                                                                                                                                                                                                                             |
-| Plan needs a single tweak    | Comment on the issue with the correction; on the next tick the factory edits the existing plan comment in place (preserves the rest, stamps `<!-- drafto-factory-replan-ack:<id> -->` so the same comment doesn't loop). Drag back to Ready only if you want a full restart. See `docs/features/dark-factory.md` → "The plan comment looks wrong". |
+| Severity                        | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One bad card                    | Drag to **Blocked**, or apply `factory-pause` to the issue. Factory skips it next tick.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Stop all factory work           | `node scripts/lib/state-cli.mjs factory:pause` (Wave 2+). Manual pause never auto-expires. Resume with `factory:resume`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Stop the launchd job            | `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist`. Reload to resume.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Active Claude session hangs     | `node scripts/lib/state-cli.mjs factory:slot-status` shows the PID + issue for each implement/watch slot; `kill -TERM <pid>`. The wall-time wrapper (`run-claude.mjs`) caps each invocation (`FACTORY_PLAN_TIMEOUT_SEC` — default 360 s — for `--plan`/replan, `FACTORY_IMPLEMENT_TIMEOUT_SEC`/`FACTORY_WATCH_TIMEOUT_SEC` for the engines — default 2700/1800 s) so a true hang is rare.                                                                                                                                                                                                                                          |
+| Worktree install hangs          | Each `pnpm install` is wrapped by `run-with-timeout.mjs` and capped at `FACTORY_INSTALL_TIMEOUT_SEC` (default 600 s); on cap, `--implement` releases the slot + worktree and bumps the card's attempt budget, while `--watch` logs a warning and proceeds. A cold install should take seconds (clonefile seed + offline reconcile), not minutes — see "Worktree installs & disk".                                                                                                                                                                                                                                                  |
+| CodeRabbit CLI lane misbehaving | Set `FACTORY_CR_CLI=0` in the plist and reload. Cards then promote without waiting for CodeRabbit. Housekeeping keeps running with the lane off: it terminates an in-flight CLI run (SIGTERM to its process group) and discards any finished run's results — nothing is posted and no coverage is recorded — then removes the run's worktree and frees the slot. To do that by hand right away, see "Killing a wedged run". A lane pause (`factory:cr-cli-pause-until`) only stops new runs; cards still hold for the bot and their own in-flight run (see "What a lane pause does to cards"). See "CodeRabbit CLI gap-fill lane". |
+| Stuck PR with a wrong commit    | `gh pr close <n> --delete-branch`. Drag the card back to Ready. Factory will re-plan on the next tick.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Plan needs a single tweak       | Comment on the issue with the correction; on the next tick the factory edits the existing plan comment in place (preserves the rest, stamps `<!-- drafto-factory-replan-ack:<id> -->` so the same comment doesn't loop). Drag back to Ready only if you want a full restart. See `docs/features/dark-factory.md` → "The plan comment looks wrong".                                                                                                                                                                                                                                                                                 |
+
+### Automatic pause on a Claude session limit (self-healing)
+
+The factory shares a Claude subscription with interactive sessions on the Mac mini. When a `claude -p` call dies because that subscription hit its 5-hour session usage limit, the failure is invisible in the factory logs (`claude exited non-zero (1)` with empty stdout/stderr — the "resets HH:MM" message lives only in the CLI's session transcript under `~/.claude/projects/<cwd-slug>/*.jsonl`). Before this was handled, issue #463 burned all 5 implement retries in 41 minutes against a limit that couldn't reset until later that morning.
+
+Now, on any non-timeout claude failure (`--plan`, replan, `--implement`, `--watch`), the engine checks the transcript (`scripts/lib/session-limit.mjs`). If the last assistant message is a session/usage-limit error it:
+
+- does **not** bump the card's attempt budget (the failure wasn't the card's fault),
+- parses the reset time and sets a **timed pause** via `node scripts/lib/state-cli.mjs factory:pause-until <iso> "<reason>"` (fallback: `FACTORY_LIMIT_FALLBACK_MIN`, default 30 min, when the reset time can't be parsed), and
+- returns the card to its re-entrant state (plan → Ready, replan → Plan Review, implement keeps its warm slot + worktree in In Progress).
+
+The next tick's pause gate reports the factory paused (`… (until: <iso>)`) and exits until the deadline; once `now ≥ pausedUntil`, `factory:paused?` auto-resumes and work continues — no operator action needed. A **manual** `factory:pause` has no deadline and never auto-expires. To lift a timed pause early, run `factory:resume`. To inspect it: `node scripts/lib/state-cli.mjs factory:status` shows `paused` + `pausedUntil` + `pausedReason`.
+
+Trade-off: because the loop runs plan→implement→watch→release sequentially under one mutex, a session-limit pause also defers `--release` merges until the reset — acceptable at the factory's cadence.
 
 ## Rollback drills
 
 The factory's blast radius is bounded by:
 
-1. **Pre-merge.** Worst case, a PR is opened with bad code. Closing the PR (and removing its `factory/issue-<n>` branch) reverts to zero side effects.
+1. **Pre-merge.** Worst case, a PR is opened with bad code. Closing the PR (and removing its `factory/issue-<n>` branch) reverts to zero side effects. For a salvageable PR sitting in In Test, prefer the **In Test iteration loop** — comment the change you want and the factory revises the same PR in place — over closing and re-filing.
 2. **Post-merge but pre-release.** Vercel auto-deploys main → prod on merge. If the factory merged something bad, follow the standard web rollback: `vercel rollback <previous-deployment-id>` from the Vercel dashboard. The web app is back in <60 s.
 3. **Post-merge and post-beta-dispatch (Phase D only).** TestFlight / Play internal builds are pre-authorised and reversible — the next build supersedes the bad one. No store-public users are affected (production app-store submissions stay manual; see CLAUDE.md "Release Authorization").
 4. **Schema migration.** The migration gate refuses to merge a PR with `supabase/migrations/**` files unless `migration-approved` is on the PR. If a bad migration _did_ land, follow [`docs/operations/migrations.md`](./migrations.md) → "Rolling back a migration".
@@ -115,29 +428,113 @@ The factory's `cleanup()` trap files a `factory-failure`-labelled GitHub issue w
 2. **Check `logs/factory-*.log` on the Mac mini** for the full context.
 3. **Common causes** (in approximate order of frequency):
    - Network blip during `gh` call (transient — usually resolves on the next tick).
-   - Worktree slot leaked (a previous run died without releasing it). `node scripts/lib/state-cli.mjs factory:slot-status` shows each slot's PID + issue; if the PID is dead, `node scripts/lib/state-cli.mjs factory:slot-release <slot>` then `node scripts/lib/worktree-cli.mjs remove --issue <n> --force`. (`--watch`'s cleanup sweep also auto-releases slots whose issue has left In Review/In Test.)
-   - Disk full under `worktrees/` — clean up via `git worktree prune` (and `node scripts/lib/worktree-cli.mjs list` to see the factory's worktrees).
-   - Claude wall-time cap hit on every retry (the prompt or context bundle is too large). Inspect the bundle in the log; truncate prior PR threads if needed.
+   - Worktree slot leaked (a previous run died without releasing it). `node scripts/lib/state-cli.mjs factory:slot-status` shows each slot's PID + issue; if the PID is dead, `node scripts/lib/state-cli.mjs factory:slot-release <slot>` then `node scripts/lib/worktree-cli.mjs remove --issue <n> --force`. (`--watch`'s cleanup sweep also auto-releases slots whose issue has left the active In Progress/In Review/In Test states — e.g. merged, Blocked, or closed. Since ADR-0033 that sweep removes the worktree but **keeps** the local branch whenever a PR still points at it, so a card dragged back to In Progress resumes on its own commits.)
+   - Disk full under `worktrees/` — the factory now refuses to start an implement when free space is below `FACTORY_MIN_FREE_DISK_GB` (it parks the card in Blocked with a `disk-low` comment), so a mid-build ENOSPC should be rare. Reclaim space via `git worktree prune` (and `node scripts/lib/worktree-cli.mjs list` to see the factory's worktrees); see "Worktree installs & disk" for the full reclamation runbook.
+   - Claude wall-time cap hit on every retry (the prompt or context bundle is too large). Inspect the bundle in the log; truncate prior PR threads if needed. (A Claude _session usage_ limit is handled separately — the factory auto-pauses until reset instead of failing; see "Automatic pause on a Claude session limit".)
 4. **Close the failure issue** once resolved. The trap doesn't auto-close; that's intentional so the issue is visible until acknowledged.
 
 If the same failure mode files >3 issues in 24h, pause the factory globally (`factory:pause`) and open a regular bug to fix the root cause.
 
+## Recovering a card whose feedback was falsely consumed
+
+Applies to cards worked before [ADR-0033](../adr/0033-factory-branch-safety-and-implement-verification.md). Symptom: an open PR, a reporter comment asking for a change, and a factory log line saying "revision pushed" — but the PR head never moved and `--watch` keeps re-presenting the same preview.
+
+The feedback high-water mark was advanced past the comment, so no future tick will read it. Rewind it, clear the retry counter, and make sure the branch is present:
+
+```bash
+# 1. The comment's own createdAt, minus a second, from:
+#    gh issue view <n> --json comments --jq '.comments[] | "\(.createdAt) \(.author.login)"'
+node scripts/lib/state-cli.mjs factory:set-issue-field <n> lastFeedbackAt "<iso-just-before-the-comment>"
+node scripts/lib/state-cli.mjs factory:reset-attempts <n>
+
+# 2. Restore the local branch if the old sweep deleted it. --fetch now does this
+#    automatically on the next tick, but doing it by hand is instant and safe.
+git fetch origin factory/issue-<n>
+git branch factory/issue-<n> origin/factory/issue-<n> 2>/dev/null || true
+```
+
+Then drag the card to **In Progress**. The next `--implement` tick re-reads the comment, resumes on the PR's own commits, and — if it still fails to push — now stops instead of claiming success.
+
+To find stray branches and stale remote-tracking refs left by the old behaviour:
+
+```bash
+git fetch --prune origin                       # --release deletes remote branches without pruning
+git branch --list 'factory/issue-*'
+gh pr list --state open --json headRefName --jq '.[].headRefName'
+node scripts/lib/worktree-cli.mjs list
+```
+
+Delete any local `factory/issue-*` that has no open PR and no worktree. A branch backing an open PR is now kept deliberately — don't prune those.
+
 ## Coexistence with `nightly-support.sh` Phase 3
 
-Phase 3 (existing midnight implementation pass) and the factory's `--implement` mode operate on overlapping issue sets. The deprecation schedule is:
+Phase 3 (existing midnight implementation pass) and the factory's `--implement` mode could operate on overlapping issue sets. **Revised 2026-06-21: Phase 3 is no longer deprecated** — it stays running unchanged across all factory phases, and the factory is kept off its queue by a factory-side guard. The coexistence model is:
 
-| Factory phase | Phase 3 status                                                                                                                                                                                                                                                               |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A             | Phase 3 keeps running. Factory only `--plan`s; no overlap.                                                                                                                                                                                                                   |
-| B             | Phase 3 keeps running. Factory `--implement`s only `status:ready` cards set by humans; Phase 3 still picks up `support`-labelled issues without `status:*`. Operator monitors logs to ensure they don't both pick up the same issue (label set is disjoint by construction). |
-| C             | Phase 3 disabled at cutover. Factory takes over support-issue implementation.                                                                                                                                                                                                |
-| D             | Phase 3 code removed.                                                                                                                                                                                                                                                        |
+| Factory phase | Phase 3 status                                                                                                                                                                                 |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A             | Phase 3 keeps running. Factory only `--plan`s; no overlap.                                                                                                                                     |
+| B             | Phase 3 keeps running. Factory `--implement`s only `status:ready` cards set by humans; Phase 3 still picks up `support`-labelled issues without `status:*`.                                    |
+| C             | Phase 3 keeps running, **unchanged (no cutover)**. The factory may now implement mobile/desktop, but its `--implement` queue skips `support`-labelled issues, so the two tracks stay disjoint. |
+| D             | Phase 3 keeps running, **unchanged (not removed)**.                                                                                                                                            |
 
-If both the factory and Phase 3 ever try to implement the same issue (a misconfiguration), the factory takes priority — its worktree-slot lock will block Phase 3's attempt. Both will log; Phase 3's log will say "issue #N already has a factory worktree".
+Collision avoidance is **factory-side**: the `--implement` queue excludes `support`-labelled issues, so the factory never claims an issue Phase 3 owns and the nightly script needs no edits. To hand a support issue to the factory deliberately, a human removes the `support` label — the factory then sees it as an ordinary board card. (Belt-and-braces: if both ever target the same issue, the factory's worktree-slot lock blocks Phase 3's attempt and Phase 3 logs "issue #N already has a factory worktree".)
+
+## Claude effort & timeouts
+
+The factory runs its **code-writing** stages (`--implement`, `--watch`) at **ultracode** effort (xhigh reasoning + dynamic multi-agent workflow orchestration) and its **read-only planning** stages (`--plan`, replan) at **xhigh**. Effort is passed to `claude` via `--effort`; if the Workflows feature is disabled on the account, ultracode degrades safely to plain xhigh (no error). ultracode multiplies token usage on the shared subscription, so dial `FACTORY_EFFORT` down if it pressures rate limits. All values are env knobs on the launchd plist's `EnvironmentVariables`:
+
+| Var                             | Default     | Purpose                                                                                               |
+| ------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------- |
+| `FACTORY_EFFORT`                | `ultracode` | `--effort` for `--implement` / `--watch` (the code-writing stages). Set `xhigh`/`high`/… to cut cost. |
+| `FACTORY_PLAN_EFFORT`           | `xhigh`     | `--effort` for `--plan` / replan (read-only planning).                                                |
+| `FACTORY_PLAN_TIMEOUT_SEC`      | `360`       | Wall-clock cap per `--plan`/replan Claude call (was 180; xhigh planning thinks longer).               |
+| `FACTORY_IMPLEMENT_TIMEOUT_SEC` | `2700`      | Wall-clock cap per `--implement` Claude call (was 1800; ultracode workflows run longer).              |
+| `FACTORY_WATCH_TIMEOUT_SEC`     | `1800`      | Wall-clock cap per `--watch` fix Claude call (was 900).                                               |
+| `FACTORY_REVIEW_TIMEOUT_SEC`    | `900`       | Wall-clock cap per code-review Claude call (read-only; runs once per PR head SHA).                    |
+
+> **Rollout precondition.** The loop self-updates the repo each tick but **not** the `claude` CLI. The Mac mini's `claude` must accept `--effort` — verify with `claude --effort ultracode -p 'reply with OK'` (must exit 0 and print `OK`). An older CLI would fail every Claude call and Block cards within `FACTORY_MAX_ATTEMPTS` ticks. Rollback needs no code redeploy: set `FACTORY_EFFORT` / `FACTORY_PLAN_EFFORT` to a base level (or lower the timeouts) in the plist.
+
+## Worktree installs & disk
+
+The factory implements each card in a throwaway git worktree that needs its own `node_modules`. The pnpm store lives on an external volume (`/Volumes/Zewnętrzny/pnpm-store`), so a cold `pnpm install` can't hardlink and cross-device-copies ~2000 packages — on #451 this ran **3.5+ hours** and silently held the implement lock, starving every other card. Two mitigations are built in:
+
+- **Clonefile seed.** Before installing, `seed_worktree_node_modules` clones the main checkout's `node_modules` (repo root + `apps/*` + `packages/*`) into the worktree with APFS `cp -c` (O(1), copy-on-write, ~0 bytes). The subsequent install is a fast **offline reconcile** (`pnpm install --frozen-lockfile --offline`), falling back to frozen-online then unfrozen-online for genuine lockfile drift. A cold install now takes seconds.
+- **Bounded install + disk guard.** Every install is wrapped by `run-with-timeout.mjs` and capped at `FACTORY_INSTALL_TIMEOUT_SEC`. Before starting, the factory checks free space and parks the card in **Blocked** with a `disk-low` comment if it's below `FACTORY_MIN_FREE_DISK_GB`.
+
+> **Do not delete the beta build roots** (`drafto-beta-mobile`, `drafto-beta-desktop`) when reclaiming space. They live outside `<repoRoot>/worktrees/` and carry no `factory/issue-*` branch, so `worktree-cli.mjs list` never reports them — but a broad `rm -rf` would destroy the desktop fossil replica, which can only be rebuilt by re-cloning from `/Users/jakub/code/drafto` and re-validating with a TestFlight build. Their `node_modules` costs ~0 bytes (clonefile); the space is in **build artefacts**, so prune those instead:
+>
+> ```bash
+> rm -rf /Users/jakub/code/drafto-beta-desktop/apps/desktop/macos/build
+> rm -rf /Users/jakub/code/drafto-beta-mobile/apps/mobile/ios/build
+> rm -rf /Users/jakub/code/drafto-beta-mobile/apps/mobile/android/.gradle
+> ```
+
+**Env knobs** (set in the launchd plist's `EnvironmentVariables`, alongside `FACTORY_PHASE`):
+
+| Var                           | Default | Purpose                                                           |
+| ----------------------------- | ------- | ----------------------------------------------------------------- |
+| `FACTORY_INSTALL_TIMEOUT_SEC` | `600`   | Wall-clock cap per worktree `pnpm install`.                       |
+| `FACTORY_MIN_FREE_DISK_GB`    | `3`     | Free-disk floor below which a card is Blocked instead of started. |
+
+**Reclaiming disk:**
+
+```bash
+git worktree prune                       # drop metadata for removed worktrees
+node scripts/lib/worktree-cli.mjs list   # show the factory's live worktrees
+rm -rf ~/Library/Developer/Xcode/DerivedData/* ~/.gradle/caches/*
+xcrun simctl delete unavailable
+# stale Claude Code worktrees (verify the branch is merged first):
+#   git worktree remove --force .claude/worktrees/<name>
+# or strip just the (reinstallable) node_modules to keep unmerged work:
+#   rm -rf .claude/worktrees/<name>/node_modules .claude/worktrees/<name>/{apps,packages}/*/node_modules
+```
+
+**Durable fix (optional):** move the pnpm store onto the internal volume so installs hardlink in seconds even without the clonefile seed — `pnpm config set store-dir ~/Library/pnpm/store && pnpm store prune && pnpm install` at the repo root (needs free internal space first). The clonefile seed then remains a cheap safety net regardless of store location.
 
 ## Related
 
 - [`docs/features/dark-factory.md`](../features/dark-factory.md) — operator manual.
 - [ADR-0026](../adr/0026-dark-factory-pipeline.md) — decision record.
+- [ADR-0035](../adr/0035-factory-code-review-gate.md) / [ADR-0036](../adr/0036-factory-coderabbit-cli-gap-fill.md) — review-thread merge gate and the CodeRabbit CLI gap-fill lane.
 - [`docs/operations/migrations.md`](./migrations.md) — migration safety + rollback workflow.
 - [`docs/operations/builds-and-releases.md`](./builds-and-releases.md) — release commands, beta lanes.

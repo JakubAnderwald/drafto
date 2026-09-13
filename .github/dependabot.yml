@@ -9,3 +9,49 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # Expo-SDK-aligned packages must track the pinned Expo SDK (~55); the SDK is bumped
+      # deliberately as one coordinated step. Major bumps ahead of the SDK break the React
+      # Native / Expo build and can never merge, so Dependabot retries them forever — the
+      # dominant source of nightly-audit false positives. Suppress semver-major bumps for the
+      # whole Expo family: bare `expo`, `expo-*`, scoped `@expo/*` (e.g. @expo/vector-icons),
+      # and the Expo tooling packages that lack an `expo` prefix. Minor/patch updates still
+      # flow through the minor-and-patch group above.
+      - dependency-name: "expo"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "expo-*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@expo/*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "eslint-config-expo"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "jest-expo"
+        update-types: ["version-update:semver-major"]
+      # React Native and its native community modules are pinned by the Expo SDK
+      # (set via `expo install`), not Dependabot. In RN's 0.x line a *minor* bump is a
+      # breaking change: RN 0.83 → 0.86 ran ahead of Expo SDK 55 (whose bundled
+      # @react-native/codegen is 0.83.x) and broke the release-bundle codegen, which can
+      # never merge — so suppress minor + major for the RN family. Patch updates within
+      # the SDK's supported minor still flow through the minor-and-patch group.
+      - dependency-name: "react-native"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "react-native-safe-area-context"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "react-native-screens"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "react-native-svg"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "react-native-webview"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # The scoped `@react-native/*` build tooling (babel-preset, metro-config,
+      # typescript-config, jest-preset) is part of the same 0.x train and must stay aligned
+      # with the React Native version each app is pinned to — a minor bump silently changes
+      # how the app's JS is compiled. 0.86 → 0.87 flipped the babel preset's default
+      # transform profile from `default` to `hermes-stable`, which drops
+      # @babel/plugin-transform-class-properties and so breaks the legacy decorators that
+      # WatermelonDB models depend on (`@field("remote_id") remoteId!: string`). That fails
+      # desktop's Jest run outright, and would change the bundle the fossil
+      # react-native-macos 0.81 app ships (see docs/operations/desktop-build-fossil.md),
+      # which CI cannot verify. Suppress minor + major; patches still flow through the group.
+      - dependency-name: "@react-native/*"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]

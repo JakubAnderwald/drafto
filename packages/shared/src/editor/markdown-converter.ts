@@ -1,4 +1,9 @@
-import type { BlockNoteBlock, BlockNoteInlineContent, BlockNoteTableContent } from "./types";
+import {
+  getTableCellInline,
+  type BlockNoteBlock,
+  type BlockNoteInlineContent,
+  type BlockNoteTableContent,
+} from "./types";
 
 // --- BlockNote -> Markdown ---
 
@@ -98,7 +103,9 @@ function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
       if (tableContent?.type === "tableContent" && tableContent.rows.length > 0) {
         for (let i = 0; i < tableContent.rows.length; i++) {
           const row = tableContent.rows[i];
-          const cells = row.cells.map((cell) => inlineContentToMarkdown(cell));
+          // BlockNote cells may be raw InlineContent[] (legacy) or wrapped
+          // { type: "tableCell", content } (v0.47+); normalise via the helper.
+          const cells = row.cells.map((cell) => inlineContentToMarkdown(getTableCellInline(cell)));
           lines.push(`${prefix}| ${cells.join(" | ")} |`);
           if (i === 0) {
             lines.push(`${prefix}| ${cells.map(() => "---").join(" | ")} |`);

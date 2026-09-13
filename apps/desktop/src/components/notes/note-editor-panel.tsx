@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { View, Text, TextInput, StyleSheet, ActivityIndicator } from "react-native";
 import { useEditorBridge, TenTapStartKit } from "@10play/tentap-editor";
+import type { WebViewMessageEvent } from "react-native-webview";
 
 import { useNote } from "@/hooks/use-note";
 import { useAutoSave } from "@/hooks/use-auto-save";
@@ -11,7 +12,6 @@ import {
   formatRelativeTime,
   tiptapToBlocknote,
   toAttachmentUrl,
-  resolveTipTapImageUrls,
   migrateSignedUrlsToAttachmentUrls,
 } from "@drafto/shared";
 import type { TipTapDoc, TipTapNode } from "@drafto/shared";
@@ -23,8 +23,20 @@ import { Badge, type BadgeVariant } from "@/components/ui/badge";
 import { CalendarIcon } from "@/components/ui/icons/calendar-icon";
 import { ClockIcon } from "@/components/ui/icons/clock-icon";
 import { NoteEditor } from "@/components/editor/note-editor";
+import { FindBar } from "@/components/editor/find-bar";
+import {
+  findSearchJS,
+  findStepJS,
+  findClearJS,
+  parseFindResult,
+  type FindResult,
+} from "@/components/editor/find-engine";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { isCatastrophicEraseSave } from "@/components/notes/erase-tripwire";
+import {
+  classifyNoteContent,
+  resolveImageUrlsOrFallback,
+} from "@/components/notes/note-content-loader";
 
 type SaveStatusKey = "saving" | "saved" | "error";
 
@@ -66,11 +78,41 @@ async function buildInsertNode(attachment: Attachment): Promise<TipTapNode> {
   };
 }
 
-interface NoteEditorPanelProps {
-  noteId: string | undefined;
+// Bound on image-URL resolution so a never-settling signed-URL fetch can't hang
+// a note load (and strand the loading overlay). On timeout, resolve to the
+// unresolved doc — images degrade to placeholders; attachment:// is the
+// canonical stored form, so persisting it back is non-destructive.
+const RESOLVE_TIMEOUT_MS = 8000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(fallback);
+      },
+    );
+  });
 }
 
-export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
+/** Imperative signal from the native Find menu items (Cmd+F / Cmd+G / Cmd+Shift+G). */
+export interface FindSignal {
+  command: "open" | "next" | "prev";
+  /** Incremented on each menu invocation so repeats re-trigger the panel. */
+  nonce: number;
+}
+
+interface NoteEditorPanelProps {
+  noteId: string | undefined;
+  findSignal?: FindSignal;
+}
+
+export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
   const { note, loading } = useNote(noteId);
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
@@ -85,8 +127,16 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   // the previous note's content into the newly-switched-to row.
   const noteIdRef = useRef<string | undefined>(undefined);
   const loadedNoteIdRef = useRef<string | null>(null);
+  // Tracks the last-handled findSignal so the effect fires once per menu press.
+  const lastFindNonceRef = useRef(0);
+  // Debounces find-as-you-type so a full ProseMirror tree-walk (the injected
+  // engine re-scans every text node per search) doesn't run on every keystroke.
+  const findDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleSaveTitle = useCallback(async (payload: TitleSavePayload) => {
+    // Don't persist an empty/whitespace title over a real one (a transient clear,
+    // or a flush firing mid-edit).
+    if (!payload.title.trim()) return;
     const record = await database.get<Note>("notes").find(payload.noteId);
     await database.write(async () => {
       await record.update((n) => {
@@ -122,6 +172,20 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   contentAutoSaveRef.current = contentAutoSave;
 
   const [editorReady, setEditorReady] = useState(false);
+  // Shown (as an overlay) from the moment a different note is selected until its
+  // content is set into the editor — so the previous note's stale body is never
+  // visible during the swap. The editor/WebView itself is never unmounted.
+  const [contentLoading, setContentLoading] = useState(false);
+  // Set when a note's content fails to load; drives an error overlay so a load
+  // failure shows an error instead of revealing the previous note's stale body
+  // under the new note's header (autosave stays gated via loadedNoteIdRef).
+  const [loadFailed, setLoadFailed] = useState(false);
+
+  // Find-in-note UI state. The WebView (via the injected engine) is the source of
+  // truth for matches; findMatch just mirrors the counts it posts back.
+  const [findVisible, setFindVisible] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findMatch, setFindMatch] = useState<FindResult>({ current: 0, total: 0 });
 
   const handleEditorChange = useCallback(() => {
     const editor = editorRef.current;
@@ -164,21 +228,37 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
   });
   editorRef.current = editor;
 
+  // Gate content loads on tentap's real readiness signal instead of polling
+  // editor.getJSON(). A resolved getJSON() only proves the WebView bridge can
+  // round-trip a message — NOT that the ProseMirror view is mounted and able to
+  // accept setContent. On macOS that gap left the very first setContent silently
+  // dropped, so notes opened blank even though their content was present and
+  // valid in the DB (issue #551). `isReady` flips true off the web editor's
+  // onCreate state update, which is the first instant setContent is honoured.
+  // (This is the same signal the library's own useBridgeState hook reads; we
+  // subscribe directly and unsubscribe once ready to avoid re-rendering the
+  // panel on every keystroke.)
   useEffect(() => {
     if (editorReady) return;
-    const interval = setInterval(() => {
-      try {
-        editor
-          .getJSON()
-          .then(() => {
-            setEditorReady(true);
-            clearInterval(interval);
-          })
-          .catch(() => {});
-      } catch {}
-    }, 200);
-    return () => clearInterval(interval);
+    if (editor.getEditorState().isReady) {
+      setEditorReady(true);
+      return;
+    }
+    return editor._subscribeToEditorStateUpdate((state) => {
+      if (state.isReady) setEditorReady(true);
+    });
   }, [editor, editorReady]);
+
+  // Full find reset — clears the bar, query, counts, and WebView highlights.
+  // Used on note switch / no-note (highlights point at the outgoing note's DOM)
+  // and on explicit close.
+  const resetFind = useCallback(() => {
+    if (findDebounceRef.current) clearTimeout(findDebounceRef.current);
+    setFindVisible(false);
+    setFindQuery("");
+    setFindMatch({ current: 0, total: 0 });
+    editorRef.current?.webviewRef.current?.injectJavaScript(findClearJS());
+  }, []);
 
   // Sync local state when a different note is loaded.
   useEffect(() => {
@@ -191,8 +271,12 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
       titleAutoSaveRef.current?.flush();
       contentAutoSaveRef.current?.flush();
 
+      resetFind(); // highlights point at the outgoing note's DOM
+
       noteIdRef.current = note.id;
       loadedNoteIdRef.current = null; // gate autosave until setContent completes
+      setContentLoading(true); // overlay the editor until setContent() lands
+      setLoadFailed(false);
       setTitle(note.title || "");
 
       const rawContent = note.content || "";
@@ -206,49 +290,35 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
         // newer note.
         if (noteIdRef.current === targetNoteId) {
           loadedNoteIdRef.current = targetNoteId;
+          setContentLoading(false);
         }
       };
 
       (async () => {
         try {
-          if (!rawContent) {
-            editor.setContent("");
+          const load = classifyNoteContent(rawContent);
+          if (load.kind === "empty") {
+            editorRef.current?.setContent("");
             markLoaded();
             return;
           }
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(rawContent);
-          } catch {
-            // Not JSON — treat as plain text
-            const htmlContent = rawContent
-              .split("\n")
-              .map((line: string) => `<p>${escapeHtml(line) || "<br>"}</p>`)
-              .join("");
-            editor.setContent(htmlContent);
+          if (load.kind === "html") {
+            editorRef.current?.setContent(load.html);
             markLoaded();
             return;
           }
-          const isBlockNote =
-            Array.isArray(parsed) && parsed.length > 0 && (parsed[0] as { type?: string })?.type;
-          const isTipTap =
-            parsed &&
-            typeof parsed === "object" &&
-            !Array.isArray(parsed) &&
-            (parsed as { type?: string }).type === "doc";
-          if (!isBlockNote && !isTipTap) {
-            const htmlContent = rawContent
-              .split("\n")
-              .map((line: string) => `<p>${escapeHtml(line) || "<br>"}</p>`)
-              .join("");
-            editor.setContent(htmlContent);
-            markLoaded();
-            return;
-          }
-          const tiptapDoc = contentToTiptap(parsed);
-          const resolved = await resolveTipTapImageUrls(tiptapDoc, getSignedUrl);
+          const tiptapDoc = contentToTiptap(load.value);
+          // Resolve image URLs defensively, bounded by a timeout so a
+          // never-settling signed-URL fetch can't strand the loading overlay: a
+          // resolution failure/timeout degrades images to placeholders rather
+          // than blanking the whole (otherwise valid) note.
+          const resolved = await withTimeout(
+            resolveImageUrlsOrFallback(tiptapDoc, getSignedUrl),
+            RESOLVE_TIMEOUT_MS,
+            tiptapDoc,
+          );
           if (cancelled || noteIdRef.current !== targetNoteId) return;
-          editor.setContent(resolved);
+          editorRef.current?.setContent(resolved);
           markLoaded();
         } catch (err) {
           // Intentionally do NOT call editor.setContent("") or markLoaded()
@@ -264,6 +334,13 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
             `noteId=${targetNoteId}`,
             err,
           );
+          // Swap the loading spinner for an error overlay (not the editor "as
+          // is") so a load failure never reveals the previous note's body under
+          // the new note's header. The autosave stays gated above.
+          if (!cancelled && noteIdRef.current === targetNoteId) {
+            setContentLoading(false);
+            setLoadFailed(true);
+          }
         }
       })();
 
@@ -273,16 +350,25 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
     } else if (!note) {
       titleAutoSaveRef.current?.flush();
       contentAutoSaveRef.current?.flush();
+      resetFind();
       noteIdRef.current = undefined;
       loadedNoteIdRef.current = null;
+      setContentLoading(false);
+      setLoadFailed(false);
       setTitle("");
       try {
-        editor.setContent("");
+        editorRef.current?.setContent("");
       } catch {
         // Editor not ready — safe to ignore
       }
     }
-  }, [note?.id, editor, editorReady]);
+    // `editor` is intentionally NOT a dependency here. useEditorBridge returns a
+    // NEW object every render, so depending on it re-ran this effect on every
+    // render — cancelling an in-flight async content resolve (via the cleanup's
+    // `cancelled = true`) and stranding the loading overlay for notes whose
+    // resolution didn't finish within a single microtask (attachment notes). The
+    // live editor is read through editorRef.current instead.
+  }, [note?.id, editorReady, resetFind]);
 
   const handleAttachmentReady = useCallback(
     async (attachment: Attachment) => {
@@ -329,6 +415,7 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
     return () => {
       titleAutoSaveRef.current?.flush();
       contentAutoSaveRef.current?.flush();
+      if (findDebounceRef.current) clearTimeout(findDebounceRef.current);
     };
   }, []);
 
@@ -339,25 +426,53 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
     titleAutoSaveRef.current?.trigger({ noteId: active, title: text });
   }, []);
 
-  if (!noteId) {
-    return (
-      <View style={styles.container}>
-        <EmptyState
-          icon="✏️"
-          title="Select a note"
-          subtitle="Choose a note from the list to start editing"
-        />
-      </View>
-    );
-  }
+  // --- Find in note ---------------------------------------------------------
+  // Cmd+F is captured natively (DraftoMenuManager) and forwarded here as a
+  // findSignal. Highlight/scroll is driven by injecting the find engine into the
+  // tentap WebView; match counts come back via handleEditorMessage. Nothing here
+  // mutates note content — the CSS Custom Highlight overlay leaves the DOM alone.
+  const injectFind = useCallback((js: string) => {
+    editorRef.current?.webviewRef.current?.injectJavaScript(js);
+  }, []);
 
-  if (loading) {
-    return (
-      <View style={[styles.container, styles.loadingContainer]}>
-        <ActivityIndicator size="small" color={colors.primary[600]} />
-      </View>
-    );
-  }
+  const handleFindChange = useCallback(
+    (query: string) => {
+      setFindQuery(query);
+      // Debounce the (full-document) search; the input stays responsive.
+      if (findDebounceRef.current) clearTimeout(findDebounceRef.current);
+      findDebounceRef.current = setTimeout(() => injectFind(findSearchJS(query)), 150);
+    },
+    [injectFind],
+  );
+
+  const handleFindNext = useCallback(() => {
+    injectFind(findStepJS("next"));
+  }, [injectFind]);
+
+  const handleFindPrev = useCallback(() => {
+    injectFind(findStepJS("prev"));
+  }, [injectFind]);
+
+  const handleFindClose = useCallback(() => {
+    resetFind();
+  }, [resetFind]);
+
+  const handleEditorMessage = useCallback((event: WebViewMessageEvent) => {
+    const result = parseFindResult(event);
+    if (result) setFindMatch(result);
+  }, []);
+
+  // React to native Find menu commands. Every command opens the bar (only when a
+  // note is loaded); next/prev also step. Refocus on repeated Cmd+F is handled by
+  // FindBar via focusSignal (the nonce).
+  useEffect(() => {
+    if (!findSignal || findSignal.nonce === lastFindNonceRef.current) return;
+    lastFindNonceRef.current = findSignal.nonce;
+    if (!noteIdRef.current) return; // no note selected — nothing to find
+    setFindVisible(true);
+    if (findSignal.command === "next") handleFindNext();
+    else if (findSignal.command === "prev") handleFindPrev();
+  }, [findSignal, handleFindNext, handleFindPrev]);
 
   const saveStatusKey: SaveStatusKey | null =
     titleAutoSave.status === "saving" || contentAutoSave.status === "saving"
@@ -369,21 +484,28 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
           : null;
   const statusConfig = saveStatusKey ? saveStatusConfig[saveStatusKey] : null;
 
+  // The editor (and its tentap WebView) is mounted ONCE and never unmounted.
+  // On macOS (New Arch / Fabric + react-native-webview) an unmounted WKWebView is
+  // recycled rather than destroyed, and remounting it strands the editor on the
+  // previously-loaded note's stale DOM — the note-switch bug. So note content is
+  // swapped via editor.setContent() on the live WebView (the load effect), and the
+  // select / loading / not-found states render as OVERLAYS on top of the editor
+  // rather than early-returns that would unmount it.
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <View style={styles.titleRow}>
-          <TextInput
-            style={styles.titleInput}
-            value={title}
-            onChangeText={handleTitleChange}
-            placeholder="Untitled"
-            placeholderTextColor={semantic.fgSubtle}
-          />
-          {statusConfig && <Badge variant={statusConfig.variant} label={statusConfig.label} />}
-        </View>
+      {note && (
+        <View style={styles.header}>
+          <View style={styles.titleRow}>
+            <TextInput
+              style={styles.titleInput}
+              value={title}
+              onChangeText={handleTitleChange}
+              placeholder="Untitled"
+              placeholderTextColor={semantic.fgSubtle}
+            />
+            {statusConfig && <Badge variant={statusConfig.variant} label={statusConfig.label} />}
+          </View>
 
-        {note && (
           <View style={styles.metadataRow}>
             <View style={styles.metadataItem}>
               <CalendarIcon size={14} color={semantic.fgSubtle} />
@@ -394,25 +516,59 @@ export function NoteEditorPanel({ noteId }: NoteEditorPanelProps) {
               <Text style={styles.metadataText}>Modified {formatRelativeTime(note.updatedAt)}</Text>
             </View>
           </View>
+        </View>
+      )}
+
+      <View style={styles.editorContainer}>
+        <NoteEditor editor={editor} onMessage={handleEditorMessage} />
+        {findVisible && note && (
+          <FindBar
+            query={findQuery}
+            match={findMatch}
+            onChangeQuery={handleFindChange}
+            onNext={handleFindNext}
+            onPrev={handleFindPrev}
+            onClose={handleFindClose}
+            focusSignal={findSignal?.nonce ?? 0}
+          />
         )}
       </View>
 
-      <View style={styles.editorContainer}>
-        <NoteEditor editor={editor} />
-      </View>
+      {note && <AttachmentPicker noteId={note.id} onAttachmentReady={handleAttachmentReady} />}
 
-      {noteId && <AttachmentPicker noteId={noteId} onAttachmentReady={handleAttachmentReady} />}
+      {!noteId && (
+        <View style={styles.overlay}>
+          <EmptyState
+            icon="✏️"
+            title="Select a note"
+            subtitle="Choose a note from the list to start editing"
+          />
+        </View>
+      )}
+
+      {noteId && (loading || !editorReady || contentLoading) && (
+        <View style={styles.overlay}>
+          <ActivityIndicator size="small" color={colors.primary[600]} />
+        </View>
+      )}
+
+      {noteId && !loading && !note && (
+        <View style={styles.overlay}>
+          <EmptyState icon="🔍" title="Note not found" subtitle="This note may have been deleted" />
+        </View>
+      )}
+
+      {noteId && !loading && note && loadFailed && (
+        <View style={styles.overlay}>
+          <EmptyState
+            icon="⚠️"
+            title="Couldn't load this note"
+            subtitle="Switch away and back to retry"
+          />
+        </View>
+      )}
     </View>
   );
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
 }
 
 const createStyles = (semantic: SemanticColors) =>
@@ -424,6 +580,18 @@ const createStyles = (semantic: SemanticColors) =>
     loadingContainer: {
       alignItems: "center",
       justifyContent: "center",
+    },
+    // Covers the always-mounted editor for the select / loading / not-found
+    // states (the editor is never unmounted — see the render note).
+    overlay: {
+      position: "absolute",
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: semantic.bg,
     },
     header: {
       backgroundColor: semantic.bgSubtle,

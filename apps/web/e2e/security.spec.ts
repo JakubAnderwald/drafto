@@ -88,6 +88,18 @@ test.describe("Security: admin route protection", () => {
     expect([307, 401]).toContain(response.status);
   });
 
+  test("unauthenticated user cannot access admin delete-user endpoint", async () => {
+    const response = await fetch("http://localhost:3000/api/admin/delete-user", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: "00000000-0000-0000-0000-000000000000" }),
+      redirect: "manual",
+    });
+    // Blocked: middleware redirect (307) or route handler rejection (401)
+    expect(response.ok).toBe(false);
+    expect([307, 401]).toContain(response.status);
+  });
+
   test("unauthenticated user cannot access cleanup-trash endpoint", async () => {
     const response = await fetch("http://localhost:3000/api/cron/cleanup-trash", {
       method: "POST",

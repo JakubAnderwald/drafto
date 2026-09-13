@@ -11,8 +11,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AppMenu } from "@/components/layout/app-menu";
 import { ImportEvernoteDialog } from "@/components/import/import-evernote-dialog";
 import { ImportTickTickDialog } from "@/components/import/import-ticktick-dialog";
+import { ExportEvernoteDialog } from "@/components/export/export-evernote-dialog";
 import { SearchOverlay } from "@/components/search/search-overlay";
 import { usePaneCollapse } from "@/hooks/use-pane-collapse";
+import type { NoteListPatch } from "@/lib/note-patch";
 
 interface NotebookInfo {
   id: string;
@@ -214,12 +216,10 @@ export function AppShell({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [showTickTickImportDialog, setShowTickTickImportDialog] = useState(false);
+  const [showExportDialog, setShowExportDialog] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const { notebooksCollapsed, notesCollapsed, togglePane } = usePaneCollapse();
-  const [lastNoteUpdate, setLastNoteUpdate] = useState<{
-    noteId: string;
-    updatedAt: string;
-  } | null>(null);
+  const [lastNoteUpdate, setLastNoteUpdate] = useState<NoteListPatch | null>(null);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -245,8 +245,18 @@ export function AppShell({
     setRefreshTrigger((prev) => prev + 1);
   }, []);
 
-  const handleNoteUpdated = useCallback((noteId: string, updatedAt: string) => {
-    setLastNoteUpdate({ noteId, updatedAt });
+  const handleNoteUpdated = useCallback((patch: NoteListPatch) => {
+    setLastNoteUpdate(patch);
+  }, []);
+
+  // The open note was trashed or deleted on another device and the user dismissed
+  // the notice. Distinct from handleDeleteNote, which *performs* a delete — here the
+  // write already happened elsewhere, so re-issuing it would be a redundant race.
+  const handleNoteClosed = useCallback((noteId: string) => {
+    setSelectedNoteId((current) => (current === noteId ? null : current));
+    // Safe to bump here: React batches both updates, so the panel unmounts in the
+    // same commit rather than re-suspending on a changed cache key.
+    setRefreshTrigger((prev) => prev + 1);
   }, []);
 
   const handleSearchSelect = useCallback(
@@ -469,6 +479,7 @@ export function AppShell({
           <AppMenu
             onImportEvernote={() => setShowImportDialog(true)}
             onImportTickTick={() => setShowTickTickImportDialog(true)}
+            onExportEvernote={() => setShowExportDialog(true)}
             isAdmin={isAdmin}
           />
         </div>
@@ -499,7 +510,7 @@ export function AppShell({
         data-testid="notes-pane"
         className={`${
           mobileView === "notes" ? "flex" : "hidden"
-        } bg-bg w-full flex-col overflow-hidden sm:flex sm:w-[300px] sm:shrink-0 ${
+        } bg-bg min-h-0 w-full flex-col overflow-hidden sm:flex sm:w-[300px] sm:shrink-0 ${
           notesCollapsed ? "lg:hidden" : ""
         }`}
       >
@@ -603,6 +614,7 @@ export function AppShell({
               noteId={selectedNoteId}
               refreshTrigger={refreshTrigger}
               onNoteUpdated={handleNoteUpdated}
+              onNoteClosed={handleNoteClosed}
             />
           </Suspense>
         ) : (
@@ -635,6 +647,8 @@ export function AppShell({
           }}
         />
       )}
+
+      {showExportDialog && <ExportEvernoteDialog onClose={() => setShowExportDialog(false)} />}
 
       {searchOpen && (
         <SearchOverlay

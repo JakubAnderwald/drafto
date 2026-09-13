@@ -256,4 +256,35 @@ describe("TrashList", () => {
       expect(screen.getByText("Trash")).toBeInTheDocument();
     });
   });
+
+  // Regression guard for #536: the trash list shares the note-list scroll
+  // structure, so its root must keep `min-h-0` for the inner `overflow-y-auto`
+  // `<nav>` to gain a constrained height and scroll when the list is long.
+  it("keeps the height-constraining classes so the list can scroll", async () => {
+    const { container } = await act(async () => {
+      return render(
+        <Suspense fallback={<Skeleton height="2.5rem" />}>
+          <TrashList
+            notebooks={mockNotebooks}
+            onRestore={vi.fn()}
+            onPermanentDelete={vi.fn()}
+            refreshTrigger={refreshCounter}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Deleted Note A")).toBeInTheDocument();
+    });
+
+    const root = container.firstElementChild as HTMLElement;
+    expect(root).not.toBeNull();
+    expect(root.className).toContain("min-h-0");
+    expect(root.className).toContain("flex-1");
+
+    const scrollContainer = container.querySelector("nav");
+    expect(scrollContainer).not.toBeNull();
+    expect(scrollContainer?.className).toContain("overflow-y-auto");
+  });
 });

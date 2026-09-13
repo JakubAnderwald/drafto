@@ -3,21 +3,33 @@
     "allow": ["Bash(bundle exec fastlane mac *)"]
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "H=\"$CLAUDE_PROJECT_DIR/.claude/hooks\"; [ -f \"$H/sync-cloud-skills.sh\" ] || { P=\"$(cd \"${CLAUDE_PROJECT_DIR:-/}\" 2>/dev/null && pwd -P)\"; T=\"$(git rev-parse --show-toplevel 2>/dev/null)\"; T=\"$(cd \"${T:-/nonexistent}\" 2>/dev/null && pwd -P)\"; case \"$T/\" in \"${P%/}\"/*) H=\"$T/.claude/hooks\";; esac; }; [ -f \"$H/sync-cloud-skills.sh\" ] || exit 0; bash \"$H/sync-cloud-skills.sh\"",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/prevent-main-commit.sh\""
+            "command": "H=\"$CLAUDE_PROJECT_DIR/.claude/hooks\"; [ -f \"$H/prevent-main-commit.sh\" ] || { P=\"$(cd \"${CLAUDE_PROJECT_DIR:-/}\" 2>/dev/null && pwd -P)\"; T=\"$(git rev-parse --show-toplevel 2>/dev/null)\"; T=\"$(cd \"${T:-/nonexistent}\" 2>/dev/null && pwd -P)\"; case \"$T/\" in \"${P%/}\"/*) H=\"$T/.claude/hooks\";; esac; }; [ -f \"$H/prevent-main-commit.sh\" ] || { echo \"Blocked: prevent-main-commit.sh not found; refusing to run unguarded.\" >&2; exit 2; }; bash \"$H/prevent-main-commit.sh\""
           },
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/prevent-main-push.sh\""
+            "command": "H=\"$CLAUDE_PROJECT_DIR/.claude/hooks\"; [ -f \"$H/prevent-main-push.sh\" ] || { P=\"$(cd \"${CLAUDE_PROJECT_DIR:-/}\" 2>/dev/null && pwd -P)\"; T=\"$(git rev-parse --show-toplevel 2>/dev/null)\"; T=\"$(cd \"${T:-/nonexistent}\" 2>/dev/null && pwd -P)\"; case \"$T/\" in \"${P%/}\"/*) H=\"$T/.claude/hooks\";; esac; }; [ -f \"$H/prevent-main-push.sh\" ] || { echo \"Blocked: prevent-main-push.sh not found; refusing to run unguarded.\" >&2; exit 2; }; bash \"$H/prevent-main-push.sh\""
           },
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/migration-stats-pre.sh\""
+            "command": "H=\"$CLAUDE_PROJECT_DIR/.claude/hooks\"; [ -f \"$H/migration-stats-pre.sh\" ] || { P=\"$(cd \"${CLAUDE_PROJECT_DIR:-/}\" 2>/dev/null && pwd -P)\"; T=\"$(git rev-parse --show-toplevel 2>/dev/null)\"; T=\"$(cd \"${T:-/nonexistent}\" 2>/dev/null && pwd -P)\"; case \"$T/\" in \"${P%/}\"/*) H=\"$T/.claude/hooks\";; esac; }; [ -f \"$H/migration-stats-pre.sh\" ] || exit 0; bash \"$H/migration-stats-pre.sh\""
           }
         ]
       }
@@ -28,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/migration-stats-post.sh\""
+            "command": "H=\"$CLAUDE_PROJECT_DIR/.claude/hooks\"; [ -f \"$H/migration-stats-post.sh\" ] || { P=\"$(cd \"${CLAUDE_PROJECT_DIR:-/}\" 2>/dev/null && pwd -P)\"; T=\"$(git rev-parse --show-toplevel 2>/dev/null)\"; T=\"$(cd \"${T:-/nonexistent}\" 2>/dev/null && pwd -P)\"; case \"$T/\" in \"${P%/}\"/*) H=\"$T/.claude/hooks\";; esac; }; [ -f \"$H/migration-stats-post.sh\" ] || exit 0; bash \"$H/migration-stats-post.sh\""
           }
         ]
       }

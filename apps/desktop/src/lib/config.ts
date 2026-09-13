@@ -2,10 +2,10 @@
  * App configuration.
  *
  * Uses react-native-dotenv to load environment variables at build time:
- * - Debug builds: reads from `.env` (dev Supabase project)
- * - Release builds: Fastlane copies `.env.production` to `.env` before bundling (prod Supabase project)
- *
- * Same pattern as mobile (Expo loads .env/.env.production based on build type).
+ * - Debug builds: read from `.env` (dev Supabase project)
+ * - Release builds: Fastlane injects `.env.production` into the environment before
+ *   bundling; react-native-dotenv gives `process.env` precedence over the `.env` file,
+ *   so the prod values win (same approach as mobile's Fastlane lane).
  */
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "@env";
 

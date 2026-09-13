@@ -64,8 +64,12 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
 
     const trimmed = query.trim();
     if (!trimmed) {
+      // Clearing local state when the query empties is the intentional terminating
+      // case — no fetch, no cascading render storm — so the synchronous reset is fine.
+      /* eslint-disable react-hooks/set-state-in-effect */
       setResults([]);
       setLoading(false);
+      /* eslint-enable react-hooks/set-state-in-effect */
       return;
     }
 

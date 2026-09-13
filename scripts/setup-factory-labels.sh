@@ -64,6 +64,7 @@ LABELS=(
   "parity:web-only|C5DEF5|Skip cross-platform parity check (web-only feature)."
   "parity:mobile-only|C5DEF5|Skip cross-platform parity check (mobile-only feature)."
   "parity:desktop-only|C5DEF5|Skip cross-platform parity check (desktop-only feature)."
+  "parity:infra-only|C5DEF5|Skip parity check; change touches no app platform (scripts/docs/CI)."
 )
 
 echo "Bootstrapping factory labels on $REPO ($(date '+%Y-%m-%d %H:%M:%S'))"

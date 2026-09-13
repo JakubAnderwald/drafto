@@ -77,6 +77,13 @@ describe("LoginScreen", () => {
     expect(getByText("Sign up")).toBeTruthy();
   });
 
+  it("offers a route into the forgot-password flow", () => {
+    const { getByTestId, getByText } = render(<LoginScreen />);
+
+    expect(getByText("Forgot your password?")).toBeTruthy();
+    expect(getByTestId("forgot-password-link").props.href).toBe("/(auth)/forgot-password");
+  });
+
   it("trims email whitespace before submitting", async () => {
     mockSignInWithPassword.mockResolvedValue({ error: null });
 

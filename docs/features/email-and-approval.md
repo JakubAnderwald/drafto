@@ -1,6 +1,6 @@
 # Email and approval
 
-**Status:** shipped **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-09-13
 
 ## What it is
 
@@ -8,7 +8,7 @@ Transactional email delivered through Resend from `hello@drafto.eu`, plus an adm
 
 ## Current state
 
-Shipped in production. A Postgres `after insert on auth.users` trigger calls `/api/webhooks/new-signup`, which emails all `profiles.is_admin = true` users a "New signup" message containing a signed one-click approve link. Clicking the link hits `/api/admin/approve-user/one-click`, flips `profiles.is_approved`, and sends the new user a "You're approved" email. The approval UI at `/admin` covers the same flow interactively. Platform coverage: the email pipeline is web-only (runs on Vercel); mobile and desktop rely on the same `is_approved` gate and simply see the approval take effect on their next auth check.
+Shipped in production. A Postgres `after insert on auth.users` trigger calls `/api/webhooks/new-signup`, which emails all `profiles.is_admin = true` users a "New signup" message containing a signed one-click approve link. Clicking the link hits `/api/admin/approve-user/one-click`, flips `profiles.is_approved`, and sends the new user a "You're approved" email. The approval UI at `/admin` covers the same flow interactively. It also lets an admin permanently delete a pending signup through `/api/admin/delete-user`, which refuses approved users and sends no email. Platform coverage: the email pipeline is web-only (runs on Vercel); mobile and desktop rely on the same `is_approved` gate and simply see the approval take effect on their next auth check.
 
 ## Code paths
 
@@ -19,6 +19,7 @@ Shipped in production. A Postgres `after insert on auth.users` trigger calls `/a
 | Supabase-triggered signup webhook       | `apps/web/src/app/api/webhooks/new-signup/route.ts`                |
 | Interactive approve API                 | `apps/web/src/app/api/admin/approve-user/route.ts`                 |
 | One-click approve (signed link) API     | `apps/web/src/app/api/admin/approve-user/one-click/route.ts`       |
+| Interactive delete-pending-user API     | `apps/web/src/app/api/admin/delete-user/route.ts`                  |
 | Signed approval token (HMAC)            | `apps/web/src/lib/approval-tokens.ts`                              |
 | Admin UI                                | `apps/web/src/app/(app)/admin/page.tsx`                            |
 | Admin user list component               | `apps/web/src/app/(app)/admin/admin-user-list.tsx`                 |
@@ -48,6 +49,7 @@ Shipped in production. A Postgres `after insert on auth.users` trigger calls `/a
 - **Tests that will catch regressions:**
   - `apps/web/__tests__/unit/new-signup-webhook.test.ts` — HMAC verification, admin discovery, fallback behavior.
   - `apps/web/__tests__/unit/admin-approve-user.test.ts` — interactive admin approval auth and state transitions.
+  - `apps/web/__tests__/unit/admin-delete-user.test.ts` — admin-only deletion of pending signups; approved users are refused (409) and no email is sent.
   - `apps/web/__tests__/unit/approve-user-one-click.test.ts` — signed-link verification and approval flow.
   - `apps/web/__tests__/unit/approval-tokens.test.ts` — HMAC signing, TTL, tamper detection.
   - `apps/web/__tests__/unit/email-client.test.ts` + `email-templates.test.ts` — Resend transport and template rendering.
@@ -63,7 +65,7 @@ Shipped in production. A Postgres `after insert on auth.users` trigger calls `/a
 cd apps/web && pnpm test
 
 # Targeted unit tests for this feature
-cd apps/web && pnpm test -- new-signup-webhook admin-approve-user approve-user-one-click approval-tokens email-client email-templates
+cd apps/web && pnpm test -- new-signup-webhook admin-approve-user admin-delete-user approve-user-one-click approval-tokens email-client email-templates
 
 # Web E2E (signup + approval happy path)
 set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e -- auth

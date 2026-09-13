@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Build a per-issue context bundle for the dark-factory agent.
 //
-// Three kinds today:
+// Five kinds today:
 //
 //   factory_plan       — for `factory-agent.sh --plan`. Contains the issue
 //                        body + comments, the parsed spec contract sections,
@@ -18,8 +18,23 @@
 //   factory_watch      — for `factory-agent.sh --watch` (Phase B+). The
 //                        /push-style fix loop: approved plan + PR pointer +
 //                        a CI failure summary + the unresolved review
-//                        comments, so the model can make minimal in-scope
-//                        fixes and re-push.
+//                        comments + the unresolved inline review threads, so
+//                        the model can make minimal in-scope fixes, answer
+//                        every thread and re-push.
+//
+//   factory_review     — for `factory-agent.sh --watch` on a green In Review
+//                        PR, once per head SHA. Read-only: issue + approved
+//                        plan + the diff. The model posts each finding as an
+//                        inline review thread (which blocks the merge until
+//                        answered) plus one marked summary comment.
+//
+//   factory_intest     — for `factory-agent.sh --watch` at the In Review →
+//                        In Test hand-off (any phase). Read-only: the issue,
+//                        the approved plan, the actual PR diff and the
+//                        platforms derived from it, plus the facts bash
+//                        already knows (preview URL, dispatched beta lanes,
+//                        advisory checks). The model writes the human test
+//                        scenario and posts the In Test comment.
 //
 // Pure functions for unit tests, plus a CLI that reads a single JSON object
 // on stdin and prints the resulting bundle JSON to stdout — mirrors
@@ -74,6 +89,122 @@ function envelopeBody(raw, tag = "issue-body") {
   return `<${tag}>${safe}</${tag}>`;
 }
 
+// Hosts GitHub serves issue/PR image attachments and repo raw images from. The
+// planner is permitted to fetch ONLY URLs whose host is in this set (and, for
+// github.com, only under the /user-attachments/ path). This allowlist is the
+// SSRF/exfil control: it lives in code, not in the prompt, so a prompt-injected
+// link to an arbitrary origin in the (enveloped, treated-as-data) issue body can
+// never become an outbound fetch — only code-extracted, GitHub-hosted URLs ever
+// reach `bundle.screenshots`, and the prompt tells the planner to fetch nothing
+// else.
+const SCREENSHOT_HOSTS = new Set([
+  "user-images.githubusercontent.com",
+  "private-user-images.githubusercontent.com",
+  "raw.githubusercontent.com",
+  "objects.githubusercontent.com",
+  "camo.githubusercontent.com",
+]);
+
+// Cap the number of screenshots surfaced so a comment stuffed with image links
+// can't balloon the bundle or the planner's fetch budget.
+const MAX_SCREENSHOTS = 12;
+
+function isAllowedScreenshotUrl(raw) {
+  // curl and the WHATWG URL parser disagree on backslashes: `new URL` treats
+  // "\" as an authority terminator while curl does not. So a string like
+  // "https://user-images.githubusercontent.com\@evil.com/x" parses to a GitHub
+  // host HERE but fetches evil.com UNDER curl — a parser-differential SSRF /
+  // image-injection vector. Reject backslashes (and any embedded credentials)
+  // outright so the host we validate is the host curl will reach.
+  if (typeof raw !== "string" || raw.includes("\\")) return false;
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "https:") return false;
+  if (u.username || u.password) return false; // no userinfo — host must be the real target
+  const host = u.hostname.toLowerCase();
+  if (SCREENSHOT_HOSTS.has(host)) return true;
+  // github.com itself only serves attachments under /user-attachments/<…>.
+  return host === "github.com" && u.pathname.startsWith("/user-attachments/");
+}
+
+// An <img>/Markdown image is image-by-construction, but a BARE link is not —
+// raw.githubusercontent.com/objects.githubusercontent.com serve arbitrary repo
+// files too. Gate the bare-URL branch so a linked `turbo.json` isn't surfaced as
+// a "screenshot" the planner then fetches and tries to Read as an image.
+// github.com/user-attachments uploads are always media (and usually
+// extension-less), so trust those regardless of extension.
+const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|bmp|svg|avif|heic)(?:[?#]|$)/i;
+function isLikelyImageUrl(url) {
+  if (/^https:\/\/github\.com\/user-attachments\//i.test(url)) return true;
+  return IMAGE_EXT_RE.test(url);
+}
+
+// Strip trailing markdown/sentence punctuation a greedy bare-URL match can grab
+// (e.g. a URL at the end of a sentence, or wrapped in parens).
+function stripUrlTrailers(raw) {
+  return String(raw).replace(/[)\].,;:'"]+$/, "");
+}
+
+function altFromImgTag(tag) {
+  // `(?<![-\w])` so `data-alt=`/`x-alt=` don't masquerade as the real `alt`.
+  const m = /(?<![-\w])alt\s*=\s*["']([^"']*)["']/i.exec(tag);
+  return m ? m[1].trim() : "";
+}
+
+// Pure: collect image URLs the planner can actually look at. Scans the issue
+// body and every comment for Markdown images, HTML <img> tags, and bare links,
+// then keeps only GitHub-hosted URLs (see isAllowedScreenshotUrl), deduped in
+// first-seen order and capped. Surfacing screenshots as a first-class field —
+// rather than leaving them buried in the enveloped body the planner is told to
+// treat as inert data — is what makes a screenshot-driven spec inspectable
+// instead of invisible. Some specs ("see screenshots") carry their entire
+// signal in images the planner would otherwise never see.
+export function extractScreenshots(body, comments = []) {
+  const sources = [typeof body === "string" ? body : ""];
+  for (const c of Array.isArray(comments) ? comments : []) {
+    if (typeof c?.body === "string") sources.push(c.body);
+  }
+  const seen = new Set();
+  const out = [];
+  const push = (rawUrl, alt) => {
+    if (out.length >= MAX_SCREENSHOTS) return;
+    const url = stripUrlTrailers(rawUrl);
+    if (!isAllowedScreenshotUrl(url) || seen.has(url)) return;
+    seen.add(url);
+    out.push({ url, alt: typeof alt === "string" ? alt.trim() : "" });
+  };
+  const mdImg = /!\[([^\]]*)\]\(\s*([^)\s]+)/g;
+  // `(?<![-\w])src` so `data-src=` (a decoy attr) can't be read as the real src.
+  const htmlImg = /<img\b[^>]*?(?<![-\w])src\s*=\s*["']([^"']+)["'][^>]*>/gi;
+  const bareUrl = /https:\/\/[^\s"'<>)]+/gi;
+  for (const text of sources) {
+    for (const m of text.matchAll(mdImg)) push(m[2], m[1]);
+    for (const m of text.matchAll(htmlImg)) push(m[1], altFromImgTag(m[0]));
+    // Bare links aren't necessarily images — gate on image-likeness (above).
+    for (const m of text.matchAll(bareUrl)) {
+      if (isLikelyImageUrl(stripUrlTrailers(m[0]))) push(m[0], "");
+    }
+    if (out.length >= MAX_SCREENSHOTS) break;
+  }
+  return out;
+}
+
+// Concat any number of comment arrays into one screenshot-source list, skipping
+// non-array args. Lets a bundle scan several curated comment slices (the issue
+// thread, reporter revision comments, PR-conversation comments) in a single
+// extractScreenshots pass — without dumping their text into the bundle.
+function collectCommentSources(...arrays) {
+  const out = [];
+  for (const a of arrays) {
+    if (Array.isArray(a)) out.push(...a);
+  }
+  return out;
+}
+
 // Pure: pull the structured sections out of a factory-feature.yml issue body.
 // The template renders each field under a `### <label>` heading and a blank
 // line, with bullet lists for the checkbox group. We don't need a Markdown
@@ -83,16 +214,19 @@ export function parseSpec(body) {
     what: "",
     acceptance: "",
     affectedPlatforms: [],
+    infraOnly: false,
     schemaChanges: null,
     ui: "",
     outOfScope: "",
   };
   if (typeof body !== "string" || body.length === 0) return empty;
   const sections = splitSections(body);
+  const platformsSection = pickSection(sections, ["Affected platforms"]);
   return {
     what: pickSection(sections, ["What"]),
     acceptance: pickSection(sections, ["Acceptance criteria"]),
-    affectedPlatforms: parsePlatformCheckboxes(pickSection(sections, ["Affected platforms"])),
+    affectedPlatforms: parsePlatformCheckboxes(platformsSection),
+    infraOnly: parseInfraOnlyCheckbox(platformsSection),
     schemaChanges: parseSchemaAnswer(pickSection(sections, ["Schema changes?"])),
     ui: pickSection(sections, ["UI design (if applicable)", "UI"]),
     outOfScope: pickSection(sections, ["Out of scope"]),
@@ -158,6 +292,19 @@ export function parsePlatformCheckboxes(section) {
   return [...new Set(out)].sort();
 }
 
+// Pure: was the "None — no app platform" box ticked in the Affected platforms
+// section? A ticked None box marks the issue infra-only (factory internals,
+// docs, CI) — the form-native equivalent of the parity:infra-only label.
+export function parseInfraOnlyCheckbox(section) {
+  if (typeof section !== "string" || section.length === 0) return false;
+  for (const line of section.split(/\r?\n/)) {
+    const m = line.match(/^\s*[-*]\s*\[([ xX])\]\s*(.+?)\s*$/);
+    if (!m || m[1] === " ") continue;
+    if (m[2].toLowerCase().startsWith("none")) return true;
+  }
+  return false;
+}
+
 function parseSchemaAnswer(section) {
   if (typeof section !== "string" || section.length === 0) return null;
   const s = section.toLowerCase().trim();
@@ -167,7 +314,9 @@ function parseSchemaAnswer(section) {
 }
 
 // Pure: which parity:* override label is present on the issue (if any).
-// Returns "web-only" | "mobile-only" | "desktop-only" | null.
+// Returns "web-only" | "mobile-only" | "desktop-only" | "infra-only" | null.
+// "infra-only" marks a change that touches no app platform (factory internals
+// under scripts/, docs, CI); the others authorise single-platform app work.
 export function parityOverrideFrom(labels) {
   const list = Array.isArray(labels) ? labels : [];
   for (const lbl of list) {
@@ -176,8 +325,16 @@ export function parityOverrideFrom(labels) {
     if (name === "parity:web-only") return "web-only";
     if (name === "parity:mobile-only") return "mobile-only";
     if (name === "parity:desktop-only") return "desktop-only";
+    if (name === "parity:infra-only") return "infra-only";
   }
   return null;
+}
+
+// Pure: the effective parity override for an issue — an explicit parity:* label
+// wins; otherwise a ticked "None" box in the Affected platforms section implies
+// infra-only. Same return vocabulary as parityOverrideFrom (plus null).
+export function effectiveParityOverride(labels, spec) {
+  return parityOverrideFrom(labels) ?? (spec?.infraOnly ? "infra-only" : null);
 }
 
 // Pure: distil the support-agent footer into the fields the factory needs.
@@ -209,6 +366,26 @@ function envelopeComments(comments) {
     user: { login: c?.user?.login ?? c?.author?.login ?? "" },
     body: envelopeBody(c?.body ?? "", "comment"),
     createdAt: c?.createdAt ?? c?.created_at ?? null,
+  }));
+}
+
+// Pure: shape unresolved PR review threads for the watch bundle. Each thread is
+// an inline finding anchored at path:line that GitHub's
+// required_conversation_resolution rule blocks the merge on until it is
+// resolved. Every body is envelope-wrapped: a review comment is attacker-
+// influencable (anyone can comment on a public PR), so it must never escape
+// into the model's instruction stream.
+function envelopeReviewThreads(threads) {
+  const list = Array.isArray(threads) ? threads : [];
+  return list.map((t) => ({
+    id: t?.id ?? null,
+    path: t?.path ?? "",
+    line: t?.line ?? null,
+    isOutdated: t?.isOutdated === true,
+    comments: (Array.isArray(t?.comments) ? t.comments : []).map((c) => ({
+      user: { login: c?.author?.login ?? c?.user?.login ?? "" },
+      body: envelopeBody(c?.body ?? "", "review-comment"),
+    })),
   }));
 }
 
@@ -277,11 +454,15 @@ export function buildFactoryPlanBundle({
   if (!issue || !Number.isInteger(issue.number)) {
     throw new Error("buildFactoryPlanBundle: issue.number is required");
   }
+  const spec = parseSpec(issue.body ?? "");
   const bundle = {
     kind: "factory_plan",
     issue: shapeIssue(issue),
-    spec: parseSpec(issue.body ?? ""),
-    parityOverride: parityOverrideFrom(issue.labels),
+    spec,
+    parityOverride: effectiveParityOverride(issue.labels, spec),
+    // GitHub-hosted image URLs (host-validated) pulled from the body + comments
+    // so the planner can fetch and actually look at screenshot-driven specs.
+    screenshots: extractScreenshots(issue.body ?? "", comments),
     comments: envelopeComments(comments),
     reporter: reporterFromBody(issue.body ?? ""),
     config: shapeConfig(config),
@@ -297,6 +478,8 @@ export function buildFactoryImplementBundle({
   issue,
   approvedPlan,
   comments = [],
+  revisionComments = [],
+  screenshotSources = [],
   priorPr = null,
   attempts = 0,
   config,
@@ -310,11 +493,25 @@ export function buildFactoryImplementBundle({
   // need to see it, and downstream forwarding (if any) shouldn't surface it.
   const planBody = typeof approvedPlan?.body === "string" ? approvedPlan.body : "";
   const planClean = planBody.split(FACTORY_PLAN_MARKER).join("").trim();
+  const spec = parseSpec(issue.body ?? "");
   return {
     kind: "factory_implement",
     issue: shapeIssue(issue),
-    spec: parseSpec(issue.body ?? ""),
-    parityOverride: parityOverrideFrom(issue.labels),
+    spec,
+    parityOverride: effectiveParityOverride(issue.labels, spec),
+    // GitHub-hosted image URLs (host-validated) pulled from the body + every
+    // comment slice this stage has: the full issue thread (screenshotSources)
+    // and reporter revision comments (plus any forwarded comments). Lets the
+    // implementer fetch and reproduce a screenshot-driven spec — or a screenshot
+    // a reporter pasted in a comment — before changing code. Body is scanned
+    // first, so spec/body images win the 12-shot cap. Same extractor + allowlist
+    // the plan bundle already uses — no second extractor, no relaxed validation.
+    // Only the screenshot source widens here; the enveloped `comments` field
+    // below stays exactly as the driver sets it (slim).
+    screenshots: extractScreenshots(
+      issue.body ?? "",
+      collectCommentSources(comments, revisionComments, screenshotSources),
+    ),
     approvedPlan: approvedPlan
       ? {
           commentId: approvedPlan.commentId ?? approvedPlan.id ?? null,
@@ -324,6 +521,9 @@ export function buildFactoryImplementBundle({
         }
       : null,
     comments: envelopeComments(comments),
+    // Reporter change requests from the In Test preview, to apply on top of the
+    // approved plan, on the existing PR branch. Empty on a first implementation.
+    revisionComments: envelopeComments(revisionComments),
     reporter: reporterFromBody(issue.body ?? ""),
     priorPr: priorPr
       ? {
@@ -341,16 +541,19 @@ export function buildFactoryImplementBundle({
 }
 
 // Bundle for `factory-agent.sh --watch`. Built when an In Review PR has
-// failing CI checks and/or unresolved review comments — the /push-style fix
+// failing CI checks and/or unresolved review threads — the /push-style fix
 // loop. Carries the approved plan (so fixes stay in scope), the PR pointer,
-// a plain-text CI failure summary, and the unresolved review comments.
+// a plain-text CI failure summary, the unresolved PR-conversation comments,
+// and the unresolved inline review threads the watcher must answer and resolve.
 export function buildFactoryWatchBundle({
   issue,
   approvedPlan,
   priorPr = null,
   ciSummary = "",
   unresolvedComments = [],
+  reviewThreads = [],
   comments = [],
+  screenshotSources = [],
   attempts = 0,
   config,
   repo,
@@ -361,11 +564,23 @@ export function buildFactoryWatchBundle({
   }
   const planBody = typeof approvedPlan?.body === "string" ? approvedPlan.body : "";
   const planClean = planBody.split(FACTORY_PLAN_MARKER).join("").trim();
+  const spec = parseSpec(issue.body ?? "");
   return {
     kind: "factory_watch",
     issue: shapeIssue(issue),
-    spec: parseSpec(issue.body ?? ""),
-    parityOverride: parityOverrideFrom(issue.labels),
+    spec,
+    parityOverride: effectiveParityOverride(issue.labels, spec),
+    // GitHub-hosted image URLs (host-validated) pulled from the body + every
+    // comment slice this stage has: the issue thread (screenshotSources) and the
+    // unresolved PR-conversation comments (plus any forwarded comments). Lets the
+    // watcher view a screenshot referenced by a review comment or a
+    // screenshot-driven spec. Body is scanned first, so it wins the 12-shot cap.
+    // Same extractor + allowlist the plan bundle uses; only the screenshot source
+    // widens — the enveloped `comments` field below stays slim.
+    screenshots: extractScreenshots(
+      issue.body ?? "",
+      collectCommentSources(comments, unresolvedComments, screenshotSources),
+    ),
     approvedPlan: approvedPlan
       ? {
           commentId: approvedPlan.commentId ?? approvedPlan.id ?? null,
@@ -387,9 +602,215 @@ export function buildFactoryWatchBundle({
     // instruction stream.
     ciSummaryEnveloped: envelopeBody(typeof ciSummary === "string" ? ciSummary : "", "ci-summary"),
     unresolvedComments: envelopeComments(unresolvedComments),
+    // Unresolved inline review threads (CodeRabbit's findings, the factory's own
+    // review stage, and any human's). Each one blocks the merge until the
+    // watcher answers and resolves it — see factory-watch-prompt.md.
+    reviewThreads: envelopeReviewThreads(reviewThreads),
     comments: envelopeComments(comments),
     reporter: reporterFromBody(issue.body ?? ""),
     attempts: Number.isInteger(attempts) ? attempts : 0,
+    config: shapeConfig(config),
+    repo: shapeRepo(repo),
+    nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
+  };
+}
+
+// Cap a unified diff so a large PR can't blow the model's context. Trims by
+// line count first (keeps whole lines readable) then by bytes, and reports what
+// was dropped so the prompt can tell the model its view is partial rather than
+// letting it silently reason about half a change.
+export function truncateDiff(text, { maxBytes = 200_000, maxLines = 4000 } = {}) {
+  const raw = typeof text === "string" ? text : "";
+  const lines = raw.split("\n");
+  let omittedLines = 0;
+  let out = raw;
+  if (lines.length > maxLines) {
+    omittedLines = lines.length - maxLines;
+    out = lines.slice(0, maxLines).join("\n");
+  }
+  let truncated = omittedLines > 0;
+  if (Buffer.byteLength(out, "utf8") > maxBytes) {
+    // Cut on a line boundary so the tail isn't a mangled hunk.
+    const clipped = Buffer.from(out, "utf8").subarray(0, maxBytes).toString("utf8");
+    const lastNl = clipped.lastIndexOf("\n");
+    // No newline in the kept slice at all (one huge line — a minified bundle or
+    // a lockfile hunk): drop it entirely rather than ship a partial line that
+    // may also end in a U+FFFD from splitting a multi-byte character.
+    const kept = lastNl > 0 ? clipped.slice(0, lastNl) : "";
+    const dropped = out.slice(kept.length).split("\n").filter(Boolean).length;
+    omittedLines += dropped || 1;
+    out = kept;
+    truncated = true;
+  }
+  return { text: out, truncated, omittedLines };
+}
+
+// Bundle for the code-review stage (`factory-agent.sh --watch`, In Review, once
+// per head SHA on a green PR). Read-only: the model reads the diff and posts
+// each finding as an inline review thread plus one marked summary comment. It
+// gets the issue (what was asked for), the approved plan (what was meant to
+// change) and the diff (what actually changed) — enough to catch scope drift as
+// well as defects. Deliberately NO comment thread: a reviewer should judge the
+// diff, not be primed by what people have already said about it.
+export function buildFactoryReviewBundle({
+  issue,
+  approvedPlan,
+  priorPr = null,
+  prDiff = "",
+  prFiles = "",
+  headSha = "",
+  config,
+  repo,
+  nowIso,
+} = {}) {
+  if (!issue || !Number.isInteger(issue.number)) {
+    throw new Error("buildFactoryReviewBundle: issue.number is required");
+  }
+  const planBody = typeof approvedPlan?.body === "string" ? approvedPlan.body : "";
+  const planClean = planBody.split(FACTORY_PLAN_MARKER).join("").trim();
+  const spec = parseSpec(issue.body ?? "");
+  // truncateDiff returns {text, truncated, omittedLines} — NOT a string. Passing
+  // the object straight to envelopeBody silently yields an empty envelope (it
+  // coerces any non-string to ""), which would hand the reviewer a zero-byte
+  // diff and make the whole gate decorative.
+  const diff = truncateDiff(prDiff);
+  return {
+    kind: "factory_review",
+    issue: shapeIssue(issue),
+    spec,
+    parityOverride: effectiveParityOverride(issue.labels, spec),
+    approvedPlan: approvedPlan
+      ? {
+          commentId: approvedPlan.commentId ?? approvedPlan.id ?? null,
+          url: approvedPlan.url ?? "",
+          createdAt: approvedPlan.createdAt ?? approvedPlan.created_at ?? null,
+          bodyEnveloped: envelopeBody(planClean, "factory-plan"),
+        }
+      : null,
+    priorPr: priorPr
+      ? {
+          number: priorPr.number ?? null,
+          url: priorPr.url ?? "",
+          headRef: priorPr.headRef ?? "",
+          state: priorPr.state ?? "",
+        }
+      : null,
+    headSha: typeof headSha === "string" ? headSha : "",
+    // Enveloped like every other untrusted input: a hunk may quote a directive
+    // and must never be read as an instruction.
+    prDiffEnveloped: envelopeBody(diff.text, "pr-diff"),
+    // The reviewer needs to know when it is looking at a partial diff, or it
+    // will review the first 4000 lines and call the PR clean.
+    prDiffTruncated: diff.truncated,
+    prDiffOmittedLines: diff.omittedLines,
+    prFiles: typeof prFiles === "string" ? prFiles : "",
+    config: shapeConfig(config),
+    repo: shapeRepo(repo),
+    nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
+  };
+}
+
+// Bundle for the In Test hand-off (`factory-agent.sh --watch`, In Review → In
+// Test). Read-only stage: the model writes a human test scenario for the card
+// and posts it as the In Test comment. It gets the issue (what the reporter
+// asked for), the approved plan (what was meant to change), the actual PR diff
+// (what DID change — the ground truth for the scenario), the platforms derived
+// from that diff, and the facts bash already knows (preview URL, dispatched
+// beta lanes, advisory checks, CodeRabbit coverage note) so the model never
+// invents a URL or build number.
+export function buildFactoryInTestBundle({
+  issue,
+  approvedPlan,
+  priorPr = null,
+  prDiff = "",
+  prFiles = "",
+  platforms = {},
+  previewUrl = "",
+  advisory = "",
+  crCoverageNote = "",
+  betaDispatch = null,
+  headSha = "",
+  comments = [],
+  screenshotSources = [],
+  config,
+  repo,
+  nowIso,
+} = {}) {
+  if (!issue || !Number.isInteger(issue.number)) {
+    throw new Error("buildFactoryInTestBundle: issue.number is required");
+  }
+  const planBody = typeof approvedPlan?.body === "string" ? approvedPlan.body : "";
+  const planClean = planBody.split(FACTORY_PLAN_MARKER).join("").trim();
+  const spec = parseSpec(issue.body ?? "");
+  const diff = truncateDiff(prDiff);
+  return {
+    kind: "factory_intest",
+    issue: shapeIssue(issue),
+    spec,
+    parityOverride: effectiveParityOverride(issue.labels, spec),
+    screenshots: extractScreenshots(
+      issue.body ?? "",
+      collectCommentSources(comments, screenshotSources),
+    ),
+    approvedPlan: approvedPlan
+      ? {
+          commentId: approvedPlan.commentId ?? approvedPlan.id ?? null,
+          url: approvedPlan.url ?? "",
+          createdAt: approvedPlan.createdAt ?? approvedPlan.created_at ?? null,
+          bodyEnveloped: envelopeBody(planClean, "factory-plan"),
+        }
+      : null,
+    priorPr: priorPr
+      ? {
+          number: priorPr.number ?? null,
+          url: priorPr.url ?? "",
+          headRef: priorPr.headRef ?? "",
+          state: priorPr.state ?? "",
+        }
+      : null,
+    headSha: typeof headSha === "string" ? headSha : "",
+    // The diff is enveloped like every other untrusted input: a PR may touch a
+    // file whose contents quote a directive, and a hunk must never be read as
+    // an instruction.
+    prDiffEnveloped: envelopeBody(diff.text, "pr-diff"),
+    prDiffTruncated: diff.truncated,
+    prDiffOmittedLines: diff.omittedLines,
+    prFiles: String(prFiles ?? "")
+      .split("\n")
+      .map((f) => f.trim())
+      .filter(Boolean),
+    // Derived from the diff, NOT from the issue's "Affected platforms"
+    // checkboxes: the scenario must cover what actually changed.
+    platforms: {
+      mobile: Boolean(platforms?.mobile),
+      desktop: Boolean(platforms?.desktop),
+      web: Boolean(platforms?.web),
+    },
+    previewUrl: typeof previewUrl === "string" ? previewUrl : "",
+    advisory: typeof advisory === "string" ? advisory : "",
+    // The CodeRabbit CLI lane's one-line coverage note (ADR-0036) — "CodeRabbit
+    // did not review <sha12> (…)", or "CodeRabbit coverage of <sha12> unknown
+    // (lane error)" when the lane failed open — "" when the commit was covered
+    // or the lane is off. A field of its own rather
+    // than a suffix on `advisory`: it is not a failing check, and a joined string
+    // could only be split back apart by guessing at the note's wording.
+    crCoverageNote: typeof crCoverageNote === "string" ? crCoverageNote : "",
+    betaDispatch: betaDispatch
+      ? {
+          dispatched: Array.isArray(betaDispatch.dispatched) ? betaDispatch.dispatched : [],
+          skipped: Array.isArray(betaDispatch.skipped) ? betaDispatch.skipped : [],
+          // Always [{id, command}] — a bare string list leaves the scenario
+          // writer unable to say which command belongs to which platform when
+          // both natives are skipped. Legacy string entries are coerced rather
+          // than dropped, but they carry no id.
+          manualCommands: (Array.isArray(betaDispatch.manualCommands)
+            ? betaDispatch.manualCommands
+            : []
+          ).map((c) => (typeof c === "string" ? { id: "", command: c } : c)),
+        }
+      : { dispatched: [], skipped: [], manualCommands: [] },
+    comments: envelopeComments(comments),
+    reporter: reporterFromBody(issue.body ?? ""),
     config: shapeConfig(config),
     repo: shapeRepo(repo),
     nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
@@ -428,6 +849,8 @@ async function main() {
       issue: input.issue,
       approvedPlan: input.approvedPlan,
       comments: input.comments,
+      revisionComments: input.revisionComments,
+      screenshotSources: input.screenshotSources,
       priorPr: input.priorPr,
       attempts: input.attempts,
       config: input.config,
@@ -441,8 +864,41 @@ async function main() {
       priorPr: input.priorPr,
       ciSummary: input.ciSummary,
       unresolvedComments: input.unresolvedComments,
+      reviewThreads: input.reviewThreads,
       comments: input.comments,
+      screenshotSources: input.screenshotSources,
       attempts: input.attempts,
+      config: input.config,
+      repo: input.repo,
+      nowIso: input.nowIso,
+    });
+  } else if (input.kind === "factory_intest") {
+    bundle = buildFactoryInTestBundle({
+      issue: input.issue,
+      approvedPlan: input.approvedPlan,
+      priorPr: input.priorPr,
+      prDiff: input.prDiff,
+      prFiles: input.prFiles,
+      platforms: input.platforms,
+      previewUrl: input.previewUrl,
+      advisory: input.advisory,
+      crCoverageNote: input.crCoverageNote,
+      betaDispatch: input.betaDispatch,
+      headSha: input.headSha,
+      comments: input.comments,
+      screenshotSources: input.screenshotSources,
+      config: input.config,
+      repo: input.repo,
+      nowIso: input.nowIso,
+    });
+  } else if (input.kind === "factory_review") {
+    bundle = buildFactoryReviewBundle({
+      issue: input.issue,
+      approvedPlan: input.approvedPlan,
+      priorPr: input.priorPr,
+      prDiff: input.prDiff,
+      prFiles: input.prFiles,
+      headSha: input.headSha,
       config: input.config,
       repo: input.repo,
       nowIso: input.nowIso,

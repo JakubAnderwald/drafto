@@ -8,6 +8,9 @@ import {
   SIGNED_URL_EXPIRY_SECONDS,
 } from "@drafto/shared";
 import type { BlockNoteBlock } from "@drafto/shared";
+import type { Database } from "@/lib/supabase/database.types";
+
+type NoteUpdate = Database["public"]["Tables"]["notes"]["Update"];
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -22,7 +25,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 
   const { data: note, error } = await supabase
     .from("notes")
-    .select("id, title, content, created_at, updated_at")
+    // `is_trashed` is returned rather than filtered on: the web editor needs to be
+    // able to tell that the note it has open was trashed on another device.
+    .select("id, title, content, is_trashed, created_at, updated_at")
     .eq("id", id)
     .eq("user_id", user.id)
     .single();
@@ -120,7 +125,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
 
   const { data: note, error } = await supabase
     .from("notes")
-    .update(updates)
+    .update(updates as NoteUpdate)
     .eq("id", id)
     .eq("user_id", user.id)
     .select()

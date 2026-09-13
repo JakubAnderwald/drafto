@@ -64,6 +64,7 @@ maestro test apps/mobile/e2e/ios-only/ --platform ios -e RUN_ID=$(date +%s)
 | `03-create-edit-note.yaml`    | Create notes, open editor, rename via long press   |
 | `04-trash-restore.yaml`       | Tab navigation between Notebooks and Trash         |
 | `05-cross-platform-sync.yaml` | Open a note created by web E2E, edit on mobile     |
+| `06-forgot-password.yaml`     | Request a reset link, open the recovery deep link  |
 | `search.yaml`                 | Open search, type query, dismiss                   |
 
 ### Android-only
@@ -94,6 +95,9 @@ The main navigation difference between platforms:
 
 - Tests are designed to run **sequentially** (each builds on state from the previous flow)
 - Flow 01 clears app state and logs in fresh; flows 02+ assume prior login
+- Flow 06 is the exception: it clears state and runs **signed out**, so run it on its own
+  (`maestro test apps/mobile/e2e/06-forgot-password.yaml --platform ios -e E2E_TEST_EMAIL=...`)
+  rather than in the middle of the sequence
 - Maestro E2E tests are **local-only** — they do not run in CI
 - Run the full suite on both iOS Simulator and Android Emulator before any release
 - Minimum timeout tier is 10s to avoid flakiness on slow emulators

@@ -5,10 +5,11 @@ import { readFileSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Structural guardrails for the staged Phase B engine (--implement + --watch;
-// --release deferred). These assert the contract the runtime depends on, so a
-// future refactor can't silently drop a gate or re-introduce a Phase-A-only
-// stub.
+// Structural guardrails for the Phase B engine (--implement + --watch +
+// --release). These assert the contract the runtime depends on, so a future
+// refactor can't silently drop a gate or re-introduce a Phase-A-only stub.
+// The --release engine has its own dedicated suite in
+// factory-agent-release.test.mjs.
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS = resolve(HERE, "..");
@@ -30,9 +31,11 @@ describe("Phase / mode gates", () => {
     );
   });
 
-  it("--release is deferred (no-op) in every phase, not yet built", () => {
-    assert.match(script, /--release is deferred \(staged Phase B/);
-    assert.match(script, /if \[\[ "\$MODE_RELEASE" -eq 1 \]\]; then/);
+  it("--release is no longer the deferred stub (real engine built)", () => {
+    // The Phase-A gate (asserted above) is what no-ops --release now; the
+    // unconditional "deferred, exit 0" stub must be gone.
+    assert.doesNotMatch(script, /--release is deferred \(staged Phase B/);
+    assert.match(script, /--release \(phase=\$PHASE\): \$APPROVED_COUNT Approved item/);
   });
 
   it("does NOT contain a Phase B+ 'NOT YET IMPLEMENTED' guard for implement/watch", () => {

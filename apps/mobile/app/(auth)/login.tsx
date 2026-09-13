@@ -108,6 +108,13 @@ export default function LoginScreen() {
               Sign up
             </Link>
           </Text>
+          <Link
+            href="/(auth)/forgot-password"
+            style={[styles.link, styles.forgotPasswordLink]}
+            testID="forgot-password-link"
+          >
+            Forgot your password?
+          </Link>
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -169,5 +176,9 @@ const createStyles = (semantic: SemanticColors) =>
     link: {
       color: colors.primary[600],
       fontWeight: "600",
+    },
+    forgotPasswordLink: {
+      marginTop: spacing.md,
+      fontSize: fontSizes.base,
     },
   });
