@@ -154,6 +154,12 @@ function mergeWithDefaults(parsed) {
   if (!parsed || typeof parsed !== "object") return base;
   const slotsIn = parsed.slots && typeof parsed.slots === "object" ? parsed.slots : {};
   return {
+    // Unknown top-level keys pass through untouched. The factory self-updates
+    // with `git reset --hard` every tick, so an OLDER copy of this file can load
+    // a state file written by a newer one; dropping what it doesn't recognise
+    // would silently erase the newer code's data on the next save — the same
+    // failure that nearly wiped the crCli ledger. Known keys are normalised below.
+    ...parsed,
     paused: Boolean(parsed.paused),
     pausedAt: typeof parsed.pausedAt === "string" ? parsed.pausedAt : null,
     // Absent in legacy files → null, i.e. a plain never-expiring pause. This is

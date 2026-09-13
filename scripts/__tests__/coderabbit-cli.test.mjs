@@ -1158,6 +1158,21 @@ describe("runHousekeeping — lifecycle", () => {
     assert.equal((await readState()).issues[ISSUE].crCoverage, "cli-partial");
   });
 
+  it("a lost run whose inFlight record has no runDir is cleaned up instead of throwing", async () => {
+    const { worktree } = await seedRun({ events: EVENTS.ok, exit: EXIT_OK });
+    const state = await readState();
+    state.crCli.inFlight.runDir = null;
+    await saveFactoryState(state, stateFile);
+    const { deps } = makeDeps();
+    const out = await runHousekeeping(hkOpts(), deps);
+    assert.equal(out.state, "lost");
+    assert.equal(out.outcome, "error");
+    const after = await readState();
+    assert.equal(after.crCli.inFlight, null);
+    assert.equal(after.issues[ISSUE].crCoverage, "cli-failed");
+    assert.equal(existsSync(worktree), false);
+  });
+
   it("discards a run whose SHA the gate already decided (no late threads, coverage kept)", async () => {
     const { worktree } = await seedRun({ events: EVENTS.ok, exit: EXIT_OK });
     const state = await readState();

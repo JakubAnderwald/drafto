@@ -604,6 +604,57 @@ describe("factory:cr-cli-* (CodeRabbit CLI lane, ADR-0036)", () => {
     }
   });
 
+  it("factory:cr-cli-finish keeps the run in flight when the supervisor survives SIGTERM", async () => {
+    const runId = "42-dddddddddddd-20260912T210000Z";
+    const child = spawn(
+      process.execPath,
+      ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)", runId],
+      { detached: true, stdio: "ignore" },
+    );
+    child.unref();
+    try {
+      await new Promise((resolve) => child.once("spawn", resolve));
+      // Give node a moment to install the SIGTERM handler before we signal it.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const seeded = { crCli: { runs: [], inFlight: { ...inFlight, runId, pid: child.pid } } };
+      writeFileSync(stateFile, JSON.stringify(seeded));
+      const r = spawnSync(
+        "node",
+        [CLI, "factory:cr-cli-finish", runId, "--wait-ms", "400", "--state-file", stateFile],
+        { encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.ok, false);
+      assert.equal(out.reason, "supervisor-still-running");
+      assert.equal(out.killed, true);
+      assert.equal(out.pid, child.pid);
+      // Nothing released: the gate must not start a second run meanwhile.
+      assert.equal(readState().crCli.inFlight.runId, runId);
+    } finally {
+      try {
+        process.kill(child.pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+  });
+
+  it("factory:cr-cli-finish rejects a malformed --wait-ms before signalling", () => {
+    writeFileSync(stateFile, JSON.stringify({ crCli: { runs: [], inFlight } }));
+    const r = run([
+      "factory:cr-cli-finish",
+      "run-9",
+      "--wait-ms",
+      "soon",
+      "--state-file",
+      stateFile,
+    ]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /invalid --wait-ms/);
+    assert.equal(readState().crCli.inFlight.runId, "run-9");
+  });
+
   it("factory:cr-cli-finish leaves a live pid alone when its command is not this run's", async () => {
     const child = startFakeSupervisor("some-other-run");
     try {

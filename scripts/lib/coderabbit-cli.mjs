@@ -968,7 +968,11 @@ export async function runHousekeeping(opts, deps) {
     return { ...result, refund: "none", reaped };
   }
 
-  const eventsText = readText(deps.fs, path.join(inFlight.runDir, "events.ndjson"));
+  // A malformed in-flight record can lack runDir (pollRun already tolerates
+  // that). Throwing here would fail every tick and never reach finishRun, so
+  // the run is classified from nothing (→ a failed run) and cleaned up.
+  const runDir = typeof inFlight.runDir === "string" && inFlight.runDir ? inFlight.runDir : null;
+  const eventsText = runDir ? readText(deps.fs, path.join(runDir, "events.ndjson")) : "";
   const events = R.parseEvents(eventsText);
   const exit = poll.exit ?? { exitCode: null, signal: null, timedOut: false };
   const classified = R.classifyOutcome({
@@ -976,7 +980,7 @@ export async function runHousekeeping(opts, deps) {
     signal: exit.signal,
     timedOut: Boolean(exit.timedOut),
     events,
-    stderr: readText(deps.fs, path.join(inFlight.runDir, "stderr.log"), 64 * 1024),
+    stderr: runDir ? readText(deps.fs, path.join(runDir, "stderr.log"), 64 * 1024) : "",
     now,
     fallbackMin: knobs.limitFallbackMin,
   });

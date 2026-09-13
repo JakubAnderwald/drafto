@@ -171,6 +171,30 @@ describe("crCli ledger: load / save round-trip", () => {
     assert.equal(after.issues["42"].attempts, 1);
     assert.deepEqual(after.crCli, crCli);
   });
+
+  it("an unknown top-level key (a newer factory's data) survives a load → save cycle", () => {
+    // factory-agent-loop.sh self-updates with `git reset --hard`, so an older
+    // factory-state.mjs can read a file written by a newer one.
+    const future = { schema: 2, entries: [{ id: "x", at: T0 }] };
+    writeFileSync(stateFile, JSON.stringify({ issues: {}, futureLedger: future, paused: false }));
+    const r = spawnSync("node", [CLI, "factory:bump-attempts", "42", "--state-file", stateFile], {
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const after = JSON.parse(readFileSync(stateFile, "utf8"));
+    assert.equal(after.issues["42"].attempts, 1);
+    assert.deepEqual(after.futureLedger, future);
+    // Known keys are still normalised, never taken verbatim from the file.
+    assert.deepEqual(after.crCli, emptyCrCli());
+  });
+
+  it("known top-level keys override garbage values from the file", async () => {
+    writeFileSync(stateFile, JSON.stringify({ paused: "yes", slots: "nope", crCli: 7 }));
+    const state = await loadFactoryState(stateFile);
+    assert.equal(state.paused, true);
+    assert.equal(state.slots["0"].pid, null);
+    assert.deepEqual(state.crCli, emptyCrCli());
+  });
 });
 
 describe("getCrCli", () => {

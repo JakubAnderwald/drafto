@@ -123,17 +123,23 @@
 //                                    Pause ONLY the CodeRabbit lane until <iso>.
 //                                    Never touches the factory pause.
 //   factory:cr-cli-resume           Clear the lane pause.
-//   factory:cr-cli-finish <runId> [--refund none|spawn|card]
+//   factory:cr-cli-finish <runId> [--refund none|spawn|card] [--wait-ms <ms>]
 //                                    Release a wedged in-flight run. Prints
 //                                    {ok:false, reason:"run-id-mismatch"} (exit
 //                                    0) when <runId> isn't the in-flight run.
 //                                    Otherwise SIGTERMs the run's supervisor
 //                                    process group first — only when its pid is
 //                                    alive AND its command line carries <runId>
-//                                    (a reused pid is left alone) — and reports
-//                                    killed:true|false. The worktree is left to
-//                                    housekeeping, whose reap skips it until the
-//                                    supervisor has actually exited.
+//                                    (a reused pid is left alone) — and waits up
+//                                    to --wait-ms (default 10000) for it to exit.
+//                                    Only then is the run released (killed:
+//                                    true|false). If it is still running, or ps
+//                                    can't verify it, the state is left untouched
+//                                    and {ok:false, reason:"supervisor-still-
+//                                    running"|"supervisor-unverifiable"} is
+//                                    printed (exit 0): `kill -KILL -<pid>` and
+//                                    re-run. The worktree is left to
+//                                    housekeeping's reap.
 //
 // State path can be overridden via --state-file <path> for tests; defaults to
 // state.mjs's DEFAULT_STATE_PATH for support subcommands and to
@@ -193,21 +199,43 @@ function isPidAlive(pid) {
   }
 }
 
+// Is the in-flight run's supervisor still running? "alive" only when the pid
+// exists, is not a zombie, and its command line carries the runId (a reused pid
+// is someone else's process: "gone"). "unknown" when ps itself fails for a pid
+// that kill(0) says exists — ownership can't be verified either way.
+function crCliSupervisorState(inFlight) {
+  const pid = inFlight?.pid;
+  if (!Number.isInteger(pid) || pid <= 0 || !isPidAlive(pid)) return "gone";
+  const ps = spawnSync("ps", ["-o", "stat=,command=", "-p", String(pid)], { encoding: "utf8" });
+  const line = String(ps.stdout ?? "").trim();
+  if (ps.status !== 0 || !line) return isPidAlive(pid) ? "unknown" : "gone";
+  // An exited child not yet reaped by its parent is a zombie: it can no longer
+  // do anything, so it counts as gone.
+  if (/^Z/.test(line)) return "gone";
+  return line.includes(inFlight.runId) ? "alive" : "gone";
+}
+
 // Releasing a run in the ledger without stopping it would leave a vendor review
 // running that nothing collects, and the gate free to start a second one — which
-// the vendor refuses while the first is connected. The supervisor was spawned
-// detached, so it leads its own process group and -pid reaches the CLI too.
-function killCrCliSupervisor(inFlight) {
-  const pid = inFlight?.pid;
-  if (!Number.isInteger(pid) || pid <= 0 || !isPidAlive(pid)) return false;
-  const ps = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
-  if (ps.status !== 0 || !String(ps.stdout ?? "").includes(inFlight.runId)) return false;
+// the vendor refuses while the first is connected. So the release only happens
+// once the supervisor is verifiably gone: SIGTERM its process group (it was
+// spawned detached, so it leads its own group and -pid reaches the CLI too),
+// then wait, bounded, for it to exit. Returns {state, killed}.
+async function stopCrCliSupervisor(inFlight, { waitMs }) {
+  const initial = crCliSupervisorState(inFlight);
+  if (initial !== "alive") return { state: initial, killed: false };
   try {
-    process.kill(-pid, "SIGTERM");
-    return true;
+    process.kill(-inFlight.pid, "SIGTERM");
   } catch {
-    return false;
+    // Fall through to the wait: it reports whatever state the process is in.
   }
+  const deadline = Date.now() + waitMs;
+  let state = crCliSupervisorState(inFlight);
+  while (state === "alive" && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    state = crCliSupervisorState(inFlight);
+  }
+  return { state, killed: true };
 }
 
 async function main(argv) {
@@ -564,15 +592,34 @@ async function main(argv) {
       if (!runId)
         throw new Error("factory:cr-cli-finish requires <runId> [--refund none|spawn|card]");
       const refund = flags.refund ?? "none";
+      const waitMs = flags["wait-ms"] == null ? 10_000 : Number(flags["wait-ms"]);
+      if (!Number.isFinite(waitMs) || waitMs < 0) {
+        throw new Error(`factory:cr-cli-finish: invalid --wait-ms: ${flags["wait-ms"]}`);
+      }
+      const snapshot = await loadFactoryState(file);
+      const inFlight = getCrCli(snapshot).inFlight;
+      // Dry-finish a throwaway copy first: it validates <runId> and --refund, so
+      // a bad invocation fails before anything is signalled.
+      const check = finishCrCliRun(structuredClone(snapshot), runId, { refund, now });
+      if (!check.ok) return check;
+      const stop = await stopCrCliSupervisor(inFlight, { waitMs });
+      if (stop.state !== "gone") {
+        // Still running, or unverifiable: keep inFlight, so the gate won't start
+        // a second (vendor-refused) run and housekeeping still owns this one.
+        return {
+          ok: false,
+          reason: stop.state === "alive" ? "supervisor-still-running" : "supervisor-unverifiable",
+          runId,
+          pid: inFlight?.pid ?? null,
+          killed: stop.killed,
+        };
+      }
+      // Re-load: the wait can take seconds while the factory keeps writing.
       const state = await loadFactoryState(file);
-      const inFlight = getCrCli(state).inFlight;
-      // Finish in memory first: it validates <runId> and --refund, so a bad
-      // invocation throws before anything is signalled.
       const result = finishCrCliRun(state, runId, { refund, now });
-      if (!result.ok) return result;
-      const killed = killCrCliSupervisor(inFlight);
+      if (!result.ok) return { ...result, killed: stop.killed };
       await saveFactoryState(state, file);
-      return { ...result, killed };
+      return { ...result, killed: stop.killed };
     }
     case "--help":
     case "-h":
