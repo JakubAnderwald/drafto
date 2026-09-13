@@ -358,6 +358,27 @@ node scripts/lib/state-cli.mjs factory:cr-cli-resume
 
 Auth is a file, not the Keychain, so it keeps working from launchd after a headless reboot. If `doctor` fails on `Backend reachable` / `WebSocket reachable`, it's the network or the vendor — the lane's 60-minute `doctor` pause retries on its own.
 
+### Asking whether a PR was reviewed
+
+The lane records coverage in factory state, but a PR merged by hand has no card. This answers
+the same question from the PR alone, for any PR in this repo:
+
+```bash
+node scripts/lib/coderabbit-cli.mjs coverage --pr 628
+# {"covered":false,"source":null,"bot":"absent","cli":"absent",…,"reason":"nothing has reviewed this commit"}
+```
+
+Exit `0` when covered, `2` when it ran fine and the answer is no, `1` when it could not answer
+at all — a caller that cannot tell those apart fails open on an outage. `covered` is true for a
+bot review of the head commit or a completed CLI run (`COVERED_KINDS`); `cli-partial` is not
+coverage, because findings that only reached the collapsed summary never went in front of the
+fix loop.
+
+It is read-only — no ledger, no worktree, no CLI binary — and it is what the `/merge` skill
+calls before merging. Two states are worth knowing apart: `retryable: true` means a review is
+running right now and is worth waiting for, while `rate_limited` means waiting needs the hour
+to roll over.
+
 ## Kill switches
 
 | Severity                        | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |

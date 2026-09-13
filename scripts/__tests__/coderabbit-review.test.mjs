@@ -16,6 +16,8 @@ import {
   assertNoPaidFlags,
   parseEvents,
   classifyOutcome,
+  classifyCliCoverage,
+  renderSummary,
   parseWaitTime,
   extractLine,
   stripBoilerplate,
@@ -2186,5 +2188,56 @@ describe("planFindings — partial", () => {
       ["severity"],
     );
     assert.equal(out.partial, false);
+  });
+});
+
+// The factory's CLI lane leaves its verdict on the PR as well as in state, so a
+// PR with no card (anything merged by hand — #628 and #630 both) can still be
+// asked whether the CLI covered its head. /merge relies on this.
+describe("classifyCliCoverage", () => {
+  const HEAD = "a".repeat(40);
+  const OTHER = "b".repeat(40);
+  const OWNER = "JakubAnderwald";
+  const by = (login, body) => ({ user: { login }, body });
+  const stamped = (sha, kind) => by(OWNER, renderSummary({ sha, inline: 2, kind }));
+  const state = (comments, headSha = HEAD) =>
+    classifyCliCoverage({ comments, headSha, ownerLogin: OWNER }).state;
+
+  it("reads the kind the run stamped, rather than inferring it", () => {
+    assert.equal(state([stamped(HEAD, "cli")]), "cli");
+    assert.equal(state([stamped(HEAD, "cli-empty")]), "cli");
+    assert.equal(state([stamped(HEAD, "cli-partial")]), "cli-partial");
+  });
+
+  // A run whose findings failed to parse renders identically to a clean one, so
+  // an unstamped marker cannot be assumed to mean full coverage.
+  it("treats a marker with no kind as not-coverage", () => {
+    assert.equal(state([stamped(HEAD, null)]), "cli-partial");
+  });
+
+  it("ignores a summary for a different commit", () => {
+    assert.equal(state([stamped(OTHER, "cli")]), "absent");
+  });
+
+  // Without the author check, any PR author could paste the marker into a
+  // comment and manufacture coverage for their own branch.
+  it("ignores a summary posted by anyone but the owner", () => {
+    assert.equal(state([by("a-contributor", renderSummary({ sha: HEAD, kind: "cli" }))]), "absent");
+  });
+
+  // A later comment quoting an earlier marker must not be able to upgrade the
+  // verdict, so the most conservative kind wins.
+  it("takes the most conservative kind when several comments carry the marker", () => {
+    assert.equal(state([stamped(HEAD, "cli-partial"), stamped(HEAD, "cli")]), "cli-partial");
+    assert.equal(state([stamped(HEAD, "cli"), stamped(HEAD, "cli-partial")]), "cli-partial");
+  });
+
+  it("is absent with no comments, no owner, or a bad sha", () => {
+    assert.equal(state([]), "absent");
+    assert.equal(
+      classifyCliCoverage({ comments: [stamped(HEAD, "cli")], headSha: HEAD }).state,
+      "absent",
+    );
+    assert.equal(state([stamped(HEAD, "cli")], "not-a-sha"), "absent");
   });
 });
