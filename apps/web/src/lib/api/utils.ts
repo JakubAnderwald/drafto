@@ -47,19 +47,23 @@ export async function getAuthenticatedUser(): Promise<AuthResult> {
   };
 }
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isUuid(value: string): boolean {
+  return UUID_REGEX.test(value);
+}
+
 /**
  * Fast-path authentication that reads verified auth state from middleware headers.
  * Middleware already validated the session and approval status, so this skips
  * the redundant getUser() + profiles query (~200ms savings per request).
  * Falls back to full auth if headers are absent (e.g., direct API calls).
  */
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 export async function getAuthenticatedUserFast(request: NextRequest): Promise<AuthResult> {
   const userId = request.headers.get("x-verified-user-id");
   const userEmail = request.headers.get("x-verified-user-email");
 
-  if (!userId || !UUID_REGEX.test(userId)) {
+  if (!userId || !isUuid(userId)) {
     return getAuthenticatedUser();
   }
 
