@@ -53,10 +53,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
 
   return (
     <div className="mx-auto max-w-2xl p-8">
-      <div className="mb-6 flex items-baseline justify-between">
-        <h1 className="text-fg text-2xl font-bold">Admin — User Approval</h1>
-        <span className="text-fg-muted text-sm">{pendingUsers.length} pending</span>
-      </div>
+      <h1 className="text-fg mb-6 text-2xl font-bold">Admin — User Approval</h1>
       <AdminFlashMessage approved={params.approved} error={params.error} />
       <AdminUserList initialUsers={pendingUsers} />
     </div>

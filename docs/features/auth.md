@@ -1,6 +1,6 @@
 # Authentication
 
-**Status:** shipped **Updated:** 2026-09-11
+**Status:** shipped **Updated:** 2026-09-13
 
 ## What it is
 
@@ -31,6 +31,8 @@ Available on all four platforms: web, iOS, Android, and macOS. The web app uses 
 | Admin user list component                       | `apps/web/src/app/(app)/admin/admin-user-list.tsx`           |
 | Admin flash message                             | `apps/web/src/app/(app)/admin/admin-flash-message.tsx`       |
 | Admin approve-user API                          | `apps/web/src/app/api/admin/approve-user/route.ts`           |
+| Admin delete-pending-user API                   | `apps/web/src/app/api/admin/delete-user/route.ts`            |
+| Deleted user's attachment cleanup (storage)     | `apps/web/src/lib/storage/remove-user-attachments.ts`        |
 | One-click approve (email link)                  | `apps/web/src/app/api/admin/approve-user/one-click/route.ts` |
 | Signed approval token helper                    | `apps/web/src/lib/approval-tokens.ts`                        |
 | Mobile login screen                             | `apps/mobile/app/(auth)/login.tsx`                           |
@@ -80,10 +82,13 @@ Available on all four platforms: web, iOS, Android, and macOS. The web app uses 
   - The middleware in `apps/web/src/lib/supabase/middleware.ts` is the only server-side gate between unauthenticated / unapproved users and the app shell. Every new user-scoped route must pass through it (i.e., not be added to `PUBLIC_ROUTES` unless it is truly public).
   - `profiles.is_approved` defaults to `false` and is NOT user-writable. Only the service-role client (via `apps/web/src/lib/supabase/admin.ts`) should flip it.
   - RLS policies reference both `auth.uid()` and `is_approved` — never add a policy that only checks `auth.uid()` on user data tables.
+  - `/api/admin/delete-user` permanently deletes **pending** users only. `auth.admin.deleteUser` cannot be undone, so every guard runs before it: caller is an admin, target is not the caller, target exists, and target is neither approved nor an admin (409). It also refuses (409) any account that already owns notebooks, notes or API keys, checked with the service-role client. A signup that was never approved cannot own any of those rows, because each table's insert policy requires approval. The profile and every user-owned row go with the auth user through `on delete cascade`; storage objects are removed best-effort afterwards.
 - **Tests that will catch regressions:**
   - `apps/web/__tests__/unit/middleware.test.ts` — covers public-route allowlist, unauthenticated redirect, unapproved redirect, approved pass-through, and the verified-user header injection.
   - `apps/web/__tests__/unit/auth-callback.test.ts` — PKCE code exchange and sanitized redirect.
   - `apps/web/__tests__/unit/admin-approve-user.test.ts` + `apps/web/__tests__/unit/approve-user-one-click.test.ts` — admin-only approval and signed-link flow.
+  - `apps/web/__tests__/unit/admin-delete-user.test.ts` + `apps/web/__tests__/unit/remove-user-attachments.test.ts` — admin-only deletion of pending users (every rejection path asserts nothing was deleted) and the best-effort storage cleanup.
+  - `apps/web/__tests__/integration/admin-user-list.test.tsx` — approve and delete flows on the admin page, including the confirm dialog and the pending count.
   - `apps/web/__tests__/unit/approval-tokens.test.ts` — HMAC signing and TTL.
   - `apps/web/__tests__/integration/login.test.tsx`, `signup.test.tsx`, `waiting-for-approval.test.tsx` — UI flow.
   - `apps/web/e2e/auth.spec.ts` — Playwright end-to-end sign-in.
@@ -94,6 +99,8 @@ Available on all four platforms: web, iOS, Android, and macOS. The web app uses 
 - **Files that must change together:**
   - Adding a new public route: update `PUBLIC_ROUTES` in `apps/web/src/lib/supabase/middleware.ts` **and** add a test case in `middleware.test.ts`.
   - Changing the `profiles` shape: update `apps/web/src/lib/supabase/database.types.ts`, the RLS policies, and every `AuthProvider` (web middleware, mobile provider, desktop provider) that reads the column.
+  - Adding a table with a foreign key to `auth.users`: declare it `on delete cascade`, or `/api/admin/delete-user` fails with a 500 for any user who owns a row in it. If only approved users can insert into the table, also add it to `USER_OWNED_TABLES` in that route.
+  - Changing the attachments storage path layout (`{userId}/{noteId}/{fileName}`): update `apps/web/src/lib/storage/remove-user-attachments.ts` and its test.
   - Adding a new OAuth provider: update both `apps/web/src/components/auth/oauth-buttons.tsx` and `apps/mobile/src/components/auth/oauth-buttons.tsx`, plus the Supabase dashboard config for each environment.
   - Changing a recovery redirect URL: update `RECOVERY_REDIRECT_URL` in the platform's `auth-recovery.ts`, its `RECOVERY_PATHS` set, **and** the Redirect URLs allowlist in both Supabase projects. The desktop `handleOAuthCallback` defers to `isRecoveryUrl()` to avoid consuming the recovery code — keep the two path sets consistent or the OAuth handler will burn it.
 
