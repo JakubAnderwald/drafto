@@ -10,6 +10,11 @@ vi.mock("@/env", () => ({
   },
 }));
 
+const captureExceptionMock = vi.fn();
+vi.mock("@sentry/nextjs", () => ({
+  captureException: (...args: unknown[]) => captureExceptionMock(...args),
+}));
+
 const { AdminUserList } = await import("@/app/(app)/admin/admin-user-list");
 
 describe("AdminUserList", () => {
@@ -153,6 +158,7 @@ describe("AdminUserList — pending count and delete", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    captureExceptionMock.mockClear();
   });
 
   it("shows the pending count, including zero", () => {
@@ -256,6 +262,8 @@ describe("AdminUserList — pending count and delete", () => {
     expect(rowAction("spam@example.com", "Delete")).toBeEnabled();
     expect(rowAction("spam@example.com", "Approve")).toBeEnabled();
     expect(dialogAction("Delete")).toBeEnabled();
+    // The server already reports its own failures; the client only reports requests that never got a response.
+    expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 
   it("shows a generic error when the failure response has no error message", async () => {
@@ -275,7 +283,8 @@ describe("AdminUserList — pending count and delete", () => {
   });
 
   it("shows a generic error when the request fails, and clears it when the dialog is reopened", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+    const networkError = new TypeError("Failed to fetch");
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(networkError));
     const user = userEvent.setup();
     render(<AdminUserList initialUsers={users} />);
 
@@ -285,6 +294,9 @@ describe("AdminUserList — pending count and delete", () => {
     expect(within(screen.getByRole("alertdialog")).getByRole("alert")).toHaveTextContent(
       "Failed to delete user. Please try again.",
     );
+    expect(captureExceptionMock).toHaveBeenCalledWith(networkError, {
+      extra: { where: "admin-user-list:confirmDelete", userId: "u-1" },
+    });
 
     await user.click(dialogAction("Cancel"));
     await user.click(rowAction("spam@example.com", "Delete"));

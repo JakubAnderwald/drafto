@@ -183,6 +183,15 @@ describe("POST /api/admin/delete-user", () => {
     });
 
     await expectRejectedWithoutDeleting(request, 500, "Failed to verify admin privileges");
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      { message: "Row not found" },
+      {
+        extra: {
+          where: "delete-user:adminCheck",
+          adminId: "dddddddd-0000-4000-8000-000000000004",
+        },
+      },
+    );
   });
 
   it("returns 400 when the body is not valid JSON", async () => {
@@ -229,14 +238,18 @@ describe("POST /api/admin/delete-user", () => {
     );
   });
 
-  it("returns 500 when the target profile lookup fails", async () => {
-    mockProfiles(PROFILES, { maybeSingle: { data: null, error: { message: "boom" } } });
+  it("returns 500 and reports to Sentry when the target profile lookup fails", async () => {
+    const lookupError = { message: "boom" };
+    mockProfiles(PROFILES, { maybeSingle: { data: null, error: lookupError } });
 
     await expectRejectedWithoutDeleting(
       createRequest({ userId: PENDING_ID }),
       500,
       "Failed to look up user",
     );
+    expect(captureExceptionMock).toHaveBeenCalledWith(lookupError, {
+      extra: { where: "delete-user:targetLookup", userId: PENDING_ID },
+    });
   });
 
   it("returns 409 and deletes nothing when the target is already approved", async () => {
@@ -268,16 +281,33 @@ describe("POST /api/admin/delete-user", () => {
     },
   );
 
-  it.each([
-    ["errors", { count: null, error: { message: "boom" } }],
-    ["returns no count", { count: null, error: null }],
-  ])("returns 500 and deletes nothing when the ownership lookup %s", async (_label, result) => {
-    mockOwnedRows({ notes: result });
+  it("returns 500, deletes nothing and reports to Sentry when an ownership lookup errors", async () => {
+    const countError = { message: "boom" };
+    mockOwnedRows({ notes: { count: null, error: countError } });
 
     await expectRejectedWithoutDeleting(
       createRequest({ userId: PENDING_ID }),
       500,
       "Failed to look up user",
+    );
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock).toHaveBeenCalledWith(countError, {
+      extra: { where: "delete-user:ownedRows", table: "notes", userId: PENDING_ID },
+    });
+  });
+
+  it("returns 500, deletes nothing and reports to Sentry when an ownership lookup returns no count", async () => {
+    mockOwnedRows({ api_keys: { count: null, error: null } });
+
+    await expectRejectedWithoutDeleting(
+      createRequest({ userId: PENDING_ID }),
+      500,
+      "Failed to look up user",
+    );
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      new Error("Ownership count for api_keys came back empty"),
+      { extra: { where: "delete-user:ownedRows", table: "api_keys", userId: PENDING_ID } },
     );
   });
 

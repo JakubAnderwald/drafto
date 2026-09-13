@@ -26,6 +26,9 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (profileError) {
+    Sentry.captureException(profileError, {
+      extra: { where: "delete-user:adminCheck", adminId: user.id },
+    });
     return errorResponse("Failed to verify admin privileges", 500);
   }
 
@@ -60,6 +63,7 @@ export async function POST(request: NextRequest) {
     .maybeSingle();
 
   if (targetError) {
+    Sentry.captureException(targetError, { extra: { where: "delete-user:targetLookup", userId } });
     return errorResponse("Failed to look up user", 500);
   }
 
@@ -82,7 +86,16 @@ export async function POST(request: NextRequest) {
     ),
   );
 
-  if (ownedRows.some(({ error, count }) => error || count === null)) {
+  const failedLookups = ownedRows
+    .map(({ error, count }, i) => ({ table: USER_OWNED_TABLES[i], error, count }))
+    .filter(({ error, count }) => error || count === null);
+
+  if (failedLookups.length > 0) {
+    for (const { table, error } of failedLookups) {
+      // A null count without an error has nothing to capture, so report it as its own error.
+      const err = error ?? new Error(`Ownership count for ${table} came back empty`);
+      Sentry.captureException(err, { extra: { where: "delete-user:ownedRows", table, userId } });
+    }
     return errorResponse("Failed to look up user", 500);
   }
 
