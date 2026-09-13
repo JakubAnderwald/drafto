@@ -5,7 +5,7 @@ import { ADMIN_E2E_SKIP_REASON, getAdminCredentials } from "./helpers/admin-cred
  * Admin — User Approval panel: closing it with the ✕ button or Escape.
  *
  * Runs in the `chromium-admin` project, signed in as E2E_ADMIN_EMAIL (see
- * auth.setup.ts). That project is only registered when the admin E2E variables
+ * admin.setup.ts). That project is only registered when the admin E2E variables
  * are set; the skip below covers running this file some other way.
  */
 const hasAdminCredentials = getAdminCredentials() !== null;
