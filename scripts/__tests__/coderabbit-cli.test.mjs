@@ -2573,12 +2573,16 @@ describe("isManualReviewCommand", () => {
     const yes = [
       "node scripts/lib/coderabbit-cli.mjs review --pr 637 --repo-root /x",
       "/opt/homebrew/bin/node /r/scripts/lib/coderabbit-cli.mjs review --repo-root /x --pr=637",
-      "node coderabbit-cli.mjs review --pr 637",
+      "node --no-warnings coderabbit-cli.mjs review --pr 637",
     ];
     const no = [
       "node coderabbit-cli.mjs review --pr 6370",
       "node coderabbit-cli.mjs coverage --pr 637",
       "node other.mjs review --pr 637",
+      "node other.mjs coderabbit-cli.mjs review --pr 637",
+      "node -e setInterval coderabbit-cli.mjs review --pr 637",
+      "node coderabbit-cli.mjs coverage review --pr 637",
+      "bash coderabbit-cli.mjs review --pr 637",
       "node coderabbit-cli.mjs _supervise --run-dir /x/pr-637",
       "",
     ];
@@ -2629,11 +2633,19 @@ describe("runHousekeeping — manual review in flight", () => {
 
   it("frees the slot once the process is gone, keeping the hour spent", async () => {
     await seedManual();
+    const worktree = path.join(tmp, "cr-cli-manual-7-left-behind");
+    mkdirSync(worktree, { recursive: true });
+    await operatorWrites((s) => {
+      s.crCli.inFlight.worktree = worktree;
+    });
     const { deps, calls } = makeDeps({ pidAlive: false });
     const out = await runHousekeeping(hkOpts(), deps);
     assert.equal(out.state, "manual-lost");
     assert.equal(out.reason, "process-gone");
     assert.equal(calls.kill.length, 0);
+    // A SIGKILLed or rebooted review leaves its temp worktree for nobody else.
+    assert.equal(existsSync(worktree), false);
+    assert.ok(calls.git.some((c) => c.args.join(" ") === `worktree remove --force ${worktree}`));
     const state = await readState();
     assert.equal(state.crCli.inFlight, null);
     assert.equal(state.crCli.runs.length, 1);

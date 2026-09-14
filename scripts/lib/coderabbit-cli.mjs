@@ -1139,6 +1139,10 @@ async function windDownManual({ S, inFlight, base, dryRun, now, opts }, deps) {
     Date.parse(now) > deadlineMs + OVERDUE_GRACE_MS + POST_GIVE_UP_MS;
   if (alive && !overrun) return { ...result, state: "manual-running" };
   if (dryRun) return { ...result, state: "manual-lost", dryRun: true };
+  // Nothing else can clean this up: the worktree is in the temp dir, outside
+  // everything reap() sweeps. Only when the owner is gone — an overrun process
+  // may still be reading it.
+  if (!alive) await removeWorktree(opts.repoRoot, inFlight.worktree, deps);
   // The vendor run may well have started, so the hourly slot stays spent.
   const finished = await finishRun(S, opts.stateFile, inFlight.runId, { refund: "none", now });
   return {

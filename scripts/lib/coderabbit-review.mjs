@@ -1307,15 +1307,32 @@ function shortSha(sha) {
 // the subcommand and its --pr are what tie a live pid to the ledger's record —
 // and what stop a reused pid from passing for it. Used by housekeeping and by
 // state-cli's factory:cr-cli-finish, which must agree.
+//
+// Structural, not substring: the entrypoint node executes (its first non-flag
+// argument) must be coderabbit-cli.mjs, the subcommand right after it must be
+// `review`, and --pr must equal <pr>. `node other.mjs coderabbit-cli.mjs review
+// --pr 7` is some other program. Tokens split on whitespace, so a path with a
+// space never matches — the safe direction for a guard that decides whether to
+// signal a pid.
 export function isManualReviewCommand(command, pr) {
-  const cmd = ` ${String(command ?? "")} `;
   const prNum = String(pr ?? "");
   if (!/^[0-9]+$/.test(prNum)) return false;
-  return (
-    cmd.includes("coderabbit-cli.mjs") &&
-    /\sreview\s/.test(cmd) &&
-    new RegExp(`\\s--pr[ =]${prNum}\\s`).test(cmd)
-  );
+  const tokens = String(command ?? "")
+    .trim()
+    .split(/\s+/);
+  if (tokens.length < 3 || !/(^|\/)node$/.test(tokens[0])) return false;
+  let i = 1;
+  while (i < tokens.length && tokens[i].startsWith("-")) i++;
+  if (!/(^|\/)coderabbit-cli\.mjs$/.test(tokens[i] ?? "") || tokens[i + 1] !== "review") {
+    return false;
+  }
+  const rest = tokens.slice(i + 2);
+  let seenPr = null;
+  for (let j = 0; j < rest.length; j++) {
+    if (rest[j] === "--pr") seenPr = rest[j + 1] ?? null;
+    else if (rest[j].startsWith("--pr=")) seenPr = rest[j].slice("--pr=".length);
+  }
+  return seenPr === prNum;
 }
 
 // A thread counts as a CLI finding only if the repo owner's identity (the Mac

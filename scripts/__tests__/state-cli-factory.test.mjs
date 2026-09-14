@@ -581,6 +581,13 @@ describe("factory:cr-cli-* (CodeRabbit CLI lane, ADR-0036)", () => {
     deadlineAt: "2026-09-12T20:30:00.000Z",
     manual: true,
   });
+  // A stand-in that node really executes as coderabbit-cli.mjs, so its ps
+  // command line has the same shape as a real `review` process.
+  const startFakeManualReview = (pr) => {
+    const script = path.join(workdir, "coderabbit-cli.mjs");
+    writeFileSync(script, "setInterval(() => {}, 1000);\n");
+    return spawn(process.execPath, [script, "review", "--pr", pr], { stdio: "ignore" });
+  };
   const writeManual = (pid) =>
     writeFileSync(
       stateFile,
@@ -593,11 +600,7 @@ describe("factory:cr-cli-* (CodeRabbit CLI lane, ADR-0036)", () => {
     );
 
   it("factory:cr-cli-finish SIGTERMs a live manual review (its pid, not a group) before releasing", async () => {
-    const child = spawn(
-      process.execPath,
-      ["-e", "setInterval(() => {}, 1000)", "coderabbit-cli.mjs", "review", "--pr", "637"],
-      { stdio: "ignore" },
-    );
+    const child = startFakeManualReview("637");
     try {
       await new Promise((resolve) => child.once("spawn", resolve));
       writeManual(child.pid);
@@ -626,11 +629,7 @@ describe("factory:cr-cli-* (CodeRabbit CLI lane, ADR-0036)", () => {
   });
 
   it("factory:cr-cli-finish never signals a live pid that is not that PR's manual review", async () => {
-    const child = spawn(
-      process.execPath,
-      ["-e", "setInterval(() => {}, 1000)", "coderabbit-cli.mjs", "review", "--pr", "6370"],
-      { stdio: "ignore" },
-    );
+    const child = startFakeManualReview("6370");
     try {
       await new Promise((resolve) => child.once("spawn", resolve));
       writeManual(child.pid);
