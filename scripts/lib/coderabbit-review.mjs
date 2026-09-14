@@ -1241,6 +1241,8 @@ export function renderSummary({
   // text. Anything reading coverage back off the PR (a PR with no factory card
   // has only the PR) would otherwise have to guess, and guess wrong.
   kind = null,
+  // "manual": a person ran `coderabbit-cli.mjs review` on a PR with no card.
+  origin = "factory",
 } = {}) {
   const head = String(sha ?? "").toLowerCase();
   if (!SHA40.test(head)) throw new Error("renderSummary: sha must be a 40-hex commit");
@@ -1253,7 +1255,7 @@ export function renderSummary({
 
   const lines = [`### CodeRabbit CLI review — \`${shortSha(head)}\``, ""];
   lines.push(
-    `The CodeRabbit PR bot did not review this commit, so the factory ran the CodeRabbit CLI on ${range}. Outcome: \`${String(outcome).replace(/[^a-z_-]/gi, "")}\`.`,
+    `The CodeRabbit PR bot did not review this commit, so ${origin === "manual" ? "the CodeRabbit CLI was run by hand (`coderabbit-cli.mjs review`)" : "the factory ran the CodeRabbit CLI"} on ${range}. Outcome: \`${String(outcome).replace(/[^a-z_-]/gi, "")}\`.`,
   );
   lines.push("");
   if (stale) {
@@ -1285,7 +1287,7 @@ export function renderSummary({
   }
   lines.push(
     "",
-    "<sub>Automated, unverified vendor findings (CodeRabbit CLI, posted by the Drafto factory).</sub>",
+    `<sub>Automated, unverified vendor findings (CodeRabbit CLI, posted ${origin === "manual" ? "by `coderabbit-cli.mjs review`" : "by the Drafto factory"}).</sub>`,
     "",
     `<!-- ${SUMMARY_MARKER} sha=${head}${/^[a-z-]+$/.test(String(kind ?? "")) ? ` kind=${kind}` : ""} -->`,
   );
@@ -1299,6 +1301,39 @@ function shortSha(sha) {
 }
 
 // ── fix-loop attempt exemption ──────────────────────────────────────────────
+
+// Is <command> (a `ps` command line) a manual `coderabbit-cli.mjs review` of PR
+// <pr>? A manual run's id is made inside the process and never reaches argv, so
+// the subcommand and its --pr are what tie a live pid to the ledger's record —
+// and what stop a reused pid from passing for it. Used by housekeeping and by
+// state-cli's factory:cr-cli-finish, which must agree.
+//
+// Structural, not substring: the entrypoint node executes (its first non-flag
+// argument) must be coderabbit-cli.mjs, the subcommand right after it must be
+// `review`, and --pr must equal <pr>. `node other.mjs coderabbit-cli.mjs review
+// --pr 7` is some other program. Tokens split on whitespace, so a path with a
+// space never matches — the safe direction for a guard that decides whether to
+// signal a pid.
+export function isManualReviewCommand(command, pr) {
+  const prNum = String(pr ?? "");
+  if (!/^[0-9]+$/.test(prNum)) return false;
+  const tokens = String(command ?? "")
+    .trim()
+    .split(/\s+/);
+  if (tokens.length < 3 || !/(^|\/)node$/.test(tokens[0])) return false;
+  let i = 1;
+  while (i < tokens.length && tokens[i].startsWith("-")) i++;
+  if (!/(^|\/)coderabbit-cli\.mjs$/.test(tokens[i] ?? "") || tokens[i + 1] !== "review") {
+    return false;
+  }
+  const rest = tokens.slice(i + 2);
+  let seenPr = null;
+  for (let j = 0; j < rest.length; j++) {
+    if (rest[j] === "--pr") seenPr = rest[j + 1] ?? null;
+    else if (rest[j].startsWith("--pr=")) seenPr = rest[j].slice("--pr=".length);
+  }
+  return seenPr === prNum;
+}
 
 // A thread counts as a CLI finding only if the repo owner's identity (the Mac
 // mini's gh login) opened it AND it carries the finding marker. The author check

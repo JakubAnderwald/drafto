@@ -569,6 +569,88 @@ describe("factory:cr-cli-* (CodeRabbit CLI lane, ADR-0036)", () => {
     ]);
   }
 
+  // ADR-0037: a manual `coderabbit-cli.mjs review` holds the lane from its own,
+  // non-leader process whose argv carries the PR, not the run id.
+  const manualInFlight = (pid) => ({
+    runId: "pr637-dddddddddddd-20260914T180000Z",
+    issue: null,
+    pr: "637",
+    sha: SHA,
+    pid,
+    startedAt: T0,
+    deadlineAt: "2026-09-12T20:30:00.000Z",
+    manual: true,
+  });
+  // A stand-in that node really executes as coderabbit-cli.mjs, so its ps
+  // command line has the same shape as a real `review` process.
+  const startFakeManualReview = (pr) => {
+    const script = path.join(workdir, "coderabbit-cli.mjs");
+    writeFileSync(script, "setInterval(() => {}, 1000);\n");
+    return spawn(process.execPath, [script, "review", "--pr", pr], { stdio: "ignore" });
+  };
+  const writeManual = (pid) =>
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        crCli: {
+          runs: [{ runId: manualInFlight(pid).runId, issue: "pr-637", sha: SHA, startedAt: T0 }],
+          inFlight: manualInFlight(pid),
+        },
+      }),
+    );
+
+  it("factory:cr-cli-finish SIGTERMs a live manual review (its pid, not a group) before releasing", async () => {
+    const child = startFakeManualReview("637");
+    try {
+      await new Promise((resolve) => child.once("spawn", resolve));
+      writeManual(child.pid);
+      const exited = waitForExit(child);
+      const r = spawn(process.execPath, [
+        CLI,
+        "factory:cr-cli-finish",
+        manualInFlight(child.pid).runId,
+        "--state-file",
+        stateFile,
+        "--now",
+        T0,
+      ]);
+      let stdout = "";
+      r.stdout.on("data", (d) => (stdout += d));
+      const code = await new Promise((resolve) => r.once("close", resolve));
+      assert.equal(code, 0);
+      assert.equal(await exited, "SIGTERM");
+      const out = JSON.parse(stdout);
+      assert.equal(out.ok, true);
+      assert.equal(out.killed, true);
+      assert.equal(readState().crCli.inFlight, null);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+  });
+
+  it("factory:cr-cli-finish never signals a live pid that is not that PR's manual review", async () => {
+    const child = startFakeManualReview("6370");
+    try {
+      await new Promise((resolve) => child.once("spawn", resolve));
+      writeManual(child.pid);
+      const r = run([
+        "factory:cr-cli-finish",
+        manualInFlight(child.pid).runId,
+        "--state-file",
+        stateFile,
+        "--now",
+        T0,
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).killed, false);
+      assert.equal(child.exitCode, null);
+      assert.equal(child.signalCode, null);
+      assert.equal(readState().crCli.inFlight, null);
+    } finally {
+      child.kill("SIGKILL");
+    }
+  });
+
   it("factory:cr-cli-finish SIGTERMs the live supervisor's process group before releasing the run", async () => {
     const runId = "42-cccccccccccc-20260912T200000Z";
     const child = startFakeSupervisor(runId);

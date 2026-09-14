@@ -184,6 +184,7 @@ import {
   finishCrCliRun,
 } from "./factory-state.mjs";
 import { bumpNotification, bumpCounters } from "./policy.mjs";
+import { isManualReviewCommand } from "./coderabbit-review.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 import { isMainModule } from "./is-main.mjs";
 
@@ -223,6 +224,15 @@ function processGroupExists(pgid) {
 // "unknown" when ps fails while the pid or its group still exists.
 function crCliRunState(inFlight) {
   const pid = inFlight?.pid;
+  // A manual `coderabbit-cli.mjs review` holds the lane from its own process:
+  // it is not a group leader and its run id never reaches argv, so it is alive
+  // exactly while that pid is a `review` of the recorded PR.
+  if (inFlight?.manual) {
+    if (!Number.isInteger(pid) || pid <= 0 || !isPidAlive(pid)) return "gone";
+    const ps = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+    if (ps.status !== 0) return isPidAlive(pid) ? "unknown" : "gone";
+    return isManualReviewCommand(ps.stdout.trim(), inFlight.pr) ? "alive" : "gone";
+  }
   if (!Number.isInteger(pid) || pid <= 0) return "gone";
   const ps = spawnSync("ps", ["-axo", "pid=,pgid=,stat=,command="], { encoding: "utf8" });
   if (ps.status !== 0) {
@@ -251,7 +261,9 @@ async function stopCrCliSupervisor(inFlight, { waitMs }) {
   const initial = crCliRunState(inFlight);
   if (initial !== "alive") return { state: initial, signalled: false, killed: false };
   try {
-    process.kill(-inFlight.pid, "SIGTERM");
+    // A manual review traps SIGTERM itself (stops its CLI child, frees the
+    // lane); the factory's supervisor is a group leader, so -pid reaches its CLI.
+    process.kill(inFlight.manual ? inFlight.pid : -inFlight.pid, "SIGTERM");
   } catch {
     // Fall through to the wait: it reports whatever state the group is in.
   }
@@ -644,6 +656,10 @@ async function main(argv) {
       // Re-load: the wait can take seconds while the factory keeps writing.
       const state = await loadFactoryState(file);
       const result = finishCrCliRun(state, runId, { refund, now });
+      // A manual review frees its own slot on SIGTERM; that is the success case.
+      if (!result.ok && inFlight?.manual && getCrCli(state).inFlight?.runId !== runId) {
+        return { ok: true, runId, releasedBy: "manual-review", killed: stop.killed };
+      }
       if (!result.ok) return { ...result, killed: stop.killed };
       await saveFactoryState(state, file);
       return { ...result, killed: stop.killed };
