@@ -16,6 +16,7 @@ import {
   runHousekeeping,
   runFreePass,
   runCoverage,
+  runManualReview,
   coverageKind,
   postFindings,
   pollRun,
@@ -42,7 +43,12 @@ import {
   getIssue,
   setIssueField,
 } from "../lib/factory-state.mjs";
-import { fingerprint, FINDING_MARKER, SUMMARY_MARKER } from "../lib/coderabbit-review.mjs";
+import {
+  fingerprint,
+  isManualReviewCommand,
+  FINDING_MARKER,
+  SUMMARY_MARKER,
+} from "../lib/coderabbit-review.mjs";
 
 const NOW = "2026-09-12T21:00:00.000Z";
 const SHA = "a".repeat(40);
@@ -160,7 +166,7 @@ const EVENTS = {
 // ── fake deps ──────────────────────────────────────────────────────────────
 
 function makeDeps(overrides = {}) {
-  const calls = { gh: [], git: [], spawn: [], kill: [], doctor: [], ps: 0 };
+  const calls = { gh: [], git: [], spawn: [], kill: [], doctor: [], review: [], ps: 0 };
   const cfg = {
     env: { FACTORY_CR_CLI: "1", FACTORY_CR_CLI_BIN: "/fake/bin/coderabbit" },
     executable: true,
@@ -190,6 +196,9 @@ function makeDeps(overrides = {}) {
     onDoctor: null,
     onSpawn: null,
     onKill: null,
+    // The synchronous vendor run `review` makes (runWithTimeout with args[0] "review").
+    reviewResult: { exitCode: 0, timedOut: false, stdout: EVENTS.ok, stderr: "" },
+    onReview: null,
     ...overrides,
   };
   const postQueue = [...cfg.postResponses];
@@ -198,6 +207,8 @@ function makeDeps(overrides = {}) {
   const deps = {
     env: cfg.env,
     now: () => NOW,
+    pid: 5151,
+    tmpdir: () => tmp,
     fs: nodeFs,
     gh: async (args, { input } = {}) => {
       calls.gh.push({ args, input });
@@ -279,7 +290,12 @@ function makeDeps(overrides = {}) {
       if (cfg.onKill) cfg.onKill();
       return true;
     },
-    runWithTimeout: async (command, args) => {
+    runWithTimeout: async (command, args, opts = {}) => {
+      if (args[0] === "review") {
+        calls.review.push({ command, args, opts });
+        if (cfg.onReview) await cfg.onReview();
+        return cfg.reviewResult;
+      }
       calls.doctor.push({ command, args });
       if (cfg.onDoctor) await cfg.onDoctor();
       return { exitCode: cfg.doctorExit, timedOut: false, stdout: "", stderr: "" };
@@ -2295,5 +2311,366 @@ describe("runCoverage", () => {
 
   it("throws rather than answering when the PR cannot be read", async () => {
     await assert.rejects(() => runCoverage({ pr: PR }, makeDeps({ prViewCode: 1 }).deps));
+  });
+});
+
+// ── review (manual) ────────────────────────────────────────────────────────
+
+describe("runManualReview", () => {
+  const rvOpts = (extra = {}) => ({ pr: PR, repoRoot, stateFile, now: NOW, ...extra });
+  const seedState = async (mutate = () => {}) => {
+    const state = emptyFactoryState();
+    mutate(state);
+    await saveFactoryState(state, stateFile);
+  };
+
+  it("skips a head the PR bot already reviewed, without touching the CLI", async () => {
+    await seedState();
+    const { deps, calls } = makeDeps({ botReviews: [COVERED_REVIEW] });
+    const out = await runManualReview(rvOpts(), deps);
+    assert.equal(out.ran, false);
+    assert.equal(out.reason, "bot-covered");
+    assert.equal(calls.doctor.length + calls.review.length, 0);
+  });
+
+  it("skips while the bot is reviewing the head right now", async () => {
+    const { deps, calls } = makeDeps({
+      botComments: [
+        {
+          user: BOT,
+          body: "<!-- This is an auto-generated comment: review in progress by coderabbit.ai -->",
+        },
+      ],
+    });
+    const out = await runManualReview(rvOpts(), deps);
+    assert.equal(out.reason, "bot-in-progress");
+    assert.equal(calls.review.length, 0);
+  });
+
+  it("skips a head a CLI review already covered (factory or manual)", async () => {
+    const { deps, calls } = makeDeps({
+      issueComments: [
+        {
+          user: { login: OWNER_LOGIN },
+          body: `<!-- ${SUMMARY_MARKER} sha=${SHA} kind=cli-empty -->`,
+        },
+      ],
+    });
+    const out = await runManualReview(rvOpts(), deps);
+    assert.equal(out.reason, "cli-already-ran");
+    assert.equal(out.coverage, "cli");
+    assert.equal(calls.review.length, 0);
+  });
+
+  it("does nothing on a PR that is no longer open", async () => {
+    const { deps, calls } = makeDeps({ prView: { state: "MERGED", headRefOid: SHA } });
+    const out = await runManualReview(rvOpts(), deps);
+    assert.equal(out.reason, "pr-merged");
+    assert.equal(calls.gh.length, 1);
+  });
+
+  it("reports cli-unavailable with no binary or a failing doctor", async () => {
+    const noBin = await runManualReview(rvOpts(), makeDeps({ executable: false }).deps);
+    assert.match(noBin.reason, /^cli-unavailable/);
+    const { deps, calls } = makeDeps({ doctorExit: 1 });
+    const badDoctor = await runManualReview(rvOpts(), deps);
+    assert.match(badDoctor.reason, /doctor exit 1/);
+    assert.equal(calls.review.length, 0);
+  });
+
+  it("reviews a gap, posts threads + a manual summary, and releases the lane", async () => {
+    await seedState();
+    let heldDuringRun = null;
+    const { deps, calls } = makeDeps({
+      botComments: [RATE_LIMITED_SUMMARY],
+      onReview: async () => {
+        heldDuringRun = (await readState()).crCli.inFlight;
+      },
+    });
+    const out = await runManualReview(rvOpts(), deps);
+    assert.equal(out.ran, true);
+    assert.equal(out.outcome, "ok");
+    assert.equal(out.reason, "reviewed");
+    assert.equal(out.coverage, "cli");
+    assert.equal(out.posted.inline, 1);
+
+    // While the vendor ran, the lane was held for this PR by this process.
+    assert.equal(heldDuringRun.manual, true);
+    assert.equal(heldDuringRun.pr, PR);
+    assert.equal(heldDuringRun.pid, 5151);
+    assert.equal(heldDuringRun.issue, null);
+
+    // Full review against the merge-base, run inside the temp worktree.
+    assert.deepEqual(calls.review[0].args, ["review", "--agent", "--base-commit", MERGE_BASE]);
+    assert.ok(calls.review[0].opts.cwd.startsWith(tmp));
+    assert.equal(existsSync(calls.review[0].opts.cwd), false);
+
+    assert.equal(ghPosts(calls, `pulls/${PR}/comments`).length, 1);
+    const summary = ghPosts(calls, `issues/${PR}/comments`);
+    assert.equal(summary.length, 1);
+    const body = JSON.parse(summary[0].input).body;
+    assert.match(body, /run by hand/);
+    assert.match(body, new RegExp(`<!-- ${SUMMARY_MARKER} sha=${SHA} kind=cli -->`));
+
+    // Budget spent, lane free, and no card record invented for a hand-made PR.
+    const state = await readState();
+    assert.equal(state.crCli.inFlight, null);
+    assert.equal(state.crCli.runs.length, 1);
+    assert.equal(state.crCli.runs[0].issue, `pr-${PR}`);
+    assert.deepEqual(state.issues, {});
+  });
+
+  it("refuses to start while the factory's lane is busy, paused or out of budget", async () => {
+    const rows = [
+      {
+        name: "busy",
+        mutate: (s) =>
+          reserveCrCliRun(s, {
+            issue: ISSUE,
+            sha: OTHER_SHA,
+            pr: "9",
+            runId: "r1",
+            maxPerHour: 3,
+            now: NOW,
+          }),
+        reason: /^cli-busy \(#42\)/,
+      },
+      {
+        name: "paused",
+        mutate: (s) => pauseCrCli(s, { until: minutesFrom(NOW, 30), reason: "rate_limited" }),
+        reason: /^cli-paused \(until .*rate_limited\)/,
+      },
+      {
+        name: "budget",
+        mutate: (s) => {
+          for (let i = 0; i < 3; i++) {
+            const runId = `b${i}`;
+            reserveCrCliRun(s, {
+              issue: ISSUE,
+              sha: OTHER_SHA,
+              runId,
+              maxPerHour: 3,
+              now: minutesFrom(NOW, -10),
+            });
+            finishCrCliRun(s, runId, { now: minutesFrom(NOW, -10) });
+          }
+        },
+        reason: /^cli-budget \(next slot/,
+      },
+    ];
+    for (const row of rows) {
+      await seedState(row.mutate);
+      const { deps, calls } = makeDeps();
+      const out = await runManualReview(rvOpts(), deps);
+      assert.equal(out.ran, false, row.name);
+      assert.match(out.reason, row.reason, row.name);
+      assert.equal(calls.review.length, 0, row.name);
+      assert.equal(calls.git.length, 0, row.name);
+    }
+  });
+
+  it("runs without ledger coordination when no state file exists", async () => {
+    const { deps, calls } = makeDeps();
+    const out = await runManualReview(rvOpts({ stateFile: path.join(tmp, "missing.json") }), deps);
+    assert.equal(out.ran, true);
+    assert.equal(calls.review.length, 1);
+    assert.equal(existsSync(path.join(tmp, "missing.json")), false);
+  });
+
+  it("gives the hourly slot back when the worktree cannot be prepared", async () => {
+    await seedState();
+    const { deps, calls } = makeDeps({
+      git: { "worktree add": () => ({ code: 128, stdout: "", stderr: "fatal: bad object" }) },
+    });
+    const out = await runManualReview(rvOpts(), deps);
+    assert.equal(out.ran, false);
+    assert.match(out.reason, /^cli-start-failed: worktree add failed/);
+    assert.equal(calls.review.length, 0);
+    const state = await readState();
+    assert.equal(state.crCli.inFlight, null);
+    assert.equal(state.crCli.runs.length, 0);
+  });
+
+  it("a vendor rate limit pauses the factory's lane and posts nothing", async () => {
+    await seedState();
+    const { deps, calls } = makeDeps({
+      reviewResult: { exitCode: 1, timedOut: false, stdout: EVENTS.rateLimited, stderr: "" },
+    });
+    const out = await runManualReview(rvOpts(), deps);
+    assert.equal(out.ran, true);
+    assert.equal(out.outcome, "rate_limited");
+    assert.equal(ghPosts(calls, "").length, 0);
+    const state = await readState();
+    assert.equal(state.crCli.inFlight, null);
+    assert.equal(state.crCli.pausedReason, "rate_limited");
+    assert.equal(state.crCli.runs.length, 1);
+  });
+
+  it("lists findings in the summary only when the head moved during the run", async () => {
+    let views = 0;
+    const { deps, calls } = makeDeps();
+    const gh = deps.gh;
+    deps.gh = async (args, o) => {
+      if (args[0] === "pr" && args[1] === "view" && views++ > 0) {
+        calls.gh.push({ args, input: o?.input });
+        return { code: 0, stdout: JSON.stringify(PR_COLUMNS.movedOpen), stderr: "" };
+      }
+      return gh(args, o);
+    };
+    const out = await runManualReview(rvOpts({ stateFile: null }), deps);
+    assert.equal(out.coverage, null);
+    assert.match(out.reason, /^head-moved/);
+    assert.equal(ghPosts(calls, `pulls/${PR}/comments`).length, 0);
+    assert.equal(ghPosts(calls, `issues/${PR}/comments`).length, 1);
+  });
+
+  it("releases the lane even when the vendor run itself throws", async () => {
+    await seedState();
+    const { deps } = makeDeps({
+      onReview: async () => {
+        throw new Error("spawn EACCES");
+      },
+    });
+    await assert.rejects(() => runManualReview(rvOpts(), deps), /EACCES/);
+    assert.equal((await readState()).crCli.inFlight, null);
+  });
+
+  it("when stopped mid-review, kills the vendor child, removes the worktree and frees the lane", async () => {
+    await seedState();
+    let handler = null;
+    let untrapped = false;
+    const child = { exitCode: null, killed: [], kill: (sig) => child.killed.push(sig) };
+    const { deps } = makeDeps({
+      onReview: async () => {
+        await handler("SIGTERM");
+      },
+    });
+    deps.trapSignals = (h) => {
+      handler = h;
+      return () => {
+        untrapped = true;
+      };
+    };
+    const runWithTimeout = deps.runWithTimeout;
+    deps.runWithTimeout = async (command, args, opts = {}) => {
+      if (args[0] === "review") opts.onChild?.(child);
+      return runWithTimeout(command, args, opts);
+    };
+    await runManualReview(rvOpts(), deps);
+    assert.deepEqual(child.killed, ["SIGTERM"]);
+    assert.equal((await readState()).crCli.inFlight, null);
+    assert.equal(untrapped, true);
+  });
+
+  it("main() requires --pr and --repo-root", async () => {
+    await assert.rejects(() => main(["review", "--pr", PR], makeDeps().deps), /repo-root/);
+    await assert.rejects(() => main(["review", "--repo-root", repoRoot], makeDeps().deps), /--pr/);
+  });
+});
+
+describe("isManualReviewCommand", () => {
+  it("matches only a coderabbit-cli.mjs review of exactly that PR", () => {
+    const yes = [
+      "node scripts/lib/coderabbit-cli.mjs review --pr 637 --repo-root /x",
+      "/opt/homebrew/bin/node /r/scripts/lib/coderabbit-cli.mjs review --repo-root /x --pr=637",
+      "node coderabbit-cli.mjs review --pr 637",
+    ];
+    const no = [
+      "node coderabbit-cli.mjs review --pr 6370",
+      "node coderabbit-cli.mjs coverage --pr 637",
+      "node other.mjs review --pr 637",
+      "node coderabbit-cli.mjs _supervise --run-dir /x/pr-637",
+      "",
+    ];
+    for (const c of yes) assert.equal(isManualReviewCommand(c, "637"), true, c);
+    for (const c of no) assert.equal(isManualReviewCommand(c, "637"), false, c);
+    assert.equal(isManualReviewCommand(yes[0], "6.*"), false);
+  });
+});
+
+describe("runHousekeeping — manual review in flight", () => {
+  const seedManual = async ({ pid = 5151, deadlineAt = minutesFrom(NOW, 20) } = {}) => {
+    const state = emptyFactoryState();
+    factoryState.reserveManualCrCliRun(state, {
+      pr: PR,
+      sha: SHA,
+      runId: "manual-1",
+      pid,
+      maxPerHour: 3,
+      now: minutesFrom(NOW, -10),
+      deadlineAt,
+    });
+    await saveFactoryState(state, stateFile);
+  };
+
+  it("leaves a live manual run alone: no PR read, no kill, no post, lane still held", async () => {
+    await seedManual();
+    const { deps, calls } = makeDeps({
+      pidAlive: true,
+      ps: `node scripts/lib/coderabbit-cli.mjs review --pr ${PR} --repo-root /x`,
+    });
+    const out = await runHousekeeping(hkOpts(), deps);
+    assert.equal(out.state, "manual-running");
+    assert.equal(calls.gh.length + calls.kill.length, 0);
+    assert.equal((await readState()).crCli.inFlight.runId, "manual-1");
+  });
+
+  it("leaves it alone with the lane switched off too — it is not the lane's run", async () => {
+    await seedManual();
+    const { deps, calls } = makeDeps({
+      env: { FACTORY_CR_CLI: "0" },
+      pidAlive: true,
+      ps: `node coderabbit-cli.mjs review --pr=${PR}`,
+    });
+    const out = await runHousekeeping(hkOpts(), deps);
+    assert.equal(out.state, "manual-running");
+    assert.equal(calls.kill.length, 0);
+  });
+
+  it("frees the slot once the process is gone, keeping the hour spent", async () => {
+    await seedManual();
+    const { deps, calls } = makeDeps({ pidAlive: false });
+    const out = await runHousekeeping(hkOpts(), deps);
+    assert.equal(out.state, "manual-lost");
+    assert.equal(out.reason, "process-gone");
+    assert.equal(calls.kill.length, 0);
+    const state = await readState();
+    assert.equal(state.crCli.inFlight, null);
+    assert.equal(state.crCli.runs.length, 1);
+  });
+
+  it("does not trust a reused pid whose command is another PR's review", async () => {
+    await seedManual();
+    const { deps } = makeDeps({ pidAlive: true, ps: `node coderabbit-cli.mjs review --pr ${PR}0` });
+    const out = await runHousekeeping(hkOpts(), deps);
+    assert.equal(out.state, "manual-lost");
+  });
+
+  it("frees a live run that is far past its deadline", async () => {
+    await seedManual({ deadlineAt: minutesFrom(NOW, -71) });
+    const { deps } = makeDeps({ pidAlive: true, ps: `node coderabbit-cli.mjs review --pr ${PR}` });
+    const out = await runHousekeeping(hkOpts(), deps);
+    assert.equal(out.state, "manual-lost");
+    assert.equal(out.reason, "overrun");
+  });
+
+  it("the factory gate holds at cli-busy while a manual run holds the lane", async () => {
+    await seedManual();
+    const { deps, calls } = makeDeps({ botComments: [RATE_LIMITED_SUMMARY] });
+    const out = await runGate(
+      {
+        issue: ISSUE,
+        pr: PR,
+        sha: OTHER_SHA,
+        stateFile,
+        repoRoot,
+        runRoot,
+        now: minutesFrom(NOW, 20),
+      },
+      deps,
+    );
+    assert.equal(out.action, "hold");
+    assert.equal(out.reason, "cli-busy");
+    assert.equal(calls.spawn.length, 0);
   });
 });

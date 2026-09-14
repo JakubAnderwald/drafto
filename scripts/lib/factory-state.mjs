@@ -228,6 +228,8 @@ function mergeInFlight(f) {
     deadlineAt: strOrNull(f.deadlineAt),
     runDir: strOrNull(f.runDir),
     worktree: strOrNull(f.worktree),
+    // Only stamped when true, so a factory run's record keeps its exact shape.
+    ...(f.manual === true ? { manual: true } : {}),
   };
 }
 
@@ -615,6 +617,66 @@ export function reserveCrCliRun(state, { issue, sha, pr = null, runId, maxPerHou
     worktree: null,
   };
   adjustCardRuns(state, issue, +1);
+  return { ok: true, runId: entry.runId };
+}
+
+// Claim the lane for a review started by hand (`coderabbit-cli.mjs review`) on
+// a PR that has no factory card. Same guards and budget entry as
+// reserveCrCliRun, so the factory's gate holds at cli-busy instead of starting
+// a second, concurrent vendor run. Differences: there is no card, so no
+// issues[] record is created or counted against a per-card cap; the record is
+// complete at reservation (the caller IS the process running the review, so
+// there is nothing to attach later); and `manual: true` tells housekeeping to
+// leave it alone while that process lives.
+export function reserveManualCrCliRun(
+  state,
+  { pr, sha, runId, pid, maxPerHour, now, deadlineAt = null, worktree = null } = {},
+) {
+  if (pr == null || pr === "") throw new Error("reserveManualCrCliRun requires <pr>");
+  if (sha == null || sha === "") throw new Error("reserveManualCrCliRun requires <sha>");
+  if (runId == null || runId === "") throw new Error("reserveManualCrCliRun requires <runId>");
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`reserveManualCrCliRun: invalid <pid>: ${pid}`);
+  }
+  const max = Number(maxPerHour);
+  if (!Number.isInteger(max) || max < 1) {
+    throw new Error(`reserveManualCrCliRun: invalid <maxPerHour>: ${maxPerHour}`);
+  }
+  nowMs(now);
+  const crCli = getCrCli(state);
+  clearExpiredCrCliPause(state, now);
+  if (isCrCliPaused(state, now)) {
+    return {
+      ok: false,
+      reason: "paused",
+      pausedUntil: crCli.pausedUntil,
+      pausedReason: crCli.pausedReason,
+    };
+  }
+  if (crCli.inFlight) {
+    return { ok: false, reason: "busy", inFlight: crCli.inFlight };
+  }
+  pruneCrCliRuns(state, now);
+  const usage = crCliUsage(state, { now });
+  if (usage.usedLastHour >= max) {
+    return { ok: false, reason: "budget", nextSlotAt: usage.nextSlotAt };
+  }
+  const entry = { runId: String(runId), issue: `pr-${pr}`, sha: String(sha), startedAt: now };
+  crCli.runs.push(entry);
+  crCli.inFlight = {
+    runId: entry.runId,
+    issue: null,
+    pr: String(pr),
+    sha: entry.sha,
+    baseSha: null,
+    mode: null,
+    pid,
+    startedAt: now,
+    deadlineAt: strOrNull(deadlineAt),
+    runDir: null,
+    worktree: strOrNull(worktree),
+    manual: true,
+  };
   return { ok: true, runId: entry.runId };
 }
 

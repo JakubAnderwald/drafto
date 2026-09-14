@@ -28,6 +28,7 @@ import {
   pauseCrCli,
   resumeCrCli,
   reserveCrCliRun,
+  reserveManualCrCliRun,
   attachCrCliRun,
   finishCrCliRun,
 } from "../lib/factory-state.mjs";
@@ -557,6 +558,85 @@ describe("issue fields for the lane", () => {
     for (const f of FIELDS) {
       assert.equal(setIssueField(state, 7, f, "v"), "v", f);
       assert.equal(setIssueField(state, 7, f, ""), null, f);
+    }
+  });
+});
+
+describe("reserveManualCrCliRun (a review started by hand, no card)", () => {
+  const manual = (extra = {}) => ({
+    pr: "637",
+    sha: SHA_A,
+    runId: "m1",
+    pid: 99,
+    maxPerHour: 3,
+    now: T0,
+    deadlineAt: "2026-09-12T20:30:00.000Z",
+    ...extra,
+  });
+
+  it("holds the lane with a complete, manual record and spends an hourly slot", () => {
+    const state = emptyFactoryState();
+    assert.deepEqual(reserveManualCrCliRun(state, manual()), { ok: true, runId: "m1" });
+    const { inFlight, runs } = getCrCli(state);
+    assert.equal(inFlight.manual, true);
+    assert.equal(inFlight.pid, 99);
+    assert.equal(inFlight.pr, "637");
+    assert.equal(inFlight.issue, null);
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].issue, "pr-637");
+    assert.deepEqual(state.issues, {});
+  });
+
+  it("refuses exactly like the factory's reservation: paused, busy, budget", () => {
+    const paused = emptyFactoryState();
+    pauseCrCli(paused, { until: "2026-09-12T21:00:00.000Z", reason: "auth" });
+    assert.equal(reserveManualCrCliRun(paused, manual()).reason, "paused");
+
+    const busy = emptyFactoryState();
+    reserveCrCliRun(busy, { issue: 1, sha: SHA_B, runId: "f1", maxPerHour: 3, now: T0 });
+    assert.equal(reserveManualCrCliRun(busy, manual()).reason, "busy");
+
+    const spent = emptyFactoryState();
+    for (const id of ["a", "b", "c"]) {
+      reserveCrCliRun(spent, { issue: 1, sha: SHA_B, runId: id, maxPerHour: 3, now: T0 });
+      finishCrCliRun(spent, id, { now: T0 });
+    }
+    assert.equal(reserveManualCrCliRun(spent, manual()).reason, "budget");
+  });
+
+  it("blocks the factory's reservation while held, and finishing it touches no card", () => {
+    const state = emptyFactoryState();
+    reserveManualCrCliRun(state, manual());
+    assert.equal(
+      reserveCrCliRun(state, { issue: 5, sha: SHA_B, runId: "f", maxPerHour: 3, now: T0 }).reason,
+      "busy",
+    );
+    assert.equal(finishCrCliRun(state, "m1", { refund: "card", now: T0 }).ok, true);
+    assert.equal(getCrCli(state).inFlight, null);
+    assert.deepEqual(state.issues, {});
+  });
+
+  it("survives a save/load round trip with its manual flag; factory records stay unflagged", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "cr-cli-manual-"));
+    try {
+      const file = path.join(dir, "state.json");
+      const state = emptyFactoryState();
+      reserveManualCrCliRun(state, manual());
+      await saveFactoryState(state, file);
+      assert.equal((await loadFactoryState(file)).crCli.inFlight.manual, true);
+
+      const factory = emptyFactoryState();
+      reserveCrCliRun(factory, { issue: 1, sha: SHA_B, runId: "f", maxPerHour: 3, now: T0 });
+      await saveFactoryState(factory, file);
+      assert.equal("manual" in (await loadFactoryState(file)).crCli.inFlight, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a missing pr, sha, runId or pid", () => {
+    for (const bad of [{ pr: "" }, { sha: "" }, { runId: "" }, { pid: 0 }]) {
+      assert.throws(() => reserveManualCrCliRun(emptyFactoryState(), manual(bad)));
     }
   });
 });

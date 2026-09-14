@@ -36,6 +36,16 @@
 //         answer is no, keeping that distinct from exit 1 "could not answer": a
 //         caller that conflates them fails open on an outage. Every other
 //         subcommand still exits 0 on a decision and 1 only on error.
+//   review --pr N --repo-root R [--state-file F] [--timeout-min M] [--dry-run 0|1]
+//       → {pr, headSha, ran, reason, outcome, coverage, posted}. Runs the CLI on
+//         a PR opened by hand (no factory card) whose head nothing reviewed, and
+//         WAITS for it (minutes, not a tick). Findings are posted exactly as the
+//         lane posts them, so `coverage` counts the result. With --state-file it
+//         shares the lane's ledger: it refuses to start while the lane is
+//         paused, busy or out of hourly budget, and holds the lane (a `manual`
+//         inFlight) while it runs so the factory never starts a concurrent
+//         vendor run. Without one (another machine, a cloud session) the
+//         vendor's own rate limit is the only guard. Exit 0 on any decision.
 //   _supervise --run-dir D                  (internal; spawned detached by gate)
 //
 // Why a detached supervisor rather than a synchronous call: a review takes
@@ -65,6 +75,7 @@
 
 import { spawn } from "node:child_process";
 import * as nodeFs from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./is-main.mjs";
@@ -208,7 +219,7 @@ function writeJsonAtomic(fs, file, value) {
 
 // Spawn and collect, never throw: callers branch on `code`. Output is buffered
 // without a cap — `gh pr diff` on a large PR outgrows execFile's maxBuffer.
-function runCommand(command, args, { cwd, input, env, timeoutMs } = {}) {
+function runCommand(command, args, { cwd, input, env, timeoutMs, onChild } = {}) {
   return new Promise((resolve) => {
     let child;
     try {
@@ -221,6 +232,7 @@ function runCommand(command, args, { cwd, input, env, timeoutMs } = {}) {
       resolve({ code: 127, stdout: "", stderr: err.message, timedOut: false });
       return;
     }
+    if (onChild) onChild(child);
     const out = [];
     const errOut = [];
     let timedOut = false;
@@ -316,6 +328,23 @@ export function createDeps() {
   return {
     env: process.env,
     now: () => new Date().toISOString(),
+    pid: process.pid,
+    tmpdir: () => tmpdir(),
+    // `review` runs for minutes in the caller's process; being stopped (the
+    // user skipping it, a killed shell) must still stop the vendor child and
+    // free the lane. Returns the untrap function.
+    trapSignals: (handler) => {
+      const signals = ["SIGTERM", "SIGINT", "SIGHUP"];
+      const onSignal = (signal) => {
+        Promise.resolve(handler(signal)).finally(() =>
+          process.exit(128 + (signal === "SIGINT" ? 2 : signal === "SIGHUP" ? 1 : 15)),
+        );
+      };
+      for (const sig of signals) process.once(sig, onSignal);
+      return () => {
+        for (const sig of signals) process.removeListener(sig, onSignal);
+      };
+    },
     fs: nodeFs,
     gh: (args, { input } = {}) => runCommand("gh", args, { input }),
     git: (args, { cwd } = {}) => runCommand("git", args, { cwd }),
@@ -343,8 +372,8 @@ export function createDeps() {
     // Same exit-124-on-cap convention as run-with-timeout.mjs, but with the
     // output captured: that helper inherits stdio, which would corrupt this
     // command's one-JSON-line stdout contract.
-    runWithTimeout: (command, args, { timeoutMs, env } = {}) =>
-      runCommand(command, args, { timeoutMs, env }).then((r) => ({
+    runWithTimeout: (command, args, { timeoutMs, env, cwd, onChild } = {}) =>
+      runCommand(command, args, { timeoutMs, env, cwd, onChild }).then((r) => ({
         exitCode: r.code,
         timedOut: r.timedOut,
         stdout: r.stdout,
@@ -893,6 +922,7 @@ export async function runHousekeeping(opts, deps) {
   }
 
   const base = { runId: inFlight.runId, issue: inFlight.issue, sha: inFlight.sha };
+  if (inFlight.manual) return windDownManual({ S, inFlight, base, dryRun, now, opts }, deps);
   const worktree = inFlight.worktree ?? worktreePathFor(repoRoot, inFlight.issue, inFlight.sha);
   const decidedSha = String(snapshot.issues?.[String(inFlight.issue)]?.crCoverageSha ?? "");
   const windDown = !laneOn
@@ -1089,6 +1119,36 @@ export async function runHousekeeping(opts, deps) {
   return { ...result, refund, reaped };
 }
 
+// A `review` started by hand holds the lane from its own process, which waits
+// for the vendor, posts and releases the ledger itself. Housekeeping never
+// collects, posts or kills it — the lane kill switch included, since the run is
+// not the lane's. It only frees the slot once that process is gone (killed, or
+// the machine rebooted) or has blown well past its deadline. Its worktree lives
+// in the temp dir, outside everything reap() sweeps.
+async function windDownManual({ S, inFlight, base, dryRun, now, opts }, deps) {
+  const result = { ...base, pr: inFlight.pr, manual: true };
+  const { R } = await libs();
+  let alive = false;
+  if (deps.isPidAlive(inFlight.pid)) {
+    // pid reuse: only a `review` of this PR counts as the owner.
+    alive = R.isManualReviewCommand(await deps.psCommand(inFlight.pid), inFlight.pr);
+  }
+  const deadlineMs = Date.parse(inFlight.deadlineAt ?? inFlight.startedAt ?? "");
+  const overrun =
+    !Number.isFinite(deadlineMs) ||
+    Date.parse(now) > deadlineMs + OVERDUE_GRACE_MS + POST_GIVE_UP_MS;
+  if (alive && !overrun) return { ...result, state: "manual-running" };
+  if (dryRun) return { ...result, state: "manual-lost", dryRun: true };
+  // The vendor run may well have started, so the hourly slot stays spent.
+  const finished = await finishRun(S, opts.stateFile, inFlight.runId, { refund: "none", now });
+  return {
+    ...result,
+    state: "manual-lost",
+    reason: alive ? "overrun" : "process-gone",
+    ...(finished ? {} : { finishedElsewhere: true }),
+  };
+}
+
 async function reap({ repoRoot, runRoot, inFlight, now }, deps) {
   const reaped = { worktrees: [], runDirs: [] };
   const keepWorktrees = new Set();
@@ -1277,6 +1337,8 @@ export async function postFindings(opts, deps) {
     // parsing. It makes the run cli-partial and appears nowhere in the rendered
     // summary, so it has to be carried here to be stamped into the marker.
     incomplete = false,
+    // "manual" when a person ran `review`, so the summary doesn't claim the factory did.
+    origin = "factory",
   } = opts;
 
   const [reviewComments, issueComments] = await Promise.all([
@@ -1403,6 +1465,7 @@ export async function postFindings(opts, deps) {
       summary,
       stale,
       kind: coverageKind({ events, partial, incomplete }),
+      origin,
     });
     const r = await ghPost(deps, `repos/${REPO}/issues/${pr}/comments`, { body });
     if (r.code !== 0) return { ok: false, reason: "summary post failed" };
@@ -1529,6 +1592,223 @@ export async function runCoverage({ pr }, deps = createDeps()) {
   };
 }
 
+// ── review (manual, synchronous) ────────────────────────────────────────────
+
+// The lane only reviews factory cards. A PR opened by hand has no card, so when
+// the PR bot skips its head (rate-limited on the OSS tier, auto-paused) nothing
+// reviews it — /merge used to stop on exactly that. This runs the same CLI
+// review for one PR, in the caller's own process, and posts it the same way.
+export async function runManualReview(opts, deps = createDeps()) {
+  const { S, R } = await libs();
+  const prNum = String(opts.pr ?? "").trim();
+  if (!/^[0-9]+$/.test(prNum))
+    throw new UsageError(`--pr must be a number: ${JSON.stringify(opts.pr)}`);
+  const { repoRoot, stateFile } = opts;
+  const dryRun = Boolean(opts.dryRun);
+  const knobs = readKnobs(deps.env);
+  const timeoutMin = positiveInt(opts.timeoutMin, knobs.timeoutMin);
+  const now = opts.now ?? deps.now();
+
+  const head = await readPrHead(prNum, deps);
+  if (!head) throw new Error(`could not read PR #${prNum} from ${REPO}`);
+  const sha = String(head.headRefOid).toLowerCase();
+  const answer = (fields) => ({
+    pr: Number(prNum),
+    headSha: sha,
+    ran: false,
+    reason: "",
+    outcome: null,
+    coverage: null,
+    posted: null,
+    ...fields,
+  });
+  if (head.state !== "OPEN") return answer({ reason: `pr-${head.state.toLowerCase()}` });
+
+  const activity = await fetchBotActivity(prNum, deps);
+  if (!activity.ok) throw new Error(`could not read PR #${prNum} activity: ${activity.error}`);
+  const bot = R.classifyBotCoverage({
+    comments: activity.comments,
+    reviews: activity.reviews,
+    headSha: sha,
+  });
+  if (bot.state === "covered") return answer({ reason: "bot-covered", coverage: "bot" });
+  // A review that is running will cover the head; a CLI run now would duplicate it.
+  if (bot.state === "in_progress") return answer({ reason: "bot-in-progress" });
+  const cli = R.classifyCliCoverage({
+    comments: activity.comments,
+    headSha: sha,
+    ownerLogin: OWNER_LOGIN,
+  });
+  if (cli.state !== "absent") return answer({ reason: "cli-already-ran", coverage: cli.state });
+
+  const bin = resolveBinary({ env: deps.env, isExecutable: deps.isExecutable });
+  if (!bin) return answer({ reason: "cli-unavailable (no coderabbit binary)" });
+  if (dryRun) return answer({ reason: "dry-run: would review" });
+
+  const doctor = await deps.runWithTimeout(bin, ["doctor"], {
+    timeoutMs: DOCTOR_TIMEOUT_MS,
+    env: supervisedEnv(deps.env),
+  });
+  if (doctor.exitCode !== 0) {
+    return answer({ reason: `cli-unavailable (doctor exit ${doctor.exitCode})` });
+  }
+
+  const runId = makeRunId(`pr${prNum}`, sha, now);
+  const worktree = path.join(
+    deps.tmpdir?.() ?? tmpdir(),
+    `cr-cli-manual-${prNum}-${sha.slice(0, 12)}-${isoSeconds(now).replace(/[-:]/g, "")}`,
+  );
+  const deadlineAt = addMinutes(now, timeoutMin);
+
+  // Claim the lane before any side effect. Written only when a state file is
+  // given AND exists: a path that doesn't exist is a typo or another machine,
+  // not permission to create a fresh ledger that hides the real one.
+  const ledger = Boolean(stateFile) && deps.fs.existsSync(stateFile);
+  if (ledger) {
+    let reservation = null;
+    await mutateState(S, stateFile, (s) => {
+      reservation = S.reserveManualCrCliRun(s, {
+        pr: prNum,
+        sha,
+        runId,
+        pid: deps.pid ?? process.pid,
+        maxPerHour: knobs.maxPerHour,
+        now,
+        deadlineAt,
+        worktree,
+      });
+      return reservation.ok;
+    });
+    if (!reservation.ok) {
+      const detail =
+        reservation.reason === "budget"
+          ? ` (next slot ${reservation.nextSlotAt})`
+          : reservation.reason === "paused"
+            ? ` (until ${reservation.pausedUntil}${reservation.pausedReason ? `, ${reservation.pausedReason}` : ""})`
+            : reservation.reason === "busy"
+              ? ` (${reservation.inFlight?.issue ? `#${reservation.inFlight.issue}` : `PR #${reservation.inFlight?.pr}`})`
+              : "";
+      return answer({ reason: `cli-${reservation.reason}${detail}` });
+    }
+  }
+  let released = false;
+  const release = async ({ refund, writes = [] }) => {
+    if (released) return;
+    released = true;
+    if (ledger) await finishRun(S, stateFile, runId, { refund, now: deps.now(), writes });
+  };
+  // Stopped from outside: stop the vendor child, drop the worktree, free the
+  // lane — otherwise housekeeping frees it once this pid is gone while an
+  // orphaned CLI is still connected, and the factory starts a concurrent run.
+  let child = null;
+  const untrap =
+    deps.trapSignals?.(async () => {
+      if (child && child.exitCode == null) child.kill("SIGTERM");
+      await removeWorktree(repoRoot, worktree, deps);
+      await release({ refund: "none" });
+    }) ?? (() => {});
+  try {
+    return await reviewAndPost();
+  } finally {
+    untrap();
+  }
+
+  async function reviewAndPost() {
+    let base;
+    try {
+      await prepareWorktree({ repoRoot, pr: prNum, sha, worktree }, deps);
+      base = await pickBase({ repoRoot, sha, rec: {}, bot }, deps, R);
+    } catch (err) {
+      await removeWorktree(repoRoot, worktree, deps);
+      // The vendor never saw it: give the hourly slot back.
+      await release({ refund: "spawn" });
+      return answer({ reason: `cli-start-failed: ${err.message}` });
+    }
+
+    let run;
+    try {
+      const args = R.buildReviewArgs({ baseSha: base.baseSha });
+      run = await deps.runWithTimeout(bin, args, {
+        timeoutMs: timeoutMin * MINUTE_MS,
+        env: supervisedEnv(deps.env),
+        cwd: worktree,
+        onChild: (c) => {
+          child = c;
+        },
+      });
+    } catch (err) {
+      await release({ refund: "none" });
+      throw err;
+    } finally {
+      await removeWorktree(repoRoot, worktree, deps);
+    }
+
+    const events = R.parseEvents(run.stdout ?? "");
+    const classified = R.classifyOutcome({
+      exitCode: run.exitCode,
+      signal: null,
+      timedOut: Boolean(run.timedOut),
+      events,
+      stderr: String(run.stderr ?? "").slice(-64 * 1024),
+      now: deps.now(),
+      fallbackMin: knobs.limitFallbackMin,
+    });
+    const outcome = classified.outcome;
+    const ranFields = { ran: true, outcome, base: base.baseSha, mode: base.mode };
+
+    // The same lane pauses housekeeping applies, so the factory learns the budget
+    // is gone instead of rediscovering it with a failed run of its own.
+    const writes = [];
+    const endNow = deps.now();
+    if (outcome === "rate_limited" || outcome === "action_required") {
+      const until = classified.retryAt ?? addMinutes(endNow, knobs.limitFallbackMin);
+      writes.push((s) => pauseLaneAtLeast(S, s, { until, reason: outcome, now: endNow }));
+    } else if (outcome === "auth") {
+      const until = addMinutes(endNow, AUTH_PAUSE_MIN);
+      writes.push((s) => pauseLaneAtLeast(S, s, { until, reason: "auth", now: endNow }));
+    }
+    if (outcome !== "ok" && outcome !== "empty") {
+      await release({ refund: "none", writes });
+      return answer({ ...ranFields, reason: `cli-${outcome}: ${classified.detail}` });
+    }
+
+    try {
+      const view = await readPrHead(prNum, deps);
+      if (!view || view.state !== "OPEN") {
+        return answer({
+          ...ranFields,
+          reason: view ? `pr-${view.state.toLowerCase()}` : "pr-view-failed",
+        });
+      }
+      const headSame = view.headRefOid.toLowerCase() === sha;
+      const posted = await postFindings(
+        {
+          pr: prNum,
+          sha,
+          baseSha: base.baseSha,
+          runMode: base.mode,
+          mode: headSame ? "inline" : "summary-only",
+          events,
+          outcome,
+          stale: !headSame,
+          incomplete: classified.incomplete === true,
+          origin: "manual",
+        },
+        deps,
+      );
+      if (!posted.ok) return answer({ ...ranFields, reason: `post-failed: ${posted.reason}` });
+      return answer({
+        ...ranFields,
+        reason: headSame ? "reviewed" : "head-moved (findings listed in the summary only)",
+        coverage: headSame ? posted.kind : null,
+        posted: { inline: posted.inline, summarized: posted.summarized, partial: posted.partial },
+      });
+    } finally {
+      await release({ refund: "none", writes });
+    }
+  }
+}
+
 const USAGE =
   "Usage: coderabbit-cli.mjs <" +
   "gate --issue N --pr P --sha S --state-file F --repo-root R --run-root D|" +
@@ -1536,6 +1816,7 @@ const USAGE =
   "free-pass --issue N --state-file F (threads JSON on stdin)|" +
   "note --issue N --sha S --state-file F|" +
   "coverage --pr N|" +
+  "review --pr N --repo-root R [--state-file F] [--timeout-min M]|" +
   "_supervise --run-dir D> [--dry-run 0|1] [--now ISO]";
 
 function readStdin() {
@@ -1621,6 +1902,12 @@ export async function main(argv, deps = createDeps()) {
     case "coverage":
       required(flags, ["pr"]);
       return await runCoverage({ pr: flags.pr }, deps);
+    case "review":
+      required(flags, ["pr", "repo-root"]);
+      return await runManualReview(
+        { ...common, pr: flags.pr, timeoutMin: flags["timeout-min"] },
+        deps,
+      );
     default:
       throw new UsageError(sub ? `unknown subcommand: ${sub}` : "missing subcommand");
   }

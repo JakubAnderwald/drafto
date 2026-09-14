@@ -379,6 +379,23 @@ calls before merging. Two states are worth knowing apart: `retryable: true` mean
 running right now and is worth waiting for, while `rate_limited` means waiting needs the hour
 to roll over.
 
+### Reviewing a hand-made PR with the CLI
+
+The lane only reviews factory cards. For a PR opened by hand whose head nothing reviewed, run the same CLI review yourself ([ADR-0037](../adr/0037-manual-coderabbit-cli-review.md)):
+
+```bash
+node scripts/lib/coderabbit-cli.mjs review --pr 637 --repo-root "$PWD" \
+  --state-file /Users/jakub/code/drafto-factory/logs/factory-state.json --timeout-min 30
+# {"pr":637,"headSha":"…","ran":true,"reason":"reviewed","outcome":"ok","coverage":"cli","posted":{"inline":1,…}}
+```
+
+- **It waits.** A review takes minutes, so `/merge` starts it in the background.
+- **What it posts.** Findings go up as review threads plus a summary comment, exactly as the lane posts them, so `coverage` then reports `source: "cli"`.
+- **What it skips.** A head the bot reviewed or is reviewing, a head a CLI review already covered, and a PR that is no longer open.
+- **Always pass the factory's state file on the Mac mini.** The run then shares the lane's run log: it refuses to start (`cli-busy`, `cli-paused`, `cli-budget`) instead of colliding with a factory run, it uses up an hourly slot, and a vendor rate limit pauses the lane.
+- **While it runs**, `factory:cr-cli-status` shows an `inFlight` with `"manual": true` and the process's pid. Factory cards wait at `cli-busy`, and housekeeping leaves the run alone. If the process dies, the next `--watch` tick frees the slot. `factory:cr-cli-finish <runId>` frees it at once.
+- **Primary checkout's state file.** `logs/factory-state.json` there is not the factory's; the live one is in `drafto-factory`.
+
 ## Kill switches
 
 | Severity                        | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
