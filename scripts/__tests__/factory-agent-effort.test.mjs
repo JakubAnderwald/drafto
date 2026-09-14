@@ -64,4 +64,22 @@ describe("factory-agent Claude effort", () => {
   it("raises the plan/replan timeout to a knob (FACTORY_PLAN_TIMEOUT_SEC)", () => {
     assert.match(script, /FACTORY_PLAN_TIMEOUT_SEC:-\$\{CLAUDE_CALL_TIMEOUT_SEC:-360\}/);
   });
+
+  it("lets background workflows finish instead of the 600s print-mode ceiling", () => {
+    // At ultracode the implementer delegates to background workflows; claude -p
+    // kills them after 600s by default and exits without a summary line (#623).
+    // The export must be unconditional (not per call site) and default to 0,
+    // with the run-with-timeout wall caps still bounding every call.
+    assert.match(
+      script,
+      /^export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="\$\{FACTORY_BG_WAIT_CEILING_MS:-0\}"$/m,
+    );
+    assert.match(script, /defaulting to 0/);
+    const exportAt = script.search(/^export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=/m);
+    const firstCall = script.indexOf('node "$SCRIPT_DIR/lib/run-claude.mjs"');
+    assert.ok(
+      exportAt > 0 && exportAt < firstCall,
+      "ceiling must be exported before any claude call",
+    );
+  });
 });
