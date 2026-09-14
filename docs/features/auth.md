@@ -30,6 +30,8 @@ Available on all four platforms: web, iOS, Android, and macOS. The web app uses 
 | Admin approval UI                               | `apps/web/src/app/(app)/admin/page.tsx`                      |
 | Admin user list component                       | `apps/web/src/app/(app)/admin/admin-user-list.tsx`           |
 | Admin flash message                             | `apps/web/src/app/(app)/admin/admin-flash-message.tsx`       |
+| Admin panel close button (click / Escape)       | `apps/web/src/app/(app)/admin/admin-close-button.tsx`        |
+| Admin panel Escape guard                        | `apps/web/src/app/(app)/admin/should-close-on-escape.ts`     |
 | Admin approve-user API                          | `apps/web/src/app/api/admin/approve-user/route.ts`           |
 | Admin delete-pending-user API                   | `apps/web/src/app/api/admin/delete-user/route.ts`            |
 | Deleted user's attachment cleanup (storage)     | `apps/web/src/lib/storage/remove-user-attachments.ts`        |
@@ -89,6 +91,8 @@ Available on all four platforms: web, iOS, Android, and macOS. The web app uses 
   - `apps/web/__tests__/unit/admin-approve-user.test.ts` + `apps/web/__tests__/unit/approve-user-one-click.test.ts` — admin-only approval and signed-link flow.
   - `apps/web/__tests__/unit/admin-delete-user.test.ts` + `apps/web/__tests__/unit/remove-user-attachments.test.ts` — admin-only deletion of pending users (every rejection path asserts nothing was deleted) and the best-effort storage cleanup.
   - `apps/web/__tests__/integration/admin-user-list.test.tsx` — approve and delete flows on the admin page, including the confirm dialog and the pending count.
+  - `apps/web/__tests__/unit/should-close-on-escape.test.ts` + `apps/web/__tests__/integration/admin-close-button.test.tsx` — closing the admin panel by click or Escape, and the cases where Escape is ignored (typing in an input, a pending delete confirmation, an open menu, focus outside the panel — including an overlay that closed on the same keypress).
+  - `apps/web/e2e/admin.spec.ts` — Playwright: the close button and Escape return to `/` without a reload. Runs only when `E2E_ADMIN_EMAIL`, `E2E_ADMIN_PASSWORD` and `SUPABASE_SERVICE_ROLE_KEY` are set (see [testing](../architecture/testing.md#playwright-web-e2e)).
   - `apps/web/__tests__/unit/approval-tokens.test.ts` — HMAC signing and TTL.
   - `apps/web/__tests__/integration/login.test.tsx`, `signup.test.tsx`, `waiting-for-approval.test.tsx` — UI flow.
   - `apps/web/e2e/auth.spec.ts` — Playwright end-to-end sign-in.
