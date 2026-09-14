@@ -93,6 +93,22 @@ if ! [[ "$WATCH_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
   WATCH_TIMEOUT_SEC=1800
 fi
 
+# ── Claude background-task wait ─────────────────────────────────────────────
+# In `-p` (print) mode, claude waits only 600s for background tasks (workflow
+# agents, background subagents) after its final turn, then kills them and
+# exits 0. At ultracode effort the implementer hands most of the work to such
+# workflows, so every long run ended with "Background tasks still running after
+# 600s; terminating", no summary line, nothing committed and one attempt burned.
+# #623 lost all four implement attempts this way on 2026-09-14. Wait without a
+# ceiling instead: every call site is already bounded by its run-with-timeout
+# wall cap (the *_TIMEOUT_SEC knobs above), so a stuck workflow still ends in a
+# timeout rather than a hang.
+export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${FACTORY_BG_WAIT_CEILING_MS:-0}"
+if ! [[ "$CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS" =~ ^[0-9]+$ ]]; then
+  echo "WARNING: invalid FACTORY_BG_WAIT_CEILING_MS='$CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS'; defaulting to 0" >&2
+  export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0
+fi
+
 # Retry budget shared by --plan / --implement / --watch. After this many failed
 # Claude invocations on one issue, the card is parked in Blocked for a human.
 FACTORY_MAX_ATTEMPTS="${FACTORY_MAX_ATTEMPTS:-5}"
