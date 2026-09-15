@@ -31,20 +31,31 @@ number — or, equivalently, do a regex match (e.g.
 otherwise every run will fail with a different number even when the agent
 behaved correctly.
 
+### Intent-independent rules in `expected.json`
+
+Some rules in `support-agent-prompt.md` ignore the classified intent. For
+those fixtures `expected.json` carries `intent_any_of` (any listed intent is
+acceptable) instead of a single `intent`, and asserts the outcome fields
+(`action`, labels, `no_reply_sent`, …). `06-account-deletion-request` is one:
+prompt step 5.5 escalates every account-deletion or data-rights request in
+every phase (`applies_in_phases`), whatever the classifier says.
+
 ## Coverage
 
-This is a starter set of 5 fixtures covering each intent category. The plan
-calls for a fuller corpus (10 bugs, 5 features, 3 questions, 2 spam) once the
-classifier is being tuned in Phase E. Add new fixtures as you encounter real
-support email patterns that the agent should handle deterministically.
+This is a starter set of 6 fixtures: one per intent category, plus the
+account-deletion escalation rule. The plan calls for a fuller corpus (10 bugs,
+5 features, 3 questions, 2 spam) once the classifier is being tuned in Phase
+E. Add new fixtures as you encounter real support email patterns that the
+agent should handle deterministically.
 
-| File                             | Intent   | Notes                                                         |
-| -------------------------------- | -------- | ------------------------------------------------------------- |
-| `01-bug-pdf-export.json`         | bug      | Public sender; clear repro.                                   |
-| `02-bug-sync-conflict.json`      | bug      | Allowlisted sender; should produce the "nightly agent" reply. |
-| `03-feature-dark-mode.json`      | feature  | Public sender; vague request.                                 |
-| `04-question-mobile-import.json` | question | Answerable from `docs/`.                                      |
-| `05-spam-crypto.json`            | spam     | Should be moved to `Drafto/Support/Spam`.                     |
+| File                               | Intent   | Notes                                                                                                       |
+| ---------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------- |
+| `01-bug-pdf-export.json`           | bug      | Public sender; clear repro.                                                                                 |
+| `02-bug-sync-conflict.json`        | bug      | Allowlisted sender; should produce the "nightly agent" reply.                                               |
+| `03-feature-dark-mode.json`        | feature  | Public sender; vague request.                                                                               |
+| `04-question-mobile-import.json`   | question | Answerable from `docs/`.                                                                                    |
+| `05-spam-crypto.json`              | spam     | Should be moved to `Drafto/Support/Spam`.                                                                   |
+| `06-account-deletion-request.json` | any      | Account-deletion request (step 5.5): always `NeedsHuman` + admin email; no reply, no issue, in every phase. |
 
 ## Replaying
 

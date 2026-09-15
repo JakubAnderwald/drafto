@@ -12,6 +12,10 @@ const PUBLIC_ROUTES = [
   "/api/health",
   "/api/mcp",
   "/api/webhooks",
+  // Native apps call it with a bearer token and no cookie; the route authenticates itself.
+  "/api/account",
+  // Public account-deletion explainer that store reviewers must reach signed out.
+  "/account/delete",
 ];
 
 function isPublicRoute(pathname: string): boolean {

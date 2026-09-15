@@ -10,6 +10,7 @@ import {
 } from "react-native";
 import { Q } from "@nozbe/watermelondb";
 
+import { useNetworkStatus } from "@/hooks/use-network-status";
 import { useNotebooks } from "@/hooks/use-notebooks";
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
@@ -18,6 +19,10 @@ import { generateId } from "@/lib/generate-id";
 import { colors, fontFamily, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { SyncStatus } from "@/components/sync-status";
+import {
+  DeleteAccountPanel,
+  DELETE_ACCOUNT_OFFLINE_NOTE,
+} from "@/components/sidebar/delete-account-panel";
 import { IconButton } from "@/components/ui/icon-button";
 import { PlusIcon } from "@/components/ui/icons/plus-icon";
 import { SearchIcon } from "@/components/ui/icons/search-icon";
@@ -42,14 +47,17 @@ export function NotebooksSidebar({
   onTriggerCreateHandled,
 }: NotebooksSidebarProps) {
   const { notebooks, loading } = useNotebooks();
-  const { user, signOut } = useAuth();
+  const { user, signOut, deleteAccount } = useAuth();
+  const { isConnected } = useNetworkStatus();
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+  const isOffline = !isConnected;
 
   const [isCreating, setIsCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
   // Allow programmatic trigger of create mode (from menu shortcut)
   useEffect(() => {
@@ -259,9 +267,36 @@ export function NotebooksSidebar({
           <Text style={styles.userEmail} numberOfLines={1}>
             {user?.email}
           </Text>
-          <Pressable onPress={signOut} accessibilityLabel="Sign out" accessibilityRole="button">
-            <Text style={styles.signOutText}>Sign out</Text>
-          </Pressable>
+          <View style={styles.accountActions}>
+            <Pressable onPress={signOut} accessibilityLabel="Sign out" accessibilityRole="button">
+              <Text style={styles.signOutText}>Sign out</Text>
+            </Pressable>
+            <Pressable
+              testID="delete-account-row"
+              // Open-only: closing goes through the panel's Cancel / Escape, which stay
+              // disabled while a request is pending. A toggle here could unmount the panel
+              // mid-request, hiding its result and letting a second DELETE go out.
+              onPress={() => setIsDeletingAccount(true)}
+              disabled={isOffline}
+              accessibilityLabel="Delete account"
+              accessibilityRole="button"
+              accessibilityState={{ disabled: isOffline, expanded: isDeletingAccount }}
+            >
+              <Text style={[styles.deleteAccountText, isOffline && styles.accountActionDisabled]}>
+                Delete account
+              </Text>
+            </Pressable>
+          </View>
+          {isOffline && !isDeletingAccount ? (
+            <Text style={styles.offlineNote}>{DELETE_ACCOUNT_OFFLINE_NOTE}</Text>
+          ) : null}
+          {isDeletingAccount ? (
+            <DeleteAccountPanel
+              onCancel={() => setIsDeletingAccount(false)}
+              onConfirm={deleteAccount}
+              isOffline={isOffline}
+            />
+          ) : null}
         </View>
       </View>
     </View>
@@ -490,9 +525,29 @@ const createStyles = (semantic: SemanticColors) =>
       marginBottom: spacing.xs,
       fontFamily: fontFamily.sans,
     },
+    accountActions: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: spacing.sm,
+    },
     signOutText: {
       fontSize: fontSizes.sm,
       color: colors.primary[600],
+      fontFamily: fontFamily.sans,
+    },
+    deleteAccountText: {
+      fontSize: fontSizes.sm,
+      color: semantic.errorText,
+      fontFamily: fontFamily.sans,
+    },
+    accountActionDisabled: {
+      opacity: 0.5,
+    },
+    offlineNote: {
+      fontSize: fontSizes.xs,
+      color: semantic.fgMuted,
+      marginTop: spacing.xs,
       fontFamily: fontFamily.sans,
     },
   });

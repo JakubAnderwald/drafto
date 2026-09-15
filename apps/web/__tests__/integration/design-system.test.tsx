@@ -152,6 +152,29 @@ describe("DesignSystemPage", () => {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
+  it("keeps the type-to-confirm dialog locked until DELETE is typed", async () => {
+    const user = userEvent.setup();
+    render(<DesignSystemPage />);
+
+    await user.click(screen.getByRole("button", { name: "Show type-to-confirm dialog" }));
+    const confirmButton = screen.getByRole("button", { name: "Delete workspace" });
+    expect(confirmButton).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Type DELETE to confirm"), "DELETE");
+    expect(confirmButton).toBeEnabled();
+
+    await user.click(confirmButton);
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+
+    // Reopening starts from an empty, locked state.
+    await user.click(screen.getByRole("button", { name: "Show type-to-confirm dialog" }));
+    expect(screen.getByLabelText("Type DELETE to confirm")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Delete workspace" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
   it("closes dropdown menu items on click", async () => {
     const user = userEvent.setup();
     render(<DesignSystemPage />);

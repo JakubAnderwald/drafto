@@ -1,14 +1,30 @@
 import { Alert } from "react-native";
 import { Q } from "@nozbe/watermelondb";
+import { describeAccountDeletionFailure, type AccountDeletionResult } from "@drafto/shared";
 
-import { render, waitFor } from "../helpers/test-utils";
+import { render, waitFor, fireEvent, act } from "../helpers/test-utils";
 import { NotebooksSidebar } from "@/components/sidebar/notebooks-sidebar";
+import {
+  DELETE_ACCOUNT_OFFLINE_NOTE,
+  DELETE_ACCOUNT_WARNING,
+} from "@/components/sidebar/delete-account-panel";
 
 // SyncStatus pulls in useDatabase/useNetworkStatus providers we don't render here.
 jest.mock("@/components/sync-status", () => ({ SyncStatus: () => null }));
 
+const mockSignOut = jest.fn();
+const mockDeleteAccount = jest.fn();
 jest.mock("@/providers/auth-provider", () => ({
-  useAuth: () => ({ user: { id: "user-1", email: "user@example.com" }, signOut: jest.fn() }),
+  useAuth: () => ({
+    user: { id: "user-1", email: "user@example.com" },
+    signOut: mockSignOut,
+    deleteAccount: mockDeleteAccount,
+  }),
+}));
+
+let mockIsConnected = true;
+jest.mock("@/hooks/use-network-status", () => ({
+  useNetworkStatus: () => ({ isConnected: mockIsConnected, isInternetReachable: mockIsConnected }),
 }));
 
 const mockNotebooks: Array<{ id: string; name: string; markAsDeleted: jest.Mock }> = [];
@@ -164,5 +180,109 @@ describe("NotebooksSidebar — delete guard", () => {
     );
     expect(mockWrite).not.toHaveBeenCalled();
     expect(markAsDeleted).not.toHaveBeenCalled();
+  });
+});
+
+describe("NotebooksSidebar — delete account", () => {
+  type TestInstance = ReturnType<ReturnType<typeof render>["getByTestId"]>;
+  const isDisabled = (node: TestInstance) => node.props.accessibilityState?.disabled === true;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockNotebooks.length = 0;
+    mockLoading = false;
+    mockIsConnected = true;
+    mockDeleteAccount.mockResolvedValue({ status: "ok" });
+  });
+
+  it("offers Delete account next to Sign out, with the panel closed", () => {
+    const { getByTestId, getByLabelText, queryByTestId } = render(
+      <NotebooksSidebar {...defaultProps} />,
+    );
+
+    const row = getByTestId("delete-account-row");
+    expect(row.props.accessibilityLabel).toBe("Delete account");
+    expect(isDisabled(row)).toBe(false);
+    expect(getByLabelText("Sign out")).toBeTruthy();
+    expect(queryByTestId("delete-account-input")).toBeNull();
+  });
+
+  it("opens the confirmation panel on the first click", () => {
+    const { getByTestId, getByText } = render(<NotebooksSidebar {...defaultProps} />);
+
+    fireEvent.press(getByTestId("delete-account-row"));
+
+    expect(getByText(DELETE_ACCOUNT_WARNING)).toBeTruthy();
+    expect(getByTestId("delete-account-input")).toBeTruthy();
+    expect(mockDeleteAccount).not.toHaveBeenCalled();
+  });
+
+  it("keeps the panel open on a second click on the row and closes it from Cancel", () => {
+    const { getByTestId, queryByTestId } = render(<NotebooksSidebar {...defaultProps} />);
+
+    fireEvent.press(getByTestId("delete-account-row"));
+    fireEvent.press(getByTestId("delete-account-row"));
+    expect(getByTestId("delete-account-input")).toBeTruthy();
+
+    fireEvent.press(getByTestId("delete-account-cancel"));
+    expect(queryByTestId("delete-account-input")).toBeNull();
+    expect(mockDeleteAccount).not.toHaveBeenCalled();
+  });
+
+  it("keeps the panel and its result on screen when the row is clicked mid-request", async () => {
+    let resolveDeletion: (result: AccountDeletionResult) => void = () => {};
+    mockDeleteAccount.mockImplementationOnce(
+      () =>
+        new Promise<AccountDeletionResult>((resolve) => {
+          resolveDeletion = resolve;
+        }),
+    );
+    const { getByTestId, getByText } = render(<NotebooksSidebar {...defaultProps} />);
+
+    fireEvent.press(getByTestId("delete-account-row"));
+    fireEvent.changeText(getByTestId("delete-account-input"), "DELETE");
+    fireEvent.press(getByTestId("delete-account-confirm"));
+    fireEvent.press(getByTestId("delete-account-row"));
+
+    await act(async () => {
+      resolveDeletion({ status: "network" });
+    });
+
+    expect(getByTestId("delete-account-input")).toBeTruthy();
+    expect(getByText(describeAccountDeletionFailure({ status: "network" }))).toBeTruthy();
+    expect(mockDeleteAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables Delete account and explains why while offline", () => {
+    mockIsConnected = false;
+    const { getByTestId, getByText, queryByTestId } = render(
+      <NotebooksSidebar {...defaultProps} />,
+    );
+
+    const row = getByTestId("delete-account-row");
+    expect(isDisabled(row)).toBe(true);
+    expect(getByText(DELETE_ACCOUNT_OFFLINE_NOTE)).toBeTruthy();
+
+    fireEvent.press(row);
+    expect(queryByTestId("delete-account-input")).toBeNull();
+  });
+
+  it("does not show the offline note while online", () => {
+    const { queryByText } = render(<NotebooksSidebar {...defaultProps} />);
+
+    expect(queryByText(DELETE_ACCOUNT_OFFLINE_NOTE)).toBeNull();
+  });
+
+  it("confirms through useAuth().deleteAccount once DELETE is typed", async () => {
+    const { getByTestId } = render(<NotebooksSidebar {...defaultProps} />);
+
+    fireEvent.press(getByTestId("delete-account-row"));
+    fireEvent.changeText(getByTestId("delete-account-input"), "DELETE");
+    await act(async () => {
+      fireEvent.press(getByTestId("delete-account-confirm"));
+    });
+
+    expect(mockDeleteAccount).toHaveBeenCalledTimes(1);
+    expect(mockSignOut).not.toHaveBeenCalled();
   });
 });

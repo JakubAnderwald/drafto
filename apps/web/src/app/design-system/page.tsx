@@ -184,6 +184,13 @@ function ColorScale({ label, prefix, shades }: ColorScaleProps) {
 export default function DesignSystemPage() {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [typedConfirmOpen, setTypedConfirmOpen] = useState(false);
+  const [typedConfirmation, setTypedConfirmation] = useState("");
+
+  const closeTypedConfirm = () => {
+    setTypedConfirmOpen(false);
+    setTypedConfirmation("");
+  };
 
   return (
     <div className="space-y-4">
@@ -461,9 +468,14 @@ export default function DesignSystemPage() {
       </Section>
 
       <Section title="ConfirmDialog">
-        <Button variant="danger" onClick={() => setConfirmOpen(true)}>
-          Show confirm dialog
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="danger" onClick={() => setConfirmOpen(true)}>
+            Show confirm dialog
+          </Button>
+          <Button variant="secondary" onClick={() => setTypedConfirmOpen(true)}>
+            Show type-to-confirm dialog
+          </Button>
+        </div>
         {confirmOpen && (
           <div className="mt-4 max-w-md">
             <ConfirmDialog
@@ -477,6 +489,31 @@ export default function DesignSystemPage() {
               <p className="text-fg-muted text-sm">
                 This action cannot be undone. The item will be permanently removed.
               </p>
+            </ConfirmDialog>
+          </div>
+        )}
+        {typedConfirmOpen && (
+          <div className="mt-4 max-w-md">
+            {/* confirmDisabled keeps the destructive action locked until the check passes */}
+            <ConfirmDialog
+              title="Delete this workspace?"
+              confirmLabel="Delete workspace"
+              cancelLabel="Cancel"
+              variant="danger"
+              confirmDisabled={typedConfirmation.trim() !== "DELETE"}
+              onConfirm={closeTypedConfirm}
+              onCancel={closeTypedConfirm}
+            >
+              <Label htmlFor="ds-type-to-confirm" className="mb-1 block">
+                Type DELETE to confirm
+              </Label>
+              <Input
+                id="ds-type-to-confirm"
+                inputSize="sm"
+                autoComplete="off"
+                value={typedConfirmation}
+                onChange={(e) => setTypedConfirmation(e.target.value)}
+              />
             </ConfirmDialog>
           </div>
         )}

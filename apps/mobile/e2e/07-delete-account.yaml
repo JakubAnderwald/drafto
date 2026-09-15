@@ -1,0 +1,70 @@
+appId: eu.drafto.mobile
+---
+# Flow 07: Delete account (cancel only)
+# Tests: the Settings "Delete account" row opens the type-DELETE confirmation,
+# the destructive button stays disabled for anything but the exact word, and
+# Cancel closes the dialog with the user still signed in.
+# Depends on: 01-login (user is logged in)
+#
+# NEVER taps an enabled confirm: this runs against the shared E2E user, which
+# must not be deleted. The real deletion path is covered by unit tests.
+#
+# The wrong text is "DELET", not "delete": the input auto-capitalises, so a
+# lowercase entry could reach the field as "DELETE" on some keyboards.
+# Case-sensitivity is covered by the dialog's unit tests.
+#
+# No RUN_ID needed — this flow creates no user data.
+
+- launchApp
+
+- extendedWaitUntil:
+    visible: "Notebooks"
+    timeout: 30000
+
+# --- Open Settings ---
+# iOS labels the tab "Settings, tab, 3 of 3"; Android uses the bare title.
+- tapOn: "Settings(, tab.*)?"
+- scrollUntilVisible:
+    element:
+      id: "delete-account-row"
+    direction: DOWN
+    timeout: 10000
+
+# --- Test: the row opens the confirmation dialog ---
+# Wait on the dialog's input, not its "Delete account?" title: Maestro text
+# selectors are regexes, so "Delete account?" also matches the row's own
+# "Delete account" label, which stays on screen behind the dialog.
+- tapOn:
+    id: "delete-account-row"
+- extendedWaitUntil:
+    visible:
+      id: "delete-account-input"
+    timeout: 10000
+- assertVisible: "Type DELETE to confirm"
+- assertVisible:
+    id: "delete-account-confirm"
+    enabled: false
+
+# --- Test: wrong text keeps the destructive button disabled ---
+- tapOn:
+    id: "delete-account-input"
+- inputText: "DELET"
+- hideKeyboard
+- assertVisible:
+    id: "delete-account-confirm"
+    enabled: false
+
+# --- Test: Cancel closes the dialog and leaves the user signed in ---
+- tapOn:
+    id: "delete-account-cancel"
+- extendedWaitUntil:
+    notVisible:
+      id: "delete-account-input"
+    timeout: 10000
+- assertVisible:
+    id: "delete-account-row"
+- tapOn: "Notebooks(, tab.*)?"
+- extendedWaitUntil:
+    visible: "Notebooks"
+    timeout: 10000
+- assertNotVisible: "Log In"

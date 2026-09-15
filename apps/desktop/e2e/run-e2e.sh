@@ -199,6 +199,12 @@ else
   fail "Sign out link" "Not found"
 fi
 
+if has_element "Delete account"; then
+  pass "Delete account link visible"
+else
+  fail "Delete account link" "Not found"
+fi
+
 if has_element "Sync status"; then
   pass "Sync status button visible"
 else
@@ -213,7 +219,7 @@ echo "TEST 3: Select a notebook"
 FIRST_NB_IDX=$(osascript -e '
 tell application "System Events"
   tell process "Drafto"
-    set knownDescs to {"Search", "New notebook", "Trash", "Sign out", "Sync status", "Drafto", "New note"}
+    set knownDescs to {"Search", "New notebook", "Trash", "Sign out", "Delete account", "Sync status", "Drafto", "New note"}
     repeat with i from 1 to count of UI elements of window 1
       try
         set d to description of UI element i of window 1
