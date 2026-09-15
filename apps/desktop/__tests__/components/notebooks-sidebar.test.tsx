@@ -23,8 +23,12 @@ jest.mock("@/providers/auth-provider", () => ({
 }));
 
 let mockIsConnected = true;
+let mockIsInternetReachable: boolean | null = true;
 jest.mock("@/hooks/use-network-status", () => ({
-  useNetworkStatus: () => ({ isConnected: mockIsConnected, isInternetReachable: mockIsConnected }),
+  useNetworkStatus: () => ({
+    isConnected: mockIsConnected,
+    isInternetReachable: mockIsInternetReachable,
+  }),
 }));
 
 const mockNotebooks: Array<{ id: string; name: string; markAsDeleted: jest.Mock }> = [];
@@ -192,6 +196,7 @@ describe("NotebooksSidebar — delete account", () => {
     mockNotebooks.length = 0;
     mockLoading = false;
     mockIsConnected = true;
+    mockIsInternetReachable = true;
     mockDeleteAccount.mockResolvedValue({ status: "ok" });
   });
 
@@ -255,6 +260,7 @@ describe("NotebooksSidebar — delete account", () => {
 
   it("disables Delete account and explains why while offline", () => {
     mockIsConnected = false;
+    mockIsInternetReachable = false;
     const { getByTestId, getByText, queryByTestId } = render(
       <NotebooksSidebar {...defaultProps} />,
     );
@@ -265,6 +271,22 @@ describe("NotebooksSidebar — delete account", () => {
 
     fireEvent.press(row);
     expect(queryByTestId("delete-account-input")).toBeNull();
+  });
+
+  it("disables Delete account when connected but the internet is known to be unreachable", () => {
+    mockIsInternetReachable = false;
+    const { getByTestId, getByText } = render(<NotebooksSidebar {...defaultProps} />);
+
+    expect(isDisabled(getByTestId("delete-account-row"))).toBe(true);
+    expect(getByText(DELETE_ACCOUNT_OFFLINE_NOTE)).toBeTruthy();
+  });
+
+  it("keeps Delete account enabled while internet reachability is still unknown", () => {
+    mockIsInternetReachable = null;
+    const { getByTestId, queryByText } = render(<NotebooksSidebar {...defaultProps} />);
+
+    expect(isDisabled(getByTestId("delete-account-row"))).toBe(false);
+    expect(queryByText(DELETE_ACCOUNT_OFFLINE_NOTE)).toBeNull();
   });
 
   it("does not show the offline note while online", () => {

@@ -118,7 +118,12 @@ The agent has no tool that can delete an account, and an automatic answer could 
 **Operator procedure for an escalated request:**
 
 1. **Verify.** `From` headers can be spoofed. Reply from Zoho to the email address registered on the Drafto account, and act only once that address confirms. The confirming reply is escalated again the same way, but the 24 h per-thread cooldown can delay the repeat admin email, so watch the thread in Zoho.
-2. **Delete by hand**, following [`auth.md` → Account deletion](./auth.md#account-deletion). Never delete an admin account from an emailed request.
+2. **Act only on what was asked.** Delete an account only for a confirmed erasure or account-closure request.
+   - **Erasure, or "close my account":** delete by hand, following [`auth.md` → Account deletion](./auth.md#account-deletion). Never delete an admin account from an emailed request.
+   - **Access (DSAR), portability or export:** delete nothing. Send the requester a copy of their data. If they can still sign in, point them at the web app's notebook export (`apps/web/src/components/export/export-evernote-dialog.tsx`). Otherwise export their profile, notebooks, notes and attachments by hand from the production project, following [production data safety](../operations/migrations.md).
+   - **Rectification:** delete nothing. If they can still sign in, point them at editing in the app. Otherwise correct the data by hand in the production project.
+   - **Restriction or objection:** delete nothing. Reply in person and decide case by case.
+   - **Unclear which right is meant:** ask the requester before acting. Never delete on an ambiguous request.
 3. **Tell the requester** by replying in the thread. Emailed requests are handled within 30 days. Replying yourself also trips the human-intervention check, so the agent stays out of the thread.
 
 The golden fixture `scripts/__fixtures__/support-emails/06-account-deletion-request.json` (with its `.expected.json`) records the expected outcome.

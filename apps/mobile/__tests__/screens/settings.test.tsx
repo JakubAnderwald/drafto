@@ -80,6 +80,24 @@ describe("SettingsScreen", () => {
     expect(queryByText("Delete account?")).toBeNull();
   });
 
+  it("disables the row when connected but the internet is known to be unreachable", () => {
+    mockUseNetworkStatus.mockReturnValue({ isConnected: true, isInternetReachable: false });
+
+    const { getByTestId, getByText } = render(<SettingsScreen />);
+
+    expect(getByTestId("delete-account-row")).toBeDisabled();
+    expect(getByText(OFFLINE_NOTE)).toBeTruthy();
+  });
+
+  it("keeps the row enabled while internet reachability is still unknown", () => {
+    mockUseNetworkStatus.mockReturnValue({ isConnected: true, isInternetReachable: null });
+
+    const { getByTestId, queryByText } = render(<SettingsScreen />);
+
+    expect(getByTestId("delete-account-row")).toBeEnabled();
+    expect(queryByText(OFFLINE_NOTE)).toBeNull();
+  });
+
   it("opens the confirmation dialog when the row is pressed", () => {
     const { getByTestId, getByText, queryByText } = render(<SettingsScreen />);
 

@@ -203,9 +203,12 @@ or its data has been deleted, exported or changed, or that it will be.
 _For context only; do not attempt any of this yourself._ A person handles
 the request. A `From` header can be spoofed, so they first confirm the
 request by replying to the email address registered on the Drafto account,
-and act only once that address confirms. They then delete the account by
-hand, following the manual procedure in `docs/features/auth.md` →
-"Account deletion".
+and act only once that address confirms. Only a confirmed erasure or
+account-closure request leads to deleting the account by hand, following the
+manual procedure in `docs/features/auth.md` → "Account deletion". Access,
+portability, rectification, restriction and objection requests are handled
+separately (`docs/features/support-agent.md` → "Account-deletion and
+data-rights requests") and never lead to a deletion.
 
 6. **Phase escalation gate.** Decide whether the current phase has live
    handling for the classified intent. If not, escalate now and exit before

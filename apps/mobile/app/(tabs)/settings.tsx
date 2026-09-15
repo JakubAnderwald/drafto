@@ -26,12 +26,13 @@ export default function SettingsScreen() {
   const { signOut, deleteAccount } = useAuth();
   const { semantic, theme, setTheme } = useTheme();
   const haptics = useHaptics();
-  const { isConnected } = useNetworkStatus();
+  const { isConnected, isInternetReachable } = useNetworkStatus();
   const [isDeleteDialogVisible, setDeleteDialogVisible] = useState(false);
   const styles = useMemo(() => createStyles(semantic), [semantic]);
 
-  // Deletion runs on the server, so it is unavailable offline.
-  const canDeleteAccount = isConnected;
+  // Deletion runs on the server, so it is unavailable offline. Unknown reachability (`null`)
+  // stays enabled; only an explicit `false` counts as offline.
+  const canDeleteAccount = isConnected && isInternetReachable !== false;
 
   return (
     <ScrollView style={styles.scroll} contentContainerStyle={styles.container}>

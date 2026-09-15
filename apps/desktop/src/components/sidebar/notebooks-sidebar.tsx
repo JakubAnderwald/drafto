@@ -48,10 +48,11 @@ export function NotebooksSidebar({
 }: NotebooksSidebarProps) {
   const { notebooks, loading } = useNotebooks();
   const { user, signOut, deleteAccount } = useAuth();
-  const { isConnected } = useNetworkStatus();
+  const { isConnected, isInternetReachable } = useNetworkStatus();
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
-  const isOffline = !isConnected;
+  // Unknown reachability (`null`) stays enabled; only an explicit `false` counts as offline.
+  const isOffline = !isConnected || isInternetReachable === false;
 
   const [isCreating, setIsCreating] = useState(false);
   const [newName, setNewName] = useState("");

@@ -42,7 +42,8 @@ every phase (`applies_in_phases`), whatever the classifier says.
 
 ## Coverage
 
-This is a starter set of 6 fixtures: one per intent category, plus the
+This is a starter set of 6 fixtures: representative `bug`, `feature`,
+`question` and `spam` cases (there is no `other` fixture yet), plus the
 account-deletion escalation rule. The plan calls for a fuller corpus (10 bugs,
 5 features, 3 questions, 2 spam) once the classifier is being tuned in Phase
 E. Add new fixtures as you encounter real support email patterns that the
