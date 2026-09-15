@@ -19,10 +19,8 @@ import { generateId } from "@/lib/generate-id";
 import { colors, fontFamily, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { SyncStatus } from "@/components/sync-status";
-import {
-  DeleteAccountPanel,
-  DELETE_ACCOUNT_OFFLINE_NOTE,
-} from "@/components/sidebar/delete-account-panel";
+import { AppMenu } from "@/components/sidebar/app-menu";
+import { DeleteAccountPanel } from "@/components/sidebar/delete-account-panel";
 import { IconButton } from "@/components/ui/icon-button";
 import { PlusIcon } from "@/components/ui/icons/plus-icon";
 import { SearchIcon } from "@/components/ui/icons/search-icon";
@@ -184,122 +182,120 @@ export function NotebooksSidebar({
     }
   }, []);
 
+  // Open-only: closing goes through the panel's Cancel / Escape, which stay disabled while a
+  // request is pending. A toggle could unmount the panel mid-request, hiding its result and
+  // letting a second DELETE go out.
+  const openDeleteAccountPanel = useCallback(() => setIsDeletingAccount(true), []);
+
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.appTitle}>Drafto</Text>
-        <IconButton onPress={onOpenSearch} accessibilityLabel="Search">
-          <SearchIcon size={18} color={semantic.fgMuted} />
-        </IconButton>
-      </View>
+      <AppMenu onSignOut={signOut} onDeleteAccount={openDeleteAccountPanel} isOffline={isOffline}>
+        {({ trigger, onAnchorLayout }) => (
+          <>
+            <View style={styles.header}>
+              <Text style={styles.appTitle}>Drafto</Text>
+              <IconButton onPress={onOpenSearch} accessibilityLabel="Search">
+                <SearchIcon size={18} color={semantic.fgMuted} />
+              </IconButton>
+            </View>
 
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionLabel}>NOTEBOOKS</Text>
-        <IconButton onPress={() => setIsCreating(true)} accessibilityLabel="New notebook">
-          <PlusIcon size={16} color={semantic.fgMuted} />
-        </IconButton>
-      </View>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionLabel}>NOTEBOOKS</Text>
+              <IconButton onPress={() => setIsCreating(true)} accessibilityLabel="New notebook">
+                <PlusIcon size={16} color={semantic.fgMuted} />
+              </IconButton>
+            </View>
 
-      {isCreating && (
-        <View style={styles.createRow}>
-          <TextInput
-            style={styles.input}
-            value={newName}
-            onChangeText={setNewName}
-            placeholder="Notebook name"
-            placeholderTextColor={semantic.fgSubtle}
-            autoFocus
-            onSubmitEditing={handleCreate}
-            // @ts-expect-error -- RN macOS supports onKeyDown but types are incomplete
-            onKeyDown={(e: { nativeEvent: { key: string } }) => {
-              if (e.nativeEvent.key === "Escape") {
-                setIsCreating(false);
-                setNewName("");
-              }
-            }}
-          />
-        </View>
-      )}
+            {isCreating && (
+              <View style={styles.createRow}>
+                <TextInput
+                  style={styles.input}
+                  value={newName}
+                  onChangeText={setNewName}
+                  placeholder="Notebook name"
+                  placeholderTextColor={semantic.fgSubtle}
+                  autoFocus
+                  onSubmitEditing={handleCreate}
+                  // @ts-expect-error -- RN macOS supports onKeyDown but types are incomplete
+                  onKeyDown={(e: { nativeEvent: { key: string } }) => {
+                    if (e.nativeEvent.key === "Escape") {
+                      setIsCreating(false);
+                      setNewName("");
+                    }
+                  }}
+                />
+              </View>
+            )}
 
-      {loading ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="small" color={colors.primary[600]} />
-        </View>
-      ) : (
-        <View style={styles.list}>
-          {notebooks.map((nb) => (
-            <NotebookRow
-              key={nb.id}
-              notebook={nb}
-              isSelected={!showTrash && nb.id === selectedNotebookId}
-              isEditing={editingId === nb.id}
-              editName={editName}
-              onSelect={() => onSelectNotebook(nb.id)}
-              onStartEdit={() => {
-                setEditingId(nb.id);
-                setEditName(nb.name);
-              }}
-              onEditNameChange={setEditName}
-              onSubmitRename={() => handleRename(nb)}
-              onCancelEdit={() => {
-                setEditingId(null);
-                setEditName("");
-              }}
-              onDelete={() => handleDelete(nb)}
-              styles={styles}
-            />
-          ))}
-        </View>
-      )}
+            {loading ? (
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="small" color={colors.primary[600]} />
+              </View>
+            ) : (
+              <View style={styles.list}>
+                {notebooks.map((nb) => (
+                  <NotebookRow
+                    key={nb.id}
+                    notebook={nb}
+                    isSelected={!showTrash && nb.id === selectedNotebookId}
+                    isEditing={editingId === nb.id}
+                    editName={editName}
+                    onSelect={() => onSelectNotebook(nb.id)}
+                    onStartEdit={() => {
+                      setEditingId(nb.id);
+                      setEditName(nb.name);
+                    }}
+                    onEditNameChange={setEditName}
+                    onSubmitRename={() => handleRename(nb)}
+                    onCancelEdit={() => {
+                      setEditingId(null);
+                      setEditName("");
+                    }}
+                    onDelete={() => handleDelete(nb)}
+                    styles={styles}
+                  />
+                ))}
+              </View>
+            )}
 
-      <View style={styles.footer}>
-        <Pressable
-          style={[styles.trashButton, showTrash && styles.trashButtonActive]}
-          onPress={onToggleTrash}
-          accessibilityLabel="Trash"
-          accessibilityRole="button"
-        >
-          <Text style={[styles.trashText, showTrash && styles.trashTextActive]}>Trash</Text>
-        </Pressable>
+            <View style={styles.footer}>
+              <Pressable
+                style={[styles.trashButton, showTrash && styles.trashButtonActive]}
+                onPress={onToggleTrash}
+                accessibilityLabel="Trash"
+                accessibilityRole="button"
+              >
+                <Text style={[styles.trashText, showTrash && styles.trashTextActive]}>Trash</Text>
+              </Pressable>
 
-        <SyncStatus />
+              <SyncStatus />
 
-        <View style={styles.userSection}>
-          <Text style={styles.userEmail} numberOfLines={1}>
-            {user?.email}
-          </Text>
-          <View style={styles.accountActions}>
-            <Pressable onPress={signOut} accessibilityLabel="Sign out" accessibilityRole="button">
-              <Text style={styles.signOutText}>Sign out</Text>
-            </Pressable>
-            <Pressable
-              testID="delete-account-row"
-              // Open-only: closing goes through the panel's Cancel / Escape, which stay
-              // disabled while a request is pending. A toggle here could unmount the panel
-              // mid-request, hiding its result and letting a second DELETE go out.
-              onPress={() => setIsDeletingAccount(true)}
-              disabled={isOffline}
-              accessibilityLabel="Delete account"
-              accessibilityRole="button"
-              accessibilityState={{ disabled: isOffline, expanded: isDeletingAccount }}
-            >
-              <Text style={[styles.deleteAccountText, isOffline && styles.accountActionDisabled]}>
-                Delete account
-              </Text>
-            </Pressable>
-          </View>
-          {isOffline && !isDeletingAccount ? (
-            <Text style={styles.offlineNote}>{DELETE_ACCOUNT_OFFLINE_NOTE}</Text>
-          ) : null}
-          {isDeletingAccount ? (
-            <DeleteAccountPanel
-              onCancel={() => setIsDeletingAccount(false)}
-              onConfirm={deleteAccount}
-              isOffline={isOffline}
-            />
-          ) : null}
-        </View>
-      </View>
+              {/* Last child of the footer, which is the last child of the AppMenu host: the menu
+                  opens above it, positioned from the host's bottom edge by this section's height.
+                  notebooks-sidebar.test.tsx checks that nothing renders below it. */}
+              <View
+                testID="sidebar-user-section"
+                style={styles.userSection}
+                onLayout={onAnchorLayout}
+              >
+                <View style={styles.userRow}>
+                  <Text style={styles.userEmail} numberOfLines={1}>
+                    {user?.email}
+                  </Text>
+                  {trigger}
+                </View>
+                {isDeletingAccount ? (
+                  <DeleteAccountPanel
+                    onCancel={() => setIsDeletingAccount(false)}
+                    onConfirm={deleteAccount}
+                    isOffline={isOffline}
+                  />
+                ) : null}
+              </View>
+            </View>
+          </>
+        )}
+      </AppMenu>
     </View>
   );
 }
@@ -520,35 +516,15 @@ const createStyles = (semantic: SemanticColors) =>
       borderTopWidth: 1,
       borderTopColor: semantic.border,
     },
-    userEmail: {
-      fontSize: fontSizes.sm,
-      color: semantic.fgSubtle,
-      marginBottom: spacing.xs,
-      fontFamily: fontFamily.sans,
-    },
-    accountActions: {
+    userRow: {
       flexDirection: "row",
       alignItems: "center",
-      justifyContent: "space-between",
       gap: spacing.sm,
     },
-    signOutText: {
+    userEmail: {
+      flex: 1,
       fontSize: fontSizes.sm,
-      color: colors.primary[600],
-      fontFamily: fontFamily.sans,
-    },
-    deleteAccountText: {
-      fontSize: fontSizes.sm,
-      color: semantic.errorText,
-      fontFamily: fontFamily.sans,
-    },
-    accountActionDisabled: {
-      opacity: 0.5,
-    },
-    offlineNote: {
-      fontSize: fontSizes.xs,
-      color: semantic.fgMuted,
-      marginTop: spacing.xs,
+      color: semantic.fgSubtle,
       fontFamily: fontFamily.sans,
     },
   });

@@ -19,7 +19,7 @@ describe("Support page", () => {
 
     expect(text).toMatch(/Web:.*Settings.*Delete account/);
     expect(text).toMatch(/iPhone, iPad and Android:.*Settings.*Delete account/);
-    expect(text).toMatch(/Mac:.*Delete account.*Sign out/);
+    expect(text).toMatch(/Mac:.*⋯.*sidebar.*choose Delete account\./);
     expect(text.indexOf("Delete account")).toBeLessThan(text.indexOf("support@drafto.eu"));
     expect(text).toMatch(/within 30 days/);
   });

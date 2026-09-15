@@ -31,6 +31,11 @@ describe("Account deletion page (/account/delete)", () => {
       expect(steps).toHaveTextContent("Delete account");
       expect(steps).toHaveTextContent("DELETE");
     }
+    // On the Mac, account actions sit behind the sidebar's ⋯ app menu.
+    const macSteps = screen.getByRole("heading", { level: 3, name: "Mac" })
+      .nextElementSibling as HTMLElement;
+    expect(macSteps).toHaveTextContent(/⋯.*Choose Delete account\./);
+    expect(macSteps).not.toHaveTextContent(/Sign out/);
     expect(screen.getByText(/needs an internet connection/)).toBeInTheDocument();
     expect(screen.getByText(/immediate and permanent/)).toBeInTheDocument();
   });

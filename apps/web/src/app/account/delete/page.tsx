@@ -62,7 +62,11 @@ export default function DeleteAccountInfoPage() {
         <ol>
           <li>Open the Drafto app and sign in.</li>
           <li>
-            In the sidebar, click <strong>Delete account</strong> next to <strong>Sign out</strong>.
+            At the bottom of the sidebar, click the <strong>⋯</strong> menu next to your email
+            address.
+          </li>
+          <li>
+            Choose <strong>Delete account</strong>.
           </li>
           <li>
             Type <strong>DELETE</strong> and click <strong>Delete account</strong> to confirm.

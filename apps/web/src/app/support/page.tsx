@@ -48,8 +48,8 @@ export default function SupportPage() {
             tap <strong>Delete account</strong>.
           </li>
           <li>
-            <strong>Mac:</strong> in the sidebar, click <strong>Delete account</strong> next to{" "}
-            <strong>Sign out</strong>.
+            <strong>Mac:</strong> click the <strong>⋯</strong> menu at the bottom of the sidebar and
+            choose <strong>Delete account</strong>.
           </li>
         </ul>
         <p>
