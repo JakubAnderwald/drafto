@@ -51,6 +51,120 @@ def write_local_properties
   File.write(File.join(PROJECT_ROOT, "android", "local.properties"), "sdk.dir=#{sdk_dir}\n")
 end
 
+# JDK range the Android Gradle build can run on. Gradle runs on JAVA_HOME (else
+# /usr/bin/java = the newest installed JDK), and the wrapper `expo prebuild`
+# generates (android/gradle/wrapper/gradle-wrapper.properties) is Gradle 9.0.0,
+# which supports running only on JDK 17-24
+# (docs.gradle.org/9.0.0/userguide/compatibility.html); AGP 8.12 / React Native
+# 0.83 need >= 17. Revisit GRADLE_MAX_JDK whenever an Expo / RN upgrade changes
+# that wrapper version. JDK 25 is unsupported but happened to build; JDK 26
+# (Homebrew's `temurin` cask, 2026-09-12) fails while evaluating
+# android/build.gradle with "Unsupported class file major version 70", which
+# broke every mobile beta.
+GRADLE_MIN_JDK = 17
+GRADLE_MAX_JDK = 24
+# Tie-break among in-range JDKs: 21 is what this build is verified on, 17 is
+# React Native's documented baseline; any other in-range JDK (newest first) is
+# used only when neither is installed.
+GRADLE_PREFERRED_JDKS = [21, 17].freeze
+ANDROID_STUDIO_JBR_HOMES = [
+  "/Applications/Android Studio.app/Contents/jbr/Contents/Home",
+  File.join(Dir.home, "Applications", "Android Studio.app", "Contents", "jbr", "Contents", "Home")
+].freeze
+
+# Major version of the JDK at `java_home`, read from its `release` file
+# (JAVA_VERSION="26.0.2.1" → 26, "1.8.0_392" → 8), or nil if unreadable. Read as
+# binary so a stray non-ASCII byte can't raise an encoding error mid-lane.
+def jdk_major_version(java_home)
+  release_file = File.join(java_home.to_s, "release")
+  return nil unless File.file?(release_file)
+
+  version = File.binread(release_file)[/^JAVA_VERSION="([^"]+)"/n, 1]
+  return nil if version.nil?
+
+  major = version[/\A1\.(\d+)/n, 1] || version[/\A(\d+)/n, 1]
+  major&.to_i
+rescue SystemCallError
+  nil
+end
+
+def gradle_compatible_jdk_major?(major)
+  !major.nil? && major.between?(GRADLE_MIN_JDK, GRADLE_MAX_JDK)
+end
+
+# Every installed JDK home worth trying, by location: the macOS JVM directories
+# (what /usr/libexec/java_home scans, and where `brew install --cask temurin@N`
+# lands), Homebrew openjdk formulae, Android Studio's bundled JBR, then JDKs
+# Gradle auto-provisioned for toolchains. Globbed rather than asked of
+# /usr/libexec/java_home: its `-v` takes only an exact version or a lower bound
+# (`-v 17+` returns JDK 26 here), an unmatched `-v N` without --failfast
+# silently returns the default JDK, and it scans only the JavaVirtualMachines
+# directories (never Android Studio's JBR or Gradle's jdks), so it can't
+# express "any installed 17-24".
+def installed_jdk_homes
+  gradle_user_home = ENV["GRADLE_USER_HOME"].to_s
+  gradle_user_home = File.join(Dir.home, ".gradle") if gradle_user_home.empty?
+  patterns = [
+    "/Library/Java/JavaVirtualMachines/*/Contents/Home",
+    File.join(Dir.home, "Library", "Java", "JavaVirtualMachines", "*", "Contents", "Home"),
+    "/opt/homebrew/opt/openjdk*/libexec/openjdk.jdk/Contents/Home",
+    "/usr/local/opt/openjdk*/libexec/openjdk.jdk/Contents/Home",
+    *ANDROID_STUDIO_JBR_HOMES,
+    File.join(gradle_user_home, "jdks", "*", "Contents", "Home"),
+    File.join(gradle_user_home, "jdks", "*", "*", "Contents", "Home")
+  ]
+  patterns.flat_map { |pattern| Dir.glob(pattern) }.uniq
+end
+
+# The installed in-range JDK to run Gradle on — a GRADLE_PREFERRED_JDKS major
+# first, else the newest; ties keep installed_jdk_homes order — or nil.
+def best_gradle_compatible_jdk
+  ranked = installed_jdk_homes.each_with_index.filter_map do |home, index|
+    major = jdk_major_version(home)
+    next unless gradle_compatible_jdk_major?(major)
+
+    [GRADLE_PREFERRED_JDKS.index(major) || GRADLE_PREFERRED_JDKS.size, -major, index, home]
+  end
+  ranked.min&.last
+end
+
+# Point JAVA_HOME at a JDK Gradle can run on: an in-range JAVA_HOME is kept;
+# otherwise the best installed in-range JDK wins. If none exists, warn and leave
+# the environment untouched rather than fail — the build may still work, and
+# the warning names the fix.
+def use_gradle_compatible_jdk
+  range = "#{GRADLE_MIN_JDK}-#{GRADLE_MAX_JDK}"
+  explicit = ENV["JAVA_HOME"].to_s
+  explicit_major = explicit.empty? ? nil : jdk_major_version(explicit)
+  if gradle_compatible_jdk_major?(explicit_major)
+    UI.message("Gradle JDK: keeping JAVA_HOME #{explicit} (JDK #{explicit_major})")
+    return
+  end
+
+  chosen = best_gradle_compatible_jdk
+  if chosen.nil?
+    UI.important(
+      "No JDK #{range} found (checked JAVA_HOME, /Library/Java/JavaVirtualMachines, " \
+      "~/Library/Java/JavaVirtualMachines, Homebrew openjdk, Android Studio's JBR, Gradle's jdks). " \
+      "Gradle will run on #{explicit.empty? ? 'the default java' : explicit} and may fail " \
+      "(JDK 26: 'Unsupported class file major version 70'). " \
+      "Fix: `brew install --cask temurin@21`."
+    )
+    return
+  end
+
+  chosen_label = "#{chosen} (JDK #{jdk_major_version(chosen)})"
+  if explicit.empty?
+    UI.message("Gradle JDK: #{chosen_label}")
+  else
+    UI.important(
+      "JAVA_HOME #{explicit} (JDK #{explicit_major || 'unknown'}) is outside the " \
+      "JDK #{range} range Gradle supports — overriding with #{chosen_label}"
+    )
+  end
+  ENV["JAVA_HOME"] = chosen
+end
+
 def json_key_path
   ENV["GOOGLE_PLAY_SERVICE_ACCOUNT_KEY_PATH"] || File.join(PROJECT_ROOT, "google-play-service-account.json")
 end
@@ -192,7 +306,11 @@ platform :android do
     # Write local.properties for Gradle to find Android SDK
     write_local_properties
 
-    # Set JDK 25+ compatibility
+    # Run Gradle on a JDK in the range its wrapper supports (see GRADLE_MAX_JDK)
+    use_gradle_compatible_jdk
+
+    # Allow native access up front: JDK 24+ warns on restricted native calls
+    # without it (JEP 472). Every JDK in the supported range accepts the flag.
     ENV["_JAVA_OPTIONS"] = "--enable-native-access=ALL-UNNAMED"
 
     # Auto-increment version code from store

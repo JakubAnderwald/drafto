@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Privacy Policy — Drafto",
@@ -10,14 +11,15 @@ export default function PrivacyPolicyPage() {
     <main className="mx-auto max-w-2xl px-6 py-16">
       <h1 className="text-fg mb-2 text-3xl font-bold">Privacy Policy</h1>
       <p className="text-fg-muted mb-8 text-sm">
-        Effective date: March 8, 2026 &middot; Last updated: March 8, 2026
+        Effective date: March 8, 2026 &middot; Last updated: September 14, 2026
       </p>
 
       <div className="prose dark:prose-invert max-w-none">
         <p>
-          Drafto (&ldquo;we&rdquo;, &ldquo;our&rdquo;, &ldquo;us&rdquo;) operates the Drafto mobile
-          application and the drafto.eu website (collectively, the &ldquo;Service&rdquo;). This
-          Privacy Policy explains what data we collect, how we use it, and your rights.
+          Drafto (&ldquo;we&rdquo;, &ldquo;our&rdquo;, &ldquo;us&rdquo;) operates the Drafto apps
+          for iOS, Android and macOS and the drafto.eu website (collectively, the
+          &ldquo;Service&rdquo;). This Privacy Policy explains what data we collect, how we use it,
+          and your rights.
         </p>
 
         <h2>1. Data We Collect</h2>
@@ -36,15 +38,22 @@ export default function PrivacyPolicyPage() {
 
         <h3>Device and usage data</h3>
         <p>
-          We collect anonymous usage analytics (page views, feature usage) through PostHog to
-          improve the Service. We collect crash reports and error data through Sentry to fix bugs.
-          This data does not include note content.
+          When you use the web app at drafto.eu, we collect anonymous usage analytics (page views,
+          feature usage) through PostHog to improve the Service, and crash reports and error data
+          through Sentry to fix bugs. This data does not include note content.
+        </p>
+        <p>
+          The iOS, Android and macOS apps contain no analytics or crash-reporting SDK. They send no
+          usage analytics or crash reports to Drafto. If our drafto.eu servers fail to handle a
+          request from one of the apps (for example, an account deletion), the server may record
+          that error in Sentry.
         </p>
 
         <h3>Offline data</h3>
         <p>
-          The mobile app stores a local copy of your notes on your device using SQLite for offline
-          access. This data stays on your device and syncs with our servers when you are online.
+          The iOS, Android and macOS apps store a local copy of your notes on your device using
+          SQLite for offline access. This data stays on your device and syncs with our servers when
+          you are online.
         </p>
 
         <h2>2. How We Use Your Data</h2>
@@ -53,8 +62,8 @@ export default function PrivacyPolicyPage() {
             <strong>Provide the Service:</strong> Store and sync your notes across devices
           </li>
           <li>
-            <strong>Improve the Service:</strong> Analyze anonymous usage patterns to improve
-            features
+            <strong>Improve the Service:</strong> Analyze anonymous usage patterns in the web app to
+            improve features
           </li>
           <li>
             <strong>Fix issues:</strong> Use crash reports to identify and resolve bugs
@@ -88,12 +97,12 @@ export default function PrivacyPolicyPage() {
             </tr>
             <tr>
               <td>PostHog</td>
-              <td>Usage analytics</td>
+              <td>Usage analytics (web app only)</td>
               <td>Anonymous usage events</td>
             </tr>
             <tr>
               <td>Sentry</td>
-              <td>Error tracking</td>
+              <td>Error tracking (web app and drafto.eu servers only)</td>
               <td>Crash reports, error context</td>
             </tr>
             <tr>
@@ -132,7 +141,9 @@ export default function PrivacyPolicyPage() {
             <strong>Export</strong> your notes through the web app
           </li>
           <li>
-            <strong>Delete</strong> your account and all associated data by contacting us
+            <strong>Delete</strong> your account and all associated data at any time from within the
+            app on the web, iOS, Android or macOS. Deletion is immediate. See{" "}
+            <Link href="/account/delete">how to delete your account</Link>
           </li>
           <li>
             <strong>Correct</strong> your information through account settings
@@ -147,7 +158,13 @@ export default function PrivacyPolicyPage() {
         <ul>
           <li>Your data is retained as long as your account is active</li>
           <li>Trashed notes are permanently deletable by you at any time</li>
-          <li>If you delete your account, we remove all associated data within 30 days</li>
+          <li>
+            When you delete your account in the app, we immediately delete your account, notebooks,
+            notes, attachments and API keys
+          </li>
+          <li>
+            If you ask us to delete your account by email, we process the request within 30 days
+          </li>
           <li>Anonymous analytics data may be retained indefinitely in aggregate form</li>
         </ul>
 
@@ -171,11 +188,20 @@ export default function PrivacyPolicyPage() {
           us at:
         </p>
         <p>
-          <strong>Email:</strong> <a href="mailto:privacy@drafto.eu">privacy@drafto.eu</a>
+          <strong>Email:</strong> <a href="mailto:support@drafto.eu">support@drafto.eu</a>
           <br />
           <strong>Website:</strong> <a href="https://drafto.eu">https://drafto.eu</a>
         </p>
       </div>
+
+      <footer className="border-border text-fg-muted mt-12 flex flex-wrap gap-x-6 gap-y-2 border-t pt-6 text-sm">
+        <Link href="/account/delete" className="hover:text-fg hover:underline">
+          Delete your account
+        </Link>
+        <Link href="/support" className="hover:text-fg hover:underline">
+          Support
+        </Link>
+      </footer>
     </main>
   );
 }

@@ -2,16 +2,17 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import * as Sentry from "@sentry/nextjs";
 import { getAuthenticatedUserFast, errorResponse, isUuid } from "@/lib/api/utils";
+import { deleteUserAccount } from "@/lib/account/delete-user";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { removeUserAttachments } from "@/lib/storage/remove-user-attachments";
 
 const USER_OWNED_TABLES = ["notebooks", "notes", "api_keys"] as const;
 
 /**
- * Permanently deletes a pending (not yet approved) signup. Deleting the auth
- * user cascades to the profile and every user-owned row; the user's storage
- * objects are cleaned up best-effort afterwards. There is no undo, so every
- * guard runs before `deleteUser` is called.
+ * Permanently deletes a pending (not yet approved) signup through the shared
+ * `deleteUserAccount` helper: the user's storage objects are swept strictly
+ * first, then the auth user is deleted, which cascades to the profile and
+ * every user-owned row. There is no undo, so every guard runs before anything
+ * is deleted.
  */
 export async function POST(request: NextRequest) {
   const { data: auth, error: authError } = await getAuthenticatedUserFast(request);
@@ -103,15 +104,15 @@ export async function POST(request: NextRequest) {
     return errorResponse("Only pending users can be deleted: this account already has data", 409);
   }
 
-  try {
-    const { error: deleteError } = await admin.auth.admin.deleteUser(userId);
-    if (deleteError) throw deleteError;
-  } catch (err) {
-    Sentry.captureException(err, { extra: { where: "delete-user:deleteUser", userId } });
-    return errorResponse("Failed to delete user", 500);
+  const result = await deleteUserAccount(admin, userId);
+  if (!result.ok) {
+    return result.stage === "storage"
+      ? errorResponse(
+          "Failed to delete the user's attachments. The user was not deleted — please try again.",
+          500,
+        )
+      : errorResponse("Failed to delete user", 500);
   }
-
-  await removeUserAttachments(admin, userId);
 
   return NextResponse.json({ success: true });
 }

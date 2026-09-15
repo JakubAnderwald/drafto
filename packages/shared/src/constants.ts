@@ -11,3 +11,5 @@ export const DEBOUNCE_MS = 500;
 export const BUCKET_NAME = "attachments";
 export const SIGNED_URL_EXPIRY_SECONDS = 604800; // 7 days
 export const ATTACHMENT_URL_PREFIX = "attachment://";
+// The exact text a user must type before an account deletion is sent.
+export const ACCOUNT_DELETE_CONFIRMATION = "DELETE";

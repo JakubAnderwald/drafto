@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Support — Drafto",
@@ -34,11 +35,40 @@ export default function SupportPage() {
 
         <h3>How do I delete my account?</h3>
         <p>
-          To delete your account and all associated data, email{" "}
-          <a href="mailto:privacy@drafto.eu">privacy@drafto.eu</a>. We will process your request
-          within 30 days.
+          You can delete your account and all of your notebooks, notes and attachments from inside
+          the app. Deletion is immediate and permanent, and needs an internet connection:
+        </p>
+        <ul>
+          <li>
+            <strong>Web:</strong> open <strong>Settings</strong> from the app menu and select{" "}
+            <strong>Delete account</strong>.
+          </li>
+          <li>
+            <strong>iPhone, iPad and Android:</strong> go to the <strong>Settings</strong> tab and
+            tap <strong>Delete account</strong>.
+          </li>
+          <li>
+            <strong>Mac:</strong> click the <strong>⋯</strong> menu at the bottom of the sidebar and
+            choose <strong>Delete account</strong>.
+          </li>
+        </ul>
+        <p>
+          If you no longer have the app or can&apos;t sign in, email{" "}
+          <a href="mailto:support@drafto.eu">support@drafto.eu</a> from the address you signed up
+          with. We will confirm the request by replying to that address, and delete your account
+          within 30 days. See <Link href="/account/delete">how to delete your account</Link> for
+          what is deleted.
         </p>
       </div>
+
+      <footer className="border-border text-fg-muted mt-12 flex flex-wrap gap-x-6 gap-y-2 border-t pt-6 text-sm">
+        <Link href="/account/delete" className="hover:text-fg hover:underline">
+          Delete your account
+        </Link>
+        <Link href="/privacy" className="hover:text-fg hover:underline">
+          Privacy Policy
+        </Link>
+      </footer>
     </main>
   );
 }

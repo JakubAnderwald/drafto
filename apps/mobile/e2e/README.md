@@ -65,6 +65,7 @@ maestro test apps/mobile/e2e/ios-only/ --platform ios -e RUN_ID=$(date +%s)
 | `04-trash-restore.yaml`       | Tab navigation between Notebooks and Trash         |
 | `05-cross-platform-sync.yaml` | Open a note created by web E2E, edit on mobile     |
 | `06-forgot-password.yaml`     | Request a reset link, open the recovery deep link  |
+| `07-delete-account.yaml`      | Open Delete account, check DELETE gating, cancel   |
 | `search.yaml`                 | Open search, type query, dismiss                   |
 
 ### Android-only
@@ -98,6 +99,9 @@ The main navigation difference between platforms:
 - Flow 06 is the exception: it clears state and runs **signed out**, so run it on its own
   (`maestro test apps/mobile/e2e/06-forgot-password.yaml --platform ios -e E2E_TEST_EMAIL=...`)
   rather than in the middle of the sequence
+- Flow 07 only ever **cancels** the account-deletion dialog — it must never tap an enabled
+  confirm, because the flows share one real E2E account. It is also inlined at the end of
+  `ios-all.yaml` and `android-all.yaml`
 - Maestro E2E tests are **local-only** — they do not run in CI
 - Run the full suite on both iOS Simulator and Android Emulator before any release
 - Minimum timeout tier is 10s to avoid flakiness on slow emulators

@@ -137,7 +137,11 @@ cd apps/mobile && pnpm release:prod:android
 ### Android build prerequisites
 
 - `android/local.properties` must have `sdk.dir` pointing to the Android SDK (e.g., `/Users/jakub/Library/Android/sdk`)
-- JDK 25+ requires `_JAVA_OPTIONS='--enable-native-access=ALL-UNNAMED'` (already set in the `android:release` script)
+- **JDK 17–24.** The Gradle 9.0.0 wrapper that `expo prebuild` generates [supports running only on JDK 17–24](https://docs.gradle.org/9.0.0/userguide/compatibility.html). Gradle runs on `JAVA_HOME`, else `/usr/bin/java` (the newest installed JDK). The bounds are `GRADLE_MIN_JDK`/`GRADLE_MAX_JDK` in `apps/mobile/fastlane/Fastfile`; revisit them when an Expo/RN upgrade bumps the wrapper.
+  - **Fastlane Android lanes pick one automatically.** An in-range `JAVA_HOME` is kept. Otherwise the lane scans `/Library/Java/JavaVirtualMachines`, `~/Library/Java/JavaVirtualMachines`, Homebrew `openjdk` formulae, Android Studio's bundled JBR and `~/.gradle/jdks`, and picks JDK 21, else 17, else the newest in range. If none is in range it only warns (fix: `brew install --cask temurin@21`).
+  - **`pnpm android` / `pnpm android:release-local` don't**, so export a JDK 17–24 home first, e.g. Android Studio's bundled JBR: `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"` (its version is in that directory's `release` file).
+  - **Too-new JDK signature:** `Failed to apply plugin 'com.facebook.react.rootproject'` → `Unsupported class file major version 70` (70 = JDK 26).
+- `_JAVA_OPTIONS='--enable-native-access=ALL-UNNAMED'` silences JDK 24+ native-access warnings (set by the Fastlane lane and `android:release-local`)
 - Google Play service account key: `apps/mobile/google-play-service-account.json` (gitignored)
 - Android upload keystore: `~/drafto-secrets/drafto-release.keystore` (env var `ANDROID_KEYSTORE_PATH`)
 - Signing config injected via Expo config plugin (`plugins/with-android-signing.js`)
