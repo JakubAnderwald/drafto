@@ -367,7 +367,9 @@ describe("desktop post-release-notes build selection", () => {
         id: "build-ios-56-old",
         attributes: {
           version: "56",
-          uploadedDate: "2026-08-01T10:00:00-07:00",
+          // Uploaded AFTER the macOS build, so a selector that ignored platform
+          // and took the newest exact match would pick this one.
+          uploadedDate: "2026-09-16T10:00:00-07:00",
           computedMinMacOsVersion: "11.0",
         },
         relationships: { preReleaseVersion: { data: { id: "pr-ios" } } },
@@ -408,11 +410,21 @@ describe("desktop post-release-notes build selection", () => {
     assert.deepEqual(parse(["--notes", "--build", "56"]), { notes: "", build: "56" });
   });
 
+  it("accepts only CFBundleVersion-shaped build numbers", async () => {
+    const { isValidBuildNumber } =
+      await import("../../apps/desktop/scripts/post-release-notes.mjs");
+    for (const ok of ["0", "56", "1.2", "10.14.1"]) assert.ok(isValidBuildNumber(ok), ok);
+    for (const bad of ["abc", "-1", "1.", ".1", "1.2.3.4", "1..2", " 56"]) {
+      assert.ok(!isValidBuildNumber(bad), bad);
+    }
+  });
+
   it("the desktop lane does not block on App Store processing and passes --build", () => {
     // Blocking on processing hung #623's lane for 3 days after build 56 was
     // already VALID. Mobile has always skipped the wait.
     const src = readFileSync(resolve(HERE, "..", "..", "apps/desktop/fastlane/Fastfile"), "utf8");
-    assert.ok(!/skip_waiting_for_build_processing:\s*false/.test(src));
+    // Require an explicit true: dropping the option restores fastlane's blocking default.
+    assert.match(src, /skip_waiting_for_build_processing:\s*true/);
     assert.match(src, /post_release_notes\(max_chars: 4000, build: new_build_number\)/);
     assert.match(src, /"--build", build\.to_s/);
   });

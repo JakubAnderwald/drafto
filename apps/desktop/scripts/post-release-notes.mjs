@@ -107,6 +107,10 @@ export const ascFetch = async (url, options = {}) => {
   throw lastError;
 };
 
+// CFBundleVersion: one to three period-separated integers. Checked up front so a
+// typo fails fast instead of polling App Store Connect for 5 minutes.
+export const isValidBuildNumber = (build) => /^\d+(\.\d+){0,2}$/.test(String(build));
+
 /**
  * Flatten an App Store Connect `/builds` response (data + included) into
  * `{ id, version, uploadedDate, platform }` records. `platform` comes ONLY from
@@ -278,6 +282,10 @@ async function main() {
   }
   if (!build) {
     console.error("Error: --build is required so notes target THAT macOS build");
+    process.exit(1);
+  }
+  if (!isValidBuildNumber(build)) {
+    console.error(`Error: --build "${build}" is not a CFBundleVersion (e.g. 56 or 1.2.3)`);
     process.exit(1);
   }
   try {

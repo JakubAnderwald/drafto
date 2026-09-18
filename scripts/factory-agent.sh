@@ -1811,6 +1811,9 @@ intest_check_lane_outcomes() {
       # failed, however chatty it is.
       if [[ -f "$log_file_path" ]]; then
         if [[ -n "$(find "$log_file_path" -mmin "+$FACTORY_LANE_STALE_MIN" 2>/dev/null)" ]]; then
+          # Usually already dead, but a silent group that is still alive would
+          # hold the root lock, or outlive a retry that resets the root under it.
+          [[ "$DRY_RUN" -eq 0 ]] && kill_lane_holding_log "$log_file_path"
           reason="produced no output for over ${FACTORY_LANE_STALE_MIN} min and never recorded an exit code (killed?)"
         elif [[ "$lane_age_min" -gt "$FACTORY_LANE_MAX_MIN" ]]; then
           [[ "$DRY_RUN" -eq 0 ]] && kill_lane_holding_log "$log_file_path"
@@ -1819,7 +1822,7 @@ intest_check_lane_outcomes() {
           kept="${kept:+$kept,}$lane"        # still building
           continue
         fi
-      elif [[ -n "$dispatched_at" ]] && [[ "$(iso_age_min "$dispatched_at")" -gt "$FACTORY_LANE_STALE_MIN" ]]; then
+      elif [[ -n "$lane_started$dispatched_at" ]] && [[ "$lane_age_min" -gt "$FACTORY_LANE_STALE_MIN" ]]; then
         reason="left no log and no exit code ${FACTORY_LANE_STALE_MIN}+ min after dispatch (killed before it could write?)"
       else
         kept="${kept:+$kept,}$lane"          # too early to call

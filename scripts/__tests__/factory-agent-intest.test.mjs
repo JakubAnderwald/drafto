@@ -886,6 +886,21 @@ cat "$STATE_FILE"
     rmSync(r.dir, { recursive: true, force: true });
   });
 
+  it("uses the per-lane clock for a traceless lane too", () => {
+    // A sibling's re-dispatch restamps the shared intestBetaAt; it must not
+    // keep a lane with no log and no exit code alive for ever.
+    const r = run({
+      exitContent: undefined,
+      writeLog: false,
+      dispatchedAgoMin: 5,
+      laneStartedAgoMin: 300,
+      dryRun: 0,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /left no log and no exit code/);
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
   it("does NOT declare a traceless lane dead while it is still young", () => {
     const r = run({ exitContent: undefined, writeLog: false, dispatchedAgoMin: 5, dryRun: 0 });
     assert.equal(r.status, 0, r.stderr);
