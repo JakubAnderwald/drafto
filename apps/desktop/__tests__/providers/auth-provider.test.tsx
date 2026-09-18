@@ -2,6 +2,7 @@ import React from "react";
 import { Linking } from "react-native";
 import { renderHook, act, waitFor } from "@testing-library/react-native";
 import type { User } from "@supabase/supabase-js";
+import { requestAccountDeletion, type AccountDeletionResult } from "@drafto/shared";
 
 import { database } from "@/db";
 import { syncDatabase, resetSyncState } from "@/db/sync";
@@ -26,6 +27,15 @@ jest.mock("@/lib/supabase", () => ({
 }));
 
 jest.mock("@/lib/approval-cache");
+
+jest.mock("@drafto/shared", () => ({
+  ...jest.requireActual("@drafto/shared"),
+  requestAccountDeletion: jest.fn(),
+}));
+
+jest.mock("@/lib/config", () => ({
+  apiUrl: "https://api.drafto.test",
+}));
 
 jest.mock("@/db", () => ({
   database: {
@@ -54,6 +64,7 @@ const mockSyncDatabase = syncDatabase as jest.Mock;
 const mockResetSyncState = resetSyncState as jest.Mock;
 const mockProcessPendingUploads = processPendingUploads as jest.Mock;
 const mockDeleteAllLocalAttachments = deleteAllLocalAttachments as jest.Mock;
+const mockRequestAccountDeletion = requestAccountDeletion as jest.Mock;
 
 function wrapper({ children }: { children: React.ReactNode }) {
   return <AuthProvider>{children}</AuthProvider>;
@@ -312,6 +323,27 @@ describe("AuthProvider", () => {
     warnSpy.mockRestore();
   });
 
+  it("keeps the default (global) scope on a plain sign-out", async () => {
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+      data: { session: { user: TEST_USER } },
+    });
+    mockProfileQuery({ is_approved: true }, null);
+    (mockSupabase.auth.signOut as jest.Mock).mockResolvedValue({});
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.signOut();
+    });
+
+    expect(mockSupabase.auth.signOut).toHaveBeenCalledWith();
+    expect(mockRequestAccountDeletion).not.toHaveBeenCalled();
+  });
+
   it("still resets local data when clearing the approval cache fails", async () => {
     (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
       data: { session: { user: TEST_USER } },
@@ -338,6 +370,159 @@ describe("AuthProvider", () => {
     expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
     expect(mockDeleteAllLocalAttachments).toHaveBeenCalled();
     errorSpy.mockRestore();
+  });
+});
+
+describe("AuthProvider — deleteAccount", () => {
+  const SIGNED_IN_SESSION = { access_token: "access-token-123", user: TEST_USER };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockApprovalCache.getCachedApproval.mockResolvedValue(null);
+    mockApprovalCache.setCachedApproval.mockResolvedValue(undefined);
+    mockApprovalCache.clearCachedApproval.mockResolvedValue(undefined);
+    mockSyncDatabase.mockResolvedValue({ conflictCount: 0 });
+    mockProcessPendingUploads.mockResolvedValue(0);
+    mockDeleteAllLocalAttachments.mockResolvedValue(undefined);
+    (mockSupabase.auth.signOut as jest.Mock).mockResolvedValue({});
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+      data: { session: SIGNED_IN_SESSION },
+    });
+    mockProfileQuery({ is_approved: true }, null);
+  });
+
+  async function renderSignedIn() {
+    const rendered = renderHook(() => useAuth(), { wrapper });
+    await waitFor(() => {
+      expect(rendered.result.current.isLoading).toBe(false);
+    });
+    expect(rendered.result.current.user?.id).toBe("user-123");
+    return rendered;
+  }
+
+  function expectNothingReset() {
+    expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
+    expect(mockApprovalCache.clearCachedApproval).not.toHaveBeenCalled();
+    expect(mockResetSyncState).not.toHaveBeenCalled();
+    expect(mockDatabase.unsafeResetDatabase).not.toHaveBeenCalled();
+    expect(mockDeleteAllLocalAttachments).not.toHaveBeenCalled();
+  }
+
+  it("on success, sends the fresh token to the API, then signs out locally and wipes local data", async () => {
+    mockRequestAccountDeletion.mockResolvedValue({ status: "ok" });
+    const { result } = await renderSignedIn();
+
+    let outcome: AccountDeletionResult | undefined;
+    await act(async () => {
+      outcome = await result.current.deleteAccount();
+    });
+
+    expect(outcome).toEqual({ status: "ok" });
+    expect(mockRequestAccountDeletion).toHaveBeenCalledWith({
+      baseUrl: "https://api.drafto.test",
+      accessToken: "access-token-123",
+    });
+    expect(mockSupabase.auth.signOut).toHaveBeenCalledWith({ scope: "local" });
+    expect(mockRequestAccountDeletion.mock.invocationCallOrder[0]).toBeLessThan(
+      (mockSupabase.auth.signOut as jest.Mock).mock.invocationCallOrder[0],
+    );
+    expect(mockApprovalCache.clearCachedApproval).toHaveBeenCalledWith("user-123");
+    expect(mockResetSyncState).toHaveBeenCalled();
+    expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
+    expect(mockDeleteAllLocalAttachments).toHaveBeenCalled();
+    expect(result.current.session).toBeNull();
+    expect(result.current.user).toBeNull();
+    expect(result.current.isApproved).toBe(false);
+  });
+
+  it("skips the pre-sign-out flush, since the account's server data is already gone", async () => {
+    mockRequestAccountDeletion.mockResolvedValue({ status: "ok" });
+    const { result } = await renderSignedIn();
+
+    await act(async () => {
+      await result.current.deleteAccount();
+    });
+
+    expect(mockProcessPendingUploads).not.toHaveBeenCalled();
+    expect(mockSyncDatabase).not.toHaveBeenCalled();
+  });
+
+  it("still finishes the local wipe when a best-effort reset step fails", async () => {
+    mockRequestAccountDeletion.mockResolvedValue({ status: "ok" });
+    mockDatabase.unsafeResetDatabase.mockRejectedValueOnce(new Error("reset failed"));
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const { result } = await renderSignedIn();
+
+    await act(async () => {
+      await expect(result.current.deleteAccount()).resolves.toEqual({ status: "ok" });
+    });
+
+    expect(mockDeleteAllLocalAttachments).toHaveBeenCalled();
+    expect(result.current.session).toBeNull();
+    errorSpy.mockRestore();
+  });
+
+  it("still wipes local data if the local sign-out throws after deletion", async () => {
+    mockRequestAccountDeletion.mockResolvedValue({ status: "ok" });
+    const { result } = await renderSignedIn();
+    (mockSupabase.auth.signOut as jest.Mock).mockRejectedValue(new Error("storage locked"));
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    let outcome: AccountDeletionResult | undefined;
+    await act(async () => {
+      outcome = await result.current.deleteAccount();
+    });
+
+    expect(outcome).toEqual({ status: "ok" });
+    expect(mockApprovalCache.clearCachedApproval).toHaveBeenCalledWith("user-123");
+    expect(mockResetSyncState).toHaveBeenCalled();
+    expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
+    expect(mockDeleteAllLocalAttachments).toHaveBeenCalled();
+    expect(result.current.session).toBeNull();
+    errorSpy.mockRestore();
+  });
+
+  const failures: AccountDeletionResult[] = [
+    { status: "network" },
+    { status: "unauthorized" },
+    { status: "last-admin" },
+    { status: "failed", httpStatus: 500 },
+  ];
+
+  it.each(failures)(
+    "returns $status and keeps the session and local data intact",
+    async (failure) => {
+      mockRequestAccountDeletion.mockResolvedValue(failure);
+      const { result } = await renderSignedIn();
+
+      let outcome: AccountDeletionResult | undefined;
+      await act(async () => {
+        outcome = await result.current.deleteAccount();
+      });
+
+      expect(outcome).toEqual(failure);
+      expectNothingReset();
+      expect(result.current.session).not.toBeNull();
+      expect(result.current.user?.id).toBe("user-123");
+      expect(result.current.isApproved).toBe(true);
+    },
+  );
+
+  it("returns unauthorized without calling the API when there is no access token", async () => {
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+      data: { session: { user: TEST_USER } },
+    });
+    const { result } = await renderSignedIn();
+
+    let outcome: AccountDeletionResult | undefined;
+    await act(async () => {
+      outcome = await result.current.deleteAccount();
+    });
+
+    expect(outcome).toEqual({ status: "unauthorized" });
+    expect(mockRequestAccountDeletion).not.toHaveBeenCalled();
+    expectNothingReset();
+    expect(result.current.user?.id).toBe("user-123");
   });
 });
 

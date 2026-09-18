@@ -2,6 +2,7 @@ import React from "react";
 import { Linking } from "react-native";
 import { renderHook, act, waitFor } from "@testing-library/react-native";
 import type { User } from "@supabase/supabase-js";
+import { requestAccountDeletion, type AccountDeletionResult } from "@drafto/shared";
 
 import { database } from "@/db";
 import { syncDatabase, resetSyncState } from "@/db/sync";
@@ -44,6 +45,23 @@ jest.mock("@/lib/data/attachment-queue", () => ({
   deleteAllLocalAttachments: jest.fn(),
 }));
 
+jest.mock("@drafto/shared", () => ({
+  ...jest.requireActual("@drafto/shared"),
+  requestAccountDeletion: jest.fn(),
+}));
+
+// Read lazily through a getter: the factory runs during the hoisted imports,
+// before `mockExpoExtra` is initialised.
+const mockExpoExtra: { apiUrl?: string } = {};
+jest.mock("expo-constants", () => ({
+  __esModule: true,
+  default: {
+    get expoConfig() {
+      return { extra: mockExpoExtra };
+    },
+  },
+}));
+
 const mockSupabase = supabase as jest.Mocked<typeof supabase>;
 const mockApprovalCache = approvalCache as jest.Mocked<typeof approvalCache>;
 const mockDatabase = database as unknown as {
@@ -54,6 +72,7 @@ const mockSyncDatabase = syncDatabase as jest.Mock;
 const mockResetSyncState = resetSyncState as jest.Mock;
 const mockProcessPendingUploads = processPendingUploads as jest.Mock;
 const mockDeleteAllLocalAttachments = deleteAllLocalAttachments as jest.Mock;
+const mockRequestAccountDeletion = requestAccountDeletion as jest.Mock;
 
 function wrapper({ children }: { children: React.ReactNode }) {
   return <AuthProvider>{children}</AuthProvider>;
@@ -243,6 +262,8 @@ describe("AuthProvider", () => {
     // The final flush uploads attachments and syncs metadata while the session
     // is still valid — i.e. before supabase.auth.signOut() is called.
     expect(mockProcessPendingUploads).toHaveBeenCalled();
+    // An ordinary sign-out keeps the default (global) scope.
+    expect(mockSupabase.auth.signOut).toHaveBeenCalledWith();
     expect(mockSyncDatabase).toHaveBeenCalled();
     expect(mockSyncDatabase.mock.invocationCallOrder[0]).toBeLessThan(
       (mockSupabase.auth.signOut as jest.Mock).mock.invocationCallOrder[0],
@@ -410,6 +431,165 @@ describe("AuthProvider", () => {
     expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
     expect(mockDeleteAllLocalAttachments).toHaveBeenCalled();
     errorSpy.mockRestore();
+  });
+});
+
+const TEST_SESSION = { user: TEST_USER, access_token: "access-token-abc" };
+
+describe("AuthProvider — account deletion", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockExpoExtra.apiUrl = "https://api.drafto.test";
+    mockApprovalCache.getCachedApproval.mockResolvedValue(null);
+    mockApprovalCache.setCachedApproval.mockResolvedValue(undefined);
+    mockApprovalCache.clearCachedApproval.mockResolvedValue(undefined);
+    mockSyncDatabase.mockResolvedValue({ conflictCount: 0 });
+    mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, failed: 0 });
+    mockDeleteAllLocalAttachments.mockResolvedValue(undefined);
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+      data: { session: TEST_SESSION },
+    });
+    (mockSupabase.auth.signOut as jest.Mock).mockResolvedValue({ error: null });
+    mockProfileQuery({ is_approved: true }, null);
+    mockRequestAccountDeletion.mockResolvedValue({ status: "ok" });
+  });
+
+  async function renderSignedIn() {
+    const rendered = renderHook(() => useAuth(), { wrapper });
+    await waitFor(() => {
+      expect(rendered.result.current.isLoading).toBe(false);
+    });
+    expect(rendered.result.current.user?.id).toBe("user-123");
+    return rendered;
+  }
+
+  it("deletes the account with the session's access token and the configured API URL", async () => {
+    const { result } = await renderSignedIn();
+
+    let outcome: AccountDeletionResult | undefined;
+    await act(async () => {
+      outcome = await result.current.deleteAccount();
+    });
+
+    expect(outcome).toEqual({ status: "ok" });
+    expect(mockRequestAccountDeletion).toHaveBeenCalledTimes(1);
+    expect(mockRequestAccountDeletion).toHaveBeenCalledWith({
+      baseUrl: "https://api.drafto.test",
+      accessToken: "access-token-abc",
+    });
+  });
+
+  it("uses the freshest access token from the Supabase client", async () => {
+    const { result } = await renderSignedIn();
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+      data: { session: { ...TEST_SESSION, access_token: "rotated-token" } },
+    });
+
+    await act(async () => {
+      await result.current.deleteAccount();
+    });
+
+    expect(mockRequestAccountDeletion).toHaveBeenCalledWith(
+      expect.objectContaining({ accessToken: "rotated-token" }),
+    );
+  });
+
+  it("falls back to the production origin when no API URL is configured", async () => {
+    delete mockExpoExtra.apiUrl;
+    const { result } = await renderSignedIn();
+
+    await act(async () => {
+      await result.current.deleteAccount();
+    });
+
+    expect(mockRequestAccountDeletion).toHaveBeenCalledWith(
+      expect.objectContaining({ baseUrl: "https://drafto.eu" }),
+    );
+  });
+
+  it("wipes local data and signs out locally, without a final sync, on success", async () => {
+    const { result } = await renderSignedIn();
+
+    await act(async () => {
+      await result.current.deleteAccount();
+    });
+
+    // The account is already gone server-side, so there is nothing to flush.
+    expect(mockProcessPendingUploads).not.toHaveBeenCalled();
+    expect(mockSyncDatabase).not.toHaveBeenCalled();
+
+    expect(mockSupabase.auth.signOut).toHaveBeenCalledTimes(1);
+    expect(mockSupabase.auth.signOut).toHaveBeenCalledWith({ scope: "local" });
+    expect(mockApprovalCache.clearCachedApproval).toHaveBeenCalledWith("user-123");
+    expect(mockResetSyncState).toHaveBeenCalled();
+    expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
+    expect(mockDeleteAllLocalAttachments).toHaveBeenCalled();
+
+    // Deletion is confirmed before anything local is touched.
+    expect(mockRequestAccountDeletion.mock.invocationCallOrder[0]).toBeLessThan(
+      (mockSupabase.auth.signOut as jest.Mock).mock.invocationCallOrder[0],
+    );
+
+    expect(result.current.session).toBeNull();
+    expect(result.current.user).toBeNull();
+    expect(result.current.isApproved).toBe(false);
+  });
+
+  it("still wipes local data if the local sign-out throws after deletion", async () => {
+    const { result } = await renderSignedIn();
+    (mockSupabase.auth.signOut as jest.Mock).mockRejectedValue(new Error("storage locked"));
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    let outcome: AccountDeletionResult | undefined;
+    await act(async () => {
+      outcome = await result.current.deleteAccount();
+    });
+
+    expect(outcome).toEqual({ status: "ok" });
+    expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
+    expect(mockDeleteAllLocalAttachments).toHaveBeenCalled();
+    expect(result.current.session).toBeNull();
+    errorSpy.mockRestore();
+  });
+
+  it.each<Exclude<AccountDeletionResult, { status: "ok" }>>([
+    { status: "network" },
+    { status: "unauthorized" },
+    { status: "last-admin" },
+    { status: "failed", httpStatus: 500 },
+  ])("keeps the session and local data intact on a $status result", async (failure) => {
+    mockRequestAccountDeletion.mockResolvedValue(failure);
+    const { result } = await renderSignedIn();
+
+    let outcome: AccountDeletionResult | undefined;
+    await act(async () => {
+      outcome = await result.current.deleteAccount();
+    });
+
+    expect(outcome).toEqual(failure);
+    expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
+    expect(mockApprovalCache.clearCachedApproval).not.toHaveBeenCalled();
+    expect(mockResetSyncState).not.toHaveBeenCalled();
+    expect(mockDatabase.unsafeResetDatabase).not.toHaveBeenCalled();
+    expect(mockDeleteAllLocalAttachments).not.toHaveBeenCalled();
+    expect(result.current.user?.id).toBe("user-123");
+    expect(result.current.isApproved).toBe(true);
+  });
+
+  it("reports unauthorized without calling the server when there is no access token", async () => {
+    const { result } = await renderSignedIn();
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({ data: { session: null } });
+
+    let outcome: AccountDeletionResult | undefined;
+    await act(async () => {
+      outcome = await result.current.deleteAccount();
+    });
+
+    expect(outcome).toEqual({ status: "unauthorized" });
+    expect(mockRequestAccountDeletion).not.toHaveBeenCalled();
+    expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
+    expect(mockDatabase.unsafeResetDatabase).not.toHaveBeenCalled();
+    expect(result.current.user?.id).toBe("user-123");
   });
 });
 

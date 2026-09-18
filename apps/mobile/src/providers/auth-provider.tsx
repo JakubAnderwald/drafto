@@ -1,6 +1,8 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { Linking } from "react-native";
+import Constants from "expo-constants";
 import type { Session, User } from "@supabase/supabase-js";
+import { requestAccountDeletion, type AccountDeletionResult } from "@drafto/shared";
 
 import { database } from "@/db";
 import { syncDatabase, resetSyncState } from "@/db/sync";
@@ -11,6 +13,15 @@ import { supabase } from "@/lib/supabase";
 
 /** Max time to wait for the pre-sign-out flush before proceeding to reset. */
 const FINAL_SYNC_TIMEOUT_MS = 10_000;
+
+/** Production web origin, used when a build carries no `EXPO_PUBLIC_API_URL`. */
+const DEFAULT_API_URL = "https://drafto.eu";
+
+/** Origin of the web API that performs server-side account operations. */
+function getApiUrl(): string {
+  const configured: unknown = Constants.expoConfig?.extra?.apiUrl;
+  return typeof configured === "string" && configured.length > 0 ? configured : DEFAULT_API_URL;
+}
 
 /**
  * Best-effort flush of unsynced local changes while the session is still valid.
@@ -62,6 +73,12 @@ interface AuthContextValue {
   /** Leaves recovery mode; called once the password has actually been changed. */
   endRecovery: () => void;
   signOut: () => Promise<void>;
+  /**
+   * Permanently deletes the signed-in account on the server. Local data is wiped
+   * and the user signed out only when the server confirms (`status: "ok"`); any
+   * other result leaves the session and the offline database untouched.
+   */
+  deleteAccount: () => Promise<AccountDeletionResult>;
   refreshApprovalStatus: () => Promise<boolean>;
 }
 
@@ -132,19 +149,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return false;
   }, [session?.user, checkApproval]);
 
-  const signOut = useCallback(async () => {
-    const userId = session?.user?.id;
-
-    // Best-effort: flush unsynced local changes while the session is still valid.
-    // A failed, offline, or slow sync must never block sign-out, so it is bounded
-    // by a timeout and its errors are swallowed.
-    try {
-      await withTimeout(flushPendingChanges(), FINAL_SYNC_TIMEOUT_MS);
-    } catch (error) {
-      console.warn("Final sync before sign-out failed or timed out:", error);
-    }
-
-    await supabase.auth.signOut();
+  /**
+   * Clears the in-memory session and every trace of the account on this device.
+   * Runs after the Supabase session has been ended, on both sign-out and account
+   * deletion. Each step is best-effort so one failure can't skip the others.
+   */
+  const resetLocalSession = useCallback(async (userId: string | undefined) => {
     setSession(null);
     setIsApproved(false);
     setIsRecovering(false);
@@ -152,7 +162,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (userId) {
       // Best-effort: a cache-clear failure must not skip the sync invalidation,
       // database reset, and attachment wipe below — those are the actual
-      // cross-account guarantees — nor reject out of signOut().
+      // cross-account guarantees — nor reject out of the caller.
       try {
         await clearCachedApproval(userId);
       } catch (error) {
@@ -160,10 +170,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    // Invalidate any in-flight sync (e.g. a final sync that timed out above but
-    // is still running) so the next signed-in user starts a fresh sync instead
-    // of coalescing onto this session's — which could otherwise write this
-    // user's pulled records into the freshly-reset database below.
+    // Invalidate any in-flight sync (e.g. a final sync that timed out before
+    // sign-out but is still running) so the next signed-in user starts a fresh
+    // sync instead of coalescing onto this session's — which could otherwise
+    // write this user's pulled records into the freshly-reset database below.
     resetSyncState();
 
     // Wipe the offline cache so a different account/environment starts clean and
@@ -182,7 +192,56 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (error) {
       console.error("Failed to delete local attachments on sign-out:", error);
     }
-  }, [session?.user?.id]);
+  }, []);
+
+  const signOut = useCallback(async () => {
+    const userId = session?.user?.id;
+
+    // Best-effort: flush unsynced local changes while the session is still valid.
+    // A failed, offline, or slow sync must never block sign-out, so it is bounded
+    // by a timeout and its errors are swallowed.
+    try {
+      await withTimeout(flushPendingChanges(), FINAL_SYNC_TIMEOUT_MS);
+    } catch (error) {
+      console.warn("Final sync before sign-out failed or timed out:", error);
+    }
+
+    await supabase.auth.signOut();
+    await resetLocalSession(userId);
+  }, [session?.user?.id, resetLocalSession]);
+
+  const deleteAccount = useCallback(async (): Promise<AccountDeletionResult> => {
+    // Read the session from the client rather than React state so the request
+    // carries the freshest access token (autoRefreshToken may have rotated it).
+    const {
+      data: { session: currentSession },
+    } = await supabase.auth.getSession();
+    const accessToken = currentSession?.access_token;
+    if (!accessToken) return { status: "unauthorized" };
+
+    const result = await requestAccountDeletion({ baseUrl: getApiUrl(), accessToken });
+    // Anything short of a confirmed deletion keeps the user signed in with their
+    // offline data intact, so they can retry or keep working.
+    if (result.status !== "ok") return result;
+
+    // No pre-sign-out flush here, unlike signOut(): the account and all of its
+    // rows are already gone, so a sync would only fail with 401s and stall for up
+    // to FINAL_SYNC_TIMEOUT_MS before the reset. Unsynced local edits are
+    // discarded on purpose.
+    //
+    // `local` scope: deleting the user already ended every server session, so
+    // only this device's stored session needs clearing. The default global scope
+    // would ask the server to revoke all sessions of a user that no longer
+    // exists. Best-effort — the account is gone either way, so a failure here
+    // must not skip the local wipe below.
+    try {
+      await supabase.auth.signOut({ scope: "local" });
+    } catch (error) {
+      console.error("Local sign-out after account deletion failed:", error);
+    }
+    await resetLocalSession(currentSession.user.id);
+    return result;
+  }, [resetLocalSession]);
 
   // Password-recovery deep links. The flag has to flip the moment the link is
   // recognised — before the session lands — or the guard would route the user
@@ -258,6 +317,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         recoveryError,
         endRecovery,
         signOut,
+        deleteAccount,
         refreshApprovalStatus,
       }}
     >

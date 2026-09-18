@@ -42,12 +42,31 @@ describe("Auth middleware", () => {
       "/reset-password",
       "/api/health",
       "/api/webhooks/new-signup",
+      "/api/account",
+      "/account/delete",
     ];
 
     for (const route of publicRoutes) {
       const response = await updateSession(createRequest(route));
       expect(response.status).toBe(200);
     }
+  });
+
+  it("passes a cookie-less DELETE /api/account through to the route instead of redirecting", async () => {
+    // Native apps authenticate this route with a bearer token and send no cookie.
+    // A redirect would be followed by fetch and land on the login page's HTML.
+    mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+
+    const response = await updateSession(
+      new NextRequest(new URL("/api/account", "http://localhost:3000"), {
+        method: "DELETE",
+        headers: { Authorization: "Bearer native-access-token" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+    expect(mockFrom).not.toHaveBeenCalled();
   });
 
   it("redirects unauthenticated users to /login", async () => {

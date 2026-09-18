@@ -3,6 +3,28 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import SettingsPage from "@/app/settings/page";
 
+// The Delete account section needs the router and the browser Supabase client.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+}));
+
+vi.mock("@/lib/supabase/client", () => ({
+  createClient: () => ({
+    auth: { signOut: vi.fn().mockResolvedValue({ error: null }) },
+  }),
+}));
+
+vi.mock("@/env", () => ({
+  env: {
+    NEXT_PUBLIC_SUPABASE_URL: "https://test.supabase.co",
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: "test-key",
+  },
+}));
+
+vi.mock("@sentry/nextjs", () => ({
+  captureException: vi.fn(),
+}));
+
 // Mock fetch
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
@@ -178,6 +200,26 @@ describe("SettingsPage", () => {
 
     expect(screen.getByText("Connect to Claude")).toBeInTheDocument();
     expect(screen.getByText(/YOUR_API_KEY/)).toBeInTheDocument();
+  });
+
+  it("renders the Delete account section as the last section", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve([]),
+    });
+
+    const { container } = render(<SettingsPage />);
+
+    const section = screen.getByTestId("delete-account-section");
+    expect(section).toHaveTextContent("Delete account");
+    expect(section.className).toContain("mt-6");
+    expect(container.firstElementChild?.lastElementChild).toBe(section);
+
+    await waitFor(() => {
+      expect(screen.getByText("No API keys yet. Generate one to get started.")).toBeInTheDocument();
+    });
+    // Rendering the section must not add any request of its own.
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
   it("shows error when key creation fails", async () => {

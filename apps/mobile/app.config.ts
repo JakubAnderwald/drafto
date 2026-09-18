@@ -59,6 +59,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
     googleWebClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
     googleIosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
+    // Web origin for server-side account operations (DELETE /api/account). The
+    // apex host serves /api/* directly; a www redirect would drop the bearer token.
+    apiUrl: process.env.EXPO_PUBLIC_API_URL || "https://drafto.eu",
     eas: {
       projectId: "6cf2a8f0-c2a6-410c-89dc-3e49aa4119a5",
     },
