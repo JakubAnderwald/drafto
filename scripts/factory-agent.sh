@@ -1670,6 +1670,37 @@ if ! [[ "$FACTORY_LANE_STALE_MIN" =~ ^[1-9][0-9]*$ ]]; then
   FACTORY_LANE_STALE_MIN=120
 fi
 
+# Hard wall-clock cap on one lane, however much it logs (see
+# intest_check_lane_outcomes). Observed builds take 4-40 min.
+FACTORY_LANE_MAX_MIN="${FACTORY_LANE_MAX_MIN:-240}"
+if ! [[ "$FACTORY_LANE_MAX_MIN" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_LANE_MAX_MIN='$FACTORY_LANE_MAX_MIN'; defaulting to 240" >&2
+  FACTORY_LANE_MAX_MIN=240
+fi
+
+# Terminate a hung lane: its whole process GROUP. dispatch-release.mjs spawns
+# each lane detached, so the wrapper leads its own group. That group holds
+# fastlane's piped children too (xcodebuild, productbuild, the uploader), which
+# never hold the log, and they must die before a retry resets the build root
+# under them. The group is found through THIS attempt's log, which only this
+# lane holds open, so it can never reach another card's lane. The per-root
+# .lock pid could: it belongs to whoever claimed the root last. TERM first,
+# then KILL whatever ignored it.
+kill_lane_holding_log() {
+  local log_path="$1" pid pgid pgids=""
+  for pid in $(lsof -t -- "$log_path" 2>/dev/null || true); do
+    pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+    # Never signal group 0/1 or our own group: that would take down the factory.
+    [[ "$pgid" =~ ^[0-9]+$ && "$pgid" -gt 1 && "$pgid" != "$(ps -o pgid= -p $$ | tr -d ' ')" ]] || continue
+    [[ " $pgids " == *" $pgid "* ]] || pgids="$pgids $pgid"
+  done
+  [[ -n "${pgids// /}" ]] || return 0
+  log "Killing hung lane process group(s) holding $log_path:$pgids"
+  for pgid in $pgids; do kill -TERM -- "-$pgid" 2>/dev/null || true; done
+  sleep "${FACTORY_LANE_KILL_GRACE_SEC:-10}"
+  for pgid in $pgids; do kill -KILL -- "-$pgid" 2>/dev/null || true; done
+}
+
 # Whole minutes since an ISO-8601 UTC timestamp, or a huge number if it can't be
 # parsed (an unparseable stamp must not read as "just dispatched" and suppress a
 # lane for ever). BSD date on macOS; -j -f parses rather than sets.
@@ -1716,7 +1747,7 @@ intest_check_lane_outcomes() {
   local issue_num="$1" sha="$2" pr_num="${3:-}"
   local state_json prior_sha prior_lanes prior_attempts dispatched_at lane exit_file
   local log_file_path code lane_attempt kept="" changed=0 give_up
-  local reason new_attempts attempts_changed=0
+  local reason new_attempts attempts_changed=0 lane_at_csv lane_started lane_age_min
 
   state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
@@ -1724,6 +1755,7 @@ intest_check_lane_outcomes() {
   prior_lanes=$(echo "$state_json" | jq -r '.intestBetaLanes // ""' 2>/dev/null || echo "")
   dispatched_at=$(echo "$state_json" | jq -r '.intestBetaAt // ""' 2>/dev/null || echo "")
   prior_attempts=$(echo "$state_json" | jq -r '.intestBetaAttempts // ""' 2>/dev/null || echo "")
+  lane_at_csv=$(echo "$state_json" | jq -r '.intestBetaLaneAt // ""' 2>/dev/null || echo "")
   new_attempts="$prior_attempts"
   # Only meaningful for the commit currently under test.
   [[ -n "$sha" && "$prior_sha" == "$sha" && -n "$prior_lanes" ]] || return 0
@@ -1750,6 +1782,17 @@ intest_check_lane_outcomes() {
     log_file_path="$LOG_DIR/beta-lane-${lane}-${issue_num}-${sha:0:12}-a${lane_attempt}.log"
     exit_file="${log_file_path}.exit"
     reason=""
+    # This lane's own age. intestBetaAt is shared and reset by any lane's
+    # re-dispatch, so it is only the fallback for state written before
+    # intestBetaLaneAt existed.
+    lane_started=$(lane_attempt_of "$lane_at_csv" "$lane")
+    if [[ "$lane_started" =~ ^[1-9][0-9]*$ ]]; then
+      lane_age_min=$(( ($(date +%s) - lane_started) / 60 ))
+    elif [[ -n "$dispatched_at" ]]; then
+      lane_age_min=$(iso_age_min "$dispatched_at")
+    else
+      lane_age_min=0
+    fi
     if [[ ! -f "$exit_file" ]]; then
       # No outcome yet. Still building, or dead without a trace?
       #
@@ -1759,9 +1802,19 @@ intest_check_lane_outcomes() {
       # openSync fell back to "ignore"), fall back to how long ago the dispatch
       # was recorded; otherwise a lane with neither artefact would be suppressed
       # for ever — the exact silent non-delivery this mechanism exists to end.
+      #
+      # Silence alone misses a lane that is alive but stuck in a loop that
+      # keeps logging: #623's desktop lane logged "Waiting for App Store Connect
+      # to finish processing" every 32 s for 3 days, so its log never went
+      # stale. It held the desktop build root the whole time. So a lane still
+      # running FACTORY_LANE_MAX_MIN after dispatch is killed and counts as
+      # failed, however chatty it is.
       if [[ -f "$log_file_path" ]]; then
         if [[ -n "$(find "$log_file_path" -mmin "+$FACTORY_LANE_STALE_MIN" 2>/dev/null)" ]]; then
           reason="produced no output for over ${FACTORY_LANE_STALE_MIN} min and never recorded an exit code (killed?)"
+        elif [[ "$lane_age_min" -gt "$FACTORY_LANE_MAX_MIN" ]]; then
+          [[ "$DRY_RUN" -eq 0 ]] && kill_lane_holding_log "$log_file_path"
+          reason="was still running ${FACTORY_LANE_MAX_MIN}+ min after dispatch with no exit code (hung; killed)"
         else
           kept="${kept:+$kept,}$lane"        # still building
           continue
@@ -1909,7 +1962,7 @@ intest_dispatch_betas() {
   # and later failed (see intest_check_lane_outcomes, which removes it), is
   # re-dispatched while a healthy sibling is left alone. A single shared SHA
   # used to suppress both: mobile succeeding hid a desktop failure entirely.
-  local prior_lanes="" prior_attempts="" state_json="" want to_dispatch="" new_attempts=""
+  local prior_lanes="" prior_attempts="" state_json="" want to_dispatch="" new_attempts="" new_lane_at=""
   local lane_attempt log_key
   state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
@@ -2025,6 +2078,15 @@ intest_dispatch_betas() {
     done
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
       intestBetaAttempts "$new_attempts" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    # Per-lane start time, for the FACTORY_LANE_MAX_MIN cap. Only the lanes
+    # started NOW are stamped; a sibling still building keeps its own clock.
+    new_lane_at=$(echo "$state_json" | jq -r '.intestBetaLaneAt // ""' 2>/dev/null || echo "")
+    for want in $(echo "$confirmed_csv" | tr ',' ' '); do
+      [[ -n "$want" ]] || continue
+      new_lane_at=$(lane_attempt_set "$new_lane_at" "$want" "$(date +%s)")
+    done
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+      intestBetaLaneAt "$new_lane_at" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   else
     # Nothing started — deliberately record NO SHA, so the next tick retries.
     logerr "WARNING: pre-merge beta dispatch started no lanes for #$issue_num; leaving retry armed"

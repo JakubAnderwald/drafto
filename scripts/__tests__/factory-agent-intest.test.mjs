@@ -600,6 +600,8 @@ describe("intest_check_lane_outcomes (extracted, real bash)", () => {
     attempt = 1,
     decoys = null,
     markers = [],
+    holdLog = false,
+    laneStartedAgoMin = null,
   }) => {
     const dir = mkdtempSync(join(tmpdir(), "drafto-outcome-"));
     const stateFile = join(dir, "state.json");
@@ -611,6 +613,11 @@ describe("intest_check_lane_outcomes (extracted, real bash)", () => {
             intestBetaSha: stateSha,
             intestBetaLanes: lanes,
             intestBetaAttempts: attempts,
+            ...(laneStartedAgoMin === null
+              ? {}
+              : {
+                  intestBetaLaneAt: `mobile:${Math.floor(Date.now() / 1000) - laneStartedAgoMin * 60}`,
+                }),
             ...(dispatchedAgoMin === null
               ? {}
               : {
@@ -635,8 +642,23 @@ set -uo pipefail
 eval "$(awk '/^iso_age_min\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 eval "$(awk '/^lane_attempt_of\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 eval "$(awk '/^lane_attempt_set\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
+eval "$(awk '/^kill_lane_holding_log\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 eval "$(awk '/^intest_check_lane_outcomes\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 log() { echo "[log] $*"; }
+# A stand-in for a hung lane, in its OWN process group as dispatch-release.mjs's
+# detached spawn gives it (set -m). The leader holds this attempt's log; its
+# child does not, like xcodebuild whose output fastlane pipes back to ruby.
+HELD_PID= KID_PID=
+${
+  holdLog
+    ? `set -m
+bash -c 'sleep 30 >/dev/null 2>&1 & echo $! >"$0"; exec sleep 30' "${base}.kid" >>"${base}" &
+HELD_PID=$!
+set +m
+sleep 0.3
+KID_PID=$(cat "${base}.kid")`
+    : ""
+}
 # Models markers already on the issue ($2 is the marker). Default: none present.
 issue_has_marker() {
   case "$2" in
@@ -655,10 +677,17 @@ STATE_FILE=${JSON.stringify(stateFile)}
 LOG_DIR=${JSON.stringify(dir)}
 LOG_FILE=${JSON.stringify(join(dir, "agent.log"))}
 FACTORY_LANE_STALE_MIN=120
+FACTORY_LANE_MAX_MIN=240
+FACTORY_LANE_KILL_GRACE_SEC=1
 FACTORY_LANE_MAX_ATTEMPTS=3
 FACTORY_INTEST_BETA=1
 DRY_RUN=${dryRun}
 intest_check_lane_outcomes 463 ${JSON.stringify(sha)} 591
+if [[ -n "$HELD_PID" ]]; then
+  sleep 0.3
+  if kill -0 "$HELD_PID" 2>/dev/null; then echo "HELD_ALIVE"; kill "$HELD_PID"; else echo "HELD_DEAD"; fi
+  if kill -0 "$KID_PID" 2>/dev/null; then echo "KID_ALIVE"; kill "$KID_PID"; else echo "KID_DEAD"; fi
+fi
 cat "$STATE_FILE"
 `;
     const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
@@ -774,6 +803,74 @@ cat "$STATE_FILE"
       !state.issues["463"].intestBetaLanes,
       "a dead lane must be re-armed (lane set cleared)",
     );
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("kills and re-arms a lane that keeps logging past the wall-clock cap", () => {
+    // #623's desktop lane logged "Waiting for App Store Connect to finish
+    // processing" every 32 s for 3 days. Its log never went silent, so the
+    // silence check never fired and it held the desktop build root throughout.
+    const r = run({ exitContent: undefined, laneStartedAgoMin: 300, holdLog: true, dryRun: 0 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /still running 240\+ min after dispatch/);
+    assert.match(r.stdout, /HELD_DEAD/, "the process holding the lane's log must be terminated");
+    assert.match(
+      r.stdout,
+      /KID_DEAD/,
+      "its piped children must die too, or they outlive the retry",
+    );
+    const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
+    assert.ok(!state.issues["463"].intestBetaLanes, "a hung lane must be re-armed");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("leaves a chatty lane alone while it is under the wall-clock cap", () => {
+    const r = run({ exitContent: undefined, laneStartedAgoMin: 30, holdLog: true, dryRun: 0 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!/re-arming/.test(r.stdout), "a 30-minute-old lane is still building");
+    assert.match(r.stdout, /HELD_ALIVE/, "a healthy lane must not be killed");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("clocks the cap per lane, so a sibling's re-dispatch cannot reset it", () => {
+    // intestBetaAt is shared and restamped by every dispatch. A mobile retry 5
+    // minutes ago must not buy a desktop lane hung for 300 minutes more time.
+    const r = run({
+      exitContent: undefined,
+      dispatchedAgoMin: 5,
+      laneStartedAgoMin: 300,
+      holdLog: true,
+      dryRun: 0,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /HELD_DEAD/);
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("does not kill a young lane just because the shared dispatch stamp is old", () => {
+    const r = run({
+      exitContent: undefined,
+      dispatchedAgoMin: 300,
+      laneStartedAgoMin: 10,
+      holdLog: true,
+      dryRun: 0,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /HELD_ALIVE/);
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("falls back to the shared dispatch stamp for state predating intestBetaLaneAt", () => {
+    const r = run({ exitContent: undefined, dispatchedAgoMin: 300, holdLog: true, dryRun: 0 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /HELD_DEAD/);
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("does not kill anything on a dry run", () => {
+    const r = run({ exitContent: undefined, laneStartedAgoMin: 300, holdLog: true, dryRun: 1 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /HELD_ALIVE/, "DRY_RUN must never terminate a process");
     rmSync(r.dir, { recursive: true, force: true });
   });
 

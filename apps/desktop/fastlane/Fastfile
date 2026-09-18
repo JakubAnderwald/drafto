@@ -31,10 +31,15 @@ end
 
 load_local_secrets
 
-def post_release_notes(max_chars:)
+# `build` is the macOS build number just uploaded. post-release-notes.mjs needs
+# it to target THAT build: macOS and iOS share one App Store Connect app, and iOS
+# builds also carry the macOS-only fields the script used to match on.
+def post_release_notes(max_chars:, build:)
   Dir.chdir(PROJECT_ROOT) do
     notes = sh("bash", "scripts/generate-release-notes.sh", "--max-chars", max_chars.to_s).strip
-    sh("node", "scripts/post-release-notes.mjs", "--platform", "macos", "--notes", notes) unless notes.empty?
+    next if notes.empty?
+
+    sh("node", "scripts/post-release-notes.mjs", "--platform", "macos", "--notes", notes, "--build", build.to_s)
   end
 rescue StandardError => e
   UI.important("Release notes posting failed (non-fatal): #{e.message}")
@@ -291,7 +296,12 @@ platform :mac do
       upload_to_testflight(
         api_key: api_key,
         pkg: pkg_path,
-        skip_waiting_for_build_processing: false
+        # Don't block on Apple's processing (matches mobile). Waiting hung the
+        # #623 pre-merge lane for 3 days: build 56 went VALID in App Store
+        # Connect, but fastlane's poll never saw it, so the lane never exited
+        # and the factory never announced the build. post-release-notes.mjs
+        # polls for the exact build itself.
+        skip_waiting_for_build_processing: true
       )
     else
       upload_to_app_store(
@@ -304,7 +314,7 @@ platform :mac do
     end
 
     # Post release notes
-    post_release_notes(max_chars: 4000)
+    post_release_notes(max_chars: 4000, build: new_build_number)
 
     # Phase G: comment "Now live" on closed support issues for this build.
     # TestFlight (beta) and the App Store (production) ship the same macOS
