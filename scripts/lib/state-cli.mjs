@@ -103,6 +103,7 @@
 //                                    lastFeedbackAt, intestCommentSha,
 //                                    intestBetaSha, intestBetaAt,
 //                                    intestBetaLanes, intestBetaAttempts,
+//                                    intestBetaLaneAt,
 //                                    lastReviewSha, crConvergedSha,
 //                                    crConvergedAt, crCoverageSha, crCoverage,
 //                                    crLastCoveredSha, crCliRuns,

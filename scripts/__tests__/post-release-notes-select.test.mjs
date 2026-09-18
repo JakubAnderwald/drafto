@@ -356,3 +356,76 @@ describe("mobile/desktop mirror invariant", () => {
     });
   }
 });
+
+describe("desktop post-release-notes build selection", () => {
+  // Live shape that broke it: iOS build 42 reports computedMinMacOsVersion
+  // (iPhone apps run on Apple Silicon Macs) and was uploaded AFTER macOS 56, so
+  // "newest build with macOS fields" picked iOS 42 and overwrote its notes.
+  const response = {
+    data: [
+      {
+        id: "build-ios-56-old",
+        attributes: {
+          version: "56",
+          // Uploaded AFTER the macOS build, so a selector that ignored platform
+          // and took the newest exact match would pick this one.
+          uploadedDate: "2026-09-16T10:00:00-07:00",
+          computedMinMacOsVersion: "11.0",
+        },
+        relationships: { preReleaseVersion: { data: { id: "pr-ios" } } },
+      },
+      {
+        id: "build-mac-56",
+        attributes: { version: "56", uploadedDate: "2026-09-15T05:18:13-07:00" },
+        relationships: { preReleaseVersion: { data: { id: "pr-mac" } } },
+      },
+    ],
+    included: [
+      { type: "preReleaseVersions", id: "pr-mac", attributes: { platform: "MAC_OS" } },
+      { type: "preReleaseVersions", id: "pr-ios", attributes: { platform: "IOS" } },
+    ],
+  };
+
+  it("picks the MAC_OS build with the exact number, never an iOS one", async () => {
+    const { normalizeBuilds: norm, selectMacBuild } =
+      await import("../../apps/desktop/scripts/post-release-notes.mjs");
+    assert.equal(selectMacBuild(norm(response), { buildNumber: 56 })?.id, "build-mac-56");
+  });
+
+  it("does not treat macOS-only build fields as proof of a macOS build", async () => {
+    const { normalizeBuilds: norm, selectMacBuild } =
+      await import("../../apps/desktop/scripts/post-release-notes.mjs");
+    const iosOnly = { data: [response.data[0]], included: response.included };
+    assert.equal(selectMacBuild(norm(iosOnly), { buildNumber: "56" }), null);
+    const noLinkage = { data: [{ ...response.data[0], relationships: {} }] };
+    assert.equal(selectMacBuild(norm(noLinkage), { buildNumber: "56" }), null);
+  });
+
+  it("parses --notes and --build without swallowing a flag as a value", async () => {
+    const { parseArgs: parse } = await import("../../apps/desktop/scripts/post-release-notes.mjs");
+    assert.deepEqual(parse(["--platform", "macos", "--notes", "hi", "--build", "56"]), {
+      notes: "hi",
+      build: "56",
+    });
+    assert.deepEqual(parse(["--notes", "--build", "56"]), { notes: "", build: "56" });
+  });
+
+  it("accepts only CFBundleVersion-shaped build numbers", async () => {
+    const { isValidBuildNumber } =
+      await import("../../apps/desktop/scripts/post-release-notes.mjs");
+    for (const ok of ["0", "56", "1.2", "10.14.1"]) assert.ok(isValidBuildNumber(ok), ok);
+    for (const bad of ["abc", "-1", "1.", ".1", "1.2.3.4", "1..2", " 56"]) {
+      assert.ok(!isValidBuildNumber(bad), bad);
+    }
+  });
+
+  it("the desktop lane does not block on App Store processing and passes --build", () => {
+    // Blocking on processing hung #623's lane for 3 days after build 56 was
+    // already VALID. Mobile has always skipped the wait.
+    const src = readFileSync(resolve(HERE, "..", "..", "apps/desktop/fastlane/Fastfile"), "utf8");
+    // Require an explicit true: dropping the option restores fastlane's blocking default.
+    assert.match(src, /skip_waiting_for_build_processing:\s*true/);
+    assert.match(src, /post_release_notes\(max_chars: 4000, build: new_build_number\)/);
+    assert.match(src, /"--build", build\.to_s/);
+  });
+});
