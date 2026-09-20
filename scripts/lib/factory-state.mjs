@@ -111,6 +111,10 @@ function emptyIssue() {
     // cap and the per-ATTEMPT artefact path — keying the log/.exit on the
     // commit alone let a retry share files with the attempt it replaced.
     intestBetaAttempts: null,
+    // Per-lane dispatch time, "mobile:<epoch>,desktop:<epoch>". Clocks the
+    // FACTORY_LANE_MAX_MIN cap per lane: intestBetaAt is shared and reset by
+    // any lane's re-dispatch, which would let a hung sibling outlive the cap.
+    intestBetaLaneAt: null,
     // Head SHA the code-review stage last ran against, so --watch reviews each
     // commit exactly once. Re-armed by every new push, which is what makes a
     // fix-then-re-review cycle converge instead of repeating. See ADR-0035.
@@ -412,6 +416,7 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   "intestBetaAt",
   "intestBetaLanes",
   "intestBetaAttempts",
+  "intestBetaLaneAt",
   // Code-review stage idempotency key (ADR-0035): the head SHA the review stage
   // last ran against. Same silent-failure hazard as the In Test keys above — a
   // rejected field would make --watch re-review (and re-comment on) every tick.
