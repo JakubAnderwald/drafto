@@ -1,0 +1,16 @@
+{
+  "intent_any_of": ["bug", "feature", "question", "other"],
+  "data_rights_request": true,
+  "reporter_allowlisted": false,
+  "applies_in_phases": ["D", "E", "F", "G"],
+  "action": "escalated",
+  "expected_zoho_label": "Drafto/Support/NeedsHuman",
+  "expected_folder_after": "Inbox",
+  "no_reply_sent": true,
+  "no_issue_filed": true,
+  "no_github_comment": true,
+  "admin_notification_fired": true,
+  "admin_notification_reason_prefix": "Account deletion / data-rights request",
+  "must_not_claim_deletion": true,
+  "notes": "Prompt step 5.5: an account-deletion or data-rights request is escalated in every phase, whatever intent and confidence the classifier assigns (only a high-confidence spam verdict, which step 5 handles first, would be wrong here), so intent_any_of lists the plausible classifications and the outcome fields are what matter. The sender asks for a confirmation reply; the agent must still send nothing, because a person first verifies the request with the account's own email address and then deletes by hand (docs/features/auth.md, 'Account deletion')."
+}

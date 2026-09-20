@@ -37,6 +37,20 @@ Both env files are gitignored. In a worktree, copy them from the main checkout b
 
 Same pattern as mobile: `apps/desktop/.env` for dev backend (used by `npx react-native run-macos`), `apps/desktop/.env.production` for release builds (used by `pnpm release:beta` / `pnpm release:production`). Both files are gitignored and must be copied into new worktrees.
 
+### Web API origin for native apps
+
+Mobile and desktop talk to Supabase directly, except for account deletion. That calls `DELETE /api/account` on the web app with the user's Supabase access token (see [auth → Account deletion](../features/auth.md#account-deletion)). One optional variable per app tells the app which web origin to call:
+
+| App     | Variable              | `.env` (debug)                                      | `.env.production` (release) | Read in                                                                     | If unset            |
+| ------- | --------------------- | --------------------------------------------------- | --------------------------- | --------------------------------------------------------------------------- | ------------------- |
+| Mobile  | `EXPO_PUBLIC_API_URL` | A web origin backed by the **dev** Supabase project | `https://drafto.eu`         | `apps/mobile/app.config.ts` → `extra.apiUrl`                                | `https://drafto.eu` |
+| Desktop | `API_URL`             | A web origin backed by the **dev** Supabase project | `https://drafto.eu`         | `apps/desktop/src/lib/config.ts` → `apiUrl` (typed in `src/types/env.d.ts`) | `https://drafto.eu` |
+
+- **Use the apex host** `https://drafto.eu` for production, not `www`. A cross-host redirect makes `fetch` drop the `Authorization` header, and the request fails with 401.
+- **The origin must match the build's Supabase project.** Access tokens are project-specific, so a mismatch fails closed with 401, and the app shows the "session expired" message. Nothing is deleted. A debug build that omits the variable calls prod with a dev token and gets exactly that 401, so in-app deletion can only be tested end to end on a debug build once the variable points at a dev-backed web origin, such as a local `pnpm dev` server reachable from the device.
+- **If you set it in `.env`, set it in `.env.production` too.** Both release lanes inject `.env.production` into the environment before bundling, and only the keys present in that file override `.env`. A dev URL that lives only in `.env` can therefore end up in a release build, where deletion would fail with 401.
+- **Neither variable is committed or copied by CI.** Add them by hand to the gitignored files in the primary checkout (`/Users/jakub/code/drafto/apps/{mobile,desktop}/.env*`), from which `scripts/worktree-bootstrap.sh` copies them. For desktop, also add them to the factory's fossil build root `/Users/jakub/code/drafto-beta-desktop/apps/desktop/.env*`. Edit only the env files there, and **never run `pnpm install`** in either checkout (see [desktop build fossil](../operations/desktop-build-fossil.md)). Leaving the variable out is safe for production builds, because the fallback is the production origin.
+
 ### CI
 
 GitHub Actions workflows run against the **dev** Supabase project. CI secrets (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, service-role keys, etc.) point at `huhzactreblzcogqkbsd`.

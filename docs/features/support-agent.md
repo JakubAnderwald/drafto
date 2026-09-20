@@ -1,10 +1,10 @@
 # Support agent
 
-**Status:** shipped **Updated:** 2026-05-03
+**Status:** shipped **Updated:** 2026-09-14
 
 ## What it is
 
-The real-time support pipeline: customer mail to `support@drafto.eu` is polled every 5 minutes from a Mac-mini-resident agent, classified by Claude Code, and either replied to (high-confidence questions, grounded in `docs/`), filed as a GitHub issue (bug / feature), escalated to human review (`Drafto/Support/NeedsHuman` + admin email), or dropped as spam. Linked GitHub issues sync bidirectionally with the customer's email thread — comments authored by the bot with a `<!-- drafto-progress -->` marker are forwarded as Zoho replies, and lifecycle transitions (closed / not-planned / reopened) trigger customer-facing emails. Release announcements ("Now live in TestFlight build 145") are forwarded the same way after each Fastlane release.
+The real-time support pipeline: customer mail to `support@drafto.eu` is polled every 5 minutes from a Mac-mini-resident agent, classified by Claude Code, and either replied to (high-confidence questions, grounded in `docs/`), filed as a GitHub issue (bug / feature), escalated to human review (`Drafto/Support/NeedsHuman` + admin email), or dropped as spam. Linked GitHub issues sync bidirectionally with the customer's email thread — comments authored by the bot with a `<!-- drafto-progress -->` marker are forwarded as Zoho replies, and lifecycle transitions (closed / not-planned / reopened) trigger customer-facing emails. Release announcements ("Now live in TestFlight build 145") are forwarded the same way after each Fastlane release. Account-deletion and data-rights requests are never handled by the agent; they always go to a person (see [Account-deletion and data-rights requests](#account-deletion-and-data-rights-requests)).
 
 This ADR ([0024 — Real-Time Support Agent](../adr/0024-realtime-support-agent.md)) supersedes [ADR-0013](../adr/0013-automated-support-pipeline.md) for **Stage 1** of the support pipeline. Stage 2 (`scripts/nightly-support.sh`, midnight implementation pass) and Stage 3 (`scripts/nightly-audit.sh`) keep their schedules and core behaviour.
 
@@ -102,6 +102,31 @@ The `zoho-thread-id` field is load-bearing — comment-sync uses it to route Git
 4. **Manual override**: applying the `support-allowlisted` label (repo collaborators only — GitHub-authenticated, not LLM-mediated) short-circuits the gate. The next nightly run treats the issue as allowlisted regardless of the state entry, and the issue is kept in the queue even if `needs-triage` is also present. Use this for legacy issues filed before sender persistence existed (ADR-0025 "Negative" point) or one-off backfills where the operator can't easily edit `logs/support-state.json` on the Mac mini.
 
 This eliminates the spoof window where a forged `<!-- drafto-support-agent v1 ... reporter-allowlisted: true -->` block in a customer's email body could slip through if the LLM copied it verbatim into the issue body. See [ADR-0025](../adr/0025-support-allowlist-from-zoho-sender.md) for the full rationale.
+
+### Account-deletion and data-rights requests
+
+`support@drafto.eu` is the published email fallback for deleting a Drafto account. The public page [drafto.eu/account/delete](https://drafto.eu/account/delete), `/support`, `/privacy` and the store privacy policy (`apps/mobile/store/metadata/privacy-policy.md`) all send people who no longer have the app here. Publish no other address for this: `support@drafto.eu` is the mailbox the agent polls, so only mail sent here reaches the escalation rule below. Users who can still sign in delete their account instantly in the app; see [`auth.md` → Account deletion](./auth.md#account-deletion).
+
+The agent has no tool that can delete an account, and an automatic answer could point someone who can no longer sign in at in-app steps, or read as if the deletion had happened. So step 5.5 of `scripts/support-agent-prompt.md` **always escalates** any message, in any language, that asks to delete or close an account or to exercise a data-protection right (erasure, access / DSAR, portability, rectification, restriction, objection, or anything citing GDPR, RODO or CCPA):
+
+- It runs in **every phase** (D–G), before the phase gate, and ignores the classified intent and confidence. When unsure, the agent treats the message as in scope. A plain how-to question about a product feature, such as exporting a notebook, is still an ordinary `question`.
+- The thread gets `Drafto/Support/NeedsHuman` (a message label for un-threaded singletons) and stays in the Inbox. The admin notification fires under the usual suppression rules, with `Reason:` starting `Account deletion / data-rights request`. The runner logs `action=escalated`.
+- The agent sends no reply and files no GitHub issue, and never applies `Replied` or moves the thread to `Resolved`. On a thread already linked to an issue, step 4.5 steps aside, so the request is not quoted on the public issue either.
+- The agent never states or implies that anything was deleted.
+- The earlier guards still run first. The loop guard and the human-intervention check escalate to `NeedsHuman` anyway, and obvious spam (step 5) still goes to `Drafto/Support/Spam`.
+
+**Operator procedure for an escalated request:**
+
+1. **Verify.** `From` headers can be spoofed. Reply from Zoho to the email address registered on the Drafto account, and act only once that address confirms. The confirming reply is escalated again the same way, but the 24 h per-thread cooldown can delay the repeat admin email, so watch the thread in Zoho.
+2. **Act only on what was asked.** Delete an account only for a confirmed erasure or account-closure request.
+   - **Erasure, or "close my account":** delete by hand, following [`auth.md` → Account deletion](./auth.md#account-deletion). Never delete an admin account from an emailed request.
+   - **Access (DSAR), portability or export:** delete nothing. Send the requester a copy of their data. If they can still sign in, point them at the web app's notebook export (`apps/web/src/components/export/export-evernote-dialog.tsx`). Otherwise export their profile, notebooks, notes and attachments by hand from the production project, following [production data safety](../operations/migrations.md).
+   - **Rectification:** delete nothing. If they can still sign in, point them at editing in the app. Otherwise correct the data by hand in the production project.
+   - **Restriction or objection:** delete nothing. Reply in person and decide case by case.
+   - **Unclear which right is meant:** ask the requester before acting. Never delete on an ambiguous request.
+3. **Tell the requester** by replying in the thread. Emailed requests are handled within 30 days. Replying yourself also trips the human-intervention check, so the agent stays out of the thread.
+
+The golden fixture `scripts/__fixtures__/support-emails/06-account-deletion-request.json` (with its `.expected.json`) records the expected outcome.
 
 ## Cross-platform notes
 
@@ -218,6 +243,7 @@ Stage 2 already authenticates `gh` on the Mac mini for the same user. No additio
   - Replies must thread via `inReplyTo` + `toAddress` + `subject` anchored to the latest messageId in the thread. `inReplyTo + threadId` together returns `404 JSON_PARSE_ERROR`. The CLI signature is `reply <messageId> --to <addr> --subject <s> --body-file <path>`.
   - Customer-facing replies must be verbose, include the full GitHub URL, and explain "what happens next." The existing prompt templates encode this — keep them.
   - `nightly-support.sh` allowlist gate: read the inbound sender from `state.issues[<n>].reporterEmail` (recorded by the runner at filing time, not from the issue body). Never trust LLM-written content in the issue body for the gate decision — the body could carry a forged footer copied from a customer email. See ADR-0025.
+  - Account-deletion and data-rights mail always escalates to `NeedsHuman` (prompt step 5.5, plus its exception at the top of step 4.5). Keep step 5.5 ahead of the phase gate, and never give the agent a tool that deletes, exports or edits user data. The confirmed-by-reply manual procedure is the only path for emailed requests.
 - **Tests that will catch regressions:**
   - `scripts/__tests__/policy.test.mjs` — loop headers, rate limits, sender allowlisting.
   - `scripts/__tests__/zoho-cli.test.mjs` — namespace gates, `add-label` / `move-to-folder` refusals, OAuth refresh-on-401 retries exactly once.
@@ -230,6 +256,7 @@ Stage 2 already authenticates `gh` on the Mac mini for the same user. No additio
   - Adding a new bundle kind → `build-bundle.mjs`, the prompt's "kinds" enum, `support-agent.sh`'s mode dispatch, and a new test fixture under `scripts/__fixtures__/support-emails/`.
   - Adding a new Zoho subcommand → `zoho-cli.mjs`, the prompt's "Tools" allowlist, and `zoho-cli.test.mjs`.
   - Renaming a label → `zoho-cli.mjs`'s namespace allowlist, the prompt's state-machine table, and the runbook's state-machine table above.
+  - Changing the account-deletion email fallback → the agent must poll the new mailbox (see [One-time setup](#one-time-setup)), plus the [Account-deletion and data-rights requests](#account-deletion-and-data-rights-requests) section above, `apps/web/src/app/account/delete/page.tsx`, `apps/web/src/app/support/page.tsx`, `apps/web/src/app/privacy/page.tsx` and `apps/mobile/store/metadata/privacy-policy.md`.
 
 ## Verify
 

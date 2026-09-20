@@ -152,3 +152,49 @@ appId: eu.drafto.mobile
 - extendedWaitUntil:
     visible: ".*NB ${RUN_ID}.*"
     timeout: 10000
+
+# ===== FLOW 07: Delete account (cancel only) =====
+# NEVER taps an enabled confirm — the shared E2E user must not be deleted.
+# "DELET" rather than "delete": the input auto-capitalises.
+# Dialog waits use the input's id: the text regex "Delete account?" would also
+# match the row's "Delete account" label behind the dialog.
+
+- tapOn: "Settings, tab.*"
+- scrollUntilVisible:
+    element:
+      id: "delete-account-row"
+    direction: DOWN
+    timeout: 10000
+- tapOn:
+    id: "delete-account-row"
+- extendedWaitUntil:
+    visible:
+      id: "delete-account-input"
+    timeout: 10000
+- assertVisible: "Type DELETE to confirm"
+- assertVisible:
+    id: "delete-account-confirm"
+    enabled: false
+
+# --- Wrong text keeps the destructive button disabled ---
+- tapOn:
+    id: "delete-account-input"
+- inputText: "DELET"
+- hideKeyboard
+- assertVisible:
+    id: "delete-account-confirm"
+    enabled: false
+
+# --- Cancel closes the dialog; the user and their data are still there ---
+- tapOn:
+    id: "delete-account-cancel"
+- extendedWaitUntil:
+    notVisible:
+      id: "delete-account-input"
+    timeout: 10000
+- assertVisible:
+    id: "delete-account-row"
+- tapOn: "Notebooks, tab.*"
+- extendedWaitUntil:
+    visible: ".*NB ${RUN_ID}.*"
+    timeout: 10000

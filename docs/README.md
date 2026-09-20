@@ -16,7 +16,7 @@ Entry point for engineers (and coding agents) working in this repo. For the user
 
 One brief per functional area. Each brief lists the current state, code paths on every platform, related ADRs, and how to verify a change.
 
-- [`features/auth.md`](./features/auth.md) — email/password + OAuth, approval flow, RLS boundary
+- [`features/auth.md`](./features/auth.md) — email/password + OAuth, approval flow, account deletion, RLS boundary
 - [`features/notes-and-notebooks.md`](./features/notes-and-notebooks.md) — data model, CRUD API, soft delete, trash
 - [`features/editor.md`](./features/editor.md) — BlockNote editor, auto-save, Markdown conversion
 - [`features/offline-sync.md`](./features/offline-sync.md) — WatermelonDB on mobile + desktop, sync loop, conflict rules

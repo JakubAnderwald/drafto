@@ -330,9 +330,9 @@ describe("POST /api/admin/delete-user", () => {
     }
     expect(storageFromMock).toHaveBeenCalledWith("attachments");
     expect(storageRemoveMock).toHaveBeenCalledWith([`${PENDING_ID}/note-1/photo.png`]);
-    // Storage is only touched once the auth user is gone.
-    expect(deleteUserMock.mock.invocationCallOrder[0]).toBeLessThan(
-      storageListMock.mock.invocationCallOrder[0],
+    // Storage is swept before the auth user is deleted, so a failed sweep leaves it intact.
+    expect(storageRemoveMock.mock.invocationCallOrder[0]).toBeLessThan(
+      deleteUserMock.mock.invocationCallOrder[0],
     );
     expect(captureExceptionMock).not.toHaveBeenCalled();
   });
@@ -343,19 +343,20 @@ describe("POST /api/admin/delete-user", () => {
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
-  it("still succeeds when storage cleanup fails", async () => {
+  it("returns 500 without deleting the user when the storage sweep fails", async () => {
     const storageError = new Error("storage unavailable");
     storageListMock.mockResolvedValue({ data: null, error: storageError });
 
     const response = await POST(createRequest({ userId: PENDING_ID }));
 
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ success: true });
-    expect(deleteUserMock).toHaveBeenCalledWith(PENDING_ID);
-    expect(captureExceptionMock).toHaveBeenCalledWith(
-      storageError,
-      expect.objectContaining({ extra: expect.objectContaining({ userId: PENDING_ID }) }),
+    expect(response.status).toBe(500);
+    expect((await response.json()).error).toBe(
+      "Failed to delete the user's attachments. The user was not deleted — please try again.",
     );
+    expect(deleteUserMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalledWith(storageError, {
+      extra: { where: "delete-user-account:storage", userId: PENDING_ID },
+    });
   });
 
   it("returns 500 and reports to Sentry when deleteUser returns an error", async () => {
@@ -367,9 +368,10 @@ describe("POST /api/admin/delete-user", () => {
     expect(response.status).toBe(500);
     expect((await response.json()).error).toBe("Failed to delete user");
     expect(captureExceptionMock).toHaveBeenCalledWith(deleteError, {
-      extra: { where: "delete-user:deleteUser", userId: PENDING_ID },
+      extra: { where: "delete-user-account:deleteUser", userId: PENDING_ID },
     });
-    expect(storageFromMock).not.toHaveBeenCalled();
+    // Only the strict sweep before deleteUser listed storage; no sweep ran afterwards.
+    expect(storageListMock).toHaveBeenCalledTimes(1);
   });
 
   it("returns 500 and reports to Sentry when deleteUser throws", async () => {
@@ -379,9 +381,10 @@ describe("POST /api/admin/delete-user", () => {
     const response = await POST(createRequest({ userId: PENDING_ID }));
 
     expect(response.status).toBe(500);
+    expect((await response.json()).error).toBe("Failed to delete user");
     expect(captureExceptionMock).toHaveBeenCalledWith(thrown, {
-      extra: { where: "delete-user:deleteUser", userId: PENDING_ID },
+      extra: { where: "delete-user-account:deleteUser", userId: PENDING_ID },
     });
-    expect(storageFromMock).not.toHaveBeenCalled();
+    expect(storageListMock).toHaveBeenCalledTimes(1);
   });
 });

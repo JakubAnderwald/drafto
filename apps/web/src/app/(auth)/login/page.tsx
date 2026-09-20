@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { OAuthButtons } from "@/components/auth/oauth-buttons";
+import { AccountDeletedNotice } from "@/components/auth/account-deleted-notice";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -39,6 +40,10 @@ export default function LoginPage() {
   return (
     <>
       <h1 className="text-fg mb-6 text-center text-2xl font-bold">Log In</h1>
+
+      <Suspense fallback={null}>
+        <AccountDeletedNotice />
+      </Suspense>
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>

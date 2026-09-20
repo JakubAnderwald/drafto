@@ -357,6 +357,29 @@ describe("mobile/desktop mirror invariant", () => {
   }
 });
 
+describe("mobile Fastfile Android JDK selection", () => {
+  it("picks a Gradle-compatible JDK before the Android lane runs Gradle", () => {
+    // Gradle 9.0.0 can't run on JDK 26; a Homebrew cask upgrade made it the
+    // host's only system JDK and every mobile beta died in Gradle (2026-09-12).
+    const src = readFileSync(resolve(HERE, "..", "..", "apps/mobile/fastlane/Fastfile"), "utf8");
+    assert.match(src, /^GRADLE_MAX_JDK = \d+$/m, "no upper JDK bound for Gradle");
+    assert.match(src, /^def use_gradle_compatible_jdk$/m, "JDK selection helper missing");
+
+    const androidIdx = src.indexOf("platform :android do");
+    const iosIdx = src.indexOf("platform :ios do");
+    assert.ok(
+      androidIdx !== -1 && iosIdx > androidIdx,
+      "expected android then ios platform blocks",
+    );
+    const lane = src.slice(src.indexOf("private_lane :build_and_submit", androidIdx), iosIdx);
+    const callIdx = lane.search(/^\s*use_gradle_compatible_jdk$/m);
+    const gradleIdx = lane.search(/^\s*gradle\(/m);
+    assert.ok(callIdx !== -1, "the Android lane never selects a JDK");
+    assert.ok(gradleIdx !== -1, "expected a gradle( step in the Android lane");
+    assert.ok(callIdx < gradleIdx, "the JDK must be selected BEFORE Gradle runs");
+  });
+});
+
 describe("desktop post-release-notes build selection", () => {
   // Live shape that broke it: iOS build 42 reports computedMinMacOsVersion
   // (iPhone apps run on Apple Silicon Macs) and was uploaded AFTER macOS 56, so

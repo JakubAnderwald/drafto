@@ -23,7 +23,17 @@ export {
   BUCKET_NAME,
   SIGNED_URL_EXPIRY_SECONDS,
   ATTACHMENT_URL_PREFIX,
+  ACCOUNT_DELETE_CONFIRMATION,
 } from "./constants";
+export {
+  ACCOUNT_DELETION_PATH,
+  requestAccountDeletion,
+  describeAccountDeletionFailure,
+} from "./account/request-account-deletion";
+export type {
+  AccountDeletionResult,
+  RequestAccountDeletionOptions,
+} from "./account/request-account-deletion";
 export { formatRelativeTime } from "./formatters";
 export {
   blocknoteToTiptap,
