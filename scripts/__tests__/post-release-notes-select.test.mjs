@@ -298,6 +298,20 @@ describe("ascFetch (transient-failure retries)", () => {
   });
 });
 
+describe("desktop export compliance", () => {
+  it("the macOS Info.plist declares ITSAppUsesNonExemptEncryption = false", () => {
+    // Without it every macOS upload sits at "Missing Compliance" and no tester
+    // group can see it. fastlane used to answer after its processing wait,
+    // which the lane now skips (#641). Build 56 for #623 was invisible for
+    // hours because of this. Mobile declares the same in app.config.ts.
+    const plist = readFileSync(
+      resolve(HERE, "..", "..", "apps/desktop/macos/Drafto-macOS/Info.plist"),
+      "utf8",
+    );
+    assert.match(plist, /<key>ITSAppUsesNonExemptEncryption<\/key>\s*<false\/>/);
+  });
+});
+
 describe("mobile/desktop mirror invariant", () => {
   // These two copies had silently diverged: desktop's had no timeout and no
   // retry at all, and its release-notes generator kept a `--grep` classifier
