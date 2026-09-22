@@ -1,6 +1,6 @@
 # Authentication
 
-**Status:** shipped **Updated:** 2026-10-17
+**Status:** shipped **Updated:** 2026-10-24
 
 ## What it is
 
@@ -96,6 +96,7 @@ A signed-in user can permanently delete their own account from inside the app on
 | Initial schema + RLS + `profiles` table                                                                                                                      | `supabase/migrations/20260224000001_initial_schema.sql`                                                                                                            |
 | RLS recursion fix                                                                                                                                            | `supabase/migrations/20260225000001_fix_rls_recursion.sql`                                                                                                         |
 | Admin bootstrap (first approved user)                                                                                                                        | `supabase/migrations/20260420000001_admin_bootstrap.sql`                                                                                                           |
+| Guard on `is_admin` / `is_approved` (users cannot grant themselves either flag)                                                                              | `supabase/migrations/20260922000001_guard_profile_privilege_columns.sql`                                                                                           |
 
 ## Related ADRs
 
@@ -108,6 +109,7 @@ A signed-in user can permanently delete their own account from inside the app on
 - [0045 — Mobile Auth Uses the PKCE Flow](../adr/0045-mobile-auth-uses-pkce.md)
 - [0049 — Revoke Sign in with Apple Tokens on Account Deletion](../adr/0049-apple-token-revocation-on-account-deletion.md)
 - [0051 — Factory Browser Access Through a Locked-Down Claude in Chrome Runner](../adr/0051-factory-browser-runner.md) (the preview-only test sign-in)
+- [0055 — Trigger Guard on Profile Privilege Columns](../adr/0055-profile-privilege-column-guard.md)
 
 ## Cross-platform notes
 
@@ -367,7 +369,7 @@ The dark factory's browser runner checks a PR's Vercel preview in Chrome, signed
     - `/api/mcp` is excluded because it authenticates its own Bearer API key, and a client with a bad key retries around the clock. After each 401, MCP clients also probe `/.well-known/oauth-*`, `/.well-known/openid-configuration`, then `/register`, `/authorize` and `/token`. None of those is a route, so skipping middleware turns each into a static 404 instead of a 307 to `/login` plus a second run ([ADR-0054](../adr/0054-keep-machine-traffic-out-of-session-middleware.md)).
     - Only add a path to that exclusion if it is public and needs no session. Keep the `$` anchor so lookalike paths still pass through the gate.
   - A request with no `sb-*` cookie skips the Supabase client entirely. Public routes pass through, `/` is rewritten to the landing page, and everything else redirects to `/login`, which is what the session lookup would have decided anyway. Don't put anything in that branch that a route relies on, such as the `x-verified-*` headers: those are set only after a real `getUser()`.
-  - `profiles.is_approved` defaults to `false` and is NOT user-writable. Only the service-role client (via `apps/web/src/lib/supabase/admin.ts`) should flip it.
+  - `profiles.is_approved` and `profiles.is_admin` default to `false` and are NOT user-writable. RLS cannot enforce that on its own, because a policy cannot restrict columns and "Users can update own profile" only checks row ownership. The `guard_profile_privilege_columns` trigger does it: any change to either flag from the `authenticated` / `anon` roles fails with `42501` (HTTP 403) unless `public.is_admin()` is true. Admins (through their own session) and `service_role` / `postgres` can still change them. Keep the trigger function `SECURITY INVOKER`.
   - RLS policies reference both `auth.uid()` and `is_approved` — never add a policy that only checks `auth.uid()` on user data tables.
   - `/api/admin/delete-user` permanently deletes **pending** users only. `auth.admin.deleteUser` cannot be undone, so every guard runs before it: caller is an admin, target is not the caller, target exists, and target is neither approved nor an admin (409). It also refuses (409) any account that already owns notebooks, notes or API keys, checked with the service-role client. A signup that was never approved cannot own any of those rows, because each table's insert policy requires approval. The actual deletion goes through the shared `deleteUserAccount` helper, the same one `/api/account` uses. It sweeps storage strictly first (a failure returns 500 and keeps the user), then deletes the auth user, which takes the profile and every user-owned row with it through `on delete cascade`, then runs a best-effort sweep.
   - `/api/account` is in `PUBLIC_ROUTES` and authenticates itself through `authenticateAccountRequest` only. Never switch it to `getAuthenticatedUserFast` or read `x-verified-*` headers (forgeable on public routes), and never accept a user id from the body, query or params. Any route added under `/api/account/*` or `/account/delete/*` is public by prefix match and needs the same care.
@@ -392,6 +394,8 @@ The dark factory's browser runner checks a PR's Vercel preview in Chrome, signed
   - `apps/web/__tests__/unit/middleware.test.ts` also covers `/api/account` and `/account/delete` being public, and a cookie-less bearer `DELETE /api/account` reaching the route instead of redirecting.
   - `packages/shared/__tests__/request-account-deletion.test.ts` — every `AccountDeletionResult` branch, including a redirected HTML 200 mapping to `failed`.
   - `apps/web/__tests__/integration/delete-account-section.test.tsx`, `ui/confirm-dialog.test.tsx` (`confirmDisabled`), `login.test.tsx` (the deleted notice), `settings.test.tsx` (section rendered last), `account-delete-page.test.tsx` and `legal-pages.test.tsx` (in-app flow first, `support@drafto.eu` only).
+  - `scripts/__tests__/profile-privilege-guard.test.mjs` — static check of the privilege guard migration, run in CI: the exact guard condition, the `42501` raise, `SECURITY INVOKER`, and that it sorts after `public.is_admin()` and the admin bootstrap.
+  - `scripts/__tests__/profile-privilege-guard.live.test.mjs` — creates real users on **dev** and asserts that a user's own `PATCH` of `is_approved` / `is_admin` gets 403 and changes nothing, that a `display_name` edit still works, and that an admin session and the service role can still approve. It **skips** unless `NEXT_PUBLIC_SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are exported and `NEXT_PUBLIC_SUPABASE_URL`'s host is exactly `huhzactreblzcogqkbsd.supabase.co`, so CI skips it. Run it once before the migration reaches a project too: the self-escalation test must fail there, which proves the check can see the hole.
   - `apps/web/__tests__/integration/account-deletion.live.test.ts` — creates a real user on **dev** with a notebook, note, attachment row and object, and API key, runs `deleteUserAccount`, and asserts everything is gone. It **skips** unless `SUPABASE_SERVICE_ROLE_KEY` is exported and `NEXT_PUBLIC_SUPABASE_URL`'s host is exactly `huhzactreblzcogqkbsd.supabase.co`. Vitest does not load `.env.local`, so a plain `pnpm test` and CI skip it.
   - `apps/web/e2e/account-deletion.spec.ts` — Playwright: `/account/delete` loads signed out, and its `#sign-in-with-apple` section (linked from the privacy policy) explains Apple revocation; in settings, typed-`DELETE` gating and cancel work; a mocked success (with the Supabase logout call mocked too) lands on `/login?deleted=1` with the notice. The shared E2E user is never really deleted.
   - `apps/mobile/__tests__/components/delete-account-dialog.test.tsx`, `apps/mobile/__tests__/screens/settings.test.tsx` and `apps/mobile/__tests__/providers/auth-provider.test.tsx` — confirm gating, the offline-disabled row, and `deleteAccount()` resetting only on `ok` with no flush and a local-scope sign-out, while `signOut()` keeps the default scope.
@@ -418,6 +422,7 @@ The dark factory's browser runner checks a PR's Vercel preview in Chrome, signed
   - `apps/mobile/e2e/06-forgot-password.yaml` — Maestro: the recovery deep link opens in-app rather than bouncing to the website.
 - **Files that must change together:**
   - Adding a new public route: update `PUBLIC_ROUTES` in `apps/web/src/lib/supabase/middleware.ts` **and** add a test case in `middleware.test.ts`.
+  - Adding a `profiles` column that users must not set for themselves: add it to the guard in a new migration (`create or replace function public.guard_profile_privilege_columns()`), and extend both `profile-privilege-guard` tests.
   - Changing the `profiles` shape: update `apps/web/src/lib/supabase/database.types.ts`, the RLS policies, and every `AuthProvider` (web middleware, mobile provider, desktop provider) that reads the column.
   - Adding a table with a foreign key to `auth.users`: declare it `on delete cascade`. Otherwise `deleteUser` fails, and both `DELETE /api/account` and `/api/admin/delete-user` return 500 for any user who owns a row in it, after their storage has already been swept. If only approved users can insert into the table, also add it to `USER_OWNED_TABLES` in the admin route. List it under "What is deleted" on `/account/delete` if users would recognise it as their data.
   - Changing the attachments storage path layout (`{userId}/{noteId}/{fileName}`): both sweeps in `apps/web/src/lib/storage/remove-user-attachments.ts` (strict and best-effort share the walker) walk the `{userId}/` prefix. Update them, `remove-user-attachments.test.ts`, `account-deletion.live.test.ts`, and step 4 of the manual procedure in [Account deletion](#account-deletion), or account deletion will leave files behind.
@@ -447,6 +452,12 @@ cd packages/shared && pnpm test
 # Account deletion against the real DEV project (skips unless both are set; refuses any other host)
 NEXT_PUBLIC_SUPABASE_URL=https://huhzactreblzcogqkbsd.supabase.co SUPABASE_SERVICE_ROLE_KEY=<dev service-role key> \
   pnpm --filter @drafto/web exec vitest run __tests__/integration/account-deletion.live.test.ts
+
+# Guard on is_approved / is_admin: static check, then the live check against the DEV project
+# (skips unless all three are set; refuses any other host)
+node --test scripts/__tests__/profile-privilege-guard.test.mjs
+NEXT_PUBLIC_SUPABASE_URL=https://huhzactreblzcogqkbsd.supabase.co NEXT_PUBLIC_SUPABASE_ANON_KEY=<dev anon key> \
+  SUPABASE_SERVICE_ROLE_KEY=<dev service-role key> node --test scripts/__tests__/profile-privilege-guard.live.test.mjs
 
 # Web E2E (requires E2E_TEST_EMAIL / E2E_TEST_PASSWORD in apps/web/.env.local)
 set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e -- auth
