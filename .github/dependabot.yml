@@ -55,3 +55,20 @@ updates:
       # which CI cannot verify. Suppress minor + major; patches still flow through the group.
       - dependency-name: "@react-native/*"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # React (`react`, `react-dom`, `react-test-renderer`) is governed by the root
+      # package.json's `pnpm.overrides`, not by the apps' own declarations — the override is
+      # what forces a single shared React instance across all four workspaces, which
+      # ADR-0027 / #558 established is mandatory (multiple React copies, even at the same
+      # version, break Context/hook identity and render an empty tree with no error).
+      # Dependabot cannot edit `pnpm.overrides`. It can only rewrite pnpm-lock.yaml's
+      # `overrides:` block, so every React bump it opens is one of two useless shapes:
+      # inert (bumps apps/*/package.json while the override silently overrules it, as in
+      # #593) or unmergeable (a lockfile-only override edit that aborts every install with
+      # ERR_PNPM_LOCKFILE_CONFIG_MISMATCH, as in #609 — which also failed the Vercel preview
+      # deployment). Suppress the family entirely; React moves when someone edits
+      # `pnpm.overrides` and regenerates the lockfile as one deliberate step (#441, #610).
+      # This does not freeze React contrary to ADR-0027 §5 — it suppresses a mechanism that
+      # is structurally incapable of moving it, and leaves the deliberate cadence intact.
+      - dependency-name: "react"
+      - dependency-name: "react-dom"
+      - dependency-name: "react-test-renderer"
