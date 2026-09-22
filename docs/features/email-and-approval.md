@@ -1,6 +1,6 @@
 # Email and approval
 
-**Status:** shipped **Updated:** 2026-09-13
+**Status:** shipped **Updated:** 2026-09-22
 
 ## What it is
 
@@ -12,39 +12,41 @@ Shipped in production. A Postgres `after insert on auth.users` trigger calls `/a
 
 ## Code paths
 
-| Concern                                 | Path                                                               |
-| --------------------------------------- | ------------------------------------------------------------------ |
-| Resend client wrapper                   | `apps/web/src/lib/email/client.ts`                                 |
-| Email templates (new signup, approved)  | `apps/web/src/lib/email/templates.ts`                              |
-| Supabase-triggered signup webhook       | `apps/web/src/app/api/webhooks/new-signup/route.ts`                |
-| Interactive approve API                 | `apps/web/src/app/api/admin/approve-user/route.ts`                 |
-| One-click approve (signed link) API     | `apps/web/src/app/api/admin/approve-user/one-click/route.ts`       |
-| Interactive delete-pending-user API     | `apps/web/src/app/api/admin/delete-user/route.ts`                  |
-| Signed approval token (HMAC)            | `apps/web/src/lib/approval-tokens.ts`                              |
-| Admin UI                                | `apps/web/src/app/(app)/admin/page.tsx`                            |
-| Admin user list component               | `apps/web/src/app/(app)/admin/admin-user-list.tsx`                 |
-| Admin flash message component           | `apps/web/src/app/(app)/admin/admin-flash-message.tsx`             |
-| Admin bootstrap migration (first admin) | `supabase/migrations/20260420000001_admin_bootstrap.sql`           |
-| New-signup webhook trigger migration    | `supabase/migrations/20260421000001_new_signup_webhook.sql`        |
-| Webhook hardening migration             | `supabase/migrations/20260421000002_new_signup_webhook_harden.sql` |
+| Concern                                 | Path                                                                     |
+| --------------------------------------- | ------------------------------------------------------------------------ |
+| Resend client wrapper                   | `apps/web/src/lib/email/client.ts`                                       |
+| Email templates (new signup, approved)  | `apps/web/src/lib/email/templates.ts`                                    |
+| Supabase-triggered signup webhook       | `apps/web/src/app/api/webhooks/new-signup/route.ts`                      |
+| Interactive approve API                 | `apps/web/src/app/api/admin/approve-user/route.ts`                       |
+| One-click approve (signed link) API     | `apps/web/src/app/api/admin/approve-user/one-click/route.ts`             |
+| Interactive delete-pending-user API     | `apps/web/src/app/api/admin/delete-user/route.ts`                        |
+| Signed approval token (HMAC)            | `apps/web/src/lib/approval-tokens.ts`                                    |
+| Admin UI                                | `apps/web/src/app/(app)/admin/page.tsx`                                  |
+| Admin user list component               | `apps/web/src/app/(app)/admin/admin-user-list.tsx`                       |
+| Admin flash message component           | `apps/web/src/app/(app)/admin/admin-flash-message.tsx`                   |
+| Admin bootstrap migration (first admin) | `supabase/migrations/20260420000001_admin_bootstrap.sql`                 |
+| New-signup webhook trigger migration    | `supabase/migrations/20260421000001_new_signup_webhook.sql`              |
+| Webhook hardening migration             | `supabase/migrations/20260421000002_new_signup_webhook_harden.sql`       |
+| Privilege-column guard (approval/admin) | `supabase/migrations/20260922000001_guard_profile_privilege_columns.sql` |
 
 ## Related ADRs
 
 - [0019 — Email Infrastructure and Approval Flow](../adr/0019-email-infrastructure-and-approval-flow.md)
+- [0039 — Trigger Guard on Profile Privilege Columns](../adr/0039-profile-privilege-column-guard.md)
 - [0024 — Real-Time Support Agent](../adr/0024-realtime-support-agent.md) — inbound `support@drafto.eu` (independent pipeline, Zoho Mail rather than Resend); see [`docs/features/support-agent.md`](./support-agent.md).
 
 ## Cross-platform notes
 
 - The entire email + approval pipeline is **web-only** — it runs in Vercel API routes. Mobile and desktop never send email and never receive the admin notification.
 - What mobile/desktop do care about is the **result**: `profiles.is_approved` flipping to `true`. Their `AuthProvider` (see `apps/mobile/src/providers/auth-provider.tsx`, `apps/desktop/src/providers/auth-provider.tsx`) re-queries `profiles.is_approved` on app resume and on an explicit "refresh" action, so approval propagates without a code change on those platforms.
-- Shared pieces: the `profiles.is_approved` / `profiles.is_admin` columns, the RLS policies, and the admin-bootstrap migration — all defined in `supabase/migrations/` and consumed identically by every client.
+- Shared pieces: the `profiles.is_approved` / `profiles.is_admin` columns, the RLS policies, the trigger that guards those two columns, and the admin-bootstrap migration — all defined in `supabase/migrations/` and consumed identically by every client.
 
 ## Modifying safely
 
 - **Invariants:**
   - The webhook route at `/api/webhooks/new-signup` must remain public in the middleware allowlist (`apps/web/src/lib/supabase/middleware.ts` → `PUBLIC_ROUTES` includes `/api/webhooks`). Authenticity is enforced by `WEBHOOK_SECRET`, not by Supabase session.
   - One-click approve tokens are short-lived (72h) and signed with `APPROVAL_LINK_SECRET`. Rotating this secret invalidates every outstanding email link — coordinate with any in-flight admin actions.
-  - Only service-role code should flip `profiles.is_approved`. RLS blocks direct user writes to that column.
+  - Only an admin or a privileged server-side role can change `profiles.is_approved` or `profiles.is_admin`. RLS alone does not enforce this: the "Users can update own profile" policy checks row ownership only. The `guard_profile_privilege_columns` trigger (`supabase/migrations/20260922000001_guard_profile_privilege_columns.sql`) rejects a change to either flag from the `authenticated` / `anon` API roles with `42501` (HTTP 403) unless `public.is_admin()` is true. `service_role` and `postgres` are not gated, so both approval routes and the admin bootstrap keep working. The trigger function must stay `SECURITY INVOKER`, or `current_user` becomes the owner and the guard lets everyone through.
   - When there are zero admins in `profiles`, the webhook falls back to `EMAIL_ADMIN_FALLBACK`. Do not remove this fallback without first proving an admin exists in every environment.
 - **Tests that will catch regressions:**
   - `apps/web/__tests__/unit/new-signup-webhook.test.ts` — HMAC verification, admin discovery, fallback behavior.
@@ -52,6 +54,8 @@ Shipped in production. A Postgres `after insert on auth.users` trigger calls `/a
   - `apps/web/__tests__/unit/admin-delete-user.test.ts` — admin-only deletion of pending signups; approved users are refused (409) and no email is sent.
   - `apps/web/__tests__/unit/approve-user-one-click.test.ts` — signed-link verification and approval flow.
   - `apps/web/__tests__/unit/approval-tokens.test.ts` — HMAC signing, TTL, tamper detection.
+  - `scripts/__tests__/profile-privilege-guard.test.mjs` — static check of the guard migration (runs in CI): the exact guard condition, the 42501 raise, `SECURITY INVOKER`, and migration ordering.
+  - `scripts/__tests__/profile-privilege-guard.live.test.mjs` — opt-in check against the **dev** project: a user's own `PATCH` of either flag gets 403, a `display_name` edit still works, and an admin session and the service role can still approve. Skips unless the dev URL, anon key and service-role key are all set.
   - `apps/web/__tests__/unit/email-client.test.ts` + `email-templates.test.ts` — Resend transport and template rendering.
 - **Files that must change together:**
   - Changing the webhook payload shape: update `apps/web/src/app/api/webhooks/new-signup/route.ts` **and** `supabase/migrations/20260421000001_new_signup_webhook.sql` (the trigger builds the body). Add a new migration rather than editing the old one.
@@ -66,6 +70,12 @@ cd apps/web && pnpm test
 
 # Targeted unit tests for this feature
 cd apps/web && pnpm test -- new-signup-webhook admin-approve-user admin-delete-user approve-user-one-click approval-tokens email-client email-templates
+
+# Guard on is_approved / is_admin: static check, then the live check against the DEV project
+# (skips unless all three are set; refuses any other host)
+node --test scripts/__tests__/profile-privilege-guard.test.mjs
+NEXT_PUBLIC_SUPABASE_URL=https://huhzactreblzcogqkbsd.supabase.co NEXT_PUBLIC_SUPABASE_ANON_KEY=<dev anon key> \
+  SUPABASE_SERVICE_ROLE_KEY=<dev service-role key> node --test scripts/__tests__/profile-privilege-guard.live.test.mjs
 
 # Web E2E (signup + approval happy path)
 set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e -- auth

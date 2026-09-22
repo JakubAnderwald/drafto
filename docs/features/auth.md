@@ -1,6 +1,6 @@
 # Authentication
 
-**Status:** shipped **Updated:** 2026-09-14
+**Status:** shipped **Updated:** 2026-09-22
 
 ## What it is
 
@@ -14,68 +14,69 @@ A signed-in user can permanently delete their own account from inside the app on
 
 ## Code paths
 
-| Concern                                                                                         | Path                                                                |
-| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| Next.js middleware entrypoint                                                                   | `apps/web/middleware.ts`                                            |
-| Middleware session refresh + `is_approved` gate                                                 | `apps/web/src/lib/supabase/middleware.ts`                           |
-| Web Supabase browser client                                                                     | `apps/web/src/lib/supabase/client.ts`                               |
-| Web Supabase server client                                                                      | `apps/web/src/lib/supabase/server.ts`                               |
-| Web Supabase admin (service-role) client                                                        | `apps/web/src/lib/supabase/admin.ts`                                |
-| Login page (email+password, OAuth)                                                              | `apps/web/src/app/(auth)/login/page.tsx`                            |
-| Signup page                                                                                     | `apps/web/src/app/(auth)/signup/page.tsx`                           |
-| Forgot password                                                                                 | `apps/web/src/app/(auth)/forgot-password/page.tsx`                  |
-| Reset password                                                                                  | `apps/web/src/app/(auth)/reset-password/page.tsx`                   |
-| Waiting-for-approval landing                                                                    | `apps/web/src/app/(auth)/waiting-for-approval/page.tsx`             |
-| OAuth callback (PKCE code exchange)                                                             | `apps/web/src/app/auth/callback/route.ts`                           |
-| OAuth button component (web)                                                                    | `apps/web/src/components/auth/oauth-buttons.tsx`                    |
-| OAuth button component (mobile)                                                                 | `apps/mobile/src/components/auth/oauth-buttons.tsx`                 |
-| Admin approval UI                                                                               | `apps/web/src/app/(app)/admin/page.tsx`                             |
-| Admin user list component                                                                       | `apps/web/src/app/(app)/admin/admin-user-list.tsx`                  |
-| Admin flash message                                                                             | `apps/web/src/app/(app)/admin/admin-flash-message.tsx`              |
-| Admin panel close button (click / Escape)                                                       | `apps/web/src/app/(app)/admin/admin-close-button.tsx`               |
-| Admin panel Escape guard                                                                        | `apps/web/src/app/(app)/admin/should-close-on-escape.ts`            |
-| Admin approve-user API                                                                          | `apps/web/src/app/api/admin/approve-user/route.ts`                  |
-| Admin delete-pending-user API                                                                   | `apps/web/src/app/api/admin/delete-user/route.ts`                   |
-| Self-service account deletion API (`DELETE /api/account`, last-admin guard)                     | `apps/web/src/app/api/account/route.ts`                             |
-| Account route auth (session cookie or bearer token)                                             | `apps/web/src/lib/account/authenticate-account-request.ts`          |
-| Shared account-deletion helper (`deleteUserAccount`)                                            | `apps/web/src/lib/account/delete-user.ts`                           |
-| User attachment sweeps: strict `removeAllUserAttachments` + best-effort `removeUserAttachments` | `apps/web/src/lib/storage/remove-user-attachments.ts`               |
-| Web settings "Delete account" section                                                           | `apps/web/src/components/settings/delete-account-section.tsx`       |
-| Settings page (renders the section last)                                                        | `apps/web/src/app/settings/page.tsx`                                |
-| Confirm dialog (`confirmDisabled` for type-to-confirm)                                          | `apps/web/src/components/ui/confirm-dialog.tsx`                     |
-| "Your account has been deleted." notice on `/login?deleted=1`                                   | `apps/web/src/components/auth/account-deleted-notice.tsx`           |
-| Public deletion explainer (`/account/delete`)                                                   | `apps/web/src/app/account/delete/page.tsx`                          |
-| Client request + failure copy (`requestAccountDeletion`, `describeAccountDeletionFailure`)      | `packages/shared/src/account/request-account-deletion.ts`           |
-| Confirmation word (`ACCOUNT_DELETE_CONFIRMATION`)                                               | `packages/shared/src/constants.ts`                                  |
-| One-click approve (email link)                                                                  | `apps/web/src/app/api/admin/approve-user/one-click/route.ts`        |
-| Signed approval token helper                                                                    | `apps/web/src/lib/approval-tokens.ts`                               |
-| Mobile login screen                                                                             | `apps/mobile/app/(auth)/login.tsx`                                  |
-| Mobile signup screen                                                                            | `apps/mobile/app/(auth)/signup.tsx`                                 |
-| Mobile forgot password                                                                          | `apps/mobile/app/(auth)/forgot-password.tsx`                        |
-| Mobile reset password                                                                           | `apps/mobile/app/(auth)/reset-password.tsx`                         |
-| Mobile recovery deep-link parsing                                                               | `apps/mobile/src/lib/auth-recovery.ts`                              |
-| Mobile route guard (recovery branch)                                                            | `apps/mobile/app/_layout.tsx`                                       |
-| Mobile waiting-for-approval                                                                     | `apps/mobile/app/(auth)/waiting-for-approval.tsx`                   |
-| Mobile auth provider (`signOut`, `deleteAccount`, shared `resetLocalSession`)                   | `apps/mobile/src/providers/auth-provider.tsx`                       |
-| Mobile "Delete account" row (disabled offline)                                                  | `apps/mobile/app/(tabs)/settings.tsx`                               |
-| Mobile type-`DELETE` dialog                                                                     | `apps/mobile/src/components/delete-account-dialog.tsx`              |
-| Mobile web API origin (`extra.apiUrl`)                                                          | `apps/mobile/app.config.ts`                                         |
-| Desktop login screen                                                                            | `apps/desktop/src/screens/login.tsx`                                |
-| Desktop signup screen                                                                           | `apps/desktop/src/screens/signup.tsx`                               |
-| Desktop forgot password                                                                         | `apps/desktop/src/screens/forgot-password.tsx`                      |
-| Desktop reset password                                                                          | `apps/desktop/src/screens/reset-password.tsx`                       |
-| Desktop recovery deep-link parsing                                                              | `apps/desktop/src/lib/auth-recovery.ts`                             |
-| Desktop route switch (recovery branch)                                                          | `apps/desktop/src/navigation/app-navigator.tsx`                     |
-| Desktop waiting-for-approval                                                                    | `apps/desktop/src/screens/waiting-for-approval.tsx`                 |
-| Desktop auth provider (`signOut`, `deleteAccount`, shared `resetLocalSession`)                  | `apps/desktop/src/providers/auth-provider.tsx`                      |
-| Desktop sidebar user section (email + app menu trigger; hosts the delete panel)                 | `apps/desktop/src/components/sidebar/notebooks-sidebar.tsx`         |
-| Desktop app menu (⋯): "Sign out" / "Delete account…" (disabled offline)                         | `apps/desktop/src/components/sidebar/app-menu.tsx`                  |
-| Desktop inline type-`DELETE` panel                                                              | `apps/desktop/src/components/sidebar/delete-account-panel.tsx`      |
-| Desktop web API origin (`apiUrl` from `API_URL`)                                                | `apps/desktop/src/lib/config.ts`, `apps/desktop/src/types/env.d.ts` |
-| Support agent: always escalate emailed deletion / data-rights requests                          | `scripts/support-agent-prompt.md` (step 5.5)                        |
-| Initial schema + RLS + `profiles` table                                                         | `supabase/migrations/20260224000001_initial_schema.sql`             |
-| RLS recursion fix                                                                               | `supabase/migrations/20260225000001_fix_rls_recursion.sql`          |
-| Admin bootstrap (first approved user)                                                           | `supabase/migrations/20260420000001_admin_bootstrap.sql`            |
+| Concern                                                                                         | Path                                                                     |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Next.js middleware entrypoint                                                                   | `apps/web/middleware.ts`                                                 |
+| Middleware session refresh + `is_approved` gate                                                 | `apps/web/src/lib/supabase/middleware.ts`                                |
+| Web Supabase browser client                                                                     | `apps/web/src/lib/supabase/client.ts`                                    |
+| Web Supabase server client                                                                      | `apps/web/src/lib/supabase/server.ts`                                    |
+| Web Supabase admin (service-role) client                                                        | `apps/web/src/lib/supabase/admin.ts`                                     |
+| Login page (email+password, OAuth)                                                              | `apps/web/src/app/(auth)/login/page.tsx`                                 |
+| Signup page                                                                                     | `apps/web/src/app/(auth)/signup/page.tsx`                                |
+| Forgot password                                                                                 | `apps/web/src/app/(auth)/forgot-password/page.tsx`                       |
+| Reset password                                                                                  | `apps/web/src/app/(auth)/reset-password/page.tsx`                        |
+| Waiting-for-approval landing                                                                    | `apps/web/src/app/(auth)/waiting-for-approval/page.tsx`                  |
+| OAuth callback (PKCE code exchange)                                                             | `apps/web/src/app/auth/callback/route.ts`                                |
+| OAuth button component (web)                                                                    | `apps/web/src/components/auth/oauth-buttons.tsx`                         |
+| OAuth button component (mobile)                                                                 | `apps/mobile/src/components/auth/oauth-buttons.tsx`                      |
+| Admin approval UI                                                                               | `apps/web/src/app/(app)/admin/page.tsx`                                  |
+| Admin user list component                                                                       | `apps/web/src/app/(app)/admin/admin-user-list.tsx`                       |
+| Admin flash message                                                                             | `apps/web/src/app/(app)/admin/admin-flash-message.tsx`                   |
+| Admin panel close button (click / Escape)                                                       | `apps/web/src/app/(app)/admin/admin-close-button.tsx`                    |
+| Admin panel Escape guard                                                                        | `apps/web/src/app/(app)/admin/should-close-on-escape.ts`                 |
+| Admin approve-user API                                                                          | `apps/web/src/app/api/admin/approve-user/route.ts`                       |
+| Admin delete-pending-user API                                                                   | `apps/web/src/app/api/admin/delete-user/route.ts`                        |
+| Self-service account deletion API (`DELETE /api/account`, last-admin guard)                     | `apps/web/src/app/api/account/route.ts`                                  |
+| Account route auth (session cookie or bearer token)                                             | `apps/web/src/lib/account/authenticate-account-request.ts`               |
+| Shared account-deletion helper (`deleteUserAccount`)                                            | `apps/web/src/lib/account/delete-user.ts`                                |
+| User attachment sweeps: strict `removeAllUserAttachments` + best-effort `removeUserAttachments` | `apps/web/src/lib/storage/remove-user-attachments.ts`                    |
+| Web settings "Delete account" section                                                           | `apps/web/src/components/settings/delete-account-section.tsx`            |
+| Settings page (renders the section last)                                                        | `apps/web/src/app/settings/page.tsx`                                     |
+| Confirm dialog (`confirmDisabled` for type-to-confirm)                                          | `apps/web/src/components/ui/confirm-dialog.tsx`                          |
+| "Your account has been deleted." notice on `/login?deleted=1`                                   | `apps/web/src/components/auth/account-deleted-notice.tsx`                |
+| Public deletion explainer (`/account/delete`)                                                   | `apps/web/src/app/account/delete/page.tsx`                               |
+| Client request + failure copy (`requestAccountDeletion`, `describeAccountDeletionFailure`)      | `packages/shared/src/account/request-account-deletion.ts`                |
+| Confirmation word (`ACCOUNT_DELETE_CONFIRMATION`)                                               | `packages/shared/src/constants.ts`                                       |
+| One-click approve (email link)                                                                  | `apps/web/src/app/api/admin/approve-user/one-click/route.ts`             |
+| Signed approval token helper                                                                    | `apps/web/src/lib/approval-tokens.ts`                                    |
+| Mobile login screen                                                                             | `apps/mobile/app/(auth)/login.tsx`                                       |
+| Mobile signup screen                                                                            | `apps/mobile/app/(auth)/signup.tsx`                                      |
+| Mobile forgot password                                                                          | `apps/mobile/app/(auth)/forgot-password.tsx`                             |
+| Mobile reset password                                                                           | `apps/mobile/app/(auth)/reset-password.tsx`                              |
+| Mobile recovery deep-link parsing                                                               | `apps/mobile/src/lib/auth-recovery.ts`                                   |
+| Mobile route guard (recovery branch)                                                            | `apps/mobile/app/_layout.tsx`                                            |
+| Mobile waiting-for-approval                                                                     | `apps/mobile/app/(auth)/waiting-for-approval.tsx`                        |
+| Mobile auth provider (`signOut`, `deleteAccount`, shared `resetLocalSession`)                   | `apps/mobile/src/providers/auth-provider.tsx`                            |
+| Mobile "Delete account" row (disabled offline)                                                  | `apps/mobile/app/(tabs)/settings.tsx`                                    |
+| Mobile type-`DELETE` dialog                                                                     | `apps/mobile/src/components/delete-account-dialog.tsx`                   |
+| Mobile web API origin (`extra.apiUrl`)                                                          | `apps/mobile/app.config.ts`                                              |
+| Desktop login screen                                                                            | `apps/desktop/src/screens/login.tsx`                                     |
+| Desktop signup screen                                                                           | `apps/desktop/src/screens/signup.tsx`                                    |
+| Desktop forgot password                                                                         | `apps/desktop/src/screens/forgot-password.tsx`                           |
+| Desktop reset password                                                                          | `apps/desktop/src/screens/reset-password.tsx`                            |
+| Desktop recovery deep-link parsing                                                              | `apps/desktop/src/lib/auth-recovery.ts`                                  |
+| Desktop route switch (recovery branch)                                                          | `apps/desktop/src/navigation/app-navigator.tsx`                          |
+| Desktop waiting-for-approval                                                                    | `apps/desktop/src/screens/waiting-for-approval.tsx`                      |
+| Desktop auth provider (`signOut`, `deleteAccount`, shared `resetLocalSession`)                  | `apps/desktop/src/providers/auth-provider.tsx`                           |
+| Desktop sidebar user section (email + app menu trigger; hosts the delete panel)                 | `apps/desktop/src/components/sidebar/notebooks-sidebar.tsx`              |
+| Desktop app menu (⋯): "Sign out" / "Delete account…" (disabled offline)                         | `apps/desktop/src/components/sidebar/app-menu.tsx`                       |
+| Desktop inline type-`DELETE` panel                                                              | `apps/desktop/src/components/sidebar/delete-account-panel.tsx`           |
+| Desktop web API origin (`apiUrl` from `API_URL`)                                                | `apps/desktop/src/lib/config.ts`, `apps/desktop/src/types/env.d.ts`      |
+| Support agent: always escalate emailed deletion / data-rights requests                          | `scripts/support-agent-prompt.md` (step 5.5)                             |
+| Initial schema + RLS + `profiles` table                                                         | `supabase/migrations/20260224000001_initial_schema.sql`                  |
+| RLS recursion fix                                                                               | `supabase/migrations/20260225000001_fix_rls_recursion.sql`               |
+| Admin bootstrap (first approved user)                                                           | `supabase/migrations/20260420000001_admin_bootstrap.sql`                 |
+| Guard on `is_admin` / `is_approved` (users cannot grant themselves either flag)                 | `supabase/migrations/20260922000001_guard_profile_privilege_columns.sql` |
 
 ## Related ADRs
 
@@ -84,6 +85,7 @@ A signed-in user can permanently delete their own account from inside the app on
 - [0019 — Email Infrastructure and Approval Flow](../adr/0019-email-infrastructure-and-approval-flow.md)
 - [0034 — Password Recovery via Custom-Scheme Deep Links](../adr/0034-password-recovery-deep-links-on-mobile-and-desktop.md)
 - [0038 — Account Deletion Endpoint for All Platforms](../adr/0038-account-deletion-endpoint.md)
+- [0039 — Trigger Guard on Profile Privilege Columns](../adr/0039-profile-privilege-column-guard.md)
 
 ## Cross-platform notes
 
@@ -227,7 +229,7 @@ Why not the admin page: `/api/admin/delete-user` only deletes **pending** users.
 
 - **Invariants:**
   - The middleware in `apps/web/src/lib/supabase/middleware.ts` is the only server-side gate between unauthenticated / unapproved users and the app shell. Every new user-scoped route must pass through it (i.e., not be added to `PUBLIC_ROUTES` unless it is truly public).
-  - `profiles.is_approved` defaults to `false` and is NOT user-writable. Only the service-role client (via `apps/web/src/lib/supabase/admin.ts`) should flip it.
+  - `profiles.is_approved` and `profiles.is_admin` default to `false` and are NOT user-writable. RLS cannot enforce that on its own, because a policy cannot restrict columns and "Users can update own profile" only checks row ownership. The `guard_profile_privilege_columns` trigger does it: any change to either flag from the `authenticated` / `anon` roles fails with `42501` (HTTP 403) unless `public.is_admin()` is true. Admins (through their own session) and `service_role` / `postgres` can still change them. Keep the trigger function `SECURITY INVOKER`.
   - RLS policies reference both `auth.uid()` and `is_approved` — never add a policy that only checks `auth.uid()` on user data tables.
   - `/api/admin/delete-user` permanently deletes **pending** users only. `auth.admin.deleteUser` cannot be undone, so every guard runs before it: caller is an admin, target is not the caller, target exists, and target is neither approved nor an admin (409). It also refuses (409) any account that already owns notebooks, notes or API keys, checked with the service-role client. A signup that was never approved cannot own any of those rows, because each table's insert policy requires approval. The actual deletion goes through the shared `deleteUserAccount` helper, the same one `/api/account` uses. It sweeps storage strictly first (a failure returns 500 and keeps the user), then deletes the auth user, which takes the profile and every user-owned row with it through `on delete cascade`, then runs a best-effort sweep.
   - `/api/account` is in `PUBLIC_ROUTES` and authenticates itself through `authenticateAccountRequest` only. Never switch it to `getAuthenticatedUserFast` or read `x-verified-*` headers (forgeable on public routes), and never accept a user id from the body, query or params. Any route added under `/api/account/*` or `/account/delete/*` is public by prefix match and needs the same care.
@@ -247,6 +249,8 @@ Why not the admin page: `/api/admin/delete-user` only deletes **pending** users.
   - `apps/web/__tests__/unit/middleware.test.ts` also covers `/api/account` and `/account/delete` being public, and a cookie-less bearer `DELETE /api/account` reaching the route instead of redirecting.
   - `packages/shared/__tests__/request-account-deletion.test.ts` — every `AccountDeletionResult` branch, including a redirected HTML 200 mapping to `failed`.
   - `apps/web/__tests__/integration/delete-account-section.test.tsx`, `ui/confirm-dialog.test.tsx` (`confirmDisabled`), `login.test.tsx` (the deleted notice), `settings.test.tsx` (section rendered last), `account-delete-page.test.tsx` and `legal-pages.test.tsx` (in-app flow first, `support@drafto.eu` only).
+  - `scripts/__tests__/profile-privilege-guard.test.mjs` — static check of the privilege guard migration, run in CI: the exact guard condition, the `42501` raise, `SECURITY INVOKER`, and that it sorts after `public.is_admin()` and the admin bootstrap.
+  - `scripts/__tests__/profile-privilege-guard.live.test.mjs` — creates real users on **dev** and asserts that a user's own `PATCH` of `is_approved` / `is_admin` gets 403 and changes nothing, that a `display_name` edit still works, and that an admin session and the service role can still approve. It **skips** unless `NEXT_PUBLIC_SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are exported and `NEXT_PUBLIC_SUPABASE_URL`'s host is exactly `huhzactreblzcogqkbsd.supabase.co`, so CI skips it. Run it once before the migration reaches a project too: the self-escalation test must fail there, which proves the check can see the hole.
   - `apps/web/__tests__/integration/account-deletion.live.test.ts` — creates a real user on **dev** with a notebook, note, attachment row and object, and API key, runs `deleteUserAccount`, and asserts everything is gone. It **skips** unless `SUPABASE_SERVICE_ROLE_KEY` is exported and `NEXT_PUBLIC_SUPABASE_URL`'s host is exactly `huhzactreblzcogqkbsd.supabase.co`. Vitest does not load `.env.local`, so a plain `pnpm test` and CI skip it.
   - `apps/web/e2e/account-deletion.spec.ts` — Playwright: `/account/delete` loads signed out; in settings, typed-`DELETE` gating and cancel work; a mocked success (with the Supabase logout call mocked too) lands on `/login?deleted=1` with the notice. The shared E2E user is never really deleted.
   - `apps/mobile/__tests__/components/delete-account-dialog.test.tsx`, `apps/mobile/__tests__/screens/settings.test.tsx` and `apps/mobile/__tests__/providers/auth-provider.test.tsx` — confirm gating, the offline-disabled row, and `deleteAccount()` resetting only on `ok` with no flush and a local-scope sign-out, while `signOut()` keeps the default scope.
@@ -266,6 +270,7 @@ Why not the admin page: `/api/admin/delete-user` only deletes **pending** users.
   - `apps/mobile/e2e/06-forgot-password.yaml` — Maestro: the recovery deep link opens in-app rather than bouncing to the website.
 - **Files that must change together:**
   - Adding a new public route: update `PUBLIC_ROUTES` in `apps/web/src/lib/supabase/middleware.ts` **and** add a test case in `middleware.test.ts`.
+  - Adding a `profiles` column that users must not set for themselves: add it to the guard in a new migration (`create or replace function public.guard_profile_privilege_columns()`), and extend both `profile-privilege-guard` tests.
   - Changing the `profiles` shape: update `apps/web/src/lib/supabase/database.types.ts`, the RLS policies, and every `AuthProvider` (web middleware, mobile provider, desktop provider) that reads the column.
   - Adding a table with a foreign key to `auth.users`: declare it `on delete cascade`. Otherwise `deleteUser` fails, and both `DELETE /api/account` and `/api/admin/delete-user` return 500 for any user who owns a row in it, after their storage has already been swept. If only approved users can insert into the table, also add it to `USER_OWNED_TABLES` in the admin route. List it under "What is deleted" on `/account/delete` if users would recognise it as their data.
   - Changing the attachments storage path layout (`{userId}/{noteId}/{fileName}`): both sweeps in `apps/web/src/lib/storage/remove-user-attachments.ts` (strict and best-effort share the walker) walk the `{userId}/` prefix. Update them, `remove-user-attachments.test.ts`, `account-deletion.live.test.ts`, and step 4 of the manual procedure in [Account deletion](#account-deletion), or account deletion will leave files behind.
@@ -292,6 +297,12 @@ cd packages/shared && pnpm test
 # Account deletion against the real DEV project (skips unless both are set; refuses any other host)
 NEXT_PUBLIC_SUPABASE_URL=https://huhzactreblzcogqkbsd.supabase.co SUPABASE_SERVICE_ROLE_KEY=<dev service-role key> \
   pnpm --filter @drafto/web exec vitest run __tests__/integration/account-deletion.live.test.ts
+
+# Guard on is_approved / is_admin: static check, then the live check against the DEV project
+# (skips unless all three are set; refuses any other host)
+node --test scripts/__tests__/profile-privilege-guard.test.mjs
+NEXT_PUBLIC_SUPABASE_URL=https://huhzactreblzcogqkbsd.supabase.co NEXT_PUBLIC_SUPABASE_ANON_KEY=<dev anon key> \
+  SUPABASE_SERVICE_ROLE_KEY=<dev service-role key> node --test scripts/__tests__/profile-privilege-guard.live.test.mjs
 
 # Web E2E (requires E2E_TEST_EMAIL / E2E_TEST_PASSWORD in apps/web/.env.local)
 set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e -- auth

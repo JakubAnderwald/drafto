@@ -71,3 +71,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0036](./0036-factory-coderabbit-cli-gap-fill.md)                    | Factory CodeRabbit CLI Gap-Fill Review Lane          | Accepted           | 2026-09-12 |
 | [0037](./0037-manual-coderabbit-cli-review.md)                       | Manual CodeRabbit CLI Review for Hand-Made PRs       | Accepted           | 2026-09-14 |
 | [0038](./0038-account-deletion-endpoint.md)                          | Account Deletion Endpoint for All Platforms          | Accepted           | 2026-09-14 |
+| [0039](./0039-profile-privilege-column-guard.md)                     | Trigger Guard on Profile Privilege Columns           | Accepted           | 2026-09-22 |
