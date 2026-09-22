@@ -3,9 +3,10 @@
 // path an attacker holding the public anon key and their own JWT would use.
 //
 // Opt-in: it runs only when NEXT_PUBLIC_SUPABASE_ANON_KEY and
-// SUPABASE_SERVICE_ROLE_KEY are exported and NEXT_PUBLIC_SUPABASE_URL's host is
-// exactly the dev project. The CI scripts job exports none of them, so it skips
-// there, and it refuses any other project, so it can never touch production.
+// SUPABASE_SERVICE_ROLE_KEY are exported and NEXT_PUBLIC_SUPABASE_URL's origin
+// is exactly the dev project over HTTPS. The CI scripts job exports none of
+// them, so it skips there, and it refuses any other project or a plain-http
+// origin, so it can never touch production or send a key in cleartext.
 //
 // Run it once BEFORE applying the migration to dev as well. The self-escalation
 // test must fail then, which proves dev's `authenticated` role really holds
@@ -25,7 +26,7 @@ const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 
 function isDevProject(url) {
   try {
-    return new URL(url).hostname === `${DEV_PROJECT_REF}.supabase.co`;
+    return new URL(url).origin === `https://${DEV_PROJECT_REF}.supabase.co`;
   } catch {
     return false;
   }
