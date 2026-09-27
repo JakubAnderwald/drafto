@@ -27,9 +27,10 @@ serves both iOS and macOS under bundle id `eu.drafto.mobile`. Neither lane passe
 platform's version.
 
 **Submissions stalled on the questionnaire.** Neither lane sent
-`submission_information`, so every upload left the IDFA, export-compliance and
-content-rights questions unanswered — each one a manual blocker before Apple
-will accept the submission.
+`submission_information`, so every upload left the export-compliance and
+content-rights questions unanswered — each one a manual blocker before Apple will
+accept the submission. (Apple has since retired the IDFA question, and fastlane
+2.232.2 never sends `add_id_info_uses_idfa` at all.)
 
 **The pipeline announced releases that had not happened.** Both lanes called
 `comment_released_issues` on the App Store path, and
@@ -60,18 +61,43 @@ The build number defaults to the newest build of the version in that app's
 `package.json` (`latest_testflight_build_number`, filtered by version, platform
 and `app_identifier`) and can be pinned with `build_number:`. Options
 `submit:` (default `true`), `phased_release:` (default `true`) and
-`automatic_release:` (default `false`) map onto `deliver`. Every App Store upload
-— `promote` and the retained rebuild lanes — now passes explicit `app_version:`,
-`platform:`, `app_identifier:` and a shared `APPSTORE_SUBMISSION_INFORMATION`
-constant (no IDFA, exempt encryption, no third-party content). Note what
-`deliver` does with that last one: it reads the hash inside
-`Deliver::SubmitForReview`, which `Runner#run` reaches only when
-`submit_for_review` is true. The answers therefore reach App Store Connect on a
-lane that submits — `promote`, or `production submit:true` — and an upload-only
-`production` run still leaves the three questions for the manual submit. The same
-is true of `build_number`: `promote submit:false` resolves and validates a build
-but attaches nothing, because `select_build` is only called from the submission
-path.
+`automatic_release:` (default `false`). Every App Store upload — `promote` and the
+retained rebuild lanes — now passes explicit `app_version:`, `platform:`,
+`app_identifier:` and a shared `APPSTORE_SUBMISSION_INFORMATION` constant (no
+IDFA, exempt encryption, no third-party content).
+
+**`skip_metadata` makes two of those options unreachable through `deliver`, so the
+lane applies them itself.** `phased_release` and `automatic_release` are read in
+exactly one place in fastlane 2.232.2 — `Deliver::UploadMetadata#upload` derives
+`releaseType` from `automatic_release` and creates or deletes the phased release —
+and that method returns on its first line when `skip_metadata` is set. A promote
+lane must skip metadata (the repo keeps no `deliver` metadata directory; uploading
+it would blank the version page), so passing the two options to
+`upload_to_app_store` applies nothing at all. Each Fastfile therefore carries a
+mirrored `apply_appstore_release_settings` helper that patches App Store Connect
+over Spaceship — `releaseType` = `MANUAL` / `AFTER_APPROVAL`, and
+create/delete of the `appStoreVersionPhasedRelease` — **before** the submission,
+in `deliver`'s own order (`verify_version` → metadata → submit), so the version is
+still `PREPARE_FOR_SUBMISSION` rather than in review. Any failure is a hard stop,
+because nothing has been submitted yet and the alternative is submitting under
+settings the lane then reports as applied. The options stay on the
+`upload_to_app_store` call as a declaration of intent, and are annotated there as
+inert.
+
+That mattered more than a wrong log line: with `releaseType` untouched, App Store
+Connect preselects _Automatically release this version_, so the first submission —
+reported by the lane as manual — would have gone public the moment Apple approved
+it.
+
+Two options in the same family are narrower than they look. `submission_information`
+is read only inside `Deliver::SubmitForReview`, which `Runner#run` reaches only when
+`submit_for_review` is true, and it reads just two of the three keys
+(`export_compliance_uses_encryption`, `content_rights_contains_third_party_content`);
+`add_id_info_uses_idfa` appears nowhere in fastlane 2.232.2, since Apple retired
+that submission question. An upload-only `production` run sends none of them. The
+same narrowness applies to `build_number`: `promote submit:false` resolves and
+validates a build but attaches nothing, because `select_build` is only called from
+the submission path.
 
 Three further consequences of that decision:
 
@@ -91,20 +117,23 @@ Three further consequences of that decision:
    platform/version and submission answers, and accept `submit:true`.
 
 **The factory must never invoke `promote`.** `PROD_DENYLIST` gains
-`/release:promote\b/i` and `/fastlane\s+\w+\s+promote\b/i`, tested against all
-four spellings. Phase-D auto-dispatch stays beta-only; putting the app in front
-of App Review remains a human act, consistent with CLAUDE.md "Release
-Authorization".
+`/release:promote\b/i` and `/fastlane\s+(\w+\s+)?promote\b/i`, tested against
+every spelling. The platform token is optional — and `production` was widened the
+same way — because both Fastfiles declare a `default_platform`, which makes a bare
+`bundle exec fastlane promote` in `apps/desktop` a real Mac App Store submission.
+Phase-D auto-dispatch stays beta-only; putting the app in front of App Review
+remains a human act, consistent with CLAUDE.md "Release Authorization".
 
 ## Consequences
 
 - **Positive**: the binary Apple reviews is byte-for-byte the one testers
   approved. macOS submission no longer requires a build at all, removing the
   fossil-checkout constraint and the React-19.2 crash risk from the release
-  step. A submitting lane answers the IDFA / encryption / content-rights
-  questionnaire itself, so the submission does not stall on it.
-  Customers are never told an update is live before it is. The factory cannot
-  submit to App Review even by accident.
+  step. A submitting lane answers the export-compliance and content-rights
+  questions itself, so the submission does not stall on them, and it sets the
+  release type and phased release explicitly instead of inheriting App Store
+  Connect's "release automatically" default. Customers are never told an update is
+  live before it is. The factory cannot submit to App Review even by accident.
 - **Negative**: `promote` submits _whatever is in App Store Connect_, so the
   operator must know which build that is — hence the version-scoped default, the
   hard `UI.user_error!` when no build exists, and the refusal to submit a build

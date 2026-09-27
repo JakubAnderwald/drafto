@@ -554,6 +554,53 @@ describe("App Store promote lanes", () => {
       }
     });
 
+    // fastlane 2.232.2 reads `phased_release` and `automatic_release` in exactly
+    // one place — Deliver::UploadMetadata#upload (releaseType at
+    // deliver/lib/deliver/upload_metadata.rb:181-196, the phased release at
+    // :313-331) — and that method returns on its first line when `skip_metadata`
+    // is set (:88-89). Passing them to `upload_to_app_store` alongside
+    // `skip_metadata: true`, which a promote lane must set, therefore applies
+    // NOTHING, while the lane prints "Phased release … on" and "Release: manual".
+    // App Store Connect preselects "Automatically release this version", so a
+    // submission reported as manual would go public the instant Apple approved
+    // it. The lane has to patch App Store Connect itself.
+    it(`${f.path} applies the release settings deliver drops under skip_metadata`, () => {
+      const src = read(f.path);
+      const lane = promoteLaneBody(src);
+
+      assert.match(
+        lane,
+        /if submit\r?\n\s+apply_appstore_release_settings\(/,
+        "promote must apply the release settings itself, only on a submitting run",
+      );
+
+      // Order is load-bearing: PREPARE_FOR_SUBMISSION is unambiguously editable,
+      // a version already in review is not. Patch before submitting, never after.
+      const applyAt = lane.indexOf("apply_appstore_release_settings(");
+      const uploadAt = lane.indexOf("upload_to_app_store(");
+      assert.notEqual(uploadAt, -1, "promote has no upload_to_app_store call");
+      assert.ok(
+        applyAt < uploadAt,
+        "release settings must be applied BEFORE the submission, while the version is still editable",
+      );
+
+      assert.match(
+        src,
+        /^def apply_appstore_release_settings\(/m,
+        "apply_appstore_release_settings is not defined in this Fastfile",
+      );
+      for (const bit of [
+        /releaseType: release_type/,
+        /ReleaseType::AFTER_APPROVAL/,
+        /ReleaseType::MANUAL/,
+        /create_app_store_version_phased_release\(/,
+        /PhasedReleaseState::INACTIVE/,
+        /existing\.delete!/,
+      ]) {
+        assert.match(src, bit, `apply_appstore_release_settings is missing ${bit}`);
+      }
+    });
+
     it(`${f.path} answers the IDFA / encryption / content-rights questions`, () => {
       const src = read(f.path);
       assert.match(src, /^APPSTORE_SUBMISSION_INFORMATION = \{$/m);

@@ -14,11 +14,14 @@ PROJECT_ROOT = File.expand_path("..", __dir__)
 # ships no third-party content.
 #
 # Passed on every App Store upload, but deliver reads the hash only inside
-# Deliver::SubmitForReview, which Runner#run reaches only when
-# submit_for_review is true. So the answers actually reach App Store Connect
-# exactly when a lane submits (`promote`, or `production submit:true`); an
-# upload-only `production` run still leaves the three questions for whoever
-# presses Submit in App Store Connect.
+# Deliver::SubmitForReview, which Runner#run reaches only when submit_for_review
+# is true — and it reads only two of the three keys: update_export_compliance
+# sends export_compliance_uses_encryption, update_submission_information sends
+# content_rights_contains_third_party_content. `add_id_info_uses_idfa` appears
+# nowhere in fastlane 2.232.2 (Apple retired the IDFA submission question), so it
+# is kept as a declaration of intent, not because it travels anywhere. An
+# upload-only `production` run sends none of them and leaves the questionnaire to
+# whoever presses Submit in App Store Connect.
 APPSTORE_SUBMISSION_INFORMATION = {
   add_id_info_uses_idfa: false,
   export_compliance_uses_encryption: false,
@@ -222,6 +225,91 @@ def assert_build_processed(app_identifier:, asc_platform:, build_number:)
   end
 end
 
+# Apply the App Store release settings `deliver` silently drops, and return the
+# editable version it configured.
+#
+# In fastlane 2.232.2 `phased_release` and `automatic_release` are read in exactly
+# ONE place: Deliver::UploadMetadata#upload derives `releaseType` from
+# automatic_release (deliver/lib/deliver/upload_metadata.rb:181-196) and creates
+# or deletes the phased release (:313-331). That method returns on its first line
+# when skip_metadata is set (:88-89), and nothing else under deliver/lib touches
+# either option. A promote lane MUST skip metadata — the repo keeps no `deliver`
+# metadata directory, so uploading it would blank the App Store Connect version
+# page — and therefore cannot get these applied by passing them to
+# upload_to_app_store. It has to patch App Store Connect itself.
+#
+# This is not cosmetic. With releaseType left alone it keeps whatever the version
+# already holds, and App Store Connect preselects "Automatically release this
+# version" — so a submission the lane reported as manual would go public the
+# moment Apple approved it, and `phased_release:false` would not turn phasing off.
+#
+# Runs BEFORE the submission, which is also deliver's own order (Runner#run:
+# verify_version → upload_metadata → … → submit_for_review), so the version is
+# still PREPARE_FOR_SUBMISSION when patched rather than in review. Every failure
+# is a hard stop: nothing has been submitted yet, so a re-run costs nothing,
+# whereas continuing would submit under settings the lane is about to claim it
+# applied.
+def apply_appstore_release_settings(asc_platform:, app_identifier:, app_version:, phased_release:, automatic_release:)
+  platform = Spaceship::ConnectAPI::Platform.map(asc_platform)
+  app = Spaceship::ConnectAPI::App.find(app_identifier)
+  if app.nil?
+    UI.user_error!(
+      "#{app_identifier} not found in App Store Connect — cannot set the release settings for " \
+      "#{app_version} (#{asc_platform})."
+    )
+  end
+
+  # Idempotent, and the very call deliver's own verify_version makes moments later
+  # with the same arguments: renames the editable version to app_version, or
+  # creates it when the platform has none.
+  app.ensure_version!(app_version, platform: platform)
+
+  version = app.get_edit_app_store_version(platform: platform)
+  if version.nil?
+    UI.user_error!(
+      "No editable #{asc_platform} App Store version for #{app_version}. Create it in App Store " \
+      "Connect (App Store → #{asc_platform.to_s.casecmp('osx').zero? ? 'macOS' : 'iOS'} App) and re-run."
+    )
+  end
+
+  release_type =
+    if automatic_release
+      Spaceship::ConnectAPI::AppStoreVersion::ReleaseType::AFTER_APPROVAL
+    else
+      Spaceship::ConnectAPI::AppStoreVersion::ReleaseType::MANUAL
+    end
+  version.update(attributes: { releaseType: release_type })
+  UI.message("Release type set to #{release_type} on #{asc_platform} version #{version.version_string}")
+
+  # App Store Connect answers a "no data" error rather than an empty body when a
+  # version has no phased release, so this has to be rescued — deliver rescues the
+  # same call the same way (upload_metadata.rb:314-319).
+  existing =
+    begin
+      version.fetch_app_store_version_phased_release
+    rescue StandardError
+      nil
+    end
+
+  if phased_release
+    if existing
+      UI.message("Phased release already configured (#{existing.phased_release_state})")
+    else
+      version.create_app_store_version_phased_release(
+        attributes: {
+          phasedReleaseState: Spaceship::ConnectAPI::AppStoreVersionPhasedRelease::PhasedReleaseState::INACTIVE
+        }
+      )
+      UI.message("Phased release created — INACTIVE until the version is released")
+    end
+  elsif existing
+    existing.delete!
+    UI.message("Phased release removed — every user gets the update at once")
+  end
+
+  version
+end
+
 # ---------- macOS ----------
 
 platform :mac do
@@ -258,6 +346,25 @@ platform :mac do
       requested: options[:build_number]
     )
 
+    # deliver cannot apply phased_release:/automatic_release: under
+    # skip_metadata: true (see apply_appstore_release_settings), so set them here,
+    # before anything is submitted. Gated on submit: submit:false is a dry run and
+    # must leave the version's release settings untouched.
+    if submit
+      apply_appstore_release_settings(
+        asc_platform: "osx",
+        app_identifier: BUNDLE_ID,
+        app_version: app_version,
+        phased_release: phased_release,
+        automatic_release: automatic_release
+      )
+    end
+
+    # automatic_release:/phased_release: are INERT on this call — deliver reads
+    # them only in UploadMetadata#upload, which returns immediately under
+    # skip_metadata: true. apply_appstore_release_settings above is what actually
+    # applies them; they stay here because the spec asks for them and because a
+    # future fastlane that honours them would set the same two values.
     upload_to_app_store(
       api_key: api_key,
       app_identifier: BUNDLE_ID,
@@ -295,6 +402,11 @@ platform :mac do
       UI.message("Phased release for automatic updates: #{phased_release ? 'on' : 'off'}")
       UI.message(
         automatic_release ? "Release: automatic once approved" : "Release: manual — press Release This Version after approval"
+      )
+    else
+      UI.message(
+        "phased_release:/automatic_release: were NOT applied — a dry run leaves the App Store " \
+        "version's release settings exactly as they are."
       )
     end
   end

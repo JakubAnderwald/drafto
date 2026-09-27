@@ -265,8 +265,9 @@ What it does: resolve the newest iOS build of `apps/mobile/package.json`'s `vers
 as a **definitive** state other than `VALID` (still processing); if the
 processing-state lookup itself fails — API shape change, transient 5xx, app record
 not found — warn and continue, so a broken diagnostic can't make the lane unusable
-→ `deliver` with `skip_binary_upload: true`, no metadata and no screenshots,
-carrying the IDFA, export-compliance and content-rights answers → submit for review.
+→ set the release type and phased release on the App Store version → `deliver` with
+`skip_binary_upload: true`, no metadata and no screenshots, carrying the
+export-compliance and content-rights answers → submit for review.
 
 Defaults: `submit:true`, `phased_release:true`, `automatic_release:false` — so you
 press **Release This Version** yourself once Apple approves. Override via fastlane:
@@ -278,14 +279,32 @@ cd apps/mobile && bundle exec fastlane ios promote automatic_release:true  # rel
 cd apps/mobile && bundle exec fastlane ios promote phased_release:false    # all users at once instead of 7-day phasing
 ```
 
+> **The lane sets the release type and phased release itself, not through
+> `deliver`.** `deliver` reads `automatic_release` and `phased_release` in exactly
+> one place — `Deliver::UploadMetadata#upload` — and that method returns on its
+> first line when `skip_metadata` is set, which a promote run always sets. Passed
+> to `upload_to_app_store` they apply nothing. So the lane patches App Store
+> Connect directly (`releaseType` = `MANUAL`/`AFTER_APPROVAL`, plus creating or
+> deleting the phased release) **before** submitting, while the version is still
+> _Prepare for Submission_. This matters: App Store Connect preselects
+> _Automatically release this version_, so without it a run that printed
+> "Release: manual" would go public the moment Apple approved. A failure here is a
+> hard stop — nothing has been submitted yet, so just fix it and re-run.
+>
+> It also needs the version to exist: if there is no editable version for
+> `package.json`'s `version`, the lane creates a bare one (exactly as `deliver`
+> would) — but a bare version has no description or screenshots, so create and fill
+> the version page in App Store Connect first.
+
 > **`submit:false` is a dry run, not a way to stage a build.** `deliver` uses
 > `build_number` only when it submits (`Deliver::SubmitForReview#select_build` is
 > the only caller of `select_build`), so with `submit:false` the lane resolves and
 > validates the build, ensures the App Store version exists and runs precheck — and
-> attaches **nothing** to the version. The IDFA / export-compliance / content-rights
-> answers travel with the submission too, so they also only land on `submit:true`.
-> Use it to check the build the real run would pick; select a build by hand in App
-> Store Connect if that is what you want.
+> attaches **nothing** to the version. The export-compliance / content-rights
+> answers travel with the submission too, so they also only land on `submit:true`,
+> and `phased_release:` / `automatic_release:` are deliberately not applied on a dry
+> run. Use it to check the build the real run would pick; select a build by hand in
+> App Store Connect if that is what you want.
 
 Store metadata (description, keywords, screenshots, privacy labels) is **not**
 managed from the repo — `skip_metadata` / `skip_screenshots` are on, so everything
@@ -303,10 +322,15 @@ a new binary to the App Store version. It does **not** submit for review — pas
 Connect. Note the binary it uploads is one no tester has ever run; prefer `promote`
 unless a fresh build is the point.
 
-The lane passes the IDFA / export-compliance / content-rights answers, but `deliver`
+The lane passes the export-compliance and content-rights answers, but `deliver`
 sends them as part of a submission, so on the default upload-only run they never
 reach App Store Connect — answer them there when you submit by hand, or run with
-`submit:true`.
+`submit:true`. (`add_id_info_uses_idfa` is declared alongside them but is dead in
+fastlane 2.232.2, which never sends it; Apple retired that submission question.)
+Unlike `promote`, this lane does **not** set the release type or phased release —
+`submit:true` submits under whatever App Store Connect holds, which defaults to
+_Automatically release this version_. Check that on the version page, or use
+`promote`.
 
 ### TestFlight notes
 
@@ -360,8 +384,15 @@ with App Store Connect's `osx` platform and the version read from
 
 ```bash
 cd apps/desktop && bundle exec fastlane mac promote build_number:57
-cd apps/desktop && bundle exec fastlane mac promote submit:false  # dry run: resolve + validate only
+cd apps/desktop && bundle exec fastlane mac promote submit:false            # dry run: resolve + validate only
+cd apps/desktop && bundle exec fastlane mac promote automatic_release:true  # release the moment Apple approves
+cd apps/desktop && bundle exec fastlane mac promote phased_release:false    # all users at once instead of 7-day phasing
 ```
+
+Release type and phased release are patched onto the macOS version the same way as
+[on iOS](#submit-a-tested-testflight-build-for-app-store-review-promote), before the
+submission, and the same "create and fill the version page first" precondition
+applies.
 
 ### Release to Mac App Store (rebuild — hotfix path)
 
@@ -372,9 +403,10 @@ cd apps/desktop && pnpm release:production
 ⚠️ **Builds macOS — fossil checkout only** (`/Users/jakub/code/drafto`), never a
 worktree. Rebuilds from source and **uploads** a new binary; it does not submit for
 review unless you pass `bundle exec fastlane mac production submit:true` — and, as
-on iOS, the IDFA / export-compliance / content-rights answers only travel with a
-submission, so an upload-only run leaves them to be answered in App Store Connect.
-Prefer `promote`.
+on iOS, the export-compliance / content-rights answers only travel with a
+submission, so an upload-only run leaves them to be answered in App Store Connect,
+and the lane never sets the release type (App Store Connect defaults to
+_Automatically release this version_). Prefer `promote`.
 
 ### Local macOS dev build
 
@@ -399,6 +431,12 @@ That checklist lives in
 [issue #625 → "Part A: operator prerequisites"](https://github.com/JakubAnderwald/drafto/issues/625)
 and is deliberately **not** duplicated here — one copy, one place to correct. Work
 through it per platform before the first `promote`.
+
+One item on that list the lane does own: **Version Release** and **Phased Release
+for Automatic Updates**. `promote` patches both onto the version every time it
+submits, from its `automatic_release:` / `phased_release:` options — so whatever you
+picked on the version page is overwritten at submission time. Set them with the lane
+options, not in the App Store Connect UI.
 
 Two rejection risks the repo cannot fix for you:
 

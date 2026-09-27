@@ -113,6 +113,12 @@ describe("assertBetaOnly (prod-never invariant)", () => {
       () => assertBetaOnly({ command: "bundle", args: ["exec", "fastlane", "mac", "production"] }),
       /non-beta/,
     );
+    // No platform token — both Fastfiles declare a default_platform, so this runs
+    // the real lane (apps/desktop defaults to :mac).
+    assert.throws(
+      () => assertBetaOnly({ command: "bundle", args: ["exec", "fastlane", "production"] }),
+      /non-beta/,
+    );
   });
 
   // `promote` submits an ALREADY-UPLOADED TestFlight build for App Review. It
@@ -129,6 +135,9 @@ describe("assertBetaOnly (prod-never invariant)", () => {
       { command: "bundle", args: ["exec", "fastlane", "mac", "promote"] },
       // With explicit lane options, as an operator would type it by hand.
       { command: "bundle", args: ["exec", "fastlane", "ios", "promote", "build_number:42"] },
+      // No platform token: both Fastfiles declare a default_platform, so this is
+      // a real submission (apps/desktop defaults to :mac).
+      { command: "bundle", args: ["exec", "fastlane", "promote"] },
     ]) {
       assert.throws(
         () => assertBetaOnly(lane),

@@ -87,13 +87,19 @@ export const DESKTOP_REACT_RANGE = /^19\.1\./;
 // `bundle exec fastlane ios promote`, `bundle exec fastlane mac promote` — would
 // sail past the guard. Promote never builds, which makes it cheap to invoke and
 // all the more important that only a human does.
+//
+// The platform token is optional in the fastlane patterns because both Fastfiles
+// set a `default_platform` — `bundle exec fastlane promote` in apps/desktop is a
+// real Mac App Store submission (`default_platform(:mac)`), and the same holds for
+// `production`. Defence in depth: every lane spec `platformsToLanes` builds is a
+// hardcoded `pnpm release:beta*` literal, so nothing reaches this today.
 const PROD_DENYLIST = [
   /release:prod\b/i,
   /release:production\b/i,
   /release:promote\b/i,
   /production-release\.yml/i,
-  /fastlane\s+\w+\s+production/i,
-  /fastlane\s+\w+\s+promote\b/i,
+  /fastlane\s+(\w+\s+)?production/i,
+  /fastlane\s+(\w+\s+)?promote\b/i,
 ];
 
 let _spawnForTests = null;
