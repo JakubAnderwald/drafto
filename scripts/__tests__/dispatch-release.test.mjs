@@ -114,6 +114,39 @@ describe("assertBetaOnly (prod-never invariant)", () => {
       /non-beta/,
     );
   });
+
+  // `promote` submits an ALREADY-UPLOADED TestFlight build for App Review. It
+  // does not build, so it is fast and cheap to invoke — and it is the single most
+  // consequential lane in the repo, because it puts the app in front of Apple's
+  // reviewers and (on approval) the public. `/release:prod\b/` does NOT match
+  // "release:promote" (there is no `d` in promote), so these spellings needed
+  // their own patterns; all four must be refused.
+  it("throws on every promote spelling (App Review submission is human-only)", () => {
+    for (const lane of [
+      { command: "pnpm", args: ["release:promote:ios"] },
+      { command: "pnpm", args: ["release:promote"] },
+      { command: "bundle", args: ["exec", "fastlane", "ios", "promote"] },
+      { command: "bundle", args: ["exec", "fastlane", "mac", "promote"] },
+      // With explicit lane options, as an operator would type it by hand.
+      { command: "bundle", args: ["exec", "fastlane", "ios", "promote", "build_number:42"] },
+    ]) {
+      assert.throws(
+        () => assertBetaOnly(lane),
+        /non-beta/,
+        `must refuse: ${lane.command} ${lane.args.join(" ")}`,
+      );
+    }
+  });
+
+  it("still allows the beta lanes the promote patterns sit next to", () => {
+    for (const lane of [
+      { command: "pnpm", args: ["release:beta"] },
+      { command: "pnpm", args: ["release:beta:all"] },
+      { command: "bundle", args: ["exec", "fastlane", "mac", "beta"] },
+    ]) {
+      assert.doesNotThrow(() => assertBetaOnly(lane));
+    }
+  });
 });
 
 describe("dispatch-premerge CLI", () => {

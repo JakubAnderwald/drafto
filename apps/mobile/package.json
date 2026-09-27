@@ -1,6 +1,6 @@
 {
   "name": "@drafto/mobile",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
@@ -18,7 +18,8 @@
     "release:beta:all": "bundle exec fastlane android beta && bundle exec fastlane ios beta",
     "release:prod:android": "bundle exec fastlane android production",
     "release:prod:ios": "bundle exec fastlane ios production",
-    "release:prod:all": "bundle exec fastlane android production && bundle exec fastlane ios production"
+    "release:prod:all": "bundle exec fastlane android production && bundle exec fastlane ios production",
+    "release:promote:ios": "bundle exec fastlane ios promote"
   },
   "dependencies": {
     "@10play/tentap-editor": "^1.0.1",

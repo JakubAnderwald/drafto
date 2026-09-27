@@ -1,6 +1,6 @@
 {
   "name": "@drafto/desktop",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "main": "index.js",
   "scripts": {
@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
     "release:beta": "bundle exec fastlane mac beta",
-    "release:production": "bundle exec fastlane mac production"
+    "release:production": "bundle exec fastlane mac production",
+    "release:promote": "bundle exec fastlane mac promote"
   },
   "dependencies": {
     "@10play/tentap-editor": "^1.0.1",
