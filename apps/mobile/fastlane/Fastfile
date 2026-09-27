@@ -11,8 +11,14 @@ PROJECT_ROOT = File.expand_path("..", __dir__)
 # integrates no ad framework (no IDFA), reaches the network only over HTTPS/TLS
 # provided by the OS (exempt encryption — the same claim as
 # ITSAppUsesNonExemptEncryption = false in app.config.ts), and ships no
-# third-party content. Sent on every App Store submission so a later manual
-# submit never stalls waiting on these three questions.
+# third-party content.
+#
+# Passed on every App Store upload, but deliver reads the hash only inside
+# Deliver::SubmitForReview, which Runner#run reaches only when
+# submit_for_review is true. So the answers actually reach App Store Connect
+# exactly when a lane submits (`promote`, or `production submit:true`); an
+# upload-only `production` run still leaves the three questions for whoever
+# presses Submit in App Store Connect.
 APPSTORE_SUBMISSION_INFORMATION = {
   add_id_info_uses_idfa: false,
   export_compliance_uses_encryption: false,
@@ -532,9 +538,17 @@ platform :ios do
     # a release. The build was already announced when it went to TestFlight, and
     # comment-released-issues.mjs posts "Now live in <track>", which would be a
     # lie until Apple approves and the operator presses Release This Version.
+    #
+    # submit:false is a dry run, NOT a "stage the build" mode. deliver consumes
+    # build_number only in SubmitForReview#select_build — the single caller of
+    # AppStoreVersion#select_build — and Runner#run skips that step entirely when
+    # submit_for_review is false. With the binary, metadata and screenshots all
+    # skipped, what remains is verify_version (which creates or renames the
+    # editable App Store version) plus precheck: the build is resolved and
+    # validated, but nothing is attached to the version.
     UI.success(
       "iOS #{app_version} (build #{build_number}) → App Store: " \
-      "#{submit ? 'submitted for review' : 'attached to the version, NOT submitted'}"
+      "#{submit ? 'submitted for review' : 'build resolved and validated only — NOT attached to the version, NOT submitted'}"
     )
     if submit
       UI.message("Phased release for automatic updates: #{phased_release ? 'on' : 'off'}")
@@ -610,9 +624,10 @@ platform :ios do
     else
       # app_version / platform are explicit because ASC app 6760675784 serves BOTH
       # iOS and macOS — left to deliver's own guess, a submission can land on the
-      # wrong platform's version. submission_information is sent even when not
-      # submitting, so a later manual submit isn't blocked on the IDFA and
-      # export-compliance questions.
+      # wrong platform's version. submission_information only reaches App Store
+      # Connect on the submit:true path — deliver sends it from SubmitForReview —
+      # so an upload-only run leaves the IDFA / export-compliance questions to be
+      # answered when someone submits from App Store Connect.
       upload_to_app_store(
         api_key: api_key,
         app_identifier: PACKAGE_NAME,

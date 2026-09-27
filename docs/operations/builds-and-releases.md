@@ -262,19 +262,30 @@ rebuild, and runs no `expo prebuild`, CocoaPods or `gym`.
 
 What it does: resolve the newest iOS build of `apps/mobile/package.json`'s `version`
 (or the `build_number:` you pass) → refuse if App Store Connect reports that build
-as anything other than `VALID` (still processing) → `deliver` with
-`skip_binary_upload: true`, no metadata and no screenshots, carrying the IDFA,
-export-compliance and content-rights answers → submit for review.
+as a **definitive** state other than `VALID` (still processing); if the
+processing-state lookup itself fails — API shape change, transient 5xx, app record
+not found — warn and continue, so a broken diagnostic can't make the lane unusable
+→ `deliver` with `skip_binary_upload: true`, no metadata and no screenshots,
+carrying the IDFA, export-compliance and content-rights answers → submit for review.
 
 Defaults: `submit:true`, `phased_release:true`, `automatic_release:false` — so you
 press **Release This Version** yourself once Apple approves. Override via fastlane:
 
 ```bash
 cd apps/mobile && bundle exec fastlane ios promote build_number:42         # a specific build
-cd apps/mobile && bundle exec fastlane ios promote submit:false            # attach the build, don't submit
+cd apps/mobile && bundle exec fastlane ios promote submit:false            # dry run: resolve + validate only
 cd apps/mobile && bundle exec fastlane ios promote automatic_release:true  # release the moment Apple approves
 cd apps/mobile && bundle exec fastlane ios promote phased_release:false    # all users at once instead of 7-day phasing
 ```
+
+> **`submit:false` is a dry run, not a way to stage a build.** `deliver` uses
+> `build_number` only when it submits (`Deliver::SubmitForReview#select_build` is
+> the only caller of `select_build`), so with `submit:false` the lane resolves and
+> validates the build, ensures the App Store version exists and runs precheck — and
+> attaches **nothing** to the version. The IDFA / export-compliance / content-rights
+> answers travel with the submission too, so they also only land on `submit:true`.
+> Use it to check the build the real run would pick; select a build by hand in App
+> Store Connect if that is what you want.
 
 Store metadata (description, keywords, screenshots, privacy labels) is **not**
 managed from the repo — `skip_metadata` / `skip_screenshots` are on, so everything
@@ -291,6 +302,11 @@ a new binary to the App Store version. It does **not** submit for review — pas
 `bundle exec fastlane ios production submit:true` for that, or submit from App Store
 Connect. Note the binary it uploads is one no tester has ever run; prefer `promote`
 unless a fresh build is the point.
+
+The lane passes the IDFA / export-compliance / content-rights answers, but `deliver`
+sends them as part of a submission, so on the default upload-only run they never
+reach App Store Connect — answer them there when you submit by hand, or run with
+`submit:true`.
 
 ### TestFlight notes
 
@@ -344,7 +360,7 @@ with App Store Connect's `osx` platform and the version read from
 
 ```bash
 cd apps/desktop && bundle exec fastlane mac promote build_number:57
-cd apps/desktop && bundle exec fastlane mac promote submit:false
+cd apps/desktop && bundle exec fastlane mac promote submit:false  # dry run: resolve + validate only
 ```
 
 ### Release to Mac App Store (rebuild — hotfix path)
@@ -355,8 +371,10 @@ cd apps/desktop && pnpm release:production
 
 ⚠️ **Builds macOS — fossil checkout only** (`/Users/jakub/code/drafto`), never a
 worktree. Rebuilds from source and **uploads** a new binary; it does not submit for
-review unless you pass `bundle exec fastlane mac production submit:true`. Prefer
-`promote`.
+review unless you pass `bundle exec fastlane mac production submit:true` — and, as
+on iOS, the IDFA / export-compliance / content-rights answers only travel with a
+submission, so an upload-only run leaves them to be answered in App Store Connect.
+Prefer `promote`.
 
 ### Local macOS dev build
 

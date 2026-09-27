@@ -63,7 +63,15 @@ and `app_identifier`) and can be pinned with `build_number:`. Options
 `automatic_release:` (default `false`) map onto `deliver`. Every App Store upload
 — `promote` and the retained rebuild lanes — now passes explicit `app_version:`,
 `platform:`, `app_identifier:` and a shared `APPSTORE_SUBMISSION_INFORMATION`
-constant (no IDFA, exempt encryption, no third-party content).
+constant (no IDFA, exempt encryption, no third-party content). Note what
+`deliver` does with that last one: it reads the hash inside
+`Deliver::SubmitForReview`, which `Runner#run` reaches only when
+`submit_for_review` is true. The answers therefore reach App Store Connect on a
+lane that submits — `promote`, or `production submit:true` — and an upload-only
+`production` run still leaves the three questions for the manual submit. The same
+is true of `build_number`: `promote submit:false` resolves and validates a build
+but attaches nothing, because `select_build` is only called from the submission
+path.
 
 Three further consequences of that decision:
 
@@ -93,7 +101,8 @@ Authorization".
 - **Positive**: the binary Apple reviews is byte-for-byte the one testers
   approved. macOS submission no longer requires a build at all, removing the
   fossil-checkout constraint and the React-19.2 crash risk from the release
-  step. Submissions no longer stall on the IDFA / encryption questionnaire.
+  step. A submitting lane answers the IDFA / encryption / content-rights
+  questionnaire itself, so the submission does not stall on it.
   Customers are never told an update is live before it is. The factory cannot
   submit to App Review even by accident.
 - **Negative**: `promote` submits _whatever is in App Store Connect_, so the

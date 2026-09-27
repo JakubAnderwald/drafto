@@ -545,6 +545,7 @@ describe("App Store promote lanes", () => {
         "productbuild",
         "expo",
         "gradle(",
+        "gym(",
       ]) {
         assert.ok(
           !lane.includes(builder),
@@ -563,12 +564,19 @@ describe("App Store promote lanes", () => {
       ]) {
         assert.ok(src.includes(key), `missing submission answer: ${key}`);
       }
-      // Both App Store uploads (promote and the production hotfix path) must send
-      // them, or a later manual submit stalls on the questionnaire.
-      const uploads = src.match(/^\s*upload_to_app_store\($/gm) ?? [];
+      // Both App Store uploads (promote and the production hotfix path) must pass
+      // them, so the submitting path never stalls on the questionnaire. Checked
+      // per call: a global count is satisfied by two matches inside ONE call and
+      // would hide an omission in the other.
+      const uploads = [...src.matchAll(/^[ \t]*upload_to_app_store\(([\s\S]*?)^[ \t]*\)$/gm)];
       assert.equal(uploads.length, 2, "expected exactly two upload_to_app_store calls");
-      const sends = src.match(/submission_information:\s*APPSTORE_SUBMISSION_INFORMATION/g) ?? [];
-      assert.equal(sends.length, 2, "an upload_to_app_store call omits submission_information");
+      for (const [, call] of uploads) {
+        assert.match(
+          call,
+          /submission_information:\s*APPSTORE_SUBMISSION_INFORMATION/,
+          "an upload_to_app_store call omits submission_information",
+        );
+      }
     });
 
     it(`${f.path} never tells a customer an App Store upload is live`, () => {
