@@ -393,6 +393,40 @@ def apply_appstore_release_settings(asc_platform:, app_identifier:, app_version:
     )
   end
 
+  # Read the phased-release state BEFORE anything is patched, and through a call
+  # whose failure cannot be mistaken for "there is none".
+  #
+  # version.fetch_app_store_version_phased_release cannot be made fail-closed: a
+  # version with no phased release answers with a body spaceship refuses to parse
+  # (`raise "No data"`, spaceship/connect_api/model.rb:82), so ABSENCE ITSELF
+  # arrives as an exception — and so do a 401, a 429 and a 5xx, by which point the
+  # HTTP status and Apple's error code are gone (ConnectAPI::APIClient#format_errors
+  # keeps only "title - detail", api_client.rb:340-355), leaving nothing to
+  # discriminate on. deliver rescues the call regardless
+  # (deliver/upload_metadata.rb:315-319); copying that rescue here would let a
+  # transient failure look like absence, so `phased_release: false` would skip the
+  # deletion while the lane went on to report phasing off — exactly the unverified
+  # claim about App Store Connect this helper exists to prevent.
+  #
+  # Re-reading the version with the relationship INCLUDED is unambiguous instead:
+  # Apple answers 200 with either a linked appStoreVersionPhasedRelease or an empty
+  # relationship, and spaceship inflates the former into a model while leaving the
+  # latter nil (connect_api/model.rb:133-166). `nil` therefore means App Store
+  # Connect said there is none, and every failure — including an `include` Apple
+  # rejects — stays an exception that stops the lane before anything is submitted
+  # and before releaseType is touched.
+  detailed = Spaceship::ConnectAPI::AppStoreVersion.get(
+    app_store_version_id: version.id,
+    includes: "appStoreVersionPhasedRelease"
+  )
+  if detailed.nil?
+    UI.user_error!(
+      "App Store version #{version.id} (#{app_version}, #{asc_platform}) could not be re-read from " \
+      "App Store Connect — refusing to submit under release settings that cannot be verified."
+    )
+  end
+  existing = detailed.app_store_version_phased_release
+
   release_type =
     if automatic_release
       Spaceship::ConnectAPI::AppStoreVersion::ReleaseType::AFTER_APPROVAL
@@ -401,16 +435,6 @@ def apply_appstore_release_settings(asc_platform:, app_identifier:, app_version:
     end
   version.update(attributes: { releaseType: release_type })
   UI.message("Release type set to #{release_type} on #{asc_platform} version #{version.version_string}")
-
-  # App Store Connect answers a "no data" error rather than an empty body when a
-  # version has no phased release, so this has to be rescued — deliver rescues the
-  # same call the same way (upload_metadata.rb:314-319).
-  existing =
-    begin
-      version.fetch_app_store_version_phased_release
-    rescue StandardError
-      nil
-    end
 
   if phased_release
     if existing
@@ -426,6 +450,11 @@ def apply_appstore_release_settings(asc_platform:, app_identifier:, app_version:
   elsif existing
     existing.delete!
     UI.message("Phased release removed — every user gets the update at once")
+  else
+    # Stated rather than skipped silently: this branch is the one place the lane
+    # reports phasing off without having changed anything, so the log has to show
+    # that App Store Connect was actually read and had none.
+    UI.message("No phased release on the #{asc_platform} version — every user gets the update at once")
   end
 
   version

@@ -84,6 +84,18 @@ settings the lane then reports as applied. The options stay on the
 `upload_to_app_store` call as a declaration of intent, and are annotated there as
 inert.
 
+The helper reads the version's current phased-release state through the
+`appStoreVersionPhasedRelease` **include** on the version lookup, not through the
+single-resource `fetch_app_store_version_phased_release`. That call cannot fail
+closed: spaceship raises on an absent phased release (`"No data"`) exactly as it
+does on a 401, a 429 or a 5xx, and by then the HTTP status and Apple's error code
+are gone from the message — so the broad rescue `deliver` itself uses would let a
+transient failure pass for "there is none", and `phased_release:false` would report
+phasing off without having removed it. Requested as an include, absence is a 200
+with an empty relationship instead, so `nil` means Apple said there is none and
+every failure stays an exception that stops the lane before anything is patched or
+submitted.
+
 That mattered more than a wrong log line: with `releaseType` untouched, App Store
 Connect preselects _Automatically release this version_, so the first submission —
 reported by the lane as manual — would have gone public the moment Apple approved
