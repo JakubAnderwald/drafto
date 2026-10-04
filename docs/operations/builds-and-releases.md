@@ -623,4 +623,4 @@ Do not use CI builds until these issues are resolved. All builds run locally via
 - [ADR 0011: App Store Deployment Strategy](../adr/0011-app-store-deployment-strategy.md)
 - [ADR 0015: Desktop App Technology Choice](../adr/0015-desktop-app-technology-choice.md)
 - [ADR 0016: Local Fastlane Builds](../adr/0016-local-fastlane-builds.md)
-- [ADR 0039: App Store Promote Lanes](../adr/0039-app-store-promote-lanes.md)
+- [ADR 0040: App Store Promote Lanes](../adr/0040-app-store-promote-lanes.md)
