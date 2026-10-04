@@ -145,10 +145,16 @@ if has_element "App menu"; then
   # then wipes the local database, so unsynced edits would be lost for good.
   # The sync button exposes its status ("Synced", "3 pending", "Offline"…)
   # as its accessibility help; only sign out when it says "Synced".
-  sync_status=$(osascript -e "
-  tell application \"System Events\" to tell process \"Drafto\"
-    return help of UI element $(find_element_by_desc "Sync status") of window 1
-  end tell" 2> /dev/null || true)
+  sync_idx=$(find_element_by_desc "Sync status")
+  if [ "${sync_idx:-0}" -gt 0 ] 2> /dev/null; then
+    sync_status=$(osascript -e "
+    tell application \"System Events\" to tell process \"Drafto\"
+      return help of UI element $sync_idx of window 1
+    end tell" 2> /dev/null || true)
+  else
+    echo "Warning: the Sync status control was not found." >&2
+    sync_status=""
+  fi
   if [ "$sync_status" != "Synced" ] && [ "${SCREENSHOT_CONFIRM_SIGN_OUT:-}" != 1 ]; then
     echo "Error: Drafto's sync status is '${sync_status:-unknown}', not 'Synced'." >&2
     echo "Signing out now could lose unsynced edits. Let it sync, or set" >&2

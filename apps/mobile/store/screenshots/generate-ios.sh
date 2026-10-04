@@ -36,6 +36,9 @@ DEVICES=(
   "iPad Pro 13-inch (M5)|2064x2752|ipad"
 )
 
+# One per takeScreenshot in app-store.yaml.
+SHOTS_PER_DEVICE=5
+
 SKIP_BUILD=false
 [ "${1:-}" = "--skip-build" ] && SKIP_BUILD=true
 
@@ -119,7 +122,14 @@ for device in "${DEVICES[@]}"; do
   xcrun simctl status_bar "$udid" clear
   xcrun simctl shutdown "$udid"
 
-  for png in "$OUT_DIR/$prefix"-*.png; do
+  shopt -s nullglob
+  pngs=("$OUT_DIR/$prefix"-*.png)
+  shopt -u nullglob
+  [ "${#pngs[@]}" -eq "$SHOTS_PER_DEVICE" ] || {
+    echo "Error: expected $SHOTS_PER_DEVICE $prefix screenshots, got ${#pngs[@]}." >&2
+    exit 1
+  }
+  for png in "${pngs[@]}"; do
     assert_png_size "$png" "$size"
   done
 done
