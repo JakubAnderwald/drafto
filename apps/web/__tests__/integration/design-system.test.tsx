@@ -193,6 +193,21 @@ describe("DesignSystemPage", () => {
     expect(screen.getByText(/const greeting/)).toBeInTheDocument();
   });
 
+  it("renders a long-form document sample styled by .doc-prose", () => {
+    render(<DesignSystemPage />);
+
+    expect(screen.getByText("Document Prose")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "On this page" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "2. Tables" })).toBeInTheDocument();
+    const sample = screen.getByRole("heading", { level: 3, name: "Section subheading" });
+    expect(sample.closest(".doc-prose")).not.toBeNull();
+    expect(screen.getByRole("cell", { name: /stack into cards/ })).toHaveAttribute(
+      "data-label",
+      "Purpose",
+    );
+    expect(screen.getByRole("link", { name: ".doc-link" })).toHaveClass("doc-link");
+  });
+
   it("renders shadow demos", () => {
     render(<DesignSystemPage />);
 

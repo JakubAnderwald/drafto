@@ -194,6 +194,178 @@ body {
     color var(--transition-slow);
 }
 
+/* ── Long-form Documents ─────────────────────────────────── */
+
+/*
+ * Typography for text-heavy pages written as plain HTML (privacy policy, support,
+ * account deletion). Tailwind's preflight strips heading sizes, list bullets and
+ * table styles, so without this those pages render as one unbroken wall of text.
+ * Utility classes on an element still win: they sit in a later cascade layer.
+ */
+@layer components {
+  .doc-prose {
+    @apply text-fg-muted text-base leading-7;
+  }
+
+  .doc-prose > :first-child,
+  .doc-prose :where(*) > :first-child {
+    margin-top: 0;
+  }
+
+  .doc-prose > :last-child,
+  .doc-prose :where(*) > :last-child {
+    margin-bottom: 0;
+  }
+
+  .doc-prose section {
+    @apply border-border-strong mt-14 scroll-mt-8 border-t pt-14;
+  }
+
+  .doc-prose > section:first-child {
+    @apply border-t-0 pt-0;
+  }
+
+  .doc-prose h2 {
+    @apply text-fg mt-14 mb-5 text-2xl font-semibold tracking-tight;
+  }
+
+  .doc-prose h3 {
+    @apply text-fg mt-10 mb-3 text-xl font-semibold;
+  }
+
+  .doc-prose h4 {
+    @apply text-fg mt-8 mb-2 text-base font-semibold;
+  }
+
+  .doc-prose h2 + h3 {
+    @apply mt-8;
+  }
+
+  .doc-prose h3 + h4 {
+    @apply mt-5;
+  }
+
+  .doc-prose p,
+  .doc-prose address {
+    @apply my-4;
+  }
+
+  .doc-prose address {
+    @apply not-italic;
+  }
+
+  .doc-prose ul,
+  .doc-prose ol {
+    @apply my-5 pl-6;
+  }
+
+  .doc-prose ul {
+    @apply list-disc;
+  }
+
+  .doc-prose ol {
+    @apply list-decimal;
+  }
+
+  .doc-prose li {
+    @apply pl-2;
+  }
+
+  .doc-prose li + li {
+    @apply mt-3;
+  }
+
+  .doc-prose li::marker {
+    color: var(--fg-subtle);
+  }
+
+  .doc-prose ol > li::marker {
+    @apply text-fg-muted font-medium;
+  }
+
+  .doc-prose strong {
+    @apply text-fg font-semibold;
+  }
+
+  /*
+   * `.doc-link` gives a link outside `.doc-prose` the same look. The `.dark` rule is
+   * needed because Tailwind's `dark:` variant follows the OS setting, not the `.dark`
+   * class the theme toggle sets, and primary-600 is unreadable on the dark surfaces.
+   */
+  .doc-prose a,
+  .doc-link {
+    @apply text-primary-600 decoration-primary-600/30 hover:text-primary-700 underline underline-offset-4 transition-colors hover:decoration-current;
+  }
+
+  .dark .doc-prose a,
+  .dark .doc-link {
+    @apply text-primary-300 decoration-primary-300/40 hover:text-primary-200 hover:decoration-current;
+  }
+
+  .doc-prose table {
+    @apply w-full border-collapse text-left text-sm leading-6;
+  }
+
+  .doc-prose th {
+    @apply bg-bg-muted text-fg px-4 py-3 font-semibold;
+  }
+
+  .doc-prose td {
+    @apply border-border-strong border-t px-4 py-3 align-top;
+  }
+
+  .doc-prose td:first-child {
+    @apply text-fg font-medium whitespace-nowrap;
+  }
+
+  /*
+   * Below Tailwind's `sm` breakpoint a three-column table is too narrow to read, so
+   * each row becomes a stacked card and each cell shows its column name from the
+   * cell's `data-label` attribute. `display: block` can strip table semantics in
+   * WebKit, so give such a table explicit ARIA roles (role="table", "row", "cell", …).
+   * The label is decorative: the column header already names the cell for screen
+   * readers, so its alt text is empty where `content` alt text is supported.
+   */
+  @media (width < 40rem) {
+    .doc-prose thead {
+      @apply sr-only;
+    }
+
+    .doc-prose table,
+    .doc-prose tbody,
+    .doc-prose tr,
+    .doc-prose td {
+      @apply block;
+    }
+
+    .doc-prose tr {
+      @apply px-5 py-4;
+    }
+
+    .doc-prose tr + tr {
+      @apply border-border-strong border-t;
+    }
+
+    .doc-prose td {
+      @apply border-0 p-0;
+    }
+
+    .doc-prose td + td {
+      @apply mt-3;
+    }
+
+    .doc-prose td:first-child {
+      @apply text-base font-semibold;
+    }
+
+    .doc-prose td + td[data-label]::before {
+      content: attr(data-label);
+      content: attr(data-label) / "";
+      @apply text-fg block text-xs font-semibold tracking-wide uppercase;
+    }
+  }
+}
+
 /* ── Micro-interaction Animations ────────────────────────── */
 
 @keyframes dropdown-in {

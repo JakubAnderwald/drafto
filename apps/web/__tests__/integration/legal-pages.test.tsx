@@ -271,6 +271,64 @@ describe("Privacy policy page", () => {
     );
   });
 
+  it("has a contents list that links to every numbered section", () => {
+    render(<PrivacyPolicyPage />);
+
+    const contents = screen.getByRole("navigation", { name: "On this page" });
+    const links = within(contents).getAllByRole("link");
+    const sectionHeadings = screen
+      .getAllByRole("heading", { level: 2 })
+      .filter((heading) => heading.closest("section"));
+    expect(links).toHaveLength(12);
+    expect(sectionHeadings).toHaveLength(links.length);
+
+    const targets = links.map((link) => (link.getAttribute("href") ?? "").replace(/^#/, ""));
+    // Sections render in contents order, so heading N is the Nth section on the page.
+    expect(sectionHeadings.map((heading) => heading.closest("section")?.id)).toEqual(targets);
+    targets.forEach((id, index) => {
+      const section = document.getElementById(id) as HTMLElement;
+      expect(section.tagName).toBe("SECTION");
+      expect(within(section).getByRole("heading", { level: 2 })).toHaveTextContent(
+        `${index + 1}. ${links[index].textContent}`,
+      );
+    });
+  });
+
+  it("links its cross-references to the sections they name", () => {
+    render(<PrivacyPolicyPage />);
+
+    expect(screen.getByRole("link", { name: "Section 2" })).toHaveAttribute(
+      "href",
+      "#data-we-collect",
+    );
+    expect(screen.getByRole("link", { name: "Section 4" })).toHaveAttribute(
+      "href",
+      "#data-sharing",
+    );
+    const rightsLinks = screen.getAllByRole("link", { name: "Your Rights" });
+    expect(rightsLinks.map((link) => link.getAttribute("href"))).toEqual([
+      "#your-rights",
+      "#your-rights",
+    ]);
+  });
+
+  it("labels each sharing-table cell with its column for the stacked phone layout", () => {
+    render(<PrivacyPolicyPage />);
+
+    const table = screen.getByRole("table");
+    const columns = within(table)
+      .getAllByRole("columnheader")
+      .map((header) => header.textContent);
+    expect(columns).toEqual(["Service", "Purpose", "Data shared"]);
+    for (const row of within(table).getAllByRole("row").slice(1)) {
+      expect(
+        within(row)
+          .getAllByRole("cell")
+          .map((cell) => cell.dataset.label),
+      ).toEqual(columns);
+    }
+  });
+
   it("uses support@drafto.eu as the contact address", () => {
     render(<PrivacyPolicyPage />);
 

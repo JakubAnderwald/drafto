@@ -88,6 +88,7 @@ Also: a route that must be reachable signed out (legal, support, store-review pa
   - The first cell of each row is exactly the service name. The guard test matches on it.
   - The page must not say note content is used to train AI models, and must not claim more than the code does: no Keychain on macOS, no database backups (production is on the Supabase Free tier), no "anonymous" analytics.
   - `/privacy` and `/support` stay in `PUBLIC_ROUTES`. Prefix matching makes any `/privacy/*` or `/support/*` route public too, so keep those static.
+- **Page structure:** the numbered sections and the "On this page" contents box both come from `SECTIONS` in `page.tsx`, so a new section is one entry there plus a `<NumberedSection {...section("id")}>` block (`apps/web/src/components/legal/`). Sharing-table rows come from `PROCESSORS`; a new processor is one entry there. The pages are styled by the `.doc-prose` class in `apps/web/src/app/globals.css`, not by Tailwind's `prose`: the typography plugin is not installed, so `prose` does nothing. See [design system → Long-form documents](./design-system.md#long-form-documents).
 - **Guard test blind spots:** the dependency scan reads only the `package.json` files of `apps/web`, `apps/mobile`, `apps/desktop` and `packages/shared`. It cannot see:
   - a service called over plain `fetch` with no SDK
   - anything running from `scripts/` on the Mac mini: Zoho, Anthropic and GitHub in the support pipeline are pinned only by the test's `EXPECTED_ROWS`
@@ -97,7 +98,7 @@ Also: a route that must be reachable signed out (legal, support, store-review pa
 
   A green guard test is not proof the policy is complete.
 
-- **Resolving a guard failure:** if a new dependency matches a suspicious name and receives user data, add it to `PROCESSOR_FOR_DEPENDENCY` and give the processor a row in the sharing table. If it sends no user data, add it to `NOT_A_PROCESSOR` with the reason. A mapped processor that receives nothing until it is configured (PostHog today) is named in the page text instead of the table, and listed in `NAMED_IN_TEXT_ONLY` with the reason.
+- **Resolving a guard failure:** if a new dependency matches a suspicious name and receives user data, add it to `PROCESSOR_FOR_DEPENDENCY` and give the processor a row in the sharing table (an entry in `PROCESSORS`). If it sends no user data, add it to `NOT_A_PROCESSOR` with the reason. A mapped processor that receives nothing until it is configured (PostHog today) is named in the page text instead of the table, and listed in `NAMED_IN_TEXT_ONLY` with the reason.
 - **Files that must change together:** the policy page, `legal-pages.test.tsx`, and the "What may be kept" paragraph on `/account/delete` (it summarises the retention section). A new processor also needs a row in this doc's inventory table.
 
 ## Verify
