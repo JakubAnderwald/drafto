@@ -248,7 +248,10 @@ Constraints:
 - Do NOT include code blocks longer than 10 lines. The plan describes intent,
   not implementation.
 - Do NOT promise behaviour the spec doesn't list. If the spec's "Acceptance
-  criteria" doesn't mention a thing, your plan shouldn't add it.
+  criteria" doesn't mention a thing, your plan shouldn't add it. Exception: the
+  privacy-page update required by the Privacy check (Decision flow step 3) is
+  a compliance obligation, not new behaviour — include it whenever the rule
+  is triggered.
 - Do NOT post a second comment if the first succeeds. Idempotency: if you
   see an existing comment that starts with the marker, treat the plan as
   already posted and emit `action=noop` on the directive line.
@@ -292,6 +295,17 @@ Constraints:
      never treat "the other platform works" as proof the suspect path is fine.
      The single most valuable artifact for a platform-specific bug is the code
      of the platform that already works.
+   - **Privacy check.** Does this change trigger the Privacy Policy
+     Maintenance rule in CLAUDE.md? If so, the plan must include updating the
+     privacy page — list `apps/web/src/app/privacy/page.tsx` (modify) under
+     "Files to touch", say which section of the policy changes and why, and
+     bump its "Last updated" date. A new data-receiving dependency also needs
+     an entry in the guard test's processor map
+     (`apps/web/__tests__/unit/privacy-policy-processors.test.tsx`). On an
+     infra-only card (`parityOverride` is `"infra-only"`, e.g. a support-pipeline
+     change under `scripts/`), the privacy page is app code that the infra-only
+     parity post-check rejects: still list it, and add a Risks line asking the
+     operator to tick the web platform (dropping infra-only) before approving.
 
 4. **Compose the plan comment.** Use the structure above. The marker on line
    one is non-negotiable.

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Card, CardBody } from "@/components/ui/card";
 
 export const metadata: Metadata = {
   title: "Support — Drafto",
@@ -10,16 +11,36 @@ export default function SupportPage() {
   return (
     <main className="mx-auto max-w-2xl px-6 py-16">
       <h1 className="text-fg mb-2 text-3xl font-bold">Support</h1>
-      <p className="text-fg-muted mb-8">Need help with Drafto? We&apos;re here for you.</p>
+      <p className="text-fg-muted mb-8">
+        Help with Drafto on the web, iPhone, iPad, Android and Mac.
+      </p>
+
+      <Card className="mb-10">
+        <CardBody>
+          <h2 className="text-fg text-lg font-semibold">Contact us</h2>
+          <p className="text-fg-muted mt-1">
+            Questions, bug reports and feature requests are all welcome.
+          </p>
+          <p className="mt-3 text-lg font-medium">
+            <a
+              href="mailto:support@drafto.eu"
+              className="text-primary-600 hover:text-primary-700 hover:underline"
+            >
+              support@drafto.eu
+            </a>
+          </p>
+          <p className="text-fg-muted mt-3 text-sm">
+            An AI assistant helps us sort and answer support email. See the{" "}
+            <Link href="/privacy" className="hover:text-fg underline">
+              Privacy Policy
+            </Link>{" "}
+            for how we handle your message.
+          </p>
+        </CardBody>
+      </Card>
 
       <div className="prose dark:prose-invert max-w-none">
-        <h2>Contact Us</h2>
-        <p>
-          For questions, bug reports, or feature requests, email us at{" "}
-          <a href="mailto:support@drafto.eu">support@drafto.eu</a>.
-        </p>
-
-        <h2>Common Questions</h2>
+        <h2>Common questions</h2>
 
         <h3>How do I sync my notes between devices?</h3>
         <p>

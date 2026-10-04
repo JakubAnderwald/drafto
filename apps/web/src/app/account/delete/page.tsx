@@ -84,9 +84,13 @@ export default function DeleteAccountInfoPage() {
 
         <h2>What may be kept</h2>
         <p>
-          Anonymous usage analytics from the web app may be retained in aggregate form, as described
-          in our <Link href="/privacy">Privacy Policy</Link>. This data does not include note
-          content. The iOS, Android and macOS apps send no usage analytics.
+          Some data is held outside your account and is not deleted with it: error reports in Sentry
+          and request logs at Vercel, which those services delete after their retention periods;
+          emails we have exchanged with you, and notification emails our administrator received
+          about your sign-up or support requests; and GitHub issues filed from your support emails.
+          Ask us at support@drafto.eu to remove your support emails or issues. Our{" "}
+          <Link href="/privacy">Privacy Policy</Link> describes each of these. If you use Drafto on
+          another device, sign out there to erase its local copy of your notes.
         </p>
 
         <h2>No longer have the app, or can&apos;t sign in?</h2>

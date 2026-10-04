@@ -16,6 +16,11 @@ const PUBLIC_ROUTES = [
   "/api/account",
   // Public account-deletion explainer that store reviewers must reach signed out.
   "/account/delete",
+  // Legal and support pages: the store listings link here, so App Store / Play reviewers
+  // and signed-out visitors must reach them. Prefix match: any future /privacy/* or
+  // /support/* route is public too — keep those static.
+  "/privacy",
+  "/support",
 ];
 
 function isPublicRoute(pathname: string): boolean {

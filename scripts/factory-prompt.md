@@ -198,7 +198,8 @@ For a first implementation, `revisionComments` is empty; ignore this section.
    emit `action=blocked` — the bash post-check will catch this too, but
    failing fast saves a Claude call's worth of churn.
 
-3. **Implement the plan.** Edit / create only the files the plan lists.
+3. **Implement the plan.** Edit / create only the files the plan lists (plus
+   the privacy policy page when the Privacy check below requires it).
    When the spec is screenshot-driven, a `revisionComments` entry references a
    screenshot, or the plan's Confidence is `low`, view `bundle.screenshots` FIRST
    (see the Screenshots tool entry) and reproduce the failure the images show
@@ -213,6 +214,14 @@ For a first implementation, `revisionComments` is empty; ignore this section.
    - Mobile + desktop `apps/{mobile,desktop}/src/db/` must stay in sync if
      the plan touches either.
    - SOLID — split files that would need to change for multiple reasons.
+   - Privacy check — does this change trigger the Privacy Policy Maintenance
+     rule in CLAUDE.md? If so, update `apps/web/src/app/privacy/page.tsx` and
+     its "Last updated" date in this same PR. If the approved plan left that
+     out, make the update anyway and record it under "Drift vs. approved plan".
+     Exception: when `parityOverride` is `"infra-only"`, do not edit it — the
+     parity post-check rejects any `apps/**` change on an infra-only card. Emit
+     `action=blocked` with reason "privacy policy update needed but the card is
+     infra-only — tick the web platform" instead.
 
 4. **Add tests concurrently with code.** Every feature gets unit
    (`__tests__/unit/`), integration (`__tests__/integration/`), and where
