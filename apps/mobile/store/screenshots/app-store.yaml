@@ -30,15 +30,18 @@ appId: eu.drafto.mobile
 - tapOn:
     id: "login-button"
 
-# Wait for the first sync to pull the account's notebooks.
+# Wait for the first sync to pull the account's notebooks. Optional: when the
+# "Save Password?" sheet below arrives first it hides the app's hierarchy from
+# Maestro, and the required check after the restart proves the login anyway.
 - extendedWaitUntil:
     visible: ".*${NOTEBOOK}.*"
     timeout: 60000
+    optional: true
 
-# iOS offers to save the password ("Save Password?") a few seconds after
-# login. The sheet is drawn out of process, so Maestro can neither see nor tap
-# it reliably. Let it arrive, then restart the app: the session persists, and
-# the sheet goes away with the old process.
+# iOS offers to save the password ("Save Password?") shortly after login,
+# sometimes before the first sync finishes. The sheet is drawn out of process,
+# so Maestro can neither see nor tap it reliably. Let it arrive, then restart
+# the app: the session persists, and the sheet goes away with the old process.
 - extendedWaitUntil:
     visible: "never-present-just-wait"
     timeout: 8000
