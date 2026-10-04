@@ -22,7 +22,7 @@ factory refuses all of them (`assertBetaOnly` in `scripts/lib/dispatch-release.m
 already tested — it resolves an existing App Store Connect build and never compiles
 anything. The `release:prod:*` / `release:production` lanes rebuild from source and
 upload a brand-new binary nobody has run. Prefer `promote` unless you specifically
-need a fresh build, and see [ADR-0039](../adr/0039-app-store-promote-lanes.md).
+need a fresh build, and see [ADR-0040](../adr/0040-app-store-promote-lanes.md).
 
 ## Build environment mapping
 

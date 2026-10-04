@@ -280,6 +280,25 @@ Full reference with all 9 tools enumerated, auth model, and registry publishing 
 - After changing any MCP tool, bump `version` in `server.json` and run `~/bin/mcp-publisher publish`
 - Run MCP-related tests: `cd apps/web && pnpm test` (includes mcp-auth and api-keys tests)
 
+## Privacy Policy Maintenance
+
+The policy at [drafto.eu/privacy](https://drafto.eu/privacy) (`apps/web/src/app/privacy/page.tsx`) is linked from the App Store and Play listings, so it must describe what the apps actually do. Processor inventory, code locations and the guard test: [`docs/features/privacy-policy.md`](./docs/features/privacy-policy.md).
+
+**Maintenance rules (agents must follow):** update `apps/web/src/app/privacy/page.tsx` — and its "Last updated" date — in the **same PR** whenever a change:
+
+- adds, removes, or swaps a third-party service or SDK that receives user data (analytics, error tracking, email, AI, auth provider, hosting, storage)
+- collects a new category of personal data, or a new field on the user or account
+- changes where data is stored, how long it's kept, or how it's deleted (retention jobs, trash, account deletion)
+- adds a way for data to leave Drafto (export, sharing, API keys, integrations)
+- changes the auth or session-storage mechanism on any platform
+- sends user or support data to an AI model
+
+Also:
+
+- When a new route must be reachable signed out (legal, support, store-review pages), add it to `PUBLIC_ROUTES` in `apps/web/src/lib/supabase/middleware.ts` and to `apps/web/__tests__/unit/middleware.test.ts`
+- When you add a dependency that receives user data, map it to its processor in `apps/web/__tests__/unit/privacy-policy-processors.test.tsx` — the test fails until the processor has a row in the page's sharing table. It reads only `package.json` files, so a service reached over plain `fetch` or a script on the Mac mini needs the manual check above
+- A factory card ticked **None** / `parity:infra-only` (e.g. a support-pipeline change under `scripts/`) that triggers these rules is not infra-only: the infra-only parity check rejects the `apps/web` policy edit, so untick **None** and remove the `parity:infra-only` label, then tick the web platform (ticking web alone fails the spec gate, which rejects None / infra-only combined with a platform box)
+
 ## Useful Commands
 
 Dev + verification only. Build and release commands live in [`docs/operations/builds-and-releases.md`](./docs/operations/builds-and-releases.md).

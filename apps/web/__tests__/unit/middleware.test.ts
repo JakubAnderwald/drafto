@@ -44,12 +44,37 @@ describe("Auth middleware", () => {
       "/api/webhooks/new-signup",
       "/api/account",
       "/account/delete",
+      "/privacy",
+      "/support",
     ];
 
     for (const route of publicRoutes) {
       const response = await updateSession(createRequest(route));
       expect(response.status).toBe(200);
     }
+  });
+
+  it.each(["/privacy", "/support", "/account/delete"])(
+    "serves %s to a signed-out visitor instead of redirecting to /login",
+    async (route) => {
+      // The store listings link to these pages, and store reviewers open them signed out.
+      mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+
+      const response = await updateSession(createRequest(route));
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("location")).toBeNull();
+      expect(mockFrom).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not treat a lookalike path as the public privacy page", async () => {
+    mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+
+    const response = await updateSession(createRequest("/privacy-settings"));
+
+    expect(response.status).toBe(307);
+    expect(new URL(response.headers.get("location")!).pathname).toBe("/login");
   });
 
   it("passes a cookie-less DELETE /api/account through to the route instead of redirecting", async () => {

@@ -1,4 +1,4 @@
-# 0039 — App Store Submission Promotes an Existing TestFlight Build
+# 0040 — App Store Submission Promotes an Existing TestFlight Build
 
 - **Status**: Accepted
 - **Date**: 2026-09-27
