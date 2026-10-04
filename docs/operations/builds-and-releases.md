@@ -6,12 +6,23 @@ All builds run locally via Fastlane. CI workflows exist but are non-functional (
 
 ## Release command reference
 
-| Platform          | Beta (TestFlight / Internal)                  | Production (App Store / Play Store)           |
-| ----------------- | --------------------------------------------- | --------------------------------------------- |
-| **Android**       | `cd apps/mobile && pnpm release:beta:android` | `cd apps/mobile && pnpm release:prod:android` |
-| **iOS**           | `cd apps/mobile && pnpm release:beta:ios`     | `cd apps/mobile && pnpm release:prod:ios`     |
-| **macOS**         | `cd apps/desktop && pnpm release:beta`        | `cd apps/desktop && pnpm release:production`  |
-| **Android + iOS** | `cd apps/mobile && pnpm release:beta:all`     | `cd apps/mobile && pnpm release:prod:all`     |
+| Platform          | Beta (TestFlight / Internal)                  | Submit for App Store review (`promote`)      | Rebuild + upload (hotfix)                     |
+| ----------------- | --------------------------------------------- | -------------------------------------------- | --------------------------------------------- |
+| **Android**       | `cd apps/mobile && pnpm release:beta:android` | n/a — Play has no review-submission step     | `cd apps/mobile && pnpm release:prod:android` |
+| **iOS**           | `cd apps/mobile && pnpm release:beta:ios`     | `cd apps/mobile && pnpm release:promote:ios` | `cd apps/mobile && pnpm release:prod:ios`     |
+| **macOS**         | `cd apps/desktop && pnpm release:beta`        | `cd apps/desktop && pnpm release:promote`    | `cd apps/desktop && pnpm release:production`  |
+| **Android + iOS** | `cd apps/mobile && pnpm release:beta:all`     | —                                            | `cd apps/mobile && pnpm release:prod:all`     |
+
+Beta lanes are pre-authorized. Everything in the other two columns reaches the
+public stores and needs explicit user approval per
+[CLAUDE.md → Release Authorization](../../CLAUDE.md#release-authorization); the dark
+factory refuses all of them (`assertBetaOnly` in `scripts/lib/dispatch-release.mjs`).
+
+**`promote` vs. the hotfix column.** `promote` submits the binary TestFlight users
+already tested — it resolves an existing App Store Connect build and never compiles
+anything. The `release:prod:*` / `release:production` lanes rebuild from source and
+upload a brand-new binary nobody has run. Prefer `promote` unless you specifically
+need a fresh build, and see [ADR-0040](../adr/0040-app-store-promote-lanes.md).
 
 ## Build environment mapping
 
@@ -32,7 +43,7 @@ Desktop uses the same env-file convention: `apps/desktop/.env` for development, 
 
 - **Ruby**: rbenv with Ruby 3.3.7 (global default), Bundler 4.0.9
 - **Fastlane**: Installed via Bundler (`bundle exec fastlane`)
-- **Signing secrets**: Loaded automatically from `~/drafto-secrets/android-env.sh` (covers Android keystore, ASC API key, and Match password)
+- **Signing secrets**: Loaded automatically by both Fastfiles from `~/drafto-secrets/android-env.sh` (Android keystore, ASC API key) and `~/drafto-secrets/match-env.sh` (`MATCH_PASSWORD`). `load_local_secrets` parses bare `KEY=value` lines as well as `export KEY=value`, so neither file needs an `export` and no `set -a` wrapper is required.
 - **Locale**: `LANG=en_US.UTF-8` required for CocoaPods (set in Fastfiles and nightly script)
 - **Worktree note**: Git worktrees do not share Ruby gems. Run `bundle install` in the worktree's `apps/mobile/` (or `apps/desktop/`) directory before using Fastlane commands. Also copy `google-play-service-account.json` into the worktree if needed for store submissions.
 
@@ -61,19 +72,6 @@ These are sourced automatically from `~/drafto-secrets/android-env.sh` on local 
 
 Recurring issues hit when running release lanes locally. Check these first if a release fails on a fresh machine or worktree.
 
-### `MATCH_PASSWORD` not picked up by desktop fastlane
-
-`bundle exec fastlane mac beta` (and `mac production`) bails at the `match` step with `Neither the MATCH_PASSWORD environment variable nor the local keychain contained a password.` `~/drafto-secrets/match-env.sh` is a single-line `MATCH_PASSWORD=…` assignment without `export`, and `load_local_secrets` in `apps/desktop/fastlane/Fastfile` only sources `android-env.sh`. Plain `source` therefore creates a shell var, not an env var, and fastlane can't see it.
-
-Prefix the command with `set -a` so subsequent assignments are exported:
-
-```bash
-set -a; source ~/drafto-secrets/match-env.sh; set +a
-cd apps/desktop && bundle exec fastlane mac beta
-```
-
-Permanent fix: extend `load_local_secrets` to source `match-env.sh`, or add `export` to the secrets file.
-
 ### "3rd Party Mac Developer Installer" cert missing
 
 `fastlane mac beta` signs the `.pkg` with `productbuild --sign "3rd Party Mac Developer Installer: …"`. This cert is **not** managed by Match (the Matchfile uses `type("appstore")`, which only fetches the "Apple Distribution" code-signing cert). It must be installed manually per machine via Xcode → Settings → Accounts → Manage Certificates… → `+` → "Mac Installer Distribution".
@@ -85,14 +83,6 @@ security find-identity -v -p basic | grep "3rd Party Mac Developer Installer"
 ```
 
 If missing, `productbuild` fails with `Could not find appropriate signing identity`. One-time per machine; worktrees inherit the host's keychain.
-
-### `post-release-notes.mjs` 400 on List Builds (non-fatal)
-
-After `upload_to_testflight`, `apps/desktop/scripts/post-release-notes.mjs` fails with:
-
-> TestFlight error: List builds failed: 400 PARAMETER_ERROR.ILLEGAL "The parameter 'sort' can not be used with this request"
-
-App Store Connect no longer accepts the `sort` query param on List Builds. The TestFlight upload itself succeeded — fastlane logs `Release notes posting failed (non-fatal)` and continues. Fix is to drop the `sort` param (or switch endpoints) in the script.
 
 ### Xcode 27: iOS build fails on pod deployment targets / `UIAction.subtitle`
 
@@ -106,6 +96,19 @@ Xcode 27 (installed on the Mac mini on 2026-10-04) breaks every iOS build in two
 `pnpm release:beta:*` and `pnpm release:prod:*` need `apps/mobile/.env` (dev) and `apps/mobile/.env.production` (prod); desktop equivalents at `apps/desktop/.env{,.production}`. Without them, `expo prebuild` fails with `google-signin without Firebase config plugin: Missing iosUrlScheme in provided options`.
 
 These files hold Expo public env vars (Supabase URL/anon key, Google iOS URL scheme) and are gitignored. They are **not** in `~/drafto-secrets/` — restore from a personal backup. Worktree copy steps for these files are in [`CLAUDE.md`](../../CLAUDE.md) → "Worktree Workflow".
+
+### Android build hangs with `OutOfMemoryError: Metaspace`
+
+`expo prebuild --clean` regenerates `android/gradle.properties` with Expo's template `org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m`, and 512 MiB of Metaspace is too little for `bundleRelease`. The symptom is Gradle's _"The Daemon will expire after the build after running out of JVM Metaspace"_, then a failed task (e.g. `:app:compileReleaseArtProfile FAILED`) followed by repeated `Exception in thread "RMI TCP Connection(idle)" java.lang.OutOfMemoryError: Metaspace`. The build does not exit; it goes silent until something kills it. `release:beta:all` runs Android first, so iOS never starts either.
+
+`apps/mobile/plugins/with-android-gradle-memory.js` sets the daemon to `-Xmx2048m -XX:MaxMetaspaceSize=1024m -XX:+ExitOnOutOfMemoryError` on every prebuild. That doubles the Metaspace headroom (the last successful build was already warning at 512 MiB). If a build still runs out, the daemon now exits at once (Gradle reports _"Gradle build daemon disappeared unexpectedly"_) instead of hanging. Raise the limit in that plugin, never in the generated file, which the next prebuild overwrites.
+
+A build that hung before this fix does not clean up after itself. The lane (`pnpm release:beta:*` → `fastlane` → the `gradlew` client) waits forever on the wedged daemon. The daemon runs in its own process group, so killing the lane does not kill it, and a busy daemon never reaches its idle timeout. While the lane is alive the factory refuses to reuse the build root (_"mobile beta build root … is in use by pid …; refusing to reset it"_), so no later mobile beta can build. Find both and stop them:
+
+```bash
+ps -axo pid,lstart,etime,command | grep -E '[G]radleDaemon|[r]elease:beta|[f]astlane'   # a days-old ELAPSED is the hung build
+kill <pid> …                                                                             # kill -9 if one ignores SIGTERM
+```
 
 ## Android
 
@@ -268,13 +271,86 @@ cd apps/mobile && pnpm release:beta:ios
 
 What it does: `expo prebuild` → `match` (fetch signing creds) → `gym` (build IPA) → `pilot` (upload to TestFlight) → post release notes.
 
-### Release to App Store
+### Submit a tested TestFlight build for App Store review (`promote`)
+
+```bash
+cd apps/mobile && pnpm release:promote:ios
+```
+
+Submits the **exact binary TestFlight users already validated** — it does not
+rebuild, and runs no `expo prebuild`, CocoaPods or `gym`.
+
+What it does: resolve the newest iOS build of `apps/mobile/package.json`'s `version`
+(or the `build_number:` you pass) → refuse if App Store Connect reports that build
+as a **definitive** state other than `VALID` (still processing); if the
+processing-state lookup itself fails — API shape change, transient 5xx, app record
+not found — warn and continue, so a broken diagnostic can't make the lane unusable
+→ set the release type and phased release on the App Store version → `deliver` with
+`skip_binary_upload: true`, no metadata and no screenshots, carrying the
+export-compliance and content-rights answers → submit for review.
+
+Defaults: `submit:true`, `phased_release:true`, `automatic_release:false` — so you
+press **Release This Version** yourself once Apple approves. Override via fastlane:
+
+```bash
+cd apps/mobile && bundle exec fastlane ios promote build_number:42         # a specific build
+cd apps/mobile && bundle exec fastlane ios promote submit:false            # dry run: resolve + validate only
+cd apps/mobile && bundle exec fastlane ios promote automatic_release:true  # release the moment Apple approves
+cd apps/mobile && bundle exec fastlane ios promote phased_release:false    # all users at once instead of 7-day phasing
+```
+
+> **The lane sets the release type and phased release itself, not through
+> `deliver`.** `deliver` reads `automatic_release` and `phased_release` in exactly
+> one place — `Deliver::UploadMetadata#upload` — and that method returns on its
+> first line when `skip_metadata` is set, which a promote run always sets. Passed
+> to `upload_to_app_store` they apply nothing. So the lane patches App Store
+> Connect directly (`releaseType` = `MANUAL`/`AFTER_APPROVAL`, plus creating or
+> deleting the phased release) **before** submitting, while the version is still
+> _Prepare for Submission_. This matters: App Store Connect preselects
+> _Automatically release this version_, so without it a run that printed
+> "Release: manual" would go public the moment Apple approved. A failure here is a
+> hard stop — nothing has been submitted yet, so just fix it and re-run.
+>
+> It also needs the version to exist: if there is no editable version for
+> `package.json`'s `version`, the lane creates a bare one (exactly as `deliver`
+> would) — but a bare version has no description or screenshots, so create and fill
+> the version page in App Store Connect first.
+
+> **`submit:false` is a dry run, not a way to stage a build.** `deliver` uses
+> `build_number` only when it submits (`Deliver::SubmitForReview#select_build` is
+> the only caller of `select_build`), so with `submit:false` the lane resolves and
+> validates the build, ensures the App Store version exists and runs precheck — and
+> attaches **nothing** to the version. The export-compliance / content-rights
+> answers travel with the submission too, so they also only land on `submit:true`,
+> and `phased_release:` / `automatic_release:` are deliberately not applied on a dry
+> run. Use it to check the build the real run would pick; select a build by hand in
+> App Store Connect if that is what you want.
+
+Store metadata (description, keywords, screenshots, privacy labels) is **not**
+managed from the repo — `skip_metadata` / `skip_screenshots` are on, so everything
+on the version page is whatever you entered in App Store Connect.
+
+### Release to App Store (rebuild — hotfix path)
 
 ```bash
 cd apps/mobile && pnpm release:prod:ios
 ```
 
-Uses `deliver` instead of `pilot` to upload to the App Store review queue.
+Rebuilds from the current source and uses `deliver` instead of `pilot` to **upload**
+a new binary to the App Store version. It does **not** submit for review — pass
+`bundle exec fastlane ios production submit:true` for that, or submit from App Store
+Connect. Note the binary it uploads is one no tester has ever run; prefer `promote`
+unless a fresh build is the point.
+
+The lane passes the export-compliance and content-rights answers, but `deliver`
+sends them as part of a submission, so on the default upload-only run they never
+reach App Store Connect — answer them there when you submit by hand, or run with
+`submit:true`. (`add_id_info_uses_idfa` is declared alongside them but is dead in
+fastlane 2.232.2, which never sends it; Apple retired that submission question.)
+Unlike `promote`, this lane does **not** set the release type or phased release —
+`submit:true` submits under whatever App Store Connect holds, which defaults to
+_Automatically release this version_. Check that on the version page, or use
+`promote`.
 
 ### TestFlight notes
 
@@ -309,11 +385,48 @@ What it does: validate `apps/desktop/.env.production` points at the prod Supabas
 
 > The lane aborts before upload if `.env.production` is missing or doesn't point at prod, or if the compiled bundle still references the dev project. This is what prevents shipping a dev-pointed "production" build (the cause of 0.3.2 build 28 connecting to the dev Supabase project — the old `.env`-copy approach was silently overridden by the environment). `mac production` shares the same checks.
 
-### Release to Mac App Store
+### Submit a tested TestFlight build for Mac App Store review (`promote`)
+
+```bash
+cd apps/desktop && pnpm release:promote
+```
+
+Same contract as [the iOS lane](#submit-a-tested-testflight-build-for-app-store-review-promote),
+with App Store Connect's `osx` platform and the version read from
+`apps/desktop/package.json`.
+
+> **The desktop React fossil rule does not apply to this lane.** It runs no
+> CocoaPods, no Metro and no `build_mac_app` — nothing is compiled, so the React
+> version in `node_modules` is irrelevant. `pnpm release:promote` is safe from any
+> checkout that has the Ruby gems installed (`cd apps/desktop && bundle install`).
+> Every lane that _builds_ macOS (`release:beta`, `release:production`) still runs
+> from the fossil checkout only — see [desktop build fossil](./desktop-build-fossil.md).
+
+```bash
+cd apps/desktop && bundle exec fastlane mac promote build_number:57
+cd apps/desktop && bundle exec fastlane mac promote submit:false            # dry run: resolve + validate only
+cd apps/desktop && bundle exec fastlane mac promote automatic_release:true  # release the moment Apple approves
+cd apps/desktop && bundle exec fastlane mac promote phased_release:false    # all users at once instead of 7-day phasing
+```
+
+Release type and phased release are patched onto the macOS version the same way as
+[on iOS](#submit-a-tested-testflight-build-for-app-store-review-promote), before the
+submission, and the same "create and fill the version page first" precondition
+applies.
+
+### Release to Mac App Store (rebuild — hotfix path)
 
 ```bash
 cd apps/desktop && pnpm release:production
 ```
+
+⚠️ **Builds macOS — fossil checkout only** (`/Users/jakub/code/drafto`), never a
+worktree. Rebuilds from source and **uploads** a new binary; it does not submit for
+review unless you pass `bundle exec fastlane mac production submit:true` — and, as
+on iOS, the export-compliance / content-rights answers only travel with a
+submission, so an upload-only run leaves them to be answered in App Store Connect,
+and the lane never sets the release type (App Store Connect defaults to
+_Automatically release this version_). Prefer `promote`.
 
 ### Local macOS dev build
 
@@ -324,6 +437,43 @@ cd apps/desktop && npx react-native run-macos
 ### macOS build prerequisites
 
 Same ASC API credentials as iOS (`ASC_API_KEY_ID`, `ASC_API_ISSUER_ID`, `ASC_API_KEY_P8_PATH`).
+
+## First App Store release checklist (iOS + macOS)
+
+The `promote` lanes above are everything the repo can automate. The rest is App
+Store Connect work no lane can do: agreements, **EU Digital Services Act trader
+status** (without it Apple removes the app from EU storefronts), App Information,
+App Privacy labels, pricing and availability, per-platform screenshots and
+descriptions, the reviewer demo account, and pressing **Submit** / **Release This
+Version**.
+
+That checklist lives in
+[issue #625 → "Part A: operator prerequisites"](https://github.com/JakubAnderwald/drafto/issues/625)
+and is deliberately **not** duplicated here — one copy, one place to correct. Work
+through it per platform before the first `promote`.
+
+One item on that list the lane does own: **Version Release** and **Phased Release
+for Automatic Updates**. `promote` patches both onto the version every time it
+submits, from its `automatic_release:` / `phased_release:` options — so whatever you
+picked on the version page is overwritten at submission time. Set them with the lane
+options, not in the App Store Connect UI.
+
+Two rejection risks the repo cannot fix for you:
+
+- **Guideline 2.1 — the reviewer can't sign in.** New Drafto accounts land on
+  _waiting for approval_, so a reviewer who signs up sees an empty app. Create a
+  reviewer account on prod, approve it in `/admin`, seed a notebook and a few notes,
+  and put the credentials **and** that explanation in App Review Information →
+  Notes.
+- **Guideline 5.1.1(v) — no in-app account deletion.** Implemented in
+  [#639](https://github.com/JakubAnderwald/drafto/pull/639), but what matters is
+  that the _build you promote_ contains it. Check the version you are submitting,
+  not just `main`.
+
+Both platforms share App Store Connect app `6760675784`, so every `promote` and
+`production` call passes `platform:` (`ios` / `osx`) and `app_identifier:`
+explicitly — without them `deliver` can attach a submission to the other platform's
+version.
 
 ## App Store screenshots
 
@@ -412,14 +562,28 @@ node scripts/post-release-notes.mjs --platform android --notes "$NOTES"
 
 ## Post-merge release flow
 
-When a feature merges to `main`, the full release wave runs in parallel:
+**Post-merge is beta, not production.** Per
+[CLAUDE.md → Release Authorization](../../CLAUDE.md#release-authorization), TestFlight
+and Play-internal builds are pre-authorized and ship without asking; anything that
+reaches the public stores needs explicit user approval. When a feature merges to
+`main`, the wave is:
 
 - **Web**: Vercel auto-deploys on merge to `main` (no manual step)
-- **Android**: `cd apps/mobile && pnpm release:prod:android`
-- **iOS**: `cd apps/mobile && pnpm release:prod:ios`
-- **macOS**: `cd apps/desktop && pnpm release:production`
+- **Android**: `cd apps/mobile && pnpm release:beta:android` → Play internal track
+- **iOS**: `cd apps/mobile && pnpm release:beta:ios` → TestFlight
+- **macOS**: `cd apps/desktop && pnpm release:beta` → TestFlight (fossil checkout only)
 
-The three store releases can run concurrently in separate terminals. Web deploys on its own.
+The three store lanes can run concurrently in separate terminals; web deploys on its
+own. On the Mac mini the dark factory dispatches exactly these lanes at Phase D
+(`scripts/lib/dispatch-release.mjs`), so a merged factory card needs no manual step.
+
+Public-store release is a **separate, explicitly approved step**, taken only once a
+beta build has actually been tested:
+
+- **iOS**: `cd apps/mobile && pnpm release:promote:ios`
+- **macOS**: `cd apps/desktop && pnpm release:promote`
+- **Android**: promote the internal-track release to production in the Play Console,
+  or `cd apps/mobile && pnpm release:prod:android`
 
 ## CI workflows
 
@@ -459,3 +623,4 @@ Do not use CI builds until these issues are resolved. All builds run locally via
 - [ADR 0011: App Store Deployment Strategy](../adr/0011-app-store-deployment-strategy.md)
 - [ADR 0015: Desktop App Technology Choice](../adr/0015-desktop-app-technology-choice.md)
 - [ADR 0016: Local Fastlane Builds](../adr/0016-local-fastlane-builds.md)
+- [ADR 0040: App Store Promote Lanes](../adr/0040-app-store-promote-lanes.md)

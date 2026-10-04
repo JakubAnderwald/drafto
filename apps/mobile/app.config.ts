@@ -69,9 +69,36 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   updates: {
     enabled: false,
   },
+  // iOS permission purpose strings live here, NOT in a checked-in Info.plist:
+  // apps/mobile/ios is untracked and every release lane runs
+  // `expo prebuild --clean`, so a hand-edited plist would be erased. App Review
+  // guideline 5.1.1(ii) rejects both vague strings and strings for permissions
+  // the app never asks for, so each plugin below either states the real reason or
+  // sets the key to `false` to delete it.
   plugins: [
     "expo-router",
-    "expo-secure-store",
+    [
+      "expo-secure-store",
+      {
+        // No SecureStore call passes `requireAuthentication`, so nothing in the
+        // app is behind a biometric-protected keychain item and the Face ID
+        // prompt can never appear. `false` deletes NSFaceIDUsageDescription.
+        faceIDPermission: false,
+      },
+    ],
+    [
+      "expo-image-picker",
+      {
+        // The only picker call is ImagePicker.launchImageLibraryAsync in
+        // src/lib/data/attachments.ts — the photo library, for note attachments.
+        photosPermission: "Drafto uses your photo library so you can attach images to your notes.",
+        // No camera and no audio recording anywhere in the app. `false` deletes
+        // NSCameraUsageDescription / NSMicrophoneUsageDescription on iOS and
+        // blocks CAMERA / RECORD_AUDIO in the Android manifest.
+        cameraPermission: false,
+        microphonePermission: false,
+      },
+    ],
     "expo-font",
     "expo-apple-authentication",
     [
@@ -81,6 +108,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       },
     ],
     "./plugins/with-android-optimizations",
+    "./plugins/with-android-gradle-memory",
     "./plugins/with-android-signing",
     "./plugins/with-ios-swift-concurrency",
     "./plugins/with-ios-modular-headers",

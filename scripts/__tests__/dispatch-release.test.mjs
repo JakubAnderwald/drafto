@@ -113,6 +113,48 @@ describe("assertBetaOnly (prod-never invariant)", () => {
       () => assertBetaOnly({ command: "bundle", args: ["exec", "fastlane", "mac", "production"] }),
       /non-beta/,
     );
+    // No platform token — both Fastfiles declare a default_platform, so this runs
+    // the real lane (apps/desktop defaults to :mac).
+    assert.throws(
+      () => assertBetaOnly({ command: "bundle", args: ["exec", "fastlane", "production"] }),
+      /non-beta/,
+    );
+  });
+
+  // `promote` submits an ALREADY-UPLOADED TestFlight build for App Review. It
+  // does not build, so it is fast and cheap to invoke — and it is the single most
+  // consequential lane in the repo, because it puts the app in front of Apple's
+  // reviewers and (on approval) the public. `/release:prod\b/` does NOT match
+  // "release:promote" (there is no `d` in promote), so these spellings needed
+  // their own patterns; all four must be refused.
+  it("throws on every promote spelling (App Review submission is human-only)", () => {
+    for (const lane of [
+      { command: "pnpm", args: ["release:promote:ios"] },
+      { command: "pnpm", args: ["release:promote"] },
+      { command: "bundle", args: ["exec", "fastlane", "ios", "promote"] },
+      { command: "bundle", args: ["exec", "fastlane", "mac", "promote"] },
+      // With explicit lane options, as an operator would type it by hand.
+      { command: "bundle", args: ["exec", "fastlane", "ios", "promote", "build_number:42"] },
+      // No platform token: both Fastfiles declare a default_platform, so this is
+      // a real submission (apps/desktop defaults to :mac).
+      { command: "bundle", args: ["exec", "fastlane", "promote"] },
+    ]) {
+      assert.throws(
+        () => assertBetaOnly(lane),
+        /non-beta/,
+        `must refuse: ${lane.command} ${lane.args.join(" ")}`,
+      );
+    }
+  });
+
+  it("still allows the beta lanes the promote patterns sit next to", () => {
+    for (const lane of [
+      { command: "pnpm", args: ["release:beta"] },
+      { command: "pnpm", args: ["release:beta:all"] },
+      { command: "bundle", args: ["exec", "fastlane", "mac", "beta"] },
+    ]) {
+      assert.doesNotThrow(() => assertBetaOnly(lane));
+    }
   });
   it("throws on the store-screenshot upload lanes", () => {
     for (const args of [["store:screenshots:upload:ios"], ["store:screenshots:upload"]]) {

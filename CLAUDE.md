@@ -110,7 +110,9 @@ When planning, fan out independent actions into a single batched message — don
 
 **Worktree gotcha**: `Edit`/`Write` require a prior `Read` of the _exact_ path. Reading `/Users/…/drafto/foo.ts` does NOT satisfy an edit against `/Users/…/drafto-worktree/foo.ts`. Pattern when starting work in a worktree: one batched `Read` for every worktree file you'll touch, then one batched `Edit`/`Write` for all the changes.
 
-**Plan structure**: Multi-PR or multi-step plans should also exploit parallelism — group independent work into "waves" (Wave 1 fully parallel, Wave 2 after Wave 1, etc.) and assign each independent unit to its own subagent. End any plan that ships a cross-platform release with the explicit per-platform release commands as a final wave: web (Vercel auto-deploys on merge), `cd apps/mobile && pnpm release:prod:android`, `pnpm release:prod:ios`, `cd apps/desktop && pnpm release:production` (⚠️ desktop builds **only** from the primary checkout's fossil `node_modules` — never a worktree; see [Release Authorization](#release-authorization)). The three store releases run concurrently in their own subagents. Note any required version bumps (`pnpm version:mobile|desktop patch|minor|major`) before the release wave.
+**Plan structure**: Multi-PR or multi-step plans should also exploit parallelism — group independent work into "waves" (Wave 1 fully parallel, Wave 2 after Wave 1, etc.) and assign each independent unit to its own subagent. End any plan that ships a cross-platform change with the **beta** release wave — that is the pre-authorized one: web (Vercel auto-deploys on merge), `cd apps/mobile && pnpm release:beta:android`, `pnpm release:beta:ios`, `cd apps/desktop && pnpm release:beta` (⚠️ a desktop **build** runs **only** from the primary checkout's fossil `node_modules` — never a worktree; see [Release Authorization](#release-authorization)). The three store lanes run concurrently in their own subagents. Note any required version bumps (`pnpm version:mobile|desktop patch|minor|major`) before that wave.
+
+Public-store release is **not** part of the default plan. Plan it only once the user has explicitly approved it and a beta build has actually been tested, as a separate wave after the beta one: `cd apps/mobile && pnpm release:promote:ios`, `cd apps/desktop && pnpm release:promote`, and Play production via `pnpm release:prod:android` or the Play Console. The Apple `promote` lanes submit the exact build TestFlight testers validated instead of rebuilding, so they compile nothing and the desktop fossil rule does not apply to them; the rebuild path (`pnpm release:prod:ios` / `pnpm release:production`) stays available for hotfixes and does re-impose it.
 
 ## SOLID Principles (Enforced)
 
@@ -179,7 +181,7 @@ Common CI failure patterns:
 
 Beta TestFlight builds (Mac App Store Connect, iOS, Android internal track) are **pre-authorized** — ship them without asking. Communicate what's going out (version + build number, what's in it) but don't gate on permission. A bad TestFlight build is reversible: the next build supersedes it, and old builds can be expired in App Store Connect.
 
-Production / public-store releases (`pnpm release:prod:*`, `pnpm release:production`, App Store / Play Store submission) still require explicit user approval — those affect non-tester users.
+Production / public-store releases still require explicit user approval — those affect non-tester users. That covers the Apple App Review submission lanes (`cd apps/mobile && pnpm release:promote:ios`, `cd apps/desktop && pnpm release:promote`), the rebuild-and-upload hotfix lanes (`pnpm release:prod:*`, `pnpm release:production`), and any App Store / Play Store submission or public release done by hand.
 
 ### ⚠️ Desktop (macOS) builds ONLY from the primary checkout's fossil `node_modules`
 

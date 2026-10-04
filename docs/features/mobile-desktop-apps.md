@@ -24,7 +24,7 @@ Both link the same `@nozbe/watermelondb@0.28.x` native module and reuse the
 | Mobile Expo config (iOS + Android) | `apps/mobile/app.config.ts`                                                                                                   |
 | Mobile app routes (expo-router)    | `apps/mobile/app/`                                                                                                            |
 | Mobile source tree                 | `apps/mobile/src/{components,db,hooks,lib,providers,screens,theme}/`                                                          |
-| Mobile Expo config plugins         | `apps/mobile/plugins/with-android-optimizations.js`, `with-android-signing.js`, `with-ios-swift-concurrency.js`               |
+| Mobile Expo config plugins         | `apps/mobile/plugins/with-android-{optimizations,gradle-memory,signing}.js`, `with-ios-*.js`                                  |
 | Mobile Fastlane                    | `apps/mobile/fastlane/{Fastfile,Appfile,Matchfile,Pluginfile}`                                                                |
 | Mobile release-notes scripts       | `apps/mobile/scripts/{generate-release-notes.sh,post-release-notes.mjs}`                                                      |
 | Mobile tests                       | `apps/mobile/__tests__/{components,hooks,lib,performance,providers,screens}/`                                                 |
