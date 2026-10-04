@@ -123,6 +123,15 @@ In rough order of value:
 10. **Secrets and safety** — a credential in argv or a log line, a destructive
     SQL statement, an unqualified `DELETE`/`DROP`, anything that would run
     against production.
+11. **Privacy policy drift** — a change that triggers the Privacy Policy
+    Maintenance rule in `CLAUDE.md` without updating
+    `apps/web/src/app/privacy/page.tsx` and its "Last updated" date in the same
+    PR. Triggers include: a new or swapped service or SDK that receives user
+    data, a new category of personal data, a change to storage, retention or
+    deletion, a new way for data to leave Drafto, an auth or session-storage
+    change, or user or support data sent to an AI model. A route that must be
+    reachable signed out but is missing from `PUBLIC_ROUTES` is the same kind
+    of finding.
 
 Do NOT post: style preferences Prettier already settles, praise, summaries of
 what the diff does, speculative "consider maybe", or anything you have not

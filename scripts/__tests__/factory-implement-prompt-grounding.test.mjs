@@ -58,3 +58,40 @@ describe("implementer prompt — screenshots", () => {
     assert.match(flat, /factory-screenshots\/issue-<n>/);
   });
 });
+
+describe("implementer prompt — privacy policy check (#648)", () => {
+  it("lists the privacy check with the CLAUDE.md rules the implementer must follow", () => {
+    assert.match(
+      flat,
+      /Privacy check — does this change trigger the Privacy Policy Maintenance rule in CLAUDE\.md\?/,
+    );
+    const check = flat.indexOf("Privacy check —");
+    assert.ok(check > flat.indexOf("Follow CLAUDE.md's enforced rules"));
+    assert.ok(check < flat.indexOf("**Add tests concurrently with code.**"));
+  });
+
+  it("requires the privacy page update in the same PR and records an unplanned one as drift", () => {
+    assert.match(
+      flat,
+      /update `apps\/web\/src\/app\/privacy\/page\.tsx` and its "Last updated" date in this same PR/,
+    );
+    assert.match(flat, /record it under "Drift vs\. approved plan"/);
+  });
+});
+
+describe("implementer prompt — privacy check fits the other rules (#648)", () => {
+  it("lets the privacy page through the 'only the files the plan lists' rule", () => {
+    assert.match(
+      flat,
+      /Edit \/ create only the files the plan lists \(plus the privacy policy page when the Privacy check below requires it\)/,
+    );
+  });
+
+  it("blocks instead of editing apps/ on an infra-only card", () => {
+    assert.match(flat, /when `parityOverride` is `"infra-only"`, do not edit it/);
+    assert.match(
+      flat,
+      /privacy policy update needed but the card is infra-only — untick None and remove the `parity:infra-only` label, then tick the web platform/,
+    );
+  });
+});

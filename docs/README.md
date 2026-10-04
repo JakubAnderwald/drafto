@@ -25,6 +25,7 @@ One brief per functional area. Each brief lists the current state, code paths on
 - [`features/mcp-server.md`](./features/mcp-server.md) — remote MCP at `/api/mcp`, API keys, tool reference, registry
 - [`features/design-system.md`](./features/design-system.md) — tokens, primitives, cross-platform parity
 - [`features/email-and-approval.md`](./features/email-and-approval.md) — transactional email via Resend + approval pipeline
+- [`features/privacy-policy.md`](./features/privacy-policy.md) — the public `/privacy` page, processor inventory, maintenance checklist, guard test
 - [`features/mobile-desktop-apps.md`](./features/mobile-desktop-apps.md) — how iOS / Android / macOS fit together
 
 ## Architecture

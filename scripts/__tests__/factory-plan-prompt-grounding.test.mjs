@@ -82,3 +82,42 @@ describe("planner prompt — confidence calibration (item 4)", () => {
     assert.match(flat, /implement stage must reproduce it before changing code/);
   });
 });
+
+describe("planner prompt — privacy policy check (#648)", () => {
+  it("asks whether the change triggers the Privacy Policy Maintenance rule", () => {
+    assert.match(
+      flat,
+      /Does this change trigger the Privacy Policy Maintenance rule in CLAUDE\.md\? If so, the plan must include updating the privacy page/,
+    );
+  });
+
+  it("names the privacy page and its Last updated date so the plan lists them", () => {
+    assert.match(flat, /`apps\/web\/src\/app\/privacy\/page\.tsx` \(modify\)/);
+    assert.match(flat, /"Last updated" date/);
+  });
+
+  it("puts the check inside the grounding step, before the plan is composed", () => {
+    const check = flat.indexOf("**Privacy check.**");
+    assert.ok(check > flat.indexOf("**Ground the plan.**"));
+    assert.ok(check < flat.indexOf("**Compose the plan comment.**"));
+  });
+});
+
+describe("planner prompt — privacy check fits the other rules (#648)", () => {
+  it("exempts the privacy-page update from the 'do not promise unlisted behaviour' constraint", () => {
+    assert.match(flat, /Exception: the privacy-page update required by the Privacy check/);
+  });
+
+  it("flags an infra-only card that needs a policy update instead of silently leaving apps/ alone", () => {
+    assert.match(
+      flat,
+      /On an infra-only card .* the privacy page is app code that the infra-only parity post-check rejects/,
+    );
+    // Ticking web alone leaves None / parity:infra-only in place and fails the
+    // spec gate, so the remedy must clear infra-only first.
+    assert.match(
+      flat,
+      /asking the operator to untick None and remove the `parity:infra-only` label, then tick the web platform/,
+    );
+  });
+});
