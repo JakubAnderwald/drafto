@@ -162,7 +162,7 @@ describe("factory-agent.sh branch safety", () => {
   describe("worktree creation", () => {
     it("passes --fetch at both add sites so a deleted branch is recovered", () => {
       const adds =
-        script.match(/worktree-cli\.mjs" add --issue[\s\S]{0,120}?2>>"\$LOG_FILE"/g) ?? [];
+        script.match(/worktree-cli\.mjs" add --issue[\s\S]{0,120}?2>"\$WT_ERR_FILE"/g) ?? [];
       assert.equal(adds.length, 2, "expected the --implement and --watch add sites");
       for (const add of adds) {
         assert.match(add, /--fetch/, `add site missing --fetch: ${add}`);
