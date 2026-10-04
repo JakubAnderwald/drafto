@@ -89,6 +89,9 @@ describe("implementer prompt — privacy check fits the other rules (#648)", () 
 
   it("blocks instead of editing apps/ on an infra-only card", () => {
     assert.match(flat, /when `parityOverride` is `"infra-only"`, do not edit it/);
-    assert.match(flat, /privacy policy update needed but the card is infra-only/);
+    assert.match(
+      flat,
+      /privacy policy update needed but the card is infra-only — untick None and remove the `parity:infra-only` label, then tick the web platform/,
+    );
   });
 });

@@ -221,7 +221,8 @@ For a first implementation, `revisionComments` is empty; ignore this section.
      Exception: when `parityOverride` is `"infra-only"`, do not edit it — the
      parity post-check rejects any `apps/**` change on an infra-only card. Emit
      `action=blocked` with reason "privacy policy update needed but the card is
-     infra-only — tick the web platform" instead.
+     infra-only — untick None and remove the `parity:infra-only` label, then
+     tick the web platform" instead.
 
 4. **Add tests concurrently with code.** Every feature gets unit
    (`__tests__/unit/`), integration (`__tests__/integration/`), and where

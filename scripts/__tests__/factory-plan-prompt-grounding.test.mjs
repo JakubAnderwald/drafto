@@ -113,6 +113,11 @@ describe("planner prompt — privacy check fits the other rules (#648)", () => {
       flat,
       /On an infra-only card .* the privacy page is app code that the infra-only parity post-check rejects/,
     );
-    assert.match(flat, /asking the operator to tick the web platform/);
+    // Ticking web alone leaves None / parity:infra-only in place and fails the
+    // spec gate, so the remedy must clear infra-only first.
+    assert.match(
+      flat,
+      /asking the operator to untick None and remove the `parity:infra-only` label, then tick the web platform/,
+    );
   });
 });

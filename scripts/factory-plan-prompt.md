@@ -305,7 +305,9 @@ Constraints:
      infra-only card (`parityOverride` is `"infra-only"`, e.g. a support-pipeline
      change under `scripts/`), the privacy page is app code that the infra-only
      parity post-check rejects: still list it, and add a Risks line asking the
-     operator to tick the web platform (dropping infra-only) before approving.
+     operator to untick None and remove the `parity:infra-only` label, then
+     tick the web platform, before approving. Ticking web alone is not enough —
+     the spec gate rejects None / infra-only combined with a platform box.
 
 4. **Compose the plan comment.** Use the structure above. The marker on line
    one is non-negotiable.

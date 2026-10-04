@@ -22,7 +22,7 @@ Treat the privacy page as code that must change in the same PR as the behaviour 
 3. **Factory prompts.** The planner (`scripts/factory-plan-prompt.md`) must ask whether the rule is triggered and put the privacy page into "Files to touch". The implementer (`scripts/factory-prompt.md`) checks it among the CLAUDE.md rules, and the code-review stage (`scripts/factory-review-prompt.md`, item 11) reports a triggered rule with no policy update as a finding.
 4. **Public legal routes.** `/privacy` and `/support` are in `PUBLIC_ROUTES`, and the middleware unit test plus a signed-out Playwright spec keep them there. Any future route that must be reachable signed out follows the same pattern.
 
-The processor table stays inline JSX on the page. The guard test renders the page rather than importing a shared data module.
+The processor table's rows stay on the page itself, as a local `PROCESSORS` array in `page.tsx`, not in a shared data module. The guard test renders the page rather than importing that array.
 
 ## Consequences
 
