@@ -94,6 +94,13 @@ After `upload_to_testflight`, `apps/desktop/scripts/post-release-notes.mjs` fail
 
 App Store Connect no longer accepts the `sort` query param on List Builds. The TestFlight upload itself succeeded — fastlane logs `Release notes posting failed (non-fatal)` and continues. Fix is to drop the `sort` param (or switch endpoints) in the script.
 
+### Xcode 27: iOS build fails on pod deployment targets / `UIAction.subtitle`
+
+Xcode 27 (installed on the Mac mini on 2026-10-04) breaks every iOS build in two ways:
+
+- It rejects deployment targets below iOS 15.0 as an error, and several pods (SDWebImage, GoogleSignIn, AppAuth, GTMSessionFetcher, RNSVG…) still declare 9.0–12.4. The `with-ios-pod-deployment-target` config plugin raises every pod target below 15.1 to 15.1 on each `expo prebuild`. It never lowers one. Don't override `IPHONEOS_DEPLOYMENT_TARGET` on the `xcodebuild` command line instead: that also _lowers_ pods that need iOS 16, and they then fail to compile.
+- Its SDK marks `UIAction.subtitle` iOS 16+, which expo-router 55.0.18 uses unguarded with a 15.1 target. `patches/expo-router@55.0.18.patch` wraps it in `#available(iOS 16.0, *)`. `apps/mobile/package.json` pins `expo-router` to exactly `55.0.18` so the patch keeps applying. A bump (including a Dependabot patch bump) must re-create the patch with `pnpm patch` or drop it if upstream fixed the guard. Otherwise `pnpm install` fails on the unused patch.
+
 ### Missing `.env` / `.env.production` files
 
 `pnpm release:beta:*` and `pnpm release:prod:*` need `apps/mobile/.env` (dev) and `apps/mobile/.env.production` (prod); desktop equivalents at `apps/desktop/.env{,.production}`. Without them, `expo prebuild` fails with `google-signin without Firebase config plugin: Missing iosUrlScheme in provided options`.
@@ -317,6 +324,28 @@ cd apps/desktop && npx react-native run-macos
 ### macOS build prerequisites
 
 Same ASC API credentials as iOS (`ASC_API_KEY_ID`, `ASC_API_ISSUER_ID`, `ASC_API_KEY_P8_PATH`).
+
+## App Store screenshots
+
+App Store Connect requires screenshots for each platform: iPhone 6.9" (1320×2868), iPad 13" (2064×2752, because `supportsTablet: true`), and Mac (16:10, 2880×1800). They are generated automatically, signed in as the **App Review demo account**, so the listing shows exactly what reviewers see. The output goes to each app's gitignored `fastlane/screenshots/en-US/`.
+
+| Step     | iOS + iPadOS (`apps/mobile`)                                                          | macOS (`apps/desktop`)                |
+| -------- | ------------------------------------------------------------------------------------- | ------------------------------------- |
+| Generate | `pnpm store:screenshots:ios` (`-- --skip-build` reuses the last simulator build)      | `pnpm store:screenshots`              |
+| Upload   | `pnpm store:screenshots:upload:ios`                                                   | `pnpm store:screenshots:upload`       |
+| Script   | `store/screenshots/generate-ios.sh` + Maestro flow `store/screenshots/app-store.yaml` | `store/screenshots/generate-macos.sh` |
+
+**Prerequisites:**
+
+- `~/drafto-secrets/app-review-account.txt` with `email: …` and `password: …` lines: the same account that is entered under _App Review Information_ in App Store Connect. It must be approved on prod. The scripts never echo it (override the path with `APPREVIEW_ACCOUNT_FILE`).
+- **iOS:** Xcode with the `iPhone 17 Pro Max` and `iPad Pro 13-inch (M5)` simulators, and Maestro (`~/.maestro/bin`). The script builds a Release _simulator_ app against **prod** (`.env.production`, about 20 min). It refuses to capture if the embedded Expo config doesn't point at the prod Supabase project. Run it from a worktree or another checkout with the mobile `node_modules`, **not** the primary checkout's desktop fossil install.
+- **macOS:** a prod-pointed `Drafto.app` installed (default `/Applications/Drafto.app`, the TestFlight install; override with `DRAFTO_APP`), `cliclick`, and Accessibility + Screen Recording permission for the terminal. Nothing is built, so the fossil rule does not apply. ⚠️ It **signs the app out** of its current account, but only once its sync status reads "Synced", because desktop sign-out wipes local data. Override with `SCREENSHOT_CONFIRM_SIGN_OUT=1`. It leaves the app signed in as the review account with View → Appearance set to Light. The screen must be unlocked, and the display must fit a 1440×900-point window.
+
+**What gets captured** (all read-only on the review account): notebooks, a notebook's notes, the editor, search and settings on iPhone and iPad; on Mac, two notes open in the three-pane view plus search. Light mode, 9:41 status bar. Every PNG's pixel size is checked against the App Store Connect display types. Override the notebook, note or search query with `SCREENSHOT_NOTEBOOK`, `SCREENSHOT_NOTE`, `SCREENSHOT_NOTE_2` (macOS) and `SCREENSHOT_SEARCH`.
+
+**Upload** (`fastlane ios|mac upload_screenshots`) uses `deliver` with `skip_binary_upload`, `skip_metadata` and no `app_version`. It targets whichever version is in _Prepare for Submission_ on that platform and **replaces** that version's en-US screenshots. It builds, edits and submits nothing else, but it changes the store listing, so the factory's beta-only guard (`PROD_DENYLIST` in `scripts/lib/dispatch-release.mjs`) refuses both lanes.
+
+Known limitation: the app has no tablet layout, so the iPad screenshots show the phone UI at iPad size.
 
 ## Versioning
 

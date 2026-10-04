@@ -105,3 +105,7 @@ The main navigation difference between platforms:
 - Maestro E2E tests are **local-only** — they do not run in CI
 - Run the full suite on both iOS Simulator and Android Emulator before any release
 - Minimum timeout tier is 10s to avoid flakiness on slow emulators
+
+## App Store screenshots
+
+`../store/screenshots/app-store.yaml` is not part of this suite. It is the Maestro flow behind `pnpm store:screenshots:ios`, which signs in as the App Review demo account. See `docs/operations/builds-and-releases.md` → "App Store screenshots".
