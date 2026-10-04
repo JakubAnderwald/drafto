@@ -90,6 +90,19 @@ If missing, `productbuild` fails with `Could not find appropriate signing identi
 
 These files hold Expo public env vars (Supabase URL/anon key, Google iOS URL scheme) and are gitignored. They are **not** in `~/drafto-secrets/` — restore from a personal backup. Worktree copy steps for these files are in [`CLAUDE.md`](../../CLAUDE.md) → "Worktree Workflow".
 
+### Android build hangs with `OutOfMemoryError: Metaspace`
+
+`expo prebuild --clean` regenerates `android/gradle.properties` with Expo's template `org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m`, and 512 MiB of Metaspace is too little for `bundleRelease`. The symptom is Gradle's _"The Daemon will expire after the build after running out of JVM Metaspace"_, then a failed task (e.g. `:app:compileReleaseArtProfile FAILED`) followed by repeated `Exception in thread "RMI TCP Connection(idle)" java.lang.OutOfMemoryError: Metaspace`. The build does not exit; it goes silent until something kills it. `release:beta:all` runs Android first, so iOS never starts either.
+
+`apps/mobile/plugins/with-android-gradle-memory.js` sets the daemon to `-Xmx2048m -XX:MaxMetaspaceSize=1024m -XX:+ExitOnOutOfMemoryError` on every prebuild. That doubles the Metaspace headroom (the last successful build was already warning at 512 MiB). If a build still runs out, the daemon now exits at once (Gradle reports _"Gradle build daemon disappeared unexpectedly"_) instead of hanging. Raise the limit in that plugin, never in the generated file, which the next prebuild overwrites.
+
+A build that hung before this fix does not clean up after itself. The lane (`pnpm release:beta:*` → `fastlane` → the `gradlew` client) waits forever on the wedged daemon. The daemon runs in its own process group, so killing the lane does not kill it, and a busy daemon never reaches its idle timeout. While the lane is alive the factory refuses to reuse the build root (_"mobile beta build root … is in use by pid …; refusing to reset it"_), so no later mobile beta can build. Find both and stop them:
+
+```bash
+ps -axo pid,lstart,etime,command | grep -E '[G]radleDaemon|[r]elease:beta|[f]astlane'   # a days-old ELAPSED is the hung build
+kill <pid> …                                                                             # kill -9 if one ignores SIGTERM
+```
+
 ## Android
 
 App package: `eu.drafto.mobile`
