@@ -59,7 +59,7 @@ The full set is created idempotently by `scripts/setup-factory-labels.sh`. Refer
 | `status:blocked`      | factory              | Hard stop — see comment on issue.                                    |
 | `factory-pause`       | operator             | Global kill switch on this issue (factory ignores).                  |
 | `migration-approved`  | operator             | Authorises factory to merge a PR with `supabase/migrations` SQL.     |
-| `factory-failure`     | factory failure trap | Filed by `cleanup()` when a factory run errors out.                  |
+| `factory-failure`     | factory failure trap | Filed by `cleanup()` on a run error, or by the toolchain check.      |
 | `parity:web-only`     | operator             | Skip cross-platform parity check (legitimate web-only work).         |
 | `parity:mobile-only`  | operator             | Skip cross-platform parity check (legitimate mobile-only work).      |
 | `parity:desktop-only` | operator             | Skip cross-platform parity check (legitimate desktop-only work).     |
@@ -83,6 +83,7 @@ After filing, drag the card to **Ready** on the board. The factory picks it up o
 - **Per-card**: drag the card to **Blocked**, or apply `factory-pause` to the issue. The factory ignores the card on the next tick.
 - **Global**: run `node scripts/lib/state-cli.mjs factory:pause` on the Mac mini. The agent reads the flag every cycle and exits early when set. A manual pause never auto-expires; `factory:resume` to unpause. (Available once Wave 2 lands; until then, unload the launchd plist.)
 - **Automatic (self-healing)**: when a claude call dies on a Claude subscription _session usage_ limit, the factory pauses itself until the limit resets (`factory:pause-until`) instead of burning the card's retry budget, then auto-resumes on the first tick past the deadline. See [factory-runbook.md → "Automatic pause on a Claude session limit"](../operations/factory-runbook.md#automatic-pause-on-a-claude-session-limit-self-healing).
+- **Automatic toolchain pause (self-healing)**: every tick probes git / gh / claude on the Mac mini before running the modes. If one stays broken for two ticks (e.g. git refusing to run on an unaccepted Xcode license after an Xcode update), the factory pauses itself, emails the operator the exact fix and files one `factory-failure` issue, then resumes on its own once the probes pass. See [factory-runbook.md → "Automatic toolchain pause"](../operations/factory-runbook.md#automatic-toolchain-pause-self-healing).
 - **Emergency stop**: `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist` on the Mac mini, or `kill` the active claude PID under `logs/factory.*.pid`.
 
 ## Troubleshooting
@@ -165,6 +166,10 @@ Comment the change on the **issue** while the card is in **In Test** (e.g. "the 
 - The reply text reads as accept-intent ("go ahead", "ship it", "thanks", `[ACCEPT]`, `[GO]`).
 
 Check `logs/support/support-agent-*.log` for the per-thread classification line. If the classifier flagged the reply as non-accept-intent (e.g. it mentioned a new direction), the agent treated the reply as a fresh comment and the card stays where it is — drag it manually if needed.
+
+### "Every card stalled and I got a 'drafto factory paused' email"
+
+The toolchain health check found a broken tool on the Mac mini, typically git failing because a new Xcode's license hasn't been accepted. The email and the `factory-failure` issue name the fix. For the Xcode license, run `sudo xcodebuild -license accept` in a real Terminal on the Mac mini; it can't run from launchd or a Claude `!` command because sudo needs a password prompt. Nothing else is needed: the next tick sees the probes pass, resumes the factory, closes the issue and emails you that it has recovered. See [factory-runbook.md → "Automatic toolchain pause"](../operations/factory-runbook.md#automatic-toolchain-pause-self-healing).
 
 ### "A card moved to Blocked saying 'low disk'"
 

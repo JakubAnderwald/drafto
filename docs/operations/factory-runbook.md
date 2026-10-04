@@ -425,6 +425,33 @@ The next tick's pause gate reports the factory paused (`… (until: <iso>)`) and
 
 Trade-off: because the loop runs plan→implement→watch→release sequentially under one mutex, a session-limit pause also defers `--release` merges until the reset — acceptable at the factory's cadence.
 
+### Automatic toolchain pause (self-healing)
+
+On 2026-10-04 an Xcode 27 update landed on the Mac mini with its license unaccepted. From then on every `/usr/bin/git` call failed with "You have not agreed to the Xcode license agreements". For about 3 hours every tick failed `worktree add` / `worktree resume`, self-update blamed "(offline?)", each mode still exited 0 (so no `factory-failure` issue was filed), and nobody was told.
+
+Now `factory-agent-loop.sh` runs `scripts/lib/toolchain-health.mjs check` every tick, right after self-update and before the modes. It probes `git --version`, `git rev-parse HEAD` in the factory checkout, `gh --version` and `claude --version`. All the probes are local, so a network blip can't trip them.
+
+- **Any probe fails:** the tick is skipped (`toolchain-health: unhealthy; skipping this tick` in `launchd-factory-stderr.log`, after a JSON line naming the failure and its class).
+- **Same fault on 2 consecutive ticks:**
+  - The factory pauses itself with reason `toolchain: <tool> broken (<class>)`. The `toolchain:` prefix marks the pause as the check's own. A pause with any other reason is never rewritten or resumed, including a manual `factory:pause` you add mid-incident (for example to keep the factory stopped after fixing the host).
+  - It emails the operator once from `support@drafto.eu` via `zoho-cli.mjs send`. GitHub doesn't notify Jakub about issues his own token files, so email is the real alert.
+  - It files one `factory-failure` issue as the record. The issue carries a `<!-- drafto-factory-toolchain:<signature> -->` marker and the exact fix.
+  - A different fault mid-incident gets a fresh email and a comment on the same issue. A fault still present after 24h sends one reminder email.
+- **The probes pass again:** the factory resumes its own pause (only a pause whose reason starts with `toolchain:`, even if the incident record was lost), closes the issue, sends a recovery email and clears `toolchainIncident` in `logs/factory-state.json`. A failed close is retried on later ticks.
+- **Retries:** the email and the issue are tracked separately and each is retried every tick until it succeeds. A failed email is never treated as sent just because the issue was filed.
+- **Fails open:** the check runs after self-update, so a broken check can always be fixed by merging to main. Only exit 3 (a broken tool) skips the tick. If the check itself crashes (corrupt state file, full disk), the loop logs `toolchain-health: check itself failed (rc=N); running the tick anyway` and the tick runs as before.
+
+Known fault classes and fixes:
+
+| Class                  | Fix                                                                                                                                |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `xcode-license`        | `sudo xcodebuild -license accept` in a **real Terminal** on the Mac mini. sudo can't prompt under launchd or a Claude `!` command. |
+| `xcode-developer-path` | `xcode-select --install` (or `sudo xcode-select -s /Applications/Xcode.app`)                                                       |
+| `not-found`            | Binary missing from launchd's `PATH`: reinstall it or fix the plist's `PATH`.                                                      |
+| `timeout`              | A probe hung; look for a stuck process or a pending system dialog.                                                                 |
+
+Inspect with `node scripts/lib/state-cli.mjs factory:status` (pause) and `jq .toolchainIncident logs/factory-state.json` (incident). Dry-run the check by hand with `node scripts/lib/toolchain-health.mjs check --repo . --dry-run`. Set `FACTORY_HEALTHCHECK=0` in the plist to disable it.
+
 ## Rollback drills
 
 The factory's blast radius is bounded by:
@@ -441,12 +468,13 @@ Practice drill (do once per month while the factory is active):
 
 ## On-call response — `factory-failure` issue appears
 
-The factory's `cleanup()` trap files a `factory-failure`-labelled GitHub issue when a run errors out. `nightly-audit.sh` will surface these in its 05:00 sweep. When you see one:
+The factory's `cleanup()` trap files a `factory-failure`-labelled GitHub issue when a run errors out, and the toolchain health check files one when a host tool breaks (see "Automatic toolchain pause"). `nightly-audit.sh` does **not** sweep these, and GitHub does not notify Jakub about issues filed with his own token, so check the label by hand. Toolchain faults also arrive by email. When you see one:
 
 1. **Read the issue body.** Sanitised log tail is included (timestamps only — no bundle PII, same regex pattern as `support-agent.sh`).
 2. **Check `logs/factory-*.log` on the Mac mini** for the full context.
 3. **Common causes** (in approximate order of frequency):
    - Network blip during `gh` call (transient — usually resolves on the next tick).
+   - Broken host toolchain: git failing on an unaccepted Xcode license after an Xcode update, missing Command Line Tools, or a binary gone from `PATH`. The toolchain health check pauses the factory and emails the fix; see "Automatic toolchain pause".
    - Worktree slot leaked (a previous run died without releasing it). `node scripts/lib/state-cli.mjs factory:slot-status` shows each slot's PID + issue; if the PID is dead, `node scripts/lib/state-cli.mjs factory:slot-release <slot>` then `node scripts/lib/worktree-cli.mjs remove --issue <n> --force`. (`--watch`'s cleanup sweep also auto-releases slots whose issue has left the active In Progress/In Review/In Test states — e.g. merged, Blocked, or closed. Since ADR-0033 that sweep removes the worktree but **keeps** the local branch whenever a PR still points at it, so a card dragged back to In Progress resumes on its own commits.)
    - Disk full under `worktrees/` — the factory now refuses to start an implement when free space is below `FACTORY_MIN_FREE_DISK_GB` (it parks the card in Blocked with a `disk-low` comment), so a mid-build ENOSPC should be rare. Reclaim space via `git worktree prune` (and `node scripts/lib/worktree-cli.mjs list` to see the factory's worktrees); see "Worktree installs & disk" for the full reclamation runbook.
    - Claude wall-time cap hit on every retry (the prompt or context bundle is too large). Inspect the bundle in the log; truncate prior PR threads if needed. (A Claude _session usage_ limit is handled separately — the factory auto-pauses until reset instead of failing; see "Automatic pause on a Claude session limit".)
