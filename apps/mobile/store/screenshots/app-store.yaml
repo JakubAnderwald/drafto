@@ -1,0 +1,97 @@
+appId: eu.drafto.mobile
+---
+# App Store screenshots — driven by generate-ios.sh, not part of the E2E suite.
+# Signs in as the App Review demo account and captures the main screens.
+# Read-only: it never creates, edits or deletes anything on the account.
+#
+# Env (passed by generate-ios.sh):
+#   MAESTRO_APPREVIEW_EMAIL / MAESTRO_APPREVIEW_PASSWORD  review account
+#   OUT        absolute output path prefix, e.g. …/en-US/iphone
+#   NOTEBOOK   notebook to open
+#   NOTE       note to open in the editor
+#   QUERY      search query
+
+# --- Clean start, signed out ---
+- clearKeychain
+- stopApp
+- clearState
+- launchApp
+
+- extendedWaitUntil:
+    visible: "Log In"
+    timeout: 60000
+
+- tapOn: "you@example.com"
+- inputText: ${MAESTRO_APPREVIEW_EMAIL}
+- tapOn: "Sign in to your Drafto account"
+- tapOn: "Your password"
+- inputText: ${MAESTRO_APPREVIEW_PASSWORD}
+- tapOn: "Sign in to your Drafto account"
+- tapOn:
+    id: "login-button"
+
+# Wait for the first sync to pull the account's notebooks.
+- extendedWaitUntil:
+    visible: ".*${NOTEBOOK}.*"
+    timeout: 60000
+
+# iOS offers to save the password ("Save Password?") a few seconds after
+# login. The sheet is drawn out of process, so Maestro can neither see nor tap
+# it reliably. Let it arrive, then restart the app: the session persists, and
+# the sheet goes away with the old process.
+- extendedWaitUntil:
+    visible: "never-present-just-wait"
+    timeout: 8000
+    optional: true
+- stopApp
+- launchApp
+- extendedWaitUntil:
+    visible: ".*${NOTEBOOK}.*"
+    timeout: 30000
+- waitForAnimationToEnd
+
+# --- 01: Notebooks ---
+- takeScreenshot: ${OUT}-01-notebooks
+
+# --- 02: Notes in a notebook ---
+- tapOn: ".*${NOTEBOOK}.*"
+- extendedWaitUntil:
+    visible: ".*${NOTE}.*"
+    timeout: 15000
+- waitForAnimationToEnd
+- takeScreenshot: ${OUT}-02-notes
+
+# --- 03: Editor ---
+- tapOn: ".*${NOTE}.*"
+- extendedWaitUntil:
+    visible: ".*${NOTE}.*"
+    timeout: 15000
+# The editor is a WebView; give it time to render the note body.
+- waitForAnimationToEnd:
+    timeout: 5000
+- hideKeyboard
+- takeScreenshot: ${OUT}-03-editor
+
+# --- 04: Search ---
+- tapOn: "Notes"
+- tapOn: "Notebooks"
+- extendedWaitUntil:
+    visible: ".*${NOTEBOOK}.*"
+    timeout: 10000
+- tapOn:
+    id: "search-button"
+- extendedWaitUntil:
+    visible: "Search notes and notebooks..."
+    timeout: 10000
+- tapOn: "Search notes and notebooks..."
+- inputText: ${QUERY}
+- hideKeyboard
+- waitForAnimationToEnd
+- takeScreenshot: ${OUT}-04-search
+- swipe:
+    direction: DOWN
+
+# --- 05: Settings ---
+- tapOn: "Settings, tab.*"
+- waitForAnimationToEnd
+- takeScreenshot: ${OUT}-05-settings

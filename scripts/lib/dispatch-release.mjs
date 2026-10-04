@@ -100,6 +100,9 @@ const PROD_DENYLIST = [
   /production-release\.yml/i,
   /fastlane\s+(\w+\s+)?production/i,
   /fastlane\s+(\w+\s+)?promote\b/i,
+  // Store-listing screenshots replace what App Store Connect shows publicly.
+  /store:screenshots:upload\b/i,
+  /fastlane\s+\w+\s+upload_screenshots\b/i,
 ];
 
 let _spawnForTests = null;

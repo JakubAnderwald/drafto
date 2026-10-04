@@ -615,9 +615,14 @@ describe("App Store promote lanes", () => {
       // them, so the submitting path never stalls on the questionnaire. Checked
       // per call: a global count is satisfied by two matches inside ONE call and
       // would hide an omission in the other.
-      const uploads = [...src.matchAll(/^[ \t]*upload_to_app_store\(([\s\S]*?)^[ \t]*\)$/gm)];
-      assert.equal(uploads.length, 2, "expected exactly two upload_to_app_store calls");
-      for (const [, call] of uploads) {
+      // The screenshot-only upload (upload_store_screenshots) hard-codes
+      // `submit_for_review: false`, so it can never reach the questionnaire and is
+      // excluded by that property, not by name.
+      const uploads = [...src.matchAll(/^[ \t]*upload_to_app_store\(([\s\S]*?)^[ \t]*\)$/gm)]
+        .map(([, call]) => call)
+        .filter((call) => !/^\s*submit_for_review:\s*false,?$/m.test(call));
+      assert.equal(uploads.length, 2, "expected exactly two submitting upload_to_app_store calls");
+      for (const call of uploads) {
         assert.match(
           call,
           /submission_information:\s*APPSTORE_SUBMISSION_INFORMATION/,

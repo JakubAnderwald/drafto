@@ -171,9 +171,16 @@ function remoteBranchState(root, branch) {
     allowFail: true,
     timeoutMs: NETWORK_TIMEOUT_MS,
   });
-  if (res.status === 0) return "present";
-  if (res.status === 2) return "absent";
-  return "unreachable";
+  if (res.status === 0) return { state: "present" };
+  if (res.status === 2) return { state: "absent" };
+  // Keep git's stderr: a broken git binary (e.g. an unaccepted Xcode license)
+  // also lands here, and "could not reach origin" alone points at the network.
+  return {
+    state: "unreachable",
+    detail: String(res.stderr ?? "")
+      .trim()
+      .split("\n")[0],
+  };
 }
 
 function revParse(root, ref) {
@@ -226,11 +233,13 @@ export function addWorktree({
   // `add` a purely local operation for callers that want it that way.
   let remote = null;
   if (fetchRemote) {
-    remote = remoteBranchState(root, branch);
+    const probe = remoteBranchState(root, branch);
+    remote = probe.state;
     if (remote === "unreachable") {
       throw new Error(
         `could not reach origin to check for ${branch}; refusing to branch from ${base} ` +
-          `and orphan a possible open PR`,
+          `and orphan a possible open PR` +
+          (probe.detail ? ` (git: ${probe.detail})` : ""),
       );
     }
     if (remote === "present") {

@@ -112,5 +112,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     "./plugins/with-android-signing",
     "./plugins/with-ios-swift-concurrency",
     "./plugins/with-ios-modular-headers",
+    "./plugins/with-ios-pod-deployment-target",
   ],
 });

@@ -156,6 +156,21 @@ describe("assertBetaOnly (prod-never invariant)", () => {
       assert.doesNotThrow(() => assertBetaOnly(lane));
     }
   });
+  it("throws on the store-screenshot upload lanes", () => {
+    for (const args of [["store:screenshots:upload:ios"], ["store:screenshots:upload"]]) {
+      assert.throws(() => assertBetaOnly({ command: "pnpm", args }), /non-beta/);
+    }
+    for (const platform of ["ios", "mac"]) {
+      assert.throws(
+        () =>
+          assertBetaOnly({
+            command: "bundle",
+            args: ["exec", "fastlane", platform, "upload_screenshots"],
+          }),
+        /non-beta/,
+      );
+    }
+  });
 });
 
 describe("dispatch-premerge CLI", () => {

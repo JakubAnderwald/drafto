@@ -45,16 +45,21 @@ jest.mock("@/hooks/use-note", () => ({
 }));
 
 const mockSetContent = jest.fn();
+const mockUseEditorBridge = jest.fn();
 const mockGetJSON = jest.fn().mockResolvedValue({ type: "doc", content: [] });
 
 jest.mock("@10play/tentap-editor", () => ({
-  useEditorBridge: () => ({
-    getJSON: mockGetJSON,
-    setContent: mockSetContent,
-    injectCSS: jest.fn(),
-  }),
+  useEditorBridge: (options: unknown) => {
+    mockUseEditorBridge(options);
+    return {
+      getJSON: mockGetJSON,
+      setContent: mockSetContent,
+      injectCSS: jest.fn(),
+    };
+  },
   useBridgeState: () => ({ isReady: true }),
   TenTapStartKit: [],
+  CoreBridge: { configureCSS: (css: string) => ({ name: "core", extendCSS: css }) },
   RichText: () => null,
   Toolbar: () => null,
   DEFAULT_TOOLBAR_ITEMS: [],
@@ -112,6 +117,24 @@ describe("EditorScreen", () => {
     const { getByDisplayValue } = render(<EditorScreen />);
 
     expect(getByDisplayValue("Test Note")).toBeTruthy();
+  });
+
+  it("styles the note body with the system sans font, like desktop", () => {
+    mockNoteLoading = false;
+    mockNote = {
+      id: "note-1",
+      title: "Test Note",
+      content: null,
+      updatedAt: new Date(),
+    };
+
+    render(<EditorScreen />);
+
+    const [{ bridgeExtensions }] = mockUseEditorBridge.mock.calls[0] as [
+      { bridgeExtensions: { name: string; extendCSS?: string }[] },
+    ];
+    const core = bridgeExtensions.find((ext) => ext.name === "core");
+    expect(core?.extendCSS).toMatch(/\.ProseMirror \{ font-family: -apple-system/);
   });
 
   it("allows editing the title", () => {

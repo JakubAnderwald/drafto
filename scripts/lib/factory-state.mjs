@@ -31,6 +31,10 @@
 //         in emptyIssue() below.
 //       }
 //     },
+//     toolchainIncident: null | {          // open host-toolchain fault (toolchain-health.mjs)
+//       signature, summary, since, consecutive, issueNumber, issueSignature,
+//       emailSignature, lastEmailAt, recovered
+//     },
 //     crCli: {                             // CodeRabbit CLI gap-fill lane (ADR-0036)
 //       runs:     [ { runId, issue, sha, startedAt } ],   // rolling budget ledger, 24 h
 //       inFlight: null | { runId, issue, pr, sha, baseSha, mode, pid,
@@ -42,8 +46,9 @@
 //
 // Atomic writes use the same temp-file + rename pattern as state.mjs. **Callers
 // must serialize** loadFactoryState → mutate → saveFactoryState; the only
-// process writing this file in production is the factory-agent (which holds a
-// PID-file lock), so today that holds.
+// processes writing this file in production are the factory-agent and the
+// loop's toolchain-health check, both run sequentially inside the loop's
+// mutex, so today that holds.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -71,6 +76,7 @@ export function emptyFactoryState() {
       1: emptySlot(),
     },
     issues: {},
+    toolchainIncident: null,
     crCli: emptyCrCli(),
   };
 }
@@ -180,6 +186,10 @@ function mergeWithDefaults(parsed) {
     // return is silently erased by the next save. The crCli ledger was nearly
     // lost that way — an unrelated `factory:bump-attempts` would have wiped an
     // in-flight run's record, orphaning its worktree and refunding nothing.
+    toolchainIncident:
+      parsed.toolchainIncident && typeof parsed.toolchainIncident === "object"
+        ? parsed.toolchainIncident
+        : null,
     crCli: mergeCrCli(parsed.crCli),
   };
 }
