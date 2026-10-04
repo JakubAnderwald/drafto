@@ -97,6 +97,40 @@ def package_json_version
   JSON.parse(File.read(File.join(PROJECT_ROOT, "package.json")))["version"]
 end
 
+# Uploads ./fastlane/screenshots/<locale>/*.png to the App Store version that is
+# currently editable ("Prepare for Submission") on `platform`, replacing that
+# locale's existing screenshots. deliver picks each PNG's display type from its
+# pixel size. No app_version is passed, so deliver neither creates nor renames a
+# version; nothing is built, no metadata is touched, nothing is submitted.
+def upload_store_screenshots(platform:, app_identifier:)
+  screenshots_path = File.join(PROJECT_ROOT, "fastlane", "screenshots")
+  pngs = Dir.glob(File.join(screenshots_path, "*", "*.png"))
+  UI.user_error!("No screenshots in #{screenshots_path} — run the store/screenshots generator first") if pngs.empty?
+
+  api_key = app_store_connect_api_key(
+    key_id: ENV["ASC_API_KEY_ID"],
+    issuer_id: ENV["ASC_API_ISSUER_ID"],
+    key_filepath: ENV["ASC_API_KEY_P8_PATH"],
+    key_content: ENV["ASC_API_KEY_P8"],
+    in_house: false
+  )
+
+  upload_to_app_store(
+    api_key: api_key,
+    app_identifier: app_identifier,
+    platform: platform,
+    screenshots_path: screenshots_path,
+    overwrite_screenshots: true,
+    skip_binary_upload: true,
+    skip_metadata: true,
+    skip_app_version_update: true,
+    submit_for_review: false,
+    run_precheck_before_submit: false,
+    force: true
+  )
+  UI.success("Uploaded #{pngs.length} screenshots (#{platform})")
+end
+
 # ---------- macOS ----------
 
 platform :mac do
@@ -108,6 +142,12 @@ platform :mac do
   desc "Build and submit to App Store (macOS)"
   lane :production do
     build_and_submit(destination: "appstore")
+  end
+
+  desc "Upload fastlane/screenshots (from store/screenshots/generate-macos.sh) to the Mac App Store version"
+  desc "being prepared, replacing its en-US screenshots. Builds and submits nothing; changes the store listing."
+  lane :upload_screenshots do
+    upload_store_screenshots(platform: "osx", app_identifier: BUNDLE_ID)
   end
 
   private_lane :build_and_submit do |options|

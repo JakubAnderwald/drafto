@@ -12,7 +12,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
     "release:beta": "bundle exec fastlane mac beta",
-    "release:production": "bundle exec fastlane mac production"
+    "release:production": "bundle exec fastlane mac production",
+    "store:screenshots": "bash store/screenshots/generate-macos.sh",
+    "store:screenshots:upload": "bundle exec fastlane mac upload_screenshots"
   },
   "dependencies": {
     "@10play/tentap-editor": "^1.0.1",
