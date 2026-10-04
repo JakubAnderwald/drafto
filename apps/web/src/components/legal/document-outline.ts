@@ -9,11 +9,12 @@ export interface NumberedOutlineEntry extends OutlineEntry {
 
 /**
  * Looks up a section in a document's outline, so a page's headings and its table of
- * contents are numbered and titled from the same list and cannot drift apart.
+ * contents are numbered and titled from the same list and cannot drift apart. For an
+ * outline declared `as const`, an id that is not in it fails to compile.
  */
-export function outlineEntry(
-  outline: readonly OutlineEntry[],
-  id: OutlineEntry["id"],
+export function outlineEntry<const T extends readonly OutlineEntry[]>(
+  outline: T,
+  id: T[number]["id"],
 ): NumberedOutlineEntry {
   const index = outline.findIndex((entry) => entry.id === id);
   if (index === -1) throw new Error(`Unknown document section: ${id}`);

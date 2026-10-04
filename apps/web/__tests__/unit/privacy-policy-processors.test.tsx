@@ -111,8 +111,14 @@ interface RenderedPolicy {
   tableServices: string[];
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function isDisclosed(processor: string, policy: RenderedPolicy): boolean {
-  if (processor in NAMED_IN_TEXT_ONLY) return new RegExp(`\\b${processor}\\b`).test(policy.text);
+  if (processor in NAMED_IN_TEXT_ONLY) {
+    return new RegExp(`\\b${escapeRegExp(processor)}\\b`).test(policy.text);
+  }
   return policy.tableServices.includes(processor);
 }
 

@@ -172,7 +172,9 @@ describe("Privacy policy page", () => {
     expect(rowFor("Resend")).toHaveTextContent("password reset");
     expect(rowFor("Zoho Mail")).toHaveTextContent("EU data centre");
     expect(rowFor("Anthropic")).toHaveTextContent("support email");
-    expect(rowFor("GitHub")).toHaveTextContent("your email address");
+    expect(rowFor("GitHub")).toHaveTextContent(
+      "your email address (not shown on the issue page, but readable through GitHub's API)",
+    );
     expect(screen.queryByRole("cell", { name: /Expo/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("cell", { name: "PostHog" })).not.toBeInTheDocument();
   });
@@ -226,6 +228,10 @@ describe("Privacy policy page", () => {
     expect(rights).toMatch(/contact support@drafto\.eu to change your email address/);
     expect(rights).not.toMatch(/through account settings/);
     expect(rights).toMatch(/object to processing based on our legitimate interests/);
+    // Deletion keeps the data listed under "Data held outside your account".
+    expect(rights).toMatch(/Delete your account and the data stored in it/);
+    expect(rights).toMatch(/Some data held outside your account is kept/);
+    expect(rights).not.toMatch(/all associated data/);
   });
 
   it("describes trash purging and note history retention", () => {
@@ -309,6 +315,11 @@ describe("Privacy policy page", () => {
     expect(rightsLinks.map((link) => link.getAttribute("href"))).toEqual([
       "#your-rights",
       "#your-rights",
+    ]);
+    const retentionLinks = screen.getAllByRole("link", { name: "Data Retention" });
+    expect(retentionLinks.map((link) => link.getAttribute("href"))).toEqual([
+      "#retention",
+      "#retention",
     ]);
   });
 

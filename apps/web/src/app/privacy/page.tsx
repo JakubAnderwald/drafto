@@ -100,7 +100,7 @@ const PROCESSORS: readonly Processor[] = [
     service: "GitHub",
     purpose: "Public issue tracker for bug reports and feature requests",
     dataShared:
-      "Your report, which usually quotes your message; later replies on that thread; any attachments you sent; your email address (hidden)",
+      "Your report, which usually quotes your message; later replies on that thread; any attachments you sent; your email address (not shown on the issue page, but readable through GitHub's API)",
   },
 ];
 
@@ -475,8 +475,10 @@ export default function PrivacyPolicyPage() {
               copy. Notes in the trash and earlier note versions are not included
             </li>
             <li>
-              <strong>Delete</strong> your account and all associated data at any time from within
-              the app on the web, iOS, Android or macOS. Deletion is immediate. See{" "}
+              <strong>Delete</strong> your account and the data stored in it at any time from within
+              the app on the web, iOS, Android or macOS. Deletion is immediate. Some data held
+              outside your account is kept (see{" "}
+              <SectionLink id="retention">{section("retention").title}</SectionLink>). See{" "}
               <Link href="/account/delete">how to delete your account</Link>. If your account has
               not been approved yet, email us to delete it
             </li>
