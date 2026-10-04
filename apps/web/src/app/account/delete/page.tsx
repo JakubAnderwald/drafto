@@ -89,8 +89,9 @@ export default function DeleteAccountInfoPage() {
           emails we have exchanged with you, and notification emails our administrator received
           about your sign-up or support requests; and GitHub issues filed from your support emails.
           Ask us at support@drafto.eu to remove your support emails or issues. Our{" "}
-          <Link href="/privacy">Privacy Policy</Link> describes each of these. If you use Drafto on
-          another device, sign out there to erase its local copy of your notes.
+          <Link href="/privacy">Privacy Policy</Link> describes each of these. Before you delete
+          your account, sign out of Drafto on your other devices to erase their local copies; if you
+          have already deleted it, uninstall the app there.
         </p>
 
         <h2>No longer have the app, or can&apos;t sign in?</h2>

@@ -294,7 +294,7 @@ The policy at [drafto.eu/privacy](https://drafto.eu/privacy) (`apps/web/src/app/
 Also:
 
 - When a new route must be reachable signed out (legal, support, store-review pages), add it to `PUBLIC_ROUTES` in `apps/web/src/lib/supabase/middleware.ts` and to `apps/web/__tests__/unit/middleware.test.ts`
-- When you add a dependency that receives user data, map it to its processor in `apps/web/__tests__/unit/privacy-policy-processors.test.tsx` — the test fails until the processor is named on the page. It reads only `package.json` files, so a service reached over plain `fetch` or a script on the Mac mini needs the manual check above
+- When you add a dependency that receives user data, map it to its processor in `apps/web/__tests__/unit/privacy-policy-processors.test.tsx` — the test fails until the processor has a row in the page's sharing table. It reads only `package.json` files, so a service reached over plain `fetch` or a script on the Mac mini needs the manual check above
 - A factory card ticked **None** / `parity:infra-only` (e.g. a support-pipeline change under `scripts/`) that triggers these rules is not infra-only: the infra-only parity check rejects the `apps/web` policy edit, so tick the web platform instead
 
 ## Useful Commands

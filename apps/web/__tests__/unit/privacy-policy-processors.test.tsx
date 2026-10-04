@@ -70,6 +70,12 @@ const SUSPICIOUS: RegExp[] = [
 // Dependencies that match SUSPICIOUS but send no user data, each with the reason.
 const NOT_A_PROCESSOR: Record<string, string> = {};
 
+// Mapped processors that receive nothing today, so the page names them in the text instead of
+// giving them a sharing-table row, each with the reason. Every other mapped processor needs a row.
+const NAMED_IN_TEXT_ONLY: Record<string, string> = {
+  PostHog: "no PostHog key is configured, so the SDK sends nothing",
+};
+
 const NATIVE_APPS = ["apps/mobile", "apps/desktop"];
 const PACKAGES = ["apps/web", ...NATIVE_APPS, "packages/shared"];
 // `import.meta.url` is an http: URL under jsdom, so resolve from the file path instead.
@@ -100,10 +106,20 @@ function processorFor(dependency: string): string | undefined {
   return PROCESSOR_FOR_DEPENDENCY.find(([pattern]) => pattern.test(dependency))?.[1];
 }
 
-function undisclosed(dependencies: string[], pageText: string): string[] {
+interface RenderedPolicy {
+  text: string;
+  tableServices: string[];
+}
+
+function isDisclosed(processor: string, policy: RenderedPolicy): boolean {
+  if (processor in NAMED_IN_TEXT_ONLY) return new RegExp(`\\b${processor}\\b`).test(policy.text);
+  return policy.tableServices.includes(processor);
+}
+
+function undisclosed(dependencies: string[], policy: RenderedPolicy): string[] {
   return dependencies.flatMap((dependency) => {
     const processor = processorFor(dependency);
-    if (!processor || new RegExp(`\\b${processor}\\b`).test(pageText)) return [];
+    if (!processor || isDisclosed(processor, policy)) return [];
     return [`${dependency} → ${processor}`];
   });
 }
@@ -124,29 +140,27 @@ function telemetry(dependencies: string[]): string[] {
   );
 }
 
-function renderedPageText(): string {
-  render(<PrivacyPolicyPage />);
-  return document.body.textContent ?? "";
-}
-
-function sharingTableServices(): string[] {
+function renderedPolicy(): RenderedPolicy {
   render(<PrivacyPolicyPage />);
   const table = screen.getByRole("table");
-  return within(table)
-    .getAllByRole("row")
-    .slice(1) // header row
-    .map((row) => within(row).getAllByRole("cell")[0].textContent ?? "");
+  return {
+    text: document.body.textContent ?? "",
+    tableServices: within(table)
+      .getAllByRole("row")
+      .slice(1) // header row
+      .map((row) => within(row).getAllByRole("cell")[0].textContent ?? ""),
+  };
 }
 
 const allDependencies = [...new Set(PACKAGES.flatMap(dependenciesOf))];
 
 describe("privacy policy sharing table", () => {
   it("lists every processor", () => {
-    expect(sharingTableServices()).toEqual(expect.arrayContaining(EXPECTED_ROWS));
+    expect(renderedPolicy().tableServices).toEqual(expect.arrayContaining(EXPECTED_ROWS));
   });
 
   it("has no row for services that receive no user data", () => {
-    const services = sharingTableServices();
+    const services = renderedPolicy().tableServices;
     // Builds are local Fastlane and OTA updates are off, so Expo receives nothing.
     expect(services.some((service) => /Expo/.test(service))).toBe(false);
     // No PostHog key is configured, so nothing reaches PostHog (named in the text instead).
@@ -160,9 +174,10 @@ describe("privacy policy dependency guard", () => {
     expect(allDependencies).toContain("expo-apple-authentication");
   });
 
-  it("names the processor of every data-processing dependency on the page", () => {
-    // Fix: describe the processor on /privacy (and bump "Last updated").
-    expect(undisclosed(allDependencies, renderedPageText())).toEqual([]);
+  it("gives the processor of every data-processing dependency a sharing-table row", () => {
+    // Fix: add a row for the processor to the sharing table on /privacy (and bump "Last
+    // updated"). A processor that receives nothing yet goes in NAMED_IN_TEXT_ONLY instead.
+    expect(undisclosed(allDependencies, renderedPolicy())).toEqual([]);
   });
 
   it("has a policy decision for every dependency with a data-processing name", () => {
@@ -173,17 +188,28 @@ describe("privacy policy dependency guard", () => {
 
   it("keeps the claim that the native apps have no analytics or crash-reporting SDK true", () => {
     // Fix: if a native app now ships one, rewrite that paragraph on /privacy and this test.
-    expect(renderedPageText()).toMatch(
+    expect(renderedPolicy().text).toMatch(
       /The iOS, Android and macOS apps contain no analytics or crash-reporting SDK/,
     );
     expect(telemetry(NATIVE_APPS.flatMap(dependenciesOf))).toEqual([]);
   });
 
-  it("flags a mapped dependency whose processor the page does not name", () => {
-    expect(undisclosed(["@sentry/react-native", "react"], "Supabase stores your notes.")).toEqual([
+  it("flags a mapped dependency whose processor has no sharing-table row", () => {
+    // Naming the processor in the text is not enough.
+    const policy = { text: "Errors are reported to Sentry.", tableServices: ["Supabase"] };
+    expect(undisclosed(["@sentry/react-native", "react"], policy)).toEqual([
       "@sentry/react-native → Sentry",
     ]);
-    expect(undisclosed(["resend"], "Email is sent through Resend.")).toEqual([]);
+    expect(undisclosed(["resend"], { text: "", tableServices: ["Resend"] })).toEqual([]);
+  });
+
+  it("accepts a text-only mention for a processor that receives nothing today", () => {
+    expect(
+      undisclosed(["posthog-js"], { text: "PostHog is not enabled.", tableServices: [] }),
+    ).toEqual([]);
+    expect(undisclosed(["posthog-js"], { text: "", tableServices: [] })).toEqual([
+      "posthog-js → PostHog",
+    ]);
   });
 
   it("flags a telemetry SDK even when its processor is already named on the page", () => {

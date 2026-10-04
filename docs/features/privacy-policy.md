@@ -97,7 +97,7 @@ Also: a route that must be reachable signed out (legal, support, store-review pa
 
   A green guard test is not proof the policy is complete.
 
-- **Resolving a guard failure:** if a new dependency matches a suspicious name and receives user data, add it to `PROCESSOR_FOR_DEPENDENCY` and describe the processor on the page. If it sends no user data, add it to `NOT_A_PROCESSOR` with the reason.
+- **Resolving a guard failure:** if a new dependency matches a suspicious name and receives user data, add it to `PROCESSOR_FOR_DEPENDENCY` and give the processor a row in the sharing table. If it sends no user data, add it to `NOT_A_PROCESSOR` with the reason. A mapped processor that receives nothing until it is configured (PostHog today) is named in the page text instead of the table, and listed in `NAMED_IN_TEXT_ONLY` with the reason.
 - **Files that must change together:** the policy page, `legal-pages.test.tsx`, and the "What may be kept" paragraph on `/account/delete` (it summarises the retention section). A new processor also needs a row in this doc's inventory table.
 
 ## Verify

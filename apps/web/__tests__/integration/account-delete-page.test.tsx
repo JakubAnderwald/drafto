@@ -65,7 +65,12 @@ describe("Account deletion page (/account/delete)", () => {
     // Mirrors the privacy policy's retention section; there is no analytics data to keep.
     expect(kept).toHaveTextContent(/error reports in Sentry/);
     expect(kept).toHaveTextContent(/GitHub issues filed from your support emails/);
-    expect(kept).toHaveTextContent(/sign out there to erase its local copy/);
+    // An app whose session ends because the account is gone keeps its copy, so the advice is
+    // to sign out first, or uninstall afterwards.
+    expect(kept).toHaveTextContent(
+      /Before you delete your account, sign out of Drafto on your other devices to erase their local copies/,
+    );
+    expect(kept).toHaveTextContent(/if you have already deleted it, uninstall the app there/);
     expect(kept).not.toHaveTextContent(/analytics/i);
     expect(within(kept).getByRole("link", { name: "Privacy Policy" })).toHaveAttribute(
       "href",
