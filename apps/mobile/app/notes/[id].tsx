@@ -24,6 +24,7 @@ import { NoteEditor } from "@/components/editor/note-editor";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { EditorSkeleton } from "@/components/ui/skeleton";
 import { useAutoSave } from "@/hooks/use-auto-save";
+import { buildEditorColorCss, buildEditorCss } from "@/lib/editor-css";
 import {
   contentToTiptap,
   contentToBlocknote,
@@ -81,12 +82,6 @@ export default function EditorScreen() {
   // where setContent is called before the TenTap WebView finishes initializing.
   return <NoteEditorView key={id} noteId={id} initialNote={note} />;
 }
-
-// The note body uses the same font stack as the desktop editor. Without it the
-// WebView falls back to its default serif (Times). Set through CoreBridge so it
-// ships with the editor's initial load rather than a post-load injection.
-const EDITOR_FONT_CSS = `body, .ProseMirror { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.6; }`;
-const EDITOR_BRIDGE_EXTENSIONS = [...TenTapStartKit, CoreBridge.configureCSS(EDITOR_FONT_CSS)];
 
 interface NoteEditorViewProps {
   noteId: string;
@@ -190,10 +185,18 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     }, [noteId, database, sync]),
   });
 
+  // Font and colours are set through CoreBridge so they ship with the editor's
+  // initial load and are re-applied whenever the WebView reloads. A post-load
+  // injectCSS alone is lost on reload, leaving dark text on the dark background.
+  const bridgeExtensions = useMemo(
+    () => [...TenTapStartKit, CoreBridge.configureCSS(buildEditorCss(semantic, isDark))],
+    [semantic, isDark],
+  );
+
   // Pass initialContent so TipTap has the content when it first initializes
   // inside the WebView — no race condition with setContent.
   const editor = useEditorBridge({
-    bridgeExtensions: EDITOR_BRIDGE_EXTENSIONS,
+    bridgeExtensions,
     autofocus: false,
     avoidIosKeyboard: true,
     initialContent: resolvedContent,
@@ -215,16 +218,11 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     editorReadyRef.current = isReady;
   }, [isReady]);
 
+  // Applies a theme switch made while the note is open; the initial colours
+  // already come from the bridge CSS above.
   useEffect(() => {
     if (!isReady) return;
-    const css = isDark
-      ? `
-        * { background-color: ${semantic.bg}; color: ${semantic.fg}; }
-        blockquote { border-left: 3px solid ${semantic.borderStrong}; padding-left: 1rem; }
-        .highlight-background { background-color: ${semantic.bgMuted}; }
-      `
-      : `* { background-color: ${semantic.bg}; color: ${semantic.fg}; }`;
-    editor.injectCSS(css, "dark-mode");
+    editor.injectCSS(buildEditorColorCss(semantic, isDark), "dark-mode");
   }, [isDark, semantic, editor, isReady]);
 
   const { flush: flushContent } = contentSave;
