@@ -10,9 +10,13 @@ import {
   isNoOpContentSave,
   queueNoteWrite,
   rememberContentBaseline,
+  sameStoredContent,
   serializeEditorContent,
+  serializeLoadedDoc,
   type ContentBaseline,
 } from "@/components/notes/content-save-guard";
+
+import { jsonbReordered } from "../../helpers/jsonb";
 
 const SIGNED_URL =
   "https://example.supabase.co/storage/v1/object/sign/attachments/user-1/note-1/photo.png?token=abc";
@@ -77,12 +81,58 @@ describe("serializeEditorContent", () => {
   });
 });
 
+describe("serializeLoadedDoc", () => {
+  it("serialises an empty doc as the one empty paragraph ProseMirror fills it with", () => {
+    expect(serializeLoadedDoc({ type: "doc", content: [] })).toBe(
+      serializeEditorContent({ type: "doc", content: [{ type: "paragraph" }] }),
+    );
+  });
+
+  it("serialises any other doc exactly like serializeEditorContent", () => {
+    expect(serializeLoadedDoc(textDoc("hello"))).toBe(serializeEditorContent(textDoc("hello")));
+  });
+});
+
+describe("sameStoredContent", () => {
+  const content = serializeEditorContent(textDoc("hello"));
+
+  it("treats JSON that differs only in object key order as the same content", () => {
+    const pulled = jsonbReordered(content);
+    expect(pulled).not.toBe(content); // precondition: the bytes really differ
+    expect(sameStoredContent(content, pulled)).toBe(true);
+  });
+
+  it("distinguishes JSON with different values or array order", () => {
+    expect(sameStoredContent(content, serializeEditorContent(textDoc("hello!")))).toBe(false);
+    expect(sameStoredContent('[{"type":"a"},{"type":"b"}]', '[{"type":"b"},{"type":"a"}]')).toBe(
+      false,
+    );
+    expect(sameStoredContent('{"a":1}', '{"a":1,"b":2}')).toBe(false);
+    expect(sameStoredContent('{"a":1,"b":2}', '{"a":1}')).toBe(false);
+    expect(sameStoredContent('{"a":[1]}', '{"a":{"0":1}}')).toBe(false);
+    expect(sameStoredContent('{"a":null}', '{"a":{}}')).toBe(false);
+  });
+
+  it("requires plain text that is not JSON to match exactly", () => {
+    expect(sameStoredContent("first line", "first line")).toBe(true);
+    expect(sameStoredContent("first line", "first line ")).toBe(false);
+    expect(sameStoredContent("not json", content)).toBe(false);
+  });
+
+  it("treats a missing value as null and never equal to stored text", () => {
+    expect(sameStoredContent(null, undefined)).toBe(true);
+    expect(sameStoredContent(null, "")).toBe(false);
+    expect(sameStoredContent(undefined, "[]")).toBe(false);
+    expect(sameStoredContent("[]", null)).toBe(false);
+  });
+});
+
 describe("isNoOpContentSave", () => {
   const content = serializeEditorContent(textDoc("hello"));
   const edited = serializeEditorContent(textDoc("hello world"));
   const STORED = "stored-in-another-form";
   const baselineFor = (noteId: string, stored: string | null = STORED) =>
-    new Map<string, ContentBaseline>([[noteId, { stored, serialized: content }]]);
+    new Map<string, ContentBaseline>([[noteId, { stored, serializations: [content] }]]);
 
   it("is true when the payload equals the baseline of the unchanged stored row", () => {
     expect(isNoOpContentSave(baselineFor("note-1"), { noteId: "note-1", content }, STORED)).toBe(
@@ -123,10 +173,51 @@ describe("isNoOpContentSave", () => {
     expect(isNoOpContentSave(new Map(), { noteId: "note-1", content }, null)).toBe(false);
     expect(isNoOpContentSave(new Map(), { noteId: "note-1", content }, undefined)).toBe(false);
   });
+
+  it("is true when a sync pull handed the saved content back with jsonb's key order", () => {
+    expect(
+      isNoOpContentSave(new Map(), { noteId: "note-1", content }, jsonbReordered(content)),
+    ).toBe(true);
+  });
+
+  it("keeps a baseline when the stored row only came back re-serialised by a sync pull", () => {
+    const stored = serializeEditorContent(textDoc("loaded"));
+    const baselines = new Map<string, ContentBaseline>([
+      ["note-1", { stored, serializations: [content] }],
+    ]);
+    expect(
+      isNoOpContentSave(baselines, { noteId: "note-1", content }, jsonbReordered(stored)),
+    ).toBe(true);
+  });
+
+  it("matches any of the baseline's serialisations, in any key order", () => {
+    const baselines = new Map<string, ContentBaseline>([
+      ["note-1", { stored: STORED, serializations: [edited, jsonbReordered(content)] }],
+    ]);
+    expect(isNoOpContentSave(baselines, { noteId: "note-1", content }, STORED)).toBe(true);
+    expect(isNoOpContentSave(baselines, { noteId: "note-1", content: edited }, STORED)).toBe(true);
+    expect(
+      isNoOpContentSave(
+        baselines,
+        { noteId: "note-1", content: serializeEditorContent(textDoc("other")) },
+        STORED,
+      ),
+    ).toBe(false);
+  });
+
+  it("is false for a baseline with no serialisations", () => {
+    const baselines = new Map<string, ContentBaseline>([
+      ["note-1", { stored: STORED, serializations: [] }],
+    ]);
+    expect(isNoOpContentSave(baselines, { noteId: "note-1", content }, STORED)).toBe(false);
+  });
 });
 
 describe("rememberContentBaseline", () => {
-  const baseline = (serialized: string): ContentBaseline => ({ stored: null, serialized });
+  const baseline = (serialized: string): ContentBaseline => ({
+    stored: null,
+    serializations: [serialized],
+  });
 
   it("records and overwrites a note's baseline", () => {
     const baselines = new Map<string, ContentBaseline>();

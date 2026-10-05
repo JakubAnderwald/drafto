@@ -32,6 +32,7 @@ import {
   queueNoteWrite,
   rememberContentBaseline,
   serializeEditorContent,
+  serializeLoadedDoc,
   type ContentBaseline,
 } from "@/components/notes/content-save-guard";
 import {
@@ -85,8 +86,8 @@ async function buildInsertNode(attachment: Attachment): Promise<TipTapNode> {
 // canonical stored form, so persisting it back is non-destructive.
 const RESOLVE_TIMEOUT_MS = 8000;
 
-// Bound on reading the editor back after a load to seed the no-op-save
-// baseline. On timeout the autosave gate still opens, just without a baseline,
+// Bound on reading the editor back after a load to add its serialisation to
+// the no-op-save baseline. On timeout the autosave gate still opens without it,
 // so a stuck WebView reply can never strand the loading overlay.
 const BASELINE_READ_TIMEOUT_MS = 3000;
 
@@ -134,8 +135,8 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
   // newly-switched-to row.
   const noteIdRef = useRef<string | undefined>(undefined);
   const loadedNoteIdRef = useRef<string | null>(null);
-  // Per-note editor serialisation of the content each note was loaded with, so
-  // a save that would only write it back (the load's own content-update echo,
+  // Per-note serialisations of the content each note was loaded with, so a
+  // save that would only write it back (the load's own content-update echo,
   // or an edit reverted before the debounce fired) is skipped instead of
   // bumping updated_at (issue #654). Keyed by noteId, not "the current note": a
   // flush-on-switch save for the outgoing note runs after the refs have moved on.
@@ -155,6 +156,10 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
     if (!payload.title.trim()) return;
     const record = await database.get<Note>("notes").find(payload.noteId);
     await database.write(async () => {
+      // WatermelonDB bumps updated_at on every update, so an unchanged title
+      // (e.g. an edit reverted before the debounce fired) must not be written
+      // (issue #654). Compared inside the writer, so earlier writes have landed.
+      if (record.title === payload.title) return;
       await record.update((n) => {
         n.title = payload.title;
       });
@@ -180,9 +185,10 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
           return;
         }
         // After this write the row holds the editor's own serialisation, so a
-        // repeat of this payload matches it exactly, while the load baseline
-        // (tied to the row's previous content) stops matching — reverting to
-        // the pre-save text is a real change and persists.
+        // repeat of this payload matches it (even once a sync pull has handed
+        // it back with jsonb's key order), while the load baseline (tied to the
+        // row's previous content) stops matching — reverting to the pre-save
+        // text is a real change and persists.
         await database.write(async () => {
           await record.update((n) => {
             n.content = payload.content;
@@ -319,16 +325,33 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
         }
       };
 
+      // This note's baseline: serialisations of the stored content it was
+      // loaded from that a save may write back without changing anything.
+      const serializations: string[] = [];
+      const addBaselineSerialization = (serialize: () => string) => {
+        try {
+          serializations.push(serialize());
+          rememberContentBaseline(contentBaselinesRef.current, targetNoteId, {
+            stored: storedContent,
+            serializations: [...serializations],
+          });
+        } catch (err) {
+          console.warn("[note-editor] baseline serialisation failed", err);
+        }
+      };
+
       // setContent() only posts a message to the WebView, and the web editor
       // answers it with a content-update — so opening the gate right after
       // setContent let that echo through as an "edit" (issue #654). Read the
       // editor back first: setContent and getJSON share tentap's single
       // postMessage channel, so the reply reflects the loaded document, and its
-      // serialised form becomes this note's baseline, tied to the stored content
-      // it was loaded from. The echo then either arrives while the gate is still
-      // closed or serialises to the baseline; neither writes. A failed or
-      // timed-out read still opens the gate (saves fall back to the exact
-      // stored-content comparison) — never a stuck note.
+      // serialised form joins this note's baseline. The echo then either
+      // arrives while the gate is still closed or serialises to the baseline;
+      // neither writes. A failed or timed-out read still opens the gate — never
+      // a stuck note. Saves to a structured or empty note are then checked
+      // against the converter's own serialisation, recorded before setContent;
+      // legacy plain text has none (ProseMirror's HTML parse decides its
+      // shape), so for it only the stored-content comparison remains.
       const seedBaselineAndMarkLoaded = async () => {
         const json = await withTimeout<object | null>(
           editorRef.current?.getJSON() ?? Promise.resolve(null),
@@ -336,16 +359,7 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
           null,
         );
         if (cancelled || noteIdRef.current !== targetNoteId) return;
-        if (json) {
-          try {
-            rememberContentBaseline(contentBaselinesRef.current, targetNoteId, {
-              stored: storedContent,
-              serialized: serializeEditorContent(json as TipTapDoc),
-            });
-          } catch (err) {
-            console.warn("[note-editor] baseline serialisation failed", err);
-          }
-        }
+        if (json) addBaselineSerialization(() => serializeEditorContent(json as TipTapDoc));
         markLoaded();
       };
 
@@ -353,6 +367,7 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
         try {
           const load = classifyNoteContent(rawContent);
           if (load.kind === "empty") {
+            addBaselineSerialization(() => serializeLoadedDoc({ type: "doc", content: [] }));
             editorRef.current?.setContent("");
             await seedBaselineAndMarkLoaded();
             return;
@@ -363,6 +378,7 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
             return;
           }
           const tiptapDoc = contentToTiptap(load.value);
+          addBaselineSerialization(() => serializeLoadedDoc(tiptapDoc));
           // Resolve image URLs defensively, bounded by a timeout so a
           // never-settling signed-URL fetch can't strand the loading overlay: a
           // resolution failure/timeout degrades images to placeholders rather

@@ -9,8 +9,9 @@ import {
 } from "@drafto/shared";
 
 import { render, fireEvent, act } from "../../helpers/test-utils";
+import { jsonbReordered } from "../../helpers/jsonb";
 import { NoteEditorPanel } from "@/components/notes/note-editor-panel";
-import { serializeEditorContent } from "@/components/notes/content-save-guard";
+import { sameStoredContent, serializeEditorContent } from "@/components/notes/content-save-guard";
 import { useNote } from "@/hooks/use-note";
 import type { Attachment, Note } from "@/db";
 
@@ -92,8 +93,26 @@ function clone<T>(value: T): T {
 const EMPTY_EDITOR_DOC: TipTapDoc = { type: "doc", content: [{ type: "paragraph" }] };
 
 // ProseMirror keeps a node's marks sorted by schema rank, whatever order they
-// were given in, so the editor's read-back can differ from what was set.
+// were given in, and merges adjacent text nodes that carry the same marks, so
+// the editor's read-back can differ from what was set.
 const MARK_RANK = ["bold", "italic", "underline", "strike", "code", "link"];
+
+function mergeAdjacentText(nodes: TipTapNode[]): TipTapNode[] {
+  const merged: TipTapNode[] = [];
+  for (const node of nodes) {
+    const previous = merged[merged.length - 1];
+    if (
+      previous?.type === "text" &&
+      node.type === "text" &&
+      JSON.stringify(previous.marks ?? []) === JSON.stringify(node.marks ?? [])
+    ) {
+      merged[merged.length - 1] = { ...previous, text: `${previous.text}${node.text}` };
+    } else {
+      merged.push(node);
+    }
+  }
+  return merged;
+}
 
 function normaliseNode(node: TipTapNode): TipTapNode {
   const next: TipTapNode = { ...node };
@@ -102,7 +121,7 @@ function normaliseNode(node: TipTapNode): TipTapNode {
       (a, b) => MARK_RANK.indexOf(a.type) - MARK_RANK.indexOf(b.type),
     );
   }
-  if (next.content) next.content = next.content.map(normaliseNode);
+  if (next.content) next.content = mergeAdjacentText(next.content.map(normaliseNode));
   return next;
 }
 
@@ -217,6 +236,24 @@ function webAuthoredContent(text: string): string {
   ]);
 }
 
+// Web-authored content with one sentence stored as two runs of the same styles,
+// which the web editor merges into one text node on load — a difference in the
+// data itself, not just in key order, that only the editor's read-back knows.
+function webAuthoredSplitRuns(): string {
+  return JSON.stringify([
+    {
+      id: "block-1",
+      type: "paragraph",
+      props: { textColor: "default", backgroundColor: "default", textAlignment: "left" },
+      content: [
+        { type: "text", text: "Hello, ", styles: { italic: true, bold: true } },
+        { type: "text", text: "world", styles: { bold: true, italic: true } },
+      ],
+      children: [],
+    },
+  ]);
+}
+
 function withParagraph(doc: TipTapDoc, text: string): TipTapDoc {
   return {
     ...doc,
@@ -272,22 +309,23 @@ describe("NoteEditorPanel — no writes from merely opening a note (#654)", () =
   });
 
   it("does not write a web-authored note when a late load echo arrives after the gate opened", async () => {
-    const note = createRecord("a", "Welcome", webAuthoredContent("Hello"));
+    const note = createRecord("a", "Welcome", webAuthoredSplitRuns());
     const asSet = contentToTiptap(JSON.parse(note.content!));
 
     renderPanel("a");
     await flushAsync();
-    // Preconditions: neither the stored bytes nor the doc that was set equal the
-    // editor's read-back, so only a baseline read back from the editor works.
+    // Preconditions: neither the stored content nor the converter's own
+    // serialisation of the doc that was set holds the same data as the editor's
+    // read-back, so only the baseline read back from the editor works.
     const readBack = serializeEditorContent(web.currentDoc());
-    expect(readBack).not.toBe(note.content);
-    expect(readBack).not.toBe(serializeEditorContent(asSet));
+    expect(sameStoredContent(readBack, note.content)).toBe(false);
+    expect(sameStoredContent(readBack, serializeEditorContent(asSet))).toBe(false);
 
     web.emitChange();
     await flushAsync(DEBOUNCE_MS * 2);
 
     expect(writes(note)).toBe(0);
-    expect(note.content).toBe(webAuthoredContent("Hello"));
+    expect(note.content).toBe(webAuthoredSplitRuns());
   });
 
   it("does not write an empty TipTap doc, a legacy plain-text note or an empty note when opened", async () => {
@@ -433,6 +471,49 @@ describe("NoteEditorPanel — no writes from merely opening a note (#654)", () =
     expect(note.content).toBe(webAuthoredContent("Hello"));
   });
 
+  it("a title change event carrying the unchanged title writes nothing", async () => {
+    const note = createRecord("a", "Medyczne", webAuthoredContent("Hello"));
+    const { getByPlaceholderText } = renderPanel("a");
+    await flushAsync();
+
+    fireEvent.changeText(getByPlaceholderText("Untitled"), "Medyczne");
+    await flushAsync(DEBOUNCE_MS * 2);
+
+    expect(writes(note)).toBe(0);
+  });
+
+  it("a title edited and changed back before the debounce fires writes nothing", async () => {
+    const note = createRecord("a", "Medyczne", webAuthoredContent("Hello"));
+    const { getByPlaceholderText } = renderPanel("a");
+    await flushAsync();
+
+    fireEvent.changeText(getByPlaceholderText("Untitled"), "Medyczne!");
+    await flushAsync(DEBOUNCE_MS / 2);
+    fireEvent.changeText(getByPlaceholderText("Untitled"), "Medyczne");
+    await flushAsync(DEBOUNCE_MS * 2);
+
+    expect(writes(note)).toBe(0);
+  });
+
+  it("a title changed back while the rename's write is still queued keeps the original", async () => {
+    const note = createRecord("a", "Alpha", webAuthoredContent("Hello"));
+    const { getByPlaceholderText } = renderPanel("a");
+    await flushAsync();
+
+    const release = holdWriteQueue(); // e.g. a sync applying remote changes
+    fireEvent.changeText(getByPlaceholderText("Untitled"), "Beta");
+    await flushAsync(DEBOUNCE_MS); // the rename's save runs; its write waits in the queue
+    fireEvent.changeText(getByPlaceholderText("Untitled"), "Alpha");
+    await flushAsync(DEBOUNCE_MS); // the change back is compared once that write lands
+
+    await act(async () => {
+      release();
+      await jest.advanceTimersByTimeAsync(0);
+    });
+
+    expect(note.title).toBe("Alpha");
+  });
+
   it("a pending edit flushed by a rapid switch lands only on its own note", async () => {
     const a = createRecord("a", "Welcome", webAuthoredContent("Hello"));
     const b = createRecord("b", "Meeting notes", webAuthoredContent("Agenda"));
@@ -495,6 +576,85 @@ describe("NoteEditorPanel — no writes from merely opening a note (#654)", () =
     expect(note.content).toBe(serializeEditorContent(original));
   });
 
+  it("an edit that saved and came back from a sync pull is not written again", async () => {
+    const note = createRecord("a", "Welcome", webAuthoredContent("Hello"));
+    renderPanel("a");
+    await flushAsync();
+
+    web.userEdit(withParagraph(web.currentDoc(), "typed"));
+    await flushAsync(DEBOUNCE_MS);
+    expect(writes(note)).toBe(1);
+
+    // The push stamps updated_at on the server, so the next pull hands the same
+    // content back — re-serialised from jsonb, with its object keys reordered.
+    const pulled = jsonbReordered(note.content!);
+    expect(pulled).not.toBe(note.content); // precondition: the bytes really differ
+    note.content = pulled;
+
+    web.emitChange(); // a content-update with no edit
+    await flushAsync(DEBOUNCE_MS * 2);
+    expect(writes(note)).toBe(1);
+  });
+
+  it("a sync pull that only re-serialises the loaded content keeps the baseline", async () => {
+    const note = createRecord("a", "Welcome", webAuthoredContent("Hello"));
+    renderPanel("a");
+    await flushAsync();
+
+    note.content = jsonbReordered(note.content!);
+    web.emitChange();
+    await flushAsync(DEBOUNCE_MS * 2);
+
+    expect(writes(note)).toBe(0);
+  });
+
+  it("does not write a web-authored note when the read-back timed out and a late echo arrives", async () => {
+    const note = createRecord("a", "Welcome", webAuthoredContent("Hello"));
+    const asSet = contentToTiptap(JSON.parse(note.content!));
+    web.hangNextGetJSON();
+    renderPanel("a");
+    await flushAsync(5000); // past the panel's baseline-read timeout: gate open, no read-back
+
+    // Precondition: the editor holds the doc with its marks re-sorted, so its
+    // serialisation is not byte-identical to the converter's own.
+    const readBack = serializeEditorContent(web.currentDoc());
+    expect(readBack).not.toBe(serializeEditorContent(asSet));
+    expect(sameStoredContent(readBack, serializeEditorContent(asSet))).toBe(true);
+
+    web.emitChange();
+    await flushAsync(DEBOUNCE_MS * 2);
+    expect(writes(note)).toBe(0);
+  });
+
+  it("does not write an empty note when the read-back timed out and a late echo arrives", async () => {
+    const note = createRecord("a", "Untitled", null);
+    web.hangNextGetJSON();
+    renderPanel("a");
+    await flushAsync(5000);
+
+    web.emitChange();
+    await flushAsync(DEBOUNCE_MS * 2);
+    expect(writes(note)).toBe(0);
+  });
+
+  it("reverting a saved edit still writes when the read-back timed out", async () => {
+    const note = createRecord("a", "Welcome", webAuthoredContent("Hello"));
+    web.hangNextGetJSON();
+    renderPanel("a");
+    await flushAsync(5000);
+    const original = web.currentDoc();
+
+    web.userEdit(withParagraph(original, "added"));
+    await flushAsync(DEBOUNCE_MS);
+    expect(writes(note)).toBe(1);
+
+    // The row now holds the edit, so the load-time baseline no longer applies.
+    web.userEdit(original);
+    await flushAsync(DEBOUNCE_MS);
+    expect(writes(note)).toBe(2);
+    expect(note.content).toBe(serializeEditorContent(original));
+  });
+
   it("still opens the note and saves edits when the baseline read fails", async () => {
     const note = createRecord("a", "Welcome", webAuthoredContent("Hello"));
     web.failNextGetJSON();
@@ -511,7 +671,7 @@ describe("NoteEditorPanel — no writes from merely opening a note (#654)", () =
     expect(note.content).toBe(serializeEditorContent(edited));
   });
 
-  it("falls back to the exact stored-content comparison when the baseline read fails", async () => {
+  it("does not write a desktop-authored note when the baseline read fails", async () => {
     // Desktop-authored: the stored bytes already are the editor's serialisation.
     createRecord("seed", "Seed", webAuthoredContent("Hello"));
     const { rerender } = renderPanel("seed");
@@ -522,7 +682,7 @@ describe("NoteEditorPanel — no writes from merely opening a note (#654)", () =
     web.failNextGetJSON();
     rerender(<NoteEditorPanel noteId="a" />);
     await flushAsync();
-    web.emitChange(); // late load echo, after the gate opened without a baseline
+    web.emitChange(); // late load echo after a failed read-back; it equals the stored bytes
     await flushAsync(DEBOUNCE_MS * 2);
 
     expect(writes(note)).toBe(0);
@@ -569,7 +729,7 @@ describe("NoteEditorPanel — no writes from merely opening a note (#654)", () =
     expect(note.content).toBe(serializeEditorContent(edited));
   });
 
-  it("opens the note without a baseline when the read-back cannot be serialised", async () => {
+  it("opens the note when the read-back cannot be serialised", async () => {
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     const note = createRecord("a", "Welcome", webAuthoredContent("Hello"));
     web.malformNextGetJSON();
