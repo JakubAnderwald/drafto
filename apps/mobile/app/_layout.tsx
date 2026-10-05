@@ -99,7 +99,9 @@ function ThemedStack() {
             contentStyle: { backgroundColor: semantic.bg },
           }}
         >
-          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          {/* The title is never shown as a header (headerShown: false), but iOS uses it as the
+              back-button label on screens pushed from the tabs; without it that reads "(tabs)". */}
+          <Stack.Screen name="(tabs)" options={{ headerShown: false, title: "Notebooks" }} />
           <Stack.Screen name="(auth)/login" options={{ title: "Log In" }} />
           <Stack.Screen name="(auth)/signup" options={{ title: "Sign Up" }} />
           <Stack.Screen name="(auth)/forgot-password" options={{ title: "Forgot Password" }} />

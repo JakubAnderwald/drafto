@@ -12,7 +12,8 @@ import {
   ascFetch,
 } from "../../apps/mobile/scripts/post-release-notes.mjs";
 
-// Newest-builds fixture (the `sort=-uploadedDate` query): macOS (desktop) and iOS
+// Newest-builds fixture (the no-build-number query, which now pages client-side
+// rather than asking ASC to sort): macOS (desktop) and iOS
 // builds coexist under ONE shared App Store Connect app (eu.drafto.mobile). This
 // is the exact shape the bug hinged on — a macOS build sorted newest while an iOS
 // build was the one actually being released.
@@ -324,6 +325,18 @@ describe("mobile/desktop mirror invariant", () => {
       }
       assert.ok(src.includes("await ascFetch("), "ASC requests must go through ascFetch");
     });
+
+    it(`${p} never sends a 'sort' param to App Store Connect`, () => {
+      // ASC rejects it outright on List Builds:
+      //   400 PARAMETER_ERROR.ILLEGAL "The parameter 'sort' can not be used with
+      //   this request"
+      // Fastlane rescues the resulting failure as non-fatal, so the only symptom
+      // was a shipped build with an empty "What to Test". Build selection is
+      // client-side (selectTestFlightBuild / selectMacBuild already order by
+      // uploadedDate), so no server-side sort is needed.
+      const src = read(p);
+      assert.ok(!/[?&]sort=/.test(src), "an App Store Connect URL still carries a sort param");
+    });
   }
 
   for (const p of ["apps/mobile/fastlane/Fastfile", "apps/desktop/fastlane/Fastfile"]) {
@@ -355,6 +368,29 @@ describe("mobile/desktop mirror invariant", () => {
       assert.match(src, /sed -nE 's\/\^fix/, "fix must be filtered+stripped in one pass");
     });
   }
+});
+
+describe("mobile Fastfile Android JDK selection", () => {
+  it("picks a Gradle-compatible JDK before the Android lane runs Gradle", () => {
+    // Gradle 9.0.0 can't run on JDK 26; a Homebrew cask upgrade made it the
+    // host's only system JDK and every mobile beta died in Gradle (2026-09-12).
+    const src = readFileSync(resolve(HERE, "..", "..", "apps/mobile/fastlane/Fastfile"), "utf8");
+    assert.match(src, /^GRADLE_MAX_JDK = \d+$/m, "no upper JDK bound for Gradle");
+    assert.match(src, /^def use_gradle_compatible_jdk$/m, "JDK selection helper missing");
+
+    const androidIdx = src.indexOf("platform :android do");
+    const iosIdx = src.indexOf("platform :ios do");
+    assert.ok(
+      androidIdx !== -1 && iosIdx > androidIdx,
+      "expected android then ios platform blocks",
+    );
+    const lane = src.slice(src.indexOf("private_lane :build_and_submit", androidIdx), iosIdx);
+    const callIdx = lane.search(/^\s*use_gradle_compatible_jdk$/m);
+    const gradleIdx = lane.search(/^\s*gradle\(/m);
+    assert.ok(callIdx !== -1, "the Android lane never selects a JDK");
+    assert.ok(gradleIdx !== -1, "expected a gradle( step in the Android lane");
+    assert.ok(callIdx < gradleIdx, "the JDK must be selected BEFORE Gradle runs");
+  });
 });
 
 describe("desktop post-release-notes build selection", () => {
@@ -428,4 +464,203 @@ describe("desktop post-release-notes build selection", () => {
     assert.match(src, /post_release_notes\(max_chars: 4000, build: new_build_number\)/);
     assert.match(src, /"--build", build\.to_s/);
   });
+});
+
+// --- App Store / Mac App Store `promote` lanes --------------------------------
+//
+// `promote` submits an already-uploaded TestFlight build for App Review instead
+// of rebuilding. Two properties make it worth asserting from a test rather than
+// trusting a reviewer to notice:
+//
+//   1. It must NOT build. That is what makes the macOS lane safe to run outside
+//      the React 19.1 fossil checkout (docs/operations/desktop-build-fossil.md) —
+//      the moment someone adds a `build_mac_app` / CocoaPods / Metro step, the
+//      lane silently becomes fossil-only again and ships a crashing binary.
+//   2. Uploading a binary to the App Store is not a release. The build still has
+//      to pass App Review and be released by hand, so the "Now live in <track>"
+//      customer notice must never fire on an App Store destination.
+//
+// Neither can be checked by running the lane: submitting to App Review is
+// operator-gated, so these are source-level invariants.
+describe("App Store promote lanes", () => {
+  const read = (p) => readFileSync(resolve(HERE, "..", "..", p), "utf8");
+
+  const FASTFILES = [
+    {
+      path: "apps/mobile/fastlane/Fastfile",
+      ascPlatform: "ios",
+      appIdentifier: "PACKAGE_NAME",
+      liveClaim: '"the App Store (build',
+      script: ["apps/mobile/package.json", "release:promote:ios", "fastlane ios promote"],
+    },
+    {
+      path: "apps/desktop/fastlane/Fastfile",
+      ascPlatform: "osx",
+      appIdentifier: "BUNDLE_ID",
+      liveClaim: '"the macOS App Store (build',
+      script: ["apps/desktop/package.json", "release:promote", "fastlane mac promote"],
+    },
+  ];
+
+  // The promote lane body: from its own `lane :promote do` to the next lane
+  // definition, so assertions can't accidentally read the building lane below it.
+  function promoteLaneBody(src) {
+    const start = src.indexOf("lane :promote do");
+    assert.notEqual(start, -1, "no `lane :promote` defined");
+    const end = src.indexOf("private_lane ", start);
+    assert.notEqual(end, -1, "expected a private_lane after promote");
+    return src.slice(start, end);
+  }
+
+  for (const f of FASTFILES) {
+    it(`${f.path} declares a documented promote lane`, () => {
+      const src = read(f.path);
+      // `fastlane lanes` only lists a lane when a desc immediately precedes it.
+      assert.match(
+        src,
+        /desc "[^"]+"\r?\n\s*lane :promote do/,
+        "the promote lane has no desc on the line above it — `fastlane lanes` would hide it",
+      );
+    });
+
+    it(`${f.path} promote submits an existing build and never builds one`, () => {
+      const lane = promoteLaneBody(read(f.path));
+      assert.match(lane, /skip_binary_upload:\s*true/, "promote must not upload a binary");
+      assert.match(lane, /submit_for_review:\s*submit\b/, "submit: option not wired through");
+      assert.match(
+        lane,
+        new RegExp(`platform:\\s*"${f.ascPlatform}"`),
+        "platform must be explicit — one ASC app record serves iOS and macOS",
+      );
+      assert.match(
+        lane,
+        new RegExp(`app_identifier:\\s*${f.appIdentifier}`),
+        "app_identifier must be explicit on the shared ASC app record",
+      );
+      assert.match(lane, /submission_information:\s*APPSTORE_SUBMISSION_INFORMATION/);
+      for (const builder of [
+        "build_app(",
+        "build_mac_app(",
+        "cocoapods(",
+        "productbuild",
+        "expo",
+        "gradle(",
+        "gym(",
+      ]) {
+        assert.ok(
+          !lane.includes(builder),
+          `promote must not build: found ${builder}. A build step re-imposes the desktop fossil rule.`,
+        );
+      }
+    });
+
+    // fastlane 2.232.2 reads `phased_release` and `automatic_release` in exactly
+    // one place — Deliver::UploadMetadata#upload (releaseType at
+    // deliver/lib/deliver/upload_metadata.rb:181-196, the phased release at
+    // :313-331) — and that method returns on its first line when `skip_metadata`
+    // is set (:88-89). Passing them to `upload_to_app_store` alongside
+    // `skip_metadata: true`, which a promote lane must set, therefore applies
+    // NOTHING, while the lane prints "Phased release … on" and "Release: manual".
+    // App Store Connect preselects "Automatically release this version", so a
+    // submission reported as manual would go public the instant Apple approved
+    // it. The lane has to patch App Store Connect itself.
+    it(`${f.path} applies the release settings deliver drops under skip_metadata`, () => {
+      const src = read(f.path);
+      const lane = promoteLaneBody(src);
+
+      assert.match(
+        lane,
+        /if submit\r?\n\s+apply_appstore_release_settings\(/,
+        "promote must apply the release settings itself, only on a submitting run",
+      );
+
+      // Order is load-bearing: PREPARE_FOR_SUBMISSION is unambiguously editable,
+      // a version already in review is not. Patch before submitting, never after.
+      const applyAt = lane.indexOf("apply_appstore_release_settings(");
+      const uploadAt = lane.indexOf("upload_to_app_store(");
+      assert.notEqual(uploadAt, -1, "promote has no upload_to_app_store call");
+      assert.ok(
+        applyAt < uploadAt,
+        "release settings must be applied BEFORE the submission, while the version is still editable",
+      );
+
+      assert.match(
+        src,
+        /^def apply_appstore_release_settings\(/m,
+        "apply_appstore_release_settings is not defined in this Fastfile",
+      );
+      for (const bit of [
+        /releaseType: release_type/,
+        /ReleaseType::AFTER_APPROVAL/,
+        /ReleaseType::MANUAL/,
+        /create_app_store_version_phased_release\(/,
+        /PhasedReleaseState::INACTIVE/,
+        /existing\.delete!/,
+      ]) {
+        assert.match(src, bit, `apply_appstore_release_settings is missing ${bit}`);
+      }
+    });
+
+    it(`${f.path} answers the IDFA / encryption / content-rights questions`, () => {
+      const src = read(f.path);
+      assert.match(src, /^APPSTORE_SUBMISSION_INFORMATION = \{$/m);
+      for (const key of [
+        "add_id_info_uses_idfa: false",
+        "export_compliance_uses_encryption: false",
+        "content_rights_contains_third_party_content: false",
+      ]) {
+        assert.ok(src.includes(key), `missing submission answer: ${key}`);
+      }
+      // Both App Store uploads (promote and the production hotfix path) must pass
+      // them, so the submitting path never stalls on the questionnaire. Checked
+      // per call: a global count is satisfied by two matches inside ONE call and
+      // would hide an omission in the other.
+      // The screenshot-only upload (upload_store_screenshots) hard-codes
+      // `submit_for_review: false`, so it can never reach the questionnaire and is
+      // excluded by that property, not by name.
+      const uploads = [...src.matchAll(/^[ \t]*upload_to_app_store\(([\s\S]*?)^[ \t]*\)$/gm)]
+        .map(([, call]) => call)
+        .filter((call) => !/^\s*submit_for_review:\s*false,?$/m.test(call));
+      assert.equal(uploads.length, 2, "expected exactly two submitting upload_to_app_store calls");
+      for (const call of uploads) {
+        assert.match(
+          call,
+          /submission_information:\s*APPSTORE_SUBMISSION_INFORMATION/,
+          "an upload_to_app_store call omits submission_information",
+        );
+      }
+    });
+
+    it(`${f.path} never tells a customer an App Store upload is live`, () => {
+      const src = read(f.path);
+      assert.ok(
+        !src.includes(f.liveClaim),
+        "comment-released-issues.mjs posts 'Now live in <track>' — an App Store upload is not live",
+      );
+      const lane = promoteLaneBody(src);
+      assert.ok(
+        !/^\s*comment_released_issues\(/m.test(lane),
+        "promote must not post a 'now live' notice: Apple has not approved the build yet",
+      );
+    });
+
+    it(`${f.path} loads MATCH_PASSWORD without a shell preamble`, () => {
+      // `~/drafto-secrets/match-env.sh` holds a bare `MATCH_PASSWORD=…` with no
+      // `export`, so `source` alone leaves it invisible to fastlane and `match`
+      // bailed with "Neither the MATCH_PASSWORD environment variable nor the local
+      // keychain contained a password". Parsed directly now — the `set -a`
+      // workaround is gone from the runbook, so it must stay gone from here.
+      const src = read(f.path);
+      assert.match(src, /LOCAL_SECRET_FILES = \[[^\]]*"match-env\.sh"/);
+      assert.ok(
+        !/next unless line\.start_with\?\("export "\)/.test(src),
+        "an `export `-only filter would skip match-env.sh's bare assignment",
+      );
+    });
+
+    it(`${f.script[0]} exposes the promote lane as a pnpm script`, () => {
+      const pkg = JSON.parse(read(f.script[0]));
+      assert.equal(pkg.scripts[f.script[1]], `bundle exec ${f.script[2]}`);
+    });
+  }
 });

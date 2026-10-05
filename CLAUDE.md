@@ -110,7 +110,9 @@ When planning, fan out independent actions into a single batched message — don
 
 **Worktree gotcha**: `Edit`/`Write` require a prior `Read` of the _exact_ path. Reading `/Users/…/drafto/foo.ts` does NOT satisfy an edit against `/Users/…/drafto-worktree/foo.ts`. Pattern when starting work in a worktree: one batched `Read` for every worktree file you'll touch, then one batched `Edit`/`Write` for all the changes.
 
-**Plan structure**: Multi-PR or multi-step plans should also exploit parallelism — group independent work into "waves" (Wave 1 fully parallel, Wave 2 after Wave 1, etc.) and assign each independent unit to its own subagent. End any plan that ships a cross-platform release with the explicit per-platform release commands as a final wave: web (Vercel auto-deploys on merge), `cd apps/mobile && pnpm release:prod:android`, `pnpm release:prod:ios`, `cd apps/desktop && pnpm release:production` (⚠️ desktop builds **only** from the primary checkout's fossil `node_modules` — never a worktree; see [Release Authorization](#release-authorization)). The three store releases run concurrently in their own subagents. Note any required version bumps (`pnpm version:mobile|desktop patch|minor|major`) before the release wave.
+**Plan structure**: Multi-PR or multi-step plans should also exploit parallelism — group independent work into "waves" (Wave 1 fully parallel, Wave 2 after Wave 1, etc.) and assign each independent unit to its own subagent. End any plan that ships a cross-platform change with the **beta** release wave — that is the pre-authorized one: web (Vercel auto-deploys on merge), `cd apps/mobile && pnpm release:beta:android`, `pnpm release:beta:ios`, `cd apps/desktop && pnpm release:beta` (⚠️ a desktop **build** runs **only** from the primary checkout's fossil `node_modules` — never a worktree; see [Release Authorization](#release-authorization)). The three store lanes run concurrently in their own subagents. Note any required version bumps (`pnpm version:mobile|desktop patch|minor|major`) before that wave.
+
+Public-store release is **not** part of the default plan. Plan it only once the user has explicitly approved it and a beta build has actually been tested, as a separate wave after the beta one: `cd apps/mobile && pnpm release:promote:ios`, `cd apps/desktop && pnpm release:promote`, and Play production via `pnpm release:prod:android` or the Play Console. The Apple `promote` lanes submit the exact build TestFlight testers validated instead of rebuilding, so they compile nothing and the desktop fossil rule does not apply to them; the rebuild path (`pnpm release:prod:ios` / `pnpm release:production`) stays available for hotfixes and does re-impose it.
 
 ## SOLID Principles (Enforced)
 
@@ -179,7 +181,7 @@ Common CI failure patterns:
 
 Beta TestFlight builds (Mac App Store Connect, iOS, Android internal track) are **pre-authorized** — ship them without asking. Communicate what's going out (version + build number, what's in it) but don't gate on permission. A bad TestFlight build is reversible: the next build supersedes it, and old builds can be expired in App Store Connect.
 
-Production / public-store releases (`pnpm release:prod:*`, `pnpm release:production`, App Store / Play Store submission) still require explicit user approval — those affect non-tester users.
+Production / public-store releases still require explicit user approval — those affect non-tester users. That covers the Apple App Review submission lanes (`cd apps/mobile && pnpm release:promote:ios`, `cd apps/desktop && pnpm release:promote`), the rebuild-and-upload hotfix lanes (`pnpm release:prod:*`, `pnpm release:production`), and any App Store / Play Store submission or public release done by hand.
 
 ### ⚠️ Desktop (macOS) builds ONLY from the primary checkout's fossil `node_modules`
 
@@ -277,6 +279,25 @@ Full reference with all 9 tools enumerated, auth model, and registry publishing 
 - When adding or modifying database tables/columns that affect note content or structure, update `packages/shared/src/editor/markdown-converter.ts` if the new content type needs Markdown representation
 - After changing any MCP tool, bump `version` in `server.json` and run `~/bin/mcp-publisher publish`
 - Run MCP-related tests: `cd apps/web && pnpm test` (includes mcp-auth and api-keys tests)
+
+## Privacy Policy Maintenance
+
+The policy at [drafto.eu/privacy](https://drafto.eu/privacy) (`apps/web/src/app/privacy/page.tsx`) is linked from the App Store and Play listings, so it must describe what the apps actually do. Processor inventory, code locations and the guard test: [`docs/features/privacy-policy.md`](./docs/features/privacy-policy.md).
+
+**Maintenance rules (agents must follow):** update `apps/web/src/app/privacy/page.tsx` — and its "Last updated" date — in the **same PR** whenever a change:
+
+- adds, removes, or swaps a third-party service or SDK that receives user data (analytics, error tracking, email, AI, auth provider, hosting, storage)
+- collects a new category of personal data, or a new field on the user or account
+- changes where data is stored, how long it's kept, or how it's deleted (retention jobs, trash, account deletion)
+- adds a way for data to leave Drafto (export, sharing, API keys, integrations)
+- changes the auth or session-storage mechanism on any platform
+- sends user or support data to an AI model
+
+Also:
+
+- When a new route must be reachable signed out (legal, support, store-review pages), add it to `PUBLIC_ROUTES` in `apps/web/src/lib/supabase/middleware.ts` and to `apps/web/__tests__/unit/middleware.test.ts`
+- When you add a dependency that receives user data, map it to its processor in `apps/web/__tests__/unit/privacy-policy-processors.test.tsx` — the test fails until the processor has a row in the page's sharing table. It reads only `package.json` files, so a service reached over plain `fetch` or a script on the Mac mini needs the manual check above
+- A factory card ticked **None** / `parity:infra-only` (e.g. a support-pipeline change under `scripts/`) that triggers these rules is not infra-only: the infra-only parity check rejects the `apps/web` policy edit, so untick **None** and remove the `parity:infra-only` label, then tick the web platform (ticking web alone fails the spec gate, which rejects None / infra-only combined with a platform box)
 
 ## Useful Commands
 

@@ -13,6 +13,7 @@ import {
   useEditorBridge,
   useBridgeState,
   TenTapStartKit,
+  CoreBridge,
   darkEditorTheme,
 } from "@10play/tentap-editor";
 
@@ -80,6 +81,12 @@ export default function EditorScreen() {
   // where setContent is called before the TenTap WebView finishes initializing.
   return <NoteEditorView key={id} noteId={id} initialNote={note} />;
 }
+
+// The note body uses the same font stack as the desktop editor. Without it the
+// WebView falls back to its default serif (Times). Set through CoreBridge so it
+// ships with the editor's initial load rather than a post-load injection.
+const EDITOR_FONT_CSS = `body, .ProseMirror { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.6; }`;
+const EDITOR_BRIDGE_EXTENSIONS = [...TenTapStartKit, CoreBridge.configureCSS(EDITOR_FONT_CSS)];
 
 interface NoteEditorViewProps {
   noteId: string;
@@ -186,7 +193,7 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   // Pass initialContent so TipTap has the content when it first initializes
   // inside the WebView — no race condition with setContent.
   const editor = useEditorBridge({
-    bridgeExtensions: TenTapStartKit,
+    bridgeExtensions: EDITOR_BRIDGE_EXTENSIONS,
     autofocus: false,
     avoidIosKeyboard: true,
     initialContent: resolvedContent,

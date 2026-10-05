@@ -13,6 +13,8 @@ export interface ConfirmDialogProps extends HTMLAttributes<HTMLDivElement> {
   variant?: "danger" | "warning";
   error?: string | null;
   loading?: boolean;
+  /** Keeps the confirm button disabled, e.g. until a type-to-confirm check passes. */
+  confirmDisabled?: boolean;
 }
 
 export const ConfirmDialog = forwardRef<HTMLDivElement, ConfirmDialogProps>(function ConfirmDialog(
@@ -25,6 +27,7 @@ export const ConfirmDialog = forwardRef<HTMLDivElement, ConfirmDialogProps>(func
     variant = "danger",
     error,
     loading = false,
+    confirmDisabled = false,
     className,
     children,
     ...props
@@ -49,7 +52,13 @@ export const ConfirmDialog = forwardRef<HTMLDivElement, ConfirmDialogProps>(func
         </p>
       )}
       <div className="flex gap-2">
-        <Button size="sm" variant={confirmVariant} onClick={onConfirm} loading={loading}>
+        <Button
+          size="sm"
+          variant={confirmVariant}
+          onClick={onConfirm}
+          loading={loading}
+          disabled={confirmDisabled}
+        >
           {confirmLabel}
         </Button>
         <Button size="sm" variant="secondary" onClick={onCancel}>

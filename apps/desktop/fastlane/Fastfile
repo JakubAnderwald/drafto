@@ -7,25 +7,60 @@ default_platform(:mac)
 BUNDLE_ID = "eu.drafto.mobile"
 PROJECT_ROOT = File.expand_path("..", __dir__)
 
+# App Review answers App Store Connect otherwise blocks a submission on. Drafto
+# integrates no ad framework (no IDFA), reaches the network only over HTTPS/TLS
+# provided by the OS (exempt encryption — the same claim as
+# ITSAppUsesNonExemptEncryption = false in macos/Drafto-macOS/Info.plist), and
+# ships no third-party content.
+#
+# Passed on every App Store upload, but deliver reads the hash only inside
+# Deliver::SubmitForReview, which Runner#run reaches only when submit_for_review
+# is true — and it reads only two of the three keys: update_export_compliance
+# sends export_compliance_uses_encryption, update_submission_information sends
+# content_rights_contains_third_party_content. `add_id_info_uses_idfa` appears
+# nowhere in fastlane 2.232.2 (Apple retired the IDFA submission question), so it
+# is kept as a declaration of intent, not because it travels anywhere. An
+# upload-only `production` run sends none of them and leaves the questionnaire to
+# whoever presses Submit in App Store Connect.
+APPSTORE_SUBMISSION_INFORMATION = {
+  add_id_info_uses_idfa: false,
+  export_compliance_uses_encryption: false,
+  content_rights_contains_third_party_content: false
+}.freeze
+
+# Machine-local secrets kept outside the repo. `android-env.sh` uses
+# `export KEY=value`; `match-env.sh` is a bare `MATCH_PASSWORD=…` assignment with
+# no `export`, which a plain `source` turns into a shell variable fastlane cannot
+# see — that is why `bundle exec fastlane mac beta` used to bail at `match` with
+# "Neither the MATCH_PASSWORD environment variable nor the local keychain
+# contained a password" unless the caller wrapped it in `set -a`. Both forms are
+# parsed here, so no shell preamble is needed any more.
+LOCAL_SECRET_FILES = ["android-env.sh", "match-env.sh"].freeze
+
 # ---------- helpers ----------
 
 def load_local_secrets
-  secrets_file = File.join(Dir.home, "drafto-secrets", "android-env.sh")
-  return unless File.exist?(secrets_file)
+  LOCAL_SECRET_FILES.each do |name|
+    secrets_file = File.join(Dir.home, "drafto-secrets", name)
+    next unless File.exist?(secrets_file)
 
-  File.readlines(secrets_file).each do |line|
-    line = line.strip
-    next if line.empty? || line.start_with?("#")
-    next unless line.start_with?("export ")
+    File.readlines(secrets_file).each do |line|
+      line = line.strip
+      next if line.empty? || line.start_with?("#")
 
-    assignment = line.sub(/^export\s+/, "")
-    key, value = assignment.split("=", 2)
-    next unless key && value
-    next if value.include?("$(")
+      # Parse "export KEY=value", "KEY=value" or "KEY=\"value\"".
+      assignment = line.sub(/^export\s+/, "")
+      key, value = assignment.split("=", 2)
+      next unless key && value
+      # Only a bare shell identifier is a variable assignment — this is what
+      # keeps `if [ -f … ]; then` and friends out now that `export ` is optional.
+      next unless key.match?(/\A[A-Za-z_][A-Za-z0-9_]*\z/)
+      next if value.include?("$(")
 
-    value = value.gsub(/\A["']|["']\z/, "")
-    value = value.gsub("$HOME", Dir.home)
-    ENV[key] ||= value
+      value = value.gsub(/\A["']|["']\z/, "")
+      value = value.gsub("$HOME", Dir.home)
+      ENV[key] ||= value
+    end
   end
 end
 
@@ -97,6 +132,247 @@ def package_json_version
   JSON.parse(File.read(File.join(PROJECT_ROOT, "package.json")))["version"]
 end
 
+# A boolean lane option. Fastlane's CLI already turns `promote submit:false` into
+# a real `false`, but a lane invoked from Ruby (or a future fastlane) can still
+# hand over the string — accept both rather than silently treating "false" as
+# truthy, which would submit an app to App Review the operator asked not to.
+def option_bool(options, key, default)
+  raw = options[key]
+  return default if raw.nil? || raw.to_s.strip.empty?
+  return raw if raw == true || raw == false
+
+  case raw.to_s.strip.downcase
+  when "true", "1", "yes" then true
+  when "false", "0", "no" then false
+  else UI.user_error!("#{key}: expected true or false, got #{raw.inspect}")
+  end
+end
+
+# The already-uploaded build `promote` will submit for review, or a hard stop.
+#
+# `upload_to_app_store(skip_binary_upload: true)` does not verify that the build
+# it names exists or has finished processing; it would happily "succeed" and
+# leave the App Store version without a reviewable binary. Resolve and validate
+# first. `asc_platform` is App Store Connect's platform token ("osx" here) —
+# macOS and iOS share ASC app 6760675784, so it (and app_identifier) must always
+# be explicit or the lookup can cross platforms.
+def resolve_promote_build_number(api_key:, asc_platform:, app_identifier:, app_version:, requested: nil)
+  build_number = requested.to_s.strip
+  if build_number.empty?
+    build_number = latest_testflight_build_number(
+      api_key: api_key,
+      app_identifier: app_identifier,
+      version: app_version,
+      platform: asc_platform,
+      initial_build_number: 0
+    ).to_s
+  end
+
+  if build_number.empty? || build_number == "0"
+    UI.user_error!(
+      "No uploaded build found for version #{app_version} (#{asc_platform}) of #{app_identifier}. " \
+      "Ship a TestFlight build first (macOS: `pnpm release:beta`), or pass an explicit build_number:."
+    )
+  end
+
+  assert_build_processed(
+    app_identifier: app_identifier,
+    asc_platform: asc_platform,
+    build_number: build_number
+  )
+  build_number
+end
+
+# Refuse to submit a build Apple has not finished processing.
+#
+# Deliberately asymmetric: a build App Store Connect reports as anything but
+# VALID is a hard `UI.user_error!`, but a LOOKUP that fails for any other reason
+# (API shape change, transient 5xx) only warns — a promote lane must not become
+# unusable because a diagnostic call broke.
+def assert_build_processed(app_identifier:, asc_platform:, build_number:)
+  asc_enum = asc_platform.to_s.casecmp("osx").zero? ? "MAC_OS" : "IOS"
+  state =
+    begin
+      app = Spaceship::ConnectAPI::App.find(app_identifier)
+      if app.nil?
+        UI.important("#{app_identifier} not found in App Store Connect — skipping the processing-state check")
+        return
+      end
+      builds = app.get_builds(
+        filter: { version: build_number, "preReleaseVersion.platform" => asc_enum },
+        includes: "preReleaseVersion"
+      )
+      if builds.nil? || builds.empty?
+        UI.user_error!(
+          "Build #{build_number} (#{asc_enum}) does not exist in App Store Connect for " \
+          "#{app_identifier} — there is nothing to submit."
+        )
+      end
+      builds.first.processing_state
+    rescue FastlaneCore::Interface::FastlaneError
+      raise # our own UI.user_error! above — never downgrade it to a warning
+    rescue StandardError => e
+      UI.important("Could not read the processing state of build #{build_number} (#{e.message}) — continuing")
+      nil
+    end
+  return if state.nil?
+
+  unless state.to_s == "VALID"
+    UI.user_error!(
+      "Build #{build_number} (#{asc_enum}) is #{state}, not VALID — Apple is still processing it. " \
+      "Wait for App Store Connect to finish (the 'ready to test' email) and re-run."
+    )
+  end
+end
+
+# Apply the App Store release settings `deliver` silently drops, and return the
+# editable version it configured.
+#
+# In fastlane 2.232.2 `phased_release` and `automatic_release` are read in exactly
+# ONE place: Deliver::UploadMetadata#upload derives `releaseType` from
+# automatic_release (deliver/lib/deliver/upload_metadata.rb:181-196) and creates
+# or deletes the phased release (:313-331). That method returns on its first line
+# when skip_metadata is set (:88-89), and nothing else under deliver/lib touches
+# either option. A promote lane MUST skip metadata — the repo keeps no `deliver`
+# metadata directory, so uploading it would blank the App Store Connect version
+# page — and therefore cannot get these applied by passing them to
+# upload_to_app_store. It has to patch App Store Connect itself.
+#
+# This is not cosmetic. With releaseType left alone it keeps whatever the version
+# already holds, and App Store Connect preselects "Automatically release this
+# version" — so a submission the lane reported as manual would go public the
+# moment Apple approved it, and `phased_release:false` would not turn phasing off.
+#
+# Runs BEFORE the submission, which is also deliver's own order (Runner#run:
+# verify_version → upload_metadata → … → submit_for_review), so the version is
+# still PREPARE_FOR_SUBMISSION when patched rather than in review. Every failure
+# is a hard stop: nothing has been submitted yet, so a re-run costs nothing,
+# whereas continuing would submit under settings the lane is about to claim it
+# applied.
+def apply_appstore_release_settings(asc_platform:, app_identifier:, app_version:, phased_release:, automatic_release:)
+  platform = Spaceship::ConnectAPI::Platform.map(asc_platform)
+  app = Spaceship::ConnectAPI::App.find(app_identifier)
+  if app.nil?
+    UI.user_error!(
+      "#{app_identifier} not found in App Store Connect — cannot set the release settings for " \
+      "#{app_version} (#{asc_platform})."
+    )
+  end
+
+  # Idempotent, and the very call deliver's own verify_version makes moments later
+  # with the same arguments: renames the editable version to app_version, or
+  # creates it when the platform has none.
+  app.ensure_version!(app_version, platform: platform)
+
+  version = app.get_edit_app_store_version(platform: platform)
+  if version.nil?
+    UI.user_error!(
+      "No editable #{asc_platform} App Store version for #{app_version}. Create it in App Store " \
+      "Connect (App Store → #{asc_platform.to_s.casecmp('osx').zero? ? 'macOS' : 'iOS'} App) and re-run."
+    )
+  end
+
+  # Read the phased-release state BEFORE anything is patched, and through a call
+  # whose failure cannot be mistaken for "there is none".
+  #
+  # version.fetch_app_store_version_phased_release cannot be made fail-closed: a
+  # version with no phased release answers with a body spaceship refuses to parse
+  # (`raise "No data"`, spaceship/connect_api/model.rb:82), so ABSENCE ITSELF
+  # arrives as an exception — and so do a 401, a 429 and a 5xx, by which point the
+  # HTTP status and Apple's error code are gone (ConnectAPI::APIClient#format_errors
+  # keeps only "title - detail", api_client.rb:340-355), leaving nothing to
+  # discriminate on. deliver rescues the call regardless
+  # (deliver/upload_metadata.rb:315-319); copying that rescue here would let a
+  # transient failure look like absence, so `phased_release: false` would skip the
+  # deletion while the lane went on to report phasing off — exactly the unverified
+  # claim about App Store Connect this helper exists to prevent.
+  #
+  # Re-reading the version with the relationship INCLUDED is unambiguous instead:
+  # Apple answers 200 with either a linked appStoreVersionPhasedRelease or an empty
+  # relationship, and spaceship inflates the former into a model while leaving the
+  # latter nil (connect_api/model.rb:133-166). `nil` therefore means App Store
+  # Connect said there is none, and every failure — including an `include` Apple
+  # rejects — stays an exception that stops the lane before anything is submitted
+  # and before releaseType is touched.
+  detailed = Spaceship::ConnectAPI::AppStoreVersion.get(
+    app_store_version_id: version.id,
+    includes: "appStoreVersionPhasedRelease"
+  )
+  if detailed.nil?
+    UI.user_error!(
+      "App Store version #{version.id} (#{app_version}, #{asc_platform}) could not be re-read from " \
+      "App Store Connect — refusing to submit under release settings that cannot be verified."
+    )
+  end
+  existing = detailed.app_store_version_phased_release
+
+  release_type =
+    if automatic_release
+      Spaceship::ConnectAPI::AppStoreVersion::ReleaseType::AFTER_APPROVAL
+    else
+      Spaceship::ConnectAPI::AppStoreVersion::ReleaseType::MANUAL
+    end
+  version.update(attributes: { releaseType: release_type })
+  UI.message("Release type set to #{release_type} on #{asc_platform} version #{version.version_string}")
+
+  if phased_release
+    if existing
+      UI.message("Phased release already configured (#{existing.phased_release_state})")
+    else
+      version.create_app_store_version_phased_release(
+        attributes: {
+          phasedReleaseState: Spaceship::ConnectAPI::AppStoreVersionPhasedRelease::PhasedReleaseState::INACTIVE
+        }
+      )
+      UI.message("Phased release created — INACTIVE until the version is released")
+    end
+  elsif existing
+    existing.delete!
+    UI.message("Phased release removed — every user gets the update at once")
+  else
+    # Stated rather than skipped silently: this branch is the one place the lane
+    # reports phasing off without having changed anything, so the log has to show
+    # that App Store Connect was actually read and had none.
+    UI.message("No phased release on the #{asc_platform} version — every user gets the update at once")
+  end
+
+  version
+end
+
+# Uploads ./fastlane/screenshots/<locale>/*.png to the App Store version that is
+# currently editable ("Prepare for Submission") on `platform`, replacing that
+# locale's existing screenshots. deliver picks each PNG's display type from its
+# pixel size. No app_version is passed, so deliver neither creates nor renames a
+# version; nothing is built, no metadata is touched, nothing is submitted.
+def upload_store_screenshots(platform:, app_identifier:)
+  screenshots_path = File.join(PROJECT_ROOT, "fastlane", "screenshots")
+  pngs = Dir.glob(File.join(screenshots_path, "*", "*.png"))
+  UI.user_error!("No screenshots in #{screenshots_path} — run the store/screenshots generator first") if pngs.empty?
+
+  api_key = app_store_connect_api_key(
+    key_id: ENV["ASC_API_KEY_ID"],
+    issuer_id: ENV["ASC_API_ISSUER_ID"],
+    key_filepath: ENV["ASC_API_KEY_P8_PATH"],
+    key_content: ENV["ASC_API_KEY_P8"],
+    in_house: false
+  )
+
+  upload_to_app_store(
+    api_key: api_key,
+    app_identifier: app_identifier,
+    platform: platform,
+    screenshots_path: screenshots_path,
+    overwrite_screenshots: true,
+    skip_binary_upload: true,
+    skip_metadata: true,
+    skip_app_version_update: true,
+    submit_for_review: false,
+    run_precheck_before_submit: false,
+    force: true
+  )
+  UI.success("Uploaded #{pngs.length} screenshots (#{platform})")
+end
+
 # ---------- macOS ----------
 
 platform :mac do
@@ -105,13 +381,108 @@ platform :mac do
     build_and_submit(destination: "testflight")
   end
 
-  desc "Build and submit to App Store (macOS)"
-  lane :production do
-    build_and_submit(destination: "appstore")
+  desc "Rebuild from source and upload to the Mac App Store (hotfix path). Pass submit:true to also submit for review. MUST run from the fossil checkout (see docs/operations/desktop-build-fossil.md); prefer `promote`, which submits the build testers already validated and does not build."
+  lane :production do |options|
+    build_and_submit(destination: "appstore", submit: options[:submit])
+  end
+
+  desc "Submit an ALREADY-UPLOADED macOS TestFlight build for Mac App Store review. Does NOT build — no CocoaPods, no Metro, no build_mac_app — so the desktop React fossil rule does not apply and this lane is safe from any checkout with the Ruby gems installed. Options: build_number: (default: newest macOS build of the package.json version), submit: (true), phased_release: (true), automatic_release: (false)."
+  lane :promote do |options|
+    app_version = package_json_version
+    submit = option_bool(options, :submit, true)
+    phased_release = option_bool(options, :phased_release, true)
+    automatic_release = option_bool(options, :automatic_release, false)
+
+    api_key = app_store_connect_api_key(
+      key_id: ENV["ASC_API_KEY_ID"],
+      issuer_id: ENV["ASC_API_ISSUER_ID"],
+      key_filepath: ENV["ASC_API_KEY_P8_PATH"],
+      key_content: ENV["ASC_API_KEY_P8"],
+      in_house: false
+    )
+
+    build_number = resolve_promote_build_number(
+      api_key: api_key,
+      asc_platform: "osx",
+      app_identifier: BUNDLE_ID,
+      app_version: app_version,
+      requested: options[:build_number]
+    )
+
+    # deliver cannot apply phased_release:/automatic_release: under
+    # skip_metadata: true (see apply_appstore_release_settings), so set them here,
+    # before anything is submitted. Gated on submit: submit:false is a dry run and
+    # must leave the version's release settings untouched.
+    if submit
+      apply_appstore_release_settings(
+        asc_platform: "osx",
+        app_identifier: BUNDLE_ID,
+        app_version: app_version,
+        phased_release: phased_release,
+        automatic_release: automatic_release
+      )
+    end
+
+    # automatic_release:/phased_release: are INERT on this call — deliver reads
+    # them only in UploadMetadata#upload, which returns immediately under
+    # skip_metadata: true. apply_appstore_release_settings above is what actually
+    # applies them; they stay here because the spec asks for them and because a
+    # future fastlane that honours them would set the same two values.
+    upload_to_app_store(
+      api_key: api_key,
+      app_identifier: BUNDLE_ID,
+      app_version: app_version,
+      build_number: build_number,
+      platform: "osx",
+      skip_binary_upload: true,
+      skip_metadata: true,
+      skip_screenshots: true,
+      submit_for_review: submit,
+      automatic_release: automatic_release,
+      phased_release: phased_release,
+      force: true,
+      precheck_include_in_app_purchases: false,
+      submission_information: APPSTORE_SUBMISSION_INFORMATION
+    )
+
+    # No comment_released_issues / release tag here: submitting for review is not
+    # a release. The build was already announced when it went to TestFlight, and
+    # comment-released-issues.mjs posts "Now live in <track>", which would be a
+    # lie until Apple approves and the operator presses Release This Version.
+    #
+    # submit:false is a dry run, NOT a "stage the build" mode. deliver consumes
+    # build_number only in SubmitForReview#select_build — the single caller of
+    # AppStoreVersion#select_build — and Runner#run skips that step entirely when
+    # submit_for_review is false. With the binary, metadata and screenshots all
+    # skipped, what remains is verify_version (which creates or renames the
+    # editable App Store version) plus precheck: the build is resolved and
+    # validated, but nothing is attached to the version.
+    UI.success(
+      "macOS #{app_version} (build #{build_number}) → Mac App Store: " \
+      "#{submit ? 'submitted for review' : 'build resolved and validated only — NOT attached to the version, NOT submitted'}"
+    )
+    if submit
+      UI.message("Phased release for automatic updates: #{phased_release ? 'on' : 'off'}")
+      UI.message(
+        automatic_release ? "Release: automatic once approved" : "Release: manual — press Release This Version after approval"
+      )
+    else
+      UI.message(
+        "phased_release:/automatic_release: were NOT applied — a dry run leaves the App Store " \
+        "version's release settings exactly as they are."
+      )
+    end
+  end
+
+  desc "Upload fastlane/screenshots (from store/screenshots/generate-macos.sh) to the Mac App Store version"
+  desc "being prepared, replacing its en-US screenshots. Builds and submits nothing; changes the store listing."
+  lane :upload_screenshots do
+    upload_store_screenshots(platform: "osx", app_identifier: BUNDLE_ID)
   end
 
   private_lane :build_and_submit do |options|
     destination = options[:destination]
+    submit_for_review = option_bool(options, :submit, false)
 
     # Known Supabase project refs (public — they appear in URLs and shipped bundles; not secrets).
     known_prod_ref = "tbmjbxxseonkciqovnpl"
@@ -304,25 +675,45 @@ platform :mac do
         skip_waiting_for_build_processing: true
       )
     else
+      # app_version / platform are explicit because ASC app 6760675784 serves BOTH
+      # macOS and iOS — left to deliver's own guess, a submission can land on the
+      # wrong platform's version. submission_information only reaches App Store
+      # Connect on the submit:true path — deliver sends it from SubmitForReview —
+      # so an upload-only run leaves the IDFA / export-compliance questions to be
+      # answered when someone submits from App Store Connect.
       upload_to_app_store(
         api_key: api_key,
+        app_identifier: BUNDLE_ID,
+        app_version: version,
+        platform: "osx",
         pkg: pkg_path,
         skip_metadata: true,
         skip_screenshots: true,
-        precheck_include_in_app_purchases: false
+        submit_for_review: submit_for_review,
+        force: submit_for_review,
+        precheck_include_in_app_purchases: false,
+        submission_information: APPSTORE_SUBMISSION_INFORMATION
       )
     end
 
     # Post release notes
     post_release_notes(max_chars: 4000, build: new_build_number)
 
-    # Phase G: comment "Now live" on closed support issues for this build.
-    # TestFlight (beta) and the App Store (production) ship the same macOS
-    # build to different audiences — distinguish in the customer label.
-    track_label =
-      destination == "appstore" ? "the macOS App Store (build #{new_build_number})" : "TestFlight macOS (build #{new_build_number})"
-    comment_released_issues(build: new_build_number, track: track_label)
-    comment_intest_build(build: new_build_number, track: track_label)
+    # Phase G: comment "Now live" on closed support issues for this build — for
+    # TestFlight ONLY. comment-released-issues.mjs posts "Now live in <track>",
+    # and a Mac App Store upload is not a release: the build still has to pass App
+    # Review and then be released by hand. Telling a customer their fix is live on
+    # the Mac App Store the moment a binary is uploaded is simply false.
+    if destination == "appstore"
+      UI.message(
+        "Mac App Store upload — no customer 'now live' notice: the build is not public until Apple " \
+        "approves it and Release This Version is pressed."
+      )
+    else
+      track_label = "TestFlight macOS (build #{new_build_number})"
+      comment_released_issues(build: new_build_number, track: track_label)
+      comment_intest_build(build: new_build_number, track: track_label)
+    end
 
     # Tag this release (e.g. desktop@0.3.2+45) so generate-release-notes.sh scopes
     # the NEXT build's "What to Test" to the delta since this build, instead of

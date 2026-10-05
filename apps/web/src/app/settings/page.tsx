@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardBody } from "@/components/ui/card";
+import { DeleteAccountSection } from "@/components/settings/delete-account-section";
 
 interface ApiKey {
   id: string;
@@ -187,6 +188,8 @@ export default function SettingsPage() {
           </code>
         </CardBody>
       </Card>
+
+      <DeleteAccountSection className="mt-6" />
     </div>
   );
 }

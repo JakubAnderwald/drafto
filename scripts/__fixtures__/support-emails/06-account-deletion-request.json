@@ -1,0 +1,29 @@
+[
+  {
+    "threadId": "fixture-thread-0006",
+    "subject": "Please delete my Drafto account",
+    "fromAddress": "sam.okafor@example.com",
+    "from": "Sam Okafor <sam.okafor@example.com>",
+    "labels": [],
+    "messages": [
+      {
+        "messageId": "fixture-msg-0006",
+        "from": "Sam Okafor <sam.okafor@example.com>",
+        "fromAddress": "sam.okafor@example.com",
+        "to": "support@drafto.eu",
+        "subject": "Please delete my Drafto account",
+        "receivedTime": "2026-09-12T10:22:41.000Z",
+        "summary": "Asks for their Drafto account and all their data to be deleted; no longer has the app installed.",
+        "content": "<email>Hi,\n\nI stopped using Drafto a few months ago and have already removed the app from my phone, so I can't get into the settings any more.\n\nPlease delete my Drafto account (sam.okafor@example.com) and all the data you hold on me: notebooks, notes, attachments, everything.\n\nCould you reply to confirm once it's done?\n\nThanks,\nSam</email>"
+      }
+    ],
+    "headers": {
+      "From": "Sam Okafor <sam.okafor@example.com>",
+      "To": "support@drafto.eu",
+      "Subject": "Please delete my Drafto account",
+      "Date": "Sat, 12 Sep 2026 10:22:41 +0000",
+      "Message-ID": "<fixture-0006@example.com>",
+      "Content-Type": "text/plain; charset=UTF-8"
+    }
+  }
+]

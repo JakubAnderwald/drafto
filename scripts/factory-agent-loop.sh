@@ -51,6 +51,8 @@ fi
 echo "$$" > "$LOCK_PID_FILE" 2>/dev/null || true
 trap 'rm -rf "$LOCK_DIR" 2>/dev/null || true' EXIT
 
+_ts() { date "+%Y-%m-%d %H:%M:%S"; }
+
 # ── Self-update: only ever run reviewed, CI-gated code from origin/main ──
 # The factory deploys from a dedicated git worktree pinned to main (detached
 # HEAD; see docs/operations/factory-runbook.md → "Deployment"). Fast-forward to
@@ -61,16 +63,17 @@ trap 'rm -rf "$LOCK_DIR" 2>/dev/null || true' EXIT
 # can't reset the tree out from under each other. Set FACTORY_AUTOPULL=0 for
 # ad-hoc local runs against a dirty tree.
 if [[ "${FACTORY_AUTOPULL:-1}" == "1" ]]; then
-  _ts() { date "+%Y-%m-%d %H:%M:%S"; }
   _loop_before="$(shasum "${BASH_SOURCE[0]}" 2>/dev/null | awk '{print $1}')"
-  if git -C "$SCRIPT_DIR" fetch --quiet origin main 2>/dev/null; then
-    if git -C "$SCRIPT_DIR" reset --hard --quiet origin/main 2>/dev/null; then
+  # Keep git's own stderr: the old "(offline?)" guess hid the Xcode-license
+  # outage for hours. Log git's first line so the real cause is visible.
+  if _git_err=$(git -C "$SCRIPT_DIR" fetch --quiet origin main 2>&1); then
+    if _git_err=$(git -C "$SCRIPT_DIR" reset --hard --quiet origin/main 2>&1); then
       echo "[$(_ts)] self-update: synced to origin/main @ $(git -C "$SCRIPT_DIR" rev-parse --short HEAD)"
     else
-      echo "[$(_ts)] self-update: reset to origin/main FAILED; running the checked-out tree as-is" >&2
+      echo "[$(_ts)] self-update: reset to origin/main FAILED: $(echo "$_git_err" | head -n 1); running the checked-out tree as-is" >&2
     fi
   else
-    echo "[$(_ts)] self-update: fetch origin main FAILED (offline?); running the checked-out tree as-is" >&2
+    echo "[$(_ts)] self-update: fetch origin main FAILED: $(echo "$_git_err" | head -n 1); running the checked-out tree as-is" >&2
   fi
   # If this wrapper itself changed in the sync, the running bash is now executing
   # a stale file (byte-offset reads can misbehave). Re-exec the fresh copy once;
@@ -83,6 +86,39 @@ if [[ "${FACTORY_AUTOPULL:-1}" == "1" ]]; then
     rm -rf "$LOCK_DIR" 2>/dev/null || true
     export FACTORY_LOOP_REEXECED=1
     exec /bin/bash "${BASH_SOURCE[0]}"
+  fi
+fi
+
+# ── Toolchain health: refuse to run on a broken host ──
+# Probes git / gh / claude. On a broken tool it skips the tick (exit 3); after
+# a couple of consecutive failures it pauses the factory with a `toolchain:`
+# reason, emails the operator with the exact fix and files one factory-failure
+# issue, then resumes on its own once the probes pass. Added after the
+# 2026-10-04 unaccepted-Xcode-license outage, where every git call failed for
+# hours while each mode still exited 0 and nobody was told. See
+# scripts/lib/toolchain-health.mjs and the runbook's "Automatic toolchain
+# pause".
+#
+# Runs AFTER self-update so a bad health-check commit can always be fixed by
+# merging to main (with git broken, self-update just fails harmlessly first).
+# Fails OPEN: only exit 3 (a probed tool is broken) skips the tick. A crash of
+# the check itself (corrupt state file, full disk, a bug) is logged and the
+# tick runs as before, so the check can never become a silent dead stop.
+if [[ -f "$HOME/drafto-secrets/support-env.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$HOME/drafto-secrets/support-env.sh"
+fi
+if [[ "${FACTORY_HEALTHCHECK:-1}" == "1" ]]; then
+  _health_rc=0
+  node "$SCRIPT_DIR/lib/toolchain-health.mjs" check \
+    --repo "$SCRIPT_DIR/.." \
+    --state-file "$SCRIPT_DIR/../logs/factory-state.json" \
+    --to "${SUPPORT_ADMIN_EMAIL:-jakub@anderwald.info}" >&2 || _health_rc=$?
+  if [[ "$_health_rc" -eq 3 ]]; then
+    echo "[$(_ts)] toolchain-health: unhealthy; skipping this tick (details on the line above)" >&2
+    exit 0
+  elif [[ "$_health_rc" -ne 0 ]]; then
+    echo "[$(_ts)] toolchain-health: check itself failed (rc=$_health_rc); running the tick anyway" >&2
   fi
 fi
 

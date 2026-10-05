@@ -1,6 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { outlineEntry, type OutlineEntry } from "@/components/legal/document-outline";
+import { NumberedSection } from "@/components/legal/numbered-section";
+import { TableOfContents } from "@/components/legal/table-of-contents";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardBody, CardFooter } from "@/components/ui/card";
@@ -129,6 +132,11 @@ const RADIUS_TOKENS = [
   { token: "full", value: "9999px" },
 ] as const;
 
+const DOCUMENT_OUTLINE = [
+  { id: "sample-text", title: "Text and lists" },
+  { id: "sample-table", title: "Tables" },
+] as const satisfies readonly OutlineEntry[];
+
 /* ── Helper components ────────────────────────────────────── */
 
 function Section({ title, children }: SectionProps) {
@@ -184,6 +192,13 @@ function ColorScale({ label, prefix, shades }: ColorScaleProps) {
 export default function DesignSystemPage() {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [typedConfirmOpen, setTypedConfirmOpen] = useState(false);
+  const [typedConfirmation, setTypedConfirmation] = useState("");
+
+  const closeTypedConfirm = () => {
+    setTypedConfirmOpen(false);
+    setTypedConfirmation("");
+  };
 
   return (
     <div className="space-y-4">
@@ -290,6 +305,68 @@ export default function DesignSystemPage() {
             <p className="text-fg-muted mb-1 font-mono text-xs">font-mono (Geist Mono)</p>
             <p className="font-mono text-sm">const greeting = &quot;Hello, Drafto!&quot;;</p>
           </div>
+        </div>
+      </Section>
+
+      {/* ── Long-form documents ───────────────────────────── */}
+      <Section title="Document Prose">
+        <div className="max-w-2xl">
+          <p className="text-fg-muted mb-4 font-mono text-xs">
+            TableOfContents · .doc-prose · NumberedSection · Card callout · .doc-link
+          </p>
+          <TableOfContents entries={DOCUMENT_OUTLINE} />
+          <div className="doc-prose mt-10">
+            <NumberedSection {...outlineEntry(DOCUMENT_OUTLINE, "sample-text")}>
+              <h3>Section subheading</h3>
+              <p>
+                Body copy for policies and help pages, with <strong>emphasis</strong> and an{" "}
+                <a href="#sample-table">inline link</a>.
+              </p>
+              <h4>Minor heading</h4>
+              <ul>
+                <li>A bulleted list item</li>
+                <li>Another list item</li>
+              </ul>
+              <ol>
+                <li>A numbered step</li>
+                <li>Another step</li>
+              </ol>
+              <Card className="text-fg my-6">
+                <CardBody className="px-6 py-5">
+                  <p>A callout built from Card, for statements that need to stand out.</p>
+                </CardBody>
+              </Card>
+            </NumberedSection>
+            <NumberedSection {...outlineEntry(DOCUMENT_OUTLINE, "sample-table")}>
+              <div className="bg-surface-lowest my-6 overflow-x-auto rounded-lg shadow-sm">
+                <table role="table">
+                  <thead role="rowgroup">
+                    <tr role="row">
+                      <th role="columnheader">Service</th>
+                      <th role="columnheader">Purpose</th>
+                    </tr>
+                  </thead>
+                  <tbody role="rowgroup">
+                    <tr role="row">
+                      <td role="cell" data-label="Service">
+                        Example
+                      </td>
+                      <td role="cell" data-label="Purpose">
+                        Table cells stack into cards on phones
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </NumberedSection>
+          </div>
+          <p className="text-fg-muted mt-8 text-sm">
+            Outside <code>.doc-prose</code>, give a link the same look with{" "}
+            <a href="#sample-text" className="doc-link">
+              .doc-link
+            </a>
+            .
+          </p>
         </div>
       </Section>
 
@@ -461,9 +538,14 @@ export default function DesignSystemPage() {
       </Section>
 
       <Section title="ConfirmDialog">
-        <Button variant="danger" onClick={() => setConfirmOpen(true)}>
-          Show confirm dialog
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="danger" onClick={() => setConfirmOpen(true)}>
+            Show confirm dialog
+          </Button>
+          <Button variant="secondary" onClick={() => setTypedConfirmOpen(true)}>
+            Show type-to-confirm dialog
+          </Button>
+        </div>
         {confirmOpen && (
           <div className="mt-4 max-w-md">
             <ConfirmDialog
@@ -477,6 +559,31 @@ export default function DesignSystemPage() {
               <p className="text-fg-muted text-sm">
                 This action cannot be undone. The item will be permanently removed.
               </p>
+            </ConfirmDialog>
+          </div>
+        )}
+        {typedConfirmOpen && (
+          <div className="mt-4 max-w-md">
+            {/* confirmDisabled keeps the destructive action locked until the check passes */}
+            <ConfirmDialog
+              title="Delete this workspace?"
+              confirmLabel="Delete workspace"
+              cancelLabel="Cancel"
+              variant="danger"
+              confirmDisabled={typedConfirmation.trim() !== "DELETE"}
+              onConfirm={closeTypedConfirm}
+              onCancel={closeTypedConfirm}
+            >
+              <Label htmlFor="ds-type-to-confirm" className="mb-1 block">
+                Type DELETE to confirm
+              </Label>
+              <Input
+                id="ds-type-to-confirm"
+                inputSize="sm"
+                autoComplete="off"
+                value={typedConfirmation}
+                onChange={(e) => setTypedConfirmation(e.target.value)}
+              />
             </ConfirmDialog>
           </div>
         )}

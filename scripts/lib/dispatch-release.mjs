@@ -10,8 +10,10 @@
 // (comment-released-issues.mjs) posts the "now live" notice when a build lands.
 //
 // BETA CHANNELS ONLY. Production store lanes (release:prod:* / *:production /
-// production-release.yml) are NEVER constructed, and assertBetaOnly() throws if
-// one is ever passed — a code invariant, not just a convention.
+// production-release.yml) and App Review submissions (release:promote* /
+// *:promote, which submit an existing TestFlight build without rebuilding) are
+// NEVER constructed, and assertBetaOnly() throws if one is ever passed — a code
+// invariant, not just a convention.
 //
 // Functions:
 //   derivePlatforms(diffFiles) → {mobile, desktop, web}   (pure)
@@ -78,11 +80,29 @@ export const DESKTOP_REACT_RANGE = /^19\.1\./;
 // Production lanes the factory must NEVER auto-invoke (beta channels only —
 // production store submission stays a manual, explicitly-approved step per
 // CLAUDE.md "Release Authorization").
+//
+// The `promote` entries are not redundant with the `prod` ones: `release:promote`
+// does not contain "prod" (no `d`), so without them a lane that submits the app
+// to App Review — `pnpm release:promote:ios`, `pnpm release:promote`,
+// `bundle exec fastlane ios promote`, `bundle exec fastlane mac promote` — would
+// sail past the guard. Promote never builds, which makes it cheap to invoke and
+// all the more important that only a human does.
+//
+// The platform token is optional in the fastlane patterns because both Fastfiles
+// set a `default_platform` — `bundle exec fastlane promote` in apps/desktop is a
+// real Mac App Store submission (`default_platform(:mac)`), and the same holds for
+// `production`. Defence in depth: every lane spec `platformsToLanes` builds is a
+// hardcoded `pnpm release:beta*` literal, so nothing reaches this today.
 const PROD_DENYLIST = [
   /release:prod\b/i,
   /release:production\b/i,
+  /release:promote\b/i,
   /production-release\.yml/i,
-  /fastlane\s+\w+\s+production/i,
+  /fastlane\s+(\w+\s+)?production/i,
+  /fastlane\s+(\w+\s+)?promote\b/i,
+  // Store-listing screenshots replace what App Store Connect shows publicly.
+  /store:screenshots:upload\b/i,
+  /fastlane\s+\w+\s+upload_screenshots\b/i,
 ];
 
 let _spawnForTests = null;

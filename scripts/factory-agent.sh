@@ -407,6 +407,18 @@ log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 # ensure_beta_build_root had no redirect at all). One destination, always.
 logerr() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" >>"$LOG_FILE" 2>/dev/null || true; }
 
+# worktree_cli_error <stderr-file> — append worktree-cli's captured stderr to
+# the log, delete the file, and echo the first line of its {"error": …} message
+# so the timestamped ERROR line names the real cause (e.g. git refusing to run
+# on an unaccepted Xcode license) instead of a bare "worktree add failed".
+worktree_cli_error() {
+  local f="$1" msg
+  cat "$f" >>"$LOG_FILE" 2>/dev/null || true
+  msg=$(tail -n 1 "$f" 2>/dev/null | jq -r '.error // empty' 2>/dev/null | head -n 1 | cut -c1-300)
+  rm -f "$f"
+  echo "${msg:-no detail}"
+}
+
 # ── Failure notification (mirrors support-agent.sh) ─────────────────────────
 cleanup() {
   local exit_code=$?
@@ -3319,12 +3331,14 @@ Drag it back to **Ready** so the factory can plan it first.
         --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
       log "WARNING: slot-acquire $SLOT for #$ISSUE_NUM failed; deferring"; continue
     fi
+    WT_ERR_FILE=$(mktemp -t factory-wt-err)
     if ! WT_JSON=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" add --issue "$ISSUE_NUM" \
-        --root "$REPO_ROOT" --base origin/main --fetch 2>>"$LOG_FILE"); then
-      log "ERROR: worktree add failed for #$ISSUE_NUM; releasing slot $SLOT"
+        --root "$REPO_ROOT" --base origin/main --fetch 2>"$WT_ERR_FILE"); then
+      log "ERROR: worktree add failed for #$ISSUE_NUM: $(worktree_cli_error "$WT_ERR_FILE"); releasing slot $SLOT"
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       continue
     fi
+    cat "$WT_ERR_FILE" >>"$LOG_FILE" 2>/dev/null || true; rm -f "$WT_ERR_FILE"
     WT_PATH=$(echo "$WT_JSON" | jq -r '.path')
     log "Issue #$ISSUE_NUM: worktree $WT_PATH (branchReused=$(echo "$WT_JSON" | jq -r '.branchReused // false'), fromRemote=$(echo "$WT_JSON" | jq -r '.fromRemote // false'), base=$(echo "$WT_JSON" | jq -r '.base // ""'))"
     copy_worktree_env "$WT_PATH"
@@ -3787,16 +3801,18 @@ A human should take a look. Reset with \
       fi
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-acquire "$SLOT" "$ISSUE_NUM" "$$" \
         --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      WT_ERR_FILE=$(mktemp -t factory-wt-err)
       if ! WT_JSON=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" add --issue "$ISSUE_NUM" \
-          --root "$REPO_ROOT" --base origin/main --fetch 2>>"$LOG_FILE"); then
+          --root "$REPO_ROOT" --base origin/main --fetch 2>"$WT_ERR_FILE"); then
         # Release the slot we just acquired, mirroring the --implement site: an
         # unreachable origin now fails the add instead of silently branching
         # from base, and holding both slots through a network fault would
         # starve --implement for as long as it lasts.
-        log "ERROR: worktree resume failed for #$ISSUE_NUM; releasing slot $SLOT"
+        log "ERROR: worktree resume failed for #$ISSUE_NUM: $(worktree_cli_error "$WT_ERR_FILE"); releasing slot $SLOT"
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         continue
       fi
+      cat "$WT_ERR_FILE" >>"$LOG_FILE" 2>/dev/null || true; rm -f "$WT_ERR_FILE"
       WT_PATH=$(echo "$WT_JSON" | jq -r '.path')
       log "Issue #$ISSUE_NUM: worktree $WT_PATH (branchReused=$(echo "$WT_JSON" | jq -r '.branchReused // false'), fromRemote=$(echo "$WT_JSON" | jq -r '.fromRemote // false'), base=$(echo "$WT_JSON" | jq -r '.base // ""'))"
       copy_worktree_env "$WT_PATH"

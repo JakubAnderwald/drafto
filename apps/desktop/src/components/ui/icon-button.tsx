@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { Pressable, StyleSheet } from "react-native";
+import { Pressable, StyleSheet, type AccessibilityState } from "react-native";
 
 import { useTheme } from "@/providers/theme-provider";
 import { radii, type SemanticColors } from "@/theme/tokens";
@@ -7,6 +7,8 @@ import { radii, type SemanticColors } from "@/theme/tokens";
 interface IconButtonProps {
   onPress: () => void;
   accessibilityLabel: string;
+  /** e.g. `{ expanded }` for a button that opens a menu. */
+  accessibilityState?: AccessibilityState;
   testID?: string;
   size?: number;
   children: ReactNode;
@@ -19,6 +21,7 @@ interface IconButtonProps {
 export function IconButton({
   onPress,
   accessibilityLabel,
+  accessibilityState,
   testID,
   size = 28,
   children,
@@ -39,6 +42,7 @@ export function IconButton({
       onHoverOut={() => setHovered(false)}
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
+      accessibilityState={accessibilityState}
       testID={testID}
     >
       {children}

@@ -70,3 +70,6 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0035](./0035-factory-code-review-gate.md)                           | Factory Code Review Gate (threads block the merge)   | Accepted           | 2026-09-12 |
 | [0036](./0036-factory-coderabbit-cli-gap-fill.md)                    | Factory CodeRabbit CLI Gap-Fill Review Lane          | Accepted           | 2026-09-12 |
 | [0037](./0037-manual-coderabbit-cli-review.md)                       | Manual CodeRabbit CLI Review for Hand-Made PRs       | Accepted           | 2026-09-14 |
+| [0038](./0038-account-deletion-endpoint.md)                          | Account Deletion Endpoint for All Platforms          | Accepted           | 2026-09-14 |
+| [0039](./0039-privacy-policy-processor-guard.md)                     | Privacy Policy Kept in Step with the Code            | Accepted           | 2026-10-04 |
+| [0040](./0040-app-store-promote-lanes.md)                            | App Store Submission Promotes an Existing Build      | Accepted           | 2026-09-27 |

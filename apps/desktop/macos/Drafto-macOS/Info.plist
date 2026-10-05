@@ -33,6 +33,12 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>47</string>
+	<!-- Export compliance: Drafto reaches the network only over HTTPS/TLS provided
+	     by macOS, which is exempt, so every build can skip App Store Connect's
+	     encryption questionnaire. iOS makes the same declaration via
+	     apps/mobile/app.config.ts (ios.infoPlist.ITSAppUsesNonExemptEncryption). -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>

@@ -5,8 +5,10 @@ import { act } from "react";
 
 // Mock next/navigation
 const mockPush = vi.fn();
+let mockSearchParams = new URLSearchParams();
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: mockPush }),
+  useSearchParams: () => mockSearchParams,
 }));
 
 // Mock Supabase client
@@ -33,6 +35,7 @@ const { default: LoginPage } = await import("@/app/(auth)/login/page");
 describe("Login page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSearchParams = new URLSearchParams();
   });
 
   it("renders the login form with OAuth buttons", async () => {
@@ -47,6 +50,37 @@ describe("Login page", () => {
     expect(screen.getByRole("button", { name: "Google" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Apple" })).toBeInTheDocument();
     expect(screen.getByText("or continue with")).toBeInTheDocument();
+  });
+
+  it("does not show the account-deleted notice by default", async () => {
+    await act(async () => {
+      render(<LoginPage />);
+    });
+
+    expect(screen.queryByText("Your account has been deleted.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("shows the account-deleted notice after an account deletion redirect", async () => {
+    mockSearchParams = new URLSearchParams("deleted=1");
+
+    await act(async () => {
+      render(<LoginPage />);
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Your account has been deleted.");
+    // The form stays usable underneath the notice.
+    expect(screen.getByRole("button", { name: "Log in" })).toBeInTheDocument();
+  });
+
+  it("ignores other values of the deleted query parameter", async () => {
+    mockSearchParams = new URLSearchParams("deleted=true");
+
+    await act(async () => {
+      render(<LoginPage />);
+    });
+
+    expect(screen.queryByText("Your account has been deleted.")).not.toBeInTheDocument();
   });
 
   it("has links to signup and forgot password", async () => {
