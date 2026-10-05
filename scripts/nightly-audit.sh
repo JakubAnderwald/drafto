@@ -40,8 +40,10 @@ trap cleanup EXIT
 
 log "=== Nightly audit started ==="
 
-# 24-hours-ago timestamp for filtering (macOS date -v)
-YESTERDAY=$(date -v-24H +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -d '24 hours ago' +%Y-%m-%dT%H:%M:%S)
+# 24-hours-ago timestamp for filtering (macOS date -v, GNU date -d fallback).
+# UTC (-u) to match GitHub's Z-suffixed createdAt/mergedAt, which the jq filters
+# below compare as strings — a local-time cutoff would silently shrink the window.
+YESTERDAY=$(date -u -v-24H +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%S)
 
 # ── Section A: Stage 1 — Issue Creation Health ──
 log "--- Section A: Issue Creation Health ---"
