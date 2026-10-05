@@ -1,7 +1,9 @@
 import React from "react";
+import * as ReactNative from "react-native";
 
 import { render, fireEvent, waitFor } from "../helpers/test-utils";
 import EditorScreen from "../../app/notes/[id]";
+import { semanticDark } from "@/theme/tokens";
 
 jest.mock("expo-router", () => ({
   useLocalSearchParams: () => ({ id: "note-1" }),
@@ -45,6 +47,7 @@ jest.mock("@/hooks/use-note", () => ({
 }));
 
 const mockSetContent = jest.fn();
+const mockInjectCSS = jest.fn();
 const mockUseEditorBridge = jest.fn();
 const mockGetJSON = jest.fn().mockResolvedValue({ type: "doc", content: [] });
 
@@ -54,7 +57,7 @@ jest.mock("@10play/tentap-editor", () => ({
     return {
       getJSON: mockGetJSON,
       setContent: mockSetContent,
-      injectCSS: jest.fn(),
+      injectCSS: mockInjectCSS,
     };
   },
   useBridgeState: () => ({ isReady: true }),
@@ -135,6 +138,31 @@ describe("EditorScreen", () => {
     ];
     const core = bridgeExtensions.find((ext) => ext.name === "core");
     expect(core?.extendCSS).toMatch(/\.ProseMirror \{ font-family: -apple-system/);
+  });
+
+  it("ships the dark-mode text colour with the editor's initial load", () => {
+    const colorSchemeSpy = jest.spyOn(ReactNative, "useColorScheme").mockReturnValue("dark");
+    mockNoteLoading = false;
+    mockNote = {
+      id: "note-1",
+      title: "Test Note",
+      content: null,
+      updatedAt: new Date(),
+    };
+
+    render(<EditorScreen />);
+
+    const [{ bridgeExtensions }] = mockUseEditorBridge.mock.calls[0] as [
+      { bridgeExtensions: { name: string; extendCSS?: string }[] },
+    ];
+    const core = bridgeExtensions.find((ext) => ext.name === "core");
+    expect(core?.extendCSS).toContain(`color: ${semanticDark.fg}`);
+    expect(core?.extendCSS).toContain(`background-color: ${semanticDark.bg}`);
+    expect(mockInjectCSS).toHaveBeenCalledWith(
+      expect.stringContaining(`color: ${semanticDark.fg}`),
+      "dark-mode",
+    );
+    colorSchemeSpy.mockRestore();
   });
 
   it("allows editing the title", () => {
