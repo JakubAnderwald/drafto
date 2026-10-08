@@ -192,6 +192,10 @@ ensure_beta_build_root() {
 
   if [[ ! -d "$root/.git" && ! -f "$root/.git" ]]; then
     logerr "Creating $platform beta build root at $root (detached at ${sha:0:12})"
+    # The sha can come from the GitHub API (nightly: origin/main's head) and so
+    # need not exist locally yet. A fetch only moves remote-tracking refs, never
+    # the checkout's working tree — safe in the fossil checkout too.
+    git -C "$REPO_ROOT" fetch origin >>"$LOG_FILE" 2>&1 || logerr "WARNING: fetch failed in $REPO_ROOT"
     if ! git -C "$REPO_ROOT" worktree add --detach "$root" "$sha" >>"$LOG_FILE" 2>&1; then
       logerr "ERROR: could not create beta build root $root"; rm -f "$lock"; return 1
     fi

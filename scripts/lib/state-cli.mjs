@@ -797,6 +797,13 @@ async function main(argv) {
     case "reset-release-attempts": {
       const issueNumber = positional[0];
       if (!issueNumber) throw new Error("reset-release-attempts requires <issue>");
+      // Same check as record-release-attempt: a typo (`#661`) must fail loudly,
+      // not report a reset that left the real counter at its give-up limit.
+      if (!/^[1-9][0-9]*$/.test(issueNumber)) {
+        throw new Error(
+          `reset-release-attempts: invalid issue number ${JSON.stringify(issueNumber)}`,
+        );
+      }
       const {
         loadReleaseState,
         saveReleaseState,

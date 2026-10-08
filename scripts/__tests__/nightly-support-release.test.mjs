@@ -330,6 +330,56 @@ if out=$(ensure_beta_build_root mobile deadbeef); then echo "OK:$out"; else echo
     assert.match(r.log, /could not create beta build root/);
   });
 
+  it("ensure_beta_build_root fetches before creating a root at a sha not yet local", () => {
+    // The nightly passes origin/main's head straight from the GitHub API.
+    const dir = mkdtempSync(join(tmpdir(), "beta-root-fetch-"));
+    try {
+      const git = (cwd, ...a) => spawnSync("git", ["-C", cwd, ...a], { encoding: "utf8" });
+      const id = ["-c", "user.email=t@t", "-c", "user.name=t"];
+      const origin = join(dir, "origin");
+      mkdirSync(origin);
+      git(origin, "init", "-q", "-b", "main");
+      git(origin, ...id, "commit", "-q", "--allow-empty", "-m", "one");
+      const repo = join(dir, "repo");
+      assert.equal(spawnSync("git", ["clone", "-q", origin, repo]).status, 0);
+      git(origin, ...id, "commit", "-q", "--allow-empty", "-m", "two");
+      const sha = git(origin, "rev-parse", "HEAD").stdout.trim();
+      assert.notEqual(git(repo, "cat-file", "-e", sha).status, 0, "precondition: not local yet");
+      const root = join(dir, "beta-desktop");
+      const r = spawnSync(
+        BASH,
+        [
+          "-c",
+          [
+            "set -uo pipefail",
+            `LOG_FILE=${JSON.stringify(join(dir, "log"))}`,
+            `REPO_ROOT=${JSON.stringify(repo)}`,
+            `SCRIPT_DIR=${JSON.stringify(join(repo, "scripts"))}`,
+            "INSTALL_TIMEOUT_SEC=5",
+            "log() { :; }; logerr() { :; }",
+            `source ${JSON.stringify(LIB)}`,
+            `ensure_beta_build_root desktop ${sha}`,
+          ].join("\n"),
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            PATH: process.env.PATH,
+            HOME: process.env.HOME,
+            DRAFTO_DESKTOP_BUILD_ROOT: root,
+            DRAFTO_BETA_MOBILE_ROOT: join(dir, "beta-mobile"),
+            DRAFTO_DESKTOP_FOSSIL_ROOT: join(dir, "fossil"),
+          },
+        },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout.trim(), root);
+      assert.equal(git(root, "rev-parse", "HEAD").stdout.trim(), sha);
+    } finally {
+      rmSync(join(dir), { recursive: true, force: true });
+    }
+  });
+
   it("ensure_beta_build_root refuses a root another live process holds", () => {
     const r = runLib(`
 sleep 30 & HOLDER=$!

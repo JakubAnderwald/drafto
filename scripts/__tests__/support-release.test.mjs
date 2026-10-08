@@ -722,6 +722,7 @@ describe("state-cli release-attempt subcommands", () => {
       ["record-release-attempt", "abc", "ios", "ok"],
       ["record-release-attempt", "658", "ios", "maybe"],
       ["reset-release-attempts"],
+      ["reset-release-attempts", "#661"],
     ]) {
       const r = run([...args, "--state-file", stateFile]);
       assert.equal(r.status, 1, `${args.join(" ")} should fail`);
