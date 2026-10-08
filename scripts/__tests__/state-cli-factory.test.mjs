@@ -1,7 +1,7 @@
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -569,6 +569,16 @@ describe("factory:cr-cli-* (CodeRabbit CLI lane, ADR-0036)", () => {
     ]);
   }
 
+  // A child writes its ready file once its SIGTERM handler is installed, so the
+  // test signals it only then — a fixed sleep loses that race on a loaded machine.
+  async function waitForFile(p, timeoutMs = 10_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (!existsSync(p)) {
+      if (Date.now() >= deadline) throw new Error(`${p} never appeared`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
   // ADR-0037: a manual `coderabbit-cli.mjs review` holds the lane from its own,
   // non-leader process whose argv carries the PR, not the run id.
   const manualInFlight = (pid) => ({
@@ -690,10 +700,18 @@ describe("factory:cr-cli-* (CodeRabbit CLI lane, ADR-0036)", () => {
     const runId = "42-eeeeeeeeeeee-20260912T210000Z";
     // The leader stands in for the supervisor: it starts a SIGTERM-ignoring child
     // in its own process group (the CLI), then exits on SIGTERM itself.
+    const ready = path.join(workdir, "group-member.ready");
+    const cliScript = [
+      "process.on('SIGTERM', () => {});",
+      `require('node:fs').writeFileSync(${JSON.stringify(ready)}, '');`,
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    // The leader's handler goes in synchronously before it spawns the child, so
+    // once the child's ready file exists both SIGTERM handlers are in place.
     const leaderScript = [
       "const { spawn } = require('node:child_process');",
-      "spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)\"], { stdio: 'ignore' });",
       "process.on('SIGTERM', () => process.exit(0));",
+      `spawn(process.execPath, ['-e', ${JSON.stringify(cliScript)}], { stdio: 'ignore' });`,
       "setInterval(() => {}, 1000);",
     ].join("\n");
     const leader = spawn(process.execPath, ["-e", leaderScript, runId], {
@@ -703,7 +721,7 @@ describe("factory:cr-cli-* (CodeRabbit CLI lane, ADR-0036)", () => {
     leader.unref();
     try {
       await new Promise((resolve) => leader.once("spawn", resolve));
-      await new Promise((resolve) => setTimeout(resolve, 500)); // child started, handlers installed
+      await waitForFile(ready);
       writeFileSync(
         stateFile,
         JSON.stringify({ crCli: { runs: [], inFlight: { ...inFlight, runId, pid: leader.pid } } }),
@@ -729,16 +747,20 @@ describe("factory:cr-cli-* (CodeRabbit CLI lane, ADR-0036)", () => {
 
   it("factory:cr-cli-finish keeps the run in flight when the supervisor survives SIGTERM", async () => {
     const runId = "42-dddddddddddd-20260912T210000Z";
-    const child = spawn(
-      process.execPath,
-      ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)", runId],
-      { detached: true, stdio: "ignore" },
-    );
+    const ready = path.join(workdir, "supervisor.ready");
+    const supervisorScript = [
+      "process.on('SIGTERM', () => {});",
+      `require('node:fs').writeFileSync(${JSON.stringify(ready)}, '');`,
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const child = spawn(process.execPath, ["-e", supervisorScript, runId], {
+      detached: true,
+      stdio: "ignore",
+    });
     child.unref();
     try {
       await new Promise((resolve) => child.once("spawn", resolve));
-      // Give node a moment to install the SIGTERM handler before we signal it.
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await waitForFile(ready); // SIGTERM handler installed
       const seeded = { crCli: { runs: [], inFlight: { ...inFlight, runId, pid: child.pid } } };
       writeFileSync(stateFile, JSON.stringify(seeded));
       const r = spawnSync(
@@ -763,6 +785,89 @@ describe("factory:cr-cli-* (CodeRabbit CLI lane, ADR-0036)", () => {
         /* already gone */
       }
     }
+  });
+
+  // A stand-in `ps` first on PATH for the spawned CLI (crCliRunState runs a bare
+  // `ps`): it logs its args and prints a fixed process table, so a test pins how
+  // one snapshot is read instead of racing a real process's exit.
+  function withFakePs(name, rows) {
+    const bin = path.join(workdir, name);
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(path.join(bin, "ps.table"), rows.join("\n") + "\n");
+    writeFileSync(
+      path.join(bin, "ps"),
+      '#!/bin/sh\ndir=$(dirname "$0")\necho "$*" >> "$dir/ps.log"\ncat "$dir/ps.table"\n',
+      { mode: 0o755 },
+    );
+    const log = path.join(bin, "ps.log");
+    rmSync(log, { force: true });
+    return {
+      env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` },
+      calls: () => (existsSync(log) ? readFileSync(log, "utf8") : ""),
+    };
+  }
+  // Above macOS's 99999 and Linux's PID_MAX_LIMIT (2^22): no real process or
+  // group has it, so the SIGTERM to its group reaches nothing.
+  const FAKE_PID = 9_999_999;
+  const finishAgainstFakePs = (runId, ps) => {
+    writeFileSync(
+      stateFile,
+      JSON.stringify({ crCli: { runs: [], inFlight: { ...inFlight, runId, pid: FAKE_PID } } }),
+    );
+    const r = spawnSync(
+      "node",
+      [CLI, "factory:cr-cli-finish", runId, "--wait-ms", "0", "--state-file", stateFile],
+      { encoding: "utf8", env: ps.env },
+    );
+    assert.equal(r.status, 0, r.stderr);
+    // The CLI really read the fake table, not the machine's process list.
+    assert.match(ps.calls(), /-axo pid=,pgid=,stat=,command=/);
+    return JSON.parse(r.stdout);
+  };
+
+  // Mid-exit, ps prints the leader by its bare name, without the runId: "(node)"
+  // on macOS (a row seen there while the leader exited), "[node]" with procps.
+  for (const [platform, leaderRow] of [
+    ["macOS", `${FAKE_PID} ${FAKE_PID} ?Ns  (node)`],
+    ["Linux", `${FAKE_PID} ${FAKE_PID} R    [node]`],
+  ]) {
+    it(`factory:cr-cli-finish keeps the run in flight while its exiting leader's args are unreadable (${platform})`, () => {
+      const runId = "42-ffffffffffff-20260912T220000Z";
+      // ...while the CLI it started still runs in its group.
+      const ps = withFakePs(`ps-leader-exiting-${platform}`, [
+        leaderRow,
+        `${FAKE_PID + 1} ${FAKE_PID} SN   node coderabbit review`,
+      ]);
+      const out = finishAgainstFakePs(runId, ps);
+      assert.equal(out.ok, false, JSON.stringify(out));
+      assert.equal(out.reason, "supervisor-still-running");
+      assert.equal(out.signalled, true);
+      assert.equal(out.killed, false);
+      assert.equal(readState().crCli.inFlight.runId, runId);
+    });
+  }
+
+  it("factory:cr-cli-finish counts an exiting leader as live until it is gone, even alone", () => {
+    const runId = "42-ffffffffffff-20260912T220000Z";
+    const ps = withFakePs("ps-leader-exiting-alone", [`${FAKE_PID} ${FAKE_PID} ?Ns  (node)`]);
+    const out = finishAgainstFakePs(runId, ps);
+    assert.equal(out.ok, false, JSON.stringify(out));
+    assert.equal(out.reason, "supervisor-still-running");
+    assert.equal(readState().crCli.inFlight.runId, runId);
+  });
+
+  it("factory:cr-cli-finish still reads a live leader with a readable foreign command as a reused pid", () => {
+    const runId = "42-ffffffffffff-20260912T220000Z";
+    // Readable args without the runId: the pid was reused, so what shares its
+    // pgid is the new process's group, not this run's.
+    const ps = withFakePs("ps-pid-reused", [
+      `${FAKE_PID} ${FAKE_PID} Ss   node some-other-script.mjs`,
+      `${FAKE_PID + 1} ${FAKE_PID} S    node some-other-child.mjs`,
+    ]);
+    const out = finishAgainstFakePs(runId, ps);
+    assert.equal(out.ok, true, JSON.stringify(out));
+    assert.equal(out.killed, false);
+    assert.equal(readState().crCli.inFlight, null);
   });
 
   it("factory:cr-cli-finish rejects a malformed --wait-ms before signalling", () => {
