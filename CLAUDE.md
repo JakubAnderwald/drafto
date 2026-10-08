@@ -81,13 +81,16 @@ cp /Users/jakub/code/drafto/apps/desktop/.env.production apps/desktop/.env.produ
 echo "sdk.dir=/Users/jakub/Library/Android/sdk" > apps/mobile/android/local.properties
 ```
 
-> Note: a full production `pnpm --filter @drafto/web build` additionally needs the
-> server-only secrets in `turbo.json`'s `passThroughEnv` (`APP_URL`,
-> `SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY`, …). Those are injected by Vercel
-> at deploy time, not stored in any local file, so a full local build fails on
-> `APP_URL` in the main repo too. For local work use `pnpm dev`, or
-> `SKIP_ENV_VALIDATION=true pnpm --filter @drafto/web build` for a compile-only
-> sanity check. The bootstrap script only handles the gitignored _files_.
+> Note: `APP_URL` is the one required server-only variable. Locally it lives in
+> `apps/web/.env.local` as `http://localhost:3000` (see `.env.local.example`), and
+> Vercel sets the real value at deploy time. Without it, `pnpm dev`, `pnpm test:e2e`
+> and `pnpm --filter @drafto/web build` all fail env validation. The other server-only
+> secrets in `turbo.json`'s `passThroughEnv` (`SUPABASE_SERVICE_ROLE_KEY`,
+> `RESEND_API_KEY`, …) are optional and not stored in any local file, so the features
+> that need them (approval emails, the admin page) stay off locally. CI sets
+> `SKIP_ENV_VALIDATION=true`, so it never notices a required var missing from
+> `.env.local.example`. Keep the two in sync. The bootstrap script only handles the
+> gitignored _files_.
 
 **Metro port conflicts:** The main repo may have Metro running on port 8081. In a worktree, start Metro on a different port (`pnpm start --port 8082`) and use `adb reverse tcp:8081 tcp:8082` to redirect the app.
 
