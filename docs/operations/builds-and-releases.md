@@ -385,6 +385,8 @@ What it does: validate `apps/desktop/.env.production` points at the prod Supabas
 
 > The lane aborts before upload if `.env.production` is missing or doesn't point at prod, or if the compiled bundle still references the dev project. This is what prevents shipping a dev-pointed "production" build (the cause of 0.3.2 build 28 connecting to the dev Supabase project — the old `.env`-copy approach was silently overridden by the environment). `mac production` shares the same checks.
 
+> The lane writes the build number, version and signing settings into `macos/Drafto-macOS/Info.plist` and `macos/Drafto.xcodeproj/project.pbxproj` before building. `beta` and `production` restore both files afterwards, whether the build succeeded or failed, so the primary checkout stays clean and the next `git pull` is not blocked. A file that already had uncommitted edits when the lane started is left alone. `Podfile.lock` is never restored: if CocoaPods rewrites it, the pods really changed, so commit it.
+
 ### Submit a tested TestFlight build for Mac App Store review (`promote`)
 
 ```bash

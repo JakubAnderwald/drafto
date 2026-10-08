@@ -249,8 +249,9 @@ FACTORY_INTEST_BETA_DESKTOP="${FACTORY_INTEST_BETA_DESKTOP:-0}"
 # The build roots are DEDICATED and disposable: the factory hard-resets them to
 # the commit under test. They must never be the fossil itself or this checkout —
 # ensure_beta_build_root refuses to touch either, because a `reset --hard` there
-# would destroy the operator's working tree (which is permanently dirty: the
-# desktop Fastlane lane mutates Info.plist and project.pbxproj on every run).
+# would destroy the operator's working tree and any uncommitted edits in it. (The
+# desktop Fastlane lane now restores the Info.plist / project.pbxproj it rewrites,
+# but the operator's own edits are reason enough.)
 DESKTOP_FOSSIL_ROOT="${DRAFTO_DESKTOP_FOSSIL_ROOT:-/Users/jakub/code/drafto}"
 BETA_MOBILE_ROOT="${DRAFTO_BETA_MOBILE_ROOT:-/Users/jakub/code/drafto-beta-mobile}"
 BETA_DESKTOP_ROOT="${DRAFTO_DESKTOP_BUILD_ROOT:-/Users/jakub/code/drafto-beta-desktop}"

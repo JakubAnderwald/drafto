@@ -373,8 +373,7 @@ describe("ensure_beta_build_root — working-tree safety", () => {
 
   it("refuses to use the factory checkout or the fossil as a build root", () => {
     // It hard-resets and cleans the root. The fossil IS the operator's working
-    // tree (permanently dirty — the desktop lane mutates Info.plist and
-    // project.pbxproj), so resetting it would destroy real work.
+    // tree, so resetting it would destroy any uncommitted edits there.
     assert.match(body, /canon_root" == "\$canon_repo" \|\| "\$canon_root" == "\$canon_fossil"/);
     assert.match(body, /refusing to use \$root as a \$platform beta build root/);
     assert.match(body, /return 1/);
