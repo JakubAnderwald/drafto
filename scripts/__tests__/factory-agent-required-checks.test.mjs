@@ -229,18 +229,21 @@ describe("cancelled-check recovery helpers (real helpers, jq) — #654", () => {
 
   // Bash with the named helpers loaded, the required set in place and echoing
   // stubs for everything that would touch GitHub or the state file. The helpers
-  // send gh/node output to $LOG_FILE, so it points at stdout to capture those
-  // calls. `pre` overrides a stub (later definitions win). The environment is
-  // built from scratch so a knob exported by the caller (the factory's plist
-  // sets FACTORY_* vars) can't change the results.
+  // send gh/node output to $LOG_FILE, so the log (log() included, keeping the
+  // order) goes to a temp file that is printed to stdout on exit. Not
+  // /dev/stdout: on Linux spawnSync's stdout is a socket, which can't be opened.
+  // `pre` overrides a stub (later definitions win). The environment is built
+  // from scratch so a knob exported by the caller (the factory's plist sets
+  // FACTORY_* vars) can't change the results.
   function runBash(fns, body, { required = REQUIRED_654, pre = "", env = {} } = {}) {
     const harness = [
       "set -uo pipefail",
-      "LOG_FILE=/dev/stdout",
+      "LOG_FILE=$(mktemp)",
+      `trap 'cat "$LOG_FILE"; rm -f "$LOG_FILE"' EXIT`,
       "SCRIPT_DIR=/nonexistent",
       "STATE_FILE=/nonexistent",
       `REQUIRED_CONTEXTS_JSON='${required}'`,
-      'log() { echo "LOG $*"; }',
+      'log() { echo "LOG $*" >>"$LOG_FILE"; }',
       'gh() { echo "GH $*"; }',
       'node() { echo "NODE $*" >&2; echo "{}"; }',
       ...fns.map(extract),
@@ -299,8 +302,7 @@ describe("cancelled-check recovery helpers (real helpers, jq) — #654", () => {
   describe("classify_failing_required", () => {
     // gh stub for the job lookup: <started> maps job id → "true"/"false"; an id
     // missing from the map makes the lookup fail. Calls are logged on fd 3 (a
-    // dup of stderr): the helper sends gh's stderr to $LOG_FILE, which here is
-    // stdout, i.e. inside the $(...) capture.
+    // dup of stderr), apart from the log file the harness prints on stdout.
     const classify = (view, started) => {
       const res = runBash(
         ["pr_failing_required_checks", "classify_failing_required"],
