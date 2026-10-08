@@ -129,10 +129,13 @@
 //                                    {ok:false, reason:"run-id-mismatch"} (exit
 //                                    0) when <runId> isn't the in-flight run.
 //                                    Otherwise SIGTERMs the run's supervisor
-//                                    process group first — only when its pid is
-//                                    alive AND its command line carries <runId>
-//                                    (a reused pid is left alone) — and waits up
-//                                    to --wait-ms (default 10000) for it to exit.
+//                                    process group first — only while the run is
+//                                    still ours: its pid alive with <runId> on
+//                                    its command line, or the supervisor exited
+//                                    or mid-exit with its group still live (a
+//                                    reused pid is left alone; see
+//                                    crCliRunState) — and waits up to --wait-ms
+//                                    (default 10000) for the group to exit.
 //                                    Only then is the run released (killed:
 //                                    true|false). If it is still running, or ps
 //                                    can't verify it, the state is left untouched
@@ -220,6 +223,11 @@ function processGroupExists(pgid) {
 //   - leader alive (not a zombie) → "alive" if its command carries the runId,
 //     else "gone" (a reused pid: POSIX never reuses a pid still in use as a
 //     process group id, so our group can't exist alongside it);
+//   - leader alive but ps can't read its args (it prints the bare process name:
+//     "(node)" on macOS, "[node]" with Linux procps, for one that is mid-exit) →
+//     treated as exiting, so its group decides, below, as it will a moment later
+//     when the leader is a zombie; the dying leader still counts as a live
+//     member until then;
 //   - leader exited or an unreaped zombie → "alive" while any non-zombie process
 //     still has pgid == pid (the CLI it started), else "gone".
 // "unknown" when ps fails while the pid or its group still exists.
@@ -246,7 +254,11 @@ function crCliRunState(inFlight) {
     .map((m) => ({ pid: Number(m[1]), pgid: Number(m[2]), stat: m[3], command: m[4] }));
   const live = (r) => !r.stat.startsWith("Z");
   const leader = rows.find((r) => r.pid === pid);
-  if (leader && live(leader)) return leader.command.includes(inFlight.runId) ? "alive" : "gone";
+  // "(node)" / "[node]": our leader mid-exit, not a reused pid, so its group decides.
+  const argsUnreadable = (r) => /^(\(.*\)|\[.*\])$/.test(r.command.trim());
+  if (leader && live(leader) && !argsUnreadable(leader)) {
+    return leader.command.includes(inFlight.runId) ? "alive" : "gone";
+  }
   return rows.some((r) => r.pgid === pid && live(r)) ? "alive" : "gone";
 }
 
