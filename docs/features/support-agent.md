@@ -1,6 +1,6 @@
 # Support agent
 
-**Status:** shipped **Updated:** 2026-09-14
+**Status:** shipped **Updated:** 2026-10-08
 
 ## What it is
 
@@ -24,12 +24,12 @@ Shipped. The pipeline has been live since 2026-04-26; lifecycle sync (Phase G) m
 | Bundle builders (inbound, comment-batch, state)    | `scripts/lib/build-bundle.mjs`         |
 | Pure policy helpers (rate limits, allowlist, etc.) | `scripts/lib/policy.mjs`               |
 | State load / save (atomic, mode 0600)              | `scripts/lib/state.mjs`                |
-| GitHub sync helpers (`gh` subprocess wrappers)     | `scripts/lib/github-sync.mjs`          |
-| Issue-body footer parser (zoho-thread-id routing)  | `scripts/lib/parse-issue-footer.mjs`   |
-| State-mutation CLI (cooldowns, cursors, sender)    | `scripts/lib/state-cli.mjs`            |
+| GitHub sync helpers + Zoho route (`issue-route`)   | `scripts/lib/github-sync.mjs`          |
+| Issue-body footer parser (provenance, fallback)    | `scripts/lib/parse-issue-footer.mjs`   |
+| State-mutation CLI (cooldowns, cursors, route)     | `scripts/lib/state-cli.mjs`            |
 | Stage 2 (preserved, sender-gated via state)        | `scripts/nightly-support.sh`           |
 | Release-announcement walker (Fastlane post-hook)   | `scripts/comment-released-issues.mjs`  |
-| Unit tests (167)                                   | `scripts/__tests__/`                   |
+| Unit tests (`cd scripts && npm test`)              | `scripts/__tests__/`                   |
 | Captured Zoho fixtures for golden runs             | `scripts/__fixtures__/support-emails/` |
 
 ## Architecture
@@ -59,8 +59,8 @@ Tools available to Claude (allow-listed only):
         │
         ▼
 [Zoho labels under Drafto/Support/*] + [Drafto/Support/Resolved | Spam folder]
-+ [GitHub issue body footer carrying zoho-thread-id (load-bearing for comment-sync) + reporter-email/reporter-allowlisted (provenance only — see ADR-0025)]
-+ [logs/support-state.json — cursors, rate-limit counters, admin-notification cooldown, reporterEmail per filed issue]
++ [GitHub issue body footer — provenance, plus a routing fallback for older issues (see "Routing progress emails")]
++ [logs/support-state.json — cursors, rate-limit counters, admin-notification cooldown, and per filed issue the reporterEmail + Zoho route]
 ```
 
 ### State machine (Zoho-side)
@@ -85,12 +85,24 @@ Every GitHub issue the agent files carries this fenced footer at the very end of
 reporter-email: jane@example.com
 reporter-allowlisted: false
 zoho-thread-id: 1777397751089013400
+zoho-message-id: 1791172614617005600
 -->
 ```
 
-The `zoho-thread-id` field is load-bearing — comment-sync uses it to route GitHub-comment forwards back to the originating Zoho thread. `reporter-email` and `reporter-allowlisted` are kept for human-readable provenance only and are NOT trusted for any privilege decision (see [ADR-0025](../adr/0025-support-allowlist-from-zoho-sender.md)).
+The footer is LLM-written, so it never decides who passes the allowlist gate or who receives an email. `reporter-email` and `reporter-allowlisted` are human-readable provenance only (see [ADR-0025](../adr/0025-support-allowlist-from-zoho-sender.md)). `zoho-thread-id` and `zoho-message-id` are only a routing fallback for issues filed before the runner recorded routes in state; see the next section.
 
-> **Singleton-threadId quirk.** Zoho assigns a `threadId` only after a customer-side reply. First-contact filings record `zoho-thread-id: null` in the footer; the operator (or the next agent pass after the customer replies) patches it once Zoho assigns one.
+### Routing progress emails
+
+`--comment-sync` and `--state-sync` both ask `node scripts/lib/github-sync.mjs issue-route <n>` where the customer email for issue `n` goes. It returns `{threadId, messageId, subject, to, routable}`:
+
+- **Source.** `state.issues[<n>]` in `logs/support-state.json` wins: `zohoThreadId`, `zohoMessageId`, `zohoSubject` and `reporterEmail`. `support-agent.sh` writes them through `state-cli.mjs record-filed-issue <n> <email> [<threadId>] --message-id <id> --subject <s>`, using the Zoho entry it read before Claude ran. The footer's `zoho-thread-id` / `zoho-message-id` fill in only when state has neither id. `null`, `undefined` and empty values count as absent everywhere.
+- **Recipient.** `to` is always the runner-recorded `reporterEmail`, never the footer.
+- **Thread route** (`threadId` set). The prompt runs `get-thread` and replies to the thread's latest message. It addresses the email to `to`, and falls back to that message's sender only when `to` is unknown, because the latest message can be one of our own replies.
+- **Message route** (no `threadId`, but a `messageId` and `to`). The prompt runs `zoho-cli reply <messageId> --to <to> --subject "<subject, or the issue title>"`. The issue-filing acknowledgement uses the same call, so the email threads on the customer's side through `In-Reply-To`.
+- **No route.** `routable: false` means neither route can send. Comment-sync logs the skipped issue numbers in one line, once per daily log file and again whenever the set changes. State-sync logs a `WARNING`, records the new state and does not invoke Claude, so a lifecycle email is never left to the model to drop.
+- **First comment-sync cursor.** An issue whose route was recorded at filing (state has `zohoMessageId`) forwards every comment since the issue was created. An issue that became routable later, through the footer fallback, a linked customer reply, or a rebuilt state file, starts its cursor at "now". Its older comments are not emailed, so a customer never gets months of backlog at once.
+
+> **Singleton-threadId quirk.** Zoho gives a customer's first email ("singleton") no `threadId`, and the acknowledgement reply does not return one either. Those issues route by the inbound message id. Issue #658 and earlier #360 lost every progress email before this was fixed. Once the customer replies, the reply lands in a real Zoho thread that carries the `Drafto/Support/Issue/<n>` label. `--auto-classify` then records that thread as `zohoThreadId` (only when state has none), and later emails switch to the thread route. To route an older issue by hand, run `node scripts/lib/state-cli.mjs set-issue-field <n> zohoMessageId <id>`, plus `zohoSubject <subject>`. Without a subject, the email goes out as `Re: <issue title>`, which some mail clients file as a separate conversation. Once `zohoMessageId` is set, comment-sync also forwards the issue's earlier comments. To skip them, set `lastGithubCommentSyncAt` first. The setter refuses a literal `null` or `undefined`.
 
 ### Allowlist gate (Stage 2)
 
@@ -240,7 +252,8 @@ Stage 2 already authenticates `gh` on the Mac mini for the same user. No additio
   - Every label and folder the agent touches must live under `Drafto/Support/...`. `zoho-cli.mjs` rejects anything else at the CLI boundary, with a closed-suffix allowlist (`{Seen, NeedsHuman, Spam, Resolved, Replied, Issue/<n>}` for labels; `{Spam, Resolved}` for folders). Adding a new label = update the allowlist, the prompt, and `assertSupportNamespace`'s test together.
   - Zoho's `displayName` cap is **25 characters**. `Drafto/Support/NeedsHuman` is exactly 25; `Drafto/Support/Issue/<n>` fits up to 4-digit issue numbers. Do not invent labels longer than that without first verifying live (`POST /labels` returns a length error).
   - `POST /messages` (used for `reply` and `send`) rejects unknown top-level keys with `404 EXTRA_KEY_FOUND_IN_JSON`. Don't add `headers: { ... }` for `Auto-Submitted` — rely on the rate-limit caps for loop protection.
-  - Replies must thread via `inReplyTo` + `toAddress` + `subject` anchored to the latest messageId in the thread. `inReplyTo + threadId` together returns `404 JSON_PARSE_ERROR`. The CLI signature is `reply <messageId> --to <addr> --subject <s> --body-file <path>`.
+  - Replies must thread via `inReplyTo` + `toAddress` + `subject`, anchored to the latest messageId in the thread, or, for a first-contact issue with no thread, to the inbound messageId recorded at filing. `inReplyTo + threadId` together returns `404 JSON_PARSE_ERROR`. The CLI signature is `reply <messageId> --to <addr> --subject <s> --body-file <path>`.
+  - Progress and lifecycle emails route only through `github-sync.mjs issue-route` (see [Routing progress emails](#routing-progress-emails)). Never route by footer content alone, and never take a recipient from the issue body. Bash decides "no route" before invoking Claude, so the prompt never has to improvise an unroutable case.
   - Customer-facing replies must be verbose, include the full GitHub URL, and explain "what happens next." The existing prompt templates encode this — keep them.
   - `nightly-support.sh` allowlist gate: read the inbound sender from `state.issues[<n>].reporterEmail` (recorded by the runner at filing time, not from the issue body). Never trust LLM-written content in the issue body for the gate decision — the body could carry a forged footer copied from a customer email. See ADR-0025.
   - Account-deletion and data-rights mail always escalates to `NeedsHuman` (prompt step 5.5, plus its exception at the top of step 4.5). Keep step 5.5 ahead of the phase gate, and never give the agent a tool that deletes, exports or edits user data. The confirmed-by-reply manual procedure is the only path for emailed requests.
@@ -249,9 +262,12 @@ Stage 2 already authenticates `gh` on the Mac mini for the same user. No additio
   - `scripts/__tests__/zoho-cli.test.mjs` — namespace gates, `add-label` / `move-to-folder` refusals, OAuth refresh-on-401 retries exactly once.
   - `scripts/__tests__/notification.test.mjs` — admin notification 24h cooldown; suppressed for allowlisted senders; suppressed when state.humanIntervened.
   - `scripts/__tests__/state-cli.test.mjs` — counter bumps, atomic save, prior-state preservation.
-  - `scripts/__tests__/state-cli-reporter-email.test.mjs` — `record-filed-issue` / `get-reporter-email` round-trip for the Stage 2 allowlist gate (ADR-0025).
-  - `scripts/__tests__/build-bundle.test.mjs` — bundle shape for all three kinds.
-  - `scripts/__tests__/github-sync.test.mjs` — comment / state diffing, marker filter, platform derivation.
+  - `scripts/__tests__/state-cli-reporter-email.test.mjs` — `record-filed-issue` / `get-reporter-email` round-trip for the Stage 2 allowlist gate (ADR-0025), plus `--message-id` / `--subject` route persistence.
+  - `scripts/__tests__/state-cli-set-issue-field.test.mjs` — the allowlisted route setter, including the `null` / `undefined` refusal.
+  - `scripts/__tests__/build-bundle.test.mjs` — bundle shape for all three kinds, including `zoho_route`.
+  - `scripts/__tests__/github-sync.test.mjs` — comment / state diffing, marker filter, platform derivation, and `resolveIssueRoute` / `issue-route` precedence (state over footer, recipient never from the footer).
+  - `scripts/__tests__/parse-issue-footer.test.mjs` — footer parsing, with `null` values read as absent.
+  - `scripts/__tests__/support-agent-routing.test.mjs` — `support-agent.sh` structure: both sync modes route through `issue-route`, no silent skip, deterministic no-route handling in state-sync, and route persistence at filing.
 - **Files that must change together:**
   - Adding a new bundle kind → `build-bundle.mjs`, the prompt's "kinds" enum, `support-agent.sh`'s mode dispatch, and a new test fixture under `scripts/__fixtures__/support-emails/`.
   - Adding a new Zoho subcommand → `zoho-cli.mjs`, the prompt's "Tools" allowlist, and `zoho-cli.test.mjs`.
@@ -261,11 +277,11 @@ Stage 2 already authenticates `gh` on the Mac mini for the same user. No additio
 ## Verify
 
 ```bash
-# Unit tests (all 167)
-pnpm --filter=. exec node --test scripts/__tests__/
+# Unit tests (same command CI runs)
+cd scripts && npm test
 
 # Dry-run against fixtures (no live API)
-bash scripts/support-agent.sh --dry-run --fixture scripts/__fixtures__/support-emails/01-bug-attachment-upload.json
+bash scripts/support-agent.sh --dry-run --fixture scripts/__fixtures__/support-emails/01-bug-pdf-export.json
 
 # Live dry-run against the real Inbox (requires OAuth bootstrap)
 bash scripts/support-agent.sh --dry-run

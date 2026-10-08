@@ -167,6 +167,13 @@ describe("reporterFromBody", () => {
     assert.equal(r.zohoThreadId, "");
   });
 
+  it("returns an empty zohoThreadId for a first-contact `zoho-thread-id: null` footer", () => {
+    const body = `<!-- drafto-support-agent v1\nreporter-email: x@y\nzoho-thread-id: null\n-->`;
+    const r = reporterFromBody(body);
+    assert.equal(r.zohoThreadId, "");
+    assert.equal(r.email, "x@y");
+  });
+
   it("treats reporter-allowlisted: false as false (case-insensitive)", () => {
     const body = `<!-- drafto-support-agent v1\nreporter-allowlisted: False\nreporter-email: x@y\n-->`;
     const r = reporterFromBody(body);

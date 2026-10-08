@@ -82,6 +82,25 @@ The fix moves the `zoho-thread-id` source of truth off the LLM-written footer an
 
 Pre-fix open issues need a one-off `state-cli set-issue-field <n> zohoThreadId <id>` to route through state. The allowlist gate from this ADR's main decision is untouched.
 
+## Update — first-contact routing by message id (2026-10-08)
+
+Two statements in the #422 update above turned out to be wrong:
+
+- **"The footer … is no longer load-bearing for any code path."** `--state-sync` still read `zoho-thread-id` only from the footer, through `github-sync.mjs state-change-info`, and a footer value of `null` came back as the string `"null"`.
+- **The ack reply gives Zoho a real `ackThreadId`.** It does not. For #658 and #360, Zoho returned only a `messageId`, so there was never a thread id to patch into the footer or mirror into state.
+
+As a result, issue #658, filed from a customer's first email, lost every progress email. Comment-sync skipped "Working on it" and "Fix in review" without logging anything. State-sync handed Claude a bundle it could not route, Claude returned `noop`, and the runner marked the closed/completed transition handled, so that email was lost for good.
+
+The fix applies this ADR's principle to routing too. The route is recorded by the runner from the Zoho entry it read before the LLM ran, not read back from the LLM-written footer:
+
+- `record-filed-issue` takes `--message-id <id>` and `--subject <s>`, stored as `issues.<n>.zohoMessageId` / `.zohoSubject` next to `reporterEmail` (and `zohoThreadId` when the inbound mail was threaded). The post-filing footer re-read and the prompt's footer-patch step are gone.
+- `github-sync.mjs issue-route <n>` (pure core `resolveIssueRoute`) is the one route resolver for both sync modes. State wins. The footer's `zoho-thread-id` / new `zoho-message-id` fill in only when state has neither id, and `null` / `undefined` values count as absent. **The recipient (`to`) comes only from `issues.<n>.reporterEmail`, never from the footer's `reporter-email`**, for the same spoofing reason as the allowlist gate.
+- With no thread id, the prompt replies to the inbound message by id (`zoho-cli reply <messageId> --to <reporterEmail>`), the same call the acknowledgement makes. When a later customer reply arrives on a thread carrying the issue's label, `--auto-classify` records that thread as `zohoThreadId` if state had none. The thread route also addresses `reporterEmail` when it is known.
+- An issue that becomes routable after filing, through the footer fallback or a linked reply, starts its comment-sync cursor at "now", so its comment history is never emailed in one burst.
+- An issue with no route at all is never handed to Claude by `--state-sync`. The runner logs a `WARNING` and records the new state. `--comment-sync` logs the unroutable issue numbers instead of skipping them silently.
+
+The footer is still provenance, plus a fallback for issues filed before routes were recorded in state. It is never trusted for the allowlist gate or for choosing a recipient.
+
 ## Related
 
 - `scripts/lib/state-cli.mjs` — `record-filed-issue` (now optional 3rd positional `<zoho-thread-id>`), `get-reporter-email`, `get-issue-zoho-thread-id` and the allowlisted `set-issue-field` subcommands (the last three added by issue #422).
@@ -92,3 +111,4 @@ Pre-fix open issues need a one-off `state-cli set-issue-field <n> zohoThreadId <
 - `scripts/support-agent-prompt.md` — step 8 narrative updated for the allowlist move; step 11 notes that bash re-reads the patched footer immediately after filing and mirrors `<ackThreadId>` into state.
 - Pre-fix issues whose linkage was never recorded can be patched manually via `node scripts/lib/state-cli.mjs set-issue-field <n> zohoThreadId <id>`. The footer is now human-readable provenance only — no code path reads it at sync time.
 - [`docs/adr/0024-realtime-support-agent.md`](./0024-realtime-support-agent.md) — narrows section "State storage" point 2; the footer-as-allowlist-gate aspect is replaced by this ADR's main decision, and the footer-as-comment-sync-routing aspect is replaced by the issue #422 update above.
+- As of the 2026-10-08 update, the bullets above about the singleton footer re-read, the ack-thread-id footer patch, and comment-sync reading `get-issue-zoho-thread-id` are historical. `record-filed-issue` also records `--message-id` / `--subject`. Both sync modes route through `github-sync.mjs issue-route`, which uses `parseIssueFooter` only as the fallback for older issues. `get-issue-zoho-thread-id` now only decides whether a linked customer reply should record its thread for an issue that had none.

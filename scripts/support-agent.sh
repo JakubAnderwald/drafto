@@ -38,14 +38,16 @@
 #                              phase gate (config.phase) to the actions
 #                              permitted at that phase.
 #   --comment-sync             Phase F+ live mode. Sweep GitHub support
-#                              issues; for each, find the linked Zoho thread
-#                              from the issue body footer, fetch comments
-#                              newer than the per-issue cursor in
-#                              support-state.json (filtering out the bot
+#                              issues; for each, resolve its Zoho route
+#                              (`github-sync.mjs issue-route`: thread id, or
+#                              the inbound message id for a first-contact
+#                              filing — state first, issue footer fallback),
+#                              fetch comments newer than the per-issue cursor
+#                              in support-state.json (filtering out the bot
 #                              user), build a `github_comment_batch` bundle,
 #                              and invoke Claude to forward each comment as a
-#                              Zoho reply on the thread. Cursor is advanced
-#                              after Claude reports `action=sync-comment`.
+#                              Zoho reply. Cursor is advanced after Claude
+#                              reports `action=sync-comment`.
 #   --state-sync               Phase G+ live mode. Sweep GitHub support
 #                              issues; for each, compare the current
 #                              {state, state_reason} against
@@ -57,7 +59,9 @@
 #                              appropriate "fixed / won't-do / reopened"
 #                              email and replies in-thread. lastKnownState +
 #                              lastIssueStateSync are advanced after Claude
-#                              reports `action=sync-state` (or noop).
+#                              reports `action=sync-state` (or noop). An
+#                              issue with no Zoho route is advanced with a
+#                              WARNING and Claude is not invoked.
 #   --fixture <path>           (--dry-run only) Replay a captured Zoho
 #                              list-pending JSON instead of hitting the
 #                              live API. Refused under --label-only,
@@ -107,10 +111,11 @@ Exactly one of --dry-run, --label-only, --auto-classify, --comment-sync, or --st
                     constrained by scripts/support-agent-prompt.md and
                     the bundle's config.phase to the actions permitted at
                     that phase.
-  --comment-sync    Phase F+. Sweep GitHub support issues, find each one's
-                    linked Zoho thread via the issue body footer, and forward
-                    new GitHub comments to that thread. Per-issue cursor in
-                    logs/support-state.json prevents re-forwarding.
+  --comment-sync    Phase F+. Sweep GitHub support issues, resolve each one's
+                    Zoho route (thread id, or the inbound message id of a
+                    first-contact filing), and forward new GitHub comments to
+                    the customer. Per-issue cursor in logs/support-state.json
+                    prevents re-forwarding.
   --state-sync      Phase G+. Sweep GitHub support issues, detect transitions
                     in {state, state_reason} since the per-issue
                     lastKnownState in logs/support-state.json, and email the
@@ -330,35 +335,60 @@ if [[ "$COMMENT_SYNC" -eq 1 ]]; then
   fi
   log "Found $ISSUE_COUNT support-labelled issues"
 
+  # Issues skipped for lack of a Zoho route, collected into ONE line after the
+  # loop and logged once per daily log file per distinct set. A line every
+  # 60-second tick would bury the log in legacy Apps-Script-era issues that
+  # will never have a route; a new unroutable issue still shows up at once.
+  UNROUTED_ISSUES=""
   for IDX in $(seq 0 $((ISSUE_COUNT - 1))); do
     ISSUE_ENTRY=$(echo "$ISSUES_JSON" | jq ".[${IDX}]")
     ISSUE_NUMBER=$(echo "$ISSUE_ENTRY" | jq -r '.number')
     ISSUE_BODY=$(echo "$ISSUE_ENTRY" | jq -r '.body // ""')
 
-    # Find the linked Zoho thread via state.issues[<n>].zohoThreadId. This is
-    # written by record-filed-issue at filing time (and by set-issue-field for
-    # singletons whose ackThreadId only exists after Claude's auto-reply has
-    # gone out). Before issue #422 this came from the issue body's agent
-    # footer, but that field was unreliable for singleton-first-contact
-    # tickets (initialised with `null` and not always patched), so state.json
-    # is now the source of truth. Issues with no linkage (older Apps-Script-
-    # era, or pre-fix singletons that need a one-off `set-issue-field`) are
-    # skipped silently — same behaviour as before.
-    THREAD_ID=$(node "$SCRIPT_DIR/lib/state-cli.mjs" get-issue-zoho-thread-id "$ISSUE_NUMBER" \
-      --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "")
-    if [[ -z "$THREAD_ID" ]]; then
+    # Resolve where this issue's progress emails go (github-sync.mjs
+    # resolveIssueRoute): state.issues[<n>] first — zohoThreadId, or the
+    # inbound zohoMessageId + zohoSubject recorded at filing time for a
+    # customer's first email, which Zoho never gives a threadId — then the
+    # issue-body footer's ids, only when state has neither. The recipient is
+    # always the runner-recorded reporterEmail. The body is piped in from
+    # list-support-issues so this costs no extra gh call.
+    if ! ROUTE_JSON=$(printf '%s' "$ISSUE_BODY" | node "$SCRIPT_DIR/lib/github-sync.mjs" issue-route \
+        "$ISSUE_NUMBER" --body-file - --state-file "$STATE_FILE" 2>>"$LOG_FILE"); then
+      log "WARNING: github-sync issue-route failed for issue #$ISSUE_NUMBER; skipping this tick"
       continue
     fi
+    if [[ "$(echo "$ROUTE_JSON" | jq -r '.routable')" != "true" ]]; then
+      UNROUTED_ISSUES="$UNROUTED_ISSUES #$ISSUE_NUMBER"
+      continue
+    fi
+    THREAD_ID=$(echo "$ROUTE_JSON" | jq -r '.threadId // empty')
+    ROUTE_MESSAGE_ID=$(echo "$ROUTE_JSON" | jq -r '.messageId // empty')
 
-    # Per-issue cursor; default to issue.createdAt so the first sync skips
-    # comments that pre-existed when this PR landed (otherwise we'd forward
-    # historical bot chatter as if it were new).
+    # Per-issue cursor. With none yet, an issue whose route was recorded at
+    # filing (state has the inbound zohoMessageId — every filing since issue
+    # #658) starts from issue.createdAt: everything posted after filing is news
+    # to the customer. Any other issue only became routable after the fact
+    # (the issue-footer fallback, a linked customer reply recording a thread,
+    # or a state file rebuilt from scratch), so its comment history was never
+    # meant for this route: bootstrap the cursor to now and forward only what
+    # comes next, instead of emailing the customer months of backlog.
     CURSOR=""
+    FILED_MESSAGE_ID=""
     if [[ -f "$STATE_FILE" ]]; then
       CURSOR=$(jq -r --arg n "$ISSUE_NUMBER" '.issues[$n].lastGithubCommentSyncAt // empty' "$STATE_FILE" 2>/dev/null || echo "")
+      FILED_MESSAGE_ID=$(jq -r --arg n "$ISSUE_NUMBER" '.issues[$n].zohoMessageId // empty' "$STATE_FILE" 2>/dev/null || echo "")
     fi
-    if [[ -z "$CURSOR" ]]; then
+    if [[ -z "$CURSOR" && -n "$FILED_MESSAGE_ID" ]]; then
       CURSOR=$(echo "$ISSUE_ENTRY" | jq -r '.createdAt')
+    elif [[ -z "$CURSOR" ]]; then
+      BOOTSTRAP_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      if node "$SCRIPT_DIR/lib/state-cli.mjs" set-issue-cursor "$ISSUE_NUMBER" "$BOOTSTRAP_AT" \
+          --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+        log "Comment-sync: issue #$ISSUE_NUMBER is routable but has no cursor; forwarding comments from $BOOTSTRAP_AT on (earlier ones are not sent)"
+      else
+        log "WARNING: set-issue-cursor (bootstrap) failed for issue #$ISSUE_NUMBER"
+      fi
+      continue
     fi
 
     if ! NEW_COMMENTS=$(node "$SCRIPT_DIR/lib/github-sync.mjs" list-new-comments "$ISSUE_NUMBER" \
@@ -374,17 +404,17 @@ if [[ "$COMMENT_SYNC" -eq 1 ]]; then
     if [[ "$NEW_COUNT" -eq 0 ]]; then
       continue
     fi
-    log "Issue #$ISSUE_NUMBER: $NEW_COUNT new comment(s) since $CURSOR (thread=$THREAD_ID)"
+    log "Issue #$ISSUE_NUMBER: $NEW_COUNT new comment(s) since $CURSOR (thread=${THREAD_ID:-<none>}, message=${ROUTE_MESSAGE_ID:-<none>})"
 
     BUILD_INPUT=$(jq -n \
       --argjson issue "$ISSUE_ENTRY" \
       --argjson comments "$NEW_COMMENTS" \
-      --arg threadId "$THREAD_ID" \
+      --argjson route "$ROUTE_JSON" \
       '{
          kind: "github_comment_batch",
          issue: { number: $issue.number, title: $issue.title, state: $issue.state },
          comments: $comments,
-         zohoThreadId: $threadId
+         zohoRoute: $route
        }')
     if ! BUNDLE=$(echo "$BUILD_INPUT" | node "$SCRIPT_DIR/lib/build-bundle.mjs" 2>>"$LOG_FILE"); then
       log "ERROR: build-bundle (github_comment_batch) failed for issue #$ISSUE_NUMBER"
@@ -438,6 +468,12 @@ if [[ "$COMMENT_SYNC" -eq 1 ]]; then
     fi
   done
 
+  if [[ -n "$UNROUTED_ISSUES" ]]; then
+    UNROUTED_LINE="Comment-sync: no Zoho route (no thread id, no message id + reporter email) for issue(s)$UNROUTED_ISSUES; skipping"
+    if ! grep -qF -- "$UNROUTED_LINE" "$LOG_FILE" 2>/dev/null; then
+      log "$UNROUTED_LINE"
+    fi
+  fi
   log "=== support-agent comment-sync completed in $(( $(date +%s) - START_TIME ))s ==="
   exit 0
 fi
@@ -510,21 +546,34 @@ if [[ "$STATE_SYNC" -eq 1 ]]; then
 
     log "State-sync: issue #$ISSUE_NUMBER transitioned ${OLD_STATE}/${OLD_REASON:-null} → ${NEW_STATE}/${NEW_REASON:-null}"
 
-    if ! INFO=$(node "$SCRIPT_DIR/lib/github-sync.mjs" state-change-info "$ISSUE_NUMBER" \
-        --bot-user "$SUPPORT_BOT_GH_USER" 2>>"$LOG_FILE"); then
-      log "WARNING: state-change-info failed for issue #$ISSUE_NUMBER"
+    # Same route resolution as --comment-sync (state first, footer fallback;
+    # a first-contact filing routes by its inbound message id). Resolve it
+    # before state-change-info so an unroutable issue costs no further gh
+    # calls. A resolver failure leaves lastKnownState alone, so the next tick
+    # retries the transition.
+    ISSUE_BODY=$(echo "$ISSUE_ENTRY" | jq -r '.body // ""')
+    if ! ROUTE_JSON=$(printf '%s' "$ISSUE_BODY" | node "$SCRIPT_DIR/lib/github-sync.mjs" issue-route \
+        "$ISSUE_NUMBER" --body-file - --state-file "$STATE_FILE" 2>>"$LOG_FILE"); then
+      log "WARNING: github-sync issue-route failed for issue #$ISSUE_NUMBER; retrying next tick"
       continue
     fi
-    THREAD_ID=$(echo "$INFO" | jq -r '.zoho_thread_id // empty')
-    if [[ -z "$THREAD_ID" ]]; then
-      # No linked Zoho thread — nothing to email. Still advance lastKnownState
-      # so we don't re-detect the same transition every 5 minutes.
-      log "State-sync: issue #$ISSUE_NUMBER has no zoho-thread-id footer; recording new state without notifying"
+    if [[ "$(echo "$ROUTE_JSON" | jq -r '.routable')" != "true" ]]; then
+      # Nothing can reach the customer. Decide here, deterministically, rather
+      # than handing Claude a bundle it cannot route: advance lastKnownState
+      # so the transition isn't re-detected every tick, and say so loudly —
+      # this customer will not hear about the change.
+      log "WARNING: State-sync: issue #$ISSUE_NUMBER has no Zoho route (no thread id, no message id + reporter email); recording ${NEW_STATE}/${NEW_REASON:-null} without notifying the customer"
       if ! node "$SCRIPT_DIR/lib/state-cli.mjs" set-issue-state "$ISSUE_NUMBER" \
           "$NEW_STATE" "$NEW_REASON" \
           --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
         log "WARNING: set-issue-state failed for issue #$ISSUE_NUMBER"
       fi
+      continue
+    fi
+
+    if ! INFO=$(printf '%s' "$ISSUE_BODY" | node "$SCRIPT_DIR/lib/github-sync.mjs" state-change-info \
+        "$ISSUE_NUMBER" --bot-user "$SUPPORT_BOT_GH_USER" --body-file - 2>>"$LOG_FILE"); then
+      log "WARNING: state-change-info failed for issue #$ISSUE_NUMBER"
       continue
     fi
 
@@ -535,6 +584,7 @@ if [[ "$STATE_SYNC" -eq 1 ]]; then
       --arg newState "$NEW_STATE" \
       --arg newReason "$NEW_REASON" \
       --argjson info "$INFO" \
+      --argjson route "$ROUTE_JSON" \
       '{
          kind: "github_state_change",
          issue: { number: $issue.number, title: $issue.title },
@@ -542,7 +592,7 @@ if [[ "$STATE_SYNC" -eq 1 ]]; then
          newState: { state: $newState, state_reason: (if $newReason == "" then null else $newReason end) },
          lastComment: $info.lastComment,
          platforms: $info.platforms,
-         zohoThreadId: $info.zoho_thread_id
+         zohoRoute: $route
        }')
     if ! BUNDLE=$(echo "$BUILD_INPUT" | node "$SCRIPT_DIR/lib/build-bundle.mjs" 2>>"$LOG_FILE"); then
       log "ERROR: build-bundle (github_state_change) failed for issue #$ISSUE_NUMBER"
@@ -639,6 +689,9 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
   MSG_ID=$(echo "$ENTRY" | jq -r '.messageId // .id // empty')
   FOLDER_ID=$(echo "$ENTRY" | jq -r '.folderId // empty')
   SENDER=$(echo "$ENTRY" | jq -r '.fromAddress // .sender // empty')
+  # Raw Zoho /messages/view entries carry the subject; record-filed-issue
+  # persists it so message-id-routed progress emails reuse it as "Re: …".
+  SUBJECT=$(echo "$ENTRY" | jq -r '.subject // empty')
   TRACK_ID="${THREAD_ID:-$MSG_ID}"
   if [[ -z "$TRACK_ID" ]]; then
     log "WARNING: pending entry $THREAD_INDEX has no threadId/messageId — skipping"
@@ -765,6 +818,26 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
         2>>"$LOG_FILE"); then
       log "WARNING: find-linked-issue failed for $TRACK_ID; treating as unlinked"
       LINKED_ISSUE=""
+    fi
+  fi
+
+  # Upgrade a first-contact issue to thread routing. An issue filed from a
+  # customer's first email has only the inbound message id as its route. Once
+  # the customer replies, that reply lands in a real Zoho thread that carries
+  # our Drafto/Support/Issue/<n> label. Record that thread so later progress
+  # emails go to the latest message in the conversation. The thread id comes
+  # from Zoho and the issue number from our own label, so neither passes
+  # through the LLM. Live --auto-classify only: --dry-run never mutates state.
+  if [[ "$AUTO_CLASSIFY" -eq 1 && -n "$THREAD_ID" && "$LINKED_ISSUE" =~ ^[0-9]+$ ]]; then
+    KNOWN_THREAD_ID=$(node "$SCRIPT_DIR/lib/state-cli.mjs" get-issue-zoho-thread-id "$LINKED_ISSUE" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "")
+    if [[ -z "$KNOWN_THREAD_ID" ]]; then
+      if node "$SCRIPT_DIR/lib/state-cli.mjs" set-issue-field "$LINKED_ISSUE" zohoThreadId "$THREAD_ID" \
+          --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+        log "Issue #$LINKED_ISSUE: recorded Zoho thread $THREAD_ID from a linked customer reply; progress emails now route by thread"
+      else
+        log "WARNING: set-issue-field zohoThreadId failed for issue #$LINKED_ISSUE (thread $THREAD_ID)"
+      fi
     fi
   fi
 
@@ -991,37 +1064,31 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
       # customer in-thread, applied the Drafto/Support/Issue/<n> label, and
       # moved the thread to Drafto/Support/Resolved.
       #
-      # Persist the inbound sender against the issue number (ADR-0025) and —
-      # when Zoho gave us a real threadId on the inbound side — the linkage
-      # too (issue #422). Both are extracted from the Zoho bundle BEFORE
-      # invoking Claude, so they are the authoritative source. The empty-arg
-      # form (third positional `""`) is the singleton path: state-cli persists
-      # the email only, and the post-filing footer re-read below mirrors the
-      # ackThreadId Claude has just written.
+      # Persist the inbound sender against the issue number (ADR-0025) and
+      # the Zoho route progress emails will use: the threadId when Zoho gave
+      # the inbound message one (issue #422), plus always the inbound
+      # messageId + subject (issue #658). All of it comes from the Zoho
+      # list-pending entry, captured BEFORE invoking Claude, so it is the
+      # authoritative source — nothing here is read back from the LLM-written
+      # issue footer. A customer's first email has no threadId (Zoho assigns
+      # none, and the acknowledgement reply does not return one), so the
+      # messageId is that issue's only route: --comment-sync / --state-sync
+      # reply to it, exactly as the acknowledgement did.
       ISSUE_NUM=$(echo "$SUMMARY_LINE" | sed -E 's/.*issue=([^ ]+).*/\1/')
       if [[ -n "$ISSUE_NUM" && "$ISSUE_NUM" != "-" && -n "$SENDER" ]]; then
-        if ! node "$SCRIPT_DIR/lib/state-cli.mjs" record-filed-issue "$ISSUE_NUM" "$SENDER" "${THREAD_ID:-}" \
+        RECORD_ARGS=(record-filed-issue "$ISSUE_NUM" "$SENDER" "${THREAD_ID:-}")
+        if [[ -n "$MSG_ID" ]]; then
+          RECORD_ARGS+=(--message-id "$MSG_ID")
+        fi
+        if [[ -n "$SUBJECT" ]]; then
+          RECORD_ARGS+=(--subject "$SUBJECT")
+        fi
+        if ! node "$SCRIPT_DIR/lib/state-cli.mjs" "${RECORD_ARGS[@]}" \
             --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
           log "WARNING: state-cli record-filed-issue failed for issue $ISSUE_NUM ($TRACK_ID)"
         fi
-        # Singleton path (issue #422): the inbound message had no Zoho
-        # threadId, so record-filed-issue couldn't persist the linkage. Claude
-        # has now sent the auto-reply and patched the GitHub issue body
-        # footer with the ackThreadId. Re-read the footer once and mirror the
-        # value into state.json so --comment-sync can route progress updates
-        # back to the customer's thread. Costs one extra `gh issue view` per
-        # singleton filed-issue action (~1/day typical).
-        if [[ -z "${THREAD_ID:-}" ]]; then
-          ACK_TID=$(gh issue view "$ISSUE_NUM" --json body --jq .body 2>>"$LOG_FILE" \
-            | node "$SCRIPT_DIR/lib/parse-issue-footer.mjs" --field zoho-thread-id 2>>"$LOG_FILE" || echo "")
-          if [[ -n "$ACK_TID" && "$ACK_TID" != "null" ]]; then
-            if ! node "$SCRIPT_DIR/lib/state-cli.mjs" set-issue-field "$ISSUE_NUM" zohoThreadId "$ACK_TID" \
-                --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
-              log "WARNING: set-issue-field zohoThreadId failed for issue $ISSUE_NUM"
-            fi
-          else
-            log "WARNING: singleton issue $ISSUE_NUM has no zoho-thread-id in footer after filing — comment-sync will skip until an operator runs set-issue-field"
-          fi
+        if [[ -z "${THREAD_ID:-}" && -z "$MSG_ID" ]]; then
+          log "WARNING: issue $ISSUE_NUM was filed with neither a Zoho thread id nor a message id — progress emails cannot reach the customer until an operator runs state-cli set-issue-field"
         fi
       else
         log "WARNING: filed-issue but cannot record sender (issue=$ISSUE_NUM sender=${SENDER:-<empty>})"
@@ -1035,9 +1102,9 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
       # Phase F+: Claude detected a customer reply on a thread linked to a
       # filed issue (Drafto/Support/Issue/<n> label found on some message in
       # the thread), commented on the GH issue with the customer's text, and
-      # labelled the new message so list-pending stops surfacing it. No
-      # bash-side state mutations — the cursor + footer linkage are
-      # sufficient on their own.
+      # labelled the new message so list-pending stops surfacing it. The only
+      # bash-side state mutation — recording this thread as the issue's
+      # route when it had none — already ran before Claude was invoked.
       ;;
     *)
       log "WARNING: unrecognised action '$ACTION' from claude for $TRACK_ID"

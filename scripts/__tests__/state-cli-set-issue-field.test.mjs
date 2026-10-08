@@ -141,3 +141,50 @@ describe("state-cli set-issue-field (issue #422)", () => {
     });
   });
 });
+
+describe("state-cli set-issue-field — message-id routing fields (issue #658)", () => {
+  it("accepts zohoMessageId and zohoSubject without touching threads", async () => {
+    await withTempState(async (file) => {
+      const a = run(["set-issue-field", "610", "zohoMessageId", " 1791172614617005600 "], {
+        stateFile: file,
+      });
+      assert.equal(a.status, 0, a.stderr);
+      const b = run(["set-issue-field", "610", "zohoSubject", "Sync broken on iPad"], {
+        stateFile: file,
+      });
+      assert.equal(b.status, 0, b.stderr);
+      const raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["610"].zohoMessageId, "1791172614617005600");
+      assert.equal(raw.issues["610"].zohoSubject, "Sync broken on iPad");
+      assert.equal(Object.keys(raw.threads ?? {}).length, 0);
+    });
+  });
+
+  for (const literal of ["null", "NULL", " Null ", "undefined", "Undefined"]) {
+    it(`rejects the literal ${JSON.stringify(literal)} for every allowlisted field`, async () => {
+      await withTempState(async (file) => {
+        for (const field of [
+          "zohoThreadId",
+          "zohoMessageId",
+          "zohoSubject",
+          "reporterEmail",
+          "lastGithubCommentSyncAt",
+        ]) {
+          const r = run(["set-issue-field", "611", field, literal], { stateFile: file });
+          assert.notEqual(r.status, 0, `${field}=${literal} should be refused`);
+          assert.match(r.stderr, /refusing literal/i);
+        }
+        // Nothing was written — no issue entry, no "null" thread key.
+        const exists = await fs
+          .access(file)
+          .then(() => true)
+          .catch(() => false);
+        if (exists) {
+          const raw = JSON.parse(await fs.readFile(file, "utf8"));
+          assert.equal(raw.issues?.["611"], undefined);
+          assert.equal(raw.threads?.null, undefined);
+        }
+      });
+    });
+  }
+});

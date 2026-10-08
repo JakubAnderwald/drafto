@@ -65,6 +65,22 @@ describe("state-cli get-issue-zoho-thread-id (issue #422)", () => {
     });
   });
 
+  it("prints a stored literal 'null' / 'undefined' as empty (legacy set-issue-field writes)", async () => {
+    await withTempState(async (file) => {
+      await fs.writeFile(
+        file,
+        JSON.stringify({
+          issues: { 702: { zohoThreadId: "null" }, 703: { zohoThreadId: "Undefined" } },
+        }),
+      );
+      for (const n of ["702", "703"]) {
+        const r = run(["get-issue-zoho-thread-id", n], { stateFile: file });
+        assert.equal(r.status, 0, r.stderr);
+        assert.equal(r.stdout, "");
+      }
+    });
+  });
+
   it("rejects missing issue number", async () => {
     await withTempState(async (file) => {
       const r = run(["get-issue-zoho-thread-id"], { stateFile: file });
