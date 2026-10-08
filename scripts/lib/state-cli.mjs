@@ -71,7 +71,12 @@
 //                                    zohoThreadId also mirror onto
 //                                    state.threads[<value>] (linkedIssue +
 //                                    fromAddress when the issue has a
-//                                    reporterEmail). See issue #422.
+//                                    reporterEmail). See issue #422. A write
+//                                    that makes an issue routable for the first
+//                                    time also sets lastGithubCommentSyncAt =
+//                                    now (when unset), so comment-sync never
+//                                    emails comments from before the route
+//                                    existed (issue #658).
 //
 // Dark-factory subcommands (all prefixed with `factory:`). These mutate
 // logs/factory-state.json (separate file from support-state.json) via
@@ -209,6 +214,7 @@ import { isMainModule } from "./is-main.mjs";
 // A bash caller interpolating an unset value can hand us "", "null" or
 // "undefined"; none is a real Zoho id or subject, so they count as absent.
 import { isAbsentValue, normaliseRouteValue } from "./route-value.mjs";
+import { resolveIssueRoute } from "./github-sync.mjs";
 
 function isPidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -487,7 +493,27 @@ async function main(argv) {
       const state = await loadState(file);
       state.issues ??= {};
       state.issues[issueNumber] ??= {};
-      state.issues[issueNumber][field] = normalised;
+      const issue = state.issues[issueNumber];
+      // Same routability rule the sync modes use (state only — no footer here).
+      const wasRoutable = resolveIssueRoute({ stateEntry: issue }).routable;
+      issue[field] = normalised;
+      // A route that appears after filing (an operator backfill, or the
+      // runner recording a linked customer reply's thread) must not make
+      // comment-sync email the issue's whole comment history: with no cursor
+      // yet, comment-sync would start from issue.createdAt. Start it at now;
+      // forwarding older comments stays a deliberate opt-in (set
+      // lastGithubCommentSyncAt to an earlier time afterwards).
+      // record-filed-issue does not do this: a filing-time route rightly
+      // starts from createdAt.
+      let cursorBootstrappedAt = null;
+      if (
+        !wasRoutable &&
+        resolveIssueRoute({ stateEntry: issue }).routable &&
+        isAbsentValue(issue.lastGithubCommentSyncAt)
+      ) {
+        issue.lastGithubCommentSyncAt = now;
+        cursorBootstrappedAt = now;
+      }
       if (field === "zohoThreadId") {
         state.threads ??= {};
         state.threads[normalised] ??= {};
@@ -506,7 +532,7 @@ async function main(argv) {
         }
       }
       await saveState(state, file);
-      return { ok: true, issueNumber, field, value: normalised };
+      return { ok: true, issueNumber, field, value: normalised, cursorBootstrappedAt };
     }
     case "factory:pause": {
       const reason = positional[0] ?? null;
