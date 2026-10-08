@@ -272,7 +272,8 @@ describe("Phase-D beta dispatch (gap 1)", () => {
     // a fossil-derived build root instead.
     assert.match(releaseBlock, /--repo-root "\$REPO_ROOT" \$DESKTOP_ROOT_FLAG/);
     assert.match(releaseBlock, /DESKTOP_ROOT_FLAG="--desktop-root \$DESKTOP_ROOT_READY"/);
-    assert.match(script, /^BETA_DESKTOP_ROOT="\$\{DRAFTO_DESKTOP_BUILD_ROOT:-/m);
+    const lib = readFileSync(resolve(HERE, "..", "lib", "beta-build-root.sh"), "utf8");
+    assert.match(lib, /^\s*BETA_DESKTOP_ROOT="\$\{DRAFTO_DESKTOP_BUILD_ROOT:-/m);
   });
 
   it("prepares the desktop build root at the merged commit, or skips the lane", () => {

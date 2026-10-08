@@ -18,44 +18,56 @@ import { fileURLToPath } from "node:url";
 
 const scriptPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "factory-agent.sh");
 const script = readFileSync(scriptPath, "utf8");
+// The seed / install helpers moved to the shared build-root lib (sourced by
+// both factory-agent.sh and nightly-support.sh); their invariants are pinned
+// there now. The call sites and knobs stay in factory-agent.sh.
+const libPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "lib", "beta-build-root.sh");
+const lib = readFileSync(libPath, "utf8");
 
 describe("factory-agent install: clonefile seed + bounded reconcile (#451)", () => {
   it("defines the seed / install / free-disk helpers", () => {
-    assert.match(script, /^seed_worktree_node_modules\(\) \{/m, "seed helper must exist");
-    assert.match(script, /^run_pnpm_install\(\) \{/m, "install helper must exist");
+    assert.match(lib, /^seed_worktree_node_modules\(\) \{/m, "seed helper must exist");
+    assert.match(lib, /^run_pnpm_install\(\) \{/m, "install helper must exist");
     assert.match(script, /^free_disk_gb\(\) \{/m, "free-disk helper must exist");
   });
 
+  it("sources the shared lib instead of defining the helpers itself", () => {
+    assert.match(script, /^source "\$SCRIPT_DIR\/lib\/beta-build-root\.sh"$/m);
+    for (const fn of ["seed_worktree_node_modules", "run_pnpm_install", "copy_worktree_env"]) {
+      assert.doesNotMatch(
+        script,
+        new RegExp(`^${fn}\\(\\) \\{`, "m"),
+        `${fn} must live only in the lib`,
+      );
+    }
+  });
+
   it("seeds via APFS clonefile from the pnpm workspace roots only", () => {
-    assert.match(script, /cp -c -R "\$src" "\$wt\/\$rel"/, "must clone with `cp -c -R`");
+    assert.match(lib, /cp -c -R "\$src" "\$wt\/\$rel"/, "must clone with `cp -c -R`");
     // root + apps/* + packages/* — never the factory's own worktrees/ checkouts.
     // The source root is a parameter (defaulting to $REPO_ROOT) because the
     // desktop beta build root must seed from the FOSSIL checkout instead.
     assert.match(
-      script,
+      lib,
       /"\$src_root"\/node_modules "\$src_root"\/apps\/\*\/node_modules "\$src_root"\/packages\/\*\/node_modules/,
       "must enumerate root + apps/* + packages/* node_modules",
     );
     assert.match(
-      script,
+      lib,
       /local src_root="\$\{2:-\$REPO_ROOT\}"/,
       "the source root must default to $REPO_ROOT so existing callers are unchanged",
     );
     assert.match(
-      script,
+      lib,
       /\[\[ -e "\$wt\/\$rel" \]\] && continue/,
       "must skip already-present trees (idempotent / reused worktree)",
     );
   });
 
   it("bounds every install attempt with run-with-timeout.mjs and tries offline first", () => {
+    assert.match(lib, /run-with-timeout\.mjs" "\$INSTALL_TIMEOUT_SEC"/, "install must be capped");
     assert.match(
-      script,
-      /run-with-timeout\.mjs" "\$INSTALL_TIMEOUT_SEC"/,
-      "install must be capped",
-    );
-    assert.match(
-      script,
+      lib,
       /pnpm install --frozen-lockfile --offline --prefer-offline/,
       "first attempt must be a fast offline reconcile",
     );
@@ -72,7 +84,7 @@ describe("factory-agent install: clonefile seed + bounded reconcile (#451)", () 
       "implement path must not call pnpm install directly",
     );
     assert.doesNotMatch(
-      script,
+      lib,
       /cd "\$wt" && pnpm install/,
       "run_pnpm_install must wrap pnpm with run-with-timeout, not call it directly",
     );
@@ -114,11 +126,11 @@ describe("seed_worktree_node_modules (real helper, macOS clonefile)", () => {
   // cp -c (clonefile) is macOS-only; the factory only runs on the Mac mini.
   const darwinOnly = process.platform !== "darwin" ? "clonefile (cp -c) is macOS-only" : false;
 
-  // Extract the real function body from the script and run it in a harness with
+  // Extract the real function body from the lib and run it in a harness with
   // REPO_ROOT / LOG_FILE / log() stubbed, against throwaway temp dirs.
   function runSeed(repoRoot, worktree) {
-    const fn = script.match(/seed_worktree_node_modules\(\) \{[\s\S]*?\n\}/);
-    assert.ok(fn, "could not extract seed_worktree_node_modules from the script");
+    const fn = lib.match(/seed_worktree_node_modules\(\) \{[\s\S]*?\n\}/);
+    assert.ok(fn, "could not extract seed_worktree_node_modules from the lib");
     const harness = [
       "set -euo pipefail",
       `REPO_ROOT=${JSON.stringify(repoRoot)}`,
