@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, mkdtempSync, writeFileSync, rmSync, utimesSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync, rmSync, utimesSync, existsSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -44,6 +44,15 @@ function fnBody(name) {
   const m = script.match(re);
   assert.ok(m, `could not find ${name}()`);
   return m[0];
+}
+
+// The PATH launchd gives the factory: no /usr/sbin or /sbin. Filtered rather
+// than replaced, so node, jq, ps and awk still resolve.
+function pathWithoutSbin() {
+  return (process.env.PATH ?? "")
+    .split(":")
+    .filter((p) => !["/usr/sbin", "/sbin"].includes(p.replace(/\/+$/, "")))
+    .join(":");
 }
 
 describe("factory-agent.sh syntax", () => {
@@ -602,6 +611,8 @@ describe("intest_check_lane_outcomes (extracted, real bash)", () => {
     markers = [],
     holdLog = false,
     laneStartedAgoMin = null,
+    path = process.env.PATH,
+    env = {},
   }) => {
     const dir = mkdtempSync(join(tmpdir(), "drafto-outcome-"));
     const stateFile = join(dir, "state.json");
@@ -690,7 +701,11 @@ if [[ -n "$HELD_PID" ]]; then
 fi
 cat "$STATE_FILE"
 `;
-    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+    // An operator's exported FACTORY_LSOF_BIN must not leak into every case; only
+    // a test that sets it on purpose gets one.
+    const childEnv = { ...process.env, PATH: path, ...env };
+    if (!("FACTORY_LSOF_BIN" in env)) delete childEnv.FACTORY_LSOF_BIN;
+    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8", env: childEnv });
     // gh output is redirected into $LOG_FILE, so comment assertions must read it
     // there — pointing LOG_FILE at /dev/null (as this harness used to) silently
     // discards every comment the function makes.
@@ -797,6 +812,9 @@ cat "$STATE_FILE"
     const r = run({ exitContent: undefined, logAgeMin: 500, dryRun: 0 });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /never recorded an exit code/);
+    // lsof runs and finds nothing holding the log, the usual case for a lane
+    // that already died. That is not worth a warning.
+    assert.ok(!/WARNING/.test(r.stdout + r.stderr), `unexpected warning: ${r.stdout}${r.stderr}`);
     const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
     // state-cli normalises an empty value to null.
     assert.ok(
@@ -821,6 +839,101 @@ cat "$STATE_FILE"
     );
     const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
     assert.ok(!state.issues["463"].intestBetaLanes, "a hung lane must be re-armed");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("kills a hung lane under the factory's launchd PATH, which has no /usr/sbin or /sbin", () => {
+    // #659: macOS keeps lsof only in /usr/sbin and the PATH the factory plist
+    // sets leaves sbin out, so a bare `lsof` was "command not found", silenced, and
+    // the hung lane survived its re-arm. On Linux CI lsof is in /usr/bin and
+    // this passes either way; the structural test below covers that.
+    const r = run({
+      exitContent: undefined,
+      laneStartedAgoMin: 300,
+      holdLog: true,
+      dryRun: 0,
+      path: pathWithoutSbin(),
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /still running 240\+ min after dispatch/);
+    assert.ok(!/WARNING/.test(r.stdout + r.stderr), `unexpected warning: ${r.stdout}${r.stderr}`);
+    assert.match(r.stdout, /HELD_DEAD/, "lsof must be found without sbin on PATH");
+    assert.match(r.stdout, /KID_DEAD/);
+    const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
+    assert.ok(!state.issues["463"].intestBetaLanes, "a hung lane must be re-armed");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("uses FACTORY_LSOF_BIN when it is set", () => {
+    const realLsof = ["/usr/sbin/lsof", "/usr/bin/lsof", "/sbin/lsof"].find((p) => existsSync(p));
+    assert.ok(realLsof, "this test needs lsof installed");
+    // A wrapper that records the call, so the test proves the knob was used
+    // rather than the PATH / /usr/sbin lookup.
+    const binDir = mkdtempSync(join(tmpdir(), "drafto-lsof-bin-"));
+    const wrapper = join(binDir, "lsof-wrapper");
+    const calls = join(binDir, "calls");
+    writeFileSync(wrapper, `#!/bin/sh\necho called >>"${calls}"\nexec "${realLsof}" "$@"\n`, {
+      mode: 0o755,
+    });
+    const r = run({
+      exitContent: undefined,
+      laneStartedAgoMin: 300,
+      holdLog: true,
+      dryRun: 0,
+      path: pathWithoutSbin(),
+      env: { FACTORY_LSOF_BIN: wrapper },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(existsSync(calls), "the FACTORY_LSOF_BIN binary must be the one run");
+    assert.match(r.stdout, /HELD_DEAD/);
+    assert.match(r.stdout, /KID_DEAD/);
+    rmSync(r.dir, { recursive: true, force: true });
+    rmSync(binDir, { recursive: true, force: true });
+  });
+
+  it("warns, kills nothing and still re-arms when no lsof can be found", () => {
+    // An explicit FACTORY_LSOF_BIN has no fallback, so pointing it at nothing
+    // is the one portable way to model a host without lsof. The 2>/dev/null
+    // used to hide this failure entirely.
+    const missing = "/nonexistent/drafto-test/lsof";
+    assert.ok(!existsSync(missing));
+    const r = run({
+      exitContent: undefined,
+      laneStartedAgoMin: 300,
+      holdLog: true,
+      dryRun: 0,
+      env: { FACTORY_LSOF_BIN: missing },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(
+      r.stdout,
+      /WARNING: no usable lsof \(FACTORY_LSOF_BIN=\/nonexistent\/drafto-test\/lsof\)/,
+    );
+    assert.match(
+      r.stdout,
+      /WARNING: .*beta-lane-mobile-463-abc123-a1\.log/,
+      "the warning must name the lane's log",
+    );
+    assert.match(r.stdout, /HELD_ALIVE/, "no fallback to PATH or /usr/sbin when the knob is set");
+    // The callers' flow is unchanged: the lane is still reported and re-armed.
+    assert.match(r.stdout, /still running 240\+ min after dispatch/);
+    const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
+    assert.ok(!state.issues["463"].intestBetaLanes, "the lane must still be re-armed");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("treats a FACTORY_LSOF_BIN that is a directory as no lsof", () => {
+    // A directory passes `-x`; running it would fail inside the silenced call.
+    const r = run({
+      exitContent: undefined,
+      laneStartedAgoMin: 300,
+      holdLog: true,
+      dryRun: 0,
+      env: { FACTORY_LSOF_BIN: tmpdir() },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /WARNING: no usable lsof/);
+    assert.match(r.stdout, /HELD_ALIVE/);
     rmSync(r.dir, { recursive: true, force: true });
   });
 
@@ -1022,6 +1135,60 @@ describe("intest_check_lane_outcomes — wiring and reporting", () => {
   it("writes nothing under --dry-run", () => {
     assert.match(body, /DRY_RUN" -eq 0 \]\][\s\S]{0,20}issue_has_marker/);
     assert.match(body, /changed" -eq 1 && "\$DRY_RUN" -eq 0/);
+  });
+});
+
+describe("kill_lane_holding_log — lsof resolution", () => {
+  // Every `lsof` word that is not the /usr/sbin/lsof fallback or the
+  // `command -v lsof` lookup. Comments and plain log messages are prose, not
+  // calls; a log line with a command substitution is still checked.
+  const bareLsofCalls = (fn) => {
+    const code = fn
+      .split("\n")
+      .filter((l) => !/^\s*#/.test(l) && !/^\s*log "(?:[^$`]|\$(?!\())*"\s*$/.test(l))
+      .map((l) => l.replace(/\s#\s.*$/, ""))
+      .join("\n");
+    return [...code.matchAll(/(?<![\w/.])lsof(?![\w-])/g)]
+      .filter((m) => !/command -v $/.test(code.slice(0, m.index)))
+      .map((m) =>
+        code
+          .slice(code.lastIndexOf("\n", m.index) + 1)
+          .split("\n")[0]
+          .trim(),
+      );
+  };
+
+  it("flags the pre-#659 bare call, so the check below can fail", () => {
+    const before = `kill_lane_holding_log() {
+  for pid in $(lsof -t -- "$log_path" 2>/dev/null || true); do
+}`;
+    assert.equal(bareLsofCalls(before).length, 1);
+    // Other bare forms: a bare-name default, and a call inside a log message.
+    assert.equal(bareLsofCalls('  lsof_bin="${FACTORY_LSOF_BIN:-lsof}"').length, 1);
+    assert.equal(bareLsofCalls('  log "holders: $(lsof -t -- "$log_path")"').length, 1);
+  });
+
+  it("never calls lsof by bare name", () => {
+    // The factory's launchd PATH has no /usr/sbin, the only place macOS keeps
+    // lsof. On Linux CI lsof is in /usr/bin, so the PATH-filtered run above
+    // cannot catch a regression there; this does.
+    const body = fnBody("kill_lane_holding_log");
+    assert.deepEqual(bareLsofCalls(body), []);
+    assert.match(body, /\$\{FACTORY_LSOF_BIN:-\}/, "the knob must be read safely under set -u");
+    assert.match(body, /command -v lsof/);
+    assert.match(body, /lsof_bin=\/usr\/sbin\/lsof/);
+    assert.match(body, /\$\("\$lsof_bin" -t -- "\$log_path"/);
+  });
+
+  it("warns, rather than hides, a missing lsof and still returns 0", () => {
+    const body = fnBody("kill_lane_holding_log");
+    assert.match(body, /log "WARNING: no usable lsof[^"]*\$log_path"\s*\n\s*return 0/);
+  });
+});
+
+describe("factory-agent.sh PATH", () => {
+  it("appends sbin, so it adds commands without shadowing any", () => {
+    assert.match(script, /^export PATH="\$HOME\/\.local\/bin:\$PATH:\/usr\/sbin:\/sbin"$/m);
   });
 });
 

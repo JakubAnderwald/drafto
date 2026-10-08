@@ -58,7 +58,12 @@
 set -euo pipefail
 
 # ── PATH / locale (launchd provides minimal env) ────────────────────────────
-export PATH="$HOME/.local/bin:$PATH"
+# The factory plist sets its own PATH (for the rbenv shims), replacing launchd's
+# default and leaving out sbin, where macOS keeps some tools (lsof is only in
+# /usr/sbin). Appended, so it can only add commands, never shadow one already on
+# PATH. kill_lane_holding_log resolves lsof itself as well, so it does not
+# depend on this.
+export PATH="$HOME/.local/bin:$PATH:/usr/sbin:/sbin"
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 
@@ -1698,9 +1703,33 @@ fi
 # lane holds open, so it can never reach another card's lane. The per-root
 # .lock pid could: it belongs to whoever claimed the root last. TERM first,
 # then KILL whatever ignored it.
+#
+# lsof is resolved here, never called by bare name. On macOS it lives only in
+# /usr/sbin, which the factory plist's PATH leaves out, so a bare `lsof` was
+# "command not found", hidden by 2>/dev/null, and no hung lane was ever killed
+# (#659).
+# FACTORY_LSOF_BIN, when set, is the only candidate (like FACTORY_CR_CLI_BIN);
+# otherwise PATH, then /usr/sbin/lsof. No usable lsof is logged as a WARNING
+# and the function still returns 0, so the callers re-arm as before. The knob
+# is read here rather than defaulted at the top level so the tests, which
+# extract only this function, see it too.
 kill_lane_holding_log() {
-  local log_path="$1" pid pgid pgids=""
-  for pid in $(lsof -t -- "$log_path" 2>/dev/null || true); do
+  local log_path="$1" lsof_bin tried pid pgid pgids=""
+  if [[ -n "${FACTORY_LSOF_BIN:-}" ]]; then
+    lsof_bin="$FACTORY_LSOF_BIN"
+    tried="FACTORY_LSOF_BIN=$FACTORY_LSOF_BIN"
+  else
+    lsof_bin=$(command -v lsof 2>/dev/null || true)
+    [[ -f "$lsof_bin" && -x "$lsof_bin" ]] || lsof_bin=/usr/sbin/lsof
+    tried="PATH and /usr/sbin/lsof"
+  fi
+  if [[ ! -f "$lsof_bin" || ! -x "$lsof_bin" ]]; then
+    log "WARNING: no usable lsof ($tried); cannot kill whatever still holds $log_path"
+    return 0
+  fi
+  # lsof -t exits 1 when nothing holds the file, the usual case for a lane that
+  # already died, so that stays silent.
+  for pid in $("$lsof_bin" -t -- "$log_path" 2>/dev/null || true); do
     pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
     # Never signal group 0/1 or our own group: that would take down the factory.
     [[ "$pgid" =~ ^[0-9]+$ && "$pgid" -gt 1 && "$pgid" != "$(ps -o pgid= -p $$ | tr -d ' ')" ]] || continue

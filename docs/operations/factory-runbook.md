@@ -158,17 +158,18 @@ It is idempotent (an already-merged PR just finishes the Released transition + s
 
 A card in **In Test** needs a build a human can actually install. `--watch` therefore dispatches beta builds **from the PR head, before the merge**, for the native platforms the diff touched (ADR-0030). This is separate from the Phase-D post-merge lane above and has its own knobs — enabling pre-merge betas must not silently switch on post-merge auto-dispatch.
 
-| Var                           | Default                                 | Purpose                                                                                         |
-| ----------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `FACTORY_INTEST_BETA`         | `0`                                     | Master switch. `1` + Phase C/D dispatches the **mobile** lane (iOS TestFlight + Play internal). |
-| `FACTORY_INTEST_BETA_DESKTOP` | `0`                                     | Additionally dispatch the **macOS** lane. Only turn on after the fossil validation below.       |
-| `FACTORY_INTEST_TIMEOUT_SEC`  | `600`                                   | Wall-clock cap for the In Test scenario writer (read-only stage).                               |
-| `FACTORY_LANE_STALE_MIN`      | `120`                                   | A lane silent this long with no exit code is declared dead and retried.                         |
-| `FACTORY_LANE_MAX_MIN`        | `240`                                   | A lane still running this long after ITS dispatch is killed (whole process group) and retried.  |
-| `FACTORY_LANE_MAX_ATTEMPTS`   | `3`                                     | Retry budget per lane per commit; a new commit resets it.                                       |
-| `DRAFTO_BETA_MOBILE_ROOT`     | `/Users/jakub/code/drafto-beta-mobile`  | Dedicated mobile build root.                                                                    |
-| `DRAFTO_DESKTOP_BUILD_ROOT`   | `/Users/jakub/code/drafto-beta-desktop` | Dedicated macOS build root (clonefile replica of the fossil).                                   |
-| `DRAFTO_DESKTOP_FOSSIL_ROOT`  | `/Users/jakub/code/drafto`              | The fossil the desktop root is seeded **from**. Never built in.                                 |
+| Var                           | Default                                 | Purpose                                                                                                                                           |
+| ----------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FACTORY_INTEST_BETA`         | `0`                                     | Master switch. `1` + Phase C/D dispatches the **mobile** lane (iOS TestFlight + Play internal).                                                   |
+| `FACTORY_INTEST_BETA_DESKTOP` | `0`                                     | Additionally dispatch the **macOS** lane. Only turn on after the fossil validation below.                                                         |
+| `FACTORY_INTEST_TIMEOUT_SEC`  | `600`                                   | Wall-clock cap for the In Test scenario writer (read-only stage).                                                                                 |
+| `FACTORY_LANE_STALE_MIN`      | `120`                                   | A lane silent this long with no exit code is declared dead and retried.                                                                           |
+| `FACTORY_LANE_MAX_MIN`        | `240`                                   | A lane still running this long after ITS dispatch is killed (whole process group) and retried.                                                    |
+| `FACTORY_LSOF_BIN`            | unset                                   | Path to `lsof`, used to kill hung lanes; no fallback when set. Unset: PATH, then `/usr/sbin/lsof`. None found: WARNING in the agent log, no kill. |
+| `FACTORY_LANE_MAX_ATTEMPTS`   | `3`                                     | Retry budget per lane per commit; a new commit resets it.                                                                                         |
+| `DRAFTO_BETA_MOBILE_ROOT`     | `/Users/jakub/code/drafto-beta-mobile`  | Dedicated mobile build root.                                                                                                                      |
+| `DRAFTO_DESKTOP_BUILD_ROOT`   | `/Users/jakub/code/drafto-beta-desktop` | Dedicated macOS build root (clonefile replica of the fossil).                                                                                     |
+| `DRAFTO_DESKTOP_FOSSIL_ROOT`  | `/Users/jakub/code/drafto`              | The fossil the desktop root is seeded **from**. Never built in.                                                                                   |
 
 **The build roots.** Each is a detached git worktree that the factory hard-resets to the PR head SHA, with `node_modules` clonefile-seeded (`cp -c -R` — O(1) space). They are **dedicated and disposable**: `ensure_beta_build_root` refuses, by canonical path, to use the factory checkout or the fossil as a build root, because it resets what it is given and the fossil is your working tree. The issue's own worktree is deliberately not used either — the next `--watch` tick may install and edit files in it, and the cleanup sweep deletes it when the card leaves In Test.
 
