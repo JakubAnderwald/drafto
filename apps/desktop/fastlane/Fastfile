@@ -132,6 +132,47 @@ def package_json_version
   JSON.parse(File.read(File.join(PROJECT_ROOT, "package.json")))["version"]
 end
 
+# Tracked files build_and_submit rewrites in place on every run (paths relative to
+# PROJECT_ROOT). increment_build_number writes the TestFlight build number into
+# both, increment_version_number and update_code_signing_settings write
+# project.pbxproj, and update_info_plist writes Info.plist. None of it belongs in
+# a commit: the next run derives every value again (the build number from
+# latest_testflight_build_number). Left in place, though, it dirties the primary
+# checkout after every release, and the next `git pull` there refuses to update
+# those files.
+LANE_REWRITTEN_FILES = [
+  "macos/Drafto-macOS/Info.plist",
+  "macos/Drafto.xcodeproj/project.pbxproj"
+].freeze
+
+# Runs the block, then restores every LANE_REWRITTEN_FILES entry that matched HEAD
+# when it started, whether the build succeeded or failed. A file that was already
+# modified is left alone, because those are someone's uncommitted edits. If git
+# cannot answer, the file counts as modified, so the worst case is the old
+# behaviour (a dirty checkout), never lost work.
+#
+# Podfile.lock is deliberately not covered: when `cocoapods` rewrites it, the pods
+# really changed, and that belongs in a commit (see #618).
+def restoring_lane_rewritten_files
+  clean = Dir.chdir(PROJECT_ROOT) do
+    LANE_REWRITTEN_FILES.select do |path|
+      system("git", "diff", "--quiet", "HEAD", "--", path, err: File::NULL)
+    end
+  end
+  yield
+ensure
+  restore_lane_rewritten_files(clean) if clean
+end
+
+def restore_lane_rewritten_files(paths)
+  return if paths.empty?
+
+  Dir.chdir(PROJECT_ROOT) { sh("git", "checkout", "HEAD", "--", *paths) }
+  UI.message("Restored #{paths.join(', ')} — the lane's build-number writes are not meant to be committed")
+rescue StandardError => e
+  UI.important("Could not restore #{paths.join(', ')} (non-fatal): #{e.message}")
+end
+
 # A boolean lane option. Fastlane's CLI already turns `promote submit:false` into
 # a real `false`, but a lane invoked from Ruby (or a future fastlane) can still
 # hand over the string — accept both rather than silently treating "false" as
@@ -377,13 +418,15 @@ end
 
 platform :mac do
   desc "Build and submit to TestFlight (macOS)"
+  # Every caller of build_and_submit goes through restoring_lane_rewritten_files,
+  # so a release leaves the checkout as clean as it found it.
   lane :beta do
-    build_and_submit(destination: "testflight")
+    restoring_lane_rewritten_files { build_and_submit(destination: "testflight") }
   end
 
   desc "Rebuild from source and upload to the Mac App Store (hotfix path). Pass submit:true to also submit for review. MUST run from the fossil checkout (see docs/operations/desktop-build-fossil.md); prefer `promote`, which submits the build testers already validated and does not build."
   lane :production do |options|
-    build_and_submit(destination: "appstore", submit: options[:submit])
+    restoring_lane_rewritten_files { build_and_submit(destination: "appstore", submit: options[:submit]) }
   end
 
   desc "Submit an ALREADY-UPLOADED macOS TestFlight build for Mac App Store review. Does NOT build — no CocoaPods, no Metro, no build_mac_app — so the desktop React fossil rule does not apply and this lane is safe from any checkout with the Ruby gems installed. Options: build_number: (default: newest macOS build of the package.json version), submit: (true), phased_release: (true), automatic_release: (false)."
