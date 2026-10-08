@@ -124,31 +124,44 @@ describe("owner_comments_since (extracted from factory-agent.sh)", () => {
 });
 
 describe("revise_noop_reply (extracted, real bash)", () => {
-  // Runs the real revise_noop_reply + issue_has_marker against a stubbed
-  // comment list. `gh` is a HARD STUB: the fallback path posts an issue
-  // comment, and without the stub a unit test would post to a live issue.
-  function runReply({ comments, fetchFails = false, pr = "665", marker }) {
+  // Runs the real revise_noop_reply against a stubbed comment list. `gh` is a
+  // HARD STUB: the fallback path posts an issue comment, and without the stub a
+  // unit test would post to a live issue. The fetch stub fails its first
+  // `failFirst` calls and counts every call; `sleep` is stubbed out.
+  function runReply({ comments = [], failFirst = 0, pr = "665", marker }) {
     const dir = mkdtempSync(join(tmpdir(), "revise-reply-"));
+    const fetches = join(dir, "fetches");
     try {
       const snippet = `
 set -euo pipefail
 eval "$(awk '/^revise_noop_reply\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
-eval "$(awk '/^issue_has_marker\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 log() { echo "[log] $*"; }
 gh() { printf '[gh-stub] %s\\n' "$*"; return 0; }
-fetch_issue_comments() { ${fetchFails ? "return 1" : `printf '%s' ${JSON.stringify(JSON.stringify(comments ?? []))}`}; }
+sleep() { :; }
+fetch_issue_comments() {
+  local n
+  n=$(( $(cat ${JSON.stringify(fetches)} 2>/dev/null || echo 0) + 1 ))
+  echo "$n" >${JSON.stringify(fetches)}
+  if [[ "$n" -le ${failFirst} ]]; then return 1; fi
+  printf '%s' ${JSON.stringify(JSON.stringify(comments))}
+}
 LOG_FILE=${JSON.stringify(join(dir, "agent.log"))}
 revise_noop_reply 659 ${JSON.stringify(pr)} ${JSON.stringify(marker)}
 `;
       const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
       assert.equal(r.status, 0, `bash failed: ${r.stderr}`);
-      let posted = "";
-      try {
-        posted = readFileSync(join(dir, "agent.log"), "utf8");
-      } catch {
-        /* nothing was posted */
-      }
-      return { log: r.stdout, posted };
+      const read = (p) => {
+        try {
+          return readFileSync(p, "utf8");
+        } catch {
+          return "";
+        }
+      };
+      return {
+        log: r.stdout,
+        posted: read(join(dir, "agent.log")),
+        fetches: Number(read(fetches) || 0),
+      };
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -165,32 +178,47 @@ revise_noop_reply 659 ${JSON.stringify(pr)} ${JSON.stringify(marker)}
     const out = runReply({ comments: [], marker: "drafto-factory-revise-reply-123" });
     assert.match(out.log, /no revision reply found for drafto-factory-revise-reply-123/);
     assert.match(out.posted, /\[gh-stub\] issue comment 659 --repo JakubAnderwald\/drafto/);
-    assert.match(out.posted, /this run left no reply/);
-    assert.match(out.posted, /Any details are in PR #665's description/);
+    assert.match(out.posted, /No code change was made for that, and no reply was found/);
+    assert.match(out.posted, /notes in PR #665's description; if not, comment again/);
     assert.match(out.posted, /<!-- drafto-factory-revise-noop -->/);
   });
 
   it("does not take another round's reply for this one (reply-1234 is not reply-123)", () => {
     const out = runReply({ comments: [reply(1234)], marker: "drafto-factory-revise-reply-123" });
-    assert.match(out.posted, /this run left no reply/);
+    assert.match(out.posted, /no reply was found/);
   });
 
-  it("posts the fallback without a marker to look for", () => {
+  it("posts the fallback without a marker to look for, and fetches nothing", () => {
     const out = runReply({ comments: [reply(123)], marker: "" });
-    assert.match(out.log, /no revision reply found; posting fallback/);
+    assert.match(out.log, /no reply marker for this revision; posting the fallback/);
     assert.match(out.posted, /<!-- drafto-factory-revise-noop -->/);
+    assert.equal(out.fetches, 0);
   });
 
   it("drops the PR sentence when the PR number is unknown", () => {
     const out = runReply({ comments: [], pr: "", marker: "drafto-factory-revise-reply-123" });
     assert.match(out.posted, /The preview is unchanged\. Drag to/);
-    assert.doesNotMatch(out.posted, /Any details are in PR/);
+    assert.doesNotMatch(out.posted, /notes in PR/);
   });
 
-  it("skips the fallback when the comments can't be fetched (issue_has_marker fails closed)", () => {
-    const out = runReply({ fetchFails: true, marker: "drafto-factory-revise-reply-123" });
+  it("retries a failed comment fetch before deciding", () => {
+    const out = runReply({
+      comments: [reply(123)],
+      failFirst: 2,
+      marker: "drafto-factory-revise-reply-123",
+    });
+    assert.equal(out.fetches, 3);
     assert.match(out.log, /revision reply posted/);
     assert.equal(out.posted, "");
+  });
+
+  it("fails open: posts the fallback when the comments still can't be read", () => {
+    // A silent round trip is the bug this exists to fix, so an unreadable
+    // thread must not count as "replied".
+    const out = runReply({ failFirst: 99, marker: "drafto-factory-revise-reply-123" });
+    assert.equal(out.fetches, 3);
+    assert.match(out.log, /WARNING: could not read #659's comments/);
+    assert.match(out.posted, /<!-- drafto-factory-revise-noop -->/);
   });
 });
 

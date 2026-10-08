@@ -166,7 +166,26 @@ describe("factory-agent.sh --implement verification", () => {
 
   it("leaves the legitimate noop paths advancing as before", () => {
     assert.match(noopArm, /transition_status "\$ITEM_ID" "\$ISSUE_NUM" "In Test"/);
+    // Revision noop: only the feedback the run was given is consumed.
+    assert.match(noopArm, /lastFeedbackAt "\$FEEDBACK_MARK"/);
+    // Fresh idempotency noop: there is no feedback, so "now" is the baseline.
     assert.match(noopArm, /lastFeedbackAt "\$NOW_ISO"/);
+  });
+
+  it("marks only the feedback a revision run was given as consumed", () => {
+    // A comment posted while the run worked must stay newer than the mark, or
+    // the In Test sweep never sees it.
+    assert.match(
+      script,
+      /FEEDBACK_CONSUMED_AT=\$\(echo "\$REVISION_COMMENTS" \| jq -r 'sort_by\(\.createdAt\) \| \.\[-1\]\.createdAt/,
+    );
+    assert.match(script, /FEEDBACK_MARK="\$NOW_ISO"\n/);
+    assert.match(
+      script,
+      /if \[\[ "\$IS_REVISION" -eq 1 && -n "\$FEEDBACK_CONSUMED_AT" \]\]; then\n\s*FEEDBACK_MARK="\$FEEDBACK_CONSUMED_AT"/,
+    );
+    assert.match(implementedArm, /lastFeedbackAt "\$FEEDBACK_MARK"/);
+    assert.doesNotMatch(implementedArm, /lastFeedbackAt "\$NOW_ISO"/);
   });
 });
 
