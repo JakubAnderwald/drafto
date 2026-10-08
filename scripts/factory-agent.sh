@@ -1574,6 +1574,17 @@ pr_infra_rerun_ids() {
     [ .[] | (.url | capture("/actions/runs/(?<id>[0-9]+)") | .id) ] | unique[]' 2>/dev/null || true
 }
 
+# Re-runs already spent on <head_sha> (state field ciRerun = "<sha>:<count>"). 0
+# for any other head — a new push re-arms the budget — or an unreadable record.
+ci_rerun_count() {
+  local issue_num="$1" head_sha="$2" record count
+  record=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.ciRerun // ""' 2>/dev/null || echo "")
+  count="${record##*:}"
+  [[ "${record%%:*}" == "$head_sha" && "$count" =~ ^(0|[1-9][0-9]*)$ ]] || count=0
+  echo "$count"
+}
+
 # Re-run the cancelled required checks on <head_sha>, at most FACTORY_CI_RERUN_MAX
 # times per head SHA (state field ciRerun = "<sha>:<count>"; a new push re-arms
 # it). Returns 0 when it acted — re-ran, or is waiting for the run to finish
@@ -1585,7 +1596,7 @@ pr_infra_rerun_ids() {
 # of retrying every tick forever.
 rerun_infra_failures() {
   local issue_num="$1" pr_num="$2" head_sha="$3" pr_view="$4"
-  local run_ids record count id status
+  local run_ids count id status
   run_ids=$(pr_infra_rerun_ids "$pr_view")
   [[ -n "$run_ids" ]] || return 1
   while IFS= read -r id; do
@@ -1601,10 +1612,7 @@ rerun_infra_failures() {
       return 0
     fi
   done <<< "$run_ids"
-  record=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
-    --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.ciRerun // ""' 2>/dev/null || echo "")
-  count="${record##*:}"
-  [[ "${record%%:*}" == "$head_sha" && "$count" =~ ^(0|[1-9][0-9]*)$ ]] || count=0
+  count=$(ci_rerun_count "$issue_num" "$head_sha")
   if [[ "$count" -ge "$FACTORY_CI_RERUN_MAX" ]]; then
     return 1
   fi
@@ -1625,12 +1633,20 @@ rerun_infra_failures() {
 
 # One-time (per head SHA) notice that CI could not run on the PR and the factory's
 # re-runs are spent. The card stays in <where>: the code isn't the problem, so
-# handing it to the Claude fix loop would only burn an attempt.
+# handing it to the Claude fix loop would only burn an attempt. It reports the
+# re-runs actually spent on this head (ci_rerun_count), never the knob: with
+# FACTORY_CI_RERUN_MAX=0, or the knob lowered mid-way, they differ.
 comment_ci_infra_hold() {
   local issue_num="$1" pr_num="$2" head_sha="$3" pr_view="$4" where="$5"
-  local sha12="${head_sha:0:12}" summary commands
+  local sha12="${head_sha:0:12}" summary commands count tried
   [[ "$DRY_RUN" -eq 0 ]] || return 0
   issue_has_marker "$issue_num" "drafto-factory-ci-infra:$sha12" && return 0
+  count=$(ci_rerun_count "$issue_num" "$head_sha")
+  if [[ "$count" -gt 0 ]]; then
+    tried="The factory re-ran them $count time(s) without getting a result."
+  else
+    tried="The factory didn't re-run them (\`FACTORY_CI_RERUN_MAX\` is $FACTORY_CI_RERUN_MAX)."
+  fi
   summary=$(pr_failing_required_summary "$pr_view" | sed 's/^/- /')
   commands=$(pr_infra_rerun_ids "$pr_view" | sed 's/^/gh run rerun /; s/$/ --failed --repo JakubAnderwald\/drafto/')
   gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
@@ -1641,8 +1657,7 @@ them up, so CI never judged the code:
 
 $summary
 
-The factory tried to re-run them $FACTORY_CI_RERUN_MAX time(s) without getting a \
-result. Once GitHub Actions is healthy, re-run them:
+$tried Once GitHub Actions is healthy, re-run them:
 
 \`\`\`bash
 $commands
@@ -1658,7 +1673,7 @@ The card stays in **$where** and moves on by itself once they're green.
 recover_cancelled_ci() {
   local issue_num="$1" pr_num="$2" head_sha="$3" pr_view="$4" where="$5"
   rerun_infra_failures "$issue_num" "$pr_num" "$head_sha" "$pr_view" && return 0
-  log "Issue #$issue_num: PR #$pr_num required check(s) still couldn't run after $FACTORY_CI_RERUN_MAX re-run(s); holding in $where"
+  log "Issue #$issue_num: PR #$pr_num required check(s) still couldn't run after $(ci_rerun_count "$issue_num" "$head_sha") re-run(s); holding in $where"
   comment_ci_infra_hold "$issue_num" "$pr_num" "$head_sha" "$pr_view" "$where"
 }
 

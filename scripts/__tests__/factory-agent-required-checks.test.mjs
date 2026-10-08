@@ -24,6 +24,7 @@ describe("factory-agent required-context gating: static wiring", () => {
     assert.match(script, /^pr_failing_required_summary\(\) \{/m);
     assert.match(script, /^classify_failing_required\(\) \{/m);
     assert.match(script, /^pr_infra_rerun_ids\(\) \{/m);
+    assert.match(script, /^ci_rerun_count\(\) \{/m);
     assert.match(script, /^rerun_infra_failures\(\) \{/m);
     assert.match(script, /^comment_ci_infra_hold\(\) \{/m);
     assert.match(script, /^recover_cancelled_ci\(\) \{/m);
@@ -375,7 +376,12 @@ describe("cancelled-check recovery helpers (real helpers, jq) — #654", () => {
   });
 
   describe("rerun_infra_failures", () => {
-    const FNS = ["pr_failing_required_checks", "pr_infra_rerun_ids", "rerun_infra_failures"];
+    const FNS = [
+      "pr_failing_required_checks",
+      "pr_infra_rerun_ids",
+      "ci_rerun_count",
+      "rerun_infra_failures",
+    ];
     // node stub: factory:get-issue answers with <record>; set-issue-field is echoed.
     // gh stub: `run view` answers <runStatus>; everything else is echoed.
     const stubs = (record, runStatus) =>
@@ -459,11 +465,16 @@ describe("cancelled-check recovery helpers (real helpers, jq) — #654", () => {
       "pr_failing_required_checks",
       "pr_failing_required_summary",
       "pr_infra_rerun_ids",
+      "ci_rerun_count",
       "comment_ci_infra_hold",
     ];
-    const hold = ({ marked = false, env = {} } = {}) =>
+    // <record> is the issue's ciRerun state ("<sha>:<count>"), read via node.
+    const hold = ({ marked = false, env = {}, record = `${SHA}:2` } = {}) =>
       runBash(FNS, `comment_ci_infra_hold 654 657 "${SHA}" ${q(PR_657)} "Approved"`, {
-        pre: `issue_has_marker() { echo "MARKER? $2" >&2; return ${marked ? 0 : 1}; }`,
+        pre: [
+          `issue_has_marker() { echo "MARKER? $2" >&2; return ${marked ? 0 : 1}; }`,
+          `node() { echo '{"ciRerun":${JSON.stringify(record)}}'; }`,
+        ].join("\n"),
         env,
       });
 
@@ -477,9 +488,22 @@ describe("cancelled-check recovery helpers (real helpers, jq) — #654", () => {
         res.stdout,
         /^gh run rerun 37371041547 --failed --repo JakubAnderwald\/drafto$/m,
       );
-      assert.match(res.stdout, /tried to re-run them 2 time\(s\)/);
+      assert.match(res.stdout, /re-ran them 2 time\(s\) without getting a result/);
       assert.match(res.stdout, /stays in \*\*Approved\*\*/);
       assert.match(res.stdout, /<!-- drafto-factory-ci-infra:5a5201f119ea -->/);
+    });
+
+    it("reports the re-runs actually spent, not the knob", () => {
+      const lowered = hold({ record: `${SHA}:1`, env: { FACTORY_CI_RERUN_MAX: "1" } }).stdout;
+      assert.match(lowered, /re-ran them 1 time\(s\)/);
+      // Disabled (or nothing spent on this head): never claim a re-run happened.
+      for (const out of [
+        hold({ record: null, env: { FACTORY_CI_RERUN_MAX: "0" } }).stdout,
+        hold({ record: "0123456789ab:2" }).stdout,
+      ]) {
+        assert.doesNotMatch(out, /re-ran them/);
+        assert.match(out, /didn't re-run them \(`FACTORY_CI_RERUN_MAX` is [0-9]+\)/);
+      }
     });
 
     it("stays quiet once the marker for this head exists", () => {
@@ -500,6 +524,7 @@ describe("cancelled-check recovery helpers (real helpers, jq) — #654", () => {
           pre: [
             `rerun_infra_failures() { echo "RERUN $1 $2 $3"; return ${rerunRc}; }`,
             'comment_ci_infra_hold() { echo "HOLD $1 $2 $3 $5"; }',
+            "ci_rerun_count() { echo 2; }",
           ].join("\n"),
         },
       ).stdout;
@@ -512,7 +537,7 @@ describe("cancelled-check recovery helpers (real helpers, jq) — #654", () => {
 
     it("budget spent → logs and posts the hold for <where>", () => {
       const out = run(1);
-      assert.match(out, /holding in In Review/);
+      assert.match(out, /still couldn't run after 2 re-run\(s\); holding in In Review/);
       assert.match(out, new RegExp(`HOLD 654 657 ${SHA} In Review`));
     });
   });
