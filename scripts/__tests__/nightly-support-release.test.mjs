@@ -330,8 +330,10 @@ if out=$(ensure_beta_build_root mobile deadbeef); then echo "OK:$out"; else echo
     assert.match(r.log, /could not create beta build root/);
   });
 
-  it("ensure_beta_build_root fetches before creating a root at a sha not yet local", () => {
-    // The nightly passes origin/main's head straight from the GitHub API.
+  // Real git: an origin with two commits and a clone that has only the first.
+  // Runs ensure_beta_build_root for the desktop root at `sha` (default: the
+  // commit the clone lacks) and returns the result plus what the run logged.
+  function withRealGit(fn) {
     const dir = mkdtempSync(join(tmpdir(), "beta-root-fetch-"));
     try {
       const git = (cwd, ...a) => spawnSync("git", ["-C", cwd, ...a], { encoding: "utf8" });
@@ -342,42 +344,93 @@ if out=$(ensure_beta_build_root mobile deadbeef); then echo "OK:$out"; else echo
       git(origin, ...id, "commit", "-q", "--allow-empty", "-m", "one");
       const repo = join(dir, "repo");
       assert.equal(spawnSync("git", ["clone", "-q", origin, repo]).status, 0);
+      const localSha = git(repo, "rev-parse", "HEAD").stdout.trim();
       git(origin, ...id, "commit", "-q", "--allow-empty", "-m", "two");
-      const sha = git(origin, "rev-parse", "HEAD").stdout.trim();
-      assert.notEqual(git(repo, "cat-file", "-e", sha).status, 0, "precondition: not local yet");
+      const remoteSha = git(origin, "rev-parse", "HEAD").stdout.trim();
       const root = join(dir, "beta-desktop");
-      const r = spawnSync(
-        BASH,
-        [
-          "-c",
+      const logFile = join(dir, "log");
+      const ensure = (sha, { env = {}, timeout } = {}) => {
+        const r = spawnSync(
+          BASH,
           [
-            "set -uo pipefail",
-            `LOG_FILE=${JSON.stringify(join(dir, "log"))}`,
-            `REPO_ROOT=${JSON.stringify(repo)}`,
-            `SCRIPT_DIR=${JSON.stringify(join(repo, "scripts"))}`,
-            "INSTALL_TIMEOUT_SEC=5",
-            "log() { :; }; logerr() { :; }",
-            `source ${JSON.stringify(LIB)}`,
-            `ensure_beta_build_root desktop ${sha}`,
-          ].join("\n"),
-        ],
-        {
-          encoding: "utf8",
-          env: {
-            PATH: process.env.PATH,
-            HOME: process.env.HOME,
-            DRAFTO_DESKTOP_BUILD_ROOT: root,
-            DRAFTO_BETA_MOBILE_ROOT: join(dir, "beta-mobile"),
-            DRAFTO_DESKTOP_FOSSIL_ROOT: join(dir, "fossil"),
+            "-c",
+            [
+              "set -uo pipefail",
+              `LOG_FILE=${JSON.stringify(logFile)}`,
+              `REPO_ROOT=${JSON.stringify(repo)}`,
+              // The real scripts dir: the fetch runs under lib/run-with-timeout.mjs.
+              `SCRIPT_DIR=${JSON.stringify(resolve(HERE, ".."))}`,
+              "INSTALL_TIMEOUT_SEC=5",
+              `log() { :; }; logerr() { echo "$*" >> "$LOG_FILE"; }`,
+              `source ${JSON.stringify(LIB)}`,
+              `ensure_beta_build_root desktop ${sha}`,
+            ].join("\n"),
+          ],
+          {
+            encoding: "utf8",
+            timeout,
+            env: {
+              PATH: process.env.PATH,
+              HOME: process.env.HOME,
+              DRAFTO_DESKTOP_BUILD_ROOT: root,
+              DRAFTO_BETA_MOBILE_ROOT: join(dir, "beta-mobile"),
+              DRAFTO_DESKTOP_FOSSIL_ROOT: join(dir, "fossil"),
+              ...env,
+            },
           },
-        },
-      );
-      assert.equal(r.status, 0, r.stderr);
-      assert.equal(r.stdout.trim(), root);
-      assert.equal(git(root, "rev-parse", "HEAD").stdout.trim(), sha);
+        );
+        const log = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
+        return { ...r, log };
+      };
+      return fn({ git, repo, root, localSha, remoteSha, ensure });
     } finally {
-      rmSync(join(dir), { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
     }
+  }
+
+  it("ensure_beta_build_root fetches before creating a root at a sha not yet local", () => {
+    // The nightly passes origin/main's head straight from the GitHub API.
+    withRealGit(({ git, repo, root, remoteSha, ensure }) => {
+      assert.notEqual(
+        git(repo, "cat-file", "-e", remoteSha).status,
+        0,
+        "precondition: not local yet",
+      );
+      const r = ensure(remoteSha);
+      assert.equal(r.status, 0, r.stderr + r.log);
+      assert.equal(r.stdout.trim(), root);
+      assert.equal(git(root, "rev-parse", "HEAD").stdout.trim(), remoteSha);
+    });
+  });
+
+  it("ensure_beta_build_root skips the network when the sha is already local", () => {
+    // An unreachable origin proves no fetch ran: it would fail and warn.
+    withRealGit(({ git, repo, root, localSha, ensure }) => {
+      git(repo, "remote", "set-url", "origin", "/nonexistent/drafto-origin");
+      const r = ensure(localSha);
+      assert.equal(r.status, 0, r.stderr + r.log);
+      assert.equal(git(root, "rev-parse", "HEAD").stdout.trim(), localSha);
+      assert.doesNotMatch(r.log, /fetch failed/);
+    });
+  });
+
+  it("ensure_beta_build_root bounds a stalled fetch and releases the lock", () => {
+    // A remote that never answers must not hold the build-root lock forever.
+    withRealGit(({ git, repo, root, remoteSha, ensure }) => {
+      git(repo, "remote", "set-url", "origin", "ssh://stalled.invalid/drafto.git");
+      const started = Date.now();
+      const r = ensure(remoteSha, {
+        env: {
+          DRAFTO_BETA_FETCH_TIMEOUT_SEC: "1",
+          GIT_SSH_COMMAND: 'sh -c "sleep 20" --',
+        },
+        timeout: 15000,
+      });
+      assert.ok(Date.now() - started < 12000, "the fetch was not cut off by its cap");
+      assert.notEqual(r.status, 0, "the sha is still missing, so creating the root fails");
+      assert.match(r.log, /fetch failed or timed out/);
+      assert.equal(existsSync(`${root}.lock`), false, "lock left behind");
+    });
   });
 
   it("ensure_beta_build_root refuses a root another live process holds", () => {

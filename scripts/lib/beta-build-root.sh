@@ -26,6 +26,7 @@
 #   BETA_MOBILE_ROOT     DRAFTO_BETA_MOBILE_ROOT
 #   BETA_DESKTOP_ROOT    DRAFTO_DESKTOP_BUILD_ROOT
 #   BETA_BUILDS_VOLUME_DIR  DRAFTO_BUILDS_VOLUME_DIR
+#   BETA_FETCH_TIMEOUT_SEC  DRAFTO_BETA_FETCH_TIMEOUT_SEC  (default 300)
 #
 # The build-root defaults live on the external build volume when it is mounted
 # (that is where the Mac mini keeps them), else beside the checkouts in
@@ -46,6 +47,8 @@
 # uncommitted edits in it.
 BETA_BUILDS_VOLUME_DIR="${DRAFTO_BUILDS_VOLUME_DIR:-/Volumes/Zewnętrzny/drafto-builds}"
 DESKTOP_FOSSIL_ROOT="${DRAFTO_DESKTOP_FOSSIL_ROOT:-/Users/jakub/code/drafto}"
+# Wall-clock cap for the one network call made while a build-root lock is held.
+BETA_FETCH_TIMEOUT_SEC="${DRAFTO_BETA_FETCH_TIMEOUT_SEC:-300}"
 
 # (Re)compute BETA_MOBILE_ROOT / BETA_DESKTOP_ROOT. Runs once at source time; a
 # long-running caller re-runs it right before preparing a root, because "is the
@@ -138,6 +141,20 @@ run_pnpm_install() {
       pnpm install >>"$LOG_FILE" 2>&1 )
 }
 
+# Make <sha> available to `git -C <dir>` without letting a stalled remote hold
+# the build-root lock forever. Skips the network when the commit is already in
+# the object store (the usual case: build roots are worktrees of $REPO_ROOT and
+# share its objects), otherwise fetches under a wall-clock cap. Best-effort: a
+# failed or capped fetch only warns, and the `worktree add` / `reset --hard`
+# that follows fails loudly if the sha is still missing. $1 dir, $2 sha.
+_beta_root_fetch() {
+  local dir="$1" sha="$2"
+  git -C "$dir" cat-file -e "${sha}^{commit}" 2>/dev/null && return 0
+  node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$BETA_FETCH_TIMEOUT_SEC" \
+    git -C "$dir" fetch origin >>"$LOG_FILE" 2>&1 \
+    || logerr "WARNING: fetch failed or timed out in $dir"
+}
+
 # Prepare a dedicated, persistent build root checked out at <sha>, printing its
 # path (empty on failure).
 #
@@ -195,12 +212,12 @@ ensure_beta_build_root() {
     # The sha can come from the GitHub API (nightly: origin/main's head) and so
     # need not exist locally yet. A fetch only moves remote-tracking refs, never
     # the checkout's working tree — safe in the fossil checkout too.
-    git -C "$REPO_ROOT" fetch origin >>"$LOG_FILE" 2>&1 || logerr "WARNING: fetch failed in $REPO_ROOT"
+    _beta_root_fetch "$REPO_ROOT" "$sha"
     if ! git -C "$REPO_ROOT" worktree add --detach "$root" "$sha" >>"$LOG_FILE" 2>&1; then
       logerr "ERROR: could not create beta build root $root"; rm -f "$lock"; return 1
     fi
   else
-    git -C "$root" fetch origin >>"$LOG_FILE" 2>&1 || logerr "WARNING: fetch failed in $root"
+    _beta_root_fetch "$root" "$sha"
     if ! git -C "$root" reset --hard "$sha" >>"$LOG_FILE" 2>&1; then
       logerr "ERROR: could not reset $root to ${sha:0:12}"; rm -f "$lock"; return 1
     fi
