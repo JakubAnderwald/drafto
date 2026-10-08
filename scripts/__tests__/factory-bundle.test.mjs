@@ -533,6 +533,37 @@ describe("buildFactoryImplementBundle", () => {
     );
   });
 
+  it("passes a well-formed replyMarker through and nulls anything else", () => {
+    const base = {
+      issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "B" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    };
+    assert.equal(buildFactoryImplementBundle(base).replyMarker, null, "first run has none");
+    assert.equal(
+      buildFactoryImplementBundle({
+        ...base,
+        replyMarker: "drafto-factory-revise-reply-6067249983",
+      }).replyMarker,
+      "drafto-factory-revise-reply-6067249983",
+    );
+    // Bash looks the marker up as a regex, so only the exact shape it builds
+    // may reach the implementer.
+    for (const bad of [
+      "drafto-factory-revise-reply-1.*",
+      "drafto-factory-revise-reply-",
+      "drafto-factory-revise-noop",
+      "",
+      123,
+    ]) {
+      assert.equal(
+        buildFactoryImplementBundle({ ...base, replyMarker: bad }).replyMarker,
+        null,
+        JSON.stringify(bad),
+      );
+    }
+  });
+
   it("surfaces host-validated screenshots from the body and every comment slice", () => {
     const bundle = buildFactoryImplementBundle({
       issue: {
@@ -988,6 +1019,20 @@ describe("factory-bundle CLI", () => {
       ["https://user-images.githubusercontent.com/1/a.png"],
     );
     assert.deepEqual(bundle.comments, []);
+  });
+
+  it("forwards a factory_implement replyMarker through the CLI", () => {
+    const r = run({
+      kind: "factory_implement",
+      issue: { number: 42, title: "x", body: SAMPLE_BODY, labels: [] },
+      priorPr: { number: 7, url: "https://x/y/pull/7", headRef: "factory/issue-42", state: "OPEN" },
+      revisionComments: [{ id: 88, user: { login: "x" }, body: "run the scenario for me" }],
+      replyMarker: "drafto-factory-revise-reply-88",
+      config: { phase: "B" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).replyMarker, "drafto-factory-revise-reply-88");
   });
 
   it("emits a factory_watch bundle and forwards screenshotSources", () => {

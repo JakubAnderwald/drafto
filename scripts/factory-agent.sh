@@ -802,7 +802,8 @@ issue_already_impl_stubbed() {
 
 # Build the factory_implement bundle. $2 is the approved-plan comment object
 # (from extract_plan_comment: {id,user,body,createdAt}) or "null"; $3 is the
-# prior-PR object or "null"; $4 is the attempts counter.
+# prior-PR object or "null"; $4 is the attempts counter; $7 is the revision
+# reply marker ("" on a first implementation — see revise_noop_reply).
 build_implement_bundle() {
   local issue_entry="$1"
   local approved_plan="${2:-null}"
@@ -810,6 +811,7 @@ build_implement_bundle() {
   local attempts="${4:-0}"
   local revision_comments="${5:-[]}"
   local screenshot_sources="${6:-[]}"
+  local reply_marker="${7:-}"
   local repo_head_ref
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   jq -n \
@@ -819,6 +821,7 @@ build_implement_bundle() {
     --arg attempts "$attempts" \
     --argjson revisionComments "$revision_comments" \
     --argjson screenshotSources "$screenshot_sources" \
+    --arg replyMarker "$reply_marker" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
     --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
     --arg phase "$PHASE" \
@@ -838,6 +841,7 @@ build_implement_bundle() {
        comments: [],
        revisionComments: $revisionComments,
        screenshotSources: $screenshotSources,
+       replyMarker: (if $replyMarker == "" then null else $replyMarker end),
        config: {
          phase: $phase,
          allowlist: ($allowlist | split(",") | map(ascii_downcase | sub("^\\s+";"") | sub("\\s+$";""))),
@@ -880,6 +884,50 @@ ship|shipit|approved|approve|done|ok|okay|okthanks|yes|yep|yeah|awesome|love|lov
       return 0 ;;
   esac
   [[ ${#norm} -le 2 ]]
+}
+
+# A revision run returned action=noop: the feedback needed no code change (a
+# question, "run the test scenario for me"). The implementer answers on the
+# issue itself, in a comment carrying <marker> (bundle.replyMarker, keyed on the
+# feedback comment it answers), so the results land where the reporter asked
+# instead of only in the PR body. Trust the marker, not the directive line (as
+# intest_handoff does): only when no reply is found, post the fixed fallback, so
+# the round trip is never silent. The ([^0-9]|$) suffix stops reply-123 from
+# matching reply-1234. Unlike issue_has_marker this fails OPEN: if the comments
+# still can't be read after a few tries, the fallback goes out, because a rare
+# extra notice beats a reporter hearing nothing.
+revise_noop_reply() {
+  local issue_num="$1" pr_num="$2" marker="$3"
+  local comments="" attempt details=""
+  if [[ -n "$marker" ]]; then
+    for attempt in 1 2 3; do
+      if comments=$(fetch_issue_comments "$issue_num" 2>/dev/null) && [[ -n "$comments" ]]; then
+        break
+      fi
+      comments=""
+      if [[ "$attempt" -lt 3 ]]; then sleep 2; fi
+    done
+    if [[ -z "$comments" ]]; then
+      log "WARNING: could not read #$issue_num's comments to look for $marker; posting the fallback"
+    elif echo "$comments" | jq -e --arg m "${marker}([^0-9]|\$)" 'any(.[]; .body | test($m))' >/dev/null 2>&1; then
+      log "Issue #$issue_num: revision reply posted ($marker)"
+      return 0
+    else
+      log "Issue #$issue_num: no revision reply found for $marker; posting the fallback"
+    fi
+  else
+    log "Issue #$issue_num: no reply marker for this revision; posting the fallback"
+  fi
+  if [[ -n "$pr_num" ]]; then
+    details=" If you asked a question or for a check, the run may have left notes in PR #$pr_num's description; if not, comment again."
+  fi
+  gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+    --body "🏭 **No code change was made for that, and no reply was found.**
+
+The preview is unchanged.$details Drag to **Approved** to ship it, or comment \
+a more specific change.
+
+<!-- drafto-factory-revise-noop -->" >>"$LOG_FILE" 2>&1 || true
 }
 
 # Build the factory_watch bundle. $2 approved-plan obj|null, $3 prior-PR obj,
@@ -3324,6 +3372,8 @@ Drag it back to **Ready** so the factory can plan it first.
     # plan is the source of truth there.
     REVISION_COMMENTS="[]"
     IS_REVISION=0
+    REPLY_MARKER=""
+    FEEDBACK_CONSUMED_AT=""
     if [[ "$PRIOR_PR" != "null" ]]; then
       FEEDBACK_HWM=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
         --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.lastFeedbackAt // ""' 2>/dev/null || echo "")
@@ -3334,6 +3384,13 @@ Drag it back to **Ready** so the factory can plan it first.
       if [[ "$REV_COUNT" -gt 0 ]]; then
         IS_REVISION=1
         log "Issue #$ISSUE_NUM: revision run ($REV_COUNT new feedback comment(s) on the open PR)"
+        # One reply per feedback round, keyed on the newest comment it answers,
+        # so a retry of the same feedback finds the reply it already posted.
+        REPLY_ID=$(echo "$REVISION_COMMENTS" | jq -r 'sort_by(.createdAt) | .[-1].id // ""' 2>/dev/null || echo "")
+        if [[ "$REPLY_ID" =~ ^[0-9]+$ ]]; then
+          REPLY_MARKER="drafto-factory-revise-reply-$REPLY_ID"
+        fi
+        FEEDBACK_CONSUMED_AT=$(echo "$REVISION_COMMENTS" | jq -r 'sort_by(.createdAt) | .[-1].createdAt // ""' 2>/dev/null || echo "")
       fi
     fi
 
@@ -3344,7 +3401,7 @@ Drag it back to **Ready** so the factory can plan it first.
       break
     fi
 
-    if ! BUNDLE=$(build_implement_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PRIOR_PR" "$ATTEMPTS" "$REVISION_COMMENTS" "$COMMENTS_JSON"); then
+    if ! BUNDLE=$(build_implement_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PRIOR_PR" "$ATTEMPTS" "$REVISION_COMMENTS" "$COMMENTS_JSON" "$REPLY_MARKER"); then
       log "ERROR: build_implement_bundle failed for #$ISSUE_NUM"; continue
     fi
     AFFECTED=$(echo "$BUNDLE" | jq -r '.spec.affectedPlatforms // [] | join(",")')
@@ -3451,6 +3508,14 @@ Drag it back to **Ready** so the factory can plan it first.
     PR_URL=$(echo "$SUMMARY_LINE" | sed -E 's/.*pr=([^ ]+).*/\1/')
 
     NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # On a revision run, mark as consumed only the feedback this run was given.
+    # A comment posted while it ran (a scenario run can take most of the cap)
+    # stays newer than the mark, so the In Test sweep picks it up next instead
+    # of it being dropped unread.
+    FEEDBACK_MARK="$NOW_ISO"
+    if [[ "$IS_REVISION" -eq 1 && -n "$FEEDBACK_CONSUMED_AT" ]]; then
+      FEEDBACK_MARK="$FEEDBACK_CONSUMED_AT"
+    fi
     case "$ACTION" in
       implemented)
         PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
@@ -3520,11 +3585,12 @@ drag the card back to **In Progress**.
           continue
         fi
         # Happy path: advance to In Review. KEEP slot + worktree for --watch.
-        # Advancing lastFeedbackAt = now marks every comment up to this point as
-        # consumed, so a revision we just applied can't re-trigger next tick.
+        # Advancing lastFeedbackAt to FEEDBACK_MARK marks the comments this run
+        # applied as consumed, so a revision we just applied can't re-trigger
+        # next tick.
         transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review" || true
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastImplementAt "$NOW_ISO" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$NOW_ISO" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$FEEDBACK_MARK" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         if [[ "$IS_REVISION" -eq 1 ]]; then
           log "Issue #$ISSUE_NUM: revision pushed → In Review (PR $PR_URL; slot $SLOT retained)"
@@ -3557,15 +3623,10 @@ drag the card back to **In Progress**.
           # The feedback needed no code change. The existing PR + preview are
           # still valid, so re-present in In Test instead of re-running CI.
           transition_status "$ITEM_ID" "$ISSUE_NUM" "In Test" || true
-          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$NOW_ISO" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$FEEDBACK_MARK" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
           node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-          gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
-            --body "🏭 **No code change was needed for that.**
-
-The preview is unchanged. Drag to **Approved** to ship it, or comment a more \
-specific change.
-
-<!-- drafto-factory-revise-noop -->" >>"$LOG_FILE" 2>&1 || true
+          # The PR number comes from bash's own lookup, not the directive's pr=.
+          revise_noop_reply "$ISSUE_NUM" "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" "$REPLY_MARKER"
           log "Issue #$ISSUE_NUM: revision no-op; returned to In Test"
         else
           # Fresh idempotency hit: a PR already exists from a prior attempt.
@@ -4156,8 +4217,10 @@ A human should take a look. Reset with \
     gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
       --body "🏭 **Revising — picking up your feedback.**
 
-I'll update the open PR on the same branch and redeploy the preview. (To ship \
-as-is instead, drag the card to **Approved**.)
+A code change goes onto the open PR's branch and comes back through In Review \
+to In Test with the preview redeployed. Anything else, such as a question or a \
+test run, gets a reply here. (To ship as-is instead, drag the card to \
+**Approved**.)
 
 <!-- drafto-factory-revising -->" >>"$LOG_FILE" 2>&1 || true
   done
