@@ -96,7 +96,7 @@ describe("Privacy policy page", () => {
     render(<PrivacyPolicyPage />);
 
     expect(screen.getByText(/Effective date: March 8, 2026/)).toHaveTextContent(
-      "Last updated: October 4, 2026",
+      "Last updated: October 8, 2026",
     );
   });
 
@@ -249,6 +249,11 @@ describe("Privacy policy page", () => {
     );
     expect(retention).toMatch(/GitHub issues filed from your support emails/);
     expect(retention).toMatch(/notification emails our administrator received/);
+    // Only the run logs are pruned (support-agent.sh); the per-issue routing
+    // record in logs/support-state.json is kept until removed on request.
+    expect(retention).toMatch(/Our support system deletes its run logs after 30 days\. It keeps/);
+    expect(retention).toMatch(/subject line and Zoho message reference/);
+    expect(retention).toMatch(/until you ask us to remove them/);
   });
 
   it("describes immediate in-app deletion and links to the deletion page", () => {

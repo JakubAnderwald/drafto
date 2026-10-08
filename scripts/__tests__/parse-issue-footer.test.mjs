@@ -75,6 +75,64 @@ not a key value pair
   });
 });
 
+describe("parseIssueFooter — empty / null / undefined values (issue #658)", () => {
+  const singletonBody = `<!-- drafto-support-agent v1
+reporter-email: jakub@anderwald.info
+reporter-allowlisted: true
+zoho-thread-id: null
+zoho-message-id: 1791172614617005600
+-->`;
+
+  it("treats `null` as an absent field, not the string 'null'", () => {
+    const out = parseIssueFooter(singletonBody);
+    assert.equal("zoho-thread-id" in out, false);
+    assert.equal(out["zoho-message-id"], "1791172614617005600");
+    assert.equal(out["reporter-email"], "jakub@anderwald.info");
+  });
+
+  it("is case-insensitive and covers `undefined` too", () => {
+    const body = `<!-- drafto-support-agent v1
+zoho-thread-id: NULL
+zoho-message-id: Undefined
+reporter-email: a@b.co
+-->`;
+    assert.deepEqual(parseIssueFooter(body), { "reporter-email": "a@b.co" });
+  });
+
+  it("treats an empty value as absent too", () => {
+    const body = `<!-- drafto-support-agent v1
+zoho-thread-id:
+reporter-email: a@b.co
+-->`;
+    assert.deepEqual(parseIssueFooter(body), { "reporter-email": "a@b.co" });
+  });
+
+  it("keeps values that merely contain 'null'", () => {
+    const body = `<!-- drafto-support-agent v1
+reporter-email: nullable@example.com
+-->`;
+    assert.equal(parseIssueFooter(body)["reporter-email"], "nullable@example.com");
+  });
+
+  it("CLI --field zoho-thread-id prints empty for a `null` value", () => {
+    const r = spawnSync("node", [CLI, "--field", "zoho-thread-id"], {
+      encoding: "utf8",
+      input: singletonBody,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, "");
+  });
+
+  it("CLI --field zoho-message-id prints the inbound message id", () => {
+    const r = spawnSync("node", [CLI, "--field", "zoho-message-id"], {
+      encoding: "utf8",
+      input: singletonBody,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, "1791172614617005600");
+  });
+});
+
 describe("parse-issue-footer CLI", () => {
   function run(args, { input } = {}) {
     return spawnSync("node", [CLI, ...args], { encoding: "utf8", input });
@@ -86,7 +144,7 @@ describe("parse-issue-footer CLI", () => {
     assert.equal(r.stdout, "jane@example.com");
   });
 
-  it("--field zoho-thread-id prints the routing id (the only load-bearing field today)", () => {
+  it("--field zoho-thread-id prints the routing id", () => {
     const r = run(["--field", "zoho-thread-id"], { input: goodBody });
     assert.equal(r.status, 0, r.stderr);
     assert.equal(r.stdout, "8537837000001234567");

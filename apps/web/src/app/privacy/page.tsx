@@ -110,7 +110,7 @@ export default function PrivacyPolicyPage() {
       <header>
         <h1 className="text-fg text-4xl font-bold tracking-tight">Privacy Policy</h1>
         <p className="text-fg-muted mt-3 text-sm">
-          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: October&nbsp;4,&nbsp;2026
+          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: October&nbsp;8,&nbsp;2026
         </p>
         <p className="text-fg-muted mt-8 text-lg leading-8">
           Drafto (&ldquo;we&rdquo;, &ldquo;our&rdquo;, &ldquo;us&rdquo;) operates the Drafto apps
@@ -563,9 +563,11 @@ export default function PrivacyPolicyPage() {
               remove your support emails or issues
             </li>
             <li>
-              Our support system deletes its run logs after 30 days. Until we delete them, it keeps
-              drafts and notes it saved while handling your email, a record of which email address
-              reported which issue, and the email addresses it has sent automatic replies to
+              Our support system deletes its run logs after 30 days. It keeps the drafts and notes
+              it saved while handling your email, a record of which email address reported which
+              issue (with that email&apos;s subject line and Zoho message reference, so our progress
+              updates reply on the same thread), and the email addresses it has sent automatic
+              replies to, until you ask us to remove them
             </li>
           </ul>
         </NumberedSection>

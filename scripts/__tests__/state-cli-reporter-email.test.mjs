@@ -187,3 +187,126 @@ describe("state-cli record-filed-issue 3-arg form (issue #422)", () => {
     });
   });
 });
+
+describe("state-cli record-filed-issue --message-id / --subject (issue #658)", () => {
+  it("persists the inbound messageId + subject for a singleton (no thread id)", async () => {
+    await withTempState(async (file) => {
+      const w = run(
+        [
+          "record-filed-issue",
+          "658",
+          "Jakub@Anderwald.info",
+          "",
+          "--message-id",
+          "1791172614617005600",
+          "--subject",
+          "  Editor loses focus  ",
+        ],
+        { stateFile: file },
+      );
+      assert.equal(w.status, 0, w.stderr);
+      const out = JSON.parse(w.stdout);
+      assert.equal(out.zohoThreadId, null);
+      assert.equal(out.zohoMessageId, "1791172614617005600");
+      assert.equal(out.zohoSubject, "Editor loses focus");
+      const raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["658"].reporterEmail, "jakub@anderwald.info");
+      assert.equal(raw.issues["658"].zohoMessageId, "1791172614617005600");
+      assert.equal(raw.issues["658"].zohoSubject, "Editor loses focus");
+      assert.equal(raw.issues["658"].zohoThreadId, undefined);
+      assert.equal(Object.keys(raw.threads ?? {}).length, 0);
+    });
+  });
+
+  it("records thread id, message id and subject together for a threaded inbound", async () => {
+    await withTempState(async (file) => {
+      const w = run(
+        [
+          "record-filed-issue",
+          "659",
+          "customer@example.com",
+          "T-659",
+          "--message-id",
+          "M-659",
+          "--subject",
+          "Re: export fails",
+        ],
+        { stateFile: file },
+      );
+      assert.equal(w.status, 0, w.stderr);
+      const raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["659"].zohoThreadId, "T-659");
+      assert.equal(raw.issues["659"].zohoMessageId, "M-659");
+      assert.equal(raw.issues["659"].zohoSubject, "Re: export fails");
+      assert.equal(raw.threads["T-659"].linkedIssue, "659");
+    });
+  });
+
+  it("accepts the --flag=value form", async () => {
+    await withTempState(async (file) => {
+      const w = run(
+        ["record-filed-issue", "660", "customer@example.com", "--message-id=M-660", "--subject=Hi"],
+        { stateFile: file },
+      );
+      assert.equal(w.status, 0, w.stderr);
+      const raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["660"].zohoMessageId, "M-660");
+      assert.equal(raw.issues["660"].zohoSubject, "Hi");
+      assert.equal(raw.issues["660"].zohoThreadId, undefined);
+    });
+  });
+
+  for (const absent of ["", "   ", "null", "NULL", "undefined"]) {
+    it(`ignores ${JSON.stringify(absent)} for --message-id / --subject`, async () => {
+      await withTempState(async (file) => {
+        const w = run(
+          [
+            "record-filed-issue",
+            "661",
+            "customer@example.com",
+            "",
+            "--message-id",
+            absent,
+            "--subject",
+            absent,
+          ],
+          { stateFile: file },
+        );
+        assert.equal(w.status, 0, w.stderr);
+        const raw = JSON.parse(await fs.readFile(file, "utf8"));
+        assert.equal(raw.issues["661"].reporterEmail, "customer@example.com");
+        assert.equal(raw.issues["661"].zohoMessageId, undefined);
+        assert.equal(raw.issues["661"].zohoSubject, undefined);
+      });
+    });
+  }
+
+  it("treats 'undefined' as no thread linkage, like 'null'", async () => {
+    await withTempState(async (file) => {
+      const w = run(["record-filed-issue", "662", "customer@example.com", "undefined"], {
+        stateFile: file,
+      });
+      assert.equal(w.status, 0, w.stderr);
+      const raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["662"].zohoThreadId, undefined);
+      assert.equal(Object.keys(raw.threads ?? {}).length, 0);
+    });
+  });
+
+  it("keeps other issue fields when re-recording", async () => {
+    await withTempState(async (file) => {
+      const c = run(["set-issue-cursor", "663", "2026-10-01T00:00:00.000Z"], { stateFile: file });
+      assert.equal(c.status, 0, c.stderr);
+      const w = run(
+        ["record-filed-issue", "663", "customer@example.com", "--message-id", "M-663"],
+        {
+          stateFile: file,
+        },
+      );
+      assert.equal(w.status, 0, w.stderr);
+      const raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["663"].lastGithubCommentSyncAt, "2026-10-01T00:00:00.000Z");
+      assert.equal(raw.issues["663"].zohoMessageId, "M-663");
+    });
+  });
+});

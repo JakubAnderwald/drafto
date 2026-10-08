@@ -688,3 +688,123 @@ describe("buildGithubStateChangeBundle (Phase G)", () => {
     assert.equal(out.zoho_thread_id, "T-1");
   });
 });
+
+describe("zoho_route on GitHub-side bundles (issue #658)", () => {
+  const SINGLETON_ROUTE = {
+    threadId: null,
+    messageId: "1791172614617005600",
+    subject: "Editor loses focus",
+    to: "jakub@anderwald.info",
+    routable: true,
+  };
+  const EMPTY_ROUTE = { thread_id: null, message_id: null, subject: null, to: null };
+
+  it("comment batch carries the message-id route for a singleton", () => {
+    const bundle = buildGithubCommentBatchBundle({
+      issue: { number: 658, title: "Editor loses focus", state: "OPEN" },
+      comments: [],
+      zohoRoute: SINGLETON_ROUTE,
+      zohoThreadId: "",
+    });
+    assert.deepEqual(bundle.zoho_route, {
+      thread_id: null,
+      message_id: "1791172614617005600",
+      subject: "Editor loses focus",
+      to: "jakub@anderwald.info",
+    });
+    assert.equal(bundle.zoho_thread_id, "");
+  });
+
+  it("state change carries the route too", () => {
+    const bundle = buildGithubStateChangeBundle({
+      issue: { number: 658, title: "Editor loses focus" },
+      oldState: { state: "open", state_reason: null },
+      newState: { state: "closed", state_reason: "completed" },
+      lastComment: null,
+      platforms: ["web"],
+      zohoRoute: SINGLETON_ROUTE,
+    });
+    assert.equal(bundle.zoho_route.message_id, "1791172614617005600");
+    assert.equal(bundle.zoho_route.to, "jakub@anderwald.info");
+    assert.equal(bundle.zoho_route.thread_id, null);
+    assert.equal(bundle.zoho_thread_id, "");
+  });
+
+  it("accepts snake_case route keys and mirrors thread_id into zoho_thread_id", () => {
+    const bundle = buildGithubCommentBatchBundle({
+      issue: { number: 1, title: "x", state: "OPEN" },
+      comments: [],
+      zohoRoute: { thread_id: "T-9", message_id: "M-9", subject: "s", to: "a@b.co" },
+    });
+    assert.deepEqual(bundle.zoho_route, {
+      thread_id: "T-9",
+      message_id: "M-9",
+      subject: "s",
+      to: "a@b.co",
+    });
+    assert.equal(bundle.zoho_thread_id, "T-9");
+  });
+
+  it("fills thread_id from a legacy bare zohoThreadId when no route is given", () => {
+    const bundle = buildGithubStateChangeBundle({
+      issue: { number: 1, title: "x" },
+      zohoThreadId: "T-legacy",
+    });
+    assert.deepEqual(bundle.zoho_route, { ...EMPTY_ROUTE, thread_id: "T-legacy" });
+    assert.equal(bundle.zoho_thread_id, "T-legacy");
+  });
+
+  it("normalises 'null' / '' route values to null and never emits zoho_thread_id 'null'", () => {
+    const bundle = buildGithubCommentBatchBundle({
+      issue: { number: 1, title: "x", state: "OPEN" },
+      comments: [],
+      zohoRoute: { threadId: "null", messageId: "", subject: "undefined", to: "  " },
+      zohoThreadId: "null",
+    });
+    assert.deepEqual(bundle.zoho_route, EMPTY_ROUTE);
+    assert.equal(bundle.zoho_thread_id, "");
+  });
+
+  it("defaults to an all-null route", () => {
+    assert.deepEqual(buildGithubCommentBatchBundle({}).zoho_route, EMPTY_ROUTE);
+    assert.deepEqual(buildGithubStateChangeBundle({}).zoho_route, EMPTY_ROUTE);
+  });
+
+  for (const kind of ["github_comment_batch", "github_state_change"]) {
+    it(`CLI passes zohoRoute through for ${kind}`, () => {
+      const input = {
+        kind,
+        issue: { number: 658, title: "Editor loses focus", state: "OPEN" },
+        comments: [],
+        oldState: { state: "open", state_reason: null },
+        newState: { state: "closed", state_reason: "completed" },
+        platforms: [],
+        zohoRoute: SINGLETON_ROUTE,
+        zohoThreadId: "",
+      };
+      const r = spawnSync("node", [CLI], { encoding: "utf8", input: JSON.stringify(input) });
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.kind, kind);
+      assert.equal(out.zoho_route.message_id, "1791172614617005600");
+      assert.equal(out.zoho_route.subject, "Editor loses focus");
+      assert.equal(out.zoho_route.to, "jakub@anderwald.info");
+      assert.equal(out.zoho_route.thread_id, null);
+      assert.equal(out.zoho_thread_id, "");
+    });
+  }
+
+  it("CLI accepts the snake_case zoho_route input key", () => {
+    const input = {
+      kind: "github_comment_batch",
+      issue: { number: 1, title: "x", state: "OPEN" },
+      comments: [],
+      zoho_route: { thread_id: "T-1", message_id: null, subject: null, to: null },
+    };
+    const r = spawnSync("node", [CLI], { encoding: "utf8", input: JSON.stringify(input) });
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.zoho_route.thread_id, "T-1");
+    assert.equal(out.zoho_thread_id, "T-1");
+  });
+});

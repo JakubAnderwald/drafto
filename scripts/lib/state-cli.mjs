@@ -25,6 +25,7 @@
 //                                    transition. <state-reason> may be
 //                                    empty/"null" to record an explicit null.
 //   record-filed-issue <issue> <sender-email> [<zoho-thread-id>]
+//                      [--message-id <id>] [--subject <s>]
 //                                    Persist state.issues[<issue>].reporterEmail
 //                                    = sender-email (lower-cased, trimmed). Called
 //                                    by support-agent.sh after Claude reports
@@ -38,25 +39,44 @@
 //                                    mirrors onto state.threads[<id>] (linkedIssue
 //                                    + fromAddress). Empty/"null" 3rd arg is
 //                                    treated as "no linkage yet" and skips the
-//                                    thread-side write. Read back by `--comment-sync`
-//                                    via get-issue-zoho-thread-id. See issue #422.
+//                                    thread-side write. See issue #422.
+//
+//                                    --message-id / --subject record the inbound
+//                                    Zoho messageId + subject as
+//                                    issues[<issue>].zohoMessageId / .zohoSubject.
+//                                    That is the route progress emails use when
+//                                    Zoho never assigned a threadId (a customer's
+//                                    first email) — `reply <messageId>` threads
+//                                    without one. Empty / "null" / "undefined"
+//                                    values are ignored. Read back through
+//                                    `github-sync.mjs issue-route`.
 //   get-reporter-email <issue>      Print state.issues[<issue>].reporterEmail (or
 //                                    empty string if absent / unknown). Exit 0
 //                                    regardless — callers branch on the printed
 //                                    value. Used by nightly-support.sh's gate.
 //   get-issue-zoho-thread-id <issue>
 //                                    Print state.issues[<issue>].zohoThreadId (or
-//                                    empty string if absent / unknown). Exit 0
-//                                    regardless — used by --comment-sync to decide
-//                                    routing. See issue #422.
+//                                    empty string if absent / unknown / a stored
+//                                    literal "null"). Exit 0 regardless — used by
+//                                    the inbound path to decide whether a linked
+//                                    customer reply should upgrade the issue to
+//                                    thread routing. See issue #422.
 //   set-issue-field <issue> <field> <value>
 //                                    Allowlisted setter for support-side issue
-//                                    fields. <field> ∈ {zohoThreadId, reporterEmail,
+//                                    fields. <field> ∈ {zohoThreadId, zohoMessageId,
+//                                    zohoSubject, reporterEmail,
 //                                    lastGithubCommentSyncAt}. Empty/whitespace
-//                                    values are rejected. Writes to zohoThreadId
-//                                    also mirror onto state.threads[<value>]
-//                                    (linkedIssue + fromAddress when the issue has
-//                                    a reporterEmail). See issue #422.
+//                                    values and the literals "null" / "undefined"
+//                                    (any case) are rejected. Writes to
+//                                    zohoThreadId also mirror onto
+//                                    state.threads[<value>] (linkedIssue +
+//                                    fromAddress when the issue has a
+//                                    reporterEmail). See issue #422. A write
+//                                    that makes an issue routable for the first
+//                                    time also sets lastGithubCommentSyncAt =
+//                                    now (when unset), so comment-sync never
+//                                    emails comments from before the route
+//                                    existed (issue #658).
 //
 // Dark-factory subcommands (all prefixed with `factory:`). These mutate
 // logs/factory-state.json (separate file from support-state.json) via
@@ -191,6 +211,10 @@ import { bumpNotification, bumpCounters } from "./policy.mjs";
 import { isManualReviewCommand } from "./coderabbit-review.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 import { isMainModule } from "./is-main.mjs";
+// A bash caller interpolating an unset value can hand us "", "null" or
+// "undefined"; none is a real Zoho id or subject, so they count as absent.
+import { isAbsentValue, normaliseRouteValue } from "./route-value.mjs";
+import { resolveIssueRoute } from "./github-sync.mjs";
 
 function isPidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -368,7 +392,8 @@ async function main(argv) {
       const zohoThreadIdRaw = positional[2];
       if (!issueNumber || !senderEmail) {
         throw new Error(
-          "record-filed-issue requires <issue-number> <sender-email> [<zoho-thread-id>]",
+          "record-filed-issue requires <issue-number> <sender-email> [<zoho-thread-id>] " +
+            "[--message-id <id>] [--subject <s>]",
         );
       }
       const normalised = String(senderEmail).trim().toLowerCase();
@@ -376,13 +401,12 @@ async function main(argv) {
         throw new Error("record-filed-issue: sender-email is empty after trim");
       }
       // Empty string or the literal "null" (case-insensitive) → singleton path:
-      // no Zoho linkage yet, persist email only. support-agent.sh re-reads the
-      // patched footer post-filing and calls set-issue-field to fill it in.
-      const zohoThreadIdTrimmed = zohoThreadIdRaw == null ? "" : String(zohoThreadIdRaw).trim();
-      const zohoThreadId =
-        zohoThreadIdTrimmed === "" || zohoThreadIdTrimmed.toLowerCase() === "null"
-          ? null
-          : zohoThreadIdTrimmed;
+      // Zoho has not assigned a threadId to a customer's first email. Persist
+      // the email plus the inbound messageId / subject (below), which is enough
+      // for the sync modes to route by `reply <messageId>`.
+      const zohoThreadId = normaliseRouteValue(zohoThreadIdRaw);
+      const zohoMessageId = normaliseRouteValue(flags["message-id"]);
+      const zohoSubject = normaliseRouteValue(flags.subject);
       const state = await loadState(file);
       state.issues ??= {};
       state.issues[issueNumber] ??= {};
@@ -394,8 +418,17 @@ async function main(argv) {
         state.threads[zohoThreadId].linkedIssue = String(issueNumber);
         state.threads[zohoThreadId].fromAddress = normalised;
       }
+      if (zohoMessageId != null) state.issues[issueNumber].zohoMessageId = zohoMessageId;
+      if (zohoSubject != null) state.issues[issueNumber].zohoSubject = zohoSubject;
       await saveState(state, file);
-      return { ok: true, issueNumber, reporterEmail: normalised, zohoThreadId };
+      return {
+        ok: true,
+        issueNumber,
+        reporterEmail: normalised,
+        zohoThreadId,
+        zohoMessageId,
+        zohoSubject,
+      };
     }
     case "get-reporter-email": {
       const issueNumber = positional[0];
@@ -415,7 +448,10 @@ async function main(argv) {
         throw new Error("get-issue-zoho-thread-id requires <issue-number>");
       }
       const state = await loadState(file);
-      const id = state.issues?.[issueNumber]?.zohoThreadId ?? "";
+      const raw = state.issues?.[issueNumber]?.zohoThreadId;
+      // Older set-issue-field builds accepted a literal "null"; print it as
+      // absent so callers' `-z` checks see "no linkage".
+      const id = isAbsentValue(raw) ? "" : String(raw);
       // Bare value, no JSON, no trailing newline — bash callers capture directly.
       process.stdout.write(id);
       return null;
@@ -425,7 +461,13 @@ async function main(argv) {
       // lastKnownState (a nested object) or lastIssueStateSync (an audit
       // timestamp set by --state-sync). Keep this set narrow; widen only when
       // there is a real operator need.
-      const ALLOWED = new Set(["zohoThreadId", "reporterEmail", "lastGithubCommentSyncAt"]);
+      const ALLOWED = new Set([
+        "zohoThreadId",
+        "zohoMessageId",
+        "zohoSubject",
+        "reporterEmail",
+        "lastGithubCommentSyncAt",
+      ]);
       const issueNumber = positional[0];
       const field = positional[1];
       const value = positional[2];
@@ -441,11 +483,37 @@ async function main(argv) {
       if (!normalised) {
         throw new Error("set-issue-field: value is empty after trim");
       }
+      // A literal "null" / "undefined" is what an unset bash or jq value turns
+      // into. Storing it would read back as a real id (issue #658 lost its
+      // progress emails to a footer that said `zoho-thread-id: null`).
+      if (isAbsentValue(normalised)) {
+        throw new Error(`set-issue-field: refusing literal '${normalised}' as a value`);
+      }
       if (field === "reporterEmail") normalised = normalised.toLowerCase();
       const state = await loadState(file);
       state.issues ??= {};
       state.issues[issueNumber] ??= {};
-      state.issues[issueNumber][field] = normalised;
+      const issue = state.issues[issueNumber];
+      // Same routability rule the sync modes use (state only — no footer here).
+      const wasRoutable = resolveIssueRoute({ stateEntry: issue }).routable;
+      issue[field] = normalised;
+      // A route that appears after filing (an operator backfill, or the
+      // runner recording a linked customer reply's thread) must not make
+      // comment-sync email the issue's whole comment history: with no cursor
+      // yet, comment-sync would start from issue.createdAt. Start it at now;
+      // forwarding older comments stays a deliberate opt-in (set
+      // lastGithubCommentSyncAt to an earlier time afterwards).
+      // record-filed-issue does not do this: a filing-time route rightly
+      // starts from createdAt.
+      let cursorBootstrappedAt = null;
+      if (
+        !wasRoutable &&
+        resolveIssueRoute({ stateEntry: issue }).routable &&
+        isAbsentValue(issue.lastGithubCommentSyncAt)
+      ) {
+        issue.lastGithubCommentSyncAt = now;
+        cursorBootstrappedAt = now;
+      }
       if (field === "zohoThreadId") {
         state.threads ??= {};
         state.threads[normalised] ??= {};
@@ -464,7 +532,7 @@ async function main(argv) {
         }
       }
       await saveState(state, file);
-      return { ok: true, issueNumber, field, value: normalised };
+      return { ok: true, issueNumber, field, value: normalised, cursorBootstrappedAt };
     }
     case "factory:pause": {
       const reason = positional[0] ?? null;
@@ -685,7 +753,8 @@ async function main(argv) {
           "bump-counters <track-key> <sender>|" +
           "set-issue-cursor <issue-number> <cursor-iso>|" +
           "set-issue-state <issue-number> <state> [<state-reason>]|" +
-          "record-filed-issue <issue-number> <sender-email> [<zoho-thread-id>]|" +
+          "record-filed-issue <issue-number> <sender-email> [<zoho-thread-id>] " +
+          "[--message-id <id>] [--subject <s>]|" +
           "get-reporter-email <issue-number>|" +
           "get-issue-zoho-thread-id <issue-number>|" +
           "set-issue-field <issue-number> <field> <value>|" +
