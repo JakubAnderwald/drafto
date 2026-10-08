@@ -227,6 +227,7 @@ Why not the admin page: `/api/admin/delete-user` only deletes **pending** users.
 
 - **Invariants:**
   - The middleware in `apps/web/src/lib/supabase/middleware.ts` is the only server-side gate between unauthenticated / unapproved users and the app shell. Every new user-scoped route must pass through it (i.e., not be added to `PUBLIC_ROUTES` unless it is truly public).
+  - The `matcher` in `apps/web/middleware.ts` skips static assets and exactly `/api/health`, so middleware never runs for them. `/api/health` is excluded because Sentry's uptime monitor polls it, and every middleware run bills Vercel Active CPU (4 CPU-hours per 30 days on Hobby; over that, the projects pause). Only add a path to that exclusion if it is public and needs no session. Keep the `$` anchor so lookalike paths still pass through the gate.
   - `profiles.is_approved` defaults to `false` and is NOT user-writable. Only the service-role client (via `apps/web/src/lib/supabase/admin.ts`) should flip it.
   - RLS policies reference both `auth.uid()` and `is_approved` — never add a policy that only checks `auth.uid()` on user data tables.
   - `/api/admin/delete-user` permanently deletes **pending** users only. `auth.admin.deleteUser` cannot be undone, so every guard runs before it: caller is an admin, target is not the caller, target exists, and target is neither approved nor an admin (409). It also refuses (409) any account that already owns notebooks, notes or API keys, checked with the service-role client. A signup that was never approved cannot own any of those rows, because each table's insert policy requires approval. The actual deletion goes through the shared `deleteUserAccount` helper, the same one `/api/account` uses. It sweeps storage strictly first (a failure returns 500 and keeps the user), then deletes the auth user, which takes the profile and every user-owned row with it through `on delete cascade`, then runs a best-effort sweep.
@@ -238,6 +239,7 @@ Why not the admin page: `/api/admin/delete-user` only deletes **pending** users.
   - Account deletion is not an MCP tool and must never accept an API key.
 - **Tests that will catch regressions:**
   - `apps/web/__tests__/unit/middleware.test.ts` — covers public-route allowlist, unauthenticated redirect, unapproved redirect, approved pass-through, and the verified-user header injection.
+  - `apps/web/__tests__/unit/middleware-matcher.test.ts` — runs the real `matcher` through Next's `unstable_doesMiddlewareMatch`: `/api/health` and static assets skip middleware, while lookalike paths (`/api/healthz`, `/api/health/extra`) and app/API routes still run it.
   - `apps/web/__tests__/unit/auth-callback.test.ts` — PKCE code exchange and sanitized redirect.
   - `apps/web/__tests__/unit/admin-approve-user.test.ts` + `apps/web/__tests__/unit/approve-user-one-click.test.ts` — admin-only approval and signed-link flow.
   - `apps/web/__tests__/unit/admin-delete-user.test.ts` + `apps/web/__tests__/unit/remove-user-attachments.test.ts` — admin-only deletion of pending users (every rejection path asserts nothing was deleted) and the best-effort storage cleanup.
