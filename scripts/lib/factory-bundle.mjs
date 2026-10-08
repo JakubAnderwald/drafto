@@ -62,6 +62,8 @@
 //     "issue":         { "number", "title", "body", ... },
 //     "approvedPlan":  { "commentId", "url", "body", "createdAt" },
 //     "comments":      [...],
+//     "revisionComments": [...],
+//     "replyMarker":   "drafto-factory-revise-reply-<commentId>" | null,
 //     "priorPr":       { "number", "url", "headRef", "state" } | null,
 //     "attempts":      <number>,
 //     "config":        { "phase", ... },
@@ -480,6 +482,7 @@ export function buildFactoryImplementBundle({
   comments = [],
   revisionComments = [],
   screenshotSources = [],
+  replyMarker = null,
   priorPr = null,
   attempts = 0,
   config,
@@ -524,6 +527,13 @@ export function buildFactoryImplementBundle({
     // Reporter change requests from the In Test preview, to apply on top of the
     // approved plan, on the existing PR branch. Empty on a first implementation.
     revisionComments: envelopeComments(revisionComments),
+    // The marker the implementer's issue reply must carry when the feedback
+    // needs no code change; bash checks for it as a regex and posts a fallback
+    // when it's missing, so only the exact shape bash builds gets through.
+    replyMarker:
+      typeof replyMarker === "string" && /^drafto-factory-revise-reply-\d+$/.test(replyMarker)
+        ? replyMarker
+        : null,
     reporter: reporterFromBody(issue.body ?? ""),
     priorPr: priorPr
       ? {
@@ -851,6 +861,7 @@ async function main() {
       comments: input.comments,
       revisionComments: input.revisionComments,
       screenshotSources: input.screenshotSources,
+      replyMarker: input.replyMarker,
       priorPr: input.priorPr,
       attempts: input.attempts,
       config: input.config,

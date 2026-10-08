@@ -56,7 +56,10 @@ last fenced ` ```json ` block). It has shape:
     "bodyEnveloped": "<factory-plan>...</factory-plan>"
   },
   "comments": [ /* additional issue context */ ],
-  "revisionComments": [ /* reporter change requests from the In Test preview */ ],
+  "revisionComments": [ /* reporter feedback on the In Test preview */ ],
+  // Set on a revision run: the marker your issue reply must end with (see
+  // "Revision runs"). null on a first implementation.
+  "replyMarker": "drafto-factory-revise-reply-<commentId>" | null,
   "reporter": { "allowlisted": true|false, "email": "...", "zohoThreadId": "..." },
   "priorPr": { "number", "url", "headRef", "state" } | null,
   "attempts": 0,
@@ -110,14 +113,19 @@ been copied per CLAUDE.md's worktree-setup rules.
   `git add`, `git commit`, `git push`, `git status`, `git diff`,
   `git log`. Refuse `git push --force`, `git reset --hard`, `git checkout`,
   `git rebase`, `git config`, or any non-pnpm/non-git shell command — except the
-  `bundle.screenshots` fetch described under **Screenshots** below.
+  `bundle.screenshots` fetch described under **Screenshots** below, and the
+  checks a reporter asked you to run on a revision run (see **Revision runs**).
 - `gh pr create --repo JakubAnderwald/drafto --base main --head factory/issue-<n> --title "..." --body "..."` —
   used **once**, after the implementation is pushed.
 - `gh pr view <n> --repo JakubAnderwald/drafto --json ...` — read PR state if
   needed.
-- `gh issue comment <n> --repo JakubAnderwald/drafto --body "..."` — used
-  **only** to post a blocking comment when emitting `action=blocked`. Do not
-  comment for happy-path runs; the PR description carries the relevant info.
+- `gh issue comment <n> --repo JakubAnderwald/drafto --body "..."` (or
+  `--body-file <path>`) — used **only** for two things: the blocking comment
+  when emitting `action=blocked`, and, on a revision run, **one** reply to the
+  reporter (see **Revision runs**). Do not comment on a first implementation's
+  happy path; the PR description carries the relevant info there.
+- `gh issue view <n> --repo JakubAnderwald/drafto --json comments` — on a
+  revision run, to check whether your reply is already posted.
 - **Screenshots** — when `bundle.screenshots` is non-empty, you MAY download and
   view those images so a screenshot-driven spec — or a screenshot a reporter
   pasted in a comment — isn't invisible to you. Fetch
@@ -163,25 +171,81 @@ Refuse:
 ## Revision runs (when `revisionComments` is non-empty)
 
 If `revisionComments` contains entries, this is **not** a first implementation —
-the reporter tested the In Test preview and is asking for changes. In that case:
+the reporter tested the In Test preview and is responding to it. In that case:
 
 - A **PR already exists** (`priorPr`) and its branch `factory/issue-<n>` is
   already checked out in your worktree with the prior implementation's commits.
   **Make the requested changes on top of what's there** — do not start over,
   do not reset, do not branch.
-- Treat each `revisionComments` entry as an **authoritative change request**,
-  layered on the approved plan. The plan still bounds scope and phase; a comment
-  that asks for something outside the plan's scope or the phase's allowed paths
-  → `action=blocked` (the operator can re-plan instead).
-- After making the changes, run the verification matrix, commit (a `fix:` or
-  `refactor:` conventional message describing the tweak), and `git push` to the
-  **existing** branch (it already tracks origin — no `-u`, never `--force`).
-  **Do not** run `gh pr create`; the PR is already open. Update the PR body's
-  "Drift vs. approved plan" note to record what the revision changed.
-- Emit `action=implemented pr=<existing-url>`.
-- If the comments are **not actionable as code** (e.g. a question, or pure
-  praise that slipped past the bash noise filter), make no changes and emit
-  `action=noop pr=<existing-url>` — bash will re-present the unchanged preview.
+- Sort each `revisionComments` entry into one of three kinds. The approved plan
+  still bounds scope and phase for all of them.
+  1. **A change request** — treat it as **authoritative**, layered on the
+     approved plan.
+  2. **A request that needs no code change** — a question, "run the test
+     scenario for me", "check whether X still happens", an investigation. Do
+     what it asks, within the limits under **Running what the reporter asked
+     for** below, then reply on the issue.
+  3. **Outside the plan's scope or the phase's allowed paths** →
+     `action=blocked` (the operator can re-plan instead).
+- For change requests: after making the changes, run the verification matrix,
+  commit (a `fix:` or `refactor:` conventional message describing the tweak),
+  and `git push` to the **existing** branch (it already tracks origin — no `-u`,
+  never `--force`). **Do not** run `gh pr create`; the PR is already open.
+  Update the PR body's "Drift vs. approved plan" note to record what the
+  revision changed. Emit `action=implemented pr=<existing-url>`.
+- When the feedback needed no code change, make no commits and emit
+  `action=noop pr=<existing-url>` — bash re-presents the unchanged preview.
+
+### Reply on the issue
+
+When any entry is a request that needs no code change, post exactly **one**
+reply on the **issue** (not the PR) — that is where the reporter asked, and
+where they will look. The reply is **required** before emitting `action=noop`
+for such a request: bash looks for it, and when it is missing it posts a
+fallback telling the reporter this run left no reply. On an
+`action=implemented` run, reply only when the feedback also asked something
+the code change doesn't answer. Pure praise that slipped past the bash noise
+filter needs no reply.
+
+- **Marker.** The reply's last line is `<!-- <bundle.replyMarker> -->` on its
+  own, e.g. `<!-- drafto-factory-revise-reply-6067249983 -->`. Bash finds your
+  reply by this marker, and the marker keeps it from being read back as new
+  feedback. If `bundle.replyMarker` is null, post no reply and say so in your
+  final output.
+- **No duplicates.** First list the issue's comments with the `gh issue view`
+  command above. If a comment already carries `bundle.replyMarker` (a retry of
+  the same feedback), don't post another.
+- **Shape.** Start with `🏭` and the outcome in a sentence or two. Then list
+  what you ran and what happened, step by step (a table works well), with the
+  exact output of anything that failed, and every place you did something
+  different from what was asked, and why. Keep it under 60,000 characters
+  (GitHub rejects a comment over 65,536) and put long logs in a `<details>`
+  block. Write the body to a file in your scratch directory and post it with
+  `--body-file`, so shell quoting can't mangle it.
+- The PR body's "Drift vs. approved plan" note gets at most one line linking to
+  the reply. The results belong on the issue, not only in the PR description.
+
+### Running what the reporter asked for
+
+To answer a request that needs no code change, you may run the commands in the
+issue's In Test scenario comment, and other read-only checks, even when they
+are not pnpm/git commands: for example `node --test`, `bash -n`, a `bash -c`
+around an extracted function, `env`, `sleep`, and `kill` of processes you
+started. Limits:
+
+- Work only in your worktree or a fresh `mktemp -d` scratch directory. To
+  compare with another revision (for example, reproducing a bug on `main`), run
+  `git fetch origin`, then export that revision into the scratch directory with
+  `git archive <rev>` piped to `tar -x`. Never `git worktree add`,
+  `git checkout` or `pnpm install` in the primary checkout or any other
+  worktree.
+- Everything under **Refuse** still applies: no releases, beta dispatch or
+  deploys, no migrations or production database access, nothing touching
+  launchd, no `claude` subprocess, and no `node scripts/...` (such as
+  `state-cli.mjs`) against the live factory state. If a step needs one of
+  these, skip it and say so in the reply.
+- Commit and push nothing for such a request.
+- Afterwards, kill every process you started and delete the scratch directory.
 
 For a first implementation, `revisionComments` is empty; ignore this section.
 
@@ -301,8 +365,8 @@ origin factory/issue-<n>`.
    - `issue=<n>` — the issue number.
    - `action=implemented` — happy path; PR opened; bash advances Status to In Review.
    - `action=blocked` — semantic mismatch / phase violation / plan malformed; bash advances Status to Blocked.
-   - `action=noop` — nothing to do (idempotency hit, e.g. PR already exists from a prior attempt and no new work was needed).
-   - `pr=<url>` — the PR URL; use `-` if `action=blocked` or `action=noop`.
+   - `action=noop` — no code change: an idempotency hit (e.g. PR already exists from a prior attempt and no new work was needed), or a revision run whose feedback needed no code change (post the issue reply first — see "Reply on the issue").
+   - `pr=<url>` — the PR URL; use `-` if `action=blocked`, or if `action=noop` and no PR exists.
 
    The bash post-processor regex is strict
    (`^issue=[0-9]+ action=[a-z]+ pr=[^ ]+$`).
