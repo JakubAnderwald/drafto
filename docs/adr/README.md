@@ -74,3 +74,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0039](./0039-privacy-policy-processor-guard.md)                     | Privacy Policy Kept in Step with the Code            | Accepted           | 2026-10-04 |
 | [0040](./0040-app-store-promote-lanes.md)                            | App Store Submission Promotes an Existing Build      | Accepted           | 2026-09-27 |
 | [0041](./0041-factory-ci-red-and-cancelled-checks.md)                | Factory Handling of Red and Cancelled CI             | Accepted           | 2026-10-08 |
+| [0042](./0042-nightly-support-runner-owns-beta-dispatch.md)          | Nightly Support Runner Owns Beta Dispatch            | Accepted           | 2026-10-08 |

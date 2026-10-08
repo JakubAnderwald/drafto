@@ -19,6 +19,10 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const agentPath = resolve(HERE, "..", "factory-agent.sh");
 const script = readFileSync(agentPath, "utf8");
+// Build-root helpers (ensure/claim/release_beta_build_root, copy_worktree_env,
+// …) and the root defaults moved to the lib both schedulers source.
+const libPath = resolve(HERE, "..", "lib", "beta-build-root.sh");
+const lib = readFileSync(libPath, "utf8");
 
 // Slice the In Review → In Test advance out of the script so structural
 // assertions can't be satisfied by an incidental match elsewhere.
@@ -39,9 +43,9 @@ const sweepBlock = (() => {
 })();
 
 // The intest_handoff / intest_fallback_comment function bodies.
-function fnBody(name) {
+function fnBody(name, src = script) {
   const re = new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?^\\}`, "m");
-  const m = script.match(re);
+  const m = src.match(re);
   assert.ok(m, `could not find ${name}()`);
   return m[0];
 }
@@ -378,7 +382,7 @@ intest_beta_gate ${JSON.stringify(platforms)}
 });
 
 describe("ensure_beta_build_root — working-tree safety", () => {
-  const body = fnBody("ensure_beta_build_root");
+  const body = fnBody("ensure_beta_build_root", lib);
 
   it("refuses to use the factory checkout or the fossil as a build root", () => {
     // It hard-resets and cleans the root. The fossil IS the operator's working
@@ -1198,18 +1202,24 @@ describe("pre-merge beta knobs", () => {
   });
 
   it("points the build roots at dedicated paths, not the fossil or this checkout", () => {
+    // The plist's explicit knobs win; otherwise the external build volume when it
+    // is mounted, else the original ~/code locations.
     assert.match(
-      script,
-      /BETA_MOBILE_ROOT="\$\{DRAFTO_BETA_MOBILE_ROOT:-\/Users\/jakub\/code\/drafto-beta-mobile\}"/,
+      lib,
+      /BETA_MOBILE_ROOT="\$\{DRAFTO_BETA_MOBILE_ROOT:-\$parent\/drafto-beta-mobile\}"/,
     );
     assert.match(
-      script,
-      /BETA_DESKTOP_ROOT="\$\{DRAFTO_DESKTOP_BUILD_ROOT:-\/Users\/jakub\/code\/drafto-beta-desktop\}"/,
+      lib,
+      /BETA_DESKTOP_ROOT="\$\{DRAFTO_DESKTOP_BUILD_ROOT:-\$parent\/drafto-beta-desktop\}"/,
     );
     assert.match(
-      script,
+      lib,
       /DESKTOP_FOSSIL_ROOT="\$\{DRAFTO_DESKTOP_FOSSIL_ROOT:-\/Users\/jakub\/code\/drafto\}"/,
     );
+    assert.match(lib, /parent="\/Users\/jakub\/code"/, "~/code fallback kept");
+    assert.match(lib, /-d "\$BETA_BUILDS_VOLUME_DIR"/, "volume used only when mounted");
+    // The factory must not shadow the lib's defaults with its own.
+    assert.doesNotMatch(script, /^\s*(BETA_MOBILE_ROOT|BETA_DESKTOP_ROOT|DESKTOP_FOSSIL_ROOT)=/m);
   });
 
   it("dispatches betas before writing the scenario (the build takes 20-40 min)", () => {
@@ -1233,7 +1243,7 @@ describe("pre-merge beta knobs", () => {
   });
 
   it("copies the Play service-account key into build roots (Android lane needs it)", () => {
-    assert.match(script, /apps\/mobile\/google-play-service-account\.json/);
+    assert.match(lib, /apps\/mobile\/google-play-service-account\.json/);
   });
 });
 

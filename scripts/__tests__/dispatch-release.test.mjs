@@ -15,6 +15,7 @@ import {
   laneLogPath,
   dispatchLanes,
   DESKTOP_FOSSIL_ROOT_DEFAULT,
+  parseReleaseIssues,
   _setSpawnForTests,
 } from "../lib/dispatch-release.mjs";
 
@@ -234,6 +235,77 @@ describe("dispatch-premerge CLI", () => {
       JSON.parse(r.stdout).dispatched.map((d) => d.id),
       ["mobile"],
     );
+  });
+});
+
+describe("dispatch --release-issues (nightly support runner, ADR-0042)", () => {
+  const CLI = fileURLToPath(new URL("../lib/dispatch-release.mjs", import.meta.url));
+  const run = (args) => spawnSync("node", [CLI, ...args], { encoding: "utf8" });
+
+  it("normalises the CSV: numbers only, de-duplicated, sorted", () => {
+    assert.equal(parseReleaseIssues("661, 658,661"), "658,661");
+    assert.equal(parseReleaseIssues("7"), "7");
+  });
+
+  it("rejects anything that is not a list of issue numbers", () => {
+    for (const bad of ["", " , ", "658;rm -rf", "#658", "0", "65a", "658,-1", undefined]) {
+      assert.throws(
+        () => parseReleaseIssues(bad),
+        /comma-separated list of issue numbers/,
+        String(bad),
+      );
+    }
+  });
+
+  it("hands the issues to the lane as DRAFTO_RELEASE_ISSUES", () => {
+    const r = run([
+      "dispatch",
+      "--platforms",
+      "mobile",
+      "--release-issues",
+      "661,658",
+      "--dry-run",
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.deepEqual(
+      out.dispatched.map((d) => [d.id, d.releaseIssues]),
+      [["mobile", "658,661"]],
+    );
+  });
+
+  it("passes the env to the real spawn path (not just the dry-run echo)", async () => {
+    const seen = [];
+    _setSpawnForTests(async (lane, opts) => {
+      seen.push([lane.id, opts.laneEnv]);
+      return { ok: true, pid: 4242, logPath: "/tmp/x.log", exitPath: "/tmp/x.log.exit" };
+    });
+    const out = await dispatchLanes({
+      platforms: { mobile: true },
+      laneEnv: { DRAFTO_RELEASE_ISSUES: "658" },
+    });
+    assert.deepEqual(seen, [["mobile", { DRAFTO_RELEASE_ISSUES: "658" }]]);
+    assert.equal(out.dispatched[0].releaseIssues, "658");
+  });
+
+  it("fails the whole dispatch on a malformed list — nothing is spawned", () => {
+    const r = run([
+      "dispatch",
+      "--platforms",
+      "mobile",
+      "--release-issues",
+      "658,abc",
+      "--dry-run",
+    ]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /comma-separated list of issue numbers/);
+    assert.equal(r.stdout, "");
+  });
+
+  it("omits the env entirely when the flag is absent (factory --release is unchanged)", () => {
+    const r = run(["dispatch", "--platforms", "mobile", "--dry-run"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).dispatched[0].releaseIssues, undefined);
   });
 });
 

@@ -50,10 +50,14 @@
 // instead, and assertDesktopFossil() enforces the invariant at dispatch time.
 // See docs/operations/desktop-build-fossil.md and ADR-0027.
 //
-// CLI (called from scripts/factory-agent.sh --release):
+// CLI (called from scripts/factory-agent.sh --release / --watch, and from
+// scripts/nightly-support.sh Phase 4):
 //   derive-platforms (--diff-file <path|-> | --diff <str>)
 //   dispatch (--diff-file <path|-> | --platforms mobile,desktop) [--repo-root <dir>]
-//           [--desktop-root <dir>]
+//           [--desktop-root <dir>] [--release-issues <n,n,…>]
+//        --release-issues becomes DRAFTO_RELEASE_ISSUES in the lane env, so the
+//        Fastlane "now live" hook (comment-released-issues.mjs) announces those
+//        support issues even when its tag-range walk misses them (ADR-0042).
 //
 // Prints JSON to stdout and exits 0; errors print {"error": "..."} to stderr and
 // exit non-zero — same shape as factory-project.mjs / state-cli.mjs.
@@ -410,6 +414,9 @@ export async function dispatchLanes({
       ...(spawned?.pid ? { pid: spawned.pid } : {}),
       ...(spawned?.logPath ? { logPath: spawned.logPath } : {}),
       ...(spawned?.exitPath ? { exitPath: spawned.exitPath } : {}),
+      // Which support issues this build will announce (dispatch --release-issues),
+      // echoed so the caller's log shows it and a dry run can be checked.
+      ...(laneEnv?.DRAFTO_RELEASE_ISSUES ? { releaseIssues: laneEnv.DRAFTO_RELEASE_ISSUES } : {}),
     });
   }
   return { dispatched, failed, skipped, platforms: plats };
@@ -431,6 +438,23 @@ async function readDiff(flags) {
   if (!src) throw new Error("requires --diff-file <path|-> or --diff <str>");
   if (src === "-") return readStdin();
   return readFileSync(src, "utf8");
+}
+
+// Validate + normalise the --release-issues CSV: issue numbers only, so the
+// value is safe to hand to a lane's environment and the hook can trust it.
+// Throws on anything else (including an empty list) — a typo must fail the
+// dispatch loudly rather than ship a build that announces nothing.
+export function parseReleaseIssues(csv) {
+  const parts = String(csv ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (parts.length === 0 || !parts.every((p) => /^[1-9][0-9]*$/.test(p))) {
+    throw new Error(
+      `--release-issues must be a comma-separated list of issue numbers (got ${JSON.stringify(String(csv ?? ""))})`,
+    );
+  }
+  return [...new Set(parts.map(Number))].sort((a, b) => a - b).join(",");
 }
 
 function parsePlatforms(csv) {
@@ -456,6 +480,10 @@ async function main(argv) {
     case "dispatch": {
       const platforms = flags.platforms ? parsePlatforms(flags.platforms) : undefined;
       const diffFiles = platforms ? undefined : await readDiff(flags);
+      const releaseIssues =
+        flags["release-issues"] === undefined
+          ? undefined
+          : parseReleaseIssues(flags["release-issues"]);
       return dispatchLanes({
         repoRoot: flags["repo-root"] ?? DEFAULT_REPO_ROOT,
         desktopRoot: flags["desktop-root"],
@@ -464,6 +492,7 @@ async function main(argv) {
         dryRun,
         logDir: flags["log-dir"],
         logKey: flags["log-key"],
+        ...(releaseIssues ? { laneEnv: { DRAFTO_RELEASE_ISSUES: releaseIssues } } : {}),
       });
     }
     // Pre-merge dispatch from an In Test card's PR head. Same lanes and the same
@@ -502,7 +531,7 @@ async function main(argv) {
       process.stdout.write(
         "Usage: dispatch-release.mjs <derive-platforms (--diff-file <path|-> | --diff <str>)|" +
           "dispatch (--diff-file <path|-> | --platforms mobile,desktop) [--repo-root <dir>] " +
-          "[--desktop-root <dir>] [--log-dir <dir>] [--log-key <key>] [--dry-run]|" +
+          "[--desktop-root <dir>] [--log-dir <dir>] [--log-key <key>] [--release-issues <n,n>] [--dry-run]|" +
           "dispatch-premerge (same flags) --issue <n> [--pr <n>] [--sha <sha>] [--only <ids>]>\n",
       );
       return null;

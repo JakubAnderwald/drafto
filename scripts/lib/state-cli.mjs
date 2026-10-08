@@ -165,6 +165,24 @@
 //                                    re-run. The worktree is left to
 //                                    housekeeping's reap.
 //
+// Nightly beta-release retry counters (ADR-0042). These live in
+// logs/support-release-state.json — written only by nightly-support.sh, so they
+// never race support-agent.sh's every-minute writes to support-state.json — and
+// default to that file; --state-file overrides it as for every other subcommand.
+//
+//   record-release-attempt <issue> <platform> ok|fail [--closed-at <iso>]
+//                                    Record one nightly attempt to ship <issue>'s
+//                                    fix to <platform> (android|ios|macos) under
+//                                    issues[<n>].releaseAttempts[<platform>] =
+//                                    {failures, lastAttemptAt, lastResult}. ok
+//                                    resets failures to 0; fail increments it.
+//                                    --closed-at scopes the count to that close
+//                                    (a record from an earlier close restarts
+//                                    at 0). Prints the updated record.
+//   reset-release-attempts <issue>  Forget every platform's attempts for
+//                                    <issue>, so the next nightly retries it
+//                                    (operator escape hatch after a give-up).
+//
 // State path can be overridden via --state-file <path> for tests; defaults to
 // state.mjs's DEFAULT_STATE_PATH for support subcommands and to
 // factory-state.mjs's DEFAULT_FACTORY_STATE_PATH for `factory:*` subcommands.
@@ -215,6 +233,11 @@ import { isMainModule } from "./is-main.mjs";
 // "undefined"; none is a real Zoho id or subject, so they count as absent.
 import { isAbsentValue, normaliseRouteValue } from "./route-value.mjs";
 import { resolveIssueRoute } from "./github-sync.mjs";
+
+// The release-attempt subcommands load support-release.mjs (and with it the
+// beta dispatcher) only when they run: support-agent.sh calls this CLI every
+// minute, and its state updates must not depend on the release code loading.
+const loadReleaseModule = () => import("./support-release.mjs");
 
 function isPidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -745,6 +768,47 @@ async function main(argv) {
       await saveFactoryState(state, file);
       return { ...result, killed: stop.killed };
     }
+    case "record-release-attempt": {
+      const issueNumber = positional[0];
+      const platform = positional[1];
+      const result = positional[2];
+      if (!issueNumber || !platform || !result) {
+        throw new Error("record-release-attempt requires <issue> <platform> ok|fail");
+      }
+      if (!/^[1-9][0-9]*$/.test(issueNumber)) {
+        throw new Error(
+          `record-release-attempt: invalid issue number ${JSON.stringify(issueNumber)}`,
+        );
+      }
+      const {
+        loadReleaseState,
+        saveReleaseState,
+        recordReleaseAttempt,
+        DEFAULT_RELEASE_STATE_PATH,
+      } = await loadReleaseModule();
+      const releaseFile = flags["state-file"] ?? DEFAULT_RELEASE_STATE_PATH;
+      const state = await loadReleaseState(releaseFile);
+      const record = recordReleaseAttempt(state, issueNumber, platform, result, now, {
+        closedAt: flags["closed-at"],
+      });
+      await saveReleaseState(state, releaseFile);
+      return { ok: true, issueNumber: String(issueNumber), platform, ...record };
+    }
+    case "reset-release-attempts": {
+      const issueNumber = positional[0];
+      if (!issueNumber) throw new Error("reset-release-attempts requires <issue>");
+      const {
+        loadReleaseState,
+        saveReleaseState,
+        resetReleaseAttempts,
+        DEFAULT_RELEASE_STATE_PATH,
+      } = await loadReleaseModule();
+      const releaseFile = flags["state-file"] ?? DEFAULT_RELEASE_STATE_PATH;
+      const state = await loadReleaseState(releaseFile);
+      resetReleaseAttempts(state, issueNumber);
+      await saveReleaseState(state, releaseFile);
+      return { ok: true, issueNumber: String(issueNumber), releaseAttempts: null };
+    }
     case "--help":
     case "-h":
     case undefined:
@@ -771,6 +835,8 @@ async function main(argv) {
           "factory:get-attempts <issue>|" +
           "factory:set-issue-field <issue> <field> <value>|" +
           "factory:get-issue <issue>|" +
+          "record-release-attempt <issue> <platform> ok|fail|" +
+          "reset-release-attempts <issue>|" +
           "factory:cr-cli-status|" +
           "factory:cr-cli-pause-until <until-iso> [<reason>]|" +
           "factory:cr-cli-resume|" +

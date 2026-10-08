@@ -115,6 +115,20 @@ The footer is LLM-written, so it never decides who passes the allowlist gate or 
 
 This eliminates the spoof window where a forged `<!-- drafto-support-agent v1 ... reporter-allowlisted: true -->` block in a customer's email body could slip through if the LLM copied it verbatim into the issue body. See [ADR-0025](../adr/0025-support-allowlist-from-zoho-sender.md) for the full rationale.
 
+### Stage 2 releases (nightly beta dispatch)
+
+The Claude session in Phase 3 **stops at the squash-merge**. It never runs a Fastlane lane or a `pnpm release:*` script. It works in `$HOME/code/drafto-support-<n>` (branch `fix/support-<n>`) and never in the primary checkout, which holds the desktop fossil. The runner removes that worktree once the issue is closed. The **runner** ships the betas, in Phase 4 of `scripts/nightly-support.sh` ([ADR-0042](../adr/0042-nightly-support-runner-owns-beta-dispatch.md)):
+
+1. `scripts/lib/support-release.mjs pending` finds `support` issues closed as _completed_ in the last 14 days (`SUPPORT_RELEASE_WINDOW_DAYS`) whose merged closing PR touched `apps/mobile` (Android and iOS), `apps/desktop` (macOS) or `packages/shared` (all three). A platform drops out once its "Now live" notice has been posted since the issue's latest close, or after 3 failed attempts.
+2. `support-release.mjs main-ci` waits up to 45 min for main's required checks on `origin/main`'s head. Red or pending means retry next night.
+3. Each lane is prepared in the dark factory's shared beta build roots (`scripts/lib/beta-build-root.sh`, under its pid lock) and dispatched with `dispatch-release.mjs dispatch --release-issues <n,…>`: mobile runs `release:beta:all`, macOS runs `release:beta` from the fossil replica. The runner **waits** for each lane's exit code. A lane is killed when its log is silent for 120 min or it has run for 180 min.
+4. The Fastlane hook `comment-released-issues.mjs` posts `Now live in <track>. <!-- drafto-progress --> <!-- now-live:<platform>:<build> -->` on every issue in `$DRAFTO_RELEASE_ISSUES` (and the tag range), once per platform per fix. `--comment-sync` forwards it to the reporter.
+5. `support-release.mjs settle` counts a platform as shipped only if that notice appeared. Otherwise the attempt is recorded as failed in `logs/support-release-state.json` and retried on later nights. After 3 failures the issue gets `needs-manual-intervention` and an operator comment, without the progress marker, naming the lane log.
+
+None of these spends an attempt: main CI red or pending, a build root in use or failing to prepare, a lane refused by the fossil check, or the external build volume not mounted. They are simply retried the next night. The failure budget belongs to the current fix, so an issue that is reopened and fixed again starts from zero. A fix that leaves the 14-day window without shipping, because it only ever hit these outcomes, is labelled `needs-manual-intervention` with one operator comment. It never just drops out. Because the script also exits early only when nothing is pending, a fix whose build failed is retried even on nights with no open support issue.
+
+**After a give-up:** fix the cause, then run `node scripts/lib/state-cli.mjs reset-release-attempts <n>` on the Mac mini and remove the label. Alternatively, ship by hand (`cd apps/mobile && pnpm release:beta:android|ios`, or `pnpm release:beta` for desktop from the fossil checkout). The nightly log lists every platform's outcome under `Phase 4:`. Lane logs are in `logs/support-release/`.
+
 ### Account-deletion and data-rights requests
 
 `support@drafto.eu` is the published email fallback for deleting a Drafto account. The public page [drafto.eu/account/delete](https://drafto.eu/account/delete), `/support`, `/privacy` and the store privacy policy (`apps/mobile/store/metadata/privacy-policy.md`) all send people who no longer have the app here. Publish no other address for this: `support@drafto.eu` is the mailbox the agent polls, so only mail sent here reaches the escalation rule below. Users who can still sign in delete their account instantly in the app; see [`auth.md` → Account deletion](./auth.md#account-deletion).

@@ -257,20 +257,13 @@ FACTORY_INTEST_BETA="${FACTORY_INTEST_BETA:-0}"
 FACTORY_INTEST_BETA_DESKTOP="${FACTORY_INTEST_BETA_DESKTOP:-0}"
 
 # Where the fossil lives (React 19.1.x, never reinstalled) and the dedicated,
-# persistent build roots the beta lanes run in. The mobile root is seeded from
-# this checkout; the desktop root is a clonefile replica of the fossil and must
-# NEVER be `pnpm install`ed — dispatch-release.mjs asserts React 19.1.x before it
-# will spawn the lane. See docs/operations/desktop-build-fossil.md and ADR-0027.
-#
-# The build roots are DEDICATED and disposable: the factory hard-resets them to
-# the commit under test. They must never be the fossil itself or this checkout —
-# ensure_beta_build_root refuses to touch either, because a `reset --hard` there
-# would destroy the operator's working tree and any uncommitted edits in it. (The
-# desktop Fastlane lane now restores the Info.plist / project.pbxproj it rewrites,
-# but the operator's own edits are reason enough.)
-DESKTOP_FOSSIL_ROOT="${DRAFTO_DESKTOP_FOSSIL_ROOT:-/Users/jakub/code/drafto}"
-BETA_MOBILE_ROOT="${DRAFTO_BETA_MOBILE_ROOT:-/Users/jakub/code/drafto-beta-mobile}"
-BETA_DESKTOP_ROOT="${DRAFTO_DESKTOP_BUILD_ROOT:-/Users/jakub/code/drafto-beta-desktop}"
+# persistent build roots the beta lanes run in — DESKTOP_FOSSIL_ROOT,
+# BETA_MOBILE_ROOT and BETA_DESKTOP_ROOT — are defined in
+# scripts/lib/beta-build-root.sh, sourced just after the EXIT trap below. That
+# lib is shared with nightly-support.sh, which ships merged support fixes into
+# the SAME roots (ADR-0042), so the defaults and the root lock live in one place.
+# The build roots are DEDICATED and disposable: they are hard-reset to the commit
+# being built and must never be the fossil itself or this checkout.
 
 # ── Args ────────────────────────────────────────────────────────────────────
 MODE_PLAN=0
@@ -474,6 +467,14 @@ EOF
   fi
 }
 trap cleanup EXIT
+
+# Beta build roots: copy_worktree_env, seed_worktree_node_modules,
+# run_pnpm_install, ensure_beta_build_root, claim_beta_build_root,
+# release_beta_build_root and the root paths. Its caller contract (REPO_ROOT,
+# SCRIPT_DIR, LOG_FILE, INSTALL_TIMEOUT_SEC, log, logerr) is satisfied above.
+# Sourced after the trap so a missing lib still files a factory-failure issue.
+# shellcheck source=lib/beta-build-root.sh
+source "$SCRIPT_DIR/lib/beta-build-root.sh"
 
 START_TIME=$(date +%s)
 log "=== factory-agent --$MODE_NAME run started (phase=$PHASE, dry-run=$DRY_RUN) ==="
@@ -1131,80 +1132,8 @@ pr_head_oid() {
   gh pr view "$1" --repo JakubAnderwald/drafto --json headRefOid --jq '.headRefOid' 2>>"$LOG_FILE" || echo ""
 }
 
-# Copy the gitignored env files CLAUDE.md lists into a fresh worktree. Phase B
-# is web-only so the mobile/desktop envs are usually absent — copy what exists,
-# never fail the run on a missing optional file.
-copy_worktree_env() {
-  local wt="$1"
-  local f
-  # google-play-service-account.json is required by the Android Fastlane lane
-  # (json_key_path defaults to it) — without it a beta build from any non-primary
-  # checkout fails at upload. worktree-bootstrap.sh copies it for humans.
-  for f in \
-    apps/web/.env.local apps/web/.env.production \
-    apps/mobile/.env apps/mobile/.env.production \
-    apps/mobile/google-play-service-account.json \
-    apps/desktop/.env apps/desktop/.env.production; do
-    if [[ -f "$REPO_ROOT/$f" ]]; then
-      mkdir -p "$wt/$(dirname "$f")"
-      cp "$REPO_ROOT/$f" "$wt/$f" 2>>"$LOG_FILE" || log "WARNING: failed to copy $f into worktree"
-    fi
-  done
-  if [[ -f "$REPO_ROOT/apps/mobile/android/local.properties" ]]; then
-    mkdir -p "$wt/apps/mobile/android"
-    cp "$REPO_ROOT/apps/mobile/android/local.properties" \
-      "$wt/apps/mobile/android/local.properties" 2>>"$LOG_FILE" || true
-  fi
-}
-
-# Seed a fresh worktree's node_modules from the main checkout via APFS clonefile
-# (`cp -c`: O(1), copy-on-write, same volume). The pnpm store lives on an
-# external volume on the Mac mini, so a cold `pnpm install` cross-device-copies
-# ~2000 packages and ran for 3.5+ hours on #451. Cloning the main checkout's
-# already-materialized trees turns the subsequent install into a fast offline
-# reconcile that adds ~0 bytes. Best-effort: on any failure the partial dir is
-# removed and `pnpm install` repopulates it normally. Only the pnpm workspace
-# roots (repo root + apps/* + packages/*) are seeded — never the factory's own
-# worktrees/ checkouts.
-seed_worktree_node_modules() {
-  # $2 (optional) overrides the source checkout. The desktop beta root seeds
-  # from the FOSSIL checkout, not $REPO_ROOT — see the fossil note on
-  # BETA_DESKTOP_ROOT. Defaults to $REPO_ROOT so existing callers are unchanged.
-  local wt="$1" src rel
-  local src_root="${2:-$REPO_ROOT}"
-  for src in "$src_root"/node_modules "$src_root"/apps/*/node_modules "$src_root"/packages/*/node_modules; do
-    [[ -d "$src" ]] || continue
-    rel="${src#"$src_root"/}"
-    [[ -e "$wt/$rel" ]] && continue
-    mkdir -p "$wt/$(dirname "$rel")"
-    if ! cp -c -R "$src" "$wt/$rel" 2>>"$LOG_FILE"; then
-      log "WARNING: clonefile seed of $rel failed; pnpm install will repopulate it"
-      # Guard the cleanup: only remove a non-empty, worktree-relative path so a
-      # malformed $wt / $rel can never expand toward / (shellcheck SC2115).
-      if [[ -n "$wt" && -d "$wt" && -n "$rel" ]]; then
-        rm -rf -- "$wt/$rel" 2>/dev/null || true
-      fi
-    fi
-  done
-}
-
-# Install deps in a worktree with a wall-clock cap (run-with-timeout.mjs, exit
-# 124 on cap) so a hung install can't hold the implement lock for hours (#451).
-# Ladder: fast offline reconcile (node_modules already seeded) → frozen online
-# (fetch only drifted tarballs, keep the lockfile) → unfrozen online as a last
-# resort for genuine lockfile drift. Returns 0 on the first attempt that
-# succeeds, non-zero if all fail / time out.
-run_pnpm_install() {
-  local wt="$1"
-  ( cd "$wt" && node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$INSTALL_TIMEOUT_SEC" \
-      pnpm install --frozen-lockfile --offline --prefer-offline >>"$LOG_FILE" 2>&1 ) && return 0
-  log "WARNING: offline reconcile failed/timed out; retrying frozen online"
-  ( cd "$wt" && node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$INSTALL_TIMEOUT_SEC" \
-      pnpm install --frozen-lockfile >>"$LOG_FILE" 2>&1 ) && return 0
-  log "WARNING: frozen install failed/timed out; retrying unfrozen online"
-  ( cd "$wt" && node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$INSTALL_TIMEOUT_SEC" \
-      pnpm install >>"$LOG_FILE" 2>&1 )
-}
+# copy_worktree_env / seed_worktree_node_modules / run_pnpm_install live in
+# scripts/lib/beta-build-root.sh (sourced above), shared with nightly-support.sh.
 
 # Free space (whole GiB) on the volume backing the repo/worktrees. POSIX
 # `df -Pk` guarantees a single data row in 1024-byte blocks; $4 is available.
@@ -1727,149 +1656,8 @@ intest_beta_gate() {
   echo "lanes=$lanes skipped=$skipped"
 }
 
-# Prepare a dedicated, persistent build root checked out at <sha>, printing its
-# path (empty on failure).
-#
-# Why a dedicated root rather than the issue's worktree: that worktree is live
-# (the next --watch tick may pnpm install and let Claude edit files in it) and
-# the cleanup sweep deletes it the moment the card leaves In Test — either would
-# happen mid-build. A fixed root also keeps ios/Pods and the Gradle cache warm.
-#
-# Why detached: factory/issue-<n> is already checked out in the issue worktree
-# and git refuses a second checkout of the same branch. Pinning the SHA is also
-# more precise — it is exactly what CI went green on.
-#
-# The desktop root's node_modules is a clonefile replica of the FOSSIL checkout
-# and must NEVER be installed into; dispatch-release.mjs asserts React 19.1.x
-# before it will spawn the lane. $1 platform (mobile|desktop), $2 sha.
-ensure_beta_build_root() {
-  local platform="$1" sha="$2" root src_root
-  case "$platform" in
-    mobile)  root="$BETA_MOBILE_ROOT";  src_root="$REPO_ROOT" ;;
-    desktop) root="$BETA_DESKTOP_ROOT"; src_root="$DESKTOP_FOSSIL_ROOT" ;;
-    *) logerr "ERROR: ensure_beta_build_root: unknown platform '$platform'"; return 1 ;;
-  esac
-  [[ -n "$sha" ]] || { logerr "ERROR: ensure_beta_build_root: empty sha"; return 1; }
-
-  # Hard safety rail. This function hard-resets and cleans $root, so a
-  # misconfigured knob pointing it at the operator's checkout (or the fossil we
-  # clone FROM) would destroy real work. Refuse, loudly, rather than proceed.
-  local canon_root canon_repo canon_fossil
-  canon_root=$(cd "$root" 2>/dev/null && pwd -P || echo "$root")
-  canon_repo=$(cd "$REPO_ROOT" 2>/dev/null && pwd -P || echo "$REPO_ROOT")
-  canon_fossil=$(cd "$DESKTOP_FOSSIL_ROOT" 2>/dev/null && pwd -P || echo "$DESKTOP_FOSSIL_ROOT")
-  if [[ "$canon_root" == "$canon_repo" || "$canon_root" == "$canon_fossil" ]]; then
-    logerr "ERROR: refusing to use $root as a $platform beta build root — it is the factory checkout or the fossil, and this function resets it. Set DRAFTO_BETA_MOBILE_ROOT / DRAFTO_DESKTOP_BUILD_ROOT to a dedicated path."
-    return 1
-  fi
-
-  # The roots are single fixed paths shared by every card and every mode, and
-  # this function hard-resets + cleans them. Resetting one while a detached lane
-  # is still building there corrupts that build. Hold a pid-file lock for the
-  # lifetime of the lane; a stale lock (pid gone) is reaped.
-  local lock="$root.lock" lock_pid=""
-  if [[ -f "$lock" ]]; then
-    lock_pid=$(cat "$lock" 2>/dev/null || echo "")
-    if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
-      logerr "ERROR: $platform beta build root $root is in use by pid $lock_pid; refusing to reset it"
-      return 1
-    fi
-    rm -f "$lock" 2>/dev/null || true
-  fi
-
-  if [[ ! -d "$root/.git" && ! -f "$root/.git" ]]; then
-    logerr "Creating $platform beta build root at $root (detached at ${sha:0:12})"
-    if ! git -C "$REPO_ROOT" worktree add --detach "$root" "$sha" >>"$LOG_FILE" 2>&1; then
-      logerr "ERROR: could not create beta build root $root"; return 1
-    fi
-  else
-    git -C "$root" fetch origin >>"$LOG_FILE" 2>&1 || logerr "WARNING: fetch failed in $root"
-    if ! git -C "$root" reset --hard "$sha" >>"$LOG_FILE" 2>&1; then
-      logerr "ERROR: could not reset $root to ${sha:0:12}"; return 1
-    fi
-    # Keep node_modules and the warm native build dirs; drop everything else so
-    # a previous build's stray files can't leak into this one.
-    #
-    # The exclude paths must be the REAL ones. `-e` takes gitignore-style
-    # patterns: a pattern containing a slash is anchored to the repo root, so
-    # `-e macos/Pods` protects only `<root>/macos/Pods` — not
-    # `apps/desktop/macos/Pods`, which is where they actually live. Getting this
-    # wrong silently nukes Pods and DerivedData on every dispatch, forcing a full
-    # `pod install` + cold build each time (verified with `git clean -ndx`).
-    # `ios` / `android` have no slash so they match at any depth, but spell those
-    # out too rather than rely on the distinction.
-    git -C "$root" clean -fdx \
-      -e node_modules \
-      -e apps/desktop/macos/Pods -e apps/desktop/macos/build \
-      -e apps/mobile/ios -e apps/mobile/android \
-      >>"$LOG_FILE" 2>&1 || logerr "WARNING: clean failed in $root"
-  fi
-
-  # This function's stdout IS its return value (the root path), but these
-  # helpers report through log(), which writes to stdout — a single warning (a
-  # failed clonefile seed, a missing .env) would otherwise be captured as part of
-  # the path and passed to --repo-root as a mangled multi-word argument. Pin
-  # their output to stderr; it still reaches $LOG_FILE via log()'s tee.
-  seed_worktree_node_modules "$root" "$src_root" >&2
-  copy_worktree_env "$root" >&2
-  if [[ "$platform" == "mobile" ]]; then
-    run_pnpm_install "$root" >&2 || logerr "WARNING: install failed/timed out in $root; the lane may fail"
-    # Ruby gems are global (no per-checkout bundle path), so this is a cheap
-    # reconcile. Restore Gemfile.lock if it drifted — the root must stay clean
-    # for the `git clean` guard above to mean anything.
-    # Bounded like the pnpm install above: intest_dispatch_betas runs
-    # SYNCHRONOUSLY inside the --watch tick, so an unbounded `bundle install`
-    # hanging on RubyGems would block the whole tick and stall every other card.
-    ( cd "$root/apps/mobile" && ( bundle check >/dev/null 2>&1 \
-        || node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$INSTALL_TIMEOUT_SEC" bundle install ) ) >>"$LOG_FILE" 2>&1 \
-      || logerr "WARNING: bundle install failed/timed out in $root/apps/mobile; the lane may fail"
-    git -C "$root" checkout -- apps/mobile/Gemfile.lock 2>/dev/null || true
-  fi
-
-  # Every file that ends up inside a .app must be readable by non-root users, or
-  # App Store Connect rejects the whole upload (ITMS-90255, see laneShellScript).
-  # Setting umask on the lane fixes what the BUILD generates; this fixes what the
-  # build COPIES IN. git, pnpm and CocoaPods all ran under the factory's
-  # `umask 077`, so the checked-out fonts/assets and the Pods resource bundles are
-  # mode 600 on disk and land in the bundle that way.
-  #
-  # Normalising the inputs here — rather than chmod-ing the built .app later —
-  # keeps the fix clear of the code signature: build_mac_app signs the bundle, and
-  # mutating a signed .app is a good way to trade one upload rejection for
-  # another. `go+rX` adds read for group/other and directory-traverse only where
-  # execute already exists, so it never makes a data file executable.
-  #
-  # The credentials seeded into this root are PRUNED FROM THE TRAVERSAL, not
-  # widened and then re-restricted: a build root is ~100k files, so "widen
-  # everything, put the secrets back" leaves them world-readable for as long as
-  # the walk takes. Never make a secret readable at all, not even briefly.
-  # `.env*` alone is not the whole set — google-play-service-account.json is a
-  # Play publishing credential, and the signing material is matched here too so
-  # that adding a keystore later can't silently start leaking it.
-  local -a secrets=(
-    -name '.env*'
-    -o -name 'google-play-service-account.json'
-    -o -name '*.keystore' -o -name '*.jks' -o -name '*.p12'
-    -o -name '*.mobileprovision' -o -name '*.cer' -o -name '*.pem'
-  )
-  find "$root" \( "${secrets[@]}" \) -prune -o -exec chmod go+rX {} + 2>/dev/null || true
-  # Defence in depth: whatever the traversal did, the secrets end up owner-only.
-  find "$root" -type f \( "${secrets[@]}" \) -exec chmod go-rwx {} + 2>/dev/null || true
-  echo "$root"
-}
-
-# Claim a build root for a lane's lifetime. Written after the spawn succeeds so
-# a refused/failed dispatch never leaves a lock behind.
-claim_beta_build_root() {
-  local platform="$1" pid="$2" root
-  case "$platform" in
-    mobile)  root="$BETA_MOBILE_ROOT" ;;
-    desktop) root="$BETA_DESKTOP_ROOT" ;;
-    *) return 0 ;;
-  esac
-  [[ -n "$pid" && "$pid" != "?" ]] || return 0
-  echo "$pid" > "$root.lock" 2>/dev/null || true
-}
+# ensure_beta_build_root / claim_beta_build_root / release_beta_build_root live in
+# scripts/lib/beta-build-root.sh (sourced above), shared with nightly-support.sh.
 
 # Learn how already-dispatched lanes actually ENDED, and re-arm the ones that
 # failed.
@@ -2357,6 +2145,12 @@ intest_dispatch_betas() {
     # Nothing started — deliberately record NO SHA, so the next tick retries.
     logerr "WARNING: pre-merge beta dispatch started no lanes for #$issue_num; leaving retry armed"
   fi
+  # ensure_beta_build_root locked each prepared root with THIS process's pid.
+  # A lane that started has taken its lock over (claim above); drop any lock
+  # still ours — a lane refused or unable to start — so the nightly support
+  # runner isn't locked out of the root for the rest of this tick.
+  [[ -n "${mobile_root:-}" ]] && release_beta_build_root mobile
+  [[ -n "${desktop_root:-}" ]] && release_beta_build_root desktop
   # Merge bash-side skips (gate) with node-side refusals (e.g. fossil assertion).
   jq -nc --argjson d "$(echo "${dispatch_json:-{\}}" | jq -c '.dispatched // []' 2>/dev/null || echo '[]')" \
     --argjson gateSkipped "$skipped_json" \
@@ -4805,6 +4599,13 @@ retry next cycle; if it keeps failing, merge it by hand. The card stays in \
       # shellcheck disable=SC2086 # DESKTOP_ROOT_FLAG is a deliberately word-split flag pair
       DISPATCH_JSON=$(node "$SCRIPT_DIR/lib/dispatch-release.mjs" dispatch --platforms "$DISPATCH_CSV" --repo-root "$REPO_ROOT" $DESKTOP_ROOT_FLAG \
         --log-dir "$LOG_DIR" --log-key "release-${MERGE_SHA:0:12}" 2>>"$LOG_FILE" || echo "")
+      # Only the desktop lane builds in a shared build root here (mobile builds
+      # from $REPO_ROOT), so only its lock is handed to the lane — or dropped if
+      # the lane did not start, rather than held until this process exits.
+      if [[ -n "$DESKTOP_ROOT_FLAG" ]]; then
+        claim_beta_build_root desktop "$(echo "$DISPATCH_JSON" | jq -r '[.dispatched[]? | select(.id == "desktop") | .pid // empty][0] // empty' 2>/dev/null || echo "")"
+        release_beta_build_root desktop
+      fi
       DISPATCHED=$(echo "$DISPATCH_JSON" | jq -r '[.dispatched[]?.id] | join(", ")' 2>/dev/null || echo "")
       # A lane refused by its guard (e.g. the desktop root lost its fossil) OR
       # one that could not start at all is reported, never silently dropped — a

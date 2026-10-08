@@ -576,8 +576,20 @@ reaches the public stores needs explicit user approval. When a feature merges to
 - **macOS**: `cd apps/desktop && pnpm release:beta` → TestFlight (fossil checkout only)
 
 The three store lanes can run concurrently in separate terminals; web deploys on its
-own. On the Mac mini the dark factory dispatches exactly these lanes at Phase D
-(`scripts/lib/dispatch-release.mjs`), so a merged factory card needs no manual step.
+own. On the Mac mini, `scripts/lib/dispatch-release.mjs` dispatches exactly these
+lanes in two places:
+
+- **Merged support fixes** — `scripts/nightly-support.sh` Phase 4 ships every
+  `support` issue fixed in the last 14 days whose PR touched a native app: it
+  waits for main CI, builds in the factory's shared beta build roots, waits for
+  each lane, and retries on later nights (up to 3 failures). The Fastlane hook's
+  "Now live" notice is forwarded to the reporter. See
+  [ADR-0042](../adr/0042-nightly-support-runner-owns-beta-dispatch.md) and
+  [support-agent.md](../features/support-agent.md#stage-2-releases-nightly-beta-dispatch).
+- **Merged factory cards** — the dark factory's `--release` dispatches them only at
+  **Phase D**. The factory runs at Phase C today, so a merged factory card still
+  needs the manual wave above. (`--release` skips `support` issues; the nightly
+  owns those.)
 
 Public-store release is a **separate, explicitly approved step**, taken only once a
 beta build has actually been tested:
