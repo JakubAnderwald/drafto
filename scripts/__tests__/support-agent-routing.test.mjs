@@ -185,6 +185,21 @@ describe("inbound: a linked customer reply upgrades the issue to thread routing"
     assert.match(perThreadLoop, /set-issue-field "\$LINKED_ISSUE" zohoThreadId "\$THREAD_ID"/);
   });
 
+  it("writes only when the lookup succeeded, never on a failed read", () => {
+    assert.match(
+      perThreadLoop,
+      /if KNOWN_THREAD_ID=\$\(node "\$SCRIPT_DIR\/lib\/state-cli\.mjs" get-issue-zoho-thread-id "\$LINKED_ISSUE"/,
+    );
+    assert.doesNotMatch(
+      perThreadLoop,
+      /get-issue-zoho-thread-id "\$LINKED_ISSUE"[^)]*\|\| echo ""/,
+    );
+    assert.match(
+      perThreadLoop,
+      /WARNING: get-issue-zoho-thread-id failed for issue #\$LINKED_ISSUE/,
+    );
+  });
+
   it("runs after find-linked-issue, so the linkage it reads is fresh", () => {
     const find = perThreadLoop.indexOf("find-linked-issue");
     const upgrade = perThreadLoop.indexOf('set-issue-field "$LINKED_ISSUE" zohoThreadId');

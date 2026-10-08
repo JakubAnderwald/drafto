@@ -828,16 +828,21 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
   # emails go to the latest message in the conversation. The thread id comes
   # from Zoho and the issue number from our own label, so neither passes
   # through the LLM. Live --auto-classify only: --dry-run never mutates state.
+  # Write only when the lookup SUCCEEDED and found nothing: a failed read must
+  # never be mistaken for "no thread recorded" and overwrite a stored one.
   if [[ "$AUTO_CLASSIFY" -eq 1 && -n "$THREAD_ID" && "$LINKED_ISSUE" =~ ^[0-9]+$ ]]; then
-    KNOWN_THREAD_ID=$(node "$SCRIPT_DIR/lib/state-cli.mjs" get-issue-zoho-thread-id "$LINKED_ISSUE" \
-      --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "")
-    if [[ -z "$KNOWN_THREAD_ID" ]]; then
-      if node "$SCRIPT_DIR/lib/state-cli.mjs" set-issue-field "$LINKED_ISSUE" zohoThreadId "$THREAD_ID" \
-          --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
-        log "Issue #$LINKED_ISSUE: recorded Zoho thread $THREAD_ID from a linked customer reply; progress emails now route by thread"
-      else
-        log "WARNING: set-issue-field zohoThreadId failed for issue #$LINKED_ISSUE (thread $THREAD_ID)"
+    if KNOWN_THREAD_ID=$(node "$SCRIPT_DIR/lib/state-cli.mjs" get-issue-zoho-thread-id "$LINKED_ISSUE" \
+        --state-file "$STATE_FILE" 2>>"$LOG_FILE"); then
+      if [[ -z "$KNOWN_THREAD_ID" ]]; then
+        if node "$SCRIPT_DIR/lib/state-cli.mjs" set-issue-field "$LINKED_ISSUE" zohoThreadId "$THREAD_ID" \
+            --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+          log "Issue #$LINKED_ISSUE: recorded Zoho thread $THREAD_ID from a linked customer reply; progress emails now route by thread"
+        else
+          log "WARNING: set-issue-field zohoThreadId failed for issue #$LINKED_ISSUE (thread $THREAD_ID)"
+        fi
       fi
+    else
+      log "WARNING: get-issue-zoho-thread-id failed for issue #$LINKED_ISSUE; not recording thread $THREAD_ID"
     fi
   fi
 
