@@ -118,6 +118,17 @@ fi
 # Claude invocations on one issue, the card is parked in Blocked for a human.
 FACTORY_MAX_ATTEMPTS="${FACTORY_MAX_ATTEMPTS:-5}"
 
+# Automatic re-runs per PR head SHA for required checks GitHub cancelled before
+# they could judge the code (no runner acquired). Spent → one comment and a hold.
+# See rerun_infra_failures.
+FACTORY_CI_RERUN_MAX="${FACTORY_CI_RERUN_MAX:-2}"
+# No leading zeros: bash arithmetic reads "08" as invalid octal, and a failed
+# -ge comparison would mean an unlimited budget.
+if ! [[ "$FACTORY_CI_RERUN_MAX" =~ ^(0|[1-9][0-9]*)$ ]]; then
+  echo "WARNING: invalid FACTORY_CI_RERUN_MAX='$FACTORY_CI_RERUN_MAX'; defaulting to 2" >&2
+  FACTORY_CI_RERUN_MAX=2
+fi
+
 # Fallback backoff (minutes) when a claude call dies on a session/usage limit
 # but the reset time can't be parsed from the transcript. The factory pauses
 # itself for this long, then re-checks. When the reset time IS parseable we
@@ -1502,6 +1513,168 @@ pr_failing_advisory() {
       | (.name // .context // "check") ]
     | ( if ($req | length) > 0 then [ .[] | select(. as $n | $req | index($n) | not) ] else [] end )
     | unique | join(", ")' 2>/dev/null || echo ""
+}
+
+# The failing *required* checks as a JSON array of {name, c, url}: the base the
+# helpers below build on. Same failing-conclusion set, required-set filtering and
+# fallback (every check, when the required set is unknown) as pr_failing_required.
+pr_failing_required_checks() {
+  local pr_view="$1"
+  echo "$pr_view" | jq -c --argjson req "${REQUIRED_CONTEXTS_JSON:-[]}" '
+    [ .statusCheckRollup[]? | (.conclusion // .state // "") as $c
+      | select($c == "FAILURE" or $c == "TIMED_OUT" or $c == "CANCELLED"
+               or $c == "ACTION_REQUIRED" or $c == "ERROR" or $c == "STARTUP_FAILURE")
+      | { name: (.name // .context // "check"), c: $c, url: (.detailsUrl // .targetUrl // "") } ]
+    | if ($req | length) > 0 then [ .[] | select(.name as $n | $req | index($n)) ] else . end' \
+    2>/dev/null || echo "[]"
+}
+
+# The failing *required* checks, one "name — CONCLUSION (url)" line each. Feeds
+# the --watch fix bundle (never hand the fix agent an advisory bot's red to
+# "fix") and the CI comments.
+pr_failing_required_summary() {
+  pr_failing_required_checks "$1" | jq -r '
+    [ .[] | (.name + " — " + .c + (if .url != "" then " (" + .url + ")" else "" end)) ]
+    | join("\n")' 2>/dev/null || echo ""
+}
+
+# Did CI judge the code? Prints one word for the failing required checks:
+#   infra   — every one is a GitHub Actions job that was CANCELLED before any
+#             runner picked it up ("The job was not acquired by Runner of type
+#             hosted": no runner, no steps). Re-running is the fix, not a code
+#             change. This is what parked #654 in Approved for days.
+#   red     — anything else: a FAILURE / TIMED_OUT / ERROR / STARTUP_FAILURE (a
+#             workflow the PR itself may have broken), a job cancelled after it
+#             started (a job-level timeout or a manual cancel is a CANCELLED that
+#             ran — likely a hang in the code), or a non-Actions check.
+#   unknown — a job lookup failed; the caller retries next tick rather than guess.
+classify_failing_required() {
+  local checks jobs job started
+  checks=$(pr_failing_required_checks "$1")
+  if ! echo "$checks" | jq -e 'length > 0 and all(.c == "CANCELLED")' >/dev/null 2>&1; then
+    echo "red"; return 0
+  fi
+  jobs=$(echo "$checks" | jq -r '.[] | ((.url | capture("/actions/runs/[0-9]+/job/(?<j>[0-9]+)") | .j) // "none")' 2>/dev/null)
+  while IFS= read -r job; do
+    [[ "$job" =~ ^[0-9]+$ ]] || { echo "red"; return 0; }
+    if ! started=$(gh api "repos/JakubAnderwald/drafto/actions/jobs/$job" \
+        --jq '((.steps // []) | length > 0) or ((.runner_name // "") != "")' 2>>"$LOG_FILE"); then
+      echo "unknown"; return 0
+    fi
+    [[ "$started" == "false" ]] || { echo "red"; return 0; }
+  done <<< "$jobs"
+  echo "infra"
+}
+
+# The GitHub Actions run IDs behind the failing required checks, deduped, one per
+# line. Only meaningful once classify_failing_required said "infra", which
+# guarantees every one of them is an Actions job.
+pr_infra_rerun_ids() {
+  pr_failing_required_checks "$1" | jq -r '
+    [ .[] | (.url | capture("/actions/runs/(?<id>[0-9]+)") | .id) ] | unique[]' 2>/dev/null || true
+}
+
+# Re-runs already spent on <head_sha> (state field ciRerun = "<sha>:<count>"). 0
+# for any other head — a new push re-arms the budget — or an unreadable record.
+ci_rerun_count() {
+  local issue_num="$1" head_sha="$2" record count
+  record=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.ciRerun // ""' 2>/dev/null || echo "")
+  count="${record##*:}"
+  [[ "${record%%:*}" == "$head_sha" && "$count" =~ ^(0|[1-9][0-9]*)$ ]] || count=0
+  echo "$count"
+}
+
+# Re-run the cancelled required checks on <head_sha>, at most FACTORY_CI_RERUN_MAX
+# times per head SHA (state field ciRerun = "<sha>:<count>"; a new push re-arms
+# it). Returns 0 when it acted — re-ran, or is waiting for the run to finish
+# first — and the caller waits for a later tick. Returns 1 once the budget is
+# spent. `gh run rerun --failed` refuses a run that is still in progress, and
+# the run also carries non-required jobs (Mobile/Desktop Checks), so it waits on
+# the RUN's status, not the required checks'. The attempt is counted BEFORE
+# calling gh, so a re-run GitHub keeps refusing still spends the budget instead
+# of retrying every tick forever.
+rerun_infra_failures() {
+  local issue_num="$1" pr_num="$2" head_sha="$3" pr_view="$4"
+  local run_ids count id status
+  run_ids=$(pr_infra_rerun_ids "$pr_view")
+  [[ -n "$run_ids" ]] || return 1
+  while IFS= read -r id; do
+    status=$(gh run view "$id" --repo JakubAnderwald/drafto --json status --jq '.status' 2>>"$LOG_FILE" || echo "")
+    # An unreadable status is "unknown", not "completed": retry next tick rather
+    # than spend an attempt on a re-run GitHub may refuse (run still going).
+    if [[ -z "$status" ]]; then
+      log "WARNING: couldn't read the status of run $id for PR #$pr_num (transient?); re-running on a later tick"
+      return 0
+    fi
+    if [[ "$status" != "completed" ]]; then
+      log "Issue #$issue_num: PR #$pr_num has cancelled required check(s) but run $id is still $status; re-running once it finishes"
+      return 0
+    fi
+  done <<< "$run_ids"
+  count=$(ci_rerun_count "$issue_num" "$head_sha")
+  if [[ "$count" -ge "$FACTORY_CI_RERUN_MAX" ]]; then
+    return 1
+  fi
+  count=$((count + 1))
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "DRY-RUN: would re-run cancelled required checks on PR #$pr_num (run(s) $(echo "$run_ids" | tr '\n' ' '), attempt $count/$FACTORY_CI_RERUN_MAX)"
+    return 0
+  fi
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" ciRerun "$head_sha:$count" \
+    --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  log "Issue #$issue_num: PR #$pr_num required check(s) were cancelled before a runner picked them up; re-running (attempt $count/$FACTORY_CI_RERUN_MAX)"
+  while IFS= read -r id; do
+    gh run rerun "$id" --failed --repo JakubAnderwald/drafto >>"$LOG_FILE" 2>&1 \
+      || log "WARNING: gh run rerun $id --failed refused for PR #$pr_num (counted against the re-run budget)"
+  done <<< "$run_ids"
+  return 0
+}
+
+# One-time (per head SHA) notice that CI could not run on the PR and the factory's
+# re-runs are spent. The card stays in <where>: the code isn't the problem, so
+# handing it to the Claude fix loop would only burn an attempt. It reports the
+# re-runs actually spent on this head (ci_rerun_count), never the knob: with
+# FACTORY_CI_RERUN_MAX=0, or the knob lowered mid-way, they differ.
+comment_ci_infra_hold() {
+  local issue_num="$1" pr_num="$2" head_sha="$3" pr_view="$4" where="$5"
+  local sha12="${head_sha:0:12}" summary commands count tried
+  [[ "$DRY_RUN" -eq 0 ]] || return 0
+  issue_has_marker "$issue_num" "drafto-factory-ci-infra:$sha12" && return 0
+  count=$(ci_rerun_count "$issue_num" "$head_sha")
+  if [[ "$count" -gt 0 ]]; then
+    tried="The factory re-ran them $count time(s) without getting a result."
+  else
+    tried="The factory didn't re-run them (\`FACTORY_CI_RERUN_MAX\` is $FACTORY_CI_RERUN_MAX)."
+  fi
+  summary=$(pr_failing_required_summary "$pr_view" | sed 's/^/- /')
+  commands=$(pr_infra_rerun_ids "$pr_view" | sed 's/^/gh run rerun /; s/$/ --failed --repo JakubAnderwald\/drafto/')
+  gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+    --body "🏭 **CI couldn't run on \`$sha12\`.**
+
+These required checks on PR #$pr_num were cancelled before any runner picked \
+them up, so CI never judged the code:
+
+$summary
+
+$tried Once GitHub Actions is healthy, re-run them:
+
+\`\`\`bash
+$commands
+\`\`\`
+
+The card stays in **$where** and moves on by itself once they're green.
+
+<!-- drafto-factory-ci-infra:$sha12 -->" >>"$LOG_FILE" 2>&1 || true
+}
+
+# Shared by --watch and --release once classify_failing_required said "infra":
+# re-run the cancelled jobs, or — budget spent — comment once and hold in <where>.
+recover_cancelled_ci() {
+  local issue_num="$1" pr_num="$2" head_sha="$3" pr_view="$4" where="$5"
+  rerun_infra_failures "$issue_num" "$pr_num" "$head_sha" "$pr_view" && return 0
+  log "Issue #$issue_num: PR #$pr_num required check(s) still couldn't run after $(ci_rerun_count "$issue_num" "$head_sha") re-run(s); holding in $where"
+  comment_ci_infra_hold "$issue_num" "$pr_num" "$head_sha" "$pr_view" "$where"
 }
 
 # Which beta lanes may be dispatched for an In Test card, given the platforms in
@@ -3808,6 +3981,26 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
       [[ "$THREAD_COUNT" =~ ^[0-9]+$ ]] || THREAD_COUNT=0
     fi
 
+    # Required checks GitHub cancelled before any runner picked them up are not
+    # something a fix pass can repair: re-run them instead of spending a Claude
+    # attempt, and once the re-runs are spent tell the operator rather than loop
+    # the fix agent. Only with a known required set — the all-checks fallback
+    # would classify advisory bots too.
+    if [[ "$FAILING" -gt 0 && "${REQUIRED_CONTEXTS_JSON:-[]}" != "[]" ]]; then
+      WATCH_HEAD_SHA=$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')
+      if [[ -z "$WATCH_HEAD_SHA" ]]; then
+        log "WARNING: PR #$PR_NUM has no head SHA in the snapshot (transient?); skipping this tick"; continue
+      fi
+      case "$(classify_failing_required "$PR_VIEW")" in
+        infra)
+          recover_cancelled_ci "$ISSUE_NUM" "$PR_NUM" "$WATCH_HEAD_SHA" "$PR_VIEW" "In Review"
+          continue ;;
+        unknown)
+          log "WARNING: couldn't look up PR #$PR_NUM's cancelled jobs (transient?); skipping this tick"
+          continue ;;
+      esac
+    fi
+
     if [[ "$FAILING" -gt 0 || "$THREAD_COUNT" -gt 0 ]]; then
       if [[ "$FAILING" -gt 0 ]]; then
         log "Issue #$ISSUE_NUM: PR #$PR_NUM has $FAILING failing check(s), $THREAD_COUNT open thread(s) → fix loop"
@@ -3852,14 +4045,7 @@ A human should take a look. Reset with \
       # Only the required failures the fix agent can act on — never hand it an
       # advisory bot's red (e.g. CodeRabbit) to "fix". Falls back to all reds
       # when the required set is unknown.
-      CI_SUMMARY=$(echo "$PR_VIEW" | jq -r --argjson req "${REQUIRED_CONTEXTS_JSON:-[]}" '
-        [ .statusCheckRollup[]? | (.conclusion // .state // "") as $c
-          | select($c == "FAILURE" or $c == "TIMED_OUT" or $c == "CANCELLED"
-                   or $c == "ACTION_REQUIRED" or $c == "ERROR" or $c == "STARTUP_FAILURE")
-          | { name: (.name // .context // "check"), c: $c, url: (.detailsUrl // .targetUrl) } ]
-        | ( if ($req | length) > 0 then [ .[] | select(.name as $n | $req | index($n)) ] else . end )
-        | [ .[] | (.name + " — " + .c + (if .url then " (" + .url + ")" else "" end)) ]
-        | join("\n")')
+      CI_SUMMARY=$(pr_failing_required_summary "$PR_VIEW")
       # Also drop the CodeRabbit CLI lane's PR-conversation summary (ADR-0036).
       # It lists the findings that did NOT become threads (lower severities,
       # outside the diff, next to an existing thread, past the thread cap,
@@ -3949,6 +4135,14 @@ A human should take a look. Reset with \
         noop)
           log "Issue #$ISSUE_NUM: watcher found nothing actionable (transient CI?); leaving In Review"
           watch_bound_thread_loop
+          # A no-op pass on red CI is a wasted Claude run. Cancelled-before-a-
+          # runner checks never get here (re-run above), so what's left is a red
+          # the agent can't fix: spend an attempt so it ends in Blocked, not an
+          # endless loop (--release hands red Approved cards back here — ADR-0041).
+          if [[ "$FAILING" -gt 0 ]]; then
+            log "Issue #$ISSUE_NUM: no-op fix pass on $FAILING failing required check(s); spending one attempt"
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          fi
           ;;
         blocked)
           transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
@@ -4240,8 +4434,10 @@ fi
 #
 # The Approved drag is the human merge-authorisation gate (ADR-0026); --release
 # only ever acts on a card a human already moved. Anything that can't merge
-# cleanly (failing CI, conflicts, missing migration approval, no PR) is left in
-# Approved for the operator — the factory never regresses an approved card.
+# cleanly (conflicts, missing migration approval, no PR, CI that couldn't run) is
+# left in Approved for the operator. The two exceptions need a code change, so
+# they hand the card back to In Review for the fix loop and re-require the
+# Approved drag: a genuinely red required check and an unresolved review thread.
 # PHASE is guaranteed != "A" here (Phase A --release no-op'd at the gate above).
 if [[ "$MODE_RELEASE" -eq 1 ]]; then
   if ! APPROVED_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
@@ -4305,7 +4501,7 @@ if [[ "$MODE_RELEASE" -eq 1 ]]; then
     # below — unlike `--json files`, it is NOT capped at 100 files, so a migration
     # sorting past file #100 can't slip through the gate.)
     PR_VIEW=$(gh pr view "$PR_NUM" --repo JakubAnderwald/drafto \
-      --json state,mergeable,mergeStateStatus,isDraft,baseRefName,statusCheckRollup,labels 2>>"$LOG_FILE" || echo "")
+      --json state,mergeable,mergeStateStatus,isDraft,baseRefName,statusCheckRollup,labels,headRefOid 2>>"$LOG_FILE" || echo "")
     if [[ -z "$PR_VIEW" ]]; then
       log "WARNING: gh pr view #$PR_NUM failed (transient?); skipping this tick"; continue
     fi
@@ -4379,14 +4575,57 @@ PR #$PR_NUM $PARITY_VIOLATION, which this phase doesn't allow. The card stays in
       continue
     fi
 
-    # CI gate. A failing *required* check parks the card; then every branch-
-    # protection required context must be SUCCESS (ci_required_green). An
-    # empty/partial rollup (checks never ran) can't pass — "no checks" is not
-    # "green". Advisory non-required reds (CodeRabbit) never block the merge.
+    # CI gate. A failing *required* check never parks the card silently (#654 sat
+    # in Approved for days on checks GitHub had cancelled — ADR-0041):
+    #  - cancelled before any runner picked them up: CI didn't judge the code, so
+    #    re-run them; once re-runs are spent, comment once and hold in Approved
+    #    (a stale branch is refreshed by the BEHIND step below once green);
+    #  - anything else red: comment once and hand the card back to In Review for
+    #    the fix loop, re-requiring approval (the diff will change).
+    # With an unknown required set the fallback counts advisory bots too, so the
+    # card just waits in Approved, as before. Then every branch-protection
+    # required context must be SUCCESS (ci_required_green). An empty/partial
+    # rollup (checks never ran) can't pass — "no checks" is not "green". Advisory
+    # non-required reds (CodeRabbit) never block the merge.
     FAILING=$(pr_failing_required "$PR_VIEW")
     [[ "$FAILING" =~ ^[0-9]+$ ]] || FAILING=0
     if [[ "$FAILING" -gt 0 ]]; then
-      log "Issue #$ISSUE_NUM: PR #$PR_NUM has $FAILING failing required check(s); not merging (left in Approved)"
+      if [[ "${REQUIRED_CONTEXTS_JSON:-[]}" == "[]" ]]; then
+        log "Issue #$ISSUE_NUM: PR #$PR_NUM has $FAILING failing check(s) and the required set is unknown; not merging (left in Approved)"
+        continue
+      fi
+      HEAD_SHA=$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')
+      if [[ -z "$HEAD_SHA" ]]; then
+        log "WARNING: PR #$PR_NUM has no head SHA in the snapshot (transient?); skipping this tick"; continue
+      fi
+      case "$(classify_failing_required "$PR_VIEW")" in
+        infra)
+          recover_cancelled_ci "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "$PR_VIEW" "Approved"
+          continue ;;
+        unknown)
+          log "WARNING: couldn't look up PR #$PR_NUM's cancelled jobs (transient?); not merging this tick"
+          continue ;;
+      esac
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM has $FAILING failing required check(s); not merging, handing back to In Review"
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        log "DRY-RUN: would comment on #$ISSUE_NUM and move it back to In Review"; continue
+      fi
+      SHA12="${HEAD_SHA:0:12}"
+      if ! issue_has_marker "$ISSUE_NUM" "drafto-factory-ci-red:$SHA12"; then
+        RED_LIST=$(pr_failing_required_summary "$PR_VIEW" | sed 's/^/- /')
+        gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+          --body "🏭 **Not merging — required CI is red on \`$SHA12\`.**
+
+$RED_LIST
+
+Moving the card back to **In Review** so the fix loop can repair PR #$PR_NUM. It \
+comes back to In Test for your approval once CI is green again.
+
+<!-- drafto-factory-ci-red:$SHA12 -->" >>"$LOG_FILE" 2>&1 || true
+      fi
+      # Same hand-back as an unresolved review thread (below): --watch is the
+      # only mode that runs the fix loop and it never looks at Approved cards.
+      transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review" || true
       continue
     fi
     if ! ci_required_green "$PR_VIEW"; then

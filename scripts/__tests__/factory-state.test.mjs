@@ -328,6 +328,17 @@ describe("per-issue counters", () => {
     assert.equal(s.issues["7"].lastFeedbackAt, "2026-05-24T13:00:00.000Z");
   });
 
+  it("tracks ciRerun (cancelled-check re-run budget) and clears it on reset", () => {
+    // A rejected write fails silently in bash (`|| true`), which would re-run CI
+    // every tick and never tell the operator — so the field must be writable.
+    const s = emptyFactoryState();
+    assert.equal(getIssue(s, 9).ciRerun, null);
+    setIssueField(s, 9, "ciRerun", "5a5201f119ea5c7020b17bc5f098ceed4841c80f:1");
+    assert.equal(s.issues["9"].ciRerun, "5a5201f119ea5c7020b17bc5f098ceed4841c80f:1");
+    setIssueField(s, 9, "ciRerun", "");
+    assert.equal(s.issues["9"].ciRerun, null);
+  });
+
   it("setIssueField clears the field on empty/null/'null' sentinels", () => {
     const s = emptyFactoryState();
     setIssueField(s, 1, "lastError", "boom");
