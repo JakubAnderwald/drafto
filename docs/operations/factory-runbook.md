@@ -142,7 +142,7 @@ A dated record of actual phase changes so the current operating phase is auditab
 
 1. It only ever acts on a card a human (or an allowlisted reporter) moved to **Approved** — the Approved drag _is_ the merge-authorisation gate (ADR-0026); the factory never moves a card to Approved itself.
 2. It refuses to merge a PR touching `supabase/migrations/**` until `migration-approved` is on the PR — it leaves the card in Approved and comments once (`<!-- drafto-factory-migration-gate -->`).
-3. It won't merge unless CI is green and the branch is conflict-free; otherwise it leaves the card in Approved for you (a transient merge error is retried next tick, comment `<!-- drafto-factory-merge-failed -->`).
+3. It won't merge unless CI is green and the branch is conflict-free. A conflict leaves the card in Approved for you (a transient merge error is retried next tick, comment `<!-- drafto-factory-merge-failed -->`). Red CI moves the card back to **In Review** for the fix loop, and required checks GitHub cancelled before any runner picked them up are re-run first. See "Red or cancelled CI on a factory PR" below.
 
 **"CI is green" means the branch-protection _required_ contexts only** — both `--watch` (In Review → In Test) and `--release` (the merge gate) count only failing/pending checks whose context is in `required_status_checks`, fetched once per run (`fetch_required_contexts` → `pr_failing_required` / `pr_pending_required`). An advisory bot like **CodeRabbit** is never a required context, so its red — including its **"Review rate limited"** status when it can't review — never triggers the `--watch` fix loop, blocks the In Test advance, or blocks the merge. Advisory reds are instead surfaced in the In Test hand-off comment for the operator to glance at before Approving. **A review _comment_ is a different thing from a review _check_:** the check status stays advisory and never gates anything, but an unresolved review **thread** is a hard block on the merge (see `--release` below). (Before this, a rate-limited CodeRabbit check would loop `--watch`'s fix path to exhaustion and park the card in Blocked — the #463 failure of 2026-07-22.) When branch protection is unreadable/empty the helpers fall back to counting all checks, so an unknown required set can't silently pass a red PR.
 
@@ -452,6 +452,22 @@ Known fault classes and fixes:
 | `timeout`              | A probe hung; look for a stuck process or a pending system dialog.                                                                 |
 
 Inspect with `node scripts/lib/state-cli.mjs factory:status` (pause) and `jq .toolchainIncident logs/factory-state.json` (incident). Dry-run the check by hand with `node scripts/lib/toolchain-health.mjs check --repo . --dry-run`. Set `FACTORY_HEALTHCHECK=0` in the plist to disable it.
+
+### Red or cancelled CI on a factory PR (self-healing)
+
+On 2026-10-05 GitHub cancelled three required checks on #654's PR because it had no runner for them ("The job was not acquired by Runner of type hosted"). `--release` counted `CANCELLED` as a failure and logged `not merging (left in Approved)` every tick for about 2.5 days, without a comment, a re-run or a transition. Updating the branch would have started a fresh run, but that step came after the failing-checks gate and was never reached.
+
+Now `--watch` and `--release` sort failing **required** checks into two kinds (`classify_failing_required`). Advisory checks such as CodeRabbit still never count. If branch protection can't be read, the required set is unknown and the fallback would count advisory bots too, so the card simply waits, as before.
+
+- **CI couldn't run.** Every failing required check is `CANCELLED`, and the GitHub Actions job behind each one never got a runner. The job API shows no `runner_name` and no steps, which is exactly how #654's three jobs look.
+  - Both modes re-run the cancelled jobs with `gh run rerun <run> --failed`. They make at most `FACTORY_CI_RERUN_MAX` re-runs per head SHA (default 2) and spend no fix attempt. They wait until the whole workflow run has finished first, because GitHub refuses to re-run a run that still has jobs going. A stale branch is not updated at this point: the existing BEHIND step does that once the checks are green.
+  - When the re-runs are spent, the factory posts one comment (`<!-- drafto-factory-ci-infra:<sha12> -->`) with the `gh run rerun` commands. The card **stays where it is**: Approved, or In Review. The Claude fix agent is never spawned for it. A card held in In Review keeps its worktree slot. During a runner outage nothing can get through CI anyway, but if you need the slot back, re-run the checks or drag the card to Blocked.
+  - If the job lookup fails, the tick is skipped and the next one classifies again.
+- **CI is red.** Anything else: `FAILURE`, `TIMED_OUT`, `ERROR`, `ACTION_REQUIRED`, `STARTUP_FAILURE` (often a workflow file the PR itself broke), a job cancelled after it had started (a job-level timeout or a manual cancel), or a cancelled check that isn't an Actions job.
+  - `--watch` runs its fix loop as before. A `noop` pass on red CI now spends an attempt, so a red the agent can't fix ends in **Blocked** instead of looping every tick.
+  - `--release` posts one comment (`<!-- drafto-factory-ci-red:<sha12> -->`) listing the failures and moves the card back to **In Review** for the fix loop, the same as an unresolved review thread. It comes back to In Test, and the Approved drag is required again. See [ADR-0041](../adr/0041-factory-ci-red-and-cancelled-checks.md).
+
+Both markers are keyed on the head SHA, so a new push re-arms them. The re-run budget is stored per issue as `ciRerun` (`"<sha>:<count>"`) in the **live** state file in `drafto-factory`. To grant a fresh budget on the same commit, run `node scripts/lib/state-cli.mjs factory:set-issue-field <n> ciRerun "" --state-file logs/factory-state.json` there.
 
 ## Rollback drills
 

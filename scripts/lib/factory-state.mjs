@@ -135,6 +135,10 @@ function emptyIssue() {
     crLastCoveredSha: null, // last SHA CodeRabbit (bot or CLI) reviewed: the incremental base
     crCliRuns: null, // decimal string: CLI runs spent on this card since its last In Test
     crCliFreePassSha: null, // crLastCoveredSha whose findings already got an attempt-free fix pass
+    // Re-runs spent on required checks GitHub cancelled (no runner acquired),
+    // as "<head sha>:<count>". Head-SHA keyed like the rest: a new push re-arms
+    // the FACTORY_CI_RERUN_MAX budget. See rerun_infra_failures.
+    ciRerun: null,
   };
 }
 
@@ -442,6 +446,9 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   "crLastCoveredSha",
   "crCliRuns",
   "crCliFreePassSha",
+  // Cancelled-check re-run budget. A rejected write leaves the count at zero,
+  // so the factory would re-run CI on every tick and never tell the operator.
+  "ciRerun",
 ]);
 
 export function setIssueField(state, issueNumber, field, value) {
