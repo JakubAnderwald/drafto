@@ -428,6 +428,15 @@ describe("cancelled-check recovery helpers (real helpers, jq) — #654", () => {
       assert.match(out, /RC=0/);
     });
 
+    it("an unreadable run status waits too — it never spends the budget on a guess", () => {
+      const out = rerun(PR_657, {
+        pre: 'gh() { if [[ "$1 $2" == "run view" ]]; then return 1; else echo "GH $*"; fi; }',
+      });
+      assert.doesNotMatch(out, /GH run rerun|set-issue-field/);
+      assert.match(out, /WARNING: couldn't read the status of run 37371041547/);
+      assert.match(out, /RC=0/);
+    });
+
     it("dry run touches neither GitHub nor the state file", () => {
       const out = rerun(PR_657, { env: { DRY_RUN: "1" } });
       assert.doesNotMatch(out, /GH run rerun|set-issue-field/);

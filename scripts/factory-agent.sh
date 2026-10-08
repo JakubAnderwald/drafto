@@ -1590,7 +1590,13 @@ rerun_infra_failures() {
   [[ -n "$run_ids" ]] || return 1
   while IFS= read -r id; do
     status=$(gh run view "$id" --repo JakubAnderwald/drafto --json status --jq '.status' 2>>"$LOG_FILE" || echo "")
-    if [[ -n "$status" && "$status" != "completed" ]]; then
+    # An unreadable status is "unknown", not "completed": retry next tick rather
+    # than spend an attempt on a re-run GitHub may refuse (run still going).
+    if [[ -z "$status" ]]; then
+      log "WARNING: couldn't read the status of run $id for PR #$pr_num (transient?); re-running on a later tick"
+      return 0
+    fi
+    if [[ "$status" != "completed" ]]; then
       log "Issue #$issue_num: PR #$pr_num has cancelled required check(s) but run $id is still $status; re-running once it finishes"
       return 0
     fi
