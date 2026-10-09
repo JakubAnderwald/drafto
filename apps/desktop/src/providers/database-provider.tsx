@@ -26,12 +26,18 @@ interface DatabaseContextValue {
 const DatabaseContext = createContext<DatabaseContextValue | null>(null);
 
 export function DatabaseProvider({ children }: { children: React.ReactNode }) {
-  const { user } = useAuth();
+  const { user, isApproved } = useAuth();
   const syncingRef = useRef(false);
   const retryCountRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const periodicTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const identityReadyRef = useRef(false);
+  // Mirrors `user && isApproved` for callbacks that outlive the render that
+  // scheduled them (the retry timer). RLS answers an anon or unapproved pull
+  // with zero rows and no error, so no sync may run without both. Belt and
+  // braces: sync() already bails on identityReadyRef, which the effect below
+  // clears in the same commit — this only matters if that coupling changes.
+  const canSyncRef = useRef(false);
   const [hasPendingChanges, setHasPendingChanges] = useState(false);
   const [pendingChangesCount, setPendingChangesCount] = useState(0);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
@@ -102,6 +108,9 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
         if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
         retryTimerRef.current = setTimeout(() => {
           retryTimerRef.current = null;
+          // A retry scheduled before sign-out (or before approval was lost) must
+          // not pull afterwards.
+          if (!canSyncRef.current) return;
           sync();
         }, delay);
       } else {
@@ -114,17 +123,23 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
     }
   }, [checkPendingChanges]);
 
-  // Initial sync when user logs in. The cross-account identity guard runs first
-  // (and may reset the local DB) so no sync — the initial one, the periodic /
-  // foreground / reconnect triggers, or the context-exposed sync() the UI calls
-  // — ever pushes or surfaces another user's local data. sync() checks
+  useEffect(() => {
+    canSyncRef.current = Boolean(user && isApproved);
+  }, [user, isApproved]);
+
+  // Initial sync when an approved user logs in. The cross-account identity
+  // guard runs first (and may reset the local DB) so no sync — the initial one,
+  // the periodic / foreground / reconnect triggers, or the context-exposed sync()
+  // the UI calls — ever pushes or surfaces another user's local data. sync() checks
   // identityReadyRef itself, which is what covers the UI callers that are
   // already interactive while the guard is resolving. If the guard reports
   // "unsafe" it could not clear the previous user's records, so every sync
   // trigger stays parked until a later launch retries the guard successfully.
+  // An unapproved user is treated like a signed-out one: RLS would return no
+  // rows, and the "empty" pull would advance lastPulledAt past their data.
   useEffect(() => {
     let cancelled = false;
-    if (user) {
+    if (user && isApproved) {
       retryCountRef.current = 0;
       identityReadyRef.current = false;
       ensureLocalIdentity(user.id).then((status) => {
@@ -155,12 +170,12 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
         retryTimerRef.current = null;
       }
     };
-  }, [user, sync]);
+  }, [user, isApproved, sync]);
 
   // Periodic sync for pending changes
   useEffect(() => {
     periodicTimerRef.current = setInterval(async () => {
-      if (!user || !identityReadyRef.current) return;
+      if (!user || !isApproved || !identityReadyRef.current) return;
       const pending = await hasUnsyncedChanges({ database }).catch(() => false);
       if (pending) {
         sync();
@@ -173,19 +188,19 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
         periodicTimerRef.current = null;
       }
     };
-  }, [sync, user]);
+  }, [sync, user, isApproved]);
 
   // Sync when window comes to foreground
   // On macOS, AppState "active" fires when the app window gains focus
   // (maps to NSApplication.didBecomeActiveNotification)
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active" && user && identityReadyRef.current) {
+      if (state === "active" && user && isApproved && identityReadyRef.current) {
         sync();
       }
     });
     return () => subscription.remove();
-  }, [sync, user]);
+  }, [sync, user, isApproved]);
 
   // Sync when network reconnects
   useEffect(() => {
@@ -194,14 +209,14 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       const isConnected = state.isConnected ?? false;
       if (!isConnected) {
         wasDisconnected = true;
-      } else if (wasDisconnected && user && identityReadyRef.current) {
+      } else if (wasDisconnected && user && isApproved && identityReadyRef.current) {
         wasDisconnected = false;
         retryCountRef.current = 0;
         sync();
       }
     });
     return () => unsubscribe();
-  }, [sync, user]);
+  }, [sync, user, isApproved]);
 
   return (
     <DatabaseContext.Provider

@@ -1,6 +1,6 @@
 # Offline Sync
 
-**Status:** shipped **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-10-09
 
 ## What it is
 
@@ -80,6 +80,20 @@ it. This file is hand-maintained, not generated: when a column changes, update
   queued until `processPendingUploads()` finishes.
 - Note `content` is a JSON column on Supabase and a stringified JSON column in
   WatermelonDB — round-trip with `JSON.parse` / `JSON.stringify` on every hop.
+- Desktop: no sync trigger may pull for a signed-out or unapproved user. RLS
+  answers an anon or unapproved select with zero rows and **no error**, which
+  looks exactly like an empty server. `createPullChanges` aborts when
+  `supabase.auth.getSession()` returns an error or no session (it does not check
+  approval). `DatabaseProvider` starts a sync (initial, periodic, foreground,
+  reconnect, retry) only when `user && isApproved`. Server-deletion detection
+  skips any table whose server ID set comes back empty while synced local
+  records exist. The sign-out flush in `auth-provider.tsx` calls
+  `syncDatabase()` directly, so only the session gate covers it, and the local
+  reset that follows discards its result.
+- WatermelonDB passes `lastPulledAt: null` (not `undefined`) on a first sync, so
+  both drivers' `lastPulledAt === undefined` check actually treats a first sync
+  as incremental from the epoch, sending rows as `updated`. That is harmless:
+  WatermelonDB creates missing records.
 
 **Conflict resolution (server-wins, per ADR 0010):**
 
@@ -106,7 +120,8 @@ it. This file is hand-maintained, not generated: when a column changes, update
 **Tests that catch regressions:**
 
 - `apps/desktop/__tests__/db/sync.test.ts` — pull + push round-trip, conflict
-  counter, first-sync vs. incremental.
+  counter, first-sync vs. incremental, the pull's session gate and the
+  empty-server-ID-set guard on deletion detection.
 - `apps/desktop/__tests__/db/sync-mappers.test.ts` — column mapping drift.
 - `apps/desktop/__tests__/db/{schema,migrations,models}.test.ts` — structural
   checks; these fail fast when the two schemas drift.
@@ -156,6 +171,15 @@ Desktop is the only platform that has reproduced this — `apps/desktop/src/db/s
 
 - Wire `SET app.client = 'desktop'` (and `'mobile'` / `'web'`) on every client write so future `note_content_history` rows populate `archived_by` and pinpoint the responsible client.
 - A third recurrence is the trigger to file a tracked GitHub issue with timestamps + pre/post diff and stop guessing.
+
+Findings from [#458](https://github.com/JakubAnderwald/drafto/issues/458) narrow that suspicion:
+
+- **The deletion detection has never run in the app.** Its loops (added in #274) read `_status` off each fetched record, but WatermelonDB models expose sync state as `syncStatus` (`_raw._status`). No real record ever matched `"synced"`, so nothing was flagged as deleted. It cannot explain the erasures above, which are content overwrites anyway. A side effect: rows hard-deleted on the server are never removed from desktop's local database. That covers a note deleted forever from trash or purged by the 30-day trash cleanup (with its cascaded attachments), a deleted notebook and a deleted attachment. Trashing a note still syncs, because it is an `is_trashed` update. #458 kept that read as it was. Switching detection on needs `fetchAllIds()` to page past the Supabase API's `max_rows` limit (1000 locally and by default on hosted projects) first, or rows past the limit would be flagged as deleted. `fetchTable()` is unpaged too, so the pull itself is capped the same way.
+- **Desktop could pull with no usable session or approval.** RLS answered those pulls with nothing, and `lastPulledAt` still advanced. Two paths reached such a pull:
+  - **A signed-in but unapproved user.** `DatabaseProvider` gated only on `user`, so the "empty" pull moved `lastPulledAt` past rows this device never received.
+  - **The sign-out flush.** `flushPendingChanges()` calls `syncDatabase()` directly and keeps running after its 10 s timeout. If `processPendingUploads()` outlasts that timeout, the flush's pull starts after `auth.signOut()` and the local reset. It then runs with the anon key and stores a `lastPulledAt` in the fresh database. `ensureLocalIdentity()` doesn't reset an empty database, so the next sign-in's pull is incremental from that timestamp, and older rows are never pulled.
+
+  A network retry after sign-out was already blocked, because the provider clears the pending timer and `identityReadyRef`. #458 adds the session gate, which stops the flush case when its pull starts after sign-out but not when the session ends mid-pull. It also adds the `user && isApproved` gating and the empty-ID-set guard described under "Sync contract invariants".
 
 ## Verify
 

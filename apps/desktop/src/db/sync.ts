@@ -13,6 +13,8 @@ type AttachmentRow = Database["public"]["Tables"]["attachments"]["Row"];
 
 type SyncRecord = Record<string, unknown>;
 
+type SyncTable = "notebooks" | "notes" | "attachments";
+
 type SyncTableChanges = {
   created: SyncRecord[];
   updated: SyncRecord[];
@@ -70,7 +72,7 @@ function mapAttachmentRow(row: AttachmentRow): SyncRecord {
 }
 
 async function fetchTable<T>(
-  table: "notebooks" | "notes" | "attachments",
+  table: SyncTable,
   timestampCol: string,
   lastPulledAt: number | undefined,
   mapFn: (row: T) => SyncRecord,
@@ -106,15 +108,76 @@ async function getServerTimestamp(): Promise<number> {
   return Date.now() - 5000;
 }
 
-async function fetchAllIds(table: "notebooks" | "notes" | "attachments"): Promise<string[]> {
+async function fetchAllIds(table: SyncTable): Promise<string[]> {
   const { data, error } = await supabase.from(table).select("id");
   if (error) throw new Error(`Fetch ${table} IDs failed: ${error.message}`);
   return (data as { id: string }[]).map((r) => r.id);
 }
 
+/**
+ * Refuses to pull without an authenticated session. RLS answers an anon select
+ * with zero rows and no error, so an unauthenticated pull looks like "the
+ * server is empty" and `lastPulledAt` would advance past rows this device never
+ * received. (Live deletion detection would also read it as "everything was
+ * deleted"; see detectServerDeletions for why that is inert today and guarded
+ * anyway.) Only the session is checked, not approval — DatabaseProvider gates
+ * on `isApproved`. A `getSession()` error (e.g. a token refresh while offline)
+ * keeps its original message so `isNetworkError` still classifies it and the
+ * provider retries as before.
+ */
+async function assertAuthenticatedSession(): Promise<void> {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) throw new Error(`Sync aborted: session check failed: ${error.message}`);
+  if (!data.session) throw new Error("Sync aborted: no authenticated session");
+}
+
+type LocalSyncState = { id: string; remoteId?: string | null; _status?: string };
+
+/**
+ * Returns the local IDs of synced records whose remote row is missing from
+ * `serverIds`, i.e. rows deleted on the server since the last pull. Unsynced
+ * local records (created/updated offline) won't exist on the server yet and
+ * must not be flagged as deleted before the push phase runs.
+ *
+ * Fail-safe: an empty server ID set while synced local records exist is
+ * treated as suspicious rather than as "everything was deleted". RLS returns
+ * zero rows with no error when the session is missing or the account is not
+ * approved, so acting on it would wipe the table locally. Detection is skipped
+ * for that table instead; a table legitimately emptied on another device stays
+ * stale here until it has rows again (tombstones would fix that server-side).
+ *
+ * Note: WatermelonDB models expose their sync state as `syncStatus`
+ * (`_raw._status`), not `_status`, so this check — kept as it was in the loops
+ * it replaced — matches no real model record and detection is inert in the
+ * app today. Reading `syncStatus` instead would switch it on; that needs
+ * `fetchAllIds` to page past the Supabase API's `max_rows` limit (1000 in
+ * `supabase/config.toml` and by default on hosted projects) first, or a user
+ * with more rows than that would see the overflow flagged as deleted.
+ */
+function detectServerDeletions(
+  localRecords: readonly LocalSyncState[],
+  serverIds: readonly string[],
+  table: SyncTable,
+): string[] {
+  const synced = localRecords.filter((r) => r._status === "synced");
+  if (synced.length === 0) return [];
+  if (serverIds.length === 0) {
+    console.warn(
+      `[Sync] Server returned no ${table} IDs but ${synced.length} synced local record(s) exist — skipping deletion detection for ${table}`,
+    );
+    return [];
+  }
+  const serverIdSet = new Set(serverIds);
+  return synced.filter((r) => !serverIdSet.has(r.remoteId || r.id)).map((r) => r.id);
+}
+
 function createPullChanges(database: WMDatabase) {
   return async ({ lastPulledAt }: { lastPulledAt?: number }): Promise<SyncPullResult> => {
     const isFirstSync = lastPulledAt === undefined;
+
+    // Throwing here makes synchronize() abort before applying anything, so
+    // lastPulledAt does not advance on a pull RLS would have answered with nothing.
+    await assertAuthenticatedSession();
 
     const [notebooks, notes, attachments, serverTimestamp] = await Promise.all([
       fetchTable<NotebookRow>("notebooks", "updated_at", lastPulledAt, mapNotebookRow),
@@ -136,32 +199,27 @@ function createPullChanges(database: WMDatabase) {
         fetchAllIds("attachments"),
       ]);
 
-      const serverNotebookSet = new Set(serverNotebookIds);
-      const serverNoteSet = new Set(serverNoteIds);
-      const serverAttachmentSet = new Set(serverAttachmentIds);
-
       const localNotebooks = await database.get("notebooks").query().fetch();
       const localNotes = await database.get("notes").query().fetch();
       const localAttachments = await database.get("attachments").query().fetch();
 
-      // Only check synced records for server-side deletion. Unsynced local
-      // records (created/updated offline) won't exist on the server yet and
-      // must not be flagged as deleted before the push phase runs.
-      for (const r of localNotebooks) {
-        if ((r as unknown as { _status: string })._status !== "synced") continue;
-        const remoteId = (r as unknown as { remoteId: string }).remoteId || r.id;
-        if (!serverNotebookSet.has(remoteId)) notebookChanges.deleted.push(r.id);
-      }
-      for (const r of localNotes) {
-        if ((r as unknown as { _status: string })._status !== "synced") continue;
-        const remoteId = (r as unknown as { remoteId: string }).remoteId || r.id;
-        if (!serverNoteSet.has(remoteId)) noteChanges.deleted.push(r.id);
-      }
-      for (const r of localAttachments) {
-        if ((r as unknown as { _status: string })._status !== "synced") continue;
-        const remoteId = (r as unknown as { remoteId: string }).remoteId || r.id;
-        if (!serverAttachmentSet.has(remoteId)) attachmentChanges.deleted.push(r.id);
-      }
+      notebookChanges.deleted.push(
+        ...detectServerDeletions(
+          localNotebooks as unknown as LocalSyncState[],
+          serverNotebookIds,
+          "notebooks",
+        ),
+      );
+      noteChanges.deleted.push(
+        ...detectServerDeletions(localNotes as unknown as LocalSyncState[], serverNoteIds, "notes"),
+      );
+      attachmentChanges.deleted.push(
+        ...detectServerDeletions(
+          localAttachments as unknown as LocalSyncState[],
+          serverAttachmentIds,
+          "attachments",
+        ),
+      );
     }
 
     return {
