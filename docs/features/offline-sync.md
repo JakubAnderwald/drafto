@@ -72,8 +72,11 @@ it. This file is hand-maintained, not generated: when a column changes, update
   update path).
 - The pull timestamp comes from Supabase (`get_server_time` RPC); never use
   client `Date.now()` unless the RPC fails (then fall back to `Date.now() - 5s`).
-- First sync (no `lastPulledAt`) sends every row as `created`; subsequent syncs
-  send every row as `updated` — WatermelonDB auto-creates missing locals.
+- Every pull sends rows as `updated`, including the first — WatermelonDB
+  auto-creates missing locals. WatermelonDB passes `lastPulledAt: null` (not
+  `undefined`) on a first sync, so both drivers' `lastPulledAt === undefined`
+  check never fires: a first sync pulls incrementally from the epoch, and the
+  `created` branch of `splitChanges` stays unused.
 - Push order: notebooks -> notes -> attachments (notes depend on notebooks;
   attachments on notes).
 - Attachments only push when `upload_status === "uploaded"`; pending blobs stay
@@ -90,10 +93,6 @@ it. This file is hand-maintained, not generated: when a column changes, update
   records exist. The sign-out flush in `auth-provider.tsx` calls
   `syncDatabase()` directly, so only the session gate covers it, and the local
   reset that follows discards its result.
-- WatermelonDB passes `lastPulledAt: null` (not `undefined`) on a first sync, so
-  both drivers' `lastPulledAt === undefined` check actually treats a first sync
-  as incremental from the epoch, sending rows as `updated`. That is harmless:
-  WatermelonDB creates missing records.
 
 **Conflict resolution (server-wins, per ADR 0010):**
 
