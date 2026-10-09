@@ -608,6 +608,54 @@ describe("buildGithubCommentBatchBundle (Phase F)", () => {
       "<github-comment>Working on it now (from the nightly agent).</github-comment>",
     );
   });
+
+  it("strips every HTML comment marker, e.g. the now-live fingerprint", () => {
+    // 2026-10-09: the first "Now live" email showed the customer the literal
+    // `<!-- now-live:android:50 -->` idempotency fingerprint.
+    const bundle = buildGithubCommentBatchBundle({
+      issue: { number: 658, title: "x", state: "CLOSED" },
+      comments: [
+        {
+          id: 1,
+          user: { login: "JakubAnderwald" },
+          body: "Now live in Google Play internal track (build 50). <!-- drafto-progress --> <!-- now-live:android:50 -->",
+          created_at: "2026-10-09T03:35:29Z",
+        },
+        {
+          id: 2,
+          user: { login: "JakubAnderwald" },
+          body: "Before <!-- a\nmulti-line marker --> after. <!-- drafto-progress -->",
+          created_at: "2026-10-09T03:36:00Z",
+        },
+      ],
+      zohoThreadId: "T-1",
+    });
+    assert.equal(
+      bundle.comments[0].body,
+      "<github-comment>Now live in Google Play internal track (build 50).</github-comment>",
+    );
+    assert.equal(bundle.comments[1].body, "<github-comment>Before  after.</github-comment>");
+  });
+
+  it("keeps HTML comments inside a fenced code example", () => {
+    const fenced = "```html\n<!-- keep this example -->\n<p>hi</p>\n```";
+    const bundle = buildGithubCommentBatchBundle({
+      issue: { number: 1, title: "x", state: "OPEN" },
+      comments: [
+        {
+          id: 1,
+          user: { login: "JakubAnderwald" },
+          body: `Use this markup:\n${fenced}\nThanks! <!-- now-live:ios:44 --> <!-- drafto-progress -->`,
+          created_at: "2026-10-09T04:00:00Z",
+        },
+      ],
+      zohoThreadId: "T-1",
+    });
+    assert.equal(
+      bundle.comments[0].body,
+      `<github-comment>Use this markup:\n${fenced}\nThanks!</github-comment>`,
+    );
+  });
 });
 
 describe("buildGithubStateChangeBundle (Phase G)", () => {

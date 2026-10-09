@@ -27,6 +27,7 @@
 #   BETA_DESKTOP_ROOT    DRAFTO_DESKTOP_BUILD_ROOT
 #   BETA_BUILDS_VOLUME_DIR  DRAFTO_BUILDS_VOLUME_DIR
 #   BETA_FETCH_TIMEOUT_SEC  DRAFTO_BETA_FETCH_TIMEOUT_SEC  (default 300)
+#   BETA_BUNDLE_CHECK_TIMEOUT_SEC  DRAFTO_BETA_BUNDLE_CHECK_TIMEOUT_SEC  (default 120)
 #
 # The build-root defaults live on the external build volume when it is mounted
 # (that is where the Mac mini keeps them), else beside the checkouts in
@@ -49,6 +50,9 @@ BETA_BUILDS_VOLUME_DIR="${DRAFTO_BUILDS_VOLUME_DIR:-/Volumes/Zewnętrzny/drafto-
 DESKTOP_FOSSIL_ROOT="${DRAFTO_DESKTOP_FOSSIL_ROOT:-/Users/jakub/code/drafto}"
 # Wall-clock cap for the one network call made while a build-root lock is held.
 BETA_FETCH_TIMEOUT_SEC="${DRAFTO_BETA_FETCH_TIMEOUT_SEC:-300}"
+# Wall-clock cap for `bundle check`. It normally takes a second; a cap of its own
+# keeps a wedged ruby from holding the build-root lock (see ensure_beta_build_root).
+BETA_BUNDLE_CHECK_TIMEOUT_SEC="${DRAFTO_BETA_BUNDLE_CHECK_TIMEOUT_SEC:-120}"
 
 # (Re)compute BETA_MOBILE_ROOT / BETA_DESKTOP_ROOT. Runs once at source time; a
 # long-running caller re-runs it right before preparing a root, because "is the
@@ -254,7 +258,12 @@ ensure_beta_build_root() {
     # Bounded like the pnpm install above: intest_dispatch_betas runs
     # SYNCHRONOUSLY inside the --watch tick, so an unbounded `bundle install`
     # hanging on RubyGems would block the whole tick and stall every other card.
-    ( cd "$root/apps/mobile" && ( bundle check >/dev/null 2>&1 \
+    # `bundle check` is capped too: on 2026-10-09 one launched by the nightly
+    # job blocked for 5 hours in ruby's startup getcwd() on the build volume,
+    # holding the mobile root's lock the whole time. A capped check just falls
+    # through to the capped install.
+    ( cd "$root/apps/mobile" && ( node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$BETA_BUNDLE_CHECK_TIMEOUT_SEC" \
+          bundle check >/dev/null 2>&1 \
         || node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$INSTALL_TIMEOUT_SEC" bundle install ) ) >>"$LOG_FILE" 2>&1 \
       || logerr "WARNING: bundle install failed/timed out in $root/apps/mobile; the lane may fail"
     git -C "$root" checkout -- apps/mobile/Gemfile.lock 2>/dev/null || true

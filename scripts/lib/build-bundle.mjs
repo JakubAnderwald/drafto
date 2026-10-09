@@ -218,14 +218,30 @@ function normaliseAttachments(input) {
 // documented envelope tags). Any literal `</github-comment>` inside the body
 // is neutralised by inserting a zero-width space so an attacker can't
 // escape the envelope by closing it early.
+// Remove HTML comments outside fenced code blocks. In prose they are machine
+// markers (e.g. the `<!-- now-live:android:50 -->` idempotency fingerprint,
+// which the first "Now live" email on 2026-10-09 showed the customer as
+// literal text). Inside a ```fence``` they are a quoted example and stay.
+// split() with a capturing group puts the fenced blocks at the odd indices.
+function stripHtmlCommentMarkers(text) {
+  return text
+    .split(/(```[\s\S]*?```)/u)
+    .map((part, i) => (i % 2 === 1 ? part : part.replace(/<!--[\s\S]*?-->/gu, "")))
+    .join("");
+}
+
 function envelopeCommentBody(raw) {
   const text = typeof raw === "string" ? raw : "";
   // Strip the progress-marker first — it's a routing artifact (filterNewComments
   // uses it to allow bot-authored comments through), not customer content.
   // Leaving it in would surface in the forwarded email as an HTML comment that
-  // some clients render as an empty line. Trim trailing whitespace too so the
-  // forwarded body doesn't carry the marker's surrounding spaces.
-  const stripped = text.split(PROGRESS_MARKER).join("").replace(/\s+$/u, "");
+  // some clients render as an empty line. The other machine markers go too
+  // (stripHtmlCommentMarkers). Trim trailing whitespace so the forwarded body
+  // doesn't carry the markers' surrounding spaces.
+  const stripped = stripHtmlCommentMarkers(text.split(PROGRESS_MARKER).join("")).replace(
+    /\s+$/u,
+    "",
+  );
   const safe = stripped.replace(/<\/github-comment>/gi, "<​/github-comment>");
   return `<github-comment>${safe}</github-comment>`;
 }

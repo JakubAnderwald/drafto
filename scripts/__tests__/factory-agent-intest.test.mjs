@@ -493,6 +493,15 @@ describe("ensure_beta_build_root — working-tree safety", () => {
     assert.match(body, /run-with-timeout\.mjs" "\$INSTALL_TIMEOUT_SEC" bundle install/);
   });
 
+  it("bounds bundle check too — a wedged ruby must not hold the root lock", () => {
+    // 2026-10-09: an uncapped `bundle check` blocked for 5 hours in getcwd().
+    assert.match(
+      body,
+      /run-with-timeout\.mjs" "\$BETA_BUNDLE_CHECK_TIMEOUT_SEC" \\\n\s+bundle check/,
+    );
+    assert.ok(!/\(\s*bundle check\b/.test(body), "an uncapped bundle check is back");
+  });
+
   it("seeds desktop from the fossil and never installs into it", () => {
     assert.match(body, /desktop\) root="\$BETA_DESKTOP_ROOT"; src_root="\$DESKTOP_FOSSIL_ROOT"/);
     // The install/bundle step is mobile-only.
