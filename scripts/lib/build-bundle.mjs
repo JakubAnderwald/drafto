@@ -223,9 +223,16 @@ function envelopeCommentBody(raw) {
   // Strip the progress-marker first — it's a routing artifact (filterNewComments
   // uses it to allow bot-authored comments through), not customer content.
   // Leaving it in would surface in the forwarded email as an HTML comment that
-  // some clients render as an empty line. Trim trailing whitespace too so the
-  // forwarded body doesn't carry the marker's surrounding spaces.
-  const stripped = text.split(PROGRESS_MARKER).join("").replace(/\s+$/u, "");
+  // some clients render as an empty line. Every other HTML comment goes too:
+  // they are all machine markers (e.g. the `<!-- now-live:android:50 -->`
+  // idempotency fingerprint), and the first "Now live" email on 2026-10-09
+  // showed that one to the customer as literal text. Trim trailing whitespace
+  // too so the forwarded body doesn't carry the markers' surrounding spaces.
+  const stripped = text
+    .split(PROGRESS_MARKER)
+    .join("")
+    .replace(/<!--[\s\S]*?-->/gu, "")
+    .replace(/\s+$/u, "");
   const safe = stripped.replace(/<\/github-comment>/gi, "<​/github-comment>");
   return `<github-comment>${safe}</github-comment>`;
 }
