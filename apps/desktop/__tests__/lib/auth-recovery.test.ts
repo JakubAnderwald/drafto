@@ -45,10 +45,12 @@ describe("isRecoveryUrl", () => {
     expect(isRecoveryUrl(PKCE_LINK)).toBe(true);
   });
 
-  it("is true for any path carrying type=recovery", () => {
+  it("is false for type=recovery on another path, which only a forged link would carry", () => {
+    // Supabase sends no `type` param under PKCE; the path alone decides.
     expect(isRecoveryUrl("eu.drafto.desktop://auth/callback#type=recovery&access_token=AAA")).toBe(
-      true,
+      false,
     );
+    expect(isRecoveryUrl("eu.drafto.desktop://somewhere?type=recovery&code=abc")).toBe(false);
   });
 
   it("accepts the alternate reset-password path an operator might allowlist", () => {
@@ -97,6 +99,19 @@ describe("parseRecoveryLink", () => {
   it("survives a malformed percent-escape instead of throwing", () => {
     expect(parseRecoveryLink("eu.drafto.desktop://auth/recovery?code=%zz")).toEqual({
       code: "%zz",
+      errorMessage: null,
+    });
+  });
+
+  it("does not let an empty error_description hide the error code", () => {
+    expect(
+      parseRecoveryLink("eu.drafto.desktop://auth/recovery#error=access_denied&error_description="),
+    ).toEqual({ code: null, errorMessage: "access_denied" });
+  });
+
+  it("treats an empty code as no code", () => {
+    expect(parseRecoveryLink("eu.drafto.desktop://auth/recovery?code=")).toEqual({
+      code: null,
       errorMessage: null,
     });
   });
@@ -188,6 +203,46 @@ describe("completeRecoveryFromUrl", () => {
     await completeRecoveryFromUrl(PKCE_LINK, { onRecoveryError });
 
     expect(onRecoveryError).toHaveBeenCalledWith("code expired");
+  });
+
+  it.each([
+    [
+      "flow_state_expired",
+      "invalid flow state, flow state has expired",
+      "This password reset link has expired. Request a new one.",
+    ],
+    [
+      "flow_state_not_found",
+      "invalid flow state, no valid flow state found",
+      "This password reset link has already been used or has expired. Request a new one.",
+    ],
+    [
+      "pkce_code_verifier_not_found",
+      "PKCE code verifier not found in storage.",
+      "Open this link on the Mac where you asked for the reset, or request a new one.",
+    ],
+  ])("explains a %s exchange failure in plain language", async (code, message, expected) => {
+    mockExchangeCodeForSession.mockResolvedValue({ data: {}, error: { code, message } });
+    const onRecoveryError = jest.fn();
+
+    await completeRecoveryFromUrl(PKCE_LINK, { onRecoveryError });
+
+    expect(onRecoveryError).toHaveBeenCalledWith(expected);
+  });
+
+  it("does not report a throwing error callback back to itself", async () => {
+    mockExchangeCodeForSession.mockResolvedValue({
+      data: {},
+      error: { code: "flow_state_expired", message: "expired" },
+    });
+    const onRecoveryError = jest.fn(() => {
+      throw new Error("screen already unmounted");
+    });
+
+    await expect(completeRecoveryFromUrl(PKCE_LINK, { onRecoveryError })).rejects.toThrow(
+      "screen already unmounted",
+    );
+    expect(onRecoveryError).toHaveBeenCalledTimes(1);
   });
 
   it("reports a credential-less recovery link rather than hanging", async () => {

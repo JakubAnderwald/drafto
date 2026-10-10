@@ -226,12 +226,20 @@ describe("handleOAuthCallback", () => {
     expect(mockSetSession).not.toHaveBeenCalled();
   });
 
-  it("leaves a type=recovery callback alone even on the OAuth path", () => {
+  it("ignores tokens in a type=recovery link on the OAuth path", () => {
     handleOAuthCallback(
       "eu.drafto.desktop://auth/callback#access_token=AAA&refresh_token=RRR&type=recovery",
     );
 
     expect(mockSetSession).not.toHaveBeenCalled();
     expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
+  });
+
+  it("decides by path, so a type=recovery param cannot steal an OAuth code", () => {
+    // Supabase sends no `type` under PKCE; only the recovery paths belong to the
+    // recovery handler.
+    handleOAuthCallback("eu.drafto.desktop://auth/callback?code=oauth-with-type&type=recovery");
+
+    expect(mockExchangeCodeForSession).toHaveBeenCalledWith("oauth-with-type");
   });
 });
