@@ -29,9 +29,15 @@
 #   BETA_FETCH_TIMEOUT_SEC  DRAFTO_BETA_FETCH_TIMEOUT_SEC  (default 300)
 #   BETA_BUNDLE_CHECK_TIMEOUT_SEC  DRAFTO_BETA_BUNDLE_CHECK_TIMEOUT_SEC  (default 120)
 #
-# The build-root defaults live on the external build volume when it is mounted
-# (that is where the Mac mini keeps them), else beside the checkouts in
-# ~/code — the original location, kept as the fallback.
+# The DESKTOP root defaults to the external build volume when it is mounted
+# (that is where the Mac mini keeps it), else beside the checkouts in ~/code.
+# The MOBILE root always defaults to ~/code/drafto-beta-mobile: its iOS lane
+# cannot build from a path with non-ASCII bytes. React Native 0.83's CocoaPods
+# scripts (rncore.rb / rndependencies.rb) build file URLs with URI::File.build,
+# which rejects them ("bad component(expected absolute path component)"), so
+# `pod install` fails on the volume's "Zewnętrzny" mount point. That is what
+# broke the first nightly iOS beta (#658, 2026-10-09); ensure_beta_build_root
+# refuses such a mobile root outright (see ADR-0042).
 #
 # macOS /bin/bash 3.2 compatible: no ${VAR,,}, no declare -A, no mapfile.
 
@@ -65,7 +71,8 @@ resolve_beta_build_roots() {
   else
     parent="/Users/jakub/code"
   fi
-  BETA_MOBILE_ROOT="${DRAFTO_BETA_MOBILE_ROOT:-$parent/drafto-beta-mobile}"
+  # Mobile never follows the volume: iOS pods need an ASCII path (see header).
+  BETA_MOBILE_ROOT="${DRAFTO_BETA_MOBILE_ROOT:-/Users/jakub/code/drafto-beta-mobile}"
   BETA_DESKTOP_ROOT="${DRAFTO_DESKTOP_BUILD_ROOT:-$parent/drafto-beta-desktop}"
 }
 resolve_beta_build_roots
@@ -192,6 +199,14 @@ ensure_beta_build_root() {
   canon_fossil=$(cd "$DESKTOP_FOSSIL_ROOT" 2>/dev/null && pwd -P || echo "$DESKTOP_FOSSIL_ROOT")
   if [[ "$canon_root" == "$canon_repo" || "$canon_root" == "$canon_fossil" ]]; then
     logerr "ERROR: refusing to use $root as a $platform beta build root — it is the caller's own checkout ($REPO_ROOT) or the fossil, and this function resets it. Set DRAFTO_BETA_MOBILE_ROOT / DRAFTO_DESKTOP_BUILD_ROOT to a dedicated path."
+    return 1
+  fi
+
+  # The mobile lane builds iOS, whose React Native 0.83 pods cannot handle a
+  # non-ASCII path (see the header). Fail before touching anything rather than
+  # spend a full Android build only to die in `pod install`.
+  if [[ "$platform" == "mobile" ]] && printf '%s' "$root" | LC_ALL=C grep -q '[^ -~]'; then
+    logerr "ERROR: refusing mobile beta build root $root — it contains non-ASCII characters, and React Native 0.83's iOS pods reject non-ASCII paths (URI::File.build). Set DRAFTO_BETA_MOBILE_ROOT to an ASCII path, e.g. /Users/jakub/code/drafto-beta-mobile."
     return 1
   fi
 
