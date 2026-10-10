@@ -41,6 +41,7 @@ One brief per functional area. Each brief lists the current state, code paths on
 - [`operations/builds-and-releases.md`](./operations/builds-and-releases.md) — Fastlane for iOS / Android / macOS, versioning, release notes
 - [`operations/migrations.md`](./operations/migrations.md) — Supabase migration workflow, production safety rails
 - [`operations/claude-code-hooks.md`](./operations/claude-code-hooks.md) — the five committed `.claude/hooks`, how they locate themselves, what the `main` guards match
+- [`operations/macos-in-test-automation.md`](./operations/macos-in-test-automation.md) — run a factory In-Test scenario against the macOS TestFlight build and production, hands-off; driving RN macOS from the accessibility API
 
 ## ADRs
 

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -106,6 +106,30 @@ describe("In Test prompt — scenario quality rules", () => {
 
   it("suppresses the Vercel preview entirely for a non-web change", () => {
     assert.match(flat, /do not mention the preview at all/);
+  });
+
+  it("requires checking that a step's pass signal can actually appear", () => {
+    // #458's scenario expected two signals the desktop app can never show (the
+    // "still pending" message, #676; the indicator's pending count, #677).
+    assert.match(flat, /Check that the pass signal can actually appear/);
+    assert.match(flat, /`Read` the code that produces it/);
+  });
+
+  it("asks for an independent check and explicit timing per step", () => {
+    assert.match(flat, /Pair UI expectations with an independent check/);
+    assert.match(flat, /Spell out timing/);
+    assert.match(flat, /say which trigger the step exercises/);
+  });
+
+  it("points macOS scenarios at the automation harness, which exists", () => {
+    const repoRoot = resolve(HERE, "..", "..");
+    for (const path of [
+      "apps/desktop/e2e/in-test/",
+      "docs/operations/macos-in-test-automation.md",
+    ]) {
+      assert.ok(prompt.includes(path), `prompt does not mention ${path}`);
+      assert.ok(existsSync(resolve(repoRoot, path)), `${path} does not exist`);
+    }
   });
 
   it("routes macOS testing away from ad-hoc local builds", () => {
