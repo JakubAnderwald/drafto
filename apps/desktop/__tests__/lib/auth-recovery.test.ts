@@ -221,6 +221,13 @@ describe("completeRecoveryFromUrl", () => {
       "PKCE code verifier not found in storage.",
       "Open this link on the Mac where you asked for the reset, or request a new one.",
     ],
+    [
+      "bad_code_verifier",
+      "code challenge does not match previously saved code verifier",
+      "A newer sign-in or reset request replaced this link. Use the latest reset email, or request a new one.",
+    ],
+    // Inherited Object.prototype keys must not resolve to a message.
+    ["constructor", "unexpected server error", "unexpected server error"],
   ])("explains a %s exchange failure in plain language", async (code, message, expected) => {
     mockExchangeCodeForSession.mockResolvedValue({ data: {}, error: { code, message } });
     const onRecoveryError = jest.fn();

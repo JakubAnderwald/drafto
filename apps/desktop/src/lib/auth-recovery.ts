@@ -73,19 +73,30 @@ const EXCHANGE_FAILED_MESSAGE = "Could not open this password reset link.";
  * Plain-language messages for the code-exchange failures PKCE makes common.
  * supabase-js's own wording for these is aimed at web developers.
  */
-const EXCHANGE_ERROR_MESSAGES: Record<string, string> = {
+const EXCHANGE_ERROR_MESSAGES = new Map<string, string>([
   // The verifier is not in this install: another Mac, or a reinstall.
-  pkce_code_verifier_not_found:
+  [
+    "pkce_code_verifier_not_found",
     "Open this link on the Mac where you asked for the reset, or request a new one.",
+  ],
+  // A later sign-in or reset request on this Mac replaced the stored verifier.
+  [
+    "bad_code_verifier",
+    "A newer sign-in or reset request replaced this link. Use the latest reset email, or request a new one.",
+  ],
   // Supabase times a reset from when it was requested, not from when the email
   // arrived (5 minutes by default; measured on the hosted dev project).
-  flow_state_expired: "This password reset link has expired. Request a new one.",
-  flow_state_not_found:
+  ["flow_state_expired", "This password reset link has expired. Request a new one."],
+  [
+    "flow_state_not_found",
     "This password reset link has already been used or has expired. Request a new one.",
-};
+  ],
+]);
 
 function describeExchangeError(error: { message: string; code?: string }): string {
-  return (error.code && EXCHANGE_ERROR_MESSAGES[error.code]) || error.message;
+  // A Map, not an object literal: a server-supplied code such as "constructor"
+  // must not resolve to an inherited Object.prototype member.
+  return (error.code && EXCHANGE_ERROR_MESSAGES.get(error.code)) || error.message;
 }
 
 function decodeComponent(value: string): string {
