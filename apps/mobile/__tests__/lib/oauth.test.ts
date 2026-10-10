@@ -1,20 +1,27 @@
 const mockSignInWithIdToken = jest.fn();
+const mockSignInWithOAuth = jest.fn();
+const mockExchangeCodeForSession = jest.fn();
 
 jest.mock("@/lib/supabase", () => ({
   supabase: {
     auth: {
       signInWithIdToken: (...args: unknown[]) => mockSignInWithIdToken(...args),
+      signInWithOAuth: (...args: unknown[]) => mockSignInWithOAuth(...args),
+      exchangeCodeForSession: (...args: unknown[]) => mockExchangeCodeForSession(...args),
     },
   },
 }));
 
+import { Platform } from "react-native";
+import * as WebBrowser from "expo-web-browser";
 import { GoogleSignin } from "@react-native-google-signin/google-signin";
 import type { SignInResponse, User } from "@react-native-google-signin/google-signin";
 
-import { signInWithGoogle, describeGoogleSignInError } from "@/lib/oauth";
+import { signInWithApple, signInWithGoogle, describeGoogleSignInError } from "@/lib/oauth";
 
 const mockSignIn = jest.mocked(GoogleSignin.signIn);
 const mockHasPlayServices = jest.mocked(GoogleSignin.hasPlayServices);
+const mockOpenAuthSession = jest.mocked(WebBrowser.openAuthSessionAsync);
 
 /** A full `User` payload — only `idToken` matters to the code under test. */
 function googleUser(idToken: string | null): User {
@@ -177,5 +184,134 @@ describe("describeGoogleSignInError", () => {
     expect(describeGoogleSignInError(new Error("network request failed"))).toBe(
       "Google Sign-In failed. Please try again.",
     );
+  });
+});
+
+describe("signInWithApple on Android (browser flow)", () => {
+  const PROVIDER_URL = "https://example.supabase.co/auth/v1/authorize?provider=apple";
+
+  /** What `openAuthSessionAsync` resolves with once the browser lands on `url`. */
+  function redirectedTo(url: string): WebBrowser.WebBrowserAuthSessionResult {
+    return { type: "success", url };
+  }
+
+  /** The session ended without a redirect. The enum is not in the test mock, so use its value. */
+  function closedWith(type: "cancel" | "dismiss"): WebBrowser.WebBrowserAuthSessionResult {
+    return { type } as WebBrowser.WebBrowserAuthSessionResult;
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.replaceProperty(Platform, "OS", "android");
+    mockSignInWithOAuth.mockResolvedValue({ data: { url: PROVIDER_URL }, error: null });
+    mockExchangeCodeForSession.mockResolvedValue({ data: {}, error: null });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("asks Supabase for the Apple URL with the app callback, and opens it in an auth session", async () => {
+    mockOpenAuthSession.mockResolvedValue(closedWith("cancel"));
+
+    await signInWithApple();
+
+    expect(mockSignInWithOAuth).toHaveBeenCalledWith({
+      provider: "apple",
+      options: { redirectTo: "drafto://auth/callback", skipBrowserRedirect: true },
+    });
+    expect(mockOpenAuthSession).toHaveBeenCalledWith(PROVIDER_URL, "drafto://auth/callback");
+  });
+
+  it("exchanges the PKCE code from the callback, parsed without relying on URL", async () => {
+    mockOpenAuthSession.mockResolvedValue(redirectedTo("drafto://auth/callback?code=apple-code"));
+
+    const result = await signInWithApple();
+
+    expect(mockExchangeCodeForSession).toHaveBeenCalledWith("apple-code");
+    expect(result).toEqual({ error: null });
+  });
+
+  it("surfaces a failed code exchange", async () => {
+    mockOpenAuthSession.mockResolvedValue(redirectedTo("drafto://auth/callback?code=apple-code"));
+    mockExchangeCodeForSession.mockResolvedValue({ data: {}, error: { message: "flow expired" } });
+
+    expect(await signInWithApple()).toEqual({ error: "flow expired" });
+  });
+
+  it("surfaces the provider's error instead of treating it as a cancel", async () => {
+    mockOpenAuthSession.mockResolvedValue(
+      redirectedTo(
+        "drafto://auth/callback?error=server_error&error_description=Unable+to+exchange+external+code",
+      ),
+    );
+
+    const result = await signInWithApple();
+
+    expect(result).toEqual({ error: "Unable to exchange external code" });
+    expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
+  });
+
+  it("reports a generic failure when the redirect carries neither a code nor a description", async () => {
+    mockOpenAuthSession.mockResolvedValue(
+      redirectedTo("drafto://auth/callback#error=server_error"),
+    );
+
+    expect(await signInWithApple()).toEqual({ error: "Apple Sign-In failed. Please try again." });
+  });
+
+  it.each([
+    "drafto://auth/callback?error=user_cancelled_authorize",
+    "drafto://auth/callback?error=access_denied&error_description=user+cancelled",
+    "drafto://auth/callback?error=invalid_request&error_code=user_cancelled_authorize",
+  ])("treats a cancel on Apple's own page as a cancel, not a failure: %s", async (url) => {
+    mockOpenAuthSession.mockResolvedValue(redirectedTo(url));
+
+    expect(await signInWithApple()).toEqual({ error: null });
+    expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
+  });
+
+  it("does not mistake another error with an access_denied cousin for a cancel", async () => {
+    mockOpenAuthSession.mockResolvedValue(
+      redirectedTo(
+        "drafto://auth/callback?error=access_denied&error_code=bad_oauth_state&error_description=OAuth+state+expired",
+      ),
+    );
+
+    expect(await signInWithApple()).toEqual({ error: "OAuth state expired" });
+  });
+
+  it("never signs in with session tokens on the callback", async () => {
+    mockOpenAuthSession.mockResolvedValue(
+      redirectedTo("drafto://auth/callback#access_token=AAA&refresh_token=RRR"),
+    );
+
+    const result = await signInWithApple();
+
+    expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
+    expect(result.error).toBe("Apple Sign-In failed. Please try again.");
+  });
+
+  it("stays silent when the user closes the browser", async () => {
+    mockOpenAuthSession.mockResolvedValue(closedWith("dismiss"));
+
+    expect(await signInWithApple()).toEqual({ error: null });
+    expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
+  });
+
+  it("reports a Supabase failure to start the flow", async () => {
+    mockSignInWithOAuth.mockResolvedValue({
+      data: { url: null },
+      error: { message: "provider off" },
+    });
+
+    expect(await signInWithApple()).toEqual({ error: "provider off" });
+    expect(mockOpenAuthSession).not.toHaveBeenCalled();
+  });
+
+  it("turns a thrown error into the generic failure", async () => {
+    mockOpenAuthSession.mockRejectedValue(new Error("no browser"));
+
+    expect(await signInWithApple()).toEqual({ error: "Apple Sign-In failed. Please try again." });
   });
 });

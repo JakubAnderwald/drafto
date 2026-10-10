@@ -4,7 +4,11 @@ import { Platform } from "react-native";
 
 import type { Database } from "@drafto/shared";
 
+import { installCryptoRandom } from "@/lib/crypto-random";
 import { secureStoreAdapter } from "./secure-store-adapter";
+
+// Before any auth call: supabase-js draws the PKCE `code_verifier` from it.
+installCryptoRandom();
 
 const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl as string;
 const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey as string;
@@ -31,6 +35,11 @@ export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: Platform.OS === "web",
+    // PKCE, not supabase-js's implicit default (ADR-0045). Redirects into the app
+    // (password reset, Apple sign-in on Android) then carry a one-time `code` that
+    // only the `code_verifier` in this device's SecureStore can redeem. They never
+    // carry session tokens, which any website could forge into a `drafto://` link.
+    flowType: "pkce",
   },
   global: {
     headers: { "x-drafto-client": clientTag },

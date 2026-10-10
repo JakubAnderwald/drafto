@@ -86,3 +86,9 @@ Two things follow for anyone touching this code path:
 Append-only note. The status stays **Accepted**. The macOS decision above still applies: the system browser, the `eu.drafto.desktop` scheme, and `Linking` to receive the callback. What changed is the `redirectTo` the app hands Supabase.
 
 It is now `https://drafto.eu/auth/desktop/callback`, not `eu.drafto.desktop://auth/callback`. Supabase's `302` straight to the custom scheme left Google's (and Apple's) page frozen in its "in progress" state after the account click. The hand-off page forwards the code to the same `eu.drafto.desktop://auth/callback` URL the app always handled, so `handleOAuthCallback` is unchanged. See [ADR-0044](./0044-desktop-auth-web-handoff.md).
+
+## Amendment (2026-10-10) — Apple on Android now receives a code
+
+Append-only note. The status stays **Accepted**. The Android Apple leg (`signInWithOAuth()` through `expo-web-browser`) reads a `code` from the `drafto://auth/callback` redirect. The mobile client used to run supabase-js's implicit default, which never sends one, so a completed Apple sign-in on Android most likely fell into the "user cancelled" branch and signed nobody in. The mobile client now runs `flowType: "pkce"` ([ADR-0045](./0045-mobile-auth-uses-pkce.md)), so the redirect carries a `code`.
+
+The callback is parsed with the shared hand-rolled parser in `apps/mobile/src/lib/app-deep-link.ts` instead of React Native's `URL`. An `error_description` on it is shown instead of being treated as a cancel. This still needs checking on a real Android device. The native Google flows and Apple on iOS use `signInWithIdToken` and are unaffected.

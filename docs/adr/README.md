@@ -77,3 +77,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0042](./0042-nightly-support-runner-owns-beta-dispatch.md)          | Nightly Support Runner Owns Beta Dispatch             | Accepted           | 2026-10-08 |
 | [0043](./0043-automated-macos-in-test-scenarios.md)                  | Automated macOS In-Test Scenarios                     | Accepted           | 2026-10-10 |
 | [0044](./0044-desktop-auth-web-handoff.md)                           | Desktop Auth Returns Through drafto.eu Hand-off Pages | Accepted           | 2026-10-10 |
+| [0045](./0045-mobile-auth-uses-pkce.md)                              | Mobile Auth Uses the PKCE Flow                        | Accepted           | 2026-10-10 |

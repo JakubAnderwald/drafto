@@ -593,7 +593,10 @@ describe("AuthProvider — account deletion", () => {
   });
 });
 
-const RECOVERY_LINK = "drafto://reset-password#access_token=AAA&refresh_token=RRR&type=recovery";
+const RECOVERY_LINK = "drafto://reset-password?code=recovery-code";
+/** The implicit-flow shape. The client runs PKCE (ADR-0045), so this is only ever a forgery. */
+const FORGED_TOKEN_LINK =
+  "drafto://reset-password#access_token=AAA&refresh_token=RRR&type=recovery";
 const OAUTH_LINK = "drafto://auth/callback?code=oauth-code";
 const EXPIRED_LINK =
   "drafto://reset-password#error_description=Email+link+is+invalid+or+has+expired";
@@ -693,7 +696,28 @@ describe("AuthProvider — password recovery", () => {
 
     expect(result.current.isRecovering).toBe(true);
     expect(result.current.recoveryError).toBeNull();
-    expect(mockSupabase.auth.setSession as jest.Mock).toHaveBeenCalled();
+    expect(mockSupabase.auth.exchangeCodeForSession as jest.Mock).toHaveBeenCalledWith(
+      "recovery-code",
+    );
+    expect(mockSupabase.auth.setSession as jest.Mock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a forged recovery link carrying session tokens", async () => {
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    await act(async () => {
+      linkHandler?.({ url: FORGED_TOKEN_LINK });
+    });
+
+    expect(mockSupabase.auth.setSession as jest.Mock).not.toHaveBeenCalled();
+    expect(mockSupabase.auth.exchangeCodeForSession as jest.Mock).not.toHaveBeenCalled();
+    expect(result.current.recoveryError).toBe(
+      "This password reset link is missing its credentials. Request a new one.",
+    );
   });
 
   it("handles a recovery link the app was cold-started with", async () => {
@@ -718,6 +742,7 @@ describe("AuthProvider — password recovery", () => {
     });
 
     expect(result.current.isRecovering).toBe(false);
+    expect(mockSupabase.auth.exchangeCodeForSession as jest.Mock).not.toHaveBeenCalled();
     expect(mockSupabase.auth.setSession as jest.Mock).not.toHaveBeenCalled();
   });
 
