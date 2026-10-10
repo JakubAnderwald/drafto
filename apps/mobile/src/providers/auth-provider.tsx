@@ -284,10 +284,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, newSession) => {
-      // supabase-js only emits PASSWORD_RECOVERY when it parses the recovery URL
-      // itself (`detectSessionInUrl`), which is web-only here — the deep-link
-      // handler above is what normally flips the flag. Handled anyway so a
-      // future client-config change cannot silently bypass the reset screen.
+      // The deep-link handler above flips the flag first, the moment a recovery
+      // link arrives, so the route guard holds the reset screen during the
+      // exchange. Under PKCE (ADR-0045) the exchange then also emits
+      // PASSWORD_RECOVERY for a recovery code; handling it keeps the reset screen
+      // in place even if a recovery session ever arrives another way.
       if (event === "PASSWORD_RECOVERY") {
         startRecovery();
       }

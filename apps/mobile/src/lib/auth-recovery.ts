@@ -56,27 +56,67 @@ export interface RecoveryCallbacks {
 const MISSING_CREDENTIALS_MESSAGE =
   "This password reset link is missing its credentials. Request a new one.";
 
-/** True when the URL is a password-recovery callback rather than an OAuth one. */
-export function isRecoveryUrl(url: string): boolean {
-  const parts = parseAppDeepLink(url);
-  if (!parts) return false;
-  return RECOVERY_PATHS.has(parts.path) || parts.params.get("type") === "recovery";
+const EXCHANGE_FAILED_MESSAGE = "Could not open this password reset link.";
+
+/**
+ * Plain-language messages for the code-exchange failures PKCE makes common.
+ * supabase-js's own wording for these is aimed at web developers.
+ */
+const EXCHANGE_ERROR_MESSAGES: Record<string, string> = {
+  // The verifier is not on this device: another phone, an iPad, or a reinstall.
+  pkce_code_verifier_not_found:
+    "Open this link on the device where you asked for the reset, or request a new one.",
+  // Supabase times a reset from when it was requested, not from when the email arrived.
+  flow_state_expired: "This password reset link has expired. Request a new one.",
+  flow_state_not_found:
+    "This password reset link has already been used or has expired. Request a new one.",
+};
+
+function describeExchangeError(error: { message: string; code?: string }): string {
+  return (error.code && EXCHANGE_ERROR_MESSAGES[error.code]) || error.message;
 }
 
-/** Returns the recovery credentials carried by `url`, or `null` if it isn't a recovery link. */
+/**
+ * Returns the recovery credentials carried by `url`, or `null` if it isn't a
+ * recovery link. Only the recovery paths count. Supabase sends no `type` param
+ * under PKCE, so a `type=recovery` on any other path could only be forged.
+ */
 export function parseRecoveryLink(url: string): RecoveryLink | null {
   const parts = parseAppDeepLink(url);
-  if (!parts) return null;
+  if (!parts || !RECOVERY_PATHS.has(parts.path)) return null;
 
-  const { path, params } = parts;
-  if (!RECOVERY_PATHS.has(path) && params.get("type") !== "recovery") {
-    return null;
-  }
-
+  const { params } = parts;
   return {
-    code: params.get("code") ?? null,
-    errorMessage: params.get("error_description") ?? params.get("error") ?? null,
+    code: params.get("code") || null,
+    errorMessage: params.get("error_description") || params.get("error") || null,
   };
+}
+
+/** True when the URL is a password-recovery callback rather than an OAuth one. */
+export function isRecoveryUrl(url: string): boolean {
+  return parseRecoveryLink(url) !== null;
+}
+
+/** The error to report for `link`, or `null` once its session is established. */
+async function establishRecoverySession(link: RecoveryLink): Promise<string | null> {
+  if (link.errorMessage) return link.errorMessage;
+  // No code: session tokens in the URL are not credentials (see the module comment).
+  if (!link.code) return MISSING_CREDENTIALS_MESSAGE;
+
+  try {
+    const { error } = await supabase.auth.exchangeCodeForSession(link.code);
+    return error ? describeExchangeError(error) : null;
+  } catch (error) {
+    return error instanceof Error ? error.message : EXCHANGE_FAILED_MESSAGE;
+  }
+}
+
+async function completeRecovery(link: RecoveryLink, callbacks: RecoveryCallbacks): Promise<void> {
+  callbacks.onRecoveryDetected?.();
+  // Called outside the exchange's try/catch, so a throwing callback is never
+  // reported back to itself as a second recovery error.
+  const errorMessage = await establishRecoverySession(link);
+  if (errorMessage) callbacks.onRecoveryError?.(errorMessage);
 }
 
 /**
@@ -90,29 +130,7 @@ export async function completeRecoveryFromUrl(
   callbacks: RecoveryCallbacks = {},
 ): Promise<void> {
   const link = parseRecoveryLink(url);
-  if (!link) return;
-
-  callbacks.onRecoveryDetected?.();
-
-  if (link.errorMessage) {
-    callbacks.onRecoveryError?.(link.errorMessage);
-    return;
-  }
-
-  try {
-    if (link.code) {
-      const { error } = await supabase.auth.exchangeCodeForSession(link.code);
-      if (error) callbacks.onRecoveryError?.(error.message);
-      return;
-    }
-
-    // No code: session tokens in the URL are not credentials (see the module comment).
-    callbacks.onRecoveryError?.(MISSING_CREDENTIALS_MESSAGE);
-  } catch (error) {
-    callbacks.onRecoveryError?.(
-      error instanceof Error ? error.message : "Could not open this password reset link.",
-    );
-  }
+  if (link) await completeRecovery(link, callbacks);
 }
 
 export interface RecoveryLinkHandler {
@@ -134,10 +152,10 @@ export interface RecoveryLinkHandler {
  * - Supabase session changes run strictly one after another.
  * - Only the most recent link may report an error; a superseded link that has
  *   not started yet is skipped outright.
- * - A link this handler has already seen is dropped for the handler's whole
- *   lifetime, whether its attempt is still in flight or long finished. Its
- *   one-time code would fail a second exchange ("PKCE code verifier not found")
- *   and swap a working reset form for an error.
+ * - A code this handler has already seen is dropped for the handler's whole
+ *   lifetime, whether its attempt is still in flight or long finished. A spent
+ *   code would fail a second exchange ("PKCE code verifier not found") and swap
+ *   a working reset form for an error.
  */
 export function createRecoveryLinkHandler(callbacks: RecoveryCallbacks = {}): RecoveryLinkHandler {
   let queue: Promise<void> = Promise.resolve();
@@ -146,11 +164,16 @@ export function createRecoveryLinkHandler(callbacks: RecoveryCallbacks = {}): Re
   const seen = new Set<string>();
 
   const handle = (url: string) => {
-    if (cancelled || seen.has(url) || !isRecoveryUrl(url)) return;
+    const link = parseRecoveryLink(url);
+    if (cancelled || !link) return;
+
+    // Keyed on the code, so the same link spelled differently is still a repeat.
+    const key = link.code ?? url;
+    if (seen.has(key)) return;
+    seen.add(key);
 
     const seq = ++latest;
     const isCurrent = () => !cancelled && seq === latest;
-    seen.add(url);
 
     // Flag recovery immediately, not when the link's turn in the queue comes —
     // the route guard must hold the reset screen for the whole wait.
@@ -159,7 +182,7 @@ export function createRecoveryLinkHandler(callbacks: RecoveryCallbacks = {}): Re
     queue = queue
       .then(() => {
         if (!isCurrent()) return;
-        return completeRecoveryFromUrl(url, {
+        return completeRecovery(link, {
           onRecoveryError: (message) => {
             if (isCurrent()) callbacks.onRecoveryError?.(message);
           },

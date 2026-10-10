@@ -43,8 +43,10 @@ describe("isRecoveryUrl", () => {
     expect(isRecoveryUrl(PKCE_LINK)).toBe(true);
   });
 
-  it("is true for any path carrying type=recovery", () => {
-    expect(isRecoveryUrl("drafto://auth/callback#type=recovery&access_token=AAA")).toBe(true);
+  it("ignores type=recovery on any other path, since Supabase sends no type under PKCE", () => {
+    // Only a forged link could carry it, e.g. to force a signed-in user onto the reset screen.
+    expect(isRecoveryUrl("drafto://auth/callback#type=recovery&access_token=AAA")).toBe(false);
+    expect(isRecoveryUrl("drafto://notes/123?type=recovery")).toBe(false);
   });
 
   it("accepts the alternate auth/recovery path an operator might allowlist", () => {
@@ -78,6 +80,20 @@ describe("parseRecoveryLink", () => {
 
     expect(link?.errorMessage).toBe("Email link is invalid or has expired");
     expect(link?.code).toBeNull();
+  });
+
+  it("falls back to the bare error code when the description is empty", () => {
+    expect(
+      parseRecoveryLink("drafto://reset-password?error=access_denied&error_description=")
+        ?.errorMessage,
+    ).toBe("access_denied");
+  });
+
+  it("treats an empty code as no code", () => {
+    expect(parseRecoveryLink("drafto://reset-password?code=")).toEqual({
+      code: null,
+      errorMessage: null,
+    });
   });
 
   it("falls back to the bare error code when no description is supplied", () => {
@@ -184,6 +200,42 @@ describe("completeRecoveryFromUrl", () => {
 
     await completeRecoveryFromUrl(PKCE_LINK, { onRecoveryError });
 
+    expect(onRecoveryError).toHaveBeenCalledWith("code expired");
+  });
+
+  it.each([
+    [
+      "pkce_code_verifier_not_found",
+      "Open this link on the device where you asked for the reset, or request a new one.",
+    ],
+    ["flow_state_expired", "This password reset link has expired. Request a new one."],
+    [
+      "flow_state_not_found",
+      "This password reset link has already been used or has expired. Request a new one.",
+    ],
+  ])("explains the %s exchange failure in plain words", async (code, message) => {
+    mockExchangeCodeForSession.mockResolvedValue({
+      data: {},
+      error: { code, message: "PKCE code verifier not found in storage. For SSR frameworks…" },
+    });
+    const onRecoveryError = jest.fn();
+
+    await completeRecoveryFromUrl(PKCE_LINK, { onRecoveryError });
+
+    expect(onRecoveryError).toHaveBeenCalledWith(message);
+  });
+
+  it("does not report a throwing callback's own error back to it", async () => {
+    mockExchangeCodeForSession.mockResolvedValue({ data: {}, error: { message: "code expired" } });
+    const onRecoveryError = jest.fn(() => {
+      throw new Error("screen already unmounted");
+    });
+
+    await expect(completeRecoveryFromUrl(PKCE_LINK, { onRecoveryError })).rejects.toThrow(
+      "screen already unmounted",
+    );
+
+    expect(onRecoveryError).toHaveBeenCalledTimes(1);
     expect(onRecoveryError).toHaveBeenCalledWith("code expired");
   });
 
@@ -348,6 +400,17 @@ describe("createRecoveryLinkHandler", () => {
     expect(onRecoveryError).not.toHaveBeenCalled();
   });
 
+  it("treats the same code spelled differently as a repeat", async () => {
+    const handler = createRecoveryLinkHandler();
+
+    handler.handle("drafto://reset-password?code=spent");
+    await flush();
+    handler.handle("DRAFTO:///reset-password/?code=spent");
+    await flush();
+
+    expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(1);
+  });
+
   it("still handles a different link after a finished one", async () => {
     const handler = createRecoveryLinkHandler();
 
@@ -373,6 +436,8 @@ describe("createRecoveryLinkHandler", () => {
     await flush();
 
     expect(mockExchangeCodeForSession.mock.calls).toEqual([["a"], ["b"]]);
+    // Reported once: the throw is logged, not fed back to the callback as a second error.
+    expect(onRecoveryError.mock.calls).toEqual([["expired"]]);
     expect(errorSpy).toHaveBeenCalledWith(
       "[auth-recovery] Failed to handle a recovery link:",
       expect.any(Error),

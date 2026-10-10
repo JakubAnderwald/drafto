@@ -1,4 +1,9 @@
 const mockCreateClient = jest.fn(() => ({ auth: {} }));
+const mockInstallCryptoRandom = jest.fn();
+
+jest.mock("@/lib/crypto-random", () => ({
+  installCryptoRandom: () => mockInstallCryptoRandom(),
+}));
 
 jest.mock("@supabase/supabase-js", () => ({
   createClient: (...args: unknown[]) => mockCreateClient(...(args as [])),
@@ -22,6 +27,11 @@ describe("supabase client", () => {
     });
 
     expect(mockCreateClient).toHaveBeenCalledTimes(1);
+    // The CSPRNG must be in place before supabase-js generates any code verifier.
+    expect(mockInstallCryptoRandom).toHaveBeenCalledTimes(1);
+    expect(mockInstallCryptoRandom.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCreateClient.mock.invocationCallOrder[0],
+    );
     const [url, key, options] = mockCreateClient.mock.calls[0] as unknown as [
       string,
       string,

@@ -254,10 +254,31 @@ describe("signInWithApple on Android (browser flow)", () => {
 
   it("reports a generic failure when the redirect carries neither a code nor a description", async () => {
     mockOpenAuthSession.mockResolvedValue(
-      redirectedTo("drafto://auth/callback#error=access_denied"),
+      redirectedTo("drafto://auth/callback#error=server_error"),
     );
 
     expect(await signInWithApple()).toEqual({ error: "Apple Sign-In failed. Please try again." });
+  });
+
+  it.each([
+    "drafto://auth/callback?error=user_cancelled_authorize",
+    "drafto://auth/callback?error=access_denied&error_description=user+cancelled",
+    "drafto://auth/callback?error=invalid_request&error_code=user_cancelled_authorize",
+  ])("treats a cancel on Apple's own page as a cancel, not a failure: %s", async (url) => {
+    mockOpenAuthSession.mockResolvedValue(redirectedTo(url));
+
+    expect(await signInWithApple()).toEqual({ error: null });
+    expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
+  });
+
+  it("does not mistake another error with an access_denied cousin for a cancel", async () => {
+    mockOpenAuthSession.mockResolvedValue(
+      redirectedTo(
+        "drafto://auth/callback?error=access_denied&error_code=bad_oauth_state&error_description=OAuth+state+expired",
+      ),
+    );
+
+    expect(await signInWithApple()).toEqual({ error: "OAuth state expired" });
   });
 
   it("never signs in with session tokens on the callback", async () => {

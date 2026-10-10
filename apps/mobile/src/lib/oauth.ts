@@ -8,8 +8,8 @@ import {
 } from "@react-native-google-signin/google-signin";
 import Constants from "expo-constants";
 
-import { parseAppDeepLink } from "./app-deep-link";
-import { supabase } from "./supabase";
+import { parseAppDeepLink } from "@/lib/app-deep-link";
+import { supabase } from "@/lib/supabase";
 
 const googleWebClientId = Constants.expoConfig?.extra?.googleWebClientId as string;
 
@@ -162,6 +162,12 @@ async function signInWithAppleNative(): Promise<{ error: string | null }> {
 /** Where Supabase sends the browser back to after Apple sign-in on Android. */
 const APPLE_CALLBACK_URL = "drafto://auth/callback";
 
+/**
+ * Errors that mean the user backed out on Apple's own page. Apple reports
+ * `user_cancelled_authorize`, and Supabase may pass it on as `access_denied`.
+ */
+const APPLE_CANCEL_ERRORS = new Set(["user_cancelled_authorize", "access_denied"]);
+
 async function signInWithAppleBrowser(): Promise<{ error: string | null }> {
   try {
     const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
@@ -193,6 +199,10 @@ async function signInWithAppleBrowser(): Promise<{ error: string | null }> {
     }
 
     // The redirect completed without a code: Supabase or Apple sent an error back.
+    const providerError = params?.get("error_code") || params?.get("error") || "";
+    if (APPLE_CANCEL_ERRORS.has(providerError)) {
+      return { error: null };
+    }
     return { error: params?.get("error_description") || APPLE_SIGN_IN_FAILED_MESSAGE };
   } catch {
     return { error: APPLE_SIGN_IN_FAILED_MESSAGE };

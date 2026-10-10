@@ -4,7 +4,11 @@ import { Platform } from "react-native";
 
 import type { Database } from "@drafto/shared";
 
+import { installCryptoRandom } from "@/lib/crypto-random";
 import { secureStoreAdapter } from "./secure-store-adapter";
+
+// Before any auth call: supabase-js draws the PKCE `code_verifier` from it.
+installCryptoRandom();
 
 const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl as string;
 const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey as string;
