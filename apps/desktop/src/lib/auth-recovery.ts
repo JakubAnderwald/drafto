@@ -213,14 +213,20 @@ export function createRecoveryLinkHandler(callbacks: RecoveryCallbacks = {}): Re
     // the route guard must hold the reset screen for the whole wait.
     callbacks.onRecoveryDetected?.();
 
-    queue = queue.then(() => {
-      if (!isCurrent()) return;
-      return completeRecoveryFromUrl(url, {
-        onRecoveryError: (message) => {
-          if (isCurrent()) callbacks.onRecoveryError?.(message);
-        },
+    queue = queue
+      .then(() => {
+        if (!isCurrent()) return;
+        return completeRecoveryFromUrl(url, {
+          onRecoveryError: (message) => {
+            if (isCurrent()) callbacks.onRecoveryError?.(message);
+          },
+        });
+      })
+      // A throwing callback must not leave the queue rejected, or every later
+      // link would be skipped without a word.
+      .catch((err: unknown) => {
+        console.error("[auth-recovery] Failed to handle a recovery link:", err);
       });
-    });
   };
 
   const cancel = () => {

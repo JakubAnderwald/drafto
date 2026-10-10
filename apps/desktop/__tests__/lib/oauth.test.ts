@@ -135,6 +135,60 @@ describe("handleOAuthCallback", () => {
     expect(mockExchangeCodeForSession.mock.calls).toEqual([["first-sign-in"], ["second-sign-in"]]);
   });
 
+  describe("after a failed exchange", () => {
+    /** Lets the exchange promise's continuations run. */
+    const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    let errorSpy: jest.SpyInstance;
+    beforeEach(() => {
+      errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    });
+    afterEach(() => {
+      errorSpy.mockRestore();
+    });
+
+    it("lets the same link retry when the request never reached the server", async () => {
+      // supabase-js keeps the verifier on a network failure, so a retry can still succeed.
+      mockExchangeCodeForSession.mockResolvedValueOnce({
+        data: {},
+        error: { name: "AuthRetryableFetchError", message: "Failed to fetch" },
+      });
+
+      handleOAuthCallback("eu.drafto.desktop://auth/callback?code=went-offline");
+      await flush();
+      handleOAuthCallback("eu.drafto.desktop://auth/callback?code=went-offline");
+
+      expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not retry a code the server rejected", async () => {
+      mockExchangeCodeForSession.mockResolvedValueOnce({
+        data: {},
+        error: { name: "AuthApiError", message: "invalid flow state" },
+      });
+
+      handleOAuthCallback("eu.drafto.desktop://auth/callback?code=rejected");
+      await flush();
+      handleOAuthCallback("eu.drafto.desktop://auth/callback?code=rejected");
+
+      expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[oauth] Failed to exchange code for session:",
+        "invalid flow state",
+      );
+    });
+
+    it("lets the same link retry after an unexpected rejection", async () => {
+      mockExchangeCodeForSession.mockRejectedValueOnce(new Error("boom"));
+
+      handleOAuthCallback("eu.drafto.desktop://auth/callback?code=threw");
+      await flush();
+      handleOAuthCallback("eu.drafto.desktop://auth/callback?code=threw");
+
+      expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it.each([
     "eu.drafto.desktop://auth/callback#access_token=AAA&refresh_token=RRR",
     "eu.drafto.desktop://auth/callback?access_token=AAA&refresh_token=RRR",

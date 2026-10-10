@@ -43,8 +43,16 @@ export async function signInWithOAuthBrowser(
  * single-use, and the drafto.eu hand-off page sends the same link twice in the
  * normal case: once automatically and again from its "Open Drafto" button. A
  * second exchange would only fail ("PKCE code verifier not found").
+ *
+ * A code is forgotten again when its exchange never reached the server: supabase-js
+ * keeps the verifier in that case, so the same link can still succeed on retry.
  */
 const exchangedCodes = new Set<string>();
+
+/** supabase-js reports a request that never got a server response under this name. */
+function isRetryableExchangeError(error: { name?: string }): boolean {
+  return error.name === "AuthRetryableFetchError";
+}
 
 /**
  * Finishes OAuth sign-in from an `eu.drafto.desktop://auth/callback` deep link.
@@ -91,9 +99,17 @@ export function handleOAuthCallback(url: string): void {
     }
 
     exchangedCodes.add(code);
-    supabase.auth.exchangeCodeForSession(code).catch((err) => {
-      console.error("[oauth] Failed to exchange code for session:", err);
-    });
+    supabase.auth
+      .exchangeCodeForSession(code)
+      .then(({ error }) => {
+        if (!error) return;
+        if (isRetryableExchangeError(error)) exchangedCodes.delete(code);
+        console.error("[oauth] Failed to exchange code for session:", error.message);
+      })
+      .catch((err) => {
+        exchangedCodes.delete(code);
+        console.error("[oauth] Failed to exchange code for session:", err);
+      });
   } catch (err) {
     console.error("[oauth] Failed to parse callback URL:", err);
   }

@@ -358,6 +358,27 @@ describe("createRecoveryLinkHandler", () => {
     expect(mockExchangeCodeForSession.mock.calls).toEqual([["a"], ["b"]]);
   });
 
+  it("keeps handling links after a callback throws", async () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    mockExchangeCodeForSession.mockResolvedValueOnce({ data: {}, error: { message: "expired" } });
+    const onRecoveryError = jest.fn(() => {
+      throw new Error("screen already unmounted");
+    });
+    const handler = createRecoveryLinkHandler({ onRecoveryError });
+
+    handler.handle(linkFor("a"));
+    await flush();
+    handler.handle(linkFor("b"));
+    await flush();
+
+    expect(mockExchangeCodeForSession.mock.calls).toEqual([["a"], ["b"]]);
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[auth-recovery] Failed to handle a recovery link:",
+      expect.any(Error),
+    );
+    errorSpy.mockRestore();
+  });
+
   it("fires nothing once cancelled", async () => {
     const first = deferredExchange();
     mockExchangeCodeForSession.mockReturnValueOnce(first.promise);
