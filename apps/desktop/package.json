@@ -32,7 +32,7 @@
     "react-native": "0.86.2",
     "react-native-document-picker-macos": "^1.0.0",
     "react-native-fs": "^2.20.0",
-    "react-native-keychain": "^10.0.0",
+    "react-native-keychain": "9.2.3",
     "react-native-macos": "^0.81.9",
     "react-native-safe-area-context": "^5.8.0",
     "react-native-screens": "^4.26.0",
