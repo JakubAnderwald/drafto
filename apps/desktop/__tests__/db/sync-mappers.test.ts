@@ -1,6 +1,10 @@
 const mockSynchronize = jest.fn().mockResolvedValue(undefined);
 const mockSupabaseFrom = jest.fn();
 const mockSupabaseRpc = jest.fn();
+// pullChanges refuses to run without a session, so every pull here has one.
+const mockGetSession = jest
+  .fn()
+  .mockResolvedValue({ data: { session: { access_token: "token" } }, error: null });
 
 jest.mock("@nozbe/watermelondb/sync", () => ({
   synchronize: (...args: unknown[]) => mockSynchronize(...args),
@@ -10,6 +14,7 @@ jest.mock("@/lib/supabase", () => ({
   supabase: {
     from: (...args: unknown[]) => mockSupabaseFrom(...args),
     rpc: (...args: unknown[]) => mockSupabaseRpc(...args),
+    auth: { getSession: (...args: unknown[]) => mockGetSession(...args) },
   },
 }));
 
