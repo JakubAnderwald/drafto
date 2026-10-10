@@ -15,7 +15,9 @@ jest.mock("expo-constants", () => ({
 
 describe("supabase client", () => {
   it("runs the PKCE flow, so deep links never carry session tokens (ADR-0045)", () => {
+    // Required lazily: a static import would run createClient before `mockCreateClient` exists.
     jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- see above
       require("@/lib/supabase");
     });
 
