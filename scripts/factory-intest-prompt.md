@@ -159,10 +159,38 @@ that is your entire write surface.
 
 6. **Ground it in the real UI.** Use the actual screen, menu, and button names
    from the code (`Read`/`Grep` them if unsure). Never invent a URL, a build
-   number, or a TestFlight link — every such fact comes from the bundle.
+   number, or a TestFlight link — every such fact comes from the bundle. On
+   macOS, when a control's `accessibilityLabel` or `testID` differs from its
+   on-screen title, give it in backticks too: macOS scenarios can be run
+   hands-off by `apps/desktop/e2e/in-test/`
+   (`docs/operations/macos-in-test-automation.md`), which finds controls by
+   those names.
 
 7. **Keep it to what changed.** A test scenario is not a regression suite for
    the whole app.
+
+8. **Check that the pass signal can actually appear.** Before you make a
+   message, an indicator state, or a screen the expected result of a step,
+   `Read` the code that produces it and confirm it can show that at that
+   moment. A screen swapped for a spinner while it works loses its own state,
+   and a status indicator may refresh only on certain events. Two desktop
+   cases found on #458: the Awaiting Approval screen's "still pending" message
+   never appears (#676), and the sync indicator reads "Synced" while an edit
+   waits to be pushed (#677). If the signal is unreliable, expect something
+   else, or say in the step that this signal is known not to work.
+
+9. **Pair UI expectations with an independent check.** Where one exists, add
+   evidence that doesn't rely on the same UI. For example: the change is visible
+   on drafto.eu or another device, or another screen shows it. A step whose
+   only evidence is one indicator can't tell a broken fix from a broken
+   indicator.
+
+10. **Spell out timing.** When a step relies on a trigger with a cadence or a
+    delay, say which trigger the step exercises, how long to wait, and what
+    would set off a different trigger by accident. For example, the desktop
+    sync runs every 30 s only while changes are pending, and also on window
+    activation and on network reconnect, so switching windows during a "30 s
+    timer" step tests the wrong trigger.
 
 ## The comment you post
 

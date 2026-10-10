@@ -75,3 +75,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0040](./0040-app-store-promote-lanes.md)                            | App Store Submission Promotes an Existing Build      | Accepted           | 2026-09-27 |
 | [0041](./0041-factory-ci-red-and-cancelled-checks.md)                | Factory Handling of Red and Cancelled CI             | Accepted           | 2026-10-08 |
 | [0042](./0042-nightly-support-runner-owns-beta-dispatch.md)          | Nightly Support Runner Owns Beta Dispatch            | Accepted           | 2026-10-08 |
+| [0043](./0043-automated-macos-in-test-scenarios.md)                  | Automated macOS In-Test Scenarios                    | Accepted           | 2026-10-10 |

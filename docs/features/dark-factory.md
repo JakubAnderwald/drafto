@@ -123,6 +123,8 @@ When a card advances, the factory posts one comment (marker `<!-- drafto-factory
 3. Any **advisory** (non-required) red checks, for a glance before Approving.
 4. When the CodeRabbit CLI lane is on and it promoted the commit without full CodeRabbit coverage, a note saying so ("CodeRabbit did not review `<sha>` (…)"), on its own line — it is not a check, and it travels to the scenario writer as its own bundle field (`crCoverageNote`), never inside the advisory list. If the lane itself errored, the card is promoted anyway and the note reads "CodeRabbit coverage of `<sha>` unknown (lane error)". When the scenario is re-written for the same head (e.g. the promoting tick died before posting it), the note is rebuilt from the recorded coverage; the lane-error note isn't recorded, so it can't be. A commit pushed while the card is already In Test gets no note.
 
+On macOS the scenario can be run hands-off against the posted TestFlight build: see [macOS In-Test automation](../operations/macos-in-test-automation.md).
+
 The scenario is refreshed whenever the PR head SHA changes, so an In Test → feedback → In Test round trip gets a new one. If Claude fails or times out, the factory posts a deterministic fallback comment instead — the card still advances, and this stage never consumes the retry budget.
 
 ### "Vercel preview never appeared in In Test"
