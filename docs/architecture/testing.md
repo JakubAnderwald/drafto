@@ -37,6 +37,7 @@ Never skip a suite because "it's unrelated" — CI will run all of them and a fa
 - The Expo dev client must be running: `cd apps/mobile && npx expo start --dev-client`.
 - `E2E_TEST_EMAIL` and `E2E_TEST_PASSWORD` must be exported in the shell.
 - In a worktree, Metro on port 8081 may clash with the main checkout's Metro. Start on a different port and redirect: `pnpm start --port 8082 && adb reverse tcp:8081 tcp:8082`.
+- **Before shipping an iOS release, launch a Release build on the iOS 27 simulator** (runtime `com.apple.CoreSimulator.SimRuntime.iOS-27-0`). Build it with `xcodebuild … -configuration Release -sdk iphonesimulator` after `expo prebuild` with `.env.production` sourced, then check that the app reaches the Log In screen. Then quit it with `xcrun simctl terminate <sim> eu.drafto.mobile` and check that `xcrun simctl openurl <sim> "drafto://reset-password"` lands on the reset screen. Quitting first makes this a true cold start, through `scene(_:willConnectTo:options:)`. With the app still running, the link goes through `scene(_:openURLContexts:)` instead. iOS 27 stops apps built with its SDK that skip the UIScene lifecycle, and older simulators don't show it ([ADR-0046](../adr/0046-ios-uiscene-lifecycle.md)).
 
 ### Mobile / desktop unit tests
 
