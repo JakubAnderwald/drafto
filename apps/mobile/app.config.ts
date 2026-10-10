@@ -113,5 +113,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     "./plugins/with-ios-swift-concurrency",
     "./plugins/with-ios-modular-headers",
     "./plugins/with-ios-pod-deployment-target",
+    "./plugins/with-ios-scene-lifecycle",
   ],
 });
