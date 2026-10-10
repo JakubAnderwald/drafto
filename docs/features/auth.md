@@ -112,7 +112,9 @@ A signed-in user can permanently delete their own account from inside the app on
     - With the check on, iOS Google sign-in fails with "Passed nonce and nonce in id_token should either both exist or not".
     - The trade-off is that Supabase no longer binds Google ID tokens to a nonce. The audience (the Web client) and signature checks still apply.
     - Revisit if the library gains nonce support.
-  - Read or change both through the Management API (`GET/PATCH /v1/projects/<ref>/config/auth`: `external_apple_client_id`, `external_google_skip_nonce_check`), or in the dashboard under Authentication → Sign In / Providers.
+  - Read or change both in the dashboard (Authentication → Sign In / Providers) or through the Management API (`GET/PATCH /v1/projects/<ref>/config/auth`):
+    - Apple: set `external_apple_client_id` to `eu.drafto.web.auth` and `external_apple_additional_client_ids` to `eu.drafto.mobile`. The platform merges the additional IDs into `external_apple_client_id`, so a `GET` reads back `"eu.drafto.web.auth,eu.drafto.mobile"` and an empty additional field. Sending the comma-joined list in `external_apple_client_id` alone is equivalent.
+    - Google: set `external_google_skip_nonce_check` to `true`.
   - **macOS (both providers)** — `signInWithOAuth()` opened in the system browser with `redirectTo` set to the drafto.eu hand-off page `https://drafto.eu/auth/desktop/callback` ([ADR-0044](../adr/0044-desktop-auth-web-handoff.md)). That page forwards the code to the `eu.drafto.desktop://auth/callback` deep link (`apps/desktop/src/lib/oauth.ts`), where it is exchanged in-app, and leaves the tab on a "Finishing sign-in in Drafto — you can close this tab" page. Redirecting straight to the scheme used to leave Google's page frozen mid-navigation. The page never exchanges the code itself, because the PKCE verifier lives in the app.
     - The page opens the app on its own only on a Mac desktop.
     - It shows fixed copy, never Supabase's error text.
