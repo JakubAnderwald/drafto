@@ -9,6 +9,8 @@
 #   SCENARIO_TITLE      report heading, e.g. "#458 desktop sync gating"
 #   QA_TAG              goes into the throwaway e-mail, e.g. 458
 #   ISSUE, PR           optional: preflight then checks the In-Test markers
+#                       (default them as ${ISSUE-<n>} so `ISSUE= PR=` skips that
+#                       once the card has shipped)
 #   TOGGLES_NETWORK     1 when a step takes the Mac offline (needs sudo)
 #   PRODUCTION_SUMMARY  bullet lines naming the scenario's own production writes
 # and may define scenario_preflight() for extra read-only checks.
@@ -55,7 +57,6 @@ if [ "$MODE" = --cleanup-only ]; then
 else
   RUN_DIR="$RUNS_ROOT/$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$RUN_DIR/shots"
-  [ "$MODE" = run ] && ln -sfn "$RUN_DIR" "$RUNS_ROOT/latest"
 fi
 
 # shellcheck source=common.sh
@@ -114,7 +115,7 @@ preflight() {
   # The build under test is the one the factory posted for this card.
   if [ -n "$ISSUE" ]; then
     local installed marker_build marker_sha head labels comments
-    installed=$(defaults read "$APP/Contents/Info.plist" CFBundleVersion 2> /dev/null)
+    installed=$(app_plist CFBundleVersion)
     comments=$(gh api "repos/$GH_REPO/issues/$ISSUE/comments" --paginate --jq '.[].body' 2> /dev/null)
     marker_build=$(grep -oE 'drafto-factory-intest-build:macos:[0-9]+' <<< "$comments" | tail -1 | cut -d: -f3)
     marker_sha=$(grep -oE 'drafto-factory-scenario-sha:[0-9a-f]{40}' <<< "$comments" | tail -1 | cut -d: -f2)
@@ -142,6 +143,21 @@ preflight() {
     pf fail "Drafto is not running (open $APP first)"
   else
     pf ok "screen unlocked"
+    # The run drives the running process, so it must be the installed bundle,
+    # started after that bundle was last written (a TestFlight update replaces
+    # the bundle under a still-running old process).
+    local pid exe started written
+    pid=$(drafto_pid)
+    exe=$(ps -o comm= -p "$pid")
+    started=$(LC_ALL=C date -j -f "%a %b %d %T %Y" "$(LC_ALL=C ps -o lstart= -p "$pid" | sed 's/[[:space:]]*$//')" +%s 2> /dev/null)
+    written=$(stat -f %m "$APP/Contents/Info.plist" 2> /dev/null)
+    if [[ "$exe" != "$APP/"* ]]; then
+      pf fail "the running Drafto (pid $pid) is $exe, not $APP"
+    elif [ -n "$started" ] && [ -n "$written" ] && [ "$started" -ge "$written" ]; then
+      pf ok "the running Drafto was started from $APP after it was installed"
+    else
+      pf fail "the running Drafto started before $APP was last updated — quit and reopen it"
+    fi
     local n
     n=$(ax_dump | jq 'length' 2> /dev/null)
     [ "${n:-0}" -gt 3 ] && pf ok "accessibility tree readable ($n elements)" || pf fail "cannot read Drafto's accessibility tree (Accessibility permission for Terminal?)"
@@ -194,6 +210,14 @@ cleanup() {
   local rc=$?
   set +e
   trap - EXIT INT TERM
+  # A run that stops outside fail_step (Ctrl-C, die, an unset variable) must
+  # not read as a shorter green run.
+  [ "$STEP_OPEN" = 1 ] && step_end ABORTED "the run ended (exit $rc) before this step finished"
+  if [ "$RUN_COMPLETE" = 1 ]; then
+    RUN_OUTCOME="all steps ran (exit $rc)"
+  else
+    RUN_OUTCOME="STOPPED EARLY (exit $rc) — steps after the last row did not run"
+  fi
   net_restore_if_needed
   if [ "$SIGNED_UP" = 1 ] && [ "$ACCOUNT_DELETED" != 1 ]; then
     log "Cleanup: removing the throwaway account $QA_EMAIL"
@@ -225,8 +249,13 @@ cleanup() {
 # ── --cleanup-only ──────────────────────────────────────────────────────────
 
 if [ "$MODE" = --cleanup-only ]; then
-  # shellcheck source=/dev/null
-  [ -f "$RUN_DIR/state.env" ] && source "$RUN_DIR/state.env"
+  trap 'rm -f "$RUN_DIR"/.hdr-*' EXIT
+  if [ -f "$RUN_DIR/state.env" ]; then
+    # shellcheck source=/dev/null
+    source "$RUN_DIR/state.env"
+  else
+    log "No state.env in $RUN_DIR: that run created no account, or already deleted it."
+  fi
   [ -s "$NET_DISABLED_FILE" ] && { sudo -v && net_on; }
   if [ -n "$QA_EMAIL" ]; then
     mgmt_init || die "no Supabase CLI token"
@@ -246,6 +275,10 @@ fi
 
 # ── Full run: confirm, then set up ──────────────────────────────────────────
 
+# Header files hold secrets from here on; the full cleanup trap replaces this
+# one once the run is confirmed.
+trap 'rm -f "$RUN_DIR"/.hdr-*' EXIT
+trap 'exit 130' INT TERM
 preflight || die "preflight failed — nothing was changed"
 prod_load_env || die "prod env"
 
@@ -287,6 +320,8 @@ QA_PASSWORD="Qa-$(openssl rand -hex 8)-Zz"
   umask 077
   printf 'QA_EMAIL=%q\nQA_PASSWORD=%q\n' "$QA_EMAIL" "$QA_PASSWORD" > "$RUN_DIR/state.env"
 )
+# --cleanup-only follows this link, so it moves only once a run has credentials.
+ln -sfn "$RUN_DIR" "$RUNS_ROOT/latest"
 
 trap cleanup EXIT
 trap 'exit 130' INT TERM

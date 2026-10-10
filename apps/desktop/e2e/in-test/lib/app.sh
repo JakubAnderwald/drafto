@@ -23,7 +23,9 @@ redact() {
 # back to the accessibility description in case one does not.
 open_app_menu() {
   menu_open && return 0
-  press_until 2 menu_open id app-menu-trigger || press_until 2 menu_open desc "App menu"
+  # The trigger toggles, so a retry that comes too soon closes the menu the
+  # first press opened: give each press 5 s to show.
+  press_until 5 menu_open id app-menu-trigger || press_until 5 menu_open desc "App menu"
 }
 
 sign_out_via_menu() {
@@ -50,14 +52,8 @@ log_in() {
 
 # settle [timeout_s] — wait until the indicator reads Synced and nothing is
 # pending in the local DB.
-settle() {
-  local end=$(($(date +%s) + ${1:-60}))
-  while [ "$(date +%s)" -lt "$end" ]; do
-    [ "$(sync_help)" = Synced ] && [ "$(db_pending)" = 0 ] && return 0
-    sleep 0.5
-  done
-  return 1
-}
+synced_idle() { [ "$(sync_help)" = Synced ] && [ "$(db_pending)" = 0 ]; }
+settle() { poll "${1:-60}" synced_idle; }
 
 # poll_synced <timeout_s> <marker> — after a local edit: waits for "Synced",
 # nothing pending and the marker on the server. Sets SAW_PENDING and ELAPSED.

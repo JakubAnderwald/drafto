@@ -9,8 +9,13 @@ SHOT_N=0
 STEP_ID=""
 STEP_NAME=""
 STEP_T0=0
+STEP_OPEN=0
+RUN_COMPLETE=0
+RUN_OUTCOME=""
 
-now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'; }
+# app_plist <key> — from the installed bundle, read directly (`defaults read`
+# goes through cfprefsd and can return a cached value).
+app_plist() { /usr/libexec/PlistBuddy -c "Print :$1" "$APP/Contents/Info.plist" 2> /dev/null; }
 
 log() {
   printf '%s %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$RUN_DIR/log.txt" >&2
@@ -33,12 +38,14 @@ step_begin() {
   STEP_ID=$1
   STEP_NAME=$2
   STEP_T0=$(date +%s)
+  STEP_OPEN=1
   log "── Step $STEP_ID: $STEP_NAME"
 }
 
-# step_end <PASS|FAIL|WARN|SKIP> <evidence>
+# step_end <PASS|FAIL|WARN|SKIP|ABORTED> <evidence>
 step_end() {
   local status=$1 detail=$2 secs
+  STEP_OPEN=0
   secs=$(($(date +%s) - STEP_T0))
   jq -nc --arg id "$STEP_ID" --arg name "$STEP_NAME" --arg status "$status" \
     --arg detail "$detail" --argjson secs "$secs" \
@@ -58,7 +65,9 @@ write_report() {
   {
     echo "# $SCENARIO_TITLE — automated In-Test run $(basename "$RUN_DIR")"
     echo
-    echo "Build: Drafto $(defaults read "$APP/Contents/Info.plist" CFBundleShortVersionString 2> /dev/null) ($(defaults read "$APP/Contents/Info.plist" CFBundleVersion 2> /dev/null)), backend: production"
+    echo "Build: Drafto $(app_plist CFBundleShortVersionString) ($(app_plist CFBundleVersion)), backend: production"
+    echo
+    echo "Run: ${RUN_OUTCOME:-unknown}"
     echo
     echo "| Step | Check | Result | Time | Evidence |"
     echo "|---|---|---|---|---|"

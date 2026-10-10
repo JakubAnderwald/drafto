@@ -57,13 +57,19 @@ net_off() {
   done <<< "$services"
 }
 
+# Only a complete restore stands the watchdog down and forgets the list; after
+# a failure both stay armed, so the EXIT trap and the watchdog try again.
 net_on() {
   [ -s "$NET_DISABLED_FILE" ] || return 0
-  local svc
+  local svc failed=0
   while IFS= read -r svc; do
     log "   network: enabling \"$svc\""
-    sudo -n networksetup -setnetworkserviceenabled "$svc" on
+    sudo -n networksetup -setnetworkserviceenabled "$svc" on || failed=1
   done < "$NET_DISABLED_FILE"
+  if [ "$failed" = 1 ]; then
+    log "   network: re-enabling failed; the watchdog restores it within ${NET_WATCHDOG_S}s"
+    return 1
+  fi
   touch "$NET_RESTORED_FLAG"
   rm -f "$NET_DISABLED_FILE"
 }

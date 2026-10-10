@@ -11,10 +11,14 @@ db_last_pulled() { db_q "select value from local_storage where key = '__watermel
 
 db_count() { db_q "select count(*) from $1"; }
 
+# Local changes the server does not have yet. An attachment whose file has not
+# uploaded counts too: its row is skipped by the push yet still marked synced,
+# and sign-out deletes local attachment files.
 db_pending() {
   db_q "select (select count(*) from notes where _status != 'synced')
              + (select count(*) from notebooks where _status != 'synced')
-             + (select count(*) from attachments where _status != 'synced')"
+             + (select count(*) from attachments
+                where _status != 'synced' or coalesce(upload_status, '') != 'uploaded')"
 }
 
 db_note_title() { db_q "select title from notes where id = '$1' or remote_id = '$1' limit 1"; }
@@ -26,15 +30,4 @@ db_has_marker() { [ "$(db_q "select count(*) from notes where content like '%$1%
 db_marker_in_notebook() {
   [ "$(db_q "select count(*) from notes n join notebooks b on b.id = n.notebook_id
              where b.name = '$2' and n.content like '%$1%'")" -gt 0 ] 2> /dev/null
-}
-
-# wait_db <timeout_s> <command…> — poll until the command succeeds.
-wait_db() {
-  local end=$(($(date +%s) + $1))
-  shift
-  while [ "$(date +%s)" -lt "$end" ]; do
-    "$@" && return 0
-    sleep 0.5
-  done
-  return 1
 }

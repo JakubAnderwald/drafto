@@ -20,8 +20,10 @@ set -uo pipefail
 SCENARIO=458-sync-gating
 SCENARIO_TITLE="#458 desktop sync gating"
 QA_TAG=458
-ISSUE=458
-PR=673
+# The card checks pin the run to the In-Test build. #458 has shipped, so run it
+# as a regression check with `ISSUE= PR= bash scenarios/458-sync-gating.sh`.
+ISSUE=${ISSUE-458}
+PR=${PR-673}
 TOGGLES_NETWORK=1
 PRODUCTION_SUMMARY="  • signs the Drafto app out of its current account (only if it reads Synced, 0 pending)
   • signs that account up in the app (you get one \"New Drafto signup\" e-mail), confirms
@@ -66,6 +68,10 @@ SIGNED_UP=1
 ax_press desc "Sign up" || fail_step "no Sign up button"
 outcome=""
 for attempt in 1 2; do
+  if [ "$attempt" = 2 ]; then
+    log "   sign-up submit had no effect; screen reads: $(ocr_text | redact)"
+    ax_press desc "Sign up"
+  fi
   end=$(($(date +%s) + 12))
   while [ "$(date +%s)" -lt "$end" ]; do
     if on_waiting_screen; then
@@ -78,8 +84,6 @@ for attempt in 1 2; do
     fi
     sleep 2
   done
-  log "   sign-up submit had no effect (attempt $attempt); screen reads: $(ocr_text | redact)"
-  ax_press desc "Sign up"
 done
 [ -n "$outcome" ] || fail_step "Sign up created no account; screen reads: $(ocr_text | redact)"
 if [ "$outcome" = waiting ] || ax_wait 3 desc "Check approval status"; then
@@ -112,7 +116,10 @@ printf 'QA_UID=%q\n' "$QA_UID" >> "$RUN_DIR/state.env"
 step_end "$A1_STATUS" "$A1_NOTE; user $QA_UID"
 
 # ── A1b. Unapproved never syncs ─────────────────────────────────────────────
-step_begin A1b "Unapproved account never pulls (sign-in sync, 35 s idle, window focus)"
+step_begin A1b "Unapproved account never pulls (sign-in sync, retry window, window focus)"
+# 35 s outlasts the sync retry delays (2/5/15/30 s). The 30 s periodic timer is
+# not exercised here: it only syncs when local changes are pending, and an
+# unapproved user cannot make any — that gate is covered by the PR's unit tests.
 sleep 35
 focus_away_and_back
 sleep 6
@@ -184,7 +191,7 @@ step_begin A4 "Check approval again: main window opens and the first sync comple
 press_until 20 on_main_screen desc "Check approval status" || fail_step "main window did not open after Check approval status"
 settle 45 || fail_step "indicator never settled on Synced (now '$(sync_help)')"
 has_30_notes() { [ "$(db_count notes)" = 30 ]; }
-wait_db 30 has_30_notes || true
+poll 30 has_30_notes || true
 pulled=$(db_last_pulled)
 counts="$(db_count notebooks)/$(db_count notes)"
 [ -n "$pulled" ] || fail_step "lastPulledAt still unset after approval"
@@ -229,7 +236,7 @@ sleep 8
 ctrl_title=$(db_note_title "$SEED_NOTE")
 focus_away_and_back
 title_is_w1() { [ "$(db_note_title "$SEED_NOTE")" = "$W1" ]; }
-wait_db 12 title_is_w1 || fail_step "the edit did not arrive within 12 s of the focus switch"
+poll 12 title_is_w1 || fail_step "the edit did not arrive within 12 s of the focus switch"
 L1=$(db_last_pulled)
 [ "$L1" != "$L0" ] || fail_step "title changed but lastPulledAt did not advance"
 if [ "$ctrl_title" = "$W1" ]; then
@@ -248,10 +255,10 @@ step_end "$st" "pending seen: $SAW_PENDING; Synced and on the server after ${ELA
 
 # ── B10. Reconnect ──────────────────────────────────────────────────────────
 step_begin B10 "Offline edit syncs on its own after the network returns"
+settle 60 || fail_step "did not settle before the test"
 if ! net_wait_idle 600; then
   step_end SKIP "a build or support run stayed active for 10 min; network left alone"
 else
-  settle 60 || fail_step "did not settle before the test"
   net_off || fail_step "could not disable the network services"
   wait_help 20 '^Offline$' || fail_step "indicator never showed Offline (now '$(sync_help)')"
   type_marker "$M3" || fail_step "the offline edit never reached the local DB"
@@ -270,7 +277,7 @@ else
   secs=$(($(date +%s) - t_on))
   [ "$synced" = yes ] || fail_step "not Synced within 60 s of the network returning (now '$(sync_help)')"
   net_wait_online 60 || fail_step "Supabase unreachable after re-enabling the network"
-  wait_db 30 sb_has_marker "$M3" || fail_step "the offline edit is not on the server"
+  poll 30 sb_has_marker "$M3" || fail_step "the offline edit is not on the server"
   if [ "$secs" -le 10 ]; then st=PASS; elif [ "$secs" -le 30 ]; then st=WARN; else st=FAIL; fi
   step_end "$st" "Offline shown; Synced ${secs}s after the network returned (scenario: ~10 s), edit on the server"
   [ "$st" = FAIL ] && exit 1
@@ -303,7 +310,7 @@ p_before=$(db_pending)
 press_until 3 menu_closed id logout-button || press_until 3 menu_closed desc "Sign out" || fail_step "Sign out did not respond"
 ax_wait 20 desc "Log in" || fail_step "the login screen did not appear within 20 s"
 secs=$(($(date +%s) - t0))
-wait_db 20 sb_has_marker "$M4" || fail_step "the edit made right before sign-out is NOT on the server (lost)"
+poll 20 sb_has_marker "$M4" || fail_step "the edit made right before sign-out is NOT on the server (lost)"
 if [ "${p_before:-0}" -gt 0 ] 2> /dev/null; then
   step_end PASS "signed out with $p_before local change(s) unsynced (indicator: '$h_before'); login screen after ${secs}s; the edit reached the server"
 else
@@ -316,7 +323,7 @@ sleep 1
 log_in on_main_screen || fail_step "main window did not open after logging back in; screen reads: $(ocr_text | redact)"
 srv="$(sb_count notebooks)/$(sb_count notes)"
 counts_match() { [ "$(db_count notebooks)/$(db_count notes)" = "$srv" ]; }
-wait_db 60 counts_match || fail_step "local notebooks/notes $(db_count notebooks)/$(db_count notes) ≠ server $srv"
+poll 60 counts_match || fail_step "local notebooks/notes $(db_count notebooks)/$(db_count notes) ≠ server $srv"
 settle 45 || fail_step "indicator never settled on Synced (now '$(sync_help)')"
 db_has_marker "$M4" || fail_step "the step-12 edit is missing locally"
 title_is_w1 || fail_step "the web title edit is missing locally"
@@ -330,13 +337,14 @@ press_until 5 delete_panel_open id delete-account-menu-item || press_until 5 del
 { fill_field "delete-account-input" "DELETE" id || fill_field "Type DELETE to confirm" "DELETE"; } ||
   fail_step "could not type DELETE into the confirmation field"
 sleep 0.5
-delete_started() { on_login_screen || ! delete_panel_open || [ "$(ax_find id delete-account-confirm | jq -r '.enabled // true')" = false ]; }
+delete_started() { on_login_screen || ! delete_panel_open || [ "$(ax_find id delete-account-confirm | jq -r '.enabled')" = false ]; }
 press_until 5 delete_started id delete-account-confirm || press_until 5 delete_started desc "Delete account" AXButton ||
   fail_step "the confirm button did not respond"
 ax_wait 45 desc "Log in" || fail_step "not back on the login screen within 45 s"
-row=$(sql_user_row)
+row=$(sql_user_row) || fail_step "could not check auth.users for $QA_EMAIL (admin SQL failed)"
 [ -z "$row" ] || fail_step "auth.users still has $QA_EMAIL"
 ACCOUNT_DELETED=1
 step_end PASS "account deleted through the app; auth.users row gone; login screen shown"
 
+RUN_COMPLETE=1
 log "All steps done. The app is on the login screen — sign back in to your own account."

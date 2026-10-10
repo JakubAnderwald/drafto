@@ -42,15 +42,18 @@ Preflight checks:
 - the installed build equals the `drafto-factory-intest-build:macos:<n>` marker on the issue;
 - the PR head equals `drafto-factory-scenario-sha`;
 - the issue still has `status:in-test`;
+- the running Drafto is that installed bundle and was started after it was installed, since a TestFlight update replaces the bundle under a still-running old process;
 - the accessibility tree, OCR, the local database and production auth are all reachable;
 - the Supabase CLI token is available.
 
-Each run writes to `~/Library/Logs/drafto-in-test/<scenario>/<timestamp>/` (`latest` points to the newest):
+Once a card has shipped, the card checks fail by design. To re-run its scenario as a regression check, clear them: `ISSUE= PR= bash apps/desktop/e2e/in-test/scenarios/458-sync-gating.sh`.
 
-- `report.md` (also printed at the end) and `results.jsonl`: one row per step with PASS / WARN / FAIL / SKIP and the evidence;
+Each run writes to `~/Library/Logs/drafto-in-test/<scenario>/<timestamp>/`:
+
+- `report.md` (also printed at the end) and `results.jsonl`: one row per step with PASS / WARN / FAIL / SKIP and the evidence. The report's `Run:` line says whether every step ran. A run that stops outside a step's own check (Ctrl-C, an error) gets an ABORTED row for the step it was in, so it can't pass for a shorter green run;
 - `log.txt`, `shots/` (a window capture per step), `app.log` (the app's JS console via `log stream`) and `sql.log` (every admin statement).
 
-`state.env` holds the throwaway credentials (mode 600). It is deleted once the account has been deleted. Sign back in to your own account afterwards.
+`state.env` holds the throwaway credentials (mode 600). It is deleted once the account has been deleted. `latest` points to the newest run that got as far as creating credentials, which is the run `--cleanup-only` cleans up. Sign back in to your own account afterwards.
 
 ## Layout
 
@@ -69,7 +72,7 @@ Each run writes to `~/Library/Logs/drafto-in-test/<scenario>/<timestamp>/` (`lat
 
 ## Writing a scenario
 
-Copy `458-sync-gating.sh`. Set `SCENARIO`, `SCENARIO_TITLE`, `QA_TAG`, `ISSUE`, `PR`, `TOGGLES_NETWORK` and `PRODUCTION_SUMMARY`, source `lib/harness.sh`, then write the steps. Rules that the first scenario taught:
+Copy `458-sync-gating.sh`. Set `SCENARIO`, `SCENARIO_TITLE`, `QA_TAG`, `ISSUE`, `PR`, `TOGGLES_NETWORK` and `PRODUCTION_SUMMARY`, source `lib/harness.sh`, then write the steps, ending with `RUN_COMPLETE=1`. Rules that the first scenario taught:
 
 - **Verify every press by its effect.** Use `press_until <timeout> <check> …` with a predicate that is true only once the press did what it should. Never assume an input landed.
 - **Prefer independent results over UI text.** Good evidence is the local database (`db_last_pulled`, `db_count`, `db_pending`, `db_has_marker`) and the server as the throwaway user (`sb_count`, `sb_has_marker`). The UI can be wrong, as #676 and #677 show.
@@ -112,6 +115,8 @@ These are measured behaviours of the TestFlight build, not guesses:
   - so does the manual indicator button.
 - **The 30 s timer runs on a fixed beat** from when the account became approved. That's how the 2026-10-10 run proved its sign-out flush: the last edit and the sign-out both fell between two ticks.
 - **Read pending state from the database.** The indicator's pending count only refreshes after a sync attempt (#677), so `db_pending` is the reliable signal.
+  - `db_pending` also counts attachments whose file hasn't uploaded. The push skips those rows but still marks them synced, and sign-out deletes local attachment files.
+  - It is the guard before a scenario signs out your own account.
 - **`poll` takes whole seconds** (`date +%s` arithmetic).
 
 ## Production specifics

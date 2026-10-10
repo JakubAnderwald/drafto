@@ -41,8 +41,11 @@ sb_login() {
   )
 }
 
+# http_ok <code> — a 2xx status. curl reports 000 when it never got a response.
+http_ok() { [ "$1" -ge 200 ] 2> /dev/null && [ "$1" -lt 300 ]; }
+
 # sb_rest <METHOD> <path?query> [json] — PostgREST as the throwaway user.
-# Prints the body; non-zero on HTTP >= 300. Re-logs in once on 401.
+# Prints the body; non-zero unless HTTP 2xx. Re-logs in once on 401.
 sb_rest() {
   local method=$1 path=$2 body=${3:-} out code attempt
   for attempt in 1 2; do
@@ -55,7 +58,7 @@ sb_rest() {
       continue
     fi
     printf '%s\n' "${out%$'\n'*}"
-    [ "$code" -lt 300 ] 2> /dev/null
+    http_ok "$code"
     return
   done
 }
@@ -92,13 +95,17 @@ sb_sql() {
   code=${out##*$'\n'}
   out=${out%$'\n'*}
   printf '%s >> %s\n' "$1" "$code" >> "$RUN_DIR/sql.log"
-  if [ "$code" -ge 300 ] 2> /dev/null || [ -z "$code" ]; then
+  if ! http_ok "$code"; then
     log "   SQL failed ($code): $(head -c 300 <<< "$out")"
     return 1
   fi
   printf '%s\n' "$out"
 }
 
+# sql_user_row — the throwaway user's auth.users row, empty when there is none;
+# non-zero when the query itself failed (so "no row" is never a guess).
 sql_user_row() {
-  sb_sql "select id, email_confirmed_at from auth.users where email = '$QA_EMAIL'" | jq -c 'first // empty'
+  local rows
+  rows=$(sb_sql "select id, email_confirmed_at from auth.users where email = '$QA_EMAIL'") || return 1
+  jq -c 'first // empty' <<< "$rows"
 }

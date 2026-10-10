@@ -49,19 +49,8 @@ ax_find_contains() {
 
 ax_has() { [ -n "$(ax_find "$@")" ]; }
 
-# ax_wait <timeout_s> <desc|id> <value> [role]
-ax_wait() {
-  local timeout=$1
-  shift
-  local end=$(($(date +%s) + timeout))
-  while [ "$(date +%s)" -lt "$end" ]; do
-    ax_has "$@" && return 0
-    sleep 0.5
-  done
-  return 1
-}
-
-# poll <timeout_s> <command…> — run the command until it succeeds.
+# poll <timeout_s> <command…> — run the command until it succeeds. Whole
+# seconds only (date +%s arithmetic).
 poll() {
   local end=$(($(date +%s) + $1))
   shift
@@ -70,6 +59,13 @@ poll() {
     sleep 0.5
   done
   return 1
+}
+
+# ax_wait <timeout_s> <desc|id> <value> [role]
+ax_wait() {
+  local timeout=$1
+  shift
+  poll "$timeout" ax_has "$@"
 }
 
 frontmost() {
@@ -169,7 +165,7 @@ click_editor_end() {
   el=$(ax_dump | jq -c '
     (map(select(.role == "AXWebArea" and .desc == "RichTextEditor")) | first) as $web
     | if $web == null then empty else
-        map(select(.role == "AXTextArea" and (.path | startswith($web.path)) and ((.w // 0) > 0))) | first // empty
+        map(select(.role == "AXTextArea" and (.path | startswith($web.path + "/")) and ((.w // 0) > 0))) | first // empty
       end')
   [ -n "$el" ] || return 1
   ensure_front
@@ -203,25 +199,10 @@ sync_help() {
   ax_dump 1 | jq -r 'map(select(.desc == "Sync status")) | first | .help // empty'
 }
 
-# wait_help <timeout_s> <regex>
-wait_help() {
-  local end=$(($(date +%s) + $1)) h
-  while [ "$(date +%s)" -lt "$end" ]; do
-    h=$(sync_help)
-    [[ "$h" =~ $2 ]] && return 0
-    sleep 0.3
-  done
-  return 1
-}
+help_matches() { [[ "$(sync_help)" =~ $1 ]]; }
 
-# Pastes into whatever has keyboard focus (cliclick's per-character typing
-# drops keys on RN macOS — see apps/desktop/e2e/run-e2e.sh).
-paste_text() {
-  printf '%s' "$1" | pbcopy
-  ensure_front
-  osascript -e 'tell application "System Events" to keystroke "v" using command down'
-  sleep 0.4
-}
+# wait_help <timeout_s> <regex>
+wait_help() { poll "$1" help_matches "$2"; }
 
 clear_clipboard() { pbcopy < /dev/null; }
 
@@ -286,17 +267,4 @@ win_capture() { screencapture -x -o -l"$(drafto_wid)" "$1"; }
 ocr_has() {
   local img="$RUN_DIR/tmp-ocr.png"
   win_capture "$img" && "$OCR" "$img" "$1" > /dev/null
-}
-
-# ocr_click <text> — click the centre of the first OCR match.
-ocr_click() {
-  local img="$RUN_DIR/tmp-ocr.png" m win x y
-  win_capture "$img" || return 1
-  m=$("$OCR" "$img" "$1") || return 1
-  win=$(ax_dump 0 | jq -c 'map(select(.role == "AXWindow")) | first')
-  read -r x y < <(jq -rn --argjson m "$m" --argjson w "$win" '
-    ($m.width / $w.w) as $s
-    | "\(($w.x + ($m.match.x + $m.match.w / 2) / $s) | floor) \(($w.y + ($m.match.y + $m.match.h / 2) / $s) | floor)"')
-  ensure_front
-  cliclick "c:$x,$y"
 }
