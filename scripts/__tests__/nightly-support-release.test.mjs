@@ -256,25 +256,30 @@ describe("beta-build-root.sh — root lock (real bash)", () => {
 
   it("refuses a non-ASCII mobile root before locking; desktop may use one", () => {
     // 2026-10-09: React Native 0.83's iOS pods (URI::File.build) failed on
-    // /Volumes/Zewnętrzny — the #658 iOS beta never built there.
-    const r = runLib(
-      `
+    // /Volumes/Zewnętrzny — the #658 iOS beta never built there. The unique
+    // test-owned dir keeps the non-ASCII byte in both roots' paths.
+    const dir = mkdtempSync(join(tmpdir(), "Zewnętrzny-test-"));
+    try {
+      const r = runLib(
+        `
 if ensure_beta_build_root mobile deadbeef >/dev/null; then echo MOBILE-OK; else echo MOBILE-REFUSED; fi
 [[ -e "$BETA_MOBILE_ROOT.lock" ]] && echo LOCKED || echo NO-LOCK
 ensure_beta_build_root desktop deadbeef >/dev/null || true
 grep -q 'non-ASCII' "$LOG_FILE" && echo LOGGED
 [[ $(grep -c 'refusing mobile beta build root' "$LOG_FILE") -eq 1 ]] && echo ONLY-MOBILE`,
-      {
-        env: {
-          DRAFTO_BETA_MOBILE_ROOT: join(tmpdir(), "Zewnętrzny-test", "beta-mobile"),
-          DRAFTO_DESKTOP_BUILD_ROOT: join(tmpdir(), "Zewnętrzny-test", "beta-desktop"),
+        {
+          env: {
+            DRAFTO_BETA_MOBILE_ROOT: join(dir, "beta-mobile"),
+            DRAFTO_DESKTOP_BUILD_ROOT: join(dir, "beta-desktop"),
+          },
         },
-      },
-    );
-    assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /MOBILE-REFUSED\nNO-LOCK\nLOGGED\nONLY-MOBILE/);
-    assert.match(r.log, /React Native 0\.83's iOS pods reject non-ASCII paths/);
-    rmSync(join(tmpdir(), "Zewnętrzny-test"), { recursive: true, force: true });
+      );
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /MOBILE-REFUSED\nNO-LOCK\nLOGGED\nONLY-MOBILE/);
+      assert.match(r.log, /React Native 0\.83's iOS pods reject non-ASCII paths/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("takes a free lock with the caller's pid, re-entrantly", () => {
