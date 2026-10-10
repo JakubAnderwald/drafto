@@ -3,7 +3,7 @@
 A harness that runs a dark-factory **In Test** scenario against the installed macOS TestFlight build and **production**, with no one clicking. It reads the app through the accessibility API, the app's local WatermelonDB, the production API and OCR of window captures. It signs up a throwaway account, approves it with scoped SQL, and deletes it at the end. Decision record: [ADR-0043](../adr/0043-automated-macos-in-test-scenarios.md).
 
 - Code: [`apps/desktop/e2e/in-test/`](../../apps/desktop/e2e/in-test/)
-- First scenario: [`scenarios/458-sync-gating.sh`](../../apps/desktop/e2e/in-test/scenarios/458-sync-gating.sh), for #458 / PR #673. Its first green run was on 2026-10-10 against build 0.4.1 (59): 13 steps, 11 PASS, 3 WARN, the WARNs being the pre-existing bugs listed below.
+- First scenario: [`scenarios/458-sync-gating.sh`](../../apps/desktop/e2e/in-test/scenarios/458-sync-gating.sh), for #458 / PR #673. Its first green run was on 2026-10-10 against build 0.4.1 (59): 14 checks (step 0, the scenario's steps and an extra A1b check), 11 PASS, 3 WARN. The WARNs were #675, #676 and a sign-out check that now reads the local database instead of the indicator.
 
 It is not part of the [test matrix](../architecture/testing.md), because it writes to production. Nothing runs it in CI or before a push.
 

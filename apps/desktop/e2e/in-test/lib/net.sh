@@ -44,13 +44,16 @@ net_off() {
   [ -n "$services" ] || return 1
   printf '%s\n' "$services" > "$NET_DISABLED_FILE"
   rm -f "$NET_RESTORED_FLAG"
-  # Detached watchdog: survives this script dying or the terminal closing.
-  local restore_cmds=""
+  # Detached watchdog: survives this script dying or the terminal closing. The
+  # root script is fixed text; the service names (which may contain quotes) and
+  # the flag path arrive as positional arguments.
+  local svcs=()
   while IFS= read -r svc; do
-    restore_cmds+="/usr/sbin/networksetup -setnetworkserviceenabled '$svc' on; "
+    svcs+=("$svc")
   done <<< "$services"
-  sudo -n -b nohup /bin/sh -c "sleep $NET_WATCHDOG_S; [ -f '$NET_RESTORED_FLAG' ] || { $restore_cmds }" \
-    > /dev/null 2>&1 || return 1
+  sudo -n -b nohup /bin/sh -c \
+    'sleep "$1"; flag=$2; shift 2; [ -f "$flag" ] || for s in "$@"; do /usr/sbin/networksetup -setnetworkserviceenabled "$s" on; done' \
+    sh "$NET_WATCHDOG_S" "$NET_RESTORED_FLAG" "${svcs[@]}" > /dev/null 2>&1 || return 1
   while IFS= read -r svc; do
     log "   network: disabling \"$svc\""
     sudo -n networksetup -setnetworkserviceenabled "$svc" off || return 1

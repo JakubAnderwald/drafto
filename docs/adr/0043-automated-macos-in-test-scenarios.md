@@ -6,7 +6,7 @@
 
 ## Context
 
-The dark factory moves a card to **In Test** with a written test scenario and, for macOS, a TestFlight build ([ADR-0030](./0030-in-test-scenarios-and-pre-merge-betas.md)). A person then works through the steps by hand. For #458 (PR #673, desktop sync gating) the scenario had 13 steps, and several of its key checks can't be seen by a person at all. "An unapproved user never pulls", for example, is invisible in the UI.
+The dark factory moves a card to **In Test** with a written test scenario and, for macOS, a TestFlight build ([ADR-0030](./0030-in-test-scenarios-and-pre-merge-betas.md)). A person then works through the steps by hand. For #458 (PR #673, desktop sync gating) the scenario had a dozen steps, and several of its key checks can't be seen by a person at all. "An unapproved user never pulls", for example, is invisible in the UI.
 
 The repo already drove the desktop app from shell for E2E and store screenshots (`apps/desktop/e2e/lib/ax-helpers.sh`). That approach clicks with `cliclick` at elements found by AppleScript description, and it proved unreliable for a long, stateful run against the TestFlight build:
 
@@ -36,7 +36,7 @@ Automate macOS In-Test scenarios with a harness in `apps/desktop/e2e/in-test/`, 
 ## Consequences
 
 - **Positive:**
-  - A 13-step macOS scenario runs in about 4 minutes with evidence per step: the report, screenshots, the SQL log and the app log.
+  - The #458 scenario (14 checks) runs in about 4 minutes with evidence per step: the report, screenshots, the SQL log and the app log.
   - Checks a person can't see, such as "no pull happened", become hard assertions.
   - The #458 runs found four app bugs that already existed on main (#675–#678).
 - **Negative:**
