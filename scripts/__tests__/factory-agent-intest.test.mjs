@@ -1211,11 +1211,12 @@ describe("pre-merge beta knobs", () => {
   });
 
   it("points the build roots at dedicated paths, not the fossil or this checkout", () => {
-    // The plist's explicit knobs win; otherwise the external build volume when it
-    // is mounted, else the original ~/code locations.
+    // The plist's explicit knobs win. Desktop: the external build volume when
+    // it is mounted, else ~/code. Mobile: always ~/code — its iOS pods cannot
+    // build from the volume's non-ASCII mount point.
     assert.match(
       lib,
-      /BETA_MOBILE_ROOT="\$\{DRAFTO_BETA_MOBILE_ROOT:-\$parent\/drafto-beta-mobile\}"/,
+      /BETA_MOBILE_ROOT="\$\{DRAFTO_BETA_MOBILE_ROOT:-\/Users\/jakub\/code\/drafto-beta-mobile\}"/,
     );
     assert.match(
       lib,
