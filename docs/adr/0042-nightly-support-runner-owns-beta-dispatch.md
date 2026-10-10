@@ -45,6 +45,12 @@ Beta channels only. `dispatch-release.mjs` never builds anything but `release:be
 - **Neutral**: Phase 4 is skipped while the external build volume is not mounted, unless the roots are set explicitly. The factory skips its whole tick in that case too. The default roots are re-derived right before Phase 4 prepares them, so they always match the factory's.
 - **Neutral**: The nightly runs from the primary checkout, so it only picks up this change after a `git pull` there. Never `pnpm install` there.
 
+## Update 2026-10-10: the mobile root stays off the build volume
+
+The first live Phase 4 run shipped #658 to the Play internal track (build 50), but its iOS half failed in `pod install`: `[!] The React-Core-prebuilt pod failed to validate … Missing required attribute 'source'`. React Native 0.83's CocoaPods scripts (`rncore.rb` and `rndependencies.rb`) build file URLs for the prebuilt-core tarballs with `URI::File.build`, which rejects non-ASCII paths ("bad component(expected absolute path component)"). The shared mobile root had moved to `/Volumes/Zewnętrzny/drafto-builds/`. Every iOS beta that ever succeeded was built from `/Users/jakub/code/drafto-beta-mobile`.
+
+So the mobile root always defaults to `/Users/jakub/code/drafto-beta-mobile`, and `ensure_beta_build_root` refuses a mobile root with any non-ASCII byte before it takes the lock. That counts as "retry next night" for the nightly and as a failed preparation for the factory. The desktop root still defaults to the build volume, because its fossil replica builds fine there. Renaming the volume to an ASCII name was considered and rejected. A full-system scan found that IDrive keys its backup set by path (it would re-upload about 310 GB), and that a Google Drive two-way mirror, calibre, Image Capture, Claude desktop, two backup scripts, four symlinks, pnpm `.modules.yaml` files and the git worktree links all store the old path. The cost of this choice is about 7 GB on the internal disk.
+
 ## Alternatives Considered
 
 - **Keep the LLM running the builds, with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`.** This would have saved #658's lanes. It still leaves a 40-minute build, its retries, and the question of whether it shipped to a model that can end its turn, misreport an outcome or skip a platform. Rejected. The wait ceiling is still exported, as defence in depth for the session's own work.

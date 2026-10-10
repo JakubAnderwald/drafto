@@ -222,7 +222,7 @@ function runLib(body, { env = {} } = {}) {
 }
 
 describe("beta-build-root.sh — root lock (real bash)", () => {
-  it("defaults the roots to the external build volume only when it is mounted", () => {
+  it("defaults the desktop root to the build volume only when it is mounted", () => {
     const r = runLib('echo "$BETA_MOBILE_ROOT|$BETA_DESKTOP_ROOT"', {
       env: {
         DRAFTO_BETA_MOBILE_ROOT: "",
@@ -237,12 +237,48 @@ describe("beta-build-root.sh — root lock (real bash)", () => {
     );
     const vol = mkdtempSync(join(tmpdir(), "builds-volume-"));
     try {
-      const r2 = runLib('echo "$BETA_MOBILE_ROOT"', {
-        env: { DRAFTO_BETA_MOBILE_ROOT: "", DRAFTO_BUILDS_VOLUME_DIR: vol },
+      const r2 = runLib('echo "$BETA_MOBILE_ROOT|$BETA_DESKTOP_ROOT"', {
+        env: {
+          DRAFTO_BETA_MOBILE_ROOT: "",
+          DRAFTO_DESKTOP_BUILD_ROOT: "",
+          DRAFTO_BUILDS_VOLUME_DIR: vol,
+        },
       });
-      assert.equal(r2.stdout.trim(), `${vol}/drafto-beta-mobile`);
+      // Mobile never follows the volume: iOS pods need an ASCII path.
+      assert.equal(
+        r2.stdout.trim(),
+        `/Users/jakub/code/drafto-beta-mobile|${vol}/drafto-beta-desktop`,
+      );
     } finally {
       rmSync(vol, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a non-ASCII mobile root before locking; desktop may use one", () => {
+    // 2026-10-09: React Native 0.83's iOS pods (URI::File.build) failed on
+    // /Volumes/Zewnętrzny — the #658 iOS beta never built there. The unique
+    // test-owned dir keeps the non-ASCII byte in both roots' paths.
+    const dir = mkdtempSync(join(tmpdir(), "Zewnętrzny-test-"));
+    try {
+      const r = runLib(
+        `
+if ensure_beta_build_root mobile deadbeef >/dev/null; then echo MOBILE-OK; else echo MOBILE-REFUSED; fi
+[[ -e "$BETA_MOBILE_ROOT.lock" ]] && echo LOCKED || echo NO-LOCK
+ensure_beta_build_root desktop deadbeef >/dev/null || true
+grep -q 'non-ASCII' "$LOG_FILE" && echo LOGGED
+[[ $(grep -c 'refusing mobile beta build root' "$LOG_FILE") -eq 1 ]] && echo ONLY-MOBILE`,
+        {
+          env: {
+            DRAFTO_BETA_MOBILE_ROOT: join(dir, "beta-mobile"),
+            DRAFTO_DESKTOP_BUILD_ROOT: join(dir, "beta-desktop"),
+          },
+        },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /MOBILE-REFUSED\nNO-LOCK\nLOGGED\nONLY-MOBILE/);
+      assert.match(r.log, /React Native 0\.83's iOS pods reject non-ASCII paths/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 
