@@ -18,7 +18,10 @@ import {
   parseRecoveryLink,
 } from "@/lib/auth-recovery";
 
-const IMPLICIT_LINK = `${RECOVERY_REDIRECT_URL}#access_token=AAA&refresh_token=RRR&expires_in=3600&token_type=bearer&type=recovery`;
+const PKCE_LINK = `${RECOVERY_REDIRECT_URL}?code=pkce-123`;
+
+/** The implicit-flow shape: real session tokens in the fragment. Anyone can forge it. */
+const TOKEN_LINK = `${RECOVERY_REDIRECT_URL}#access_token=AAA&refresh_token=RRR&expires_in=3600&token_type=bearer&type=recovery`;
 
 describe("RECOVERY_REDIRECT_URL", () => {
   it("points at the Expo Router path of the reset screen so a cold start lands there", () => {
@@ -37,7 +40,7 @@ describe("isRecoveryUrl", () => {
   });
 
   it("is true for the recovery path", () => {
-    expect(isRecoveryUrl(IMPLICIT_LINK)).toBe(true);
+    expect(isRecoveryUrl(PKCE_LINK)).toBe(true);
   });
 
   it("is true for any path carrying type=recovery", () => {
@@ -59,22 +62,12 @@ describe("parseRecoveryLink", () => {
     expect(parseRecoveryLink("https://drafto.eu/reset-password")).toBeNull();
   });
 
-  it("extracts implicit-flow tokens from the fragment", () => {
-    expect(parseRecoveryLink(IMPLICIT_LINK)).toEqual({
-      accessToken: "AAA",
-      refreshToken: "RRR",
-      code: null,
-      errorMessage: null,
-    });
+  it("extracts a PKCE code from the query string", () => {
+    expect(parseRecoveryLink(PKCE_LINK)).toEqual({ code: "pkce-123", errorMessage: null });
   });
 
-  it("extracts a PKCE code from the query string", () => {
-    expect(parseRecoveryLink("drafto://reset-password?code=pkce-123")).toEqual({
-      accessToken: null,
-      refreshToken: null,
-      code: "pkce-123",
-      errorMessage: null,
-    });
+  it("never reads session tokens, so a forged token link carries no credentials", () => {
+    expect(parseRecoveryLink(TOKEN_LINK)).toEqual({ code: null, errorMessage: null });
   });
 
   it("decodes the error description Supabase returns for an expired link", () => {
@@ -84,7 +77,7 @@ describe("parseRecoveryLink", () => {
     );
 
     expect(link?.errorMessage).toBe("Email link is invalid or has expired");
-    expect(link?.accessToken).toBeNull();
+    expect(link?.code).toBeNull();
   });
 
   it("falls back to the bare error code when no description is supplied", () => {
@@ -94,25 +87,14 @@ describe("parseRecoveryLink", () => {
   });
 
   it("survives a malformed percent-escape instead of throwing", () => {
-    expect(parseRecoveryLink("drafto://reset-password#access_token=%zz&refresh_token=RRR")).toEqual(
-      {
-        accessToken: "%zz",
-        refreshToken: "RRR",
-        code: null,
-        errorMessage: null,
-      },
-    );
-  });
-
-  it("lets fragment credentials win over stale query ones", () => {
-    const link = parseRecoveryLink("drafto://reset-password?access_token=QUERY#access_token=HASH");
-    expect(link?.accessToken).toBe("HASH");
+    expect(parseRecoveryLink("drafto://reset-password?code=%zz")).toEqual({
+      code: "%zz",
+      errorMessage: null,
+    });
   });
 
   it("reports no credentials when the link carries none", () => {
     expect(parseRecoveryLink("drafto://reset-password")).toEqual({
-      accessToken: null,
-      refreshToken: null,
       code: null,
       errorMessage: null,
     });
@@ -134,38 +116,51 @@ describe("completeRecoveryFromUrl", () => {
     });
 
     expect(onRecoveryDetected).not.toHaveBeenCalled();
-    expect(mockSetSession).not.toHaveBeenCalled();
     expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
   });
 
   it("flags recovery before the session round-trip resolves", () => {
     const order: string[] = [];
-    mockSetSession.mockImplementation(() => {
-      order.push("setSession");
+    mockExchangeCodeForSession.mockImplementation(() => {
+      order.push("exchange");
       return Promise.resolve({ data: {}, error: null });
     });
 
     // Deliberately not awaited: the flag must already be set by the time the
     // first await point is reached, or the route guard flashes the main app.
-    void completeRecoveryFromUrl(IMPLICIT_LINK, {
+    void completeRecoveryFromUrl(PKCE_LINK, {
       onRecoveryDetected: () => order.push("detected"),
     });
 
-    expect(order).toEqual(["detected", "setSession"]);
+    expect(order).toEqual(["detected", "exchange"]);
   });
 
-  it("establishes the session from implicit-flow tokens", async () => {
-    await completeRecoveryFromUrl(IMPLICIT_LINK);
+  it("exchanges the PKCE code", async () => {
+    await completeRecoveryFromUrl(PKCE_LINK);
 
-    expect(mockSetSession).toHaveBeenCalledWith({
-      access_token: "AAA",
-      refresh_token: "RRR",
-    });
-    expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
+    expect(mockExchangeCodeForSession).toHaveBeenCalledWith("pkce-123");
+    expect(mockSetSession).not.toHaveBeenCalled();
   });
 
-  it("exchanges a PKCE code when no implicit tokens are present", async () => {
-    await completeRecoveryFromUrl("drafto://reset-password?code=pkce-123");
+  it.each([TOKEN_LINK, `${RECOVERY_REDIRECT_URL}?access_token=AAA&refresh_token=RRR`])(
+    "never signs in with session tokens taken from the URL: %s",
+    async (url) => {
+      // Any website or app can open this link; honouring it would sign the app
+      // into whoever owns the tokens.
+      const onRecoveryError = jest.fn();
+
+      await completeRecoveryFromUrl(url, { onRecoveryError });
+
+      expect(mockSetSession).not.toHaveBeenCalled();
+      expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
+      expect(onRecoveryError).toHaveBeenCalledWith(
+        "This password reset link is missing its credentials. Request a new one.",
+      );
+    },
+  );
+
+  it("uses only the code when tokens ride along with it", async () => {
+    await completeRecoveryFromUrl(`${PKCE_LINK}#access_token=AAA&refresh_token=RRR`);
 
     expect(mockExchangeCodeForSession).toHaveBeenCalledWith("pkce-123");
     expect(mockSetSession).not.toHaveBeenCalled();
@@ -180,23 +175,14 @@ describe("completeRecoveryFromUrl", () => {
     );
 
     expect(onRecoveryError).toHaveBeenCalledWith("Email link is invalid or has expired");
-    expect(mockSetSession).not.toHaveBeenCalled();
-  });
-
-  it("surfaces a Supabase rejection of the tokens", async () => {
-    mockSetSession.mockResolvedValue({ data: {}, error: { message: "Invalid refresh token" } });
-    const onRecoveryError = jest.fn();
-
-    await completeRecoveryFromUrl(IMPLICIT_LINK, { onRecoveryError });
-
-    expect(onRecoveryError).toHaveBeenCalledWith("Invalid refresh token");
+    expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
   });
 
   it("surfaces a failed code exchange", async () => {
     mockExchangeCodeForSession.mockResolvedValue({ data: {}, error: { message: "code expired" } });
     const onRecoveryError = jest.fn();
 
-    await completeRecoveryFromUrl("drafto://reset-password?code=pkce-123", { onRecoveryError });
+    await completeRecoveryFromUrl(PKCE_LINK, { onRecoveryError });
 
     expect(onRecoveryError).toHaveBeenCalledWith("code expired");
   });
@@ -217,16 +203,16 @@ describe("completeRecoveryFromUrl", () => {
   });
 
   it("converts a thrown transport failure into a recovery error", async () => {
-    mockSetSession.mockRejectedValue(new Error("Network request failed"));
+    mockExchangeCodeForSession.mockRejectedValue(new Error("Network request failed"));
     const onRecoveryError = jest.fn();
 
-    await completeRecoveryFromUrl(IMPLICIT_LINK, { onRecoveryError });
+    await completeRecoveryFromUrl(PKCE_LINK, { onRecoveryError });
 
     expect(onRecoveryError).toHaveBeenCalledWith("Network request failed");
   });
 
   it("does not require any callbacks", async () => {
-    await expect(completeRecoveryFromUrl(IMPLICIT_LINK)).resolves.toBeUndefined();
+    await expect(completeRecoveryFromUrl(PKCE_LINK)).resolves.toBeUndefined();
   });
 });
 
@@ -346,15 +332,52 @@ describe("createRecoveryLinkHandler", () => {
     expect(onRecoveryError).not.toHaveBeenCalled();
   });
 
-  it("accepts the same link again once its earlier attempt has settled", async () => {
+  it("drops a repeat even after the first attempt has settled", async () => {
+    // A spent code would fail a second exchange and swap a working reset form for an error.
+    const onRecoveryDetected = jest.fn();
+    const onRecoveryError = jest.fn();
+    const handler = createRecoveryLinkHandler({ onRecoveryDetected, onRecoveryError });
+
+    handler.handle(linkFor("a"));
+    await flush();
+    handler.handle(linkFor("a"));
+    await flush();
+
+    expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(1);
+    expect(onRecoveryDetected).toHaveBeenCalledTimes(1);
+    expect(onRecoveryError).not.toHaveBeenCalled();
+  });
+
+  it("still handles a different link after a finished one", async () => {
     const handler = createRecoveryLinkHandler();
 
     handler.handle(linkFor("a"));
     await flush();
-    handler.handle(linkFor("a"));
+    handler.handle(linkFor("b"));
     await flush();
 
-    expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(2);
+    expect(mockExchangeCodeForSession.mock.calls).toEqual([["a"], ["b"]]);
+  });
+
+  it("keeps handling links after a callback throws", async () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    mockExchangeCodeForSession.mockResolvedValueOnce({ data: {}, error: { message: "expired" } });
+    const onRecoveryError = jest.fn(() => {
+      throw new Error("screen already unmounted");
+    });
+    const handler = createRecoveryLinkHandler({ onRecoveryError });
+
+    handler.handle(linkFor("a"));
+    await flush();
+    handler.handle(linkFor("b"));
+    await flush();
+
+    expect(mockExchangeCodeForSession.mock.calls).toEqual([["a"], ["b"]]);
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[auth-recovery] Failed to handle a recovery link:",
+      expect.any(Error),
+    );
+    errorSpy.mockRestore();
   });
 
   it("fires nothing once cancelled", async () => {

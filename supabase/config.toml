@@ -153,6 +153,8 @@ additional_redirect_urls = [
   "https://*-jakubanderwalds-projects.vercel.app/**",
   "drafto://auth/callback",
   "eu.drafto.desktop://auth/callback",
+  "drafto://reset-password",
+  "eu.drafto.desktop://auth/recovery",
 ]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600

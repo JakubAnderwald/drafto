@@ -31,6 +31,11 @@ export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: Platform.OS === "web",
+    // PKCE, not supabase-js's implicit default (ADR-0045). Redirects into the app
+    // (password reset, Apple sign-in on Android) then carry a one-time `code` that
+    // only the `code_verifier` in this device's SecureStore can redeem. They never
+    // carry session tokens, which any website could forge into a `drafto://` link.
+    flowType: "pkce",
   },
   global: {
     headers: { "x-drafto-client": clientTag },

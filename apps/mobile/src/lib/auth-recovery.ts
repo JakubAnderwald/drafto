@@ -1,28 +1,32 @@
+import { parseAppDeepLink } from "@/lib/app-deep-link";
 import { supabase } from "@/lib/supabase";
 
 /**
  * Password-recovery deep links for the mobile app.
  *
  * Supabase mails a link to `/auth/v1/verify?...&type=recovery&redirect_to=<app link>`,
- * which 302s to the app's custom scheme. The mobile client leaves `flowType`
- * unset in `src/lib/supabase.ts`, so supabase-js runs the implicit flow and the
- * credentials arrive as fragment tokens rather than a PKCE `code` — but both
- * shapes are accepted here so the parser survives a future flow change.
+ * which 302s to the app's custom scheme.
+ *
+ * The mobile client sets `flowType: "pkce"` in `src/lib/supabase.ts` (ADR-0045),
+ * so a genuine callback carries only a `code`, and only this device holds the
+ * `code_verifier` that redeems it. Implicit-flow `access_token`/`refresh_token`
+ * params are deliberately ignored. Any website or app can open
+ * `drafto://reset-password#access_token=…&refresh_token=…`, and honouring those
+ * tokens with `setSession` would sign the app into an attacker's account. A
+ * token-only link therefore gets the missing-credentials error.
+ *
+ * Because PKCE stores the `code_verifier` in this device's SecureStore, a reset
+ * requested on this phone can only be completed on this phone. The request
+ * screen says so.
  *
  * The redirect target is `drafto://reset-password`, i.e. the Expo Router path of
  * `app/(auth)/reset-password.tsx` (route groups are not part of the URL). A cold
  * start therefore lands on the reset screen natively instead of Expo Router's
  * "Unmatched route" fallback.
- *
- * Parsing is deliberately hand-rolled rather than using `URL` /
- * `URLSearchParams`: React Native ships partial implementations of both, and
- * WHATWG parsing treats the first path segment of a custom scheme as the host.
  */
 
 /** Redirect target handed to `resetPasswordForEmail`. Must be allowlisted in Supabase Auth. */
 export const RECOVERY_REDIRECT_URL = "drafto://reset-password";
-
-const APP_SCHEME_PREFIX = "drafto://";
 
 /**
  * Paths that identify a recovery callback. `reset-password` is what we ask for;
@@ -32,11 +36,7 @@ const APP_SCHEME_PREFIX = "drafto://";
 const RECOVERY_PATHS = new Set(["reset-password", "auth/recovery"]);
 
 export interface RecoveryLink {
-  /** Implicit-flow access token, when present. */
-  accessToken: string | null;
-  /** Implicit-flow refresh token, when present. */
-  refreshToken: string | null;
-  /** PKCE authorization code, when present. */
+  /** PKCE authorization code, when present. Session tokens in the URL are never read. */
   code: string | null;
   /** Message Supabase returned instead of credentials (expired or already-used link). */
   errorMessage: string | null;
@@ -56,59 +56,16 @@ export interface RecoveryCallbacks {
 const MISSING_CREDENTIALS_MESSAGE =
   "This password reset link is missing its credentials. Request a new one.";
 
-function decodeComponent(value: string): string {
-  try {
-    return decodeURIComponent(value.replace(/\+/g, " "));
-  } catch {
-    // A malformed escape sequence must not take down the whole callback.
-    return value;
-  }
-}
-
-function parseParams(raw: string, into: Map<string, string>): Map<string, string> {
-  for (const pair of raw.split("&")) {
-    if (!pair) continue;
-    const separator = pair.indexOf("=");
-    const key = separator === -1 ? pair : pair.slice(0, separator);
-    const value = separator === -1 ? "" : pair.slice(separator + 1);
-    into.set(decodeComponent(key), decodeComponent(value));
-  }
-  return into;
-}
-
-/** Splits `drafto://<path>?<query>#<fragment>` without relying on `URL`. */
-function splitAppUrl(url: string): { path: string; params: Map<string, string> } | null {
-  if (!url.toLowerCase().startsWith(APP_SCHEME_PREFIX)) {
-    return null;
-  }
-
-  const rest = url.slice(APP_SCHEME_PREFIX.length);
-  const hashAt = rest.indexOf("#");
-  const beforeHash = hashAt === -1 ? rest : rest.slice(0, hashAt);
-  const fragment = hashAt === -1 ? "" : rest.slice(hashAt + 1);
-
-  const queryAt = beforeHash.indexOf("?");
-  const rawPath = queryAt === -1 ? beforeHash : beforeHash.slice(0, queryAt);
-  const query = queryAt === -1 ? "" : beforeHash.slice(queryAt + 1);
-
-  // Query first, fragment second: Supabase puts implicit-flow credentials in the
-  // fragment, so it wins any collision.
-  const params = parseParams(query, new Map<string, string>());
-  parseParams(fragment, params);
-
-  return { path: rawPath.replace(/^\/+|\/+$/g, "").toLowerCase(), params };
-}
-
 /** True when the URL is a password-recovery callback rather than an OAuth one. */
 export function isRecoveryUrl(url: string): boolean {
-  const parts = splitAppUrl(url);
+  const parts = parseAppDeepLink(url);
   if (!parts) return false;
   return RECOVERY_PATHS.has(parts.path) || parts.params.get("type") === "recovery";
 }
 
 /** Returns the recovery credentials carried by `url`, or `null` if it isn't a recovery link. */
 export function parseRecoveryLink(url: string): RecoveryLink | null {
-  const parts = splitAppUrl(url);
+  const parts = parseAppDeepLink(url);
   if (!parts) return null;
 
   const { path, params } = parts;
@@ -117,8 +74,6 @@ export function parseRecoveryLink(url: string): RecoveryLink | null {
   }
 
   return {
-    accessToken: params.get("access_token") ?? null,
-    refreshToken: params.get("refresh_token") ?? null,
     code: params.get("code") ?? null,
     errorMessage: params.get("error_description") ?? params.get("error") ?? null,
   };
@@ -145,21 +100,13 @@ export async function completeRecoveryFromUrl(
   }
 
   try {
-    if (link.accessToken && link.refreshToken) {
-      const { error } = await supabase.auth.setSession({
-        access_token: link.accessToken,
-        refresh_token: link.refreshToken,
-      });
-      if (error) callbacks.onRecoveryError?.(error.message);
-      return;
-    }
-
     if (link.code) {
       const { error } = await supabase.auth.exchangeCodeForSession(link.code);
       if (error) callbacks.onRecoveryError?.(error.message);
       return;
     }
 
+    // No code: session tokens in the URL are not credentials (see the module comment).
     callbacks.onRecoveryError?.(MISSING_CREDENTIALS_MESSAGE);
   } catch (error) {
     callbacks.onRecoveryError?.(
@@ -181,27 +128,29 @@ export interface RecoveryLinkHandler {
  *
  * Without it, two links (a second email tapped mid-exchange, or the cold-start
  * URL arriving through both `getInitialURL` and the `url` event) race: a late
- * `setSession` / `exchangeCodeForSession` can replace the newer session, and
- * the stale link's error can overwrite the newer link's state. So:
+ * `exchangeCodeForSession` can replace the newer session, and the stale link's
+ * error can overwrite the newer link's state. So:
  *
  * - Supabase session changes run strictly one after another.
  * - Only the most recent link may report an error; a superseded link that has
  *   not started yet is skipped outright.
- * - A link identical to one still in flight is dropped — its one-time
- *   credentials would fail a second exchange and mask a recovery that worked.
+ * - A link this handler has already seen is dropped for the handler's whole
+ *   lifetime, whether its attempt is still in flight or long finished. Its
+ *   one-time code would fail a second exchange ("PKCE code verifier not found")
+ *   and swap a working reset form for an error.
  */
 export function createRecoveryLinkHandler(callbacks: RecoveryCallbacks = {}): RecoveryLinkHandler {
   let queue: Promise<void> = Promise.resolve();
   let latest = 0;
   let cancelled = false;
-  const inFlight = new Set<string>();
+  const seen = new Set<string>();
 
   const handle = (url: string) => {
-    if (cancelled || inFlight.has(url) || !isRecoveryUrl(url)) return;
+    if (cancelled || seen.has(url) || !isRecoveryUrl(url)) return;
 
     const seq = ++latest;
     const isCurrent = () => !cancelled && seq === latest;
-    inFlight.add(url);
+    seen.add(url);
 
     // Flag recovery immediately, not when the link's turn in the queue comes —
     // the route guard must hold the reset screen for the whole wait.
@@ -216,8 +165,10 @@ export function createRecoveryLinkHandler(callbacks: RecoveryCallbacks = {}): Re
           },
         });
       })
-      .finally(() => {
-        inFlight.delete(url);
+      // A throwing callback must not leave the queue rejected, or every later
+      // link would be skipped without a word.
+      .catch((err: unknown) => {
+        console.error("[auth-recovery] Failed to handle a recovery link:", err);
       });
   };
 
