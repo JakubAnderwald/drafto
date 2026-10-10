@@ -256,6 +256,49 @@ Look for `Status{statusCode=DEVELOPER_ERROR}`. The app also logs every native fa
 `[oauth][google] sign-in failed` (visible via `adb logcat -s ReactNativeJS:V`), and the on-screen
 banner carries the status code, so a cable is not strictly required.
 
+## Google OAuth branding
+
+The Google account chooser shows the app as whatever the **Branding** page of Cloud project
+**Drafto Play Store** (`drafto-play-store`, number `235950201348`; it owns the Web, iOS and Android
+OAuth clients) says, but only once that branding is **verified**. Until then, Google shows the
+redirect URI's host instead. For the Supabase-hosted flow (web, and macOS through
+[ADR-0044](../adr/0044-desktop-auth-web-handoff.md)) that host is
+`tbmjbxxseonkciqovnpl.supabase.co`, so the chooser read "continue to tbmjbxxseonkciqovnpl.supabase.co".
+This is Google-console work. No build or release changes it.
+
+Brand verification is free. The configuration, done once and kept in sync:
+
+- **Search Console:** `drafto.eu` is verified as a domain property by a DNS TXT record at GoDaddy.
+  Do not remove that record: the Resend and Zoho records sit next to it, and Google re-checks
+  ownership.
+- **Google Auth Platform → Branding:**
+  - App name **Drafto**.
+  - The app icon as a 120×120 logo.
+  - User support email.
+  - Home page `https://drafto.eu`.
+  - Privacy policy `https://drafto.eu/privacy`.
+  - Authorized domains `drafto.eu` and `supabase.co`. The Web client's redirect URI is
+    `https://tbmjbxxseonkciqovnpl.supabase.co/auth/v1/callback`, so `supabase.co` has to be listed.
+- **Audience:** External, **In production**. **Data access:** only `openid`, `email` and `profile`.
+  These are non-sensitive, so there is no data-access review.
+
+What Google checks, and how this repo meets it:
+
+- **The home page must be public, describe the app, and link the privacy policy.** `https://drafto.eu`
+  sends signed-out visitors to `/login`, so that job falls to the footer in
+  `apps/web/src/app/(auth)/layout.tsx`: a one-line description plus Privacy Policy and Support links.
+  Keep it if that layout is ever redesigned. The privacy policy itself must stay on `drafto.eu`.
+- **`supabase.co` cannot be verified by us.** If Google flags it, reply on the Trust & Safety thread
+  (it arrives by email to the project owner) that `supabase.co` is the domain of Supabase, our
+  third-party authentication provider, which hosts the OAuth callback. Other Supabase projects report
+  approval this way.
+- **Re-verification.** Editing the Branding page while a review is running is blocked; cancel the
+  review first. Changing the app name, logo or home page later triggers a fresh review.
+
+The paid alternative is a Supabase custom domain (e.g. `auth.drafto.eu`), which would make the
+redirect host ours. It needs the Pro plan plus the Custom Domain add-on, so it is not adopted
+(infrastructure cost discipline in `CLAUDE.md`). Reach for it only if Google refuses verification.
+
 ## iOS
 
 - App Store Connect App ID: `6760675784`

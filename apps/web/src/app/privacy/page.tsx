@@ -110,7 +110,7 @@ export default function PrivacyPolicyPage() {
       <header>
         <h1 className="text-fg text-4xl font-bold tracking-tight">Privacy Policy</h1>
         <p className="text-fg-muted mt-3 text-sm">
-          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: October&nbsp;8,&nbsp;2026
+          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: October&nbsp;10,&nbsp;2026
         </p>
         <p className="text-fg-muted mt-8 text-lg leading-8">
           Drafto (&ldquo;we&rdquo;, &ldquo;our&rdquo;, &ldquo;us&rdquo;) operates the Drafto apps
@@ -227,6 +227,12 @@ export default function PrivacyPolicyPage() {
             request from one of the apps (for example, an account deletion), the server may record
             that error in Sentry. Apple and Google may separately collect diagnostic data from your
             device, depending on your device settings and their own privacy policies.
+          </p>
+          <p>
+            Signing in to the macOS app with Google or Apple, or opening a macOS password-reset
+            link, takes your browser through a drafto.eu page that hands the result to the app. That
+            page is part of the website, so the web monitoring described above, Sentry error and
+            performance monitoring and Session Replay, applies to it.
           </p>
           <p>
             To check whether you are online, the iOS and macOS apps send a small request to a Google

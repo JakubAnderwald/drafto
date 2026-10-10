@@ -80,3 +80,9 @@ Two things follow for anyone touching this code path:
 - `signInWithGoogle()` (`apps/mobile/src/lib/oauth.ts`) surfaces the native status code in its
   error message and logs it under `[oauth][google] sign-in failed`, so this failure mode is
   identifiable from a screenshot rather than only from `adb logcat`.
+
+## Amendment (2026-10-10) — the desktop redirect ends on a drafto.eu hand-off page
+
+Append-only note. The status stays **Accepted**. The macOS decision above still applies: the system browser, the `eu.drafto.desktop` scheme, and `Linking` to receive the callback. What changed is the `redirectTo` the app hands Supabase.
+
+It is now `https://drafto.eu/auth/desktop/callback`, not `eu.drafto.desktop://auth/callback`. Supabase's `302` straight to the custom scheme left Google's (and Apple's) page frozen in its "in progress" state after the account click. The hand-off page forwards the code to the same `eu.drafto.desktop://auth/callback` URL the app always handled, so `handleOAuthCallback` is unchanged. See [ADR-0044](./0044-desktop-auth-web-handoff.md).

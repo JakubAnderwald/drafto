@@ -12,6 +12,10 @@ jest.mock("@/lib/supabase", () => ({
   },
 }));
 
+jest.mock("@/lib/config", () => ({
+  apiUrl: "https://api.drafto.test",
+}));
+
 const mockUseNetworkStatus = jest.fn();
 jest.mock("@/hooks/use-network-status", () => ({
   useNetworkStatus: () => mockUseNetworkStatus(),
@@ -47,7 +51,7 @@ describe("ForgotPasswordScreen", () => {
     expect(mockResetPasswordForEmail).not.toHaveBeenCalled();
   });
 
-  it("sends the reset link to the desktop deep-link redirect and confirms", async () => {
+  it("sends the reset link to the drafto.eu recovery hand-off page and confirms", async () => {
     const { getByText, getByTestId } = render(<ForgotPasswordScreen />);
 
     fireEvent.changeText(getByTestId("forgot-password-email-input"), "  test@example.com  ");
@@ -55,7 +59,7 @@ describe("ForgotPasswordScreen", () => {
 
     await waitFor(() => {
       expect(mockResetPasswordForEmail).toHaveBeenCalledWith("test@example.com", {
-        redirectTo: "eu.drafto.desktop://auth/recovery",
+        redirectTo: "https://api.drafto.test/auth/desktop/recovery",
       });
     });
 

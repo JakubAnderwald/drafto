@@ -7,6 +7,9 @@ const PUBLIC_ROUTES = [
   "/login",
   "/signup",
   "/auth/callback",
+  // macOS app sign-in and password-reset hand-off pages: the browser that lands here is
+  // signed out — the session belongs to the app, not to drafto.eu.
+  "/auth/desktop",
   "/forgot-password",
   "/reset-password",
   "/api/health",
