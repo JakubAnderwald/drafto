@@ -67,6 +67,51 @@ export interface RecoveryCallbacks {
 const MISSING_CREDENTIALS_MESSAGE =
   "This password reset link is missing its credentials. Request a new one.";
 
+const EXCHANGE_FAILED_MESSAGE = "Could not open this password reset link. Request a new one.";
+
+const USED_OR_EXPIRED_MESSAGE =
+  "This password reset link has already been used or has expired. Request a new one.";
+
+/**
+ * Plain-language messages for the code-exchange failures PKCE makes common.
+ * supabase-js's own wording for these is aimed at web developers.
+ *
+ * Every one ends in "request a new one": supabase-js deletes the stored code
+ * verifier after any exchange attempt, success or failure, so a reset link that
+ * failed once can never work again.
+ */
+const EXCHANGE_ERROR_MESSAGES = new Map<string, string>([
+  // No verifier in this install: the link was already used here, a sign-in
+  // since then consumed it, or the reset was requested on another Mac.
+  [
+    "pkce_code_verifier_not_found",
+    "This password reset link can't be used here: it was already used, or it was requested on another Mac. Request a new one.",
+  ],
+  // A later sign-in or reset request on this Mac replaced the stored verifier.
+  ["bad_code_verifier", "A newer sign-in or reset request replaced this link. Request a new one."],
+  // Supabase times a reset from when it was requested, not from when the email
+  // arrived (5 minutes by default; measured on the hosted dev project).
+  ["flow_state_expired", "This password reset link has expired. Request a new one."],
+  ["flow_state_not_found", USED_OR_EXPIRED_MESSAGE],
+]);
+
+/** Link-level errors the hand-off page forwards as `error_code`, before any exchange. */
+const LINK_ERROR_MESSAGES = new Map<string, string>([["otp_expired", USED_OR_EXPIRED_MESSAGE]]);
+
+/** The request never reached Supabase; the verifier is gone all the same. */
+const OFFLINE_MESSAGE =
+  "Couldn't reach Drafto to open this password reset link. Check your connection, then request a new one.";
+
+function describeExchangeError(error: { message: string; code?: string; name?: string }): string {
+  // A Map, not an object literal: a server-supplied code such as "constructor"
+  // must not resolve to an inherited Object.prototype member.
+  const mapped = error.code ? EXCHANGE_ERROR_MESSAGES.get(error.code) : undefined;
+  if (mapped) return mapped;
+  if (error.name === "AuthRetryableFetchError") return OFFLINE_MESSAGE;
+  // Never an empty string: callers treat "" as success.
+  return error.message || EXCHANGE_FAILED_MESSAGE;
+}
+
 function decodeComponent(value: string): string {
   try {
     return decodeURIComponent(value.replace(/\+/g, " "));
@@ -111,27 +156,45 @@ function splitAppUrl(url: string): { path: string; params: Map<string, string> }
   return { path: rawPath.replace(/^\/+|\/+$/g, "").toLowerCase(), params };
 }
 
-/** True when the URL is a password-recovery callback rather than an OAuth one. */
-export function isRecoveryUrl(url: string): boolean {
-  const parts = splitAppUrl(url);
-  if (!parts) return false;
-  return RECOVERY_PATHS.has(parts.path) || parts.params.get("type") === "recovery";
-}
-
-/** Returns the recovery credentials carried by `url`, or `null` if it isn't a recovery link. */
+/**
+ * Returns the recovery credentials carried by `url`, or `null` if it isn't a
+ * recovery link. Only the recovery paths count. Supabase sends no `type` param
+ * under PKCE, so a `type=recovery` on any other path could only be forged.
+ */
 export function parseRecoveryLink(url: string): RecoveryLink | null {
   const parts = splitAppUrl(url);
-  if (!parts) return null;
+  if (!parts || !RECOVERY_PATHS.has(parts.path)) return null;
 
-  const { path, params } = parts;
-  if (!RECOVERY_PATHS.has(path) && params.get("type") !== "recovery") {
-    return null;
-  }
-
+  const { params } = parts;
+  const errorCode = params.get("error_code");
+  // `||`, not `??`: an empty `code` or `error_description` must not hide the real value.
   return {
-    code: params.get("code") ?? null,
-    errorMessage: params.get("error_description") ?? params.get("error") ?? null,
+    code: params.get("code") || null,
+    errorMessage:
+      (errorCode ? LINK_ERROR_MESSAGES.get(errorCode) : undefined) ||
+      params.get("error_description") ||
+      params.get("error") ||
+      null,
   };
+}
+
+/** True when the URL is a password-recovery callback rather than an OAuth one. */
+export function isRecoveryUrl(url: string): boolean {
+  return parseRecoveryLink(url) !== null;
+}
+
+/** The error to report for `link`, or `null` once its session is established. */
+async function establishRecoverySession(link: RecoveryLink): Promise<string | null> {
+  if (link.errorMessage) return link.errorMessage;
+  // No code: session tokens in the URL are not credentials (see the module comment).
+  if (!link.code) return MISSING_CREDENTIALS_MESSAGE;
+
+  try {
+    const { error } = await supabase.auth.exchangeCodeForSession(link.code);
+    return error ? describeExchangeError(error) : null;
+  } catch (error) {
+    return (error instanceof Error && error.message) || EXCHANGE_FAILED_MESSAGE;
+  }
 }
 
 /**
@@ -148,26 +211,10 @@ export async function completeRecoveryFromUrl(
   if (!link) return;
 
   callbacks.onRecoveryDetected?.();
-
-  if (link.errorMessage) {
-    callbacks.onRecoveryError?.(link.errorMessage);
-    return;
-  }
-
-  try {
-    if (link.code) {
-      const { error } = await supabase.auth.exchangeCodeForSession(link.code);
-      if (error) callbacks.onRecoveryError?.(error.message);
-      return;
-    }
-
-    // No code: session tokens in the URL are not credentials (see the module comment).
-    callbacks.onRecoveryError?.(MISSING_CREDENTIALS_MESSAGE);
-  } catch (error) {
-    callbacks.onRecoveryError?.(
-      error instanceof Error ? error.message : "Could not open this password reset link.",
-    );
-  }
+  // Called outside the exchange's try/catch, so a throwing callback is never
+  // reported back to itself as a second recovery error.
+  const errorMessage = await establishRecoverySession(link);
+  if (errorMessage) callbacks.onRecoveryError?.(errorMessage);
 }
 
 export interface RecoveryLinkHandler {

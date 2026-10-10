@@ -282,10 +282,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } = supabase.auth.onAuthStateChange((event, newSession) => {
       if (!mounted) return;
 
-      // supabase-js only emits PASSWORD_RECOVERY when it parses the recovery URL
-      // itself (`detectSessionInUrl`), which is web-only here — the deep-link
-      // handler above is what normally flips the flag. Handled anyway so a
-      // future client-config change cannot silently bypass the reset screen.
+      // The deep-link handler above is what holds the reset screen: it flips the
+      // flag the moment a recovery link arrives, before the exchange. The
+      // supabase-js in the shipped fossil build (auth-js 2.101.1) emits SIGNED_IN
+      // even for a recovery code, so this branch never fires there. Newer
+      // supabase-js (2.116, as on mobile) emits PASSWORD_RECOVERY for a recovery
+      // code; handled so an upgrade keeps the reset screen in place.
       if (event === "PASSWORD_RECOVERY") {
         startRecovery();
       }

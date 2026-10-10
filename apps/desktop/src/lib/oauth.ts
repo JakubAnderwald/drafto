@@ -44,15 +44,15 @@ export async function signInWithOAuthBrowser(
  * normal case: once automatically and again from its "Open Drafto" button. A
  * second exchange would only fail ("PKCE code verifier not found").
  *
- * A code is forgotten again when its exchange never reached the server: supabase-js
- * keeps the verifier in that case, so the same link can still succeed on retry.
+ * A code stays remembered even when its exchange fails: supabase-js deletes the
+ * stored verifier after every exchange attempt, success or failure (auth-js
+ * 2.101.1 in the shipped fossil build, and 2.116), so no retry of the same link
+ * can succeed. The user signs in again from the app.
  */
 const exchangedCodes = new Set<string>();
 
-/** supabase-js reports a request that never got a server response under this name. */
-function isRetryableExchangeError(error: { name?: string }): boolean {
-  return error.name === "AuthRetryableFetchError";
-}
+/** The app's own scheme. Must agree with `splitAppUrl` in `auth-recovery.ts`. */
+const APP_SCHEME_PREFIX = "eu.drafto.desktop://";
 
 /**
  * Finishes OAuth sign-in from an `eu.drafto.desktop://auth/callback` deep link.
@@ -67,7 +67,9 @@ function isRetryableExchangeError(error: { name?: string }): boolean {
 export function handleOAuthCallback(url: string): void {
   try {
     // URL schemes are case-insensitive per RFC 3986 — normalize before match.
-    if (!url.toLowerCase().startsWith("eu.drafto.desktop:")) {
+    // Same prefix as the recovery parser: a slash-less `eu.drafto.desktop:auth/recovery`
+    // must not slip past `isRecoveryUrl` and have its code exchanged here.
+    if (!url.toLowerCase().startsWith(APP_SCHEME_PREFIX)) {
       return;
     }
 
@@ -102,12 +104,9 @@ export function handleOAuthCallback(url: string): void {
     supabase.auth
       .exchangeCodeForSession(code)
       .then(({ error }) => {
-        if (!error) return;
-        if (isRetryableExchangeError(error)) exchangedCodes.delete(code);
-        console.error("[oauth] Failed to exchange code for session:", error.message);
+        if (error) console.error("[oauth] Failed to exchange code for session:", error.message);
       })
       .catch((err) => {
-        exchangedCodes.delete(code);
         console.error("[oauth] Failed to exchange code for session:", err);
       });
   } catch (err) {

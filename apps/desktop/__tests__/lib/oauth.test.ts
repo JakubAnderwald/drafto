@@ -147,8 +147,9 @@ describe("handleOAuthCallback", () => {
       errorSpy.mockRestore();
     });
 
-    it("lets the same link retry when the request never reached the server", async () => {
-      // supabase-js keeps the verifier on a network failure, so a retry can still succeed.
+    it("does not retry a code after a network failure, whose verifier is already gone", async () => {
+      // supabase-js deletes the stored verifier after every exchange attempt, so
+      // a second exchange of the same code could only fail.
       mockExchangeCodeForSession.mockResolvedValueOnce({
         data: {},
         error: { name: "AuthRetryableFetchError", message: "Failed to fetch" },
@@ -158,7 +159,7 @@ describe("handleOAuthCallback", () => {
       await flush();
       handleOAuthCallback("eu.drafto.desktop://auth/callback?code=went-offline");
 
-      expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(2);
+      expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(1);
     });
 
     it("does not retry a code the server rejected", async () => {
@@ -178,15 +179,25 @@ describe("handleOAuthCallback", () => {
       );
     });
 
-    it("lets the same link retry after an unexpected rejection", async () => {
+    it("logs an unexpected rejection and does not retry the code", async () => {
       mockExchangeCodeForSession.mockRejectedValueOnce(new Error("boom"));
 
       handleOAuthCallback("eu.drafto.desktop://auth/callback?code=threw");
       await flush();
       handleOAuthCallback("eu.drafto.desktop://auth/callback?code=threw");
 
-      expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(2);
+      expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[oauth] Failed to exchange code for session:",
+        expect.any(Error),
+      );
     });
+  });
+
+  it("ignores a slash-less scheme link, so a recovery code cannot slip past the recovery guard", () => {
+    handleOAuthCallback("eu.drafto.desktop:auth/recovery?code=recovery-no-slashes");
+
+    expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -226,12 +237,20 @@ describe("handleOAuthCallback", () => {
     expect(mockSetSession).not.toHaveBeenCalled();
   });
 
-  it("leaves a type=recovery callback alone even on the OAuth path", () => {
+  it("ignores tokens in a type=recovery link on the OAuth path", () => {
     handleOAuthCallback(
       "eu.drafto.desktop://auth/callback#access_token=AAA&refresh_token=RRR&type=recovery",
     );
 
     expect(mockSetSession).not.toHaveBeenCalled();
     expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
+  });
+
+  it("decides by path, so a type=recovery param cannot steal an OAuth code", () => {
+    // Supabase sends no `type` under PKCE; only the recovery paths belong to the
+    // recovery handler.
+    handleOAuthCallback("eu.drafto.desktop://auth/callback?code=oauth-with-type&type=recovery");
+
+    expect(mockExchangeCodeForSession).toHaveBeenCalledWith("oauth-with-type");
   });
 });
