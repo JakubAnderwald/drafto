@@ -1,9 +1,17 @@
 import { Linking } from "react-native";
 
 import { isRecoveryUrl } from "@/lib/auth-recovery";
+import { apiUrl } from "@/lib/config";
 import { supabase } from "@/lib/supabase";
 
-const REDIRECT_URL = "eu.drafto.desktop://auth/callback";
+/**
+ * Supabase ends the OAuth redirect on this drafto.eu hand-off page, not on the
+ * app's scheme: a redirect straight to `eu.drafto.desktop://` leaves the browser
+ * tab frozen mid-navigation. The page forwards the code to
+ * `eu.drafto.desktop://auth/callback`, which `handleOAuthCallback` consumes.
+ * Must be allowlisted in Supabase Auth (ADR-0044).
+ */
+export const OAUTH_REDIRECT_URL = `${apiUrl}/auth/desktop/callback`;
 
 type OAuthProvider = "google" | "apple";
 
@@ -14,7 +22,7 @@ export async function signInWithOAuthBrowser(
     const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
       provider,
       options: {
-        redirectTo: REDIRECT_URL,
+        redirectTo: OAUTH_REDIRECT_URL,
         skipBrowserRedirect: true,
       },
     });
@@ -30,6 +38,24 @@ export async function signInWithOAuthBrowser(
   }
 }
 
+/**
+ * Codes this app run has already handed to `exchangeCodeForSession`. A code is
+ * single-use, and the drafto.eu hand-off page sends the same link twice in the
+ * normal case: once automatically and again from its "Open Drafto" button. A
+ * second exchange would only fail ("PKCE code verifier not found").
+ */
+const exchangedCodes = new Set<string>();
+
+/**
+ * Finishes OAuth sign-in from an `eu.drafto.desktop://auth/callback` deep link.
+ *
+ * Only a PKCE `code` is accepted. The client runs `flowType: "pkce"`, so only
+ * this install holds the `code_verifier` that redeems it. Implicit-flow
+ * `access_token`/`refresh_token` params are deliberately ignored. Any website can
+ * open `eu.drafto.desktop://auth/callback#access_token=…&refresh_token=…`, and
+ * honouring those tokens with `setSession` would sign the app into an attacker's
+ * account.
+ */
 export function handleOAuthCallback(url: string): void {
   try {
     // URL schemes are case-insensitive per RFC 3986 — normalize before match.
@@ -46,39 +72,28 @@ export function handleOAuthCallback(url: string): void {
 
     const parsed = new URL(url);
 
-    // Callbacks can arrive with params in the query string (PKCE) or the
-    // hash fragment (implicit). WHATWG URL parses `auth` as the host for
-    // non-special schemes, so do not gate on pathname — gate on scheme
-    // above and on the presence of known auth params below.
+    // WHATWG URL parses `auth` as the host for non-special schemes, so do not
+    // gate on pathname — gate on scheme above and on the code below.
     const searchParams = new URLSearchParams(parsed.search);
     const hashParams = new URLSearchParams(
       parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash,
     );
 
-    // Log only non-sensitive metadata — never the raw URL, which carries
-    // the OAuth code or access/refresh tokens.
+    // Log only non-sensitive metadata — never the raw URL, which carries the code.
     console.info("[oauth] handling callback", {
       hasQuery: !!parsed.search,
       hasHash: !!parsed.hash,
     });
 
     const code = searchParams.get("code") ?? hashParams.get("code");
-    if (code) {
-      supabase.auth.exchangeCodeForSession(code).catch((err) => {
-        console.error("[oauth] Failed to exchange code for session:", err);
-      });
+    if (!code || exchangedCodes.has(code)) {
       return;
     }
 
-    const accessToken = searchParams.get("access_token") ?? hashParams.get("access_token");
-    const refreshToken = searchParams.get("refresh_token") ?? hashParams.get("refresh_token");
-    if (accessToken && refreshToken) {
-      supabase.auth
-        .setSession({ access_token: accessToken, refresh_token: refreshToken })
-        .catch((err) => {
-          console.error("[oauth] Failed to set session:", err);
-        });
-    }
+    exchangedCodes.add(code);
+    supabase.auth.exchangeCodeForSession(code).catch((err) => {
+      console.error("[oauth] Failed to exchange code for session:", err);
+    });
   } catch (err) {
     console.error("[oauth] Failed to parse callback URL:", err);
   }

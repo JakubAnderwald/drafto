@@ -1,16 +1,101 @@
+import { Linking } from "react-native";
+
 const mockExchangeCodeForSession = jest.fn();
 const mockSetSession = jest.fn();
+const mockSignInWithOAuth = jest.fn();
 
 jest.mock("@/lib/supabase", () => ({
   supabase: {
     auth: {
       exchangeCodeForSession: (...args: unknown[]) => mockExchangeCodeForSession(...args),
       setSession: (...args: unknown[]) => mockSetSession(...args),
+      signInWithOAuth: (...args: unknown[]) => mockSignInWithOAuth(...args),
     },
   },
 }));
 
-import { handleOAuthCallback } from "../../src/lib/oauth";
+jest.mock("@/lib/config", () => ({
+  apiUrl: "https://api.drafto.test",
+}));
+
+import {
+  OAUTH_REDIRECT_URL,
+  handleOAuthCallback,
+  signInWithOAuthBrowser,
+} from "../../src/lib/oauth";
+
+describe("signInWithOAuthBrowser", () => {
+  let openURL: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    openURL = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+    mockSignInWithOAuth.mockResolvedValue({
+      data: { url: "https://supabase.test/auth/v1/authorize?provider=google" },
+      error: null,
+    });
+  });
+
+  afterEach(() => {
+    openURL.mockRestore();
+  });
+
+  it("returns through the web hand-off page, not straight to the app scheme", () => {
+    // A redirect straight to eu.drafto.desktop:// leaves the browser tab frozen.
+    expect(OAUTH_REDIRECT_URL).toBe("https://api.drafto.test/auth/desktop/callback");
+  });
+
+  it("asks Supabase for the provider URL with the hand-off redirect and opens it", async () => {
+    const result = await signInWithOAuthBrowser("google");
+
+    expect(mockSignInWithOAuth).toHaveBeenCalledWith({
+      provider: "google",
+      options: {
+        redirectTo: "https://api.drafto.test/auth/desktop/callback",
+        skipBrowserRedirect: true,
+      },
+    });
+    expect(openURL).toHaveBeenCalledWith("https://supabase.test/auth/v1/authorize?provider=google");
+    expect(result).toEqual({ error: null });
+  });
+
+  it("passes the provider through for Apple", async () => {
+    await signInWithOAuthBrowser("apple");
+
+    expect(mockSignInWithOAuth).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "apple" }),
+    );
+  });
+
+  it("surfaces the Supabase error and opens nothing", async () => {
+    mockSignInWithOAuth.mockResolvedValue({
+      data: { url: null },
+      error: { message: "Provider is not enabled" },
+    });
+
+    const result = await signInWithOAuthBrowser("google");
+
+    expect(result).toEqual({ error: "Provider is not enabled" });
+    expect(openURL).not.toHaveBeenCalled();
+  });
+
+  it("reports a generic error when Supabase returns no URL", async () => {
+    mockSignInWithOAuth.mockResolvedValue({ data: { url: null }, error: null });
+
+    const result = await signInWithOAuthBrowser("google");
+
+    expect(result).toEqual({ error: "Failed to start sign-in." });
+    expect(openURL).not.toHaveBeenCalled();
+  });
+
+  it("reports a retryable error when the browser cannot be opened", async () => {
+    openURL.mockRejectedValue(new Error("no handler"));
+
+    const result = await signInWithOAuthBrowser("google");
+
+    expect(result).toEqual({ error: "Failed to open sign-in. Please try again." });
+  });
+});
 
 describe("handleOAuthCallback", () => {
   beforeEach(() => {
@@ -18,6 +103,9 @@ describe("handleOAuthCallback", () => {
     mockExchangeCodeForSession.mockResolvedValue({ data: {}, error: null });
     mockSetSession.mockResolvedValue({ data: {}, error: null });
   });
+
+  // `handleOAuthCallback` remembers exchanged codes for the life of the module,
+  // so every test uses its own code unless it is testing that memory.
 
   it("ignores URLs that are not the desktop callback scheme", () => {
     handleOAuthCallback("https://drafto.eu/auth/callback?code=abc");
@@ -31,13 +119,41 @@ describe("handleOAuthCallback", () => {
     expect(mockSetSession).not.toHaveBeenCalled();
   });
 
-  it("sets the session when implicit-flow tokens arrive in the hash fragment", () => {
-    handleOAuthCallback("eu.drafto.desktop://auth/callback#access_token=AAA&refresh_token=RRR");
-    expect(mockSetSession).toHaveBeenCalledWith({
-      access_token: "AAA",
-      refresh_token: "RRR",
-    });
+  it("exchanges a code only once, so the hand-off page's button cannot re-send it", () => {
+    // The page opens the app automatically and again from "Open Drafto": same link.
+    handleOAuthCallback("eu.drafto.desktop://auth/callback?code=sent-twice");
+    handleOAuthCallback("eu.drafto.desktop://auth/callback?code=sent-twice");
+
+    expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(1);
+    expect(mockExchangeCodeForSession).toHaveBeenCalledWith("sent-twice");
+  });
+
+  it("still exchanges a different code later", () => {
+    handleOAuthCallback("eu.drafto.desktop://auth/callback?code=first-sign-in");
+    handleOAuthCallback("eu.drafto.desktop://auth/callback?code=second-sign-in");
+
+    expect(mockExchangeCodeForSession.mock.calls).toEqual([["first-sign-in"], ["second-sign-in"]]);
+  });
+
+  it.each([
+    "eu.drafto.desktop://auth/callback#access_token=AAA&refresh_token=RRR",
+    "eu.drafto.desktop://auth/callback?access_token=AAA&refresh_token=RRR",
+  ])("never sets a session from tokens in the URL (%s)", (url) => {
+    // Any website can open this scheme; honouring the tokens would sign the app
+    // into whatever account the page chose.
+    handleOAuthCallback(url);
+
+    expect(mockSetSession).not.toHaveBeenCalled();
     expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
+  });
+
+  it("uses only the code when tokens ride along with it", () => {
+    handleOAuthCallback(
+      "eu.drafto.desktop://auth/callback?code=with-tokens#access_token=AAA&refresh_token=RRR",
+    );
+
+    expect(mockExchangeCodeForSession).toHaveBeenCalledWith("with-tokens");
+    expect(mockSetSession).not.toHaveBeenCalled();
   });
 
   it("does nothing when no recognized auth params are present", () => {

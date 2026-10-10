@@ -1,6 +1,6 @@
 # Authentication
 
-**Status:** shipped **Updated:** 2026-09-14
+**Status:** shipped **Updated:** 2026-10-10
 
 ## What it is
 
@@ -14,68 +14,72 @@ A signed-in user can permanently delete their own account from inside the app on
 
 ## Code paths
 
-| Concern                                                                                         | Path                                                                |
-| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| Next.js middleware entrypoint                                                                   | `apps/web/middleware.ts`                                            |
-| Middleware session refresh + `is_approved` gate                                                 | `apps/web/src/lib/supabase/middleware.ts`                           |
-| Web Supabase browser client                                                                     | `apps/web/src/lib/supabase/client.ts`                               |
-| Web Supabase server client                                                                      | `apps/web/src/lib/supabase/server.ts`                               |
-| Web Supabase admin (service-role) client                                                        | `apps/web/src/lib/supabase/admin.ts`                                |
-| Login page (email+password, OAuth)                                                              | `apps/web/src/app/(auth)/login/page.tsx`                            |
-| Signup page                                                                                     | `apps/web/src/app/(auth)/signup/page.tsx`                           |
-| Forgot password                                                                                 | `apps/web/src/app/(auth)/forgot-password/page.tsx`                  |
-| Reset password                                                                                  | `apps/web/src/app/(auth)/reset-password/page.tsx`                   |
-| Waiting-for-approval landing                                                                    | `apps/web/src/app/(auth)/waiting-for-approval/page.tsx`             |
-| OAuth callback (PKCE code exchange)                                                             | `apps/web/src/app/auth/callback/route.ts`                           |
-| OAuth button component (web)                                                                    | `apps/web/src/components/auth/oauth-buttons.tsx`                    |
-| OAuth button component (mobile)                                                                 | `apps/mobile/src/components/auth/oauth-buttons.tsx`                 |
-| Admin approval UI                                                                               | `apps/web/src/app/(app)/admin/page.tsx`                             |
-| Admin user list component                                                                       | `apps/web/src/app/(app)/admin/admin-user-list.tsx`                  |
-| Admin flash message                                                                             | `apps/web/src/app/(app)/admin/admin-flash-message.tsx`              |
-| Admin panel close button (click / Escape)                                                       | `apps/web/src/app/(app)/admin/admin-close-button.tsx`               |
-| Admin panel Escape guard                                                                        | `apps/web/src/app/(app)/admin/should-close-on-escape.ts`            |
-| Admin approve-user API                                                                          | `apps/web/src/app/api/admin/approve-user/route.ts`                  |
-| Admin delete-pending-user API                                                                   | `apps/web/src/app/api/admin/delete-user/route.ts`                   |
-| Self-service account deletion API (`DELETE /api/account`, last-admin guard)                     | `apps/web/src/app/api/account/route.ts`                             |
-| Account route auth (session cookie or bearer token)                                             | `apps/web/src/lib/account/authenticate-account-request.ts`          |
-| Shared account-deletion helper (`deleteUserAccount`)                                            | `apps/web/src/lib/account/delete-user.ts`                           |
-| User attachment sweeps: strict `removeAllUserAttachments` + best-effort `removeUserAttachments` | `apps/web/src/lib/storage/remove-user-attachments.ts`               |
-| Web settings "Delete account" section                                                           | `apps/web/src/components/settings/delete-account-section.tsx`       |
-| Settings page (renders the section last)                                                        | `apps/web/src/app/settings/page.tsx`                                |
-| Confirm dialog (`confirmDisabled` for type-to-confirm)                                          | `apps/web/src/components/ui/confirm-dialog.tsx`                     |
-| "Your account has been deleted." notice on `/login?deleted=1`                                   | `apps/web/src/components/auth/account-deleted-notice.tsx`           |
-| Public deletion explainer (`/account/delete`)                                                   | `apps/web/src/app/account/delete/page.tsx`                          |
-| Client request + failure copy (`requestAccountDeletion`, `describeAccountDeletionFailure`)      | `packages/shared/src/account/request-account-deletion.ts`           |
-| Confirmation word (`ACCOUNT_DELETE_CONFIRMATION`)                                               | `packages/shared/src/constants.ts`                                  |
-| One-click approve (email link)                                                                  | `apps/web/src/app/api/admin/approve-user/one-click/route.ts`        |
-| Signed approval token helper                                                                    | `apps/web/src/lib/approval-tokens.ts`                               |
-| Mobile login screen                                                                             | `apps/mobile/app/(auth)/login.tsx`                                  |
-| Mobile signup screen                                                                            | `apps/mobile/app/(auth)/signup.tsx`                                 |
-| Mobile forgot password                                                                          | `apps/mobile/app/(auth)/forgot-password.tsx`                        |
-| Mobile reset password                                                                           | `apps/mobile/app/(auth)/reset-password.tsx`                         |
-| Mobile recovery deep-link parsing                                                               | `apps/mobile/src/lib/auth-recovery.ts`                              |
-| Mobile route guard (recovery branch)                                                            | `apps/mobile/app/_layout.tsx`                                       |
-| Mobile waiting-for-approval                                                                     | `apps/mobile/app/(auth)/waiting-for-approval.tsx`                   |
-| Mobile auth provider (`signOut`, `deleteAccount`, shared `resetLocalSession`)                   | `apps/mobile/src/providers/auth-provider.tsx`                       |
-| Mobile "Delete account" row (disabled offline)                                                  | `apps/mobile/app/(tabs)/settings.tsx`                               |
-| Mobile type-`DELETE` dialog                                                                     | `apps/mobile/src/components/delete-account-dialog.tsx`              |
-| Mobile web API origin (`extra.apiUrl`)                                                          | `apps/mobile/app.config.ts`                                         |
-| Desktop login screen                                                                            | `apps/desktop/src/screens/login.tsx`                                |
-| Desktop signup screen                                                                           | `apps/desktop/src/screens/signup.tsx`                               |
-| Desktop forgot password                                                                         | `apps/desktop/src/screens/forgot-password.tsx`                      |
-| Desktop reset password                                                                          | `apps/desktop/src/screens/reset-password.tsx`                       |
-| Desktop recovery deep-link parsing                                                              | `apps/desktop/src/lib/auth-recovery.ts`                             |
-| Desktop route switch (recovery branch)                                                          | `apps/desktop/src/navigation/app-navigator.tsx`                     |
-| Desktop waiting-for-approval                                                                    | `apps/desktop/src/screens/waiting-for-approval.tsx`                 |
-| Desktop auth provider (`signOut`, `deleteAccount`, shared `resetLocalSession`)                  | `apps/desktop/src/providers/auth-provider.tsx`                      |
-| Desktop sidebar user section (email + app menu trigger; hosts the delete panel)                 | `apps/desktop/src/components/sidebar/notebooks-sidebar.tsx`         |
-| Desktop app menu (⋯): "Sign out" / "Delete account…" (disabled offline)                         | `apps/desktop/src/components/sidebar/app-menu.tsx`                  |
-| Desktop inline type-`DELETE` panel                                                              | `apps/desktop/src/components/sidebar/delete-account-panel.tsx`      |
-| Desktop web API origin (`apiUrl` from `API_URL`)                                                | `apps/desktop/src/lib/config.ts`, `apps/desktop/src/types/env.d.ts` |
-| Support agent: always escalate emailed deletion / data-rights requests                          | `scripts/support-agent-prompt.md` (step 5.5)                        |
-| Initial schema + RLS + `profiles` table                                                         | `supabase/migrations/20260224000001_initial_schema.sql`             |
-| RLS recursion fix                                                                               | `supabase/migrations/20260225000001_fix_rls_recursion.sql`          |
-| Admin bootstrap (first approved user)                                                           | `supabase/migrations/20260420000001_admin_bootstrap.sql`            |
+| Concern                                                                                         | Path                                                                                                       |
+| ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Next.js middleware entrypoint                                                                   | `apps/web/middleware.ts`                                                                                   |
+| Middleware session refresh + `is_approved` gate                                                 | `apps/web/src/lib/supabase/middleware.ts`                                                                  |
+| Web Supabase browser client                                                                     | `apps/web/src/lib/supabase/client.ts`                                                                      |
+| Web Supabase server client                                                                      | `apps/web/src/lib/supabase/server.ts`                                                                      |
+| Web Supabase admin (service-role) client                                                        | `apps/web/src/lib/supabase/admin.ts`                                                                       |
+| Login page (email+password, OAuth)                                                              | `apps/web/src/app/(auth)/login/page.tsx`                                                                   |
+| Signup page                                                                                     | `apps/web/src/app/(auth)/signup/page.tsx`                                                                  |
+| Forgot password                                                                                 | `apps/web/src/app/(auth)/forgot-password/page.tsx`                                                         |
+| Reset password                                                                                  | `apps/web/src/app/(auth)/reset-password/page.tsx`                                                          |
+| Waiting-for-approval landing                                                                    | `apps/web/src/app/(auth)/waiting-for-approval/page.tsx`                                                    |
+| OAuth callback (PKCE code exchange)                                                             | `apps/web/src/app/auth/callback/route.ts`                                                                  |
+| Desktop hand-off pages (`/auth/desktop/{callback,recovery}` → `eu.drafto.desktop://auth/…`)     | `apps/web/src/app/(auth)/auth/desktop/[flow]/page.tsx`, `apps/web/src/components/auth/desktop-handoff.tsx` |
+| Desktop hand-off deep-link builder (forwards only `code` / `error*`) and Mac-desktop check      | `apps/web/src/lib/auth/desktop-deep-link.ts`, `apps/web/src/lib/auth/is-mac-desktop.ts`                    |
+| Signed-out home page footer (what Drafto is + Privacy link; Google brand verification)          | `apps/web/src/app/(auth)/layout.tsx`                                                                       |
+| OAuth button component (web)                                                                    | `apps/web/src/components/auth/oauth-buttons.tsx`                                                           |
+| OAuth button component (mobile)                                                                 | `apps/mobile/src/components/auth/oauth-buttons.tsx`                                                        |
+| Admin approval UI                                                                               | `apps/web/src/app/(app)/admin/page.tsx`                                                                    |
+| Admin user list component                                                                       | `apps/web/src/app/(app)/admin/admin-user-list.tsx`                                                         |
+| Admin flash message                                                                             | `apps/web/src/app/(app)/admin/admin-flash-message.tsx`                                                     |
+| Admin panel close button (click / Escape)                                                       | `apps/web/src/app/(app)/admin/admin-close-button.tsx`                                                      |
+| Admin panel Escape guard                                                                        | `apps/web/src/app/(app)/admin/should-close-on-escape.ts`                                                   |
+| Admin approve-user API                                                                          | `apps/web/src/app/api/admin/approve-user/route.ts`                                                         |
+| Admin delete-pending-user API                                                                   | `apps/web/src/app/api/admin/delete-user/route.ts`                                                          |
+| Self-service account deletion API (`DELETE /api/account`, last-admin guard)                     | `apps/web/src/app/api/account/route.ts`                                                                    |
+| Account route auth (session cookie or bearer token)                                             | `apps/web/src/lib/account/authenticate-account-request.ts`                                                 |
+| Shared account-deletion helper (`deleteUserAccount`)                                            | `apps/web/src/lib/account/delete-user.ts`                                                                  |
+| User attachment sweeps: strict `removeAllUserAttachments` + best-effort `removeUserAttachments` | `apps/web/src/lib/storage/remove-user-attachments.ts`                                                      |
+| Web settings "Delete account" section                                                           | `apps/web/src/components/settings/delete-account-section.tsx`                                              |
+| Settings page (renders the section last)                                                        | `apps/web/src/app/settings/page.tsx`                                                                       |
+| Confirm dialog (`confirmDisabled` for type-to-confirm)                                          | `apps/web/src/components/ui/confirm-dialog.tsx`                                                            |
+| "Your account has been deleted." notice on `/login?deleted=1`                                   | `apps/web/src/components/auth/account-deleted-notice.tsx`                                                  |
+| Public deletion explainer (`/account/delete`)                                                   | `apps/web/src/app/account/delete/page.tsx`                                                                 |
+| Client request + failure copy (`requestAccountDeletion`, `describeAccountDeletionFailure`)      | `packages/shared/src/account/request-account-deletion.ts`                                                  |
+| Confirmation word (`ACCOUNT_DELETE_CONFIRMATION`)                                               | `packages/shared/src/constants.ts`                                                                         |
+| One-click approve (email link)                                                                  | `apps/web/src/app/api/admin/approve-user/one-click/route.ts`                                               |
+| Signed approval token helper                                                                    | `apps/web/src/lib/approval-tokens.ts`                                                                      |
+| Mobile login screen                                                                             | `apps/mobile/app/(auth)/login.tsx`                                                                         |
+| Mobile signup screen                                                                            | `apps/mobile/app/(auth)/signup.tsx`                                                                        |
+| Mobile forgot password                                                                          | `apps/mobile/app/(auth)/forgot-password.tsx`                                                               |
+| Mobile reset password                                                                           | `apps/mobile/app/(auth)/reset-password.tsx`                                                                |
+| Mobile recovery deep-link parsing                                                               | `apps/mobile/src/lib/auth-recovery.ts`                                                                     |
+| Mobile route guard (recovery branch)                                                            | `apps/mobile/app/_layout.tsx`                                                                              |
+| Mobile waiting-for-approval                                                                     | `apps/mobile/app/(auth)/waiting-for-approval.tsx`                                                          |
+| Mobile auth provider (`signOut`, `deleteAccount`, shared `resetLocalSession`)                   | `apps/mobile/src/providers/auth-provider.tsx`                                                              |
+| Mobile "Delete account" row (disabled offline)                                                  | `apps/mobile/app/(tabs)/settings.tsx`                                                                      |
+| Mobile type-`DELETE` dialog                                                                     | `apps/mobile/src/components/delete-account-dialog.tsx`                                                     |
+| Mobile web API origin (`extra.apiUrl`)                                                          | `apps/mobile/app.config.ts`                                                                                |
+| Desktop login screen                                                                            | `apps/desktop/src/screens/login.tsx`                                                                       |
+| Desktop signup screen                                                                           | `apps/desktop/src/screens/signup.tsx`                                                                      |
+| Desktop forgot password                                                                         | `apps/desktop/src/screens/forgot-password.tsx`                                                             |
+| Desktop reset password                                                                          | `apps/desktop/src/screens/reset-password.tsx`                                                              |
+| Desktop OAuth (`redirectTo` + `eu.drafto.desktop://auth/callback` handler)                      | `apps/desktop/src/lib/oauth.ts`                                                                            |
+| Desktop recovery deep-link parsing                                                              | `apps/desktop/src/lib/auth-recovery.ts`                                                                    |
+| Desktop route switch (recovery branch)                                                          | `apps/desktop/src/navigation/app-navigator.tsx`                                                            |
+| Desktop waiting-for-approval                                                                    | `apps/desktop/src/screens/waiting-for-approval.tsx`                                                        |
+| Desktop auth provider (`signOut`, `deleteAccount`, shared `resetLocalSession`)                  | `apps/desktop/src/providers/auth-provider.tsx`                                                             |
+| Desktop sidebar user section (email + app menu trigger; hosts the delete panel)                 | `apps/desktop/src/components/sidebar/notebooks-sidebar.tsx`                                                |
+| Desktop app menu (⋯): "Sign out" / "Delete account…" (disabled offline)                         | `apps/desktop/src/components/sidebar/app-menu.tsx`                                                         |
+| Desktop inline type-`DELETE` panel                                                              | `apps/desktop/src/components/sidebar/delete-account-panel.tsx`                                             |
+| Desktop web API origin (`apiUrl` from `API_URL`)                                                | `apps/desktop/src/lib/config.ts`, `apps/desktop/src/types/env.d.ts`                                        |
+| Support agent: always escalate emailed deletion / data-rights requests                          | `scripts/support-agent-prompt.md` (step 5.5)                                                               |
+| Initial schema + RLS + `profiles` table                                                         | `supabase/migrations/20260224000001_initial_schema.sql`                                                    |
+| RLS recursion fix                                                                               | `supabase/migrations/20260225000001_fix_rls_recursion.sql`                                                 |
+| Admin bootstrap (first approved user)                                                           | `supabase/migrations/20260420000001_admin_bootstrap.sql`                                                   |
 
 ## Related ADRs
 
@@ -84,6 +88,7 @@ A signed-in user can permanently delete their own account from inside the app on
 - [0019 — Email Infrastructure and Approval Flow](../adr/0019-email-infrastructure-and-approval-flow.md)
 - [0034 — Password Recovery via Custom-Scheme Deep Links](../adr/0034-password-recovery-deep-links-on-mobile-and-desktop.md)
 - [0038 — Account Deletion Endpoint for All Platforms](../adr/0038-account-deletion-endpoint.md)
+- [0044 — Desktop Auth Returns Through drafto.eu Hand-off Pages](../adr/0044-desktop-auth-web-handoff.md)
 
 ## Cross-platform notes
 
@@ -94,10 +99,16 @@ A signed-in user can permanently delete their own account from inside the app on
   - **Google on iOS and Android** — the native Google Sign-In SDK; the returned ID token goes straight to `supabase.auth.signInWithIdToken()` (`apps/mobile/src/lib/oauth.ts`). No `expo-web-browser` session and no `/auth/callback` route — but the two platforms differ underneath: on **Android** the flow is fully native (the Play services account picker), while on **iOS** `GIDSignIn` still presents Google's own system web sheet and returns through the reversed-client-ID URL scheme (`EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME`, registered by the config plugin in `apps/mobile/app.config.ts` — it is load-bearing, not dead config). The Android leg additionally requires an Android-type OAuth client registered by package name + signing-cert SHA-1 — see [builds and releases](../operations/builds-and-releases.md#google-sign-in-android-oauth-client).
   - **Apple on iOS** — `expo-apple-authentication`'s system sheet, then `signInWithIdToken()`. Genuinely web-free: no browser and no web sheet at any point.
   - **Apple on Android** — `signInWithOAuth()` opened via `expo-web-browser`, handed back to the app through the `drafto://auth/callback` deep link and exchanged in-app.
-  - **macOS (both providers)** — `signInWithOAuth()` opened in the system browser, handed back through the `eu.drafto.desktop://auth/callback` deep link (`apps/desktop/src/lib/oauth.ts`) and exchanged in-app.
-- **Password recovery is deep-linked on mobile and desktop** ([ADR-0034](../adr/0034-password-recovery-deep-links-on-mobile-and-desktop.md)). Web redirects to `/auth/callback?next=/reset-password`; the apps cannot, so `resetPasswordForEmail` targets a custom scheme instead — `drafto://reset-password` (mobile) and `eu.drafto.desktop://auth/recovery` (desktop). Both URLs must be present in **Supabase Auth → URL Configuration → Redirect URLs** for the dev (`huhzactreblzcogqkbsd`) _and_ prod (`tbmjbxxseonkciqovnpl`) projects, or every recovery link is rejected. The flows also differ in shape: mobile runs the implicit flow (fragment tokens), desktop runs PKCE, so a desktop reset link only completes on the Mac that requested it.
+  - **macOS (both providers)** — `signInWithOAuth()` opened in the system browser with `redirectTo` set to the drafto.eu hand-off page `https://drafto.eu/auth/desktop/callback` ([ADR-0044](../adr/0044-desktop-auth-web-handoff.md)). That page forwards the code to the `eu.drafto.desktop://auth/callback` deep link (`apps/desktop/src/lib/oauth.ts`), where it is exchanged in-app, and leaves the tab on a "Finishing sign-in in Drafto — you can close this tab" page. Redirecting straight to the scheme used to leave Google's page frozen mid-navigation. The page never exchanges the code itself, because the PKCE verifier lives in the app.
+    - The page opens the app on its own only on a Mac desktop.
+    - It shows fixed copy, never Supabase's error text.
+    - The app exchanges each code once, so the page's "Open Drafto" button cannot re-send a spent code.
+    - The app ignores `access_token`/`refresh_token` in the URL: any website can open the scheme, so only a PKCE code is a credential.
+    - The hand-off URL, code included, can appear in Sentry traces and replays. That is acceptable because the code is useless without the app's `code_verifier`.
+  - **Google's account chooser names the app from the Branding page** of the Cloud project, but only once it is verified; until then it shows the Supabase redirect host (`tbmjbxxseonkciqovnpl.supabase.co`). See [Google OAuth branding](../operations/builds-and-releases.md#google-oauth-branding).
+- **Password recovery is deep-linked on mobile and desktop** ([ADR-0034](../adr/0034-password-recovery-deep-links-on-mobile-and-desktop.md)). Web redirects to `/auth/callback?next=/reset-password`; the apps cannot, so `resetPasswordForEmail` targets the app instead — `drafto://reset-password` (mobile) and, on desktop, the hand-off page `https://drafto.eu/auth/desktop/recovery`, which forwards the code or error to `eu.drafto.desktop://auth/recovery` and tells the user the link only works on the Mac that asked for it ([ADR-0044](../adr/0044-desktop-auth-web-handoff.md)). These URLs, plus `https://drafto.eu/auth/desktop/callback` for desktop OAuth, must be allowed in **Supabase Auth → URL Configuration → Redirect URLs** for the dev (`huhzactreblzcogqkbsd`) _and_ prod (`tbmjbxxseonkciqovnpl`) projects, or Supabase rejects the redirect and falls back to the Site URL. Both hosted projects already allow `https://drafto.eu/**`, which covers the two hand-off pages. Keep the old `eu.drafto.desktop://auth/callback` and `eu.drafto.desktop://auth/recovery` entries too: installed builds still send them. The flows also differ in shape: mobile runs the implicit flow (fragment tokens), desktop runs PKCE, so a desktop reset link only completes on the Mac that requested it. On any other device the hand-off page says so instead of trying to open the app. Desktop therefore accepts only a `code` from a recovery link; a token-only link gets the missing-credentials error.
 - **A recovery session is a real session**, which is why both apps carry an `isRecovering` flag on `AuthProvider`. It is checked _before_ the approval gate and before the signed-in redirect, or the reset screen is unreachable. `PASSWORD_RECOVERY` is not emitted here — supabase-js only raises it when it parses the URL itself (`detectSessionInUrl`, web-only) — so the flag is set by the deep-link handler.
-- **Account deletion is the one auth flow where mobile and desktop call the web app.** Everything else they do goes straight to Supabase. Deleting an auth user needs the service role, which must never ship in a client, so the native apps send their Supabase access token to `DELETE /api/account` on the web origin (`EXPO_PUBLIC_API_URL` / `API_URL`, falling back to `https://drafto.eu`). See [Account deletion](#account-deletion) and [ADR-0038](../adr/0038-account-deletion-endpoint.md).
+- **Account deletion is the one auth flow where mobile and desktop call the web API.** Everything else they do goes straight to Supabase. (Desktop OAuth and password-reset redirects pass through drafto.eu pages in the browser, but the app itself never calls them.) Deleting an auth user needs the service role, which must never ship in a client, so the native apps send their Supabase access token to `DELETE /api/account` on the web origin (`EXPO_PUBLIC_API_URL` / `API_URL`, falling back to `https://drafto.eu`). See [Account deletion](#account-deletion) and [ADR-0038](../adr/0038-account-deletion-endpoint.md).
 - **Shared invariant:** RLS in Postgres is the single source of truth. Every platform uses the same `profiles.is_approved` column and the same RLS policies — if a user bypasses a client check, the database still refuses the query.
 
 ## Account deletion

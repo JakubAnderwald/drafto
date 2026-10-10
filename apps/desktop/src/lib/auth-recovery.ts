@@ -1,13 +1,22 @@
+import { apiUrl } from "@/lib/config";
 import { supabase } from "@/lib/supabase";
 
 /**
  * Password-recovery deep links for the macOS app.
  *
- * Supabase mails a link to `/auth/v1/verify?...&type=recovery&redirect_to=<app link>`,
- * which 302s to the app's registered `eu.drafto.desktop` scheme. The desktop
- * client sets `flowType: "pkce"` in `src/lib/supabase.ts`, so the callback
- * normally carries a `code` — the implicit fragment shape is accepted too so the
- * parser survives a future flow change.
+ * Supabase mails a link to `/auth/v1/verify?...&type=recovery&redirect_to=<hand-off page>`,
+ * which 302s to `https://drafto.eu/auth/desktop/recovery`. That page forwards the
+ * result to the app's registered scheme as `eu.drafto.desktop://auth/recovery`
+ * (ADR-0044) — redirecting straight to the scheme left the browser tab blank and
+ * loading, and did nothing at all on a device without the app.
+ *
+ * The desktop client sets `flowType: "pkce"` in `src/lib/supabase.ts`, so a
+ * genuine callback carries only a `code`, and only this install holds the
+ * `code_verifier` that redeems it. Implicit-flow `access_token`/`refresh_token`
+ * params are deliberately ignored. Any website can open
+ * `eu.drafto.desktop://auth/recovery#access_token=…&refresh_token=…`, and honouring
+ * those tokens with `setSession` would sign the app into an attacker's account. A
+ * token-only link therefore gets the missing-credentials error.
  *
  * Because PKCE stores the `code_verifier` in this install's AsyncStorage, a
  * reset requested on the Mac can only be completed on the Mac. The request
@@ -22,8 +31,11 @@ import { supabase } from "@/lib/supabase";
  * patched in `src/lib/url-polyfill.ts` only papers over part of that.
  */
 
-/** Redirect target handed to `resetPasswordForEmail`. Must be allowlisted in Supabase Auth. */
-export const RECOVERY_REDIRECT_URL = "eu.drafto.desktop://auth/recovery";
+/**
+ * Redirect target handed to `resetPasswordForEmail`: the drafto.eu hand-off page,
+ * which opens `eu.drafto.desktop://auth/recovery`. Must be allowlisted in Supabase Auth.
+ */
+export const RECOVERY_REDIRECT_URL = `${apiUrl}/auth/desktop/recovery`;
 
 const APP_SCHEME_PREFIX = "eu.drafto.desktop://";
 
@@ -35,11 +47,7 @@ const APP_SCHEME_PREFIX = "eu.drafto.desktop://";
 const RECOVERY_PATHS = new Set(["auth/recovery", "reset-password"]);
 
 export interface RecoveryLink {
-  /** Implicit-flow access token, when present. */
-  accessToken: string | null;
-  /** Implicit-flow refresh token, when present. */
-  refreshToken: string | null;
-  /** PKCE authorization code, when present. */
+  /** PKCE authorization code, when present. Session tokens in the URL are never read. */
   code: string | null;
   /** Message Supabase returned instead of credentials (expired or already-used link). */
   errorMessage: string | null;
@@ -95,7 +103,7 @@ function splitAppUrl(url: string): { path: string; params: Map<string, string> }
   const rawPath = queryAt === -1 ? beforeHash : beforeHash.slice(0, queryAt);
   const query = queryAt === -1 ? "" : beforeHash.slice(queryAt + 1);
 
-  // Query first, fragment second: implicit-flow credentials live in the
+  // Query first, fragment second: Supabase can put an expired-link error in the
   // fragment, so it wins any collision.
   const params = parseParams(query, new Map<string, string>());
   parseParams(fragment, params);
@@ -121,8 +129,6 @@ export function parseRecoveryLink(url: string): RecoveryLink | null {
   }
 
   return {
-    accessToken: params.get("access_token") ?? null,
-    refreshToken: params.get("refresh_token") ?? null,
     code: params.get("code") ?? null,
     errorMessage: params.get("error_description") ?? params.get("error") ?? null,
   };
@@ -155,15 +161,7 @@ export async function completeRecoveryFromUrl(
       return;
     }
 
-    if (link.accessToken && link.refreshToken) {
-      const { error } = await supabase.auth.setSession({
-        access_token: link.accessToken,
-        refresh_token: link.refreshToken,
-      });
-      if (error) callbacks.onRecoveryError?.(error.message);
-      return;
-    }
-
+    // No code: session tokens in the URL are not credentials (see the module comment).
     callbacks.onRecoveryError?.(MISSING_CREDENTIALS_MESSAGE);
   } catch (error) {
     callbacks.onRecoveryError?.(
@@ -185,44 +183,44 @@ export interface RecoveryLinkHandler {
  *
  * Without it, two links (a second email tapped mid-exchange, or the cold-start
  * URL arriving through both `getInitialURL` and the `url` event) race: a late
- * `setSession` / `exchangeCodeForSession` can replace the newer session, and
- * the stale link's error can overwrite the newer link's state. So:
+ * `exchangeCodeForSession` can replace the newer session, and the stale link's
+ * error can overwrite the newer link's state. So:
  *
  * - Supabase session changes run strictly one after another.
  * - Only the most recent link may report an error; a superseded link that has
  *   not started yet is skipped outright.
- * - A link identical to one still in flight is dropped — its one-time
- *   credentials would fail a second exchange and mask a recovery that worked.
+ * - A link this handler has already seen is dropped for the handler's whole
+ *   lifetime, whether its attempt is still in flight or long finished. Its
+ *   one-time code would fail a second exchange ("PKCE code verifier not found")
+ *   and swap a working reset form for an error. The repeat is routine: the
+ *   drafto.eu hand-off page opens the app automatically and also offers an
+ *   "Open Drafto" button carrying the same link.
  */
 export function createRecoveryLinkHandler(callbacks: RecoveryCallbacks = {}): RecoveryLinkHandler {
   let queue: Promise<void> = Promise.resolve();
   let latest = 0;
   let cancelled = false;
-  const inFlight = new Set<string>();
+  const seen = new Set<string>();
 
   const handle = (url: string) => {
-    if (cancelled || inFlight.has(url) || !isRecoveryUrl(url)) return;
+    if (cancelled || seen.has(url) || !isRecoveryUrl(url)) return;
 
     const seq = ++latest;
     const isCurrent = () => !cancelled && seq === latest;
-    inFlight.add(url);
+    seen.add(url);
 
     // Flag recovery immediately, not when the link's turn in the queue comes —
     // the route guard must hold the reset screen for the whole wait.
     callbacks.onRecoveryDetected?.();
 
-    queue = queue
-      .then(() => {
-        if (!isCurrent()) return;
-        return completeRecoveryFromUrl(url, {
-          onRecoveryError: (message) => {
-            if (isCurrent()) callbacks.onRecoveryError?.(message);
-          },
-        });
-      })
-      .finally(() => {
-        inFlight.delete(url);
+    queue = queue.then(() => {
+      if (!isCurrent()) return;
+      return completeRecoveryFromUrl(url, {
+        onRecoveryError: (message) => {
+          if (isCurrent()) callbacks.onRecoveryError?.(message);
+        },
       });
+    });
   };
 
   const cancel = () => {

@@ -3,6 +3,7 @@
 import { usePathname, useSearchParams } from "next/navigation";
 import { Suspense, useEffect } from "react";
 import { getPostHogClient } from "./client";
+import { buildPageviewUrl } from "./pageview-url";
 
 function PostHogPageView() {
   const pathname = usePathname();
@@ -12,8 +13,7 @@ function PostHogPageView() {
     const posthog = getPostHogClient();
     if (!posthog) return;
 
-    const url =
-      window.origin + pathname + (searchParams?.toString() ? `?${searchParams.toString()}` : "");
+    const url = buildPageviewUrl(window.origin, pathname, searchParams?.toString() ?? "");
     posthog.capture("$pageview", { $current_url: url });
   }, [pathname, searchParams]);
 

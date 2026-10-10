@@ -1,30 +1,15 @@
 "use client";
 
 import { forwardRef, type ButtonHTMLAttributes } from "react";
-import { cn } from "@/lib/cn";
+import { buttonClassName, type ButtonSize, type ButtonVariant } from "./button-styles";
 
-export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "success";
-export type ButtonSize = "sm" | "md" | "lg";
+export type { ButtonClassNameOptions, ButtonSize, ButtonVariant } from "./button-styles";
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
   size?: ButtonSize;
   loading?: boolean;
 }
-
-const variantStyles: Record<ButtonVariant, string> = {
-  primary: "bg-primary-600 text-white hover:bg-primary-700 focus-visible:ring-primary-500",
-  secondary: "bg-bg-muted text-fg hover:bg-bg-muted-hover focus-visible:ring-neutral-400",
-  ghost: "bg-transparent text-fg-muted hover:bg-bg-muted focus-visible:ring-neutral-400",
-  danger: "bg-error text-white hover:bg-error-hover focus-visible:ring-error",
-  success: "bg-success text-white hover:bg-success-hover focus-visible:ring-success",
-};
-
-const sizeStyles: Record<ButtonSize, string> = {
-  sm: "px-2.5 py-1 text-sm rounded-md",
-  md: "px-4 py-2 text-sm rounded-md",
-  lg: "px-5 py-2.5 text-base rounded-md",
-};
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
   { variant = "primary", size = "md", loading = false, disabled, className, children, ...props },
@@ -36,13 +21,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     <button
       ref={ref}
       disabled={isDisabled}
-      className={cn(
-        "inline-flex items-center justify-center font-medium transition-colors duration-[var(--transition-fast)] focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none",
-        variantStyles[variant],
-        sizeStyles[size],
-        isDisabled && "pointer-events-none opacity-50",
-        className,
-      )}
+      className={buttonClassName({ variant, size, disabled: isDisabled, className })}
       {...props}
     >
       {loading && (
