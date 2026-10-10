@@ -67,36 +67,49 @@ export interface RecoveryCallbacks {
 const MISSING_CREDENTIALS_MESSAGE =
   "This password reset link is missing its credentials. Request a new one.";
 
-const EXCHANGE_FAILED_MESSAGE = "Could not open this password reset link.";
+const EXCHANGE_FAILED_MESSAGE = "Could not open this password reset link. Request a new one.";
+
+const USED_OR_EXPIRED_MESSAGE =
+  "This password reset link has already been used or has expired. Request a new one.";
 
 /**
  * Plain-language messages for the code-exchange failures PKCE makes common.
  * supabase-js's own wording for these is aimed at web developers.
+ *
+ * Every one ends in "request a new one": supabase-js deletes the stored code
+ * verifier after any exchange attempt, success or failure, so a reset link that
+ * failed once can never work again.
  */
 const EXCHANGE_ERROR_MESSAGES = new Map<string, string>([
-  // The verifier is not in this install: another Mac, or a reinstall.
+  // No verifier in this install: the link was already used here, a sign-in
+  // since then consumed it, or the reset was requested on another Mac.
   [
     "pkce_code_verifier_not_found",
-    "Open this link on the Mac where you asked for the reset, or request a new one.",
+    "This password reset link can't be used here: it was already used, or it was requested on another Mac. Request a new one.",
   ],
   // A later sign-in or reset request on this Mac replaced the stored verifier.
-  [
-    "bad_code_verifier",
-    "A newer sign-in or reset request replaced this link. Use the latest reset email, or request a new one.",
-  ],
+  ["bad_code_verifier", "A newer sign-in or reset request replaced this link. Request a new one."],
   // Supabase times a reset from when it was requested, not from when the email
   // arrived (5 minutes by default; measured on the hosted dev project).
   ["flow_state_expired", "This password reset link has expired. Request a new one."],
-  [
-    "flow_state_not_found",
-    "This password reset link has already been used or has expired. Request a new one.",
-  ],
+  ["flow_state_not_found", USED_OR_EXPIRED_MESSAGE],
 ]);
 
-function describeExchangeError(error: { message: string; code?: string }): string {
+/** Link-level errors the hand-off page forwards as `error_code`, before any exchange. */
+const LINK_ERROR_MESSAGES = new Map<string, string>([["otp_expired", USED_OR_EXPIRED_MESSAGE]]);
+
+/** The request never reached Supabase; the verifier is gone all the same. */
+const OFFLINE_MESSAGE =
+  "Couldn't reach Drafto to open this password reset link. Check your connection, then request a new one.";
+
+function describeExchangeError(error: { message: string; code?: string; name?: string }): string {
   // A Map, not an object literal: a server-supplied code such as "constructor"
   // must not resolve to an inherited Object.prototype member.
-  return (error.code && EXCHANGE_ERROR_MESSAGES.get(error.code)) || error.message;
+  const mapped = error.code ? EXCHANGE_ERROR_MESSAGES.get(error.code) : undefined;
+  if (mapped) return mapped;
+  if (error.name === "AuthRetryableFetchError") return OFFLINE_MESSAGE;
+  // Never an empty string: callers treat "" as success.
+  return error.message || EXCHANGE_FAILED_MESSAGE;
 }
 
 function decodeComponent(value: string): string {
@@ -153,10 +166,15 @@ export function parseRecoveryLink(url: string): RecoveryLink | null {
   if (!parts || !RECOVERY_PATHS.has(parts.path)) return null;
 
   const { params } = parts;
+  const errorCode = params.get("error_code");
   // `||`, not `??`: an empty `code` or `error_description` must not hide the real value.
   return {
     code: params.get("code") || null,
-    errorMessage: params.get("error_description") || params.get("error") || null,
+    errorMessage:
+      (errorCode ? LINK_ERROR_MESSAGES.get(errorCode) : undefined) ||
+      params.get("error_description") ||
+      params.get("error") ||
+      null,
   };
 }
 
@@ -175,7 +193,7 @@ async function establishRecoverySession(link: RecoveryLink): Promise<string | nu
     const { error } = await supabase.auth.exchangeCodeForSession(link.code);
     return error ? describeExchangeError(error) : null;
   } catch (error) {
-    return error instanceof Error ? error.message : EXCHANGE_FAILED_MESSAGE;
+    return (error instanceof Error && error.message) || EXCHANGE_FAILED_MESSAGE;
   }
 }
 

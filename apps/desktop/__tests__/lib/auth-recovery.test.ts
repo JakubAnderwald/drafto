@@ -87,13 +87,24 @@ describe("parseRecoveryLink", () => {
     });
   });
 
-  it("decodes the error description Supabase returns for an expired link", () => {
+  it("explains an otp_expired link (already used or expired) in plain language", () => {
     const link = parseRecoveryLink(
       "eu.drafto.desktop://auth/recovery#error=access_denied&error_code=otp_expired" +
         "&error_description=Email+link+is+invalid+or+has+expired",
     );
 
-    expect(link?.errorMessage).toBe("Email link is invalid or has expired");
+    expect(link?.errorMessage).toBe(
+      "This password reset link has already been used or has expired. Request a new one.",
+    );
+  });
+
+  it("decodes the error description when the error code is not one it explains", () => {
+    const link = parseRecoveryLink(
+      "eu.drafto.desktop://auth/recovery#error=server_error&error_code=unexpected_failure" +
+        "&error_description=Something+went+wrong",
+    );
+
+    expect(link?.errorMessage).toBe("Something went wrong");
   });
 
   it("survives a malformed percent-escape instead of throwing", () => {
@@ -219,12 +230,12 @@ describe("completeRecoveryFromUrl", () => {
     [
       "pkce_code_verifier_not_found",
       "PKCE code verifier not found in storage.",
-      "Open this link on the Mac where you asked for the reset, or request a new one.",
+      "This password reset link can't be used here: it was already used, or it was requested on another Mac. Request a new one.",
     ],
     [
       "bad_code_verifier",
       "code challenge does not match previously saved code verifier",
-      "A newer sign-in or reset request replaced this link. Use the latest reset email, or request a new one.",
+      "A newer sign-in or reset request replaced this link. Request a new one.",
     ],
     // Inherited Object.prototype keys must not resolve to a message.
     ["constructor", "unexpected server error", "unexpected server error"],
@@ -235,6 +246,45 @@ describe("completeRecoveryFromUrl", () => {
     await completeRecoveryFromUrl(PKCE_LINK, { onRecoveryError });
 
     expect(onRecoveryError).toHaveBeenCalledWith(expected);
+  });
+
+  it("tells an offline user to reconnect and request a new link", async () => {
+    mockExchangeCodeForSession.mockResolvedValue({
+      data: {},
+      error: { name: "AuthRetryableFetchError", message: "Failed to fetch" },
+    });
+    const onRecoveryError = jest.fn();
+
+    await completeRecoveryFromUrl(PKCE_LINK, { onRecoveryError });
+
+    expect(onRecoveryError).toHaveBeenCalledWith(
+      "Couldn't reach Drafto to open this password reset link. Check your connection, then request a new one.",
+    );
+  });
+
+  it.each([
+    ["an empty error message", { data: {}, error: { message: "" } }],
+    ["an unmapped code with no message", { data: {}, error: { code: "weird", message: "" } }],
+  ])("never treats %s as success", async (_label, result) => {
+    mockExchangeCodeForSession.mockResolvedValue(result);
+    const onRecoveryError = jest.fn();
+
+    await completeRecoveryFromUrl(PKCE_LINK, { onRecoveryError });
+
+    expect(onRecoveryError).toHaveBeenCalledWith(
+      "Could not open this password reset link. Request a new one.",
+    );
+  });
+
+  it("never treats a thrown error without a message as success", async () => {
+    mockExchangeCodeForSession.mockRejectedValue(new Error());
+    const onRecoveryError = jest.fn();
+
+    await completeRecoveryFromUrl(PKCE_LINK, { onRecoveryError });
+
+    expect(onRecoveryError).toHaveBeenCalledWith(
+      "Could not open this password reset link. Request a new one.",
+    );
   });
 
   it("does not report a throwing error callback back to itself", async () => {

@@ -282,11 +282,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } = supabase.auth.onAuthStateChange((event, newSession) => {
       if (!mounted) return;
 
-      // The deep-link handler above flips the flag first, the moment a recovery
-      // link arrives, so the route guard holds the reset screen during the
-      // exchange. Under PKCE the exchange then also emits PASSWORD_RECOVERY for a
-      // recovery code; handling it keeps the reset screen in place even if a
-      // recovery session ever arrives another way.
+      // The deep-link handler above is what holds the reset screen: it flips the
+      // flag the moment a recovery link arrives, before the exchange. The
+      // supabase-js in the shipped fossil build (auth-js 2.101.1) emits SIGNED_IN
+      // even for a recovery code, so this branch never fires there. Newer
+      // supabase-js (2.116, as on mobile) emits PASSWORD_RECOVERY for a recovery
+      // code; handled so an upgrade keeps the reset screen in place.
       if (event === "PASSWORD_RECOVERY") {
         startRecovery();
       }
