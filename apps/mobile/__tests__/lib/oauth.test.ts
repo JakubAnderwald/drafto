@@ -18,6 +18,8 @@ import { GoogleSignin } from "@react-native-google-signin/google-signin";
 import type { SignInResponse, User } from "@react-native-google-signin/google-signin";
 
 import { signInWithApple, signInWithGoogle, describeGoogleSignInError } from "@/lib/oauth";
+import { claimAuthCallbackDelivery } from "@/lib/auth-callback";
+import { clearAuthCallbackError, getAuthCallbackError } from "@/lib/auth-callback-errors";
 
 const mockSignIn = jest.mocked(GoogleSignin.signIn);
 const mockHasPlayServices = jest.mocked(GoogleSignin.hasPlayServices);
@@ -233,10 +235,29 @@ describe("signInWithApple on Android (browser flow)", () => {
   });
 
   it("surfaces a failed code exchange", async () => {
-    mockOpenAuthSession.mockResolvedValue(redirectedTo("drafto://auth/callback?code=apple-code"));
+    // A fresh code: each code is exchanged once per process, and the test above spent its own.
+    mockOpenAuthSession.mockResolvedValue(redirectedTo("drafto://auth/callback?code=stale-code"));
     mockExchangeCodeForSession.mockResolvedValue({ data: {}, error: { message: "flow expired" } });
 
     expect(await signInWithApple()).toEqual({ error: "flow expired" });
+  });
+
+  it("shares one exchange with the router's copy of the redirect, and owns its error", async () => {
+    const url = "drafto://auth/callback?code=shared-code";
+    mockOpenAuthSession.mockImplementation(async () => {
+      // The router hears the same Linking event before the session resolves.
+      claimAuthCallbackDelivery(url);
+      return redirectedTo(url);
+    });
+    mockExchangeCodeForSession.mockResolvedValue({ data: {}, error: { message: "flow expired" } });
+    clearAuthCallbackError();
+
+    expect(await signInWithApple()).toEqual({ error: "flow expired" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(1);
+    // The login screen shows the session's own result; nothing is held twice.
+    expect(getAuthCallbackError()).toBeNull();
   });
 
   it("surfaces the provider's error instead of treating it as a cancel", async () => {

@@ -1,8 +1,13 @@
 import React from "react";
 import { Alert } from "react-native";
 
-import { render, fireEvent, waitFor } from "../helpers/test-utils";
+import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import LoginScreen from "../../app/(auth)/login";
+import {
+  clearAuthCallbackError,
+  getAuthCallbackError,
+  reportAuthCallbackError,
+} from "@/lib/auth-callback-errors";
 
 // Mock supabase
 const mockSignInWithPassword = jest.fn();
@@ -68,6 +73,46 @@ describe("LoginScreen", () => {
 
     await waitFor(() => {
       expect(getByText("Invalid login credentials")).toBeTruthy();
+    });
+  });
+
+  describe("Apple callback errors held outside the screen", () => {
+    afterEach(() => clearAuthCallbackError());
+
+    it("shows one reported before the screen mounted", () => {
+      reportAuthCallbackError("Apple Sign-In failed. Please try again.");
+
+      const { getByText } = render(<LoginScreen />);
+
+      expect(getByText("Apple Sign-In failed. Please try again.")).toBeTruthy();
+    });
+
+    it("still shows it after the screen is mounted a second time", () => {
+      // A cold start can mount, unmount and remount login while the router settles.
+      reportAuthCallbackError("Apple Sign-In failed. Please try again.");
+      render(<LoginScreen />).unmount();
+
+      const { getByText } = render(<LoginScreen />);
+
+      expect(getByText("Apple Sign-In failed. Please try again.")).toBeTruthy();
+    });
+
+    it("shows one reported while the screen is open", () => {
+      const { getByText } = render(<LoginScreen />);
+
+      act(() => reportAuthCallbackError("Apple Sign-In failed. Please try again."));
+
+      expect(getByText("Apple Sign-In failed. Please try again.")).toBeTruthy();
+    });
+
+    it("drops it when the user starts a new sign-in", () => {
+      reportAuthCallbackError("Apple Sign-In failed. Please try again.");
+      const { getByText, queryByText } = render(<LoginScreen />);
+
+      fireEvent.press(getByText("Log in"));
+
+      expect(queryByText("Apple Sign-In failed. Please try again.")).toBeNull();
+      expect(getAuthCallbackError()).toBeNull();
     });
   });
 

@@ -8,7 +8,12 @@ import {
 } from "@react-native-google-signin/google-signin";
 import Constants from "expo-constants";
 
-import { parseAppDeepLink } from "@/lib/app-deep-link";
+import {
+  APPLE_SIGN_IN_FAILED_MESSAGE,
+  AUTH_CALLBACK_URL,
+  takeAuthCallback,
+  withBrowserSignIn,
+} from "@/lib/auth-callback";
 import { supabase } from "@/lib/supabase";
 
 const googleWebClientId = Constants.expoConfig?.extra?.googleWebClientId as string;
@@ -119,8 +124,6 @@ export async function signInWithGoogle(): Promise<{ error: string | null }> {
   }
 }
 
-const APPLE_SIGN_IN_FAILED_MESSAGE = "Apple Sign-In failed. Please try again.";
-
 export async function signInWithApple(): Promise<{ error: string | null }> {
   if (Platform.OS === "ios") {
     return signInWithAppleNative();
@@ -159,21 +162,12 @@ async function signInWithAppleNative(): Promise<{ error: string | null }> {
   }
 }
 
-/** Where Supabase sends the browser back to after Apple sign-in on Android. */
-const APPLE_CALLBACK_URL = "drafto://auth/callback";
-
-/**
- * Errors that mean the user backed out on Apple's own page. Apple reports
- * `user_cancelled_authorize`, and Supabase may pass it on as `access_denied`.
- */
-const APPLE_CANCEL_ERRORS = new Set(["user_cancelled_authorize", "access_denied"]);
-
 async function signInWithAppleBrowser(): Promise<{ error: string | null }> {
   try {
     const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
       provider: "apple",
       options: {
-        redirectTo: APPLE_CALLBACK_URL,
+        redirectTo: AUTH_CALLBACK_URL,
         skipBrowserRedirect: true,
       },
     });
@@ -182,28 +176,22 @@ async function signInWithAppleBrowser(): Promise<{ error: string | null }> {
       return { error: oauthError?.message ?? "Failed to start Apple Sign-In." };
     }
 
-    const result = await WebBrowser.openAuthSessionAsync(data.url, APPLE_CALLBACK_URL);
+    const authUrl = data.url;
+    // The outcome is awaited inside the session, so a router copy of the same
+    // redirect waits to see whether this session took it.
+    return await withBrowserSignIn(async () => {
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, AUTH_CALLBACK_URL);
 
-    // Anything but a completed redirect means the user closed the browser.
-    if (result.type !== "success" || !result.url) {
-      return { error: null };
-    }
+      // Anything but a completed redirect means the user closed the browser. A
+      // redirect that lands after all is signed in from the router's copy.
+      if (result.type !== "success" || !result.url) {
+        return { error: null };
+      }
 
-    // The client runs PKCE (ADR-0045), so the callback carries a one-time `code`.
-    // Parsed by hand: React Native's `URL` is unreliable with a custom scheme.
-    const params = parseAppDeepLink(result.url)?.params;
-    const code = params?.get("code");
-    if (code) {
-      const { error } = await supabase.auth.exchangeCodeForSession(code);
-      return { error: error ? error.message : null };
-    }
-
-    // The redirect completed without a code: Supabase or Apple sent an error back.
-    const providerError = params?.get("error_code") || params?.get("error") || "";
-    if (APPLE_CANCEL_ERRORS.has(providerError)) {
-      return { error: null };
-    }
-    return { error: params?.get("error_description") || APPLE_SIGN_IN_FAILED_MESSAGE };
+      // The client runs PKCE (ADR-0045), so the callback carries a one-time `code`.
+      // The router saw the same redirect; the code is exchanged once for both.
+      return (await takeAuthCallback(result.url)) ?? { error: APPLE_SIGN_IN_FAILED_MESSAGE };
+    });
   } catch {
     return { error: APPLE_SIGN_IN_FAILED_MESSAGE };
   }

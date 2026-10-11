@@ -1,7 +1,8 @@
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { Text, View, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
 import { Link } from "expo-router";
 
+import { clearAuthCallbackError, useAuthCallbackError } from "@/lib/auth-callback-errors";
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
@@ -18,7 +19,15 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Apple sign-in on Android can finish outside this screen's own flow (a cold
+  // start after Android killed the app); its error still belongs here.
+  const callbackError = useAuthCallbackError();
+  useEffect(() => {
+    if (callbackError) setError(callbackError);
+  }, [callbackError]);
+
   const handleLogin = async () => {
+    clearAuthCallbackError();
     if (!email.trim() || !password) {
       setError("Please enter your email and password.");
       return;
