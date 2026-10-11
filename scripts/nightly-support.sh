@@ -274,11 +274,11 @@ for PR_NUMBER in $(echo "$DEPENDABOT_PRS" | jq -r '.[].number'); do
   fi
   log "--- Processing Dependabot PR #$PR_NUMBER (${REMAINING}s remaining, poll timeout ${POLL_TIMEOUT}s) ---"
   DEPENDABOT_WT="$SUPPORT_WORKTREE_PARENT/drafto-dependabot-${PR_NUMBER}"
-  # Keep the double-quoted "$(cat <<PROMPT … )" form for both prompts: macOS
-  # /bin/bash 3.2 mis-parses an UNquoted $(…) around a heredoc that contains
-  # apostrophes and parentheses (syntax error at a "(" inside the text). And
-  # keep apostrophes out of new prompt text: 3.2 still pairs them up.
-  DEPENDABOT_PROMPT="$(cat <<PROMPT
+  # Read both prompts straight from the heredoc, never through $(cat <<PROMPT).
+  # macOS /bin/bash 3.2 pairs up the apostrophes in a heredoc inside $(…), and
+  # here that ran "to" from "Safe to merge" as a command (exit 127, #691).
+  # read -d '' returns 1 at the end of input, hence the || true.
+  IFS= read -r -d '' DEPENDABOT_PROMPT <<PROMPT || true
 You are an automated nightly job. Process ONLY Dependabot PR #$PR_NUMBER for JakubAnderwald/drafto.
 
 1. Read the PR: gh pr view $PR_NUMBER --json title,body,headRefName
@@ -313,7 +313,6 @@ Constraints:
 - Never start a background task that must outlive this session: it is
   killed when the session ends.
 PROMPT
-  )"
   CLAUDE_RC=0
   CLAUDE_CALL_TIMEOUT_SEC="$DEPENDABOT_CLAUDE_TIMEOUT_SEC" \
     node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$DEPENDABOT_PROMPT" --dangerously-skip-permissions 2>&1 \
@@ -414,7 +413,7 @@ for ((IDX=0; IDX<SUPPORT_COUNT; IDX++)); do
 
   SUPPORT_WT="$SUPPORT_WORKTREE_PARENT/drafto-support-${ISSUE_NUMBER}"
   SUPPORT_BRANCH="fix/support-${ISSUE_NUMBER}"
-  SUPPORT_PROMPT="$(cat <<PROMPT
+  IFS= read -r -d '' SUPPORT_PROMPT <<PROMPT || true
 You are an automated nightly job. Process ONLY support issue #${ISSUE_NUMBER} for JakubAnderwald/drafto.
 
 The issue has already passed the support-agent footer gate (reporter is on \$SUPPORT_ALLOWLIST). Skip any From: / sender re-checks.
@@ -473,7 +472,6 @@ Constraints:
   **Phase G progress comment (c)**:
   gh issue comment ${ISSUE_NUMBER} --body "Hit a blocker; flagged for human review. ${PROGRESS_MARKER}"
 PROMPT
-  )"
   CLAUDE_RC=0
   CLAUDE_CALL_TIMEOUT_SEC="$SUPPORT_CLAUDE_TIMEOUT_SEC" \
     node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$SUPPORT_PROMPT" --dangerously-skip-permissions 2>&1 \
