@@ -70,11 +70,12 @@ maestro test apps/mobile/e2e/ios-only/ --platform ios -e RUN_ID=$(date +%s)
 
 ### Android-only
 
-| Flow                                         | Description                                             |
-| -------------------------------------------- | ------------------------------------------------------- |
-| `android-all.yaml`                           | Combined flow: login + notebooks + notes + nav          |
-| `android-only/05-offline-mode.yaml`          | Airplane mode, offline note creation, sync on reconnect |
-| `android-only/06-offline-notebook-sync.yaml` | Offline notebook + note creation, sync verification     |
+| Flow                                         | Description                                               |
+| -------------------------------------------- | --------------------------------------------------------- |
+| `android-all.yaml`                           | Combined flow: login + notebooks + notes + nav            |
+| `android-only/05-offline-mode.yaml`          | Airplane mode, offline note creation, sync on reconnect   |
+| `android-only/06-offline-notebook-sync.yaml` | Offline notebook + note creation, sync verification       |
+| `android-only/07-auth-callback-link.yaml`    | Apple callback link is claimed, warm and cold, not routed |
 
 ### iOS-only
 
@@ -99,6 +100,8 @@ The main navigation difference between platforms:
 - Flow 06 is the exception: it clears state and runs **signed out**, so run it on its own
   (`maestro test apps/mobile/e2e/06-forgot-password.yaml --platform ios -e E2E_TEST_EMAIL=...`)
   rather than in the middle of the sequence
+- `android-only/07-auth-callback-link.yaml` also clears state and runs signed out, so run it on its own
+  too (`maestro test apps/mobile/e2e/android-only/07-auth-callback-link.yaml --platform android`)
 - Flow 07 only ever **cancels** the account-deletion dialog — it must never tap an enabled
   confirm, because the flows share one real E2E account. It is also inlined at the end of
   `ios-all.yaml` and `android-all.yaml`

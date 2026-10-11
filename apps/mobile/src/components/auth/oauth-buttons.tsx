@@ -6,6 +6,7 @@ import Svg, { Path } from "react-native-svg";
 import { useTheme } from "@/providers/theme-provider";
 import { fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
+import { clearAuthCallbackError } from "@/lib/auth-callback-errors";
 import { signInWithGoogle, signInWithApple } from "@/lib/oauth";
 
 type OAuthProvider = "google" | "apple";
@@ -59,6 +60,8 @@ export function OAuthButtons({ onError }: OAuthButtonsProps) {
   }
 
   const handleOAuth = async (provider: OAuthProvider) => {
+    // A new attempt replaces an Apple callback error the login screen is holding.
+    clearAuthCallbackError();
     setLoadingProvider(provider);
 
     const result = provider === "google" ? await signInWithGoogle() : await signInWithApple();
