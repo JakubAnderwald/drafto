@@ -14,6 +14,7 @@ import {
   APPLE_SIGN_IN_FAILED_MESSAGE,
   claimAuthCallbackDelivery,
   completeAuthCallback,
+  takeAuthCallback,
   withBrowserSignIn,
 } from "@/lib/auth-callback";
 import {
@@ -146,18 +147,48 @@ describe("claimAuthCallbackDelivery (the router's copy)", () => {
     expect(getAuthCallbackError()).toBeNull();
   });
 
-  it("leaves reporting to a browser sign-in that is still waiting", async () => {
+  it("leaves reporting to a browser sign-in that takes the same redirect", async () => {
     mockExchangeCodeForSession.mockResolvedValue({ data: {}, error: { message: "flow expired" } });
     const url = `drafto://auth/callback?code=${freshCode()}`;
 
     const inSession = await withBrowserSignIn(async () => {
       claimAuthCallbackDelivery(url);
-      return completeAuthCallback(url);
+      // The exchange fails while the session is still open: nothing is shown yet.
+      await settle();
+      expect(getAuthCallbackError()).toBeNull();
+      return takeAuthCallback(url);
     });
     await settle();
 
     expect(inSession).toEqual({ error: "flow expired" });
     expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(1);
+    expect(getAuthCallbackError()).toBeNull();
+  });
+
+  it("reports when the open session closes without taking the redirect", async () => {
+    mockExchangeCodeForSession.mockResolvedValue({ data: {}, error: { message: "flow expired" } });
+
+    await withBrowserSignIn(async () => {
+      claimAuthCallbackDelivery(`drafto://auth/callback?code=${freshCode()}`);
+      await settle();
+      // expo-web-browser's Android polyfill can resolve "dismiss" after all.
+      return { type: "dismiss" };
+    });
+    await settle();
+
+    expect(getAuthCallbackError()).toBe(APPLE_SIGN_IN_FAILED_MESSAGE);
+  });
+
+  it("shares an error link's outcome with the session, so it is not reported twice", async () => {
+    const url = "drafto://auth/callback?error=server_error&error_description=Nope";
+
+    const inSession = await withBrowserSignIn(async () => {
+      claimAuthCallbackDelivery(url);
+      return takeAuthCallback(url);
+    });
+    await settle();
+
+    expect(inSession).toEqual({ error: "Nope" });
     expect(getAuthCallbackError()).toBeNull();
   });
 

@@ -11,7 +11,7 @@ import Constants from "expo-constants";
 import {
   APPLE_SIGN_IN_FAILED_MESSAGE,
   AUTH_CALLBACK_URL,
-  completeAuthCallback,
+  takeAuthCallback,
   withBrowserSignIn,
 } from "@/lib/auth-callback";
 import { supabase } from "@/lib/supabase";
@@ -177,19 +177,21 @@ async function signInWithAppleBrowser(): Promise<{ error: string | null }> {
     }
 
     const authUrl = data.url;
-    const result = await withBrowserSignIn(() =>
-      WebBrowser.openAuthSessionAsync(authUrl, AUTH_CALLBACK_URL),
-    );
+    // The outcome is awaited inside the session, so a router copy of the same
+    // redirect waits to see whether this session took it.
+    return await withBrowserSignIn(async () => {
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, AUTH_CALLBACK_URL);
 
-    // Anything but a completed redirect means the user closed the browser. A
-    // redirect that lands after all is signed in from the router's copy.
-    if (result.type !== "success" || !result.url) {
-      return { error: null };
-    }
+      // Anything but a completed redirect means the user closed the browser. A
+      // redirect that lands after all is signed in from the router's copy.
+      if (result.type !== "success" || !result.url) {
+        return { error: null };
+      }
 
-    // The client runs PKCE (ADR-0045), so the callback carries a one-time `code`.
-    // The router saw the same redirect; the code is exchanged once for both.
-    return (await completeAuthCallback(result.url)) ?? { error: APPLE_SIGN_IN_FAILED_MESSAGE };
+      // The client runs PKCE (ADR-0045), so the callback carries a one-time `code`.
+      // The router saw the same redirect; the code is exchanged once for both.
+      return (await takeAuthCallback(result.url)) ?? { error: APPLE_SIGN_IN_FAILED_MESSAGE };
+    });
   } catch {
     return { error: APPLE_SIGN_IN_FAILED_MESSAGE };
   }

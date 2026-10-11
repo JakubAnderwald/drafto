@@ -32,14 +32,27 @@ export interface AuthCallbackResult {
 }
 
 /**
- * Every code this process has exchanged, with its outcome. auth-js deletes the
- * PKCE verifier after the first attempt, so a second exchange of the same code
- * could only fail, and its error would replace a sign-in that worked.
+ * Every callback this process has handled, with its outcome, keyed by its code
+ * (or by the whole URL when it carries none). auth-js deletes the PKCE verifier
+ * after the first attempt, so a second exchange of the same code could only
+ * fail, and its error would replace a sign-in that worked. Keying error links
+ * too lets both copies of one redirect share an outcome.
  */
-const exchanges = new Map<string, Promise<AuthCallbackResult>>();
+const outcomes = new Map<string, Promise<AuthCallbackResult>>();
 
-/** In-app browser sign-ins still waiting for their redirect. */
+/** Outcomes a browser sign-in took from its own session, and so reports itself. */
+const takenBySession = new WeakSet<Promise<AuthCallbackResult>>();
+
+/** In-app browser sign-ins still waiting for their redirect or its outcome. */
 let openBrowserSessions = 0;
+let idleWaiters: (() => void)[] = [];
+
+function browserSessionsIdle(): Promise<void> {
+  if (openBrowserSessions === 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => idleWaiters.push(resolve));
+}
 
 async function exchangeCode(code: string): Promise<AuthCallbackResult> {
   try {
@@ -51,6 +64,22 @@ async function exchangeCode(code: string): Promise<AuthCallbackResult> {
   } catch {
     return { error: APPLE_SIGN_IN_FAILED_MESSAGE };
   }
+}
+
+function resolveCallback(params: Map<string, string>): Promise<AuthCallbackResult> {
+  const code = params.get("code");
+  if (code) {
+    return exchangeCode(code);
+  }
+
+  // No code: Supabase or Apple sent an error back.
+  const providerError = params.get("error_code") || params.get("error") || "";
+  if (APPLE_CANCEL_ERRORS.has(providerError)) {
+    return Promise.resolve({ error: null });
+  }
+  return Promise.resolve({
+    error: params.get("error_description") || APPLE_SIGN_IN_FAILED_MESSAGE,
+  });
 }
 
 /**
@@ -66,30 +95,30 @@ export function completeAuthCallback(url: string): Promise<AuthCallbackResult> |
     return null;
   }
 
-  const code = link.params.get("code");
-  if (code) {
-    let outcome = exchanges.get(code);
-    if (!outcome) {
-      outcome = exchangeCode(code);
-      exchanges.set(code, outcome);
-    }
-    return outcome;
+  const key = link.params.get("code") || url;
+  let outcome = outcomes.get(key);
+  if (!outcome) {
+    outcome = resolveCallback(link.params);
+    outcomes.set(key, outcome);
   }
-
-  // No code: Supabase or Apple sent an error back.
-  const providerError = link.params.get("error_code") || link.params.get("error") || "";
-  if (APPLE_CANCEL_ERRORS.has(providerError)) {
-    return Promise.resolve({ error: null });
-  }
-  return Promise.resolve({
-    error: link.params.get("error_description") || APPLE_SIGN_IN_FAILED_MESSAGE,
-  });
+  return outcome;
 }
 
 /**
- * Runs an in-app browser sign-in whose caller reports the callback's outcome
- * itself, so a router delivery during it stays quiet instead of showing the
- * same error twice.
+ * Takes the callback a browser sign-in's own session resolved with. That
+ * session reports the outcome, so the router's copy of the redirect stays quiet.
+ */
+export function takeAuthCallback(url: string): Promise<AuthCallbackResult> | null {
+  const outcome = completeAuthCallback(url);
+  if (outcome) {
+    takenBySession.add(outcome);
+  }
+  return outcome;
+}
+
+/**
+ * Runs an in-app browser sign-in. While it is open, a router delivery holds its
+ * report back: the session may still take the same redirect and report it.
  */
 export async function withBrowserSignIn<T>(run: () => Promise<T>): Promise<T> {
   openBrowserSessions += 1;
@@ -97,15 +126,25 @@ export async function withBrowserSignIn<T>(run: () => Promise<T>): Promise<T> {
     return await run();
   } finally {
     openBrowserSessions -= 1;
+    if (openBrowserSessions === 0) {
+      const waiters = idleWaiters;
+      idleWaiters = [];
+      waiters.forEach((resolve) => resolve());
+    }
   }
 }
 
 /**
  * Handles an auth callback that reached the app through the router. Returns
- * `false` for any other URL. A failure goes to the login screen only when no
- * browser sign-in is waiting to report it.
+ * `false` for any other URL.
  *
- * That failure is always the generic message, never the link's
+ * Whether a failure goes to the login screen is decided once the outcome is
+ * known and no browser sign-in is open: the session may take the same redirect
+ * (and report it itself), or close without seeing it (and leave it to this
+ * copy). Deciding when the link arrives instead lost the error in the second
+ * case.
+ *
+ * The failure is always the generic message, never the link's
  * `error_description`: with no sign-in in progress, the link may have come from
  * any website or app, and its text must not appear in Drafto's UI.
  */
@@ -114,12 +153,14 @@ export function claimAuthCallbackDelivery(url: string): boolean {
   if (!outcome) {
     return false;
   }
-  if (openBrowserSessions === 0) {
-    void outcome.then(({ error }) => {
-      if (error) {
-        reportAuthCallbackError(APPLE_SIGN_IN_FAILED_MESSAGE);
-      }
-    });
-  }
+  void outcome.then(async ({ error }) => {
+    if (!error) {
+      return;
+    }
+    await browserSessionsIdle();
+    if (!takenBySession.has(outcome)) {
+      reportAuthCallbackError(APPLE_SIGN_IN_FAILED_MESSAGE);
+    }
+  });
   return true;
 }
