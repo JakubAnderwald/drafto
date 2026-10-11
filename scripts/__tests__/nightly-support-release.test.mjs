@@ -31,14 +31,27 @@ const factory = readFileSync(FACTORY, "utf8");
 // bash. Prefer the real thing when present.
 const BASH = existsSync("/bin/bash") ? "/bin/bash" : "bash";
 
-function heredoc(varName) {
-  const start = nightly.indexOf(`${varName}="$(cat <<PROMPT`);
+// The prompt's whole statement: the read line, the body and the closing PROMPT.
+function promptBlock(varName) {
+  const start = nightly.indexOf(`IFS= read -r -d '' ${varName} <<PROMPT || true\n`);
   assert.ok(start !== -1, `${varName} heredoc not found`);
-  const end = nightly.indexOf("\nPROMPT\n", start);
+  const end = nightly.indexOf("\nPROMPT\n", start) + "\nPROMPT\n".length;
   return nightly.slice(start, end);
 }
+// Just the text Claude gets, as written in the script.
+const heredoc = (varName) => promptBlock(varName).split("\n").slice(1, -2).join("\n");
 const supportPrompt = heredoc("SUPPORT_PROMPT");
 const dependabotPrompt = heredoc("DEPENDABOT_PROMPT");
+
+// Runs the prompt's statement under BASH with every variable it expands
+// stubbed as stub_<NAME>, and returns what the prompt variable ends up holding.
+function buildPrompt(varName) {
+  const block = promptBlock(varName);
+  const names = new Set([...block.matchAll(/(?<!\\)\$\{?([A-Z_][A-Z0-9_]*)/g)].map((m) => m[1]));
+  const stubs = [...names].map((n) => `${n}=stub_${n}`).join("\n");
+  const script = `set -euo pipefail\n${stubs}\n${block}printf '%s' "$${varName}"\n`;
+  return spawnSync(BASH, ["-c", script], { encoding: "utf8" });
+}
 
 function fnSource(src, name) {
   const m = src.match(new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?^\\}`, "m"));
@@ -89,11 +102,31 @@ describe("the Claude session no longer ships anything", () => {
     assert.match(dependabotPrompt, /NEVER run pnpm install,\n\s+git checkout/);
   });
 
-  it("adds no apostrophes bash 3.2 would pair up inside the $(…) heredocs", () => {
-    // 3.2 mis-parses quotes in a heredoc inside $(…); the existing text has an
-    // even, known-safe set. Keep it that way.
-    assert.equal((supportPrompt.match(/'/g) || []).length, 2);
-    assert.equal((dependabotPrompt.match(/'/g) || []).length, 2);
+  it("never builds a prompt through $(cat <<PROMPT)", () => {
+    // Bash 3.2 pairs up the apostrophes in a heredoc inside $(…). Two of them
+    // in the Dependabot prompt ran "to" from "Safe to merge" as a command, and
+    // the nightly run died with exit 127 (#691). CI has no bash 3.2, so this
+    // static check is what catches a regression there.
+    assert.doesNotMatch(stripComments(nightly), /\$\(cat <<\s*PROMPT/);
+  });
+
+  for (const varName of ["SUPPORT_PROMPT", "DEPENDABOT_PROMPT"]) {
+    it(`builds ${varName} in full under the real bash`, () => {
+      const r = buildPrompt(varName);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stderr, "");
+      const lines = r.stdout.split("\n");
+      assert.equal(lines.pop(), "", "ends with the heredoc's final newline");
+      assert.equal(lines.length, heredoc(varName).split("\n").length, "no line lost");
+    });
+  }
+
+  it("keeps the apostrophes, quotes and escaped backticks of the Dependabot prompt", () => {
+    const { stdout } = buildPrompt("DEPENDABOT_PROMPT");
+    assert.match(stdout, /Check if the package's major bump/);
+    assert.match(stdout, /features\/APIs we don't use/);
+    assert.match(stdout, /"Safe to merge" \/ "Merge with changes" \/ "Skip this version"/);
+    assert.match(stdout, /poll `gh pr checks stub_PR_NUMBER` every 30 seconds/);
   });
 
   it("bounds every claude call with run-claude.mjs and waits for its background tasks", () => {
