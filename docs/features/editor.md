@@ -12,7 +12,8 @@ Shipped on all four platforms.
 
 - **Web**: BlockNote (`@blocknote/react` + `@blocknote/mantine`). Document stored as BlockNote blocks in `notes.content` JSONB.
 - **Mobile and desktop**: `@10play/tentap-editor` (TipTap inside a WebView). Documents stored as TipTap JSON strings in the local WatermelonDB `notes.content` column.
-- **Auto-save**: title and body each flow through `useAutoSave` with a 500 ms debounce (`DEBOUNCE_MS` from shared). Web PATCHes `/api/notes/:id`; mobile/desktop writes to WatermelonDB and the sync loop propagates.
+- **Auto-save**: title and body each flow through `useAutoSave` with a 500 ms debounce (`DEBOUNCE_MS` from shared). Web PATCHes `/api/notes/:id`; mobile/desktop writes to WatermelonDB and the sync loop propagates ([ADR-0048](../adr/0048-local-writes-trigger-debounced-sync.md)).
+- **No-op saves** (mobile and desktop, issue #654): loading a note into TenTap makes it answer with a content-update of its own. The save handlers compare each payload with the stored content and with the note's load baseline (`packages/shared/src/editor/content-save-guard.ts`) and skip a write that would change nothing. A skipped save resolves `false`, so `useAutoSave` stays `"idle"` instead of showing "Saved".
 - **Cross-format migration**: `GET /api/notes/:id` defensively converts TipTap → BlockNote on read and persists the repaired shape. Mobile/desktop convert BlockNote → TipTap on read.
 - **Markdown conversion** (`packages/shared/src/editor/markdown-converter.ts`) is used by the MCP server for tool I/O and by the Evernote importer's downstream paths.
 - **Attachments**: images are uploaded to Supabase Storage via signed URLs and embedded as `attachment://<path>` URIs; the API resolves these to signed URLs on read.
@@ -37,9 +38,11 @@ Shipped on all four platforms.
 | Shared text extractor (search)                 | `packages/shared/src/editor/extract-text.ts`                                                          |
 | Shared attachment URL helpers                  | `packages/shared/src/editor/attachment-url.ts`, `resolve-urls.ts`                                     |
 | Shared types (`BlockNoteBlock`, `TipTapDoc`)   | `packages/shared/src/editor/types.ts`                                                                 |
+| Shared no-op save guard (mobile, desktop)      | `packages/shared/src/editor/content-save-guard.ts`                                                    |
 | Shared constants (`DEBOUNCE_MS`, title limits) | `packages/shared/src/constants.ts`                                                                    |
 | Note read with content migration               | `apps/web/src/app/api/notes/[id]/route.ts`                                                            |
 | Auto-save unit tests                           | `apps/web/__tests__/unit/use-auto-save.test.ts`, `apps/desktop/__tests__/hooks/use-auto-save.test.ts` |
+| Mobile auto-save unit tests                    | `apps/mobile/__tests__/hooks/use-auto-save.test.ts`                                                   |
 | Web editor integration tests                   | `apps/web/__tests__/integration/note-editor.test.tsx`, `note-editor-panel.test.tsx`                   |
 | Shared editor tests                            | `packages/shared/src/editor/__tests__/markdown-converter.test.ts`, `extract-text.test.ts`             |
 | Mobile editor screen test                      | `apps/mobile/__tests__/screens/editor.test.tsx`                                                       |

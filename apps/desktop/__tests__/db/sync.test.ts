@@ -42,27 +42,83 @@ describe("syncDatabase", () => {
     );
   });
 
-  it("returns conflict count of 0 when no conflicts", async () => {
+  it("returns a remote change count of 0 when nothing was resolved", async () => {
     const result = await syncDatabase(mockDb);
-    expect(result.conflictCount).toBe(0);
+    expect(result.remoteChangeCount).toBe(0);
   });
 
-  it("counts conflicts via the conflictResolver callback", async () => {
-    mockSynchronize.mockImplementation(async (opts: Record<string, unknown>) => {
-      const resolver = opts.conflictResolver as (
-        table: string,
-        local: unknown,
-        remote: unknown,
-        resolved: unknown,
-      ) => unknown;
-      // Simulate 3 conflicts
-      resolver("notes", {}, {}, { id: "1" });
-      resolver("notes", {}, {}, { id: "2" });
-      resolver("notebooks", {}, {}, { id: "3" });
+  describe("remoteChangeCount (the 'updated from another device' notice)", () => {
+    type Raw = Record<string, unknown>;
+    type Resolution = [table: string, local: Raw, remote: Raw, resolved: Raw];
+
+    // A stored note's content, and the same JSON as a pull hands it back:
+    // JSON.stringify of the server's jsonb, whose keys are re-sorted.
+    const CONTENT =
+      '[{"type":"paragraph","content":[{"type":"text","text":"hi","styles":{}}],"children":[]}]';
+    const CONTENT_FROM_JSONB =
+      '[{"type":"paragraph","content":[{"text":"hi","type":"text","styles":{}}],"children":[]}]';
+    const LOCAL_NOTE: Raw = {
+      id: "note-1",
+      _status: "synced",
+      _changed: "",
+      title: "Groceries",
+      content: CONTENT,
+      notebook_id: "nb-1",
+      is_trashed: false,
+      updated_at: 1_000,
+    };
+
+    /** Runs a sync whose pull hands each record to the conflictResolver. */
+    async function countFor(resolutions: Resolution[]): Promise<number> {
+      const returned: unknown[] = [];
+      mockSynchronize.mockImplementation(async (opts: Record<string, unknown>) => {
+        const resolver = opts.conflictResolver as (...args: Resolution) => unknown;
+        for (const args of resolutions) returned.push(resolver(...args));
+      });
+      const { remoteChangeCount } = await syncDatabase(mockDb);
+      // Counting never changes the resolution WatermelonDB applies.
+      expect(returned).toEqual(resolutions.map(([, , , resolved]) => resolved));
+      return remoteChangeCount;
+    }
+
+    it("ignores the echo of this device's own push (reordered jsonb, new updated_at)", async () => {
+      const echo = { ...LOCAL_NOTE, content: CONTENT_FROM_JSONB, updated_at: 2_000 };
+      await expect(countFor([["notes", LOCAL_NOTE, echo, echo]])).resolves.toBe(0);
     });
 
-    const result = await syncDatabase(mockDb);
-    expect(result.conflictCount).toBe(3);
+    it("ignores a dirty local record and the echo of its previous push", async () => {
+      // The note was edited again after its last push. WatermelonDB keeps the
+      // locally changed column, so the resolved record shows the local text.
+      const dirty = { ...LOCAL_NOTE, _status: "updated", _changed: "content", content: "[]" };
+      const echo = { ...LOCAL_NOTE, content: CONTENT_FROM_JSONB, updated_at: 2_000 };
+      const resolved = { ...echo, _status: "updated", _changed: "content", content: "[]" };
+      await expect(countFor([["notes", dirty, echo, resolved]])).resolves.toBe(0);
+    });
+
+    it("counts a title changed on another device", async () => {
+      const remote = { ...LOCAL_NOTE, title: "Shopping", updated_at: 2_000 };
+      await expect(countFor([["notes", LOCAL_NOTE, remote, remote]])).resolves.toBe(1);
+    });
+
+    it("never counts attachments", async () => {
+      const local = { id: "att-1", upload_status: "pending", local_uri: "file:///a.png" };
+      const remote = { id: "att-1", upload_status: "uploaded", local_uri: null };
+      await expect(countFor([["attachments", local, remote, remote]])).resolves.toBe(0);
+    });
+
+    it("counts each visible change in a pull, and only those", async () => {
+      const notebook = { id: "nb-1", name: "Work", updated_at: 1_000 };
+      const renamed = { ...notebook, name: "Home", updated_at: 2_000 };
+      const echo = { ...LOCAL_NOTE, content: CONTENT_FROM_JSONB, updated_at: 2_000 };
+      const trashed = { ...LOCAL_NOTE, id: "note-2", is_trashed: true, updated_at: 2_000 };
+      await expect(
+        countFor([
+          ["notebooks", notebook, renamed, renamed],
+          ["notes", LOCAL_NOTE, echo, echo],
+          ["notes", { ...LOCAL_NOTE, id: "note-2" }, trashed, trashed],
+        ]),
+      ).resolves.toBe(2);
+    });
   });
 
   it("wraps network errors in SyncNetworkError", async () => {
@@ -148,7 +204,7 @@ describe("in-flight sync coalescing + resetSyncState", () => {
     mockSynchronize.mockRejectedValueOnce(new Error("Some database error"));
     await expect(syncDatabase(mockDb)).rejects.toThrow();
 
-    await expect(syncDatabase(mockDb)).resolves.toEqual({ conflictCount: 0 });
+    await expect(syncDatabase(mockDb)).resolves.toEqual({ remoteChangeCount: 0 });
     expect(mockSynchronize).toHaveBeenCalledTimes(2);
   });
 
@@ -163,7 +219,7 @@ describe("in-flight sync coalescing + resetSyncState", () => {
 
     const fresh = await syncDatabase(mockDb); // must run its own synchronize()
     expect(mockSynchronize).toHaveBeenCalledTimes(2);
-    expect(fresh).toEqual({ conflictCount: 0 });
+    expect(fresh).toEqual({ remoteChangeCount: 0 });
 
     // The stale sync settling afterwards must not clobber the (now clear) latch:
     // a subsequent call still starts its own run.

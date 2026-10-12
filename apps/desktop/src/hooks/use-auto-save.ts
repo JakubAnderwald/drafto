@@ -4,7 +4,12 @@ import { DEBOUNCE_MS } from "@drafto/shared";
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 
 interface UseAutoSaveOptions<T> {
-  onSave: (value: T) => Promise<void>;
+  /**
+   * Persists `value`. Resolve `false` when there was nothing to write (the
+   * value matched what is stored), so the status returns to "idle" instead of
+   * claiming "saved" for a save that never happened.
+   */
+  onSave: (value: T) => Promise<boolean | void>;
   delayMs?: number;
 }
 
@@ -21,8 +26,8 @@ export function useAutoSave<T>({ onSave, delayMs = DEBOUNCE_MS }: UseAutoSaveOpt
   const executeSave = useCallback(async (value: T) => {
     setStatus("saving");
     try {
-      await onSaveRef.current(value);
-      setStatus("saved");
+      const written = await onSaveRef.current(value);
+      setStatus(written === false ? "idle" : "saved");
     } catch {
       setStatus("error");
     }

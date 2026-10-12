@@ -8,7 +8,11 @@ import { renderHook, act, waitFor } from "@testing-library/react-native";
 import { syncDatabase, SyncNetworkError } from "@/db/sync";
 import { processPendingUploads, cleanupOrphanedFiles, ensureLocalIdentity } from "@/lib/data";
 import { useAuth } from "@/providers/auth-provider";
-import { DatabaseProvider, useDatabase } from "@/providers/database-provider";
+import {
+  AUTO_SYNC_DEBOUNCE_MS,
+  DatabaseProvider,
+  useDatabase,
+} from "@/providers/database-provider";
 
 jest.mock("@nozbe/watermelondb", () => ({
   Q: { where: jest.fn(), notEq: jest.fn() },
@@ -18,10 +22,24 @@ jest.mock("@nozbe/watermelondb/sync", () => ({
   hasUnsyncedChanges: jest.fn().mockResolvedValue(false),
 }));
 
+// Subscribers to database.withChangesForTables(), so a test can emit the
+// changes a local write (or a sync's own writes) would produce.
+const mockChangeListeners: ((changes: unknown[] | null) => void)[] = [];
+
 jest.mock("@/db", () => ({
   database: {
     get: jest.fn(() => ({
       query: jest.fn(() => ({ fetchCount: jest.fn().mockResolvedValue(0) })),
+    })),
+    withChangesForTables: jest.fn(() => ({
+      subscribe: (listener: (changes: unknown[] | null) => void) => {
+        mockChangeListeners.push(listener);
+        return {
+          unsubscribe: () => {
+            mockChangeListeners.splice(mockChangeListeners.indexOf(listener), 1);
+          },
+        };
+      },
     })),
   },
 }));
@@ -68,8 +86,8 @@ describe("DatabaseProvider cross-account sync guard", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockUseAuth.mockReturnValue({ user: TEST_USER, isApproved: true });
-    mockSyncDatabase.mockResolvedValue({ conflictCount: 0 });
-    mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, failed: 0 });
+    mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
+    mockProcessPendingUploads.mockResolvedValue(0);
     mockCleanupOrphanedFiles.mockResolvedValue(undefined);
     mockEnsureLocalIdentity.mockResolvedValue("ready");
   });
@@ -204,8 +222,8 @@ describe("DatabaseProvider approval gating", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     signInAs(false);
-    mockSyncDatabase.mockResolvedValue({ conflictCount: 0 });
-    mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, failed: 0 });
+    mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
+    mockProcessPendingUploads.mockResolvedValue(0);
     mockCleanupOrphanedFiles.mockResolvedValue(undefined);
     mockEnsureLocalIdentity.mockResolvedValue("ready");
     // Pending changes exist, so the periodic tick would sync if it were allowed to.
@@ -310,9 +328,9 @@ describe("DatabaseProvider approval gating", () => {
 
   it("never syncs from a retry scheduled by a sync that fails after sign-out", async () => {
     // The sync is still in flight when the user signs out, so the effect cleanup
-    // that clears pending retries has already run when this retry is scheduled.
-    // When it fires, sync() must still not run (identityReadyRef and canSyncRef
-    // both stop it).
+    // that clears pending retries has already run when it fails. Its session
+    // has ended, so it schedules no retry at all; and a retry that did fire
+    // would still not run (identityReadyRef and canSyncRef both stop it).
     jest.useFakeTimers();
     signInAs(true);
     let failSync: (error: Error) => void = () => {};
@@ -330,7 +348,7 @@ describe("DatabaseProvider approval gating", () => {
       failSync(new SyncNetworkError("Network request failed"));
       await Promise.resolve();
     });
-    await waitFor(() => expect(mockHasUnsyncedChanges).toHaveBeenCalled());
+    await flushEffects();
     await act(async () => {
       await jest.advanceTimersByTimeAsync(60_000);
     });
@@ -351,5 +369,335 @@ describe("DatabaseProvider approval gating", () => {
     });
 
     expect(mockSyncDatabase).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
+  const mockHasUnsyncedChanges = hasUnsyncedChanges as jest.Mock;
+  const mockNetInfoAddEventListener = NetInfo.addEventListener as jest.Mock;
+  let netInfoListener: ((state: { isConnected: boolean | null }) => void) | undefined;
+
+  type Change = { table: string; type: string; syncStatus: string };
+  /** What a user's write produces: a record that still has to be pushed. */
+  const LOCAL_EDIT: Change[] = [{ table: "notes", type: "updated", syncStatus: "updated" }];
+  /** What a sync's own writes produce (pulled records, markAsSynced). */
+  const SYNC_WRITE: Change[] = [{ table: "notes", type: "updated", syncStatus: "synced" }];
+  /** The upload queue recording an attachment's upload status. */
+  const UPLOAD_STATUS: Change[] = [
+    { table: "attachments", type: "updated", syncStatus: "updated" },
+  ];
+
+  function emitChanges(changes: Change[] | null): void {
+    const payload =
+      changes &&
+      changes.map(({ table, type, syncStatus }) => ({ type, record: { table, syncStatus } }));
+    for (const listener of [...mockChangeListeners]) listener(payload);
+  }
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  async function advance(ms: number): Promise<void> {
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  /** Waits for the login sync to finish completely. */
+  async function settleInitialSync(result: {
+    current: ReturnType<typeof useDatabase>;
+  }): Promise<void> {
+    await waitFor(() => expect(result.current.lastSyncedAt).not.toBeNull());
+    await waitFor(() => expect(result.current.isSyncing).toBe(false));
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseAuth.mockReturnValue({ user: TEST_USER, isApproved: true });
+    mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
+    mockProcessPendingUploads.mockResolvedValue(0);
+    mockCleanupOrphanedFiles.mockResolvedValue(undefined);
+    mockEnsureLocalIdentity.mockResolvedValue("ready");
+    mockHasUnsyncedChanges.mockResolvedValue(false);
+    netInfoListener = undefined;
+    mockNetInfoAddEventListener.mockImplementation(
+      (listener: (state: { isConnected: boolean | null }) => void) => {
+        netInfoListener = listener;
+        return jest.fn();
+      },
+    );
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    mockHasUnsyncedChanges.mockResolvedValue(false);
+    mockNetInfoAddEventListener.mockImplementation(() => jest.fn());
+  });
+
+  it("joins a running sync, then runs one more pass", async () => {
+    const first = deferred<{ remoteChangeCount: number }>();
+    mockSyncDatabase.mockReturnValueOnce(first.promise);
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(1));
+
+    // Previously dropped (it returned at once while a sync ran).
+    const joined = result.current.sync();
+    expect(mockSyncDatabase).toHaveBeenCalledTimes(1);
+    // The caller's write missed the running pass, so it is still pending.
+    mockHasUnsyncedChanges.mockResolvedValueOnce(true);
+
+    await act(async () => {
+      first.resolve({ remoteChangeCount: 0 });
+      await joined;
+    });
+    expect(mockSyncDatabase).toHaveBeenCalledTimes(2);
+    expect(result.current.isSyncing).toBe(false);
+  });
+
+  it("joins a running sync without another pass when nothing is left to push", async () => {
+    const first = deferred<{ remoteChangeCount: number }>();
+    mockSyncDatabase.mockReturnValueOnce(first.promise);
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(1));
+
+    const joined = result.current.sync();
+    await act(async () => {
+      first.resolve({ remoteChangeCount: 0 });
+      await joined;
+    });
+
+    expect(mockSyncDatabase).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs one more pass after an upload, so the attachment's status is pushed", async () => {
+    // Uploads run after synchronize() on desktop, so the uploaded attachment
+    // is dirty again until the next pass pushes it.
+    mockProcessPendingUploads.mockResolvedValueOnce(1).mockResolvedValue(0);
+    mockHasUnsyncedChanges.mockResolvedValueOnce(true);
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(2));
+    await settleInitialSync(result);
+    expect(mockSyncDatabase).toHaveBeenCalledTimes(2);
+    expect(result.current.hasPendingChanges).toBe(false);
+  });
+
+  it("pushes an edit that landed after the running pass checked for pending changes", async () => {
+    jest.useFakeTimers();
+    const first = deferred<{ remoteChangeCount: number }>();
+    mockSyncDatabase.mockReturnValueOnce(first.promise);
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(1));
+
+    act(() => emitChanges(LOCAL_EDIT));
+    // The pass reports nothing pending, so the run ends without a follow-up...
+    await act(async () => {
+      first.resolve({ remoteChangeCount: 0 });
+    });
+    await settleInitialSync(result);
+    expect(mockSyncDatabase).toHaveBeenCalledTimes(1);
+
+    // ...but the edit still goes out after the debounce.
+    mockHasUnsyncedChanges.mockResolvedValue(true);
+    await advance(AUTO_SYNC_DEBOUNCE_MS);
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(2));
+  });
+
+  it("starts a new user's sync fresh instead of joining the previous user's", async () => {
+    const stale = deferred<{ remoteChangeCount: number }>();
+    mockSyncDatabase.mockReturnValueOnce(stale.promise);
+    const { result, rerender } = renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(1));
+
+    // User A signs out while their sync is still running; user B signs in.
+    mockUseAuth.mockReturnValue({ user: null, isApproved: false });
+    rerender(undefined);
+    await flushEffects();
+    mockUseAuth.mockReturnValue({ user: { id: "user-456" }, isApproved: true });
+    rerender(undefined);
+
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.lastSyncedAt).not.toBeNull());
+
+    // A's sync failing afterwards reports nothing into B's session.
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    await act(async () => {
+      stale.reject(new Error("Push notes failed"));
+    });
+    await flushEffects();
+    expect(result.current.lastSyncError).toBeNull();
+    expect(result.current.isSyncing).toBe(false);
+    expect(errorSpy).not.toHaveBeenCalledWith("Sync failed:", expect.anything());
+    errorSpy.mockRestore();
+  });
+
+  it("still pushes a local edit when the pending check itself fails", async () => {
+    jest.useFakeTimers();
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await settleInitialSync(result);
+
+    mockHasUnsyncedChanges.mockRejectedValueOnce(new Error("adapter unavailable"));
+    act(() => emitChanges(LOCAL_EDIT));
+    await advance(AUTO_SYNC_DEBOUNCE_MS);
+
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(2));
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[DatabaseProvider] Could not check pending changes:",
+      expect.any(Error),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("pushes a local edit once edits pause for the debounce", async () => {
+    jest.useFakeTimers();
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await settleInitialSync(result);
+    mockHasUnsyncedChanges.mockResolvedValue(true);
+
+    act(() => emitChanges(LOCAL_EDIT));
+    await advance(AUTO_SYNC_DEBOUNCE_MS - 1);
+    act(() => emitChanges(LOCAL_EDIT)); // a further edit restarts the wait
+    await advance(AUTO_SYNC_DEBOUNCE_MS - 1);
+    expect(mockSyncDatabase).toHaveBeenCalledTimes(1);
+
+    await advance(1);
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(2));
+    expect(result.current.hasPendingChanges).toBe(true);
+  });
+
+  it("never schedules a sync for a sync's own writes, and stops after a clean sync", async () => {
+    jest.useFakeTimers();
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await settleInitialSync(result);
+
+    act(() => {
+      emitChanges(null); // the subscription's initial emission
+      emitChanges(SYNC_WRITE);
+      emitChanges(UPLOAD_STATUS);
+    });
+    await advance(AUTO_SYNC_DEBOUNCE_MS * 2);
+    expect(mockSyncDatabase).toHaveBeenCalledTimes(1);
+
+    // A local edit syncs once. That sync's own writes leave nothing pending,
+    // so nothing follows it.
+    mockHasUnsyncedChanges.mockResolvedValueOnce(true);
+    mockSyncDatabase.mockImplementationOnce(async () => {
+      emitChanges(SYNC_WRITE);
+      return { remoteChangeCount: 0 };
+    });
+    act(() => emitChanges(LOCAL_EDIT));
+    await advance(AUTO_SYNC_DEBOUNCE_MS);
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(2));
+
+    await advance(AUTO_SYNC_DEBOUNCE_MS * 10);
+    expect(mockSyncDatabase).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not loop on an upload that keeps failing after each sync", async () => {
+    // Desktop uploads after synchronize(), so a failing upload leaves its
+    // attachment dirty after every pass. Its status writes must not chain
+    // another pass.
+    mockHasUnsyncedChanges.mockResolvedValue(true);
+    mockProcessPendingUploads.mockImplementation(async () => {
+      emitChanges(UPLOAD_STATUS);
+      return 0;
+    });
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await settleInitialSync(result);
+    await flushEffects();
+
+    expect(mockSyncDatabase).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs one more pass for an edit made while a sync was running", async () => {
+    const first = deferred<{ remoteChangeCount: number }>();
+    mockSyncDatabase.mockReturnValueOnce(first.promise);
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(1));
+
+    act(() => emitChanges(LOCAL_EDIT));
+    // The running pass missed the edit, so it is still pending afterwards.
+    mockHasUnsyncedChanges.mockResolvedValueOnce(true);
+    await act(async () => {
+      first.resolve({ remoteChangeCount: 0 });
+    });
+
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(2));
+    await settleInitialSync(result);
+    expect(mockSyncDatabase).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not push local edits while offline, but still counts them", async () => {
+    jest.useFakeTimers();
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await settleInitialSync(result);
+
+    act(() => netInfoListener?.({ isConnected: false }));
+    mockHasUnsyncedChanges.mockResolvedValue(true);
+    act(() => emitChanges(LOCAL_EDIT));
+    await advance(AUTO_SYNC_DEBOUNCE_MS);
+
+    await waitFor(() => expect(result.current.hasPendingChanges).toBe(true));
+    expect(mockSyncDatabase).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not push local edits for an unapproved user", async () => {
+    jest.useFakeTimers();
+    mockUseAuth.mockReturnValue({ user: TEST_USER, isApproved: false });
+    renderHook(() => useDatabase(), { wrapper });
+    await flushEffects();
+
+    mockHasUnsyncedChanges.mockResolvedValue(true);
+    act(() => emitChanges(LOCAL_EDIT));
+    await advance(AUTO_SYNC_DEBOUNCE_MS * 2);
+
+    expect(mockSyncDatabase).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a failed sync, skips the requested extra pass, and clears it on success", async () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const failing = deferred<{ remoteChangeCount: number }>();
+    mockSyncDatabase.mockReturnValueOnce(failing.promise);
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(1));
+
+    const joined = result.current.sync();
+    await act(async () => {
+      failing.reject(new Error("Push attachments (create) failed: row-level security"));
+      await joined;
+    });
+
+    expect(result.current.lastSyncError).toBe(
+      "Push attachments (create) failed: row-level security",
+    );
+    // A failing pass is not repeated back to back.
+    expect(mockSyncDatabase).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await result.current.sync();
+    });
+    expect(result.current.lastSyncError).toBeNull();
+    errorSpy.mockRestore();
+  });
+
+  it("keys the identity guard on the user id, not the user object", async () => {
+    const { result, rerender } = renderHook(() => useDatabase(), { wrapper });
+    await settleInitialSync(result);
+
+    // A token refresh hands out a new user object for the same user.
+    mockUseAuth.mockReturnValue({ user: { id: TEST_USER.id }, isApproved: true });
+    rerender(undefined);
+    await flushEffects();
+
+    expect(mockEnsureLocalIdentity).toHaveBeenCalledTimes(1);
+    expect(mockSyncDatabase).toHaveBeenCalledTimes(1);
   });
 });

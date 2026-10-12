@@ -60,6 +60,21 @@ export {
   resolveTipTapImageUrls,
   migrateSignedUrlsToAttachmentUrls,
 } from "./editor/resolve-urls";
+export {
+  MAX_CONTENT_BASELINES,
+  serializeEditorContent,
+  serializeLoadedDoc,
+  sameStoredContent,
+  isNoOpContentSave,
+  rememberContentBaseline,
+  queueNoteWrite,
+} from "./editor/content-save-guard";
+export type { ContentBaseline } from "./editor/content-save-guard";
+export { isVisibleRemoteChange } from "./sync/remote-change";
+export type { SyncRawRecord } from "./sync/remote-change";
+export { hasLocalEdit } from "./sync/local-edit";
+export type { LocalChangeEntry } from "./sync/local-edit";
+export { withTimeout } from "./async/with-timeout";
 export type {
   BlockNoteBlock,
   BlockNoteInlineContent,

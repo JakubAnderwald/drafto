@@ -189,6 +189,12 @@ describe("processPendingUploads", () => {
     expect(body).toBeInstanceOf(Uint8Array);
     expect((body as Uint8Array).length).toBe(5);
     expect(opts).toEqual({ contentType: "image/jpeg", upsert: false });
+    // The attachments table has no UPDATE policy, so the row is inserted with
+    // ON CONFLICT DO NOTHING: a retry that finds it already there succeeds.
+    expect(mockUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({ id: attachment.remoteId, file_path: attachment.filePath }),
+      { onConflict: "id", ignoreDuplicates: true },
+    );
   });
 
   it("persists error message and transitions status to 'failed' when upload throws", async () => {

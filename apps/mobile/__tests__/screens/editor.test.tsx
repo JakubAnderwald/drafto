@@ -1,7 +1,9 @@
 import React from "react";
 import * as ReactNative from "react-native";
 
-import { render, fireEvent, waitFor } from "../helpers/test-utils";
+import { serializeEditorContent, type TipTapDoc } from "@drafto/shared";
+
+import { render, fireEvent, act } from "../helpers/test-utils";
 import EditorScreen from "../../app/notes/[id]";
 import { semanticDark } from "@/theme/tokens";
 
@@ -50,6 +52,7 @@ const mockSetContent = jest.fn();
 const mockInjectCSS = jest.fn();
 const mockUseEditorBridge = jest.fn();
 const mockGetJSON = jest.fn().mockResolvedValue({ type: "doc", content: [] });
+let mockEditorFocused = false;
 
 jest.mock("@10play/tentap-editor", () => ({
   useEditorBridge: (options: unknown) => {
@@ -58,6 +61,7 @@ jest.mock("@10play/tentap-editor", () => ({
       getJSON: mockGetJSON,
       setContent: mockSetContent,
       injectCSS: mockInjectCSS,
+      getEditorState: () => ({ isReady: true, isFocused: mockEditorFocused }),
     };
   },
   useBridgeState: () => ({ isReady: true }),
@@ -81,14 +85,29 @@ jest.mock("@/lib/data/attachments", () => ({
   getSignedUrl: jest.fn().mockResolvedValue("https://signed.test/url"),
 }));
 
+type SaveHandler = (value: unknown) => Promise<boolean | void>;
+const mockAutoSaveHandlers: SaveHandler[] = [];
+
 jest.mock("@/hooks/use-auto-save", () => ({
-  useAutoSave: () => ({
-    trigger: jest.fn(),
-    cancel: jest.fn(),
-    flush: jest.fn(),
-    status: "idle" as const,
-  }),
+  useAutoSave: ({ onSave }: { onSave: SaveHandler }) => {
+    mockAutoSaveHandlers.push(onSave);
+    return {
+      trigger: jest.fn(),
+      cancel: jest.fn(),
+      flush: jest.fn(),
+      status: "idle" as const,
+    };
+  },
 }));
+
+/** The latest render's handlers: the title save is created first, then content. */
+function latestSaveHandlers(): { saveTitle: SaveHandler; saveContent: SaveHandler } {
+  const count = mockAutoSaveHandlers.length;
+  return {
+    saveTitle: mockAutoSaveHandlers[count - 2],
+    saveContent: mockAutoSaveHandlers[count - 1],
+  };
+}
 
 describe("EditorScreen", () => {
   beforeEach(() => {
@@ -96,6 +115,9 @@ describe("EditorScreen", () => {
     mockNote = null;
     mockNoteLoading = true;
     mockNoteError = null;
+    mockEditorFocused = false;
+    mockAutoSaveHandlers.length = 0;
+    mockGetJSON.mockResolvedValue({ type: "doc", content: [] });
   });
 
   it("shows error state when note is not found", () => {
@@ -204,5 +226,158 @@ describe("EditorScreen", () => {
     const { getByPlaceholderText } = render(<EditorScreen />);
 
     expect(getByPlaceholderText("Untitled")).toBeTruthy();
+  });
+
+  describe("no-op saves (issue #654)", () => {
+    type StoredNote = {
+      id: string;
+      title: string;
+      content: string | null;
+      updatedAt: Date;
+      update: jest.Mock;
+    };
+
+    const LOADED_DOC: TipTapDoc = {
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: "hello" }] }],
+    };
+    const EDITED_DOC: TipTapDoc = {
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: "hello world" }] }],
+    };
+    // Stored content authored elsewhere with two adjacent unmarked text runs.
+    // ProseMirror merges them on load, so the editor reads back LOADED_DOC,
+    // which the converter's own serialisation of the stored doc does not match.
+    const SPLIT_DOC: TipTapDoc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "hel" },
+            { type: "text", text: "lo" },
+          ],
+        },
+      ],
+    };
+
+    function storeNote(title: string, content: string | null): StoredNote {
+      const record: StoredNote = {
+        id: "note-1",
+        title,
+        content,
+        updatedAt: new Date(),
+        update: jest.fn(async (apply: (r: StoredNote) => void) => apply(record)),
+      };
+      mockNoteLoading = false;
+      mockNote = record;
+      mockDatabaseGet.mockReturnValue({ find: jest.fn().mockResolvedValue(record) });
+      mockDatabaseWrite.mockImplementation((work: () => Promise<unknown>) => work());
+      return record;
+    }
+
+    /** Mounts the editor and lets its post-ready read-back settle. */
+    async function renderEditor(readBack: TipTapDoc): Promise<void> {
+      mockGetJSON.mockResolvedValue(readBack);
+      render(<EditorScreen />);
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+
+    it("does not write or sync a new note's load echo, so it never shows Saved", async () => {
+      const record = storeNote("", null);
+      // ProseMirror fills an empty doc with one empty paragraph.
+      await renderEditor({ type: "doc", content: [{ type: "paragraph" }] });
+
+      const { saveContent } = latestSaveHandlers();
+      await act(async () => {
+        await expect(saveContent(undefined)).resolves.toBe(false);
+      });
+
+      expect(record.update).not.toHaveBeenCalled();
+      expect(mockSync).not.toHaveBeenCalled();
+    });
+
+    it("does not write an unchanged doc after the editor is ready", async () => {
+      const record = storeNote("Note", serializeEditorContent(LOADED_DOC));
+      await renderEditor(LOADED_DOC);
+
+      const { saveContent } = latestSaveHandlers();
+      await act(async () => {
+        await expect(saveContent(undefined)).resolves.toBe(false);
+      });
+
+      expect(record.update).not.toHaveBeenCalled();
+      expect(mockSync).not.toHaveBeenCalled();
+    });
+
+    it("adds the editor's read-back to the baseline, covering what the editor normalises", async () => {
+      const record = storeNote("Note", serializeEditorContent(SPLIT_DOC));
+      expect(serializeEditorContent(LOADED_DOC)).not.toBe(record.content); // precondition
+      await renderEditor(LOADED_DOC);
+
+      const { saveContent } = latestSaveHandlers();
+      await act(async () => {
+        await expect(saveContent(undefined)).resolves.toBe(false);
+      });
+      expect(record.update).not.toHaveBeenCalled();
+    });
+
+    it("skips the read-back once the user has focused the editor", async () => {
+      const record = storeNote("Note", serializeEditorContent(SPLIT_DOC));
+      mockEditorFocused = true;
+      await renderEditor(LOADED_DOC);
+
+      const { saveContent } = latestSaveHandlers();
+      await act(async () => {
+        await expect(saveContent(undefined)).resolves.toBe(true);
+      });
+      expect(record.content).toBe(serializeEditorContent(LOADED_DOC));
+    });
+
+    it("writes and syncs a real edit", async () => {
+      const record = storeNote("Note", serializeEditorContent(LOADED_DOC));
+      await renderEditor(LOADED_DOC);
+      mockGetJSON.mockResolvedValue(EDITED_DOC);
+
+      const { saveContent } = latestSaveHandlers();
+      await act(async () => {
+        await expect(saveContent(undefined)).resolves.toBe(true);
+      });
+
+      expect(record.update).toHaveBeenCalledTimes(1);
+      expect(record.content).toBe(serializeEditorContent(EDITED_DOC));
+      expect(mockSync).toHaveBeenCalledTimes(1);
+    });
+
+    it("skips an unchanged title and writes and syncs a changed one", async () => {
+      const record = storeNote("Groceries", null);
+      await renderEditor({ type: "doc", content: [{ type: "paragraph" }] });
+
+      const { saveTitle } = latestSaveHandlers();
+      await act(async () => {
+        await expect(saveTitle("  Groceries ")).resolves.toBe(false);
+      });
+      expect(record.update).not.toHaveBeenCalled();
+      expect(mockSync).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await expect(saveTitle("Shopping")).resolves.toBe(true);
+      });
+      expect(record.title).toBe("Shopping");
+      expect(mockSync).toHaveBeenCalledTimes(1);
+    });
+
+    it("never writes a blank title", async () => {
+      const record = storeNote("Groceries", null);
+      await renderEditor({ type: "doc", content: [{ type: "paragraph" }] });
+
+      const { saveTitle } = latestSaveHandlers();
+      await act(async () => {
+        await expect(saveTitle("   ")).resolves.toBe(false);
+      });
+      expect(record.update).not.toHaveBeenCalled();
+    });
   });
 });

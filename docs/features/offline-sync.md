@@ -1,6 +1,6 @@
 # Offline Sync
 
-**Status:** shipped **Updated:** 2026-10-09
+**Status:** shipped **Updated:** 2026-10-12
 
 ## What it is
 
@@ -14,9 +14,15 @@ Shipped on iOS, Android, and macOS. The web app is not part of this sync loop �
 it reads and writes Supabase directly. Mobile and desktop share the same
 WatermelonDB schema (version 2), the same row mappers, and the same
 `synchronize()` driver, so sync behavior is identical on all three native
-platforms. Sync is triggered on login, app-foreground, network reconnect, and
-every 30 s when there are pending changes; attachment uploads are processed
-before metadata is pushed.
+platforms. `DatabaseProvider` owns sync scheduling ([ADR-0048](../adr/0048-local-writes-trigger-debounced-sync.md)).
+A sync runs on login, app-foreground, network reconnect, every 30 s when there
+are pending changes, and 1.5 s after the last local edit when online, so new
+screens only need to write to WatermelonDB (mobile's older screens still call
+`sync()` after a write). A `sync()` call made while a sync is running joins it
+instead of being dropped, and the run makes another pass if the caller's write
+is still unpushed. Mobile uploads queued attachments before pushing metadata;
+desktop uploads them after, and makes one more pass after an upload so the
+attachment's new status is pushed too.
 
 ## Code paths
 
@@ -36,6 +42,7 @@ before metadata is pushed.
 | Desktop sync driver                  | `apps/desktop/src/db/sync.ts`                                                                                  |
 | Desktop sync orchestration           | `apps/desktop/src/providers/database-provider.tsx`                                                             |
 | Desktop attachment upload queue      | `apps/desktop/src/lib/data/attachment-queue.ts`                                                                |
+| Shared sync helpers                  | `packages/shared/src/sync/remote-change.ts`, `packages/shared/src/sync/local-edit.ts`                          |
 | Supabase tables (source of truth)    | `supabase/migrations/*notebooks*`, `*notes*`, `*attachments*`                                                  |
 | Server timestamp RPC                 | `get_server_time` Supabase function                                                                            |
 | Sync driver tests                    | `apps/desktop/__tests__/db/sync.test.ts`, `sync-mappers.test.ts`                                               |
@@ -47,6 +54,7 @@ before metadata is pushed.
 - [0009 — Mobile App Technology Choices](../adr/0009-mobile-app-technology-choices.md)
 - [0010 — Offline Sync Strategy with WatermelonDB](../adr/0010-offline-sync-strategy.md)
 - [0015 — Desktop App Technology Choice](../adr/0015-desktop-app-technology-choice.md)
+- [0048 — Local Writes Trigger a Debounced Sync](../adr/0048-local-writes-trigger-debounced-sync.md)
 
 ## Cross-platform notes
 
@@ -81,6 +89,25 @@ it. This file is hand-maintained, not generated: when a column changes, update
   attachments on notes).
 - Attachments only push when `upload_status === "uploaded"`; pending blobs stay
   queued until `processPendingUploads()` finishes.
+- Attachment rows are inserted with `ON CONFLICT DO NOTHING`
+  (`upsert(rows, { onConflict: "id", ignoreDuplicates: true })`), both by
+  `uploadSingleAttachment()` and by the push. `public.attachments` has no UPDATE
+  policy, so a plain upsert of a row that already exists is rejected by RLS. That
+  used to abort every sync after the first attachment.
+- Scheduling: only `DatabaseProvider` decides when to sync. A local edit (a change
+  to a record that is not `synced`, other than the upload queue updating an
+  attachment; see `hasLocalEdit`) restarts a 1.5 s debounce. A sync's own writes
+  leave records synced, so they never schedule another sync. Do not add
+  sync-on-any-change triggers: after a partly failed push, the re-pulled notes
+  change on every pass and the sync would loop.
+- `sync()` never rejects. A failure is stored in `lastSyncError` and the sync
+  status shows "Sync failed". A failed pass is not repeated back to back and
+  reschedules nothing; the network retry timer or the next trigger runs it
+  again.
+- A provider-level run belongs to the session that started it. When the user
+  (or, on desktop, their approval) changes, the provider forgets the run, so the
+  next user's `sync()` starts its own and the old one cannot report into the new
+  session. This mirrors `resetSyncState()` for `syncDatabase()`.
 - Note `content` is a JSON column on Supabase and a stringified JSON column in
   WatermelonDB — round-trip with `JSON.parse` / `JSON.stringify` on every hop.
 - Desktop: no sync trigger may pull for a signed-out or unapproved user. RLS
@@ -88,19 +115,27 @@ it. This file is hand-maintained, not generated: when a column changes, update
   looks exactly like an empty server. `createPullChanges` aborts when
   `supabase.auth.getSession()` returns an error or no session (it does not check
   approval). `DatabaseProvider` starts a sync (initial, periodic, foreground,
-  reconnect, retry) only when `user && isApproved`. Server-deletion detection
+  reconnect, local edit, retry) only when `user && isApproved`. Server-deletion detection
   skips any table whose server ID set comes back empty while synced local
   records exist. The sign-out flush in `auth-provider.tsx` calls
   `syncDatabase()` directly, so only the session gate covers it, and the local
   reset that follows discards its result.
 
-**Conflict resolution (server-wins, per ADR 0010):**
+**Conflict resolution (per ADR 0010, refined by ADR 0048):**
 
 - The `conflictResolver` callback in `syncDatabase()` returns the `resolved`
-  record WatermelonDB hands it (which already prefers the remote fields) and
-  increments `conflictCount`.
-- `conflictCount > 0` surfaces a toast ("A note was updated from another
-  device") — do not silently discard this counter.
+  record WatermelonDB hands it unchanged. That record takes the remote values,
+  except for the columns this device changed since its last push, which keep
+  their local values (the next push then writes them to the server).
+- WatermelonDB calls the resolver for every pulled record that differs from its
+  local copy, including the echo of this device's own push (new `updated_at`,
+  jsonb keys re-sorted). So the callback counts only `isVisibleRemoteChange`
+  records — a changed notebook `name`, or a note's `title`, `content`
+  (key-order-insensitive), `notebook_id` or `is_trashed`; never attachments — as
+  `remoteChangeCount`.
+- `remoteChangeCount > 0` surfaces a toast on mobile ("A note was updated from
+  another device"); desktop logs it. A column both devices edited resolves to
+  the local value and is not counted.
 - Soft-delete only: trashing a note flips `is_trashed` / `trashed_at`; hard
   delete via `DELETE FROM notes` is reserved for attachments and purged notes.
 
@@ -118,16 +153,24 @@ it. This file is hand-maintained, not generated: when a column changes, update
 
 **Tests that catch regressions:**
 
-- `apps/desktop/__tests__/db/sync.test.ts` — pull + push round-trip, conflict
-  counter, first-sync vs. incremental, the pull's session gate and the
+- `apps/desktop/__tests__/db/sync.test.ts` and `apps/mobile/__tests__/db/sync.test.ts`
+  — the remote-change counter (own-push echoes are not counted), coalescing,
+  and on desktop first-sync vs. incremental, the pull's session gate and the
   empty-server-ID-set guard on deletion detection.
-- `apps/desktop/__tests__/db/sync-mappers.test.ts` — column mapping drift.
+- `apps/desktop/__tests__/db/sync-mappers.test.ts` — column mapping drift and
+  the attachment push's `ignoreDuplicates`.
+- `apps/{mobile,desktop}/__tests__/providers/database-provider.test.tsx` — the
+  identity guard, the local-edit debounce, joining a running sync, no loop after
+  a clean sync, and `lastSyncError`.
+- `packages/shared/__tests__/{remote-change,local-edit}.test.ts` — which pulled
+  records count as visible changes, and which local changes schedule a sync.
 - `apps/desktop/__tests__/db/{schema,migrations,models}.test.ts` — structural
   checks; these fail fast when the two schemas drift.
 - `apps/mobile/__tests__/performance/sync-perf.test.ts` — guards sync runtime
   on large datasets.
 - `apps/mobile/__tests__/components/sync-status.test.tsx` and the matching
-  desktop file — guard the UI affordances (pending badge, last-synced, toast).
+  desktop file — guard the UI affordances (pending badge, "Sync failed",
+  a last-synced time that keeps ticking).
 
 **Files that must change together:**
 

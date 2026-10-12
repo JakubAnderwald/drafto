@@ -1,12 +1,16 @@
-import { migrateSignedUrlsToAttachmentUrls, tiptapToBlocknote } from "@drafto/shared";
-import type { TipTapDoc } from "@drafto/shared";
+import { tiptapToBlocknote } from "./format-converter";
+import { migrateSignedUrlsToAttachmentUrls } from "./resolve-urls";
+import type { TipTapDoc } from "./types";
 
-// Pure helpers that keep the note editor from writing back content the note
-// already holds (issue #654). Loading a note into the tentap WebView makes it
-// emit a content-update for the setContent() itself; saving that echo bumped
+// Pure helpers that keep the native note editors from writing back content the
+// note already holds (issue #654). Loading a note into the tentap WebView makes
+// it emit a content-update for the load itself; saving that echo bumped
 // `updated_at` — re-sorting the note list and syncing a "modification" to
-// every device — even though nobody edited anything. Splitting the comparison
-// out of `note-editor-panel.tsx` keeps it unit testable without the WebView.
+// every device — even though nobody edited anything. Desktop
+// (`note-editor-panel.tsx`) and mobile (`app/notes/[id].tsx`) share them, and
+// the sync drivers use `sameStoredContent` to tell a pulled echo of the
+// device's own push from a real remote edit. Keeping them pure keeps them unit
+// testable without the WebView.
 
 /**
  * Upper bound on remembered per-note baselines. The map only needs the notes
@@ -152,13 +156,14 @@ export function rememberContentBaseline(
  * still queued behind a sync, then a revert), the revert would compare against
  * pre-edit state, look like a no-op, and the stale edit would land. Different
  * notes still write independently. A rejected task does not block the queue;
- * its error still reaches its own caller.
+ * its error still reaches its own caller, and so does its result (e.g. whether
+ * the write happened at all).
  */
-export function queueNoteWrite(
-  queues: Map<string, Promise<void>>,
+export function queueNoteWrite<T>(
+  queues: Map<string, Promise<unknown>>,
   noteId: string,
-  task: () => Promise<void>,
-): Promise<void> {
+  task: () => Promise<T>,
+): Promise<T> {
   const previous = queues.get(noteId) ?? Promise.resolve();
   const run = previous.catch(() => undefined).then(task);
   queues.set(noteId, run);
