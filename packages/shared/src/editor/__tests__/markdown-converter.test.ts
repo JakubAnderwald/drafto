@@ -327,3 +327,393 @@ describe("round-trip", () => {
     expect(blockNoteToMarkdown(blocks)).toBe(md);
   });
 });
+
+// Regression tests for #465: an MCP client reads a note as Markdown
+// (blockNoteToMarkdown) and saves it back (markdownToBlockNote), so both
+// directions must agree exactly.
+describe("round-trip stability", () => {
+  const text = (value: string, styles: Record<string, boolean> = {}) => ({
+    type: "text" as const,
+    text: value,
+    styles,
+  });
+  const paragraph = (...content: BlockNoteBlock["content"][]): BlockNoteBlock => ({
+    type: "paragraph",
+    content: content.flat() as BlockNoteBlock["content"],
+    children: [],
+  });
+  const item = (
+    type: string,
+    value: string,
+    children: BlockNoteBlock[] = [],
+    props?: Record<string, unknown>,
+  ): BlockNoteBlock => ({
+    type,
+    ...(props ? { props } : {}),
+    content: [text(value)],
+    children,
+  });
+  const table = (rows: string[][]): BlockNoteBlock => ({
+    type: "table",
+    content: {
+      type: "tableContent",
+      rows: rows.map((cells) => ({ cells: cells.map((cell) => [text(cell)]) })),
+    },
+    children: [],
+  });
+  const code = (value: string, language = ""): BlockNoteBlock => ({
+    type: "codeBlock",
+    props: { language },
+    content: value ? [text(value)] : [],
+    children: [],
+  });
+
+  function expectBlocksToRoundTrip(blocks: BlockNoteBlock[]) {
+    expect(markdownToBlockNote(blockNoteToMarkdown(blocks))).toEqual(blocks);
+  }
+
+  function expectMarkdownToBeStable(md: string) {
+    expect(blockNoteToMarkdown(markdownToBlockNote(md))).toBe(md);
+  }
+
+  describe("nesting", () => {
+    it("parses an indented bullet as a child, not a sibling", () => {
+      const blocks = markdownToBlockNote("- Parent\n  - Child");
+      expect(blocks).toEqual([item("bulletListItem", "Parent", [item("bulletListItem", "Child")])]);
+    });
+
+    it("round-trips bullet, numbered and check lists nested three levels deep", () => {
+      expectBlocksToRoundTrip([
+        item("bulletListItem", "a", [
+          item("bulletListItem", "a1", [item("bulletListItem", "a1x")]),
+          item("bulletListItem", "a2"),
+        ]),
+        item("numberedListItem", "b", [
+          item("numberedListItem", "b1", [item("numberedListItem", "b1x")]),
+        ]),
+        item("checkListItem", "c", [item("checkListItem", "c1", [], { checked: true })], {
+          checked: false,
+        }),
+      ]);
+    });
+
+    it("round-trips mixed block types as children", () => {
+      expectBlocksToRoundTrip([
+        item("bulletListItem", "list", [
+          item("numberedListItem", "step", [item("checkListItem", "todo", [], { checked: true })]),
+          item("paragraph", "note"),
+          item("heading", "Sub", [], { level: 2 }),
+          code("const x = 1;", "ts"),
+          table([
+            ["h", "i"],
+            ["1", "2"],
+          ]),
+        ]),
+        item("paragraph", "after"),
+      ]);
+    });
+
+    it("returns to the top level after a nested run", () => {
+      const md = "- a\n  - b\n    - c\n- d\n  - e\n\nTop";
+      const blocks = markdownToBlockNote(md);
+      expect(blocks).toEqual([
+        item("bulletListItem", "a", [item("bulletListItem", "b", [item("bulletListItem", "c")])]),
+        item("bulletListItem", "d", [item("bulletListItem", "e")]),
+        item("paragraph", "Top"),
+      ]);
+    });
+
+    it("nests 4-space and tab indents one level under the nearest shallower item", () => {
+      expect(markdownToBlockNote("1. a\n    1. b\n    1. c\n2. d")).toEqual([
+        item("numberedListItem", "a", [
+          item("numberedListItem", "b"),
+          item("numberedListItem", "c"),
+        ]),
+        item("numberedListItem", "d"),
+      ]);
+      expect(markdownToBlockNote("- a\n\t- b")).toEqual([
+        item("bulletListItem", "a", [item("bulletListItem", "b")]),
+      ]);
+    });
+
+    it("keeps the markdown of nested lists stable", () => {
+      expectMarkdownToBeStable("- a\n  - b\n    - [x] c\n  1. d");
+    });
+  });
+
+  describe("escaping plain text", () => {
+    it.each([
+      ["2 * 3 * 4"],
+      ["[not a link]"],
+      ["[label](https://not.a.link)"],
+      ["~~not struck~~"],
+      ["`not code`"],
+      ["**not bold**"],
+      ["a ~ b ~~ c ~"],
+      ["back\\slash \\* and trailing \\"],
+      ["# not a heading"],
+      ["###### not a heading"],
+      ["- not a bullet"],
+      ["+ not a bullet"],
+      ["* not a bullet"],
+      ["1. not a numbered item"],
+      ["- [ ] not a check item"],
+      ["| not | a table |"],
+      ["![not an image](x.png)"],
+      ["```not a fence"],
+      ["#hashtag stays readable"],
+    ])("round-trips the paragraph %j with no styles added", (value) => {
+      const blocks = [paragraph([text(value)])];
+      expectBlocksToRoundTrip(blocks);
+      expect(blockNoteToMarkdown(blocks)).not.toBe("");
+    });
+
+    it("escapes only what the parser would read as syntax", () => {
+      expect(blockNoteToMarkdown([paragraph([text("2 * 3 * 4")])])).toBe("2 \\* 3 \\* 4");
+      expect(blockNoteToMarkdown([paragraph([text("# x")])])).toBe("\\# x");
+      expect(blockNoteToMarkdown([paragraph([text("10. x")])])).toBe("10\\. x");
+      expect(blockNoteToMarkdown([paragraph([text("a ~ b, #tag, 1.5 - 2 | c")])])).toBe(
+        "a ~ b, #tag, 1.5 - 2 | c",
+      );
+      expect(blockNoteToMarkdown([paragraph([text("C:\\Users\\x")])])).toBe("C:\\Users\\x");
+    });
+
+    it("unescapes backslash-escaped punctuation when parsing", () => {
+      expect(markdownToBlockNote("2 \\* 3 \\* 4")).toEqual([paragraph([text("2 * 3 * 4")])]);
+      expect(markdownToBlockNote("\\# x")).toEqual([paragraph([text("# x")])]);
+      expect(markdownToBlockNote("a \\q b")).toEqual([paragraph([text("a \\q b")])]);
+    });
+
+    it("keeps escapes as text inside code spans", () => {
+      const blocks = [paragraph([text("a\\*b [c]", { code: true })])];
+      expect(blockNoteToMarkdown(blocks)).toBe("`a\\*b [c]`");
+      expectBlocksToRoundTrip(blocks);
+    });
+
+    it("escapes a trailing backslash before the next node's delimiter", () => {
+      expectBlocksToRoundTrip([
+        paragraph([text("ends with \\"), text("bold", { bold: true }), text("~", {})]),
+      ]);
+      expectBlocksToRoundTrip([paragraph([text("a~"), text("struck", { strike: true })])]);
+    });
+
+    it("escapes the same characters in headings, list items and check items", () => {
+      expectBlocksToRoundTrip([
+        item("heading", "# 2 * 3 [x]", [], { level: 2 }),
+        item("bulletListItem", "[ ] not a check"),
+        item("numberedListItem", "- dash *star*"),
+        item("checkListItem", "`tick` ~~x~~", [], { checked: true }),
+      ]);
+    });
+  });
+
+  describe("inline styles", () => {
+    it("parses ***both*** as a single bold+italic node and emits it back", () => {
+      const blocks = markdownToBlockNote("***both***");
+      expect(blocks[0].content).toEqual([text("both", { bold: true, italic: true })]);
+      expect(blockNoteToMarkdown(blocks)).toBe("***both***");
+    });
+
+    it("round-trips every style combination", () => {
+      expectBlocksToRoundTrip([
+        paragraph([
+          text("plain "),
+          text("b", { bold: true }),
+          text("i", { italic: true }),
+          text("bi", { bold: true, italic: true }),
+          text("s", { strike: true }),
+          text("bis", { bold: true, italic: true, strike: true }),
+          text("c*[|", { code: true, bold: true }),
+          text(" end"),
+        ]),
+      ]);
+    });
+
+    it("round-trips adjacent styled nodes", () => {
+      expectBlocksToRoundTrip([paragraph([text("a", { bold: true }), text("b", { bold: true })])]);
+      expectBlocksToRoundTrip([
+        paragraph([text("a", { italic: true }), text("b", { bold: true })]),
+      ]);
+      expectBlocksToRoundTrip([
+        paragraph([text("a", { bold: true, italic: true }), text("b", { bold: true })]),
+      ]);
+      expectBlocksToRoundTrip([
+        paragraph([text("a ", { bold: true }), text("b", { bold: true, italic: true })]),
+      ]);
+      expectMarkdownToBeStable("**a****b**");
+      expectMarkdownToBeStable("*a***b**");
+    });
+
+    it("round-trips styled text containing escaped delimiters", () => {
+      expectBlocksToRoundTrip([
+        paragraph([text("*", { italic: true }), text("**x**", { bold: true })]),
+      ]);
+    });
+  });
+
+  describe("links", () => {
+    it("parses styled link text recursively", () => {
+      const blocks = markdownToBlockNote("[**x**](https://example.com)");
+      expect(blocks[0].content).toEqual([
+        {
+          type: "link",
+          text: "x",
+          href: "https://example.com",
+          content: [text("x", { bold: true })],
+        },
+      ]);
+      expectMarkdownToBeStable("[**x** and *y*](https://example.com)");
+    });
+
+    it("keeps an href containing parentheses intact", () => {
+      const href = "https://en.wikipedia.org/wiki/Foo_(bar)";
+      const blocks: BlockNoteBlock[] = [
+        paragraph([{ type: "link", text: "wiki", href, content: [text("wiki")] }, text(" after")]),
+      ];
+      expect(blockNoteToMarkdown(blocks)).toBe(`[wiki](<${href}>) after`);
+      expectBlocksToRoundTrip(blocks);
+      // Hand-written balanced parentheses parse too.
+      const parsed = markdownToBlockNote(`[wiki](${href})`);
+      expect((parsed[0].content as { href?: string }[])[0].href).toBe(href);
+    });
+
+    it("keeps an href with a lone ), spaces or angle brackets intact", () => {
+      for (const href of ["https://x.test/a)b", "https://x.test/a b", "https://x.test/<a>\\"]) {
+        expectBlocksToRoundTrip([
+          paragraph([{ type: "link", text: "x", href, content: [text("x")] }]),
+        ]);
+      }
+    });
+
+    it("round-trips link text containing brackets", () => {
+      expectBlocksToRoundTrip([
+        paragraph([{ type: "link", text: "[1]", href: "https://x.test", content: [text("[1]")] }]),
+      ]);
+    });
+
+    it("round-trips an attachment named with spaces and parentheses", () => {
+      const blocks: BlockNoteBlock[] = [
+        {
+          type: "file",
+          props: { url: "attachment://user/note/report (1).pdf", name: "report (1).pdf" },
+          children: [],
+        },
+      ];
+      expect(blockNoteToMarkdown(blocks)).toBe(
+        "[report (1).pdf](<attachment://user/note/report (1).pdf>)",
+      );
+      expectBlocksToRoundTrip(blocks);
+    });
+
+    it("round-trips image captions with brackets and urls with parentheses", () => {
+      expectBlocksToRoundTrip([
+        {
+          type: "image",
+          props: { url: "https://x.test/img (2).png", caption: "a [b] c" },
+          children: [],
+        },
+      ]);
+    });
+  });
+
+  describe("tables", () => {
+    it("escapes a pipe in a cell so the column count survives", () => {
+      const blocks = [
+        table([
+          ["a|b", "c"],
+          ["1", "x | y"],
+        ]),
+      ];
+      expect(blockNoteToMarkdown(blocks)).toBe("| a\\|b | c |\n| --- | --- |\n| 1 | x \\| y |");
+      expectBlocksToRoundTrip(blocks);
+    });
+
+    it("escapes a pipe inside a code span in a cell", () => {
+      const blocks: BlockNoteBlock[] = [
+        {
+          type: "table",
+          content: {
+            type: "tableContent",
+            rows: [{ cells: [[text("a|b", { code: true })], [text("\\|")]] }],
+          },
+          children: [],
+        },
+      ];
+      expectBlocksToRoundTrip(blocks);
+    });
+
+    it("parses tables without trailing pipes", () => {
+      expect(markdownToBlockNote("| a | b\n| --- | ---\n| 1 | 2")).toEqual([
+        table([
+          ["a", "b"],
+          ["1", "2"],
+        ]),
+      ]);
+    });
+
+    it("never ingests the delimiter row, with or without alignment colons", () => {
+      expect(markdownToBlockNote("| a | b |\n|:---|---:|\n| 1 | 2 |")).toEqual([
+        table([
+          ["a", "b"],
+          ["1", "2"],
+        ]),
+      ]);
+    });
+
+    it("keeps a body row of dashes as data", () => {
+      const blocks = [table([["h"], ["---"], ["x"]])];
+      expectBlocksToRoundTrip(blocks);
+    });
+
+    it("keeps empty cells and styled cells", () => {
+      expectMarkdownToBeStable("| a |  | **b** |\n| --- | --- | --- |\n| 1 | 2 | 3 |");
+    });
+
+    it("stops a table at a line with a different indent", () => {
+      const md = "- list\n  | a | b |\n  | --- | --- |\n| c |\n| --- |";
+      expect(markdownToBlockNote(md)).toEqual([
+        item("bulletListItem", "list", [table([["a", "b"]])]),
+        table([["c"]]),
+      ]);
+    });
+  });
+
+  describe("code blocks", () => {
+    it.each([
+      ["a\n```\nb"],
+      ["````\nnested\n````"],
+      ["```js\nconsole.log(1)\n```"],
+      ["  indented\n\n\ttabbed\n"],
+      ["*not* [escaped] `here` \\"],
+    ])("keeps the content %j byte-identical", (value) => {
+      const blocks = [code(value, "md")];
+      expectBlocksToRoundTrip(blocks);
+      const parsed = markdownToBlockNote(blockNoteToMarkdown(blocks));
+      expect((parsed[0].content as { text: string }[])[0].text).toBe(value);
+    });
+
+    it("lengthens the fence past the longest backtick run", () => {
+      expect(blockNoteToMarkdown([code("a\n```\nb")])).toBe("````\na\n```\nb\n````");
+      expect(blockNoteToMarkdown([code("x ````` y")])).toBe("``````\nx ````` y\n``````");
+    });
+
+    it("round-trips a code block nested under a list item", () => {
+      expectBlocksToRoundTrip([item("bulletListItem", "a", [code("x\n  ```\ny", "ts")])]);
+    });
+
+    it("keeps an empty code block", () => {
+      expectBlocksToRoundTrip([code("")]);
+    });
+  });
+
+  it("round-trips a note combining every fix", () => {
+    const md = [
+      "# Plan \\*v2\\*",
+      "- Parent with ***both***\n  - Child [**link**](<https://x.test/a_(b)>)\n    1. 2 \\* 3",
+      "| col\\|1 | col 2 |\n| --- | --- |\n| `a\\|b` | ~~gone~~ |",
+      "````ts\nconst s = `\n```\n`;\n````",
+      "\\- not a list",
+    ].join("\n\n");
+    expectMarkdownToBeStable(md);
+  });
+});
