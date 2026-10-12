@@ -79,13 +79,15 @@ function formatDestination(href: string): string {
 /**
  * Plain text at the start of a paragraph line that the block parser would
  * otherwise read as a heading, list item, table row or image (a `!` that
- * ends the text right before a link). parseLine strips leading whitespace
- * before any block rule runs, so the escape goes after that whitespace.
+ * ends the text right before a link). Leading whitespace is dropped first:
+ * parseLine strips it as indent either way, and kept, two spaces or a tab
+ * would nest the paragraph under the block before it.
  */
 function escapeLineStart(markdown: string): string {
   return markdown
-    .replace(/^(\s*)(?=(?:#{1,6}|[-+])\s|\||!\[)/, "$1\\")
-    .replace(/^(\s*\d+)\.(?=\s)/, "$1\\.");
+    .replace(/^\s+/, "")
+    .replace(/^(?=(?:#{1,6}|[-+])\s|\||!\[)/, "\\")
+    .replace(/^(\d+)\.(?=\s)/, "$1\\.");
 }
 
 // A fence one backtick longer than any run inside the code, so no code line can close it.

@@ -506,8 +506,8 @@ describe("round-trip stability", () => {
       ]);
     });
 
-    // parseLine strips leading whitespace (it is indent), so the escape has to
-    // follow it; the whitespace itself is not kept.
+    // parseLine strips leading whitespace (it is indent), so the emitter drops
+    // it and escapes the syntax behind it; the whitespace itself is not kept.
     it.each([[" - x"], [" + x"], [" # x"], [" 1. x"], [" | a |"], ["\t- x"], ["   - [ ] x"]])(
       "keeps the paragraph %j a paragraph",
       (value) => {
@@ -517,11 +517,34 @@ describe("round-trip stability", () => {
       },
     );
 
-    it("escapes after leading whitespace, not before it", () => {
-      expect(blockNoteToMarkdown([paragraph([text(" - x")])])).toBe(" \\- x");
-      expect(blockNoteToMarkdown([paragraph([text("  # x")])])).toBe("  \\# x");
-      expect(blockNoteToMarkdown([paragraph([text(" 1. x")])])).toBe(" 1\\. x");
-      expect(blockNoteToMarkdown([paragraph([text(" | a |")])])).toBe(" \\| a |");
+    it("drops leading whitespace and escapes the syntax behind it", () => {
+      expect(blockNoteToMarkdown([paragraph([text(" - x")])])).toBe("\\- x");
+      expect(blockNoteToMarkdown([paragraph([text("  # x")])])).toBe("\\# x");
+      expect(blockNoteToMarkdown([paragraph([text(" 1. x")])])).toBe("1\\. x");
+      expect(blockNoteToMarkdown([paragraph([text(" | a |")])])).toBe("\\| a |");
+    });
+
+    // Kept, the whitespace would read back as indent and turn a flat note's
+    // paragraph into a child of the block before it.
+    it.each([["  b"], ["\tb"], ["  b"], ["    - b"], ["\n  b"]])(
+      "keeps the paragraph %j a sibling of the block before it",
+      (value) => {
+        expect(
+          markdownToBlockNote(
+            blockNoteToMarkdown([paragraph([text("a")]), paragraph([text(value)])]),
+          ),
+        ).toEqual([paragraph([text("a")]), paragraph([text(value.trimStart())])]);
+      },
+    );
+
+    it("keeps a nested paragraph starting with whitespace at its own depth", () => {
+      expect(
+        markdownToBlockNote(
+          blockNoteToMarkdown([
+            item("bulletListItem", "a", [item("paragraph", "x"), item("paragraph", "  y")]),
+          ]),
+        ),
+      ).toEqual([item("bulletListItem", "a", [item("paragraph", "x"), item("paragraph", "y")])]);
     });
 
     it("keeps a paragraph starting with whitespace and `!` before a link from becoming an image", () => {
