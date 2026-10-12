@@ -411,7 +411,9 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     <KeyboardAvoidingView
       testID="editor-keyboard-avoiding-view"
       style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      // Android runs edge-to-edge, so the window no longer shrinks for the
+      // keyboard and the view has to make room itself, as the auth screens do.
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
       // The view starts below the opaque header, but the keyboard's position is
       // reported in screen coordinates. Without the header height as the offset
       // the view stops that far short of the keyboard and the toolbar ends up

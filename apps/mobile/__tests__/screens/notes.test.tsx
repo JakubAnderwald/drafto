@@ -121,6 +121,17 @@ describe("NotesListScreen", () => {
     expect(lastHeaderTitle()).toBe("Work (2026)");
   });
 
+  it("passes the same header options while the name is unchanged", () => {
+    const { rerender } = render(<NotesListScreen />);
+    rerender(<NotesListScreen />);
+
+    const options = mockStackScreen.mock.calls.map(
+      ([props]) => (props as { options: object }).options,
+    );
+    expect(options.length).toBeGreaterThan(1);
+    expect(new Set(options).size).toBe(1);
+  });
+
   it("leaves the header blank until the notebook loads, never 'Notes'", () => {
     mockNotebookName = null;
 

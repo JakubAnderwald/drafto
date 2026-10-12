@@ -174,6 +174,22 @@ describe("EditorScreen layout", () => {
     expect(kav.props.keyboardVerticalOffset).toBe(MOCK_HEADER_HEIGHT);
   });
 
+  it.each([
+    ["ios", "padding"],
+    ["android", "height"],
+  ] as const)("avoids the keyboard on %s (behavior %s)", (os, behavior) => {
+    const originalOS = ReactNative.Platform.OS;
+    Object.defineProperty(ReactNative.Platform, "OS", { value: os, configurable: true });
+    try {
+      loadNote();
+      const { UNSAFE_getByType } = render(<EditorScreen />);
+
+      expect(UNSAFE_getByType(KeyboardAvoidingView).props.behavior).toBe(behavior);
+    } finally {
+      Object.defineProperty(ReactNative.Platform, "OS", { value: originalOS, configurable: true });
+    }
+  });
+
   it("renders the attachment row between the body and the toolbar", () => {
     loadNote();
     render(<EditorScreen />);

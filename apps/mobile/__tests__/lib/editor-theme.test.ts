@@ -22,14 +22,16 @@ describe("buildEditorTheme", () => {
 
     // TenTap's default `flex: 1` (plus the FlatList's `flexGrow: 1`) made the
     // toolbar take half of the editor column.
-    expect(toolbar?.toolbarBody).toEqual(
-      expect.objectContaining({
-        flex: 0,
-        flexGrow: 0,
-        flexShrink: 0,
-        height: EDITOR_TOOLBAR_HEIGHT,
-      }),
-    );
+    const pinned = expect.objectContaining({
+      flex: 0,
+      flexGrow: 0,
+      flexShrink: 0,
+      height: EDITOR_TOOLBAR_HEIGHT,
+    });
+    expect(toolbar?.toolbarBody).toEqual(pinned);
+    // The link bar replaces the toolbar while a link is edited and has the
+    // same default `flex: 1`.
+    expect(toolbar?.linkBarTheme?.addLinkContainer).toEqual(pinned);
   });
 
   it.each([

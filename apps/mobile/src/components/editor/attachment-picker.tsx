@@ -47,8 +47,9 @@ export function AttachmentPicker({ noteId, onAttachmentReady }: AttachmentPicker
 
       await onAttachmentReady?.(attachment);
 
-      // Push the note (now referencing the attachment) and retry anything still
-      // queued, without holding up the editor.
+      // Retry anything still queued (e.g. this file, if its upload failed) and
+      // push, without holding up the editor. The editor also syncs after writing
+      // the note; concurrent sync() calls coalesce in the database provider.
       void sync();
 
       if (uploaded) {

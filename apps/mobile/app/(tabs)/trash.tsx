@@ -6,6 +6,7 @@ import { Q } from "@nozbe/watermelondb";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useTrashedNotes } from "@/hooks/use-trashed-notes";
+import { usePullToRefresh } from "@/hooks/use-pull-to-refresh";
 import { SwipeableRow } from "@/components/swipeable-row";
 import { ListSkeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -15,7 +16,8 @@ import type { Note, Attachment } from "@/db";
 import type { SwipeAction } from "@/components/swipeable-row";
 
 export default function TrashScreen() {
-  const { database, sync, isSyncing } = useDatabase();
+  const { database, sync } = useDatabase();
+  const { refreshing, onRefresh } = usePullToRefresh(sync);
   const { notes, loading } = useTrashedNotes();
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
@@ -146,8 +148,8 @@ export default function TrashScreen() {
           contentContainerStyle={styles.list}
           refreshControl={
             <RefreshControl
-              refreshing={isSyncing}
-              onRefresh={sync}
+              refreshing={refreshing}
+              onRefresh={onRefresh}
               tintColor={colors.primary[600]}
               colors={[colors.primary[600]]}
             />

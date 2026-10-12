@@ -200,7 +200,9 @@ export default function NotesListScreen() {
   };
 
   // Rendered in every branch, so the title is set while the list is still loading.
-  const header = <Stack.Screen options={{ title: notebookName ?? "" }} />;
+  // Memoised so list re-renders (every sync) don't re-apply unchanged options.
+  const headerOptions = useMemo(() => ({ title: notebookName ?? "" }), [notebookName]);
+  const header = <Stack.Screen options={headerOptions} />;
 
   if (loading) {
     return (

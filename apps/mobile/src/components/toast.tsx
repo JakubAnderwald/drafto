@@ -139,8 +139,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
   const showToast = useCallback(
     (text: string, type: ToastType = "info") => {
-      // The same message twice in a row (e.g. two syncs reporting the same
-      // thing) is shown once.
+      // A message already on screen is not shown a second time (e.g. two syncs
+      // reporting the same thing); it can show again once that toast has gone.
       if (toastsRef.current.some((t) => t.text === text)) return;
       Haptics.notificationAsync(HAPTIC_MAP[type]);
       const id = nextId.current++;
