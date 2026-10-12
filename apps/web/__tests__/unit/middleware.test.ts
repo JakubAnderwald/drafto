@@ -48,6 +48,10 @@ describe("Auth middleware", () => {
       "/account/delete",
       "/privacy",
       "/support",
+      "/robots.txt",
+      "/sitemap.xml",
+      "/.well-known/apple-app-site-association",
+      "/.well-known/assetlinks.json",
     ];
 
     for (const route of publicRoutes) {

@@ -37,4 +37,23 @@ describe("middleware matcher", () => {
       expect(matches(path)).toBe(false);
     },
   );
+
+  it.each([
+    "/robots.txt",
+    "/sitemap.xml",
+    "/.well-known/apple-app-site-association",
+    "/.well-known/assetlinks.json",
+  ])("skips %s so crawlers and app-link verifiers are not redirected to /login", (path) => {
+    expect(matches(path)).toBe(false);
+  });
+
+  it.each([
+    "/robots.txt.bak",
+    "/sitemap.xml/extra",
+    "/well-known/x",
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/assetlinks.json.bak",
+  ])("still runs on %s, which only resembles a skipped path", (path) => {
+    expect(matches(path)).toBe(true);
+  });
 });

@@ -7,6 +7,7 @@ export const metadata: Metadata = {
   title: "Delete your account — Drafto",
   description:
     "How to permanently delete your Drafto account and data, with or without the app installed.",
+  alternates: { canonical: "/account/delete" },
 };
 
 function StepsCard({ children }: { children: ReactNode }) {

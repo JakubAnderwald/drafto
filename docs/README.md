@@ -26,6 +26,7 @@ One brief per functional area. Each brief lists the current state, code paths on
 - [`features/design-system.md`](./features/design-system.md) — tokens, primitives, cross-platform parity
 - [`features/email-and-approval.md`](./features/email-and-approval.md) — transactional email via Resend + approval pipeline
 - [`features/privacy-policy.md`](./features/privacy-policy.md) — the public `/privacy` page, processor inventory, maintenance checklist, guard test
+- [`features/seo-and-indexing.md`](./features/seo-and-indexing.md) — canonical host, robots.txt + sitemap, www/http redirects, `.well-known` app-link files, expected Search Console state
 - [`features/mobile-desktop-apps.md`](./features/mobile-desktop-apps.md) — how iOS / Android / macOS fit together
 
 ## Architecture

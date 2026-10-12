@@ -24,6 +24,13 @@ const PUBLIC_ROUTES = [
   // /support/* route is public too — keep those static.
   "/privacy",
   "/support",
+  // Fetched signed out by crawlers and the Apple / Google app-link verifiers, none of which
+  // follow a redirect to /login. `config.matcher` in `middleware.ts` already skips these, so
+  // this entry is only a backstop.
+  "/robots.txt",
+  "/sitemap.xml",
+  "/.well-known/apple-app-site-association",
+  "/.well-known/assetlinks.json",
 ];
 
 function isPublicRoute(pathname: string): boolean {
