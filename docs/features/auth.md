@@ -287,7 +287,7 @@ Apple requires apps that offer Sign in with Apple to revoke the user's Apple tok
 
 **iOS flow.**
 
-1. `deleteAccount()` in `apps/mobile/src/providers/auth-provider.tsx` reads the session, then calls `requestAppleRevocationGrant(user)` (`apps/mobile/src/lib/apple-revocation.ts`). Apple's sheet can stay open a while, so after it the provider reads the session again; supabase-js refreshes an access token that expired meanwhile.
+1. `deleteAccount()` in `apps/mobile/src/providers/auth-provider.tsx` reads the session, then calls `requestAppleRevocationGrant(user)` (`apps/mobile/src/lib/apple-revocation.ts`). Apple's sheet can stay open a while, so after it the provider reads the session again; supabase-js refreshes an access token that expired meanwhile. If that session now belongs to a different user (for example, a password-recovery link switched it), it returns `unauthorized` and deletes nothing.
    - For a user with an Apple identity (`user.identities` has `provider: "apple"`, or `app_metadata.providers` includes `apple`), it opens `AppleAuthentication.signInAsync({ requestedScopes: [] })`. The user sees Apple's "Continue with Apple ID" sheet.
    - It returns `{ authorizationCode, clientId }`, where `clientId` is `APPLE_NATIVE_CLIENT_ID` from `@drafto/shared`: the bundle ID `eu.drafto.mobile`, which the server checks against the same constant.
    - It returns `null` for anyone else, on Android, when the user cancels, or when Apple fails. The deletion then goes ahead without revocation.

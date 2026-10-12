@@ -735,6 +735,26 @@ describe("AuthProvider — account deletion", () => {
       expect(mockDatabase.unsafeResetDatabase).not.toHaveBeenCalled();
     });
 
+    it("deletes nothing if the session switched to another account while Apple's sheet was open", async () => {
+      const { result } = await renderSignedIn();
+      const otherUser = { ...APPLE_USER, id: "someone-else" } as unknown as User;
+      (mockSupabase.auth.getSession as jest.Mock)
+        .mockResolvedValueOnce({ data: { session: APPLE_SESSION } })
+        .mockResolvedValueOnce({
+          data: { session: { user: otherUser, access_token: "other-account-token" } },
+        });
+
+      let outcome: AccountDeletionResult | undefined;
+      await act(async () => {
+        outcome = await result.current.deleteAccount();
+      });
+
+      expect(outcome).toEqual({ status: "unauthorized" });
+      expect(mockRequestAccountDeletion).not.toHaveBeenCalled();
+      expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
+      expect(mockDatabase.unsafeResetDatabase).not.toHaveBeenCalled();
+    });
+
     it("still deletes the account when the user cancels Apple's sheet", async () => {
       mockAppleSignIn.mockRejectedValue(
         Object.assign(new Error("canceled"), { code: "ERR_REQUEST_CANCELED" }),
