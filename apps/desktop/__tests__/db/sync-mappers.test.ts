@@ -506,10 +506,13 @@ describe("sync pull/push behavior", () => {
 
       await syncDatabase(mockDb);
 
-      // Only the uploaded one should be upserted
-      expect(chains["attachments"].upsert).toHaveBeenCalledWith([
-        expect.objectContaining({ id: "att-1", file_name: "uploaded.png" }),
-      ]);
+      // Only the uploaded one should be inserted, with ON CONFLICT DO NOTHING:
+      // uploadSingleAttachment() may have inserted the row already, and the
+      // attachments table has no UPDATE policy, so a plain upsert is rejected.
+      expect(chains["attachments"].upsert).toHaveBeenCalledWith(
+        [expect.objectContaining({ id: "att-1", file_name: "uploaded.png" })],
+        { onConflict: "id", ignoreDuplicates: true },
+      );
     });
 
     it("skips notebook update without remote_id and logs warning", async () => {

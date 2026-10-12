@@ -3,6 +3,7 @@ import { synchronize } from "@nozbe/watermelondb/sync";
 import type { Database as WMDatabase } from "@nozbe/watermelondb";
 import type { SyncPullResult } from "@nozbe/watermelondb/sync";
 
+import { isVisibleRemoteChange } from "@drafto/shared";
 import type { Database } from "@drafto/shared";
 
 import { supabase } from "@/lib/supabase";
@@ -209,7 +210,14 @@ async function pushAttachmentChanges(changes: SyncTableChanges) {
         mime_type: r.mime_type as string,
       }));
     if (uploadedRows.length > 0) {
-      const { error } = await supabase.from("attachments").upsert(uploadedRows);
+      // ON CONFLICT DO NOTHING: uploadSingleAttachment() usually inserted this
+      // row already, and public.attachments has no UPDATE policy (attachments
+      // are immutable), so a plain upsert's ON CONFLICT DO UPDATE is rejected
+      // by RLS. That failure aborted every later sync after the notes had been
+      // pushed, so nothing was ever marked synced.
+      const { error } = await supabase
+        .from("attachments")
+        .upsert(uploadedRows, { onConflict: "id", ignoreDuplicates: true });
       if (error) throw new Error(`Push attachments (create) failed: ${error.message}`);
     }
   }
@@ -260,11 +268,17 @@ function isNetworkError(error: unknown): boolean {
 }
 
 export interface SyncResult {
-  conflictCount: number;
+  /**
+   * Pulled records that changed something the user can see on this device
+   * (see `isVisibleRemoteChange`). Not a conflict count: WatermelonDB calls the
+   * resolver for every pulled record that differs locally, including the echo
+   * of this device's own push.
+   */
+  remoteChangeCount: number;
 }
 
 async function runSync(db: WMDatabase): Promise<SyncResult> {
-  let conflictCount = 0;
+  let remoteChangeCount = 0;
 
   try {
     await synchronize({
@@ -272,10 +286,11 @@ async function runSync(db: WMDatabase): Promise<SyncResult> {
       pullChanges,
       pushChanges,
       migrationsEnabledAtVersion: 1,
-      conflictResolver: (_table, _local, remote, resolved) => {
-        // Server-wins: use the resolved record (which already prefers remote)
-        // but count the conflict so we can notify the user
-        conflictCount += 1;
+      conflictResolver: (table, local, _remote, resolved) => {
+        // Keep WatermelonDB's resolution (remote values, except for columns
+        // this device changed since its last push), and count it only when it
+        // changes what the user sees, so the echo of our own push stays quiet.
+        if (isVisibleRemoteChange(table, local, resolved)) remoteChangeCount += 1;
         return resolved;
       },
     });
@@ -286,7 +301,7 @@ async function runSync(db: WMDatabase): Promise<SyncResult> {
     throw error;
   }
 
-  return { conflictCount };
+  return { remoteChangeCount };
 }
 
 // Module-level in-flight coalesce. WatermelonDB forbids concurrent

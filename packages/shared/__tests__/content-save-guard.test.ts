@@ -1,9 +1,4 @@
-import {
-  migrateSignedUrlsToAttachmentUrls,
-  tiptapToBlocknote,
-  toAttachmentUrl,
-  type TipTapDoc,
-} from "@drafto/shared";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   MAX_CONTENT_BASELINES,
@@ -14,9 +9,13 @@ import {
   serializeEditorContent,
   serializeLoadedDoc,
   type ContentBaseline,
-} from "@/components/notes/content-save-guard";
+} from "../src/editor/content-save-guard";
+import { toAttachmentUrl } from "../src/editor/attachment-url";
+import { tiptapToBlocknote } from "../src/editor/format-converter";
+import { migrateSignedUrlsToAttachmentUrls } from "../src/editor/resolve-urls";
+import type { TipTapDoc } from "../src/editor/types";
 
-import { jsonbReordered } from "../../helpers/jsonb";
+import { jsonbReordered } from "./helpers/jsonb";
 
 const SIGNED_URL =
   "https://example.supabase.co/storage/v1/object/sign/attachments/user-1/note-1/photo.png?token=abc";
@@ -260,7 +259,7 @@ describe("queueNoteWrite", () => {
   }
 
   it("runs a note's writes one at a time, in order", async () => {
-    const queues = new Map<string, Promise<void>>();
+    const queues = new Map<string, Promise<unknown>>();
     const first = deferred();
     const events: string[] = [];
 
@@ -283,7 +282,7 @@ describe("queueNoteWrite", () => {
   });
 
   it("does not hold one note's write behind another note's", async () => {
-    const queues = new Map<string, Promise<void>>();
+    const queues = new Map<string, Promise<unknown>>();
     const blocked = deferred();
     const ran: string[] = [];
 
@@ -297,11 +296,11 @@ describe("queueNoteWrite", () => {
   });
 
   it("keeps the queue moving after a failed write and reports the failure to its caller", async () => {
-    const queues = new Map<string, Promise<void>>();
+    const queues = new Map<string, Promise<unknown>>();
     const failing = queueNoteWrite(queues, "note-1", async () => {
       throw new Error("write failed");
     });
-    const next = jest.fn(async () => {});
+    const next = vi.fn(async () => {});
     const following = queueNoteWrite(queues, "note-1", next);
 
     await expect(failing).rejects.toThrow("write failed");
@@ -309,8 +308,17 @@ describe("queueNoteWrite", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
+  it("hands each task's result back to its own caller", async () => {
+    const queues = new Map<string, Promise<unknown>>();
+    const skipped = queueNoteWrite(queues, "note-1", async () => false);
+    const written = queueNoteWrite(queues, "note-1", async () => true);
+
+    await expect(skipped).resolves.toBe(false);
+    await expect(written).resolves.toBe(true);
+  });
+
   it("forgets a note once its queue has drained", async () => {
-    const queues = new Map<string, Promise<void>>();
+    const queues = new Map<string, Promise<unknown>>();
     await queueNoteWrite(queues, "note-1", async () => {});
     await Promise.resolve();
     expect(queues.has("note-1")).toBe(false);

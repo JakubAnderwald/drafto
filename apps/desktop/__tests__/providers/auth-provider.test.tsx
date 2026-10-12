@@ -88,7 +88,7 @@ describe("AuthProvider", () => {
     mockApprovalCache.getCachedApproval.mockResolvedValue(null);
     mockApprovalCache.setCachedApproval.mockResolvedValue(undefined);
     mockApprovalCache.clearCachedApproval.mockResolvedValue(undefined);
-    mockSyncDatabase.mockResolvedValue({ conflictCount: 0 });
+    mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
     mockProcessPendingUploads.mockResolvedValue(0);
     mockDeleteAllLocalAttachments.mockResolvedValue(undefined);
   });
@@ -381,7 +381,7 @@ describe("AuthProvider — deleteAccount", () => {
     mockApprovalCache.getCachedApproval.mockResolvedValue(null);
     mockApprovalCache.setCachedApproval.mockResolvedValue(undefined);
     mockApprovalCache.clearCachedApproval.mockResolvedValue(undefined);
-    mockSyncDatabase.mockResolvedValue({ conflictCount: 0 });
+    mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
     mockProcessPendingUploads.mockResolvedValue(0);
     mockDeleteAllLocalAttachments.mockResolvedValue(undefined);
     (mockSupabase.auth.signOut as jest.Mock).mockResolvedValue({});
@@ -549,7 +549,7 @@ describe("AuthProvider — password recovery", () => {
     mockApprovalCache.getCachedApproval.mockResolvedValue(null);
     mockApprovalCache.setCachedApproval.mockResolvedValue(undefined);
     mockApprovalCache.clearCachedApproval.mockResolvedValue(undefined);
-    mockSyncDatabase.mockResolvedValue({ conflictCount: 0 });
+    mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
     mockProcessPendingUploads.mockResolvedValue(0);
     mockDeleteAllLocalAttachments.mockResolvedValue(undefined);
     (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({ data: { session: null } });

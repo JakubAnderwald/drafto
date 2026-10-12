@@ -47,7 +47,9 @@ Mobile / Desktop
   User edit
     -> React Native screen
     -> WatermelonDB write (local SQLite, immediate)
-    -> sync.ts (apps/{mobile,desktop}/src/db/sync.ts, periodic)
+    -> DatabaseProvider schedules a sync (1.5 s after the last local edit, plus
+       login / foreground / reconnect / every 30 s while changes are pending)
+    -> sync.ts (apps/{mobile,desktop}/src/db/sync.ts)
     -> @supabase/supabase-js push/pull
     -> Postgres
   Offline writes queue locally and replay on reconnect.

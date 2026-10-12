@@ -3,6 +3,8 @@ import { useEditorBridge } from "@10play/tentap-editor";
 import {
   DEBOUNCE_MS,
   contentToTiptap,
+  sameStoredContent,
+  serializeEditorContent,
   toAttachmentUrl,
   type TipTapDoc,
   type TipTapNode,
@@ -11,7 +13,6 @@ import {
 import { render, fireEvent, act } from "../../helpers/test-utils";
 import { jsonbReordered } from "../../helpers/jsonb";
 import { NoteEditorPanel } from "@/components/notes/note-editor-panel";
-import { sameStoredContent, serializeEditorContent } from "@/components/notes/content-save-guard";
 import { useNote } from "@/hooks/use-note";
 import type { Attachment, Note } from "@/db";
 
@@ -326,6 +327,22 @@ describe("NoteEditorPanel — no writes from merely opening a note (#654)", () =
 
     expect(writes(note)).toBe(0);
     expect(note.content).toBe(webAuthoredSplitRuns());
+  });
+
+  it("shows no 'Saved' badge for a skipped save, and shows it once an edit is written", async () => {
+    const note = createRecord("a", "Welcome", webAuthoredSplitRuns());
+    const { queryByText } = renderPanel("a");
+    await flushAsync();
+
+    web.emitChange(); // the late load echo: a save that writes nothing
+    await flushAsync(DEBOUNCE_MS * 2);
+    expect(writes(note)).toBe(0);
+    expect(queryByText("Saved")).toBeNull();
+
+    web.userEdit(withParagraph(web.currentDoc(), "typed by the user"));
+    await flushAsync(DEBOUNCE_MS * 2);
+    expect(writes(note)).toBe(1);
+    expect(queryByText("Saved")).not.toBeNull();
   });
 
   it("does not write an empty TipTap doc, a legacy plain-text note or an empty note when opened", async () => {
