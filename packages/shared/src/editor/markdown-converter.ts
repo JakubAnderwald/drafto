@@ -57,9 +57,10 @@ function escapeInlineText(text: string): string {
   });
 }
 
-// Image captions and file names: only the brackets around them are syntax.
+// Image captions and file names: the brackets around them are syntax, and a
+// backtick would open a code span that hides the closing `]`.
 function escapeLinkLabel(text: string): string {
-  return escapeMarkdown(text, (ch) => ch === "[" || ch === "]");
+  return escapeMarkdown(text, (ch) => ch === "[" || ch === "]" || ch === "`");
 }
 
 /**
@@ -87,7 +88,11 @@ function escapeLineStart(markdown: string): string {
 
 // A fence one backtick longer than any run inside the code, so no code line can close it.
 function codeFence(code: string): string {
-  const longestRun = Math.max(0, ...(code.match(/`+/g) ?? []).map((run) => run.length));
+  // reduce, not Math.max(...runs): a large block can have more runs than a call takes arguments.
+  const longestRun = (code.match(/`+/g) ?? []).reduce(
+    (longest, run) => Math.max(longest, run.length),
+    0,
+  );
   return "`".repeat(Math.max(3, longestRun + 1));
 }
 
@@ -455,7 +460,8 @@ function parseInlineMarkdown(
       if (span) {
         flushPlain();
         const spanStyles = { ...styles, ...DELIMITER_STYLES[span.delimiter] };
-        result.push(...parseInlineMarkdown(span.inner, spanStyles, inLink));
+        // A loop, not push(...nodes): a long span can hold more nodes than a call takes arguments.
+        for (const node of parseInlineMarkdown(span.inner, spanStyles, inLink)) result.push(node);
         i = span.end;
         continue;
       }
@@ -477,16 +483,18 @@ function isClosingFence(line: string, fenceLength: number): boolean {
 
 /**
  * Split a `| a | b |` row on unescaped pipes. GFM strips `\|` back to `|`
- * before a cell's inline Markdown is read; other escapes are left for
- * parseInlineMarkdown. The trailing pipe is optional.
+ * before a cell's inline Markdown is read; every other backslash is left for
+ * parseInlineMarkdown. Only `\|` is consumed, so `\\|` is a backslash plus an
+ * escaped pipe, exactly reversing tableCellToMarkdown, whose code spans keep
+ * their backslashes unescaped. The trailing pipe is optional.
  */
 function splitTableRow(row: string): string[] {
   const cells: string[] = [];
   let cell = "";
   for (let i = 0; i < row.length; i++) {
     const ch = row[i];
-    if (ch === "\\" && i + 1 < row.length) {
-      cell += row[i + 1] === "|" ? "|" : ch + row[i + 1];
+    if (ch === "\\" && row[i + 1] === "|") {
+      cell += "|";
       i++;
     } else if (ch === "|") {
       cells.push(cell);
@@ -589,9 +597,9 @@ export function markdownToBlockNote(markdown: string): BlockNoteBlock[] {
       continue;
     }
 
-    // Image
+    // Image. Text after it on the same line makes the line a paragraph, so it isn't dropped.
     const imageMatch = content.startsWith("!") ? parseLinkAt(content, 1) : null;
-    if (imageMatch) {
+    if (imageMatch && content.slice(imageMatch.end).trim() === "") {
       const props: Record<string, unknown> = { url: imageMatch.href };
       const caption = unescapeMarkdown(imageMatch.label);
       if (caption) props.caption = caption;

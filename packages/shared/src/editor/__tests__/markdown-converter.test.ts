@@ -553,6 +553,15 @@ describe("round-trip stability", () => {
       expectMarkdownToBeStable("*a***b**");
     });
 
+    it("parses a styled span holding more nodes than a call takes arguments", () => {
+      const content = markdownToBlockNote(`**${"`a`b".repeat(100_000)}**`)[0].content;
+      expect(content).toHaveLength(200_000);
+      expect((content as { styles: Record<string, boolean> }[])[0].styles).toEqual({
+        bold: true,
+        code: true,
+      });
+    });
+
     it("round-trips styled text containing escaped delimiters", () => {
       expectBlocksToRoundTrip([
         paragraph([text("*", { italic: true }), text("**x**", { bold: true })]),
@@ -629,6 +638,35 @@ describe("round-trip stability", () => {
         },
       ]);
     });
+
+    it("round-trips attachment names and image captions containing backticks", () => {
+      // A backtick in the label must not pair with one in the url as a code span.
+      expectBlocksToRoundTrip([
+        {
+          type: "file",
+          props: { url: "attachment://u/n/`report.pdf", name: "`report.pdf" },
+          children: [],
+        },
+        {
+          type: "image",
+          props: { url: "https://x.test/`a.png", caption: "`a` and `b" },
+          children: [],
+        },
+      ]);
+    });
+
+    it("keeps text that follows an image on the same line", () => {
+      const href = "https://x.test/a.png";
+      const blocks = markdownToBlockNote(`![diagram](${href}) Figure 1`);
+      expect(blocks).toEqual([
+        paragraph([
+          text("!"),
+          { type: "link", text: "diagram", href, content: [text("diagram")] },
+          text(" Figure 1"),
+        ]),
+      ]);
+      expectMarkdownToBeStable(blockNoteToMarkdown(blocks));
+    });
   });
 
   describe("tables", () => {
@@ -656,6 +694,23 @@ describe("round-trip stability", () => {
       ];
       expectBlocksToRoundTrip(blocks);
     });
+
+    it.each([["foo\\|bar"], ["foo\\\\|bar"], ["ends \\"]])(
+      "keeps the code span %j in one cell",
+      (value) => {
+        const blocks: BlockNoteBlock[] = [
+          {
+            type: "table",
+            content: {
+              type: "tableContent",
+              rows: [{ cells: [[text(value, { code: true })], [text("y")]] }],
+            },
+            children: [],
+          },
+        ];
+        expectBlocksToRoundTrip(blocks);
+      },
+    );
 
     it("parses tables without trailing pipes", () => {
       expect(markdownToBlockNote("| a | b\n| --- | ---\n| 1 | 2")).toEqual([
@@ -730,6 +785,10 @@ describe("round-trip stability", () => {
 
     it("keeps an empty code block", () => {
       expectBlocksToRoundTrip([code("")]);
+    });
+
+    it("emits a code block with more backtick runs than a call takes arguments", () => {
+      expectBlocksToRoundTrip([code("`a".repeat(500_000))]);
     });
   });
 
