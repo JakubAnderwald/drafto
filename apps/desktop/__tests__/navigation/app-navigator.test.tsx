@@ -56,9 +56,15 @@ jest.mock("@/screens/reset-password", () => ({
     return <RNText>RESET</RNText>;
   },
 }));
+// Counts mounts, so a test can tell "still the same screen" from "unmounted and remounted".
+const mockWaitingMounts = jest.fn();
 jest.mock("@/screens/waiting-for-approval", () => ({
   WaitingForApprovalScreen: () => {
+    const { useEffect } = require("react");
     const { Text: RNText } = require("react-native");
+    useEffect(() => {
+      mockWaitingMounts();
+    }, []);
     return <RNText>WAITING</RNText>;
   },
 }));
@@ -214,6 +220,118 @@ describe("RootNavigator", () => {
 
     expect(queryByText("LOGIN")).toBeNull();
     expect(queryByText("RESET")).toBeNull();
+  });
+
+  it("shows its spinner only for the first auth read", () => {
+    mockUseAuth.mockReturnValue(authState({ isLoading: true }));
+    const { getByTestId, rerender, queryByTestId } = render(<RootNavigator />);
+
+    expect(getByTestId("navigator-loading")).toBeTruthy();
+
+    mockUseAuth.mockReturnValue(
+      authState({ user: APPROVED_USER, isApproved: true, isCheckingApproval: true }),
+    );
+    rerender(<RootNavigator />);
+
+    expect(queryByTestId("navigator-loading")).toBeNull();
+  });
+
+  it("keeps the waiting screen mounted through a manual approval check (#676)", () => {
+    // A spinner swap unmounted the screen, so its "still pending approval" message was lost.
+    mockUseAuth.mockReturnValue(authState({ user: APPROVED_USER, isApproved: false }));
+    const { getByText, queryByTestId, rerender } = render(<RootNavigator />);
+    expect(mockWaitingMounts).toHaveBeenCalledTimes(1);
+
+    mockUseAuth.mockReturnValue(
+      authState({ user: APPROVED_USER, isApproved: false, isCheckingApproval: true }),
+    );
+    rerender(<RootNavigator />);
+    expect(getByText("WAITING")).toBeTruthy();
+    expect(queryByTestId("navigator-loading")).toBeNull();
+
+    mockUseAuth.mockReturnValue(authState({ user: APPROVED_USER, isApproved: false }));
+    rerender(<RootNavigator />);
+
+    expect(getByText("WAITING")).toBeTruthy();
+    expect(mockWaitingMounts).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the app once a manual check finds the account approved", () => {
+    mockUseAuth.mockReturnValue(authState({ user: APPROVED_USER, isApproved: false }));
+    const { getByText, rerender } = render(<RootNavigator />);
+
+    mockUseAuth.mockReturnValue(
+      authState({ user: APPROVED_USER, isApproved: false, isCheckingApproval: true }),
+    );
+    rerender(<RootNavigator />);
+    mockUseAuth.mockReturnValue(authState({ user: APPROVED_USER, isApproved: true }));
+    rerender(<RootNavigator />);
+
+    expect(getByText("MAIN")).toBeTruthy();
+  });
+
+  it("keeps the app on screen through an approval re-check", () => {
+    mockUseAuth.mockReturnValue(authState({ user: APPROVED_USER, isApproved: true }));
+    const { getByText, rerender } = render(<RootNavigator />);
+
+    mockUseAuth.mockReturnValue(
+      authState({ user: APPROVED_USER, isApproved: true, isCheckingApproval: true }),
+    );
+    rerender(<RootNavigator />);
+
+    expect(getByText("MAIN")).toBeTruthy();
+  });
+
+  it("holds the login screen during a sign-in's approval check, with no waiting-screen flash", () => {
+    const { getByText, queryByText, rerender } = render(<RootNavigator />);
+    expect(getByText("LOGIN")).toBeTruthy();
+
+    // isApproved is still the signed-out default while the check runs.
+    mockUseAuth.mockReturnValue(
+      authState({ user: APPROVED_USER, isApproved: false, isCheckingApproval: true }),
+    );
+    rerender(<RootNavigator />);
+    expect(getByText("LOGIN")).toBeTruthy();
+    expect(queryByText("WAITING")).toBeNull();
+
+    mockUseAuth.mockReturnValue(authState({ user: APPROVED_USER, isApproved: true }));
+    rerender(<RootNavigator />);
+    expect(getByText("MAIN")).toBeTruthy();
+    expect(mockWaitingMounts).not.toHaveBeenCalled();
+  });
+
+  it("keeps Sign Up on screen while a sign-up session's approval check runs", () => {
+    // Confirmation off: sign-up itself signs the user in. Rewinding the auth route on the bare
+    // sign-in would flash the login form during the check.
+    const { getByText, queryByText, rerender } = render(<RootNavigator />);
+    fireEvent.press(getByText("TO-SIGNUP"));
+
+    mockUseAuth.mockReturnValue(
+      authState({ user: APPROVED_USER, isApproved: false, isCheckingApproval: true }),
+    );
+    rerender(<RootNavigator />);
+    expect(getByText("SIGNUP")).toBeTruthy();
+    expect(queryByText("LOGIN")).toBeNull();
+
+    mockUseAuth.mockReturnValue(authState({ user: APPROVED_USER, isApproved: false }));
+    rerender(<RootNavigator />);
+    expect(getByText("WAITING")).toBeTruthy();
+
+    // ...and the auth route is still rewound for the next sign-out.
+    mockUseAuth.mockReturnValue(authState());
+    rerender(<RootNavigator />);
+    expect(getByText("LOGIN")).toBeTruthy();
+  });
+
+  it("never holds a signed-out user in the app behind a check still in flight", () => {
+    mockUseAuth.mockReturnValue(authState({ user: APPROVED_USER, isApproved: true }));
+    const { getByText, queryByText, rerender } = render(<RootNavigator />);
+
+    mockUseAuth.mockReturnValue(authState({ user: null, isCheckingApproval: true }));
+    rerender(<RootNavigator />);
+
+    expect(getByText("LOGIN")).toBeTruthy();
+    expect(queryByText("MAIN")).toBeNull();
   });
 
   it("registers a deep-link listener for the OAuth callback", () => {

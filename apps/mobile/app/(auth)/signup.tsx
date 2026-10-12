@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { Text, View, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
-import { Link, router } from "expo-router";
+import { Link } from "expo-router";
+import { SIGNUP_CONFIRMATION_SENT, SIGNUP_EMAIL_REDIRECT_URL } from "@drafto/shared";
 
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
@@ -17,9 +18,11 @@ export default function SignupScreen() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [sentTo, setSentTo] = useState<string | null>(null);
 
   const handleSignup = async () => {
-    if (!email.trim() || !password) {
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail || !password) {
       setError("Please enter your email and password.");
       return;
     }
@@ -33,9 +36,10 @@ export default function SignupScreen() {
     setLoading(true);
 
     try {
-      const { error: signUpError } = await supabase.auth.signUp({
-        email: email.trim(),
+      const { data, error: signUpError } = await supabase.auth.signUp({
+        email: trimmedEmail,
         password,
+        options: { emailRedirectTo: SIGNUP_EMAIL_REDIRECT_URL },
       });
 
       if (signUpError) {
@@ -43,11 +47,31 @@ export default function SignupScreen() {
         return;
       }
 
-      router.replace("/(auth)/waiting-for-approval");
+      // With email confirmation on, sign-up returns no session: the user has to confirm the
+      // address first. Navigating anywhere now would only bounce off the route guard, so say
+      // what happens next instead. With a session, the auth state change routes the user on.
+      if (!data.session) {
+        setSentTo(trimmedEmail);
+      }
     } finally {
       setLoading(false);
     }
   };
+
+  if (sentTo) {
+    return (
+      <View style={styles.confirmationContainer} testID="signup-check-email">
+        <Text style={styles.title} accessibilityRole="header">
+          Check Your Email
+        </Text>
+        <Text style={styles.sentTo}>{sentTo}</Text>
+        <Text style={styles.confirmationText}>{SIGNUP_CONFIRMATION_SENT}</Text>
+        <Link href="/(auth)/login" dismissTo style={styles.link}>
+          Back to login
+        </Link>
+      </View>
+    );
+  }
 
   return (
     <KeyboardAvoidingView
@@ -101,6 +125,7 @@ export default function SignupScreen() {
             fullWidth
             size="lg"
             accessibilityLabel="Sign up"
+            testID="signup-submit"
             style={styles.submitButton}
           />
         </View>
@@ -110,7 +135,7 @@ export default function SignupScreen() {
         <View style={styles.footer}>
           <Text style={styles.footerText}>
             Already have an account?{" "}
-            <Link href="/(auth)/login" style={styles.link}>
+            <Link href="/(auth)/login" dismissTo style={styles.link}>
               Log in
             </Link>
           </Text>
@@ -131,11 +156,31 @@ const createStyles = (semantic: SemanticColors) =>
       justifyContent: "center",
       padding: spacing["2xl"],
     },
+    confirmationContainer: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: spacing["2xl"],
+    },
     title: {
       fontSize: fontSizes["4xl"],
       fontWeight: "bold",
       marginBottom: spacing.sm,
       color: semantic.fg,
+      textAlign: "center",
+    },
+    sentTo: {
+      fontSize: fontSizes.base,
+      fontWeight: "600",
+      color: semantic.fg,
+      textAlign: "center",
+      marginBottom: spacing.md,
+    },
+    confirmationText: {
+      fontSize: fontSizes.base,
+      color: semantic.fgMuted,
+      textAlign: "center",
+      marginBottom: spacing["2xl"],
     },
     subtitle: {
       fontSize: fontSizes.xl,
@@ -175,5 +220,6 @@ const createStyles = (semantic: SemanticColors) =>
     link: {
       color: colors.primary[600],
       fontWeight: "600",
+      fontSize: fontSizes.base,
     },
   });

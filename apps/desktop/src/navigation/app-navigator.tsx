@@ -14,6 +14,14 @@ import { MainScreen } from "@/screens/main";
 
 type AuthRoute = "Login" | "Signup" | "ForgotPassword";
 
+/** Which side of the auth gate is on screen: the auth flow, the approval wait, or the app. */
+type Gate = "auth" | "waiting" | "main";
+
+function resolveGate(isSignedIn: boolean, isApproved: boolean): Gate {
+  if (!isSignedIn) return "auth";
+  return isApproved ? "main" : "waiting";
+}
+
 export function RootNavigator() {
   const { user, isApproved, isLoading, isCheckingApproval, isRecovering } = useAuth();
   const { semantic } = useTheme();
@@ -39,25 +47,50 @@ export function RootNavigator() {
     return () => subscription.remove();
   }, []);
 
+  const isSignedIn = Boolean(user);
+
+  // An approval check in flight holds the screen that was last decided instead of swapping it
+  // for a spinner. A spinner unmounted the waiting screen on "Check approval status", losing
+  // its "still pending" message (#676), and would blank the open editor on any re-check. On
+  // sign-in the login screen stays up for the check, so neither an approved user sees the
+  // waiting screen flash nor an unapproved one the app. Signing out is never held: a check
+  // still in flight must not keep a signed-out user in the app. Updating state during render
+  // is React's pattern for deriving from a previous render.
+  const currentGate = resolveGate(isSignedIn, isApproved);
+  const holdGate = isCheckingApproval && isSignedIn;
+  const [settledGate, setSettledGate] = useState<Gate>(currentGate);
+  if (!holdGate && settledGate !== currentGate) {
+    setSettledGate(currentGate);
+  }
+  const gate = holdGate ? settledGate : currentGate;
+
   // The auth stack's route is local state on a component that never unmounts, so
   // it outlives the session: without this, signing out drops the user back on
   // whichever auth screen they last used — Forgot Password, say — instead of the
-  // login screen. Rewinding on the sign-in edge covers every way a session can
-  // end, including an involuntary one (revoked refresh token), and can never yank
-  // a signed-out user off a screen they chose. It does not cover the recovery
-  // link that never yields a session — that exit still runs through the
-  // `onNavigateToLogin` handed to ResetPasswordScreen below, which must stay.
-  const isSignedIn = Boolean(user);
+  // login screen. Rewinding once the gate leaves the auth flow covers every way a
+  // session can end, including an involuntary one (revoked refresh token), and can
+  // never yank a signed-out user off a screen they chose. It waits for the gate,
+  // not the bare sign-in: during the approval check that follows a sign-in the auth
+  // screen stays up, and rewinding then would swap Sign Up for Log In mid-check. It
+  // does not cover the recovery link that never yields a session — that exit still
+  // runs through the `onNavigateToLogin` handed to ResetPasswordScreen below, which
+  // must stay.
+  const hasLeftAuth = gate !== "auth";
 
   useEffect(() => {
-    if (isSignedIn) {
+    if (hasLeftAuth) {
       setAuthRoute("Login");
     }
-  }, [isSignedIn]);
+  }, [hasLeftAuth]);
 
-  if (isLoading || isCheckingApproval) {
+  // Only the first auth read blanks the window. isLoading stays true through the launch-time
+  // approval check, so nothing is shown on a stale approval at start-up.
+  if (isLoading) {
     return (
-      <View style={[styles.loadingContainer, { backgroundColor: semantic.bg }]}>
+      <View
+        style={[styles.loadingContainer, { backgroundColor: semantic.bg }]}
+        testID="navigator-loading"
+      >
         <ActivityIndicator size="large" color={colors.primary[600]} />
       </View>
     );
@@ -72,12 +105,12 @@ export function RootNavigator() {
     return <ResetPasswordScreen onNavigateToLogin={() => setAuthRoute("Login")} />;
   }
 
-  if (user && isApproved) {
+  if (gate === "main") {
     return <MainScreen />;
   }
 
   // Authenticated but not approved — always show waiting screen
-  if (user && !isApproved) {
+  if (gate === "waiting") {
     return <WaitingForApprovalScreen />;
   }
 

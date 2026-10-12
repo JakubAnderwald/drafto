@@ -73,7 +73,7 @@ export default function ForgotPasswordScreen() {
           We&apos;ve sent a password reset link to <Text style={styles.strong}>{sentTo}</Text>. Open
           it on this device to set a new password.
         </Text>
-        <Link href="/(auth)/login" style={styles.link}>
+        <Link href="/(auth)/login" dismissTo style={styles.link}>
           Back to login
         </Link>
       </View>
@@ -124,7 +124,7 @@ export default function ForgotPasswordScreen() {
         </View>
 
         <View style={styles.footer}>
-          <Link href="/(auth)/login" style={styles.link}>
+          <Link href="/(auth)/login" dismissTo style={styles.link}>
             Back to login
           </Link>
         </View>

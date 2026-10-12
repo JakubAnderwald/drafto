@@ -103,4 +103,20 @@ describe("ForgotPasswordScreen", () => {
     });
     expect(getByText("You're offline. Reconnect to the internet and try again.")).toBeTruthy();
   });
+
+  it("dismisses back to the login screen below instead of pushing another one", async () => {
+    const { getByText, getByTestId } = render(<ForgotPasswordScreen />);
+
+    // On the form...
+    expect(getByText("Back to login").props.dismissTo).toBe(true);
+
+    fireEvent.changeText(getByTestId("forgot-password-email-input"), "test@example.com");
+    fireEvent.press(getByText("Send reset link"));
+
+    // ...and on the confirmation.
+    await waitFor(() => {
+      expect(getByText("Check Your Email")).toBeTruthy();
+    });
+    expect(getByText("Back to login").props.dismissTo).toBe(true);
+  });
 });

@@ -1,7 +1,10 @@
 import { useEffect, useState, useMemo } from "react";
 import { Text, View, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
 import { Link } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { ACCOUNT_DELETED_MESSAGE } from "@drafto/shared";
 
+import { clearAccountDeletedNotice, useAccountDeletedNotice } from "@/lib/account-deleted-notice";
 import { clearAuthCallbackError, useAuthCallbackError } from "@/lib/auth-callback-errors";
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
@@ -14,6 +17,8 @@ import { Input } from "@/components/ui/input";
 export default function LoginScreen() {
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+  // No header above this screen, so it keeps its own content clear of the status bar.
+  const { top: topInset } = useSafeAreaInsets();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -26,8 +31,11 @@ export default function LoginScreen() {
     if (callbackError) setError(callbackError);
   }, [callbackError]);
 
+  const accountDeleted = useAccountDeletedNotice();
+
   const handleLogin = async () => {
     clearAuthCallbackError();
+    clearAccountDeletedNotice();
     if (!email.trim() || !password) {
       setError("Please enter your email and password.");
       return;
@@ -53,12 +61,23 @@ export default function LoginScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={styles.flex}
+      style={[styles.flex, { paddingTop: topInset }]}
+      testID="login-screen"
       behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>Log In</Text>
         <Text style={styles.subtitle}>Sign in to your Drafto account</Text>
+
+        {accountDeleted && (
+          <View
+            style={styles.successContainer}
+            accessibilityRole="alert"
+            testID="account-deleted-notice"
+          >
+            <Text style={styles.successText}>{ACCOUNT_DELETED_MESSAGE}</Text>
+          </View>
+        )}
 
         {error && (
           <View style={styles.errorContainer}>
@@ -113,7 +132,7 @@ export default function LoginScreen() {
         <View style={styles.footer}>
           <Text style={styles.footerText}>
             Don&apos;t have an account?{" "}
-            <Link href="/(auth)/signup" style={styles.link}>
+            <Link href="/(auth)/signup" style={styles.link} testID="signup-link">
               Sign up
             </Link>
           </Text>
@@ -163,6 +182,18 @@ const createStyles = (semantic: SemanticColors) =>
     },
     errorText: {
       color: semantic.errorText,
+      fontSize: fontSizes.base,
+      textAlign: "center",
+    },
+    successContainer: {
+      backgroundColor: semantic.successBg,
+      borderRadius: radii.md,
+      padding: spacing.md,
+      width: "100%",
+      marginBottom: spacing.lg,
+    },
+    successText: {
+      color: semantic.successText,
       fontSize: fontSizes.base,
       textAlign: "center",
     },

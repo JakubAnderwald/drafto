@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
 import { Text, View, Pressable, StyleSheet, ActivityIndicator } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
@@ -10,6 +11,8 @@ export default function WaitingForApprovalScreen() {
   const { signOut, refreshApprovalStatus } = useAuth();
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+  // No header above this screen, so it keeps its own content clear of the status bar.
+  const { top: topInset } = useSafeAreaInsets();
   const [checking, setChecking] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -24,6 +27,9 @@ export default function WaitingForApprovalScreen() {
       if (!approved) {
         setError("Your account is still pending approval.");
       }
+    } catch (err) {
+      console.error("Approval check failed:", err);
+      setError("Unable to check approval status. Please try again.");
     } finally {
       setChecking(false);
     }
@@ -41,7 +47,7 @@ export default function WaitingForApprovalScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: topInset + spacing["2xl"] }]}>
       <Text style={styles.icon}>&#9203;</Text>
       <Text style={styles.title}>Awaiting Approval</Text>
       <Text style={styles.subtitle}>
@@ -50,7 +56,7 @@ export default function WaitingForApprovalScreen() {
       </Text>
 
       {error && (
-        <View style={styles.errorContainer}>
+        <View style={styles.errorContainer} accessibilityRole="alert">
           <Text style={styles.errorText}>{error}</Text>
         </View>
       )}

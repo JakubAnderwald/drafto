@@ -22,6 +22,8 @@ interface DeleteAccountPanelProps {
   onConfirm: () => Promise<AccountDeletionResult>;
   /** Deletion needs the server, so the confirm button stays disabled while offline. */
   isOffline?: boolean;
+  /** Keeps the confirm button disabled without the offline note, e.g. during a sign-out. */
+  disabled?: boolean;
 }
 
 /**
@@ -33,6 +35,7 @@ export function DeleteAccountPanel({
   onCancel,
   onConfirm,
   isOffline = false,
+  disabled = false,
 }: DeleteAccountPanelProps) {
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
@@ -52,7 +55,7 @@ export function DeleteAccountPanel({
   }, []);
 
   const canConfirm =
-    confirmation.trim() === ACCOUNT_DELETE_CONFIRMATION && !isPending && !isOffline;
+    confirmation.trim() === ACCOUNT_DELETE_CONFIRMATION && !isPending && !isOffline && !disabled;
 
   const handleConfirm = async () => {
     if (!canConfirm || inFlightRef.current) return;

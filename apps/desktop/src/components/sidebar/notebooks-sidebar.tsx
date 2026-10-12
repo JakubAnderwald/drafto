@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import { Q } from "@nozbe/watermelondb";
 
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { useNotebooks } from "@/hooks/use-notebooks";
+import { useSafeSignOut } from "@/hooks/use-safe-sign-out";
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { database, Notebook, Note, Attachment } from "@/db";
@@ -45,7 +46,8 @@ export function NotebooksSidebar({
   onTriggerCreateHandled,
 }: NotebooksSidebarProps) {
   const { notebooks, loading } = useNotebooks();
-  const { user, signOut, deleteAccount } = useAuth();
+  const { user, deleteAccount } = useAuth();
+  const { signOut, isSigningOut } = useSafeSignOut();
   const { isConnected, isInternetReachable } = useNetworkStatus();
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
@@ -187,9 +189,30 @@ export function NotebooksSidebar({
   // letting a second DELETE go out.
   const openDeleteAccountPanel = useCallback(() => setIsDeletingAccount(true), []);
 
+  // Sign-out and account deletion both wipe the device, so they never overlap: the panel's
+  // confirm is disabled during a sign-out, and Sign out does nothing while a deletion request
+  // is in flight (a successful deletion signs out by itself; after a failure it works again).
+  const deletionPendingRef = useRef(false);
+  const confirmDeleteAccount = useCallback(async () => {
+    deletionPendingRef.current = true;
+    try {
+      return await deleteAccount();
+    } finally {
+      deletionPendingRef.current = false;
+    }
+  }, [deleteAccount]);
+  const signOutUnlessDeleting = useCallback(() => {
+    if (deletionPendingRef.current) return;
+    void signOut();
+  }, [signOut]);
+
   return (
     <View style={styles.container}>
-      <AppMenu onSignOut={signOut} onDeleteAccount={openDeleteAccountPanel} isOffline={isOffline}>
+      <AppMenu
+        onSignOut={signOutUnlessDeleting}
+        onDeleteAccount={openDeleteAccountPanel}
+        isOffline={isOffline}
+      >
         {({ trigger, onAnchorLayout }) => (
           <>
             <View style={styles.header}>
@@ -278,17 +301,32 @@ export function NotebooksSidebar({
                 style={styles.userSection}
                 onLayout={onAnchorLayout}
               >
+                {/* While signing out (a last sync, maybe a confirmation, then the local wipe)
+                    the row says so, and the menu trigger is swapped out so a second sign-out
+                    cannot start. */}
                 <View style={styles.userRow}>
                   <Text style={styles.userEmail} numberOfLines={1}>
-                    {user?.email}
+                    {isSigningOut ? "Signing out…" : user?.email}
                   </Text>
-                  {trigger}
+                  {isSigningOut ? (
+                    <ActivityIndicator
+                      size="small"
+                      color={colors.primary[600]}
+                      testID="sign-out-progress"
+                      accessibilityLabel="Signing out"
+                    />
+                  ) : (
+                    trigger
+                  )}
                 </View>
+                {/* Stays mounted during a sign-out, so a deletion already in flight keeps
+                    its progress and result; it just cannot be confirmed meanwhile. */}
                 {isDeletingAccount ? (
                   <DeleteAccountPanel
                     onCancel={() => setIsDeletingAccount(false)}
-                    onConfirm={deleteAccount}
+                    onConfirm={confirmDeleteAccount}
                     isOffline={isOffline}
+                    disabled={isSigningOut}
                   />
                 ) : null}
               </View>
