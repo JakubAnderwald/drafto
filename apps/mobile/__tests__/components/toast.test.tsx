@@ -1,0 +1,118 @@
+import React from "react";
+import { StyleSheet } from "react-native";
+import * as Haptics from "expo-haptics";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
+import { render, act } from "../helpers/test-utils";
+import { ToastProvider, useToast, AUTO_DISMISS_MS, MAX_VISIBLE_TOASTS } from "@/components/toast";
+import { spacing } from "@/theme/tokens";
+
+type ShowToast = ReturnType<typeof useToast>["showToast"];
+
+let showToast!: ShowToast;
+
+function CaptureToast() {
+  showToast = useToast().showToast;
+  return null;
+}
+
+function renderToasts() {
+  return render(
+    <ToastProvider>
+      <CaptureToast />
+    </ToastProvider>,
+  );
+}
+
+function show(text: string) {
+  act(() => showToast(text));
+}
+
+/** Runs the dismiss timer plus the 250 ms slide-out animation. */
+function advance(ms: number) {
+  act(() => {
+    jest.advanceTimersByTime(ms);
+  });
+}
+
+describe("ToastProvider", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.clearAllMocks();
+    jest.mocked(useSafeAreaInsets).mockReturnValue({ top: 47, bottom: 34, left: 0, right: 0 });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it("sits at the top, below the status bar, not over the add button at the bottom", () => {
+    const { getByTestId } = renderToasts();
+
+    const style = StyleSheet.flatten(getByTestId("toast-container").props.style);
+    expect(style.top).toBe(47 + spacing.sm);
+    expect(style.bottom).toBeUndefined();
+  });
+
+  it("dismisses a toast after AUTO_DISMISS_MS", () => {
+    const { queryByText } = renderToasts();
+
+    show("Saved");
+    expect(queryByText("Saved")).toBeTruthy();
+
+    advance(AUTO_DISMISS_MS + 500);
+    expect(queryByText("Saved")).toBeNull();
+  });
+
+  it("does not restart a toast's timer when another toast arrives", () => {
+    const { queryByText } = renderToasts();
+
+    show("First");
+    advance(AUTO_DISMISS_MS - 1000);
+    // A new toast re-renders the provider; this used to restart every timer.
+    show("Second");
+    advance(1500);
+
+    expect(queryByText("First")).toBeNull();
+    expect(queryByText("Second")).toBeTruthy();
+  });
+
+  it("shows identical text once, with one haptic", () => {
+    const { getAllByText } = renderToasts();
+
+    show("A note was updated from another device");
+    show("A note was updated from another device");
+
+    expect(getAllByText("A note was updated from another device")).toHaveLength(1);
+    expect(Haptics.notificationAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the same text again once the first toast has gone", () => {
+    const { getAllByText } = renderToasts();
+
+    show("Saved");
+    advance(AUTO_DISMISS_MS + 500);
+    show("Saved");
+
+    expect(getAllByText("Saved")).toHaveLength(1);
+    expect(Haptics.notificationAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it(`shows at most ${MAX_VISIBLE_TOASTS} toasts, dropping the oldest`, () => {
+    const { queryByText } = renderToasts();
+
+    show("One");
+    show("Two");
+    show("Three");
+
+    expect(queryByText("One")).toBeNull();
+    expect(queryByText("Two")).toBeTruthy();
+    expect(queryByText("Three")).toBeTruthy();
+  });
+
+  it("throws when used outside the provider", () => {
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => render(<CaptureToast />)).toThrow("useToast must be used within a ToastProvider");
+    error.mockRestore();
+  });
+});

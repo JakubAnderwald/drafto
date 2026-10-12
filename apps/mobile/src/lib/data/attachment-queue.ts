@@ -192,11 +192,45 @@ export async function processPendingUploads(): Promise<UploadResult> {
       });
     }
 
+    if (await uploadAttachment(attachment)) {
+      uploaded += 1;
+    } else {
+      failed += 1;
+    }
+  }
+
+  return { uploaded, failed };
+}
+
+// One upload per attachment at a time. The editor uploads a freshly picked file
+// straight away, while a sync started meanwhile (e.g. by the note write) drains
+// the same queue; without this both would upload the file, and the second could
+// find the local copy already deleted by the first and mark it failed.
+const uploadsInFlight = new Map<string, Promise<boolean>>();
+
+/**
+ * Upload one queued attachment now and report whether it reached the server.
+ * An upload error is recorded on the row (status "failed" plus the message) and
+ * reported as `false` rather than thrown, so the next `processPendingUploads`
+ * retries it. A call made while the same attachment is already uploading shares
+ * that attempt.
+ */
+export function uploadAttachment(attachment: Attachment): Promise<boolean> {
+  // A sync can fetch the queue while a direct upload is still running and reach
+  // this attachment after that upload has finished. The upload deleted the
+  // local copy, so trying again would fail and mark an uploaded file "failed".
+  // (WatermelonDB hands out one cached instance per record, so the status read
+  // here is current.)
+  if (attachment.uploadStatus === "uploaded") return Promise.resolve(true);
+
+  const running = uploadsInFlight.get(attachment.id);
+  if (running) return running;
+
+  const attempt = (async () => {
     try {
       await uploadSingleAttachment(attachment);
-      uploaded += 1;
+      return true;
     } catch (err) {
-      failed += 1;
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`Failed to upload attachment ${attachment.fileName}:`, err);
       await database.write(async () => {
@@ -205,10 +239,14 @@ export async function processPendingUploads(): Promise<UploadResult> {
           record.uploadError = message;
         });
       });
+      return false;
     }
-  }
+  })().finally(() => {
+    uploadsInFlight.delete(attachment.id);
+  });
 
-  return { uploaded, failed };
+  uploadsInFlight.set(attachment.id, attempt);
+  return attempt;
 }
 
 /**

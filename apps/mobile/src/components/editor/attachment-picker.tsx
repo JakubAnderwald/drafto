@@ -2,7 +2,7 @@ import { useState, useMemo } from "react";
 import { View, Text, Pressable, StyleSheet, ActivityIndicator, Alert } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-import { pickImage, pickDocument, queueAttachment } from "@/lib/data";
+import { pickImage, pickDocument, queueAttachment, uploadAttachment } from "@/lib/data";
 import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
@@ -14,7 +14,8 @@ import type { Attachment } from "@/db";
 
 interface AttachmentPickerProps {
   noteId: string;
-  onAttachmentReady?: (attachment: Attachment) => void;
+  /** Inserts the attachment into the note. Awaited before the picker settles. */
+  onAttachmentReady?: (attachment: Attachment) => void | Promise<void>;
 }
 
 export function AttachmentPicker({ noteId, onAttachmentReady }: AttachmentPickerProps) {
@@ -35,22 +36,28 @@ export function AttachmentPicker({ noteId, onAttachmentReady }: AttachmentPicker
 
       setUploading(true);
 
-      // Always save locally first, then try uploading
+      // Always save locally first, so the file survives a failed or offline upload.
       const attachment = await queueAttachment(user.id, noteId, file);
 
-      if (isConnected) {
-        // Trigger sync to upload immediately
-        const result = await sync();
-        if (result.failed > 0) {
-          showToast("Upload failed — will retry automatically", "warning");
-        } else {
-          showToast("Attachment uploaded", "success");
-        }
+      // Upload just this file rather than awaiting a full sync. A sync also
+      // pushes and pulls every table before returning, which left the note body
+      // empty for seconds; and when a sync was already running it returned at
+      // once, so "Attachment uploaded" showed for a file that hadn't uploaded.
+      const uploaded = isConnected ? await uploadAttachment(attachment) : false;
+
+      await onAttachmentReady?.(attachment);
+
+      // Push the note (now referencing the attachment) and retry anything still
+      // queued, without holding up the editor.
+      void sync();
+
+      if (uploaded) {
+        showToast("Attachment uploaded", "success");
+      } else if (isConnected) {
+        showToast("Upload failed — will retry automatically", "warning");
       } else {
         showToast("Attachment saved — will upload when online", "info");
       }
-
-      onAttachmentReady?.(attachment);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to attach file";
       if (message.includes("Permission")) {

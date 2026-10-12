@@ -1,12 +1,20 @@
 import React from "react";
+import { FlatList } from "react-native";
 
-import { render, fireEvent, waitFor } from "../helpers/test-utils";
+import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import NotesListScreen from "../../app/notebooks/[id]";
 
 const mockPush = jest.fn();
+const mockStackScreen = jest.fn();
 jest.mock("expo-router", () => ({
   useRouter: () => ({ push: mockPush, back: jest.fn(), replace: jest.fn() }),
   useLocalSearchParams: () => ({ id: "nb-1" }),
+  Stack: {
+    Screen: (props: unknown) => {
+      mockStackScreen(props);
+      return null;
+    },
+  },
   Link: ({ children, ...props }: { children: React.ReactNode }) => {
     const { Text } = require("react-native");
     return <Text {...props}>{children}</Text>;
@@ -14,6 +22,7 @@ jest.mock("expo-router", () => ({
 }));
 
 const mockSync = jest.fn().mockResolvedValue(undefined);
+let mockIsSyncing = false;
 const mockDatabaseWrite = jest.fn();
 const mockDatabaseGet = jest.fn();
 
@@ -33,7 +42,7 @@ jest.mock("@/providers/database-provider", () => ({
       get: mockDatabaseGet,
     },
     sync: mockSync,
-    isSyncing: false,
+    isSyncing: mockIsSyncing,
     hasPendingChanges: false,
     pendingChangesCount: 0,
     lastSyncedAt: null,
@@ -52,6 +61,11 @@ jest.mock("@/hooks/use-notes", () => ({
     notes: mockNotes,
     loading: mockLoading,
   }),
+}));
+
+let mockNotebookName: string | null = "Work";
+jest.mock("@/hooks/use-notebook-name", () => ({
+  useNotebookName: () => mockNotebookName,
 }));
 
 jest.mock("@/hooks/use-haptics", () => ({
@@ -75,6 +89,78 @@ describe("NotesListScreen", () => {
     jest.clearAllMocks();
     mockNotes.length = 0;
     mockLoading = false;
+    mockIsSyncing = false;
+    mockNotebookName = "Work";
+    mockSync.mockResolvedValue(undefined);
+  });
+
+  function lastHeaderTitle(): unknown {
+    const calls = mockStackScreen.mock.calls;
+    return (calls[calls.length - 1][0] as { options: { title: unknown } }).options.title;
+  }
+
+  it("titles the header with the notebook's name", () => {
+    render(<NotesListScreen />);
+
+    expect(lastHeaderTitle()).toBe("Work");
+  });
+
+  it("titles the header while the notes are still loading", () => {
+    mockLoading = true;
+
+    render(<NotesListScreen />);
+
+    expect(lastHeaderTitle()).toBe("Work");
+  });
+
+  it("follows a rename of the notebook", () => {
+    const { rerender } = render(<NotesListScreen />);
+    mockNotebookName = "Work (2026)";
+    rerender(<NotesListScreen />);
+
+    expect(lastHeaderTitle()).toBe("Work (2026)");
+  });
+
+  it("leaves the header blank until the notebook loads, never 'Notes'", () => {
+    mockNotebookName = null;
+
+    render(<NotesListScreen />);
+
+    expect(lastHeaderTitle()).toBe("");
+  });
+
+  it("does not show the refresh spinner for a background sync", () => {
+    mockIsSyncing = true;
+    mockNotes.push({ id: "note-1", title: "First Note", updatedAt: new Date() });
+
+    const { UNSAFE_getByType } = render(<NotesListScreen />);
+
+    expect(UNSAFE_getByType(FlatList).props.refreshControl.props.refreshing).toBe(false);
+  });
+
+  it("shows the refresh spinner after a pull until the sync finishes", async () => {
+    let finishSync!: () => void;
+    mockSync.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishSync = resolve;
+      }),
+    );
+    mockNotes.push({ id: "note-1", title: "First Note", updatedAt: new Date() });
+    const { UNSAFE_getByType } = render(<NotesListScreen />);
+    const refreshControl = () => UNSAFE_getByType(FlatList).props.refreshControl;
+
+    act(() => {
+      refreshControl().props.onRefresh();
+    });
+
+    expect(mockSync).toHaveBeenCalledTimes(1);
+    expect(refreshControl().props.refreshing).toBe(true);
+
+    await act(async () => {
+      finishSync();
+    });
+
+    expect(refreshControl().props.refreshing).toBe(false);
   });
 
   it("renders empty state when no notes", () => {

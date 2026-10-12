@@ -13,7 +13,12 @@ export {
 
 export { pickImage, pickDocument, deleteAttachment, getSignedUrl } from "./attachments";
 
-export { queueAttachment, processPendingUploads, cleanupOrphanedFiles } from "./attachment-queue";
+export {
+  queueAttachment,
+  uploadAttachment,
+  processPendingUploads,
+  cleanupOrphanedFiles,
+} from "./attachment-queue";
 export type { UploadResult } from "./attachment-queue";
 
 export { openAttachment } from "./open-attachment";

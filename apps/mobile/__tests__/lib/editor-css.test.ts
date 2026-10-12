@@ -1,5 +1,10 @@
-import { buildEditorColorCss, buildEditorCss, EDITOR_FONT_CSS } from "@/lib/editor-css";
-import { semanticDark, semanticLight } from "@/theme/tokens";
+import {
+  buildEditorColorCss,
+  buildEditorCss,
+  EDITOR_FONT_CSS,
+  EDITOR_LAYOUT_CSS,
+} from "@/lib/editor-css";
+import { semanticDark, semanticLight, spacing } from "@/theme/tokens";
 
 describe("buildEditorColorCss", () => {
   it("uses the light foreground on the dark background in dark mode", () => {
@@ -24,5 +29,25 @@ describe("buildEditorCss", () => {
 
     expect(css.startsWith(EDITOR_FONT_CSS)).toBe(true);
     expect(css).toContain(buildEditorColorCss(semanticDark, true));
+  });
+
+  it.each([
+    ["light", semanticLight, false],
+    ["dark", semanticDark, true],
+  ] as const)("gives the note body a horizontal gutter in %s mode", (_mode, semantic, isDark) => {
+    const css = buildEditorCss(semantic, isDark);
+
+    expect(css).toContain(EDITOR_LAYOUT_CSS);
+    expect(css).toContain(`padding-left: ${spacing.lg}px`);
+    expect(css).toContain(`padding-right: ${spacing.lg}px`);
+  });
+});
+
+describe("EDITOR_LAYOUT_CSS", () => {
+  it("pads the ProseMirror body sideways only, leaving padding-bottom to TenTap", () => {
+    expect(EDITOR_LAYOUT_CSS).toBe(
+      `.ProseMirror { padding-left: ${spacing.lg}px; padding-right: ${spacing.lg}px; }`,
+    );
+    expect(EDITOR_LAYOUT_CSS).not.toMatch(/padding-(top|bottom)|padding:/);
   });
 });
