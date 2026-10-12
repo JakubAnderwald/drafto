@@ -1,7 +1,7 @@
 import React from "react";
 import { describeAccountDeletionFailure, type AccountDeletionResult } from "@drafto/shared";
 
-import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
+import { render, fireEvent, waitFor, act, within } from "../helpers/test-utils";
 import {
   APPLE_CONFIRMATION_NOTICE,
   DeleteAccountDialog,
@@ -33,6 +33,19 @@ describe("DeleteAccountDialog", () => {
     expect(getByTestId("delete-account-apple-notice")).toHaveTextContent(APPLE_CONFIRMATION_NOTICE);
     expect(APPLE_CONFIRMATION_NOTICE).toContain("Apple will ask you to confirm");
     expect(APPLE_CONFIRMATION_NOTICE).toContain("your account is still deleted");
+  });
+
+  it("scrolls the text and keeps both actions outside it, so they stay reachable", () => {
+    mockConfirmsWithApple = true;
+    const { getByTestId } = renderDialog();
+    const scroll = getByTestId("delete-account-scroll");
+
+    expect(within(scroll).getByTestId("delete-account-apple-notice")).toBeTruthy();
+    expect(within(scroll).getByTestId("delete-account-input")).toBeTruthy();
+    expect(within(scroll).queryByTestId("delete-account-confirm")).toBeNull();
+    expect(within(scroll).queryByTestId("delete-account-cancel")).toBeNull();
+    expect(getByTestId("delete-account-confirm")).toBeTruthy();
+    expect(getByTestId("delete-account-cancel")).toBeTruthy();
   });
 
   it("shows no Apple notice for everyone else", () => {

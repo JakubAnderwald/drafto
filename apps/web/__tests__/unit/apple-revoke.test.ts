@@ -2,7 +2,7 @@
  * @vitest-environment node
  */
 import crypto from "node:crypto";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 
 const captureExceptionMock = vi.fn();
 const captureMessageMock = vi.fn();
@@ -373,6 +373,62 @@ describe("revokeAppleSignIn", () => {
       expect(captureExceptionMock).toHaveBeenCalledWith(new Error("reset"), {
         extra: { where: "apple-revoke:revoke", userId: USER_ID, clientId: "eu.drafto.mobile" },
       });
+    });
+  });
+
+  describe("response deadline", () => {
+    let clock: number;
+
+    beforeEach(() => {
+      clock = 1_800_000_000_000;
+      vi.spyOn(Date, "now").mockImplementation(() => clock);
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("cuts each request's timeout to the time left", async () => {
+      const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+
+      expect(await revoke({ deadline: clock + 3_000 })).toBe("revoked");
+
+      expect(timeoutSpy.mock.calls.map(([ms]) => ms)).toEqual([3_000, 3_000]);
+    });
+
+    it("keeps the normal timeout when there is time to spare", async () => {
+      const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+
+      await revoke({ deadline: clock + 60_000 });
+
+      expect(timeoutSpy.mock.calls.map(([ms]) => ms)).toEqual([5_000, 5_000]);
+    });
+
+    it("does not call Apple when the deadline leaves less than a second", async () => {
+      expect(await revoke({ deadline: clock + 999 })).toBe("out-of-time");
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(captureMessageMock).toHaveBeenCalledWith(expect.stringContaining("no time left"), {
+        level: "warning",
+        extra: { where: "apple-revoke:out-of-time", userId: USER_ID, step: "token" },
+      });
+    });
+
+    it("stops before revoking when the exchange used up the time", async () => {
+      fetchMock.mockReset();
+      fetchMock.mockImplementationOnce(async () => {
+        clock += 4_500;
+        return tokenSuccess();
+      });
+
+      expect(await revoke({ deadline: clock + 5_000 })).toBe("out-of-time");
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(captureMessageMock).toHaveBeenCalledWith(expect.any(String), {
+        level: "warning",
+        extra: { where: "apple-revoke:out-of-time", userId: USER_ID, step: "revoke" },
+      });
+      expectNoSecretsReported();
     });
   });
 

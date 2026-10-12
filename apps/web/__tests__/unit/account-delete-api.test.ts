@@ -40,7 +40,7 @@ vi.mock("@/lib/apple/revoke", () => ({
   revokeAppleSignIn: (...args: unknown[]) => revokeAppleSignInMock(...args),
 }));
 
-const { DELETE, maxDuration } = await import("@/app/api/account/route");
+const { DELETE, RESPONSE_MARGIN_MS, maxDuration } = await import("@/app/api/account/route");
 
 const USER_ID = "aaaaaaaa-0000-4000-8000-000000000001";
 const OTHER_ID = "bbbbbbbb-0000-4000-8000-000000000002";
@@ -391,6 +391,7 @@ describe("DELETE /api/account", () => {
         key: null,
         appleSubjects: ["apple-sub"],
         userId: USER_ID,
+        deadline: expect.any(Number),
       });
       expect(deleteUserMock.mock.invocationCallOrder[0]).toBeLessThan(
         revokeAppleSignInMock.mock.invocationCallOrder[0],
@@ -401,6 +402,18 @@ describe("DELETE /api/account", () => {
       // Two Apple requests at up to 5 s each, after the deletion itself.
       expect(maxDuration).toBeGreaterThanOrEqual(30);
       expect(maxDuration).toBeLessThanOrEqual(60);
+    });
+
+    it("bounds the revocation by the function's limit, keeping a margin for the response", async () => {
+      const startedAt = Date.now();
+
+      await DELETE(appleRequest());
+
+      const { deadline } = revokeAppleSignInMock.mock.calls[0][1] as { deadline: number };
+      const budget = maxDuration * 1_000 - RESPONSE_MARGIN_MS;
+      expect(RESPONSE_MARGIN_MS).toBeGreaterThan(0);
+      expect(deadline).toBeGreaterThanOrEqual(startedAt + budget);
+      expect(deadline).toBeLessThanOrEqual(Date.now() + budget);
     });
 
     it("keeps the deletion successful when the revocation fails", async () => {

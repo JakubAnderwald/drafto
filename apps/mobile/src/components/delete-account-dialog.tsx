@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { KeyboardAvoidingView, Modal, Platform, StyleSheet, Text, View } from "react-native";
+import {
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import {
   ACCOUNT_DELETE_CONFIRMATION,
   describeAccountDeletionFailure,
@@ -107,42 +115,51 @@ export function DeleteAccountDialog({ visible, onCancel, onConfirm }: DeleteAcco
           accessibilityViewIsModal
           accessibilityLabel="Delete account confirmation"
         >
-          <Text style={styles.title} accessibilityRole="header">
-            Delete account?
-          </Text>
-          <Text style={styles.warning}>
-            This permanently deletes your Drafto account and all of your notebooks, notes and
-            attachments. This cannot be undone.
-          </Text>
-          {confirmsWithApple ? (
-            <Text style={styles.warning} testID="delete-account-apple-notice">
-              {APPLE_CONFIRMATION_NOTICE}
+          {/* The text scrolls and the buttons stay pinned, so both actions remain reachable on a
+              small screen, with large text, or with the keyboard open. */}
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.body}
+            keyboardShouldPersistTaps="handled"
+            testID="delete-account-scroll"
+          >
+            <Text style={styles.title} accessibilityRole="header">
+              Delete account?
             </Text>
-          ) : null}
+            <Text style={styles.warning}>
+              This permanently deletes your Drafto account and all of your notebooks, notes and
+              attachments. This cannot be undone.
+            </Text>
+            {confirmsWithApple ? (
+              <Text style={styles.warning} testID="delete-account-apple-notice">
+                {APPLE_CONFIRMATION_NOTICE}
+              </Text>
+            ) : null}
 
-          <Input
-            label={CONFIRM_PROMPT}
-            accessibilityLabel={CONFIRM_PROMPT}
-            value={confirmation}
-            onChangeText={setConfirmation}
-            placeholder={ACCOUNT_DELETE_CONFIRMATION}
-            autoCapitalize="characters"
-            autoCorrect={false}
-            autoComplete="off"
-            editable={!pending}
-            testID="delete-account-input"
-          />
+            <Input
+              label={CONFIRM_PROMPT}
+              accessibilityLabel={CONFIRM_PROMPT}
+              value={confirmation}
+              onChangeText={setConfirmation}
+              placeholder={ACCOUNT_DELETE_CONFIRMATION}
+              autoCapitalize="characters"
+              autoCorrect={false}
+              autoComplete="off"
+              editable={!pending}
+              testID="delete-account-input"
+            />
 
-          {error ? (
-            <View
-              style={styles.errorContainer}
-              accessibilityRole="alert"
-              accessibilityLiveRegion="polite"
-              testID="delete-account-error"
-            >
-              <Text style={styles.errorText}>{error}</Text>
-            </View>
-          ) : null}
+            {error ? (
+              <View
+                style={styles.errorContainer}
+                accessibilityRole="alert"
+                accessibilityLiveRegion="polite"
+                testID="delete-account-error"
+              >
+                <Text style={styles.errorText}>{error}</Text>
+              </View>
+            ) : null}
+          </ScrollView>
 
           <View style={styles.actions}>
             <Button
@@ -184,7 +201,16 @@ const createStyles = (semantic: SemanticColors) =>
     card: {
       backgroundColor: semantic.bg,
       borderRadius: radii.lg,
+      maxHeight: "100%",
+      overflow: "hidden",
+    },
+    scroll: {
+      flexGrow: 0,
+      flexShrink: 1,
+    },
+    body: {
       padding: spacing.xl,
+      paddingBottom: spacing.md,
       gap: spacing.md,
     },
     title: {
@@ -211,7 +237,9 @@ const createStyles = (semantic: SemanticColors) =>
     actions: {
       flexDirection: "row",
       gap: spacing.sm,
-      marginTop: spacing.xs,
+      paddingHorizontal: spacing.xl,
+      paddingTop: spacing.xs,
+      paddingBottom: spacing.xl,
     },
     action: {
       flex: 1,

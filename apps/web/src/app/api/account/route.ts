@@ -13,13 +13,18 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import type { Database } from "@/lib/supabase/database.types";
 
 /**
- * Room for a slow storage sweep plus the Apple revocation (two requests, up to
- * `APPLE_REQUEST_TIMEOUT_MS` each) after the account is gone. If the platform
- * cut the function off there, the client would get no success response and keep
- * the session and offline data of a deleted account. 60 s is the Vercel Hobby
- * ceiling without Fluid compute; a normal deletion takes a few seconds.
+ * The function's time limit, in seconds. 60 s is the Vercel Hobby ceiling without
+ * Fluid compute; a normal deletion takes a few seconds.
  */
 export const maxDuration = 60;
+
+/**
+ * Kept back from `maxDuration` for sending the response. The Apple revocation
+ * runs after the account is gone, and is cut short to finish before this margin,
+ * so a slow deletion plus a slow Apple can never cost the client its success
+ * response (it would keep the session and offline data of a deleted account).
+ */
+export const RESPONSE_MARGIN_MS = 5_000;
 
 const DELETE_FAILED_MESSAGE = "Failed to delete your account. Please try again.";
 const STORAGE_FAILED_MESSAGE =
@@ -36,6 +41,7 @@ const STORAGE_FAILED_MESSAGE =
  * destructive account deletion must not be reachable with an API key.
  */
 export async function DELETE(request: NextRequest) {
+  const deadline = Date.now() + maxDuration * 1_000 - RESPONSE_MARGIN_MS;
   const { user, error: authError } = await authenticateAccountRequest(request);
   if (authError) return authError;
   const userId = user.id;
@@ -62,6 +68,7 @@ export async function DELETE(request: NextRequest) {
       key: getAppleSignInKey(),
       appleSubjects: appleSubjectsOf(user),
       userId,
+      deadline,
     });
   }
 

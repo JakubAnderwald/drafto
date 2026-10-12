@@ -16,6 +16,9 @@ export const REVOCABLE_CLIENT_IDS: readonly string[] = [APPLE_NATIVE_CLIENT_ID];
 /** Per request to Apple, so a slow Apple can delay the deletion response by at most twice this. */
 export const APPLE_REQUEST_TIMEOUT_MS = 5_000;
 
+/** A request to Apple is not started with less time than this left before the deadline. */
+export const MIN_APPLE_REQUEST_MS = 1_000;
+
 /** Each `client_secret` is signed for one deletion, so it only needs to outlive two requests. */
 const CLIENT_SECRET_LIFETIME_SECONDS = 300;
 
@@ -31,7 +34,9 @@ export type AppleRevocationOutcome =
   | "no-apple-identity"
   | "client-secret-failed"
   | "token-exchange-failed"
-  | "revoke-failed";
+  | "revoke-failed"
+  /** The caller's deadline left no time for a request to Apple. */
+  | "out-of-time";
 
 export interface RevokeAppleSignInOptions {
   /** The Sign in with Apple key, or `null` when the environment does not configure one. */
@@ -43,6 +48,12 @@ export interface RevokeAppleSignInOptions {
   appleSubjects: readonly string[];
   /** Only for Sentry context. */
   userId: string;
+  /**
+   * Epoch milliseconds by which every request to Apple must have finished. Each
+   * request's timeout is cut to fit, and none starts with less than
+   * `MIN_APPLE_REQUEST_MS` left, so the caller can still send its response.
+   */
+  deadline?: number;
   /** Injected for tests; defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
@@ -93,11 +104,25 @@ async function runRevocation(
     key,
     appleSubjects,
     userId,
+    deadline = Number.POSITIVE_INFINITY,
     fetchImpl = fetch,
     timeoutMs = APPLE_REQUEST_TIMEOUT_MS,
   }: RevokeAppleSignInOptions,
 ): Promise<AppleRevocationOutcome> {
   const { clientId } = grant;
+  /** The timeout for the next request to Apple, or `null` when there is no time left for one. */
+  const nextTimeout = (): number | null => {
+    const remaining = deadline - Date.now();
+    return remaining < MIN_APPLE_REQUEST_MS ? null : Math.min(timeoutMs, remaining);
+  };
+  const outOfTime = (step: string): AppleRevocationOutcome => {
+    warn("Sign in with Apple revocation stopped: no time left before the response deadline", {
+      where: "apple-revoke:out-of-time",
+      userId,
+      step,
+    });
+    return "out-of-time";
+  };
 
   if (!key) {
     warn("Sign in with Apple revocation skipped: no Apple key is configured", {
@@ -134,6 +159,8 @@ async function runRevocation(
     return "client-secret-failed";
   }
 
+  const exchangeTimeout = nextTimeout();
+  if (exchangeTimeout === null) return outOfTime("token");
   const exchange = await postToApple(
     APPLE_TOKEN_URL,
     {
@@ -143,7 +170,7 @@ async function runRevocation(
       grant_type: "authorization_code",
     },
     fetchImpl,
-    timeoutMs,
+    exchangeTimeout,
   );
   if (!exchange.ok) {
     report(exchange, { where: "apple-revoke:token", userId, clientId });
@@ -159,6 +186,8 @@ async function runRevocation(
     return "token-exchange-failed";
   }
 
+  const revokeTimeout = nextTimeout();
+  if (revokeTimeout === null) return outOfTime("revoke");
   const revoke = await postToApple(
     APPLE_REVOKE_URL,
     {
@@ -168,7 +197,7 @@ async function runRevocation(
       token_type_hint: tokens.tokenTypeHint,
     },
     fetchImpl,
-    timeoutMs,
+    revokeTimeout,
   );
   if (!revoke.ok) {
     report(revoke, { where: "apple-revoke:revoke", userId, clientId });
