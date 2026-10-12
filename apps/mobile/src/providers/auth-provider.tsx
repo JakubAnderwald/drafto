@@ -88,6 +88,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // unapproved user is re-checked on refresh, which picks up an approval (or retries a check
   // that failed offline) without them pressing "Check approval status".
   const approvedUserIdRef = useRef<string | null>(null);
+  // Bumped by every approval check and by every session end. Only the latest check may decide
+  // approval: a slow check for an account that was signed out or replaced meanwhile (e.g. a
+  // second sign-in from the still-visible login screen) must not route the new session.
+  const approvalCheckRef = useRef(0);
+
+  /** Drops any approval check in flight; for a session that just ended. */
+  const abandonApprovalCheck = useCallback(() => {
+    approvalCheckRef.current += 1;
+    approvedUserIdRef.current = null;
+    setIsCheckingApproval(false);
+  }, []);
 
   const startRecovery = useCallback(() => {
     setIsRecovering(true);
@@ -105,6 +116,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const checkApproval = useCallback(async (userId: string): Promise<boolean> => {
+    const check = ++approvalCheckRef.current;
+    const isLatest = () => check === approvalCheckRef.current;
+    const settle = (approved: boolean) => {
+      if (!isLatest()) return;
+      approvedUserIdRef.current = approved ? userId : null;
+      setIsApproved(approved);
+    };
+
     setIsCheckingApproval(true);
     try {
       const { data: profile, error } = await supabase
@@ -122,14 +141,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } catch {
           // Storage unavailable — default to not approved
         }
-        approvedUserIdRef.current = approved ? userId : null;
-        setIsApproved(approved);
+        settle(approved);
         return approved;
       }
 
       const approved = profile?.is_approved === true;
-      approvedUserIdRef.current = approved ? userId : null;
-      setIsApproved(approved);
+      settle(approved);
       try {
         await setCachedApproval(userId, approved);
       } catch {
@@ -137,7 +154,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       return approved;
     } finally {
-      setIsCheckingApproval(false);
+      if (isLatest()) setIsCheckingApproval(false);
     }
   }, []);
 
@@ -153,46 +170,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    * Runs after the Supabase session has been ended, on both sign-out and account
    * deletion. Each step is best-effort so one failure can't skip the others.
    */
-  const resetLocalSession = useCallback(async (userId: string | undefined) => {
-    approvedUserIdRef.current = null;
-    setSession(null);
-    setIsApproved(false);
-    setIsRecovering(false);
-    setRecoveryError(null);
-    if (userId) {
-      // Best-effort: a cache-clear failure must not skip the sync invalidation,
-      // database reset, and attachment wipe below — those are the actual
-      // cross-account guarantees — nor reject out of the caller.
-      try {
-        await clearCachedApproval(userId);
-      } catch (error) {
-        console.error("Failed to clear cached approval on sign-out:", error);
+  const resetLocalSession = useCallback(
+    async (userId: string | undefined) => {
+      abandonApprovalCheck();
+      setSession(null);
+      setIsApproved(false);
+      setIsRecovering(false);
+      setRecoveryError(null);
+      if (userId) {
+        // Best-effort: a cache-clear failure must not skip the sync invalidation,
+        // database reset, and attachment wipe below — those are the actual
+        // cross-account guarantees — nor reject out of the caller.
+        try {
+          await clearCachedApproval(userId);
+        } catch (error) {
+          console.error("Failed to clear cached approval on sign-out:", error);
+        }
       }
-    }
 
-    // Invalidate any in-flight sync (e.g. a final sync that timed out before
-    // sign-out but is still running) so the next signed-in user starts a fresh
-    // sync instead of coalescing onto this session's — which could otherwise
-    // write this user's pulled records into the freshly-reset database below.
-    resetSyncState();
+      // Invalidate any in-flight sync (e.g. a final sync that timed out before
+      // sign-out but is still running) so the next signed-in user starts a fresh
+      // sync instead of coalescing onto this session's — which could otherwise
+      // write this user's pulled records into the freshly-reset database below.
+      resetSyncState();
 
-    // Wipe the offline cache so a different account/environment starts clean and
-    // stale notes can't carry across logins. Best-effort: a reset failure must
-    // not block sign-out.
-    try {
-      await database.write(() => database.unsafeResetDatabase());
-    } catch (error) {
-      console.error("Failed to reset local database on sign-out:", error);
-    }
+      // Wipe the offline cache so a different account/environment starts clean and
+      // stale notes can't carry across logins. Best-effort: a reset failure must
+      // not block sign-out.
+      try {
+        await database.write(() => database.unsafeResetDatabase());
+      } catch (error) {
+        console.error("Failed to reset local database on sign-out:", error);
+      }
 
-    // Delete locally cached attachment files so they can't leak to the next
-    // account. Best-effort: file-deletion failures must not block sign-out.
-    try {
-      await deleteAllLocalAttachments();
-    } catch (error) {
-      console.error("Failed to delete local attachments on sign-out:", error);
-    }
-  }, []);
+      // Delete locally cached attachment files so they can't leak to the next
+      // account. Best-effort: file-deletion failures must not block sign-out.
+      try {
+        await deleteAllLocalAttachments();
+      } catch (error) {
+        console.error("Failed to delete local attachments on sign-out:", error);
+      }
+    },
+    [abandonApprovalCheck],
+  );
 
   const signOut = useCallback(
     async (options?: SignOutOptions) => {
@@ -316,7 +336,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       setSession(newSession);
       if (!newSession?.user) {
-        approvedUserIdRef.current = null;
+        abandonApprovalCheck();
         setIsApproved(false);
         return;
       }
@@ -331,7 +351,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       subscription.unsubscribe();
     };
-  }, [checkApproval, startRecovery]);
+  }, [checkApproval, startRecovery, abandonApprovalCheck]);
 
   return (
     <AuthContext.Provider

@@ -1,5 +1,6 @@
 import React from "react";
-import { Alert } from "react-native";
+import { Alert, StyleSheet } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import LoginScreen from "../../app/(auth)/login";
@@ -161,6 +162,20 @@ describe("LoginScreen", () => {
       expect(queryByText(ACCOUNT_DELETED_MESSAGE)).toBeNull();
       expect(isAccountDeletedNoticeShown()).toBe(false);
     });
+  });
+
+  it("keeps its content below the status bar, having no header of its own", () => {
+    const insets = useSafeAreaInsets as jest.Mock;
+    insets.mockReturnValue({ top: 47, bottom: 34, left: 0, right: 0 });
+    try {
+      const { getByTestId } = render(<LoginScreen />);
+
+      expect(StyleSheet.flatten(getByTestId("login-screen").props.style)).toEqual(
+        expect.objectContaining({ paddingTop: 47 }),
+      );
+    } finally {
+      insets.mockReturnValue({ top: 0, bottom: 0, left: 0, right: 0 });
+    }
   });
 
   it("shows sign up link", () => {

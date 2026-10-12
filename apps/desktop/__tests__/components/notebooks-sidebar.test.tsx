@@ -293,7 +293,7 @@ describe("NotebooksSidebar — app menu and delete account", () => {
     expect(Alert.alert).not.toHaveBeenCalled();
   });
 
-  it("hides an open delete panel while a sign-out runs", async () => {
+  it("keeps an open delete panel mounted but unconfirmable while a sign-out runs", async () => {
     let finishSync: () => void = () => {};
     mockSync.mockReturnValue(
       new Promise<void>((resolve) => {
@@ -304,15 +304,19 @@ describe("NotebooksSidebar — app menu and delete account", () => {
     const utils = render(<NotebooksSidebar {...defaultProps} />);
 
     chooseDeleteAccount(utils);
-    expect(utils.getByTestId("delete-account-input")).toBeTruthy();
+    fireEvent.changeText(utils.getByTestId("delete-account-input"), "DELETE");
+    expect(isDisabled(utils.getByTestId("delete-account-confirm"))).toBe(false);
     openAppMenu(utils);
     fireEvent.press(utils.getByTestId("logout-button"));
 
     await waitFor(() => {
       expect(utils.getByTestId("sign-out-progress")).toBeTruthy();
     });
-    // No deletion can start while the device is being signed out and wiped.
-    expect(utils.queryByTestId("delete-account-input")).toBeNull();
+    // The panel stays (a deletion in flight keeps its progress), but none can start while the
+    // device is being signed out and wiped.
+    expect(utils.getByTestId("delete-account-input")).toBeTruthy();
+    expect(isDisabled(utils.getByTestId("delete-account-confirm"))).toBe(true);
+    expect(utils.queryByText(DELETE_ACCOUNT_OFFLINE_NOTE)).toBeNull();
 
     await act(async () => {
       finishSync();
@@ -321,6 +325,39 @@ describe("NotebooksSidebar — app menu and delete account", () => {
       expect(mockSignOut).toHaveBeenCalledWith({ skipFinalSync: true });
     });
     expect(mockDeleteAccount).not.toHaveBeenCalled();
+  });
+
+  it("ignores Sign out while an account deletion is in flight", async () => {
+    let resolveDeletion: (result: AccountDeletionResult) => void = () => {};
+    mockDeleteAccount.mockImplementationOnce(
+      () =>
+        new Promise<AccountDeletionResult>((resolve) => {
+          resolveDeletion = resolve;
+        }),
+    );
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    chooseDeleteAccount(utils);
+    fireEvent.changeText(utils.getByTestId("delete-account-input"), "DELETE");
+    fireEvent.press(utils.getByTestId("delete-account-confirm"));
+    openAppMenu(utils);
+    fireEvent.press(utils.getByTestId("logout-button"));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockCountUnsyncedChanges).not.toHaveBeenCalled();
+    expect(mockSignOut).not.toHaveBeenCalled();
+
+    // After a failed deletion, Sign out works again.
+    await act(async () => {
+      resolveDeletion({ status: "network" });
+    });
+    openAppMenu(utils);
+    fireEvent.press(utils.getByTestId("logout-button"));
+    await waitFor(() => {
+      expect(mockSignOut).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("asks before signing out with changes a last sync could not push", async () => {

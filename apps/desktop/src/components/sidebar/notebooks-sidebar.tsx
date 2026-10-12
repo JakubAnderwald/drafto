@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -189,9 +189,30 @@ export function NotebooksSidebar({
   // letting a second DELETE go out.
   const openDeleteAccountPanel = useCallback(() => setIsDeletingAccount(true), []);
 
+  // Sign-out and account deletion both wipe the device, so they never overlap: the panel's
+  // confirm is disabled during a sign-out, and Sign out does nothing while a deletion request
+  // is in flight (a successful deletion signs out by itself; after a failure it works again).
+  const deletionPendingRef = useRef(false);
+  const confirmDeleteAccount = useCallback(async () => {
+    deletionPendingRef.current = true;
+    try {
+      return await deleteAccount();
+    } finally {
+      deletionPendingRef.current = false;
+    }
+  }, [deleteAccount]);
+  const signOutUnlessDeleting = useCallback(() => {
+    if (deletionPendingRef.current) return;
+    void signOut();
+  }, [signOut]);
+
   return (
     <View style={styles.container}>
-      <AppMenu onSignOut={signOut} onDeleteAccount={openDeleteAccountPanel} isOffline={isOffline}>
+      <AppMenu
+        onSignOut={signOutUnlessDeleting}
+        onDeleteAccount={openDeleteAccountPanel}
+        isOffline={isOffline}
+      >
         {({ trigger, onAnchorLayout }) => (
           <>
             <View style={styles.header}>
@@ -298,13 +319,14 @@ export function NotebooksSidebar({
                     trigger
                   )}
                 </View>
-                {/* Hidden during a sign-out, so a deletion cannot start while the device is
-                    being wiped. */}
-                {isDeletingAccount && !isSigningOut ? (
+                {/* Stays mounted during a sign-out, so a deletion already in flight keeps
+                    its progress and result; it just cannot be confirmed meanwhile. */}
+                {isDeletingAccount ? (
                   <DeleteAccountPanel
                     onCancel={() => setIsDeletingAccount(false)}
-                    onConfirm={deleteAccount}
+                    onConfirm={confirmDeleteAccount}
                     isOffline={isOffline}
+                    disabled={isSigningOut}
                   />
                 ) : null}
               </View>

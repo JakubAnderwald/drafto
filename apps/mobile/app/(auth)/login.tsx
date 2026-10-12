@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { Text, View, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
 import { Link } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ACCOUNT_DELETED_MESSAGE } from "@drafto/shared";
 
 import { clearAccountDeletedNotice, useAccountDeletedNotice } from "@/lib/account-deleted-notice";
@@ -16,6 +17,8 @@ import { Input } from "@/components/ui/input";
 export default function LoginScreen() {
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+  // No header above this screen, so it keeps its own content clear of the status bar.
+  const { top: topInset } = useSafeAreaInsets();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -58,7 +61,8 @@ export default function LoginScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={styles.flex}
+      style={[styles.flex, { paddingTop: topInset }]}
+      testID="login-screen"
       behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">

@@ -9,6 +9,7 @@ import {
   ScrollView,
 } from "react-native";
 import { useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,6 +29,9 @@ const EXPIRED_MESSAGE =
 export default function ResetPasswordScreen() {
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+  // No header above this screen, so it keeps its own content clear of the status bar.
+  const { top: topInset } = useSafeAreaInsets();
+  const messageInset = { paddingTop: topInset + spacing["2xl"] };
   const router = useRouter();
   const { session, isRecovering, recoveryError, endRecovery, signOut } = useAuth();
   const { isConnected } = useNetworkStatus();
@@ -119,7 +123,7 @@ export default function ResetPasswordScreen() {
   // mid-flight — both of which read as the app having hung.
   if (leaving) {
     return (
-      <View style={styles.messageContainer}>
+      <View style={[styles.messageContainer, messageInset]}>
         <ActivityIndicator size="large" color={colors.primary[600]} />
         <Text style={styles.messageText}>Signing out…</Text>
       </View>
@@ -128,7 +132,7 @@ export default function ResetPasswordScreen() {
 
   if (recoveryError) {
     return (
-      <View style={styles.messageContainer}>
+      <View style={[styles.messageContainer, messageInset]}>
         <Text style={styles.title}>Reset Link Problem</Text>
         <Text style={styles.messageText}>{recoveryError}</Text>
         <Button
@@ -149,7 +153,7 @@ export default function ResetPasswordScreen() {
     // the only correct state.
     if (isRecovering) {
       return (
-        <View style={styles.messageContainer}>
+        <View style={[styles.messageContainer, messageInset]}>
           <ActivityIndicator size="large" color={colors.primary[600]} />
           <Text style={styles.messageText}>Verifying your reset link…</Text>
         </View>
@@ -157,7 +161,7 @@ export default function ResetPasswordScreen() {
     }
 
     return (
-      <View style={styles.messageContainer}>
+      <View style={[styles.messageContainer, messageInset]}>
         <Text style={styles.title}>Reset Link Problem</Text>
         <Text style={styles.messageText}>{EXPIRED_MESSAGE}</Text>
         <Button
@@ -174,7 +178,7 @@ export default function ResetPasswordScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={styles.flex}
+      style={[styles.flex, { paddingTop: topInset }]}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">

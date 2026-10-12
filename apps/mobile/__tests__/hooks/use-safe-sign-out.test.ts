@@ -6,6 +6,7 @@ import {
   describeUnsyncedLoss,
   useSafeSignOut,
 } from "@/hooks/use-safe-sign-out";
+import { registerPendingSave } from "@/lib/pending-saves";
 
 const mockSignOut = jest.fn();
 jest.mock("@/providers/auth-provider", () => ({
@@ -55,6 +56,29 @@ describe("useSafeSignOut", () => {
     expect(mockSync).not.toHaveBeenCalled();
     expect(mockSignOut).toHaveBeenCalledWith({ skipFinalSync: true });
     expect(result.current.isSigningOut).toBe(false);
+  });
+
+  it("writes a debounced editor save before it counts", async () => {
+    // An edit inside the editor's save debounce is not in the database yet: without the flush
+    // it would be neither counted nor synced, then wiped.
+    const order: string[] = [];
+    const unregister = registerPendingSave(async () => {
+      await Promise.resolve();
+      order.push("flushed");
+    });
+    mockCountUnsyncedChanges.mockImplementation(async () => {
+      order.push("counted");
+      return 0;
+    });
+    const { result } = renderHook(() => useSafeSignOut());
+
+    await act(async () => {
+      await result.current.signOut();
+    });
+    unregister();
+
+    expect(order).toEqual(["flushed", "counted"]);
+    expect(mockSignOut).toHaveBeenCalledWith({ skipFinalSync: true });
   });
 
   it("counts again only once the sync it awaited has finished", async () => {

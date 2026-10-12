@@ -3,6 +3,7 @@ import { Alert } from "react-native";
 import { withTimeout } from "@drafto/shared";
 
 import { countUnsyncedChanges } from "@/lib/data/unsynced-changes";
+import { flushPendingSaves } from "@/lib/pending-saves";
 import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
 
@@ -37,8 +38,9 @@ export interface SafeSignOut {
 
 /**
  * Sign-out that does not drop unsynced changes silently. Sign-out wipes the local database,
- * so when changes are pending it first lets one more sync run, counts again, and asks before
- * discarding whatever is still unsynced (offline, or the sync failed).
+ * so it first writes any debounced editor save, and when changes are pending it lets one more
+ * sync run, counts again, and asks before discarding whatever is still unsynced (offline, or
+ * the sync failed).
  *
  * It relies on the database provider's `sync()` joining a sync that is already running and
  * never rejecting (ADR-0048), so awaiting it also covers a sync in flight.
@@ -66,6 +68,9 @@ export function useSafeSignOut(): SafeSignOut {
     };
 
     try {
+      // An edit still inside an editor's save debounce is not in the database yet, so it would
+      // be neither counted nor synced. Write it first.
+      await flushPendingSaves();
       let pending = await countPending();
       if (pending !== null && pending > 0) {
         // Bounded: a hung request must not hang sign-out.
