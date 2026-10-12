@@ -81,23 +81,65 @@ describe("readAppleRevocationGrant", () => {
   });
 
   it("refuses a declared oversized body before reading it", async () => {
-    const text = vi.fn();
+    const getReader = vi.fn();
     const oversized = {
       headers: new Headers({ "content-length": "5000000" }),
-      text,
+      body: { getReader },
     } as unknown as NextRequest;
 
     expect(await readAppleRevocationGrant(oversized, USER_ID)).toBeNull();
-    expect(text).not.toHaveBeenCalled();
+    expect(getReader).not.toHaveBeenCalled();
     expectIgnored("too large");
+  });
+
+  it("stops reading, and cancels the stream, once an undeclared body passes the cap", async () => {
+    const chunk = new TextEncoder().encode("x".repeat(4_096));
+    let pulled = 0;
+    const cancel = vi.fn();
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(chunk);
+      },
+      cancel,
+    });
+    const request = { headers: new Headers(), body: endless } as unknown as NextRequest;
+
+    expect(await readAppleRevocationGrant(request, USER_ID)).toBeNull();
+    expectIgnored("too large");
+    expect(cancel).toHaveBeenCalled();
+    // 16 KB cap at 4 KB a chunk: the fifth chunk crosses it; nothing much past that is read.
+    expect(pulled).toBeLessThanOrEqual(7);
+  });
+
+  it("decodes a grant split across chunks, including a multi-byte character", async () => {
+    const bytes = new TextEncoder().encode(
+      JSON.stringify({ apple: { authorizationCode: "c0dé", clientId: "eu.drafto.mobile" } }),
+    );
+    const split = bytes.indexOf(0xc3) + 1; // between the two bytes of "é"
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.slice(0, split));
+        controller.enqueue(bytes.slice(split));
+        controller.close();
+      },
+    });
+    const request = { headers: new Headers(), body: stream } as unknown as NextRequest;
+
+    expect(await readAppleRevocationGrant(request, USER_ID)).toEqual({
+      authorizationCode: "c0dé",
+      clientId: "eu.drafto.mobile",
+    });
   });
 
   it("reports a body that cannot be read", async () => {
     const readError = new TypeError("Body is unusable");
-    const unreadable = {
-      headers: new Headers(),
-      text: () => Promise.reject(readError),
-    } as unknown as NextRequest;
+    const failing = new ReadableStream<Uint8Array>({
+      pull() {
+        throw readError;
+      },
+    });
+    const unreadable = { headers: new Headers(), body: failing } as unknown as NextRequest;
 
     expect(await readAppleRevocationGrant(unreadable, USER_ID)).toBeNull();
     expect(captureExceptionMock).toHaveBeenCalledWith(readError, {
