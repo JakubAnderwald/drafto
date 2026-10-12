@@ -146,18 +146,27 @@ describe("intest_handoff — failure degrades, never escalates", () => {
     assert.match(body, /check_session_limit/);
   });
 
-  it("forwards its coverage-note argument to every fallback and to the bundle", () => {
+  it("forwards its CodeRabbit and Greptile note arguments to every fallback and to the bundle", () => {
     assert.match(body, /local cr_note="\$\{10:-\}"/);
+    assert.match(body, /local greptile_note="\$\{11:-\}"/);
     const calls = body.match(/intest_fallback_comment [^\n]*/g) || [];
     assert.ok(calls.length >= 6);
     for (const call of calls) {
-      assert.match(call, /"\$\{beta_json:-\}" "\$cr_note"$/, `fallback without the note: ${call}`);
+      assert.match(
+        call,
+        /"\$\{beta_json:-\}" "\$cr_note" "\$greptile_note"$/,
+        `fallback without the notes: ${call}`,
+      );
     }
-    assert.match(body, /"\$head_sha" "\$comments_json" "\$cr_note"\); then/);
+    assert.match(body, /"\$head_sha" "\$comments_json" "\$cr_note" "\$greptile_note"\); then/);
     const bundle = fnBody("build_intest_bundle");
     assert.match(bundle, /local cr_coverage_note="\$\{12:-\}"/);
     assert.match(bundle, /--arg crCoverageNote "\$cr_coverage_note"/);
     assert.match(bundle, /crCoverageNote: \$crCoverageNote,/);
+    // ADR-0047: its own field, never folded into advisory or crCoverageNote.
+    assert.match(bundle, /local greptile_note="\$\{13:-\}"/);
+    assert.match(bundle, /--arg greptileNote "\$greptile_note"/);
+    assert.match(bundle, /greptileNote: \$greptileNote,/);
   });
 
   it("trusts the posted marker over the model's directive line", () => {
@@ -236,11 +245,14 @@ describe("intest_fallback_comment — always usable", () => {
     assert.match(body, /Advisory \(non-required\) checks are not green: \$advisory/);
   });
 
-  it("takes the CodeRabbit coverage note as its own argument, never out of $advisory", () => {
-    // ADR-0036: the note is not a check. Rendering is covered behaviourally in
-    // factory-agent-cr-cli.test.mjs; this pins the signature every caller uses.
-    assert.match(body, /local beta="\$\{7:-\}" cr_note="\$\{8:-\}"/);
+  it("takes the CodeRabbit and Greptile notes as their own arguments, never out of $advisory", () => {
+    // ADR-0036 / ADR-0047: neither note is a check. Rendering is covered
+    // behaviourally in factory-agent-cr-cli.test.mjs and
+    // factory-agent-greptile-gate.test.mjs; this pins the signature every caller uses.
+    assert.match(body, /local beta="\$\{7:-\}" cr_note="\$\{8:-\}" greptile_note="\$\{9:-\}"/);
     assert.doesNotMatch(body, /CodeRabbit did not review|CodeRabbit coverage of/);
+    // The note's wording comes only from the argument (greptile-review.mjs).
+    assert.doesNotMatch(body, /Greptile did not review/);
   });
 });
 

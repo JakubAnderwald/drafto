@@ -787,6 +787,42 @@ describe("buildFactoryInTestBundle", () => {
     assert.equal(buildFactoryInTestBundle({ ...base, crCoverageNote: null }).crCoverageNote, "");
   });
 
+  it("carries the Greptile note in its own field, apart from advisory and crCoverageNote", () => {
+    // ADR-0047: Greptile is an optional second reviewer — neither a check nor
+    // CodeRabbit coverage — so its note rides in neither of those fields.
+    const greptile = "Greptile did not review PR #591 (no review within 30 min of the PR opening)";
+    const cr = "CodeRabbit did not review a1b2c3d4e5f6 (hourly CLI budget spent)";
+    const bundle = buildFactoryInTestBundle({
+      ...base,
+      advisory: "SonarCloud",
+      crCoverageNote: cr,
+      greptileNote: greptile,
+    });
+    assert.equal(bundle.greptileNote, greptile);
+    assert.equal(bundle.crCoverageNote, cr);
+    assert.equal(bundle.advisory, "SonarCloud");
+  });
+
+  it("defaults the Greptile note to empty and drops a non-string one", () => {
+    assert.equal(buildFactoryInTestBundle(base).greptileNote, "");
+    for (const bad of [42, null, {}]) {
+      assert.equal(buildFactoryInTestBundle({ ...base, greptileNote: bad }).greptileNote, "");
+    }
+  });
+
+  it("never folds the Greptile note into advisory or crCoverageNote", () => {
+    // A green advisory stays "" even when Greptile was silent: the tester must
+    // not read a missing second review as a red check, or as CodeRabbit's gap.
+    const greptileNote =
+      "Greptile review status of PR #591 unknown (its reviews could not be read)";
+    for (const advisory of ["", "SonarCloud"]) {
+      const bundle = buildFactoryInTestBundle({ ...base, advisory, greptileNote });
+      assert.equal(bundle.advisory, advisory);
+      assert.doesNotMatch(bundle.advisory, /Greptile/);
+      assert.equal(bundle.crCoverageNote, "");
+    }
+  });
+
   it("normalises a missing betaDispatch to empty lists", () => {
     const bundle = buildFactoryInTestBundle(base);
     assert.deepEqual(bundle.betaDispatch, { dispatched: [], skipped: [], manualCommands: [] });
@@ -1080,6 +1116,7 @@ describe("factory-bundle CLI", () => {
       previewUrl: "",
       advisory: "CodeRabbit",
       crCoverageNote: "CodeRabbit coverage of a1b2c3d4e5f6 unknown (lane error)",
+      greptileNote: "Greptile has not reviewed PR #591 yet",
       headSha: "a1b2c3d4e5f6a7b8",
       config: { phase: "C" },
       repo: { nameWithOwner: "JakubAnderwald/drafto" },
@@ -1093,6 +1130,8 @@ describe("factory-bundle CLI", () => {
     assert.deepEqual(bundle.prFiles, ["apps/mobile/x.ts", "apps/desktop/y.ts"]);
     assert.equal(bundle.advisory, "CodeRabbit");
     assert.equal(bundle.crCoverageNote, "CodeRabbit coverage of a1b2c3d4e5f6 unknown (lane error)");
+    // main() must thread greptileNote through, or bash's field is silently lost.
+    assert.equal(bundle.greptileNote, "Greptile has not reviewed PR #591 yet");
     assert.equal(bundle.headSha, "a1b2c3d4e5f6a7b8");
   });
 });

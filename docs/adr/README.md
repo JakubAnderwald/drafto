@@ -79,3 +79,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0044](./0044-desktop-auth-web-handoff.md)                           | Desktop Auth Returns Through drafto.eu Hand-off Pages | Accepted           | 2026-10-10 |
 | [0045](./0045-mobile-auth-uses-pkce.md)                              | Mobile Auth Uses the PKCE Flow                        | Accepted           | 2026-10-10 |
 | [0046](./0046-ios-uiscene-lifecycle.md)                              | iOS Adopts the UIScene Lifecycle                      | Accepted           | 2026-10-10 |
+| [0047](./0047-greptile-second-reviewer.md)                           | Greptile as a Second PR Reviewer (Free OSS Plan)      | Accepted           | 2026-10-12 |

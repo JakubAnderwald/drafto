@@ -54,6 +54,9 @@ You will receive a single JSON bundle (last fenced ` ```json ` block). Shape:
   // e.g. "CodeRabbit did not review a1b2c3d4e5f6 (hourly CLI budget spent)", or
   // "CodeRabbit coverage of a1b2c3d4e5f6 unknown (lane error)" when the lane failed.
   "crCoverageNote": "",
+  // A note, NOT a check — "" when Greptile reviewed the PR (or the gate is off).
+  // e.g. "Greptile did not review PR #612 (no review within 30 min of the PR opening)".
+  "greptileNote": "",
   // What bash already did about native builds. Report these facts; never invent them.
   "betaDispatch": {
     "dispatched": [ { "id": "mobile", "command": "pnpm release:beta:all" } ],
@@ -238,6 +241,14 @@ Compose it in Markdown from the bundle's facts. Structure:
   never list it among the advisory checks or describe it as one, and never show
   it when the field is empty. Take it only from `crCoverageNote`; `advisory`
   never carries it.
+- When `greptileNote` is non-empty (a Greptile review note: "Greptile did not
+  review PR #N (…)", "Greptile review status of PR #N unknown (…)", or "Greptile
+  has not reviewed PR #N yet"): surface `greptileNote` **verbatim** as a one-line
+  ℹ️ note of its own. Greptile is an optional second AI reviewer (ADR-0047), so
+  the note only means one fewer automated look at the PR. It is not a failing
+  check and not CodeRabbit coverage: never list it among the advisory checks,
+  never merge it into the `crCoverageNote` line, and never show it when the field
+  is empty. Take it only from `greptileNote`.
 - A closing line: drag the card to **Approved** to merge and ship, or comment
   what you want changed and the factory revises on the same PR branch.
 - When `prDiffTruncated` is true and you did not expand it with `gh pr diff`,

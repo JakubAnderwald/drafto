@@ -28,6 +28,7 @@ describe("In Test prompt — bundle contract", () => {
       "previewUrl",
       "advisory",
       "crCoverageNote",
+      "greptileNote",
       "betaDispatch",
       "headSha",
     ]) {
@@ -62,6 +63,24 @@ describe("In Test prompt — bundle contract", () => {
     assert.match(flat, /`advisory` never carries it/);
     assert.doesNotMatch(flat, /`advisory` may also carry/);
     assert.doesNotMatch(flat, /If `advisory` carries a CodeRabbit/);
+  });
+
+  it("surfaces bundle.greptileNote verbatim on its own line, apart from CodeRabbit (ADR-0047)", () => {
+    // --watch sends the Greptile gate's note in its own field when Greptile did
+    // not review the PR (or its status could not be read). Greptile is an
+    // optional second reviewer: the tester sees the note as-is, never as a red
+    // check, and never blended into the CodeRabbit coverage line.
+    assert.match(prompt, /"greptileNote":\s*""/);
+    assert.match(flat, /When `greptileNote` is non-empty/);
+    assert.match(flat, /Greptile did not review PR #N \(…\)/);
+    assert.match(flat, /Greptile review status of PR #N unknown \(…\)/);
+    assert.match(flat, /Greptile has not reviewed PR #N yet/);
+    assert.match(flat, /surface `greptileNote` \*\*verbatim\*\* as a one-line ℹ️ note of its own/);
+    assert.match(flat, /optional second AI reviewer/);
+    assert.match(flat, /It is not a failing check and not CodeRabbit coverage/);
+    assert.match(flat, /never list it among the advisory checks/);
+    assert.match(flat, /never merge it into the `crCoverageNote` line/);
+    assert.match(flat, /never show it when the field is empty\. Take it only from `greptileNote`/);
   });
 });
 

@@ -1,0 +1,40 @@
+{
+  "commentTypes": ["logic", "syntax"],
+  "triggerOnUpdates": false,
+  "statusCheck": false,
+  "excludeAuthors": ["dependabot[bot]"],
+  "ignorePatterns": "pnpm-lock.yaml\n**/Gemfile.lock\n**/Podfile.lock\napps/desktop/macos/*.xcodeproj/**\napps/desktop/macos/*.xcworkspace/**\napps/mobile/ios/**\napps/mobile/android/**\nsupabase/.temp/**\napps/web/src/lib/supabase/database.types.ts\nscripts/__fixtures__/**\ndocs/archive/**\n",
+  "customContext": {
+    "files": [
+      {
+        "path": "CLAUDE.md",
+        "description": "Repo-wide rules: PR workflow, SOLID, code style, design system, testing and infrastructure cost discipline.",
+        "scope": []
+      },
+      {
+        "path": "docs/features/design-system.md",
+        "description": "Web design tokens and the lint guardrails that enforce them.",
+        "scope": ["apps/web/src/**"]
+      },
+      {
+        "path": "apps/desktop/CLAUDE.md",
+        "description": "macOS desktop fossil-build rules.",
+        "scope": ["apps/desktop/**"]
+      }
+    ],
+    "rules": [
+      {
+        "rule": "Follow SOLID: one reason to change per module, extend by composition rather than modification, keep interfaces small and focused, and import abstractions from src/lib instead of instantiating clients in components.",
+        "scope": ["apps/*/src/**", "packages/*/src/**"]
+      },
+      {
+        "rule": "Web UI uses the design system's semantic token classes (bg-bg, text-fg-muted, border-border) and scale tokens (bg-primary-500), never raw Tailwind greys (bg-gray-*, text-slate-*) or arbitrary color, shadow or radius values (bg-[#...], shadow-[...], rounded-[...]).",
+        "scope": ["apps/web/src/**"]
+      },
+      {
+        "rule": "apps/mobile/src/db and apps/desktop/src/db (schema, migrations, models) must stay in sync: a change to one needs the same change to the other in the same PR.",
+        "scope": ["apps/mobile/src/db/**", "apps/desktop/src/db/**"]
+      }
+    ]
+  }
+}

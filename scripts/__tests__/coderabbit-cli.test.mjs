@@ -2107,6 +2107,26 @@ describe("runFreePass", () => {
       exempt: false,
     });
   });
+
+  // Greptile's threads (ADR-0047) are ordinary findings: answering them spends
+  // an attempt like a human's would. Pasting the CLI marker into one buys
+  // nothing, because the free pass is keyed on the owner having opened it.
+  it("never exempts a thread Greptile opened, even one carrying the CLI marker", async () => {
+    const state = emptyFactoryState();
+    setIssueField(state, ISSUE, "crLastCoveredSha", SHA);
+    await saveFactoryState(state, stateFile);
+    const { deps } = makeDeps();
+    for (const login of ["greptile-apps", "greptile-apps[bot]"]) {
+      for (const threads of [[cliThread(login)], [cliThread(), cliThread(login)]]) {
+        const out = await runFreePass(
+          { issue: ISSUE, stateFile, threadsJson: JSON.stringify(threads) },
+          deps,
+        );
+        assert.deepEqual(out, { exempt: false }, `${login} × ${threads.length}`);
+      }
+    }
+    assert.equal(getIssue(await readState(), ISSUE).crCliFreePassSha, null);
+  });
 });
 
 // ── note ───────────────────────────────────────────────────────────────────
@@ -2303,6 +2323,42 @@ describe("runCoverage", () => {
     assert.equal(out.covered, false);
     assert.equal(out.cli, "cli-partial");
     assert.match(out.reason, /never became threads/i);
+  });
+
+  // Greptile (ADR-0047) is a second reviewer, never coverage: only CodeRabbit
+  // (the App or the CLI lane) can mark a commit reviewed. The second review
+  // quotes CodeRabbit's range wording to show trust follows the App, not text.
+  const GREPTILE = { login: "greptile-apps[bot]", type: "Bot" };
+  const greptileActivity = {
+    botReviews: [
+      { user: GREPTILE, state: "COMMENTED", body: "**3 files reviewed, 2 comments**" },
+      {
+        user: GREPTILE,
+        state: "COMMENTED",
+        body: `Re-reviewed: between ${BASE} and ${SHA}`,
+      },
+    ],
+    issueComments: [{ user: GREPTILE, body: "<h3>Greptile Summary</h3>\n\nAdds a hold." }],
+  };
+
+  it("is NOT covered by Greptile's review alone", async () => {
+    const out = await runCoverage({ pr: PR }, makeDeps(greptileActivity).deps);
+    assert.equal(out.covered, false);
+    assert.equal(out.source, null);
+    assert.equal(out.bot, "absent");
+    assert.equal(out.cli, "absent");
+  });
+
+  it("keeps the bot verdict unchanged when Greptile reviewed alongside CodeRabbit", async () => {
+    const deps = makeDeps({
+      ...greptileActivity,
+      botReviews: [...greptileActivity.botReviews, reviewed(SHA)],
+    }).deps;
+    const out = await runCoverage({ pr: PR }, deps);
+    assert.equal(out.covered, true);
+    assert.equal(out.source, "bot");
+    assert.equal(out.bot, "covered");
+    assert.equal(out.reason, "");
   });
 
   it("rejects a non-numeric --pr", async () => {

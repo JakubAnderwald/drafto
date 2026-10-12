@@ -245,6 +245,31 @@ unset _cr_knob _cr_name _cr_default
 export FACTORY_CR_CLI FACTORY_CR_CLI_MAX_PER_HOUR FACTORY_CR_CLI_MAX_RUNS_PER_CARD \
   FACTORY_CR_CLI_TIMEOUT_MIN FACTORY_CR_BOT_GRACE_MIN FACTORY_CR_HOLD_MAX_MIN
 
+# ── Greptile review hold (ADR-0047) ────────────────────────────────────────
+# Greptile is a second AI reviewer, running as its GitHub App on the free
+# open-source plan. greptile.json has it review a PR once, when the PR opens.
+# With the switch on, --watch holds a converged In Review card until Greptile has
+# reviewed the PR, for at most FACTORY_GREPTILE_HOLD_MAX_MIN counted from when
+# the PR opened, then promotes it with a "Greptile did not review PR #N" note.
+# Fails open, never a required check, never coverage: CodeRabbit + the CLI lane
+# stay the recorded review signal. Off by default, and the switch is also the
+# kill switch. Decisions live in scripts/lib/greptile-review.mjs; the IO is in
+# scripts/lib/greptile-gate.mjs, which reads the hold knob from the environment.
+FACTORY_GREPTILE_GATE="${FACTORY_GREPTILE_GATE:-0}"
+if [[ "$FACTORY_GREPTILE_GATE" != "0" && "$FACTORY_GREPTILE_GATE" != "1" ]]; then
+  echo "WARNING: invalid FACTORY_GREPTILE_GATE='$FACTORY_GREPTILE_GATE'; defaulting to 0" >&2
+  FACTORY_GREPTILE_GATE=0
+fi
+FACTORY_GREPTILE_HOLD_MAX_MIN="${FACTORY_GREPTILE_HOLD_MAX_MIN:-30}"
+# 1..1440, like greptile-review.mjs: garbage must not disable the hold (0) or
+# make it unbounded. The length check keeps bash arithmetic from overflowing.
+if ! [[ "$FACTORY_GREPTILE_HOLD_MAX_MIN" =~ ^[1-9][0-9]{0,3}$ ]] \
+    || (( FACTORY_GREPTILE_HOLD_MAX_MIN > 1440 )); then
+  echo "WARNING: invalid FACTORY_GREPTILE_HOLD_MAX_MIN='$FACTORY_GREPTILE_HOLD_MAX_MIN'; defaulting to 30" >&2
+  FACTORY_GREPTILE_HOLD_MAX_MIN=30
+fi
+export FACTORY_GREPTILE_GATE FACTORY_GREPTILE_HOLD_MAX_MIN
+
 # ── Pre-merge beta dispatch (In Test) ──────────────────────────────────────
 # Off by default. Deliberately separate from the Phase-D post-merge lane: a card
 # in In Test needs a testable native build BEFORE the merge gate, but enabling
@@ -1049,7 +1074,8 @@ build_review_bundle() {
 # approved-plan obj|null, $3 prior-PR obj, $4 raw PR diff, $5 changed-file list,
 # $6 platforms JSON, $7 preview URL, $8 advisory text, $9 beta-dispatch JSON,
 # ${10} head SHA, ${11} full issue-comment thread JSON, ${12} CodeRabbit coverage
-# note (ADR-0036; "" when the commit was covered or the lane is off).
+# note (ADR-0036; "" when the commit was covered or the lane is off), ${13}
+# Greptile note (ADR-0047; "" when Greptile reviewed the PR or the gate is off).
 build_intest_bundle() {
   local issue_entry="$1"
   local approved_plan="${2:-null}"
@@ -1063,6 +1089,7 @@ build_intest_bundle() {
   local head_sha="${10:-}"
   local comments="${11:-[]}"
   local cr_coverage_note="${12:-}"
+  local greptile_note="${13:-}"
   local repo_head_ref
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   jq -n \
@@ -1075,6 +1102,7 @@ build_intest_bundle() {
     --arg previewUrl "$preview_url" \
     --arg advisory "$advisory" \
     --arg crCoverageNote "$cr_coverage_note" \
+    --arg greptileNote "$greptile_note" \
     --argjson betaDispatch "$beta_dispatch" \
     --arg headSha "$head_sha" \
     --argjson comments "$comments" \
@@ -1099,6 +1127,7 @@ build_intest_bundle() {
        previewUrl: $previewUrl,
        advisory: $advisory,
        crCoverageNote: $crCoverageNote,
+       greptileNote: $greptileNote,
        betaDispatch: $betaDispatch,
        headSha: $headSha,
        comments: [],
@@ -2164,10 +2193,11 @@ intest_dispatch_betas() {
 # reporter must still get something usable. Platform-aware for the same reason
 # the model's version is: a Vercel link on a native-only PR tests nothing.
 # $1 issue, $2 pr-num, $3 preview URL, $4 advisory, $5 head sha, $6 platforms JSON,
-# $7 betaDispatch JSON (optional), $8 CodeRabbit coverage note (optional).
+# $7 betaDispatch JSON (optional), $8 CodeRabbit coverage note (optional),
+# $9 Greptile note (optional).
 intest_fallback_comment() {
   local issue_num="$1" pr_num="$2" preview_url="$3" advisory="$4" head_sha="$5" platforms="$6"
-  local beta="${7:-}" cr_note="${8:-}"
+  local beta="${7:-}" cr_note="${8:-}" greptile_note="${9:-}"
   local web mobile desktop dispatched build_note="" advisory_note=""
   web=$(echo "$platforms" | jq -r '.web // false' 2>/dev/null || echo "false")
   mobile=$(echo "$platforms" | jq -r '.mobile // false' 2>/dev/null || echo "false")
@@ -2206,6 +2236,13 @@ intest_fallback_comment() {
 
 ℹ️ $cr_note — not a failing check: this commit may have had no automated CodeRabbit review, so it deserves a closer look before Approving."
   fi
+  # The Greptile note (ADR-0047) is its own argument for the same reason, and
+  # gets its own line: Greptile is an optional second reviewer, not a check.
+  if [[ -n "$greptile_note" ]]; then
+    advisory_note="$advisory_note
+
+ℹ️ $greptile_note — not a failing check: Greptile is an optional second reviewer, so this only means one fewer automated look at the PR."
+  fi
   gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
     --body "🏭 **Ready to test — In Test.**
 
@@ -2243,7 +2280,8 @@ intest_record_comment_sha() {
 # scenario failed is still a green, testable card.
 #
 # $1 issue, $2 pr-num, $3 pr obj, $4 preview URL, $5 advisory, $6 head sha,
-# $7 changed files, $8 platforms JSON.
+# $7 changed files, $8 platforms JSON, $9 betaDispatch JSON, ${10} CodeRabbit
+# coverage note, ${11} Greptile note (the last three are documented below).
 intest_handoff() {
   local issue_num="$1" pr_num="$2" pr_obj="$3" preview_url="$4" advisory="$5"
   local head_sha="$6" diff_files="$7" platforms="$8"
@@ -2256,6 +2294,10 @@ intest_handoff() {
   # not a failing check, and both the scenario writer (bundle.crCoverageNote) and
   # the fallback comment render it apart from the reds.
   local cr_note="${10:-}"
+  # ${11}: the Greptile gate's one-line note for the PR (ADR-0047), "" when
+  # Greptile reviewed it or the gate is off. Its own argument for the same
+  # reason: bundle.greptileNote and the fallback comment show it as a note.
+  local greptile_note="${11:-}"
   # Default here rather than in the expansion: a `}` inside ${..:-..} has to be
   # escaped, and the escape leaks a literal backslash into the value — which
   # produced INVALID JSON for the designated fallback payload.
@@ -2266,7 +2308,7 @@ intest_handoff() {
   if [[ ! -f "$INTEST_PROMPT_FILE" ]]; then
     log "WARNING: In Test prompt missing ($INTEST_PROMPT_FILE); posting fallback comment"
     if [[ "$DRY_RUN" -eq 0 ]]; then
-      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
+      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note" "$greptile_note"
       intest_record_comment_sha "$issue_num" "$head_sha"
     fi
     return 0
@@ -2274,7 +2316,7 @@ intest_handoff() {
   if ! issue_record=$(fetch_issue_record "$issue_num"); then
     log "WARNING: fetch_issue_record failed for #$issue_num (In Test hand-off); posting fallback"
     if [[ "$DRY_RUN" -eq 0 ]]; then
-      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
+      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note" "$greptile_note"
       intest_record_comment_sha "$issue_num" "$head_sha"
     fi
     return 0
@@ -2291,10 +2333,10 @@ intest_handoff() {
 
   if ! bundle=$(build_intest_bundle "$issue_record" "$plan_json" "$pr_obj" "$pr_diff" \
       "$diff_files" "$platforms" "$preview_url" "$advisory" "$beta_json" \
-      "$head_sha" "$comments_json" "$cr_note"); then
+      "$head_sha" "$comments_json" "$cr_note" "$greptile_note"); then
     log "ERROR: build_intest_bundle failed for #$issue_num; posting fallback"
     if [[ "$DRY_RUN" -eq 0 ]]; then
-      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
+      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note" "$greptile_note"
       intest_record_comment_sha "$issue_num" "$head_sha"
     fi
     return 0
@@ -2325,13 +2367,13 @@ intest_handoff() {
     # falls back. Either way the retry budget is untouched — this is commentary.
     if [[ $exit_code -ne 124 ]] && check_session_limit "$REPO_ROOT" "$start_iso"; then
       rm -f "$out_file"
-      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
+      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note" "$greptile_note"
       intest_record_comment_sha "$issue_num" "$head_sha"
       pause_for_session_limit
       return 0
     fi
     rm -f "$out_file"
-    intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
+    intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note" "$greptile_note"
     intest_record_comment_sha "$issue_num" "$head_sha"
     return 0
   fi
@@ -2348,7 +2390,7 @@ intest_handoff() {
     log "Issue #$issue_num: test scenario posted (action=${action:-unknown})"
   else
     log "Issue #$issue_num: no test-scenario comment found (action=${action:-none}); posting fallback"
-    intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
+    intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note" "$greptile_note"
   fi
   intest_record_comment_sha "$issue_num" "$head_sha"
   return 0
@@ -2659,6 +2701,92 @@ cr_coverage_note() {
   if ! out=$(node "$SCRIPT_DIR/lib/coderabbit-cli.mjs" note --issue "$issue_num" --sha "$head_sha" \
       --state-file "$STATE_FILE" 2>>"$LOG_FILE"); then
     logerr "WARNING: issue #$issue_num: CodeRabbit coverage note lookup failed; handing off without it"
+    return 0
+  fi
+  printf '%s\n' "$out" | tail -1 \
+    | jq -r 'if type == "object" and (.note | type) == "string" then .note else "" end' 2>/dev/null \
+    || true
+}
+
+# Decide whether a converged In Review card may leave for In Test yet, as far as
+# Greptile goes (ADR-0047). Runs right after cr_lane_gate, only with
+# FACTORY_GREPTILE_GATE=1. Returns 1 to HOLD the card (the caller `continue`s)
+# and 0 to PROMOTE, setting GREPTILE_NOTE to a one-line "Greptile did not review
+# PR #<n> (…)" note when the PR goes out without a Greptile review.
+#
+# One review per PR, not per head commit: greptile.json turns per-push reviews
+# off, so later heads never get one. The hold is stateless — greptile-gate.mjs
+# reads only the PR and the clock — and bounded by FACTORY_GREPTILE_HOLD_MAX_MIN
+# counted from when the PR opened, so it runs alongside the CodeRabbit hold
+# rather than after it, and a revision round long after the PR opened never
+# waits again.
+#
+# Fails OPEN, like cr_lane_gate: a crash or unparseable output promotes with
+# "Greptile review status of PR #<n> unknown (gate error)", the wording
+# greptile-gate.mjs uses when its own gate throws. A dry run never holds.
+#
+# $1 issue, $2 pr-num.
+greptile_gate() {
+  local issue_num="$1" pr_num="$2" out action reason
+  local gate_error_note="Greptile review status of PR #$pr_num unknown (gate error)"
+  GREPTILE_NOTE=""
+  if ! out=$(node "$SCRIPT_DIR/lib/greptile-gate.mjs" gate --pr "$pr_num" 2>>"$LOG_FILE"); then
+    log "WARNING: issue #$issue_num: Greptile gate failed; promoting without it (fail open)"
+    GREPTILE_NOTE="$gate_error_note"
+    return 0
+  fi
+  out=$(printf '%s\n' "$out" | tail -1)
+  action=$(echo "$out" | jq -r '.action // ""' 2>/dev/null || echo "")
+  if [[ "$action" != "hold" && "$action" != "promote" ]]; then
+    log "WARNING: issue #$issue_num: Greptile gate gave no usable decision; promoting (fail open)"
+    GREPTILE_NOTE="$gate_error_note"
+    return 0
+  fi
+  reason=$(echo "$out" | jq -r '.reason // ""' 2>/dev/null || echo "")
+  if [[ "$action" == "hold" ]]; then
+    if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+      log "DRY-RUN: Greptile gate would hold #$issue_num ($reason); promoting"
+      return 0
+    fi
+    log "Issue #$issue_num: Greptile gate → hold ($reason)"
+    return 1
+  fi
+  log "Issue #$issue_num: Greptile gate → promote ($reason)"
+  # Greptile's review may have landed after this tick read the threads
+  # (fetch_review_threads, early in the card's pass). Promoting now would send
+  # the card to In Test with threads the fix loop never saw, and --release would
+  # bounce it back after the tester's approval. Re-read them once and hold for
+  # the fix loop if any are open; a failed read promotes anyway (fail open).
+  if [[ "$reason" == "greptile-reviewed" && "${DRY_RUN:-0}" -eq 0 ]]; then
+    local threads count
+    if threads=$(fetch_review_threads "$pr_num" 2>>"$LOG_FILE"); then
+      count=$(echo "$threads" | jq 'length' 2>/dev/null || echo "0")
+      if [[ "$count" =~ ^[1-9][0-9]*$ ]]; then
+        log "Issue #$issue_num: Greptile's review left $count open thread(s) after this tick read them; holding for the fix loop"
+        return 1
+      fi
+    fi
+  fi
+  GREPTILE_NOTE=$(echo "$out" \
+    | jq -r 'if (.note | type) == "string" then .note else "" end' 2>/dev/null || echo "")
+  return 0
+}
+
+# Print the Greptile note for PR <pr-num> as of now (ADR-0047), or nothing. For
+# the In Test sweep's scenario re-write, like cr_coverage_note: the promotion's
+# GREPTILE_NOTE lived only in its own tick. The gate is stateless, so this asks
+# GitHub again — a Greptile review that landed after the promotion clears the
+# note instead of repeating it.
+#
+# Commentary, so it never fails the caller (whose stdout it is): a crash or
+# garbled output means no note, logged via logerr to keep the value clean.
+#
+# $1 pr-num.
+greptile_note_for_pr() {
+  local pr_num="$1" out
+  [[ -n "$pr_num" ]] || return 0
+  if ! out=$(node "$SCRIPT_DIR/lib/greptile-gate.mjs" note --pr "$pr_num" 2>>"$LOG_FILE"); then
+    logerr "WARNING: PR #$pr_num: Greptile note lookup failed; handing off without it"
     return 0
   fi
   printf '%s\n' "$out" | tail -1 \
@@ -4011,15 +4139,29 @@ A human should take a look. Reset with \
       fi
     fi
 
+    # Greptile hold (ADR-0047), after the CodeRabbit lane. Greptile reviews a PR
+    # once, when it opens, so this waits for that one review — at most
+    # FACTORY_GREPTILE_HOLD_MAX_MIN from the PR opening, failing open — and never
+    # stands in for CodeRabbit coverage. Its threads need nothing here: like any
+    # thread they enter the fix loop above, and --release refuses to merge on one.
+    GREPTILE_NOTE=""
+    if [[ "${FACTORY_GREPTILE_GATE:-0}" == "1" ]]; then
+      if ! greptile_gate "$ISSUE_NUM" "$PR_NUM"; then
+        continue
+      fi
+    fi
+
     # Threads are guaranteed zero here: any open thread would have entered the
     # fix loop above, which always `continue`s. The CodeRabbit lane doesn't break
     # that — a finished CLI run's findings are posted by cr_cli_housekeeping at the
-    # top of the tick, before fetch_review_threads reads them.
+    # top of the tick, before fetch_review_threads reads them — and neither does
+    # the Greptile hold: greptile_gate re-reads the threads before promoting on a
+    # review that may have landed after that read.
     log "Issue #$ISSUE_NUM: required CI green (platforms: $(echo "$INTEST_PLATFORMS" | jq -c . 2>/dev/null)) → In Test"
     if [[ "$DRY_RUN" -eq 1 ]]; then
       log "DRY-RUN: would advance #$ISSUE_NUM to In Test and post a test scenario"
       INTEST_BETA=$(intest_dispatch_betas "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "$INTEST_PLATFORMS" 2>>"$LOG_FILE" || echo '{"dispatched":[],"skipped":[],"manualCommands":[]}')
-      intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$(pr_failing_advisory "$PR_VIEW")" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" "$INTEST_BETA" "$CR_NOTE" || true
+      intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$(pr_failing_advisory "$PR_VIEW")" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" "$INTEST_BETA" "$CR_NOTE" "$GREPTILE_NOTE" || true
       continue
     fi
     # Advance FIRST: the card must reach In Test even if writing the scenario
@@ -4034,13 +4176,14 @@ A human should take a look. Reset with \
     # Surface any advisory (non-required) red checks — e.g. CodeRabbit — so the
     # operator can glance before Approving, even though they didn't block advance.
     # The CodeRabbit lane's coverage note (CR_NOTE, "" when covered or the lane is
-    # off) travels as its own trailing argument, not inside ADVISORY: it is not a
-    # check and must never be rendered as one.
+    # off) travels as its own argument, not inside ADVISORY: it is not a check and
+    # must never be rendered as one. The Greptile note (GREPTILE_NOTE) follows it
+    # as the last argument, for the same reason.
     ADVISORY=$(pr_failing_advisory "$PR_VIEW")
     # Dispatch is its own step with its own SHA key, so a lane gated off here
     # (low disk, knob off) can still fire on a later tick.
     INTEST_BETA=$(intest_dispatch_betas "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "$INTEST_PLATFORMS" 2>>"$LOG_FILE" || echo '{"dispatched":[],"skipped":[],"manualCommands":[]}')
-    intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$ADVISORY" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" "$INTEST_BETA" "$CR_NOTE" || true
+    intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$ADVISORY" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" "$INTEST_BETA" "$CR_NOTE" "$GREPTILE_NOTE" || true
   done
 
   # ── In Test feedback sweep: a reporter comment requests a revision ──────────
@@ -4147,9 +4290,15 @@ A human should take a look. Reset with \
           if [[ "${FACTORY_CR_CLI:-0}" == "1" ]]; then
             INTEST_CR_NOTE=$(cr_coverage_note "$ISSUE_NUM" "$INTEST_HEAD_SHA")
           fi
+          # Same for the Greptile note (ADR-0047), asked of GitHub again: the
+          # gate keeps no state, and a review that landed since clears it.
+          INTEST_GREPTILE_NOTE=""
+          if [[ "${FACTORY_GREPTILE_GATE:-0}" == "1" ]]; then
+            INTEST_GREPTILE_NOTE=$(greptile_note_for_pr "$INTEST_PR_NUM")
+          fi
           intest_handoff "$ISSUE_NUM" "$INTEST_PR_NUM" "$INTEST_PR_OBJ" "$INTEST_PREVIEW" \
             "$(pr_failing_advisory "${INTEST_PR_VIEW:-}")" "$INTEST_HEAD_SHA" "$INTEST_FILES" "$INTEST_PLATS" \
-            "$INTEST_BETA" "$INTEST_CR_NOTE" || true
+            "$INTEST_BETA" "$INTEST_CR_NOTE" "$INTEST_GREPTILE_NOTE" || true
           # The scenario we just posted carries a drafto-factory marker, so
           # owner_comments_since ignores it — it can never look like feedback.
           COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM" 2>>"$LOG_FILE" || echo "$COMMENTS_JSON")

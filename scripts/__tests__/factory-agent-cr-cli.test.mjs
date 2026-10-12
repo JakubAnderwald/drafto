@@ -159,16 +159,17 @@ describe("factory-agent.sh CodeRabbit lane: static wiring", () => {
     }
   });
 
-  it("passes CR_NOTE as its own trailing intest_handoff argument at both promotion sites", () => {
+  it("passes CR_NOTE as its own intest_handoff argument at both promotion sites", () => {
     const start = watchBlock.indexOf(') → In Test"');
     const promotion = watchBlock.slice(start);
     const handoffs = promotion.match(/intest_handoff [^\n]*/g) || [];
     assert.equal(handoffs.length, 2, "dry-run and live promotion must both hand off");
     for (const call of handoffs) {
+      // The Greptile note (ADR-0047) is the only argument allowed after it.
       assert.match(
         call,
-        /"\$INTEST_BETA" "\$CR_NOTE" \|\| true$/,
-        "the note must be the tenth argument, after the beta JSON",
+        /"\$INTEST_BETA" "\$CR_NOTE" "\$GREPTILE_NOTE" \|\| true$/,
+        "the note must be the tenth argument, directly after the beta JSON",
       );
       assert.doesNotMatch(call, /"\$ADVISORY[^"]*\$CR_NOTE/);
     }
@@ -197,7 +198,7 @@ describe("factory-agent.sh CodeRabbit lane: static wiring", () => {
     );
     assert.match(
       sweep.slice(handoffIdx),
-      /^intest_handoff [\s\S]*?"\$INTEST_BETA" "\$INTEST_CR_NOTE" \|\| true/,
+      /^intest_handoff [\s\S]*?"\$INTEST_BETA" "\$INTEST_CR_NOTE" "\$INTEST_GREPTILE_NOTE" \|\| true/,
     );
   });
 
@@ -703,7 +704,8 @@ describe("intest_handoff carries the coverage note apart from advisory (real hel
     assert.equal(r.status, 0, r.stderr);
     assert.ok(r.fallbackArgs, "the missing-prompt path must post the fallback");
     const [argc, ...args] = r.fallbackArgs;
-    assert.equal(argc, "8");
+    // Nine: the Greptile note (ADR-0047) follows, empty here.
+    assert.equal(argc, "9");
     assert.equal(args[3], "SonarCloud", "$4 stays the advisory check list");
     assert.equal(args[7], NOTE);
   });

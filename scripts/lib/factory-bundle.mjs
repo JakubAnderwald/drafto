@@ -33,7 +33,8 @@
 //                        the approved plan, the actual PR diff and the
 //                        platforms derived from it, plus the facts bash
 //                        already knows (preview URL, dispatched beta lanes,
-//                        advisory checks). The model writes the human test
+//                        advisory checks, the CodeRabbit coverage note and
+//                        the Greptile note). The model writes the human test
 //                        scenario and posts the In Test comment.
 //
 // Pure functions for unit tests, plus a CLI that reads a single JSON object
@@ -612,9 +613,9 @@ export function buildFactoryWatchBundle({
     // instruction stream.
     ciSummaryEnveloped: envelopeBody(typeof ciSummary === "string" ? ciSummary : "", "ci-summary"),
     unresolvedComments: envelopeComments(unresolvedComments),
-    // Unresolved inline review threads (CodeRabbit's findings, the factory's own
-    // review stage, and any human's). Each one blocks the merge until the
-    // watcher answers and resolves it — see factory-watch-prompt.md.
+    // Unresolved inline review threads (CodeRabbit's findings, Greptile's, the
+    // factory's own review stage, and any human's). Each one blocks the merge
+    // until the watcher answers and resolves it — see factory-watch-prompt.md.
     reviewThreads: envelopeReviewThreads(reviewThreads),
     comments: envelopeComments(comments),
     reporter: reporterFromBody(issue.body ?? ""),
@@ -726,8 +727,8 @@ export function buildFactoryReviewBundle({
 // asked for), the approved plan (what was meant to change), the actual PR diff
 // (what DID change — the ground truth for the scenario), the platforms derived
 // from that diff, and the facts bash already knows (preview URL, dispatched
-// beta lanes, advisory checks, CodeRabbit coverage note) so the model never
-// invents a URL or build number.
+// beta lanes, advisory checks, CodeRabbit coverage note, Greptile note) so the
+// model never invents a URL or build number.
 export function buildFactoryInTestBundle({
   issue,
   approvedPlan,
@@ -738,6 +739,7 @@ export function buildFactoryInTestBundle({
   previewUrl = "",
   advisory = "",
   crCoverageNote = "",
+  greptileNote = "",
   betaDispatch = null,
   headSha = "",
   comments = [],
@@ -805,6 +807,13 @@ export function buildFactoryInTestBundle({
     // than a suffix on `advisory`: it is not a failing check, and a joined string
     // could only be split back apart by guessing at the note's wording.
     crCoverageNote: typeof crCoverageNote === "string" ? crCoverageNote : "",
+    // The Greptile gate's one-line note (ADR-0047) — "Greptile did not review PR
+    // #N (…)", "Greptile review status of PR #N unknown (…)" or "Greptile has not
+    // reviewed PR #N yet" — "" when Greptile reviewed the PR or the gate is off.
+    // Its own field for the same reason as crCoverageNote, never inside
+    // `advisory`, and not folded into crCoverageNote either: Greptile is an
+    // optional second reviewer, not CodeRabbit coverage.
+    greptileNote: typeof greptileNote === "string" ? greptileNote : "",
     betaDispatch: betaDispatch
       ? {
           dispatched: Array.isArray(betaDispatch.dispatched) ? betaDispatch.dispatched : [],
@@ -894,6 +903,7 @@ async function main() {
       previewUrl: input.previewUrl,
       advisory: input.advisory,
       crCoverageNote: input.crCoverageNote,
+      greptileNote: input.greptileNote,
       betaDispatch: input.betaDispatch,
       headSha: input.headSha,
       comments: input.comments,

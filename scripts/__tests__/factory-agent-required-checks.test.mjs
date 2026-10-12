@@ -219,6 +219,86 @@ describe("pr_failing_required / pr_pending_required (real helpers, jq)", () => {
     assert.equal(res.status, 0, res.stderr);
     assert.equal(res.stdout.trim(), "CodeRabbit");
   });
+
+  // Greptile (ADR-0047) is an optional second reviewer, never a required check.
+  // greptile.json keeps its status check off, but if one ever reports — as a
+  // check run or a commit status — it must behave like CodeRabbit's: no fix
+  // loop, no wedged advance, just a name in the advisory list.
+  describe("a Greptile check is advisory, never required", () => {
+    const REQUIRED_GREEN = [
+      { name: "Scripts Tests", status: "COMPLETED", conclusion: "SUCCESS" },
+      { name: "E2E Tests", status: "COMPLETED", conclusion: "SUCCESS" },
+      { name: "Unit & Integration Tests", status: "COMPLETED", conclusion: "SUCCESS" },
+    ];
+    const view = (...extra) => ({ statusCheckRollup: [...REQUIRED_GREEN, ...extra] });
+    const SHAPES = {
+      CheckRun: {
+        failing: ["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"].map(
+          (conclusion) => ({ name: "Greptile Review", status: "COMPLETED", conclusion }),
+        ),
+        pending: ["QUEUED", "IN_PROGRESS"].map((status) => ({ name: "Greptile Review", status })),
+      },
+      StatusContext: {
+        failing: ["FAILURE", "ERROR"].map((state) => ({ context: "Greptile Review", state })),
+        pending: ["PENDING", "EXPECTED"].map((state) => ({ context: "Greptile Review", state })),
+      },
+    };
+
+    for (const [shape, { failing, pending }] of Object.entries(SHAPES)) {
+      it(`a red ${shape} is never a required failure`, () => {
+        for (const check of failing) {
+          assert.equal(
+            runCounter("pr_failing_required", view(check), REQUIRED),
+            "0",
+            JSON.stringify(check),
+          );
+        }
+      });
+
+      it(`a pending ${shape} is never a required pending`, () => {
+        for (const check of pending) {
+          assert.equal(
+            runCounter("pr_pending_required", view(check), REQUIRED),
+            "0",
+            JSON.stringify(check),
+          );
+        }
+      });
+
+      it(`pr_failing_advisory names a red ${shape} as advisory`, () => {
+        for (const check of failing) {
+          assert.equal(
+            runCounter("pr_failing_advisory", view(check), REQUIRED),
+            "Greptile Review",
+            JSON.stringify(check),
+          );
+        }
+      });
+    }
+
+    it("still counts a real required red next to a red Greptile", () => {
+      const both = view(
+        { context: "Greptile Review", state: "FAILURE" },
+        { name: "Lint & Typecheck", status: "COMPLETED", conclusion: "FAILURE" },
+      );
+      const required =
+        '["Scripts Tests","E2E Tests","Unit & Integration Tests","Lint & Typecheck"]';
+      assert.equal(runCounter("pr_failing_required", both, required), "1");
+      assert.equal(runCounter("pr_failing_advisory", both, required), "Greptile Review");
+    });
+
+    it("lists Greptile alongside CodeRabbit when both are red", () => {
+      const both = view(
+        { context: "CodeRabbit", state: "FAILURE" },
+        { name: "Greptile Review", status: "COMPLETED", conclusion: "FAILURE" },
+      );
+      assert.equal(runCounter("pr_failing_required", both, REQUIRED), "0");
+      assert.equal(
+        runCounter("pr_failing_advisory", both, REQUIRED),
+        "CodeRabbit, Greptile Review",
+      );
+    });
+  });
 });
 
 describe("cancelled-check recovery helpers (real helpers, jq) — #654", () => {
