@@ -53,6 +53,8 @@ const mockInjectCSS = jest.fn();
 const mockUseEditorBridge = jest.fn();
 const mockGetJSON = jest.fn().mockResolvedValue({ type: "doc", content: [] });
 let mockEditorFocused = false;
+// Subscribers to the bridge's editor-state updates (focus changes, etc.).
+const mockStateSubscribers: ((state: { isFocused: boolean }) => void)[] = [];
 
 jest.mock("@10play/tentap-editor", () => ({
   useEditorBridge: (options: unknown) => {
@@ -62,6 +64,12 @@ jest.mock("@10play/tentap-editor", () => ({
       setContent: mockSetContent,
       injectCSS: mockInjectCSS,
       getEditorState: () => ({ isReady: true, isFocused: mockEditorFocused }),
+      _subscribeToEditorStateUpdate: (listener: (state: { isFocused: boolean }) => void) => {
+        mockStateSubscribers.push(listener);
+        return () => {
+          mockStateSubscribers.splice(mockStateSubscribers.indexOf(listener), 1);
+        };
+      },
     };
   },
   useBridgeState: () => ({ isReady: true }),
@@ -116,6 +124,7 @@ describe("EditorScreen", () => {
     mockNoteLoading = true;
     mockNoteError = null;
     mockEditorFocused = false;
+    mockStateSubscribers.length = 0;
     mockAutoSaveHandlers.length = 0;
     mockGetJSON.mockResolvedValue({ type: "doc", content: [] });
   });
@@ -334,6 +343,41 @@ describe("EditorScreen", () => {
         await expect(saveContent(undefined)).resolves.toBe(true);
       });
       expect(record.content).toBe(serializeEditorContent(LOADED_DOC));
+    });
+
+    it("skips the read-back if the editor was focused before the reply, even if blurred again", async () => {
+      // The user taps in (the reply could hold their typing) and away again
+      // before the read-back's reply arrives.
+      const record = storeNote("Note", serializeEditorContent(SPLIT_DOC));
+      let reply!: (doc: TipTapDoc) => void;
+      mockGetJSON.mockReturnValueOnce(new Promise<TipTapDoc>((resolve) => (reply = resolve)));
+      render(<EditorScreen />);
+
+      await act(async () => {
+        for (const listener of [...mockStateSubscribers]) listener({ isFocused: true });
+        for (const listener of [...mockStateSubscribers]) listener({ isFocused: false });
+        reply(LOADED_DOC);
+      });
+
+      mockGetJSON.mockResolvedValue(LOADED_DOC);
+      const { saveContent } = latestSaveHandlers();
+      await act(async () => {
+        await expect(saveContent(undefined)).resolves.toBe(true);
+      });
+      expect(record.content).toBe(serializeEditorContent(LOADED_DOC));
+      expect(mockStateSubscribers).toHaveLength(0); // unsubscribed once answered
+    });
+
+    it("skips a read-back whose text differs from the loaded note, so a typed edit is saved", async () => {
+      const record = storeNote("Note", serializeEditorContent(SPLIT_DOC));
+      await renderEditor(EDITED_DOC);
+
+      const { saveContent } = latestSaveHandlers();
+      mockGetJSON.mockResolvedValue(EDITED_DOC);
+      await act(async () => {
+        await expect(saveContent(undefined)).resolves.toBe(true);
+      });
+      expect(record.content).toBe(serializeEditorContent(EDITED_DOC));
     });
 
     it("writes and syncs a real edit", async () => {

@@ -80,6 +80,15 @@ function createLoadBaseline(note: Note): ContentBaseline {
   }
 }
 
+/**
+ * A document's text with no separators. ProseMirror's load normalisation
+ * (merging text runs, re-sorting marks, filling an empty doc) keeps it; typing
+ * changes it.
+ */
+function docText(node: { text?: string; content?: TipTapNode[] }): string {
+  return (node.text ?? "") + (node.content ?? []).map(docText).join("");
+}
+
 export default function EditorScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { note, loading, error } = useNote(id);
@@ -182,6 +191,7 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   const [contentBaselines] = useState(
     () => new Map<string, ContentBaseline>([[noteId, createLoadBaseline(initialNote)]]),
   );
+  const [loadedText] = useState(() => docText(parseInitialContent(initialNote)));
   // Settles once the editor's read-back has joined the baseline (or timed out);
   // content saves wait for it so the load echo is compared against it.
   const baselineSeedRef = useRef<Promise<void>>(Promise.resolve());
@@ -271,9 +281,16 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
       // Read the loaded document back and add its serialisation to the
       // baseline: ProseMirror normalises what it loads (an empty doc gains a
       // paragraph, adjacent text runs merge), and the load's content-update
-      // echo serialises to that. The read is skipped if the user has already
-      // focused the editor, because the reply could then hold their typing.
+      // echo serialises to that. The reply must not hold a user edit, or the
+      // baseline would make that edit look like a no-op and drop it. So the
+      // read-back is refused if the editor was focused at any point before the
+      // reply (typing needs focus, and bridge state updates reach us in order,
+      // ahead of the reply), or if its text differs from the loaded doc's.
       const liveEditor = editorRef.current;
+      let focused = liveEditor.getEditorState().isFocused;
+      const unsubscribe = liveEditor._subscribeToEditorStateUpdate((state) => {
+        if (state.isFocused) focused = true;
+      });
       baselineSeedRef.current = withTimeout<object | null>(
         liveEditor.getJSON(),
         BASELINE_READ_TIMEOUT_MS,
@@ -281,11 +298,14 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
       ).then((json) => {
         // Never rejects: content saves await this promise.
         try {
+          unsubscribe();
           const baseline = contentBaselines.get(noteId);
-          if (!json || !baseline || liveEditor.getEditorState().isFocused) return;
+          if (!json || !baseline || focused) return;
+          const readBack = json as TipTapDoc;
+          if (docText(readBack) !== loadedText) return;
           rememberContentBaseline(contentBaselines, noteId, {
             stored: baseline.stored,
-            serializations: [...baseline.serializations, serializeEditorContent(json as TipTapDoc)],
+            serializations: [...baseline.serializations, serializeEditorContent(readBack)],
           });
         } catch (err) {
           console.warn("[editor] baseline read-back failed", err);
@@ -293,7 +313,7 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
       });
     }
     editorReadyRef.current = isReady;
-  }, [isReady, contentBaselines, noteId]);
+  }, [isReady, contentBaselines, loadedText, noteId]);
 
   // Applies a theme switch made while the note is open; the initial colours
   // already come from the bridge CSS above.

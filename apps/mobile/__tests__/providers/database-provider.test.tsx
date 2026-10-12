@@ -414,6 +414,41 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
     expect(mockSyncDatabase).toHaveBeenCalledTimes(2);
   });
 
+  it("stops a previous user's run that finishes mid-pass, leaving the new run's follow-up alone", async () => {
+    // A's pass is still checking for pending changes when B signs in.
+    const aPendingCheck = deferred<boolean>();
+    mockHasUnsyncedChanges.mockReturnValueOnce(aPendingCheck.promise);
+    const { result, rerender } = renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(mockHasUnsyncedChanges).toHaveBeenCalledTimes(1));
+
+    mockUseAuth.mockReturnValue({ user: null });
+    rerender(undefined);
+    await flushEffects();
+    const bSync = deferred<{ remoteChangeCount: number }>();
+    mockSyncDatabase.mockReturnValueOnce(bSync.promise);
+    mockUseAuth.mockReturnValue({ user: { id: "user-456" } });
+    rerender(undefined);
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(2));
+
+    // B's screen joins B's run, asking for another pass.
+    const joined = result.current.sync();
+    // A's pass now finishes with changes pending. It must not act on B's
+    // request (which would start a pass for A and clear B's flags).
+    await act(async () => {
+      aPendingCheck.resolve(true);
+    });
+    await flushEffects();
+    expect(mockSyncDatabase).toHaveBeenCalledTimes(2);
+
+    // B's run still honours its own follow-up.
+    mockHasUnsyncedChanges.mockResolvedValueOnce(true);
+    await act(async () => {
+      bSync.resolve({ remoteChangeCount: 0 });
+      await joined;
+    });
+    expect(mockSyncDatabase).toHaveBeenCalledTimes(3);
+  });
+
   it("still pushes a local edit when the pending check itself fails", async () => {
     jest.useFakeTimers();
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});

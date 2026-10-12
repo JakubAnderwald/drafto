@@ -158,6 +158,8 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
         }
 
         const pending = await checkPendingChanges();
+        // The session can end during any await; a stale pass reports nothing.
+        if (!isCurrentSession()) return { ok: false, pending: false, uploaded: 0 };
 
         if (result.remoteChangeCount > 0) {
           const msg =
@@ -199,6 +201,9 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
           rerunRequestedRef.current = false;
           editedDuringSyncRef.current = false;
           const pass = await runPass();
+          // A run whose session has ended stops before touching the flags
+          // below: they belong to the new session's run now.
+          if (!isCurrentSession()) break;
           // A failed pass ends the run: the retry timer (network) or the next
           // trigger tries again, rather than this loop hammering a failure.
           // Not rescheduling here is also what keeps a partly failed push from
