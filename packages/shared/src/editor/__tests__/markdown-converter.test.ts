@@ -506,6 +506,36 @@ describe("round-trip stability", () => {
       ]);
     });
 
+    // parseLine strips leading whitespace (it is indent), so the escape has to
+    // follow it; the whitespace itself is not kept.
+    it.each([[" - x"], [" + x"], [" # x"], [" 1. x"], [" | a |"], ["\t- x"], ["   - [ ] x"]])(
+      "keeps the paragraph %j a paragraph",
+      (value) => {
+        expect(markdownToBlockNote(blockNoteToMarkdown([paragraph([text(value)])]))).toEqual([
+          paragraph([text(value.trimStart())]),
+        ]);
+      },
+    );
+
+    it("escapes after leading whitespace, not before it", () => {
+      expect(blockNoteToMarkdown([paragraph([text(" - x")])])).toBe(" \\- x");
+      expect(blockNoteToMarkdown([paragraph([text("  # x")])])).toBe("  \\# x");
+      expect(blockNoteToMarkdown([paragraph([text(" 1. x")])])).toBe(" 1\\. x");
+      expect(blockNoteToMarkdown([paragraph([text(" | a |")])])).toBe(" \\| a |");
+    });
+
+    it("keeps a paragraph starting with whitespace and `!` before a link from becoming an image", () => {
+      const link = {
+        type: "link" as const,
+        text: "x",
+        href: "https://x.test",
+        content: [text("x")],
+      };
+      expect(markdownToBlockNote(blockNoteToMarkdown([paragraph([text(" !"), link])]))).toEqual([
+        paragraph([text("!"), link]),
+      ]);
+    });
+
     it("escapes the same characters in headings, list items and check items", () => {
       expectBlocksToRoundTrip([
         item("heading", "# 2 * 3 [x]", [], { level: 2 }),
