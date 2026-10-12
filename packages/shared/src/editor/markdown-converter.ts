@@ -64,10 +64,12 @@ function escapeLinkLabel(text: string): string {
 
 /**
  * Link / image / attachment destination. Anything that would end a bare
- * destination early (parentheses, whitespace) is wrapped in `<...>`.
+ * destination early (parentheses, whitespace) is wrapped in `<...>`, and so
+ * is an empty one (an image block before its upload finishes), since a bare
+ * `()` is not read as a destination.
  */
 function formatDestination(href: string): string {
-  if (/[\s()<>]/.test(href)) {
+  if (!href || /[\s()<>]/.test(href)) {
     return `<${escapeMarkdown(href, (ch) => ch === "<" || ch === ">")}>`;
   }
   return escapeMarkdown(href, () => false);
@@ -75,10 +77,11 @@ function formatDestination(href: string): string {
 
 /**
  * Plain text at the start of a paragraph line that the block parser would
- * otherwise read as a heading, list item or table row.
+ * otherwise read as a heading, list item, table row or image (a `!` that
+ * ends the text right before a link).
  */
 function escapeLineStart(markdown: string): string {
-  if (/^(#{1,6}|[-+])\s/.test(markdown) || markdown.startsWith("|")) return `\\${markdown}`;
+  if (/^(#{1,6}|[-+])\s/.test(markdown) || /^[|]|^!\[/.test(markdown)) return `\\${markdown}`;
   return markdown.replace(/^(\d+)\.(?=\s)/, "$1\\.");
 }
 
@@ -221,9 +224,12 @@ function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
 
   // Render nested children with increased indent
   if (block.children && block.children.length > 0) {
-    for (const child of block.children) {
+    block.children.forEach((child, i) => {
+      // Siblings are joined without a blank line, so two tables in a row
+      // would read back as one table.
+      if (child.type === "table" && block.children?.[i - 1]?.type === "table") lines.push("");
       lines.push(blockToMarkdown(child, indent + 1));
-    }
+    });
   }
 
   return lines.join("\n");

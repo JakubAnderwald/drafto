@@ -497,6 +497,15 @@ describe("round-trip stability", () => {
       expectBlocksToRoundTrip([paragraph([text("a~"), text("struck", { strike: true })])]);
     });
 
+    it("keeps a paragraph starting with `!` before a link from becoming an image", () => {
+      expectBlocksToRoundTrip([
+        paragraph([
+          text("!"),
+          { type: "link", text: "x", href: "https://x.test", content: [text("x")] },
+        ]),
+      ]);
+    });
+
     it("escapes the same characters in headings, list items and check items", () => {
       expectBlocksToRoundTrip([
         item("heading", "# 2 * 3 [x]", [], { level: 2 }),
@@ -605,6 +614,12 @@ describe("round-trip stability", () => {
       expectBlocksToRoundTrip(blocks);
     });
 
+    it("round-trips an image block whose upload has not finished (empty url)", () => {
+      const blocks: BlockNoteBlock[] = [{ type: "image", props: { url: "" }, children: [] }];
+      expect(blockNoteToMarkdown(blocks)).toBe("![](<>)");
+      expectBlocksToRoundTrip(blocks);
+    });
+
     it("round-trips image captions with brackets and urls with parentheses", () => {
       expectBlocksToRoundTrip([
         {
@@ -667,6 +682,18 @@ describe("round-trip stability", () => {
 
     it("keeps empty cells and styled cells", () => {
       expectMarkdownToBeStable("| a |  | **b** |\n| --- | --- | --- |\n| 1 | 2 | 3 |");
+    });
+
+    it("keeps sibling tables under the same parent separate", () => {
+      const blocks = [
+        item("bulletListItem", "a", [
+          table([["x"], ["1"]]),
+          table([["y"], ["2"]]),
+          item("paragraph", "after"),
+        ]),
+      ];
+      expectBlocksToRoundTrip(blocks);
+      expectMarkdownToBeStable(blockNoteToMarkdown(blocks));
     });
 
     it("stops a table at a line with a different indent", () => {
