@@ -56,6 +56,9 @@ jest.mock("@10play/tentap-editor", () => ({
       getJSON: jest.fn().mockResolvedValue({ type: "doc", content: [] }),
       setContent: jest.fn(),
       injectCSS: jest.fn(),
+      // Read by the editor's load-baseline logic.
+      getEditorState: () => ({ isReady: true, isFocused: false }),
+      _subscribeToEditorStateUpdate: () => () => undefined,
     };
   },
   useBridgeState: () => ({ isReady: true }),
