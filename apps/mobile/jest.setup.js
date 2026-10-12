@@ -35,6 +35,12 @@ jest.mock("expo-router", () => ({
   },
 }));
 
+// Mock @react-navigation/elements (its real module needs the native bridge, and
+// useHeaderHeight throws outside a navigator)
+jest.mock("@react-navigation/elements", () => ({
+  useHeaderHeight: jest.fn(() => 0),
+}));
+
 // Mock @react-native-community/netinfo
 jest.mock("@react-native-community/netinfo", () => ({
   addEventListener: jest.fn(() => jest.fn()),
@@ -62,6 +68,8 @@ jest.mock("@10play/tentap-editor", () => ({
     setContent: jest.fn(),
   })),
   TenTapStartKit: [],
+  CoreBridge: { configureCSS: (css) => ({ name: "core", extendCSS: css }) },
+  darkEditorTheme: { toolbar: {}, webview: {}, webviewContainer: {} },
   RichText: () => null,
   Toolbar: () => null,
 }));

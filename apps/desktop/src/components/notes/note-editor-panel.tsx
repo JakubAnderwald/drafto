@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { View, Text, TextInput, StyleSheet, ActivityIndicator } from "react-native";
-import { useEditorBridge, TenTapStartKit } from "@10play/tentap-editor";
+import { useEditorBridge } from "@10play/tentap-editor";
 import type { WebViewMessageEvent } from "react-native-webview";
 
 import { useNote } from "@/hooks/use-note";
@@ -27,6 +27,7 @@ import { Badge, type BadgeVariant } from "@/components/ui/badge";
 import { CalendarIcon } from "@/components/ui/icons/calendar-icon";
 import { ClockIcon } from "@/components/ui/icons/clock-icon";
 import { NoteEditor } from "@/components/editor/note-editor";
+import { EDITOR_BRIDGE_EXTENSIONS } from "@/components/editor/editor-bridge-extensions";
 import { FindBar } from "@/components/editor/find-bar";
 import {
   findSearchJS,
@@ -242,7 +243,7 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
   const editor = useEditorBridge({
     autofocus: false,
     avoidIosKeyboard: false,
-    bridgeExtensions: TenTapStartKit,
+    bridgeExtensions: EDITOR_BRIDGE_EXTENSIONS,
     initialContent: "",
     onChange: handleEditorChange,
   });

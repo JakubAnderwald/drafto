@@ -19,6 +19,7 @@ import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useNotebooks } from "@/hooks/use-notebooks";
 import { useHaptics } from "@/hooks/use-haptics";
+import { usePullToRefresh } from "@/hooks/use-pull-to-refresh";
 import { generateId } from "@/lib/generate-id";
 import { SwipeableRow } from "@/components/swipeable-row";
 import { ListSkeleton } from "@/components/ui/skeleton";
@@ -30,7 +31,8 @@ import type { SwipeAction } from "@/components/swipeable-row";
 
 export default function NotebooksScreen() {
   const { user } = useAuth();
-  const { database, sync, isSyncing } = useDatabase();
+  const { database, sync } = useDatabase();
+  const { refreshing, onRefresh } = usePullToRefresh(sync);
   const router = useRouter();
   const { notebooks, loading } = useNotebooks();
   const { semantic } = useTheme();
@@ -287,8 +289,8 @@ export default function NotebooksScreen() {
           contentContainerStyle={styles.list}
           refreshControl={
             <RefreshControl
-              refreshing={isSyncing}
-              onRefresh={sync}
+              refreshing={refreshing}
+              onRefresh={onRefresh}
               tintColor={colors.primary[600]}
               colors={[colors.primary[600]]}
             />

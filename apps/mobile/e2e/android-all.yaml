@@ -152,6 +152,16 @@ appId: eu.drafto.mobile
     visible: ".*Note ${RUN_ID}.*"
     timeout: 10000
 
+# --- Editor with the keyboard up (check the screenshot: body gutter, toolbar and
+# attachment row above the keyboard, nothing under the gesture bar) ---
+- tapOn:
+    point: "50%,45%"
+- inputText: "Body ${RUN_ID}"
+- waitForAnimationToEnd
+- takeScreenshot: editor-keyboard-up
+# Close the keyboard first, or the back press below only dismisses it.
+- hideKeyboard
+
 # --- Go back and rename via long press ---
 - pressKey: back
 - extendedWaitUntil:

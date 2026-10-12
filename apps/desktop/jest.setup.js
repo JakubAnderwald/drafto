@@ -62,6 +62,7 @@ jest.mock("@10play/tentap-editor", () => ({
     setContent: jest.fn(),
   })),
   TenTapStartKit: [],
+  CoreBridge: { configureCSS: (css) => ({ name: "core", extendCSS: css }) },
   RichText: () => null,
   Toolbar: () => null,
 }));

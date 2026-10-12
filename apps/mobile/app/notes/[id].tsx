@@ -8,23 +8,21 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from "react-native";
-import { useLocalSearchParams, Stack } from "expo-router";
-import {
-  useEditorBridge,
-  useBridgeState,
-  TenTapStartKit,
-  CoreBridge,
-  darkEditorTheme,
-} from "@10play/tentap-editor";
+import { useLocalSearchParams } from "expo-router";
+import { useHeaderHeight } from "@react-navigation/elements";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useEditorBridge, useBridgeState, TenTapStartKit, CoreBridge } from "@10play/tentap-editor";
 
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useNote } from "@/hooks/use-note";
+import { useKeyboardVisible } from "@/hooks/use-keyboard-visible";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { EditorSkeleton } from "@/components/ui/skeleton";
 import { useAutoSave } from "@/hooks/use-auto-save";
 import { buildEditorColorCss, buildEditorCss } from "@/lib/editor-css";
+import { buildEditorTheme } from "@/lib/editor-theme";
 import {
   contentToTiptap,
   contentToBlocknote,
@@ -175,6 +173,9 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   const { database, sync } = useDatabase();
   const { semantic, isDark } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+  const headerHeight = useHeaderHeight();
+  const insets = useSafeAreaInsets();
+  const isKeyboardUp = useKeyboardVisible();
   const [title, setTitle] = useState(initialNote.title);
   const noteIdRef = useRef(noteId);
   // Gate autosave on TenTap's readiness. Without this, onChange emissions during
@@ -251,19 +252,20 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     [semantic, isDark],
   );
 
+  // Memoised: TenTap re-merges its theme whenever this object changes.
+  const editorTheme = useMemo(() => buildEditorTheme(semantic, isDark), [semantic, isDark]);
+
   // Pass initialContent so TipTap has the content when it first initializes
   // inside the WebView — no race condition with setContent.
   const editor = useEditorBridge({
     bridgeExtensions,
     autofocus: false,
-    avoidIosKeyboard: true,
+    // The KeyboardAvoidingView below already lifts the editor above the
+    // keyboard. TenTap's own avoidance would also pad the document by the
+    // keyboard height, leaving a blank band above the toolbar.
+    avoidIosKeyboard: false,
     initialContent: resolvedContent,
-    theme: isDark
-      ? {
-          ...darkEditorTheme,
-          webview: { backgroundColor: semantic.bg },
-        }
-      : undefined,
+    theme: editorTheme,
     onChange: () => {
       if (!editorReadyRef.current) return;
       contentSave.trigger();
@@ -403,32 +405,48 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     return <EditorSkeleton />;
   }
 
+  // No header title here: the title field below is the note's title, and the
+  // header (title "", back label "Notes") is set once in app/_layout.tsx.
   return (
-    <>
-      <Stack.Screen options={{ title: title || "Untitled" }} />
-      <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
-        <View style={styles.titleRow}>
-          <TextInput
-            style={styles.titleInput}
-            value={title}
-            onChangeText={handleTitleChange}
-            placeholder="Untitled"
-            placeholderTextColor={semantic.fgSubtle}
-            returnKeyType="next"
-          />
-          {saveStatus === "saving" && <Text style={styles.statusText}>Saving...</Text>}
-          {saveStatus === "saved" && <Text style={styles.statusTextSaved}>Saved</Text>}
-          {saveStatus === "error" && <Text style={styles.statusTextError}>Save failed</Text>}
-        </View>
-        <View style={styles.editorContainer}>
-          <NoteEditor editor={editor} />
-        </View>
-        <AttachmentPicker noteId={noteId} onAttachmentReady={handleAttachmentReady} />
-      </KeyboardAvoidingView>
-    </>
+    <KeyboardAvoidingView
+      testID="editor-keyboard-avoiding-view"
+      style={styles.container}
+      // Android runs edge-to-edge, so the window no longer shrinks for the
+      // keyboard and the view has to make room itself, as the auth screens do.
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      // The view starts below the opaque header, but the keyboard's position is
+      // reported in screen coordinates. Without the header height as the offset
+      // the view stops that far short of the keyboard and the toolbar ends up
+      // behind it.
+      keyboardVerticalOffset={headerHeight}
+    >
+      <View style={styles.titleRow}>
+        <TextInput
+          style={styles.titleInput}
+          value={title}
+          onChangeText={handleTitleChange}
+          placeholder="Untitled"
+          placeholderTextColor={semantic.fgSubtle}
+          returnKeyType="next"
+        />
+        {saveStatus === "saving" && <Text style={styles.statusText}>Saving...</Text>}
+        {saveStatus === "saved" && <Text style={styles.statusTextSaved}>Saved</Text>}
+        {saveStatus === "error" && <Text style={styles.statusTextError}>Save failed</Text>}
+      </View>
+      <View style={styles.editorContainer}>
+        <NoteEditor
+          editor={editor}
+          accessory={<AttachmentPicker noteId={noteId} onAttachmentReady={handleAttachmentReady} />}
+        />
+      </View>
+      {/* Keeps the attachment row clear of the home indicator / gesture bar. With
+          the keyboard up the keyboard covers that area, so the toolbar sits
+          directly on it instead. */}
+      <View
+        testID="editor-bottom-inset"
+        style={[styles.bottomInset, { height: isKeyboardUp ? 0 : insets.bottom }]}
+      />
+    </KeyboardAvoidingView>
   );
 }
 
@@ -477,6 +495,9 @@ const createStyles = (semantic: SemanticColors) =>
     },
     editorContainer: {
       flex: 1,
+    },
+    bottomInset: {
+      backgroundColor: semantic.bg,
     },
     errorText: {
       fontSize: fontSizes.xl,

@@ -153,7 +153,15 @@ appId: eu.drafto.mobile
     visible: ".*Note ${RUN_ID}.*"
     timeout: 10000
 
-# --- Go back (iOS: tap header back button) and rename via long press ---
+# --- Editor with the keyboard up (check the screenshot: body gutter, toolbar
+# directly on the keyboard, no blank band) ---
+- tapOn:
+    point: "50%,45%"
+- inputText: "Body ${RUN_ID}"
+- waitForAnimationToEnd
+- takeScreenshot: editor-keyboard-up
+
+# --- Go back (iOS: tap header back button, still labelled "Notes") and rename via long press ---
 - tapOn: "Notes"
 - extendedWaitUntil:
     visible: ".*Note ${RUN_ID}.*"

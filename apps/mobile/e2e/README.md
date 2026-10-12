@@ -91,7 +91,8 @@ maestro test apps/mobile/e2e/ios-only/ --platform ios -e RUN_ID=$(date +%s)
 The main navigation difference between platforms:
 
 - **Android**: Uses `pressKey: back` (hardware back button) to navigate between screens
-- **iOS**: Uses `tapOn: "Notes"` / `tapOn: "Notebooks"` to tap the header back button (label comes from the previous screen's title). The search screen is a modal dismissed with `swipe: { direction: DOWN }`
+- **iOS**: Uses `tapOn: "Notes"` / `tapOn: "Notebooks"` to tap the header back button. "Notebooks" is the tabs screen's title; "Notes" is the editor's fixed `headerBackTitle` (`app/_layout.tsx`), because the notebook screen itself is titled with the notebook's name. The search screen is a modal dismissed with `swipe: { direction: DOWN }`
+- **Editor keyboard check**: `03-create-edit-note.yaml`, `ios-all.yaml` and `android-all.yaml` tap into the note body, type a line, and save an `editor-keyboard-up` screenshot. Look at it after a run: the body text has a side gutter and the formatting toolbar sits directly on the keyboard, with no blank band above it
 
 ## Notes
 

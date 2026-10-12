@@ -137,8 +137,11 @@ function ThemedStack() {
             name="(auth)/waiting-for-approval"
             options={{ title: "Awaiting Approval", headerShown: false, gestureEnabled: false }}
           />
-          <Stack.Screen name="notebooks/[id]" options={{ title: "Notes" }} />
-          <Stack.Screen name="notes/[id]" options={{ title: "Editor" }} />
+          {/* The notebook screen titles itself with the notebook's name once it loads. */}
+          <Stack.Screen name="notebooks/[id]" options={{ title: "" }} />
+          {/* The editor's title field is the title, so the header shows only the back
+              button. Its label stays "Notes" rather than the notebook's name. */}
+          <Stack.Screen name="notes/[id]" options={{ title: "", headerBackTitle: "Notes" }} />
           <Stack.Screen name="search" options={{ title: "Search", presentation: "modal" }} />
         </Stack>
       </View>

@@ -9,14 +9,16 @@ import {
   RefreshControl,
   StyleSheet,
 } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
 import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useNotes } from "@/hooks/use-notes";
+import { useNotebookName } from "@/hooks/use-notebook-name";
 import { useHaptics } from "@/hooks/use-haptics";
+import { usePullToRefresh } from "@/hooks/use-pull-to-refresh";
 import { generateId } from "@/lib/generate-id";
 import { SwipeableRow } from "@/components/swipeable-row";
 import { ListSkeleton } from "@/components/ui/skeleton";
@@ -29,9 +31,11 @@ import type { SwipeAction } from "@/components/swipeable-row";
 export default function NotesListScreen() {
   const { id: notebookId } = useLocalSearchParams<{ id: string }>();
   const { user } = useAuth();
-  const { database, sync, isSyncing } = useDatabase();
+  const { database, sync } = useDatabase();
+  const { refreshing, onRefresh } = usePullToRefresh(sync);
   const router = useRouter();
   const { notes, loading } = useNotes(notebookId);
+  const notebookName = useNotebookName(notebookId);
   const { semantic } = useTheme();
   const haptics = useHaptics();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
@@ -195,12 +199,23 @@ export default function NotesListScreen() {
     );
   };
 
+  // Rendered in every branch, so the title is set while the list is still loading.
+  // Memoised so list re-renders (every sync) don't re-apply unchanged options.
+  const headerOptions = useMemo(() => ({ title: notebookName ?? "" }), [notebookName]);
+  const header = <Stack.Screen options={headerOptions} />;
+
   if (loading) {
-    return <ListSkeleton variant="note" />;
+    return (
+      <>
+        {header}
+        <ListSkeleton variant="note" />
+      </>
+    );
   }
 
   return (
-    <View style={styles.container}>
+    <View style={styles.container} testID="notes-list-screen">
+      {header}
       {creating && (
         <View style={styles.createBar}>
           <TextInput
@@ -245,8 +260,8 @@ export default function NotesListScreen() {
           contentContainerStyle={styles.list}
           refreshControl={
             <RefreshControl
-              refreshing={isSyncing}
-              onRefresh={sync}
+              refreshing={refreshing}
+              onRefresh={onRefresh}
               tintColor={colors.primary[600]}
               colors={[colors.primary[600]]}
             />
