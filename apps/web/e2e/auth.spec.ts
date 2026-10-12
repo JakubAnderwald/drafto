@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page, type Route } from "@playwright/test";
 
 test.describe("Login", () => {
   // Login tests need a fresh (unauthenticated) browser context
@@ -128,5 +128,80 @@ test.describe("Auth page smoke tests", () => {
     // Forgot Password → Login
     await page.getByRole("link", { name: "Back to login" }).click();
     await expect(page).toHaveURL(/\/login/);
+  });
+});
+
+test.describe("Sign-up with email confirmation", () => {
+  test.use({ storageState: { cookies: [], origins: [] } });
+
+  /**
+   * Answers Supabase's sign-up the way it does with email confirmation on: the user, and no
+   * session. Mocked so a run neither creates an account nor sends mail. Returns the request
+   * URLs it saw.
+   */
+  async function mockSignupWithoutSession(page: Page) {
+    const requests: string[] = [];
+    await page.route("**/auth/v1/signup**", async (route: Route) => {
+      requests.push(route.request().url());
+      const now = new Date().toISOString();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        // Cross-origin call to Supabase: Playwright answers the preflight itself.
+        headers: { "access-control-allow-origin": "*" },
+        body: JSON.stringify({
+          id: "00000000-0000-4000-8000-000000000001",
+          aud: "authenticated",
+          role: "authenticated",
+          email: "new-e2e-user@example.com",
+          identities: [],
+          app_metadata: { provider: "email", providers: ["email"] },
+          user_metadata: {},
+          created_at: now,
+          updated_at: now,
+        }),
+      });
+    });
+    return requests;
+  }
+
+  test("shows the check-email state instead of bouncing to login", async ({ page }) => {
+    const signupRequests = await mockSignupWithoutSession(page);
+
+    await page.goto("/signup");
+    await page.getByLabel("Email").fill("new-e2e-user@example.com");
+    await page.getByLabel("Password").fill("e2e-password-123");
+    await page.getByRole("button", { name: "Sign up" }).click();
+
+    await expect(page.getByRole("heading", { name: "Check Your Email" })).toBeVisible({
+      timeout: 10000,
+    });
+    await expect(page.getByTestId("signup-check-email")).toContainText("new-e2e-user@example.com");
+    await expect(page.getByRole("button", { name: "Sign up" })).toHaveCount(0);
+    await expect(page).toHaveURL(/\/signup$/);
+
+    // The confirmation link comes back through this origin's PKCE callback.
+    expect(signupRequests).toHaveLength(1);
+    const redirectTo = new URL(signupRequests[0]).searchParams.get("redirect_to");
+    expect(redirectTo).toBe(new URL("/auth/callback", page.url()).toString());
+
+    await page.getByRole("link", { name: "Back to login" }).click();
+    await expect(page).toHaveURL(/\/login$/);
+  });
+
+  test("the login page confirms the address where the apps' confirmation link lands", async ({
+    page,
+  }) => {
+    // The apps run PKCE, so Supabase appends a code this browser cannot use; it must not matter.
+    await page.goto("/login?confirmed=1&code=app-pkce-code");
+
+    await expect(page.getByTestId("email-confirmed-notice")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Log in" })).toBeVisible();
+  });
+
+  test("the login page explains a link the callback could not use", async ({ page }) => {
+    await page.goto("/login?error=auth-callback-error");
+
+    await expect(page.getByTestId("auth-callback-error-notice")).toBeVisible();
   });
 });

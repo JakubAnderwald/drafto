@@ -3,11 +3,17 @@ import { Alert } from "react-native";
 
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import LoginScreen from "../../app/(auth)/login";
+import { ACCOUNT_DELETED_MESSAGE } from "@drafto/shared";
 import {
   clearAuthCallbackError,
   getAuthCallbackError,
   reportAuthCallbackError,
 } from "@/lib/auth-callback-errors";
+import {
+  clearAccountDeletedNotice,
+  isAccountDeletedNoticeShown,
+  reportAccountDeleted,
+} from "@/lib/account-deleted-notice";
 
 // Mock supabase
 const mockSignInWithPassword = jest.fn();
@@ -113,6 +119,47 @@ describe("LoginScreen", () => {
 
       expect(queryByText("Apple Sign-In failed. Please try again.")).toBeNull();
       expect(getAuthCallbackError()).toBeNull();
+    });
+  });
+
+  describe("account-deleted confirmation", () => {
+    afterEach(() => clearAccountDeletedNotice());
+
+    it("is not shown by default", () => {
+      const { queryByTestId, queryByText } = render(<LoginScreen />);
+
+      expect(queryByTestId("account-deleted-notice")).toBeNull();
+      expect(queryByText(ACCOUNT_DELETED_MESSAGE)).toBeNull();
+    });
+
+    it("confirms a deletion that finished before the screen mounted", () => {
+      // The App Review recording (3:27): deleting the account dropped the user on login with
+      // no sign that anything had happened.
+      reportAccountDeleted();
+
+      const { getByTestId, getByText } = render(<LoginScreen />);
+
+      expect(getByTestId("account-deleted-notice")).toBeTruthy();
+      expect(getByText(ACCOUNT_DELETED_MESSAGE)).toBeTruthy();
+    });
+
+    it("survives the screen being mounted a second time", () => {
+      reportAccountDeleted();
+      render(<LoginScreen />).unmount();
+
+      const { getByText } = render(<LoginScreen />);
+
+      expect(getByText(ACCOUNT_DELETED_MESSAGE)).toBeTruthy();
+    });
+
+    it("goes away when the user starts a new sign-in", () => {
+      reportAccountDeleted();
+      const { getByText, queryByText } = render(<LoginScreen />);
+
+      fireEvent.press(getByText("Log in"));
+
+      expect(queryByText(ACCOUNT_DELETED_MESSAGE)).toBeNull();
+      expect(isAccountDeletedNoticeShown()).toBe(false);
     });
   });
 

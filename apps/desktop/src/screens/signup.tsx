@@ -1,5 +1,7 @@
 import { useState, useMemo } from "react";
 import { Text, View, Pressable, StyleSheet } from "react-native";
+import { SIGNUP_CONFIRMATION_SENT, SIGNUP_EMAIL_REDIRECT_URL } from "@drafto/shared";
+
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
@@ -19,9 +21,11 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [sentTo, setSentTo] = useState<string | null>(null);
 
   const handleSignup = async () => {
-    if (!email.trim() || !password) {
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail || !password) {
       setError("Please enter your email and password.");
       return;
     }
@@ -35,9 +39,10 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
     setLoading(true);
 
     try {
-      const { error: signUpError } = await supabase.auth.signUp({
-        email: email.trim(),
+      const { data, error: signUpError } = await supabase.auth.signUp({
+        email: trimmedEmail,
         password,
+        options: { emailRedirectTo: SIGNUP_EMAIL_REDIRECT_URL },
       });
 
       if (signUpError) {
@@ -45,11 +50,37 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
         return;
       }
 
-      // Auth state change will handle navigation to waiting-for-approval
+      // With email confirmation on, sign-up returns no session and no auth event fires, so
+      // the navigator has nothing to react to: say what happens next. With a session, the
+      // auth state change still leads to the waiting-for-approval screen.
+      if (!data.session) {
+        setSentTo(trimmedEmail);
+      }
     } finally {
       setLoading(false);
     }
   };
+
+  // The form is gone in this state, so it cannot be submitted again for a second email.
+  if (sentTo) {
+    return (
+      <View style={styles.container} testID="signup-check-email">
+        <Text style={styles.title} accessibilityRole="header">
+          Check Your Email
+        </Text>
+        <Text style={styles.sentTo}>{sentTo}</Text>
+        <Text style={styles.confirmationText}>{SIGNUP_CONFIRMATION_SENT}</Text>
+        <Pressable
+          onPress={onNavigateToLogin}
+          disabled={!onNavigateToLogin}
+          accessibilityRole="button"
+          accessibilityLabel="Back to login"
+        >
+          <Text style={styles.link}>Back to login</Text>
+        </Pressable>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -125,6 +156,20 @@ const createStyles = (semantic: SemanticColors) =>
       fontWeight: "bold",
       marginBottom: spacing.sm,
       color: semantic.fg,
+      textAlign: "center",
+    },
+    sentTo: {
+      fontSize: fontSizes.base,
+      fontWeight: "600",
+      color: semantic.fg,
+      textAlign: "center",
+      marginBottom: spacing.md,
+    },
+    confirmationText: {
+      fontSize: fontSizes.base,
+      color: semantic.fgMuted,
+      textAlign: "center",
+      marginBottom: spacing["2xl"],
     },
     subtitle: {
       fontSize: fontSizes.xl,
@@ -161,5 +206,6 @@ const createStyles = (semantic: SemanticColors) =>
     link: {
       color: colors.primary[600],
       fontWeight: "600",
+      fontSize: fontSizes.base,
     },
   });

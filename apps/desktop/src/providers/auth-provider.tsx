@@ -1,15 +1,17 @@
-import { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
 import { Linking } from "react-native";
 import type { Session, User } from "@supabase/supabase-js";
 import { requestAccountDeletion, type AccountDeletionResult } from "@drafto/shared";
 
 import { database } from "@/db";
 import { syncDatabase, resetSyncState } from "@/db/sync";
+import { clearAccountDeletedNotice, reportAccountDeleted } from "@/lib/account-deleted-notice";
 import { getCachedApproval, setCachedApproval, clearCachedApproval } from "@/lib/approval-cache";
 import { createRecoveryLinkHandler } from "@/lib/auth-recovery";
 import { apiUrl } from "@/lib/config";
 import { deleteAllLocalAttachments, processPendingUploads } from "@/lib/data";
 import { supabase } from "@/lib/supabase";
+import { withTimeout } from "@/lib/with-timeout";
 
 /** Max time to wait for the pre-sign-out flush before proceeding to reset. */
 const FINAL_SYNC_TIMEOUT_MS = 10_000;
@@ -28,21 +30,12 @@ async function flushPendingChanges(): Promise<void> {
   await syncDatabase(database);
 }
 
-/** Rejects if `promise` has not settled within `ms` milliseconds. */
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Operation timed out")), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
+export interface SignOutOptions {
+  /**
+   * Skip the best-effort flush before the local wipe. For a caller that has just synced and
+   * counted what is left itself, where a second attempt would only repeat a known result.
+   */
+  skipFinalSync?: boolean;
 }
 
 interface AuthContextValue {
@@ -63,7 +56,7 @@ interface AuthContextValue {
   recoveryError: string | null;
   /** Leaves recovery mode; called once the password has actually been changed. */
   endRecovery: () => void;
-  signOut: () => Promise<void>;
+  signOut: (options?: SignOutOptions) => Promise<void>;
   /**
    * Permanently deletes the signed-in user's account on the server. Only an `ok`
    * result signs out and wipes local data; any other result leaves the session
@@ -82,6 +75,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isCheckingApproval, setIsCheckingApproval] = useState(false);
   const [isRecovering, setIsRecovering] = useState(false);
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  // The user the last approval check found approved. Their hourly token refresh need not
+  // re-check: approval is what lets them work, and RLS still enforces it on the server. An
+  // unapproved user is re-checked on refresh, which picks up an approval (or retries a check
+  // that failed offline) without them pressing "Check approval status".
+  const approvedUserIdRef = useRef<string | null>(null);
 
   const startRecovery = useCallback(() => {
     setIsRecovering(true);
@@ -116,11 +114,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } catch {
           // Storage unavailable — default to not approved
         }
+        approvedUserIdRef.current = approved ? userId : null;
         setIsApproved(approved);
         return approved;
       }
 
       const approved = profile?.is_approved === true;
+      approvedUserIdRef.current = approved ? userId : null;
       setIsApproved(approved);
       try {
         await setCachedApproval(userId, approved);
@@ -147,6 +147,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    * is best-effort so one failure can't skip the others.
    */
   const resetLocalSession = useCallback(async (userId: string | undefined) => {
+    approvedUserIdRef.current = null;
     setSession(null);
     setIsApproved(false);
     setIsRecovering(false);
@@ -186,21 +187,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const signOut = useCallback(async () => {
-    const userId = session?.user?.id;
+  const signOut = useCallback(
+    async (options?: SignOutOptions) => {
+      const userId = session?.user?.id;
 
-    // Best-effort: flush unsynced local changes while the session is still valid.
-    // A failed, offline, or slow sync must never block sign-out, so it is bounded
-    // by a timeout and its errors are swallowed.
-    try {
-      await withTimeout(flushPendingChanges(), FINAL_SYNC_TIMEOUT_MS);
-    } catch (error) {
-      console.warn("Final sync before sign-out failed or timed out:", error);
-    }
+      // Best-effort: flush unsynced local changes while the session is still valid.
+      // A failed, offline, or slow sync must never block sign-out, so it is bounded
+      // by a timeout and its errors are swallowed.
+      if (!options?.skipFinalSync) {
+        try {
+          await withTimeout(flushPendingChanges(), FINAL_SYNC_TIMEOUT_MS);
+        } catch (error) {
+          console.warn("Final sync before sign-out failed or timed out:", error);
+        }
+      }
 
-    await supabase.auth.signOut();
-    await resetLocalSession(userId);
-  }, [session?.user?.id, resetLocalSession]);
+      await supabase.auth.signOut();
+      await resetLocalSession(userId);
+    },
+    [session?.user?.id, resetLocalSession],
+  );
 
   const deleteAccount = useCallback(async (): Promise<AccountDeletionResult> => {
     // Ask the client rather than React state: getSession() refreshes an expiring
@@ -213,6 +219,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const result = await requestAccountDeletion({ baseUrl: apiUrl, accessToken });
     if (result.status !== "ok") return result;
+
+    // Set before the session clears, so the login screen the navigator shows next already
+    // carries the confirmation.
+    reportAccountDeleted();
 
     // No pre-sign-out flush: the account and every server row are already gone,
     // so a sync would only fail and stall for up to FINAL_SYNC_TIMEOUT_MS.
@@ -292,12 +302,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         startRecovery();
       }
 
-      setSession(newSession);
-      if (newSession?.user) {
-        checkApproval(newSession.user.id);
-      } else {
-        setIsApproved(false);
+      // A new sign-in makes an earlier "account deleted" confirmation stale.
+      if (event === "SIGNED_IN") {
+        clearAccountDeletedNotice();
       }
+
+      setSession(newSession);
+      if (!newSession?.user) {
+        approvedUserIdRef.current = null;
+        setIsApproved(false);
+        return;
+      }
+      // The hourly token refresh only swaps tokens, so an approved user is not re-checked
+      // under whatever screen is open. An unapproved one still is (see approvedUserIdRef).
+      if (event === "TOKEN_REFRESHED" && newSession.user.id === approvedUserIdRef.current) {
+        return;
+      }
+      checkApproval(newSession.user.id);
     });
 
     return () => {

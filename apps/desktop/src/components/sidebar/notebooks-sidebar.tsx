@@ -12,6 +12,7 @@ import { Q } from "@nozbe/watermelondb";
 
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { useNotebooks } from "@/hooks/use-notebooks";
+import { useSafeSignOut } from "@/hooks/use-safe-sign-out";
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { database, Notebook, Note, Attachment } from "@/db";
@@ -45,7 +46,8 @@ export function NotebooksSidebar({
   onTriggerCreateHandled,
 }: NotebooksSidebarProps) {
   const { notebooks, loading } = useNotebooks();
-  const { user, signOut, deleteAccount } = useAuth();
+  const { user, deleteAccount } = useAuth();
+  const { signOut, isSigningOut } = useSafeSignOut();
   const { isConnected, isInternetReachable } = useNetworkStatus();
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
@@ -278,13 +280,27 @@ export function NotebooksSidebar({
                 style={styles.userSection}
                 onLayout={onAnchorLayout}
               >
+                {/* While signing out (a last sync, maybe a confirmation, then the local wipe)
+                    the row says so, and the menu trigger is swapped out so a second sign-out
+                    cannot start. */}
                 <View style={styles.userRow}>
                   <Text style={styles.userEmail} numberOfLines={1}>
-                    {user?.email}
+                    {isSigningOut ? "Signing out…" : user?.email}
                   </Text>
-                  {trigger}
+                  {isSigningOut ? (
+                    <ActivityIndicator
+                      size="small"
+                      color={colors.primary[600]}
+                      testID="sign-out-progress"
+                      accessibilityLabel="Signing out"
+                    />
+                  ) : (
+                    trigger
+                  )}
                 </View>
-                {isDeletingAccount ? (
+                {/* Hidden during a sign-out, so a deletion cannot start while the device is
+                    being wiped. */}
+                {isDeletingAccount && !isSigningOut ? (
                   <DeleteAccountPanel
                     onCancel={() => setIsDeletingAccount(false)}
                     onConfirm={deleteAccount}

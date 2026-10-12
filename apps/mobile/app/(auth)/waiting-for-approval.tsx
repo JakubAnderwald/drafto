@@ -24,6 +24,9 @@ export default function WaitingForApprovalScreen() {
       if (!approved) {
         setError("Your account is still pending approval.");
       }
+    } catch (err) {
+      console.error("Approval check failed:", err);
+      setError("Unable to check approval status. Please try again.");
     } finally {
       setChecking(false);
     }
@@ -50,7 +53,7 @@ export default function WaitingForApprovalScreen() {
       </Text>
 
       {error && (
-        <View style={styles.errorContainer}>
+        <View style={styles.errorContainer} accessibilityRole="alert">
           <Text style={styles.errorText}>{error}</Text>
         </View>
       )}

@@ -25,7 +25,7 @@ jest.mock("@/providers/auth-provider", () => ({
 
 const mockEndRecovery = jest.fn();
 const mockSignOut = jest.fn();
-const mockReplace = jest.fn();
+const mockDismissTo = jest.fn();
 
 const RECOVERY_SESSION = { user: { id: "user-123" } };
 
@@ -48,7 +48,8 @@ describe("ResetPasswordScreen", () => {
     mockUseNetworkStatus.mockReturnValue({ isConnected: true, isInternetReachable: true });
     mockUseAuth.mockReturnValue(authState());
     (useRouter as jest.Mock).mockReturnValue({
-      replace: mockReplace,
+      dismissTo: mockDismissTo,
+      replace: jest.fn(),
       push: jest.fn(),
       back: jest.fn(),
     });
@@ -153,7 +154,7 @@ describe("ResetPasswordScreen", () => {
     fireEvent.press(getByTestId("reset-password-dismiss"));
 
     expect(mockEndRecovery).toHaveBeenCalled();
-    expect(mockReplace).toHaveBeenCalledWith("/(auth)/login");
+    expect(mockDismissTo).toHaveBeenCalledWith("/(auth)/login");
     expect(mockSignOut).not.toHaveBeenCalled();
   });
 
@@ -171,7 +172,7 @@ describe("ResetPasswordScreen", () => {
 
     expect(mockEndRecovery).toHaveBeenCalled();
     expect(mockSignOut).not.toHaveBeenCalled();
-    expect(mockReplace).not.toHaveBeenCalled();
+    expect(mockDismissTo).not.toHaveBeenCalled();
   });
 
   it("waits while the recovery session is still being established", () => {
@@ -205,7 +206,7 @@ describe("ResetPasswordScreen", () => {
       expect(mockSignOut).toHaveBeenCalled();
     });
     expect(mockEndRecovery).toHaveBeenCalled();
-    expect(mockReplace).toHaveBeenCalledWith("/(auth)/login");
+    expect(mockDismissTo).toHaveBeenCalledWith("/(auth)/login");
   });
 
   it("stays in recovery when sign-out fails, so the live session is not handed to the app", async () => {
@@ -220,7 +221,7 @@ describe("ResetPasswordScreen", () => {
       await findByText("Couldn't sign out. Check your connection and try again."),
     ).toBeTruthy();
     expect(mockEndRecovery).not.toHaveBeenCalled();
-    expect(mockReplace).not.toHaveBeenCalled();
+    expect(mockDismissTo).not.toHaveBeenCalled();
     consoleError.mockRestore();
   });
 
@@ -232,7 +233,7 @@ describe("ResetPasswordScreen", () => {
     fireEvent.press(getByTestId("reset-password-back-to-login"));
 
     await waitFor(() => {
-      expect(mockReplace).toHaveBeenCalledWith("/(auth)/login");
+      expect(mockDismissTo).toHaveBeenCalledWith("/(auth)/login");
     });
     expect(mockSignOut).not.toHaveBeenCalled();
   });
@@ -259,7 +260,7 @@ describe("ResetPasswordScreen", () => {
     fireEvent.press(getByTestId("reset-password-back-to-login"));
 
     await waitFor(() => {
-      expect(mockReplace).toHaveBeenCalledWith("/(auth)/login");
+      expect(mockDismissTo).toHaveBeenCalledWith("/(auth)/login");
     });
     expect(queryByText("Signing out\u2026")).toBeNull();
   });

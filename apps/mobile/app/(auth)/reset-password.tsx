@@ -49,7 +49,9 @@ export default function ResetPasswordScreen() {
         await signOut();
       }
       endRecovery();
-      router.replace("/(auth)/login");
+      // dismissTo, not replace: a link that arrived while the app sat on login pushed this
+      // screen on top of it, and replacing would leave [login, login] with a back button.
+      router.dismissTo("/(auth)/login");
     } catch (err) {
       console.error("Sign-out while leaving password recovery failed:", err);
       setRetryable(false);
@@ -64,7 +66,7 @@ export default function ResetPasswordScreen() {
   const handleDismissRecovery = () => {
     endRecovery();
     if (!session) {
-      router.replace("/(auth)/login");
+      router.dismissTo("/(auth)/login");
     }
   };
 
