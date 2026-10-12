@@ -12,6 +12,12 @@ export const env = createEnv({
     APPROVAL_LINK_SECRET: z.string().min(32).optional(),
     APP_URL: z.string().url(),
     WEBHOOK_SECRET: z.string().min(16).optional(),
+    // Sign in with Apple key, used to revoke a user's Apple tokens when they delete their
+    // account. Revocation runs only when all three are set. The private key is the `.p8` PEM;
+    // literal "\n" escapes are accepted too (see src/lib/apple/config.ts).
+    APPLE_TEAM_ID: z.string().min(1).optional(),
+    APPLE_SIGN_IN_KEY_ID: z.string().min(1).optional(),
+    APPLE_SIGN_IN_PRIVATE_KEY: z.string().min(1).optional(),
   },
   client: {
     NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
@@ -32,6 +38,9 @@ export const env = createEnv({
     APPROVAL_LINK_SECRET: process.env.APPROVAL_LINK_SECRET,
     APP_URL: process.env.APP_URL,
     WEBHOOK_SECRET: process.env.WEBHOOK_SECRET,
+    APPLE_TEAM_ID: process.env.APPLE_TEAM_ID,
+    APPLE_SIGN_IN_KEY_ID: process.env.APPLE_SIGN_IN_KEY_ID,
+    APPLE_SIGN_IN_PRIVATE_KEY: process.env.APPLE_SIGN_IN_PRIVATE_KEY,
     NEXT_PUBLIC_SENTRY_DSN: process.env.NEXT_PUBLIC_SENTRY_DSN,
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
     NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,

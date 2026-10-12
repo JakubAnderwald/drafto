@@ -8,6 +8,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useAppleDeletionConfirmation } from "@/hooks/use-apple-deletion-confirmation";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
@@ -21,6 +22,10 @@ export interface DeleteAccountDialogProps {
 
 const CONFIRM_PROMPT = `Type ${ACCOUNT_DELETE_CONFIRMATION} to confirm`;
 
+export const APPLE_CONFIRMATION_NOTICE =
+  "You use Sign in with Apple, so Apple will ask you to confirm. This lets Drafto stop using " +
+  "your Apple ID. If you cancel that step, your account is still deleted.";
+
 /**
  * Type-to-confirm dialog for permanent account deletion. The destructive button
  * stays disabled until the exact confirmation word is entered, and while a
@@ -29,6 +34,8 @@ const CONFIRM_PROMPT = `Type ${ACCOUNT_DELETE_CONFIRMATION} to confirm`;
 export function DeleteAccountDialog({ visible, onCancel, onConfirm }: DeleteAccountDialogProps) {
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+  // On iOS, deleting an Apple-linked account opens Apple's sheet so its tokens can be revoked.
+  const confirmsWithApple = useAppleDeletionConfirmation();
   const [confirmation, setConfirmation] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -107,6 +114,11 @@ export function DeleteAccountDialog({ visible, onCancel, onConfirm }: DeleteAcco
             This permanently deletes your Drafto account and all of your notebooks, notes and
             attachments. This cannot be undone.
           </Text>
+          {confirmsWithApple ? (
+            <Text style={styles.warning} testID="delete-account-apple-notice">
+              {APPLE_CONFIRMATION_NOTICE}
+            </Text>
+          ) : null}
 
           <Input
             label={CONFIRM_PROMPT}

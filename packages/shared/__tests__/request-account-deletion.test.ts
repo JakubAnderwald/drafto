@@ -26,6 +26,40 @@ describe("requestAccountDeletion", () => {
     });
   });
 
+  it("sends an Apple revocation grant as a JSON body, and still no user id", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { success: true }));
+    const appleRevocation = { authorizationCode: "apple-code", clientId: "eu.drafto.mobile" };
+
+    await expect(
+      requestAccountDeletion({
+        baseUrl: "https://drafto.eu",
+        accessToken: "token-123",
+        appleRevocation,
+        fetchImpl,
+      }),
+    ).resolves.toEqual({ status: "ok" });
+
+    expect(fetchImpl).toHaveBeenCalledWith(`https://drafto.eu${ACCOUNT_DELETION_PATH}`, {
+      method: "DELETE",
+      headers: {
+        Accept: "application/json",
+        Authorization: "Bearer token-123",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ apple: appleRevocation }),
+    });
+  });
+
+  it("sends no body and no Content-Type without an Apple grant", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { success: true }));
+
+    await requestAccountDeletion({ baseUrl: "", accessToken: "t", fetchImpl });
+
+    const init = fetchImpl.mock.calls[0][1];
+    expect(init).not.toHaveProperty("body");
+    expect(init.headers).not.toHaveProperty("Content-Type");
+  });
+
   it("omits the Authorization header for a same-origin cookie call", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { success: true }));
 

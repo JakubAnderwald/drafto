@@ -206,6 +206,9 @@ appId: eu.drafto.mobile
       id: "delete-account-input"
     timeout: 10000
 - assertVisible: "Type DELETE to confirm"
+# The shared E2E user signs in with email, so there is no Sign in with Apple notice.
+- assertNotVisible:
+    id: "delete-account-apple-notice"
 - assertVisible:
     id: "delete-account-confirm"
     enabled: false

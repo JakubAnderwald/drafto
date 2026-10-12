@@ -35,7 +35,12 @@ vi.mock("@/lib/supabase/server", () => ({
   createClient: () => Promise.resolve({ auth: { getUser: cookieGetUserMock } }),
 }));
 
-const { DELETE } = await import("@/app/api/account/route");
+const revokeAppleSignInMock = vi.fn();
+vi.mock("@/lib/apple/revoke", () => ({
+  revokeAppleSignIn: (...args: unknown[]) => revokeAppleSignInMock(...args),
+}));
+
+const { DELETE, maxDuration } = await import("@/app/api/account/route");
 
 const USER_ID = "aaaaaaaa-0000-4000-8000-000000000001";
 const OTHER_ID = "bbbbbbbb-0000-4000-8000-000000000002";
@@ -119,6 +124,7 @@ describe("DELETE /api/account", () => {
     deleteUserMock.mockResolvedValue({ data: { user: null }, error: null });
     storageListMock.mockResolvedValue({ data: [], error: null });
     storageRemoveMock.mockResolvedValue({ data: [], error: null });
+    revokeAppleSignInMock.mockResolvedValue("revoked");
   });
 
   describe("authentication", () => {
@@ -352,6 +358,119 @@ describe("DELETE /api/account", () => {
       expect(captureExceptionMock).toHaveBeenCalledWith(thrown, {
         extra: { where: "delete-user-account:deleteUser", userId: USER_ID },
       });
+    });
+  });
+
+  describe("Sign in with Apple revocation", () => {
+    const APPLE_GRANT = { authorizationCode: "c0de-from-apple", clientId: "eu.drafto.mobile" };
+    const APPLE_USER = {
+      id: USER_ID,
+      identities: [
+        { provider: "email", id: USER_ID, identity_data: { sub: USER_ID } },
+        { provider: "apple", id: "apple-sub", identity_data: { sub: "apple-sub" } },
+      ],
+    };
+
+    function appleRequest(body: unknown = { apple: APPLE_GRANT }): NextRequest {
+      return createRequest({ headers: { Authorization: "Bearer good-token" }, body });
+    }
+
+    beforeEach(() => {
+      signedInWithCookie(null);
+      adminGetUserMock.mockResolvedValue({ data: { user: APPLE_USER }, error: null });
+    });
+
+    it("revokes after the account is deleted, for the verified user's Apple identities", async () => {
+      const response = await DELETE(appleRequest());
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ success: true });
+      expect(revokeAppleSignInMock).toHaveBeenCalledTimes(1);
+      // No Apple key in this environment: the module decides to skip, the route still asks.
+      expect(revokeAppleSignInMock).toHaveBeenCalledWith(APPLE_GRANT, {
+        key: null,
+        appleSubjects: ["apple-sub"],
+        userId: USER_ID,
+      });
+      expect(deleteUserMock.mock.invocationCallOrder[0]).toBeLessThan(
+        revokeAppleSignInMock.mock.invocationCallOrder[0],
+      );
+    });
+
+    it("gives the function room to finish revoking after the account is gone", () => {
+      // Two Apple requests at up to 5 s each, after the deletion itself.
+      expect(maxDuration).toBeGreaterThanOrEqual(30);
+      expect(maxDuration).toBeLessThanOrEqual(60);
+    });
+
+    it("keeps the deletion successful when the revocation fails", async () => {
+      revokeAppleSignInMock.mockResolvedValue("revoke-failed");
+
+      const response = await DELETE(appleRequest());
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ success: true });
+      expect(deleteUserMock).toHaveBeenCalledWith(USER_ID);
+    });
+
+    it("works through the session cookie too", async () => {
+      cookieGetUserMock.mockResolvedValue({ data: { user: APPLE_USER }, error: null });
+
+      const response = await DELETE(createRequest({ body: { apple: APPLE_GRANT } }));
+
+      await expectStatus(response, 200);
+      expect(revokeAppleSignInMock).toHaveBeenCalledWith(
+        APPLE_GRANT,
+        expect.objectContaining({ appleSubjects: ["apple-sub"], userId: USER_ID }),
+      );
+    });
+
+    it("does not touch Apple when the request carries no grant", async () => {
+      await expectStatus(
+        await DELETE(createRequest({ headers: { Authorization: "Bearer good-token" } })),
+        200,
+      );
+      expect(revokeAppleSignInMock).not.toHaveBeenCalled();
+    });
+
+    it("deletes anyway, without revoking, when the body is malformed", async () => {
+      const request = new NextRequest("http://localhost:3000/api/account", {
+        method: "DELETE",
+        headers: { Authorization: "Bearer good-token", "Content-Type": "application/json" },
+        body: "{not json",
+      });
+
+      await expectStatus(await DELETE(request), 200);
+      expect(deleteUserMock).toHaveBeenCalledWith(USER_ID);
+      expect(revokeAppleSignInMock).not.toHaveBeenCalled();
+    });
+
+    it("never revokes for an unauthenticated request", async () => {
+      adminGetUserMock.mockResolvedValue({ data: { user: null }, error: { message: "bad JWT" } });
+
+      await expectUnauthorized(appleRequest());
+      expect(revokeAppleSignInMock).not.toHaveBeenCalled();
+    });
+
+    it("never revokes when the last-admin guard refuses", async () => {
+      mockProfiles({ profile: { data: { is_admin: true }, error: null } });
+
+      await expectStatus(await DELETE(appleRequest()), 409);
+      expect(revokeAppleSignInMock).not.toHaveBeenCalled();
+    });
+
+    it("never revokes when the storage sweep fails", async () => {
+      storageListMock.mockResolvedValue({ data: null, error: new Error("storage down") });
+
+      await expectStatus(await DELETE(appleRequest()), 500);
+      expect(revokeAppleSignInMock).not.toHaveBeenCalled();
+    });
+
+    it("never revokes when deleteUser fails, so the account keeps its Apple sign-in", async () => {
+      deleteUserMock.mockResolvedValue({ data: null, error: new Error("auth down") });
+
+      await expectStatus(await DELETE(appleRequest()), 500);
+      expect(revokeAppleSignInMock).not.toHaveBeenCalled();
     });
   });
 });

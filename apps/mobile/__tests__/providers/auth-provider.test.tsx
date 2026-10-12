@@ -1,5 +1,6 @@
 import React from "react";
-import { Linking } from "react-native";
+import { Linking, Platform } from "react-native";
+import * as AppleAuthentication from "expo-apple-authentication";
 import { renderHook, act, waitFor } from "@testing-library/react-native";
 import type { User } from "@supabase/supabase-js";
 import { requestAccountDeletion, type AccountDeletionResult } from "@drafto/shared";
@@ -78,6 +79,7 @@ const mockResetSyncState = resetSyncState as jest.Mock;
 const mockProcessPendingUploads = processPendingUploads as jest.Mock;
 const mockDeleteAllLocalAttachments = deleteAllLocalAttachments as jest.Mock;
 const mockRequestAccountDeletion = requestAccountDeletion as jest.Mock;
+const mockAppleSignIn = jest.mocked(AppleAuthentication.signInAsync);
 
 function wrapper({ children }: { children: React.ReactNode }) {
   return <AuthProvider>{children}</AuthProvider>;
@@ -641,9 +643,159 @@ describe("AuthProvider — account deletion", () => {
 
     expect(outcome).toEqual({ status: "unauthorized" });
     expect(mockRequestAccountDeletion).not.toHaveBeenCalled();
+    expect(mockAppleSignIn).not.toHaveBeenCalled();
     expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
     expect(mockDatabase.unsafeResetDatabase).not.toHaveBeenCalled();
     expect(result.current.user?.id).toBe("user-123");
+  });
+
+  describe("Sign in with Apple revocation", () => {
+    const APPLE_USER = {
+      id: "user-123",
+      app_metadata: { provider: "apple", providers: ["apple"] },
+      identities: [{ id: "apple-sub", user_id: "user-123", identity_id: "i1", provider: "apple" }],
+    } as unknown as User;
+    const APPLE_SESSION = { user: APPLE_USER, access_token: "access-token-abc" };
+    let platformOs: jest.ReplaceProperty<typeof Platform.OS>;
+
+    beforeEach(() => {
+      platformOs = jest.replaceProperty(Platform, "OS", "ios");
+      (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+        data: { session: APPLE_SESSION },
+      });
+      mockAppleSignIn.mockResolvedValue({
+        user: "apple-sub",
+        state: null,
+        fullName: null,
+        email: null,
+        realUserStatus: 1,
+        identityToken: "identity-token",
+        authorizationCode: "fresh-apple-code",
+      });
+    });
+
+    afterEach(() => {
+      platformOs.restore();
+    });
+
+    it("asks an Apple-linked iOS user to confirm with Apple and sends the fresh code", async () => {
+      const { result } = await renderSignedIn();
+
+      let outcome: AccountDeletionResult | undefined;
+      await act(async () => {
+        outcome = await result.current.deleteAccount();
+      });
+
+      expect(outcome).toEqual({ status: "ok" });
+      expect(mockAppleSignIn).toHaveBeenCalledTimes(1);
+      expect(mockRequestAccountDeletion).toHaveBeenCalledWith({
+        baseUrl: "https://api.drafto.test",
+        accessToken: "access-token-abc",
+        appleRevocation: { authorizationCode: "fresh-apple-code", clientId: "eu.drafto.mobile" },
+      });
+      expect(mockAppleSignIn.mock.invocationCallOrder[0]).toBeLessThan(
+        mockRequestAccountDeletion.mock.invocationCallOrder[0],
+      );
+      expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
+    });
+
+    it("reads the session again after Apple's sheet, so a refreshed token is sent", async () => {
+      const { result } = await renderSignedIn();
+      (mockSupabase.auth.getSession as jest.Mock)
+        .mockResolvedValueOnce({ data: { session: APPLE_SESSION } })
+        .mockResolvedValueOnce({
+          data: { session: { ...APPLE_SESSION, access_token: "refreshed-after-apple" } },
+        });
+
+      await act(async () => {
+        await result.current.deleteAccount();
+      });
+
+      expect(mockRequestAccountDeletion).toHaveBeenCalledWith(
+        expect.objectContaining({ accessToken: "refreshed-after-apple" }),
+      );
+      expect(
+        (mockSupabase.auth.getSession as jest.Mock).mock.invocationCallOrder.at(-1),
+      ).toBeGreaterThan(mockAppleSignIn.mock.invocationCallOrder[0]);
+    });
+
+    it("reports unauthorized, deleting nothing, if the session ended while Apple's sheet was open", async () => {
+      const { result } = await renderSignedIn();
+      (mockSupabase.auth.getSession as jest.Mock)
+        .mockResolvedValueOnce({ data: { session: APPLE_SESSION } })
+        .mockResolvedValueOnce({ data: { session: null } });
+
+      let outcome: AccountDeletionResult | undefined;
+      await act(async () => {
+        outcome = await result.current.deleteAccount();
+      });
+
+      expect(outcome).toEqual({ status: "unauthorized" });
+      expect(mockRequestAccountDeletion).not.toHaveBeenCalled();
+      expect(mockDatabase.unsafeResetDatabase).not.toHaveBeenCalled();
+    });
+
+    it("still deletes the account when the user cancels Apple's sheet", async () => {
+      mockAppleSignIn.mockRejectedValue(
+        Object.assign(new Error("canceled"), { code: "ERR_REQUEST_CANCELED" }),
+      );
+      const { result } = await renderSignedIn();
+
+      let outcome: AccountDeletionResult | undefined;
+      await act(async () => {
+        outcome = await result.current.deleteAccount();
+      });
+
+      expect(outcome).toEqual({ status: "ok" });
+      expect(mockRequestAccountDeletion).toHaveBeenCalledWith({
+        baseUrl: "https://api.drafto.test",
+        accessToken: "access-token-abc",
+      });
+      expect(mockRequestAccountDeletion.mock.calls[0][0]).not.toHaveProperty("appleRevocation");
+      expect(mockSupabase.auth.signOut).toHaveBeenCalledWith({ scope: "local" });
+      expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
+      expect(result.current.session).toBeNull();
+    });
+
+    it("keeps the session when the server refuses, even after Apple confirmed", async () => {
+      mockRequestAccountDeletion.mockResolvedValue({ status: "failed", httpStatus: 500 });
+      const { result } = await renderSignedIn();
+
+      let outcome: AccountDeletionResult | undefined;
+      await act(async () => {
+        outcome = await result.current.deleteAccount();
+      });
+
+      expect(outcome).toEqual({ status: "failed", httpStatus: 500 });
+      expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
+      expect(mockDatabase.unsafeResetDatabase).not.toHaveBeenCalled();
+    });
+
+    it("never opens Apple's sheet for a user who is not linked to Apple", async () => {
+      (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+        data: { session: TEST_SESSION },
+      });
+      const { result } = await renderSignedIn();
+
+      await act(async () => {
+        await result.current.deleteAccount();
+      });
+
+      expect(mockAppleSignIn).not.toHaveBeenCalled();
+      expect(mockRequestAccountDeletion.mock.calls[0][0]).not.toHaveProperty("appleRevocation");
+    });
+
+    it("never opens Apple's sheet on Android", async () => {
+      platformOs.replaceValue("android");
+      const { result } = await renderSignedIn();
+
+      await act(async () => {
+        await result.current.deleteAccount();
+      });
+
+      expect(mockAppleSignIn).not.toHaveBeenCalled();
+      expect(mockRequestAccountDeletion.mock.calls[0][0]).not.toHaveProperty("appleRevocation");
+    });
   });
 });
 

@@ -19,15 +19,20 @@
 // it authenticates the client, so it answers `invalid_grant` even for a
 // garbage secret. Only a real Apple sign-in proves the secret works.
 
-import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isMainModule } from "./lib/is-main.mjs";
 import { parseFlags } from "./lib/parse-flags.mjs";
+// The signer is shared with the web API, which signs short-lived secrets to
+// revoke Apple tokens when an account is deleted.
+import {
+  APPLE_SERVICES_ID,
+  MAX_LIFETIME_SECONDS,
+  buildClientSecret,
+} from "../apps/web/src/lib/apple/client-secret.mjs";
 
-// Apple's documented ceiling for exp - iat.
-export const MAX_LIFETIME_SECONDS = 15_777_000;
+export { MAX_LIFETIME_SECONDS, buildClientSecret };
 
 const DEFAULTS = {
   key: path.join(os.homedir(), "drafto-secrets", "AuthKey_7BS35Y82Q6.p8"),
@@ -35,43 +40,9 @@ const DEFAULTS = {
   "team-id": "4J2USPSG2U",
   // The Services ID, which must stay the FIRST Apple Client ID in Supabase:
   // the browser flows send that entry as Apple's client_id.
-  "client-id": "eu.drafto.web.auth",
+  "client-id": APPLE_SERVICES_ID,
   days: "180",
 };
-
-const base64url = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
-
-export function buildClientSecret({
-  privateKey,
-  keyId,
-  teamId,
-  clientId,
-  issuedAt = Math.floor(Date.now() / 1000),
-  lifetimeSeconds,
-}) {
-  if (!Number.isInteger(lifetimeSeconds) || lifetimeSeconds <= 0) {
-    throw new Error(`Lifetime must be a positive whole number of seconds, got ${lifetimeSeconds}`);
-  }
-  if (lifetimeSeconds > MAX_LIFETIME_SECONDS) {
-    throw new Error(
-      `Apple rejects client secrets that live longer than ${MAX_LIFETIME_SECONDS}s (about 182 days)`,
-    );
-  }
-  const header = base64url({ alg: "ES256", kid: keyId });
-  const claims = base64url({
-    iss: teamId,
-    iat: issuedAt,
-    exp: issuedAt + lifetimeSeconds,
-    aud: "https://appleid.apple.com",
-    sub: clientId,
-  });
-  const unsigned = `${header}.${claims}`;
-  // JWS wants the raw r||s signature, not Node's default DER encoding.
-  const signature = crypto
-    .sign("sha256", Buffer.from(unsigned), { key: privateKey, dsaEncoding: "ieee-p1363" })
-    .toString("base64url");
-  return `${unsigned}.${signature}`;
-}
 
 export async function writeSecret(outPath, secret) {
   // "wx" refuses to overwrite: an existing file may hold the secret that is
