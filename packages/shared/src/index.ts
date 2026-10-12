@@ -31,11 +31,14 @@ export {
 } from "./constants";
 export {
   ACCOUNT_DELETION_PATH,
+  APPLE_NATIVE_CLIENT_ID,
   requestAccountDeletion,
   describeAccountDeletionFailure,
 } from "./account/request-account-deletion";
 export type {
+  AccountDeletionRequestBody,
   AccountDeletionResult,
+  AppleRevocationGrant,
   RequestAccountDeletionOptions,
 } from "./account/request-account-deletion";
 export { formatRelativeTime } from "./formatters";

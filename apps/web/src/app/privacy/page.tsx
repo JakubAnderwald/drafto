@@ -85,7 +85,8 @@ const PROCESSORS: readonly Processor[] = [
   {
     service: "Apple",
     purpose: "Sign in with Apple (optional)",
-    dataShared: "Your sign-in; Apple shares your email address and, if you choose, your name",
+    dataShared:
+      "Your sign-in; Apple shares your email address and, if you choose, your name. When you delete your account in the iPhone or iPad app, we ask Apple to end Drafto's access to your Apple ID",
   },
   {
     service: "Zoho Mail",
@@ -111,7 +112,7 @@ export default function PrivacyPolicyPage() {
       <header>
         <h1 className="text-fg text-4xl font-bold tracking-tight">Privacy Policy</h1>
         <p className="text-fg-muted mt-3 text-sm">
-          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: October&nbsp;10,&nbsp;2026
+          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: October&nbsp;12,&nbsp;2026
         </p>
         <p className="text-fg-muted mt-8 text-lg leading-8">
           Drafto (&ldquo;we&rdquo;, &ldquo;our&rdquo;, &ldquo;us&rdquo;) operates the Drafto apps
@@ -549,6 +550,16 @@ export default function PrivacyPolicyPage() {
             <li>
               When you delete your account in the app, we immediately delete your account,
               notebooks, notes, attachments and API keys, including note history
+            </li>
+            <li>
+              If you use Sign in with Apple and delete your account in the iPhone or iPad app, Apple
+              asks you to confirm, and we then ask Apple to end Drafto&apos;s access to your Apple
+              ID. If you delete your account on the web, Android or a Mac, or skip that step, you
+              can remove Drafto yourself in your Apple ID settings (see{" "}
+              <Link href="/account/delete#sign-in-with-apple">
+                how to remove Drafto from your Apple ID
+              </Link>
+              )
             </li>
             <li>
               If you ask us to delete your account by email, we process the request within 30 days

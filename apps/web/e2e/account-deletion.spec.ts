@@ -82,6 +82,22 @@ test.describe("Account deletion page", () => {
       "mailto:support@drafto.eu",
     );
   });
+
+  test("explains Sign in with Apple at the anchor the privacy policy links to", async ({
+    page,
+  }) => {
+    await page.goto("/account/delete#sign-in-with-apple");
+
+    const section = page.locator("section#sign-in-with-apple");
+    await expect(
+      section.getByRole("heading", { name: "If you use Sign in with Apple", level: 2 }),
+    ).toBeVisible();
+    await expect(section).toContainText("If you cancel that step, your account is still deleted");
+    await expect(section.getByRole("link", { name: "account.apple.com" })).toHaveAttribute(
+      "href",
+      "https://account.apple.com",
+    );
+  });
 });
 
 test.describe("Delete account in settings", () => {

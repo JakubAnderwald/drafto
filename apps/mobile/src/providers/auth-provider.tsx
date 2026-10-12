@@ -2,11 +2,17 @@ import { createContext, useContext, useEffect, useRef, useState, useCallback } f
 import { Linking } from "react-native";
 import Constants from "expo-constants";
 import type { Session, User } from "@supabase/supabase-js";
-import { requestAccountDeletion, withTimeout, type AccountDeletionResult } from "@drafto/shared";
+import {
+  requestAccountDeletion,
+  withTimeout,
+  type AccountDeletionResult,
+  type AppleRevocationGrant,
+} from "@drafto/shared";
 
 import { database } from "@/db";
 import { syncDatabase, resetSyncState } from "@/db/sync";
 import { clearAccountDeletedNotice, reportAccountDeleted } from "@/lib/account-deleted-notice";
+import { needsAppleConfirmation, requestAppleRevocationGrant } from "@/lib/apple-revocation";
 import { getCachedApproval, setCachedApproval, clearCachedApproval } from "@/lib/approval-cache";
 import { createRecoveryLinkHandler } from "@/lib/auth-recovery";
 import { deleteAllLocalAttachments, processPendingUploads } from "@/lib/data/attachment-queue";
@@ -22,6 +28,14 @@ const DEFAULT_API_URL = "https://drafto.eu";
 function getApiUrl(): string {
   const configured: unknown = Constants.expoConfig?.extra?.apiUrl;
   return typeof configured === "string" && configured.length > 0 ? configured : DEFAULT_API_URL;
+}
+
+/** The client's current session; supabase-js refreshes it here if the access token expired. */
+async function readClientSession(): Promise<Session | null> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  return session;
 }
 
 /**
@@ -68,7 +82,9 @@ interface AuthContextValue {
   /**
    * Permanently deletes the signed-in account on the server. Local data is wiped
    * and the user signed out only when the server confirms (`status: "ok"`); any
-   * other result leaves the session and the offline database untouched.
+   * other result leaves the session and the offline database untouched. On iOS an
+   * Apple-linked user is first asked to confirm with Apple, so the server can revoke
+   * their Sign in with Apple tokens.
    */
   deleteAccount: () => Promise<AccountDeletionResult>;
   refreshApprovalStatus: () => Promise<boolean>;
@@ -245,13 +261,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const deleteAccount = useCallback(async (): Promise<AccountDeletionResult> => {
     // Read the session from the client rather than React state so the request
     // carries the freshest access token (autoRefreshToken may have rotated it).
-    const {
-      data: { session: currentSession },
-    } = await supabase.auth.getSession();
-    const accessToken = currentSession?.access_token;
-    if (!accessToken) return { status: "unauthorized" };
+    let currentSession = await readClientSession();
+    if (!currentSession?.access_token) return { status: "unauthorized" };
 
-    const result = await requestAccountDeletion({ baseUrl: getApiUrl(), accessToken });
+    // An Apple-linked iOS user confirms with Apple for a fresh code, which the server revokes
+    // once the account is gone (App Store guideline 5.1.1(v)). Null when the user cancels or
+    // Apple fails: the deletion goes ahead either way. Apple's sheet can stay open a while, so
+    // the session is read again afterwards and a token that expired meanwhile is refreshed.
+    let appleRevocation: AppleRevocationGrant | null = null;
+    if (needsAppleConfirmation(currentSession.user)) {
+      const confirmedUserId = currentSession.user.id;
+      appleRevocation = await requestAppleRevocationGrant(currentSession.user);
+      currentSession = await readClientSession();
+      // Only the account the user confirmed may be deleted. Something that switched the
+      // session while the sheet was open, such as a password-recovery link, stops it here.
+      if (!currentSession?.access_token || currentSession.user.id !== confirmedUserId) {
+        return { status: "unauthorized" };
+      }
+    }
+
+    const result = await requestAccountDeletion({
+      baseUrl: getApiUrl(),
+      accessToken: currentSession.access_token,
+      ...(appleRevocation ? { appleRevocation } : {}),
+    });
     // Anything short of a confirmed deletion keeps the user signed in with their
     // offline data intact, so they can retry or keep working.
     if (result.status !== "ok") return result;

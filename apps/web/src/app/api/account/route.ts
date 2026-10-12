@@ -5,8 +5,26 @@ import * as Sentry from "@sentry/nextjs";
 import { errorResponse } from "@/lib/api/utils";
 import { authenticateAccountRequest } from "@/lib/account/authenticate-account-request";
 import { deleteUserAccount } from "@/lib/account/delete-user";
+import { readAppleRevocationGrant } from "@/lib/account/read-apple-revocation-grant";
+import { getAppleSignInKey } from "@/lib/apple/config";
+import { appleSubjectsOf } from "@/lib/apple/identities";
+import { revokeAppleSignIn } from "@/lib/apple/revoke";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { Database } from "@/lib/supabase/database.types";
+
+/**
+ * The function's time limit, in seconds. 60 s is the Vercel Hobby ceiling without
+ * Fluid compute; a normal deletion takes a few seconds.
+ */
+export const maxDuration = 60;
+
+/**
+ * Kept back from `maxDuration` for sending the response. The Apple revocation
+ * runs after the account is gone, and is cut short to finish before this margin,
+ * so a slow deletion plus a slow Apple can never cost the client its success
+ * response (it would keep the session and offline data of a deleted account).
+ */
+export const RESPONSE_MARGIN_MS = 5_000;
 
 const DELETE_FAILED_MESSAGE = "Failed to delete your account. Please try again.";
 const STORAGE_FAILED_MESSAGE =
@@ -15,16 +33,20 @@ const STORAGE_FAILED_MESSAGE =
 /**
  * Permanently deletes the caller's own account (web, iOS, Android, macOS).
  *
- * Takes no body and no parameters: the user id comes only from the verified
- * bearer token or session cookie, so a caller can never name another account.
- * There is no undo, so every guard runs before anything is deleted. Not
- * exposed as an MCP tool — a destructive account deletion must not be
- * reachable with an API key.
+ * Takes no parameters: the user id comes only from the verified bearer token
+ * or session cookie, so a caller can never name another account. The optional
+ * JSON body may only carry a fresh Sign in with Apple authorization code, whose
+ * tokens are revoked once the account is gone. There is no undo, so every
+ * guard runs before anything is deleted. Not exposed as an MCP tool — a
+ * destructive account deletion must not be reachable with an API key.
  */
 export async function DELETE(request: NextRequest) {
-  const { userId, error: authError } = await authenticateAccountRequest(request);
+  const deadline = Date.now() + maxDuration * 1_000 - RESPONSE_MARGIN_MS;
+  const { user, error: authError } = await authenticateAccountRequest(request);
   if (authError) return authError;
+  const userId = user.id;
 
+  const appleGrant = await readAppleRevocationGrant(request, userId);
   const admin = createAdminClient();
 
   const lastAdminError = await rejectLastAdmin(admin, userId);
@@ -36,6 +58,18 @@ export async function DELETE(request: NextRequest) {
       result.stage === "storage" ? STORAGE_FAILED_MESSAGE : DELETE_FAILED_MESSAGE,
       500,
     );
+  }
+
+  // Only once the account is really gone, and best-effort: revokeAppleSignIn
+  // never throws and reports its own failures, so the deletion stands either way.
+  // The identities come from the user verified above; the auth user no longer exists.
+  if (appleGrant) {
+    await revokeAppleSignIn(appleGrant, {
+      key: getAppleSignInKey(),
+      appleSubjects: appleSubjectsOf(user),
+      userId,
+      deadline,
+    });
   }
 
   return NextResponse.json({ success: true });

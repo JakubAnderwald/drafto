@@ -1,15 +1,15 @@
 import type { NextRequest, NextResponse } from "next/server";
+import type { User } from "@supabase/supabase-js";
 import { errorResponse } from "@/lib/api/utils";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 
-export type AccountRequestAuth =
-  { userId: string; error: null } | { userId: null; error: NextResponse };
+export type AccountRequestAuth = { user: User; error: null } | { user: null; error: NextResponse };
 
 const BEARER_PATTERN = /^Bearer\s+(\S+)$/i;
 
 /**
- * Resolves the user id of the caller of an account-level route.
+ * Resolves the caller of an account-level route to a verified Supabase user.
  *
  * - Native apps send `Authorization: Bearer <Supabase access token>`, verified
  *   with the service-role client. Once an `Authorization` header is present it
@@ -18,7 +18,7 @@ const BEARER_PATTERN = /^Bearer\s+(\S+)$/i;
  * - The web app sends no `Authorization` header and is verified from its
  *   session cookie.
  *
- * The id only ever comes from a verified token or session. The
+ * The user, and so the id, only ever comes from a verified token or session. The
  * `x-verified-user-*` headers are deliberately ignored: middleware passes
  * client headers through untouched on public routes, so they can be forged.
  * Approval is not required — an unapproved user may delete their own account.
@@ -37,7 +37,7 @@ export async function authenticateAccountRequest(
       error,
     } = await createAdminClient().auth.getUser(token);
     if (error || !user) return unauthorized();
-    return { userId: user.id, error: null };
+    return { user, error: null };
   }
 
   const supabase = await createClient();
@@ -46,9 +46,9 @@ export async function authenticateAccountRequest(
     error,
   } = await supabase.auth.getUser();
   if (error || !user) return unauthorized();
-  return { userId: user.id, error: null };
+  return { user, error: null };
 }
 
 function unauthorized(): AccountRequestAuth {
-  return { userId: null, error: errorResponse("Unauthorized", 401) };
+  return { user: null, error: errorResponse("Unauthorized", 401) };
 }

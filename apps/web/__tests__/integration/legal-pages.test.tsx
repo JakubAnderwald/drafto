@@ -96,7 +96,7 @@ describe("Privacy policy page", () => {
     render(<PrivacyPolicyPage />);
 
     expect(screen.getByText(/Effective date: March 8, 2026/)).toHaveTextContent(
-      "Last updated: October 10, 2026",
+      "Last updated: October 12, 2026",
     );
   });
 
@@ -266,6 +266,15 @@ describe("Privacy policy page", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText(/by email, we process the request within 30 days/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/we then ask Apple to end Drafto.s access to your Apple ID/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "how to remove Drafto from your Apple ID" }),
+    ).toHaveAttribute("href", "/account/delete#sign-in-with-apple");
+    expect(rowFor("Apple")).toHaveTextContent(
+      /When you delete your account in the iPhone or iPad app, we ask Apple to end Drafto.s access/,
+    );
     expect(screen.getByRole("link", { name: "how to delete your account" })).toHaveAttribute(
       "href",
       "/account/delete",

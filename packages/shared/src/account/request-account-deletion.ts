@@ -18,9 +18,32 @@ export type AccountDeletionResult =
   | { status: "failed"; httpStatus: number }
   | { status: "network" };
 
+/**
+ * The iOS bundle ID: the Sign in with Apple client that the native sheet issues codes to.
+ * The only client whose codes the server redeems for revocation.
+ */
+export const APPLE_NATIVE_CLIENT_ID = "eu.drafto.mobile";
+
+/**
+ * A fresh Sign in with Apple authorization code, sent with the deletion so the server
+ * can revoke the user's Apple tokens once the account is gone (App Store Review
+ * Guideline 5.1.1(v)). Revocation is best-effort and never decides the deletion.
+ */
+export interface AppleRevocationGrant {
+  /** The `authorizationCode` Apple just returned. Single-use, valid for five minutes. */
+  authorizationCode: string;
+  /** The client the code was issued to: the iOS bundle ID for the native sheet. */
+  clientId: string;
+}
+
+/** JSON body of `DELETE /api/account`. It never names the account: that comes from the credential. */
+export interface AccountDeletionRequestBody {
+  apple?: AppleRevocationGrant;
+}
+
 type FetchLike = (
   input: string,
-  init: { method: string; headers: Record<string, string> },
+  init: { method: string; headers: Record<string, string>; body?: string },
 ) => Promise<{
   status: number;
   json: () => Promise<unknown>;
@@ -34,6 +57,8 @@ export interface RequestAccountDeletionOptions {
    * The web app omits it and relies on its same-origin session cookie instead.
    */
   accessToken?: string;
+  /** Sent only for a user linked to Sign in with Apple, once a fresh code was obtained. */
+  appleRevocation?: AppleRevocationGrant;
   /** Injected for tests; defaults to the global `fetch`. */
   fetchImpl?: FetchLike;
 }
@@ -42,25 +67,32 @@ export interface RequestAccountDeletionOptions {
  * Asks the server to permanently delete the signed-in user's account.
  *
  * The request carries no user id: the server derives it from the verified token
- * or session. Only a JSON body with `success === true` counts as success, so a
- * middleware redirect that `fetch` silently followed to a 200 HTML page is
- * reported as `failed`, never as `ok`.
+ * or session. Its only possible body is an Apple revocation grant. Only a JSON
+ * response with `success === true` counts as success, so a middleware redirect
+ * that `fetch` silently followed to a 200 HTML page is reported as `failed`,
+ * never as `ok`.
  */
 export async function requestAccountDeletion({
   baseUrl,
   accessToken,
+  appleRevocation,
   fetchImpl,
 }: RequestAccountDeletionOptions): Promise<AccountDeletionResult> {
   const doFetch: FetchLike = fetchImpl ?? ((input, init) => fetch(input, init));
   const headers: Record<string, string> = { Accept: "application/json" };
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
 
+  // Without a grant the request stays body-less, exactly as before.
+  const init: Parameters<FetchLike>[1] = { method: "DELETE", headers };
+  if (appleRevocation) {
+    const body: AccountDeletionRequestBody = { apple: appleRevocation };
+    headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(body);
+  }
+
   let response: Awaited<ReturnType<FetchLike>>;
   try {
-    response = await doFetch(`${baseUrl.replace(/\/+$/, "")}${ACCOUNT_DELETION_PATH}`, {
-      method: "DELETE",
-      headers,
-    });
+    response = await doFetch(`${baseUrl.replace(/\/+$/, "")}${ACCOUNT_DELETION_PATH}`, init);
   } catch {
     return { status: "network" };
   }
