@@ -206,7 +206,9 @@ describe("implementer prompt — retry budget (#465)", () => {
   });
 
   it("hard-codes no attempt threshold of its own", () => {
-    assert.doesNotMatch(flat, /already > \d/);
+    assert.doesNotMatch(flat, /already\s*[<>]=?\s*\d/);
+    assert.doesNotMatch(flat, /\battempts`?\s*(?:[<>]=?|={2,3}|!==?)\s*\d/);
+    assert.doesNotMatch(flat, /\d\s*(?:[<>]=?|={2,3}|!==?)\s*`?attempts\b/);
     assert.doesNotMatch(flat, /reason "retry budget exhausted"/);
   });
 });
