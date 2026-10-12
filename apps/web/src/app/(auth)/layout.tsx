@@ -1,6 +1,14 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { Card, CardBody } from "@/components/ui/card";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
+
+// The utility pages in this group (password reset, waiting for approval, the desktop hand-off)
+// are thin and near-identical, so they stay out of search results by default. /login and
+// /signup opt back in from their own layouts.
+export const metadata: Metadata = {
+  robots: { index: false, follow: true },
+};
 
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return (

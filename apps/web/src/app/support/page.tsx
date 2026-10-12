@@ -5,6 +5,7 @@ import { Card, CardBody } from "@/components/ui/card";
 export const metadata: Metadata = {
   title: "Support — Drafto",
   description: "Get help with Drafto.",
+  alternates: { canonical: "/support" },
 };
 
 export default function SupportPage() {

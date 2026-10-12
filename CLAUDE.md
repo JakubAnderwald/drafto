@@ -131,7 +131,7 @@ Every module must follow SOLID:
 
 - Strict TypeScript — no `any`, no `@ts-ignore`
 - Prettier handles formatting (run `pnpm format:check` to verify)
-- Named exports only (no default exports except for Next.js pages/layouts and Expo Router route modules under `apps/mobile/app/`, which the router requires to default-export their screen)
+- Named exports only (no default exports except for Next.js pages/layouts, Next.js metadata routes such as `robots.ts` and `sitemap.ts`, and Expo Router route modules under `apps/mobile/app/`, which the router requires to default-export their screen)
 - Kebab-case file names (e.g., `user-profile.tsx`, not `UserProfile.tsx`)
 - Use `@/` import alias for all `src/` imports
 

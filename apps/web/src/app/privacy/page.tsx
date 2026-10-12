@@ -10,6 +10,7 @@ export const metadata: Metadata = {
   title: "Privacy Policy — Drafto",
   description:
     "Drafto privacy policy. Learn what data we collect, who processes it, and your rights.",
+  alternates: { canonical: "/privacy" },
 };
 
 const SECTIONS = [
