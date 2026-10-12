@@ -20,7 +20,7 @@ Shipped on all four platforms.
 - **Mobile/desktop layout**:
   - **Stylesheets.** Each app's stylesheet ships through `CoreBridge.configureCSS`, which TenTap injects together with every bridge's own CSS (image max-width, blockquote, task list, placeholder). Never pass `injectedJavaScript` to `<RichText>`: it replaces TenTap's script, and that script is what installs those styles.
   - **Gutter.** The body gets a horizontal-only gutter in line with the title (`EDITOR_LAYOUT_CSS`). TenTap owns `padding-bottom`.
-  - **Mobile keyboard.** The `KeyboardAvoidingView` is offset by the header height (`useHeaderHeight`), and TenTap's `avoidIosKeyboard` is off, so the body is lifted once rather than padded twice.
+  - **Mobile keyboard.** The `KeyboardAvoidingView` is offset by the header height (`useHeaderHeight`), and TenTap's `avoidIosKeyboard` is off, so the body is lifted once rather than padded twice. Its behaviour is `padding` on iOS and `height` on Android: Android runs edge-to-edge, so the window no longer shrinks for the keyboard.
   - **Mobile toolbar.** The toolbar theme (`src/lib/editor-theme.ts`) pins the formatting toolbar to a fixed 44 pt row on the screen's surface colour. It is rendered last, below the attachment row, so with the keyboard up it sits directly on the keyboard.
   - **Mobile header.** The editor header has no title (the title field is the title), and its back label is fixed to "Notes". The notebook screen's header shows the notebook's name.
 

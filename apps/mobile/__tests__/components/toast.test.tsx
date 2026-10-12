@@ -4,7 +4,13 @@ import * as Haptics from "expo-haptics";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { render, act } from "../helpers/test-utils";
-import { ToastProvider, useToast, AUTO_DISMISS_MS, MAX_VISIBLE_TOASTS } from "@/components/toast";
+import {
+  ToastProvider,
+  useToast,
+  AUTO_DISMISS_MS,
+  MAX_VISIBLE_TOASTS,
+  SLIDE_DISTANCE,
+} from "@/components/toast";
 import { spacing } from "@/theme/tokens";
 
 type ShowToast = ReturnType<typeof useToast>["showToast"];
@@ -52,6 +58,25 @@ describe("ToastProvider", () => {
     const style = StyleSheet.flatten(getByTestId("toast-container").props.style);
     expect(style.top).toBe(47 + spacing.sm);
     expect(style.bottom).toBeUndefined();
+  });
+
+  it("drops in from no higher than the safe area, so it never crosses the status bar", () => {
+    const { getByText } = renderToasts();
+
+    show("Saved");
+
+    // Walk up from the text to the animated toast and read its first frame.
+    let node = getByText("Saved").parent;
+    while (node && !StyleSheet.flatten(node.props.style)?.transform) node = node.parent;
+    const transform = StyleSheet.flatten(node?.props.style).transform as Array<{
+      translateY?: number;
+    }>;
+    const startY = transform.find((t) => t.translateY !== undefined)?.translateY;
+
+    expect(startY).toBe(SLIDE_DISTANCE);
+    expect(startY).toBeLessThan(0);
+    // Container top (inset + gap) plus the start offset stays at or below the inset.
+    expect(47 + spacing.sm + (startY ?? 0)).toBeGreaterThanOrEqual(47);
   });
 
   it("dismisses a toast after AUTO_DISMISS_MS", () => {

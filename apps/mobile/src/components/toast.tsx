@@ -24,8 +24,12 @@ const ToastContext = createContext<ToastContextValue | null>(null);
 
 export const AUTO_DISMISS_MS = 4000;
 const ANIMATION_MS = 250;
-/** Toasts slide in from this far above their resting place. */
-const SLIDE_DISTANCE = -100;
+/**
+ * Toasts drop into place from this far above it while fading in. It is no more
+ * than the container's `spacing.sm` gap below the safe area, so the animation
+ * never rises into the status bar.
+ */
+export const SLIDE_DISTANCE = -spacing.sm;
 /** Older toasts are dropped beyond this many, so a burst can't fill the screen. */
 export const MAX_VISIBLE_TOASTS = 2;
 

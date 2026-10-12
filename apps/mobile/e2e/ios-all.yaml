@@ -157,6 +157,7 @@ appId: eu.drafto.mobile
 # directly on the keyboard, no blank band) ---
 - tapOn:
     point: "50%,45%"
+- inputText: "Body ${RUN_ID}"
 - waitForAnimationToEnd
 - takeScreenshot: editor-keyboard-up
 

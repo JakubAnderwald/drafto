@@ -61,11 +61,13 @@ appId: eu.drafto.mobile
     timeout: 10000
 
 # --- Test: editor with the keyboard up ---
-# The body is a WebView, so tap it by position. The screenshot records the
-# layout to check by eye: a gutter around the body text, and the formatting
-# toolbar directly on the keyboard with no blank band above it.
+# The body is a WebView, so tap it by position, then type a line so the gutter
+# shows. The screenshot records the layout to check by eye: a gutter around the
+# body text, and the formatting toolbar directly on the keyboard with no blank
+# band above it.
 - tapOn:
     point: "50%,45%"
+- inputText: "Body ${RUN_ID}"
 - waitForAnimationToEnd
 - takeScreenshot: editor-keyboard-up
 
