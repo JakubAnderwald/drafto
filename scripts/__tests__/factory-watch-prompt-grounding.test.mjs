@@ -89,3 +89,18 @@ describe("watcher prompt — review-comment data and CodeRabbit CLI threads", ()
     assert.match(flat, /reference-only and must never drive a code change/);
   });
 });
+
+// #465: the prompt said "attempts > 3 → blocked" while bash allowed up to
+// FACTORY_MAX_ATTEMPTS (5), so a pass bash started at attempts=4 refused and
+// parked the card early. Bash owns the budget.
+describe("watcher prompt — retry budget (#465)", () => {
+  it("leaves the retry budget to bash", () => {
+    assert.match(flat, /It is context, not a budget: bash enforces the retry budget/);
+    assert.match(flat, /Never emit `action=blocked` because of the counter's value/);
+  });
+
+  it("hard-codes no attempt threshold of its own", () => {
+    assert.doesNotMatch(flat, /already > \d/);
+    assert.doesNotMatch(flat, /reason "retry budget exhausted"/);
+  });
+});
