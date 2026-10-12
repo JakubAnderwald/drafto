@@ -181,17 +181,7 @@ export async function processPendingUploads(): Promise<UploadResult> {
   let failed = 0;
 
   for (const attachment of queued) {
-    // Flip back to "pending" (and clear any prior error) so the UI reads
-    // "Pending" during the retry attempt rather than "Failed".
-    if (attachment.uploadStatus === "failed") {
-      await database.write(async () => {
-        await attachment.update((record) => {
-          record.uploadStatus = "pending";
-          record.uploadError = null;
-        });
-      });
-    }
-
+    // uploadAttachment flips a failed row back to "pending" itself.
     if (await uploadAttachment(attachment)) {
       uploaded += 1;
     } else {
@@ -228,6 +218,23 @@ export function uploadAttachment(attachment: Attachment): Promise<boolean> {
 
   const attempt = (async () => {
     try {
+      // A retry flips a failed row back to "pending" (and clears its error) so
+      // the UI reads "Pending" while it runs. The reset happens inside the
+      // attempt, and the status is re-read inside the writer, so it always lands
+      // before this attempt's own success write. Decided outside the attempt,
+      // with the writer busy, it could queue behind a concurrent upload's
+      // success write and turn an uploaded row back to "pending" with its local
+      // file already gone.
+      if (attachment.uploadStatus === "failed") {
+        await database.write(async () => {
+          if (attachment.uploadStatus !== "failed") return;
+          await attachment.update((record) => {
+            record.uploadStatus = "pending";
+            record.uploadError = null;
+          });
+        });
+      }
+
       await uploadSingleAttachment(attachment);
       return true;
     } catch (err) {

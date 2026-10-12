@@ -24,12 +24,31 @@ jest.mock("@drafto/shared", () => ({
   FILE_TOO_LARGE_MESSAGE: "File size exceeds 50MB limit",
 }));
 
+// WatermelonDB's writer is a FIFO queue that another writer (e.g. a sync's
+// batch) can hold.
+const mockWriteQueue: { tail: Promise<unknown> } = { tail: Promise.resolve() };
 jest.mock("@/db", () => ({
   database: {
-    write: (fn: () => Promise<unknown>) => fn(),
+    write: (work: () => Promise<unknown>) => {
+      const run = mockWriteQueue.tail.then(work);
+      mockWriteQueue.tail = run.catch(() => undefined);
+      return run;
+    },
     get: () => ({ query: (...args: unknown[]) => mockQuery(...args) }),
   },
 }));
+
+/** Another writer holds WatermelonDB's write queue until released. */
+function holdWriteQueue(): () => void {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  mockWriteQueue.tail = mockWriteQueue.tail.then(() => held);
+  return release;
+}
+
+const flush = () => new Promise<void>((resolve) => setImmediate(() => resolve()));
 
 jest.mock("@/lib/supabase", () => ({
   supabase: {
@@ -45,9 +64,9 @@ import type { Attachment } from "@/db";
 
 type Fields = { uploadStatus: string; uploadError: string | null; localUri: string | null };
 
-function makeAttachment(id = "att-1") {
+function makeAttachment(id = "att-1", uploadStatus = "pending") {
   const fields: Fields = {
-    uploadStatus: "pending",
+    uploadStatus,
     uploadError: null,
     localUri: `file:///local/${id}.jpg`,
   };
@@ -157,6 +176,48 @@ describe("uploadAttachment", () => {
 
     expect(mockUpload).toHaveBeenCalledTimes(1);
     expect(fields.uploadStatus).toBe("uploaded");
+  });
+
+  it("flips a failed row back to pending while it retries, then marks it uploaded", async () => {
+    let finishUpload!: (value: { error: null }) => void;
+    mockUpload.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishUpload = resolve;
+      }),
+    );
+    const { attachment, fields } = makeAttachment("att-1", "failed");
+    fields.uploadError = "Upload failed: timeout";
+
+    const retry = uploadAttachment(attachment);
+    await flush();
+    expect(fields).toEqual(expect.objectContaining({ uploadStatus: "pending", uploadError: null }));
+
+    finishUpload({ error: null });
+    await expect(retry).resolves.toBe(true);
+    expect(fields.uploadStatus).toBe("uploaded");
+  });
+
+  it("never lets a sync's retry reset land after a concurrent upload's success", async () => {
+    // A failed attachment is uploaded directly while the writer is busy, and a
+    // sync reaches the same attachment before the writer frees up. Deciding the
+    // "failed" -> "pending" reset outside the upload attempt queued it behind
+    // the upload's success write, turning an uploaded row back to "pending"
+    // with its local file already deleted.
+    const { attachment, fields } = makeAttachment("att-1", "failed");
+    mockQuery.mockReturnValue({ fetch: jest.fn().mockResolvedValue([attachment]) });
+    const releaseWriter = holdWriteQueue();
+
+    const direct = uploadAttachment(attachment);
+    await flush();
+    const sync = processPendingUploads();
+    await flush();
+    releaseWriter();
+
+    await expect(direct).resolves.toBe(true);
+    await expect(sync).resolves.toEqual({ uploaded: 1, failed: 0 });
+    expect(fields.uploadStatus).toBe("uploaded");
+    expect(fields.localUri).toBeNull();
+    expect(mockUpload).toHaveBeenCalledTimes(1);
   });
 
   it("uploads again on a later call once the first attempt has finished", async () => {
