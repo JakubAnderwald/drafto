@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
 import { Linking } from "react-native";
 import type { Session, User } from "@supabase/supabase-js";
-import { requestAccountDeletion, type AccountDeletionResult } from "@drafto/shared";
+import { requestAccountDeletion, withTimeout, type AccountDeletionResult } from "@drafto/shared";
 
 import { database } from "@/db";
 import { syncDatabase, resetSyncState } from "@/db/sync";
@@ -11,7 +11,6 @@ import { createRecoveryLinkHandler } from "@/lib/auth-recovery";
 import { apiUrl } from "@/lib/config";
 import { deleteAllLocalAttachments, processPendingUploads } from "@/lib/data";
 import { supabase } from "@/lib/supabase";
-import { withTimeout } from "@/lib/with-timeout";
 
 /** Max time to wait for the pre-sign-out flush before proceeding to reset. */
 const FINAL_SYNC_TIMEOUT_MS = 10_000;
@@ -195,11 +194,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // A failed, offline, or slow sync must never block sign-out, so it is bounded
       // by a timeout and its errors are swallowed.
       if (!options?.skipFinalSync) {
-        try {
-          await withTimeout(flushPendingChanges(), FINAL_SYNC_TIMEOUT_MS);
-        } catch (error) {
-          console.warn("Final sync before sign-out failed or timed out:", error);
-        }
+        const settled = await withTimeout(
+          flushPendingChanges().then(
+            () => true,
+            (error: unknown) => {
+              console.warn("Final sync before sign-out failed:", error);
+              return true;
+            },
+          ),
+          FINAL_SYNC_TIMEOUT_MS,
+          false,
+        );
+        if (!settled) console.warn("Final sync before sign-out timed out");
       }
 
       await supabase.auth.signOut();

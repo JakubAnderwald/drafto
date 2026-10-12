@@ -1,15 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Alert } from "react-native";
+import { withTimeout } from "@drafto/shared";
 
 import { countUnsyncedChanges } from "@/lib/data/unsynced-changes";
-import { withTimeout } from "@/lib/with-timeout";
 import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
 
-/** How long sign-out waits for syncing before it counts what would be lost. */
+/** How long sign-out waits for a last sync before it counts what would be lost. */
 export const PRE_SIGN_OUT_SYNC_TIMEOUT_MS = 10_000;
-/** How often it looks whether a sync that was already running has finished. */
-const SYNC_POLL_MS = 250;
 
 export function describeUnsyncedLoss(count: number): string {
   return count === 1
@@ -32,10 +30,6 @@ function confirmSignOutAnyway(count: number): Promise<boolean> {
   });
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export interface SafeSignOut {
   signOut: () => Promise<void>;
   isSigningOut: boolean;
@@ -43,40 +37,18 @@ export interface SafeSignOut {
 
 /**
  * Sign-out that does not drop unsynced changes silently. Sign-out wipes the local database,
- * so when changes are pending it first lets syncing finish (a sync already running, then one
- * more), counts again, and asks before discarding whatever is still unsynced (offline, or the
- * sync failed).
+ * so when changes are pending it first lets one more sync run, counts again, and asks before
+ * discarding whatever is still unsynced (offline, or the sync failed).
+ *
+ * It relies on the database provider's `sync()` joining a sync that is already running and
+ * never rejecting (ADR-0048), so awaiting it also covers a sync in flight.
  */
 export function useSafeSignOut(): SafeSignOut {
   const { signOut } = useAuth();
-  const { database, sync, isSyncing } = useDatabase();
+  const { database, sync } = useDatabase();
   const [isSigningOut, setIsSigningOut] = useState(false);
   // A ref, so a double tap inside one frame cannot start two sign-outs.
   const inFlightRef = useRef(false);
-  // The latest isSyncing, for the flow below to read after its awaits.
-  const isSyncingRef = useRef(isSyncing);
-  useEffect(() => {
-    isSyncingRef.current = isSyncing;
-  }, [isSyncing]);
-
-  /** Lets syncing finish, giving up at `deadline`: a hung request must not hang sign-out. */
-  const settleSync = useCallback(
-    async (deadline: number) => {
-      // A sync that is already running may make sync() return at once rather than wait for
-      // it, and its push may be exactly what is pending. Wait it out first.
-      while (isSyncingRef.current && Date.now() < deadline) {
-        await delay(SYNC_POLL_MS);
-      }
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) return;
-      try {
-        await withTimeout(sync(), remaining);
-      } catch (error) {
-        console.warn("Sync before sign-out failed or timed out:", error);
-      }
-    },
-    [sync],
-  );
 
   const safeSignOut = useCallback(async () => {
     if (inFlightRef.current) return;
@@ -96,7 +68,8 @@ export function useSafeSignOut(): SafeSignOut {
     try {
       let pending = await countPending();
       if (pending !== null && pending > 0) {
-        await settleSync(Date.now() + PRE_SIGN_OUT_SYNC_TIMEOUT_MS);
+        // Bounded: a hung request must not hang sign-out.
+        await withTimeout<unknown>(sync(), PRE_SIGN_OUT_SYNC_TIMEOUT_MS, null);
         pending = await countPending();
       }
 
@@ -117,7 +90,7 @@ export function useSafeSignOut(): SafeSignOut {
       inFlightRef.current = false;
       setIsSigningOut(false);
     }
-  }, [database, settleSync, signOut]);
+  }, [database, sync, signOut]);
 
   return { signOut: safeSignOut, isSigningOut };
 }

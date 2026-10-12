@@ -13,9 +13,8 @@ jest.mock("@/providers/auth-provider", () => ({
 }));
 
 const mockSync = jest.fn();
-let mockIsSyncing = false;
 jest.mock("@/providers/database-provider", () => ({
-  useDatabase: () => ({ database: {}, sync: mockSync, isSyncing: mockIsSyncing }),
+  useDatabase: () => ({ database: {}, sync: mockSync }),
 }));
 
 const mockCountUnsyncedChanges = jest.fn();
@@ -31,7 +30,6 @@ function alertButtons(alert: jest.SpyInstance): AlertButton[] {
 describe("useSafeSignOut", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockIsSyncing = false;
     mockSignOut.mockResolvedValue(undefined);
     mockSync.mockResolvedValue(undefined);
     mockCountUnsyncedChanges.mockResolvedValue(0);
@@ -59,30 +57,35 @@ describe("useSafeSignOut", () => {
     expect(result.current.isSigningOut).toBe(false);
   });
 
-  it("waits out a sync that is already running before syncing and counting again", async () => {
-    // Before the sync coalescing in the database provider, sync() returns at once while
-    // another sync runs, so the hook must not take that as "done".
-    mockIsSyncing = true;
+  it("counts again only once the sync it awaited has finished", async () => {
+    // The provider's sync() joins a sync already running (ADR-0048), so this one await also
+    // covers a push that was in flight when the user pressed Sign Out.
+    let finishSync: () => void = () => {};
+    mockSync.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishSync = resolve;
+      }),
+    );
     mockCountUnsyncedChanges.mockResolvedValueOnce(2).mockResolvedValueOnce(0);
     const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
-    const { result, rerender } = renderHook(() => useSafeSignOut());
+    const { result } = renderHook(() => useSafeSignOut());
 
     let done: Promise<void> = Promise.resolve();
     act(() => {
       done = result.current.signOut();
     });
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 300));
+    await waitFor(() => {
+      expect(mockSync).toHaveBeenCalledTimes(1);
     });
-    expect(mockSync).not.toHaveBeenCalled();
+    expect(mockCountUnsyncedChanges).toHaveBeenCalledTimes(1);
+    expect(mockSignOut).not.toHaveBeenCalled();
 
-    mockIsSyncing = false;
-    rerender({});
     await act(async () => {
+      finishSync();
       await done;
     });
 
-    expect(mockSync).toHaveBeenCalledTimes(1);
+    expect(mockCountUnsyncedChanges).toHaveBeenCalledTimes(2);
     expect(alert).not.toHaveBeenCalled();
     expect(mockSignOut).toHaveBeenCalledWith({ skipFinalSync: true });
   });
