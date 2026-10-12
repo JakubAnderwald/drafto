@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { render, screen } from "@testing-library/react";
 import type { Metadata } from "next";
 import { metadata as authGroupMetadata } from "@/app/(auth)/layout";
-import { metadata as loginMetadata } from "@/app/(auth)/login/layout";
-import { metadata as signupMetadata } from "@/app/(auth)/signup/layout";
+import LoginLayout, { metadata as loginMetadata } from "@/app/(auth)/login/layout";
+import SignupLayout, { metadata as signupMetadata } from "@/app/(auth)/signup/layout";
 import { metadata as privacyMetadata } from "@/app/privacy/page";
 import { metadata as supportMetadata } from "@/app/support/page";
 import { metadata as accountDeleteMetadata } from "@/app/account/delete/page";
@@ -40,5 +41,18 @@ describe("SEO metadata", () => {
   ])("%s opts back into indexing with its own title", (_path, metadata, title) => {
     expect(metadata.robots).toEqual({ index: true, follow: true });
     expect(metadata.title).toBe(title);
+  });
+
+  it.each([
+    ["login", LoginLayout],
+    ["signup", SignupLayout],
+  ])("the metadata-only %s layout renders its page unchanged", (_name, Layout) => {
+    render(
+      <Layout>
+        <p>page content</p>
+      </Layout>,
+    );
+
+    expect(screen.getByText("page content")).toBeInTheDocument();
   });
 });

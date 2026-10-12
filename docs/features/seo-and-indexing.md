@@ -38,11 +38,12 @@ The property is verified in Google Search Console as the domain property `drafto
 
 ### Expected Search Console state
 
-| Report                                             | URLs                                                                         | Meaning                                                                                                                |
-| -------------------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Indexed                                            | The `INDEXED_PATHS` pages                                                    | Correct                                                                                                                |
-| Page with redirect (Strona zawiera przekierowanie) | `http://drafto.eu/`, `https://www.drafto.eu/`, possibly `https://drafto.eu/` | Correct and permanent. Redirecting URLs are never indexed. Don't start "Validate fix" on this group: it can only fail. |
-| Excluded by noindex                                | `/forgot-password` and the other `(auth)` utility pages                      | Correct                                                                                                                |
+| Report                                             | URLs                                                    | Meaning                                                                                                                                                                                                |
+| -------------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Indexed                                            | The `INDEXED_PATHS` pages                               | Correct                                                                                                                                                                                                |
+| Page with redirect (Strona zawiera przekierowanie) | `http://drafto.eu/`, `https://www.drafto.eu/`           | Correct. These are permanent 308 redirects (protocol and host), so the URLs are never indexed. Don't start "Validate fix" on this group: it can only fail.                                             |
+| Page with redirect (Strona zawiera przekierowanie) | `https://drafto.eu/` (possibly)                         | Expected while there is no landing page. Signed-out `/` is a temporary 307 to `/login`, so Google may list it here or fold it into `/login`. The redirect is temporary on purpose, not a fault to fix. |
+| Excluded by noindex                                | `/forgot-password` and the other `(auth)` utility pages | Correct                                                                                                                                                                                                |
 
 A new "Duplicate without user-selected canonical" entry means a public page is missing its `alternates.canonical`.
 
