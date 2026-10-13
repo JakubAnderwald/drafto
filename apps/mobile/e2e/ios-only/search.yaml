@@ -60,6 +60,12 @@ appId: eu.drafto.mobile
     visible:
       id: "note-sheet-close"
     timeout: 10000
+
+# Keyboard up inside the sheet: the attachment row must sit directly on the
+# keyboard, not behind it (the sheet starts lower than a pushed screen). Check
+# the screenshot after a run.
+- tapOn: "Findable ${RUN_ID}"
+- takeScreenshot: note-sheet-keyboard-up
 - tapOn:
     id: "note-sheet-close"
 # "Search" stays in the hierarchy behind the note's sheet, so check that the
