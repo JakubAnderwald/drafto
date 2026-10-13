@@ -15,6 +15,11 @@ import { Platform, useWindowDimensions, type LayoutChangeEvent } from "react-nat
  * reach the bottom of the window, so the distance is the window height minus
  * the view's height.
  *
+ * Checked on the iOS 27 simulator: exact on iPhone and on iPad in portrait. On
+ * iPad in landscape the sheet is a card that stops about 28 pt short of the
+ * window bottom, so there the attachment row sits that much above the keyboard
+ * instead of directly on it (still fully visible; before, it was behind it).
+ *
  * Android has no sheets, so it keeps `fallback` (the header height), as does
  * iOS until the first layout.
  */
