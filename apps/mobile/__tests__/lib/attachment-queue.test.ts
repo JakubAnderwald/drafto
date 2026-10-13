@@ -135,6 +135,13 @@ describe("processPendingUploads", () => {
       contentType: "image/jpeg",
       upsert: false,
     });
+    // The attachments table has no UPDATE policy, so the row is inserted with
+    // ON CONFLICT DO NOTHING: a retry that finds it already there succeeds.
+    expect(mockUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "remote-1", file_path: "user-1/note-1/photo.jpg" }),
+      { onConflict: "id", ignoreDuplicates: true },
+    );
+    expect(mockAttachment.update).toHaveBeenCalled();
   });
 
   it("returns correct counts when some uploads fail", async () => {

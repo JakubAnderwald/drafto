@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, Pressable, ActivityIndicator } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
@@ -27,33 +27,54 @@ function formatLastSynced(date: Date | null): string {
   return date.toLocaleDateString();
 }
 
+/** How often "Last synced: …" is recomputed while the status is on screen. */
+export const LAST_SYNCED_TICK_MS = 10_000;
+
+/** Re-renders the caller every `intervalMs`, so relative times keep ticking. */
+function useTick(intervalMs: number): void {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((tick) => tick + 1), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+}
+
 export function SyncStatus() {
-  const { sync, isSyncing, lastSyncedAt, pendingChangesCount, hasPendingChanges } = useDatabase();
+  const { sync, isSyncing, lastSyncedAt, lastSyncError, pendingChangesCount, hasPendingChanges } =
+    useDatabase();
   const { isConnected } = useNetworkStatus();
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+  useTick(LAST_SYNCED_TICK_MS);
+
+  const hasSyncError = lastSyncError !== null;
 
   const statusIcon = isSyncing
     ? null
     : !isConnected
       ? "cloud-offline-outline"
-      : hasPendingChanges
-        ? "cloud-upload-outline"
-        : "cloud-done-outline";
+      : hasSyncError
+        ? "alert-circle-outline"
+        : hasPendingChanges
+          ? "cloud-upload-outline"
+          : "cloud-done-outline";
 
-  const statusColor = !isConnected
-    ? colors.error
-    : hasPendingChanges
-      ? colors.warning
-      : colors.success;
+  const statusColor =
+    !isConnected || hasSyncError
+      ? colors.error
+      : hasPendingChanges
+        ? colors.warning
+        : colors.success;
 
   const statusText = isSyncing
     ? "Syncing..."
     : !isConnected
       ? "Offline"
-      : hasPendingChanges
-        ? `${pendingChangesCount} pending ${pendingChangesCount === 1 ? "change" : "changes"}`
-        : "All synced";
+      : hasSyncError
+        ? "Sync failed"
+        : hasPendingChanges
+          ? `${pendingChangesCount} pending ${pendingChangesCount === 1 ? "change" : "changes"}`
+          : "All synced";
 
   return (
     <Pressable

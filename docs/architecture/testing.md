@@ -78,6 +78,7 @@ Some behaviour cannot be scripted deterministically and is verified by hand. Not
 - **The Supabase redirect-URL allowlist.** Each must be allowed under Supabase Auth → URL Configuration → Redirect URLs in dev (`huhzactreblzcogqkbsd`) and prod (`tbmjbxxseonkciqovnpl`):
   - `drafto://reset-password` (mobile recovery).
   - `https://drafto.eu/auth/desktop/recovery` and `https://drafto.eu/auth/desktop/callback` (desktop). Both hosted projects already allow `https://drafto.eu/**`, which covers these.
+  - `https://drafto.eu/login?confirmed=1`, where the mobile and desktop sign-up confirmation email lands. Also covered by `https://drafto.eu/**`. If it is missing, the link still confirms the address but lands on the Site URL without the "Email confirmed" notice.
   - The old `eu.drafto.desktop://auth/recovery` and `eu.drafto.desktop://auth/callback` entries. Keep them for already-installed desktop builds.
 
   Nothing in the test suite can observe this. If an entry is missing, Supabase rejects the redirect, falls back to the Site URL, and the manual checks above fail at the email link or the account click.

@@ -8,23 +8,22 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from "react-native";
-import { useLocalSearchParams, Stack } from "expo-router";
-import {
-  useEditorBridge,
-  useBridgeState,
-  TenTapStartKit,
-  CoreBridge,
-  darkEditorTheme,
-} from "@10play/tentap-editor";
+import { useLocalSearchParams } from "expo-router";
+import { useHeaderHeight } from "@react-navigation/elements";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useEditorBridge, useBridgeState, TenTapStartKit, CoreBridge } from "@10play/tentap-editor";
 
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useNote } from "@/hooks/use-note";
+import { useKeyboardVisible } from "@/hooks/use-keyboard-visible";
+import { useWindowTop } from "@/hooks/use-window-top";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { EditorSkeleton } from "@/components/ui/skeleton";
 import { useAutoSave } from "@/hooks/use-auto-save";
 import { buildEditorColorCss, buildEditorCss } from "@/lib/editor-css";
+import { buildEditorTheme } from "@/lib/editor-theme";
 import {
   contentToTiptap,
   contentToBlocknote,
@@ -32,8 +31,13 @@ import {
   resolveTipTapImageUrls,
   isAttachmentUrl,
   toAttachmentUrl,
+  isNoOpContentSave,
+  rememberContentBaseline,
+  serializeEditorContent,
+  serializeLoadedDoc,
+  withTimeout,
 } from "@drafto/shared";
-import type { TipTapDoc, TipTapNode } from "@drafto/shared";
+import type { ContentBaseline, TipTapDoc, TipTapNode } from "@drafto/shared";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Note, Attachment } from "@/db";
@@ -53,6 +57,35 @@ function parseInitialContent(note: Note): TipTapDoc {
     }
   }
   return EMPTY_DOC;
+}
+
+// Bound on reading the editor back once it is ready to add that serialisation
+// to the no-op-save baseline. Content saves wait for the read, so a stuck
+// WebView reply must not hold them up for long.
+const BASELINE_READ_TIMEOUT_MS = 3000;
+
+/**
+ * The no-op-save baseline for a note as it was loaded (issue #654, shared with
+ * desktop): its stored content, plus the converter's serialisation of the doc
+ * the editor is handed. The editor's own read-back joins it once it is ready.
+ */
+function createLoadBaseline(note: Note): ContentBaseline {
+  const stored = note.content;
+  try {
+    return { stored, serializations: [serializeLoadedDoc(parseInitialContent(note))] };
+  } catch (err) {
+    console.warn("[editor] baseline serialisation failed", err);
+    return { stored, serializations: [] };
+  }
+}
+
+/**
+ * A document's text with no separators. ProseMirror's load normalisation
+ * (merging text runs, re-sorting marks, filling an empty doc) keeps it; typing
+ * changes it.
+ */
+function docText(node: { text?: string; content?: TipTapNode[] }): string {
+  return (node.text ?? "") + (node.content ?? []).map(docText).join("");
 }
 
 export default function EditorScreen() {
@@ -141,6 +174,10 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   const { database, sync } = useDatabase();
   const { semantic, isDark } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+  const headerHeight = useHeaderHeight();
+  const windowTop = useWindowTop();
+  const insets = useSafeAreaInsets();
+  const isKeyboardUp = useKeyboardVisible();
   const [title, setTitle] = useState(initialNote.title);
   const noteIdRef = useRef(noteId);
   // Gate autosave on TenTap's readiness. Without this, onChange emissions during
@@ -149,40 +186,64 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   // the note — the same class of race that corrupted prod data on 2026-04-24.
   const editorReadyRef = useRef(false);
   const { content: resolvedContent, resolving } = useResolvedContent(initialNote);
+  // Serialisations of the content this note was loaded with that a save may
+  // write back without changing anything. TenTap answers the load with a
+  // content-update of its own, and writing that echo bumped updated_at, showed
+  // "Saved" on a note nobody had typed in, and pushed a phantom modification
+  // to every device. Created once per mount (the view is keyed by note id).
+  const [contentBaselines] = useState(
+    () => new Map<string, ContentBaseline>([[noteId, createLoadBaseline(initialNote)]]),
+  );
+  const [loadedText] = useState(() => docText(parseInitialContent(initialNote)));
+  // Settles once the editor's read-back has joined the baseline (or timed out);
+  // content saves wait for it so the load echo is compared against it.
+  const baselineSeedRef = useRef<Promise<void>>(Promise.resolve());
 
+  // Both save handlers resolve false when they wrote nothing, which keeps the
+  // status at "idle" and skips the sync (WatermelonDB bumps updated_at on every
+  // update, so an unchanged write is not harmless). Each compares inside the
+  // writer, so it sees whatever earlier writes produced.
   const titleSave = useAutoSave<string>({
     onSave: useCallback(
-      async (text: string) => {
-        if (!noteId) return;
+      async (text: string): Promise<boolean> => {
+        if (!noteId) return false;
         const trimmed = text.trim();
-        if (!trimmed) return;
-        await database.write(async () => {
+        if (!trimmed) return false;
+        const written = await database.write(async () => {
           const record = await database.get<Note>("notes").find(noteId);
+          if (record.title === trimmed) return false;
           await record.update((r) => {
             r.title = trimmed;
           });
+          return true;
         });
-        sync();
+        if (written) sync();
+        return written;
       },
       [noteId, database, sync],
     ),
   });
 
   const contentSave = useAutoSave<void>({
-    onSave: useCallback(async () => {
-      if (!noteId || noteIdRef.current !== noteId) return;
+    onSave: useCallback(async (): Promise<boolean> => {
+      if (!noteId || noteIdRef.current !== noteId) return false;
+      await baselineSeedRef.current;
       const json = await editor.getJSON();
-      const blocks = contentToBlocknote(json);
-      const migrated = migrateSignedUrlsToAttachmentUrls(blocks);
-      await database.write(async () => {
+      const payload = { noteId, content: serializeEditorContent(json as TipTapDoc) };
+      const written = await database.write(async () => {
         const record = await database.get<Note>("notes").find(noteId);
+        // Once anything really changes the row, the load baseline stops
+        // applying (it is tied to the stored content it was taken against).
+        if (isNoOpContentSave(contentBaselines, payload, record.content)) return false;
         await record.update((r) => {
-          r.content = JSON.stringify(migrated);
+          r.content = payload.content;
         });
+        return true;
       });
-      sync();
+      if (written) sync();
+      return written;
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [noteId, database, sync]),
+    }, [noteId, database, sync, contentBaselines]),
   });
 
   // Font and colours are set through CoreBridge so they ship with the editor's
@@ -193,19 +254,20 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     [semantic, isDark],
   );
 
+  // Memoised: TenTap re-merges its theme whenever this object changes.
+  const editorTheme = useMemo(() => buildEditorTheme(semantic, isDark), [semantic, isDark]);
+
   // Pass initialContent so TipTap has the content when it first initializes
   // inside the WebView — no race condition with setContent.
   const editor = useEditorBridge({
     bridgeExtensions,
     autofocus: false,
-    avoidIosKeyboard: true,
+    // The KeyboardAvoidingView below already lifts the editor above the
+    // keyboard. TenTap's own avoidance would also pad the document by the
+    // keyboard height, leaving a blank band above the toolbar.
+    avoidIosKeyboard: false,
     initialContent: resolvedContent,
-    theme: isDark
-      ? {
-          ...darkEditorTheme,
-          webview: { backgroundColor: semantic.bg },
-        }
-      : undefined,
+    theme: editorTheme,
     onChange: () => {
       if (!editorReadyRef.current) return;
       contentSave.trigger();
@@ -213,10 +275,49 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   });
 
   const { isReady } = useBridgeState(editor);
+  // useEditorBridge returns a new object every render; effects read the live
+  // one through this ref instead of depending on it.
+  const editorRef = useRef(editor);
+  editorRef.current = editor;
 
   useEffect(() => {
+    if (isReady) {
+      // Read the loaded document back and add its serialisation to the
+      // baseline: ProseMirror normalises what it loads (an empty doc gains a
+      // paragraph, adjacent text runs merge), and the load's content-update
+      // echo serialises to that. The reply must not hold a user edit, or the
+      // baseline would make that edit look like a no-op and drop it. So the
+      // read-back is refused if the editor was focused at any point before the
+      // reply (typing needs focus, and bridge state updates reach us in order,
+      // ahead of the reply), or if its text differs from the loaded doc's.
+      const liveEditor = editorRef.current;
+      let focused = liveEditor.getEditorState().isFocused;
+      const unsubscribe = liveEditor._subscribeToEditorStateUpdate((state) => {
+        if (state.isFocused) focused = true;
+      });
+      baselineSeedRef.current = withTimeout<object | null>(
+        liveEditor.getJSON(),
+        BASELINE_READ_TIMEOUT_MS,
+        null,
+      ).then((json) => {
+        // Never rejects: content saves await this promise.
+        try {
+          unsubscribe();
+          const baseline = contentBaselines.get(noteId);
+          if (!json || !baseline || focused) return;
+          const readBack = json as TipTapDoc;
+          if (docText(readBack) !== loadedText) return;
+          rememberContentBaseline(contentBaselines, noteId, {
+            stored: baseline.stored,
+            serializations: [...baseline.serializations, serializeEditorContent(readBack)],
+          });
+        } catch (err) {
+          console.warn("[editor] baseline read-back failed", err);
+        }
+      });
+    }
     editorReadyRef.current = isReady;
-  }, [isReady]);
+  }, [isReady, contentBaselines, loadedText, noteId]);
 
   // Applies a theme switch made while the note is open; the initial colours
   // already come from the bridge CSS above.
@@ -306,12 +407,28 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     return <EditorSkeleton />;
   }
 
+  // No header title here: the title field below is the note's title, and the
+  // header (title "", back label "Notes") is set once in app/_layout.tsx.
   return (
-    <>
-      <Stack.Screen options={{ title: title || "Untitled" }} />
+    <View
+      ref={windowTop.ref}
+      testID="editor-window"
+      style={styles.container}
+      onLayout={windowTop.onLayout}
+    >
       <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        testID="editor-keyboard-avoiding-view"
+        style={styles.fill}
+        // Android runs edge-to-edge, so the window no longer shrinks for the
+        // keyboard and the view has to make room itself, as the auth screens do.
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        // The view starts below the header, but the keyboard's position is
+        // reported in window coordinates. Without the view's distance from the
+        // top of the window as the offset, the view stops that far short of the
+        // keyboard and the toolbar ends up behind it. On a pushed screen that is
+        // the header height; a note opened from Search is an iOS sheet, which
+        // starts lower, so the distance is measured (header height until then).
+        keyboardVerticalOffset={windowTop.top ?? headerHeight}
       >
         <View style={styles.titleRow}>
           <TextInput
@@ -327,11 +444,22 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
           {saveStatus === "error" && <Text style={styles.statusTextError}>Save failed</Text>}
         </View>
         <View style={styles.editorContainer}>
-          <NoteEditor editor={editor} />
+          <NoteEditor
+            editor={editor}
+            accessory={
+              <AttachmentPicker noteId={noteId} onAttachmentReady={handleAttachmentReady} />
+            }
+          />
         </View>
-        <AttachmentPicker noteId={noteId} onAttachmentReady={handleAttachmentReady} />
+        {/* Keeps the attachment row clear of the home indicator / gesture bar. With
+          the keyboard up the keyboard covers that area, so the toolbar sits
+          directly on it instead. */}
+        <View
+          testID="editor-bottom-inset"
+          style={[styles.bottomInset, { height: isKeyboardUp ? 0 : insets.bottom }]}
+        />
       </KeyboardAvoidingView>
-    </>
+    </View>
   );
 }
 
@@ -340,6 +468,9 @@ const createStyles = (semantic: SemanticColors) =>
     container: {
       flex: 1,
       backgroundColor: semantic.bgSubtle,
+    },
+    fill: {
+      flex: 1,
     },
     centered: {
       flex: 1,
@@ -380,6 +511,9 @@ const createStyles = (semantic: SemanticColors) =>
     },
     editorContainer: {
       flex: 1,
+    },
+    bottomInset: {
+      backgroundColor: semantic.bg,
     },
     errorText: {
       fontSize: fontSizes.xl,

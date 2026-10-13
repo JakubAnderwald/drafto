@@ -1,8 +1,17 @@
-import { createContext, useContext, useCallback, useState, useRef, useEffect } from "react";
+import {
+  createContext,
+  useContext,
+  useCallback,
+  useState,
+  useRef,
+  useEffect,
+  useMemo,
+} from "react";
 import { View, Text, StyleSheet, Animated } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { getDefaultHeaderHeight } from "@react-navigation/elements";
+import { useSafeAreaFrame, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
@@ -22,7 +31,16 @@ interface ToastContextValue {
 
 const ToastContext = createContext<ToastContextValue | null>(null);
 
-const AUTO_DISMISS_MS = 4000;
+export const AUTO_DISMISS_MS = 4000;
+const ANIMATION_MS = 250;
+/**
+ * Toasts drop into place from this far above it while fading in. It is no more
+ * than the container's `spacing.sm` gap below the header, so the animation
+ * never rises over the header's buttons.
+ */
+export const SLIDE_DISTANCE = -spacing.sm;
+/** Older toasts are dropped beyond this many, so a burst can't fill the screen. */
+export const MAX_VISIBLE_TOASTS = 2;
 
 const ICON_MAP: Record<ToastType, keyof typeof Ionicons.glyphMap> = {
   info: "information-circle-outline",
@@ -36,28 +54,44 @@ const COLOR_MAP: Record<ToastType, string> = {
   success: colors.success,
 };
 
+const HAPTIC_MAP: Record<ToastType, Haptics.NotificationFeedbackType> = {
+  info: Haptics.NotificationFeedbackType.Success,
+  warning: Haptics.NotificationFeedbackType.Warning,
+  success: Haptics.NotificationFeedbackType.Success,
+};
+
 function Toast({
   message,
   onDismiss,
   semantic,
 }: {
   message: ToastMessage;
-  onDismiss: () => void;
+  onDismiss: (id: number) => void;
   semantic: SemanticColors;
 }) {
-  const slideAnim = useRef(new Animated.Value(100)).current;
+  const slideAnim = useRef(new Animated.Value(SLIDE_DISTANCE)).current;
   const opacityAnim = useRef(new Animated.Value(0)).current;
+  // The dismiss timer must start once per toast. Holding the callback in a ref
+  // keeps it out of the effect's dependencies; with it as a dependency, every
+  // provider re-render (each new toast) restarted every visible toast's timer,
+  // so a burst of toasts stayed on screen for many times AUTO_DISMISS_MS.
+  const onDismissRef = useRef(onDismiss);
+  useEffect(() => {
+    onDismissRef.current = onDismiss;
+  }, [onDismiss]);
+
+  const messageId = message.id;
 
   useEffect(() => {
     Animated.parallel([
       Animated.timing(slideAnim, {
         toValue: 0,
-        duration: 250,
+        duration: ANIMATION_MS,
         useNativeDriver: true,
       }),
       Animated.timing(opacityAnim, {
         toValue: 1,
-        duration: 250,
+        duration: ANIMATION_MS,
         useNativeDriver: true,
       }),
     ]).start();
@@ -65,20 +99,20 @@ function Toast({
     const timer = setTimeout(() => {
       Animated.parallel([
         Animated.timing(slideAnim, {
-          toValue: 100,
-          duration: 250,
+          toValue: SLIDE_DISTANCE,
+          duration: ANIMATION_MS,
           useNativeDriver: true,
         }),
         Animated.timing(opacityAnim, {
           toValue: 0,
-          duration: 250,
+          duration: ANIMATION_MS,
           useNativeDriver: true,
         }),
-      ]).start(() => onDismiss());
+      ]).start(() => onDismissRef.current(messageId));
     }, AUTO_DISMISS_MS);
 
     return () => clearTimeout(timer);
-  }, [slideAnim, opacityAnim, onDismiss]);
+  }, [slideAnim, opacityAnim, messageId]);
 
   const color = COLOR_MAP[message.type];
 
@@ -105,30 +139,58 @@ function Toast({
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const { semantic } = useTheme();
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  // Mirrors `toasts` so showToast can dedupe synchronously (and skip the
+  // haptic for a duplicate) without a side effect inside a state updater.
+  const toastsRef = useRef<ToastMessage[]>([]);
   const nextId = useRef(0);
   const insets = useSafeAreaInsets();
+  const frame = useSafeAreaFrame();
+  // The provider sits outside the navigator, so it can't measure the current
+  // screen's header. The library's default header height is at least as tall
+  // as this app's headers (on Android it allows 64 dp for the 56 dp stack
+  // header), so toasts always start below the header's buttons.
+  const headerBottom = getDefaultHeaderHeight(frame, false, insets.top);
 
-  const showToast = useCallback((text: string, type: ToastType = "info") => {
-    const HAPTIC_MAP: Record<ToastType, Haptics.NotificationFeedbackType> = {
-      info: Haptics.NotificationFeedbackType.Success,
-      warning: Haptics.NotificationFeedbackType.Warning,
-      success: Haptics.NotificationFeedbackType.Success,
-    };
-    Haptics.notificationAsync(HAPTIC_MAP[type]);
-    const id = nextId.current++;
-    setToasts((prev) => [...prev, { id, text, type }]);
+  const commit = useCallback((next: ToastMessage[]) => {
+    toastsRef.current = next;
+    setToasts(next);
   }, []);
 
-  const dismissToast = useCallback((id: number) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  }, []);
+  const showToast = useCallback(
+    (text: string, type: ToastType = "info") => {
+      // A message already on screen is not shown a second time (e.g. two syncs
+      // reporting the same thing); it can show again once that toast has gone.
+      if (toastsRef.current.some((t) => t.text === text)) return;
+      Haptics.notificationAsync(HAPTIC_MAP[type]);
+      const id = nextId.current++;
+      commit([...toastsRef.current, { id, text, type }].slice(-MAX_VISIBLE_TOASTS));
+    },
+    [commit],
+  );
+
+  const dismissToast = useCallback(
+    (id: number) => {
+      commit(toastsRef.current.filter((t) => t.id !== id));
+    },
+    [commit],
+  );
+
+  // Stable, so a re-render here (a new toast, a window resize) doesn't
+  // re-render every useToast consumer.
+  const contextValue = useMemo(() => ({ showToast }), [showToast]);
 
   return (
-    <ToastContext.Provider value={{ showToast }}>
+    <ToastContext.Provider value={contextValue}>
       {children}
-      <View style={[styles.container, { bottom: insets.bottom + 16 }]} pointerEvents="none">
+      {/* Just below the header: at the bottom they covered the add button and the
+          editor's attachment row, and inside the header they hid its back button. */}
+      <View
+        testID="toast-container"
+        style={[styles.container, { top: headerBottom + spacing.sm }]}
+        pointerEvents="none"
+      >
         {toasts.map((t) => (
-          <Toast key={t.id} message={t} semantic={semantic} onDismiss={() => dismissToast(t.id)} />
+          <Toast key={t.id} message={t} semantic={semantic} onDismiss={dismissToast} />
         ))}
       </View>
     </ToastContext.Provider>

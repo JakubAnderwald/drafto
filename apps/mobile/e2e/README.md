@@ -97,14 +97,15 @@ bash apps/mobile/e2e/run-nested-lists-e2e.sh
 | `ios-all.yaml`                           | Combined flow: login + notebooks + notes + nav          |
 | `ios-only/05-offline-mode.yaml`          | Airplane mode, offline note creation, sync on reconnect |
 | `ios-only/06-offline-notebook-sync.yaml` | Offline notebook + note creation, sync verification     |
-| `ios-only/search.yaml`                   | Search with modal dismiss (swipe down)                  |
+| `ios-only/search.yaml`                   | Search, a result's sheet, and both close buttons        |
 
 ## Platform differences
 
 The main navigation difference between platforms:
 
 - **Android**: Uses `pressKey: back` (hardware back button) to navigate between screens
-- **iOS**: Uses `tapOn: "Notes"` / `tapOn: "Notebooks"` to tap the header back button (label comes from the previous screen's title). The search screen is a modal dismissed with `swipe: { direction: DOWN }`
+- **iOS**: Uses `tapOn: "Notes"` / `tapOn: "Notebooks"` to tap the header back button. "Notebooks" is the tabs screen's title; "Notes" is the editor's fixed `headerBackTitle` (`app/_layout.tsx`), because the notebook screen itself is titled with the notebook's name. Search is a sheet with a close button (`tapOn: { id: "search-close" }`); a note opened from it is a sheet of its own, closed with `tapOn: { id: "note-sheet-close" }`. Assert `notVisible` on the button afterwards: the screen beneath the sheet is still in the view hierarchy, so a `visible` check on it passes even if the sheet didn't close
+- **Editor keyboard check**: `03-create-edit-note.yaml`, `ios-all.yaml` and `android-all.yaml` tap into the note body, type a line, and save an `editor-keyboard-up` screenshot. Look at it after a run: the body text has a side gutter and the formatting toolbar sits directly on the keyboard, with no blank band above it
 
 ## Notes
 

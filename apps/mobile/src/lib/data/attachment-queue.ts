@@ -123,16 +123,23 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
     }
   }
 
-  // Create attachment record in Supabase
-  const { error: dbError } = await supabase.from("attachments").upsert({
-    id: attachment.remoteId,
-    note_id: attachment.noteId,
-    user_id: attachment.userId,
-    file_name: attachment.fileName,
-    file_path: attachment.filePath,
-    file_size: attachment.fileSize,
-    mime_type: attachment.mimeType,
-  });
+  // Create attachment record in Supabase. ON CONFLICT DO NOTHING: a retry
+  // after a partial success (row inserted, local status not yet updated) finds
+  // the row already there, and public.attachments has no UPDATE policy, so a
+  // plain upsert's ON CONFLICT DO UPDATE would be rejected by RLS and strand
+  // the attachment as "failed" forever.
+  const { error: dbError } = await supabase.from("attachments").upsert(
+    {
+      id: attachment.remoteId,
+      note_id: attachment.noteId,
+      user_id: attachment.userId,
+      file_name: attachment.fileName,
+      file_path: attachment.filePath,
+      file_size: attachment.fileSize,
+      mime_type: attachment.mimeType,
+    },
+    { onConflict: "id", ignoreDuplicates: true },
+  );
 
   if (dbError) {
     throw new Error(`Failed to save attachment record: ${dbError.message}`);
@@ -174,22 +181,63 @@ export async function processPendingUploads(): Promise<UploadResult> {
   let failed = 0;
 
   for (const attachment of queued) {
-    // Flip back to "pending" (and clear any prior error) so the UI reads
-    // "Pending" during the retry attempt rather than "Failed".
-    if (attachment.uploadStatus === "failed") {
-      await database.write(async () => {
-        await attachment.update((record) => {
-          record.uploadStatus = "pending";
-          record.uploadError = null;
-        });
-      });
-    }
-
-    try {
-      await uploadSingleAttachment(attachment);
+    // uploadAttachment flips a failed row back to "pending" itself.
+    if (await uploadAttachment(attachment)) {
       uploaded += 1;
-    } catch (err) {
+    } else {
       failed += 1;
+    }
+  }
+
+  return { uploaded, failed };
+}
+
+// One upload per attachment at a time. The editor uploads a freshly picked file
+// straight away, while a sync started meanwhile (e.g. by the note write) drains
+// the same queue; without this both would upload the file, and the second could
+// find the local copy already deleted by the first and mark it failed.
+const uploadsInFlight = new Map<string, Promise<boolean>>();
+
+/**
+ * Upload one queued attachment now and report whether it reached the server.
+ * An upload error is recorded on the row (status "failed" plus the message) and
+ * reported as `false` rather than thrown, so the next `processPendingUploads`
+ * retries it. A call made while the same attachment is already uploading shares
+ * that attempt.
+ */
+export function uploadAttachment(attachment: Attachment): Promise<boolean> {
+  // A sync can fetch the queue while a direct upload is still running and reach
+  // this attachment after that upload has finished. The upload deleted the
+  // local copy, so trying again would fail and mark an uploaded file "failed".
+  // (WatermelonDB hands out one cached instance per record, so the status read
+  // here is current.)
+  if (attachment.uploadStatus === "uploaded") return Promise.resolve(true);
+
+  const running = uploadsInFlight.get(attachment.id);
+  if (running) return running;
+
+  const attempt = (async () => {
+    try {
+      // A retry flips a failed row back to "pending" (and clears its error) so
+      // the UI reads "Pending" while it runs. The reset happens inside the
+      // attempt, and the status is re-read inside the writer, so it always lands
+      // before this attempt's own success write. Decided outside the attempt,
+      // with the writer busy, it could queue behind a concurrent upload's
+      // success write and turn an uploaded row back to "pending" with its local
+      // file already gone.
+      if (attachment.uploadStatus === "failed") {
+        await database.write(async () => {
+          if (attachment.uploadStatus !== "failed") return;
+          await attachment.update((record) => {
+            record.uploadStatus = "pending";
+            record.uploadError = null;
+          });
+        });
+      }
+
+      await uploadSingleAttachment(attachment);
+      return true;
+    } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`Failed to upload attachment ${attachment.fileName}:`, err);
       await database.write(async () => {
@@ -198,10 +246,14 @@ export async function processPendingUploads(): Promise<UploadResult> {
           record.uploadError = message;
         });
       });
+      return false;
     }
-  }
+  })().finally(() => {
+    uploadsInFlight.delete(attachment.id);
+  });
 
-  return { uploaded, failed };
+  uploadsInFlight.set(attachment.id, attempt);
+  return attempt;
 }
 
 /**

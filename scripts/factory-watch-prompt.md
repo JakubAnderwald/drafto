@@ -211,6 +211,8 @@ touching the host launchd / other worktrees.
 
 ## Retry budget
 
-The bundle's `attempts` counter tracks fix passes. If it is already > 3, bash
-has decided this PR is over-budget and you should not have been invoked — emit
-`action=blocked` with reason "retry budget exhausted" so a human takes a look.
+The bundle's `attempts` counter is how many fix passes on this PR have spent
+the budget so far. It is context, not a budget: bash enforces the retry budget
+(`FACTORY_MAX_ATTEMPTS`) before invoking you and parks an over-budget card in
+Blocked itself. Never emit `action=blocked` because of the counter's value — if
+you were invoked, the fix pass is yours to make.

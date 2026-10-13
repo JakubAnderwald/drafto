@@ -1,5 +1,6 @@
 import React from "react";
-import { Linking } from "react-native";
+import { Linking, Platform } from "react-native";
+import * as AppleAuthentication from "expo-apple-authentication";
 import { renderHook, act, waitFor } from "@testing-library/react-native";
 import type { User } from "@supabase/supabase-js";
 import { requestAccountDeletion, type AccountDeletionResult } from "@drafto/shared";
@@ -10,6 +11,11 @@ import { AuthProvider, useAuth } from "@/providers/auth-provider";
 import { supabase } from "@/lib/supabase";
 import * as approvalCache from "@/lib/approval-cache";
 import { deleteAllLocalAttachments, processPendingUploads } from "@/lib/data/attachment-queue";
+import {
+  clearAccountDeletedNotice,
+  isAccountDeletedNoticeShown,
+  reportAccountDeleted,
+} from "@/lib/account-deleted-notice";
 
 jest.mock("@/lib/supabase", () => ({
   supabase: {
@@ -73,6 +79,7 @@ const mockResetSyncState = resetSyncState as jest.Mock;
 const mockProcessPendingUploads = processPendingUploads as jest.Mock;
 const mockDeleteAllLocalAttachments = deleteAllLocalAttachments as jest.Mock;
 const mockRequestAccountDeletion = requestAccountDeletion as jest.Mock;
+const mockAppleSignIn = jest.mocked(AppleAuthentication.signInAsync);
 
 function wrapper({ children }: { children: React.ReactNode }) {
   return <AuthProvider>{children}</AuthProvider>;
@@ -96,7 +103,7 @@ describe("AuthProvider", () => {
     mockApprovalCache.getCachedApproval.mockResolvedValue(null);
     mockApprovalCache.setCachedApproval.mockResolvedValue(undefined);
     mockApprovalCache.clearCachedApproval.mockResolvedValue(undefined);
-    mockSyncDatabase.mockResolvedValue({ conflictCount: 0 });
+    mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
     mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, failed: 0 });
     mockDeleteAllLocalAttachments.mockResolvedValue(undefined);
   });
@@ -268,6 +275,30 @@ describe("AuthProvider", () => {
     expect(mockSyncDatabase.mock.invocationCallOrder[0]).toBeLessThan(
       (mockSupabase.auth.signOut as jest.Mock).mock.invocationCallOrder[0],
     );
+  });
+
+  it("skips the final sync for a caller that has just synced and counted itself", async () => {
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+      data: { session: { user: TEST_USER } },
+    });
+    mockProfileQuery({ is_approved: true }, null);
+    (mockSupabase.auth.signOut as jest.Mock).mockResolvedValue({});
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.signOut({ skipFinalSync: true });
+    });
+
+    expect(mockProcessPendingUploads).not.toHaveBeenCalled();
+    expect(mockSyncDatabase).not.toHaveBeenCalled();
+    expect(mockSupabase.auth.signOut).toHaveBeenCalledWith();
+    expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
+    expect(result.current.user).toBeNull();
   });
 
   it("deletes locally cached attachment files on sign out", async () => {
@@ -443,7 +474,7 @@ describe("AuthProvider — account deletion", () => {
     mockApprovalCache.getCachedApproval.mockResolvedValue(null);
     mockApprovalCache.setCachedApproval.mockResolvedValue(undefined);
     mockApprovalCache.clearCachedApproval.mockResolvedValue(undefined);
-    mockSyncDatabase.mockResolvedValue({ conflictCount: 0 });
+    mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
     mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, failed: 0 });
     mockDeleteAllLocalAttachments.mockResolvedValue(undefined);
     (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
@@ -576,6 +607,31 @@ describe("AuthProvider — account deletion", () => {
     expect(result.current.isApproved).toBe(true);
   });
 
+  describe("the login screen's deletion confirmation", () => {
+    afterEach(() => clearAccountDeletedNotice());
+
+    it("is raised once the server confirms the deletion", async () => {
+      const { result } = await renderSignedIn();
+
+      await act(async () => {
+        await result.current.deleteAccount();
+      });
+
+      expect(isAccountDeletedNoticeShown()).toBe(true);
+    });
+
+    it("is not raised when the deletion did not happen", async () => {
+      mockRequestAccountDeletion.mockResolvedValue({ status: "network" });
+      const { result } = await renderSignedIn();
+
+      await act(async () => {
+        await result.current.deleteAccount();
+      });
+
+      expect(isAccountDeletedNoticeShown()).toBe(false);
+    });
+  });
+
   it("reports unauthorized without calling the server when there is no access token", async () => {
     const { result } = await renderSignedIn();
     (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({ data: { session: null } });
@@ -587,9 +643,179 @@ describe("AuthProvider — account deletion", () => {
 
     expect(outcome).toEqual({ status: "unauthorized" });
     expect(mockRequestAccountDeletion).not.toHaveBeenCalled();
+    expect(mockAppleSignIn).not.toHaveBeenCalled();
     expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
     expect(mockDatabase.unsafeResetDatabase).not.toHaveBeenCalled();
     expect(result.current.user?.id).toBe("user-123");
+  });
+
+  describe("Sign in with Apple revocation", () => {
+    const APPLE_USER = {
+      id: "user-123",
+      app_metadata: { provider: "apple", providers: ["apple"] },
+      identities: [{ id: "apple-sub", user_id: "user-123", identity_id: "i1", provider: "apple" }],
+    } as unknown as User;
+    const APPLE_SESSION = { user: APPLE_USER, access_token: "access-token-abc" };
+    let platformOs: jest.ReplaceProperty<typeof Platform.OS>;
+
+    beforeEach(() => {
+      platformOs = jest.replaceProperty(Platform, "OS", "ios");
+      (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+        data: { session: APPLE_SESSION },
+      });
+      mockAppleSignIn.mockResolvedValue({
+        user: "apple-sub",
+        state: null,
+        fullName: null,
+        email: null,
+        realUserStatus: 1,
+        identityToken: "identity-token",
+        authorizationCode: "fresh-apple-code",
+      });
+    });
+
+    afterEach(() => {
+      platformOs.restore();
+    });
+
+    it("asks an Apple-linked iOS user to confirm with Apple and sends the fresh code", async () => {
+      const { result } = await renderSignedIn();
+
+      let outcome: AccountDeletionResult | undefined;
+      await act(async () => {
+        outcome = await result.current.deleteAccount();
+      });
+
+      expect(outcome).toEqual({ status: "ok" });
+      expect(mockAppleSignIn).toHaveBeenCalledTimes(1);
+      expect(mockRequestAccountDeletion).toHaveBeenCalledWith({
+        baseUrl: "https://api.drafto.test",
+        accessToken: "access-token-abc",
+        appleRevocation: { authorizationCode: "fresh-apple-code", clientId: "eu.drafto.mobile" },
+      });
+      expect(mockAppleSignIn.mock.invocationCallOrder[0]).toBeLessThan(
+        mockRequestAccountDeletion.mock.invocationCallOrder[0],
+      );
+      expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
+    });
+
+    it("reads the session again after Apple's sheet, so a refreshed token is sent", async () => {
+      const { result } = await renderSignedIn();
+      (mockSupabase.auth.getSession as jest.Mock)
+        .mockResolvedValueOnce({ data: { session: APPLE_SESSION } })
+        .mockResolvedValueOnce({
+          data: { session: { ...APPLE_SESSION, access_token: "refreshed-after-apple" } },
+        });
+
+      await act(async () => {
+        await result.current.deleteAccount();
+      });
+
+      expect(mockRequestAccountDeletion).toHaveBeenCalledWith(
+        expect.objectContaining({ accessToken: "refreshed-after-apple" }),
+      );
+      expect(
+        (mockSupabase.auth.getSession as jest.Mock).mock.invocationCallOrder.at(-1),
+      ).toBeGreaterThan(mockAppleSignIn.mock.invocationCallOrder[0]);
+    });
+
+    it("reports unauthorized, deleting nothing, if the session ended while Apple's sheet was open", async () => {
+      const { result } = await renderSignedIn();
+      (mockSupabase.auth.getSession as jest.Mock)
+        .mockResolvedValueOnce({ data: { session: APPLE_SESSION } })
+        .mockResolvedValueOnce({ data: { session: null } });
+
+      let outcome: AccountDeletionResult | undefined;
+      await act(async () => {
+        outcome = await result.current.deleteAccount();
+      });
+
+      expect(outcome).toEqual({ status: "unauthorized" });
+      expect(mockRequestAccountDeletion).not.toHaveBeenCalled();
+      expect(mockDatabase.unsafeResetDatabase).not.toHaveBeenCalled();
+    });
+
+    it("deletes nothing if the session switched to another account while Apple's sheet was open", async () => {
+      const { result } = await renderSignedIn();
+      const otherUser = { ...APPLE_USER, id: "someone-else" } as unknown as User;
+      (mockSupabase.auth.getSession as jest.Mock)
+        .mockResolvedValueOnce({ data: { session: APPLE_SESSION } })
+        .mockResolvedValueOnce({
+          data: { session: { user: otherUser, access_token: "other-account-token" } },
+        });
+
+      let outcome: AccountDeletionResult | undefined;
+      await act(async () => {
+        outcome = await result.current.deleteAccount();
+      });
+
+      expect(outcome).toEqual({ status: "unauthorized" });
+      expect(mockRequestAccountDeletion).not.toHaveBeenCalled();
+      expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
+      expect(mockDatabase.unsafeResetDatabase).not.toHaveBeenCalled();
+    });
+
+    it("still deletes the account when the user cancels Apple's sheet", async () => {
+      mockAppleSignIn.mockRejectedValue(
+        Object.assign(new Error("canceled"), { code: "ERR_REQUEST_CANCELED" }),
+      );
+      const { result } = await renderSignedIn();
+
+      let outcome: AccountDeletionResult | undefined;
+      await act(async () => {
+        outcome = await result.current.deleteAccount();
+      });
+
+      expect(outcome).toEqual({ status: "ok" });
+      expect(mockRequestAccountDeletion).toHaveBeenCalledWith({
+        baseUrl: "https://api.drafto.test",
+        accessToken: "access-token-abc",
+      });
+      expect(mockRequestAccountDeletion.mock.calls[0][0]).not.toHaveProperty("appleRevocation");
+      expect(mockSupabase.auth.signOut).toHaveBeenCalledWith({ scope: "local" });
+      expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
+      expect(result.current.session).toBeNull();
+    });
+
+    it("keeps the session when the server refuses, even after Apple confirmed", async () => {
+      mockRequestAccountDeletion.mockResolvedValue({ status: "failed", httpStatus: 500 });
+      const { result } = await renderSignedIn();
+
+      let outcome: AccountDeletionResult | undefined;
+      await act(async () => {
+        outcome = await result.current.deleteAccount();
+      });
+
+      expect(outcome).toEqual({ status: "failed", httpStatus: 500 });
+      expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
+      expect(mockDatabase.unsafeResetDatabase).not.toHaveBeenCalled();
+    });
+
+    it("never opens Apple's sheet for a user who is not linked to Apple", async () => {
+      (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+        data: { session: TEST_SESSION },
+      });
+      const { result } = await renderSignedIn();
+
+      await act(async () => {
+        await result.current.deleteAccount();
+      });
+
+      expect(mockAppleSignIn).not.toHaveBeenCalled();
+      expect(mockRequestAccountDeletion.mock.calls[0][0]).not.toHaveProperty("appleRevocation");
+    });
+
+    it("never opens Apple's sheet on Android", async () => {
+      platformOs.replaceValue("android");
+      const { result } = await renderSignedIn();
+
+      await act(async () => {
+        await result.current.deleteAccount();
+      });
+
+      expect(mockAppleSignIn).not.toHaveBeenCalled();
+      expect(mockRequestAccountDeletion.mock.calls[0][0]).not.toHaveProperty("appleRevocation");
+    });
   });
 });
 
@@ -619,7 +845,7 @@ describe("AuthProvider — password recovery", () => {
     mockApprovalCache.getCachedApproval.mockResolvedValue(null);
     mockApprovalCache.setCachedApproval.mockResolvedValue(undefined);
     mockApprovalCache.clearCachedApproval.mockResolvedValue(undefined);
-    mockSyncDatabase.mockResolvedValue({ conflictCount: 0 });
+    mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
     mockProcessPendingUploads.mockResolvedValue(0);
     mockDeleteAllLocalAttachments.mockResolvedValue(undefined);
     (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({ data: { session: null } });
@@ -799,5 +1025,178 @@ describe("AuthProvider — password recovery", () => {
 
     expect(result.current.isRecovering).toBe(false);
     expect(result.current.recoveryError).toBeNull();
+  });
+});
+
+describe("AuthProvider — approval re-checks", () => {
+  /** Replays an auth event, with a session, through the listener the provider registered. */
+  function emitAuthEvent(event: string, session: unknown) {
+    const handler = (mockSupabase.auth.onAuthStateChange as jest.Mock).mock.calls[0][0] as (
+      event: string,
+      session: unknown,
+    ) => void;
+    handler(event, session);
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockApprovalCache.getCachedApproval.mockResolvedValue(null);
+    mockApprovalCache.setCachedApproval.mockResolvedValue(undefined);
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+      data: { session: TEST_SESSION },
+    });
+    mockProfileQuery({ is_approved: true }, null);
+  });
+
+  afterEach(() => clearAccountDeletedNotice());
+
+  async function renderSignedIn() {
+    const rendered = renderHook(() => useAuth(), { wrapper });
+    await waitFor(() => {
+      expect(rendered.result.current.isLoading).toBe(false);
+    });
+    expect(mockSupabase.from).toHaveBeenCalledTimes(1);
+    return rendered;
+  }
+
+  it("does not re-check an approved user on their token refresh", async () => {
+    // Each re-check put the approval gate back in flight, and the route guard used to swap
+    // the whole app for a spinner while it was: every hourly refresh threw the user out of
+    // the open note.
+    const { result } = await renderSignedIn();
+    const refreshed = { ...TEST_SESSION, access_token: "refreshed-token" };
+
+    act(() => {
+      emitAuthEvent("TOKEN_REFRESHED", refreshed);
+    });
+
+    expect(result.current.isCheckingApproval).toBe(false);
+    expect(result.current.session).toBe(refreshed);
+    expect(result.current.isApproved).toBe(true);
+    expect(mockSupabase.from).toHaveBeenCalledTimes(1);
+  });
+
+  it("still re-checks an unapproved user on their token refresh, picking up an approval", async () => {
+    // Waiting on Awaiting Approval past a refresh moves the user on without a button press,
+    // and a launch-time check that failed offline gets another try.
+    mockProfileQuery({ is_approved: false }, null);
+    const { result } = await renderSignedIn();
+    expect(result.current.isApproved).toBe(false);
+
+    mockProfileQuery({ is_approved: true }, null);
+    await act(async () => {
+      emitAuthEvent("TOKEN_REFRESHED", { ...TEST_SESSION, access_token: "refreshed-token" });
+    });
+
+    expect(mockSupabase.from).toHaveBeenCalledTimes(2);
+    expect(result.current.isApproved).toBe(true);
+  });
+
+  it("still checks a token refresh that carries a different user", async () => {
+    await renderSignedIn();
+
+    await act(async () => {
+      emitAuthEvent("TOKEN_REFRESHED", { user: { id: "someone-else" } });
+    });
+
+    expect(mockSupabase.from).toHaveBeenCalledTimes(2);
+  });
+
+  it("checks approval again on a new sign-in", async () => {
+    await renderSignedIn();
+
+    await act(async () => {
+      emitAuthEvent("SIGNED_IN", TEST_SESSION);
+    });
+
+    expect(mockSupabase.from).toHaveBeenCalledTimes(2);
+  });
+
+  it("checks again after a sign-out and a fresh session for the same user", async () => {
+    await renderSignedIn();
+
+    await act(async () => {
+      emitAuthEvent("SIGNED_OUT", null);
+    });
+    await act(async () => {
+      emitAuthEvent("TOKEN_REFRESHED", TEST_SESSION);
+    });
+
+    expect(mockSupabase.from).toHaveBeenCalledTimes(2);
+  });
+
+  /** A profiles query that answers with `result`, whenever that settles. */
+  function profileQueryResolving(result: Promise<{ data: unknown; error: unknown }>) {
+    return { select: () => ({ eq: () => ({ single: () => result }) }) };
+  }
+
+  it("ignores a slower check for an account that was replaced meanwhile", async () => {
+    // The login screen stays usable during a check, so a second sign-in can overtake the
+    // first one's check. The first result must not decide the second account's screen.
+    const { result } = await renderSignedIn();
+    let resolveFirst: (value: { data: unknown; error: unknown }) => void = () => {};
+    const slowFirst = new Promise<{ data: unknown; error: unknown }>((resolve) => {
+      resolveFirst = resolve;
+    });
+    (mockSupabase.from as jest.Mock)
+      .mockReturnValueOnce(profileQueryResolving(slowFirst))
+      .mockReturnValueOnce(
+        profileQueryResolving(Promise.resolve({ data: { is_approved: false }, error: null })),
+      );
+
+    await act(async () => {
+      emitAuthEvent("SIGNED_IN", TEST_SESSION);
+    });
+    await act(async () => {
+      emitAuthEvent("SIGNED_IN", { user: { id: "user-b" }, access_token: "token-b" });
+    });
+    expect(result.current.isApproved).toBe(false);
+    expect(result.current.isCheckingApproval).toBe(false);
+
+    await act(async () => {
+      resolveFirst({ data: { is_approved: true }, error: null });
+    });
+
+    expect(result.current.user?.id).toBe("user-b");
+    expect(result.current.isApproved).toBe(false);
+    expect(result.current.isCheckingApproval).toBe(false);
+  });
+
+  it("drops a check still in flight when the session ends", async () => {
+    const { result } = await renderSignedIn();
+    let resolveCheck: (value: { data: unknown; error: unknown }) => void = () => {};
+    (mockSupabase.from as jest.Mock).mockReturnValueOnce(
+      profileQueryResolving(
+        new Promise((resolve) => {
+          resolveCheck = resolve;
+        }),
+      ),
+    );
+
+    await act(async () => {
+      emitAuthEvent("SIGNED_IN", TEST_SESSION);
+    });
+    expect(result.current.isCheckingApproval).toBe(true);
+
+    await act(async () => {
+      emitAuthEvent("SIGNED_OUT", null);
+    });
+    expect(result.current.isCheckingApproval).toBe(false);
+
+    await act(async () => {
+      resolveCheck({ data: { is_approved: true }, error: null });
+    });
+    expect(result.current.isApproved).toBe(false);
+  });
+
+  it("drops a stale account-deleted confirmation on a new sign-in", async () => {
+    await renderSignedIn();
+    reportAccountDeleted();
+
+    await act(async () => {
+      emitAuthEvent("SIGNED_IN", TEST_SESSION);
+    });
+
+    expect(isAccountDeletedNoticeShown()).toBe(false);
   });
 });

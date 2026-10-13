@@ -24,14 +24,21 @@ export {
   SIGNED_URL_EXPIRY_SECONDS,
   ATTACHMENT_URL_PREFIX,
   ACCOUNT_DELETE_CONFIRMATION,
+  ACCOUNT_DELETED_MESSAGE,
+  SIGNUP_EMAIL_REDIRECT_URL,
+  SIGNUP_CONFIRMATION_SENT,
+  EMAIL_CONFIRMED,
 } from "./constants";
 export {
   ACCOUNT_DELETION_PATH,
+  APPLE_NATIVE_CLIENT_ID,
   requestAccountDeletion,
   describeAccountDeletionFailure,
 } from "./account/request-account-deletion";
 export type {
+  AccountDeletionRequestBody,
   AccountDeletionResult,
+  AppleRevocationGrant,
   RequestAccountDeletionOptions,
 } from "./account/request-account-deletion";
 export { formatRelativeTime } from "./formatters";
@@ -60,6 +67,21 @@ export {
   resolveTipTapImageUrls,
   migrateSignedUrlsToAttachmentUrls,
 } from "./editor/resolve-urls";
+export {
+  MAX_CONTENT_BASELINES,
+  serializeEditorContent,
+  serializeLoadedDoc,
+  sameStoredContent,
+  isNoOpContentSave,
+  rememberContentBaseline,
+  queueNoteWrite,
+} from "./editor/content-save-guard";
+export type { ContentBaseline } from "./editor/content-save-guard";
+export { isVisibleRemoteChange } from "./sync/remote-change";
+export type { SyncRawRecord } from "./sync/remote-change";
+export { hasLocalEdit } from "./sync/local-edit";
+export type { LocalChangeEntry } from "./sync/local-edit";
+export { withTimeout } from "./async/with-timeout";
 export type {
   BlockNoteBlock,
   BlockNoteInlineContent,

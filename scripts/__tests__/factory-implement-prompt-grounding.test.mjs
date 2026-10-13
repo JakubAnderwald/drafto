@@ -195,3 +195,20 @@ describe("implementer prompt — revision replies on the issue (#659)", () => {
     assert.doesNotMatch(flat, /use `-` if `action=blocked` or `action=noop`\./);
   });
 });
+
+// #465: the prompt said "attempts > 3 → blocked" while bash allowed up to
+// FACTORY_MAX_ATTEMPTS (5), so the run bash started at attempts=4 refused and
+// parked the card, and the 4th and 5th attempts never ran. Bash owns the budget.
+describe("implementer prompt — retry budget (#465)", () => {
+  it("leaves the retry budget to bash", () => {
+    assert.match(flat, /It is context, not a budget: bash enforces the retry budget/);
+    assert.match(flat, /Never emit `action=blocked` because of the counter's value/);
+  });
+
+  it("hard-codes no attempt threshold of its own", () => {
+    assert.doesNotMatch(flat, /already\s*[<>]=?\s*\d/);
+    assert.doesNotMatch(flat, /\battempts`?\s*(?:[<>]=?|={2,3}|!==?)\s*\d/);
+    assert.doesNotMatch(flat, /\d\s*(?:[<>]=?|={2,3}|!==?)\s*`?attempts\b/);
+    assert.doesNotMatch(flat, /reason "retry budget exhausted"/);
+  });
+});

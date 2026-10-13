@@ -35,6 +35,22 @@ jest.mock("expo-router", () => ({
   },
 }));
 
+// Mock @react-navigation/elements (its real module needs the native bridge, and
+// useHeaderHeight throws outside a navigator)
+jest.mock("@react-navigation/elements", () => ({
+  useHeaderHeight: jest.fn(() => 0),
+  // The real helper: it is plain arithmetic on Platform, so it needs no bridge.
+  // Loaded by path because the package only exports its index.
+  getDefaultHeaderHeight: jest.fn(
+    jest.requireActual(
+      require("path").join(
+        require("path").dirname(require.resolve("@react-navigation/elements/package.json")),
+        "lib/module/Header/getDefaultHeaderHeight.js",
+      ),
+    ).getDefaultHeaderHeight,
+  ),
+}));
+
 // Mock @react-native-community/netinfo
 jest.mock("@react-native-community/netinfo", () => ({
   addEventListener: jest.fn(() => jest.fn()),
@@ -52,6 +68,7 @@ jest.mock("react-native-safe-area-context", () => ({
     left: 0,
     right: 0,
   })),
+  useSafeAreaFrame: jest.fn(() => ({ x: 0, y: 0, width: 390, height: 844 })),
   SafeAreaProvider: ({ children }) => children,
 }));
 
@@ -62,6 +79,8 @@ jest.mock("@10play/tentap-editor", () => ({
     setContent: jest.fn(),
   })),
   TenTapStartKit: [],
+  CoreBridge: { configureCSS: (css) => ({ name: "core", extendCSS: css }) },
+  darkEditorTheme: { toolbar: {}, webview: {}, webviewContainer: {} },
   RichText: () => null,
   Toolbar: () => null,
 }));

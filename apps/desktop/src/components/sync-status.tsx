@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, Pressable, ActivityIndicator } from "react-native";
 
 import { useDatabase } from "@/providers/database-provider";
@@ -26,25 +26,44 @@ function formatLastSynced(date: Date | null): string {
   return date.toLocaleDateString();
 }
 
+/** How often the last-synced time is recomputed while the status is on screen. */
+export const LAST_SYNCED_TICK_MS = 10_000;
+
+/** Re-renders the caller every `intervalMs`, so relative times keep ticking. */
+function useTick(intervalMs: number): void {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((tick) => tick + 1), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+}
+
 export function SyncStatus() {
-  const { sync, isSyncing, lastSyncedAt, pendingChangesCount, hasPendingChanges } = useDatabase();
+  const { sync, isSyncing, lastSyncedAt, lastSyncError, pendingChangesCount, hasPendingChanges } =
+    useDatabase();
   const { isConnected } = useNetworkStatus();
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+  useTick(LAST_SYNCED_TICK_MS);
 
-  const statusColor = !isConnected
-    ? colors.error
-    : hasPendingChanges
-      ? colors.warning
-      : colors.success;
+  const hasSyncError = lastSyncError !== null;
+
+  const statusColor =
+    !isConnected || hasSyncError
+      ? colors.error
+      : hasPendingChanges
+        ? colors.warning
+        : colors.success;
 
   const statusText = isSyncing
     ? "Syncing..."
     : !isConnected
       ? "Offline"
-      : hasPendingChanges
-        ? `${pendingChangesCount} pending`
-        : "Synced";
+      : hasSyncError
+        ? "Sync failed"
+        : hasPendingChanges
+          ? `${pendingChangesCount} pending`
+          : "Synced";
 
   return (
     <Pressable

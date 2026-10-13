@@ -408,9 +408,11 @@ origin factory/issue-<n>`.
 ## Failure modes and retries
 
 - If any step fails (lint, typecheck, test), fix in-place and re-run. The
-  bundle's `attempts` counter tracks retries — if it's already > 3, the
-  bash side has decided this issue is over-budget and shouldn't have
-  invoked you. Emit `action=blocked` with reason "retry budget exhausted".
+  bundle's `attempts` counter is how many earlier runs on this issue failed.
+  It is context, not a budget: bash enforces the retry budget
+  (`FACTORY_MAX_ATTEMPTS`) before invoking you and parks an over-budget card
+  in Blocked itself. Never emit `action=blocked` because of the counter's
+  value — if you were invoked, the attempt is yours to make.
 
 - If `pnpm install` produces a workspace lockfile change you didn't expect,
   inspect — it's usually a dependency hoist artefact and is safe to commit.

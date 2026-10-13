@@ -4,6 +4,7 @@ import type { Database } from "@nozbe/watermelondb";
 import { Q } from "@nozbe/watermelondb";
 import { hasUnsyncedChanges } from "@nozbe/watermelondb/sync";
 import NetInfo from "@react-native-community/netinfo";
+import { hasLocalEdit } from "@drafto/shared";
 
 import { database } from "@/db";
 import { syncDatabase, SyncNetworkError } from "@/db/sync";
@@ -16,40 +17,80 @@ import { useToast } from "@/components/toast";
 
 const RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000] as const;
 const PERIODIC_SYNC_MS = 30_000;
+/**
+ * Quiet period after a local edit before it is pushed, so a burst of writes
+ * (typing, a multi-record move) goes out in one sync. See ADR-0048.
+ */
+export const AUTO_SYNC_DEBOUNCE_MS = 1_500;
+/**
+ * Extra passes one sync() may chain for writes that landed while it ran.
+ * Belt and braces: a pass only chains while such a write is still unpushed.
+ */
+const MAX_FOLLOW_UP_PASSES = 3;
+const SYNCED_TABLES = ["notebooks", "notes", "attachments"] as const;
 
 interface DatabaseContextValue {
   database: Database;
+  /**
+   * Upload queued attachments and synchronize. A call made while a sync is
+   * running joins it: it returns that run's promise, and the run goes round
+   * again if the caller's write is still unpushed. Never rejects; failures
+   * land in `lastSyncError`.
+   */
   sync: () => Promise<UploadResult>;
   hasPendingChanges: boolean;
   pendingChangesCount: number;
   lastSyncedAt: Date | null;
+  /** Why the latest sync failed, or null once a sync succeeds. */
+  lastSyncError: string | null;
   isSyncing: boolean;
+}
+
+interface SyncPassOutcome {
+  ok: boolean;
+  pending: boolean;
+  uploadResult: UploadResult;
 }
 
 const DatabaseContext = createContext<DatabaseContextValue | null>(null);
 
+function describeSyncError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
+  const userId = user?.id ?? null;
   const { showToast } = useToast();
-  const syncingRef = useRef(false);
+  const inFlightSyncRef = useRef<Promise<UploadResult> | null>(null);
+  // Bumped when the signed-in user changes. A run started for an earlier
+  // session neither reports into the new one nor can be joined by it.
+  const sessionRef = useRef(0);
+  // Set by a sync() call made while a sync runs: its write may have missed the pass.
+  const rerunRequestedRef = useRef(false);
+  // Set by a local edit committed while a sync runs: it may have missed the pass.
+  const editedDuringSyncRef = useRef(false);
   const retryCountRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const periodicTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const autoSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncLocalEditsRef = useRef<() => Promise<void>>(async () => {});
   const identityReadyRef = useRef(false);
+  const isOnlineRef = useRef(true);
   const [hasPendingChanges, setHasPendingChanges] = useState(false);
   const [pendingChangesCount, setPendingChangesCount] = useState(0);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+  const [lastSyncError, setLastSyncError] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  const checkPendingChanges = useCallback(async () => {
+  const checkPendingChanges = useCallback(async (): Promise<boolean> => {
     try {
       const pending = await hasUnsyncedChanges({ database });
       setHasPendingChanges(pending);
 
       if (pending) {
-        const tables = ["notebooks", "notes", "attachments"] as const;
         let count = 0;
-        for (const table of tables) {
+        for (const table of SYNCED_TABLES) {
           const dirtyRecords = await database
             .get(table)
             .query(Q.where("_status", Q.notEq("synced")))
@@ -60,76 +101,180 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       } else {
         setPendingChangesCount(0);
       }
-    } catch {
-      // Ignore errors checking pending state
+      return pending;
+    } catch (err) {
+      // Unknown, so let the sync decide: it pushes whatever is unsynced and
+      // reports its own failure.
+      console.warn("[DatabaseProvider] Could not check pending changes:", err);
+      return true;
     }
   }, []);
 
-  const sync = useCallback(async (): Promise<UploadResult> => {
+  /** (Re)starts the quiet period after which local edits are pushed. */
+  const scheduleLocalEditSync = useCallback(() => {
+    if (autoSyncTimerRef.current) clearTimeout(autoSyncTimerRef.current);
+    autoSyncTimerRef.current = setTimeout(() => {
+      autoSyncTimerRef.current = null;
+      void syncLocalEditsRef.current();
+    }, AUTO_SYNC_DEBOUNCE_MS);
+  }, []);
+
+  const sync = useCallback((): Promise<UploadResult> => {
     // The cross-account identity guard gates every sync, not just the automatic
     // triggers below: this callback is what the UI drives (autosave, pull to
     // refresh, the manual sync button), and RouteGuard renders inside this
     // provider, so screens are interactive while ensureLocalIdentity is still
     // resolving. Syncing before it reports "ready" would push the previous
     // user's rows under this session — the leak the guard exists to prevent.
-    if (!identityReadyRef.current) return { uploaded: 0, failed: 0 };
-    if (syncingRef.current) return { uploaded: 0, failed: 0 };
-    syncingRef.current = true;
-    setIsSyncing(true);
-    let uploadResult: UploadResult = { uploaded: 0, failed: 0 };
-    try {
-      // Upload any queued attachments before syncing metadata
-      uploadResult = await processPendingUploads();
-
-      const result = await measureAsync("sync", () => syncDatabase(database));
-      retryCountRef.current = 0;
-      setLastSyncedAt(new Date());
-      await checkPendingChanges();
-
-      if (result.conflictCount > 0) {
-        const msg =
-          result.conflictCount === 1
-            ? "A note was updated from another device"
-            : `${result.conflictCount} items were updated from another device`;
-        showToast(msg, "warning");
-      }
-    } catch (err) {
-      if (err instanceof SyncNetworkError) {
-        // Network error — schedule retry with backoff
-        const retryIndex = Math.min(retryCountRef.current, RETRY_DELAYS_MS.length - 1);
-        const delay = RETRY_DELAYS_MS[retryIndex];
-        retryCountRef.current += 1;
-
-        if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
-        retryTimerRef.current = setTimeout(() => {
-          retryTimerRef.current = null;
-          sync();
-        }, delay);
-      } else {
-        console.error("Sync failed:", err);
-      }
-      await checkPendingChanges();
-    } finally {
-      syncingRef.current = false;
-      setIsSyncing(false);
+    if (!identityReadyRef.current) return Promise.resolve({ uploaded: 0, failed: 0 });
+    if (inFlightSyncRef.current) {
+      // Join instead of dropping the call: the caller's write may have missed
+      // the running pass, so the run checks for it before settling.
+      rerunRequestedRef.current = true;
+      return inFlightSyncRef.current;
     }
-    return uploadResult;
-  }, [checkPendingChanges, showToast]);
+
+    const session = sessionRef.current;
+    const isCurrentSession = () => sessionRef.current === session;
+
+    const runPass = async (): Promise<SyncPassOutcome> => {
+      let uploadResult: UploadResult = { uploaded: 0, failed: 0 };
+      try {
+        // Upload any queued attachments before syncing metadata
+        uploadResult = await processPendingUploads();
+
+        const result = await measureAsync("sync", () => syncDatabase(database));
+        if (!isCurrentSession()) return { ok: false, pending: false, uploadResult };
+        retryCountRef.current = 0;
+        setLastSyncedAt(new Date());
+        setLastSyncError(null);
+        const pending = await checkPendingChanges();
+        // The session can end during any await; a stale pass reports nothing.
+        if (!isCurrentSession()) return { ok: false, pending: false, uploadResult };
+
+        if (result.remoteChangeCount > 0) {
+          const msg =
+            result.remoteChangeCount === 1
+              ? "A note was updated from another device"
+              : `${result.remoteChangeCount} items were updated from another device`;
+          showToast(msg, "warning");
+        }
+        return { ok: true, pending, uploadResult };
+      } catch (err) {
+        if (!isCurrentSession()) return { ok: false, pending: false, uploadResult };
+        setLastSyncError(describeSyncError(err));
+        if (err instanceof SyncNetworkError) {
+          // Network error — schedule retry with backoff
+          const retryIndex = Math.min(retryCountRef.current, RETRY_DELAYS_MS.length - 1);
+          const delay = RETRY_DELAYS_MS[retryIndex];
+          retryCountRef.current += 1;
+
+          if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+          retryTimerRef.current = setTimeout(() => {
+            retryTimerRef.current = null;
+            sync();
+          }, delay);
+        } else {
+          console.error("Sync failed:", err);
+        }
+        await checkPendingChanges();
+        return { ok: false, pending: true, uploadResult };
+      }
+    };
+
+    const run = (async (): Promise<UploadResult> => {
+      setIsSyncing(true);
+      const total: UploadResult = { uploaded: 0, failed: 0 };
+      let followUps = 0;
+      try {
+        for (;;) {
+          rerunRequestedRef.current = false;
+          editedDuringSyncRef.current = false;
+          const pass = await runPass();
+          total.uploaded += pass.uploadResult.uploaded;
+          total.failed += pass.uploadResult.failed;
+          // A run whose session has ended stops before touching the flags
+          // below: they belong to the new session's run now.
+          if (!isCurrentSession()) break;
+          // A failed pass ends the run: the retry timer (network) or the next
+          // trigger tries again, rather than this loop hammering a failure.
+          // Not rescheduling here is also what keeps a partly failed push from
+          // looping on the notes it re-pulls every pass.
+          if (!pass.ok || !identityReadyRef.current) break;
+          const missedWrite = rerunRequestedRef.current || editedDuringSyncRef.current;
+          if (missedWrite && pass.pending && followUps < MAX_FOLLOW_UP_PASSES) {
+            followUps += 1;
+            continue;
+          }
+          // A write that landed after the pass's pending check, or beyond the
+          // follow-up cap, still goes out once edits pause.
+          if (missedWrite) scheduleLocalEditSync();
+          break;
+        }
+      } finally {
+        if (isCurrentSession()) {
+          inFlightSyncRef.current = null;
+          setIsSyncing(false);
+        }
+      }
+      return total;
+    })();
+    inFlightSyncRef.current = run;
+    return run;
+  }, [checkPendingChanges, scheduleLocalEditSync, showToast]);
+
+  // Local edits schedule their own sync (ADR-0048): this pushes a write once
+  // edits pause, so screens don't have to.
+  const syncLocalEdits = useCallback(async () => {
+    if (!identityReadyRef.current) return;
+    const pending = await checkPendingChanges();
+    if (pending && isOnlineRef.current && identityReadyRef.current) {
+      await sync();
+    }
+  }, [checkPendingChanges, sync]);
+
+  useEffect(() => {
+    syncLocalEditsRef.current = syncLocalEdits;
+  }, [syncLocalEdits]);
+
+  useEffect(() => {
+    const subscription = database.withChangesForTables([...SYNCED_TABLES]).subscribe((changes) => {
+      // `null` is the subscription's initial emission, not a change. A sync's
+      // own writes leave records synced, so hasLocalEdit() filters them out;
+      // that is what stops this from re-triggering itself.
+      if (!changes || !hasLocalEdit(changes)) return;
+      if (inFlightSyncRef.current) {
+        // The running sync goes round again if this edit is still unpushed.
+        editedDuringSyncRef.current = true;
+        return;
+      }
+      scheduleLocalEditSync();
+    });
+    return () => {
+      subscription.unsubscribe();
+      if (autoSyncTimerRef.current) {
+        clearTimeout(autoSyncTimerRef.current);
+        autoSyncTimerRef.current = null;
+      }
+    };
+  }, [scheduleLocalEditSync]);
 
   // Initial sync when user logs in. The cross-account identity guard runs first
   // (and may reset the local DB) so no sync — the initial one, the periodic /
-  // foreground / reconnect triggers, or the context-exposed sync() the UI calls
-  // — ever pushes or surfaces another user's local data. sync() checks
-  // identityReadyRef itself, which is what covers the UI callers that are
+  // foreground / reconnect / local-edit triggers, or the context-exposed sync()
+  // the UI calls — ever pushes or surfaces another user's local data. sync()
+  // checks identityReadyRef itself, which is what covers the UI callers that are
   // already interactive while the guard is resolving. If the guard reports
   // "unsafe" it could not clear the previous user's records, so every sync
   // trigger stays parked until a later launch retries the guard successfully.
+  // Keyed on the user id, not the user object: a token refresh hands out a new
+  // object for the same user, which must not re-run the guard.
   useEffect(() => {
     let cancelled = false;
-    if (user) {
+    if (userId) {
       retryCountRef.current = 0;
       identityReadyRef.current = false;
-      ensureLocalIdentity(user.id).then((status) => {
+      ensureLocalIdentity(userId).then((status) => {
         if (cancelled) return;
         if (status !== "ready") {
           // The previous user's records are still on disk. Syncing now would push
@@ -151,13 +296,27 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
         clearTimeout(retryTimerRef.current);
         retryTimerRef.current = null;
       }
+      if (autoSyncTimerRef.current) {
+        clearTimeout(autoSyncTimerRef.current);
+        autoSyncTimerRef.current = null;
+      }
+      // End this session's sync state. A sync still running for the previous
+      // user settles in the background without being joined by the next one
+      // or reporting into its UI (db/sync.ts's resetSyncState does the same
+      // for the module-level latch).
+      sessionRef.current += 1;
+      inFlightSyncRef.current = null;
+      rerunRequestedRef.current = false;
+      editedDuringSyncRef.current = false;
+      setIsSyncing(false);
+      setLastSyncError(null);
     };
-  }, [user, sync]);
+  }, [userId, sync]);
 
   // Periodic sync for pending changes
   useEffect(() => {
     periodicTimerRef.current = setInterval(async () => {
-      if (!user || !identityReadyRef.current) return;
+      if (!userId || !identityReadyRef.current) return;
       const pending = await hasUnsyncedChanges({ database }).catch(() => false);
       if (pending) {
         sync();
@@ -170,37 +329,47 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
         periodicTimerRef.current = null;
       }
     };
-  }, [sync, user]);
+  }, [sync, userId]);
 
   // Sync when app comes to foreground
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active" && user && identityReadyRef.current) {
+      if (state === "active" && userId && identityReadyRef.current) {
         sync();
       }
     });
     return () => subscription.remove();
-  }, [sync, user]);
+  }, [sync, userId]);
 
-  // Sync when network reconnects
+  // Track connectivity for the local-edit trigger, and sync when the network
+  // reconnects
   useEffect(() => {
     let wasDisconnected = false;
     const unsubscribe = NetInfo.addEventListener((state) => {
       const isConnected = state.isConnected ?? false;
+      isOnlineRef.current = isConnected;
       if (!isConnected) {
         wasDisconnected = true;
-      } else if (wasDisconnected && user && identityReadyRef.current) {
+      } else if (wasDisconnected && userId && identityReadyRef.current) {
         wasDisconnected = false;
         retryCountRef.current = 0;
         sync();
       }
     });
     return () => unsubscribe();
-  }, [sync, user]);
+  }, [sync, userId]);
 
   return (
     <DatabaseContext.Provider
-      value={{ database, sync, hasPendingChanges, pendingChangesCount, lastSyncedAt, isSyncing }}
+      value={{
+        database,
+        sync,
+        hasPendingChanges,
+        pendingChangesCount,
+        lastSyncedAt,
+        lastSyncError,
+        isSyncing,
+      }}
     >
       {children}
     </DatabaseContext.Provider>

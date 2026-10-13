@@ -1,6 +1,6 @@
 # Privacy policy
 
-**Status:** shipped **Updated:** 2026-10-04
+**Status:** shipped **Updated:** 2026-10-12
 
 ## What it is
 
@@ -34,7 +34,7 @@ The policy text is not legal advice and has not been reviewed by a lawyer. The T
 | Sentry      | Errors, 100% performance tracing, Session Replay (10% / 100%-on-error) | `@sentry/nextjs`; `apps/web/instrumentation-client.ts`, `apps/web/sentry.{server,edge}.config.ts`. Web only                                                                                                                                                                                                 |
 | Resend      | Admin sign-up notice, approval email, Supabase Auth SMTP               | `resend`; `apps/web/src/lib/email/client.ts`; SMTP in the Supabase dashboard ([email-and-approval.md](./email-and-approval.md))                                                                                                                                                                             |
 | Google      | Sign in with Google; NetInfo connectivity check on iOS and macOS       | `apps/{web,desktop}/src/components/auth/oauth-buttons.tsx`, `apps/mobile/src/lib/oauth.ts` (`@react-native-google-signin/google-signin`). `@react-native-community/netinfo` pings `clients3.google.com/generate_204` about every 60 s on iOS and macOS (default `reachabilityUrl`; Android checks natively) |
-| Apple       | Sign in with Apple                                                     | Same files; `expo-apple-authentication` on iOS                                                                                                                                                                                                                                                              |
+| Apple       | Sign in with Apple; revokes Drafto's access when an iOS user deletes   | Same files; `expo-apple-authentication` on iOS. Revocation: `apps/mobile/src/lib/apple-revocation.ts` → `apps/web/src/lib/apple/revoke.ts` ([auth.md](./auth.md#sign-in-with-apple-token-revocation))                                                                                                       |
 | Zoho Mail   | The `support@drafto.eu` mailbox (EU data centre)                       | `scripts/lib/zoho-*.mjs`, `scripts/support-agent.sh` ([support-agent.md](./support-agent.md))                                                                                                                                                                                                               |
 | Anthropic   | Claude reads support email, auto-answers, drafts replies               | `scripts/support-agent.sh` → `scripts/lib/run-claude.mjs`; rules in `scripts/support-agent-prompt.md`                                                                                                                                                                                                       |
 | GitHub      | Public issues from support email (reporter email in hidden footer)     | `scripts/support-agent-prompt.md` (issue footer, `support-attachments/` uploads)                                                                                                                                                                                                                            |

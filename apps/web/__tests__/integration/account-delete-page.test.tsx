@@ -15,6 +15,7 @@ describe("Account deletion page (/account/delete)", () => {
       "Delete your account in the app",
       "What is deleted",
       "What may be kept",
+      "If you use Sign in with Apple",
       "No longer have the app, or can't sign in?",
     ]) {
       expect(screen.getByRole("heading", { level: 2, name })).toBeInTheDocument();
@@ -75,6 +76,23 @@ describe("Account deletion page (/account/delete)", () => {
     expect(within(kept).getByRole("link", { name: "Privacy Policy" })).toHaveAttribute(
       "href",
       "/privacy",
+    );
+  });
+
+  it("explains Apple revocation on iOS and how to remove Drafto from an Apple ID elsewhere", () => {
+    render(<DeleteAccountInfoPage />);
+
+    const section = screen
+      .getByRole("heading", { level: 2, name: "If you use Sign in with Apple" })
+      .closest("section") as HTMLElement;
+    expect(section).toHaveAttribute("id", "sign-in-with-apple");
+    expect(section).toHaveTextContent(/In the iPhone and iPad app, Apple asks you to confirm/);
+    expect(section).toHaveTextContent(/If you cancel that step, your account is still deleted/);
+    expect(section).toHaveTextContent(/on the web, on Android or on a Mac/);
+    expect(section).toHaveTextContent(/Sign-In & Security/);
+    expect(within(section).getByRole("link", { name: "account.apple.com" })).toHaveAttribute(
+      "href",
+      "https://account.apple.com",
     );
   });
 

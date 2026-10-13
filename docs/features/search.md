@@ -1,10 +1,12 @@
 # Search
 
-**Status:** shipped **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-10-13
 
 ## What it is
 
 Cross-notebook search over the user's notes by title, body text, and notebook name. A keyboard-triggered overlay on web and desktop, a dedicated search screen on mobile (`apps/mobile/app/search.tsx`) opened from the tab header's search button. Results include trashed notes, with title matches ranked first.
+
+On mobile, Search opens as a modal. On iOS that is a sheet, and a note opened from it becomes a second sheet on top: react-native-screens presents every screen pushed over a modal as a modal. A sheet's first screen has no back button, so both sheets get a close button (`HeaderCloseButton`, set in `apps/mobile/app/_layout.tsx`). Whether a screen is above a modal is read from the navigation stack (`isAboveModal` in `apps/mobile/src/lib/sheet-presentation.ts`), so a note that reaches the stack from a link while Search is open gets one too. Closing the note returns to the results. Android shows both as ordinary screens with a back arrow. The editor measures where its view starts in the window (`useWindowTop`), because in a sheet it starts lower than the header height alone, and the formatting toolbar would otherwise end up behind the keyboard.
 
 ## Current state
 
@@ -33,8 +35,9 @@ Shipped on all four platforms (web, iOS, Android, macOS).
 | Web unit test (API + validation)               | `apps/web/__tests__/unit/notes-search.test.ts`                                                    |
 | Web integration test (overlay)                 | `apps/web/__tests__/integration/search-overlay.test.tsx`                                          |
 | Web E2E                                        | `apps/web/e2e/search.spec.ts`                                                                     |
-| Mobile unit test                               | `apps/mobile/__tests__/hooks/use-search.test.ts`                                                  |
-| Mobile E2E                                     | `apps/mobile/e2e/search.yaml`                                                                     |
+| Mobile sheet close buttons (iOS)               | `apps/mobile/app/_layout.tsx`, `apps/mobile/src/components/navigation/header-close-button.tsx`    |
+| Mobile unit test                               | `apps/mobile/__tests__/hooks/use-search.test.ts`, `apps/mobile/__tests__/screens/search.test.tsx` |
+| Mobile E2E                                     | `apps/mobile/e2e/search.yaml` (Android), `apps/mobile/e2e/ios-only/search.yaml` (iOS)             |
 | Desktop tests                                  | `apps/desktop/__tests__/hooks/use-search.test.ts`, `__tests__/components/search-overlay.test.tsx` |
 
 ## Related ADRs
@@ -80,6 +83,7 @@ set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e -
 # Mobile (unit + Maestro)
 cd apps/mobile && pnpm test -- use-search
 maestro test apps/mobile/e2e/search.yaml --platform android
+maestro test apps/mobile/e2e/ios-only/search.yaml --platform ios -e RUN_ID=$(date +%s)
 
 # Desktop
 cd apps/desktop && pnpm test -- use-search search-overlay

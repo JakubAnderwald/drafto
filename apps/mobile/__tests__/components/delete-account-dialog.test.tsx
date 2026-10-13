@@ -1,8 +1,16 @@
 import React from "react";
 import { describeAccountDeletionFailure, type AccountDeletionResult } from "@drafto/shared";
 
-import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
-import { DeleteAccountDialog } from "../../src/components/delete-account-dialog";
+import { render, fireEvent, waitFor, act, within } from "../helpers/test-utils";
+import {
+  APPLE_CONFIRMATION_NOTICE,
+  DeleteAccountDialog,
+} from "../../src/components/delete-account-dialog";
+
+let mockConfirmsWithApple = false;
+jest.mock("@/hooks/use-apple-deletion-confirmation", () => ({
+  useAppleDeletionConfirmation: () => mockConfirmsWithApple,
+}));
 
 function renderDialog(overrides: Partial<React.ComponentProps<typeof DeleteAccountDialog>> = {}) {
   const onCancel = jest.fn();
@@ -15,6 +23,35 @@ function renderDialog(overrides: Partial<React.ComponentProps<typeof DeleteAccou
 describe("DeleteAccountDialog", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockConfirmsWithApple = false;
+  });
+
+  it("says Apple will ask to confirm, and that cancelling still deletes, for an Apple user", () => {
+    mockConfirmsWithApple = true;
+    const { getByTestId } = renderDialog();
+
+    expect(getByTestId("delete-account-apple-notice")).toHaveTextContent(APPLE_CONFIRMATION_NOTICE);
+    expect(APPLE_CONFIRMATION_NOTICE).toContain("Apple will ask you to confirm");
+    expect(APPLE_CONFIRMATION_NOTICE).toContain("your account is still deleted");
+  });
+
+  it("scrolls the text and keeps both actions outside it, so they stay reachable", () => {
+    mockConfirmsWithApple = true;
+    const { getByTestId } = renderDialog();
+    const scroll = getByTestId("delete-account-scroll");
+
+    expect(within(scroll).getByTestId("delete-account-apple-notice")).toBeTruthy();
+    expect(within(scroll).getByTestId("delete-account-input")).toBeTruthy();
+    expect(within(scroll).queryByTestId("delete-account-confirm")).toBeNull();
+    expect(within(scroll).queryByTestId("delete-account-cancel")).toBeNull();
+    expect(getByTestId("delete-account-confirm")).toBeTruthy();
+    expect(getByTestId("delete-account-cancel")).toBeTruthy();
+  });
+
+  it("shows no Apple notice for everyone else", () => {
+    const { queryByTestId } = renderDialog();
+
+    expect(queryByTestId("delete-account-apple-notice")).toBeNull();
   });
 
   it("renders the warning and confirmation prompt", () => {

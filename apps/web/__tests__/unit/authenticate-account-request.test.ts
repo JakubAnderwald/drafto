@@ -30,7 +30,7 @@ function createRequest(headers: Record<string, string> = {}): NextRequest {
 
 async function expectUnauthorized(request: NextRequest): Promise<void> {
   const result = await authenticateAccountRequest(request);
-  expect(result.userId).toBeNull();
+  expect(result.user).toBeNull();
   expect(result.error?.status).toBe(401);
   expect(await result.error?.json()).toEqual({ error: "Unauthorized", status: 401 });
 }
@@ -49,12 +49,26 @@ describe("authenticateAccountRequest", () => {
   });
 
   describe("with an Authorization header", () => {
+    it("returns the verified user with its identities, for Apple token revocation", async () => {
+      const user = {
+        id: TOKEN_USER_ID,
+        identities: [{ provider: "apple", id: "apple-sub", identity_data: { sub: "apple-sub" } }],
+      };
+      adminGetUserMock.mockResolvedValue({ data: { user }, error: null });
+
+      const result = await authenticateAccountRequest(
+        createRequest({ Authorization: "Bearer access-token" }),
+      );
+
+      expect(result).toEqual({ user, error: null });
+    });
+
     it("verifies the bearer token with the service-role client", async () => {
       const result = await authenticateAccountRequest(
         createRequest({ Authorization: "Bearer access-token" }),
       );
 
-      expect(result).toEqual({ userId: TOKEN_USER_ID, error: null });
+      expect(result).toEqual({ user: { id: TOKEN_USER_ID }, error: null });
       expect(adminGetUserMock).toHaveBeenCalledWith("access-token");
       expect(cookieGetUserMock).not.toHaveBeenCalled();
     });
@@ -64,7 +78,7 @@ describe("authenticateAccountRequest", () => {
         createRequest({ Authorization: "bearer   access-token" }),
       );
 
-      expect(result.userId).toBe(TOKEN_USER_ID);
+      expect(result.user?.id).toBe(TOKEN_USER_ID);
       expect(adminGetUserMock).toHaveBeenCalledWith("access-token");
     });
 
@@ -100,7 +114,7 @@ describe("authenticateAccountRequest", () => {
     it("verifies the session cookie", async () => {
       const result = await authenticateAccountRequest(createRequest());
 
-      expect(result).toEqual({ userId: COOKIE_USER_ID, error: null });
+      expect(result).toEqual({ user: { id: COOKIE_USER_ID }, error: null });
       expect(cookieGetUserMock).toHaveBeenCalledWith();
       expect(adminGetUserMock).not.toHaveBeenCalled();
     });

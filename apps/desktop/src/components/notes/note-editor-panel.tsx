@@ -1,14 +1,24 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { View, Text, TextInput, StyleSheet, ActivityIndicator } from "react-native";
-import { useEditorBridge, TenTapStartKit } from "@10play/tentap-editor";
+import { useEditorBridge } from "@10play/tentap-editor";
 import type { WebViewMessageEvent } from "react-native-webview";
 
 import { useNote } from "@/hooks/use-note";
 import { useAutoSave } from "@/hooks/use-auto-save";
 import { useTheme } from "@/providers/theme-provider";
 import { database, Note, type Attachment } from "@/db";
-import { contentToTiptap, formatRelativeTime, toAttachmentUrl } from "@drafto/shared";
-import type { TipTapDoc, TipTapNode } from "@drafto/shared";
+import {
+  contentToTiptap,
+  formatRelativeTime,
+  toAttachmentUrl,
+  isNoOpContentSave,
+  queueNoteWrite,
+  rememberContentBaseline,
+  serializeEditorContent,
+  serializeLoadedDoc,
+  withTimeout,
+} from "@drafto/shared";
+import type { ContentBaseline, TipTapDoc, TipTapNode } from "@drafto/shared";
 import { getSignedUrl } from "@/lib/data";
 import { colors, fontFamily, fontSizes, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
@@ -17,6 +27,7 @@ import { Badge, type BadgeVariant } from "@/components/ui/badge";
 import { CalendarIcon } from "@/components/ui/icons/calendar-icon";
 import { ClockIcon } from "@/components/ui/icons/clock-icon";
 import { NoteEditor } from "@/components/editor/note-editor";
+import { EDITOR_BRIDGE_EXTENSIONS } from "@/components/editor/editor-bridge-extensions";
 import { FindBar } from "@/components/editor/find-bar";
 import {
   findSearchJS,
@@ -27,14 +38,6 @@ import {
 } from "@/components/editor/find-engine";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { isCatastrophicEraseSave } from "@/components/notes/erase-tripwire";
-import {
-  isNoOpContentSave,
-  queueNoteWrite,
-  rememberContentBaseline,
-  serializeEditorContent,
-  serializeLoadedDoc,
-  type ContentBaseline,
-} from "@/components/notes/content-save-guard";
 import {
   classifyNoteContent,
   resolveImageUrlsOrFallback,
@@ -91,22 +94,6 @@ const RESOLVE_TIMEOUT_MS = 8000;
 // so a stuck WebView reply can never strand the loading overlay.
 const BASELINE_READ_TIMEOUT_MS = 3000;
 
-function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-  return new Promise<T>((resolve) => {
-    const timer = setTimeout(() => resolve(fallback), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      () => {
-        clearTimeout(timer);
-        resolve(fallback);
-      },
-    );
-  });
-}
-
 /** Imperative signal from the native Find menu items (Cmd+F / Cmd+G / Cmd+Shift+G). */
 export interface FindSignal {
   command: "open" | "next" | "prev";
@@ -143,38 +130,41 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
   const contentBaselinesRef = useRef(new Map<string, ContentBaseline>());
   // In-flight content writes per note, so each no-op check runs only after the
   // note's earlier writes have committed and it sees the row they produced.
-  const contentWriteQueuesRef = useRef(new Map<string, Promise<void>>());
+  const contentWriteQueuesRef = useRef(new Map<string, Promise<unknown>>());
   // Tracks the last-handled findSignal so the effect fires once per menu press.
   const lastFindNonceRef = useRef(0);
   // Debounces find-as-you-type so a full ProseMirror tree-walk (the injected
   // engine re-scans every text node per search) doesn't run on every keystroke.
   const findDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleSaveTitle = useCallback(async (payload: TitleSavePayload) => {
+  // Both save handlers resolve false when they wrote nothing, so the status
+  // badge stays clear instead of reporting "Saved" for a skipped save.
+  const handleSaveTitle = useCallback(async (payload: TitleSavePayload): Promise<boolean> => {
     // Don't persist an empty/whitespace title over a real one (a transient clear,
     // or a flush firing mid-edit).
-    if (!payload.title.trim()) return;
+    if (!payload.title.trim()) return false;
     const record = await database.get<Note>("notes").find(payload.noteId);
-    await database.write(async () => {
+    return database.write(async () => {
       // WatermelonDB bumps updated_at on every update, so an unchanged title
       // (e.g. an edit reverted before the debounce fired) must not be written
       // (issue #654). Compared inside the writer, so earlier writes have landed.
-      if (record.title === payload.title) return;
+      if (record.title === payload.title) return false;
       await record.update((n) => {
         n.title = payload.title;
       });
+      return true;
     });
   }, []);
 
   const handleSaveContent = useCallback(
     (payload: ContentSavePayload) =>
-      queueNoteWrite(contentWriteQueuesRef.current, payload.noteId, async () => {
+      queueNoteWrite(contentWriteQueuesRef.current, payload.noteId, async (): Promise<boolean> => {
         const record = await database.get<Note>("notes").find(payload.noteId);
         // WatermelonDB bumps updated_at on every update, so writing back
         // unchanged content would still re-sort the note list and sync a
         // "modification" to every device. Merely opening a note must never
         // write it.
-        if (isNoOpContentSave(contentBaselinesRef.current, payload, record.content)) return;
+        if (isNoOpContentSave(contentBaselinesRef.current, payload, record.content)) return false;
         if (isCatastrophicEraseSave(record.content, payload.content)) {
           console.warn(
             "[note-editor] tripwire blocked catastrophic-erase save",
@@ -182,7 +172,7 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
             `existing=${record.content?.length ?? 0}B`,
             `incoming=${payload.content.length}B`,
           );
-          return;
+          return false;
         }
         // After this write the row holds the editor's own serialisation, so a
         // repeat of this payload matches it (even once a sync pull has handed
@@ -194,6 +184,7 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
             n.content = payload.content;
           });
         });
+        return true;
       }),
     [],
   );
@@ -252,7 +243,7 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
   const editor = useEditorBridge({
     autofocus: false,
     avoidIosKeyboard: false,
-    bridgeExtensions: TenTapStartKit,
+    bridgeExtensions: EDITOR_BRIDGE_EXTENSIONS,
     initialContent: "",
     onChange: handleEditorChange,
   });

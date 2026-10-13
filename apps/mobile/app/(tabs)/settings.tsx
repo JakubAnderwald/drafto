@@ -8,6 +8,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { useTheme, type ThemePreference } from "@/providers/theme-provider";
 import { useHaptics } from "@/hooks/use-haptics";
 import { useNetworkStatus } from "@/hooks/use-network-status";
+import { useSafeSignOut } from "@/hooks/use-safe-sign-out";
 import { Button } from "@/components/ui/button";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
@@ -23,7 +24,8 @@ const THEME_OPTIONS: {
 ];
 
 export default function SettingsScreen() {
-  const { signOut, deleteAccount } = useAuth();
+  const { deleteAccount } = useAuth();
+  const { signOut, isSigningOut } = useSafeSignOut();
   const { semantic, theme, setTheme } = useTheme();
   const haptics = useHaptics();
   const { isConnected, isInternetReachable } = useNetworkStatus();
@@ -31,8 +33,10 @@ export default function SettingsScreen() {
   const styles = useMemo(() => createStyles(semantic), [semantic]);
 
   // Deletion runs on the server, so it is unavailable offline. Unknown reachability (`null`)
-  // stays enabled; only an explicit `false` counts as offline.
-  const canDeleteAccount = isConnected && isInternetReachable !== false;
+  // stays enabled; only an explicit `false` counts as offline. It also waits out a sign-out
+  // in progress, so the two never wipe the device at the same time.
+  const isOnline = isConnected && isInternetReachable !== false;
+  const canDeleteAccount = isOnline && !isSigningOut;
 
   return (
     <ScrollView style={styles.scroll} contentContainerStyle={styles.container}>
@@ -74,11 +78,13 @@ export default function SettingsScreen() {
       <Button
         title="Sign Out"
         onPress={signOut}
+        loading={isSigningOut}
         variant="danger"
         size="lg"
         fullWidth
         leftIcon={<Ionicons name="log-out-outline" size={20} color={colors.white} />}
         accessibilityLabel="Sign out"
+        testID="sign-out-button"
       />
 
       <Pressable
@@ -100,7 +106,7 @@ export default function SettingsScreen() {
         <Ionicons name="trash-outline" size={20} color={semantic.errorText} />
         <Text style={styles.deleteRowText}>Delete account</Text>
       </Pressable>
-      {!canDeleteAccount ? (
+      {!isOnline ? (
         <Text style={styles.offlineNote}>Deleting your account needs an internet connection.</Text>
       ) : null}
 

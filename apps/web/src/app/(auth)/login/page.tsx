@@ -9,17 +9,21 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { OAuthButtons } from "@/components/auth/oauth-buttons";
 import { AccountDeletedNotice } from "@/components/auth/account-deleted-notice";
+import { AuthCallbackErrorNotice } from "@/components/auth/auth-callback-error-notice";
+import { EmailConfirmedNotice } from "@/components/auth/email-confirmed-notice";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [attempted, setAttempted] = useState(false);
   const router = useRouter();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setAttempted(true);
     setLoading(true);
 
     const supabase = createClient();
@@ -43,6 +47,8 @@ export default function LoginPage() {
 
       <Suspense fallback={null}>
         <AccountDeletedNotice />
+        <EmailConfirmedNotice />
+        <AuthCallbackErrorNotice hidden={attempted} />
       </Suspense>
 
       <form onSubmit={handleSubmit} className="space-y-4">

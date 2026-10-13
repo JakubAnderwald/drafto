@@ -12,39 +12,51 @@ Shipped on all four platforms.
 
 - **Web**: BlockNote (`@blocknote/react` + `@blocknote/mantine`). Document stored as BlockNote blocks in `notes.content` JSONB.
 - **Mobile and desktop**: `@10play/tentap-editor` (TipTap inside a WebView). Documents stored as TipTap JSON strings in the local WatermelonDB `notes.content` column.
-- **Auto-save**: title and body each flow through `useAutoSave` with a 500 ms debounce (`DEBOUNCE_MS` from shared). Web PATCHes `/api/notes/:id`; mobile/desktop writes to WatermelonDB and the sync loop propagates.
+- **Auto-save**: title and body each flow through `useAutoSave` with a 500 ms debounce (`DEBOUNCE_MS` from shared). Web PATCHes `/api/notes/:id`; mobile/desktop writes to WatermelonDB and the sync loop propagates ([ADR-0048](../adr/0048-local-writes-trigger-debounced-sync.md)).
+- **No-op saves** (mobile and desktop, issue #654): loading a note into TenTap makes it answer with a content-update of its own. The save handlers compare each payload with the stored content and with the note's load baseline (`packages/shared/src/editor/content-save-guard.ts`) and skip a write that would change nothing. A skipped save resolves `false`, so `useAutoSave` stays `"idle"` instead of showing "Saved".
 - **Cross-format migration**: `GET /api/notes/:id` defensively converts TipTap → BlockNote on read and persists the repaired shape. Mobile/desktop convert BlockNote → TipTap on read.
 - **Markdown conversion** (`packages/shared/src/editor/markdown-converter.ts`) is used by the MCP server for tool I/O and by the Evernote importer's downstream paths.
-- **Attachments**: images are uploaded to Supabase Storage via signed URLs and embedded as `attachment://<path>` URIs; the API resolves these to signed URLs on read.
+- **Attachments**: images are uploaded to Supabase Storage via signed URLs and embedded as `attachment://<path>` URIs; the API resolves these to signed URLs on read. On mobile, a picked file is saved locally, then uploaded on its own (`uploadAttachment`), then inserted, and only then is a sync started without waiting for it. "Attachment uploaded" shows only when that upload succeeded.
+- **Mobile/desktop layout**:
+  - **Stylesheets.** Each app's stylesheet ships through `CoreBridge.configureCSS`, which TenTap injects together with every bridge's own CSS (image max-width, blockquote, task list, placeholder). Never pass `injectedJavaScript` to `<RichText>`: it replaces TenTap's script, and that script is what installs those styles.
+  - **Gutter.** The body gets a horizontal-only gutter in line with the title (`EDITOR_LAYOUT_CSS`). TenTap owns `padding-bottom`.
+  - **Mobile keyboard.** The `KeyboardAvoidingView` is offset by the header height (`useHeaderHeight`), and TenTap's `avoidIosKeyboard` is off, so the body is lifted once rather than padded twice. Its behaviour is `padding` on iOS and `height` on Android: Android runs edge-to-edge, so the window no longer shrinks for the keyboard.
+  - **Mobile toolbar.** The toolbar theme (`src/lib/editor-theme.ts`) pins the formatting toolbar to a fixed 44 pt row on the screen's surface colour. It is rendered last, below the attachment row, so with the keyboard up it sits directly on the keyboard.
+  - **Mobile header.** The editor header has no title (the title field is the title), and its back label is fixed to "Notes". The notebook screen's header shows the notebook's name.
 
 ## Code paths
 
-| Concern                                        | Path                                                                                                  |
-| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Web editor wrapper                             | `apps/web/src/components/editor/note-editor.tsx`                                                      |
-| Web editor panel (title + status + fetch)      | `apps/web/src/components/notes/note-editor-panel.tsx`                                                 |
-| Web auto-save hook                             | `apps/web/src/hooks/use-auto-save.ts`                                                                 |
-| Web attachment URL resolver                    | `apps/web/src/components/editor/use-attachment-url-resolver.ts`                                       |
-| Mobile editor screen                           | `apps/mobile/app/notes/[id].tsx`                                                                      |
-| Mobile editor component                        | `apps/mobile/src/components/editor/note-editor.tsx`                                                   |
-| Mobile attachment picker                       | `apps/mobile/src/components/editor/attachment-picker.tsx`                                             |
-| Mobile auto-save hook                          | `apps/mobile/src/hooks/use-auto-save.ts`                                                              |
-| Desktop editor component                       | `apps/desktop/src/components/editor/note-editor.tsx`                                                  |
-| Desktop editor panel                           | `apps/desktop/src/components/notes/note-editor-panel.tsx`                                             |
-| Desktop auto-save hook                         | `apps/desktop/src/hooks/use-auto-save.ts`                                                             |
-| Shared format converter (BlockNote ↔ TipTap)   | `packages/shared/src/editor/format-converter.ts`                                                      |
-| Shared Markdown converter (MCP, import paths)  | `packages/shared/src/editor/markdown-converter.ts`                                                    |
-| Shared text extractor (search)                 | `packages/shared/src/editor/extract-text.ts`                                                          |
-| Shared attachment URL helpers                  | `packages/shared/src/editor/attachment-url.ts`, `resolve-urls.ts`                                     |
-| Shared types (`BlockNoteBlock`, `TipTapDoc`)   | `packages/shared/src/editor/types.ts`                                                                 |
-| Shared constants (`DEBOUNCE_MS`, title limits) | `packages/shared/src/constants.ts`                                                                    |
-| Note read with content migration               | `apps/web/src/app/api/notes/[id]/route.ts`                                                            |
-| Auto-save unit tests                           | `apps/web/__tests__/unit/use-auto-save.test.ts`, `apps/desktop/__tests__/hooks/use-auto-save.test.ts` |
-| Web editor integration tests                   | `apps/web/__tests__/integration/note-editor.test.tsx`, `note-editor-panel.test.tsx`                   |
-| Shared editor tests                            | `packages/shared/src/editor/__tests__/markdown-converter.test.ts`, `extract-text.test.ts`             |
-| Native editor schema tests (headless)          | `packages/shared/__tests__/native-editor-schema.test.ts`, `format-converter.test.ts`                  |
-| Nested-lists device check (local-only)         | `apps/mobile/e2e/run-nested-lists-e2e.sh`, `08-nested-lists.yaml`                                     |
-| Mobile editor screen test                      | `apps/mobile/__tests__/screens/editor.test.tsx`                                                       |
+| Concern                                        | Path                                                                                                   |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Web editor wrapper                             | `apps/web/src/components/editor/note-editor.tsx`                                                       |
+| Web editor panel (title + status + fetch)      | `apps/web/src/components/notes/note-editor-panel.tsx`                                                  |
+| Web auto-save hook                             | `apps/web/src/hooks/use-auto-save.ts`                                                                  |
+| Web attachment URL resolver                    | `apps/web/src/components/editor/use-attachment-url-resolver.ts`                                        |
+| Mobile editor screen                           | `apps/mobile/app/notes/[id].tsx`                                                                       |
+| Mobile editor component                        | `apps/mobile/src/components/editor/note-editor.tsx`                                                    |
+| Mobile attachment picker                       | `apps/mobile/src/components/editor/attachment-picker.tsx`                                              |
+| Mobile editor CSS and toolbar theme            | `apps/mobile/src/lib/editor-css.ts`, `apps/mobile/src/lib/editor-theme.ts`                             |
+| Desktop editor CSS and bridge extensions       | `apps/desktop/src/lib/editor-css.ts`, `apps/desktop/src/components/editor/editor-bridge-extensions.ts` |
+| Mobile auto-save hook                          | `apps/mobile/src/hooks/use-auto-save.ts`                                                               |
+| Desktop editor component                       | `apps/desktop/src/components/editor/note-editor.tsx`                                                   |
+| Desktop editor panel                           | `apps/desktop/src/components/notes/note-editor-panel.tsx`                                              |
+| Desktop auto-save hook                         | `apps/desktop/src/hooks/use-auto-save.ts`                                                              |
+| Shared format converter (BlockNote ↔ TipTap)   | `packages/shared/src/editor/format-converter.ts`                                                       |
+| Shared Markdown converter (MCP, import paths)  | `packages/shared/src/editor/markdown-converter.ts`                                                     |
+| Shared text extractor (search)                 | `packages/shared/src/editor/extract-text.ts`                                                           |
+| Shared attachment URL helpers                  | `packages/shared/src/editor/attachment-url.ts`, `resolve-urls.ts`                                      |
+| Shared types (`BlockNoteBlock`, `TipTapDoc`)   | `packages/shared/src/editor/types.ts`                                                                  |
+| Shared no-op save guard (mobile, desktop)      | `packages/shared/src/editor/content-save-guard.ts`                                                     |
+| Shared constants (`DEBOUNCE_MS`, title limits) | `packages/shared/src/constants.ts`                                                                     |
+| Note read with content migration               | `apps/web/src/app/api/notes/[id]/route.ts`                                                             |
+| Auto-save unit tests                           | `apps/web/__tests__/unit/use-auto-save.test.ts`, `apps/desktop/__tests__/hooks/use-auto-save.test.ts`  |
+| Mobile auto-save unit tests                    | `apps/mobile/__tests__/hooks/use-auto-save.test.ts`                                                    |
+| Web editor integration tests                   | `apps/web/__tests__/integration/note-editor.test.tsx`, `note-editor-panel.test.tsx`                    |
+| Shared editor tests                            | `packages/shared/src/editor/__tests__/markdown-converter.test.ts`, `extract-text.test.ts`              |
+| Native editor schema tests (headless)          | `packages/shared/__tests__/native-editor-schema.test.ts`, `format-converter.test.ts`                   |
+| Nested-lists device check (local-only)         | `apps/mobile/e2e/run-nested-lists-e2e.sh`, `08-nested-lists.yaml`                                      |
+| Mobile editor screen test                      | `apps/mobile/__tests__/screens/editor.test.tsx`                                                        |
+| Mobile editor layout test (header, keyboard)   | `apps/mobile/__tests__/screens/editor-layout.test.tsx`                                                 |
 
 ## Related ADRs
 

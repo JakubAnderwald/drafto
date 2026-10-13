@@ -106,7 +106,10 @@ else
     A1_STATUS=WARN
     prompt="the app gave NO confirm-your-e-mail feedback after Sign up (#675; screen reads: $screen_text)"
   fi
-  press_contains_until 2 on_login_screen "Already have an account" || fail_step "could not get back to the login screen"
+  # Builds with the check-email state (#675) offer "Back to login"; older ones keep the form.
+  press_contains_until 2 on_login_screen "Back to login" ||
+    press_contains_until 2 on_login_screen "Already have an account" ||
+    fail_step "could not get back to the login screen"
   log_in on_waiting_screen || fail_step "Awaiting Approval screen never appeared after logging in; screen reads: $(ocr_text | redact)"
   A1_NOTE="prod requires e-mail confirmation — $prompt; confirmed via SQL in place of the e-mail link, logged in, Awaiting Approval shown"
 fi
@@ -136,12 +139,12 @@ fi
 
 # ── A2. Check approval while pending ────────────────────────────────────────
 step_begin A2 "Check approval status while still pending"
-# The press runs checkApproval, which sets isCheckingApproval, and AppNavigator
-# renders only a spinner while that is set (app-navigator.tsx:58). So the
-# waiting screen unmounts and its "still pending" error state is lost when it
-# comes back — a pre-existing desktop bug, untouched by #673. The press is
-# therefore detected by that remount: the button press_el focused is replaced
-# by an unfocused one (or by the spinner).
+# The press runs checkApproval, which sets isCheckingApproval. Up to build 59
+# AppNavigator rendered only a spinner while that was set, so the waiting screen
+# unmounted and its "still pending" message was lost (#676). Later builds keep
+# the screen mounted and show the message. On an old build the press is
+# detected by that remount: the button press_el focused is replaced by an
+# unfocused one (or by the spinner).
 pending_msg_shown() { ocr_has "still pending approval"; }
 check_btn_unfocused() { [ "$(ax_find desc "Check approval status" | jq -r '.focused // false')" != true ]; }
 A2_FIRED=0 A2_MSG=0

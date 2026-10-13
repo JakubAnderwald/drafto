@@ -12,7 +12,10 @@
         "EMAIL_ADMIN_FALLBACK",
         "APPROVAL_LINK_SECRET",
         "APP_URL",
-        "WEBHOOK_SECRET"
+        "WEBHOOK_SECRET",
+        "APPLE_TEAM_ID",
+        "APPLE_SIGN_IN_KEY_ID",
+        "APPLE_SIGN_IN_PRIVATE_KEY"
       ]
     },
     "dev": {
