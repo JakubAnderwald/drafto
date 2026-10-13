@@ -17,6 +17,7 @@ import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useNote } from "@/hooks/use-note";
 import { useKeyboardVisible } from "@/hooks/use-keyboard-visible";
+import { useWindowTop } from "@/hooks/use-window-top";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { EditorSkeleton } from "@/components/ui/skeleton";
@@ -174,6 +175,7 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   const { semantic, isDark } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
   const headerHeight = useHeaderHeight();
+  const windowTop = useWindowTop();
   const insets = useSafeAreaInsets();
   const isKeyboardUp = useKeyboardVisible();
   const [title, setTitle] = useState(initialNote.title);
@@ -408,45 +410,56 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   // No header title here: the title field below is the note's title, and the
   // header (title "", back label "Notes") is set once in app/_layout.tsx.
   return (
-    <KeyboardAvoidingView
-      testID="editor-keyboard-avoiding-view"
+    <View
+      ref={windowTop.ref}
+      testID="editor-window"
       style={styles.container}
-      // Android runs edge-to-edge, so the window no longer shrinks for the
-      // keyboard and the view has to make room itself, as the auth screens do.
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-      // The view starts below the opaque header, but the keyboard's position is
-      // reported in screen coordinates. Without the header height as the offset
-      // the view stops that far short of the keyboard and the toolbar ends up
-      // behind it.
-      keyboardVerticalOffset={headerHeight}
+      onLayout={windowTop.onLayout}
     >
-      <View style={styles.titleRow}>
-        <TextInput
-          style={styles.titleInput}
-          value={title}
-          onChangeText={handleTitleChange}
-          placeholder="Untitled"
-          placeholderTextColor={semantic.fgSubtle}
-          returnKeyType="next"
-        />
-        {saveStatus === "saving" && <Text style={styles.statusText}>Saving...</Text>}
-        {saveStatus === "saved" && <Text style={styles.statusTextSaved}>Saved</Text>}
-        {saveStatus === "error" && <Text style={styles.statusTextError}>Save failed</Text>}
-      </View>
-      <View style={styles.editorContainer}>
-        <NoteEditor
-          editor={editor}
-          accessory={<AttachmentPicker noteId={noteId} onAttachmentReady={handleAttachmentReady} />}
-        />
-      </View>
-      {/* Keeps the attachment row clear of the home indicator / gesture bar. With
+      <KeyboardAvoidingView
+        testID="editor-keyboard-avoiding-view"
+        style={styles.fill}
+        // Android runs edge-to-edge, so the window no longer shrinks for the
+        // keyboard and the view has to make room itself, as the auth screens do.
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        // The view starts below the header, but the keyboard's position is
+        // reported in window coordinates. Without the view's distance from the
+        // top of the window as the offset, the view stops that far short of the
+        // keyboard and the toolbar ends up behind it. On a pushed screen that is
+        // the header height; a note opened from Search is an iOS sheet, which
+        // starts lower, so the distance is measured (header height until then).
+        keyboardVerticalOffset={windowTop.top ?? headerHeight}
+      >
+        <View style={styles.titleRow}>
+          <TextInput
+            style={styles.titleInput}
+            value={title}
+            onChangeText={handleTitleChange}
+            placeholder="Untitled"
+            placeholderTextColor={semantic.fgSubtle}
+            returnKeyType="next"
+          />
+          {saveStatus === "saving" && <Text style={styles.statusText}>Saving...</Text>}
+          {saveStatus === "saved" && <Text style={styles.statusTextSaved}>Saved</Text>}
+          {saveStatus === "error" && <Text style={styles.statusTextError}>Save failed</Text>}
+        </View>
+        <View style={styles.editorContainer}>
+          <NoteEditor
+            editor={editor}
+            accessory={
+              <AttachmentPicker noteId={noteId} onAttachmentReady={handleAttachmentReady} />
+            }
+          />
+        </View>
+        {/* Keeps the attachment row clear of the home indicator / gesture bar. With
           the keyboard up the keyboard covers that area, so the toolbar sits
           directly on it instead. */}
-      <View
-        testID="editor-bottom-inset"
-        style={[styles.bottomInset, { height: isKeyboardUp ? 0 : insets.bottom }]}
-      />
-    </KeyboardAvoidingView>
+        <View
+          testID="editor-bottom-inset"
+          style={[styles.bottomInset, { height: isKeyboardUp ? 0 : insets.bottom }]}
+        />
+      </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -455,6 +468,9 @@ const createStyles = (semantic: SemanticColors) =>
     container: {
       flex: 1,
       backgroundColor: semantic.bgSubtle,
+    },
+    fill: {
+      flex: 1,
     },
     centered: {
       flex: 1,

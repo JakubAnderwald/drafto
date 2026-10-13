@@ -20,7 +20,7 @@ export default function SearchScreen() {
 
   const renderResult = useCallback(
     ({ item }: { item: Note }) => (
-      <Pressable onPress={() => router.push(`/notes/${item.id}`)}>
+      <Pressable testID="search-result" onPress={() => router.push(`/notes/${item.id}`)}>
         <View style={styles.row}>
           <Ionicons
             name="document-text-outline"
@@ -67,6 +67,9 @@ export default function SearchScreen() {
           keyExtractor={(item) => item.id}
           renderItem={renderResult}
           contentContainerStyle={styles.list}
+          // The search field keeps the keyboard up; without this the first tap
+          // on a result only dismissed it, and opening the note took a second.
+          keyboardShouldPersistTaps="handled"
         />
       )}
     </View>

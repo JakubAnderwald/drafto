@@ -1,6 +1,7 @@
 import React from "react";
-import { StyleSheet } from "react-native";
+import { Platform, StyleSheet } from "react-native";
 import * as Haptics from "expo-haptics";
+import { getDefaultHeaderHeight } from "@react-navigation/elements";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { render, act } from "../helpers/test-utils";
@@ -14,6 +15,9 @@ import {
 import { spacing } from "@/theme/tokens";
 
 type ShowToast = ReturnType<typeof useToast>["showToast"];
+
+/** Where an iPhone 12's header ends: the 47 pt inset plus a 44 pt bar. */
+const HEADER_BOTTOM = 47 + 44;
 
 let showToast!: ShowToast;
 
@@ -52,15 +56,62 @@ describe("ToastProvider", () => {
     jest.useRealTimers();
   });
 
-  it("sits at the top, below the status bar, not over the add button at the bottom", () => {
+  it("sits at the top, below the header, not over the add button at the bottom", () => {
     const { getByTestId } = renderToasts();
 
     const style = StyleSheet.flatten(getByTestId("toast-container").props.style);
-    expect(style.top).toBe(47 + spacing.sm);
+    expect(getDefaultHeaderHeight).toHaveBeenCalledWith(
+      expect.objectContaining({ width: 390, height: 844 }),
+      false,
+      47,
+    );
+    expect(style.top).toBe(HEADER_BOTTOM + spacing.sm);
     expect(style.bottom).toBeUndefined();
   });
 
-  it("drops in from no higher than the safe area, so it never crosses the status bar", () => {
+  it("clears the header's back button on a Dynamic Island iPhone, whose inset is taller", () => {
+    jest.mocked(useSafeAreaInsets).mockReturnValue({ top: 59, bottom: 34, left: 0, right: 0 });
+    const { getByTestId } = renderToasts();
+
+    const style = StyleSheet.flatten(getByTestId("toast-container").props.style);
+    // The bar sits a little inside a Dynamic Island inset; the toast still starts below it.
+    expect(style.top).toBeGreaterThan(59 + 44 - 6);
+  });
+
+  it("starts below the header on Android too", () => {
+    const platformOs = jest.replaceProperty(Platform, "OS", "android");
+    try {
+      jest.mocked(useSafeAreaInsets).mockReturnValue({ top: 24, bottom: 0, left: 0, right: 0 });
+      const { getByTestId } = renderToasts();
+
+      const style = StyleSheet.flatten(getByTestId("toast-container").props.style);
+      // The stack header is 56 dp under the status bar; the toast starts lower.
+      expect(style.top).toBeGreaterThan(24 + 56);
+    } finally {
+      platformOs.restore();
+    }
+  });
+
+  it("doesn't re-render the screens that use toasts when a toast appears", () => {
+    let renders = 0;
+    function Consumer() {
+      renders += 1;
+      showToast = useToast().showToast;
+      return null;
+    }
+    render(
+      <ToastProvider>
+        <Consumer />
+      </ToastProvider>,
+    );
+    const rendersBefore = renders;
+
+    show("Saved");
+
+    expect(renders).toBe(rendersBefore);
+  });
+
+  it("drops in from no higher than the header, so it never covers the header's buttons", () => {
     const { getByText } = renderToasts();
 
     show("Saved");
@@ -75,8 +126,8 @@ describe("ToastProvider", () => {
 
     expect(startY).toBe(SLIDE_DISTANCE);
     expect(startY).toBeLessThan(0);
-    // Container top (inset + gap) plus the start offset stays at or below the inset.
-    expect(47 + spacing.sm + (startY ?? 0)).toBeGreaterThanOrEqual(47);
+    // Container top (header + gap) plus the start offset stays at or below the header.
+    expect(HEADER_BOTTOM + spacing.sm + (startY ?? 0)).toBeGreaterThanOrEqual(HEADER_BOTTOM);
   });
 
   it("dismisses a toast after AUTO_DISMISS_MS", () => {

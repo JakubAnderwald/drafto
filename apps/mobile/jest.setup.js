@@ -39,6 +39,16 @@ jest.mock("expo-router", () => ({
 // useHeaderHeight throws outside a navigator)
 jest.mock("@react-navigation/elements", () => ({
   useHeaderHeight: jest.fn(() => 0),
+  // The real helper: it is plain arithmetic on Platform, so it needs no bridge.
+  // Loaded by path because the package only exports its index.
+  getDefaultHeaderHeight: jest.fn(
+    jest.requireActual(
+      require("path").join(
+        require("path").dirname(require.resolve("@react-navigation/elements/package.json")),
+        "lib/module/Header/getDefaultHeaderHeight.js",
+      ),
+    ).getDefaultHeaderHeight,
+  ),
 }));
 
 // Mock @react-native-community/netinfo
@@ -58,6 +68,7 @@ jest.mock("react-native-safe-area-context", () => ({
     left: 0,
     right: 0,
   })),
+  useSafeAreaFrame: jest.fn(() => ({ x: 0, y: 0, width: 390, height: 844 })),
   SafeAreaProvider: ({ children }) => children,
 }));
 
