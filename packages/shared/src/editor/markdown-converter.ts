@@ -643,7 +643,9 @@ export function markdownToBlockNote(markdown: string): BlockNoteBlock[] {
     }
     const parent = ancestors[ancestors.length - 1];
     if (parent) {
-      parent.block.children = [...(parent.block.children ?? []), block];
+      // Append in place: copying the array per child is quadratic in a long list.
+      parent.block.children ??= [];
+      parent.block.children.push(block);
     } else {
       blocks.push(block);
     }

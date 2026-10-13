@@ -439,6 +439,16 @@ describe("round-trip stability", () => {
     it("keeps the markdown of nested lists stable", () => {
       expectMarkdownToBeStable("- a\n  - b\n    - [x] c\n  1. d");
     });
+
+    // Copying the children array per child takes this past the test timeout.
+    it("nests a long run of children under one parent, in order", () => {
+      const md = ["- Parent", ...Array.from({ length: 100_000 }, (_, n) => `  - c${n}`)].join("\n");
+      const [parent, ...rest] = markdownToBlockNote(md);
+      expect(rest).toHaveLength(0);
+      expect(parent.children).toHaveLength(100_000);
+      expect(parent.children?.[0]).toEqual(item("bulletListItem", "c0"));
+      expect(parent.children?.[99_999]).toEqual(item("bulletListItem", "c99999"));
+    });
   });
 
   describe("escaping plain text", () => {
