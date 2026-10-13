@@ -39,11 +39,16 @@ jest.mock("expo-router", () => ({
 // useHeaderHeight throws outside a navigator)
 jest.mock("@react-navigation/elements", () => ({
   useHeaderHeight: jest.fn(() => 0),
-  // The library's phone-portrait heights: 44 on iOS, 64 on Android, plus the top inset.
-  getDefaultHeaderHeight: jest.fn((_layout, _modal, topInset) => {
-    const { Platform } = require("react-native");
-    return (Platform.OS === "ios" ? 44 : 64) + topInset;
-  }),
+  // The real helper: it is plain arithmetic on Platform, so it needs no bridge.
+  // Loaded by path because the package only exports its index.
+  getDefaultHeaderHeight: jest.fn(
+    jest.requireActual(
+      require("path").join(
+        require("path").dirname(require.resolve("@react-navigation/elements/package.json")),
+        "lib/module/Header/getDefaultHeaderHeight.js",
+      ),
+    ).getDefaultHeaderHeight,
+  ),
 }));
 
 // Mock @react-native-community/netinfo

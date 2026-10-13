@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { Text, View, StyleSheet } from "react-native";
+import { Text, View, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
 import { Link } from "expo-router";
 import { SIGNUP_CONFIRMATION_SENT, SIGNUP_EMAIL_REDIRECT_URL } from "@drafto/shared";
 
@@ -10,7 +10,6 @@ import type { SemanticColors } from "@/theme/tokens";
 import { OAuthButtons } from "@/components/auth/oauth-buttons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { KeyboardScrollView } from "@/components/ui/keyboard-scroll-view";
 
 export default function SignupScreen() {
   const { semantic } = useTheme();
@@ -75,74 +74,82 @@ export default function SignupScreen() {
   }
 
   return (
-    <KeyboardScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.title}>Sign Up</Text>
-      <Text style={styles.subtitle}>Create your Drafto account</Text>
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+    >
+      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+        <Text style={styles.title}>Sign Up</Text>
+        <Text style={styles.subtitle}>Create your Drafto account</Text>
 
-      {error && (
-        <View style={styles.errorContainer}>
-          <Text style={styles.errorText}>{error}</Text>
+        {error && (
+          <View style={styles.errorContainer}>
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        )}
+
+        <View style={styles.form}>
+          <Input
+            label="Email"
+            placeholder="you@example.com"
+            value={email}
+            onChangeText={setEmail}
+            autoCapitalize="none"
+            autoComplete="email"
+            keyboardType="email-address"
+            textContentType="emailAddress"
+            editable={!loading}
+            containerStyle={styles.field}
+          />
+
+          <Input
+            label="Password"
+            placeholder="Min. 6 characters"
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="password"
+            textContentType="newPassword"
+            editable={!loading}
+            onSubmitEditing={handleSignup}
+            containerStyle={styles.field}
+          />
+
+          <Button
+            title="Sign up"
+            onPress={handleSignup}
+            loading={loading}
+            disabled={loading}
+            fullWidth
+            size="lg"
+            accessibilityLabel="Sign up"
+            testID="signup-submit"
+            style={styles.submitButton}
+          />
         </View>
-      )}
 
-      <View style={styles.form}>
-        <Input
-          label="Email"
-          placeholder="you@example.com"
-          value={email}
-          onChangeText={setEmail}
-          autoCapitalize="none"
-          autoComplete="email"
-          keyboardType="email-address"
-          textContentType="emailAddress"
-          editable={!loading}
-          containerStyle={styles.field}
-        />
+        <OAuthButtons onError={(msg) => setError(msg)} />
 
-        <Input
-          label="Password"
-          placeholder="Min. 6 characters"
-          value={password}
-          onChangeText={setPassword}
-          secureTextEntry
-          autoCapitalize="none"
-          autoCorrect={false}
-          autoComplete="password"
-          textContentType="newPassword"
-          editable={!loading}
-          onSubmitEditing={handleSignup}
-          containerStyle={styles.field}
-        />
-
-        <Button
-          title="Sign up"
-          onPress={handleSignup}
-          loading={loading}
-          disabled={loading}
-          fullWidth
-          size="lg"
-          accessibilityLabel="Sign up"
-          testID="signup-submit"
-          style={styles.submitButton}
-        />
-      </View>
-
-      <OAuthButtons onError={(msg) => setError(msg)} />
-
-      <View style={styles.footer}>
-        <Text style={styles.footerText}>
-          Already have an account?{" "}
-          <Link href="/(auth)/login" dismissTo style={styles.link}>
-            Log in
-          </Link>
-        </Text>
-      </View>
-    </KeyboardScrollView>
+        <View style={styles.footer}>
+          <Text style={styles.footerText}>
+            Already have an account?{" "}
+            <Link href="/(auth)/login" dismissTo style={styles.link}>
+              Log in
+            </Link>
+          </Text>
+        </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const createStyles = (semantic: SemanticColors) =>
   StyleSheet.create({
+    flex: {
+      flex: 1,
+    },
     container: {
       flexGrow: 1,
       alignItems: "center",

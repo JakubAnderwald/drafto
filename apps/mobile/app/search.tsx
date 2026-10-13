@@ -7,7 +7,6 @@ import { useTheme } from "@/providers/theme-provider";
 import { useSearch } from "@/hooks/use-search";
 import { ListSkeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
-import { noteFromSearchHref } from "@/lib/note-from-search";
 import { colors, fontSizes, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Note } from "@/db";
@@ -21,7 +20,7 @@ export default function SearchScreen() {
 
   const renderResult = useCallback(
     ({ item }: { item: Note }) => (
-      <Pressable testID="search-result" onPress={() => router.push(noteFromSearchHref(item.id))}>
+      <Pressable testID="search-result" onPress={() => router.push(`/notes/${item.id}`)}>
         <View style={styles.row}>
           <Ionicons
             name="document-text-outline"
@@ -68,6 +67,9 @@ export default function SearchScreen() {
           keyExtractor={(item) => item.id}
           renderItem={renderResult}
           contentContainerStyle={styles.list}
+          // The search field keeps the keyboard up; without this the first tap
+          // on a result only dismissed it, and opening the note took a second.
+          keyboardShouldPersistTaps="handled"
         />
       )}
     </View>

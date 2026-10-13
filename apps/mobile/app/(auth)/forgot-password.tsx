@@ -1,10 +1,9 @@
 import { useState, useMemo } from "react";
-import { Text, View, StyleSheet } from "react-native";
+import { Text, View, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
 import { Link } from "expo-router";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { KeyboardScrollView } from "@/components/ui/keyboard-scroll-view";
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { RECOVERY_REDIRECT_URL } from "@/lib/auth-recovery";
 import { supabase } from "@/lib/supabase";
@@ -82,55 +81,63 @@ export default function ForgotPasswordScreen() {
   }
 
   return (
-    <KeyboardScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.title}>Forgot Password</Text>
-      <Text style={styles.subtitle}>We&apos;ll email you a link to set a new password</Text>
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+    >
+      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+        <Text style={styles.title}>Forgot Password</Text>
+        <Text style={styles.subtitle}>We&apos;ll email you a link to set a new password</Text>
 
-      {error && (
-        <View style={styles.errorContainer}>
-          <Text style={styles.errorText}>{error}</Text>
+        {error && (
+          <View style={styles.errorContainer}>
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        )}
+
+        <View style={styles.form}>
+          <Input
+            label="Email"
+            placeholder="you@example.com"
+            value={email}
+            onChangeText={setEmail}
+            autoCapitalize="none"
+            autoComplete="email"
+            keyboardType="email-address"
+            textContentType="emailAddress"
+            editable={!loading}
+            onSubmitEditing={handleSubmit}
+            testID="forgot-password-email-input"
+            containerStyle={styles.field}
+          />
+
+          <Button
+            title={retryable ? "Try again" : "Send reset link"}
+            onPress={handleSubmit}
+            loading={loading}
+            disabled={loading}
+            fullWidth
+            size="lg"
+            testID="forgot-password-submit"
+            style={styles.submitButton}
+          />
         </View>
-      )}
 
-      <View style={styles.form}>
-        <Input
-          label="Email"
-          placeholder="you@example.com"
-          value={email}
-          onChangeText={setEmail}
-          autoCapitalize="none"
-          autoComplete="email"
-          keyboardType="email-address"
-          textContentType="emailAddress"
-          editable={!loading}
-          onSubmitEditing={handleSubmit}
-          testID="forgot-password-email-input"
-          containerStyle={styles.field}
-        />
-
-        <Button
-          title={retryable ? "Try again" : "Send reset link"}
-          onPress={handleSubmit}
-          loading={loading}
-          disabled={loading}
-          fullWidth
-          size="lg"
-          testID="forgot-password-submit"
-          style={styles.submitButton}
-        />
-      </View>
-
-      <View style={styles.footer}>
-        <Link href="/(auth)/login" dismissTo style={styles.link}>
-          Back to login
-        </Link>
-      </View>
-    </KeyboardScrollView>
+        <View style={styles.footer}>
+          <Link href="/(auth)/login" dismissTo style={styles.link}>
+            Back to login
+          </Link>
+        </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const createStyles = (semantic: SemanticColors) =>
   StyleSheet.create({
+    flex: {
+      flex: 1,
+    },
     container: {
       flexGrow: 1,
       alignItems: "center",

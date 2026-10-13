@@ -1,5 +1,5 @@
 import React from "react";
-import { StyleSheet } from "react-native";
+import { Platform, StyleSheet } from "react-native";
 import * as Haptics from "expo-haptics";
 import { getDefaultHeaderHeight } from "@react-navigation/elements";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -69,12 +69,46 @@ describe("ToastProvider", () => {
     expect(style.bottom).toBeUndefined();
   });
 
-  it("clears the header's back button, which used to sit under the toast", () => {
+  it("clears the header's back button on a Dynamic Island iPhone, whose inset is taller", () => {
+    jest.mocked(useSafeAreaInsets).mockReturnValue({ top: 59, bottom: 34, left: 0, right: 0 });
     const { getByTestId } = renderToasts();
 
     const style = StyleSheet.flatten(getByTestId("toast-container").props.style);
-    // A 44 pt bar below the 47 pt inset ends at 91 pt; the toast starts lower.
-    expect(style.top).toBeGreaterThan(47 + 44);
+    // The bar sits a little inside a Dynamic Island inset; the toast still starts below it.
+    expect(style.top).toBeGreaterThan(59 + 44 - 6);
+  });
+
+  it("starts below the header on Android too", () => {
+    const platformOs = jest.replaceProperty(Platform, "OS", "android");
+    try {
+      jest.mocked(useSafeAreaInsets).mockReturnValue({ top: 24, bottom: 0, left: 0, right: 0 });
+      const { getByTestId } = renderToasts();
+
+      const style = StyleSheet.flatten(getByTestId("toast-container").props.style);
+      // The stack header is 56 dp under the status bar; the toast starts lower.
+      expect(style.top).toBeGreaterThan(24 + 56);
+    } finally {
+      platformOs.restore();
+    }
+  });
+
+  it("doesn't re-render the screens that use toasts when a toast appears", () => {
+    let renders = 0;
+    function Consumer() {
+      renders += 1;
+      showToast = useToast().showToast;
+      return null;
+    }
+    render(
+      <ToastProvider>
+        <Consumer />
+      </ToastProvider>,
+    );
+    const rendersBefore = renders;
+
+    show("Saved");
+
+    expect(renders).toBe(rendersBefore);
   });
 
   it("drops in from no higher than the header, so it never covers the header's buttons", () => {

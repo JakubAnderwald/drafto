@@ -12,7 +12,7 @@ import { ThemeProvider, useTheme } from "@/providers/theme-provider";
 import { OfflineBanner } from "@/components/offline-banner";
 import { HeaderCloseButton } from "@/components/navigation/header-close-button";
 import { ToastProvider } from "@/components/toast";
-import { isOpenedFromSearch } from "@/lib/note-from-search";
+import { isAboveModal } from "@/lib/sheet-presentation";
 import { colors } from "@/theme/tokens";
 import { markStartupBegin, markStartupEnd } from "@/lib/performance";
 
@@ -101,12 +101,26 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-// An iOS sheet's first screen has no back button. Search is a sheet, and a note
-// opened from it is presented as another sheet over it, so both get a close
-// button there. Android shows them as ordinary screens with a back arrow.
+// An iOS sheet's first screen has no back button. Search is a sheet, and a
+// screen pushed above it (a note opened from Search) becomes another sheet, so
+// each gets a close button there. Android shows them as ordinary screens with a
+// back arrow.
 const sheetCloseButton = (testID: string) =>
   Platform.OS === "ios" ? () => <HeaderCloseButton testID={testID} /> : undefined;
 
+interface StackScreenProps {
+  route: { key: string };
+  navigation: { getState: () => { routes: readonly { key: string; name: string }[] } };
+}
+
+/** A close button for a screen that ends up above a modal, and so in a sheet of its own. */
+function closeIfAboveModal({ route, navigation }: StackScreenProps, testID: string) {
+  return isAboveModal(navigation.getState().routes, route.key)
+    ? sheetCloseButton(testID)
+    : undefined;
+}
+
+// Search is the one modal route (MODAL_ROUTES in src/lib/sheet-presentation.ts).
 function searchScreenOptions() {
   return {
     title: "Search",
@@ -115,11 +129,15 @@ function searchScreenOptions() {
   };
 }
 
-function noteScreenOptions({ route }: { route: { params?: object } }) {
+function notebookScreenOptions(props: StackScreenProps) {
+  return { title: "", headerLeft: closeIfAboveModal(props, "notebook-sheet-close") };
+}
+
+function noteScreenOptions(props: StackScreenProps) {
   return {
     title: "",
     headerBackTitle: "Notes",
-    headerLeft: isOpenedFromSearch(route.params) ? sheetCloseButton("note-sheet-close") : undefined,
+    headerLeft: closeIfAboveModal(props, "note-sheet-close"),
   };
 }
 
@@ -162,7 +180,7 @@ function ThemedStack() {
             options={{ title: "Awaiting Approval", headerShown: false, gestureEnabled: false }}
           />
           {/* The notebook screen titles itself with the notebook's name once it loads. */}
-          <Stack.Screen name="notebooks/[id]" options={{ title: "" }} />
+          <Stack.Screen name="notebooks/[id]" options={notebookScreenOptions} />
           {/* The editor's title field is the title, so the header shows only the back
               button. Its label stays "Notes" rather than the notebook's name. */}
           <Stack.Screen name="notes/[id]" options={noteScreenOptions} />

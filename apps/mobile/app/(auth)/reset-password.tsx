@@ -1,11 +1,18 @@
 import { useState, useMemo } from "react";
-import { ActivityIndicator, Text, View, StyleSheet } from "react-native";
+import {
+  ActivityIndicator,
+  Text,
+  View,
+  StyleSheet,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+} from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { KeyboardScrollView } from "@/components/ui/keyboard-scroll-view";
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/providers/auth-provider";
@@ -170,75 +177,83 @@ export default function ResetPasswordScreen() {
   }
 
   return (
-    <KeyboardScrollView style={{ paddingTop: topInset }} contentContainerStyle={styles.container}>
-      <Text style={styles.title}>Reset Password</Text>
-      <Text style={styles.subtitle}>Choose a new password for your Drafto account</Text>
+    <KeyboardAvoidingView
+      style={[styles.flex, { paddingTop: topInset }]}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+    >
+      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+        <Text style={styles.title}>Reset Password</Text>
+        <Text style={styles.subtitle}>Choose a new password for your Drafto account</Text>
 
-      {error && (
-        <View style={styles.errorContainer}>
-          <Text style={styles.errorText}>{error}</Text>
+        {error && (
+          <View style={styles.errorContainer}>
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        )}
+
+        <View style={styles.form}>
+          <Input
+            label="New Password"
+            placeholder={`Min. ${MIN_PASSWORD_LENGTH} characters`}
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="new-password"
+            textContentType="newPassword"
+            editable={!loading}
+            testID="new-password-input"
+            containerStyle={styles.field}
+          />
+
+          <Input
+            label="Confirm Password"
+            placeholder="Re-enter your new password"
+            value={confirmPassword}
+            onChangeText={setConfirmPassword}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="new-password"
+            textContentType="newPassword"
+            editable={!loading}
+            onSubmitEditing={handleSubmit}
+            testID="confirm-password-input"
+            containerStyle={styles.field}
+          />
+
+          <Button
+            title={retryable ? "Try again" : "Reset password"}
+            onPress={handleSubmit}
+            loading={loading}
+            disabled={loading}
+            fullWidth
+            size="lg"
+            testID="reset-password-submit"
+            style={styles.submitButton}
+          />
         </View>
-      )}
 
-      <View style={styles.form}>
-        <Input
-          label="New Password"
-          placeholder={`Min. ${MIN_PASSWORD_LENGTH} characters`}
-          value={password}
-          onChangeText={setPassword}
-          secureTextEntry
-          autoCapitalize="none"
-          autoCorrect={false}
-          autoComplete="new-password"
-          textContentType="newPassword"
-          editable={!loading}
-          testID="new-password-input"
-          containerStyle={styles.field}
-        />
-
-        <Input
-          label="Confirm Password"
-          placeholder="Re-enter your new password"
-          value={confirmPassword}
-          onChangeText={setConfirmPassword}
-          secureTextEntry
-          autoCapitalize="none"
-          autoCorrect={false}
-          autoComplete="new-password"
-          textContentType="newPassword"
-          editable={!loading}
-          onSubmitEditing={handleSubmit}
-          testID="confirm-password-input"
-          containerStyle={styles.field}
-        />
-
-        <Button
-          title={retryable ? "Try again" : "Reset password"}
-          onPress={handleSubmit}
-          loading={loading}
-          disabled={loading}
-          fullWidth
-          size="lg"
-          testID="reset-password-submit"
-          style={styles.submitButton}
-        />
-      </View>
-
-      <View style={styles.footer}>
-        <Button
-          title="Back to login"
-          onPress={handleBackToLogin}
-          variant="ghost"
-          fullWidth
-          testID="reset-password-back-to-login"
-        />
-      </View>
-    </KeyboardScrollView>
+        <View style={styles.footer}>
+          <Button
+            title="Back to login"
+            onPress={handleBackToLogin}
+            variant="ghost"
+            fullWidth
+            testID="reset-password-back-to-login"
+          />
+        </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const createStyles = (semantic: SemanticColors) =>
   StyleSheet.create({
+    flex: {
+      flex: 1,
+    },
     container: {
       flexGrow: 1,
       alignItems: "center",

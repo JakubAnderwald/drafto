@@ -6,7 +6,7 @@
 
 Cross-notebook search over the user's notes by title, body text, and notebook name. A keyboard-triggered overlay on web and desktop, a dedicated search screen on mobile (`apps/mobile/app/search.tsx`) opened from the tab header's search button. Results include trashed notes, with title matches ranked first.
 
-On mobile, Search opens as a modal. On iOS that is a sheet, and a note opened from it becomes a second sheet on top: react-native-screens presents every screen pushed over a modal as a modal. A sheet's first screen has no back button, so both sheets get a close button (`HeaderCloseButton`, set in `apps/mobile/app/_layout.tsx`). The note knows it came from Search through `?from=search` (`apps/mobile/src/lib/note-from-search.ts`). Closing the note returns to the results. Android shows both as ordinary screens with a back arrow.
+On mobile, Search opens as a modal. On iOS that is a sheet, and a note opened from it becomes a second sheet on top: react-native-screens presents every screen pushed over a modal as a modal. A sheet's first screen has no back button, so both sheets get a close button (`HeaderCloseButton`, set in `apps/mobile/app/_layout.tsx`). Whether a screen is above a modal is read from the navigation stack (`isAboveModal` in `apps/mobile/src/lib/sheet-presentation.ts`), so a note that reaches the stack from a link while Search is open gets one too. Closing the note returns to the results. Android shows both as ordinary screens with a back arrow. The editor measures where its view starts in the window (`useWindowTop`), because in a sheet it starts lower than the header height alone, and the formatting toolbar would otherwise end up behind the keyboard.
 
 ## Current state
 

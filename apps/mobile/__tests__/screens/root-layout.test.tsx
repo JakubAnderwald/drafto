@@ -7,7 +7,10 @@ import { render } from "../helpers/test-utils";
 
 type ScreenOptions =
   | Record<string, unknown>
-  | ((props: { route: { name: string; params?: object } }) => Record<string, unknown>);
+  | ((props: {
+      route: { key: string; name: string };
+      navigation: { getState: () => { routes: { key: string; name: string }[] } };
+    }) => Record<string, unknown>);
 type ScreenProps = { name: string; options?: ScreenOptions };
 
 const mockScreens: ScreenProps[] = [];
@@ -46,18 +49,23 @@ jest.mock("@/lib/performance", () => ({
 }));
 
 import RootLayout from "../../app/_layout";
-import { noteFromSearchHref } from "@/lib/note-from-search";
 
-/** A screen's options, resolved for a route with these params if they are a function. */
-function optionsFor(name: string, params?: object): Record<string, unknown> | undefined {
+type StackRoute = { key: string; name: string };
+
+const TABS: StackRoute = { key: "tabs-1", name: "(tabs)" };
+const NOTEBOOK: StackRoute = { key: "notebook-1", name: "notebooks/[id]" };
+const SEARCH: StackRoute = { key: "search-1", name: "search" };
+const NOTE: StackRoute = { key: "note-1", name: "notes/[id]" };
+
+/**
+ * A screen's options, resolved for the last route of `stack` if they are a
+ * function, the way native-stack calls them.
+ */
+function optionsFor(name: string, stack: StackRoute[] = [TABS]) {
   const options = mockScreens.find((screen) => screen.name === name)?.options;
-  return typeof options === "function" ? options({ route: { name, params } }) : options;
-}
-
-/** The params expo-router gives a note opened through `noteFromSearchHref`. */
-function paramsOf(href: string): Record<string, string> {
-  const [path, query] = href.split("?");
-  return { id: path.split("/").pop() ?? "", ...Object.fromEntries(new URLSearchParams(query)) };
+  if (typeof options !== "function") return options;
+  const route = stack[stack.length - 1];
+  return options({ route, navigation: { getState: () => ({ routes: stack }) } });
 }
 
 /** Renders a header's left button, if the options have one. */
@@ -78,43 +86,52 @@ describe("RootLayout screen options", () => {
   });
 
   it("gives the editor no header title, so 'Editor' never shows while a note loads", () => {
-    expect(optionsFor("notes/[id]", { id: "n1" })).toEqual(expect.objectContaining({ title: "" }));
+    expect(optionsFor("notes/[id]", [TABS, NOTEBOOK, NOTE])).toEqual(
+      expect.objectContaining({ title: "" }),
+    );
   });
 
   it("keeps the editor's back label 'Notes', not the notebook's name", () => {
-    expect(optionsFor("notes/[id]", { id: "n1" })).toEqual(
+    expect(optionsFor("notes/[id]", [TABS, NOTEBOOK, NOTE])).toEqual(
       expect.objectContaining({ headerBackTitle: "Notes" }),
     );
   });
 
   it("leaves the notebook screen's title to the screen, which shows the notebook's name", () => {
-    expect(optionsFor("notebooks/[id]")).toEqual(expect.objectContaining({ title: "" }));
+    expect(optionsFor("notebooks/[id]", [TABS, NOTEBOOK])).toEqual(
+      expect.objectContaining({ title: "" }),
+    );
   });
 
   it("gives the search sheet a close button on iOS", () => {
-    const options = optionsFor("search");
+    const options = optionsFor("search", [TABS, SEARCH]);
 
     expect(options).toEqual(expect.objectContaining({ title: "Search", presentation: "modal" }));
     expect(headerLeftOf(options)?.getByTestId("search-close")).toBeTruthy();
   });
 
   it("gives a note opened from Search a close button on iOS, where it is a sheet of its own", () => {
-    const options = optionsFor("notes/[id]", paramsOf(noteFromSearchHref("n1")));
+    const options = optionsFor("notes/[id]", [TABS, SEARCH, NOTE]);
 
-    expect(headerLeftOf(options)?.getByLabelText("Close")).toBeTruthy();
+    expect(headerLeftOf(options)?.getByTestId("note-sheet-close")).toBeTruthy();
     expect(options).toEqual(expect.objectContaining({ title: "", headerBackTitle: "Notes" }));
   });
 
+  it("gives a notebook that ends up above Search a close button too", () => {
+    const options = optionsFor("notebooks/[id]", [TABS, SEARCH, NOTEBOOK]);
+
+    expect(headerLeftOf(options)?.getByTestId("notebook-sheet-close")).toBeTruthy();
+  });
+
   it("keeps the back button on a note opened from a notebook", () => {
-    expect(optionsFor("notes/[id]", { id: "n1" })?.headerLeft).toBeUndefined();
+    expect(optionsFor("notes/[id]", [TABS, NOTEBOOK, NOTE])?.headerLeft).toBeUndefined();
+    expect(optionsFor("notebooks/[id]", [TABS, NOTEBOOK])?.headerLeft).toBeUndefined();
   });
 
   it("adds no close buttons on Android, where these screens have a back arrow", () => {
     jest.replaceProperty(Platform, "OS", "android");
 
-    expect(optionsFor("search")?.headerLeft).toBeUndefined();
-    expect(
-      optionsFor("notes/[id]", paramsOf(noteFromSearchHref("n1")))?.headerLeft,
-    ).toBeUndefined();
+    expect(optionsFor("search", [TABS, SEARCH])?.headerLeft).toBeUndefined();
+    expect(optionsFor("notes/[id]", [TABS, SEARCH, NOTE])?.headerLeft).toBeUndefined();
   });
 });

@@ -42,13 +42,21 @@ appId: eu.drafto.mobile
           timeout: 10000
       - tapOn:
           id: "note-sheet-close"
+      # "Search" stays in the hierarchy behind the note's sheet, so check that
+      # the sheet's own button has gone rather than that Search is visible.
       - extendedWaitUntil:
-          visible: "Search"
+          notVisible:
+            id: "note-sheet-close"
           timeout: 10000
+      - assertVisible:
+          id: "search-close"
 
 # Close the search sheet with its close button
 - tapOn:
     id: "search-close"
 - extendedWaitUntil:
-    visible: "Notebooks"
+    notVisible:
+      id: "search-close"
     timeout: 10000
+- assertVisible:
+    id: "search-button"

@@ -1,4 +1,12 @@
-import { createContext, useContext, useCallback, useState, useRef, useEffect } from "react";
+import {
+  createContext,
+  useContext,
+  useCallback,
+  useState,
+  useRef,
+  useEffect,
+  useMemo,
+} from "react";
 import { View, Text, StyleSheet, Animated } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -138,7 +146,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const insets = useSafeAreaInsets();
   const frame = useSafeAreaFrame();
   // The provider sits outside the navigator, so it can't measure the current
-  // screen's header; the standard header height is where every header ends.
+  // screen's header. The library's default header height is at least as tall
+  // as this app's headers (on Android it allows 64 dp for the 56 dp stack
+  // header), so toasts always start below the header's buttons.
   const headerBottom = getDefaultHeaderHeight(frame, false, insets.top);
 
   const commit = useCallback((next: ToastMessage[]) => {
@@ -165,8 +175,12 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     [commit],
   );
 
+  // Stable, so a re-render here (a new toast, a window resize) doesn't
+  // re-render every useToast consumer.
+  const contextValue = useMemo(() => ({ showToast }), [showToast]);
+
   return (
-    <ToastContext.Provider value={{ showToast }}>
+    <ToastContext.Provider value={contextValue}>
       {children}
       {/* Just below the header: at the bottom they covered the add button and the
           editor's attachment row, and inside the header they hid its back button. */}

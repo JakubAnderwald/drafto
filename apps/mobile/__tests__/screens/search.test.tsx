@@ -1,4 +1,5 @@
 import React from "react";
+import { FlatList } from "react-native";
 import { useRouter } from "expo-router";
 
 import { render, fireEvent } from "../helpers/test-utils";
@@ -19,11 +20,18 @@ describe("SearchScreen", () => {
     } as unknown as ReturnType<typeof useSearch>);
   });
 
-  it("opens a result marked as opened from Search, so iOS gives its sheet a close button", () => {
+  it("opens the note for a result", () => {
     const { getByText } = render(<SearchScreen />);
 
     fireEvent.press(getByText("Packing"));
 
-    expect(push).toHaveBeenCalledWith("/notes/note-1?from=search");
+    expect(push).toHaveBeenCalledWith("/notes/note-1");
+  });
+
+  it("opens a result on the first tap while the keyboard is still up", () => {
+    const { UNSAFE_getByType } = render(<SearchScreen />);
+
+    // With the default ("never") the first tap only dismissed the keyboard.
+    expect(UNSAFE_getByType(FlatList).props.keyboardShouldPersistTaps).toBe("handled");
   });
 });
