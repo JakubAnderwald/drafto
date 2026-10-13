@@ -36,7 +36,7 @@ Shipped on all four platforms (web, iOS, Android, macOS).
 | Web integration test (overlay)                 | `apps/web/__tests__/integration/search-overlay.test.tsx`                                          |
 | Web E2E                                        | `apps/web/e2e/search.spec.ts`                                                                     |
 | Mobile sheet close buttons (iOS)               | `apps/mobile/app/_layout.tsx`, `apps/mobile/src/components/navigation/header-close-button.tsx`    |
-| Mobile unit test                               | `apps/mobile/__tests__/hooks/use-search.test.ts`, `__tests__/screens/search.test.tsx`             |
+| Mobile unit test                               | `apps/mobile/__tests__/hooks/use-search.test.ts`, `apps/mobile/__tests__/screens/search.test.tsx` |
 | Mobile E2E                                     | `apps/mobile/e2e/search.yaml` (Android), `apps/mobile/e2e/ios-only/search.yaml` (iOS)             |
 | Desktop tests                                  | `apps/desktop/__tests__/hooks/use-search.test.ts`, `__tests__/components/search-overlay.test.tsx` |
 
