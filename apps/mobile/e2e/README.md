@@ -17,10 +17,17 @@ End-to-end tests for the Drafto mobile app using [Maestro](https://maestro.mobil
    ```
 
 3. Set environment variables for test credentials:
+
    ```bash
    export E2E_TEST_EMAIL="your-test-email@example.com"
    export E2E_TEST_PASSWORD="your-test-password"
    ```
+
+4. For `ios-only/07-attach-image.yaml`, grant the app photo access on the simulator first. The system's permission prompt isn't always visible to Maestro and would block the picker:
+   ```bash
+   xcrun simctl privacy booted grant photos eu.drafto.mobile
+   ```
+   The flow adds its own photo (`fixtures/attachment-photo.jpg`) with `addMedia`, so the library needs no setup.
 
 ## Running Tests
 
@@ -85,6 +92,7 @@ maestro test apps/mobile/e2e/ios-only/ --platform ios -e RUN_ID=$(date +%s)
 | `ios-only/05-offline-mode.yaml`          | Airplane mode, offline note creation, sync on reconnect |
 | `ios-only/06-offline-notebook-sync.yaml` | Offline notebook + note creation, sync verification     |
 | `ios-only/search.yaml`                   | Search, a result's sheet, and both close buttons        |
+| `ios-only/07-attach-image.yaml`          | Attach a photo, toast below the header, "All synced"    |
 
 ## Platform differences
 

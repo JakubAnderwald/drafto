@@ -85,7 +85,9 @@ export function SyncStatus() {
         }
       }}
       accessibilityRole="button"
-      accessibilityLabel="Sync status"
+      // The label replaces the row's text for VoiceOver, so it has to carry the
+      // state itself (as desktop's hint does); "Sync status" alone hid it.
+      accessibilityLabel={`Sync status: ${statusText}`}
       accessibilityHint={isConnected && !isSyncing ? "Double tap to sync now" : undefined}
     >
       <View style={[styles.indicator, { backgroundColor: statusColor }]}>

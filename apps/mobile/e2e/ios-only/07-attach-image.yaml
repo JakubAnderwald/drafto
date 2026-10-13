@@ -1,0 +1,74 @@
+appId: eu.drafto.mobile
+---
+# iOS: attach an image to a note, then check that it syncs.
+# Guards the 1.4.4 regression where pushing an attachment failed on every sync
+# ("N pending changes" that never cleared) and the toast covered the back button.
+# Assumes user is already logged in (run after 01-login or ios-all).
+# Grant photo access first, or the system prompt (which Maestro can't always
+# see) blocks the picker:
+#   xcrun simctl privacy booted grant photos eu.drafto.mobile
+# Run with: maestro test apps/mobile/e2e/ios-only/07-attach-image.yaml --platform ios -e RUN_ID=$(date +%s)
+
+# Newest photo in the library, so it is first in the picker
+- addMedia:
+    - "../fixtures/attachment-photo.jpg"
+
+- launchApp
+- extendedWaitUntil:
+    visible:
+      id: "search-button"
+    timeout: 30000
+
+# A notebook with one note to attach to
+- tapOn:
+    id: "add"
+- assertVisible: "Notebook name"
+- inputText: "Attach NB ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*Attach NB ${RUN_ID}"
+    timeout: 10000
+- tapOn: ".*Attach NB ${RUN_ID}"
+- extendedWaitUntil:
+    visible: "No notes yet"
+    timeout: 10000
+- tapOn:
+    id: "add"
+- assertVisible: "Note title (optional)"
+- inputText: "Attach ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*Attach ${RUN_ID}.*"
+    timeout: 10000
+- tapOn: ".*Attach ${RUN_ID}.*"
+- extendedWaitUntil:
+    visible: "Attach image"
+    timeout: 20000
+
+# Pick the photo: the first cell of the system picker's grid
+- tapOn: "Attach image"
+- tapOn:
+    text: "Allow Full Access"
+    optional: true
+- tapOn:
+    point: "17%,22%"
+
+# Uploaded, and the toast sits below the header: the back button stays visible
+- extendedWaitUntil:
+    visible: "Attachment uploaded"
+    timeout: 30000
+- assertVisible: "Notes"
+- takeScreenshot: attachment-toast-below-header
+
+# The attachment syncs: Settings reaches "All synced" instead of pending changes
+- tapOn: "Notes"
+- tapOn: "Notebooks"
+# iOS labels the tab "Settings, tab, 3 of 3"
+- tapOn: "Settings, tab.*"
+# The sync row's accessibility label is "Sync status: <state>"
+- extendedWaitUntil:
+    visible: "Sync status: All synced"
+    timeout: 30000
+- tapOn: "Notebooks, tab.*"
