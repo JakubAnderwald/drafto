@@ -45,13 +45,20 @@ set -a
 source "$WEB_DIR/.env.local"
 set +a
 export XPLAT_RUN_ID="$RUN_ID"
+# On a failure, Playwright's HTML reporter would otherwise serve the report
+# and wait for Ctrl+C when run from a terminal, with its output still captured.
+export PLAYWRIGHT_HTML_OPEN=never
 
 # --- Step 1: Playwright seeds the note ---
 echo "[Step 1] Seeding the nested-list note via Playwright..."
 cd "$WEB_DIR"
-PW_OUTPUT=$(npx playwright test e2e/cross-platform-sync.spec.ts \
+if ! PW_OUTPUT=$(npx playwright test e2e/cross-platform-sync.spec.ts \
   --project=chromium \
-  --grep "create a nested-list note for mobile testing" 2>&1)
+  --grep "create a nested-list note for mobile testing" 2>&1); then
+  echo "$PW_OUTPUT" | tail -40
+  echo "ERROR: seeding the note failed" >&2
+  exit 1
+fi
 echo "$PW_OUTPUT" | tail -5
 
 NOTEBOOK_NAME=$(echo "$PW_OUTPUT" | grep -o 'XPLAT_NOTEBOOK_NAME=.*' | cut -d= -f2- || echo "")
@@ -81,7 +88,7 @@ cd "$WEB_DIR"
 npx playwright test e2e/cross-platform-sync.spec.ts \
   --project=chromium \
   --grep "verify nested lists survive a mobile edit" \
-  2>&1 | tail -5
+  2>&1 | tail -40
 
 echo "[Step 3] ✓ Nesting, checked states and the edit were saved"
 echo ""

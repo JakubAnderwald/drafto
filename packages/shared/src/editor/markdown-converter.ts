@@ -79,15 +79,13 @@ function formatDestination(href: string): string {
 /**
  * Plain text at the start of a paragraph line that the block parser would
  * otherwise read as a heading, list item, table row or image (a `!` that
- * ends the text right before a link). Leading whitespace is dropped first:
- * parseLine strips it as indent either way, and kept, two spaces or a tab
- * would nest the paragraph under the block before it.
+ * ends the text right before a link). The line's leading whitespace is
+ * already gone (see normalizeInline): parseLine strips it as indent either
+ * way, and kept, two spaces or a tab would nest the paragraph under the block
+ * before it.
  */
 function escapeLineStart(markdown: string): string {
-  return markdown
-    .replace(/^\s+/, "")
-    .replace(/^(?=(?:#{1,6}|[-+])\s|\||!\[)/, "\\")
-    .replace(/^(\d+)\.(?=\s)/, "$1\\.");
+  return markdown.replace(/^(?=(?:#{1,6}|[-+])\s|\||!\[)/, "\\").replace(/^(\d+)\.(?=\s)/, "$1\\.");
 }
 
 // A fence one backtick longer than any run inside the code, so no code line can close it.
@@ -102,35 +100,100 @@ function codeFence(code: string): string {
 
 // --- BlockNote -> Markdown ---
 
-function inlineContentToMarkdown(inlineContent: BlockNoteInlineContent[]): string {
-  return inlineContent.map(inlineItemToMarkdown).join("");
+// Markdown has no syntax for underline, so a node styled only with it is plain text.
+function isPlainText(item: BlockNoteInlineContent): boolean {
+  return (
+    item.type !== "link" &&
+    !item.styles?.bold &&
+    !item.styles?.italic &&
+    !item.styles?.strike &&
+    !item.styles?.code
+  );
+}
+
+/**
+ * Where the block parser drops whitespace around a line's text: after a
+ * paragraph's indent or a heading / list marker (`start`), and at both ends
+ * of a table cell (`both`).
+ */
+type InlineTrim = "none" | "start" | "both";
+
+/**
+ * The inline nodes as the parser will read them back, so escaping sees the
+ * text a re-parse produces and the Markdown is stable after one round trip.
+ * A bold, italic or strike node's edge whitespace moves outside its
+ * delimiters: `* x*` is not emphasis, and at the start of a line it reads as
+ * a bullet. Code spans keep their spaces. Adjacent plain nodes merge, as the
+ * parser merges them, and `trim` drops the whitespace the block parser drops.
+ */
+function normalizeInline(
+  inlineContent: BlockNoteInlineContent[],
+  trim: InlineTrim,
+): BlockNoteInlineContent[] {
+  const nodes: BlockNoteInlineContent[] = [];
+  const pushPlain = (text: string) => {
+    if (!text) return;
+    const prev = nodes[nodes.length - 1];
+    if (prev && isPlainText(prev)) {
+      nodes[nodes.length - 1] = { ...prev, text: (prev.text ?? "") + text };
+    } else {
+      nodes.push({ type: "text", text, styles: {} });
+    }
+  };
+
+  for (const item of inlineContent) {
+    if (isPlainText(item)) {
+      pushPlain(item.text ?? "");
+    } else if (item.type === "link" || item.styles?.code) {
+      nodes.push(item);
+    } else {
+      const raw = item.text ?? "";
+      const text = raw.trim();
+      const leading = raw.slice(0, raw.length - raw.trimStart().length);
+      pushPlain(leading);
+      if (text) nodes.push({ ...item, text });
+      pushPlain(raw.slice(leading.length + text.length));
+    }
+  }
+
+  // Adjacent plain nodes are merged, so at most one plain node sits at each end.
+  const first = nodes[0];
+  if (trim !== "none" && first && isPlainText(first)) {
+    const text = (first.text ?? "").trimStart();
+    if (text) nodes[0] = { ...first, text };
+    else nodes.shift();
+  }
+  const last = nodes[nodes.length - 1];
+  if (trim === "both" && last && isPlainText(last)) {
+    const text = (last.text ?? "").trimEnd();
+    if (text) nodes[nodes.length - 1] = { ...last, text };
+    else nodes.pop();
+  }
+  return nodes;
+}
+
+function inlineContentToMarkdown(
+  inlineContent: BlockNoteInlineContent[],
+  trim: InlineTrim = "none",
+): string {
+  return normalizeInline(inlineContent, trim).map(inlineItemToMarkdown).join("");
+}
+
+// The trimmed inline Markdown of a block's own line.
+function lineText(block: BlockNoteBlock): string {
+  return Array.isArray(block.content) ? inlineContentToMarkdown(block.content, "start") : "";
 }
 
 function inlineItemToMarkdown(item: BlockNoteInlineContent): string {
   let text: string;
-  // Whitespace at the edges of a styled node, emitted outside its delimiters.
-  let leading = "";
-  let trailing = "";
   if (item.type === "link" && item.content?.length) {
-    text = item.content.map(inlineItemToMarkdown).join("");
+    text = inlineContentToMarkdown(item.content);
   } else {
-    let raw = item.text ?? "";
-    if (item.styles?.code) {
-      // Code spans are literal (escapes inside them are not processed) and keep their spaces.
-      text = raw;
-    } else {
-      if (item.styles?.bold || item.styles?.italic || item.styles?.strike) {
-        // `* x*` is not emphasis, and at the start of a line it reads as a
-        // bullet, so a delimiter must touch the text it wraps.
-        const trimmed = raw.trim();
-        leading = raw.slice(0, raw.length - raw.trimStart().length);
-        trailing = raw.slice(leading.length + trimmed.length);
-        raw = trimmed;
-      }
-      text = escapeInlineText(raw);
-    }
+    const raw = item.text ?? "";
     // An empty styled node would emit bare delimiters (`****`) that re-parse as text.
-    if (!raw && item.type !== "link") return leading + trailing;
+    if (!raw && item.type !== "link") return "";
+    // Code spans are literal: escapes inside them are not processed.
+    text = item.styles?.code ? raw : escapeInlineText(raw);
   }
 
   if (item.styles) {
@@ -145,13 +208,13 @@ function inlineItemToMarkdown(item: BlockNoteInlineContent): string {
     text = `[${text}](${formatDestination(item.href)})`;
   }
 
-  return leading + text + trailing;
+  return text;
 }
 
 // GFM: a `|` inside a cell is escaped, code spans included; the parser
 // strips that escape before reading the cell's inline Markdown.
 function tableCellToMarkdown(cell: BlockNoteTableRowCell): string {
-  return inlineContentToMarkdown(getTableCellInline(cell)).replace(/\|/g, "\\|");
+  return inlineContentToMarkdown(getTableCellInline(cell), "both").replace(/\|/g, "\\|");
 }
 
 function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
@@ -162,33 +225,28 @@ function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
     case "heading": {
       const level = (block.props?.level as number) ?? 1;
       const hashes = "#".repeat(Math.min(level, 6));
-      const text = Array.isArray(block.content) ? inlineContentToMarkdown(block.content) : "";
-      lines.push(`${prefix}${hashes} ${text}`);
+      lines.push(`${prefix}${hashes} ${lineText(block)}`);
       break;
     }
 
     case "paragraph": {
-      const text = Array.isArray(block.content) ? inlineContentToMarkdown(block.content) : "";
-      lines.push(`${prefix}${escapeLineStart(text)}`);
+      lines.push(`${prefix}${escapeLineStart(lineText(block))}`);
       break;
     }
 
     case "bulletListItem": {
-      const text = Array.isArray(block.content) ? inlineContentToMarkdown(block.content) : "";
-      lines.push(`${prefix}- ${text}`);
+      lines.push(`${prefix}- ${lineText(block)}`);
       break;
     }
 
     case "numberedListItem": {
-      const text = Array.isArray(block.content) ? inlineContentToMarkdown(block.content) : "";
-      lines.push(`${prefix}1. ${text}`);
+      lines.push(`${prefix}1. ${lineText(block)}`);
       break;
     }
 
     case "checkListItem": {
       const checked = (block.props?.checked as boolean) ?? false;
-      const text = Array.isArray(block.content) ? inlineContentToMarkdown(block.content) : "";
-      lines.push(`${prefix}- [${checked ? "x" : " "}] ${text}`);
+      lines.push(`${prefix}- [${checked ? "x" : " "}] ${lineText(block)}`);
       break;
     }
 
@@ -200,7 +258,17 @@ function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
           : "";
       const fence = codeFence(text);
       lines.push(`${prefix}${fence}${language}`);
-      lines.push(text);
+      // Content lines carry the fence's indent, as CommonMark expects inside a
+      // list item, and the parser strips it again. Empty lines stay empty.
+      // Lines are split on "\n" only, as the parser splits them.
+      lines.push(
+        prefix
+          ? text
+              .split("\n")
+              .map((line) => (line ? prefix + line : line))
+              .join("\n")
+          : text,
+      );
       lines.push(`${prefix}${fence}`);
       break;
     }
@@ -240,19 +308,23 @@ function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
 
     default: {
       // Unknown block type: render as paragraph to avoid data loss
-      const text = Array.isArray(block.content) ? inlineContentToMarkdown(block.content) : "";
+      const text = lineText(block);
       if (text) lines.push(`${prefix}${escapeLineStart(text)}`);
       break;
     }
   }
 
-  // Render nested children with increased indent
+  // Render nested children with increased indent. A block that emits no
+  // visible line (an empty paragraph, a table with no rows) vanishes on
+  // parse, so its children keep its own indent: indented further, they would
+  // nest under the block before it.
+  const childIndent = lines.some((line) => line.trim() !== "") ? indent + 1 : indent;
   if (block.children && block.children.length > 0) {
     block.children.forEach((child, i) => {
       // Siblings are joined without a blank line, so two tables in a row
       // would read back as one table.
       if (child.type === "table" && block.children?.[i - 1]?.type === "table") lines.push("");
-      lines.push(blockToMarkdown(child, indent + 1));
+      lines.push(blockToMarkdown(child, childIndent));
     });
   }
 
@@ -279,6 +351,22 @@ function parseLine(line: string): ParsedLine {
   // Normalize indent: 2 spaces or 1 tab = 1 level
   const indent = Math.floor(raw.replace(/\t/g, "  ").length / 2);
   return { indent, content: match?.[2] ?? "" };
+}
+
+// Columns of a line's leading whitespace, a tab counting as 2 like parseLine.
+function indentWidth(line: string): number {
+  return (line.match(/^\s*/)?.[0] ?? "").replace(/\t/g, "  ").length;
+}
+
+// CommonMark: a fence's content lines lose up to the fence's own indentation.
+function stripFenceIndent(line: string, width: number): string {
+  let i = 0;
+  let column = 0;
+  while (column < width && (line[i] === " " || line[i] === "\t")) {
+    column += line[i] === "\t" ? 2 : 1;
+    i++;
+  }
+  return line.slice(i);
 }
 
 type Styles = Record<string, boolean>;
@@ -575,15 +663,17 @@ export function markdownToBlockNote(markdown: string): BlockNoteBlock[] {
 
     const { indent, content } = parseLine(line);
 
-    // Fenced code block. Content lines are read verbatim, indentation included.
+    // Fenced code block. Content lines are read verbatim, apart from the
+    // fence's own indentation.
     const codeMatch = content.match(/^(`{3,})(\w*)/);
     if (codeMatch) {
       const fenceLength = codeMatch[1].length;
       const language = codeMatch[2] || "";
+      const fenceIndent = indentWidth(line);
       const codeLines: string[] = [];
       i++;
       while (i < lines.length && !isClosingFence(lines[i], fenceLength)) {
-        codeLines.push(lines[i]);
+        codeLines.push(stripFenceIndent(lines[i], fenceIndent));
         i++;
       }
       i++; // skip closing fence

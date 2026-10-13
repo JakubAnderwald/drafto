@@ -537,6 +537,41 @@ describe("round-trip stability", () => {
       },
     );
 
+    // An empty or whitespace-only paragraph emits no visible line and vanishes
+    // on parse; its children must not nest under the block before it.
+    it.each([
+      ["empty", []],
+      ["whitespace-only", [text("  ")]],
+      ["bold-space", [text(" ", { bold: true })]],
+    ])("keeps the children of a vanishing %s paragraph at its depth", (_, content) => {
+      const vanishing = (children: BlockNoteBlock[]): BlockNoteBlock => ({
+        type: "paragraph",
+        content: content as BlockNoteBlock["content"],
+        children,
+      });
+      expect(
+        markdownToBlockNote(
+          blockNoteToMarkdown([
+            item("bulletListItem", "a"),
+            vanishing([item("bulletListItem", "child", [item("bulletListItem", "grandchild")])]),
+          ]),
+        ),
+      ).toEqual([
+        item("bulletListItem", "a"),
+        item("bulletListItem", "child", [item("bulletListItem", "grandchild")]),
+      ]);
+      expect(
+        markdownToBlockNote(
+          blockNoteToMarkdown([
+            item("bulletListItem", "a", [
+              item("paragraph", "b"),
+              vanishing([item("paragraph", "c")]),
+            ]),
+          ]),
+        ),
+      ).toEqual([item("bulletListItem", "a", [item("paragraph", "b"), item("paragraph", "c")])]);
+    });
+
     it("keeps a nested paragraph starting with whitespace at its own depth", () => {
       expect(
         markdownToBlockNote(
@@ -638,7 +673,7 @@ describe("round-trip stability", () => {
       expect(blockNoteToMarkdown(blocks)).toBe(markdown);
       const parsed = markdownToBlockNote(markdown);
       expect(parsed.map((b) => b.type)).toEqual(blocks.map((b) => b.type));
-      // A paragraph's leading whitespace is dropped on emit (see escapeLineStart).
+      // A paragraph's leading whitespace is dropped on emit (see normalizeInline).
       expect(plainText(parsed)).toBe(plainText(blocks).trimStart());
       expectMarkdownToBeStable(markdown);
     }
@@ -738,6 +773,52 @@ describe("round-trip stability", () => {
       };
       expect(blockNoteToMarkdown([paragraph([text("a"), link])])).toBe(
         "a[ **x** ](https://x.test)",
+      );
+    });
+
+    // Markdown that reads back with moved whitespace settles in one round trip:
+    // the whitespace the block parser drops is dropped on emit, and escaping
+    // sees the merged text a re-parse produces.
+    it.each([
+      ["- * x*"],
+      ["# * x*"],
+      ["1. ** x**"],
+      ["- [ ] ~~ x~~"],
+      ["| * x* | y |\n| --- | --- |"],
+      ["| a\\ | b |\n| --- | --- |"],
+      ["**a **~b"],
+      ["~b** a**"],
+      ["\\\\* *"],
+      ["a\\* *b*"],
+    ])("settles %j after one round trip", (md) => {
+      expectMarkdownToBeStable(blockNoteToMarkdown(markdownToBlockNote(md)));
+    });
+
+    it("emits no whitespace after a line marker or at a table cell's edges", () => {
+      expect(
+        blockNoteToMarkdown([
+          { ...item("bulletListItem", ""), content: [text(" x", { italic: true })] },
+          { ...item("heading", "", [], { level: 1 }), content: [text("  x")] },
+          {
+            type: "table",
+            content: {
+              type: "tableContent",
+              rows: [{ cells: [[text(" x ", { bold: true })], [text(" y ")]] }],
+            },
+            children: [],
+          },
+        ]),
+      ).toBe("- *x*\n\n# x\n\n| **x** | y |\n| --- | --- |");
+    });
+
+    it("escapes a `~` or `\\` by the text it ends up next to", () => {
+      // The space moved out of the bold node joins "~b", so `~` is no longer at an edge.
+      expect(blockNoteToMarkdown([paragraph([text("a ", { bold: true }), text("~b")])])).toBe(
+        "**a** ~b",
+      );
+      // A backslash followed by the moved space is not an escape, so it stays as is.
+      expect(blockNoteToMarkdown([paragraph([text("a\\"), text(" b", { italic: true })])])).toBe(
+        "a\\ *b*",
       );
     });
   });
@@ -959,14 +1040,36 @@ describe("round-trip stability", () => {
     it("parses a fenced block indented under a list item as that item's code block child", () => {
       // How LLM clients usually write numbered steps with commands.
       const blocks = markdownToBlockNote(
-        "1. Install\n   ```bash\n   npm install\n   ```\n2. Run\n  ```\n  npm test\n  ```",
+        "1. Install\n   ```bash\n   npm install\n     --save\n   ```\n2. Run\n  ```\n  npm test\n  ```",
       );
-      // Content lines are read verbatim, so they keep the list's indentation.
+      // As in CommonMark, content lines lose up to the fence's own indentation.
       expect(blocks).toEqual([
-        item("numberedListItem", "Install", [code("   npm install", "bash")]),
-        item("numberedListItem", "Run", [code("  npm test")]),
+        item("numberedListItem", "Install", [code("npm install\n  --save", "bash")]),
+        item("numberedListItem", "Run", [code("npm test")]),
       ]);
       expectBlocksToRoundTrip(blocks);
+    });
+
+    it("indents a nested code block's content lines to its fence", () => {
+      const blocks = [
+        item("bulletListItem", "a", [item("bulletListItem", "b", [code("x\n\n  y\n\tz", "ts")])]),
+      ];
+      expect(blockNoteToMarkdown(blocks)).toBe(
+        "- a\n  - b\n    ```ts\n    x\n\n      y\n    \tz\n    ```",
+      );
+      expectBlocksToRoundTrip(blocks);
+    });
+
+    it.each([["  leading"], ["\ttab"], ["a\r\n  b\r"], ["a   b"], [" \n  \n"]])(
+      "keeps the nested content %j byte-identical",
+      (value) => {
+        expectBlocksToRoundTrip([item("numberedListItem", "a", [code(value)])]);
+      },
+    );
+
+    it("strips a hand-written top-level fence's indentation from its content", () => {
+      expect(markdownToBlockNote(" ```\n x\n  y\nz\n ```")).toEqual([code("x\n y\nz")]);
+      expect(markdownToBlockNote("```\n  x\n```")).toEqual([code("  x")]);
     });
 
     it("keeps an empty code block", () => {

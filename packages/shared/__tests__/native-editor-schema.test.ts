@@ -226,7 +226,7 @@ const fixtures: Fixture[] = [
       ].join("\n"),
     ),
     expected: [
-      block("numberedListItem", "Install", [block("paragraph", "   npm install")]),
+      block("numberedListItem", "Install", [block("paragraph", "npm install")]),
       block("numberedListItem", "Check", [
         check("a", false, [check("b", true, [check("c", false)])]),
       ]),
