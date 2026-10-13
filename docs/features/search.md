@@ -83,7 +83,7 @@ set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e -
 # Mobile (unit + Maestro)
 cd apps/mobile && pnpm test -- use-search
 maestro test apps/mobile/e2e/search.yaml --platform android
-maestro test apps/mobile/e2e/ios-only/search.yaml --platform ios
+maestro test apps/mobile/e2e/ios-only/search.yaml --platform ios -e RUN_ID=$(date +%s)
 
 # Desktop
 cd apps/desktop && pnpm test -- use-search search-overlay

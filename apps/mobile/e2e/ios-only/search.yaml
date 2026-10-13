@@ -2,12 +2,39 @@ appId: eu.drafto.mobile
 ---
 # iOS search flow
 # Assumes user is already logged in (run after 01-login or ios-all)
-# Run with: maestro test apps/mobile/e2e/ios-only/search.yaml --platform ios
+# Pass -e RUN_ID=<timestamp> so the note it searches for is unique to this run.
+# Run with: maestro test apps/mobile/e2e/ios-only/search.yaml --platform ios -e RUN_ID=$(date +%s)
 
 - launchApp
 - extendedWaitUntil:
     visible: "Notebooks"
     timeout: 30000
+
+# Create a note to search for, so the result and its sheet are always tested
+- tapOn:
+    id: "add"
+- assertVisible: "Notebook name"
+- inputText: "Search NB ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*Search NB ${RUN_ID}"
+    timeout: 10000
+- tapOn: ".*Search NB ${RUN_ID}"
+- tapOn:
+    id: "add"
+- assertVisible: "Note title (optional)"
+- inputText: "Findable ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*Findable ${RUN_ID}.*"
+    timeout: 10000
+- tapOn: "Notebooks"
+- extendedWaitUntil:
+    visible:
+      id: "search-button"
+    timeout: 10000
 
 # Open search screen (tap the search button by testID)
 - tapOn:
@@ -16,40 +43,33 @@ appId: eu.drafto.mobile
     visible: "Search"
     timeout: 10000
 
-# Type a search query
+# Type a search query that matches the note created above
 - tapOn: "Search notes and notebooks..."
-- inputText: "test"
-
-# Verify search executed — either results or empty state is acceptable
+- inputText: "Findable ${RUN_ID}"
 - extendedWaitUntil:
-    visible: "No notes found"
+    visible:
+      id: "search-result"
     timeout: 10000
-    optional: true
 
 # A note opened from Search is a sheet of its own on iOS, with a close button
-# that returns to the results. Skipped when the query matched nothing.
-- runFlow:
-    when:
-      visible:
-        id: "search-result"
-    commands:
-      - tapOn:
-          id: "search-result"
-          index: 0
-      - extendedWaitUntil:
-          visible:
-            id: "note-sheet-close"
-          timeout: 10000
-      - tapOn:
-          id: "note-sheet-close"
-      # "Search" stays in the hierarchy behind the note's sheet, so check that
-      # the sheet's own button has gone rather than that Search is visible.
-      - extendedWaitUntil:
-          notVisible:
-            id: "note-sheet-close"
-          timeout: 10000
-      - assertVisible:
-          id: "search-close"
+# that returns to the results. The keyboard is still up: one tap must open it.
+- tapOn:
+    id: "search-result"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "note-sheet-close"
+    timeout: 10000
+- tapOn:
+    id: "note-sheet-close"
+# "Search" stays in the hierarchy behind the note's sheet, so check that the
+# sheet's own button has gone rather than that Search is visible.
+- extendedWaitUntil:
+    notVisible:
+      id: "note-sheet-close"
+    timeout: 10000
+- assertVisible:
+    id: "search-close"
 
 # Close the search sheet with its close button
 - tapOn:
