@@ -599,11 +599,18 @@ describe("round-trip stability", () => {
       expectBlocksToRoundTrip([
         paragraph([text("a", { bold: true, italic: true }), text("b", { bold: true })]),
       ]);
-      expectBlocksToRoundTrip([
-        paragraph([text("a ", { bold: true }), text("b", { bold: true, italic: true })]),
-      ]);
       expectMarkdownToBeStable("**a****b**");
       expectMarkdownToBeStable("*a***b**");
+    });
+
+    it("moves a styled node's trailing space out between two styled nodes", () => {
+      const blocks = [
+        paragraph([text("a ", { bold: true }), text("b", { bold: true, italic: true })]),
+      ];
+      expect(blockNoteToMarkdown(blocks)).toBe("**a** ***b***");
+      expect(markdownToBlockNote(blockNoteToMarkdown(blocks))).toEqual([
+        paragraph([text("a", { bold: true }), text(" "), text("b", { bold: true, italic: true })]),
+      ]);
     });
 
     it("parses a styled span holding more nodes than a call takes arguments", () => {
@@ -619,6 +626,119 @@ describe("round-trip stability", () => {
       expectBlocksToRoundTrip([
         paragraph([text("*", { italic: true }), text("**x**", { bold: true })]),
       ]);
+    });
+  });
+
+  describe("whitespace at the edges of styled text", () => {
+    const plainText = (blocks: BlockNoteBlock[]) =>
+      (blocks[0].content as { text: string }[]).map((node) => node.text).join("");
+
+    // Each case must keep its block type and text, and its Markdown must be stable.
+    function expectStyledWhitespaceToRoundTrip(blocks: BlockNoteBlock[], markdown: string) {
+      expect(blockNoteToMarkdown(blocks)).toBe(markdown);
+      const parsed = markdownToBlockNote(markdown);
+      expect(parsed.map((b) => b.type)).toEqual(blocks.map((b) => b.type));
+      // A paragraph's leading whitespace is dropped on emit (see escapeLineStart).
+      expect(plainText(parsed)).toBe(plainText(blocks).trimStart());
+      expectMarkdownToBeStable(markdown);
+    }
+
+    it.each([
+      ["italic", { italic: true }, "*"],
+      ["bold", { bold: true }, "**"],
+      ["strike", { strike: true }, "~~"],
+      ["bold italic", { bold: true, italic: true }, "***"],
+    ])("keeps %s text with edge spaces at the start of a paragraph a paragraph", (_, styles, d) => {
+      expectStyledWhitespaceToRoundTrip(
+        [paragraph([text(" x ", styles), text("y")])],
+        `${d}x${d} y`,
+      );
+      expectStyledWhitespaceToRoundTrip(
+        [paragraph([text("x ", styles), text("y")])],
+        `${d}x${d} y`,
+      );
+    });
+
+    it.each([
+      ["italic", { italic: true }, "*"],
+      ["bold", { bold: true }, "**"],
+      ["strike", { strike: true }, "~~"],
+    ])("keeps %s text with edge spaces mid-line in place", (_, styles, d) => {
+      expectStyledWhitespaceToRoundTrip(
+        [paragraph([text("a"), text(" x ", styles), text("b")])],
+        `a ${d}x${d} b`,
+      );
+      expectStyledWhitespaceToRoundTrip(
+        [paragraph([text("a"), text("\tx  ", styles), text("b")])],
+        `a\t${d}x${d}  b`,
+      );
+    });
+
+    it("keeps an italic node starting with a space at the start of a paragraph out of a bullet", () => {
+      // Before, this emitted `* x*`, which read back as a bullet item `x*`.
+      expect(
+        markdownToBlockNote(blockNoteToMarkdown([paragraph([text(" x", { italic: true })])])),
+      ).toEqual([paragraph([text("x", { italic: true })])]);
+    });
+
+    it("keeps styled text with edge spaces in list items, check items and headings", () => {
+      expectBlocksToRoundTrip([
+        { ...item("bulletListItem", ""), content: [text("x", { italic: true }), text(" y")] },
+      ]);
+      expect(
+        markdownToBlockNote(
+          blockNoteToMarkdown([
+            { ...item("bulletListItem", ""), content: [text(" x", { italic: true })] },
+            {
+              ...item("checkListItem", "", [], { checked: true }),
+              content: [text(" x ", { bold: true })],
+            },
+            { ...item("heading", "", [], { level: 2 }), content: [text(" x", { strike: true })] },
+          ]),
+        ),
+      ).toEqual([
+        { ...item("bulletListItem", ""), content: [text("x", { italic: true })] },
+        // The trailing space now follows the delimiter, so it reads back as plain text.
+        {
+          ...item("checkListItem", "", [], { checked: true }),
+          content: [text("x", { bold: true }), text(" ")],
+        },
+        { ...item("heading", "", [], { level: 2 }), content: [text("x", { strike: true })] },
+      ]);
+    });
+
+    it("keeps the spaces inside a code span", () => {
+      expectBlocksToRoundTrip([paragraph([text("a "), text(" x ", { code: true }), text(" b")])]);
+      expectBlocksToRoundTrip([paragraph([text(" x ", { code: true, bold: true })])]);
+      expect(blockNoteToMarkdown([paragraph([text(" x ", { code: true, italic: true })])])).toBe(
+        "*` x `*",
+      );
+    });
+
+    it("drops the style of a styled node holding only whitespace", () => {
+      const blocks = [paragraph([text("a"), text("  ", { italic: true }), text("b")])];
+      expect(blockNoteToMarkdown(blocks)).toBe("a  b");
+      expect(markdownToBlockNote(blockNoteToMarkdown(blocks))).toEqual([paragraph([text("a  b")])]);
+    });
+
+    it("escapes a backslash that ends up next to the closing delimiter", () => {
+      const blocks = [paragraph([text("a\\ ", { italic: true }), text("b")])];
+      expect(blockNoteToMarkdown(blocks)).toBe("*a\\\\* b");
+      expect(markdownToBlockNote(blockNoteToMarkdown(blocks))).toEqual([
+        paragraph([text("a\\", { italic: true }), text(" b")]),
+      ]);
+    });
+
+    it("keeps styled link text with edge spaces inside the link", () => {
+      const link = {
+        type: "link" as const,
+        text: " x ",
+        href: "https://x.test",
+        content: [text(" x ", { bold: true })],
+      };
+      expect(blockNoteToMarkdown([paragraph([text("a"), link])])).toBe(
+        "a[ **x** ](https://x.test)",
+      );
     });
   });
 
@@ -834,6 +954,19 @@ describe("round-trip stability", () => {
 
     it("round-trips a code block nested under a list item", () => {
       expectBlocksToRoundTrip([item("bulletListItem", "a", [code("x\n  ```\ny", "ts")])]);
+    });
+
+    it("parses a fenced block indented under a list item as that item's code block child", () => {
+      // How LLM clients usually write numbered steps with commands.
+      const blocks = markdownToBlockNote(
+        "1. Install\n   ```bash\n   npm install\n   ```\n2. Run\n  ```\n  npm test\n  ```",
+      );
+      // Content lines are read verbatim, so they keep the list's indentation.
+      expect(blocks).toEqual([
+        item("numberedListItem", "Install", [code("   npm install", "bash")]),
+        item("numberedListItem", "Run", [code("  npm test")]),
+      ]);
+      expectBlocksToRoundTrip(blocks);
     });
 
     it("keeps an empty code block", () => {

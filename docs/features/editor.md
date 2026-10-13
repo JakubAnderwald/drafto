@@ -1,6 +1,6 @@
 # Editor
 
-**Status:** shipped **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-10-13
 
 ## What it is
 
@@ -42,6 +42,8 @@ Shipped on all four platforms.
 | Auto-save unit tests                           | `apps/web/__tests__/unit/use-auto-save.test.ts`, `apps/desktop/__tests__/hooks/use-auto-save.test.ts` |
 | Web editor integration tests                   | `apps/web/__tests__/integration/note-editor.test.tsx`, `note-editor-panel.test.tsx`                   |
 | Shared editor tests                            | `packages/shared/src/editor/__tests__/markdown-converter.test.ts`, `extract-text.test.ts`             |
+| Native editor schema tests (headless)          | `packages/shared/__tests__/native-editor-schema.test.ts`, `format-converter.test.ts`                  |
+| Nested-lists device check (local-only)         | `apps/mobile/e2e/run-nested-lists-e2e.sh`, `08-nested-lists.yaml`                                     |
 | Mobile editor screen test                      | `apps/mobile/__tests__/screens/editor.test.tsx`                                                       |
 
 ## Related ADRs
@@ -57,6 +59,8 @@ Shipped on all four platforms.
 - **Auto-save hooks diverge** by signature. Web's hook is coupled to `fetch('/api/notes/:id')`; mobile/desktop's hook takes a generic `onSave` callback (WatermelonDB write). Both debounce with `DEBOUNCE_MS = 500`.
 - **Attachments** use the `attachment://<path>` scheme everywhere. Web resolves to signed URLs server-side on read and via `useAttachmentUrlResolver` in the editor; mobile uses `resolveTipTapImageUrls`.
 - **Markdown converter** is the single path for MCP tools, Evernote import output, and any future Markdown-based integration. It does not round-trip losslessly — underline has no Markdown equivalent and is dropped.
+- **Nesting between BlockNote and TipTap** (`format-converter.ts`). In TipTap only list items hold nested blocks (`listItem` and `taskItem` are `paragraph block*`). A list item's children stay nested and keep their own type and `checked` state. The children of any other block (paragraph, heading, code block, table, image, file) follow it as siblings, so a native edit flattens that one level without losing content. A code block reached through `children` becomes a paragraph holding its text, and a nested table becomes an empty paragraph, so a native save drops its cells.
+- **The native editor has no code block or table node.** Mobile and desktop load tentap's prebuilt WebView bundle, whose schema has no `codeBlock`, `table`, `tableRow` or `tableCell`. Given content with a node it doesn't know, TipTap logs `[tiptap warn]: Invalid content.` and loads an empty document. That is why nested code blocks and tables become paragraphs. Top-level ones are still emitted as their own nodes, so a note that has one opens empty on mobile and desktop: a known, separate bug. `native-editor-schema.test.ts` builds the bundle's schema headlessly and checks the converter's output loads into it, survives an edit, and reads back nested.
 
 ## Modifying safely
 
@@ -70,6 +74,7 @@ Shipped on all four platforms.
   - `apps/web/__tests__/unit/use-auto-save.test.ts` — debounce, concurrent save queuing, unmount flush.
   - `apps/web/__tests__/integration/note-editor.test.tsx`, `note-editor-panel.test.tsx`.
   - `packages/shared/src/editor/__tests__/markdown-converter.test.ts` — BlockNote ↔ Markdown round-trip.
+  - `packages/shared/__tests__/format-converter.test.ts`, `native-editor-schema.test.ts` — BlockNote ↔ TipTap, nesting, and what the native editor's schema accepts.
   - `apps/desktop/__tests__/hooks/use-auto-save.test.ts`, `apps/mobile/__tests__/screens/editor.test.tsx`.
 - Files that must change together:
   - Changing BlockNote block shape → update `packages/shared/src/editor/types.ts`, `format-converter.ts`, `markdown-converter.ts`, `extract-text.ts`, and `apps/web/src/app/api/notes/[id]/route.ts` (defensive conversion).
@@ -91,4 +96,7 @@ set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e -
 # Mobile and desktop
 cd apps/mobile && pnpm test
 cd apps/desktop && pnpm test
+
+# Nested lists on a device (local-only: iOS Simulator with the app installed and signed in)
+bash apps/mobile/e2e/run-nested-lists-e2e.sh
 ```

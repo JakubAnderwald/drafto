@@ -1,0 +1,81 @@
+appId: eu.drafto.mobile
+---
+# Flow 08: Nested lists survive a mobile edit (issue #465)
+#
+# Opens a note seeded by the Playwright test "create a nested-list note for
+# mobile testing" (title: "XPlat Nested <RUN_ID>"): to-dos nested three deep
+# (Nested item A > B > C) and a bullet with a check child. Checks that the
+# nested items render, types " <RUN_ID>" into the deepest one, and waits for
+# the save. The Playwright test "verify nested lists survive a mobile edit"
+# then checks the nesting, checked states and edit through the API.
+#
+# Run it through run-nested-lists-e2e.sh, which seeds the note first. On a
+# build from before the fix this flow fails at "Nested item B": the app
+# dropped a check item's children when it loaded the note.
+#
+# Depends on: 01-login (user is logged in)
+# Required env:
+#   -e RUN_ID=<timestamp> (must match the Playwright seed test)
+#   -e NOTEBOOK_NAME=<name> (notebook containing the note)
+
+- launchApp
+
+# Wait for the app to load (Android with async WatermelonDB can take >30s)
+- extendedWaitUntil:
+    visible: "Notebooks"
+    timeout: 60000
+
+# Pull-to-refresh to sync notebooks from the server
+- swipe:
+    direction: DOWN
+    duration: 1000
+
+- extendedWaitUntil:
+    visible: ".*${NOTEBOOK_NAME}.*"
+    timeout: 20000
+
+- tapOn: ".*${NOTEBOOK_NAME}.*"
+
+- extendedWaitUntil:
+    visible: "Notes"
+    timeout: 10000
+
+# Pull-to-refresh to sync notes from the server
+- swipe:
+    direction: DOWN
+    duration: 1000
+
+# Wait for the note (retry sync if needed)
+- extendedWaitUntil:
+    visible: ".*XPlat Nested ${RUN_ID}.*"
+    timeout: 20000
+    optional: true
+
+- swipe:
+    direction: DOWN
+    duration: 1000
+    optional: true
+
+- extendedWaitUntil:
+    visible: ".*XPlat Nested ${RUN_ID}.*"
+    timeout: 20000
+
+- tapOn: ".*XPlat Nested ${RUN_ID}.*"
+
+# --- The nested items render in the editor (a WebView) ---
+- extendedWaitUntil:
+    visible: ".*Nested item A.*"
+    timeout: 15000
+- assertVisible: ".*Nested item B.*"
+- assertVisible: ".*Nested item C.*"
+- assertVisible: ".*Bullet child.*"
+
+# --- Edit the deepest item ---
+# Digits only: autocapitalisation and autocorrect leave them alone.
+- tapOn: ".*Nested item C.*"
+- inputText: " ${RUN_ID}"
+
+# Auto-save writes the note, then the app syncs it to the server
+- extendedWaitUntil:
+    visible: ".*Saved.*"
+    timeout: 15000

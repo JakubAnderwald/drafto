@@ -108,14 +108,29 @@ function inlineContentToMarkdown(inlineContent: BlockNoteInlineContent[]): strin
 
 function inlineItemToMarkdown(item: BlockNoteInlineContent): string {
   let text: string;
+  // Whitespace at the edges of a styled node, emitted outside its delimiters.
+  let leading = "";
+  let trailing = "";
   if (item.type === "link" && item.content?.length) {
     text = item.content.map(inlineItemToMarkdown).join("");
   } else {
-    const raw = item.text ?? "";
+    let raw = item.text ?? "";
+    if (item.styles?.code) {
+      // Code spans are literal (escapes inside them are not processed) and keep their spaces.
+      text = raw;
+    } else {
+      if (item.styles?.bold || item.styles?.italic || item.styles?.strike) {
+        // `* x*` is not emphasis, and at the start of a line it reads as a
+        // bullet, so a delimiter must touch the text it wraps.
+        const trimmed = raw.trim();
+        leading = raw.slice(0, raw.length - raw.trimStart().length);
+        trailing = raw.slice(leading.length + trimmed.length);
+        raw = trimmed;
+      }
+      text = escapeInlineText(raw);
+    }
     // An empty styled node would emit bare delimiters (`****`) that re-parse as text.
-    if (!raw && item.type !== "link") return "";
-    // Code spans are literal: escapes inside them are not processed.
-    text = item.styles?.code ? raw : escapeInlineText(raw);
+    if (!raw && item.type !== "link") return leading + trailing;
   }
 
   if (item.styles) {
@@ -130,7 +145,7 @@ function inlineItemToMarkdown(item: BlockNoteInlineContent): string {
     text = `[${text}](${formatDestination(item.href)})`;
   }
 
-  return text;
+  return leading + text + trailing;
 }
 
 // GFM: a `|` inside a cell is escaped, code spans included; the parser
