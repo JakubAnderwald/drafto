@@ -86,13 +86,13 @@ maestro test apps/mobile/e2e/ios-only/ --platform ios -e RUN_ID=$(date +%s)
 
 ### iOS-only
 
-| Flow                                     | Description                                             |
-| ---------------------------------------- | ------------------------------------------------------- |
-| `ios-all.yaml`                           | Combined flow: login + notebooks + notes + nav          |
-| `ios-only/05-offline-mode.yaml`          | Airplane mode, offline note creation, sync on reconnect |
-| `ios-only/06-offline-notebook-sync.yaml` | Offline notebook + note creation, sync verification     |
-| `ios-only/search.yaml`                   | Search, a result's sheet, and both close buttons        |
-| `ios-only/07-attach-image.yaml`          | Attach a photo, toast below the header, "All synced"    |
+| Flow                                     | Description                                              |
+| ---------------------------------------- | -------------------------------------------------------- |
+| `ios-all.yaml`                           | Combined flow: login + notebooks + notes + nav           |
+| `ios-only/05-offline-mode.yaml`          | Airplane mode, offline note creation, sync on reconnect  |
+| `ios-only/06-offline-notebook-sync.yaml` | Offline notebook + note creation, sync verification      |
+| `ios-only/search.yaml`                   | Search, a result's sheet, and both close buttons         |
+| `ios-only/07-attach-image.yaml`          | iPhone: attach a photo, toast below header, "All synced" |
 
 ## Platform differences
 

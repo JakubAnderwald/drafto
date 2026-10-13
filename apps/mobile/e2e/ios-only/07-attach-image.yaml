@@ -4,6 +4,8 @@ appId: eu.drafto.mobile
 # Guards the 1.4.4 regression where pushing an attachment failed on every sync
 # ("N pending changes" that never cleared) and the toast covered the back button.
 # Assumes user is already logged in (run after 01-login or ios-all).
+# iPhone simulator only: on iPad the system photo picker runs out of process and
+# Maestro can't see its cells (checked on the iOS 27 iPad Pro 11").
 # Grant photo access first, or the system prompt (which Maestro can't always
 # see) blocks the picker:
 #   xcrun simctl privacy booted grant photos eu.drafto.mobile
@@ -47,13 +49,16 @@ appId: eu.drafto.mobile
     visible: "Attach image"
     timeout: 20000
 
-# Pick the photo: the first cell of the system picker's grid
+# Pick the photo. The picker labels each cell "Photo, <date>, <time>"
+# ("Zdjęcie, ..." on a Polish simulator), newest first, so the first match is
+# the one added above, on any device size.
 - tapOn: "Attach image"
 - tapOn:
     text: "Allow Full Access"
     optional: true
 - tapOn:
-    point: "17%,22%"
+    text: "(Photo|Zdjęcie), .*"
+    index: 0
 
 # Uploaded, and the toast sits below the header: the back button stays visible
 - extendedWaitUntil:
