@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert, StyleSheet } from "react-native";
+import { Alert, KeyboardAvoidingView, Platform, ScrollView, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
@@ -175,6 +175,19 @@ describe("LoginScreen", () => {
       );
     } finally {
       insets.mockReturnValue({ top: 0, bottom: 0, left: 0, right: 0 });
+    }
+  });
+
+  it("makes room for the keyboard without re-laying the form out on iOS", () => {
+    // A KeyboardAvoidingView here made the form jitter when a field was focused.
+    const platformOs = jest.replaceProperty(Platform, "OS", "ios");
+    try {
+      const { UNSAFE_getByType, UNSAFE_queryByType } = render(<LoginScreen />);
+
+      expect(UNSAFE_queryByType(KeyboardAvoidingView)).toBeNull();
+      expect(UNSAFE_getByType(ScrollView).props.automaticallyAdjustKeyboardInsets).toBe(true);
+    } finally {
+      platformOs.restore();
     }
   });
 

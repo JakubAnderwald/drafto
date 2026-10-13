@@ -26,10 +26,29 @@ appId: eu.drafto.mobile
     timeout: 10000
     optional: true
 
-# Dismiss the search modal (iOS: swipe down to dismiss)
-- swipe:
-    direction: DOWN
-    duration: 500
+# A note opened from Search is a sheet of its own on iOS, with a close button
+# that returns to the results. Skipped when the query matched nothing.
+- runFlow:
+    when:
+      visible:
+        id: "search-result"
+    commands:
+      - tapOn:
+          id: "search-result"
+          index: 0
+      - extendedWaitUntil:
+          visible:
+            id: "note-sheet-close"
+          timeout: 10000
+      - tapOn:
+          id: "note-sheet-close"
+      - extendedWaitUntil:
+          visible: "Search"
+          timeout: 10000
+
+# Close the search sheet with its close button
+- tapOn:
+    id: "search-close"
 - extendedWaitUntil:
     visible: "Notebooks"
     timeout: 10000

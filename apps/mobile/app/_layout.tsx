@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { ActivityIndicator, LogBox, View, StyleSheet } from "react-native";
+import { ActivityIndicator, LogBox, Platform, View, StyleSheet } from "react-native";
 import { Stack, useSegments, useRouter } from "expo-router";
 
 LogBox.ignoreAllLogs();
@@ -10,7 +10,9 @@ import { DatabaseProvider } from "@/providers/database-provider";
 import { configureGoogleSignIn } from "@/lib/oauth";
 import { ThemeProvider, useTheme } from "@/providers/theme-provider";
 import { OfflineBanner } from "@/components/offline-banner";
+import { HeaderCloseButton } from "@/components/navigation/header-close-button";
 import { ToastProvider } from "@/components/toast";
+import { isOpenedFromSearch } from "@/lib/note-from-search";
 import { colors } from "@/theme/tokens";
 import { markStartupBegin, markStartupEnd } from "@/lib/performance";
 
@@ -99,6 +101,28 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+// An iOS sheet's first screen has no back button. Search is a sheet, and a note
+// opened from it is presented as another sheet over it, so both get a close
+// button there. Android shows them as ordinary screens with a back arrow.
+const sheetCloseButton = (testID: string) =>
+  Platform.OS === "ios" ? () => <HeaderCloseButton testID={testID} /> : undefined;
+
+function searchScreenOptions() {
+  return {
+    title: "Search",
+    presentation: "modal" as const,
+    headerLeft: sheetCloseButton("search-close"),
+  };
+}
+
+function noteScreenOptions({ route }: { route: { params?: object } }) {
+  return {
+    title: "",
+    headerBackTitle: "Notes",
+    headerLeft: isOpenedFromSearch(route.params) ? sheetCloseButton("note-sheet-close") : undefined,
+  };
+}
+
 function ThemedStack() {
   const { semantic, isDark } = useTheme();
 
@@ -141,8 +165,8 @@ function ThemedStack() {
           <Stack.Screen name="notebooks/[id]" options={{ title: "" }} />
           {/* The editor's title field is the title, so the header shows only the back
               button. Its label stays "Notes" rather than the notebook's name. */}
-          <Stack.Screen name="notes/[id]" options={{ title: "", headerBackTitle: "Notes" }} />
-          <Stack.Screen name="search" options={{ title: "Search", presentation: "modal" }} />
+          <Stack.Screen name="notes/[id]" options={noteScreenOptions} />
+          <Stack.Screen name="search" options={searchScreenOptions} />
         </Stack>
       </View>
       <StatusBar style={isDark ? "light" : "dark"} />

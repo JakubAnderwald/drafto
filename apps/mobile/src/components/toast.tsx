@@ -2,7 +2,8 @@ import { createContext, useContext, useCallback, useState, useRef, useEffect } f
 import { View, Text, StyleSheet, Animated } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { getDefaultHeaderHeight } from "@react-navigation/elements";
+import { useSafeAreaFrame, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
@@ -26,8 +27,8 @@ export const AUTO_DISMISS_MS = 4000;
 const ANIMATION_MS = 250;
 /**
  * Toasts drop into place from this far above it while fading in. It is no more
- * than the container's `spacing.sm` gap below the safe area, so the animation
- * never rises into the status bar.
+ * than the container's `spacing.sm` gap below the header, so the animation
+ * never rises over the header's buttons.
  */
 export const SLIDE_DISTANCE = -spacing.sm;
 /** Older toasts are dropped beyond this many, so a burst can't fill the screen. */
@@ -135,6 +136,10 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const toastsRef = useRef<ToastMessage[]>([]);
   const nextId = useRef(0);
   const insets = useSafeAreaInsets();
+  const frame = useSafeAreaFrame();
+  // The provider sits outside the navigator, so it can't measure the current
+  // screen's header; the standard header height is where every header ends.
+  const headerBottom = getDefaultHeaderHeight(frame, false, insets.top);
 
   const commit = useCallback((next: ToastMessage[]) => {
     toastsRef.current = next;
@@ -163,11 +168,11 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <ToastContext.Provider value={{ showToast }}>
       {children}
-      {/* Top of the screen: at the bottom they covered the add button and the
-          editor's attachment row. */}
+      {/* Just below the header: at the bottom they covered the add button and the
+          editor's attachment row, and inside the header they hid its back button. */}
       <View
         testID="toast-container"
-        style={[styles.container, { top: insets.top + spacing.sm }]}
+        style={[styles.container, { top: headerBottom + spacing.sm }]}
         pointerEvents="none"
       >
         {toasts.map((t) => (

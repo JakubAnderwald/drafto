@@ -39,6 +39,11 @@ jest.mock("expo-router", () => ({
 // useHeaderHeight throws outside a navigator)
 jest.mock("@react-navigation/elements", () => ({
   useHeaderHeight: jest.fn(() => 0),
+  // The library's phone-portrait heights: 44 on iOS, 64 on Android, plus the top inset.
+  getDefaultHeaderHeight: jest.fn((_layout, _modal, topInset) => {
+    const { Platform } = require("react-native");
+    return (Platform.OS === "ios" ? 44 : 64) + topInset;
+  }),
 }));
 
 // Mock @react-native-community/netinfo
@@ -58,6 +63,7 @@ jest.mock("react-native-safe-area-context", () => ({
     left: 0,
     right: 0,
   })),
+  useSafeAreaFrame: jest.fn(() => ({ x: 0, y: 0, width: 390, height: 844 })),
   SafeAreaProvider: ({ children }) => children,
 }));
 

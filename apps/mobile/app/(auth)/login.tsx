@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { Text, View, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
+import { Text, View, StyleSheet } from "react-native";
 import { Link } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ACCOUNT_DELETED_MESSAGE } from "@drafto/shared";
@@ -13,6 +13,7 @@ import type { SemanticColors } from "@/theme/tokens";
 import { OAuthButtons } from "@/components/auth/oauth-buttons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { KeyboardScrollView } from "@/components/ui/keyboard-scroll-view";
 
 export default function LoginScreen() {
   const { semantic } = useTheme();
@@ -60,100 +61,95 @@ export default function LoginScreen() {
   };
 
   return (
-    <KeyboardAvoidingView
-      style={[styles.flex, { paddingTop: topInset }]}
+    <KeyboardScrollView
+      style={{ paddingTop: topInset }}
       testID="login-screen"
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      contentContainerStyle={styles.container}
     >
-      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-        <Text style={styles.title}>Log In</Text>
-        <Text style={styles.subtitle}>Sign in to your Drafto account</Text>
+      <Text style={styles.title}>Log In</Text>
+      <Text style={styles.subtitle}>Sign in to your Drafto account</Text>
 
-        {accountDeleted && (
-          <View
-            style={styles.successContainer}
-            accessibilityRole="alert"
-            testID="account-deleted-notice"
-          >
-            <Text style={styles.successText}>{ACCOUNT_DELETED_MESSAGE}</Text>
-          </View>
-        )}
-
-        {error && (
-          <View style={styles.errorContainer}>
-            <Text style={styles.errorText}>{error}</Text>
-          </View>
-        )}
-
-        <View style={styles.form}>
-          <Input
-            label="Email"
-            placeholder="you@example.com"
-            value={email}
-            onChangeText={setEmail}
-            autoCapitalize="none"
-            autoComplete="email"
-            keyboardType="email-address"
-            textContentType="emailAddress"
-            editable={!loading}
-            containerStyle={styles.field}
-          />
-
-          <Input
-            label="Password"
-            placeholder="Your password"
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            autoCapitalize="none"
-            autoCorrect={false}
-            autoComplete="password"
-            textContentType="password"
-            editable={!loading}
-            onSubmitEditing={handleLogin}
-            containerStyle={styles.field}
-          />
-
-          <Button
-            title="Log in"
-            onPress={handleLogin}
-            loading={loading}
-            disabled={loading}
-            fullWidth
-            size="lg"
-            testID="login-button"
-            accessibilityLabel="Log in"
-            style={styles.submitButton}
-          />
+      {accountDeleted && (
+        <View
+          style={styles.successContainer}
+          accessibilityRole="alert"
+          testID="account-deleted-notice"
+        >
+          <Text style={styles.successText}>{ACCOUNT_DELETED_MESSAGE}</Text>
         </View>
+      )}
 
-        <OAuthButtons onError={(msg) => setError(msg)} />
+      {error && (
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>{error}</Text>
+        </View>
+      )}
 
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>
-            Don&apos;t have an account?{" "}
-            <Link href="/(auth)/signup" style={styles.link} testID="signup-link">
-              Sign up
-            </Link>
-          </Text>
-          <Link
-            href="/(auth)/forgot-password"
-            style={[styles.link, styles.forgotPasswordLink]}
-            testID="forgot-password-link"
-          >
-            Forgot your password?
+      <View style={styles.form}>
+        <Input
+          label="Email"
+          placeholder="you@example.com"
+          value={email}
+          onChangeText={setEmail}
+          autoCapitalize="none"
+          autoComplete="email"
+          keyboardType="email-address"
+          textContentType="emailAddress"
+          editable={!loading}
+          containerStyle={styles.field}
+        />
+
+        <Input
+          label="Password"
+          placeholder="Your password"
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry
+          autoCapitalize="none"
+          autoCorrect={false}
+          autoComplete="password"
+          textContentType="password"
+          editable={!loading}
+          onSubmitEditing={handleLogin}
+          containerStyle={styles.field}
+        />
+
+        <Button
+          title="Log in"
+          onPress={handleLogin}
+          loading={loading}
+          disabled={loading}
+          fullWidth
+          size="lg"
+          testID="login-button"
+          accessibilityLabel="Log in"
+          style={styles.submitButton}
+        />
+      </View>
+
+      <OAuthButtons onError={(msg) => setError(msg)} />
+
+      <View style={styles.footer}>
+        <Text style={styles.footerText}>
+          Don&apos;t have an account?{" "}
+          <Link href="/(auth)/signup" style={styles.link} testID="signup-link">
+            Sign up
           </Link>
-        </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+        </Text>
+        <Link
+          href="/(auth)/forgot-password"
+          style={[styles.link, styles.forgotPasswordLink]}
+          testID="forgot-password-link"
+        >
+          Forgot your password?
+        </Link>
+      </View>
+    </KeyboardScrollView>
   );
 }
 
 const createStyles = (semantic: SemanticColors) =>
   StyleSheet.create({
-    flex: {
-      flex: 1,
-    },
     container: {
       flexGrow: 1,
       alignItems: "center",
