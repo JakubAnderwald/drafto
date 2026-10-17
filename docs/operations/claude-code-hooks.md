@@ -65,7 +65,7 @@ The file wires up three hooks:
 
 The file also lists the always-denied Chrome tools under `permissions.deny`.
 
-Every hook command uses absolute paths to node and the guard and ends in `|| exit 2`, so a guard that can't run blocks the call instead of letting it through.
+Every hook command uses absolute paths to node and the guard. Only the PreToolUse command ends in `|| exit 2`, so a pre guard that can't run blocks the call instead of letting it through. SessionStart and PostToolUse always exit 0. A missing SessionStart record is caught by `verify`. A failed post poisons the session or leaves its in-flight marker, and either one makes the next pre deny.
 
 **`claude -p` drops a settings file that fails validation without saying so,** and would run the session with Chrome and no guard. The canary is the check. After each run, `browser-guard.mjs verify` looks for the SessionStart record. If it is missing, the factory turns the runner off until `factory:browser-reset`.
 

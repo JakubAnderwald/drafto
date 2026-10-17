@@ -2459,7 +2459,8 @@ preview_url_for_sha() {
 # here never fails the tick.
 browser_record_result() {
   node "$SCRIPT_DIR/lib/browser-health.mjs" record --state-file "$STATE_FILE" \
-    --result "$1" --to "$ADMIN_EMAIL" >>"$LOG_FILE" 2>&1 || true
+    --result "$1" --to "$ADMIN_EMAIL" --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
+    >>"$LOG_FILE" 2>&1 || true
 }
 
 # run_browser_task <kind> <run-dir> <target-origin> <bundle-json>
@@ -3997,6 +3998,10 @@ fi
 #      preview is reachable, advance the card to In Test and post the URL.
 # PHASE is guaranteed != "A" here (Phase A --watch no-op'd at the gate above).
 if [[ "$MODE_WATCH" -eq 1 ]]; then
+  # Clear the last tick's browser candidates before anything else, so a
+  # --watch that exits anywhere (a failed query, a session-limit pause) can
+  # never leave --browser a stale list. Only the In Test sweep refills it.
+  [[ "$DRY_RUN" -eq 1 ]] || : >"$BROWSER_CANDIDATES_FILE" 2>/dev/null || true
   WATCH_PROMPT_FILE="$SCRIPT_DIR/factory-watch-prompt.md"
   # Re-assert the In Test scenario prompt path for this mode. (It also has a
   # top-level default, so intest_handoff can never trip `set -u` on it.)
@@ -4400,10 +4405,6 @@ A human should take a look. Reset with \
     INTEST_BETA=$(intest_dispatch_betas "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "$INTEST_PLATFORMS" 2>>"$LOG_FILE" || echo '{"dispatched":[],"skipped":[],"manualCommands":[]}')
     intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$ADVISORY" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" "$INTEST_BETA" "$CR_NOTE" || true
   done
-
-  # Clear the last tick's browser candidates first, so a sweep that bails out
-  # early can never leave --browser a stale list.
-  [[ "$DRY_RUN" -eq 1 ]] || : >"$BROWSER_CANDIDATES_FILE" 2>/dev/null || true
 
   # ── In Test feedback sweep: a reporter comment requests a revision ──────────
   # A reporter testing the preview asks for changes by commenting. A new OWNER

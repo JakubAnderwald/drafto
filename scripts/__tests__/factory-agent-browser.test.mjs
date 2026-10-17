@@ -126,11 +126,12 @@ describe("factory-agent.sh browser runner: static wiring", () => {
     const releaseStart = modeStart("RELEASE");
     assert.ok(watchStart !== -1 && browserStart > watchStart && releaseStart > browserStart);
     const watch = script.slice(watchStart, browserStart);
-    const sweepAt = watch.indexOf("# ── In Test feedback sweep");
-    // Cleared BEFORE the sweep's first query, so a sweep that bails out early
-    // never leaves --browser last tick's list.
-    const clearAt = watch.indexOf(': >"$BROWSER_CANDIDATES_FILE"');
-    assert.ok(clearAt !== -1 && clearAt < sweepAt, "the list is cleared before the sweep");
+    // Cleared as --watch's very first act, so a --watch that exits anywhere
+    // (a failed query, a session-limit pause) never leaves --browser last
+    // tick's list.
+    const firstLines = watch.split("\n").slice(0, 6).join("\n");
+    assert.match(firstLines, /: >"\$BROWSER_CANDIDATES_FILE"/, "cleared first in --watch");
+    assert.equal(watch.split(': >"$BROWSER_CANDIDATES_FILE"').length, 2, "cleared exactly once");
     assert.match(
       watch,
       /browser_kind_enabled intest && \[\[ "\$INTEST_PENDING_FEEDBACK" -eq 0 \]\]/,
@@ -557,6 +558,14 @@ echo "rc=$rc"
     assert.match(r.stdout, /rc=2/);
     assert.match(callLog, /health record .*--result preflight:chrome-not-running /);
     assert.doesNotMatch(callLog, /task /);
+  });
+
+  it("tells the health tracker which account file the factory uses", () => {
+    // The emails quote the file's path in their fix text.
+    assert.match(
+      extract("browser_record_result"),
+      /--account-file "\$FACTORY_BROWSER_ACCOUNT_FILE"/,
+    );
   });
 
   it("still records a disabled runner's preflight, so a failed alert email is retried", () => {
