@@ -319,19 +319,22 @@ MODE_PLAN=0
 MODE_IMPLEMENT=0
 MODE_RELEASE=0
 MODE_WATCH=0
+MODE_BROWSER=0
 PHASE="A"
 DRY_RUN=0
 usage() {
   cat <<EOF
-Usage: $0 (--plan | --implement | --release | --watch) [--phase <A|B|C|D>] [--dry-run]
+Usage: $0 (--plan | --implement | --release | --watch | --browser) [--phase <A|B|C|D>] [--dry-run]
 
-Exactly one of --plan, --implement, --release, --watch is required.
+Exactly one of --plan, --implement, --release, --watch, --browser is required.
 
   --plan       Ready → Plan Review (or Blocked). Real work in every phase.
   --implement  In Progress → In Review. Phase A: stub comment only.
                Phase B+: worktree + Claude + PR + parity post-check.
   --watch      In Review → In Test. Phase B+: CI/preview poll + fix loop.
   --release    Approved → Released. Phase B+: migration gate + squash-merge.
+  --browser    In Test web run in Chrome (ADR-0051). Phase B+, FACTORY_BROWSER=1.
+               Runs the candidates --watch found, after --release.
   --phase X    Override the phase advertised to Claude (default: A).
   --dry-run    Build context bundles and print them; no board / issue
                mutations and no Claude invocation. Useful for golden-run
@@ -344,6 +347,7 @@ while [[ $# -gt 0 ]]; do
     --implement) MODE_IMPLEMENT=1; shift ;;
     --release) MODE_RELEASE=1; shift ;;
     --watch) MODE_WATCH=1; shift ;;
+    --browser) MODE_BROWSER=1; shift ;;
     --phase)
       if [[ -z "${2:-}" || "${2:0:2}" == "--" ]]; then
         echo "ERROR: --phase requires a value (A|B|C|D)" >&2
@@ -359,14 +363,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-MODE_COUNT=$((MODE_PLAN + MODE_IMPLEMENT + MODE_RELEASE + MODE_WATCH))
+MODE_COUNT=$((MODE_PLAN + MODE_IMPLEMENT + MODE_RELEASE + MODE_WATCH + MODE_BROWSER))
 if [[ "$MODE_COUNT" -eq 0 ]]; then
-  echo "ERROR: must specify exactly one of --plan, --implement, --release, --watch." >&2
+  echo "ERROR: must specify exactly one of --plan, --implement, --release, --watch, --browser." >&2
   usage >&2
   exit 2
 fi
 if [[ "$MODE_COUNT" -gt 1 ]]; then
-  echo "ERROR: --plan / --implement / --release / --watch are mutually exclusive." >&2
+  echo "ERROR: --plan / --implement / --release / --watch / --browser are mutually exclusive." >&2
   echo "       Run the launchd entry as multiple sequential invocations." >&2
   exit 2
 fi
@@ -378,6 +382,7 @@ esac
 if [[ "$MODE_PLAN" -eq 1 ]]; then MODE_NAME="plan"
 elif [[ "$MODE_IMPLEMENT" -eq 1 ]]; then MODE_NAME="implement"
 elif [[ "$MODE_RELEASE" -eq 1 ]]; then MODE_NAME="release"
+elif [[ "$MODE_BROWSER" -eq 1 ]]; then MODE_NAME="browser"
 else MODE_NAME="watch"
 fi
 
@@ -454,6 +459,9 @@ fi
 echo "$$" > "$LOCK_FILE"
 
 STATE_FILE="$REPO_ROOT/logs/factory-state.json"
+# In Test web-run candidates (ADR-0051): written by --watch, read by --browser,
+# which the loop runs after --release so a browser session never delays a merge.
+BROWSER_CANDIDATES_FILE="$REPO_ROOT/logs/factory-browser-candidates"
 
 cd "$REPO_ROOT"
 
@@ -545,6 +553,10 @@ if [[ "$MODE_PLAN" -eq 1 && "$DRY_RUN" -eq 0 ]] && ! command -v claude >/dev/nul
   log "ERROR: --plan requires the claude CLI on PATH"
   exit 1
 fi
+if [[ "$MODE_BROWSER" -eq 1 && "$DRY_RUN" -eq 0 && "$FACTORY_BROWSER" == "1" ]] && ! command -v claude >/dev/null 2>&1; then
+  log "ERROR: --browser requires the claude CLI on PATH"
+  exit 1
+fi
 
 # ── Pause check ─────────────────────────────────────────────────────────────
 # `state-cli factory:paused?` exits 0 when paused; flip the bash sense so the
@@ -562,7 +574,7 @@ fi
 # ── Phase / mode gates ──────────────────────────────────────────────────────
 # Phase A: --release and --watch are no-ops (plan-only observation phase).
 # --implement falls through to its Phase A stub body below.
-if [[ "$PHASE" == "A" && ( "$MODE_RELEASE" -eq 1 || "$MODE_WATCH" -eq 1 ) ]]; then
+if [[ "$PHASE" == "A" && ( "$MODE_RELEASE" -eq 1 || "$MODE_WATCH" -eq 1 || "$MODE_BROWSER" -eq 1 ) ]]; then
   log "Phase A: --$MODE_NAME is a no-op (gated until Phase B)"
   log "=== factory-agent --$MODE_NAME completed in $(( $(date +%s) - START_TIME ))s ==="
   exit 0
@@ -2488,11 +2500,17 @@ run_browser_task() {
     "$(cat "$BROWSER_PROMPT_FILE")" "$bundle")
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   log "Invoking the browser runner ($kind, session $uuid, cap ${FACTORY_BROWSER_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT)"
-  # cwd is an empty directory OUTSIDE the repo: Claude Code walks up from its
-  # cwd for CLAUDE.md files and project settings, and the runner should get
-  # neither the repo's instructions nor its hooks — only this prompt and the
-  # guard's settings.
-  if ! cwd=$(mktemp -d -t factory-browser-cwd); then
+  # Nothing but this prompt and the guard's settings reach the runner. cwd is
+  # an empty directory OUTSIDE the repo (Claude Code walks up from its cwd for
+  # CLAUDE.md files and project settings); --setting-sources "" drops the user,
+  # project and local settings (plugins, their hooks, the operator's own
+  # CLAUDE.md), while the --settings file still loads; and --strict-mcp-config
+  # with no --mcp-config leaves only the built-in claude-in-chrome server, so
+  # the claude.ai connectors (Gmail, Drive…) aren't even in the session.
+  # Resolved (/private/var/…, not /var/…): claude names its transcript
+  # folder after the real path, and check_session_limit and the transcript
+  # check below look it up by that name.
+  if ! cwd=$(mktemp -d -t factory-browser-cwd) || ! cwd=$(cd "$cwd" && pwd -P); then
     log "ERROR: could not create the browser runner's working directory ($kind)"
     return 1
   fi
@@ -2500,13 +2518,21 @@ run_browser_task() {
   # account's password, and argv is visible to `ps`.
   ( cd "$cwd" && printf '%s' "$input" | CLAUDE_CALL_TIMEOUT_SEC="$FACTORY_BROWSER_TIMEOUT_SEC" \
       node "$SCRIPT_DIR/lib/run-claude.mjs" -p --chrome --permission-mode dontAsk --tools "" \
-      --allowedTools "$allowed" --settings "$settings" --session-id "$uuid" \
-      --effort "$FACTORY_PLAN_EFFORT" ) >"$BROWSER_OUT" 2>>"$LOG_FILE" || exit_code=$?
-  # A run whose guard never loaded is the one outcome that turns the runner off
-  # (until factory:browser-reset), whatever else happened in it.
+      --allowedTools "$allowed" --setting-sources "" --strict-mcp-config --settings "$settings" \
+      --session-id "$uuid" --effort "$FACTORY_PLAN_EFFORT" ) >"$BROWSER_OUT" 2>>"$LOG_FILE" || exit_code=$?
+  # A session that ran without the guard's SessionStart record is the one
+  # outcome that turns the runner off (until factory:browser-reset): it means
+  # claude dropped the settings file and ran Chrome unguarded. A claude that
+  # never got as far as a session (a bad flag after a CLI update, a crash on
+  # start) leaves no transcript either, and is just an error.
   if ! node "$guard" verify --config "$cfg" --session "$uuid" >>"$LOG_FILE" 2>&1; then
-    log "ERROR: the browser guard did not load for session $uuid; turning the browser runner off"
-    BROWSER_RESULT="guard-not-loaded"
+    if [[ -n "$(find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" -maxdepth 2 -name "$uuid.jsonl" -print 2>/dev/null | head -1)" ]]; then
+      log "ERROR: the browser guard did not load for session $uuid; turning the browser runner off"
+      BROWSER_RESULT="guard-not-loaded"
+    else
+      log "ERROR: the browser runner never started a session ($kind, exit $exit_code)"
+      BROWSER_RESULT="error"
+    fi
     rmdir "$cwd" 2>/dev/null || true
     return 0
   fi
@@ -2523,6 +2549,16 @@ run_browser_task() {
   fi
   rmdir "$cwd" 2>/dev/null || true
   return 0
+}
+
+# browser_refund_attempt <issue> <head sha> <attempts after the bump> — give
+# back an attempt that a browser-side failure spent, so the per-SHA cap counts
+# only runs that got as far as the page.
+browser_refund_attempt() {
+  local left=$(( $3 - 1 ))
+  [[ "$left" -ge 0 ]] || left=0
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$1" browserRunAttempts \
+    "$2:$left" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
 }
 
 # intest_browser_run <issue> <pr> <head sha> — the In Test web run: the Web
@@ -2611,7 +2647,17 @@ intest_browser_run() {
   fi
   case "$BROWSER_RESULT" in
     ran) ;;
-    session-limit) pause_for_session_limit; return 2 ;;
+    session-limit)
+      browser_refund_attempt "$issue_num" "$head_sha" "$attempts"
+      pause_for_session_limit
+      return 2
+      ;;
+    guard-not-loaded)
+      # The runner is now off; refund so the card gets its run after the reset.
+      browser_refund_attempt "$issue_num" "$head_sha" "$attempts"
+      browser_record_result "$BROWSER_RESULT"
+      return 2
+      ;;
     *) browser_record_result "$BROWSER_RESULT"; return 2 ;;
   esac
 
@@ -2631,8 +2677,17 @@ intest_browser_run() {
   case "$status" in
     unavailable|auth-expired)
       # The operator's problem, not the reporter's: the health tracker emails
-      # about it, and the issue gets no comment. A later attempt (or commit)
-      # tries again.
+      # about it and the issue gets no comment. Refunded, so the card still
+      # gets its run once the browser is fixed. These fail fast (the runner
+      # stops at the browser check or the first login wall), so retrying each
+      # tick is cheap.
+      browser_refund_attempt "$issue_num" "$head_sha" "$attempts"
+      return 2
+      ;;
+    malformed)
+      # No status line: nothing trustworthy to post. The attempt stays spent;
+      # the next one may produce a report.
+      log "Issue #$issue_num: the browser runner's output had no status line; nothing posted (see $run_dir)"
       return 2
       ;;
   esac
@@ -4334,6 +4389,10 @@ A human should take a look. Reset with \
     intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$ADVISORY" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" "$INTEST_BETA" "$CR_NOTE" || true
   done
 
+  # Clear the last tick's browser candidates first, so a sweep that bails out
+  # early can never leave --browser a stale list.
+  [[ "$DRY_RUN" -eq 1 ]] || : >"$BROWSER_CANDIDATES_FILE" 2>/dev/null || true
+
   # ── In Test feedback sweep: a reporter comment requests a revision ──────────
   # A reporter testing the preview asks for changes by commenting. A new OWNER
   # comment (newer than the consumed-feedback high-water mark) that isn't pure
@@ -4351,8 +4410,8 @@ A human should take a look. Reset with \
   [[ "$INTEST_COUNT" =~ ^[0-9]+$ ]] || INTEST_COUNT=0
   log "--watch In Test feedback sweep: $INTEST_COUNT item(s)"
   # In Test web-run candidates (ADR-0051), "issue:pr:sha" words. Collected in
-  # the loop and run after it, at most one per tick, so a 15-minute browser
-  # session never delays another card's rollback or scenario refresh.
+  # the loop and handed to --browser, which runs after --release: a browser
+  # session can take 15 minutes and must delay neither this sweep nor a merge.
   BROWSER_CANDIDATES=""
 
   for ((IDX=0; IDX<INTEST_COUNT; IDX++)); do
@@ -4515,14 +4574,61 @@ test run, gets a reply here. (To ship as-is instead, drag the card to \
 <!-- drafto-factory-revising -->" >>"$LOG_FILE" 2>&1 || true
   done
 
-  for BROWSER_CAND in $BROWSER_CANDIDATES; do
+  if [[ "$DRY_RUN" -eq 0 ]]; then
+    printf '%s\n' $BROWSER_CANDIDATES >"$BROWSER_CANDIDATES_FILE.tmp" 2>>"$LOG_FILE" \
+      && mv "$BROWSER_CANDIDATES_FILE.tmp" "$BROWSER_CANDIDATES_FILE" 2>>"$LOG_FILE" || true
+  fi
+
+  log "=== factory-agent --watch completed in $(( $(date +%s) - START_TIME ))s ==="
+  exit 0
+fi
+
+# ── --browser mode (Phase B+, ADR-0051) ─────────────────────────────────────
+# The In Test web run. --watch found the candidates; this runs at most one of
+# them, after --release in the loop, so a 15-minute Chrome session never holds
+# up a merge. The list is re-checked against the board (a card dragged out of
+# In Test since --watch ran is skipped), and intest_browser_run re-checks
+# every per-SHA condition itself.
+if [[ "$MODE_BROWSER" -eq 1 ]]; then
+  if ! browser_kind_enabled intest; then
+    log "Browser runner off (FACTORY_BROWSER=$FACTORY_BROWSER, kinds='$FACTORY_BROWSER_KINDS'); nothing to do"
+    log "=== factory-agent --browser completed in $(( $(date +%s) - START_TIME ))s ==="
+    exit 0
+  fi
+  BROWSER_LIST=""
+  # A list older than two ticks came from a --watch that didn't finish since:
+  # ignore it rather than act on a board that has moved on.
+  if [[ -s "$BROWSER_CANDIDATES_FILE" ]] && \
+      [[ -z "$(find "$BROWSER_CANDIDATES_FILE" -mmin +10 2>/dev/null)" ]]; then
+    BROWSER_LIST=$(grep -E '^[0-9]+:[0-9]+:[0-9a-f]{40}$' "$BROWSER_CANDIDATES_FILE" 2>/dev/null || true)
+  fi
+  if [[ -z "$BROWSER_LIST" ]]; then
+    log "--browser: no In Test web-run candidates this tick"
+    log "=== factory-agent --browser completed in $(( $(date +%s) - START_TIME ))s ==="
+    exit 0
+  fi
+  if ! BROWSER_INTEST_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
+      --status "In Test" 2>>"$LOG_FILE"); then
+    log "WARNING: query-status-items 'In Test' failed (transient?); skipping the browser run this tick"
+    log "=== factory-agent --browser completed in $(( $(date +%s) - START_TIME ))s ==="
+    exit 0
+  fi
+  for BROWSER_CAND in $BROWSER_LIST; do
+    BROWSER_ISSUE="${BROWSER_CAND%%:*}"
+    # Still In Test, and not paused or support-owned since --watch looked.
+    if [[ "$(echo "$BROWSER_INTEST_JSON" | jq --argjson n "$BROWSER_ISSUE" \
+        '[.[] | select(.issueNumber == $n)
+              | select(((.labels // []) | index("factory-pause")) == null)
+              | select(((.labels // []) | index("support")) == null)] | length' 2>/dev/null)" != "1" ]]; then
+      log "Issue #$BROWSER_ISSUE: no longer an In Test candidate; skipping its browser run"
+      continue
+    fi
     BROWSER_RC=0
-    intest_browser_run "${BROWSER_CAND%%:*}" "$(echo "$BROWSER_CAND" | cut -d: -f2)" \
+    intest_browser_run "$BROWSER_ISSUE" "$(echo "$BROWSER_CAND" | cut -d: -f2)" \
       "${BROWSER_CAND##*:}" || BROWSER_RC=$?
     [[ "$BROWSER_RC" -eq 1 ]] || break
   done
-
-  log "=== factory-agent --watch completed in $(( $(date +%s) - START_TIME ))s ==="
+  log "=== factory-agent --browser completed in $(( $(date +%s) - START_TIME ))s ==="
   exit 0
 fi
 

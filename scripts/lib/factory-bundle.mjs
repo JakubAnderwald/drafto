@@ -869,7 +869,18 @@ export function extractWebSection(body) {
   const start = lines.findIndex((l) => /^###\s+Web\s*$/.test(l.trim()));
   if (start === -1) return null;
   let end = lines.length;
+  // A web step in a note-taking app often quotes Markdown to type ("# My
+  // heading" inside a fence); a heading inside a fenced block is content, not
+  // the end of the section.
+  let fence = null;
   for (let i = start + 1; i < lines.length; i++) {
+    const opener = /^\s*(`{3,}|~{3,})/.exec(lines[i]);
+    if (opener) {
+      if (fence === null) fence = opener[1][0];
+      else if (opener[1][0] === fence) fence = null;
+      continue;
+    }
+    if (fence !== null) continue;
     if (/^#{1,3}\s/.test(lines[i]) || lines[i].trim().startsWith("<!-- drafto-factory")) {
       end = i;
       break;

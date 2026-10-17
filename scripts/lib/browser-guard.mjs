@@ -64,7 +64,19 @@
 //   8. every other tab tool needs an owned tab that is still on the allowed
 //      origin (or on a blank/new-tab page). An owned tab that drifted away is
 //      quarantined: only tabs_close_mcp, or a navigate back to the allowed
-//      origin, works on it.
+//      origin, works on it;
+//   9. computer is limited to actions that act on the page. navigate is not
+//      the only way to load a URL: cmd+l / ctrl+l / alt+d / F6 focus the
+//      omnibox, after which `type` and Return would load any URL in the
+//      owner's signed-in profile with data in it, and a cmd/ctrl/shift-click
+//      opens a tab or window this session does not track. Whether the
+//      extension's synthetic keys reach Chrome's own accelerators is
+//      unverified, so the guard assumes they do: `key` accepts only plain
+//      editing and caret keys, a single character, and select-all (cmd+a /
+//      ctrl+a / meta+a, to clear a field); every other chord and every
+//      function key is denied. No action may carry modifiers, and an action
+//      the guard does not know is denied. `type` stays allowed: a denied key
+//      never ran, so focus is still on the page element it types into.
 //
 // Residual risk the guard cannot close: the Tab Context in a click's response
 // can be captured before the navigation it started has committed, so ONE more
@@ -198,6 +210,58 @@ const TAB_TOOLS = new Set(
       ].includes(t),
   ),
 );
+
+// computer actions, from the tool's schema. Click-type actions are the ones a
+// modifier turns into "open in a new tab/window".
+export const COMPUTER_CLICK_ACTIONS = Object.freeze([
+  "left_click",
+  "right_click",
+  "double_click",
+  "triple_click",
+  "left_click_drag",
+  "hover",
+  "scroll",
+]);
+export const COMPUTER_ACTIONS = Object.freeze([
+  ...COMPUTER_CLICK_ACTIONS,
+  "screenshot",
+  "wait",
+  "zoom",
+  "scroll_to",
+  "type",
+  "key",
+]);
+
+// Key names `key` may press, compared case-insensitively. They edit a field
+// or move the caret / page; none of them reaches browser UI.
+export const ALLOWED_KEY_NAMES = Object.freeze([
+  "enter",
+  "return",
+  "tab",
+  "escape",
+  "esc",
+  "backspace",
+  "delete",
+  "space",
+  "arrowup",
+  "arrowdown",
+  "arrowleft",
+  "arrowright",
+  "up",
+  "down",
+  "left",
+  "right",
+  "home",
+  "end",
+  "pageup",
+  "pagedown",
+]);
+// The only chords: select all, so a field can be cleared before typing.
+export const SELECT_ALL_CHORDS = Object.freeze(["cmd+a", "ctrl+a", "meta+a"]);
+const FUNCTION_KEY_RE = /^f(?:[1-9]|1\d|2[0-4])$/i;
+// One code point that is neither a control/format character nor a separator.
+const PRINTABLE_CHAR_RE = /^[^\p{C}\p{Z}]$/u;
+const USE_CLICKS = "use clicks on page elements instead";
 
 const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const DEVICE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -621,7 +685,65 @@ function decide({ tool, input, config, state }) {
         `navigate back to ${origins.join(" or ")}, is allowed on it`,
     );
   }
+
+  if (name === "computer") {
+    const v = computerVerdict(args);
+    if (!v.ok) return deny(v.reason);
+  }
   return allow(`tab ${tabId}`);
+}
+
+/**
+ * Whether a `key` action's text is only plain keys. Reasons never repeat the
+ * text: it lands in the decision log, and a model can put anything there.
+ */
+export function keyVerdict(text) {
+  if (typeof text !== "string" || text.trim() === "") {
+    return verdict(false, `computer key needs the key(s) to press; ${USE_CLICKS}`);
+  }
+  for (const token of text.trim().split(/\s+/)) {
+    const lower = token.toLowerCase();
+    if (ALLOWED_KEY_NAMES.includes(lower) || SELECT_ALL_CHORDS.includes(lower)) continue;
+    if (token.includes("+")) {
+      return verdict(
+        false,
+        `computer key refused a key chord: only cmd+a / ctrl+a (select all) is allowed, ` +
+          `since other chords can reach browser shortcuts such as the address bar; ${USE_CLICKS}`,
+      );
+    }
+    if (FUNCTION_KEY_RE.test(token)) {
+      return verdict(false, `computer key refused a function key (F1–F24); ${USE_CLICKS}`);
+    }
+    if (PRINTABLE_CHAR_RE.test(token)) continue;
+    return verdict(
+      false,
+      `computer key refused a key name it does not allow (allowed: Enter, Tab, Escape, ` +
+        `Backspace, Delete, Space, arrow keys, Home, End, PageUp, PageDown, a single character, ` +
+        `cmd+a / ctrl+a); ${USE_CLICKS}`,
+    );
+  }
+  return verdict(true, "plain keys");
+}
+
+/** Whether a computer call stays on the page (rule 9 in the header comment). */
+export function computerVerdict(input) {
+  const args = isPlainObject(input) ? input : {};
+  const action = args.action;
+  if (typeof action !== "string" || !COMPUTER_ACTIONS.includes(action)) {
+    const shown = typeof action === "string" && /^[a-z_]{1,32}$/.test(action) ? action : "that";
+    return verdict(false, `computer action ${shown} is not one the guard allows; ${USE_CLICKS}`);
+  }
+  // The schema documents modifiers for clicks only, but nothing stops a model
+  // from sending them on another action, so none may carry them.
+  if (args.modifiers !== undefined && args.modifiers !== null && args.modifiers !== "") {
+    return verdict(
+      false,
+      `computer ${action} with modifier keys is not allowed (a modified click can open a tab or ` +
+        `window outside this session); use plain clicks on page elements instead`,
+    );
+  }
+  if (action === "key") return keyVerdict(args.text);
+  return verdict(true, action);
 }
 
 // ── PostToolUse ─────────────────────────────────────────────────────────────

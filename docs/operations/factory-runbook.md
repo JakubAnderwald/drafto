@@ -404,6 +404,7 @@ node scripts/lib/coderabbit-cli.mjs review --pr 637 --repo-root "$PWD" \
 The factory's only way into a browser ([ADR-0051](../adr/0051-factory-browser-runner.md)). `run_browser_task` in `scripts/factory-agent.sh` starts a `claude -p --chrome` session, the one claude call that doesn't pass `--no-chrome`, locked down like this:
 
 - **Tools:** `--permission-mode dontAsk --tools ""` and an allowlist of Chrome tools, so no Bash, files, `gh` or subagents.
+- **Isolation:** `--setting-sources "" --strict-mcp-config` drops your user settings, plugins, `~/.claude/CLAUDE.md` and the claude.ai connectors from its session.
 - **Guard:** a generated `--settings` file wires in `scripts/lib/browser-guard.mjs` (see [claude-code-hooks.md](./claude-code-hooks.md#the-browser-runners-guard-generated-not-committed)).
 - **Prompt:** `scripts/factory-browser-prompt.md`, fed on stdin.
 - **Working directory:** an empty temp dir outside the repo.
@@ -412,10 +413,10 @@ The runner drives **this Mac mini's own Chrome profile** — your real sign-ins 
 
 Today it has one use, the **In Test web run**:
 
-- **Which cards:** for a card in In Test whose diff touches `apps/web`, the `--watch` sweep runs the `### Web` section of the factory's own scenario for the head commit.
+- **Which cards:** cards in In Test whose diff touches `apps/web`. The `--watch` sweep lists them in `logs/factory-browser-candidates`, and the `--browser` mode, which the loop runs last after `--release`, runs the `### Web` section of the factory's own scenario for the head commit. Its log is `logs/factory/factory-agent-browser-<date>.log`.
 - **Where:** on that commit's own preview, found through the GitHub Deployments API (`vercel[bot]`, state `success`), signed in as the factory's dev-database test account.
 - **What gets posted:** one report comment. A FAIL doesn't move the card.
-- **How often:** at most one card per tick, after the feedback loop; two attempts per head SHA, and a new commit re-arms it.
+- **How often:** at most one card per tick. Each head SHA gets two attempts, and a new commit re-arms it. A run that fails on the browser's side gives its attempt back: unavailable, auth-expired, guard-not-loaded, or a session limit. A timeout or an error keeps it.
 
 | Var                            | Default                                        | Purpose                                                                                                                                                           |
 | ------------------------------ | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -467,10 +468,10 @@ The runner never pauses the factory. `scripts/lib/browser-health.mjs` tracks res
 | `unavailable`                        | The pinned browser isn't connected, or Chrome tools failed before any step ran.                                    | Sign the Mac mini's Claude in Chrome extension back in.                                                                                                                    |
 | `auth-expired`                       | The preview showed a Vercel (or other) login page.                                                                 | Open a preview in Chrome on the Mac mini and sign in to Vercel.                                                                                                            |
 | `blocked`                            | The runner stopped on purpose: suspected injection in the scenario or a page. The report says why.                 | Read the report on the issue.                                                                                                                                              |
-| `malformed` / `timeout` / `error`    | No parseable status line, the wall cap was hit, or claude exited non-zero.                                         | Read `runner-output.txt` and `logs/factory/factory-agent-watch-<date>.log`.                                                                                                |
+| `malformed` / `timeout` / `error`    | No parseable status line, the wall cap was hit, or claude exited non-zero.                                         | Read `runner-output.txt` and `logs/factory/factory-agent-browser-<date>.log`.                                                                                              |
 | `guard-not-loaded` (runner disabled) | The guard's SessionStart record is missing: `claude -p` silently dropped the settings file. The runner is now off. | Check `guard-settings.json` against the current Claude Code settings schema, then `node scripts/lib/state-cli.mjs factory:browser-reset`. The runner stays off until then. |
 
-**No report on the issue, for a reason other than the above.** The issue gets no comment for `unavailable` or `auth-expired`; those are the operator's to fix, and the email says so. A scenario without a `### Web` section is recorded as done for that commit and never run. A withheld report means the runner's output matched a secret pattern. The posted notice names the pattern, and the full output stays in the run directory.
+**No report on the issue, for a reason other than the above.** The issue gets no comment for `unavailable`, `auth-expired` or `malformed`. The first two are the operator's to fix and the email says so; a `malformed` run simply tries again on the next attempt. A scenario without a `### Web` section is recorded as done for that commit and never run. A withheld report means the runner's output matched a secret pattern. The posted notice names the pattern, and the full output stays in the run directory.
 
 **Re-running a commit by hand.** After fixing the browser, re-arm the card for its current head, and the next `--watch` tick runs it:
 

@@ -60,7 +60,7 @@ The dark factory's browser runner ([ADR-0051](../adr/0051-factory-browser-runner
 The file wires up three hooks:
 
 - **SessionStart** writes a canary record.
-- **PreToolUse on `mcp__claude-in-chrome__.*`** blocks with exit 2. It pins the browser device, keeps the session to its own tabs, enforces the run's exact target origin, and blocks a tab that has drifted off that origin.
+- **PreToolUse on `mcp__claude-in-chrome__.*`** blocks with exit 2. It pins the browser device, keeps the session to its own tabs, enforces the run's exact target origin, blocks a tab that has drifted off that origin, and allows only plain keys (no chords, no function keys, no modified clicks). It runs under a perl `alarm` well inside its timeout, because a PreToolUse hook that times out counts as an allow. It also blocks while an earlier call's PostToolUse is still marked in flight.
 - **PostToolUse** records the selected browser and each tab's current URL, and files screenshots.
 
 The file also lists the always-denied Chrome tools under `permissions.deny`.

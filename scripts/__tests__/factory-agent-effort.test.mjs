@@ -48,7 +48,7 @@ describe("factory-agent Claude effort", () => {
     assert.equal(calls.length, 7, "six stage calls plus the browser runner");
     assert.match(
       script,
-      /run-claude\.mjs" -p --chrome[^\n]*\\\n[^\n]*\\\n\s+--effort "\$FACTORY_PLAN_EFFORT"/,
+      /run-claude\.mjs" -p --chrome(?:[^\n]*\\\n){1,3}[^\n]*--effort "\$FACTORY_PLAN_EFFORT" \)/,
     );
   });
 

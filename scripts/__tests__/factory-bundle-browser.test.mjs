@@ -111,6 +111,27 @@ describe("extractWebSection", () => {
     assert.equal(extractWebSection(body), "1. Step.");
   });
 
+  it("doesn't end the section at a heading inside a fenced block", () => {
+    // Web steps in a note-taking app often quote Markdown to type.
+    const body = [
+      "### Web",
+      "",
+      "1. Type this into a new note:",
+      "   ```markdown",
+      "   # My heading",
+      "   ## Sub",
+      "   ```",
+      "2. Save — expected: the heading renders.",
+      "",
+      "### macOS",
+      "1. Native step.",
+    ].join("\n");
+    const web = extractWebSection(body);
+    assert.match(web, /# My heading/);
+    assert.match(web, /2\. Save — expected/);
+    assert.doesNotMatch(web, /Native step/);
+  });
+
   it("returns null with no exact ### Web heading", () => {
     assert.equal(extractWebSection(scenarioBody(SHA, { web: false })), null);
     assert.equal(extractWebSection("### Web preview\n\n1. Step."), null);

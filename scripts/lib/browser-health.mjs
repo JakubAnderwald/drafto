@@ -147,7 +147,7 @@ function localDate(iso) {
 // factory-agent.sh names its log by mode and local date; the In Test sweep
 // that runs the browser is part of --watch.
 function watchLog(iso) {
-  return `logs/factory/factory-agent-watch-${localDate(iso)}.log`;
+  return `logs/factory/factory-agent-browser-${localDate(iso)}.log`;
 }
 
 function accountFix(problem, accountFile) {

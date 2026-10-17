@@ -60,9 +60,12 @@ reason and move on.
 3. **Use your own tab group.** Call `tabs_context_mcp` with `createIfEmpty: true`
    and work only in the tabs it and `tabs_create_mcp` give you. Always pass an
    explicit `tabId`. Close every tab you opened before you finish.
-4. **Stay on `target.origin`.** Navigate only to URLs on that exact origin. If a
-   click takes a tab anywhere else, the guard blocks that tab: close it, open a
-   new one on `target.url`, and record the step as SKIP or FAIL.
+4. **Stay on `target.origin`.** Navigate only to URLs on that exact origin. A
+   step may name the preview by another address, such as a `drafto-git-…`
+   branch link or the preview link from the scenario's build notes. That's the
+   same app, so open the same path (and query) on `target.origin` instead. If
+   a click takes a tab anywhere else, the guard blocks that tab: close it, open
+   a new one on `target.url`, and record the step as SKIP or FAIL.
 5. **Sign in only as `bundle.account`,** with the email and password form on
    `target.origin`. Never press "Google" or "Apple", never use a saved password
    or an account that is already signed in, and never type the password

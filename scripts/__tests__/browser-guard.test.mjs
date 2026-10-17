@@ -23,6 +23,8 @@ import {
   ALWAYS_DENY,
   AMBIGUOUS_URL,
   CHROME_PREFIX,
+  COMPUTER_ACTIONS,
+  COMPUTER_CLICK_ACTIONS,
   DEFAULT_PERL_PATH,
   HOOK_MATCHER,
   HOOK_TIMEOUTS,
@@ -34,11 +36,13 @@ import {
   allowedToolsArg,
   applyPost,
   buildGuardSettings,
+  computerVerdict,
   decidePre,
   emptyState,
   inflightToken,
   isAllowedNavigation,
   isNeutralUrl,
+  keyVerdict,
   normaliseOrigin,
   parseAllowOrigin,
   parseAvailableTabsJson,
@@ -523,7 +527,9 @@ describe("browser-guard: decidePre rules, in order", () => {
       "resize_window",
       "tabs_close_mcp",
     ]) {
-      assert.equal(pre(tool, { tabId: OWN_TAB }, everything).allow, true, `${tool} on own tab`);
+      const own =
+        tool === "computer" ? { tabId: OWN_TAB, action: "screenshot" } : { tabId: OWN_TAB };
+      assert.equal(pre(tool, own, everything).allow, true, `${tool} on own tab`);
       assert.equal(pre(tool, { tabId: 4242 }, everything).allow, false, `${tool} on foreign tab`);
       assert.equal(pre(tool, {}, everything).allow, false, `${tool} without tabId`);
     }
@@ -604,6 +610,189 @@ describe("browser-guard: decidePre rules, in order", () => {
       false,
     );
     assert.equal(pre("computer", null, everything).allow, false);
+  });
+});
+
+describe("browser-guard: computer actions (rule 9)", () => {
+  const st = selectedState();
+  const computer = (input) => pre("computer", { tabId: OWN_TAB, ...input }, st);
+  const key = (text, extra = {}) => computer({ action: "key", text, ...extra });
+
+  const allowedKeys = [
+    "Enter",
+    "Return",
+    "Tab",
+    "Escape",
+    "Esc",
+    "Backspace",
+    "Delete",
+    "Space",
+    "ArrowUp",
+    "ArrowDown",
+    "ArrowLeft",
+    "ArrowRight",
+    "Up",
+    "Down",
+    "Left",
+    "Right",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+    // case-insensitive
+    "ENTER",
+    "arrowleft",
+    "pageDOWN",
+    // a single printable character, no modifier
+    "a",
+    "Z",
+    "7",
+    "/",
+    ".",
+    "é",
+    "€",
+    // select all, to clear a field
+    "cmd+a",
+    "ctrl+a",
+    "meta+a",
+    "CMD+A",
+    "Ctrl+A",
+    // sequences
+    "Backspace Backspace Delete",
+    "cmd+a Backspace",
+    "  Tab   Enter  ",
+  ];
+  for (const text of allowedKeys) {
+    test(`key allows ${JSON.stringify(text)}`, () => {
+      assert.equal(key(text).allow, true);
+      assert.equal(keyVerdict(text).ok, true);
+    });
+  }
+
+  test("key allows repeat", () => {
+    assert.equal(key("Backspace", { repeat: 40 }).allow, true);
+  });
+
+  const deniedKeys = [
+    // the omnibox and other browser accelerators
+    ["cmd+l", /chord/],
+    ["ctrl+l", /chord/],
+    ["alt+d", /chord/],
+    ["cmd+t", /chord/],
+    ["ctrl+w", /chord/],
+    ["cmd+n", /chord/],
+    ["cmd+[", /chord/],
+    ["alt+Left", /chord/],
+    ["shift+Tab", /chord/],
+    ["cmd+shift+a", /chord/],
+    ["ctrl+a+l", /chord/],
+    ["+", /chord/],
+    // every function key
+    ["F6", /function key/],
+    ["f1", /function key/],
+    ["F12", /function key/],
+    ["F24", /function key/],
+    // other key names and words
+    ["F25", /key name/],
+    ["PrintScreen", /key name/],
+    ["Insert", /key name/],
+    ["ab", /key name/],
+    ["https://evil.example", /key name/],
+    // one bad token spoils the sequence
+    ["Enter cmd+l", /chord/],
+    ["Tab F6", /function key/],
+    // nothing to press
+    ["", /needs the key/],
+    ["   ", /needs the key/],
+    [undefined, /needs the key/],
+    [42, /needs the key/],
+  ];
+  for (const [text, reason] of deniedKeys) {
+    test(`key denies ${JSON.stringify(text)}`, () => {
+      const d = key(text);
+      assert.equal(d.allow, false);
+      assert.match(d.reason, reason);
+      assert.match(d.reason, /use clicks on page elements instead/);
+    });
+  }
+
+  test("a denied key's reason never repeats the key text (it goes to the log)", () => {
+    for (const text of ["ctrl+hunter2SECRET", "hunter2SECRET", "Enter hunter2SECRET"]) {
+      const d = key(text);
+      assert.equal(d.allow, false);
+      assert.ok(!d.reason.includes("hunter2SECRET"), d.reason);
+    }
+  });
+
+  test("click-type actions are allowed plain and denied with any modifier", () => {
+    assert.deepEqual([...COMPUTER_CLICK_ACTIONS].sort(), [
+      "double_click",
+      "hover",
+      "left_click",
+      "left_click_drag",
+      "right_click",
+      "scroll",
+      "triple_click",
+    ]);
+    for (const action of COMPUTER_CLICK_ACTIONS) {
+      assert.equal(computer({ action, coordinate: [10, 10] }).allow, true, action);
+      assert.equal(computer({ action, coordinate: [10, 10], modifiers: "" }).allow, true, action);
+      assert.equal(computer({ action, coordinate: [10, 10], modifiers: null }).allow, true, action);
+      for (const modifiers of ["cmd", "ctrl", "shift", "alt", "meta", "ctrl+shift", "win", " "]) {
+        const d = computer({ action, coordinate: [10, 10], modifiers });
+        assert.equal(d.allow, false, `${action} + ${modifiers}`);
+        assert.match(d.reason, /modifier keys/);
+        assert.match(d.reason, /plain clicks on page elements/);
+      }
+      assert.equal(computer({ action, modifiers: ["cmd"] }).allow, false, `${action} + [cmd]`);
+    }
+  });
+
+  test("no other action may carry modifiers either", () => {
+    for (const action of ["key", "type", "screenshot", "zoom", "scroll_to", "wait"]) {
+      assert.equal(computer({ action, text: "a", modifiers: "cmd" }).allow, false, action);
+    }
+  });
+
+  test("every other known action is allowed, type included", () => {
+    for (const action of ["screenshot", "wait", "zoom", "scroll_to"]) {
+      assert.equal(computer({ action }).allow, true, action);
+    }
+    assert.equal(computer({ action: "type", text: "drafto-qa note title" }).allow, true);
+    assert.equal(computer({ action: "type", text: "https://evil.example\n" }).allow, true);
+    assert.equal(COMPUTER_ACTIONS.length, 13);
+  });
+
+  test("an unknown, missing or malformed action is denied", () => {
+    for (const action of [
+      "middle_click",
+      "drag",
+      "navigate",
+      "LEFT_CLICK",
+      "",
+      undefined,
+      3,
+      null,
+    ]) {
+      const d = computer({ action, coordinate: [1, 1] });
+      assert.equal(d.allow, false, String(action));
+      assert.match(d.reason, /not one the guard allows/);
+    }
+    assert.ok(!computer({ action: "rm -rf hunter2SECRET" }).reason.includes("hunter2SECRET"));
+  });
+
+  test("ownership and quarantine are judged before the action", () => {
+    const foreign = pre("computer", { tabId: 4242, action: "key", text: "cmd+l" }, st);
+    assert.match(foreign.reason, /not one this session opened/);
+    const drifted = selectedState({ [OWN_TAB]: "https://evil.example/" });
+    const q = pre("computer", { tabId: OWN_TAB, action: "key", text: "Enter" }, drifted);
+    assert.equal(q.allow, false);
+    assert.match(q.reason, /has left the allowed origin/);
+  });
+
+  test("computerVerdict treats a non-object input as empty", () => {
+    assert.equal(computerVerdict(null).ok, false);
+    assert.equal(computerVerdict("key").ok, false);
   });
 });
 
@@ -1166,6 +1355,26 @@ describe("browser-guard CLI: config → settings → hooks → verify", () => {
       preHook("form_input", { tabId: OWN_TAB, ref: "ref_7", value: "hunter2-SECRET-VALUE" }).status,
       0,
     );
+    const omnibox = preHook("computer", { tabId: OWN_TAB, action: "key", text: "cmd+l" });
+    assert.equal(omnibox.status, 2);
+    assert.match(omnibox.stderr, /use clicks on page elements instead/);
+    assert.equal(
+      preHook("computer", { tabId: OWN_TAB, action: "key", text: "ctrl+KEY-SECRET-TEXT" }).status,
+      2,
+    );
+    assert.equal(
+      preHook("computer", {
+        tabId: OWN_TAB,
+        action: "left_click",
+        coordinate: [5, 5],
+        modifiers: "cmd",
+      }).status,
+      2,
+    );
+    assert.equal(
+      preHook("computer", { tabId: OWN_TAB, action: "key", text: "cmd+a Backspace" }).status,
+      0,
+    );
     assert.equal(
       preHook("computer", { tabId: OWN_TAB, action: "type", text: "typed-SECRET-TEXT" }).status,
       0,
@@ -1238,6 +1447,7 @@ describe("browser-guard CLI: config → settings → hooks → verify", () => {
     const log = readFileSync(join(dirs.log, `${SID}.jsonl`), "utf8");
     assert.ok(!log.includes("hunter2-SECRET-VALUE"), "form_input value leaked into the log");
     assert.ok(!log.includes("typed-SECRET-TEXT"), "computer text leaked into the log");
+    assert.ok(!log.includes("KEY-SECRET-TEXT"), "computer key text leaked into the log");
     assert.ok(!log.includes("secret-token"), "navigate query leaked into the log");
     const lines = log
       .trim()

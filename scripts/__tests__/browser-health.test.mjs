@@ -295,10 +295,10 @@ describe("emailContent", () => {
       unavailable: /Claude in Chrome extension isn't connected — sign it back in/,
       "auth-expired": /open a Vercel preview in Chrome on the Mac mini and sign in to Vercel/,
       timeout: new RegExp(
-        `timed out twice in a row; see logs/factory/factory-agent-watch-${localDate}\\.log`,
+        `timed out twice in a row; see logs/factory/factory-agent-browser-${localDate}\\.log`,
       ),
       error: new RegExp(
-        `exited with an error twice in a row; see logs/factory/factory-agent-watch-${localDate}\\.log`,
+        `exited with an error twice in a row; see logs/factory/factory-agent-browser-${localDate}\\.log`,
       ),
       malformed: /without its status line/,
     };

@@ -84,6 +84,11 @@ describe("factory-agent.sh browser runner: static wiring", () => {
     assert.match(runner, /--tools ""/, "no built-in tools: no Bash, files, gh or subagents");
     assert.match(runner, /--allowedTools "\$allowed"/);
     assert.match(runner, /--settings "\$settings"/);
+    // Nothing but the prompt and the guard reach the runner: no user/project
+    // settings (plugins, hooks, the operator's CLAUDE.md) and no MCP server
+    // but the built-in claude-in-chrome (no Gmail or Drive connectors).
+    assert.match(runner, /--setting-sources ""/);
+    assert.match(runner, /--strict-mcp-config/);
     assert.match(runner, /--session-id "\$uuid"/);
     assert.match(runner, /--effort "\$FACTORY_PLAN_EFFORT"/);
     assert.doesNotMatch(runner, /dangerously-skip-permissions/);
@@ -114,19 +119,45 @@ describe("factory-agent.sh browser runner: static wiring", () => {
     assert.match(fallback, /<!-- drafto-factory-scenario-fallback -->/);
   });
 
-  it("collects In Test candidates in the sweep and runs at most one after the loop", () => {
-    const sweep = script.slice(script.indexOf("# ── In Test feedback sweep"));
-    assert.match(sweep, /BROWSER_CANDIDATES=""/);
+  it("has --watch collect In Test candidates and hand them to --browser", () => {
+    const modeStart = (m) => script.indexOf(`\nif [[ "$MODE_${m}" -eq 1 ]]; then`);
+    const watchStart = modeStart("WATCH");
+    const browserStart = modeStart("BROWSER");
+    const releaseStart = modeStart("RELEASE");
+    assert.ok(watchStart !== -1 && browserStart > watchStart && releaseStart > browserStart);
+    const watch = script.slice(watchStart, browserStart);
+    const sweepAt = watch.indexOf("# ── In Test feedback sweep");
+    // Cleared BEFORE the sweep's first query, so a sweep that bails out early
+    // never leaves --browser last tick's list.
+    const clearAt = watch.indexOf(': >"$BROWSER_CANDIDATES_FILE"');
+    assert.ok(clearAt !== -1 && clearAt < sweepAt, "the list is cleared before the sweep");
     assert.match(
-      sweep,
+      watch,
       /browser_kind_enabled intest && \[\[ "\$INTEST_PENDING_FEEDBACK" -eq 0 \]\]/,
       "a card about to roll back to In Progress is never a candidate",
     );
-    assert.match(sweep, /\.web \/\/ false/);
-    const loopEnd = sweep.indexOf("for BROWSER_CAND in $BROWSER_CANDIDATES; do");
-    const rollback = sweep.indexOf("<!-- drafto-factory-revising -->");
-    assert.ok(loopEnd > rollback, "the runner runs after the whole feedback loop");
-    assert.match(sweep, /\[\[ "\$BROWSER_RC" -eq 1 \]\] \|\| break/);
+    assert.match(watch, /\.web \/\/ false/);
+    assert.match(watch, /mv "\$BROWSER_CANDIDATES_FILE\.tmp" "\$BROWSER_CANDIDATES_FILE"/);
+    assert.doesNotMatch(watch, /intest_browser_run "/, "--watch never runs the browser itself");
+  });
+
+  it("runs at most one candidate in --browser, re-checked against the board", () => {
+    const start = script.indexOf('\nif [[ "$MODE_BROWSER" -eq 1 ]]; then');
+    const block = script.slice(start, script.indexOf("# ── --release mode", start));
+    assert.match(block, /browser_kind_enabled intest/);
+    assert.match(block, /-mmin \+10/, "a stale list is ignored");
+    assert.match(block, /\^\[0-9\]\+:\[0-9\]\+:\[0-9a-f\]\{40\}\$/, "only well-formed lines");
+    assert.match(block, /query-status-items[\s\S]*--status "In Test"/);
+    assert.match(block, /index\("factory-pause"\)/);
+    assert.match(block, /\[\[ "\$BROWSER_RC" -eq 1 \]\] \|\| break/);
+    assert.match(script, /"\$MODE_BROWSER" -eq 1 \) \]\]; then\n  log "Phase A:/, "Phase A no-op");
+  });
+
+  it("runs --browser last in the loop, after --release", () => {
+    const loop = readFileSync(resolve(scriptsDir, "factory-agent-loop.sh"), "utf8");
+    const release = loop.indexOf('"$AGENT" --release');
+    const browser = loop.indexOf('"$AGENT" --browser');
+    assert.ok(release !== -1 && browser > release, "a Chrome session must never delay a merge");
   });
 
   it("rotates browser run dirs and guard logs on the 30-day window", () => {
@@ -277,7 +308,7 @@ preview_url_for_sha ${SHA}
 });
 
 describe("run_browser_task", () => {
-  function run({ verifyRc = 0, runnerRc = 0 } = {}) {
+  function run({ verifyRc = 0, runnerRc = 0, transcript = true } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "browser-task-"));
     const calls = join(dir, "calls.txt");
     const stdinFile = join(dir, "stdin.txt");
@@ -303,6 +334,8 @@ node() {
     */run-claude.mjs)
       shift
       printf 'arg:%s\\n' "$@" >>${JSON.stringify(calls)}
+      sid=""; prev=""; for a in "$@"; do [[ "$prev" == "--session-id" ]] && sid="$a"; prev="$a"; done
+      ${transcript ? 'mkdir -p "$HOME/.claude/projects/x" && : >"$HOME/.claude/projects/x/$sid.jsonl"' : ":"}
       echo "pwd:$(pwd)" >>${JSON.stringify(calls)}
       echo "timeout:$CLAUDE_CALL_TIMEOUT_SEC" >>${JSON.stringify(calls)}
       cat >${JSON.stringify(stdinFile)}
@@ -316,7 +349,9 @@ rc=0
 run_browser_task intest ${JSON.stringify(join(dir, "run"))} https://drafto-x-jakubanderwalds-projects.vercel.app '{"account":{"password":"s3cret-pw"}}' || rc=$?
 echo "rc=$rc result=$BROWSER_RESULT out=$BROWSER_OUT"
 `;
-    const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8" });
+    const env = { ...process.env, HOME: dir };
+    delete env.CLAUDE_CONFIG_DIR;
+    const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8", env });
     const callLog = existsSync(calls) ? readFileSync(calls, "utf8") : "";
     const stdin = existsSync(stdinFile) ? readFileSync(stdinFile, "utf8") : "";
     return { r, dir, callLog, stdin };
@@ -361,10 +396,19 @@ echo "rc=$rc result=$BROWSER_RESULT out=$BROWSER_OUT"
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("reports guard-not-loaded when the guard's SessionStart record is missing", () => {
+  it("reports guard-not-loaded when a session ran without the guard's SessionStart record", () => {
     const { r, dir } = run({ verifyRc: 1 });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /rc=0 result=guard-not-loaded /);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("reports a claude that never started a session as an error, not guard-not-loaded", () => {
+    // e.g. a CLI update that rejects a flag: no transcript, no Chrome, so no
+    // reason to latch the runner off.
+    const { r, dir } = run({ verifyRc: 1, runnerRc: 1, transcript: false });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /rc=0 result=error /);
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -442,6 +486,7 @@ node() {
   esac
 }
 ${extract("browser_record_result")}
+${extract("browser_refund_attempt")}
 ${extract("intest_browser_run")}
 rc=0
 intest_browser_run 501 77 ${SHA} || rc=$?
@@ -520,26 +565,54 @@ echo "rc=$rc"
     assert.equal(finalState.browserRunSha, SHA);
   });
 
-  it("posts nothing on the issue when the browser was unavailable", () => {
-    const { r, callLog, finalState } = run({ state: ready, renderStatus: "unavailable" });
+  for (const renderStatus of ["unavailable", "auth-expired"]) {
+    it(`posts nothing and refunds the attempt when the browser was ${renderStatus}`, () => {
+      // The operator's to fix; once fixed, the card must still get its run.
+      const { r, callLog, finalState } = run({ state: ready, renderStatus });
+      assert.match(r.stdout, /rc=2/);
+      assert.match(callLog, new RegExp(`health record .*--result ${renderStatus} `));
+      assert.doesNotMatch(callLog, /gh issue comment/);
+      assert.equal(finalState.browserRunSha ?? null, null);
+      assert.equal(finalState.browserRunAttempts, `${SHA}:0`);
+    });
+  }
+
+  it("posts nothing for a malformed run, and keeps the attempt spent", () => {
+    const { r, callLog, finalState } = run({ state: ready, renderStatus: "malformed" });
     assert.match(r.stdout, /rc=2/);
-    assert.match(callLog, /health record .*--result unavailable /);
+    assert.match(callLog, /health record .*--result malformed /);
     assert.doesNotMatch(callLog, /gh issue comment/);
-    assert.equal(finalState.browserRunSha ?? null, null, "a later attempt may still run");
+    assert.equal(finalState.browserRunSha ?? null, null, "the next attempt may still report");
     assert.equal(finalState.browserRunAttempts, `${SHA}:1`);
   });
 
-  it("turns the runner off when the guard didn't load, and posts nothing", () => {
-    const { r, callLog } = run({ state: ready, taskResult: "guard-not-loaded" });
+  it("posts a blocked run's report, so the person at the gate sees why", () => {
+    const { r, callLog, finalState } = run({ state: ready, renderStatus: "blocked" });
+    assert.match(r.stdout, /rc=0/);
+    assert.match(callLog, /gh issue comment 501 /);
+    assert.equal(finalState.browserRunSha, SHA);
+  });
+
+  it("turns the runner off when the guard didn't load, posts nothing, and refunds", () => {
+    const { r, callLog, finalState } = run({ state: ready, taskResult: "guard-not-loaded" });
     assert.match(r.stdout, /rc=2/);
     assert.match(callLog, /health record .*--result guard-not-loaded /);
     assert.doesNotMatch(callLog, /report render|gh issue comment/);
+    assert.equal(finalState.browserRunAttempts, `${SHA}:0`);
   });
 
-  it("pauses the factory on a session limit without blaming the browser", () => {
-    const { r, callLog } = run({ state: ready, taskResult: "session-limit" });
+  it("pauses the factory on a session limit without blaming the browser or spending an attempt", () => {
+    const { r, callLog, finalState } = run({ state: ready, taskResult: "session-limit" });
     assert.match(r.stdout, /PAUSED/);
     assert.doesNotMatch(callLog, /health record/);
+    assert.equal(finalState.browserRunAttempts, `${SHA}:0`);
+  });
+
+  it("keeps a timeout's attempt spent, so a hanging runner can't run every tick", () => {
+    const { r, callLog, finalState } = run({ state: ready, taskResult: "timeout" });
+    assert.match(r.stdout, /rc=2/);
+    assert.match(callLog, /health record .*--result timeout /);
+    assert.equal(finalState.browserRunAttempts, `${SHA}:1`);
   });
 
   it("does nothing but log in a dry run", () => {
