@@ -204,15 +204,18 @@ Drafto runs an unattended development pipeline on the Mac mini ("dark factory") 
 **Creating factory issues:** Issues are **not** auto-added to the board — neither `gh issue create` nor the web issue form adds them. Always pass `--project "Drafto Factory"` when creating one via the CLI so the card lands on the [board](https://github.com/users/JakubAnderwald/projects/1) and the factory can pick it up:
 
 ```bash
-gh issue create --project "Drafto Factory" \
-  --template factory-feature.yml --title "feat: ..." --body "..."
+gh issue create --project "Drafto Factory" --title "feat: ..." --body-file spec.md
 ```
+
+`gh` can't fill in the issue form: `--template` is rejected when `--body`/`--body-file` is given. So `spec.md` must use the form's rendered headings, which `parseSpec` (`scripts/lib/factory-bundle.mjs`) and the spec gate read: `### What`, `### Acceptance criteria`, `### Affected platforms` (checkbox lines such as ``- [x] web (`apps/web`)``), `### Schema changes?` (`no` or `yes`), `### UI design (if applicable)` and `### Out of scope`. Copy an existing factory issue's body as a starting point.
 
 (Requires the `gh` token to carry `project` scope — run `gh auth refresh -s project` once if `--project` errors with a missing-scope message.)
 
 **Two human gates** the factory will never bypass: Plan Review → In Progress (plan-approval) and In Test → Approved (merge + ship). Both are reachable via the kanban board for any reporter, and via email reply for allowlisted reporters (Jakub + his wife). The migration gate (`migration-approved` label required when a PR touches `supabase/migrations/**`) is a hard stop on the Approved transition for everyone.
 
 **Kill switches**: per-card via `factory-pause` label or dragging to **Blocked**; global via `node scripts/lib/state-cli.mjs factory:pause`; emergency via `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist`.
+
+**Browser access**: only the locked-down browser runner (`run_browser_task` in `scripts/factory-agent.sh`) may pass `--chrome`; every other `claude` call in the factory, support and nightly scripts passes `--no-chrome`. Every factory, support and nightly call also passes `--strict-mcp-config`, so the operator's claude.ai connectors (Gmail, Drive, Calendar…) never load in an unattended session. It drives this Mac mini's own Chrome profile, so keep it that way. See [ADR-0051](./docs/adr/0051-factory-browser-runner.md).
 
 **Parity-mandate enforcement**: the factory's `--implement` post-check diffs the PR against the issue's "Affected platforms" checkboxes and blocks the card if a claimed platform has no code changes. To run a legitimate single-platform feature, apply `parity:web-only` / `parity:mobile-only` / `parity:desktop-only` to the issue. For a factory-internal change that touches no app platform (under `scripts/`, docs, CI), tick the **None** box in the issue form (or apply the `parity:infra-only` label) — the spec gate skips the "Affected platforms" requirement and the parity check passes as long as the PR stays out of `apps/` and `packages/shared/`.
 

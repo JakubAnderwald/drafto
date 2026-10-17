@@ -24,10 +24,10 @@ describe("factory-agent.sh syntax", () => {
 });
 
 describe("Phase / mode gates", () => {
-  it("Phase A still no-ops --release and --watch", () => {
+  it("Phase A still no-ops --release, --watch and --browser", () => {
     assert.match(
       script,
-      /if \[\[ "\$PHASE" == "A" && \( "\$MODE_RELEASE" -eq 1 \|\| "\$MODE_WATCH" -eq 1 \) \]\]/,
+      /if \[\[ "\$PHASE" == "A" && \( "\$MODE_RELEASE" -eq 1 \|\| "\$MODE_WATCH" -eq 1 \|\| "\$MODE_BROWSER" -eq 1 \) \]\]/,
     );
   });
 

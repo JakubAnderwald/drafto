@@ -53,6 +53,24 @@ Judging a shell command with a regex gets the interesting cases wrong in a diffe
 
 Also handled: leading `VAR=value` assignments, an `env`/`command` prefix, `git -c k=v`, and a command hidden inside `sh -c "…"` / `bash -c "…"` / `eval`.
 
+## The browser runner's guard: generated, not committed
+
+The dark factory's browser runner ([ADR-0051](../adr/0051-factory-browser-runner.md)) has a sixth guard, `scripts/lib/browser-guard.mjs`. It isn't in `.claude/settings.json`: it must never apply to an ordinary session, and it must apply to the runner even though that session runs outside the repo. `run_browser_task` generates a settings file per run (`browser-guard.mjs config`, then `settings`) and passes it with `--settings`.
+
+The file wires up three hooks:
+
+- **SessionStart** writes a canary record.
+- **PreToolUse on `mcp__claude-in-chrome__.*`** blocks with exit 2. It pins the browser device, keeps the session to its own tabs, enforces the run's exact target origin, blocks a tab that has drifted off that origin, and allows only plain keys (no chords, no function keys, no modified clicks). It runs under a perl `alarm` well inside its timeout, because a PreToolUse hook that times out counts as an allow. It also blocks while an earlier call's PostToolUse is still marked in flight.
+- **PostToolUse** records the selected browser and each tab's current URL, and files screenshots.
+
+The file also lists the always-denied Chrome tools under `permissions.deny`.
+
+Every hook command uses absolute paths to node and the guard. Only the PreToolUse command ends in `|| exit 2`, so a pre guard that can't run blocks the call instead of letting it through. SessionStart and PostToolUse always exit 0. A missing SessionStart record is caught by `verify`. A failed post poisons the session or leaves its in-flight marker, and either one makes the next pre deny.
+
+**`claude -p` drops a settings file that fails validation without saying so,** and would run the session with Chrome and no guard. The canary is the check. After each run, `browser-guard.mjs verify` looks for the SessionStart record. If it is missing, the factory turns the runner off until `factory:browser-reset`.
+
+Tests: `cd scripts && node --test __tests__/browser-guard.test.mjs`.
+
 ## Verifying
 
 ```bash

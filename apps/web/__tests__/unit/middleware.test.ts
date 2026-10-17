@@ -51,6 +51,7 @@ describe("Auth middleware", () => {
       "/auth/callback",
       "/auth/desktop/callback",
       "/auth/desktop/recovery",
+      "/auth/test-sign-in",
       "/forgot-password",
       "/reset-password",
       "/api/health",

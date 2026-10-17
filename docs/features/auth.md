@@ -1,6 +1,6 @@
 # Authentication
 
-**Status:** shipped **Updated:** 2026-10-12
+**Status:** shipped **Updated:** 2026-10-17
 
 ## What it is
 
@@ -27,6 +27,8 @@ A signed-in user can permanently delete their own account from inside the app on
 | Reset password                                                                                                                                               | `apps/web/src/app/(auth)/reset-password/page.tsx`                                                                                                                  |
 | Waiting-for-approval landing                                                                                                                                 | `apps/web/src/app/(auth)/waiting-for-approval/page.tsx`                                                                                                            |
 | OAuth callback (PKCE code exchange)                                                                                                                          | `apps/web/src/app/auth/callback/route.ts`                                                                                                                          |
+| Same-origin `next` redirect sanitiser (callback and test sign-in)                                                                                            | `apps/web/src/lib/auth/redirect-path.ts`                                                                                                                           |
+| [Preview-only test sign-in](#preview-only-test-sign-in-factory-browser-runner) for the factory browser runner, and its gate                                  | `apps/web/src/app/auth/test-sign-in/route.ts`, `apps/web/src/lib/auth/test-sign-in.ts`                                                                             |
 | Desktop hand-off pages (`/auth/desktop/{callback,recovery}` → `eu.drafto.desktop://auth/…`)                                                                  | `apps/web/src/app/(auth)/auth/desktop/[flow]/page.tsx`, `apps/web/src/components/auth/desktop-handoff.tsx`                                                         |
 | Desktop hand-off deep-link builder (forwards only `code` / `error*`) and Mac-desktop check                                                                   | `apps/web/src/lib/auth/desktop-deep-link.ts`, `apps/web/src/lib/auth/is-mac-desktop.ts`                                                                            |
 | Signed-out home page (what Drafto is + Privacy link; Google brand verification): middleware rewrites signed-out `/` to it                                    | `apps/web/src/app/welcome/page.tsx`, `apps/web/src/components/landing/`, `apps/web/src/components/legal/legal-links.tsx`                                           |
@@ -105,6 +107,7 @@ A signed-in user can permanently delete their own account from inside the app on
 - [0044 — Desktop Auth Returns Through drafto.eu Hand-off Pages](../adr/0044-desktop-auth-web-handoff.md)
 - [0045 — Mobile Auth Uses the PKCE Flow](../adr/0045-mobile-auth-uses-pkce.md)
 - [0049 — Revoke Sign in with Apple Tokens on Account Deletion](../adr/0049-apple-token-revocation-on-account-deletion.md)
+- [0051 — Factory Browser Access Through a Locked-Down Claude in Chrome Runner](../adr/0051-factory-browser-runner.md) (the preview-only test sign-in)
 
 ## Cross-platform notes
 
@@ -340,6 +343,20 @@ People who no longer have the app, or cannot sign in, email `support@drafto.eu`.
 7. **Reply** to the requester, confirming the deletion.
 
 Why not the admin page: `/api/admin/delete-user` only deletes **pending** users. It refuses approved users, admins and anyone who owns notebooks, notes or API keys (409). Deleting in the dashboard skips the last-admin guard and the strict sweep; steps 3, 4 and 6 stand in for them.
+
+## Preview-only test sign-in (factory browser runner)
+
+The dark factory's browser runner checks a PR's Vercel preview in Chrome, signed in as a dedicated test account in the dev project ([ADR-0051](../adr/0051-factory-browser-runner.md)). Claude in Chrome refuses to type a password on a non-local host, so the runner signs in by opening a one-time link instead: `https://<preview>/auth/test-sign-in?token_hash=<hashed_token>&next=/`.
+
+- **Where the token comes from.** Bash on the Mac mini calls Supabase's admin `generate_link` with type `magiclink` for the test account, using the **dev** service-role key, and hands the returned `hashed_token` to the runner. Nobody without that key can mint a token the route accepts.
+- **What the route does.** It calls `verifyOtp({ token_hash, type: "magiclink" })` through the server client, which sets the session cookies, and redirects to `next`. `next` goes through the same `sanitizeRedirectPath` as `/auth/callback`, so it stays on the preview's origin. A missing, used or expired token, or a thrown error, redirects to `/login?error=test-sign-in-failed`. The token is never logged.
+- **Two gating checks**, both in `isTestSignInEnabled` (`apps/web/src/lib/auth/test-sign-in.ts`). Unless both pass, the route answers 404 before it reads any parameter:
+  1. `VERCEL_ENV` is `preview`. Production deployments set `production`, and local and CI servers set nothing.
+  2. The host of `NEXT_PUBLIC_SUPABASE_URL` is exactly `huhzactreblzcogqkbsd.supabase.co`, the dev project. A preview pointed at prod or any other project stays off.
+
+  Either check alone keeps the route off on drafto.eu. Both are kept on purpose as defence in depth, so don't loosen either one or add another way to switch it on.
+
+- **Why it is in `PUBLIC_ROUTES`.** The browser that opens the link is signed out. The E2E test in `apps/web/e2e/security.spec.ts` checks that the route answers 404 on a local server.
 
 ## Modifying safely
 

@@ -399,6 +399,100 @@ node scripts/lib/coderabbit-cli.mjs review --pr 637 --repo-root "$PWD" \
 - **While it runs**, `factory:cr-cli-status` shows an `inFlight` with `"manual": true` and the process's pid. Factory cards wait at `cli-busy`, and housekeeping leaves the run alone. If the process dies, the next `--watch` tick frees the slot. `factory:cr-cli-finish <runId>` frees it at once.
 - **Primary checkout's state file.** `logs/factory-state.json` there is not the factory's; the live one is in `drafto-factory`.
 
+## Browser runner (Claude in Chrome)
+
+The factory's only way into a browser ([ADR-0051](../adr/0051-factory-browser-runner.md)). `run_browser_task` in `scripts/factory-agent.sh` starts a `claude -p --chrome` session, the one claude call that doesn't pass `--no-chrome`, locked down like this:
+
+- **Tools:** `--permission-mode dontAsk --tools ""` and an allowlist of Chrome tools, so no Bash, files, `gh` or subagents.
+- **Isolation:** `--setting-sources "" --strict-mcp-config` drops your user settings, plugins, `~/.claude/CLAUDE.md` and the claude.ai connectors from its session.
+- **Guard:** a generated `--settings` file wires in `scripts/lib/browser-guard.mjs` (see [claude-code-hooks.md](./claude-code-hooks.md#the-browser-runners-guard-generated-not-committed)).
+- **Prompt:** `scripts/factory-browser-prompt.md`, fed on stdin.
+- **Working directory:** an empty temp dir outside the repo.
+
+The runner drives **this Mac mini's own Chrome profile** — your real sign-ins — so it never gets more than this.
+
+Today it has one use, the **In Test web run**:
+
+- **Which cards:** cards in In Test whose diff touches `apps/web`. The `--watch` sweep lists them in `logs/factory-browser-candidates`, and the `--browser` mode, which the loop runs last after `--release`, runs the `### Web` section of the factory's own scenario for the head commit. Its log is `logs/factory/factory-agent-browser-<date>.log`.
+- **Where:** on that commit's own preview, found through the GitHub Deployments API (`vercel[bot]`, state `success`), signed in as the factory's dev-database test account.
+- **What gets posted:** one report comment. A FAIL doesn't move the card.
+- **How often:** at most one card per tick. Each head SHA gets two attempts, and a new commit re-arms it. A run that fails on the browser's side gives its attempt back: unavailable, auth-expired, guard-not-loaded, or a session limit. A timeout or an error keeps it.
+
+| Var                               | Default                                   | Purpose                                                                                                                                                                                                                                            |
+| --------------------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FACTORY_BROWSER`                 | `0`                                       | Master switch. Anything but `0`/`1` falls back to `0`.                                                                                                                                                                                             |
+| `FACTORY_BROWSER_KINDS`           | `intest`                                  | Comma list of live uses. Only `intest` exists so far; unknown words are dropped with a warning.                                                                                                                                                    |
+| `FACTORY_BROWSER_DEVICE_ID`       | `9796912b-8977-4d74-9c08-d9bb283b9496`    | The only browser the guard lets the runner select: this Mac mini's Chrome, never the MacBook's. A malformed value turns the runner off.                                                                                                            |
+| `FACTORY_BROWSER_TIMEOUT_SEC`     | `900`                                     | Wall cap per runner session.                                                                                                                                                                                                                       |
+| `FACTORY_BROWSER_ACCOUNT_FILE`    | `~/drafto-secrets/browser-account.env`    | `FACTORY_BROWSER_EMAIL=` / `FACTORY_BROWSER_PASSWORD=` of the test account. Must be mode `600`; read by node, never sourced. Without it the runner doesn't start. The runner itself gets only the email; the password is used for the secret scan. |
+| `FACTORY_BROWSER_SIGNIN_KEY_FILE` | `~/drafto-secrets/dev-supabase-admin.env` | `DEV_SUPABASE_URL=` / `DEV_SUPABASE_SERVICE_ROLE_KEY=` of the **dev** project. Mode `600`. Used only to mint the runner's one-time preview sign-in link (`browser-signin.mjs`); minting refuses any other project. Never reaches the runner.       |
+
+### One-time setup
+
+1. **Chrome and the extension.** Chrome runs on the Mac mini with the Claude in Chrome extension signed in. From an interactive session, `list_connected_browsers` lists `9796912b-…` with `isLocal: true`.
+2. **Vercel login.** Open any current Vercel preview in that Chrome. It should load the app directly, not Vercel's login page. The runner relies on this session to get past preview protection.
+3. **A test account in the dev project.** Create it in `huhzactreblzcogqkbsd`, **never prod**: sign up as `jakub+factory-browser@anderwald.info` on a preview or on `localhost:3000`. Then approve it in the dev project's SQL editor:
+   ```sql
+   update public.profiles set is_approved = true
+   where id = (select id from auth.users where email = 'jakub+factory-browser@anderwald.info');
+   ```
+   It's a separate account from the CI E2E user (`E2E_TEST_EMAIL`), so the runner's test data never collides with CI's.
+4. **The account file.** Write it with an editor rather than `echo`, which would leave the password in shell history:
+   ```bash
+   # ~/drafto-secrets also holds the factory's other secrets (support-env.sh, zoho-oauth.json)
+   $EDITOR ~/drafto-secrets/browser-account.env   # FACTORY_BROWSER_EMAIL=… / FACTORY_BROWSER_PASSWORD=…
+   chmod 600 ~/drafto-secrets/browser-account.env
+   node scripts/lib/browser-report.mjs account-check --account-file ~/drafto-secrets/browser-account.env   # prints ok
+   ```
+5. **The dev sign-in key.** The runner signs in on a preview by opening a one-time link, because Claude in Chrome won't type a password there (ADR-0051). Minting that link needs the **dev** service-role key. Fetch it with the Supabase CLI login rather than copying it by hand:
+   ```bash
+   # writes ~/drafto-secrets/dev-supabase-admin.env (mode 600); prints nothing secret
+   TOKEN=$(security find-generic-password -s "Supabase CLI" -a supabase -w | sed 's/^go-keyring-base64://' | base64 -D)
+   curl -s "https://api.supabase.com/v1/projects/huhzactreblzcogqkbsd/api-keys?reveal=true" -H "Authorization: Bearer $TOKEN" \
+     | jq -r '"DEV_SUPABASE_URL=https://huhzactreblzcogqkbsd.supabase.co\nDEV_SUPABASE_SERVICE_ROLE_KEY=" + ([.[] | select(.name=="service_role")][0].api_key)' \
+     > ~/drafto-secrets/dev-supabase-admin.env && chmod 600 ~/drafto-secrets/dev-supabase-admin.env; unset TOKEN
+   ```
+   The web app's `/auth/test-sign-in` route must be on the PR's branch: it is on every branch cut after ADR-0051 landed.
+6. **Switch it on.** Add `FACTORY_BROWSER=1` (and `FACTORY_BROWSER_KINDS=intest`) to the plist's `EnvironmentVariables`, then `launchctl unload`/`load` it.
+
+### What a run leaves behind
+
+- **Run directory:** `logs/factory/browser/issue-<n>-<sha12>-<timestamp>/` holds:
+  - `runner-output.txt`, the runner's whole reply;
+  - `comment.md`, exactly what was posted;
+  - `evidence/`, the screenshots the guard copied, mode 700;
+  - `guard-config.json` and `guard-settings.json`, the config and the generated settings;
+  - `guard-state/`, the per-session tab and selection state.
+- **Decision log:** `logs/factory/browser-guard/<session-id>.jsonl` has every guard decision (tool, tab, URL, allow/deny and why), never the values typed into forms.
+- **Retention:** both are reaped after 30 days.
+- **Orphaned tabs:** a runner killed mid-run leaves its tabs open in Chrome in an orphaned tab group. Close them by hand.
+
+### Health and triage
+
+The runner never pauses the factory. `scripts/lib/browser-health.mjs` tracks results in `factory-state.json` → `browser`, and emails the operator after two bad results in a row and again on recovery. Check it with `node scripts/lib/state-cli.mjs factory:browser-status`.
+
+| Result                               | Meaning                                                                                                            | Fix                                                                                                                                                                          |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `preflight:chrome-not-running`       | Chrome isn't running on the Mac mini.                                                                              | Open Chrome.                                                                                                                                                                 |
+| `preflight:account-*`                | The account file is missing, not a file, readable by others (`mode`), or lacks a key.                              | Fix the file (setup step 4).                                                                                                                                                 |
+| `unavailable`                        | The pinned browser isn't connected, or Chrome tools failed before any step ran.                                    | Sign the Mac mini's Claude in Chrome extension back in.                                                                                                                      |
+| `auth-expired`                       | The preview showed a Vercel (or other) login page.                                                                 | Open a preview in Chrome on the Mac mini and sign in to Vercel.                                                                                                              |
+| `signin-failed`                      | The one-time sign-in link didn't sign the runner in on the preview.                                                | Usually the PR's branch predates `/auth/test-sign-in`: rebase it on `main`. Otherwise check the preview uses dev Supabase and the test account still exists and is approved. |
+| `preflight:signin-key-*`             | The dev sign-in key file is missing, not a file, or readable by others.                                            | Recreate it (setup step 5).                                                                                                                                                  |
+| `preflight:signin-mint`              | Dev Supabase refused to mint the link (bad key, unknown test account).                                             | The reason is in `logs/factory/factory-agent-browser-<date>.log`.                                                                                                            |
+| `blocked`                            | The runner stopped on purpose: suspected injection in the scenario or a page. The report says why.                 | Read the report on the issue.                                                                                                                                                |
+| `malformed` / `timeout` / `error`    | No parseable status line, the wall cap was hit, or claude exited non-zero.                                         | Read `runner-output.txt` and `logs/factory/factory-agent-browser-<date>.log`.                                                                                                |
+| `guard-not-loaded` (runner disabled) | The guard's SessionStart record is missing: `claude -p` silently dropped the settings file. The runner is now off. | Check `guard-settings.json` against the current Claude Code settings schema, then `node scripts/lib/state-cli.mjs factory:browser-reset`. The runner stays off until then.   |
+
+**No report on the issue, for a reason other than the above.** The issue gets no comment for `unavailable`, `auth-expired`, `signin-failed` or `malformed`. The first three are the operator's to fix and the email says so; a `malformed` run simply tries again on the next attempt. A scenario without a `### Web` section is recorded as done for that commit and never run. A withheld report means the runner's output matched a secret pattern. The posted notice names the pattern, and the full output stays in the run directory.
+
+**Re-running a commit by hand.** After fixing the browser, re-arm the card for its current head, and the next `--watch` tick runs it:
+
+```bash
+node scripts/lib/state-cli.mjs factory:set-issue-field <n> browserRunAttempts ""
+node scripts/lib/state-cli.mjs factory:set-issue-field <n> browserRunSha ""
+```
+
 ## Kill switches
 
 | Severity                        | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -409,6 +503,7 @@ node scripts/lib/coderabbit-cli.mjs review --pr 637 --repo-root "$PWD" \
 | Active Claude session hangs     | `node scripts/lib/state-cli.mjs factory:slot-status` shows the PID + issue for each implement/watch slot; `kill -TERM <pid>`. The wall-time wrapper (`run-claude.mjs`) caps each invocation (`FACTORY_PLAN_TIMEOUT_SEC` — default 360 s — for `--plan`/replan, `FACTORY_IMPLEMENT_TIMEOUT_SEC`/`FACTORY_WATCH_TIMEOUT_SEC` for the engines — default 2700/1800 s) so a true hang is rare.                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Worktree install hangs          | Each `pnpm install` is wrapped by `run-with-timeout.mjs` and capped at `FACTORY_INSTALL_TIMEOUT_SEC` (default 600 s); on cap, `--implement` releases the slot + worktree and bumps the card's attempt budget, while `--watch` logs a warning and proceeds. A cold install should take seconds (clonefile seed + offline reconcile), not minutes — see "Worktree installs & disk".                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | CodeRabbit CLI lane misbehaving | Set `FACTORY_CR_CLI=0` in the plist and reload. Cards then promote without waiting for CodeRabbit. Housekeeping keeps running with the lane off: it terminates an in-flight CLI run (SIGTERM to its process group) and discards any finished run's results — nothing is posted and no coverage is recorded — then removes the run's worktree and frees the slot. To do that by hand right away, see "Killing a wedged run". A lane pause (`factory:cr-cli-pause-until`) only stops new runs; cards still hold for the bot and their own in-flight run (see "What a lane pause does to cards"). See "CodeRabbit CLI gap-fill lane". The kill switch covers factory runs only: a manual `coderabbit-cli.mjs review` (`"manual": true` in `factory:cr-cli-status`) keeps running and posting. Stop one with `factory:cr-cli-finish <runId>`. |
+| Browser runner misbehaving      | Set `FACTORY_BROWSER=0` in the plist and reload. No claude call gets Chrome after that. To stop a run in flight, kill its `run-claude.mjs` process; its tabs stay open in an orphaned group in Chrome. See "Browser runner (Claude in Chrome)".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | Stuck PR with a wrong commit    | `gh pr close <n> --delete-branch`. Drag the card back to Ready. Factory will re-plan on the next tick.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Plan needs a single tweak       | Comment on the issue with the correction; on the next tick the factory edits the existing plan comment in place (preserves the rest, stamps `<!-- drafto-factory-replan-ack:<id> -->` so the same comment doesn't loop). Drag back to Ready only if you want a full restart. See `docs/features/dark-factory.md` → "The plan comment looks wrong".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 

@@ -426,7 +426,7 @@ if [[ "$COMMENT_SYNC" -eq 1 ]]; then
     log "Invoking claude for issue #$ISSUE_NUMBER (comment-sync, phase=$PHASE)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t support-agent-out.XXXXXX)
     EXIT_CODE=0
-    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
+    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --no-chrome --strict-mcp-config \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
     if [[ $EXIT_CODE -eq 124 ]]; then
       log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC}s) for issue #$ISSUE_NUMBER comment-sync — skipping; next tick retries"
@@ -604,7 +604,7 @@ if [[ "$STATE_SYNC" -eq 1 ]]; then
     log "Invoking claude for issue #$ISSUE_NUMBER (state-sync, phase=$PHASE)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t support-agent-out.XXXXXX)
     EXIT_CODE=0
-    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
+    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --no-chrome --strict-mcp-config \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
     if [[ $EXIT_CODE -eq 124 ]]; then
       log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC}s) for issue #$ISSUE_NUMBER state-sync — skipping; next tick retries"
@@ -1000,7 +1000,7 @@ for THREAD_INDEX in $(seq 0 $((PENDING_COUNT - 1))); do
   log "Invoking claude for $TRACK_ID (phase=$PHASE)"
   CLAUDE_OUTPUT_FILE=$(mktemp -t support-agent-out.XXXXXX)
   EXIT_CODE=0
-  node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions \
+  node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --no-chrome --strict-mcp-config \
       >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
   if [[ $EXIT_CODE -eq 124 ]]; then
     log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC}s) for $TRACK_ID — skipping; next tick retries"
