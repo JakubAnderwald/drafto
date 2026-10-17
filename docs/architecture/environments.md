@@ -59,7 +59,8 @@ GitHub Actions workflows run against the **dev** Supabase project. CI secrets (`
 
 Sentry and PostHog each use a **single project** with environment tagging, rather than per-environment projects:
 
-- Sentry environment is set via `NEXT_PUBLIC_SENTRY_ENVIRONMENT`, configured per Vercel environment (Production / Preview / Development).
+- Sentry environment is set via `NEXT_PUBLIC_SENTRY_ENVIRONMENT`, configured per Vercel environment (Production / Preview / Development), and trimmed in [`apps/web/src/lib/sentry-environment.ts`](../../apps/web/src/lib/sentry-environment.ts).
+- The Sentry SDK is **disabled when the environment is `development`** — local `pnpm dev`, local `pnpm start` and local Playwright runs (`.env.local` sets `development`). The org is on Sentry's Free plan, and local E2E runs had been using up its 50-replays-a-month quota. Only Vercel production and preview deployments report.
 - PostHog events carry the same environment tag so production and preview/dev traffic can be filtered in the same dashboard.
 - Client instrumentation: [`apps/web/instrumentation-client.ts`](../../apps/web/instrumentation-client.ts) (not `sentry.client.config.ts` — Turbopack ignores the old webpack convention).
 - Server + edge instrumentation: [`apps/web/sentry.server.config.ts`](../../apps/web/sentry.server.config.ts), [`apps/web/sentry.edge.config.ts`](../../apps/web/sentry.edge.config.ts), loaded via [`apps/web/instrumentation.ts`](../../apps/web/instrumentation.ts).
