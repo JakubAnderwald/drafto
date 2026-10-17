@@ -2510,7 +2510,9 @@ run_browser_task() {
   # Resolved (/private/var/…, not /var/…): claude names its transcript
   # folder after the real path, and check_session_limit and the transcript
   # check below look it up by that name.
-  if ! cwd=$(mktemp -d -t factory-browser-cwd) || ! cwd=$(cd "$cwd" && pwd -P); then
+  # An explicit template, not `-t`: GNU mktemp (CI) rejects a -t prefix with
+  # no X's, where macOS's appends them.
+  if ! cwd=$(mktemp -d "${TMPDIR:-/tmp}/factory-browser-cwd.XXXXXX") || ! cwd=$(cd "$cwd" && pwd -P); then
     log "ERROR: could not create the browser runner's working directory ($kind)"
     return 1
   fi
