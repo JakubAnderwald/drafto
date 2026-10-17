@@ -127,7 +127,8 @@
 //                                    lastReviewSha, crConvergedSha,
 //                                    crConvergedAt, crCoverageSha, crCoverage,
 //                                    crLastCoveredSha, crCliRuns,
-//                                    crCliFreePassSha}.
+//                                    crCliFreePassSha, ciRerun,
+//                                    browserRunSha, browserRunAttempts}.
 //                                    Empty/`null` clears the field.
 //   factory:get-issue <issue>       Print issues[<n>] as JSON (empty record
 //                                    if absent).
@@ -164,6 +165,16 @@
 //                                    printed (exit 0): `kill -KILL -<pid>` and
 //                                    re-run. The worktree is left to
 //                                    housekeeping's reap.
+//
+// Browser runner health (browser-health.mjs). The runner records its own
+// results; these are the operator's view and the re-enable switch.
+//
+//   factory:browser-status          Print the browser health record (streak,
+//                                    last result, alert time, disabled latch).
+//   factory:browser-reset           Reset the record to its empty shape. This is
+//                                    the only way to clear `disabled` (set when
+//                                    the guard settings failed to load), so run
+//                                    it once the cause is fixed.
 //
 // Nightly beta-release retry counters (ADR-0042). These live in
 // logs/support-release-state.json — written only by nightly-support.sh, so they
@@ -224,6 +235,8 @@ import {
   pauseCrCli,
   resumeCrCli,
   finishCrCliRun,
+  emptyBrowser,
+  resetBrowser,
 } from "./factory-state.mjs";
 import { bumpNotification, bumpCounters } from "./policy.mjs";
 import { isManualReviewCommand } from "./coderabbit-review.mjs";
@@ -768,6 +781,16 @@ async function main(argv) {
       await saveFactoryState(state, file);
       return { ...result, killed: stop.killed };
     }
+    case "factory:browser-status": {
+      const state = await loadFactoryState(file);
+      return state.browser ?? emptyBrowser();
+    }
+    case "factory:browser-reset": {
+      const state = await loadFactoryState(file);
+      const browser = resetBrowser(state);
+      await saveFactoryState(state, file);
+      return { ok: true, browser };
+    }
     case "record-release-attempt": {
       const issueNumber = positional[0];
       const platform = positional[1];
@@ -847,7 +870,9 @@ async function main(argv) {
           "factory:cr-cli-status|" +
           "factory:cr-cli-pause-until <until-iso> [<reason>]|" +
           "factory:cr-cli-resume|" +
-          "factory:cr-cli-finish <runId> [--refund none|spawn|card]> " +
+          "factory:cr-cli-finish <runId> [--refund none|spawn|card]|" +
+          "factory:browser-status|" +
+          "factory:browser-reset> " +
           "[--state-file <path>] [--now <iso>]\n",
       );
       return null;

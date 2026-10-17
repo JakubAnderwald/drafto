@@ -225,7 +225,12 @@ Compose it in Markdown from the bundle's facts. Structure:
     root, and point at
     [`docs/operations/factory-runbook.md`](docs/operations/factory-runbook.md)
     → "Pre-merge beta dispatch (In Test)" rather than inventing a command.
-- `## Test scenario` — the numbered, per-platform steps.
+- `## Test scenario` — the numbered, per-platform steps, one `###` heading per
+  platform. When `platforms.web` is true, the web steps go under a heading that
+  is exactly `### Web`, and nothing else does. The factory's browser runner
+  (ADR-0051) runs only that section, on `previewUrl`, so every web step must be
+  doable in a browser on the preview alone. A cross-check on drafto.eu or on
+  another device belongs in the step's text, not in its own Web step.
 - What isn't manually testable (only if there is something).
 - When `advisory` is non-empty: a one-line ⚠️ note that advisory (non-required)
   checks are not green — naming them — and that they don't block the merge but

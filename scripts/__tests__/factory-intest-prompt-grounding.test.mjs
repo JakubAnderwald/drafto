@@ -157,6 +157,13 @@ describe("In Test prompt — machine contract", () => {
     assert.match(flat, /the \*\*full\*\* `bundle\.headSha` verbatim/);
   });
 
+  it("puts the web steps under an exact ### Web heading for the browser runner", () => {
+    // intest_browser_run (ADR-0051) runs only that section, found by
+    // extractWebSection in factory-bundle.mjs; any other heading means no run.
+    assert.match(flat, /under a heading that is exactly `### Web`, and nothing else does/);
+    assert.match(flat, /doable in a browser on the preview alone/);
+  });
+
   it("allows noop ONLY on an exact full-SHA match, never on judgement", () => {
     assert.match(flat, /byte-for-byte equal to `bundle\.headSha`/);
     assert.match(flat, /Do not judge staleness by reading the steps/);

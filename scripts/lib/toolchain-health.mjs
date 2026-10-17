@@ -385,7 +385,8 @@ function ghIssueAction(a, { incident, failures, owned, spawn }) {
   return { ok: r.ok && Boolean(m), issueNumber: m ? Number(m[1]) : null, error: r.error };
 }
 
-function sendEmail({ subject, body }, { to, zohoCli, spawn }) {
+// Exported for browser-health.mjs, which alerts through the same zoho-cli path.
+export function sendEmail({ subject, body }, { to, zohoCli, spawn }) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "factory-health-"));
   const bodyFile = path.join(dir, "body.txt");
   try {

@@ -256,6 +256,55 @@ export FACTORY_CR_CLI FACTORY_CR_CLI_MAX_PER_HOUR FACTORY_CR_CLI_MAX_RUNS_PER_CA
 FACTORY_INTEST_BETA="${FACTORY_INTEST_BETA:-0}"
 FACTORY_INTEST_BETA_DESKTOP="${FACTORY_INTEST_BETA_DESKTOP:-0}"
 
+# ── Browser runner (Claude in Chrome, ADR-0051) ────────────────────────────
+# Off by default. When on, ONE kind of claude call gets Chrome: run_browser_task,
+# a locked-down session (dontAsk, no built-in tools, a guard hook pinning the
+# Mac mini's browser and the run's exact target host). Every other call passes
+# --no-chrome, because the code-writing stages have Bash and file access and the
+# browser is the operator's own signed-in profile. FACTORY_BROWSER_KINDS picks
+# which uses are live; PR 1 ships only `intest` (the In Test web run).
+FACTORY_BROWSER="${FACTORY_BROWSER:-0}"
+if [[ "$FACTORY_BROWSER" != "0" && "$FACTORY_BROWSER" != "1" ]]; then
+  echo "WARNING: invalid FACTORY_BROWSER='$FACTORY_BROWSER'; defaulting to 0" >&2
+  FACTORY_BROWSER=0
+fi
+# Comma list. Unknown words are dropped (with a warning) rather than failing the
+# tick, and the result is re-joined with commas so the membership test in
+# browser_kind_enabled can match ",word," exactly.
+FACTORY_BROWSER_KINDS="${FACTORY_BROWSER_KINDS:-intest}"
+_bk_out=""
+_bk_rest="$FACTORY_BROWSER_KINDS,"
+while [[ -n "$_bk_rest" ]]; do
+  _bk_word="${_bk_rest%%,*}"
+  _bk_rest="${_bk_rest#*,}"
+  _bk_word="${_bk_word// /}"
+  [[ -n "$_bk_word" ]] || continue
+  case "$_bk_word" in
+    intest) _bk_out="${_bk_out:+$_bk_out,}$_bk_word" ;;
+    *) echo "WARNING: unknown FACTORY_BROWSER_KINDS entry '$_bk_word'; ignoring it" >&2 ;;
+  esac
+done
+FACTORY_BROWSER_KINDS="$_bk_out"
+unset _bk_out _bk_rest _bk_word
+# The only browser the runner may select (this Mac mini's Chrome, never the
+# MacBook's). The guard hook enforces it; this is just where the id comes from.
+FACTORY_BROWSER_DEVICE_ID="${FACTORY_BROWSER_DEVICE_ID:-9796912b-8977-4d74-9c08-d9bb283b9496}"
+if ! [[ "$FACTORY_BROWSER_DEVICE_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+  echo "WARNING: invalid FACTORY_BROWSER_DEVICE_ID='$FACTORY_BROWSER_DEVICE_ID'; turning the browser runner off" >&2
+  FACTORY_BROWSER=0
+fi
+FACTORY_BROWSER_TIMEOUT_SEC="${FACTORY_BROWSER_TIMEOUT_SEC:-900}"
+if ! [[ "$FACTORY_BROWSER_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_BROWSER_TIMEOUT_SEC='$FACTORY_BROWSER_TIMEOUT_SEC'; defaulting to 900" >&2
+  FACTORY_BROWSER_TIMEOUT_SEC=900
+fi
+# Credentials of the dedicated dev-Supabase account the runner signs in as.
+# Never the CI E2E user and never a prod account. Read by node (the bundle
+# builder and the report scanner), never sourced into this shell.
+FACTORY_BROWSER_ACCOUNT_FILE="${FACTORY_BROWSER_ACCOUNT_FILE:-$HOME/.config/drafto-factory/browser-account.env}"
+# Most runner attempts per head SHA before the card waits for a new commit.
+FACTORY_BROWSER_MAX_ATTEMPTS=2
+
 # Where the fossil lives (React 19.1.x, never reinstalled) and the dedicated,
 # persistent build roots the beta lanes run in — DESKTOP_FOSSIL_ROOT,
 # BETA_MOBILE_ROOT and BETA_DESKTOP_ROOT — are defined in
@@ -358,6 +407,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # the CI fix loop must keep running even if this stage's prompt is absent.
 INTEST_PROMPT_FILE="$SCRIPT_DIR/factory-intest-prompt.md"
 REVIEW_PROMPT_FILE="$SCRIPT_DIR/factory-review-prompt.md"
+BROWSER_PROMPT_FILE="$SCRIPT_DIR/factory-browser-prompt.md"
 umask 077
 LOG_DIR="$REPO_ROOT/logs/factory"
 mkdir -p "$LOG_DIR"
@@ -381,6 +431,10 @@ find "$LOG_DIR" -type f -name 'beta-lane-*.log.exit' -mtime +90 -delete 2>/dev/n
 # knows which dir still belongs to the in-flight run. A second sweep here would
 # be a second retention rule to keep in step with that one.
 CR_CLI_RUN_ROOT="$LOG_DIR/cr-cli"
+# Browser-runner run dirs (runner output, the guard's state, screenshots) and the
+# guard's per-session decision logs (ADR-0051), on the same 30-day window.
+find "$LOG_DIR/browser" -mindepth 1 -maxdepth 1 -type d -mtime +30 -exec rm -rf {} + 2>/dev/null || true
+find "$LOG_DIR/browser-guard" -type f -name '*.jsonl' -mtime +30 -delete 2>/dev/null || true
 # (Build-root locks live at "<root>.lock" beside the root itself, not in
 # $LOG_DIR, and are reaped by the pid check in ensure_beta_build_root.)
 
@@ -2219,6 +2273,7 @@ changed and the factory revises on the same branch.$advisory_note
 
 <!-- drafto-factory-in-test -->
 <!-- drafto-factory-test-scenario -->
+<!-- drafto-factory-scenario-fallback -->
 <!-- drafto-factory-scenario-sha:$head_sha -->" >>"$LOG_FILE" 2>&1 || true
 }
 
@@ -2314,7 +2369,7 @@ intest_handoff() {
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   # Read-only stage: runs in the factory checkout on main, no worktree, no slot.
   ( cd "$REPO_ROOT" && CLAUDE_CALL_TIMEOUT_SEC="$INTEST_TIMEOUT_SEC" \
-      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" ) \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome ) \
       >"$out_file" 2>>"$LOG_FILE" || exit_code=$?
 
   if [[ $exit_code -ne 0 ]]; then
@@ -2351,6 +2406,242 @@ intest_handoff() {
     intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
   fi
   intest_record_comment_sha "$issue_num" "$head_sha"
+  return 0
+}
+
+# ── Browser runner (ADR-0051) ─────────────────────────────────────────────
+# One locked-down Claude-in-Chrome session per call, driving the Mac mini's own
+# Chrome profile (the operator's real sign-ins). Locked down because of that
+# profile: dontAsk mode with no built-in tools (no Bash, no files, no gh, no
+# subagents), and a guard hook (scripts/lib/browser-guard.mjs) that pins the
+# browser device, keeps the session to its own tabs and denies any URL off the
+# run's exact target origin. The runner can only print; bash scans that output
+# for secrets and does any posting itself.
+
+browser_kind_enabled() {
+  [[ "$FACTORY_BROWSER" == "1" ]] || return 1
+  [[ ",$FACTORY_BROWSER_KINDS," == *",$1,"* ]]
+}
+
+# preview_url_for_sha <sha> — the per-commit Vercel preview URL, from the GitHub
+# Deployments API. Not the PR-comment scrape the In Test hand-off uses: that
+# accepts any comment whose author matches /vercel/ and returns the branch
+# alias, which is fine for a link a person clicks but not for the one origin an
+# unattended browser is allowed to open. Prints nothing and fails when there is
+# no successful vercel[bot] deployment for exactly this commit yet.
+preview_url_for_sha() {
+  local sha="$1" dep_id url
+  dep_id=$(gh api "repos/JakubAnderwald/drafto/deployments?sha=$sha&environment=Preview" \
+    --jq '[.[] | select(.creator.login == "vercel[bot]")][0].id // empty' 2>>"$LOG_FILE") || return 1
+  [[ "$dep_id" =~ ^[0-9]+$ ]] || return 1
+  url=$(gh api "repos/JakubAnderwald/drafto/deployments/$dep_id/statuses" \
+    --jq '[.[] | select(.state == "success")][0].environment_url // empty' 2>>"$LOG_FILE") || return 1
+  url="${url%/}"
+  [[ "$url" =~ ^https://drafto-[a-z0-9-]+-jakubanderwalds-projects\.vercel\.app$ ]] || return 1
+  printf '%s\n' "$url"
+}
+
+# Feed one runner outcome to the soft health tracker (browser-health.mjs). It
+# emails the operator after repeated bad outcomes and on recovery, and turns the
+# runner off on guard-not-loaded. It never pauses the factory, and a failure
+# here never fails the tick.
+browser_record_result() {
+  node "$SCRIPT_DIR/lib/browser-health.mjs" record --state-file "$STATE_FILE" \
+    --result "$1" --to "$ADMIN_EMAIL" >>"$LOG_FILE" 2>&1 || true
+}
+
+# run_browser_task <kind> <run-dir> <target-origin> <bundle-json>
+# The ONLY claude call in the factory that gets --chrome. Sets BROWSER_OUT (the
+# runner's stdout) and BROWSER_RESULT: "ran" (read the output for the runner's
+# own status), "guard-not-loaded", "timeout", "session-limit" or "error".
+# Returns 1 only when it couldn't start at all.
+run_browser_task() {
+  local kind="$1" run_dir="$2" origin="$3" bundle="$4"
+  local guard="$SCRIPT_DIR/lib/browser-guard.mjs" cfg settings allowed uuid input start_iso cwd
+  local exit_code=0
+  BROWSER_RESULT="error"
+  BROWSER_OUT="$run_dir/runner-output.txt"
+  if [[ ! -f "$BROWSER_PROMPT_FILE" ]]; then
+    log "ERROR: browser runner prompt missing ($BROWSER_PROMPT_FILE)"
+    return 1
+  fi
+  mkdir -p "$run_dir/evidence" "$run_dir/guard-state" "$LOG_DIR/browser-guard" || return 1
+  cfg="$run_dir/guard-config.json"
+  settings="$run_dir/guard-settings.json"
+  # The settings file is generated by one tested function rather than written
+  # here: `claude -p` silently drops a settings file that fails validation, and
+  # would then run with Chrome and no guard at all. `verify` below catches that.
+  if ! node "$guard" config --out "$cfg" --device "$FACTORY_BROWSER_DEVICE_ID" \
+      --allow-origin "$origin" --log-dir "$LOG_DIR/browser-guard" \
+      --state-dir "$run_dir/guard-state" --evidence-dir "$run_dir/evidence" >>"$LOG_FILE" 2>&1 \
+    || ! node "$guard" settings --config "$cfg" --out "$settings" >>"$LOG_FILE" 2>&1; then
+    log "ERROR: browser guard setup failed ($kind); not starting the runner"
+    return 1
+  fi
+  allowed=$(node "$guard" allowed-tools 2>>"$LOG_FILE" || echo "")
+  if [[ -z "$allowed" ]]; then
+    log "ERROR: browser guard printed no tool allowlist ($kind); not starting the runner"
+    return 1
+  fi
+  uuid=$(uuidgen | tr '[:upper:]' '[:lower:]')
+  input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
+    "$(cat "$BROWSER_PROMPT_FILE")" "$bundle")
+  start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  log "Invoking the browser runner ($kind, session $uuid, cap ${FACTORY_BROWSER_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT)"
+  # cwd is an empty directory OUTSIDE the repo: Claude Code walks up from its
+  # cwd for CLAUDE.md files and project settings, and the runner should get
+  # neither the repo's instructions nor its hooks — only this prompt and the
+  # guard's settings.
+  if ! cwd=$(mktemp -d -t factory-browser-cwd); then
+    log "ERROR: could not create the browser runner's working directory ($kind)"
+    return 1
+  fi
+  # The prompt goes in on stdin, not argv: the bundle carries the test
+  # account's password, and argv is visible to `ps`.
+  ( cd "$cwd" && printf '%s' "$input" | CLAUDE_CALL_TIMEOUT_SEC="$FACTORY_BROWSER_TIMEOUT_SEC" \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p --chrome --permission-mode dontAsk --tools "" \
+      --allowedTools "$allowed" --settings "$settings" --session-id "$uuid" \
+      --effort "$FACTORY_PLAN_EFFORT" ) >"$BROWSER_OUT" 2>>"$LOG_FILE" || exit_code=$?
+  # A run whose guard never loaded is the one outcome that turns the runner off
+  # (until factory:browser-reset), whatever else happened in it.
+  if ! node "$guard" verify --config "$cfg" --session "$uuid" >>"$LOG_FILE" 2>&1; then
+    log "ERROR: the browser guard did not load for session $uuid; turning the browser runner off"
+    BROWSER_RESULT="guard-not-loaded"
+    rmdir "$cwd" 2>/dev/null || true
+    return 0
+  fi
+  if [[ $exit_code -eq 0 ]]; then
+    BROWSER_RESULT="ran"
+  elif [[ $exit_code -eq 124 ]]; then
+    log "WARNING: the browser runner timed out ($kind, session $uuid)"
+    BROWSER_RESULT="timeout"
+  elif check_session_limit "$cwd" "$start_iso"; then
+    BROWSER_RESULT="session-limit"
+  else
+    log "ERROR: the browser runner exited $exit_code ($kind, session $uuid)"
+    BROWSER_RESULT="error"
+  fi
+  rmdir "$cwd" 2>/dev/null || true
+  return 0
+}
+
+# intest_browser_run <issue> <pr> <head sha> — the In Test web run: the Web
+# section of the factory's own scenario for <head sha>, on that commit's
+# preview, reported as one issue comment. Commentary, like intest_handoff: it
+# never moves the card and never spends the retry budget; a FAIL is for the
+# person at the In Test gate to read.
+#
+# Returns 0 when it ran (or found the run can never happen for this SHA), 1 when
+# the card isn't ready this tick (try the next candidate), 2 when the browser
+# itself is unavailable (stop trying candidates this tick).
+intest_browser_run() {
+  local issue_num="$1" pr_num="$2" head_sha="$3"
+  local state_json scenario_sha run_sha attempts_raw attempts=0 preflight target
+  local issue_record comments_json raw bundle origin run_dir body_file render_json status verdict withheld
+  state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
+  run_sha=$(echo "$state_json" | jq -r '.browserRunSha // ""' 2>/dev/null || echo "")
+  [[ "$run_sha" == "$head_sha" ]] && return 1
+  # Only after the scenario for this exact commit exists: the runner runs the
+  # scenario's own steps, and a refresh may still be pending.
+  scenario_sha=$(echo "$state_json" | jq -r '.intestCommentSha // ""' 2>/dev/null || echo "")
+  [[ "$scenario_sha" == "$head_sha" ]] || return 1
+  attempts_raw=$(echo "$state_json" | jq -r '.browserRunAttempts // ""' 2>/dev/null || echo "")
+  if [[ "${attempts_raw%%:*}" == "$head_sha" ]]; then
+    attempts="${attempts_raw##*:}"
+    [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=0
+  fi
+  [[ "$attempts" -lt "$FACTORY_BROWSER_MAX_ATTEMPTS" ]] || return 1
+
+  if ! preflight=$(node "$SCRIPT_DIR/lib/browser-health.mjs" preflight --state-file "$STATE_FILE" \
+      --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" 2>>"$LOG_FILE"); then
+    log "Issue #$issue_num: browser run skipped (${preflight:-preflight failed})"
+    # Recorded even while the runner is disabled: that never builds a streak or
+    # sends a second alert, but it is the only path that retries a "disabled"
+    # email whose first send failed.
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+      browser_record_result "preflight:${preflight:-unknown}"
+    fi
+    return 2
+  fi
+  if ! target=$(preview_url_for_sha "$head_sha") || [[ -z "$target" ]]; then
+    log "Issue #$issue_num: no successful Vercel preview deployment for ${head_sha:0:12} yet; browser run waits"
+    return 1
+  fi
+  issue_record=$(fetch_issue_record "$issue_num") || return 1
+  comments_json=$(fetch_issue_comments "$issue_num" 2>>"$LOG_FILE") || return 1
+  raw=$(jq -n --argjson issue "$issue_record" --argjson comments "$comments_json" \
+    --arg headSha "$head_sha" --argjson prNumber "$pr_num" --arg targetUrl "$target" \
+    --arg accountFile "$FACTORY_BROWSER_ACCOUNT_FILE" --arg deviceId "$FACTORY_BROWSER_DEVICE_ID" \
+    '{kind: "factory_browser_run", runKind: "intest",
+      issue: {number: $issue.number, title: $issue.title},
+      comments: $comments, headSha: $headSha, prNumber: $prNumber,
+      targetUrl: $targetUrl, accountFile: $accountFile, deviceId: $deviceId}') || return 1
+  # The bundle holds the test account's password: it lives in this variable and
+  # on the runner's stdin, never in the log.
+  if ! bundle=$(printf '%s' "$raw" | node "$SCRIPT_DIR/lib/factory-bundle.mjs" 2>>"$LOG_FILE"); then
+    log "ERROR: building the browser-run bundle failed for #$issue_num"
+    return 1
+  fi
+  if [[ "$(echo "$bundle" | jq -r '.scenario == null' 2>/dev/null)" == "true" ]]; then
+    # Nothing to run for this commit: no OWNER scenario with this SHA, or one
+    # without a ### Web section (e.g. the fallback comment). Record it so the
+    # sweep doesn't rebuild the bundle every tick; a new commit re-arms it.
+    log "Issue #$issue_num: scenario for ${head_sha:0:12} has no Web section to run; no browser run"
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" browserRunSha "$head_sha" \
+        --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    fi
+    return 1
+  fi
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "DRY-RUN: would run the In Test web steps for #$issue_num on $target"
+    return 0
+  fi
+
+  attempts=$((attempts + 1))
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" browserRunAttempts \
+    "$head_sha:$attempts" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  origin=$(echo "$bundle" | jq -r '.target.origin')
+  run_dir="$LOG_DIR/browser/issue-$issue_num-${head_sha:0:12}-$(date +%Y%m%dT%H%M%S)"
+  log "Issue #$issue_num: browser run $attempts/$FACTORY_BROWSER_MAX_ATTEMPTS for ${head_sha:0:12} on $origin"
+  if ! run_browser_task intest "$run_dir" "$origin" "$bundle"; then
+    browser_record_result error
+    return 2
+  fi
+  case "$BROWSER_RESULT" in
+    ran) ;;
+    session-limit) pause_for_session_limit; return 2 ;;
+    *) browser_record_result "$BROWSER_RESULT"; return 2 ;;
+  esac
+
+  body_file="$run_dir/comment.md"
+  if ! render_json=$(node "$SCRIPT_DIR/lib/browser-report.mjs" render --kind intest \
+      --in "$BROWSER_OUT" --issue "$issue_num" --sha "$head_sha" --evidence-dir "$run_dir/evidence" \
+      --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" --out "$body_file" 2>>"$LOG_FILE"); then
+    log "ERROR: rendering the browser report failed for #$issue_num (output kept in $run_dir)"
+    browser_record_result malformed
+    return 2
+  fi
+  status=$(echo "$render_json" | jq -r '.status // "malformed"' 2>/dev/null || echo "malformed")
+  verdict=$(echo "$render_json" | jq -r '.verdict // "none"' 2>/dev/null || echo "none")
+  withheld=$(echo "$render_json" | jq -r '.withheld // false' 2>/dev/null || echo "false")
+  log "Issue #$issue_num: browser run finished (browser=$status verdict=$verdict withheld=$withheld; evidence in $run_dir)"
+  browser_record_result "$status"
+  case "$status" in
+    unavailable|auth-expired)
+      # The operator's problem, not the reporter's: the health tracker emails
+      # about it, and the issue gets no comment. A later attempt (or commit)
+      # tries again.
+      return 2
+      ;;
+  esac
+  if gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body-file "$body_file" >>"$LOG_FILE" 2>&1; then
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" browserRunSha "$head_sha" \
+      --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  else
+    log "WARNING: posting the browser report on #$issue_num failed; it stays in $body_file"
+  fi
   return 0
 }
 
@@ -2425,7 +2716,7 @@ review_stage() {
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   # Read-only stage: runs in the factory checkout on main, no worktree, no slot.
   ( cd "$REPO_ROOT" && CLAUDE_CALL_TIMEOUT_SEC="$REVIEW_TIMEOUT_SEC" \
-      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" ) \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome ) \
       >"$out_file" 2>>"$LOG_FILE" || exit_code=$?
 
   if [[ $exit_code -ne 0 ]]; then
@@ -2888,7 +3179,7 @@ See \`docs/features/dark-factory.md\` for the spec contract.
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
-    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" \
+    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
     if [[ $EXIT_CODE -eq 124 ]]; then
@@ -3074,7 +3365,7 @@ and drag the card back to **Ready** to retry.
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
-    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" \
+    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
     if [[ $EXIT_CODE -eq 124 ]]; then
@@ -3436,7 +3727,7 @@ Drag it back to **Ready** so the factory can plan it first.
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
     ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$IMPLEMENT_TIMEOUT_SEC" \
-        node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" ) \
+        node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" --no-chrome ) \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
     if [[ $EXIT_CODE -eq 124 ]]; then
@@ -3898,7 +4189,7 @@ A human should take a look. Reset with \
       CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
       EXIT_CODE=0
       ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$WATCH_TIMEOUT_SEC" \
-          node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" ) \
+          node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" --no-chrome ) \
           >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
       if [[ $EXIT_CODE -ne 0 ]]; then
@@ -4059,6 +4350,10 @@ A human should take a look. Reset with \
   INTEST_COUNT=$(echo "$INTEST_JSON" | jq 'length' 2>/dev/null || echo "0")
   [[ "$INTEST_COUNT" =~ ^[0-9]+$ ]] || INTEST_COUNT=0
   log "--watch In Test feedback sweep: $INTEST_COUNT item(s)"
+  # In Test web-run candidates (ADR-0051), "issue:pr:sha" words. Collected in
+  # the loop and run after it, at most one per tick, so a 15-minute browser
+  # session never delays another card's rollback or scenario refresh.
+  BROWSER_CANDIDATES=""
 
   for ((IDX=0; IDX<INTEST_COUNT; IDX++)); do
     ITEM=$(echo "$INTEST_JSON" | jq ".[${IDX}]")
@@ -4154,6 +4449,13 @@ A human should take a look. Reset with \
           # owner_comments_since ignores it — it can never look like feedback.
           COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM" 2>>"$LOG_FILE" || echo "$COMMENTS_JSON")
         fi
+
+        # A web change with no revision pending is a browser-run candidate;
+        # intest_browser_run makes the per-SHA checks when its turn comes.
+        if browser_kind_enabled intest && [[ "$INTEST_PENDING_FEEDBACK" -eq 0 ]] \
+            && [[ "$(echo "$INTEST_PLATS" | jq -r '.web // false' 2>/dev/null)" == "true" ]]; then
+          BROWSER_CANDIDATES="${BROWSER_CANDIDATES:+$BROWSER_CANDIDATES }$ISSUE_NUM:$INTEST_PR_NUM:$INTEST_HEAD_SHA"
+        fi
       fi
     fi
 
@@ -4211,6 +4513,13 @@ test run, gets a reply here. (To ship as-is instead, drag the card to \
 **Approved**.)
 
 <!-- drafto-factory-revising -->" >>"$LOG_FILE" 2>&1 || true
+  done
+
+  for BROWSER_CAND in $BROWSER_CANDIDATES; do
+    BROWSER_RC=0
+    intest_browser_run "${BROWSER_CAND%%:*}" "$(echo "$BROWSER_CAND" | cut -d: -f2)" \
+      "${BROWSER_CAND##*:}" || BROWSER_RC=$?
+    [[ "$BROWSER_RC" -eq 1 ]] || break
   done
 
   log "=== factory-agent --watch completed in $(( $(date +%s) - START_TIME ))s ==="

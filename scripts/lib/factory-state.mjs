@@ -41,7 +41,11 @@
 //                          startedAt, deadlineAt, runDir, worktree },
 //       pausedUntil:  ISO|null,           // lane-only pause (vendor rate limit,
 //       pausedReason: string|null         // auth). Never pauses the factory.
-//     }
+//     },
+//     browser: {                           // Claude in Chrome runner health (browser-health.mjs)
+//       consecutiveBad, lastResult, lastResultAt, unavailableSince, reason,
+//       alertedAt, disabled, disabledReason   // see emptyBrowser(). Soft: never
+//     }                                      // pauses the factory.
 //   }
 //
 // Atomic writes use the same temp-file + rename pattern as state.mjs. **Callers
@@ -78,11 +82,44 @@ export function emptyFactoryState() {
     issues: {},
     toolchainIncident: null,
     crCli: emptyCrCli(),
+    browser: emptyBrowser(),
   };
 }
 
 export function emptyCrCli() {
   return { runs: [], inFlight: null, pausedUntil: null, pausedReason: null };
+}
+
+// Health of the locked-down browser runner (browser-health.mjs, ADR-0051).
+// Soft by design: a bad record only skips browser runs and emails the
+// operator, it never pauses the factory or moves a card.
+//   consecutiveBad   — bad runs/preflights in a row; 2 sends one email
+//   lastResult(At)   — the last recorded result and when, for factory:browser-status
+//   unavailableSince — first bad result of the current streak
+//   reason           — the latest bad result (picks the fix the email suggests)
+//   alertedAt        — when the operator was last told (degraded or disabled);
+//                      left unset when that email fails, so it is retried
+//   disabled         — latched off (today only by guard-not-loaded). Only
+//                      `state-cli.mjs factory:browser-reset` clears it, never a
+//                      good run: a guard that failed to load once can't be
+//                      trusted to load the next time
+export function emptyBrowser() {
+  return {
+    consecutiveBad: 0,
+    lastResult: null,
+    lastResultAt: null,
+    unavailableSince: null,
+    reason: null,
+    alertedAt: null,
+    disabled: false,
+    disabledReason: null,
+  };
+}
+
+// The operator's re-enable (factory:browser-reset): back to a clean record.
+export function resetBrowser(state) {
+  state.browser = emptyBrowser();
+  return state.browser;
 }
 
 function emptySlot() {
@@ -139,6 +176,12 @@ function emptyIssue() {
     // as "<head sha>:<count>". Head-SHA keyed like the rest: a new push re-arms
     // the FACTORY_CI_RERUN_MAX budget. See rerun_infra_failures.
     ciRerun: null,
+    // In Test browser run (Claude in Chrome on the Vercel preview). Head-SHA
+    // keyed again: browserRunSha is the head the report comment was posted
+    // for, so each commit gets one report; browserRunAttempts is
+    // "<head sha>:<count>" like ciRerun, capping runs that didn't produce one.
+    browserRunSha: null,
+    browserRunAttempts: null,
   };
 }
 
@@ -195,6 +238,7 @@ function mergeWithDefaults(parsed) {
         ? parsed.toolchainIncident
         : null,
     crCli: mergeCrCli(parsed.crCli),
+    browser: mergeBrowser(parsed.browser),
   };
 }
 
@@ -227,6 +271,27 @@ function mergeCrCli(raw) {
     inFlight: mergeInFlight(raw.inFlight),
     pausedUntil: typeof raw.pausedUntil === "string" ? raw.pausedUntil : null,
     pausedReason: typeof raw.pausedReason === "string" ? raw.pausedReason : null,
+  };
+}
+
+function mergeBrowser(raw) {
+  const base = emptyBrowser();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return base;
+  const str = (v) => (typeof v === "string" && v !== "" ? v : null);
+  return {
+    // Unknown keys pass through, for the same reason as at the top level: an
+    // older copy of this file must not erase a newer one's browser fields.
+    ...raw,
+    consecutiveBad:
+      Number.isInteger(raw.consecutiveBad) && raw.consecutiveBad > 0 ? raw.consecutiveBad : 0,
+    lastResult: str(raw.lastResult),
+    lastResultAt: str(raw.lastResultAt),
+    unavailableSince: str(raw.unavailableSince),
+    reason: str(raw.reason),
+    alertedAt: str(raw.alertedAt),
+    // Truthy garbage reads as disabled: the latch fails safe (browser off).
+    disabled: Boolean(raw.disabled),
+    disabledReason: str(raw.disabledReason),
   };
 }
 
@@ -449,6 +514,11 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   // Cancelled-check re-run budget. A rejected write leaves the count at zero,
   // so the factory would re-run CI on every tick and never tell the operator.
   "ciRerun",
+  // In Test browser run keys. A rejected browserRunSha re-runs the browser
+  // (and re-posts its report) every tick; a rejected browserRunAttempts lets
+  // a run that keeps failing retry forever.
+  "browserRunSha",
+  "browserRunAttempts",
 ]);
 
 export function setIssueField(state, issueNumber, field, value) {

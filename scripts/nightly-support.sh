@@ -315,7 +315,7 @@ Constraints:
 PROMPT
   CLAUDE_RC=0
   CLAUDE_CALL_TIMEOUT_SEC="$DEPENDABOT_CLAUDE_TIMEOUT_SEC" \
-    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$DEPENDABOT_PROMPT" --dangerously-skip-permissions 2>&1 \
+    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$DEPENDABOT_PROMPT" --dangerously-skip-permissions --no-chrome 2>&1 \
     | tee -a "$LOG_FILE" || CLAUDE_RC=$?
   if [[ "$CLAUDE_RC" -eq 124 ]]; then
     log "ERROR: Dependabot PR #$PR_NUMBER session hit the ${DEPENDABOT_CLAUDE_TIMEOUT_SEC}s cap; continuing with next item"
@@ -474,7 +474,7 @@ Constraints:
 PROMPT
   CLAUDE_RC=0
   CLAUDE_CALL_TIMEOUT_SEC="$SUPPORT_CLAUDE_TIMEOUT_SEC" \
-    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$SUPPORT_PROMPT" --dangerously-skip-permissions 2>&1 \
+    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$SUPPORT_PROMPT" --dangerously-skip-permissions --no-chrome 2>&1 \
     | tee -a "$LOG_FILE" || CLAUDE_RC=$?
   if [[ "$CLAUDE_RC" -eq 124 ]]; then
     log "ERROR: Support issue #$ISSUE_NUMBER session hit the ${SUPPORT_CLAUDE_TIMEOUT_SEC}s cap; continuing with next item"
