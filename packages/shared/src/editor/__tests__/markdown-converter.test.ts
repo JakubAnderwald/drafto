@@ -440,6 +440,61 @@ describe("round-trip stability", () => {
       expectMarkdownToBeStable("- a\n  - b\n    - [x] c\n  1. d");
     });
 
+    // CommonMark nests a code block or list inside a list item when it is
+    // indented to the item's content, so a strict parser (an MCP client)
+    // keeps these children in their item.
+    it("indents a numbered item's children 3 spaces, to its content column", () => {
+      const blocks = [
+        item("numberedListItem", "Step one", [
+          code("npm install", "bash"),
+          item("bulletListItem", "note"),
+          item("checkListItem", "done", [], { checked: true }),
+        ]),
+      ];
+      expect(blockNoteToMarkdown(blocks)).toBe(
+        "1. Step one\n   ```bash\n   npm install\n   ```\n   - note\n   - [x] done",
+      );
+      expectBlocksToRoundTrip(blocks);
+    });
+
+    it("indents each level to its own parent's content column", () => {
+      const blocks = [
+        item("numberedListItem", "a", [
+          item("numberedListItem", "b", [
+            item("bulletListItem", "c", [item("numberedListItem", "d")]),
+          ]),
+        ]),
+        item("checkListItem", "e", [item("numberedListItem", "f", [item("paragraph", "g")])], {
+          checked: false,
+        }),
+      ];
+      const md = "1. a\n   1. b\n      - c\n        1. d\n\n- [ ] e\n  1. f\n     g";
+      expect(blockNoteToMarkdown(blocks)).toBe(md);
+      expectBlocksToRoundTrip(blocks);
+      expectMarkdownToBeStable(md);
+    });
+
+    it("indents a numbered item's table, and its empty paragraph's children, 3 spaces", () => {
+      const rows = [
+        ["h", "i"],
+        ["1", "2"],
+      ];
+      expect(blockNoteToMarkdown([item("numberedListItem", "a", [table(rows)])])).toBe(
+        "1. a\n   | h | i |\n   | --- | --- |\n   | 1 | 2 |",
+      );
+      const blocks: BlockNoteBlock[] = [
+        item("numberedListItem", "a", [
+          table(rows),
+          { type: "paragraph", content: [], children: [item("bulletListItem", "b")] },
+        ]),
+      ];
+      const md = blockNoteToMarkdown(blocks);
+      expect(md.split("\n")).toContain("   - b");
+      expect(markdownToBlockNote(md)).toEqual([
+        item("numberedListItem", "a", [table(rows), item("bulletListItem", "b")]),
+      ]);
+    });
+
     // Copying the children array per child takes this past the test timeout.
     it("nests a long run of children under one parent, in order", () => {
       const md = ["- Parent", ...Array.from({ length: 100_000 }, (_, n) => `  - c${n}`)].join("\n");
@@ -1058,6 +1113,11 @@ describe("round-trip stability", () => {
         item("numberedListItem", "Run", [code("npm test")]),
       ]);
       expectBlocksToRoundTrip(blocks);
+      // Emitted at the item's content column, 3 spaces, also where the input used 2.
+      const md =
+        "1. Install\n   ```bash\n   npm install\n     --save\n   ```\n\n1. Run\n   ```\n   npm test\n   ```";
+      expect(blockNoteToMarkdown(blocks)).toBe(md);
+      expectMarkdownToBeStable(md);
     });
 
     it("indents a nested code block's content lines to its fence", () => {

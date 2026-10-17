@@ -217,8 +217,20 @@ function tableCellToMarkdown(cell: BlockNoteTableRowCell): string {
   return inlineContentToMarkdown(getTableCellInline(cell), "both").replace(/\|/g, "\\|");
 }
 
-function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
-  const prefix = "  ".repeat(indent);
+/**
+ * How far a block's children are indented past the block itself. CommonMark
+ * nests a block inside a list item when its first line is indented to the
+ * item's content: 3 columns under `1. `, 2 under `- ` and `- [ ] ` (in GFM
+ * the `[ ]` is part of the content). Other blocks' children take 2, which
+ * markdownToBlockNote reads as one level deeper. Children are not separated
+ * by blank lines, so a strict parser can still merge a paragraph-like child
+ * (paragraph, image, file link) into the text just before it.
+ */
+function childIndent(block: BlockNoteBlock): string {
+  return block.type === "numberedListItem" ? "   " : "  ";
+}
+
+function blockToMarkdown(block: BlockNoteBlock, prefix: string): string {
   const lines: string[] = [];
 
   switch (block.type) {
@@ -314,17 +326,19 @@ function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
     }
   }
 
-  // Render nested children with increased indent. A block that emits no
-  // visible line (an empty paragraph, a table with no rows) vanishes on
-  // parse, so its children keep its own indent: indented further, they would
-  // nest under the block before it.
-  const childIndent = lines.some((line) => line.trim() !== "") ? indent + 1 : indent;
+  // Render nested children indented to this block's content (see
+  // childIndent). A block that emits no visible line (an empty paragraph, a
+  // table with no rows) vanishes on parse, so its children keep its own
+  // prefix: indented further, they would nest under the block before it.
+  const childPrefix = lines.some((line) => line.trim() !== "")
+    ? prefix + childIndent(block)
+    : prefix;
   if (block.children && block.children.length > 0) {
     block.children.forEach((child, i) => {
       // Siblings are joined without a blank line, so two tables in a row
       // would read back as one table.
       if (child.type === "table" && block.children?.[i - 1]?.type === "table") lines.push("");
-      lines.push(blockToMarkdown(child, childIndent));
+      lines.push(blockToMarkdown(child, childPrefix));
     });
   }
 
@@ -335,7 +349,7 @@ function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
  * Convert BlockNote blocks to Markdown text.
  */
 export function blockNoteToMarkdown(blocks: BlockNoteBlock[]): string {
-  return blocks.map((block) => blockToMarkdown(block, 0)).join("\n\n");
+  return blocks.map((block) => blockToMarkdown(block, "")).join("\n\n");
 }
 
 // --- Markdown -> BlockNote ---
@@ -348,7 +362,9 @@ interface ParsedLine {
 function parseLine(line: string): ParsedLine {
   const match = line.match(/^(\s*)(.*)/);
   const raw = match?.[1] ?? "";
-  // Normalize indent: 2 spaces or 1 tab = 1 level
+  // Indent in steps of 2 columns, a tab counting as 2. Depths are only
+  // compared with each other (see attachBlock), so a child indented 2 columns
+  // past its parent (under `- ` or `- [ ] `) or 3 (under `1. `) nests either way.
   const indent = Math.floor(raw.replace(/\t/g, "  ").length / 2);
   return { indent, content: match?.[2] ?? "" };
 }
@@ -628,8 +644,9 @@ function parseTableLine(line: string): ParsedLine | null {
 /**
  * Convert Markdown text to BlockNote blocks.
  * Supports headings, paragraphs, bullet/numbered/check lists, code blocks, images, and inline styles.
- * Indented lines nest under the nearest less-indented block, matching the
- * 2-space-per-level indent blockNoteToMarkdown emits for `children`.
+ * Indented lines nest under the nearest less-indented block, so the
+ * `children` blockNoteToMarkdown emits, 3 spaces deeper under `1. ` and 2
+ * under any other block, read back as children.
  */
 export function markdownToBlockNote(markdown: string): BlockNoteBlock[] {
   const lines = markdown.split("\n");
