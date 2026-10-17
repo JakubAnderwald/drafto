@@ -227,6 +227,30 @@ describe("factory-agent.sh browser runner: knobs under bash 3.2", () => {
     assert.match(r.stderr, /invalid FACTORY_BROWSER_DEVICE_ID/);
   });
 
+  it("expands a leading ~ in the file knobs, which a launchd plist won't", () => {
+    const r = spawnSync(
+      "/bin/bash",
+      [
+        "-c",
+        `set -euo pipefail\nHOME=/home/test\n${block[0]}\n` +
+          'echo "A=$FACTORY_BROWSER_ACCOUNT_FILE K=$FACTORY_BROWSER_SIGNIN_KEY_FILE"',
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          FACTORY_BROWSER_ACCOUNT_FILE: "~/drafto-secrets/a.env",
+          FACTORY_BROWSER_SIGNIN_KEY_FILE: "~/drafto-secrets/k.env",
+        },
+      },
+    );
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(
+      r.stdout,
+      /^A=\/home\/test\/drafto-secrets\/a\.env K=\/home\/test\/drafto-secrets\/k\.env$/m,
+    );
+  });
+
   it("validates the timeout", () => {
     const r = runKnobs({ FACTORY_BROWSER_TIMEOUT_SEC: "15m" });
     assert.match(r.stdout, / T=900 /);

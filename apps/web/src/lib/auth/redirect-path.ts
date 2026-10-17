@@ -6,7 +6,7 @@
 // and drop tabs and newlines, so `/\evil.example` or `/<tab>/evil.example` (and `next=/%5C…`,
 // which arrives decoded) still resolve to another host. So the path is resolved the way the
 // redirect will be, and kept only if it stays on the same origin.
-const BASE = "http://redirect-check.invalid";
+const BASE = "https://redirect-check.invalid";
 
 export function sanitizeRedirectPath(path: string | null): string {
   if (!path || !path.startsWith("/") || path.startsWith("//")) {

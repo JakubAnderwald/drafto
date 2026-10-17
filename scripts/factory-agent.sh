@@ -307,6 +307,10 @@ FACTORY_BROWSER_ACCOUNT_FILE="${FACTORY_BROWSER_ACCOUNT_FILE:-$HOME/drafto-secre
 # a password on a preview, so the runner opens that link instead. Dev only:
 # minting refuses any other project. Never reaches the runner.
 FACTORY_BROWSER_SIGNIN_KEY_FILE="${FACTORY_BROWSER_SIGNIN_KEY_FILE:-$HOME/drafto-secrets/dev-supabase-admin.env}"
+# A launchd plist doesn't expand `~`, so an operator's `~/drafto-secrets/…`
+# would reach node as a literal path and every run would fail its preflight.
+case "$FACTORY_BROWSER_ACCOUNT_FILE" in "~/"*) FACTORY_BROWSER_ACCOUNT_FILE="$HOME/${FACTORY_BROWSER_ACCOUNT_FILE#\~/}" ;; esac
+case "$FACTORY_BROWSER_SIGNIN_KEY_FILE" in "~/"*) FACTORY_BROWSER_SIGNIN_KEY_FILE="$HOME/${FACTORY_BROWSER_SIGNIN_KEY_FILE#\~/}" ;; esac
 # Most runner attempts per head SHA before the card waits for a new commit.
 FACTORY_BROWSER_MAX_ATTEMPTS=2
 
