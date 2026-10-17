@@ -19,7 +19,7 @@ export const LANDING_FEATURES: readonly LandingFeature[] = [
   {
     title: "Everywhere, even offline",
     description:
-      "Your notes stay in sync across the web, iPhone, iPad, Android and Mac. The apps keep working without a connection and catch up when you're back online.",
+      "Your notes stay in sync across the web, iPhone, iPad, Android and Mac. The iPhone, iPad, Android and Mac apps keep working without a connection and catch up when you're back online.",
   },
   {
     title: "Search",
