@@ -13,6 +13,10 @@ import { test, expect } from "@playwright/test";
  *   3. "verify mobile edits are persisted" — checks the edit via API
  *   4. Maestro (Android) opens, verifies, edits the note
  *   5. "verify mobile edits are persisted" — checks again
+ *
+ * `apps/mobile/e2e/run-nested-lists-e2e.sh` orchestrates a second pair the
+ * same way (issue #465): "create a nested-list note for mobile testing", then
+ * Maestro flow 08 on iOS, then "verify nested lists survive a mobile edit".
  */
 
 const TIPTAP_DOC = {
@@ -46,6 +50,37 @@ const TIPTAP_DOC = {
     },
   ],
 };
+
+interface NestedBlock {
+  type: string;
+  props?: { checked?: boolean };
+  content?: { text?: string }[];
+  children?: NestedBlock[];
+}
+
+const checkItem = (text: string, checked: boolean, children: NestedBlock[] = []) => ({
+  type: "checkListItem",
+  props: { checked },
+  content: [{ type: "text", text, styles: {} }],
+  children,
+});
+
+// To-dos nested three deep (A > B > C, only B checked), then a bullet with a
+// check child: the shapes the native editor used to drop on its first save.
+const NESTED_LISTS_CONTENT = [
+  checkItem("Nested item A", false, [
+    checkItem("Nested item B", true, [checkItem("Nested item C", false)]),
+  ]),
+  {
+    type: "bulletListItem",
+    content: [{ type: "text", text: "Bullet parent", styles: {} }],
+    children: [checkItem("Bullet child", false)],
+  },
+];
+
+function blockText(block: NestedBlock | undefined): string {
+  return (block?.content ?? []).map((item) => item.text ?? "").join("");
+}
 
 /** Best-effort cleanup — never throws */
 async function deleteNote(
@@ -361,5 +396,89 @@ test.describe("Cross-platform format sync", () => {
     console.log(
       `Verified note ${noteId} (title: "${noteData.title}"): ${noteData.content.length} blocks in BlockNote format`,
     );
+  });
+
+  test("create a nested-list note for mobile testing", async ({ request }) => {
+    // Called by apps/mobile/e2e/run-nested-lists-e2e.sh. Seeds a note whose
+    // to-dos are nested three deep, plus a bullet with a check child, for
+    // Maestro flow 08 to open and edit on iOS.
+    const runId = process.env.XPLAT_RUN_ID;
+    if (!runId) {
+      test.skip();
+      return;
+    }
+
+    const nbName = `XPlat NB ${runId}`;
+    const nbRes = await request.post("/api/notebooks", { data: { name: nbName } });
+    expect(nbRes.ok()).toBe(true);
+    const nb: { id: string } = await nbRes.json();
+
+    const createRes = await request.post(`/api/notebooks/${nb.id}/notes`);
+    expect(createRes.ok()).toBe(true);
+    const note: { id: string } = await createRes.json();
+
+    const patchRes = await request.patch(`/api/notes/${note.id}`, {
+      data: { title: `XPlat Nested ${runId}`, content: NESTED_LISTS_CONTENT },
+    });
+    expect(patchRes.ok()).toBe(true);
+
+    console.log(`XPLAT_NOTE_ID=${note.id}`);
+    console.log(`XPLAT_NOTEBOOK_NAME=${nbName}`);
+  });
+
+  test("verify nested lists survive a mobile edit", async ({ request }) => {
+    // Called by run-nested-lists-e2e.sh after flow 08 typed " <RUN_ID>" into
+    // the deepest to-do. Before the fix, the app dropped a check item's
+    // children, so its first save deleted "Nested item B" and "Nested item C".
+    const runId = process.env.XPLAT_RUN_ID;
+    if (!runId) {
+      test.skip();
+      return;
+    }
+
+    const notebooksRes = await request.get("/api/notebooks");
+    expect(notebooksRes.ok()).toBe(true);
+    const notebooks: { id: string; name: string }[] = await notebooksRes.json();
+    const nb = notebooks.find((n) => n.name === `XPlat NB ${runId}`);
+    expect(nb).toBeDefined();
+
+    const notesRes = await request.get(`/api/notebooks/${nb!.id}/notes`);
+    expect(notesRes.ok()).toBe(true);
+    const notes: { id: string; title: string }[] = await notesRes.json();
+    const found = notes.find((n) => n.title === `XPlat Nested ${runId}`);
+    expect(found).toBeDefined();
+
+    const readContent = async (): Promise<NestedBlock[]> => {
+      const res = await request.get(`/api/notes/${found!.id}`);
+      expect(res.ok()).toBe(true);
+      return (await res.json()).content as NestedBlock[];
+    };
+
+    // The app syncs right after it saves; give the push time to reach the server.
+    await expect
+      .poll(async () => JSON.stringify(await readContent()).includes(runId), { timeout: 30000 })
+      .toBe(true);
+
+    const [a, bullet] = await readContent();
+    expect(a.type).toBe("checkListItem");
+    expect(blockText(a)).toBe("Nested item A");
+    expect(a.props?.checked).toBe(false);
+
+    const b = a.children?.[0];
+    expect(b?.type).toBe("checkListItem");
+    expect(blockText(b)).toBe("Nested item B");
+    expect(b?.props?.checked).toBe(true);
+
+    const c = b?.children?.[0];
+    expect(c?.type).toBe("checkListItem");
+    expect(c?.props?.checked).toBe(false);
+    // Where the edit lands depends on where Maestro's tap put the cursor.
+    expect(blockText(c)).toContain(runId);
+    expect(blockText(c).replace(` ${runId}`, "")).toBe("Nested item C");
+
+    expect(bullet.type).toBe("bulletListItem");
+    expect(blockText(bullet)).toBe("Bullet parent");
+    expect(bullet.children?.[0]?.type).toBe("checkListItem");
+    expect(blockText(bullet.children?.[0])).toBe("Bullet child");
   });
 });

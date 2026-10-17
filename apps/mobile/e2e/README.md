@@ -60,20 +60,33 @@ maestro test apps/mobile/e2e/android-only/ --platform android -e RUN_ID=$(date +
 maestro test apps/mobile/e2e/ios-only/ --platform ios -e RUN_ID=$(date +%s)
 ```
 
+### Web-seeded flows
+
+Flows 05 and 08 open a note that a Playwright test seeds through the web API. Run them through their runner scripts, which seed the note, run the flow, then check the saved note through the API:
+
+```bash
+# Flow 05 on iOS, then Android: a formatted web note, edited on mobile
+bash apps/mobile/e2e/run-cross-platform-e2e.sh
+
+# Flow 08 on iOS (or pass android): nested to-dos survive a mobile edit
+bash apps/mobile/e2e/run-nested-lists-e2e.sh
+```
+
 ## Test Flows
 
 ### Cross-platform (both iOS and Android)
 
-| Flow                          | Description                                        |
-| ----------------------------- | -------------------------------------------------- |
-| `01-login.yaml`               | Login with email/password, verify Notebooks screen |
-| `02-create-notebook.yaml`     | Create, rename, cancel notebooks                   |
-| `03-create-edit-note.yaml`    | Create notes, open editor, rename via long press   |
-| `04-trash-restore.yaml`       | Tab navigation between Notebooks and Trash         |
-| `05-cross-platform-sync.yaml` | Open a note created by web E2E, edit on mobile     |
-| `06-forgot-password.yaml`     | Request a reset link, open the recovery deep link  |
-| `07-delete-account.yaml`      | Open Delete account, check DELETE gating, cancel   |
-| `search.yaml`                 | Open search, type query, dismiss                   |
+| Flow                          | Description                                              |
+| ----------------------------- | -------------------------------------------------------- |
+| `01-login.yaml`               | Login with email/password, verify Notebooks screen       |
+| `02-create-notebook.yaml`     | Create, rename, cancel notebooks                         |
+| `03-create-edit-note.yaml`    | Create notes, open editor, rename via long press         |
+| `04-trash-restore.yaml`       | Tab navigation between Notebooks and Trash               |
+| `05-cross-platform-sync.yaml` | Open a note created by web E2E, edit on mobile           |
+| `06-forgot-password.yaml`     | Request a reset link, open the recovery deep link        |
+| `07-delete-account.yaml`      | Open Delete account, check DELETE gating, cancel         |
+| `08-nested-lists.yaml`        | Open a web note with nested to-dos, edit the deepest one |
+| `search.yaml`                 | Open search, type query, dismiss                         |
 
 ### Android-only
 
