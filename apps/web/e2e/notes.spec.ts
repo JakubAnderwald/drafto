@@ -55,6 +55,11 @@ test.describe("Note editing flow", () => {
     // The save indicator shows "Saving..." then "Saved"
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 
+    // --- The note's list row picks up the saved title without a reload ---
+    await expect(page.locator('[data-testid="note-item-active"]')).toContainText(noteTitle, {
+      timeout: 5000,
+    });
+
     // --- Reload the page and verify persistence ---
     await page.reload();
 

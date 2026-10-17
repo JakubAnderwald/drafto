@@ -99,15 +99,7 @@ export function NoteList({
       "removed" in patch
         ? prev.filter((n) => n.id !== patch.noteId)
         : prev.map((n) =>
-            n.id === patch.noteId
-              ? {
-                  ...n,
-                  updated_at: patch.updatedAt,
-                  // Only present for external edits; a local save leaves it undefined
-                  // because the list already shows the title the user just typed.
-                  ...(patch.title !== undefined && { title: patch.title }),
-                }
-              : n,
+            n.id === patch.noteId ? { ...n, updated_at: patch.updatedAt, title: patch.title } : n,
           ),
     );
   }

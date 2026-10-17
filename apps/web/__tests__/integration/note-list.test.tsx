@@ -573,7 +573,7 @@ describe("NoteList", () => {
             onSelectNote={vi.fn()}
             onCreateNote={vi.fn()}
             refreshTrigger={trigger}
-            lastNoteUpdate={{ noteId: "note-ts", updatedAt: newDate }}
+            lastNoteUpdate={{ noteId: "note-ts", updatedAt: newDate, title: "Timestamp Note" }}
           />
         </Suspense>,
       );
@@ -636,22 +636,23 @@ describe("NoteList", () => {
       expect(screen.queryByText("Old title")).not.toBeInTheDocument();
     });
 
-    it("keeps the locally-typed title when a save patch omits it", async () => {
-      // A local save leaves `title` undefined — the list already shows what the user
-      // typed, and overwriting it with a stale value would make the row flicker back.
+    it("applies the title carried by a local-save patch", async () => {
+      // Nothing but the patch updates the list's copy of the title, so the row would
+      // otherwise keep the title it was fetched with.
       const { patch } = await mountWith([
         {
           id: "note-y",
-          title: "Locally typed",
+          title: "Untitled",
           updated_at: new Date(Date.now() - 3600_000).toISOString(),
         },
       ]);
       await waitFor(() => expect(screen.getByText("1h ago")).toBeInTheDocument());
 
-      await patch({ noteId: "note-y", updatedAt: new Date().toISOString() });
+      await patch({ noteId: "note-y", updatedAt: new Date().toISOString(), title: "Typed here" });
 
-      await waitFor(() => expect(screen.getByText("just now")).toBeInTheDocument());
-      expect(screen.getByText("Locally typed")).toBeInTheDocument();
+      await waitFor(() => expect(screen.getByText("Typed here")).toBeInTheDocument());
+      expect(screen.queryByText("Untitled")).not.toBeInTheDocument();
+      expect(screen.getByText("just now")).toBeInTheDocument();
     });
 
     it("drops a row that was trashed or deleted elsewhere", async () => {
