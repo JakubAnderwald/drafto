@@ -115,8 +115,14 @@ export function NoteEditorPanel({
   const [conflict, setConflict] = useState<NoteSnapshot | null>(null);
   const [lifecycle, setLifecycle] = useState<NoteLifecycle>(loaded?.is_trashed ? "trashed" : null);
 
-  const { saveStatus, debouncedSave, lastSavedAt, hasPendingChanges, cancelPendingSave } =
-    useAutoSave({ noteId });
+  const {
+    saveStatus,
+    debouncedSave,
+    lastSavedAt,
+    lastSavedTitle,
+    hasPendingChanges,
+    cancelPendingSave,
+  } = useAutoSave({ noteId });
 
   // Adopt a fresh server load (the parent bumped refreshTrigger). Render-phase state
   // adjustment: only this component's own state, and it converges in one extra pass.
@@ -181,11 +187,14 @@ export function NoteEditorPanel({
 
   useNoteSync({ noteId, syncedAt, onExternalChange: handleExternalChange });
 
+  // Tell the list what the save persisted. The title comes from the server's
+  // response, not the `title` state, so the row never shows keystrokes that are
+  // still waiting on the debounce.
   useEffect(() => {
-    if (lastSavedAt) {
-      onNoteUpdated?.({ noteId, updatedAt: lastSavedAt });
+    if (lastSavedAt && lastSavedTitle !== null) {
+      onNoteUpdated?.({ noteId, updatedAt: lastSavedAt, title: lastSavedTitle });
     }
-  }, [lastSavedAt, noteId, onNoteUpdated]);
+  }, [lastSavedAt, lastSavedTitle, noteId, onNoteUpdated]);
 
   const handleReloadFromRemote = useCallback(() => {
     if (!conflict) return;
