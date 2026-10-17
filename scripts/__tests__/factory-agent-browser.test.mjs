@@ -434,6 +434,7 @@ describe("intest_browser_run", () => {
     taskResult = "ran",
     renderStatus = "ok",
     dryRun = 0,
+    liveHead = SHA,
   } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "browser-intest-"));
     const stateFile = join(dir, "state.json");
@@ -461,7 +462,10 @@ pause_for_session_limit() { echo "PAUSED"; }
 fetch_issue_record() { echo '{"number":501,"title":"t"}'; }
 fetch_issue_comments() { echo '[]'; }
 preview_url_for_sha() { ${preview ? `echo ${JSON.stringify(preview)}` : "return 1"}; }
-gh() { echo "gh $*" >>${JSON.stringify(calls)}; }
+gh() {
+  if [[ "$1 $2" == "pr view" ]]; then echo ${JSON.stringify(liveHead)}; return 0; fi
+  echo "gh $*" >>${JSON.stringify(calls)}
+}
 transition_status() { echo "transition $*" >>${JSON.stringify(calls)}; }
 run_browser_task() {
   echo "task $1 $3" >>${JSON.stringify(calls)}
@@ -515,6 +519,16 @@ echo "rc=$rc"
     assert.equal(finalState.browserRunSha, SHA);
     assert.equal(finalState.browserRunAttempts, `${SHA}:1`);
     assert.doesNotMatch(callLog, /^transition /m, "it never moves the card");
+  });
+
+  it("skips a candidate whose PR moved on since --watch listed it", () => {
+    // --watch wrote the list minutes ago; a push in between must not cost a
+    // whole browser session on the superseded commit's preview.
+    for (const liveHead of [OTHER_SHA, ""]) {
+      const { r, callLog } = run({ state: ready, liveHead });
+      assert.match(r.stdout, /rc=1/);
+      assert.doesNotMatch(callLog, /task |health /);
+    }
   });
 
   it("skips a head it already reported on", () => {

@@ -2590,6 +2590,16 @@ intest_browser_run() {
     [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=0
   fi
   [[ "$attempts" -lt "$FACTORY_BROWSER_MAX_ATTEMPTS" ]] || return 1
+  # The candidate list is a few minutes old by now (--watch wrote it, --release
+  # ran since). A push in between would have the runner spend a whole session
+  # on a superseded commit's preview, so check the PR's live head first.
+  local live_head
+  live_head=$(gh pr view "$pr_num" --repo JakubAnderwald/drafto --json headRefOid,state \
+    --jq 'select(.state == "OPEN") | .headRefOid' 2>>"$LOG_FILE" || echo "")
+  if [[ "$live_head" != "$head_sha" ]]; then
+    log "Issue #$issue_num: PR #$pr_num head is now ${live_head:0:12} (not ${head_sha:0:12}) or the PR closed; skipping the browser run until --watch catches up"
+    return 1
+  fi
 
   if ! preflight=$(node "$SCRIPT_DIR/lib/browser-health.mjs" preflight --state-file "$STATE_FILE" \
       --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" 2>>"$LOG_FILE"); then
