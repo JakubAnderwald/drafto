@@ -277,7 +277,7 @@ describe("emailContent", () => {
     lastResultAt: T1,
     alertedAt: T1,
   });
-  const opts = { accountFile: "/Users/x/.config/drafto-factory/browser-account.env", now: T2 };
+  const opts = { accountFile: "/Users/x/drafto-secrets/browser-account.env", now: T2 };
   const localDate = (() => {
     const d = new Date(T1);
     const pad = (n) => String(n).padStart(2, "0");
@@ -288,9 +288,8 @@ describe("emailContent", () => {
     const cases = {
       "preflight:chrome-not-running": /open Chrome on the Mac mini/,
       "preflight:account-missing":
-        /create \/Users\/x\/\.config\/drafto-factory\/browser-account\.env \(mode 600\) with FACTORY_BROWSER_EMAIL/,
-      "preflight:account-mode":
-        /chmod 600 \/Users\/x\/\.config\/drafto-factory\/browser-account\.env/,
+        /create \/Users\/x\/drafto-secrets\/browser-account\.env \(mode 600\) with FACTORY_BROWSER_EMAIL/,
+      "preflight:account-mode": /chmod 600 \/Users\/x\/drafto-secrets\/browser-account\.env/,
       "preflight:account-keys": /FACTORY_BROWSER_PASSWORD/,
       unavailable: /Claude in Chrome extension isn't connected — sign it back in/,
       "auth-expired": /open a Vercel preview in Chrome on the Mac mini and sign in to Vercel/,

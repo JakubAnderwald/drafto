@@ -26,7 +26,7 @@ The code-writing stages (`--implement`, `--watch`) run with `--dangerously-skip-
 
 ## Decision
 
-**Exactly one kind of claude call gets Chrome: a locked-down browser runner.** Every other claude call in the factory, the support agent and the nightly runner passes `--no-chrome` explicitly. Implementation: `run_browser_task` in `scripts/factory-agent.sh`, `scripts/lib/browser-guard.mjs`, `scripts/lib/browser-report.mjs`, `scripts/lib/browser-health.mjs`, `scripts/factory-browser-prompt.md`.
+**Exactly one kind of claude call gets Chrome: a locked-down browser runner.** Every other claude call in the factory, the support agent and the nightly runner passes `--no-chrome` explicitly. Every factory call, the runner included, also passes `--strict-mcp-config` with no `--mcp-config`. So no MCP server loads in an unattended factory session: none of the operator's claude.ai connectors (Gmail with send, Drive, Calendar, …) and none of the plugin servers. No factory prompt uses an MCP tool. Implementation: `run_browser_task` in `scripts/factory-agent.sh`, `scripts/lib/browser-guard.mjs`, `scripts/lib/browser-report.mjs`, `scripts/lib/browser-health.mjs`, `scripts/factory-browser-prompt.md`.
 
 1. **The runner has no tools but Chrome.** It runs as `claude -p --chrome --permission-mode dontAsk --tools "" --setting-sources "" --strict-mcp-config` with an allowlist of 14 Chrome tools, from an empty working directory outside the repo:
    - `switch_browser`, `javascript_tool`, `file_upload`, `upload_image`, `shortcuts_*`, `gif_creator` and `browser_batch` are left out of the allowlist and also listed in `permissions.deny`.
@@ -59,6 +59,7 @@ The code-writing stages (`--implement`, `--watch`) run with `--dangerously-skip-
   - Web cards reach the In Test gate with a real browser run of their scenario on the commit's own preview, evidence for each step, and screenshots on the Mac mini.
   - The agent that has Chrome has nothing else. A prompt injection through a page or a scenario can at worst steer clicks on the preview's own origin, and anything it prints passes the secret scan before it leaves the Mac mini.
   - Making `--no-chrome` explicit removes any dependence on the CLI default and on `claudeInChromeDefaultEnabled`, which is on on this machine.
+  - The factory's issue-reading, code-writing sessions no longer carry the operator's personal connectors. Before this they could, in principle, send mail as the operator.
 - **Negative:**
   - The runner acts inside the operator's real Chrome profile. A click on an in-page link can still take a tab off-origin for one action before the next tool response reveals it and the guard quarantines the tab. The extension's site permissions don't catch it. This is the accepted residual risk of the personal-profile choice.
   - The runner depends on the Mac mini's Chrome running, the extension staying signed in, and the profile's Vercel session staying valid. Each failure degrades to "no report" plus one email.

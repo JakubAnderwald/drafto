@@ -196,6 +196,9 @@ const SECRET_PATTERNS = [
   ["bearer", /\bBearer\s+[A-Za-z0-9._-]{10,}/i],
   ["oauth-token", /\b(access|refresh)_token\b/i],
   ["vercel-cookie", /_vercel_(jwt|sso_nonce)/],
+  // A Drafto MCP API key ("dk_" + 48 hex, apps/web/src/app/api/api-keys):
+  // /settings shows a new one in full once, so a run on that page can see it.
+  ["drafto-api-key", /\bdk_[0-9a-f]{16,}/i],
 ];
 
 // The password is matched as a literal substring — never compiled into a

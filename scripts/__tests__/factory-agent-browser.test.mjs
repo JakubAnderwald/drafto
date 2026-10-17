@@ -74,7 +74,7 @@ describe("factory-agent.sh browser runner: static wiring", () => {
     // --no-chrome sits AFTER --effort so factory-agent-effort.test.mjs's
     // `--dangerously-skip-permissions --effort "$X"` counts keep holding.
     for (const c of noChrome) {
-      assert.match(c, /--effort "\$FACTORY(_PLAN)?_EFFORT" --no-chrome/);
+      assert.match(c, /--effort "\$FACTORY(_PLAN)?_EFFORT" --no-chrome --strict-mcp-config/);
     }
   });
 
@@ -98,6 +98,17 @@ describe("factory-agent.sh browser runner: static wiring", () => {
       extract("run_browser_task"),
       /printf '%s' "\$input" \| CLAUDE_CALL_TIMEOUT_SEC="\$FACTORY_BROWSER_TIMEOUT_SEC" \\\n\s+node "\$SCRIPT_DIR\/lib\/run-claude\.mjs" -p --chrome/,
     );
+  });
+
+  it("keeps the operator's claude.ai connectors out of every factory call", () => {
+    // --strict-mcp-config with no --mcp-config loads no MCP server at all: no
+    // Gmail (with send), Drive, Calendar or plugin servers in an unattended
+    // session that reads issue text. Measured 2026-10-17: 0 MCP tools, 26
+    // built-ins. The browser runner keeps only the built-in claude-in-chrome.
+    for (const c of claudeCalls(script)) {
+      assert.match(c, /--strict-mcp-config/, c.split("\n")[0]);
+      assert.doesNotMatch(c, /--mcp-config\b/, "no MCP config may be added back");
+    }
   });
 
   it("passes --no-chrome on every support-agent and nightly-support call", () => {
@@ -191,7 +202,7 @@ describe("factory-agent.sh browser runner: knobs under bash 3.2", () => {
     const r = runKnobs({});
     assert.match(
       r.stdout,
-      /^B=0 K=intest T=900 A=\/home\/test\/\.config\/drafto-factory\/browser-account\.env$/m,
+      /^B=0 K=intest T=900 A=\/home\/test\/drafto-secrets\/browser-account\.env$/m,
     );
   });
 

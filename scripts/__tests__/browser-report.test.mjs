@@ -203,6 +203,7 @@ describe("scanForSecrets", () => {
       bearer: "Authorization: Bearer abcdefghij1234",
       "oauth-token": 'body {"refresh_token": "…"}',
       "vercel-cookie": "Set-Cookie: _vercel_jwt=…",
+      "drafto-api-key": "key dk_0123456789abcdef0123456789abcdef0123456789abcdef",
     };
     for (const [name, text] of Object.entries(cases)) {
       assert.deepEqual(scanForSecrets(text), [name], name);

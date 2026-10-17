@@ -214,7 +214,7 @@ gh issue create --project "Drafto Factory" \
 
 **Kill switches**: per-card via `factory-pause` label or dragging to **Blocked**; global via `node scripts/lib/state-cli.mjs factory:pause`; emergency via `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist`.
 
-**Browser access**: only the locked-down browser runner (`run_browser_task` in `scripts/factory-agent.sh`) may pass `--chrome`; every other `claude` call in the factory, support and nightly scripts passes `--no-chrome`. It drives this Mac mini's own Chrome profile, so keep it that way. See [ADR-0051](./docs/adr/0051-factory-browser-runner.md).
+**Browser access**: only the locked-down browser runner (`run_browser_task` in `scripts/factory-agent.sh`) may pass `--chrome`; every other `claude` call in the factory, support and nightly scripts passes `--no-chrome`. Every factory call also passes `--strict-mcp-config`, so the operator's claude.ai connectors (Gmail, Drive, Calendar…) never load in an unattended session. It drives this Mac mini's own Chrome profile, so keep it that way. See [ADR-0051](./docs/adr/0051-factory-browser-runner.md).
 
 **Parity-mandate enforcement**: the factory's `--implement` post-check diffs the PR against the issue's "Affected platforms" checkboxes and blocks the card if a claimed platform has no code changes. To run a legitimate single-platform feature, apply `parity:web-only` / `parity:mobile-only` / `parity:desktop-only` to the issue. For a factory-internal change that touches no app platform (under `scripts/`, docs, CI), tick the **None** box in the issue form (or apply the `parity:infra-only` label) — the spec gate skips the "Affected platforms" requirement and the parity check passes as long as the PR stays out of `apps/` and `packages/shared/`.
 

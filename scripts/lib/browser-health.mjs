@@ -54,8 +54,7 @@ import { sendEmail } from "./toolchain-health.mjs";
 export const ALERT_THRESHOLD = 2;
 export const DEFAULT_ACCOUNT_FILE = path.join(
   os.homedir(),
-  ".config",
-  "drafto-factory",
+  "drafto-secrets",
   "browser-account.env",
 );
 const DEFAULT_TO = "jakub@anderwald.info";

@@ -418,13 +418,13 @@ Today it has one use, the **In Test web run**:
 - **What gets posted:** one report comment. A FAIL doesn't move the card.
 - **How often:** at most one card per tick. Each head SHA gets two attempts, and a new commit re-arms it. A run that fails on the browser's side gives its attempt back: unavailable, auth-expired, guard-not-loaded, or a session limit. A timeout or an error keeps it.
 
-| Var                            | Default                                        | Purpose                                                                                                                                                           |
-| ------------------------------ | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FACTORY_BROWSER`              | `0`                                            | Master switch. Anything but `0`/`1` falls back to `0`.                                                                                                            |
-| `FACTORY_BROWSER_KINDS`        | `intest`                                       | Comma list of live uses. Only `intest` exists so far; unknown words are dropped with a warning.                                                                   |
-| `FACTORY_BROWSER_DEVICE_ID`    | `9796912b-8977-4d74-9c08-d9bb283b9496`         | The only browser the guard lets the runner select: this Mac mini's Chrome, never the MacBook's. A malformed value turns the runner off.                           |
-| `FACTORY_BROWSER_TIMEOUT_SEC`  | `900`                                          | Wall cap per runner session.                                                                                                                                      |
-| `FACTORY_BROWSER_ACCOUNT_FILE` | `~/.config/drafto-factory/browser-account.env` | `FACTORY_BROWSER_EMAIL=` / `FACTORY_BROWSER_PASSWORD=` of the test account. Must be mode `600`; read by node, never sourced. Without it the runner doesn't start. |
+| Var                            | Default                                | Purpose                                                                                                                                                           |
+| ------------------------------ | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FACTORY_BROWSER`              | `0`                                    | Master switch. Anything but `0`/`1` falls back to `0`.                                                                                                            |
+| `FACTORY_BROWSER_KINDS`        | `intest`                               | Comma list of live uses. Only `intest` exists so far; unknown words are dropped with a warning.                                                                   |
+| `FACTORY_BROWSER_DEVICE_ID`    | `9796912b-8977-4d74-9c08-d9bb283b9496` | The only browser the guard lets the runner select: this Mac mini's Chrome, never the MacBook's. A malformed value turns the runner off.                           |
+| `FACTORY_BROWSER_TIMEOUT_SEC`  | `900`                                  | Wall cap per runner session.                                                                                                                                      |
+| `FACTORY_BROWSER_ACCOUNT_FILE` | `~/drafto-secrets/browser-account.env` | `FACTORY_BROWSER_EMAIL=` / `FACTORY_BROWSER_PASSWORD=` of the test account. Must be mode `600`; read by node, never sourced. Without it the runner doesn't start. |
 
 ### One-time setup
 
@@ -438,10 +438,10 @@ Today it has one use, the **In Test web run**:
    It's a separate account from the CI E2E user (`E2E_TEST_EMAIL`), so the runner's test data never collides with CI's.
 4. **The account file.** Write it with an editor rather than `echo`, which would leave the password in shell history:
    ```bash
-   mkdir -p ~/.config/drafto-factory && chmod 700 ~/.config/drafto-factory
-   $EDITOR ~/.config/drafto-factory/browser-account.env   # FACTORY_BROWSER_EMAIL=… / FACTORY_BROWSER_PASSWORD=…
-   chmod 600 ~/.config/drafto-factory/browser-account.env
-   node scripts/lib/browser-report.mjs account-check --account-file ~/.config/drafto-factory/browser-account.env   # prints ok
+   # ~/drafto-secrets also holds the factory's other secrets (support-env.sh, zoho-oauth.json)
+   $EDITOR ~/drafto-secrets/browser-account.env   # FACTORY_BROWSER_EMAIL=… / FACTORY_BROWSER_PASSWORD=…
+   chmod 600 ~/drafto-secrets/browser-account.env
+   node scripts/lib/browser-report.mjs account-check --account-file ~/drafto-secrets/browser-account.env   # prints ok
    ```
 5. **Switch it on.** Add `FACTORY_BROWSER=1` (and `FACTORY_BROWSER_KINDS=intest`) to the plist's `EnvironmentVariables`, then `launchctl unload`/`load` it.
 
