@@ -111,7 +111,7 @@ describe("factory-agent.sh browser runner: static wiring", () => {
     }
   });
 
-  it("passes --no-chrome on every support-agent and nightly-support call", () => {
+  it("passes --no-chrome and --strict-mcp-config on every support-agent and nightly-support call", () => {
     for (const [name, source, n] of [
       ["support-agent.sh", supportScript, 3],
       ["nightly-support.sh", nightlyScript, 2],
@@ -121,6 +121,9 @@ describe("factory-agent.sh browser runner: static wiring", () => {
       for (const c of calls) {
         assert.match(c, /--no-chrome/, `${name}: ${c.split("\n")[0]}`);
         assert.doesNotMatch(c, /\s--chrome\b/, name);
+        // These read raw customer email: the operator's connectors (Gmail with
+        // send) must not be in the session either.
+        assert.match(c, /--strict-mcp-config/, `${name}: ${c.split("\n")[0]}`);
       }
     }
   });
