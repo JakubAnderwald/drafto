@@ -20,6 +20,7 @@ A spike on the Mac mini (Claude Code 2.1.302, extension 1.0.101, 2026-10-17) mea
 - **A bad settings file is dropped silently.** `claude -p` skips a settings file that fails validation and runs without its hooks, with no error.
 - **Some hook failures are silent.** A PreToolUse hook that runs past its `timeout` is treated as allow: the call runs. And a Chrome call that returns an error fires neither PostToolUse nor PostToolUseFailure.
 - **Tool responses report tab URLs.** Every Chrome tool response lists each tab in the session's group with its current URL. That's how a hook can see where a click ended up.
+- **Claude in Chrome won't type a password on a preview.** Measured on 2026-10-17 on #465: the runner declined to enter the test account's password on `*.vercel.app` and skipped every signed-in step. Its own safety rules allow typing test credentials only on a local development host (`localhost`, `127.0.0.1`, `*.localhost`, `*.test`). A prompt can't change that, and the factory must not trick it, for example with a local proxy in front of the preview.
 - **The Vercel session works.** A per-commit preview host (`https://drafto-<hash>-jakubanderwalds-projects.vercel.app`) loads directly through the profile's login.
 
 The code-writing stages (`--implement`, `--watch`) run with `--dangerously-skip-permissions`, full Bash and file access, and ultracode background agents. If those sessions could drive Chrome, a confused or prompt-injected run could edit the guard, slip past it, or post what it saw through `gh`, all while signed in as the operator.
@@ -43,15 +44,20 @@ The code-writing stages (`--implement`, `--watch`) run with `--dangerously-skip-
    - **A stalled hook blocks.** The pre hook runs under a perl `alarm` well inside its timeout, so a hung guard is killed and blocks rather than timing out into an allow. A post hook marks itself in flight while it runs, and pre denies every call while such a marker exists. A post that died before updating state (and with it a quarantine) therefore stops the session instead of leaving a stale URL behind.
 3. **A missing guard turns the runner off.** The guard writes a SessionStart record. If a session ran (its transcript exists) without that record, the settings didn't load. The runner then stays off until an operator runs `factory:browser-reset`. A `claude` that never started a session, say after a CLI update rejects a flag, counts as an ordinary error.
 4. **Only bash posts.** It parses the runner's output (`<<<REPORT … REPORT>>>` plus a `browser=… verdict=…` status line) and scans it for the test password, JWTs, Supabase auth cookies, bearer and OAuth tokens and Vercel cookies. If any match, it posts a "report withheld" notice instead of the report.
-5. **The target is the per-commit preview from the Deployments API.** It is the `vercel[bot]` deployment for exactly the head SHA, never a URL scraped from PR comments, and `drafto.eu` is never a target. The runner signs in as a dedicated test account in the **dev** Supabase project, whose credentials live in a mode-600 file on the Mac mini. The prompt goes to the runner on stdin, so the password never appears in argv.
-6. **The first use is the In Test web run, and it only reports.**
+5. **The target is the per-commit preview from the Deployments API.** It is the `vercel[bot]` deployment for exactly the head SHA, never a URL scraped from PR comments, and `drafto.eu` is never a target. The runner signs in as a dedicated test account in the **dev** Supabase project.
+6. **Sign-in on the preview is a one-time link, not a password.**
+   - **The route.** The web app has a preview-only route, `/auth/test-sign-in` (`apps/web/src/app/auth/test-sign-in/route.ts`). It turns a Supabase magic-link `token_hash` into a session with `verifyOtp`. It answers 404 unless `VERCEL_ENV` is `preview` **and** the deployment's Supabase project is dev (`huhzactreblzcogqkbsd`). Production, local dev and a preview pointed at any other project all get a 404.
+   - **The link.** Before each run, bash mints the link with `scripts/lib/browser-signin.mjs`: dev GoTrue's admin `generate_link`, type `magiclink`, which sends no email. That needs the dev service-role key, kept mode 600 in `~/drafto-secrets/dev-supabase-admin.env`. Minting refuses any other project and any origin but the run's own preview.
+   - **What the runner gets.** The link and the account's email. It never gets the password or the key, and it opens the link in its own tab. The link is single-use and short-lived. The secret scan catches it (`token_hash=`) if the runner ever echoes it.
+   - **When it fails.** If the link doesn't sign the runner in, the run ends as `signin-failed`. That's typically a branch cut before the route existed. Nothing is posted and the operator is emailed.
+7. **The first use is the In Test web run, and it only reports.**
    - **Candidates.** The `--watch` In Test sweep collects them: a web diff, no pending revision, and the factory's own OWNER-posted scenario for the head SHA (not the fallback).
    - **When it runs.** A new `--browser` mode runs after `--release`, so a Chrome session never delays a merge. It re-checks each candidate against the board and runs at most one per tick, once a successful preview exists.
    - **What's posted.** The runner runs the scenario's `### Web` section. For a completed or `blocked` run, bash posts one comment with the `drafto-factory-browser-report` and `drafto-factory-browser-run-sha:<sha>` markers. A run with no status line posts nothing.
    - **What it never does.** It never moves the card and never spends the retry budget.
    - **Attempts.** Each SHA gets two attempts. A run that fails on the browser's side gives its attempt back: unavailable, an expired login, the guard not loading, or a session limit. A timeout or an error keeps it, so a hanging runner can't run every tick.
-7. **Health is soft.** A preflight checks that Chrome is running, the account file is valid, and the runner isn't disabled. Results go to `browser-health.mjs`, which emails the operator after two bad results in a row and again on recovery. It never pauses the factory.
-8. **It's off by default.** `FACTORY_BROWSER=0` is the master switch, and `FACTORY_BROWSER_KINDS` picks the uses. The UI check in `--watch`, answering "run it for me" comments, and reproducing bugs at plan time follow in later PRs as further kinds of the same runner.
+8. **Health is soft.** A preflight checks that Chrome is running, the account file is valid, and the runner isn't disabled. Results go to `browser-health.mjs`, which emails the operator after two bad results in a row and again on recovery. It never pauses the factory.
+9. **It's off by default.** `FACTORY_BROWSER=0` is the master switch, and `FACTORY_BROWSER_KINDS` picks the uses. The UI check in `--watch`, answering "run it for me" comments, and reproducing bugs at plan time follow in later PRs as further kinds of the same runner.
 
 ## Consequences
 
@@ -66,7 +72,10 @@ The code-writing stages (`--implement`, `--watch`) run with `--dangerously-skip-
   - Tabs from a runner killed mid-run stay open in an orphaned tab group.
   - Untested: whether Tab past a page's last focusable element moves focus into Chrome's own toolbar. Tab is allowed, because forms need it. It would only matter if the extension's synthetic keys reach browser UI at all, which the keyboard rule already assumes the worst about.
   - Screenshots stay on the Mac mini. The repo is public, so they are never attached to GitHub.
-  - Untested as of this ADR: runs with the display asleep or locked, and signing in with the dev test account, which still has to be created.
+  - Untested as of this ADR: runs with the display asleep or locked.
+  - The preview-only sign-in route adds an authentication path to the web app's code, though it's switched off in production by two independent checks. Anyone holding a valid `token_hash` for a dev user can sign in as that user on a preview, which is the same trust a magic-link email carries. Only the dev service-role key can mint one.
+  - The dev service-role key lives on the Mac mini and is readable by any session running as the operator, including the factory's code-writing stages. It covers the dev project only. The Supabase CLI login already on the machine reaches both projects.
+  - Cards whose branch was cut before the route existed can't sign in on their preview until they're rebased.
 - **Neutral:**
   - The In Test gate stays human. The report is evidence for the person approving, not a gate.
   - The runner uses the plan-tier effort (`FACTORY_PLAN_EFFORT`) and the shared Claude subscription. Its wall cap is `FACTORY_BROWSER_TIMEOUT_SEC` (default 900 s).
@@ -75,6 +84,8 @@ The code-writing stages (`--implement`, `--watch`) run with `--dangerously-skip-
 
 - **Give `--chrome` to every stage.** This is closest to "the implementer checks its own UI". Rejected: those sessions have Bash and file access under `--dangerously-skip-permissions`, so the guard would only catch mistakes. Nothing would stop a misbehaving run from editing the guard or posting what it saw. Every use goes through the runner instead.
 - **A dedicated Chrome profile with no sign-ins.** It would make an off-origin click harmless. The operator chose the existing profile, so it isn't pursued now. It remains the upgrade if the residual risk above stops being acceptable: the device-id knob and the guard carry over unchanged.
+- **Serve the PR head locally on `127.0.0.1` for signed-in steps.** The runner may type test credentials there, so this needs no app change and no new secret. It tested #465 successfully on 2026-10-17. It was rejected because it tests the PR's code under `next dev` rather than the deployed preview. Routes that need secrets the Mac mini doesn't have, such as the service-role MCP route, also don't work locally.
+- **A local proxy in front of the preview.** It would get past the password rule only by disguising a remote site as a local one. Rejected.
 - **Vercel "Protection Bypass for Automation" secret.** It needs no Vercel session in the browser, but it adds a secret that must never reach a public comment. The operator chose the profile's own Vercel login.
 - **Playwright with headless Chromium.** It would be fully isolated and scriptable, but it needs a scripted scenario per card rather than the Claude-written prose scenario. It also can't get past Vercel SSO without a bypass secret, and it isn't the "Chrome" capability asked for. The repo's Playwright E2E suite stays the CI regression suite.
 - **Rely on the extension's site permissions as the boundary.** The spike showed they don't stop navigation in this mode.

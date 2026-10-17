@@ -334,6 +334,17 @@ describe("emailContent", () => {
     );
   });
 
+  it("counts signin-failed as bad, and explains it and the sign-in key problems", () => {
+    const d = decideBrowser(emptyBrowser(), "signin-failed", { now: "2026-10-17T10:00:00.000Z" });
+    assert.equal(d.next.consecutiveBad, 1);
+    assert.match(describeReason("signin-failed").fix, /\/auth\/test-sign-in/);
+    assert.match(
+      describeReason("preflight:signin-key-mode").fix,
+      /dev-supabase-admin\.env, mode 600/,
+    );
+    assert.match(describeReason("preflight:signin-mint").fix, /generate_link/);
+  });
+
   it("describeReason has a fallback for an unknown preflight reason", () => {
     assert.match(
       describeReason("preflight:pgrep-broken").fix,
@@ -352,6 +363,29 @@ describe("preflight", () => {
     chmodSync(account, 0o600);
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("checks the sign-in key file when one is given", () => {
+    const key = join(dir, "dev-supabase-admin.env");
+    writeFileSync(key, "DEV_SUPABASE_URL=x\nDEV_SUPABASE_SERVICE_ROLE_KEY=y\n");
+    chmodSync(key, 0o600);
+    assert.equal(
+      preflight({ accountFile: account, signInKeyFile: key, isChromeRunning: () => true }),
+      null,
+    );
+    chmodSync(key, 0o644);
+    assert.equal(
+      preflight({ accountFile: account, signInKeyFile: key, isChromeRunning: () => true }),
+      "signin-key-mode",
+    );
+    assert.equal(
+      preflight({
+        accountFile: account,
+        signInKeyFile: join(dir, "nope.env"),
+        isChromeRunning: () => true,
+      }),
+      "signin-key-missing",
+    );
+  });
 
   it("is null when Chrome runs and the account file is sound", () => {
     assert.equal(preflight({ accountFile: account, isChromeRunning: () => true }), null);

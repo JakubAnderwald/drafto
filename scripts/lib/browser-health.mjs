@@ -41,6 +41,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { accountFileProblem } from "./browser-report.mjs";
+import { keyFileProblem } from "./browser-signin.mjs";
 import {
   DEFAULT_FACTORY_STATE_PATH,
   emptyBrowser,
@@ -65,7 +66,14 @@ const STATUS_CMD = "node scripts/lib/state-cli.mjs factory:browser-status";
 // "blocked" is a completed run: the model refused a step on purpose, which
 // says nothing bad about Chrome, the extension or the logins.
 const GOOD_RESULTS = new Set(["ok", "blocked"]);
-const BAD_RESULTS = new Set(["unavailable", "auth-expired", "malformed", "timeout", "error"]);
+const BAD_RESULTS = new Set([
+  "unavailable",
+  "auth-expired",
+  "signin-failed",
+  "malformed",
+  "timeout",
+  "error",
+]);
 const PREFLIGHT_RESULT = /^preflight:[a-z0-9][a-z0-9:-]*$/;
 
 export function isKnownResult(result) {
@@ -193,6 +201,29 @@ export function describeReason(reason, { accountFile = DEFAULT_ACCOUNT_FILE, at 
         label: "Vercel login expired",
         fix: "open a Vercel preview in Chrome on the Mac mini and sign in to Vercel.",
       };
+    case "signin-failed":
+      return {
+        label: "preview sign-in failed",
+        fix:
+          "the runner's one-time sign-in link didn't sign it in on the preview. Check that the PR's branch " +
+          "includes /auth/test-sign-in (ADR-0051; branches cut before it landed don't), that the preview " +
+          "uses the dev Supabase project, and that the test account in the account file still exists and is approved.",
+      };
+    case "preflight:signin-key-missing":
+    case "preflight:signin-key-not-a-file":
+    case "preflight:signin-key-mode":
+      return {
+        label: "sign-in key file unusable",
+        fix:
+          "the dev service-role key file the runner mints its sign-in link with is missing, not a file, or " +
+          "readable by others: it lives at ~/drafto-secrets/dev-supabase-admin.env, mode 600, with " +
+          "DEV_SUPABASE_URL= and DEV_SUPABASE_SERVICE_ROLE_KEY= lines (runbook → Browser runner → One-time setup).",
+      };
+    case "preflight:signin-mint":
+      return {
+        label: "couldn't mint the sign-in link",
+        fix: `minting the runner's one-time sign-in link failed (dev Supabase admin generate_link); the reason is in ${log}.`,
+      };
     case "timeout":
       return {
         label: "runner timed out",
@@ -280,10 +311,17 @@ export function emailContent(
 
 // ── preflight ───────────────────────────────────────────────────────────────
 
-export function preflight({ accountFile = DEFAULT_ACCOUNT_FILE, isChromeRunning }) {
+export function preflight({ accountFile = DEFAULT_ACCOUNT_FILE, signInKeyFile, isChromeRunning }) {
   if (!isChromeRunning()) return "chrome-not-running";
   const problem = accountFileProblem(accountFile);
-  return problem ? `account-${problem}` : null;
+  if (problem) return `account-${problem}`;
+  // The dev service-role key the one-time sign-in link is minted with
+  // (browser-signin.mjs): same mode-600 rule as the account file.
+  if (signInKeyFile) {
+    const keyProblem = keyFileProblem(signInKeyFile);
+    if (keyProblem) return `signin-key-${keyProblem}`;
+  }
+  return null;
 }
 
 // A pgrep that can't run counts as "not running": skipping a run is the safe side.
@@ -325,8 +363,11 @@ export async function runPreflight(argv, { isChromeRunning = () => chromeIsRunni
   const browser = state.browser ?? emptyBrowser();
   if (browser.disabled) return `disabled:${browser.disabledReason ?? "unknown"}`;
   return (
-    preflight({ accountFile: flags["account-file"] ?? DEFAULT_ACCOUNT_FILE, isChromeRunning }) ??
-    "ok"
+    preflight({
+      accountFile: flags["account-file"] ?? DEFAULT_ACCOUNT_FILE,
+      signInKeyFile: flags["signin-key-file"],
+      isChromeRunning,
+    }) ?? "ok"
   );
 }
 

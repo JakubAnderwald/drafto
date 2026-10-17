@@ -10,6 +10,9 @@ const PUBLIC_ROUTES = [
   // macOS app sign-in and password-reset hand-off pages: the browser that lands here is
   // signed out — the session belongs to the app, not to drafto.eu.
   "/auth/desktop",
+  // The factory browser runner's one-time-link sign-in: the browser that lands here is signed
+  // out. The route itself answers 404 outside dev-backed Vercel previews.
+  "/auth/test-sign-in",
   "/forgot-password",
   "/reset-password",
   "/api/health",

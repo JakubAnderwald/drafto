@@ -42,8 +42,12 @@ describe("browser runner prompt — browser rules", () => {
 
   it("stays on the target origin and signs in only as the test account", () => {
     assert.match(flat, /Navigate only to URLs on that exact origin/);
-    assert.match(flat, /Sign in only as `bundle\.account`/);
-    assert.match(flat, /Never press "Google" or "Apple"/);
+    assert.match(flat, /Sign in only by opening `bundle\.account\.signInUrl`/);
+    // Claude in Chrome won't type a password on a preview (measured), and the
+    // runner never gets one: the one-time link is the only way in.
+    assert.match(flat, /Never type a password anywhere/);
+    assert.match(flat, /never press "Google" or "Apple"/);
+    assert.match(flat, /stop with `browser=signin-failed`/);
   });
 
   it("stops at a third-party login wall instead of typing into it", () => {
@@ -55,7 +59,7 @@ describe("browser runner prompt — browser rules", () => {
     assert.match(flat, /never by path, and never paste one into the report/);
     assert.match(
       flat,
-      /must not contain the password, cookies, tokens, request or response headers/,
+      /must not contain the sign-in link, cookies, tokens, request or response headers/,
     );
     assert.match(flat, /report only method, path and status code/);
   });
@@ -77,7 +81,7 @@ describe("browser runner prompt — output contract", () => {
     assert.match(prompt, /^REPORT>>>$/m);
     assert.match(
       prompt,
-      /^browser=<ok\|unavailable\|auth-expired\|blocked> verdict=<pass\|warn\|fail\|none>$/m,
+      /^browser=<ok\|unavailable\|auth-expired\|signin-failed\|blocked> verdict=<pass\|warn\|fail\|none>$/m,
     );
   });
 

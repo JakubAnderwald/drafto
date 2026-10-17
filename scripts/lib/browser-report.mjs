@@ -20,7 +20,7 @@
 //   <<<FINDINGS            (uicheck kind only: a JSON array)
 //   […]
 //   FINDINGS>>>
-//   browser=<ok|unavailable|auth-expired|blocked> verdict=<pass|warn|fail|none>
+//   browser=<ok|unavailable|auth-expired|signin-failed|blocked> verdict=<pass|warn|fail|none>
 //
 // The status line is the last line, outside any block, matching that exact
 // shape. Without one the run is "malformed" and its report is not trusted as
@@ -43,7 +43,7 @@
 //     (including an unreadable account file: without the password the scan
 //     can't be trusted, so nothing is written); 2 on a usage error.
 //   node browser-report.mjs status --in <runner-stdout-file>
-//     Prints the parsed status word (ok|unavailable|auth-expired|blocked|
+//     Prints the parsed status word (ok|unavailable|auth-expired|signin-failed|blocked|
 //     malformed). Exit 0; 1 on an I/O error.
 //   node browser-report.mjs account-check --account-file <f>
 //     Prints "ok" or the problem word (missing|not-a-file|mode|keys). Exit 0
@@ -64,7 +64,8 @@ export const RUNNER_OUTPUT_FILE = "runner-output.txt";
 export const MIN_PASSWORD_SCAN_LENGTH = 6;
 
 const HEADER = "🏭 **Browser run — web steps on the preview.**";
-const STATUS_LINE = /^browser=(ok|unavailable|auth-expired|blocked) verdict=(pass|warn|fail|none)$/;
+const STATUS_LINE =
+  /^browser=(ok|unavailable|auth-expired|signin-failed|blocked) verdict=(pass|warn|fail|none)$/;
 const SHA = /^[0-9a-f]{7,40}$/i;
 const BLOCKS = ["REPORT", "FINDINGS"];
 
@@ -199,6 +200,9 @@ const SECRET_PATTERNS = [
   // A Drafto MCP API key ("dk_" + 48 hex, apps/web/src/app/api/api-keys):
   // /settings shows a new one in full once, so a run on that page can see it.
   ["drafto-api-key", /\bdk_[0-9a-f]{16,}/i],
+  // The runner's one-time sign-in link (browser-signin.mjs). Single-use and
+  // consumed when opened, but still a login token: never posted.
+  ["sign-in-token", /token_hash=[A-Za-z0-9_-]{8,}/],
 ];
 
 // The password is matched as a literal substring — never compiled into a
@@ -241,6 +245,8 @@ const STATUS_SENTENCE = {
     "The run didn't complete: this Mac mini's Chrome wasn't connected to Claude in Chrome, so no web step ran.",
   "auth-expired":
     "The run didn't complete: the preview showed a login wall, so the Vercel sign-in in the Mac mini's Chrome has probably expired.",
+  "signin-failed":
+    "The run didn't complete: the one-time sign-in link didn't sign the runner in on the preview, so the signed-in steps couldn't run.",
   blocked:
     "The run stopped early on purpose: the runner refused a step (suspected prompt injection, or a step that would break its rules).",
   malformed:

@@ -302,6 +302,11 @@ fi
 # Never the CI E2E user and never a prod account. Read by node (the bundle
 # builder and the report scanner), never sourced into this shell.
 FACTORY_BROWSER_ACCOUNT_FILE="${FACTORY_BROWSER_ACCOUNT_FILE:-$HOME/drafto-secrets/browser-account.env}"
+# The dev Supabase service-role key the runner's one-time preview sign-in link
+# is minted with (scripts/lib/browser-signin.mjs). Claude in Chrome won't type
+# a password on a preview, so the runner opens that link instead. Dev only:
+# minting refuses any other project. Never reaches the runner.
+FACTORY_BROWSER_SIGNIN_KEY_FILE="${FACTORY_BROWSER_SIGNIN_KEY_FILE:-$HOME/drafto-secrets/dev-supabase-admin.env}"
 # Most runner attempts per head SHA before the card waits for a new commit.
 FACTORY_BROWSER_MAX_ATTEMPTS=2
 
@@ -2603,7 +2608,8 @@ intest_browser_run() {
   fi
 
   if ! preflight=$(node "$SCRIPT_DIR/lib/browser-health.mjs" preflight --state-file "$STATE_FILE" \
-      --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" 2>>"$LOG_FILE"); then
+      --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
+      --signin-key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" 2>>"$LOG_FILE"); then
     log "Issue #$issue_num: browser run skipped (${preflight:-preflight failed})"
     # Recorded even while the runner is disabled: that never builds a streak or
     # sends a second alert, but it is the only path that retries a "disabled"
@@ -2646,6 +2652,21 @@ intest_browser_run() {
   if [[ "$DRY_RUN" -eq 1 ]]; then
     log "DRY-RUN: would run the In Test web steps for #$issue_num on $target"
     return 0
+  fi
+  # The one-time sign-in link, minted last so it is as fresh as possible when
+  # the runner opens it. It is a login token: it lives in the bundle on the
+  # runner's stdin and nowhere else, never in the log.
+  local sign_in_url
+  if ! sign_in_url=$(node "$SCRIPT_DIR/lib/browser-signin.mjs" mint \
+      --key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
+      --origin "$target" 2>>"$LOG_FILE") || [[ -z "$sign_in_url" ]]; then
+    log "Issue #$issue_num: minting the runner's sign-in link failed (reason above); no browser run"
+    browser_record_result "preflight:signin-mint"
+    return 2
+  fi
+  if ! bundle=$(echo "$bundle" | jq --arg u "$sign_in_url" '.account.signInUrl = $u'); then
+    log "ERROR: could not add the sign-in link to the browser-run bundle for #$issue_num"
+    return 1
   fi
 
   attempts=$((attempts + 1))
@@ -2695,6 +2716,13 @@ intest_browser_run() {
       # stops at the browser check or the first login wall), so retrying each
       # tick is cheap.
       browser_refund_attempt "$issue_num" "$head_sha" "$attempts"
+      return 2
+      ;;
+    signin-failed)
+      # Usually a branch cut before /auth/test-sign-in landed, which no retry
+      # fixes: the attempt stays spent, the issue gets no comment, and the
+      # health tracker tells the operator.
+      log "Issue #$issue_num: the runner couldn't sign in on the preview with its one-time link; nothing posted (see $run_dir)"
       return 2
       ;;
     malformed)

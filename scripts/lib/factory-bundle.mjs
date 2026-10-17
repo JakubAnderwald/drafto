@@ -940,7 +940,10 @@ export function buildFactoryBrowserRunBundle({
             webStepsEnveloped: envelopeBody(webSteps, "scenario-web"),
           }
         : null,
-    account: readAccountFile(accountFile),
+    // Email only. The runner signs in by opening a one-time link that bash
+    // mints after this bundle is built (browser-signin.mjs) and sets here; it
+    // never gets the password, which it couldn't type on a preview anyway.
+    account: { email: readAccountFile(accountFile).email, signInUrl: null },
     browser: { deviceId },
     qaTag: `factory-${issue.number}-${String(headSha).slice(0, 7)}`,
     nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),

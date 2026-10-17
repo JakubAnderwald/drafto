@@ -450,6 +450,7 @@ describe("intest_browser_run", () => {
     renderStatus = "ok",
     dryRun = 0,
     liveHead = SHA,
+    mintOk = true,
   } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "browser-intest-"));
     const stateFile = join(dir, "state.json");
@@ -469,6 +470,7 @@ STATE_FILE=${JSON.stringify(stateFile)}
 SCRIPT_DIR=${JSON.stringify(scriptsDir)}
 DRY_RUN=${dryRun}
 FACTORY_BROWSER_ACCOUNT_FILE=/nonexistent/account.env
+FACTORY_BROWSER_SIGNIN_KEY_FILE=/nonexistent/dev-supabase-admin.env
 FACTORY_BROWSER_DEVICE_ID=9796912b-8977-4d74-9c08-d9bb283b9496
 FACTORY_BROWSER_MAX_ATTEMPTS=2
 ADMIN_EMAIL=ops@example.com
@@ -484,6 +486,7 @@ gh() {
 transition_status() { echo "transition $*" >>${JSON.stringify(calls)}; }
 run_browser_task() {
   echo "task $1 $3" >>${JSON.stringify(calls)}
+  echo "bundle-signin $(printf '%s' "$4" | jq -r '.account.signInUrl // "none"')" >>${JSON.stringify(calls)}
   mkdir -p "$2"
   BROWSER_OUT="$2/runner-output.txt"
   echo 'browser=${renderStatus} verdict=pass' >"$BROWSER_OUT"
@@ -496,6 +499,9 @@ node() {
       echo "health $2 $(printf '%s ' "\${@:3}")" >>${JSON.stringify(calls)}
       if [[ "$2" == preflight ]]; then echo ${JSON.stringify(preflight)}; [[ ${JSON.stringify(preflight)} == ok ]]; fi ;;
     */factory-bundle.mjs) cat >/dev/null; printf '%s' ${JSON.stringify(bundle)} ;;
+    */browser-signin.mjs)
+      echo "signin $(printf '%s ' "\${@:2}")" >>${JSON.stringify(calls)}
+      ${mintOk ? 'echo "https://drafto-x-jakubanderwalds-projects.vercel.app/auth/test-sign-in?token_hash=tok&next=%2F"' : "return 1"} ;;
     */browser-report.mjs)
       echo "report $(printf '%s ' "\${@:2}")" >>${JSON.stringify(calls)}
       out=$(printf '%s\\n' "$@" | grep -A1 -- '--out' | tail -1)
@@ -534,6 +540,40 @@ echo "rc=$rc"
     assert.equal(finalState.browserRunSha, SHA);
     assert.equal(finalState.browserRunAttempts, `${SHA}:1`);
     assert.doesNotMatch(callLog, /^transition /m, "it never moves the card");
+  });
+
+  it("mints a one-time sign-in link for the run's own preview and hands it to the runner", () => {
+    const { r, callLog } = run({ state: ready });
+    assert.match(r.stdout, /rc=0/);
+    assert.match(
+      callLog,
+      /signin mint --key-file \/nonexistent\/dev-supabase-admin\.env --account-file \/nonexistent\/account\.env --origin https:\/\/drafto-x-jakubanderwalds-projects\.vercel\.app /,
+    );
+    assert.match(
+      callLog,
+      /bundle-signin https:\/\/drafto-x-[^ ]*\/auth\/test-sign-in\?token_hash=tok/,
+    );
+    assert.match(
+      callLog,
+      /health preflight .*--signin-key-file \/nonexistent\/dev-supabase-admin\.env/,
+    );
+  });
+
+  it("records a failed mint and starts no browser session", () => {
+    const { r, callLog, finalState } = run({ state: ready, mintOk: false });
+    assert.match(r.stdout, /rc=2/);
+    assert.match(callLog, /health record .*--result preflight:signin-mint /);
+    assert.doesNotMatch(callLog, /task /);
+    assert.equal(finalState.browserRunAttempts ?? null, null, "no attempt spent before a session");
+  });
+
+  it("posts nothing when the sign-in link didn't work, and keeps the attempt spent", () => {
+    // Usually a branch cut before /auth/test-sign-in existed: no retry fixes it.
+    const { r, callLog, finalState } = run({ state: ready, renderStatus: "signin-failed" });
+    assert.match(r.stdout, /rc=2/);
+    assert.match(callLog, /health record .*--result signin-failed /);
+    assert.doesNotMatch(callLog, /gh issue comment/);
+    assert.equal(finalState.browserRunAttempts, `${SHA}:1`);
   });
 
   it("skips a candidate whose PR moved on since --watch listed it", () => {
@@ -655,7 +695,11 @@ echo "rc=$rc"
   it("does nothing but log in a dry run", () => {
     const { r, callLog, finalState } = run({ state: ready, dryRun: 1 });
     assert.match(r.stdout, /DRY-RUN: would run the In Test web steps for #501/);
-    assert.doesNotMatch(callLog, /task |gh issue comment|health record/);
+    assert.doesNotMatch(
+      callLog,
+      /task |gh issue comment|health record|signin /,
+      "a dry run mints no link",
+    );
     assert.equal(finalState.browserRunAttempts ?? null, null);
   });
 });

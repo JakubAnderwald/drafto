@@ -163,7 +163,10 @@ describe("buildFactoryBrowserRunBundle", () => {
       assert.match(b.scenario.webStepsEnveloped, /^<scenario-web>1\. Open the login page/);
       assert.match(b.scenario.webStepsEnveloped, /<\/scenario-web>$/);
       assert.equal(b.scenario.commentId, 9);
-      assert.deepEqual(b.account, { email: "bot@example.com", password: "pw-123456" });
+      // Email only: the runner signs in with a one-time link bash adds after
+      // minting it, and never sees the password.
+      assert.deepEqual(b.account, { email: "bot@example.com", signInUrl: null });
+      assert.doesNotMatch(JSON.stringify(b), /pw-123456/, "no password in the bundle");
       assert.deepEqual(b.browser, { deviceId: base.deviceId });
       assert.equal(b.qaTag, "factory-501-ccccccc");
       const json = JSON.stringify(b);

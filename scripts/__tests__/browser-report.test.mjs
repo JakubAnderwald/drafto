@@ -65,6 +65,10 @@ describe("parseRunnerOutput", () => {
 
   it("is malformed for empty or missing input", () => {
     assert.equal(parseRunnerOutput("").status, "malformed");
+    assert.equal(
+      parseRunnerOutput("<<<REPORT\nr\nREPORT>>>\nbrowser=signin-failed verdict=none").status,
+      "signin-failed",
+    );
     assert.equal(parseRunnerOutput(undefined).status, "malformed");
     assert.equal(parseRunnerOutput("").report, null);
   });
@@ -204,6 +208,7 @@ describe("scanForSecrets", () => {
       "oauth-token": 'body {"refresh_token": "…"}',
       "vercel-cookie": "Set-Cookie: _vercel_jwt=…",
       "drafto-api-key": "key dk_0123456789abcdef0123456789abcdef0123456789abcdef",
+      "sign-in-token": "opened /auth/test-sign-in?token_hash=abcdef0123456789&next=%2F",
     };
     for (const [name, text] of Object.entries(cases)) {
       assert.deepEqual(scanForSecrets(text), [name], name);
