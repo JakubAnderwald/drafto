@@ -204,9 +204,10 @@ Drafto runs an unattended development pipeline on the Mac mini ("dark factory") 
 **Creating factory issues:** Issues are **not** auto-added to the board — neither `gh issue create` nor the web issue form adds them. Always pass `--project "Drafto Factory"` when creating one via the CLI so the card lands on the [board](https://github.com/users/JakubAnderwald/projects/1) and the factory can pick it up:
 
 ```bash
-gh issue create --project "Drafto Factory" \
-  --template factory-feature.yml --title "feat: ..." --body "..."
+gh issue create --project "Drafto Factory" --title "feat: ..." --body-file spec.md
 ```
+
+`gh` can't fill in the issue form: `--template` is rejected when `--body`/`--body-file` is given. So `spec.md` must use the form's rendered headings, which `parseSpec` (`scripts/lib/factory-bundle.mjs`) and the spec gate read: `### What`, `### Acceptance criteria`, `### Affected platforms` (checkbox lines such as ``- [x] web (`apps/web`)``), `### Schema changes?` (`no` or `yes`), `### UI design (if applicable)` and `### Out of scope`. Copy an existing factory issue's body as a starting point.
 
 (Requires the `gh` token to carry `project` scope — run `gh auth refresh -s project` once if `--project` errors with a missing-scope message.)
 

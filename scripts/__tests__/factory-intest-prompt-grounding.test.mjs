@@ -108,6 +108,15 @@ describe("In Test prompt — scenario quality rules", () => {
     assert.match(flat, /do not mention the preview at all/);
   });
 
+  it("writes API and Terminal steps against the preview with vercel curl", () => {
+    // Every preview is behind Vercel Authentication: #465's scenario told the
+    // tester to `curl "$MCP"` on the preview, which only ever got a 302 to
+    // vercel.com/sso-api.
+    assert.match(flat, /behind \*\*Vercel Authentication\*\*/);
+    assert.match(flat, /`vercel curl <path> --deployment <previewUrl> -- <curl flags>`/);
+    assert.match(flat, /never as `curl "\$PREVIEW\/…"`/);
+  });
+
   it("requires checking that a step's pass signal can actually appear", () => {
     // #458's scenario expected two signals the desktop app can never show (the
     // "still pending" message, #676; the indicator's pending count, #677).

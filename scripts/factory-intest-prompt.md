@@ -203,6 +203,13 @@ Compose it in Markdown from the bundle's facts. Structure:
     is false, **do not mention the preview at all** — it exercises nothing here.
     (When `platforms.web` is true but `previewUrl` is empty, say the preview
     isn't up yet.)
+    - The preview is behind **Vercel Authentication**. A browser that's signed
+      in to Vercel opens it fine, but an anonymous `curl` gets a 302 to
+      `vercel.com/sso-api`. Write any API or Terminal step against the preview
+      as `vercel curl <path> --deployment <previewUrl> -- <curl flags>` (it
+      needs `vercel login` as a member of the project's team), never as
+      `curl "$PREVIEW/…"`. For example:
+      `vercel curl /api/mcp --deployment <previewUrl> -- -s -X POST -H "Authorization: Bearer $KEY" --data @body.json`.
   - each entry in `betaDispatch.dispatched` → say a beta build is building now
     from PR #`<n>` at `<first 12 chars of headSha>`, and that a follow-up comment
     reports the build number when it lands (~20-40 min).
