@@ -82,18 +82,4 @@ test.describe("macOS app hand-off pages (signed out)", () => {
 
     expect(response?.status()).toBe(404);
   });
-
-  test("the signed-out home page describes Drafto and links the privacy policy", async ({
-    page,
-  }) => {
-    // Google's OAuth brand verification reads https://drafto.eu as the app's home page.
-    await page.goto("/");
-
-    await expect(page).toHaveURL(/\/login$/);
-    await expect(page.getByText(/Drafto is a note-taking app/)).toBeVisible();
-    await expect(page.getByRole("link", { name: "Privacy Policy" })).toHaveAttribute(
-      "href",
-      "/privacy",
-    );
-  });
 });

@@ -302,6 +302,28 @@ body {
     @apply text-primary-300 decoration-primary-300/40 hover:text-primary-200 hover:decoration-current;
   }
 
+  /*
+   * The signed-out pages (the landing page and the (auth) group) sit on `.brand-backdrop`, with
+   * the Drafto name in `.brand-wordmark`. The primary-50/secondary-50 tints and primary-600 don't
+   * change in dark mode, where `text-fg` and `text-fg-muted` turn light, so the dark versions are
+   * set here for the same reason as `.doc-link` above.
+   */
+  .brand-backdrop {
+    @apply from-primary-50 to-secondary-50 bg-gradient-to-br;
+  }
+
+  .dark .brand-backdrop {
+    @apply from-bg-subtle to-bg;
+  }
+
+  .brand-wordmark {
+    @apply text-primary-600;
+  }
+
+  .dark .brand-wordmark {
+    @apply text-primary-300;
+  }
+
   .doc-prose table {
     @apply w-full border-collapse text-left text-sm leading-6;
   }

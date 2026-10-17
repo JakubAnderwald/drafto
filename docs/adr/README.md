@@ -81,3 +81,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0046](./0046-ios-uiscene-lifecycle.md)                              | iOS Adopts the UIScene Lifecycle                      | Accepted           | 2026-10-10 |
 | [0048](./0048-local-writes-trigger-debounced-sync.md)                | Local Writes Trigger a Debounced Sync                 | Accepted           | 2026-10-12 |
 | [0049](./0049-apple-token-revocation-on-account-deletion.md)         | Revoke Sign in with Apple Tokens on Account Deletion  | Accepted           | 2026-10-12 |
+| [0050](./0050-public-landing-page-via-middleware-rewrite.md)         | Public Landing Page at `/` via Middleware Rewrite     | Accepted           | 2026-10-17 |

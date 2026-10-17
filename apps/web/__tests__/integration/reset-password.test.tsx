@@ -3,9 +3,9 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
 
-const mockPush = vi.fn();
-vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: mockPush }),
+const mockEnterApp = vi.fn();
+vi.mock("@/lib/auth/enter-app", () => ({
+  enterApp: () => mockEnterApp(),
 }));
 
 const mockUpdateUser = vi.fn();
@@ -61,7 +61,7 @@ describe("Reset password page", () => {
     await user.click(screen.getByRole("button", { name: "Reset password" }));
 
     expect(mockUpdateUser).toHaveBeenCalledWith({ password: "newpassword123" });
-    expect(mockPush).toHaveBeenCalledWith("/");
+    expect(mockEnterApp).toHaveBeenCalledOnce();
   });
 
   it("shows error when passwords do not match", async () => {
@@ -77,7 +77,7 @@ describe("Reset password page", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Passwords do not match");
     expect(mockUpdateUser).not.toHaveBeenCalled();
-    expect(mockPush).not.toHaveBeenCalled();
+    expect(mockEnterApp).not.toHaveBeenCalled();
   });
 
   it("displays error message when updateUser fails", async () => {
@@ -95,7 +95,7 @@ describe("Reset password page", () => {
     await user.click(screen.getByRole("button", { name: "Reset password" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Password is too weak");
-    expect(mockPush).not.toHaveBeenCalled();
+    expect(mockEnterApp).not.toHaveBeenCalled();
   });
 
   it("shows loading state while submitting", async () => {

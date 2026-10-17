@@ -12,11 +12,22 @@ vi.mock("@/env", () => ({
 const mockGetUser = vi.fn();
 const mockFrom = vi.fn();
 
+type CookieToSet = { name: string; value: string; options?: Record<string, unknown> };
+type SetAllCookies = (cookies: CookieToSet[], headers: Record<string, string>) => void;
+let setAllCookies: SetAllCookies = () => {};
+
 vi.mock("@supabase/ssr", () => ({
-  createServerClient: () => ({
-    auth: { getUser: mockGetUser },
-    from: mockFrom,
-  }),
+  createServerClient: (
+    _url: string,
+    _key: string,
+    options: { cookies: { setAll: SetAllCookies } },
+  ) => {
+    setAllCookies = options.cookies.setAll;
+    return {
+      auth: { getUser: mockGetUser },
+      from: mockFrom,
+    };
+  },
 }));
 
 // Import after mocks are set up
@@ -103,10 +114,53 @@ describe("Auth middleware", () => {
   it("redirects unauthenticated users to /login", async () => {
     mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
 
-    const response = await updateSession(createRequest("/"));
+    const response = await updateSession(createRequest("/settings"));
 
     expect(response.status).toBe(307);
     expect(new URL(response.headers.get("location")!).pathname).toBe("/login");
+  });
+
+  it("serves signed-out / the landing page through a rewrite instead of redirecting", async () => {
+    // A redirect to /login made Google index the login form under `/`.
+    mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+
+    const response = await updateSession(createRequest("/?utm_source=store"));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+    const rewrite = new URL(response.headers.get("x-middleware-rewrite")!);
+    expect(rewrite.pathname).toBe("/welcome");
+    expect(rewrite.search).toBe("?utm_source=store");
+    expect(mockFrom).not.toHaveBeenCalled();
+  });
+
+  it("passes refreshed session cookies and their no-cache headers on with the landing page rewrite", async () => {
+    // An expired session is cleared during getUser(). The browser must still get the cleared
+    // cookie, and no cache may store the static landing page together with it.
+    mockGetUser.mockImplementationOnce(async () => {
+      setAllCookies([{ name: "sb-test-auth-token", value: "", options: { maxAge: 0 } }], {
+        "Cache-Control": "private, no-cache, no-store, must-revalidate, max-age=0",
+        Expires: "0",
+      });
+      return { data: { user: null }, error: null };
+    });
+
+    const response = await updateSession(createRequest("/"));
+
+    expect(response.headers.get("x-middleware-rewrite")).not.toBeNull();
+    expect(response.cookies.get("sb-test-auth-token")?.value).toBe("");
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, must-revalidate, max-age=0",
+    );
+    expect(response.headers.get("expires")).toBe("0");
+  });
+
+  it("sends a direct visit to the landing page's route to / without a session lookup", async () => {
+    const response = await updateSession(createRequest("/welcome"));
+
+    expect(response.status).toBe(308);
+    expect(new URL(response.headers.get("location")!).pathname).toBe("/");
+    expect(mockGetUser).not.toHaveBeenCalled();
   });
 
   it("redirects unapproved users to /waiting-for-approval", async () => {
@@ -144,6 +198,8 @@ describe("Auth middleware", () => {
     const response = await updateSession(createRequest("/"));
 
     expect(response.status).toBe(200);
+    // Signed in, `/` is the app, not the landing page.
+    expect(response.headers.get("x-middleware-rewrite")).toBeNull();
   });
 
   it("allows unapproved users to see /waiting-for-approval", async () => {

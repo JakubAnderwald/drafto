@@ -4,6 +4,6 @@
 export const SITE_URL = "https://drafto.eu";
 
 // The public pages search engines should index, listed in the sitemap. Each one declares
-// itself as its canonical URL. `/` is left out: it redirects signed-out visitors, crawlers
-// included, to /login, and a sitemap lists only URLs that answer 200.
-export const INDEXED_PATHS = ["/login", "/signup", "/privacy", "/support", "/account/delete"];
+// itself as its canonical URL. `/` is the landing page that middleware serves to signed-out
+// visitors, crawlers included; signed-in users get the app there.
+export const INDEXED_PATHS = ["/", "/login", "/signup", "/privacy", "/support", "/account/delete"];
