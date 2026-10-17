@@ -33,6 +33,9 @@ const PUBLIC_ROUTES = [
   "/.well-known/assetlinks.json",
 ];
 
+// Where signed-out `/` is rewritten to (`src/app/welcome/page.tsx`).
+const LANDING_PAGE_PATH = "/welcome";
+
 function isPublicRoute(pathname: string): boolean {
   return PUBLIC_ROUTES.some((route) => pathname === route || pathname.startsWith(route + "/"));
 }
@@ -45,10 +48,22 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.next({ request });
   }
 
+  // The landing page's own route is reached only through the rewrite of signed-out `/` below,
+  // which doesn't pass through middleware again. A direct visit goes to `/`, so the page has a
+  // single public URL.
+  if (pathname === LANDING_PAGE_PATH) {
+    const homeUrl = request.nextUrl.clone();
+    homeUrl.pathname = "/";
+    return NextResponse.redirect(homeUrl, 308);
+  }
+
   // Track cookies set by Supabase SSR so we can re-apply them
   // if we replace supabaseResponse later (e.g., to inject auth headers).
   let pendingCookies: Array<{ name: string; value: string; options?: Record<string, unknown> }> =
     [];
+  // The no-cache headers Supabase sends with any auth-cookie write, so a cache never stores a
+  // response that sets someone's session.
+  let pendingHeaders: Record<string, string> = {};
 
   let supabaseResponse = NextResponse.next({
     request,
@@ -65,8 +80,9 @@ export async function updateSession(request: NextRequest) {
         getAll() {
           return request.cookies.getAll();
         },
-        setAll(cookiesToSet) {
+        setAll(cookiesToSet, headers) {
           pendingCookies = cookiesToSet;
+          pendingHeaders = { ...pendingHeaders, ...headers };
           cookiesToSet.forEach(({ name, value }) => {
             request.cookies.set(name, value);
           });
@@ -88,6 +104,23 @@ export async function updateSession(request: NextRequest) {
   // Public routes: allow access regardless of auth state
   if (isPublicRoute(pathname)) {
     return supabaseResponse;
+  }
+
+  // Signed-out `/` is the public landing page; signed-in users get the app at the same URL.
+  // A rewrite keeps the URL and answers 200. The old 307 to /login made Google index the login
+  // form under `/` and ignore /login's own canonical. The landing page is static, so when the
+  // session lookup cleared a stale cookie, Supabase's no-cache headers go with it.
+  if (!user && pathname === "/") {
+    const landingUrl = request.nextUrl.clone();
+    landingUrl.pathname = LANDING_PAGE_PATH;
+    const landingResponse = NextResponse.rewrite(landingUrl);
+    for (const { name, value, options } of pendingCookies) {
+      landingResponse.cookies.set(name, value, options);
+    }
+    for (const [name, value] of Object.entries(pendingHeaders)) {
+      landingResponse.headers.set(name, value);
+    }
+    return landingResponse;
   }
 
   // No user: redirect to login

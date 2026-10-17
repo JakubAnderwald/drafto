@@ -5,11 +5,14 @@ import { act } from "react";
 import { ACCOUNT_DELETED_MESSAGE, EMAIL_CONFIRMED } from "@drafto/shared";
 
 // Mock next/navigation
-const mockPush = vi.fn();
 let mockSearchParams = new URLSearchParams();
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: mockPush }),
   useSearchParams: () => mockSearchParams,
+}));
+
+const mockEnterApp = vi.fn();
+vi.mock("@/lib/auth/enter-app", () => ({
+  enterApp: () => mockEnterApp(),
 }));
 
 // Mock Supabase client
@@ -186,7 +189,8 @@ describe("Login page", () => {
       email: "test@example.com",
       password: "password123",
     });
-    expect(mockPush).toHaveBeenCalledWith("/");
+    // A full page load, so the router can't reuse the landing page it cached for `/`.
+    expect(mockEnterApp).toHaveBeenCalledOnce();
   });
 
   it("displays error message when sign in fails", async () => {
@@ -204,7 +208,7 @@ describe("Login page", () => {
     await user.click(screen.getByRole("button", { name: "Log in" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Invalid login credentials");
-    expect(mockPush).not.toHaveBeenCalled();
+    expect(mockEnterApp).not.toHaveBeenCalled();
   });
 
   it("shows loading state while submitting", async () => {

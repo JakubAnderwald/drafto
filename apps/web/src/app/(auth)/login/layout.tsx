@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
-// The login page is a client component, so its metadata lives here. Signed-out `/` redirects
-// here with a 307, so without a canonical Google files /login as a duplicate of `/`.
+// The login page is a client component, so its metadata lives here. It is its own indexed page,
+// separate from the landing page at `/`.
 export const metadata: Metadata = {
   title: "Log in — Drafto",
   alternates: { canonical: "/login" },

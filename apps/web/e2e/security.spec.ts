@@ -129,13 +129,15 @@ test.describe("Security: upload constraints", () => {
 });
 
 test.describe("Security: UI redirects for unauthenticated access", () => {
-  test("unauthenticated visit to / redirects to login", async () => {
-    // Use fetch with redirect: "manual" to verify server-side redirect
+  test("unauthenticated visit to / gets the public landing page, not the app", async () => {
+    // Use fetch with redirect: "manual" to see the server's own answer
     // (browser.newContext() can inherit dev-mode state in Next.js)
     const response = await fetch("http://localhost:3000/", { redirect: "manual" });
-    expect(response.status).toBe(307);
-    const location = response.headers.get("location");
-    expect(location).toContain("/login");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+    const body = await response.text();
+    expect(body).toContain("What Drafto does");
+    expect(body).not.toContain("New notebook");
   });
 
   test("unauthenticated visit to /admin redirects to login", async () => {

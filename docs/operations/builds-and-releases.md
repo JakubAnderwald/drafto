@@ -285,10 +285,12 @@ Brand verification is free. The configuration, done once and kept in sync:
 
 What Google checks, and how this repo meets it:
 
-- **The home page must be public, describe the app, and link the privacy policy.** `https://drafto.eu`
-  sends signed-out visitors to `/login`, so that job falls to the footer in
-  `apps/web/src/app/(auth)/layout.tsx`: a one-line description plus Privacy Policy and Support links.
-  Keep it if that layout is ever redesigned. The privacy policy itself must stay on `drafto.eu`.
+- **The home page must be public, describe the app, and link the privacy policy.** Signed-out
+  `https://drafto.eu` is the landing page (`apps/web/src/app/welcome/page.tsx`, served at `/` by a
+  middleware rewrite; see [ADR-0050](../adr/0050-public-landing-page-via-middleware-rewrite.md)). It
+  describes Drafto and links Privacy Policy and Support through `LegalLinks`. The auth pages' footer
+  in `apps/web/src/app/(auth)/layout.tsx` repeats both. Keep them if either page is redesigned
+  (`e2e/landing.spec.ts` checks the landing page). The privacy policy itself must stay on `drafto.eu`.
 - **`supabase.co` cannot be verified by us.** If Google flags it, reply on the Trust & Safety thread
   (it arrives by email to the project owner) that `supabase.co` is the domain of Supabase, our
   third-party authentication provider, which hosts the OAuth callback. Other Supabase projects report

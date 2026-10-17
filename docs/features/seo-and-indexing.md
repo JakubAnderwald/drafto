@@ -1,12 +1,13 @@
 # SEO and indexing
 
-**Status:** shipped **Updated:** 2026-10-12
+**Status:** shipped **Updated:** 2026-10-17
 
 ## What it is
 
 How drafto.eu presents itself to search engines and app-link verifiers:
 
 - the canonical host
+- the public landing page at `/` for signed-out visitors
 - per-page canonical and robots tags
 - `robots.txt` and `sitemap.xml`
 - the `www` and `http` redirects
@@ -22,9 +23,13 @@ The property is verified in Google Search Console as the domain property `drafto
 - **Redirects:**
   - `http://` returns a 308 to `https://`. Vercel enforces this.
   - `www.drafto.eu` returns a 308 to `drafto.eu`. This is a redirect domain in the Vercel project's domain settings, not code. GoDaddy has `www` as a CNAME into Vercel.
-- **The home page has no landing page.** Signed-out `/` returns a 307 to `/login` (`src/lib/supabase/middleware.ts`). It has to be temporary, because signed-in users get the app at `/`. That is why `/` is not in the sitemap and `/login` declares itself canonical: without that, Google files `/login` as a duplicate of `/`.
+- **Landing page at `/`** ([ADR-0050](../adr/0050-public-landing-page-via-middleware-rewrite.md)):
+  - Signed-out `/` is rewritten (200, the URL stays `/`) to `src/app/welcome/page.tsx`, a static page: what Drafto is, its features, Sign up / Log in, and links to the privacy policy and support page.
+  - Signed-in `/` is the app, as before. The branch is in `updateSession` (`src/lib/supabase/middleware.ts`).
+  - A direct request for `/welcome` gets a 308 to `/`, so the page has one public URL. It declares `/` as its canonical.
+  - Until 2026-10-17, signed-out `/` was a 307 to `/login`. Google then indexed the login form under `/` and overrode `/login`'s self-canonical ("Duplicate, Google chose different canonical than user").
 - **Indexed pages:**
-  - `/login`, `/signup`, `/privacy`, `/support` and `/account/delete` each declare themselves canonical.
+  - `/`, `/login`, `/signup`, `/privacy`, `/support` and `/account/delete` each declare themselves canonical. For `/`, the declaration is on the landing page.
   - They are listed in `INDEXED_PATHS`, which feeds the sitemap.
 - **Not indexed:**
   - Every other page in the `(auth)` route group (forgot/reset password, waiting for approval, the desktop hand-off) inherits `noindex, follow` from the group layout.
@@ -38,32 +43,35 @@ The property is verified in Google Search Console as the domain property `drafto
 
 ### Expected Search Console state
 
-| Report                                             | URLs                                                    | Meaning                                                                                                                                                                                                |
-| -------------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Indexed                                            | The `INDEXED_PATHS` pages                               | Correct                                                                                                                                                                                                |
-| Page with redirect (Strona zawiera przekierowanie) | `http://drafto.eu/`, `https://www.drafto.eu/`           | Correct. These are permanent 308 redirects (protocol and host), so the URLs are never indexed. Don't start "Validate fix" on this group: it can only fail.                                             |
-| Page with redirect (Strona zawiera przekierowanie) | `https://drafto.eu/` (possibly)                         | Expected while there is no landing page. Signed-out `/` is a temporary 307 to `/login`, so Google may list it here or fold it into `/login`. The redirect is temporary on purpose, not a fault to fix. |
-| Excluded by noindex                                | `/forgot-password` and the other `(auth)` utility pages | Correct                                                                                                                                                                                                |
+| Report                                             | URLs                                                      | Meaning                                                                                                                                                                                   |
+| -------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Indexed                                            | The `INDEXED_PATHS` pages, `https://drafto.eu/` included  | Correct                                                                                                                                                                                   |
+| Page with redirect (Strona zawiera przekierowanie) | `http://drafto.eu/`, `https://www.drafto.eu/`, `/welcome` | Correct. These are permanent 308 redirects (protocol, host, and the landing page's own route), so the URLs are never indexed. Don't start "Validate fix" on this group: it can only fail. |
+| Excluded by noindex                                | `/forgot-password` and the other `(auth)` utility pages   | Correct                                                                                                                                                                                   |
 
-A new "Duplicate without user-selected canonical" entry means a public page is missing its `alternates.canonical`.
+- A new "Duplicate without user-selected canonical" entry means a public page is missing its `alternates.canonical`.
+- "Duplicate, Google chose different canonical than user" on `/login` dates from the 307 era, before 2026-10-17. It should clear once Google recrawls `/` and finds the landing page.
+  - If it comes back, check that signed-out `/` still answers 200 with `<link rel="canonical" href="https://drafto.eu"/>` (Next.js drops the trailing slash on the root URL; it is the same URL).
+  - Also check that its content still differs clearly from `/login`.
 
 ## Code paths
 
-| Concern                         | Path                                                                                                                                                                                                                    |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Canonical origin, indexed pages | `apps/web/src/lib/site.ts` → `SITE_URL`, `INDEXED_PATHS`                                                                                                                                                                |
-| `metadataBase`                  | `apps/web/src/app/layout.tsx`                                                                                                                                                                                           |
-| `robots.txt`, `sitemap.xml`     | `apps/web/src/app/robots.ts`, `apps/web/src/app/sitemap.ts`                                                                                                                                                             |
-| Auth group noindex default      | `apps/web/src/app/(auth)/layout.tsx`                                                                                                                                                                                    |
-| Login / sign-up metadata        | `apps/web/src/app/(auth)/{login,signup}/layout.tsx`. The pages are client components and can't export `metadata`.                                                                                                       |
-| Other page canonicals           | `metadata` in `apps/web/src/app/{privacy,support,account/delete}/page.tsx`                                                                                                                                              |
-| Middleware skip list            | `apps/web/middleware.ts` → `config.matcher`                                                                                                                                                                             |
-| App-link association files      | `apps/web/public/.well-known/`; the AASA `Content-Type` header is set in `apps/web/next.config.ts`                                                                                                                      |
-| Tests                           | `__tests__/unit/robots-and-sitemap.test.ts`, `__tests__/unit/middleware-matcher.test.ts`, `__tests__/unit/middleware.test.ts`, `__tests__/integration/seo-metadata.test.tsx`, `e2e/seo.spec.ts` (all under `apps/web/`) |
+| Concern                         | Path                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Canonical origin, indexed pages | `apps/web/src/lib/site.ts` → `SITE_URL`, `INDEXED_PATHS`                                                                                                                                                                                                                                                                           |
+| Landing page                    | `apps/web/src/app/welcome/page.tsx`, `apps/web/src/components/landing/`, `apps/web/src/components/legal/legal-links.tsx`, `.brand-backdrop`/`.brand-wordmark` in `globals.css`, `apps/web/src/lib/auth/enter-app.ts`. The rewrite and the `/welcome` redirect live in `updateSession` (`apps/web/src/lib/supabase/middleware.ts`). |
+| `metadataBase`                  | `apps/web/src/app/layout.tsx`                                                                                                                                                                                                                                                                                                      |
+| `robots.txt`, `sitemap.xml`     | `apps/web/src/app/robots.ts`, `apps/web/src/app/sitemap.ts`                                                                                                                                                                                                                                                                        |
+| Auth group noindex default      | `apps/web/src/app/(auth)/layout.tsx`                                                                                                                                                                                                                                                                                               |
+| Login / sign-up metadata        | `apps/web/src/app/(auth)/{login,signup}/layout.tsx`. The pages are client components and can't export `metadata`.                                                                                                                                                                                                                  |
+| Other page canonicals           | `metadata` in `apps/web/src/app/{privacy,support,account/delete}/page.tsx`                                                                                                                                                                                                                                                         |
+| Middleware skip list            | `apps/web/middleware.ts` → `config.matcher`                                                                                                                                                                                                                                                                                        |
+| App-link association files      | `apps/web/public/.well-known/`; the AASA `Content-Type` header is set in `apps/web/next.config.ts`                                                                                                                                                                                                                                 |
+| Tests                           | `__tests__/unit/robots-and-sitemap.test.ts`, `__tests__/unit/middleware-matcher.test.ts`, `__tests__/unit/middleware.test.ts`, `__tests__/unit/landing-page.test.tsx`, `__tests__/integration/seo-metadata.test.tsx`, `e2e/seo.spec.ts`, `e2e/landing.spec.ts` (all under `apps/web/`)                                             |
 
 ## Related ADRs
 
-None. This is configuration, not an architectural decision.
+- [ADR-0050](../adr/0050-public-landing-page-via-middleware-rewrite.md): signed-out `/` serves a public landing page through a middleware rewrite.
 
 ## Cross-platform notes
 
@@ -80,18 +88,26 @@ Web only. The native apps depend on it in one way: `apps/mobile/app.config.ts` c
   - Skip it in `config.matcher`, anchored with `$`, and add a case to `middleware-matcher.test.ts`.
   - Also add it to `PUBLIC_ROUTES` and `middleware.test.ts` as a backstop.
   - Relying on `PUBLIC_ROUTES` alone works, but runs a Supabase session lookup on every fetch.
-- **Never** point a canonical or a sitemap entry at `/`, at `www`, or at a preview URL.
+- **Landing page copy:**
+  - Keep `LANDING_FEATURES` true on the platforms each entry names, for example "offline" applies to the native apps only.
+  - Keep the sign-up note about approval as long as sign-up is gated ([email-and-approval.md](./email-and-approval.md)).
+- **New client-side sign-in path:** enter the app with `enterApp()` (`src/lib/auth/enter-app.ts`), a full page load, as the login and reset-password pages do. Don't use `router.push("/")`: the client router may still map `/` to the landing page.
+- **Dark mode:** the signed-out pages use `.brand-backdrop` and `.brand-wordmark` from `globals.css`. They switch with the `.dark` class; the raw `primary-50`/`secondary-50` tints don't.
+- **Only** the landing page declares `/` as its canonical. Never point a canonical or a sitemap entry at `/welcome`, at `www`, or at a preview URL.
 
 ## Verify
 
 ```bash
 # Unit + integration
-cd apps/web && pnpm test -- robots-and-sitemap seo-metadata middleware-matcher
+cd apps/web && pnpm test -- robots-and-sitemap seo-metadata middleware landing-page
 
 # E2E
-set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e -- seo
+set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e -- seo landing
 
 # Live
+curl -sI https://drafto.eu/ | head -1                    # 200 signed out (the landing page), not a 307
+curl -s https://drafto.eu/ | grep -o '<link rel="canonical"[^>]*>'   # href="https://drafto.eu" (root URL, no trailing slash)
+curl -sI https://drafto.eu/welcome | grep -iE '^(HTTP|location)'    # 308 → /
 curl -sI https://drafto.eu/robots.txt | head -1          # 200
 curl -sI https://drafto.eu/sitemap.xml | head -1         # 200
 curl -s https://drafto.eu/login | grep -o '<link rel="canonical"[^>]*>'
