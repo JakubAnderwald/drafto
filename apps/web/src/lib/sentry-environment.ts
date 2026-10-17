@@ -11,12 +11,18 @@ export function resolveSentryEnvironment(
   return configured?.trim() || (nodeEnv === "production" ? "production" : "development");
 }
 
+// Local `next dev` and local Playwright runs (NODE_ENV=development), and local
+// `next start` when .env.local sets the environment to "development". On the Free
+// plan they used up the monthly replay quota, so the SDK stays off there and only
+// Vercel deployments report. The NODE_ENV check keeps `next dev` off even if a
+// non-development environment is configured locally.
+export function isSentryEnabled(environment: string, nodeEnv: string | undefined): boolean {
+  return nodeEnv !== "development" && environment !== "development";
+}
+
 export const sentryEnvironment = resolveSentryEnvironment(
   process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT,
   process.env.NODE_ENV,
 );
 
-// Local `next dev`, local `next start` and local Playwright runs all report as
-// "development" (.env.local sets it). On the Free plan they used up the monthly
-// replay quota, so the SDK stays off there and only Vercel deployments report.
-export const sentryEnabled = sentryEnvironment !== "development";
+export const sentryEnabled = isSentryEnabled(sentryEnvironment, process.env.NODE_ENV);

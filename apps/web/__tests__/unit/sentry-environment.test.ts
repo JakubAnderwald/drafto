@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveSentryEnvironment } from "@/lib/sentry-environment";
+import { isSentryEnabled, resolveSentryEnvironment } from "@/lib/sentry-environment";
 
 describe("resolveSentryEnvironment", () => {
   it("uses the configured environment", () => {
@@ -23,5 +23,21 @@ describe("resolveSentryEnvironment", () => {
   it("treats a blank configured environment as unset", () => {
     expect(resolveSentryEnvironment("", "production")).toBe("production");
     expect(resolveSentryEnvironment("\n", "development")).toBe("development");
+  });
+});
+
+describe("isSentryEnabled", () => {
+  it.each([
+    // Vercel deployments report.
+    ["production", "production", true],
+    ["preview", "production", true],
+    // Local `next start` with .env.local's "development" stays off.
+    ["development", "production", false],
+    // `next dev` (and local E2E) stays off whatever environment is configured.
+    ["development", "development", false],
+    ["preview", "development", false],
+    ["production", "development", false],
+  ])("environment=%s, NODE_ENV=%s → %s", (environment, nodeEnv, expected) => {
+    expect(isSentryEnabled(environment, nodeEnv)).toBe(expected);
   });
 });
