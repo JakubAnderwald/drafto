@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
@@ -32,13 +32,32 @@ vi.mock("@blocknote/mantine", () => ({
 
 vi.mock("@blocknote/mantine/style.css", () => ({}));
 
-// Mock useAutoSave to avoid real save calls
-vi.mock("@/hooks/use-auto-save", () => ({
-  useAutoSave: () => ({
-    saveStatus: "idle" as const,
-    debouncedSave: vi.fn(),
-  }),
-}));
+// Most tests only need the editor to render, so autosave is a no-op by default.
+// Tests that follow a save through to the note list set `autoSave.real` to run the
+// real hook. The flag stays fixed for a whole test, so hook order is stable.
+const autoSave = vi.hoisted(() => ({ real: false }));
+vi.mock("@/hooks/use-auto-save", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-auto-save")>();
+  return {
+    useAutoSave: (options: Parameters<typeof actual.useAutoSave>[0]) =>
+      autoSave.real
+        ? actual.useAutoSave(options)
+        : { saveStatus: "idle" as const, debouncedSave: vi.fn() },
+  };
+});
+
+// The open note's `useNoteSync` subscribes to a realtime channel. Nothing here
+// drives realtime, so the channel is inert and no real websocket is opened.
+vi.mock("@/lib/supabase/client", () => {
+  interface InertChannel {
+    on: () => InertChannel;
+    subscribe: () => InertChannel;
+  }
+  const channel: InertChannel = { on: () => channel, subscribe: () => channel };
+  return {
+    createClient: () => ({ channel: () => channel, removeChannel: async () => "ok" }),
+  };
+});
 
 // Mock useTheme to avoid localStorage/matchMedia issues in jsdom
 vi.mock("@/hooks/use-theme", () => ({
@@ -926,6 +945,164 @@ describe("AppShell", () => {
     });
 
     vi.restoreAllMocks();
+  });
+
+  // A title typed into a new note used to stay "Untitled" in the list until the note
+  // was reopened: the save's patch carried no title, and coming back to the notebook
+  // reused the list cached before the save.
+  describe("note list after a title autosave", () => {
+    interface ListRow {
+      id: string;
+      title: string;
+      updated_at: string;
+    }
+
+    const CREATED_AT = "2026-10-17T10:00:00.000Z";
+
+    // The fake server's rows per notebook. Rows are replaced, never mutated, so a
+    // list the client fetched earlier keeps exactly what it was given.
+    let server: Record<string, ListRow[]>;
+    let patchCount: number;
+    let listFetchCount: number;
+
+    function findNote(noteId: string): { notebookId: string; row: ListRow } | null {
+      for (const [notebookId, rows] of Object.entries(server)) {
+        const row = rows.find((r) => r.id === noteId);
+        if (row) return { notebookId, row };
+      }
+      return null;
+    }
+
+    beforeEach(() => {
+      autoSave.real = true;
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      patchCount = 0;
+      listFetchCount = 0;
+      server = {
+        "nb-1": mockNotes.map((note) => ({ ...note })),
+        "nb-2": [{ id: "note-w", title: "Work plan", updated_at: CREATED_AT }],
+      };
+
+      const respond = (body: unknown) =>
+        Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+      // GET and PATCH /api/notes/:id both return the whole row, like the real route.
+      const fullRow = (row: ListRow) => ({
+        ...row,
+        content: null,
+        created_at: CREATED_AT,
+        is_trashed: false,
+      });
+
+      mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+        if (url === "/api/notebooks") return respond(mockNotebooks);
+
+        const list = /^\/api\/notebooks\/([^/]+)\/notes$/.exec(url);
+        if (list) {
+          const notebookId = list[1];
+          if (init?.method === "POST") {
+            const row = { id: "note-new", title: "Untitled", updated_at: CREATED_AT };
+            server[notebookId] = [row, ...server[notebookId]];
+            return respond(fullRow(row));
+          }
+          listFetchCount += 1;
+          return respond(server[notebookId].map((row) => ({ ...row })));
+        }
+
+        const noteMatch = /^\/api\/notes\/([^/]+)$/.exec(url);
+        const found = noteMatch ? findNote(noteMatch[1]) : null;
+        if (found) {
+          if (init?.method === "PATCH") {
+            patchCount += 1;
+            const changes = JSON.parse(String(init.body)) as { title?: unknown };
+            const saved: ListRow = {
+              ...found.row,
+              title: typeof changes.title === "string" ? changes.title : found.row.title,
+              updated_at: new Date(Date.parse(CREATED_AT) + patchCount * 60_000).toISOString(),
+            };
+            server[found.notebookId] = server[found.notebookId].map((row) =>
+              row.id === saved.id ? saved : row,
+            );
+            return respond(fullRow(saved));
+          }
+          return respond(fullRow(found.row));
+        }
+
+        return respond({});
+      });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      autoSave.real = false;
+    });
+
+    /** Create a note, type `title` into it and let the autosave land. */
+    async function createNoteAndTypeTitle(
+      user: ReturnType<typeof userEvent.setup>,
+      title: string,
+    ): Promise<{ listFetchesBeforeSave: number }> {
+      await act(async () => {
+        render(<AppShell />);
+      });
+      await waitFor(() => {
+        expect(screen.getByText("My First Note")).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        await user.click(screen.getByLabelText("New note"));
+      });
+      const titleInput = await screen.findByLabelText("Note title");
+      await waitFor(() => {
+        expect(screen.getByTestId("note-item-active")).toHaveTextContent("Untitled");
+      });
+      const listFetchesBeforeSave = listFetchCount;
+
+      await user.clear(titleInput);
+      await user.type(titleInput, title);
+      // Past the 500 ms autosave debounce.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId("save-status-badge")).toHaveTextContent("Saved");
+      });
+      expect(findNote("note-new")?.row.title).toBe(title);
+
+      return { listFetchesBeforeSave };
+    }
+
+    it("shows the saved title in the list row with no reopen or reload", async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const { listFetchesBeforeSave } = await createNoteAndTypeTitle(user, "Groceries");
+
+      await waitFor(() => {
+        expect(screen.getByTestId("note-item-active")).toHaveTextContent("Groceries");
+      });
+      // Patched in place: a refetch would re-suspend the editor being typed in.
+      expect(listFetchCount).toBe(listFetchesBeforeSave);
+      expect(screen.getByLabelText("Note title")).toHaveValue("Groceries");
+    });
+
+    it("still shows the saved title after switching to another notebook and back", async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      await createNoteAndTypeTitle(user, "Groceries");
+
+      await act(async () => {
+        await user.click(screen.getByText("Work"));
+      });
+      await waitFor(() => {
+        expect(screen.getByText("Work plan")).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        await user.click(screen.getByText("Personal"));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Groceries")).toBeInTheDocument();
+      });
+      expect(screen.queryByText("Untitled")).not.toBeInTheDocument();
+    });
   });
 
   describe("tablet layout — collapsible sidebar", () => {

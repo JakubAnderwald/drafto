@@ -310,6 +310,10 @@ export function AppShell({
     setSelectedNoteId(null);
     setViewingTrash(false);
     setSidebarOpen(false);
+    // Coming back to a notebook must refetch its list: the cached one predates any
+    // in-place patches made while it was open. Safe to bump here for the same reason
+    // as in handleNoteClosed — the editor unmounts in this same commit.
+    setRefreshTrigger((prev) => prev + 1);
   }, []);
 
   const handleSelectTrash = useCallback(() => {
