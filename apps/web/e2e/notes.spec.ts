@@ -28,35 +28,76 @@ test.describe("Server-rendered note list", () => {
   test("first page load serves the notes in the HTML and hydrates without errors", async ({
     page,
   }) => {
-    // The server's HTML already holds the first notebook's list, and no Suspense
-    // boundary was handed to the client after a server error (`<!--$!-->`). The
-    // skeleton's markup can still be there: once a page's HTML passes React's chunk
-    // size, React streams a finished boundary after its fallback, in the same
-    // response, and an inline script swaps it in.
-    const response = await page.request.get("/");
-    expect(response.ok()).toBe(true);
-    const html = await response.text();
-    expect(html).toMatch(/<h2[^>]*>Notes<\/h2>/);
-    expect(html).not.toContain("<!--$!-->");
+    // A notebook holding one known note, so the server's HTML can be checked for its
+    // row. The "SSR " names match the patterns `cleanupTestData` (`e2e/helpers/cleanup.ts`)
+    // deletes, should the `finally` below leave anything behind.
+    const stamp = Date.now();
+    const notebookName = `SSR NB ${stamp}`;
+    const noteTitle = `SSR Note ${stamp}`;
+    const notebookRes = await page.request.post("/api/notebooks", { data: { name: notebookName } });
+    expect(notebookRes.ok()).toBe(true);
+    const notebookId = ((await notebookRes.json()) as { id: string }).id;
+    let noteId: string | undefined;
 
-    const errors: string[] = [];
-    page.on("console", (message) => {
-      if (message.type() === "error") errors.push(message.text());
-    });
-    page.on("pageerror", (error) => errors.push(error.message));
+    try {
+      const noteRes = await page.request.post(`/api/notebooks/${notebookId}/notes`);
+      expect(noteRes.ok()).toBe(true);
+      noteId = ((await noteRes.json()) as { id: string }).id;
+      const patchRes = await page.request.patch(`/api/notes/${noteId}`, {
+        data: { title: noteTitle },
+      });
+      expect(patchRes.ok()).toBe(true);
 
-    await page.goto("/");
-    await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
+      // The server's HTML holds the seeded note's row, and no Suspense boundary was
+      // handed to the client after a server error (`<!--$!-->`). The title is matched
+      // as an element's text: the RSC payload in the same response carries the
+      // layout's notes as JSON props, so a bare substring would match even if the
+      // list never rendered. The skeleton's markup can still be there: once a page's
+      // HTML passes React's chunk size, React streams a finished boundary after its
+      // fallback, in the same response, and an inline script swaps it in.
+      //
+      // The layout renders the most recently updated notebook, and other workers
+      // create notebooks in parallel. Renaming the notebook to its own name bumps its
+      // `updated_at`, which puts it back on top before each attempt.
+      let html = "";
+      await expect(async () => {
+        const bumpRes = await page.request.patch(`/api/notebooks/${notebookId}`, {
+          data: { name: notebookName },
+        });
+        expect(bumpRes.ok()).toBe(true);
+        const response = await page.request.get("/");
+        expect(response.ok()).toBe(true);
+        html = await response.text();
+        expect(html).toContain(`>${noteTitle}</p>`);
+      }).toPass({ timeout: 20000 });
+      expect(html).toMatch(/<h2[^>]*>Notes<\/h2>/);
+      expect(html).not.toContain("<!--$!-->");
 
-    // React reports a failed hydration when it commits. Let the page finish loading
-    // and the main thread go idle so that has happened before checking.
-    await page.waitForLoadState("load");
-    await page.evaluate(
-      () => new Promise<void>((resolve) => requestIdleCallback(() => resolve(), { timeout: 5000 })),
-    );
+      const errors: string[] = [];
+      page.on("console", (message) => {
+        if (message.type() === "error") errors.push(message.text());
+      });
+      page.on("pageerror", (error) => errors.push(error.message));
 
-    expect(errors.filter((text) => HYDRATION_ERROR.test(text))).toEqual([]);
-    await expect(page.getByTestId("list-skeleton")).toHaveCount(0);
+      await page.goto("/");
+      await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
+
+      // React reports a failed hydration when it commits. Let the page finish loading
+      // and the main thread go idle so that has happened before checking.
+      await page.waitForLoadState("load");
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) => requestIdleCallback(() => resolve(), { timeout: 5000 })),
+      );
+
+      expect(errors.filter((text) => HYDRATION_ERROR.test(text))).toEqual([]);
+      await expect(page.getByTestId("list-skeleton")).toHaveCount(0);
+    } finally {
+      // Best-effort. A notebook with live notes can't be deleted, so the note goes to
+      // the trash first; deleting the notebook then removes it for good.
+      if (noteId) await page.request.delete(`/api/notes/${noteId}`).catch(() => {});
+      await page.request.delete(`/api/notebooks/${notebookId}`).catch(() => {});
+    }
   });
 });
 

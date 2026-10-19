@@ -12,6 +12,7 @@ const E2E_NOTE_PATTERNS = [
   /^First Note \d+$/,
   /^Second Note \d+$/,
   /^XPlat .+ \d+$/,
+  /^SSR Note \d+$/,
 ];
 
 const E2E_NOTEBOOK_PATTERNS = [
@@ -19,6 +20,7 @@ const E2E_NOTEBOOK_PATTERNS = [
   /^Test Notebook \d+$/,
   /^Renamed \d+$/,
   /^XPlat NB \d+$/,
+  /^SSR NB \d+$/,
 ];
 
 function isE2ENote(title: string): boolean {
