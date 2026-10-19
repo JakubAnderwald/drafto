@@ -29,8 +29,7 @@ test.describe("Server-rendered note list", () => {
     page,
   }) => {
     // A notebook holding one known note, so the server's HTML can be checked for its
-    // row. The "SSR " names match the patterns `cleanupTestData` (`e2e/helpers/cleanup.ts`)
-    // deletes, should the `finally` below leave anything behind.
+    // row. The `finally` below deletes both.
     const stamp = Date.now();
     const notebookName = `SSR NB ${stamp}`;
     const noteTitle = `SSR Note ${stamp}`;
