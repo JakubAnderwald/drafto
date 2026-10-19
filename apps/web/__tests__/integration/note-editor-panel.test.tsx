@@ -204,6 +204,105 @@ describe("NoteEditorPanel", () => {
     });
   });
 
+  describe("a note still carrying the default title", () => {
+    async function renderDefaultTitled(noteId: string) {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ ...mockNote, id: noteId, title: "Untitled" }),
+      });
+
+      await act(async () => {
+        render(
+          <Suspense fallback={<Skeleton height="2rem" />}>
+            <NoteEditorPanel noteId={noteId} />
+          </Suspense>,
+        );
+      });
+
+      return (await screen.findByLabelText("Note title")) as HTMLInputElement;
+    }
+
+    it("starts with an empty title field showing the Untitled placeholder", async () => {
+      const titleInput = await renderDefaultTitled(nextNoteId());
+
+      expect(titleInput).toHaveValue("");
+      expect(titleInput).toHaveAttribute("placeholder", "Untitled");
+      // Opening the note writes nothing: what's stored stays "Untitled".
+      expect(mockDebouncedSave).not.toHaveBeenCalled();
+    });
+
+    it("replaces the default title with what the user types", async () => {
+      const user = userEvent.setup();
+      const titleInput = await renderDefaultTitled(nextNoteId());
+
+      // No clear() first: the first keystroke must not land after "Untitled".
+      await user.type(titleInput, "Groceries");
+
+      expect(titleInput).toHaveValue("Groceries");
+      expect(mockDebouncedSave).toHaveBeenLastCalledWith({ title: "Groceries" });
+      expect(mockDebouncedSave).not.toHaveBeenCalledWith({ title: "UntitledGroceries" });
+    });
+  });
+
+  it("re-adopts the default title as an empty field when refreshTrigger changes", async () => {
+    const noteId = nextNoteId();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ ...mockNote, id: noteId, title: "Named" }),
+    });
+
+    function renderPanel(refreshTrigger: number) {
+      return (
+        <Suspense fallback={<Skeleton height="2rem" />}>
+          <NoteEditorPanel noteId={noteId} refreshTrigger={refreshTrigger} />
+        </Suspense>
+      );
+    }
+
+    const { rerender } = await act(async () => render(renderPanel(0)));
+    await screen.findByDisplayValue("Named");
+
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ ...mockNote, id: noteId, title: "Untitled" }),
+    });
+    await act(async () => {
+      rerender(renderPanel(1));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Note title")).toHaveValue("");
+    });
+    expect(mockDebouncedSave).not.toHaveBeenCalled();
+  });
+
+  it("saves the default title when the user clears a real title", async () => {
+    const noteId = nextNoteId();
+    const user = userEvent.setup();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ ...mockNote, id: noteId }),
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<Skeleton height="2rem" />}>
+          <NoteEditorPanel noteId={noteId} />
+        </Suspense>,
+      );
+    });
+
+    const titleInput = await screen.findByLabelText("Note title");
+    expect(titleInput).toHaveValue("Test Note Title");
+
+    await user.clear(titleInput);
+
+    // The field is empty and shows the placeholder, but the store never gets "".
+    expect(titleInput).toHaveValue("");
+    expect(mockDebouncedSave).toHaveBeenLastCalledWith({ title: "Untitled" });
+    expect(mockDebouncedSave).not.toHaveBeenCalledWith({ title: "" });
+  });
+
   it("fetches the correct note by ID", async () => {
     const noteId = nextNoteId();
 

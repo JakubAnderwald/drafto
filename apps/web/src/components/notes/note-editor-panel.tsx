@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { useAutoSave } from "@/hooks/use-auto-save";
 import { useNoteSync, type NoteSnapshot, type NoteSyncEvent } from "@/hooks/use-note-sync";
 import { handleAuthError } from "@/lib/handle-auth-error";
+import { DEFAULT_NOTE_TITLE, toStoredTitle, toTitleInputValue } from "@/lib/note-title";
 import { maxTimestamp } from "@/lib/timestamps";
 import type { Block } from "@blocknote/core";
 import type { BadgeVariant } from "@/components/ui/badge";
@@ -108,7 +109,8 @@ export function NoteEditorPanel({
 
   const [applied, setApplied] = useState(loaded);
   const [prevLoaded, setPrevLoaded] = useState(loaded);
-  const [title, setTitle] = useState(loaded?.title ?? "");
+  // The input's value, not the stored title: a default title shows as the placeholder.
+  const [title, setTitle] = useState(toTitleInputValue(loaded?.title));
   // Bumped whenever content is replaced from the server; part of the editor's `key`,
   // because `useCreateBlockNote` reads `initialContent` once per instance.
   const [contentEpoch, setContentEpoch] = useState(0);
@@ -129,7 +131,7 @@ export function NoteEditorPanel({
   if (prevLoaded !== loaded) {
     setPrevLoaded(loaded);
     setApplied(loaded);
-    setTitle(loaded?.title ?? "");
+    setTitle(toTitleInputValue(loaded?.title));
     setContentEpoch((n) => n + 1);
     setConflict(null);
     setLifecycle(loaded?.is_trashed ? "trashed" : null);
@@ -142,7 +144,7 @@ export function NoteEditorPanel({
   const applyRemote = useCallback(
     (next: NoteSnapshot) => {
       setApplied(next);
-      setTitle(next.title);
+      setTitle(toTitleInputValue(next.title));
       setConflict(null);
       setContentEpoch((n) => n + 1);
       onNoteUpdated?.({ noteId, updatedAt: next.updated_at, title: next.title });
@@ -214,7 +216,7 @@ export function NoteEditorPanel({
 
   function handleTitleChange(newTitle: string) {
     setTitle(newTitle);
-    debouncedSave({ title: newTitle });
+    debouncedSave({ title: toStoredTitle(newTitle) });
   }
 
   function handleContentChange(content: Block[]) {
@@ -239,7 +241,7 @@ export function NoteEditorPanel({
             onChange={(e) => handleTitleChange(e.target.value)}
             maxLength={MAX_TITLE_LENGTH}
             className="text-fg placeholder:text-fg-subtle focus:border-border-strong focus:ring-ring min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1 text-xl font-bold transition-colors duration-[var(--transition-fast)] outline-none focus:ring-1"
-            placeholder="Untitled"
+            placeholder={DEFAULT_NOTE_TITLE}
             aria-label="Note title"
           />
           {statusConfig && (
