@@ -18,6 +18,48 @@ async function selectNotebookByName(page: Page, name: string): Promise<void> {
   await page.locator("nav li").filter({ hasText: name }).locator('[role="button"]').first().click();
 }
 
+// What React logs when hydration fails or a boundary falls back to a client render:
+// #418 / "Hydration failed" for a mismatch, #419 / "Switched to client rendering"
+// for a server render error (production builds print the minified codes).
+const HYDRATION_ERROR =
+  /#41[89]\b|Hydration failed|Switched to client rendering|server rendering errored|Failed to parse URL/i;
+
+test.describe("Server-rendered note list", () => {
+  test("first page load serves the notes in the HTML and hydrates without errors", async ({
+    page,
+  }) => {
+    // The server's HTML already holds the first notebook's list, and no Suspense
+    // boundary was handed to the client after a server error (`<!--$!-->`). The
+    // skeleton's markup can still be there: once a page's HTML passes React's chunk
+    // size, React streams a finished boundary after its fallback, in the same
+    // response, and an inline script swaps it in.
+    const response = await page.request.get("/");
+    expect(response.ok()).toBe(true);
+    const html = await response.text();
+    expect(html).toMatch(/<h2[^>]*>Notes<\/h2>/);
+    expect(html).not.toContain("<!--$!-->");
+
+    const errors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+    page.on("pageerror", (error) => errors.push(error.message));
+
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
+
+    // React reports a failed hydration when it commits. Let the page finish loading
+    // and the main thread go idle so that has happened before checking.
+    await page.waitForLoadState("load");
+    await page.evaluate(
+      () => new Promise<void>((resolve) => requestIdleCallback(() => resolve(), { timeout: 5000 })),
+    );
+
+    expect(errors.filter((text) => HYDRATION_ERROR.test(text))).toEqual([]);
+    await expect(page.getByTestId("list-skeleton")).toHaveCount(0);
+  });
+});
+
 test.describe("Note editing flow", () => {
   test("create note, edit title, type content, verify auto-save, and reload to confirm persistence", async ({
     page,
