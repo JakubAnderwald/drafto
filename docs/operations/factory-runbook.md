@@ -493,6 +493,21 @@ node scripts/lib/state-cli.mjs factory:set-issue-field <n> browserRunAttempts ""
 node scripts/lib/state-cli.mjs factory:set-issue-field <n> browserRunSha ""
 ```
 
+## Pre-In-Test verification (Testing)
+
+**Upcoming (ADR-0053).** A "Testing" column between In Review and In Test, where the factory runs the test scenario itself before handing the card over. Only its state has landed so far: nothing reads it yet, and these commands report an idle lane until the stage ships.
+
+The stage keeps a `verify` ledger in `factory-state.json`. Like the CodeRabbit lane, it allows one shell-lane run in flight at a time across the whole factory, and has a lane-only pause. Each card gets head-SHA-keyed `verify*` fields: `verifySha`, `verifyStartedAt`, `verifyShell`, `verifyShellRunDir`, `verifyShellAttempts`, `verifyBrowser`, `verifyBrowserRunDir`, `verifyReportSha` and `verifyBounces`.
+
+```bash
+node scripts/lib/state-cli.mjs factory:verify-status          # in-flight run, lane pause, and every card's verify* fields
+node scripts/lib/state-cli.mjs factory:verify-finish <runId>  # stop a stuck run, then free the lane
+node scripts/lib/state-cli.mjs factory:verify-reset <n>       # forget the card's Testing round; the next tick starts it again
+```
+
+- **`factory:verify-finish`** works like `factory:cr-cli-finish` (see "Killing a wedged run"). It SIGTERMs the run's process group, but only while the run is still ours, and waits up to `--wait-ms` (default 10 s). Only then does it free the lane. If the group survives, or `ps` can't check it, nothing changes and it prints `ok:false` (`supervisor-still-running` / `supervisor-unverifiable`). The spent attempt stays spent unless you pass `--refund attempt`. The run's worktree is left to housekeeping.
+- **`factory:verify-reset`** clears the card's `verify*` fields. While the lane is running for that card it prints `ok:false, reason:"run-in-flight"` and changes nothing, so run `factory:verify-finish` first. It leaves `browserRunSha` and `browserRunAttempts` alone; to re-run the browser too, clear them as in "Re-running a commit by hand" above.
+
 ## Kill switches
 
 | Severity                        | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
