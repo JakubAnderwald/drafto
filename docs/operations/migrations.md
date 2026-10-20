@@ -13,8 +13,8 @@ See [ADR 0008: Production Data Safety Guardrails](../adr/0008-production-data-sa
 
 ## Migration workflow
 
-1. Write the migration SQL under `supabase/migrations/`.
-2. Scan for destructive patterns:
+1. Write the migration SQL under `supabase/migrations/`. A new table or view in `public` needs its `GRANT`s in the same migration — see [New tables need explicit grants](#new-tables-need-explicit-grants).
+2. Scan for destructive patterns and missing grants:
 
    ```bash
    pnpm migration:check
@@ -52,6 +52,28 @@ Never run any of the following against production:
 
 `pnpm migration:check` scans all `supabase/migrations/*.sql` files (or explicitly passed paths) for these patterns and blocks the push when it finds them. Run it before every migration push.
 
+## New tables need explicit grants
+
+From **2026-10-30** Supabase stops auto-granting the Data API roles (`anon`, `authenticated`, `service_role`) on new tables in `public`. After that, a table created without a `GRANT` returns `permission denied` to supabase-js, PostgREST and Realtime, so the feature built on it doesn't work on any platform. This also covers every replay of the migrations: a new project, a `supabase db reset --linked` on dev, a disaster-recovery rebuild. Tables created before the cutover keep their grants, and [`20261020000001_explicit_data_api_grants.sql`](../../supabase/migrations/20261020000001_explicit_data_api_grants.sql) grants them explicitly so a replay works too. See [ADR 0052](../adr/0052-explicit-data-api-grants.md).
+
+Put the grants in the migration that creates the table, next to its RLS:
+
+```sql
+create table public.widgets ( ... );
+
+grant select, insert, update, delete on table public.widgets to authenticated, service_role;
+
+alter table public.widgets enable row level security;
+-- policies ...
+```
+
+- `authenticated` covers the web session clients, mobile/desktop sync and Realtime. `service_role` covers `createAdminClient`, the MCP route and scripts. Grant only what the table needs. A table written only by `SECURITY DEFINER` functions gets `select`. A table with no insert or delete policy doesn't get `insert` or `delete` (see `public.profiles` in the grants migration).
+- Grant `anon` only for a real signed-out read path. Today nothing signed-out touches a table.
+- RLS still decides which rows a role sees. The grant only lets the Data API reach the table, so it never replaces a policy, and it can't stop a user writing a column on a row they own (that takes a column grant or a guard trigger).
+- **Views** need the same grants and must be created `with (security_invoker = true)`. A default view runs with its owner's privileges, so granting it to `authenticated` would bypass RLS on every table it reads. Materialized views can't apply RLS at all, so keep them off the API and don't grant them.
+- **Keys**: use `uuid` (or `generated … as identity`). A `serial` column's sequence would need its own `grant usage, select on sequence`.
+- `pnpm migration:check` replays the migrations in order. It fails a `public` table or view that ends with no `GRANT` to `authenticated` or `service_role`, a view without `security_invoker`, and a `serial` column. A `GRANT` counts when it follows the `create`, in the same file or a later one. A table-level `revoke` and `drop` take access away again. Only `select` / `insert` / `update` / `delete` give Data API access. A table deliberately kept off the Data API takes `-- safety:ignore` in its `create` statement, with a comment saying why. The check matches patterns and doesn't parse SQL, so DDL run from inside a `DO $$ … $$` block goes unseen.
+
 ## Production operation confirmation rules
 
 - Require explicit user "yes" before any production database operation.
@@ -83,7 +105,7 @@ Dev is meant to break — prefer the cheapest recovery:
 
 - Fix the migration file and re-run `pnpm supabase:link:dev && pnpm supabase:push`, **or**
 - Restore via the Supabase dashboard → dev project → Database → Backups, **or**
-- If dev is throwaway, `pnpm supabase:link:dev` then `supabase db reset --linked` to wipe and re-apply all migrations on the linked dev project. **Never run `supabase db reset --linked` against prod.**
+- If dev is throwaway, `pnpm supabase:link:dev` then `supabase db reset --linked` to wipe and re-apply all migrations on the linked dev project. **Never run `supabase db reset --linked` against prod.** From 2026-10-30, a reset re-creates every table without Supabase's old automatic grants, so the app can reach them only through the explicit `GRANT`s in the migrations. See [New tables need explicit grants](#new-tables-need-explicit-grants).
 
 #### 3. Bad migration or query hit **prod** (`tbmjbxxseonkciqovnpl`)
 
@@ -146,7 +168,7 @@ Production is on the Free tier today, so this is the _normal_ case for damage ol
 
 ### Preventative guardrails to lean on
 
-- `pnpm migration:check` — inspects all `supabase/migrations/*.sql` files (or explicitly passed paths) and blocks `DROP TABLE`, `TRUNCATE`, and bare `DELETE`.
+- `pnpm migration:check` — inspects all `supabase/migrations/*.sql` files (or explicitly passed paths) and blocks `DROP TABLE`, `TRUNCATE`, bare `DELETE`, and `public` tables / views the Data API can't reach (no `GRANT`) or shouldn't (a view without `security_invoker`).
 - `supabase projects list` before every prod push — confirms which ref is currently linked. Easy to forget when switching between dev and prod.
 - Require explicit user "yes" before any prod database operation; state the project ref, operation, and affected data first.
 - Apply every migration to dev first and verify before touching prod.
@@ -156,4 +178,5 @@ Production is on the Free tier today, so this is the _normal_ case for damage ol
 
 - [ADR 0008: Production Data Safety Guardrails](../adr/0008-production-data-safety-guardrails.md)
 - [ADR 0006: Dev/Prod Environment Separation](../adr/0006-dev-prod-environment-separation.md)
+- [ADR 0052: Explicit Data API Grants in Migrations](../adr/0052-explicit-data-api-grants.md)
 - [Local dev setup](./local-dev-setup.md) — installing the Supabase CLI
