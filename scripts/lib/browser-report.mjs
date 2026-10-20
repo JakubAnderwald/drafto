@@ -291,7 +291,7 @@ const STATUS_SENTENCE = {
 
 // Cut <report> to at most <max> characters without splitting a surrogate pair,
 // and close a code fence the cut left open so the footer still renders.
-export function truncateReport(report, max) {
+function truncateReport(report, max) {
   let cut = report.slice(0, Math.max(0, max));
   if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
   const fences = cut.split("\n").filter((l) => /^\s*(```|~~~)/.test(l)).length;

@@ -30,7 +30,8 @@ const cli = resolve(here, "..", "lib", "verify-report.mjs");
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 const PASSWORD = "S3cret.pass*";
 const BYPASS = "bypassSecret0123456789abcdefABCD";
-const SERVICE_KEY = "sb_secret_0123456789abcdefXYZ";
+// No pattern matches this value, so only the literal scan can find it.
+const SERVICE_KEY = "svc-key-0123456789abcdefXYZ";
 const SECRETS = { password: PASSWORD, bypass: BYPASS, signinKey: SERVICE_KEY };
 
 function shellOutput({
@@ -204,18 +205,31 @@ describe("verdict merge", () => {
     }
   });
 
-  it("falls back to the recorded verdict when the output is gone, and says so", () => {
-    const r = compose({ browser: { state: "reported:fail", dir: "/ev/b", text: null } });
-    assert.equal(r.verdict, "fail");
+  it("is no result when a lane says it reported but its output is gone or has no status line", () => {
+    // browser-report.mjs's rule: without a status line nothing is trusted,
+    // not even the verdict the state file recorded.
+    const gone = compose({ browser: { state: "reported:fail", dir: "/ev/b", text: null } });
+    assert.equal(gone.verdict, "pass", "only the shell lane counts");
+    assert.match(tableRow(gone.body, "Web (browser)"), /\| no result \| — \|/);
     assert.match(
-      gapsSection(r.body),
-      /its output is missing or empty; the verdict is the one the lane recorded/,
+      gapsSection(gone.body),
+      /its output is missing or empty, so there is no result to trust/,
+    );
+    assert.ok(
+      manualLines(gone.body).some((l) =>
+        l.startsWith("Run the **Web** steps in the test scenario by hand"),
+      ),
+      "the human runs the Web steps instead",
     );
     const noStatus = compose({
-      shell: { state: "reported:warn", text: "<<<REPORT\nr\nREPORT>>>\n" },
+      shell: { state: "reported:pass", text: "<<<REPORT\nall good\nREPORT>>>\n" },
+      browser: { state: "none", text: null },
     });
-    assert.equal(noStatus.verdict, "warn");
-    assert.match(gapsSection(noStatus.body), /its output has no status line/);
+    assert.equal(noStatus.verdict, "incomplete");
+    assert.match(
+      gapsSection(noStatus.body),
+      /its output has no status line, so its result isn't trusted/,
+    );
   });
 
   it("takes the verdict from the output's status line over the recorded one", () => {
@@ -309,7 +323,7 @@ describe("assessment", () => {
     );
     assert.match(
       r.body,
-      /\*\*Repo & API assessment:\*\* Looks right\.\n\nThe mobile list is the remaining risk\./,
+      /\*\*Repo & API assessment:\*\*\n\nLooks right\.\n\nThe mobile list is the remaining risk\./,
     );
   });
 
@@ -401,6 +415,7 @@ describe("manual steps", () => {
             "1. Open **Settings** — expected: it loads.\n2. open settings — expected: it loads\n3. Other.",
         }),
       },
+      platforms: { web: true, mobile: false, desktop: false },
       scenario: scenario({ mobile: false, mac: false }),
     });
     assert.deepEqual(manualLines(r.body), ["Open **Settings** — expected: it loads.", "Other."]);
@@ -563,6 +578,15 @@ describe("secrets", () => {
       ["bypass-secret"],
     );
     assert.deepEqual(scanLaneText("short", { bypass: "short" }), [], "too short to scan");
+    assert.deepEqual(scanLaneText("key sb_secret_AbC123xyz789", {}), ["supabase-secret-key"]);
+    assert.deepEqual(scanLaneText("sntrys_eyJpYXQiOjE3MDAwMDAwMDB9abc", {}), ["sentry-token"]);
+    assert.deepEqual(scanLaneText("ghp_0123456789abcdefghijABCDEFGHIJ", {}), ["github-token"]);
+    assert.deepEqual(scanLaneText("E2E_TEST_PASSWORD=hunter2hunter", {}), ["env-secret"]);
+    assert.deepEqual(scanLaneText("export SENTRY_AUTH_TOKEN='abcdef123456'", {}), ["env-secret"]);
+    // Names alone, empty or $-referenced values are not secrets.
+    assert.deepEqual(scanLaneText("set FACTORY_BROWSER_PASSWORD= in the file", {}), []);
+    assert.deepEqual(scanLaneText('E2E_TEST_PASSWORD="$E2E_TEST_PASSWORD"', {}), []);
+    assert.deepEqual(scanLaneText("FACTORY_INTEST_BETA_DESKTOP=0123456", {}), []);
   });
 
   const leaks = {
@@ -647,6 +671,14 @@ describe("secrets", () => {
     assert.ok(!r.body.includes("12 tests"));
     assert.ok(!r.body.includes("the list shows"));
     assert.equal(r.verdict, "pass");
+  });
+
+  it('takes "" as "the lanes never had this secret": nothing to scan for, nothing withheld', () => {
+    const r = compose({ secrets: { password: PASSWORD, bypass: "", signinKey: "" } });
+    assert.deepEqual(r.withheld, { shell: false, browser: false });
+    assert.deepEqual(r.secretHits, []);
+    const absent = compose({ secrets: { password: PASSWORD } });
+    assert.deepEqual(absent.withheld, { shell: true, browser: false }, "absent fails closed");
   });
 
   it("withholds nothing for a lane that printed nothing", () => {
@@ -763,6 +795,178 @@ describe("defanging and markers", () => {
   it("rejects a SHA that isn't the full 40 hex", () => {
     assert.throws(() => compose({ sha: SHA.slice(0, 12) }), /invalid sha/);
     assert.throws(() => compose({ sha: `${SHA} -->` }), /invalid sha/);
+  });
+});
+
+// Lines of <body> that sit inside a fenced code block, by CommonMark's rule
+// (same character, at least as long, nothing after the closer).
+function linesInsideFences(body) {
+  const inside = new Set();
+  let open = null;
+  for (const line of body.split("\n")) {
+    const m = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
+    if (open === null) {
+      if (m && !(m[1][0] === "`" && m[2].includes("`"))) open = { c: m[1][0], n: m[1].length };
+    } else if (m && m[1][0] === open.c && m[1].length >= open.n && !m[2].trim()) {
+      open = null;
+    } else {
+      inside.add(line);
+    }
+  }
+  return { inside, unclosed: open !== null };
+}
+
+function assertStructureIntact(body) {
+  const { inside, unclosed } = linesInsideFences(body);
+  assert.equal(unclosed, false, "no fence left open");
+  for (const line of [
+    "**Assessment**",
+    "**Steps for you to do manually**",
+    "**Coverage gaps**",
+    "<details>",
+    "</details>",
+    VERIFY_REPORT_MARKER,
+    verifyShaMarker(SHA),
+  ]) {
+    assert.ok(!inside.has(line), `${line} is inside a code block`);
+  }
+}
+
+describe("rendering stays intact around lane fences", () => {
+  it("a Summary or Assessment that opens with a fence", () => {
+    const r = compose({
+      shell: {
+        state: "reported:pass",
+        text: shellOutput({
+          summary: "**Summary:**\n```\n3 passed\n```",
+          assessment: "**Assessment:**\n```\nsome output\n```\nLooks right.",
+        }),
+      },
+    });
+    assertStructureIntact(r.body);
+    assert.match(r.body, /- \*\*Repo & API:\*\*\n {2}```\n {2}3 passed\n {2}```/);
+    assert.match(r.body, /\*\*Repo & API assessment:\*\*\n\n```\nsome output\n```\nLooks right\./);
+  });
+
+  it("a manual step whose fenced block is cut by the line or size cap", () => {
+    const long = Array.from({ length: 40 }, (_, i) => `   echo line ${i}`);
+    const manual = ["1. Run this:", "   ```bash", ...long, "   ```", "2. Second step."].join("\n");
+    const huge = ["1. Paste:", "   ~~~~text", `   ${"x".repeat(5000)}`, "   ~~~~", "2. Third."];
+    for (const m of [manual, huge.join("\n")]) {
+      const r = compose({ shell: { state: "reported:pass", text: shellOutput({ manual: m }) } });
+      assertStructureIntact(r.body);
+      const lines = manualLines(r.body);
+      assert.ok(
+        lines.some((l) => l === "Second step." || l === "Third."),
+        "the next step is still a list item",
+      );
+    }
+  });
+
+  it("a ~~~ fence left open is closed with tildes, and a ``` inside it doesn't count", () => {
+    const r = compose({
+      shell: {
+        state: "reported:pass",
+        text: shellOutput({
+          extra: "~~~\n```\n~~~\n~~~~md\nunclosed",
+          manual: "1. a\n   ~~~md\n   open",
+        }),
+      },
+    });
+    assertStructureIntact(r.body);
+  });
+
+  it("a manual step whose first line is a fence reads as text", () => {
+    const r = compose({
+      shell: { state: "reported:pass", text: shellOutput({ manual: "```bash\npnpm test\n```" }) },
+    });
+    assertStructureIntact(r.body);
+    assert.match(r.body, /\n1\. ​```bash\n/);
+  });
+
+  it("a truncated `<detailsx` can't become a real tag", () => {
+    const filler = "<detailsx>\n".repeat(20_000);
+    const r = compose({
+      shell: { state: "reported:pass", dir: "/ev/shell", text: shellOutput({ extra: filler }) },
+      browser: { state: "reported:pass", dir: "/ev/b", text: browserOutput({ extra: filler }) },
+    });
+    assert.ok(r.body.length <= COMMENT_MAX_CHARS);
+    assert.equal(r.body.match(/<details/g).length, 2, "only the two real openers");
+    assertStructureIntact(r.body);
+  });
+});
+
+describe("scenario sections and platforms", () => {
+  it("takes the Web section from the scenario part only, not a fence or the build notes", () => {
+    const body = [
+      "## How to get a build",
+      "### Web",
+      "Open the preview.",
+      "## Test scenario",
+      "### iOS",
+      "1. Quote this:",
+      "   ```md",
+      "### Web",
+      "   ```",
+    ].join("\n");
+    const r = compose({
+      platforms: { web: false, mobile: true, desktop: false },
+      scenario: body,
+      browser: { state: "none", text: null },
+    });
+    assert.match(tableRow(r.body, "Web (browser)"), /\| not needed \|/);
+    assert.ok(!manualLines(r.body).some((l) => /\*\*Web\*\*/.test(l)));
+  });
+
+  it("asks for a pass over other sections without reserving room, and skips 'not testable' notes", () => {
+    const body = [
+      "## Test scenario",
+      "### Setup",
+      "1. Create a notebook.",
+      "### What isn't manually testable",
+      "The race in sync.ts is covered by unit tests.",
+      "### macOS",
+      "1. Click.",
+    ].join("\n");
+    const r = compose({ platforms: { web: false, mobile: false, desktop: true }, scenario: body });
+    const lines = manualLines(r.body);
+    assert.ok(lines.includes("Go through the **Setup** section of the test scenario."));
+    assert.ok(!lines.some((l) => /testable/.test(l)));
+    assert.ok(lines.some((l) => l.startsWith("Run the **macOS** steps")));
+  });
+
+  it("asks for an affected platform by hand when the scenario has no section for it", () => {
+    const r = compose({
+      scenario: scenario({ mobile: false, mac: false }),
+      betaLanes: "desktop",
+    });
+    const lines = manualLines(r.body);
+    assert.ok(
+      lines.includes(
+        "Test the iOS / Android changes by hand on a build of this branch (no beta was dispatched; the scenario says how to get one): the test scenario has no iOS / Android section.",
+      ),
+    );
+    assert.ok(
+      lines.includes(
+        "Test the macOS changes by hand on the macOS beta for this commit (a follow-up comment gives the build number): the test scenario has no macOS section.",
+      ),
+    );
+    const none = compose({ scenario: null });
+    assert.equal(manualLines(none.body).filter((l) => l.startsWith("Test the ")).length, 2);
+  });
+});
+
+describe("headline wording", () => {
+  it("says a report was withheld, not partial, when every check ran", () => {
+    const r = compose({
+      shell: { state: "reported:pass", text: shellOutput({ extra: "rotated the refresh_token" }) },
+    });
+    assert.deepEqual(r.withheld, { shell: true, browser: false });
+    assert.match(
+      r.body,
+      /\*\*Verdict: PASS\*\* for `0123456789ab` \(PR #701\)\. A lane's report was withheld from this comment; see \*\*Coverage gaps\*\*\./,
+    );
+    assert.doesNotMatch(r.body, /Partial/);
   });
 });
 
@@ -943,23 +1147,32 @@ describe("verify-report CLI", () => {
     let r = run(args());
     assert.equal(r.status, 0, r.stderr);
     assert.deepEqual(JSON.parse(r.stdout).secretHits, ["shell:bypass-file-unreadable"]);
+    // An empty value for the key fails closed too; `--bypass-file ""` says
+    // the lanes never had a bypass secret, so there is nothing to scan for.
     writeFileSync(files.key, "DEV_SUPABASE_SERVICE_ROLE_KEY=\n");
     r = run(args({ "bypass-file": "" }));
-    assert.deepEqual(JSON.parse(r.stdout).secretHits, [
-      "shell:bypass-file-unreadable",
-      "shell:signin-key-file-unreadable",
-    ]);
+    assert.deepEqual(JSON.parse(r.stdout).secretHits, ["shell:signin-key-file-unreadable"]);
     r = run(args({ "account-file": undefined }));
     assert.deepEqual(JSON.parse(r.stdout).withheld, { shell: true, browser: true });
+  });
+
+  it('takes an empty secret flag as "never given": nothing withheld', () => {
+    const r = run(args({ "bypass-file": "", "signin-key-file": "" }));
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      verdict: "fail",
+      withheld: { shell: false, browser: false },
+      secretHits: [],
+    });
+    assert.match(readFileSync(files.out, "utf8"), /12 tests/);
   });
 
   it("treats a missing lane output or scenario file as a gap, not an error", () => {
     rmSync(join(files.browserDir, "runner-output.txt"));
     const r = run(args({ "scenario-file": join(dir, "nope.md"), "shell-dir": "" }));
     assert.equal(r.status, 0, r.stderr);
-    // Both lanes say "reported" but their output is gone: their recorded
-    // verdicts stand (the browser's fail is the worst).
-    assert.equal(JSON.parse(r.stdout).verdict, "fail");
+    // Both lanes say "reported" but neither left output: no result to trust.
+    assert.equal(JSON.parse(r.stdout).verdict, "incomplete");
     const body = readFileSync(files.out, "utf8");
     assert.match(body, /\*\*Test scenario:\*\* none was available/);
     assert.match(body, /its output is missing or empty/);

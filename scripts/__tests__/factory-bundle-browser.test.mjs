@@ -214,6 +214,14 @@ describe("extractScenarioSections", () => {
     assert.match(sections[0].text, /### Not a section/);
   });
 
+  it("counts a heading only at the start of its line, the rule that ends a section", () => {
+    const body = "## Test scenario\n### Web\n1. a\n  ### iOS\n1. b\n### macOS\n1. c";
+    assert.deepEqual(extractScenarioSections(body), [
+      { heading: "Web", text: "1. a\n  ### iOS\n1. b" },
+      { heading: "macOS", text: "1. c" },
+    ]);
+  });
+
   it("leaves out empty sections, reads nothing after a marker line, and needs a string", () => {
     assert.deepEqual(extractScenarioSections("### Web\n\n### macOS\n1. B."), [
       { heading: "macOS", text: "1. B." },

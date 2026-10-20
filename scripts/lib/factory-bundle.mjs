@@ -909,10 +909,12 @@ const SCENARIO_HEADING = /^##\s+Test scenario\b/i;
 // The scenario writer puts one `###` heading per platform under
 // `## Test scenario` (factory-intest-prompt.md), so only that part is read
 // when the body has one — a `###` under "How to get a build" is not a test
-// section — and the whole body when it has none. Each section's text is what
-// extractWebSection would return for it (same end rule, same fence handling);
-// a section with no text is left out. Headings inside fenced blocks are
-// content, and nothing after the first factory marker line is read.
+// section — and the whole body when it has none. A heading counts only at the
+// start of its line, the same rule that ends a section, so sections never
+// overlap; each one's text is what extractWebSection would return for it
+// (same end rule, same fence handling), and a section with no text is left
+// out. Headings inside fenced blocks are content, and nothing after the first
+// factory marker line is read.
 // verify-report.mjs turns the non-Web sections into the human's manual steps.
 export function extractScenarioSections(body) {
   if (typeof body !== "string") return [];
@@ -940,7 +942,7 @@ export function extractScenarioSections(body) {
       continue;
     }
     if (!inScope) continue;
-    const h = /^###\s+(.*\S)\s*$/.exec(lines[i].trim());
+    const h = /^###\s+(.*\S)\s*$/.exec(lines[i]);
     if (!h) continue;
     const text = sectionText(lines, i);
     if (text) sections.push({ heading: h[1], text });

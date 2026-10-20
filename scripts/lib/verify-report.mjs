@@ -4,19 +4,20 @@
 // verification lanes found into a verdict, an assessment and the steps the
 // human still has to do by hand.
 //
-// Why this exists: the Testing stage (ADR-0053) runs the card's test scenario
-// in two locked-down lanes that can't post anything themselves: the shell
-// lane (verify-lane.mjs, a --no-chrome claude session that runs targeted
-// tests, curl checks against the preview and the macOS --preflight) and the
-// browser lane (the `verify` kind of the Chrome runner, ADR-0051). Their
-// stdout is all they hand back, and it can carry things that must never reach
-// a public repo: the test account's password, the Vercel protection-bypass
-// secret, the dev service-role key. This module is deterministic (no claude
-// call, so composing can't fail on a session limit), and every byte of lane
-// text it posts has been scanned and defanged. Verification is evidence,
-// never a gate: the card is In Test whatever the report says.
+// Why this exists: the pre-In-Test Testing stage runs the card's test
+// scenario in two locked-down lanes that can't post anything themselves: the
+// shell lane (verify-lane.mjs, a --no-chrome claude session that runs
+// targeted tests, curl checks against the preview and the macOS --preflight)
+// and the browser lane (the `verify` kind of the Chrome runner, ADR-0051).
+// Their stdout is all they hand back, and it can carry things that must never
+// reach a public repo: the test account's password, the Vercel
+// protection-bypass secret, the dev service-role key. This module is
+// deterministic (no claude call, so composing can't fail on a session limit),
+// and every byte of lane text it posts has been scanned and defanged.
+// Verification is evidence, never a gate: the card is In Test whatever the
+// report says. (The stage's ADR lands with the state machine that calls this.)
 //
-// Lane output (each lane's last line is its status line, outside any block;
+// Lane output (each lane's status line comes last, outside any block;
 // parseBlocks() in browser-report.mjs reads both formats):
 //
 //   <shell-dir>/shell-output.txt
@@ -35,16 +36,17 @@
 // Lane states (bash passes them from the state file, the SHA already
 // stripped): `reported[:<verdict>]`, `timeout`, `unavailable:<reason>`,
 // `stale-branch`, `no-preview`, `skipped:<reason>`, `none`. A lane counts as
-// reported only when its state says so; its verdict then comes from the
-// output's status line, falling back to the state's verdict when the output
-// is gone. Reasons are free tokens; the common ones read as sentences (see
-// REASONS), any other is shown as it is.
+// reported only when its state says so AND its output ends in a valid status
+// line: the verdict comes from that line (the state's own verdict is not
+// used), and output without one is no result, as in browser-report.mjs.
+// Reasons are free tokens; the common ones read as sentences (see REASONS),
+// any other is shown as it is.
 //
 // The comment, in order:
 //   1. Header and headline: PASS / WARN / FAIL — the worst verdict among the
 //      lanes that reported (a `blocked` lane counts as at least WARN) — or
-//      INCOMPLETE when none reported a verdict; "partial" when there are
-//      coverage gaps; "Evidence, not a gate: the card is now In Test."
+//      INCOMPLETE when none reported a verdict; "partial" when some checks
+//      didn't run; "Evidence, not a gate: the card is now In Test."
 //   2. A lane table: Repo & API (shell), Web (browser), iOS / Android, macOS.
 //      No lane runs a device yet, so the last two are manual (macOS notes the
 //      shell lane's --preflight results).
@@ -52,27 +54,34 @@
 //      Assessment paragraph.
 //   4. Steps for you to do manually (deduplicated, at most MANUAL_MAX): the
 //      shell lane's MANUAL steps, the browser's FAIL and SKIP rows, one line
-//      per non-Web scenario section, and "run the Web steps by hand" when the
-//      browser lane didn't report. The scenario and Web lines, and the pointer
-//      to a withheld lane's local report, are never cut by the cap.
-//   5. Coverage gaps: --gaps, every lane that didn't report, then --cr-note.
+//      per scenario section (iOS / Android and macOS ones on the beta when one
+//      was dispatched), one line per affected platform the scenario has no
+//      section for, and "run the Web steps by hand" when the browser lane
+//      didn't report. The platform and Web lines, and the pointer to a
+//      withheld lane's local report, are never cut by the cap.
+//   5. Coverage gaps: --gaps, every lane that didn't report or was withheld,
+//      then --cr-note.
 //   6. Each lane's full report in <details>; the body stays within
 //      COMMENT_MAX_CHARS by truncating these first, pointing at the local file.
 //   7. The local evidence paths (they stay on the Mac mini; the repo is public).
 //   8. The two markers below, exactly once, as the last two lines.
 //
 // Secrets, per lane: the lane's whole output is scanned with browser-report's
-// patterns, the Vercel bypass header names, and three literals — the test
-// account's password (--account-file, FACTORY_BROWSER_PASSWORD), the bypass
-// secret (--bypass-file, VERCEL_AUTOMATION_BYPASS_SECRET) and the dev
-// service-role key (--signin-key-file, DEV_SUPABASE_SERVICE_ROLE_KEY). A hit
-// withholds only that lane's text, naming the pattern and never echoing the
-// match. A secret file that can't be read withholds the lanes it guards (fail
-// closed): the password guards both lanes, the bypass secret and the
-// service-role key guard the shell lane. Every piece of lane and scenario text
-// is defanged, so nothing but this module can put a factory marker in the
-// comment. As a last check the finished body is scanned again, and a hit
-// there replaces it with a minimal notice.
+// patterns, VERIFY_SECRET_PATTERNS, and three literals — the test account's
+// password (--account-file, FACTORY_BROWSER_PASSWORD), the bypass secret
+// (--bypass-file, VERCEL_AUTOMATION_BYPASS_SECRET) and the dev service-role
+// key (--signin-key-file, DEV_SUPABASE_SERVICE_ROLE_KEY). A hit withholds only
+// that lane's text, naming the pattern and never echoing the match. A secret
+// file that can't be read withholds the lanes it guards (fail closed): the
+// password guards both lanes, the bypass secret and the service-role key the
+// shell lane. Passing a file flag as "" says the lanes were never given that
+// secret (e.g. no bypass secret is set up), so there is nothing of it to scan
+// for; a flag left out entirely fails closed like an unreadable file. Every
+// piece of lane, scenario and gap text is defanged, so nothing but this module
+// can put a factory marker in the comment, and lane text can't open or close
+// a <details> element or leave a code fence open. As a last check the
+// finished body is scanned again, and a hit there replaces it with a minimal
+// notice.
 //
 // CLI:
 //   node verify-report.mjs render --issue <n> --pr <n> --sha <40-hex>
@@ -80,15 +89,16 @@
 //        --beta-lanes <csv> --shell-state <state> --shell-dir <dir|"">
 //        --browser-state <state> --browser-dir <dir|"">
 //        --gaps '[{"lane":…,"reason":…}]' --cr-note <text|"">
-//        --account-file <f> --bypass-file <f> --signin-key-file <f>
+//        --account-file <f|""> --bypass-file <f|""> --signin-key-file <f|"">
 //        --out <body-file>
 //     Writes the comment body to --out and prints one JSON line
 //     {verdict, withheld: {shell, browser}, secretHits}: verdict is
 //     pass|warn|fail|incomplete; secretHits lists "<lane>:<pattern>" for each
 //     match and "<lane>:<file>-unreadable" for each fail-closed file
-//     ("body:<pattern>" when the final check tripped). A missing lane output
-//     or scenario file is a coverage gap, not an error. Exit 0; 1 on an I/O
-//     error writing --out; 2 on a usage error.
+//     ("body:<pattern>" when the final check tripped). --issue is validated
+//     but not rendered: the comment is posted on that issue. A missing lane
+//     output or scenario file is a coverage gap, not an error. Exit 0; 1 on
+//     an I/O error writing --out; 2 on a usage error.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -104,9 +114,8 @@ import {
   parseEnvValues,
   parseRunnerOutput,
   scanForSecrets,
-  truncateReport,
 } from "./browser-report.mjs";
-import { extractScenarioSections, extractWebSection } from "./factory-bundle.mjs";
+import { extractScenarioSections } from "./factory-bundle.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 
@@ -127,6 +136,10 @@ const SUMMARY_MAX = 600;
 const ASSESSMENT_MAX = 2000;
 const GAPS_MAX = 20;
 const MANUAL_ITEM_MAX = 1000;
+const MOBILE_HEADING = /\b(ios|android|mobile|iphone|ipad)\b/i;
+const DESKTOP_HEADING = /\b(macos|mac|desktop)\b/i;
+// Scenario sections that are notes, not steps.
+const NOT_STEPS_HEADING = /(\bnot|n't)\s+(manually\s+)?testable\b|\buntestable\b/i;
 
 export function verifyShaMarker(sha) {
   return `<!-- ${VERIFY_SHA_MARKER_PREFIX}${sha} -->`;
@@ -162,11 +175,20 @@ const SECRET_SOURCES = {
   },
 };
 
-// On top of browser-report's SECRET_PATTERNS: the shell lane holds the Vercel
-// bypass secret in a curl config, and a header dump would name it.
+// On top of browser-report's SECRET_PATTERNS: the shell lane runs a terminal,
+// so it can also print a header dump (it holds the Vercel bypass secret in a
+// curl config), a new-format Supabase secret key, a Sentry or GitHub token,
+// or an env assignment.
 export const VERIFY_SECRET_PATTERNS = Object.freeze([
   ["bypass-header", /x-vercel-protection-bypass/i],
   ["bypass-cookie-header", /x-vercel-set-bypass-cookie/i],
+  ["supabase-secret-key", /\bsb_secret_[A-Za-z0-9_-]{8,}/],
+  ["sentry-token", /\bsntry[su]_[A-Za-z0-9+/=_-]{16,}/],
+  ["github-token", /\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/],
+  [
+    "env-secret",
+    /\b[A-Z][A-Z0-9_]*(SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|SERVICE_ROLE_KEY|AUTH_KEY)[A-Z0-9_]*\s*=\s*["']?[^\s"'$]{6,}/,
+  ],
 ]);
 
 // Reason tokens that read better as a sentence; any other is shown as is.
@@ -197,12 +219,19 @@ function own(obj, key) {
   return Object.hasOwn(obj, key) ? obj[key] : undefined;
 }
 
+// Untrusted text, made safe to post: no factory markers (defangReport), and no
+// <details> / <summary> tag — even a truncated one — that could close a lane's
+// collapsed report early or fold the rest of the comment into one of its own.
+function defang(text) {
+  return defangReport(text).replace(/<(\/?)(details|summary)/gi, "&lt;$1$2");
+}
+
 // One line of untrusted text for prose: whitespace collapsed, capped, defanged.
 function inline(text, max = 300) {
   let s = String(text ?? "")
     .replace(/\s+/g, " ")
     .trim();
-  if (s.length > max) s = `${s.slice(0, max - 1).replace(/[\uD800-\uDBFF]$/, "")}…`;
+  if (s.length > max) s = `${sliceSafe(s, max - 1)}…`;
   return defang(s);
 }
 
@@ -223,7 +252,7 @@ function pathText(p) {
   return String(p ?? "")
     .replace(/[\r\n`]/g, "")
     .replace(/</g, "&lt;")
-    .replace(/drafto-factory-/gi, (m) => `${m.slice(0, 6)}\u200b${m.slice(6)}`);
+    .replace(/drafto-factory-/gi, (m) => `${m.slice(0, 6)}​${m.slice(6)}`);
 }
 
 function reasonText(token) {
@@ -241,17 +270,55 @@ function worst(verdicts) {
   return best;
 }
 
-// Close a fenced block the text left open, so it can't swallow what follows.
-function closeFences(text) {
-  const fences = text.split("\n").filter((l) => /^\s*(```|~~~)/.test(l)).length;
-  return fences % 2 === 1 ? `${text}\n\`\`\`` : text;
+// The first <n> characters, never ending on half a surrogate pair.
+function sliceSafe(text, n) {
+  const cut = text.slice(0, Math.max(0, n));
+  return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
 }
 
-// Untrusted text, made safe to post: no factory markers (defangReport), and
-// no <details> / <summary> tag that could close a lane's collapsed report
-// early or fold the rest of the comment into one of its own.
-function defang(text) {
-  return defangReport(text).replace(/<(\/?)(details|summary)\b/gi, "&lt;$1$2");
+// ── code fences ─────────────────────────────────────────────────────────────
+// Lane text is model output: a fence it leaves open would turn the rest of the
+// comment into code. CommonMark's rule: a fence opens on a line of 3+
+// backticks or tildes (a backtick fence's info string can't contain a
+// backtick) and closes on the same character, at least as long, with nothing
+// after it.
+
+const FENCE = /^\s*(`{3,}|~{3,})(.*)$/;
+
+function fenceStep(open, line) {
+  const m = FENCE.exec(line);
+  if (!m) return open;
+  if (open === null) {
+    if (m[1][0] === "`" && m[2].includes("`")) return null;
+    return { char: m[1][0], len: m[1].length };
+  }
+  return m[1][0] === open.char && m[1].length >= open.len && !m[2].trim() ? null : open;
+}
+
+// <text> with the fence it leaves open (if any) closed. Apply before adding
+// any list indentation, so the closer gets the same indentation as the rest.
+function closeFences(text) {
+  let open = null;
+  for (const line of text.split("\n")) open = fenceStep(open, line);
+  return open ? `${text}\n${open.char.repeat(open.len)}` : text;
+}
+
+// <text> cut to at most <max> characters, the closer of a fence the cut left
+// open included.
+function cutWithin(text, max) {
+  let n = Math.max(0, max);
+  for (;;) {
+    const closed = closeFences(sliceSafe(text, n));
+    if (closed.length <= max || n === 0) return closed;
+    n -= closed.length - max;
+  }
+}
+
+// A soft cap for one section: cut to <max> and mark the cut with "…". The
+// caller closes fences.
+function capText(text, max) {
+  if (text.length <= max) return text;
+  return `${sliceSafe(text, max - 1).trimEnd()}…`;
 }
 
 // ── lane parsing ────────────────────────────────────────────────────────────
@@ -355,14 +422,6 @@ function labelled(report, label, { multi = false } = {}) {
   return out.length ? out : null;
 }
 
-// Cut <text> to at most <max> characters (plus a fence closer), ending in "…".
-function capText(text, max) {
-  if (text.length <= max) return text;
-  let cut = text.slice(0, Math.max(0, max - 1));
-  if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
-  return closeFences(`${cut.trimEnd()}…`);
-}
-
 // A MANUAL block → items [{ first, rest }]. A new item starts at a list
 // marker in the first two columns, outside fenced blocks; anything else
 // continues the current item.
@@ -371,25 +430,16 @@ export function parseManualList(text) {
   let cur = null;
   let fence = null;
   for (const line of String(text ?? "").split(/\r?\n/)) {
-    const opener = /^\s*(`{3,}|~{3,})/.exec(line);
-    if (fence === null && !opener) {
-      const m = /^ ?(?:\d+[.)]|[-*+])\s+(.*\S)\s*$/.exec(line);
-      if (m) {
-        if (cur) items.push(cur);
-        cur = { first: m[1], rest: [] };
-        continue;
-      }
-    }
-    if (opener) {
-      if (fence === null) fence = opener[1][0];
-      else if (opener[1][0] === fence) fence = null;
-    }
-    if (!cur) {
-      if (!line.trim()) continue;
+    const m = fence === null && !FENCE.test(line) && /^ ?(?:\d+[.)]|[-*+])\s+(.*\S)\s*$/.exec(line);
+    fence = fenceStep(fence, line);
+    if (m) {
+      if (cur) items.push(cur);
+      cur = { first: m[1], rest: [] };
+    } else if (cur) {
+      cur.rest.push(line);
+    } else if (line.trim()) {
       cur = { first: line.trim(), rest: [] };
-      continue;
     }
-    cur.rest.push(line);
   }
   if (cur) items.push(cur);
   for (const item of items) {
@@ -471,6 +521,8 @@ const RUNNER_STATUS_REASON = {
   "signin-failed": "signin-failed",
 };
 
+// secrets[k]: the literal; "" when the lanes were never given it; null (or
+// absent) when its file couldn't be read.
 function buildLane(key, input, secrets, { notNeeded = false } = {}) {
   const meta = LANES[key];
   const state = parseLaneState(input?.state);
@@ -484,10 +536,9 @@ function buildLane(key, input, secrets, { notNeeded = false } = {}) {
   let unreadable = [];
   let hits = [];
   if (text != null) {
-    unreadable = meta.guardedBy.filter((k) => !isSecret(secrets[k]));
+    unreadable = meta.guardedBy.filter((k) => secrets[k] !== "" && !isSecret(secrets[k]));
     hits = scanLaneText(text, secrets);
   }
-  const withheld = unreadable.length > 0 || hits.length > 0;
 
   const lane = {
     key,
@@ -497,7 +548,7 @@ function buildLane(key, input, secrets, { notNeeded = false } = {}) {
     localFile,
     text,
     parsed,
-    withheld,
+    withheld: unreadable.length > 0 || hits.length > 0,
     unreadable,
     hits,
     reported: false,
@@ -509,45 +560,40 @@ function buildLane(key, input, secrets, { notNeeded = false } = {}) {
     gap: null,
   };
 
-  if (state.kind === "reported") {
-    const stateVerdict = worst([state.detail.toLowerCase()]) ?? "none";
-    const runStatus = parsed?.status ?? "malformed";
-    const runnerReason = own(RUNNER_STATUS_REASON, runStatus);
-    if (runnerReason) {
-      lane.status = "no result";
-      lane.gap = `unavailable: ${reasonText(runnerReason)}`;
+  const runStatus = parsed?.status ?? "malformed";
+  const runnerReason = own(RUNNER_STATUS_REASON, runStatus);
+  if (state.kind !== "reported") {
+    if (notNeeded) {
+      lane.notNeeded = true;
+      lane.status = "not needed";
     } else {
-      lane.reported = true;
-      if (runStatus === "malformed") {
-        lane.runStatus = "ok";
-        lane.verdict = stateVerdict;
-        lane.status = "ran";
-        lane.gap =
-          text == null
-            ? "its output is missing or empty; the verdict is the one the lane recorded"
-            : "its output has no status line; the verdict is the one the lane recorded";
-      } else {
-        lane.runStatus = runStatus;
-        lane.verdict = parsed.verdict;
-        lane.status =
-          runStatus === "partial"
-            ? "ran (partial)"
-            : runStatus === "blocked"
-              ? "stopped (blocked)"
-              : "ran";
-        if (runStatus === "partial") lane.gap = "ran only part of its checks; see its report";
-        if (runStatus === "blocked") {
-          lane.gap = "stopped early on purpose (it refused a step); see its report";
-        }
-      }
-      lane.effective =
-        lane.runStatus === "blocked" ? worst(["warn", lane.verdict]) : worst([lane.verdict]);
+      lane.gap = describeState(state);
     }
-  } else if (notNeeded) {
-    lane.notNeeded = true;
-    lane.status = "not needed";
+  } else if (runnerReason) {
+    lane.status = "no result";
+    lane.gap = `unavailable: ${reasonText(runnerReason)}`;
+  } else if (runStatus === "malformed") {
+    // Same rule as browser-report.mjs: no status line, no result.
+    lane.status = "no result";
+    lane.gap =
+      text == null
+        ? "its output is missing or empty, so there is no result to trust"
+        : "its output has no status line, so its result isn't trusted";
   } else {
-    lane.gap = describeState(state);
+    lane.reported = true;
+    lane.runStatus = runStatus;
+    lane.verdict = parsed.verdict;
+    if (runStatus === "partial") {
+      lane.status = "ran (partial)";
+      lane.gap = "ran only part of its checks; see its report";
+    } else if (runStatus === "blocked") {
+      lane.status = "stopped (blocked)";
+      lane.gap = "stopped early on purpose (it refused a step); see its report";
+    } else {
+      lane.status = "ran";
+    }
+    lane.effective =
+      runStatus === "blocked" ? worst(["warn", lane.verdict]) : worst([lane.verdict]);
   }
   return lane;
 }
@@ -568,6 +614,13 @@ function withheldNotice(lane) {
 }
 
 // ── body sections ───────────────────────────────────────────────────────────
+
+function platformHow(platform, betaLanes) {
+  const name = platform === "mobile" ? "iOS / Android" : "macOS";
+  return betaLanes.includes(platform)
+    ? `on the ${name} beta for this commit (a follow-up comment gives the build number)`
+    : "on a build of this branch (no beta was dispatched; the scenario says how to get one)";
+}
 
 function laneTable(shell, browser, platforms, betaLanes) {
   const rows = [];
@@ -625,6 +678,15 @@ function laneTable(shell, browser, platforms, betaLanes) {
   ];
 }
 
+// Untrusted lines as one list item under <label>: the first line next to the
+// label unless it opens a fence (then the label stands alone), the rest
+// indented under it, with fences closed before the indentation goes on.
+function listItem(label, lines, max) {
+  const out = defang(closeFences(capText(lines.join("\n"), max))).split("\n");
+  const head = FENCE.test(out[0]) ? label.trimEnd() : `${label}${out.shift()}`;
+  return [head, ...out.map((l) => (l.trim() ? `  ${l}` : ""))];
+}
+
 function assessment(shell, browser) {
   const out = [];
   for (const lane of [shell, browser]) {
@@ -635,19 +697,15 @@ function assessment(shell, browser) {
       continue;
     }
     const summary = labelled(lane.parsed?.report, "Summary");
-    if (!summary) {
-      out.push(`${label}_no summary line_`);
-      continue;
-    }
-    const text = closeFences(capText(summary.join("\n"), SUMMARY_MAX));
-    const [first, ...rest] = defang(text).split("\n");
-    out.push(`${label}${first}`, ...rest.map((l) => (l.trim() ? `  ${l.trimStart()}` : "")));
+    out.push(...(summary ? listItem(label, summary, SUMMARY_MAX) : [`${label}_no summary line_`]));
   }
   if (shell.reported && !shell.withheld) {
     const para = labelled(shell.parsed?.report, "Assessment", { multi: true });
     if (para) {
-      const text = closeFences(capText(para.join("\n"), ASSESSMENT_MAX));
-      out.push("", `**${shell.meta.short} assessment:** ${defang(text)}`);
+      // On its own line under the label, so a paragraph that opens with a
+      // fence still renders as one.
+      const text = defang(closeFences(capText(para.join("\n"), ASSESSMENT_MAX)));
+      out.push("", `**${shell.meta.short} assessment:**`, "", text);
     }
   }
   return out.length ? out : ["_No lane reported a result._"];
@@ -662,59 +720,52 @@ function normaliseKey(text) {
     .trim();
 }
 
-// Render one manual item: first line plus its continuation lines, re-indented
-// under the list marker, defanged, with any fence it left open closed.
+// One untrusted manual item: its first line next to the number (a fence there
+// is broken so it reads as text), its continuation lines re-indented under
+// it — capped, fences closed and defanged before the indentation goes on.
 function renderItem(n, { first, rest }) {
-  const head = `${n}. ${inline(first, 500)}`;
+  let head = inline(first, 500);
+  if (FENCE.test(head)) head = `​${head}`;
   const kept = rest.slice(0, 20);
   const indents = kept.filter((l) => l.trim()).map((l) => /^\s*/.exec(l)[0].length);
   const cut = indents.length ? Math.min(...indents) : 0;
-  const body = kept.map((l) => (l.trim() ? `   ${defang(l.slice(cut).trimEnd())}` : ""));
-  if (rest.length > kept.length) body.push("   …");
-  return capText(closeFences([head, ...body].join("\n")), MANUAL_ITEM_MAX);
+  let body = kept
+    .map((l) => (l.trim() ? l.slice(cut).trimEnd() : ""))
+    .join("\n")
+    .replace(/^\n+/, "");
+  if (rest.length > kept.length) body += "\n…";
+  body = body ? defang(closeFences(capText(body, MANUAL_ITEM_MAX))) : "";
+  const lines = body ? body.split("\n").map((l) => (l.trim() ? `   ${l}` : "")) : [];
+  return [`${n}. ${head}`, ...lines].join("\n");
 }
 
-function scenarioLine(heading, betaLanes) {
-  const h = plainLabel(heading);
-  let how = "by hand";
-  if (/\b(ios|android|mobile|iphone|ipad)\b/i.test(heading)) {
-    how = betaLanes.includes("mobile")
-      ? "on the iOS / Android beta for this commit (a follow-up comment gives the build number)"
-      : "on a build of this branch (no beta was dispatched; the scenario says how to get one)";
-  } else if (/\b(macos|mac|desktop)\b/i.test(heading)) {
-    how = betaLanes.includes("desktop")
-      ? "on the macOS beta for this commit (a follow-up comment gives the build number)"
-      : "on a build of this branch (no beta was dispatched; the scenario says how to get one)";
-  }
-  return `Run the **${h}** steps in the test scenario ${how}.`;
-}
-
-function manualSteps({ shell, browser, sections, hasWebSection, platforms, betaLanes }) {
-  // { first, rest, reserved }: reserved items are never cut by the cap.
+function manualSteps({ shell, browser, sections, platforms, betaLanes }) {
+  // { first, rest, reserved, trusted }: reserved items are never cut by the
+  // cap; trusted ones are composed here from safe parts and render as is.
   const all = [];
-  const pointer = (lane, what) => ({
-    first:
+  const add = (first, { reserved = false } = {}) =>
+    all.push({ first, rest: [], reserved, trusted: true });
+  const pointer = (lane, what) =>
+    add(
       `Read the ${lane.meta.short} lane's local report` +
-      (lane.localFile ? ` (\`${pathText(lane.localFile)}\`)` : "") +
-      ` for ${what}: its text was withheld from this comment.`,
-    rest: [],
-    reserved: true,
-    trusted: true,
-  });
+        (lane.localFile ? ` (\`${pathText(lane.localFile)}\`)` : "") +
+        ` for ${what}: its text was withheld from this comment.`,
+      { reserved: true },
+    );
 
   if (shell.text != null) {
-    if (shell.withheld) all.push(pointer(shell, "its manual steps"));
+    if (shell.withheld) pointer(shell, "its manual steps");
     else {
       for (const item of parseManualList(shell.parsed?.manual)) all.push({ ...item });
     }
   }
 
   if (browser.text != null) {
-    if (browser.withheld) all.push(pointer(browser, "the steps it failed or skipped"));
+    if (browser.withheld) pointer(browser, "the steps it failed or skipped");
     else {
       for (const row of parseResultTable(browser.parsed?.report)) {
         if (row.result !== "FAIL" && row.result !== "SKIP") continue;
-        const num = row.num ? ` ${inline(row.num, 10)}` : "";
+        const num = row.num ? ` ${row.num}` : "";
         const evidence =
           row.result === "FAIL" && row.evidence ? ` (the browser saw: ${row.evidence})` : "";
         all.push({
@@ -727,29 +778,52 @@ function manualSteps({ shell, browser, sections, hasWebSection, platforms, betaL
     }
   }
 
+  let hasMobile = false;
+  let hasDesktop = false;
   for (const s of sections) {
-    if (s.heading === "Web") continue;
-    all.push({
-      first: scenarioLine(s.heading, betaLanes),
-      rest: [],
-      reserved: true,
-      trusted: true,
-    });
+    if (s.heading === "Web" || NOT_STEPS_HEADING.test(s.heading)) continue;
+    const h = plainLabel(s.heading);
+    if (MOBILE_HEADING.test(s.heading)) {
+      hasMobile = true;
+      add(`Run the **${h}** steps in the test scenario ${platformHow("mobile", betaLanes)}.`, {
+        reserved: true,
+      });
+    } else if (DESKTOP_HEADING.test(s.heading)) {
+      hasDesktop = true;
+      add(`Run the **${h}** steps in the test scenario ${platformHow("desktop", betaLanes)}.`, {
+        reserved: true,
+      });
+    } else {
+      add(`Go through the **${h}** section of the test scenario.`);
+    }
+  }
+  if (platforms.mobile && !hasMobile) {
+    add(
+      `Test the iOS / Android changes by hand ${platformHow("mobile", betaLanes)}: ` +
+        "the test scenario has no iOS / Android section.",
+      { reserved: true },
+    );
+  }
+  if (platforms.desktop && !hasDesktop) {
+    add(
+      `Test the macOS changes by hand ${platformHow("desktop", betaLanes)}: ` +
+        "the test scenario has no macOS section.",
+      { reserved: true },
+    );
   }
 
+  const hasWebSection = sections.some((s) => s.heading === "Web");
   const browserRan = browser.reported && browser.runStatus !== "blocked";
   if (!browserRan && (hasWebSection || platforms.web)) {
     const why = browser.reported
       ? "stopped early (blocked)"
       : `didn't report (${browser.gap ?? "no result"})`;
-    all.push({
-      first: hasWebSection
+    add(
+      hasWebSection
         ? `Run the **Web** steps in the test scenario by hand on the preview: the browser lane ${why}.`
         : `Check the web changes by hand on the preview: the browser lane ${why}, and the scenario has no Web section.`,
-      rest: [],
-      reserved: true,
-      trusted: true,
-    });
+      { reserved: true },
+    );
   }
 
   const seen = new Set();
@@ -778,31 +852,42 @@ function manualSteps({ shell, browser, sections, hasWebSection, platforms, betaL
   return lines;
 }
 
+// { lines, notRun, withheld }: notRun counts the gaps where some check didn't
+// run (they make the headline "partial"); withheld counts lanes that ran but
+// whose text was withheld.
 function coverageGaps({ shell, browser, gaps, crNote, scenarioMissing }) {
   const items = [];
+  let notRun = 0;
+  let withheld = 0;
   for (const raw of gaps) {
     const g = typeof raw === "string" ? { lane: "", reason: raw } : raw;
     const lane = own(LANES, String(g?.lane ?? ""))?.label ?? plainLabel(g?.lane ?? "", 40);
     const reason = inline(g?.reason ?? "", 300);
     if (!reason) continue;
     items.push(lane ? `- **${lane}:** ${reason}` : `- ${reason}`);
+    notRun++;
   }
   for (const lane of [shell, browser]) {
-    if (lane.gap) items.push(`- **${lane.meta.label}:** ${lane.gap}.`);
-    if (lane.withheld)
+    if (lane.gap) {
+      items.push(`- **${lane.meta.label}:** ${lane.gap}.`);
+      notRun++;
+    }
+    if (lane.withheld) {
       items.push(`- **${lane.meta.label}:** report withheld; ${withheldWhy(lane)}.`);
+      withheld++;
+    }
   }
   if (scenarioMissing) {
     items.push(
       "- **Test scenario:** none was available for this commit, so the manual steps don't include its per-platform sections.",
     );
+    notRun++;
   }
-  const gapCount = items.length;
   const shown = items.slice(0, GAPS_MAX);
   if (items.length > GAPS_MAX) shown.push(`- …and ${items.length - GAPS_MAX} more.`);
   const note = inline(crNote ?? "", 500);
   if (note) shown.push(`- ℹ️ ${note}`);
-  return { lines: shown, gapCount };
+  return { lines: shown, notRun, withheld };
 }
 
 // The text that goes in a lane's <details>: its report (and, for the shell
@@ -832,7 +917,9 @@ function detailsBlock(lane, content) {
 }
 
 // Truncate each lane's details so the whole body fits in <room>: lanes are
-// filled shortest first, each getting an equal share of what's left.
+// filled shortest first, each getting an equal share of what's left. The text
+// is already defanged, and a cut can't make a tag or marker of it: defang()
+// escapes every `<details` / `<summary` prefix and `<!--`.
 function fitDetails(entries, room) {
   const total = entries.reduce((n, e) => n + e.content.length, 0);
   if (total <= room) return entries.map((e) => e.content);
@@ -851,11 +938,11 @@ function fitDetails(entries, room) {
       left -= content.length;
       continue;
     }
-    const where = lane.localFile ? ` the full output is at \`${pathText(lane.localFile)}\`` : "";
-    const note = (n) =>
-      `\n\n_…truncated to ${n} of ${content.length} characters;${where || " see the lane's run directory"}._`;
-    // Budget against the longest note and a fence closer ("\n```" = 4).
-    const cut = truncateReport(content, share - note(content.length).length - 4);
+    const where = lane.localFile
+      ? `the full output is at \`${pathText(lane.localFile)}\``
+      : "see the lane's run directory";
+    const note = (n) => `\n\n_…truncated to ${n} of ${content.length} characters; ${where}._`;
+    const cut = cutWithin(content, share - note(content.length).length);
     out[i] = cut + note(cut.length);
     left -= out[i].length;
   }
@@ -884,10 +971,11 @@ function normaliseBetaLanes(lanes) {
  * @param {string|null} o.scenario the scenario comment body, or null
  * @param {{state:string,dir?:string,text?:string|null}} o.shell
  * @param {{state:string,dir?:string,text?:string|null}} o.browser
- * @param {{lane:string,reason:string}[]} o.gaps
+ * @param {({lane:string,reason:string}|string)[]} o.gaps
  * @param {string} o.crNote
  * @param {{password?:string|null,bypass?:string|null,signinKey?:string|null}} o.secrets
- *   each secret's literal value, or null when its file couldn't be read
+ *   each secret's literal value; "" when the lanes were never given it; null
+ *   (or absent) when its file couldn't be read, which fails closed
  * @returns {{body:string,verdict:string,withheld:{shell:boolean,browser:boolean},secretHits:string[]}}
  */
 export function composeVerifyReport({
@@ -907,7 +995,7 @@ export function composeVerifyReport({
   const betaLanes = normaliseBetaLanes(rawBetaLanes);
   const scenarioBody = typeof scenario === "string" && scenario.trim() ? scenario : null;
   const sections = scenarioBody ? extractScenarioSections(scenarioBody) : [];
-  const hasWebSection = scenarioBody ? extractWebSection(scenarioBody) != null : false;
+  const hasWebSection = sections.some((s) => s.heading === "Web");
 
   const shell = buildLane("shell", shellInput, secrets);
   const browser = buildLane("browser", browserInput, secrets, {
@@ -915,7 +1003,7 @@ export function composeVerifyReport({
   });
 
   const verdict = worst([shell.effective, browser.effective]) ?? "incomplete";
-  const { lines: gapLines, gapCount } = coverageGaps({
+  const gapInfo = coverageGaps({
     shell,
     browser,
     gaps: Array.isArray(gaps) ? gaps : [],
@@ -925,11 +1013,15 @@ export function composeVerifyReport({
 
   const short = String(sha).slice(0, 12);
   const prText = pr ? ` (PR #${inline(pr, 12)})` : "";
+  let qualifier = "";
+  if (gapInfo.notRun > 0) qualifier = " Partial: some checks didn't run; see **Coverage gaps**.";
+  else if (gapInfo.withheld > 0) {
+    qualifier = " A lane's report was withheld from this comment; see **Coverage gaps**.";
+  }
   const headline =
     verdict === "incomplete"
       ? `**Verdict: INCOMPLETE** for \`${short}\`${prText}: no verification lane reported a result.`
-      : `**Verdict: ${verdict.toUpperCase()}** for \`${short}\`${prText}.` +
-        (gapCount > 0 ? " Partial: some checks didn't run; see **Coverage gaps**." : "");
+      : `**Verdict: ${verdict.toUpperCase()}** for \`${short}\`${prText}.${qualifier}`;
 
   const evidenceDirs = [shell, browser]
     .filter((l) => l.dir)
@@ -960,11 +1052,11 @@ export function composeVerifyReport({
     "",
     "**Steps for you to do manually**",
     "",
-    ...manualSteps({ shell, browser, sections, hasWebSection, platforms, betaLanes }),
+    ...manualSteps({ shell, browser, sections, platforms, betaLanes }),
     "",
     "**Coverage gaps**",
     "",
-    ...(gapLines.length ? gapLines : ["_None._"]),
+    ...(gapInfo.lines.length ? gapInfo.lines : ["_None._"]),
     "",
   ];
 
@@ -986,7 +1078,7 @@ export function composeVerifyReport({
     body = [...head, ...footer].join("\n");
     if (body.length > COMMENT_MAX_CHARS) {
       const tail = `\n\n_…report truncated._\n\n${footer.join("\n")}`;
-      body = truncateReport(head.join("\n"), COMMENT_MAX_CHARS - tail.length - 4) + tail;
+      body = cutWithin(head.join("\n"), COMMENT_MAX_CHARS - tail.length) + tail;
     }
   }
 
@@ -1052,6 +1144,13 @@ function jsonFlag(flags, name, fallback, check) {
   return v;
 }
 
+// "" (flag given empty) = the lanes never had this secret; otherwise the value,
+// or null when the file can't be read or the flag is missing (fail closed).
+function secretFlag(flags, name, key) {
+  if (flags[name] === "") return "";
+  return readSecretValue(flags[name], key);
+}
+
 export function render(argv) {
   const { flags } = parseFlags(argv);
   const issue = required(flags, "issue");
@@ -1089,9 +1188,9 @@ export function render(argv) {
     gaps,
     crNote: flags["cr-note"] ?? "",
     secrets: {
-      password: readSecretValue(flags["account-file"], "FACTORY_BROWSER_PASSWORD"),
-      bypass: readSecretValue(flags["bypass-file"], "VERCEL_AUTOMATION_BYPASS_SECRET"),
-      signinKey: readSecretValue(flags["signin-key-file"], "DEV_SUPABASE_SERVICE_ROLE_KEY"),
+      password: secretFlag(flags, "account-file", "FACTORY_BROWSER_PASSWORD"),
+      bypass: secretFlag(flags, "bypass-file", "VERCEL_AUTOMATION_BYPASS_SECRET"),
+      signinKey: secretFlag(flags, "signin-key-file", "DEV_SUPABASE_SERVICE_ROLE_KEY"),
     },
   });
   writeFileSync(out, result.body);
