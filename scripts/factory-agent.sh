@@ -263,8 +263,9 @@ FACTORY_INTEST_BETA_DESKTOP="${FACTORY_INTEST_BETA_DESKTOP:-0}"
 # host). Every other call passes --no-chrome, because the code-writing stages
 # have Bash and file access and the browser is the operator's own signed-in
 # profile. FACTORY_BROWSER_KINDS picks which uses are live; PR 1 ships only
-# `intest` (the In Test web run).
-FACTORY_BROWSER="${FACTORY_BROWSER:-1}"
+# `intest` (the In Test web run). Only an unset switch gets the default (`-`, not
+# `:-`): an empty one is invalid and turns the runner off, like any other value.
+FACTORY_BROWSER="${FACTORY_BROWSER-1}"
 if [[ "$FACTORY_BROWSER" != "0" && "$FACTORY_BROWSER" != "1" ]]; then
   echo "WARNING: invalid FACTORY_BROWSER='$FACTORY_BROWSER'; turning the browser runner off" >&2
   FACTORY_BROWSER=0

@@ -184,7 +184,7 @@ describe("factory-agent.sh browser runner: static wiring", () => {
 
 describe("factory-agent.sh browser runner: knobs under bash 3.2", () => {
   const block = script.match(
-    /FACTORY_BROWSER="\$\{FACTORY_BROWSER:-1\}"[\s\S]*?FACTORY_BROWSER_MAX_ATTEMPTS=2\n/,
+    /FACTORY_BROWSER="\$\{FACTORY_BROWSER-1\}"[\s\S]*?FACTORY_BROWSER_MAX_ATTEMPTS=2\n/,
   );
 
   function runKnobs(env) {
@@ -214,6 +214,12 @@ describe("factory-agent.sh browser runner: knobs under bash 3.2", () => {
     const r = runKnobs({ FACTORY_BROWSER: "yes" });
     assert.match(r.stdout, /^B=0 /m);
     assert.match(r.stderr, /invalid FACTORY_BROWSER='yes'/);
+  });
+
+  it("falls back to off on an empty switch, rather than taking the default", () => {
+    const r = runKnobs({ FACTORY_BROWSER: "" });
+    assert.match(r.stdout, /^B=0 /m);
+    assert.match(r.stderr, /invalid FACTORY_BROWSER=''/);
   });
 
   it("drops unknown kinds and keeps known ones", () => {
