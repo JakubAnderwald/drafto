@@ -18,9 +18,14 @@ import { fileURLToPath } from "node:url";
 import {
   COMMENT_MAX_CHARS,
   REPORT_MARKER,
+  SECRET_PATTERNS,
   accountFileProblem,
   defangReport,
+  lastBlock,
+  literalForms,
   parseAccountFile,
+  parseBlocks,
+  parseEnvValues,
   parseRunnerOutput,
   readAccountFile,
   renderIntestComment,
@@ -140,6 +145,83 @@ describe("parseRunnerOutput", () => {
   });
 });
 
+describe("parseBlocks", () => {
+  const STATUS = /^lane=(ok|bad) verdict=(pass|fail)$/;
+  const opts = { blocks: ["REPORT", "MANUAL"], statusLine: STATUS };
+
+  it("collects every complete block per name, in order, and the last status line", () => {
+    const text = [
+      "chatter",
+      "<<<REPORT",
+      "first report",
+      "REPORT>>>",
+      "lane=bad verdict=fail",
+      "<<<MANUAL",
+      "1. Do it.",
+      "MANUAL>>>",
+      "<<<REPORT",
+      "second report",
+      "REPORT>>>",
+      "lane=ok verdict=pass",
+    ].join("\n");
+    const { blocks, status } = parseBlocks(text, opts);
+    assert.deepEqual(blocks, {
+      REPORT: ["first report", "second report"],
+      MANUAL: ["1. Do it."],
+    });
+    assert.deepEqual([...status], ["lane=ok verdict=pass", "ok", "pass"]);
+  });
+
+  it("never takes a status line from inside a block, and status is null without one", () => {
+    const quoted = parseBlocks("<<<REPORT\nlane=ok verdict=pass\nREPORT>>>\n", opts);
+    assert.equal(quoted.status, null);
+    assert.deepEqual(quoted.blocks.REPORT, ["lane=ok verdict=pass"]);
+    assert.equal(parseBlocks("", opts).status, null);
+    assert.equal(parseBlocks(undefined, opts).status, null);
+    assert.equal(parseBlocks("lane=ok verdict=pass", { blocks: ["REPORT"] }).status, null);
+  });
+
+  it("treats an unclosed block's lines as outside, and another opener inside a block as content", () => {
+    const unclosed = parseBlocks("<<<MANUAL\n1. Step\nlane=ok verdict=fail\n", opts);
+    assert.deepEqual(unclosed.blocks.MANUAL, []);
+    assert.equal(unclosed.status[2], "fail");
+    const nested = parseBlocks("<<<REPORT\n<<<MANUAL\nx\nMANUAL>>>\nREPORT>>>\n", opts);
+    assert.deepEqual(nested.blocks, { REPORT: ["<<<MANUAL\nx\nMANUAL>>>"], MANUAL: [] });
+  });
+
+  it("ignores blocks it wasn't asked for, and tolerates CRLF and a backtick-wrapped status", () => {
+    // An unrequested block's lines are ordinary outside lines: its status line counts.
+    const r = parseBlocks(
+      "`lane=ok verdict=pass`\r\n<<<OTHER\r\nlane=bad verdict=fail\r\nOTHER>>>\r\n",
+      opts,
+    );
+    assert.equal(r.status[1], "bad");
+    assert.equal(Object.hasOwn(r.blocks, "OTHER"), false);
+    const wrapped = parseBlocks("<<<REPORT\r\nr\r\nREPORT>>>\r\n  `lane=ok verdict=pass`  ", opts);
+    assert.equal(wrapped.status[1], "ok");
+    assert.deepEqual(wrapped.blocks.REPORT, ["r"]);
+  });
+
+  it("is not thrown by a /g status regex (exec would otherwise carry lastIndex)", () => {
+    const r = parseBlocks("lane=ok verdict=pass\nlane=ok verdict=fail", {
+      blocks: [],
+      statusLine: /^lane=(ok|bad) verdict=(pass|fail)$/g,
+    });
+    assert.equal(r.status[2], "fail");
+  });
+
+  it("lastBlock returns the trimmed last block, null when absent or blank", () => {
+    const { blocks } = parseBlocks(
+      "<<<REPORT\n\n  indented\n\nREPORT>>>\n<<<MANUAL\n \nMANUAL>>>",
+      opts,
+    );
+    assert.equal(lastBlock(blocks, "REPORT"), "  indented");
+    assert.equal(lastBlock(blocks, "MANUAL"), null);
+    assert.equal(lastBlock(blocks, "NOPE"), null);
+    assert.equal(lastBlock(undefined, "REPORT"), null);
+  });
+});
+
 describe("account file", () => {
   let dir;
   beforeEach(() => {
@@ -180,6 +262,12 @@ describe("account file", () => {
   it("readAccountFile reads from disk", () => {
     const p = write("a.env", "FACTORY_BROWSER_EMAIL=a@b.c\nFACTORY_BROWSER_PASSWORD=hunter22\n");
     assert.deepEqual(readAccountFile(p), { email: "a@b.c", password: "hunter22" });
+  });
+
+  it("parseEnvValues returns only the wanted keys, last assignment wins", () => {
+    const text = "A=1\nexport B='two'\nC=3\nA=again\nconstructor=x\n";
+    assert.deepEqual(parseEnvValues(text, ["A", "B"]), { A: "again", B: "two" });
+    assert.deepEqual(parseEnvValues(text, ["MISSING"]), {});
   });
 
   it("accountFileProblem: missing, not-a-file, mode, keys, ok", () => {
@@ -246,6 +334,24 @@ describe("scanForSecrets", () => {
     assert.deepEqual(scanForSecrets('{"password":"q\\"uote1"}', { password: 'q"uote1' }), [
       "password",
     ]);
+  });
+
+  it("exports its patterns frozen, and the literal forms it matches", () => {
+    assert.ok(Object.isFrozen(SECRET_PATTERNS));
+    assert.deepEqual(
+      SECRET_PATTERNS.map(([name]) => name),
+      [
+        "jwt",
+        "supabase-auth-cookie",
+        "bearer",
+        "oauth-token",
+        "vercel-cookie",
+        "drafto-api-key",
+        "sign-in-token",
+      ],
+    );
+    assert.deepEqual(literalForms('a b"c'), ['a b"c', "a%20b%22c", 'a b\\"c']);
+    assert.deepEqual(literalForms("plain"), ["plain"]);
   });
 
   it("skips a password shorter than 6 characters", () => {

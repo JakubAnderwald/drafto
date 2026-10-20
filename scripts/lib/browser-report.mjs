@@ -24,7 +24,9 @@
 //
 // The status line is the last line, outside any block, matching that exact
 // shape. Without one the run is "malformed" and its report is not trusted as
-// a result.
+// a result. The block/status-line parser itself is generic (parseBlocks), and
+// verify-report.mjs reuses it — with the secret scan and defanging below — for
+// the Testing stage's verification lanes.
 //
 // The report is model output built from page text, which is untrusted. Before
 // it goes into a comment, HTML comments are neutralised and every
@@ -80,9 +82,21 @@ function trimBlock(text) {
   return text.replace(/^(?:[ \t]*\r?\n)+/, "").replace(/\s+$/, "");
 }
 
-export function parseRunnerOutput(text) {
+// The generic shape every locked-down runner prints (this runner, and the
+// verification lanes in verify-report.mjs): `<<<NAME … NAME>>>` blocks, each
+// opener and closer alone on its line, plus a status line outside them.
+//
+// Returns { blocks: { NAME: [body, …] }, status }: every complete block's body
+// per name, in order, and `status` — the RegExp match of the LAST line outside
+// complete blocks that matches `statusLine` (a backtick-wrapped line counts),
+// or null. A block that never closed is not a block: its lines count as
+// outside, so a status line printed after a forgotten closer is still found.
+// Only lines outside complete blocks can be the status line: page text the
+// model quoted inside its report must not be able to supply one. Inside an
+// open block, another block's opener is just content.
+export function parseBlocks(text, { blocks: names = [], statusLine = null } = {}) {
   const lines = String(text ?? "").split(/\r?\n/);
-  const blocks = { REPORT: [], FINDINGS: [] };
+  const blocks = Object.fromEntries(names.map((name) => [name, []]));
   const outside = [];
   let open = null;
   let buf = [];
@@ -98,7 +112,7 @@ export function parseRunnerOutput(text) {
       }
       continue;
     }
-    const opener = BLOCKS.find((b) => t === `<<<${b}`);
+    const opener = names.find((b) => t === `<<<${b}`);
     if (opener) {
       open = opener;
       buf = [];
@@ -106,21 +120,33 @@ export function parseRunnerOutput(text) {
       outside.push(t);
     }
   }
-  // A block that never closed is not a block: its lines count as outside, so
-  // a status line printed after a forgotten `REPORT>>>` is still found.
   if (open) outside.push(...buf.map((l) => l.trim()));
 
-  // Only lines outside complete blocks can be the status line: page text the
-  // model quoted inside its report must not be able to supply one.
-  let status = "malformed";
-  let verdict = "none";
-  for (const raw of outside) {
-    const m = STATUS_LINE.exec(raw.replace(/^`(.*)`$/, "$1"));
-    if (m) [, status, verdict] = m;
+  let status = null;
+  if (statusLine) {
+    // exec on a /g or /y regex is stateful; a status line must not depend on
+    // what the previous line matched.
+    const re = new RegExp(statusLine.source, statusLine.flags.replace(/[gy]/g, ""));
+    for (const raw of outside) {
+      const m = re.exec(raw.replace(/^`(.*)`$/, "$1"));
+      if (m) status = m;
+    }
   }
+  return { blocks, status };
+}
 
-  const lastReport = blocks.REPORT.at(-1);
-  const report = lastReport == null || !lastReport.trim() ? null : trimBlock(lastReport);
+// The last complete <name> block, trimmed, or null when there is none or it is
+// blank.
+export function lastBlock(blocks, name) {
+  const last = blocks?.[name]?.at(-1);
+  return last == null || !last.trim() ? null : trimBlock(last);
+}
+
+export function parseRunnerOutput(text) {
+  const { blocks, status: m } = parseBlocks(text, { blocks: BLOCKS, statusLine: STATUS_LINE });
+  const status = m ? m[1] : "malformed";
+  const verdict = m ? m[2] : "none";
+  const report = lastBlock(blocks, "REPORT");
 
   let findings = null;
   const lastFindings = blocks.FINDINGS.at(-1);
@@ -146,16 +172,27 @@ const ACCOUNT_KEYS = { FACTORY_BROWSER_EMAIL: "email", FACTORY_BROWSER_PASSWORD:
 
 // KEY=VALUE lines, `#` comments, an optional `export ` prefix and optional
 // matching quotes around the value. No escapes or interpolation: a quoted
-// value is taken verbatim, an unquoted one is trimmed.
-export function parseAccountFile(text) {
+// value is taken verbatim, an unquoted one is trimmed. Returns { KEY: value }
+// for the wanted keys only (the last assignment wins); the caller decides what
+// a missing key means.
+export function parseEnvValues(text, keys) {
   const out = {};
   for (const line of String(text ?? "").split(/\r?\n/)) {
     const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/.exec(line);
-    if (!m || !(m[1] in ACCOUNT_KEYS)) continue;
+    if (!m || !keys.includes(m[1])) continue;
     let value = m[2].trim();
     const q = /^(["'])(.*)\1$/.exec(value);
     if (q) value = q[2];
-    out[ACCOUNT_KEYS[m[1]]] = value;
+    out[m[1]] = value;
+  }
+  return out;
+}
+
+export function parseAccountFile(text) {
+  const values = parseEnvValues(text, Object.keys(ACCOUNT_KEYS));
+  const out = {};
+  for (const [key, field] of Object.entries(ACCOUNT_KEYS)) {
+    if (key in values) out[field] = values[key];
   }
   // Name the missing key, never echo a value: this message reaches logs.
   for (const [key, field] of Object.entries(ACCOUNT_KEYS)) {
@@ -190,7 +227,9 @@ export function accountFileProblem(file) {
 
 // ── secret scan ─────────────────────────────────────────────────────────────
 
-const SECRET_PATTERNS = [
+// [name, pattern] pairs, in scan order. Exported (frozen) for verify-report.mjs,
+// which scans the verification lanes with these plus its own.
+export const SECRET_PATTERNS = Object.freeze([
   ["jwt", /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/],
   ["supabase-auth-cookie", /sb-[a-z0-9]+-auth-token/i],
   // Case-insensitive: the auth scheme is, and a network log may print it lower-case.
@@ -203,17 +242,14 @@ const SECRET_PATTERNS = [
   // The runner's one-time sign-in link (browser-signin.mjs). Single-use and
   // consumed when opened, but still a login token: never posted.
   ["sign-in-token", /token_hash=[A-Za-z0-9_-]{8,}/],
-];
+]);
 
 // The password is matched as a literal substring — never compiled into a
 // regex, so its characters can't change what is matched — in the forms it can
 // take in a page or a network log: as typed, URL-encoded and JSON-escaped.
-function passwordForms(password) {
-  const forms = new Set([
-    password,
-    encodeURIComponent(password),
-    JSON.stringify(password).slice(1, -1),
-  ]);
+// verify-report.mjs matches its other secret literals the same way.
+export function literalForms(secret) {
+  const forms = new Set([secret, encodeURIComponent(secret), JSON.stringify(secret).slice(1, -1)]);
   return [...forms];
 }
 
@@ -221,7 +257,7 @@ export function scanForSecrets(text, { password } = {}) {
   const s = String(text ?? "");
   const hits = [];
   if (typeof password === "string" && password.length >= MIN_PASSWORD_SCAN_LENGTH) {
-    if (passwordForms(password).some((form) => s.includes(form))) hits.push("password");
+    if (literalForms(password).some((form) => s.includes(form))) hits.push("password");
   }
   for (const [name, re] of SECRET_PATTERNS) {
     if (re.test(s)) hits.push(name);
