@@ -198,14 +198,25 @@
 //                                    while the run is still ours, waits up to
 //                                    --wait-ms (default 10000) and only then
 //                                    releases it. --refund attempt gives the
-//                                    card's attempt for that SHA back. The run's
-//                                    worktree is left to housekeeping's reap.
-//   factory:verify-reset <issue>    Clear every verify* key on <issue>, so the
+//                                    card's attempt for that SHA back. If the
+//                                    factory released the run itself during the
+//                                    wait: {ok:true, releasedBy:"factory"}. If it
+//                                    attached a pid this command never checked:
+//                                    {ok:false, reason:"supervisor-attached-
+//                                    meanwhile"}, nothing changed; run it again.
+//                                    The run's worktree is left to housekeeping.
+//   factory:verify-pause-until <iso> [<reason>]
+//                                    Pause ONLY the verification lane until
+//                                    <iso>. Never touches the factory pause.
+//   factory:verify-resume           Clear the lane pause.
+//   factory:verify-reset <issue>    Clear every verify* key on <issue>, plus
+//                                    browserRunSha/-Attempts (the browser runner
+//                                    skips a head browserRunSha names), so the
 //                                    next tick starts its Testing round afresh.
 //                                    Prints {ok:false, reason:"run-in-flight"}
 //                                    (exit 0) and changes nothing while the lane
 //                                    is running for that issue: verify-finish
-//                                    it first. browserRunSha/-Attempts are kept.
+//                                    it first.
 //
 // Nightly beta-release retry counters (ADR-0042). These live in
 // logs/support-release-state.json — written only by nightly-support.sh, so they
@@ -271,6 +282,8 @@ import {
   getVerify,
   isVerifyPaused,
   clearExpiredVerifyPause,
+  pauseVerify,
+  resumeVerify,
   finishVerifyRun,
   verifyIssueRecords,
   resetIssueVerify,
@@ -873,10 +886,46 @@ async function main(argv) {
       }
       // Re-load: the wait can take seconds while the factory keeps writing.
       const state = await loadFactoryState(file);
+      const current = getVerify(state).inFlight;
+      // The factory released the run itself meanwhile (housekeeping saw it
+      // exit): the lane is free, which is what was asked for.
+      if (current?.runId !== runId) {
+        return { ok: true, runId, releasedBy: "factory", killed: stop.killed };
+      }
+      // The tick attached a supervisor after the snapshot was read (the run
+      // was still at pid null, or held a stale pid). That process was never
+      // checked or signalled, so releasing it now would leave it running with
+      // nothing tracking it. Change nothing and let the operator run it again.
+      if ((current.pid ?? null) !== (inFlight.pid ?? null)) {
+        return {
+          ok: false,
+          reason: "supervisor-attached-meanwhile",
+          runId,
+          pid: current.pid ?? null,
+          killed: stop.killed,
+        };
+      }
       const result = finishVerifyRun(state, runId, { refund });
-      if (!result.ok) return { ...result, killed: stop.killed };
       await saveFactoryState(state, file);
       return { ...result, killed: stop.killed };
+    }
+    case "factory:verify-pause-until": {
+      const until = positional[0];
+      const reason = positional[1] ?? null;
+      if (!until) throw new Error("factory:verify-pause-until requires <until-iso> [<reason>]");
+      if (Number.isNaN(Date.parse(until))) {
+        throw new Error(`factory:verify-pause-until: invalid <until-iso>: ${until}`);
+      }
+      const state = await loadFactoryState(file);
+      const verify = pauseVerify(state, { until, reason });
+      await saveFactoryState(state, file);
+      return { ok: true, pausedUntil: verify.pausedUntil, pausedReason: verify.pausedReason };
+    }
+    case "factory:verify-resume": {
+      const state = await loadFactoryState(file);
+      resumeVerify(state);
+      await saveFactoryState(state, file);
+      return { ok: true, paused: false };
     }
     case "factory:verify-reset": {
       const issueNumber = positional[0];
@@ -977,6 +1026,8 @@ async function main(argv) {
           "factory:browser-reset|" +
           "factory:verify-status|" +
           "factory:verify-finish <runId> [--refund none|attempt] [--wait-ms <ms>]|" +
+          "factory:verify-pause-until <until-iso> [<reason>]|" +
+          "factory:verify-resume|" +
           "factory:verify-reset <issue>> " +
           "[--state-file <path>] [--now <iso>]\n",
       );

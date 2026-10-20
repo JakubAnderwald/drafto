@@ -602,11 +602,17 @@ describe("verification stage (ADR-0053): verify ledger", () => {
         `${SHA_A}:`,
         `${SHA_A}:x`,
         `${SHA_A}:-1`,
+        `${SHA_A}:1:2`,
         ":2",
       ]) {
         assert.equal(shaKeyedCount(v, SHA_A), 0, String(v));
       }
       assert.equal(shaKeyedCount(`${SHA_A}:1`, ""), 0);
+    });
+
+    it("takes the SHA up to the first colon, as factory-agent.sh does", () => {
+      assert.equal(shaKeyedCount(`${SHA_A}:1:2`, `${SHA_A}:1`), 0);
+      assert.equal(shaKeyedCount(`${SHA_A}:07`, SHA_A), 7);
     });
   });
 
@@ -770,7 +776,7 @@ describe("verification stage (ADR-0053): verify ledger", () => {
   });
 
   describe("per-issue keys", () => {
-    it("are the nine documented SHA-keyed fields", () => {
+    it("are the nine documented fields", () => {
       assert.deepEqual(
         [...VERIFY_ISSUE_FIELDS],
         [
@@ -819,17 +825,24 @@ describe("verification stage (ADR-0053): verify ledger", () => {
   });
 
   describe("resetIssueVerify", () => {
-    it("clears every verify key and nothing else", () => {
+    // The browser runner skips a head that browserRunSha already names, so a
+    // reset that kept it would leave the new round without a browser verdict.
+    it("clears every verify key and the shared browser-run keys, nothing else", () => {
       const s = emptyFactoryState();
       for (const f of VERIFY_ISSUE_FIELDS) setIssueField(s, 7, f, `${SHA_A}:1`);
       setIssueField(s, 7, "browserRunSha", SHA_A);
       setIssueField(s, 7, "browserRunAttempts", `${SHA_A}:1`);
+      setIssueField(s, 7, "intestCommentSha", SHA_A);
       bumpIssueAttempts(s, 7);
       const r = resetIssueVerify(s, 7);
-      assert.deepEqual(r, { ok: true, cleared: [...VERIFY_ISSUE_FIELDS] });
+      assert.deepEqual(r, {
+        ok: true,
+        cleared: [...VERIFY_ISSUE_FIELDS, "browserRunSha", "browserRunAttempts"],
+      });
       for (const f of VERIFY_ISSUE_FIELDS) assert.equal(s.issues["7"][f], null, f);
-      assert.equal(s.issues["7"].browserRunSha, SHA_A);
-      assert.equal(s.issues["7"].browserRunAttempts, `${SHA_A}:1`);
+      assert.equal(s.issues["7"].browserRunSha, null);
+      assert.equal(s.issues["7"].browserRunAttempts, null);
+      assert.equal(s.issues["7"].intestCommentSha, SHA_A);
       assert.equal(s.issues["7"].attempts, 1);
     });
 

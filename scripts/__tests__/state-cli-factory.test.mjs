@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { VERIFY_ISSUE_FIELDS } from "../lib/factory-state.mjs";
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.resolve(HERE, "..", "lib", "state-cli.mjs");
 
@@ -1059,23 +1061,17 @@ describe("factory:browser-status / factory:browser-reset (browser runner health)
 describe("factory:verify-* (pre-In-Test verification stage, ADR-0053)", () => {
   const T0 = "2026-10-20T20:00:00.000Z";
   const SHA = "d".repeat(40);
-  const FIELDS = [
-    "verifySha",
-    "verifyStartedAt",
-    "verifyShell",
-    "verifyShellRunDir",
-    "verifyShellAttempts",
-    "verifyBrowser",
-    "verifyBrowserRunDir",
-    "verifyReportSha",
-    "verifyBounces",
-  ];
+  // The list itself is pinned in factory-state.test.mjs.
+  const FIELDS = [...VERIFY_ISSUE_FIELDS];
+  // A reaped child's pid: no process and no process group to signal, so the
+  // CLI can never SIGTERM something unrelated on the test machine.
+  const DEAD_PID = spawnSync(process.execPath, ["-e", ""]).pid;
   const inFlight = {
     runId: "verify-42-dddddddddddd-20261020T200000Z",
     issue: "42",
     pr: "701",
     sha: SHA,
-    pid: 321,
+    pid: DEAD_PID,
     startedAt: T0,
     deadlineAt: "2026-10-20T20:30:00.000Z",
     runDir: "/tmp/verify-run",
@@ -1186,7 +1182,7 @@ describe("factory:verify-* (pre-In-Test verification stage, ADR-0053)", () => {
       refund: "none",
       issue: "42",
       sha: SHA,
-      // pid 321 is not this run's supervisor, whatever it is on this machine.
+      // The supervisor is long gone: nothing to signal.
       killed: false,
     });
     const state = readState();
@@ -1338,20 +1334,30 @@ describe("factory:verify-* (pre-In-Test verification stage, ADR-0053)", () => {
     }
   });
 
-  it("factory:verify-reset clears every verify key on the issue and nothing else", () => {
+  it("factory:verify-reset clears the verify keys and the shared browser-run keys, nothing else", () => {
     const issue = Object.fromEntries(FIELDS.map((f) => [f, `${SHA}:1`]));
     writeFileSync(
       stateFile,
       JSON.stringify({
-        issues: { 42: { ...issue, browserRunSha: SHA, attempts: 2 }, 43: { verifySha: SHA } },
+        issues: {
+          42: { ...issue, browserRunSha: SHA, intestCommentSha: SHA, attempts: 2 },
+          43: { verifySha: SHA },
+        },
       }),
     );
     const r = run(["factory:verify-reset", "42", "--state-file", stateFile]);
     assert.equal(r.status, 0, r.stderr);
-    assert.deepEqual(JSON.parse(r.stdout), { ok: true, cleared: FIELDS, issueNumber: "42" });
+    assert.deepEqual(JSON.parse(r.stdout), {
+      ok: true,
+      cleared: [...FIELDS, "browserRunSha"],
+      issueNumber: "42",
+    });
     const state = readState();
     for (const f of FIELDS) assert.equal(state.issues["42"][f], null, f);
-    assert.equal(state.issues["42"].browserRunSha, SHA);
+    // The browser runner skips a head browserRunSha names: kept, the new round
+    // would never get a browser verdict.
+    assert.equal(state.issues["42"].browserRunSha, null);
+    assert.equal(state.issues["42"].intestCommentSha, SHA);
     assert.equal(state.issues["42"].attempts, 2);
     assert.equal(state.issues["43"].verifySha, SHA, "other cards untouched");
   });
@@ -1384,11 +1390,119 @@ describe("factory:verify-* (pre-In-Test verification stage, ADR-0053)", () => {
     assert.match(typo.stderr, /invalid issue number/);
   });
 
+  it("factory:verify-pause-until pauses only the lane, never the factory", () => {
+    const r = run([
+      "factory:verify-pause-until",
+      "2026-10-20T22:30:00+02:00",
+      "memory",
+      "--state-file",
+      stateFile,
+      "--now",
+      T0,
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      ok: true,
+      pausedUntil: "2026-10-20T20:30:00.000Z",
+      pausedReason: "memory",
+    });
+    assert.equal(readState().verify.pausedUntil, "2026-10-20T20:30:00.000Z");
+    assert.equal(readState().paused, false);
+    const status = run(["factory:verify-status", "--state-file", stateFile, "--now", T0]);
+    assert.equal(JSON.parse(status.stdout).paused, true);
+    // The factory-wide gate stays open: exit 1 = not paused.
+    assert.equal(run(["factory:paused?", "--state-file", stateFile, "--now", T0]).status, 1);
+  });
+
+  it("factory:verify-pause-until rejects a missing or invalid <until-iso>", () => {
+    const missing = run(["factory:verify-pause-until", "--state-file", stateFile]);
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /requires <until-iso>/);
+    const bad = run(["factory:verify-pause-until", "later", "--state-file", stateFile]);
+    assert.notEqual(bad.status, 0);
+    assert.match(bad.stderr, /invalid <until-iso>/);
+  });
+
+  it("factory:verify-resume clears the lane pause and keeps the in-flight run", () => {
+    seed({
+      verify: { inFlight, pausedUntil: "2026-10-20T23:00:00.000Z", pausedReason: "memory" },
+    });
+    const r = run(["factory:verify-resume", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), { ok: true, paused: false });
+    const { verify } = readState();
+    assert.equal(verify.pausedUntil, null);
+    assert.equal(verify.pausedReason, null);
+    assert.equal(verify.inFlight.runId, inFlight.runId);
+  });
+
+  // A supervisor that, on SIGTERM, rewrites the state file before exiting:
+  // the factory's tick writing during verify-finish's wait.
+  async function finishWhileFactoryWrites(stateOnSigterm) {
+    const ready = path.join(workdir, "verify-writer.ready");
+    if (existsSync(ready)) rmSync(ready);
+    const child = startFakeSupervisor(
+      inFlight.runId,
+      [
+        "const fs = require('node:fs');",
+        "process.on('SIGTERM', () => {",
+        `  fs.writeFileSync(${JSON.stringify(stateFile)}, ${JSON.stringify(JSON.stringify(stateOnSigterm))});`,
+        "  process.exit(0);",
+        "});",
+        `fs.writeFileSync(${JSON.stringify(ready)}, '');`,
+        "setInterval(() => {}, 1000);",
+      ].join("\n"),
+    );
+    try {
+      await new Promise((resolve) => child.once("spawn", resolve));
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(ready)) {
+        if (Date.now() >= deadline) throw new Error("supervisor never became ready");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      seed({ verify: { inFlight: { ...inFlight, pid: child.pid } } });
+      const r = spawnSync(
+        "node",
+        [CLI, "factory:verify-finish", inFlight.runId, "--state-file", stateFile],
+        { encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      return { out: JSON.parse(r.stdout) };
+    } finally {
+      killQuietly(child);
+    }
+  }
+
+  it("factory:verify-finish succeeds when the factory released the run during the wait", async () => {
+    const released = { issues: {}, verify: { inFlight: null } };
+    const { out } = await finishWhileFactoryWrites(released);
+    assert.deepEqual(out, {
+      ok: true,
+      runId: inFlight.runId,
+      releasedBy: "factory",
+      killed: true,
+    });
+    assert.deepEqual(readState(), released, "the factory's write stands");
+  });
+
+  it("factory:verify-finish never releases a run whose pid changed during the wait", async () => {
+    // A tick attached a newer supervisor for the same runId: this command
+    // checked and signalled the old pid only.
+    const reattached = { verify: { inFlight: { ...inFlight, pid: DEAD_PID } } };
+    const { out } = await finishWhileFactoryWrites(reattached);
+    assert.equal(out.ok, false);
+    assert.equal(out.reason, "supervisor-attached-meanwhile");
+    assert.equal(out.pid, DEAD_PID);
+    assert.equal(readState().verify.inFlight.runId, inFlight.runId, "nothing released");
+  });
+
   it("--help lists the verify subcommands", () => {
     const r = run(["--help"]);
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /factory:verify-status/);
     assert.match(r.stdout, /factory:verify-finish <runId>/);
+    assert.match(r.stdout, /factory:verify-pause-until <until-iso>/);
+    assert.match(r.stdout, /factory:verify-resume/);
     assert.match(r.stdout, /factory:verify-reset <issue>/);
   });
 });

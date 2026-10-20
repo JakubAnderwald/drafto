@@ -197,12 +197,15 @@ function emptyIssue() {
     // "<head sha>:<count>" like ciRerun, capping runs that didn't produce one.
     browserRunSha: null,
     browserRunAttempts: null,
-    // Pre-In-Test verification stage, the "Testing" column (ADR-0053). Head-SHA
-    // keyed like the rest, so a push re-arms the stage instead of inheriting a
-    // verdict about code that no longer exists. Lane results read
-    // "<sha>:<state>[:<verdict>]"; counters read "<sha>:<count>" like ciRerun.
+    // Pre-In-Test verification stage, the "Testing" column (ADR-0053). Every
+    // key belongs to one round, the one for verifySha. The results, counters
+    // and verifyReportSha carry their own SHA, so a push re-arms them instead of
+    // inheriting a verdict about code that no longer exists. verifyStartedAt
+    // and the run dirs carry none: they mean nothing once verifySha moves on,
+    // and the stage overwrites them when it starts the new round. Lane results
+    // read "<sha>:<state>[:<verdict>]"; counters read "<sha>:<count>" like ciRerun.
     verifySha: null, // head SHA the current Testing round is for
-    verifyStartedAt: null, // …and when that round began: the anchor for the hold cap
+    verifyStartedAt: null, // when that round began (ISO): the anchor for the hold cap
     verifyShell: null, // shell lane result, "<sha>:<state>[:<verdict>]"
     verifyShellRunDir: null, // run dir of the shell lane's latest run (logs/factory/verify/<runId>)
     verifyShellAttempts: null, // "<sha>:<count>": shell-lane runs started for that SHA
@@ -920,7 +923,11 @@ export function finishCrCliRun(
 //   - the reservation and the card's attempt counter are written in the same
 //     save, before any side effect, so a tick that dies between "reserve" and
 //     "spawn" leaves a run housekeeping can find (pid null) and refund;
-//   - only in-tick callers mutate this; the supervisor never writes state.
+//   - only in-tick callers mutate this; the supervisor never writes state;
+//   - the supervisor leads its own process group and carries the runId on its
+//     command line (coderabbit-cli.mjs does it with `_supervise --run-dir
+//     <runRoot>/<runId>`). factory:verify-finish identifies the run that way:
+//     a live pid without the runId reads as a reused pid and is never signalled.
 // Per-card attempts are head-SHA keyed ("<sha>:<count>" in verifyShellAttempts),
 // so a new push gets a fresh budget without anyone resetting it.
 
@@ -929,9 +936,11 @@ const VERIFY_REFUNDS = new Set(["none", "attempt"]);
 // The count a "<sha>:<count>" value holds for <sha>: 0 for any other SHA, an
 // empty value or a malformed one. Bash writes these with `|| true`, so a value
 // can be anything; reading garbage as 0 re-arms the budget rather than wedging.
+// The SHA is everything before the FIRST colon, as factory-agent.sh reads it
+// (`${raw%%:*}`), so node and bash agree on whose count a value is.
 export function shaKeyedCount(value, sha) {
   if (typeof value !== "string" || sha == null || sha === "") return 0;
-  const i = value.lastIndexOf(":");
+  const i = value.indexOf(":");
   if (i <= 0 || value.slice(0, i) !== String(sha)) return 0;
   const raw = value.slice(i + 1);
   if (!/^\d+$/.test(raw)) return 0;
@@ -1046,7 +1055,12 @@ export function reserveVerifyRun(state, { issue, sha, pr = null, runId, maxAttem
 }
 
 // Fill in what is only known once the supervisor has started. Matches on runId
-// so a late attach from a superseded run can't overwrite a newer one.
+// so a late attach from a superseded run can't overwrite a newer one. false
+// means the reservation was released while the caller was spawning (an
+// operator's factory:verify-finish on a run still at pid null): nothing tracks
+// that supervisor any more, so the caller must stop it and remove its worktree
+// itself, as coderabbit-cli.mjs's runGate does, or a second run can start
+// beside it.
 export function attachVerifyRun(
   state,
   runId,
@@ -1100,12 +1114,22 @@ export function verifyIssueRecords(state) {
   return out;
 }
 
+// What factory:verify-reset clears: the stage's own keys, plus the browser-run
+// keys its browser lane shares with the In Test runner. The runner skips any
+// head that browserRunSha already names, so a reset that kept it would leave
+// the new round waiting for a browser verdict that can never arrive.
+const VERIFY_RESET_FIELDS = Object.freeze([
+  ...VERIFY_ISSUE_FIELDS,
+  "browserRunSha",
+  "browserRunAttempts",
+]);
+
 // Forget the card's verification round so the next tick starts it afresh.
 // Refused while the lane is running for this card: the supervisor's result
 // would land on the cleared record and mark the new round's shell lane done.
-// Stop it with factory:verify-finish first. Fields outside the stage (the
-// shared browserRunSha / browserRunAttempts, attempts) are left alone. An
-// issue with no record is not created: there is nothing to forget.
+// Stop it with factory:verify-finish first. Everything else on the card
+// (attempts, the In Test and review keys) is left alone. An issue with no
+// record is not created: there is nothing to forget.
 export function resetIssueVerify(state, issueNumber) {
   const inFlight = getVerify(state).inFlight;
   if (inFlight && inFlight.issue === String(issueNumber)) {
@@ -1113,7 +1137,7 @@ export function resetIssueVerify(state, issueNumber) {
   }
   const issue = state?.issues?.[String(issueNumber)];
   if (!issue || typeof issue !== "object") return { ok: true, cleared: [] };
-  const cleared = VERIFY_ISSUE_FIELDS.filter((f) => issue[f] != null && issue[f] !== "");
+  const cleared = VERIFY_RESET_FIELDS.filter((f) => issue[f] != null && issue[f] !== "");
   for (const f of cleared) issue[f] = null;
   return { ok: true, cleared };
 }
