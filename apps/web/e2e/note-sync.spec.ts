@@ -1,4 +1,6 @@
-import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+import type { APIRequestContext, Page } from "@playwright/test";
+import { recordRunNotebook } from "./helpers/run-notebooks";
+import { test, expect } from "./helpers/test";
 
 /**
  * External-change sync for the open note (issue #262).
@@ -9,8 +11,9 @@ import { test, expect, type APIRequestContext, type Page } from "@playwright/tes
  * `docs/architecture/testing.md`. Both signals funnel into one reconciliation handler,
  * so what is asserted here (refetch, apply, surface trash) is the shared path.
  *
- * The "XPlat " title prefix is deliberate: it matches the cleanup patterns in
- * `e2e/helpers/cleanup.ts`, so anything these tests leak is swept up later.
+ * The "XPlat " title prefix is deliberate: it matches the E2E name patterns in
+ * `e2e/helpers/e2e-patterns.ts`, so anything these tests leak is purged once it has sat
+ * untouched for a day.
  */
 
 /** Best-effort cleanup — never throws. */
@@ -45,17 +48,13 @@ test.describe("External change sync", () => {
   let notebookId: string;
   let notebookName: string;
 
-  test.beforeAll(async ({ request }) => {
+  test.beforeAll(async ({ request }, testInfo) => {
     notebookName = `XPlat NB ${Date.now()}`;
     const createRes = await request.post("/api/notebooks", { data: { name: notebookName } });
     expect(createRes.ok()).toBe(true);
     notebookId = ((await createRes.json()) as { id: string }).id;
-  });
-
-  test.afterAll(async ({ request }) => {
-    if (notebookId) {
-      await request.delete(`/api/notebooks/${notebookId}`).catch(() => {});
-    }
+    // Deleted with its notes by the run-end teardown.
+    recordRunNotebook(testInfo, notebookId);
   });
 
   /** Create a note via the API and open it in the web editor. */
