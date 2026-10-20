@@ -339,9 +339,14 @@ describe("emailContent", () => {
     assert.equal(d.next.consecutiveBad, 1);
     // Stale branches are skipped before the run, so the fix leads with the
     // environment, not the branch.
-    assert.match(describeReason("signin-failed").fix, /dev Supabase project/);
-    assert.match(describeReason("signin-failed").fix, /still exists and is approved/);
-    assert.doesNotMatch(describeReason("signin-failed").fix, /rebase|Check that the PR's branch/);
+    const fix = describeReason("signin-failed").fix;
+    assert.match(fix, /^the runner's one-time sign-in link.*dev Supabase project/);
+    assert.match(fix, /still exists and is approved/);
+    assert.ok(
+      fix.indexOf("dev Supabase project") < fix.indexOf("check that the PR's branch"),
+      "the branch check comes last, for when GitHub couldn't be asked",
+    );
+    assert.doesNotMatch(fix, /rebase/i);
     assert.match(
       describeReason("preflight:signin-key-mode").fix,
       /dev-supabase-admin\.env, mode 600/,
