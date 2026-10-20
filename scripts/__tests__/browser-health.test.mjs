@@ -337,7 +337,16 @@ describe("emailContent", () => {
   it("counts signin-failed as bad, and explains it and the sign-in key problems", () => {
     const d = decideBrowser(emptyBrowser(), "signin-failed", { now: "2026-10-17T10:00:00.000Z" });
     assert.equal(d.next.consecutiveBad, 1);
-    assert.match(describeReason("signin-failed").fix, /\/auth\/test-sign-in/);
+    // Stale branches are skipped before the run, so the fix leads with the
+    // environment, not the branch.
+    const fix = describeReason("signin-failed").fix;
+    assert.match(fix, /^the runner's one-time sign-in link.*dev Supabase project/);
+    assert.match(fix, /still exists and is approved/);
+    assert.ok(
+      fix.indexOf("dev Supabase project") < fix.indexOf("check that the PR's branch"),
+      "the branch check comes last, for when GitHub couldn't be asked",
+    );
+    assert.doesNotMatch(fix, /rebase/i);
     assert.match(
       describeReason("preflight:signin-key-mode").fix,
       /dev-supabase-admin\.env, mode 600/,
