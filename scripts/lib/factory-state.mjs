@@ -45,7 +45,13 @@
 //     browser: {                           // Claude in Chrome runner health (browser-health.mjs)
 //       consecutiveBad, lastResult, lastResultAt, unavailableSince, reason,
 //       alertedAt, disabled, disabledReason   // see emptyBrowser(). Soft: never
-//     }                                      // pauses the factory.
+//     },                                     // pauses the factory.
+//     verify: {                            // pre-In-Test verification shell lane (ADR-0053)
+//       inFlight: null | { runId, issue, pr, sha, pid, startedAt,
+//                          deadlineAt, runDir, worktree },   // one run at a time, globally
+//       pausedUntil:  ISO|null,           // lane-only pause. Never pauses the factory.
+//       pausedReason: string|null
+//     }
 //   }
 //
 // Atomic writes use the same temp-file + rename pattern as state.mjs. **Callers
@@ -83,11 +89,20 @@ export function emptyFactoryState() {
     toolchainIncident: null,
     crCli: emptyCrCli(),
     browser: emptyBrowser(),
+    verify: emptyVerify(),
   };
 }
 
 export function emptyCrCli() {
   return { runs: [], inFlight: null, pausedUntil: null, pausedReason: null };
+}
+
+// Ledger of the verification stage's shell lane (ADR-0053), modelled on crCli
+// but with no hourly budget: the lane is bounded by RAM, not by a vendor quota,
+// so it only needs the one-run-at-a-time slot and a lane-only pause. The
+// per-card cap lives on the issue record (verifyShellAttempts).
+export function emptyVerify() {
+  return { inFlight: null, pausedUntil: null, pausedReason: null };
 }
 
 // Health of the locked-down browser runner (browser-health.mjs, ADR-0051).
@@ -182,6 +197,22 @@ function emptyIssue() {
     // "<head sha>:<count>" like ciRerun, capping runs that didn't produce one.
     browserRunSha: null,
     browserRunAttempts: null,
+    // Pre-In-Test verification stage, the "Testing" column (ADR-0053). Every
+    // key belongs to one round, the one for verifySha. The results, counters
+    // and verifyReportSha carry their own SHA, so a push re-arms them instead of
+    // inheriting a verdict about code that no longer exists. verifyStartedAt
+    // and the run dirs carry none: they mean nothing once verifySha moves on,
+    // and the stage overwrites them when it starts the new round. Lane results
+    // read "<sha>:<state>[:<verdict>]"; counters read "<sha>:<count>" like ciRerun.
+    verifySha: null, // head SHA the current Testing round is for
+    verifyStartedAt: null, // when that round began (ISO): the anchor for the hold cap
+    verifyShell: null, // shell lane result, "<sha>:<state>[:<verdict>]"
+    verifyShellRunDir: null, // run dir of the shell lane's latest run (logs/factory/verify/<runId>)
+    verifyShellAttempts: null, // "<sha>:<count>": shell-lane runs started for that SHA
+    verifyBrowser: null, // browser lane result, "<sha>:<state>[:<verdict>]"
+    verifyBrowserRunDir: null, // run dir of the browser lane's latest verify run
+    verifyReportSha: null, // head SHA the verification report was posted for (post-once)
+    verifyBounces: null, // "<sha>:<count>": hand-backs to In Review for that SHA
   };
 }
 
@@ -239,6 +270,7 @@ function mergeWithDefaults(parsed) {
         : null,
     crCli: mergeCrCli(parsed.crCli),
     browser: mergeBrowser(parsed.browser),
+    verify: mergeVerify(parsed.verify),
   };
 }
 
@@ -292,6 +324,38 @@ function mergeBrowser(raw) {
     // Truthy garbage reads as disabled: the latch fails safe (browser off).
     disabled: Boolean(raw.disabled),
     disabledReason: str(raw.disabledReason),
+  };
+}
+
+function mergeVerify(raw) {
+  const base = emptyVerify();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return base;
+  return {
+    // Unknown keys pass through, as for browser: the verification stage is
+    // still growing, and an older copy of this file must not erase a newer
+    // one's ledger fields.
+    ...raw,
+    inFlight: mergeVerifyInFlight(raw.inFlight),
+    pausedUntil: typeof raw.pausedUntil === "string" ? raw.pausedUntil : null,
+    pausedReason: typeof raw.pausedReason === "string" ? raw.pausedReason : null,
+  };
+}
+
+function mergeVerifyInFlight(f) {
+  // No runId → it can never be finished, and would hold the lane forever.
+  if (!f || typeof f !== "object" || Array.isArray(f)) return null;
+  if (typeof f.runId !== "string" || f.runId === "") return null;
+  return {
+    ...f,
+    runId: f.runId,
+    issue: strOrNull(f.issue),
+    pr: strOrNull(f.pr),
+    sha: strOrNull(f.sha),
+    pid: Number.isInteger(f.pid) ? f.pid : null,
+    startedAt: strOrNull(f.startedAt),
+    deadlineAt: strOrNull(f.deadlineAt),
+    runDir: strOrNull(f.runDir),
+    worktree: strOrNull(f.worktree),
   };
 }
 
@@ -474,6 +538,21 @@ export function resetIssueAttempts(state, issueNumber) {
   return issue.attempts;
 }
 
+// The verification stage's per-issue keys (documented in emptyIssue). One list
+// feeds the setter allowlist, factory:verify-status and factory:verify-reset,
+// so a key added later can't be writable yet missed by the reset.
+export const VERIFY_ISSUE_FIELDS = Object.freeze([
+  "verifySha",
+  "verifyStartedAt",
+  "verifyShell",
+  "verifyShellRunDir",
+  "verifyShellAttempts",
+  "verifyBrowser",
+  "verifyBrowserRunDir",
+  "verifyReportSha",
+  "verifyBounces",
+]);
+
 // Allowed issue fields a CLI caller may mutate. Restricting the set keeps
 // bash callers from accidentally polluting the schema with typo'd field
 // names (e.g. `lastPanAt`).
@@ -519,6 +598,11 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   // a run that keeps failing retry forever.
   "browserRunSha",
   "browserRunAttempts",
+  // Verification stage keys (ADR-0053). A rejected verifySha re-initialises
+  // the round every tick (the hold cap never runs out); a rejected
+  // verifyReportSha re-posts the report; rejected attempt or bounce counters
+  // let a failing lane or a hand-back loop repeat forever.
+  ...VERIFY_ISSUE_FIELDS,
 ]);
 
 export function setIssueField(state, issueNumber, field, value) {
@@ -828,4 +912,232 @@ export function finishCrCliRun(
   }
   pruneCrCliRuns(state, now);
   return { ok: true, runId: String(runId), refund, issue };
+}
+
+// ── verification stage: shell lane ledger + per-issue keys (ADR-0053) ───────
+//
+// The Testing column's shell lane is a detached supervisor, like the CodeRabbit
+// CLI lane above, and follows the same bookkeeping rules:
+//   - at most one run in flight across the whole factory (a lane runs targeted
+//     tests on the Mac mini, beside the beta lanes, so RAM is the limit);
+//   - the reservation and the card's attempt counter are written in the same
+//     save, before any side effect, so a tick that dies between "reserve" and
+//     "spawn" leaves a run housekeeping can find (pid null) and refund;
+//   - only in-tick callers mutate this; the supervisor never writes state;
+//   - the supervisor leads its own process group and carries the runId on its
+//     command line (coderabbit-cli.mjs does it with `_supervise --run-dir
+//     <runRoot>/<runId>`). factory:verify-finish identifies the run that way:
+//     a live pid without the runId reads as a reused pid and is never signalled.
+// Per-card attempts are head-SHA keyed ("<sha>:<count>" in verifyShellAttempts),
+// so a new push gets a fresh budget without anyone resetting it.
+
+const VERIFY_REFUNDS = new Set(["none", "attempt"]);
+
+// The count a "<sha>:<count>" value holds for <sha>: 0 for any other SHA, an
+// empty value or a malformed one. Bash writes these with `|| true`, so a value
+// can be anything; reading garbage as 0 re-arms the budget rather than wedging.
+// The SHA is everything before the FIRST colon, as factory-agent.sh reads it
+// (`${raw%%:*}`), so node and bash agree on whose count a value is.
+export function shaKeyedCount(value, sha) {
+  if (typeof value !== "string" || sha == null || sha === "") return 0;
+  const i = value.indexOf(":");
+  if (i <= 0 || value.slice(0, i) !== String(sha)) return 0;
+  const raw = value.slice(i + 1);
+  if (!/^\d+$/.test(raw)) return 0;
+  return Number(raw);
+}
+
+// Shallow, IN-PLACE normalisation, for the same reason as getCrCli: callers
+// hold the returned object across several helper calls.
+export function getVerify(state) {
+  const cur = state.verify;
+  if (!cur || typeof cur !== "object" || Array.isArray(cur)) {
+    state.verify = emptyVerify();
+    return state.verify;
+  }
+  if (
+    !cur.inFlight ||
+    typeof cur.inFlight !== "object" ||
+    typeof cur.inFlight.runId !== "string" ||
+    cur.inFlight.runId === ""
+  ) {
+    cur.inFlight = null;
+  }
+  if (typeof cur.pausedUntil !== "string") cur.pausedUntil = null;
+  if (typeof cur.pausedReason !== "string") cur.pausedReason = null;
+  return cur;
+}
+
+export function isVerifyPaused(state, now) {
+  const until = ms(getVerify(state).pausedUntil);
+  if (until == null) return false;
+  return nowMs(now) < until;
+}
+
+// Returns true (and clears the pause in place) only when an expired pause was
+// cleared. An unparseable pausedUntil is cleared too, as for the crCli pause:
+// the lane pause is always timed, and a value that can never expire would
+// stall the lane for good.
+export function clearExpiredVerifyPause(state, now) {
+  const verify = getVerify(state);
+  if (verify.pausedUntil == null) return false;
+  const until = ms(verify.pausedUntil);
+  if (until != null && nowMs(now) < until) return false;
+  resumeVerify(state);
+  return true;
+}
+
+// Lane-only pause: a broken shell lane must never stop planning, implementing
+// or shipping. Cards in Testing still promote once their hold cap runs out.
+export function pauseVerify(state, { until, reason = null } = {}) {
+  const t = ms(until);
+  if (until == null || until === "" || t == null) {
+    throw new Error(`pauseVerify requires a valid <until>: ${until}`);
+  }
+  const verify = getVerify(state);
+  verify.pausedUntil = new Date(t).toISOString();
+  verify.pausedReason = reason == null || reason === "" ? null : String(reason);
+  return verify;
+}
+
+export function resumeVerify(state) {
+  const verify = getVerify(state);
+  verify.pausedUntil = null;
+  verify.pausedReason = null;
+  return verify;
+}
+
+// Claim the lane for one shell run of <issue> at head <sha>. Refusals, in
+// order: "paused" (lane pause), "busy" (a run is in flight, any card),
+// "attempts" (<maxAttempts> runs already started for this SHA). On success the
+// in-flight record has pid null until attachVerifyRun, and the card's
+// verifyShellAttempts counts this run.
+export function reserveVerifyRun(state, { issue, sha, pr = null, runId, maxAttempts, now } = {}) {
+  if (issue == null || issue === "") throw new Error("reserveVerifyRun requires <issue>");
+  if (sha == null || sha === "") throw new Error("reserveVerifyRun requires <sha>");
+  if (runId == null || runId === "") throw new Error("reserveVerifyRun requires <runId>");
+  const max = Number(maxAttempts);
+  if (!Number.isInteger(max) || max < 1) {
+    throw new Error(`reserveVerifyRun: invalid <maxAttempts>: ${maxAttempts}`);
+  }
+  nowMs(now);
+  const verify = getVerify(state);
+  clearExpiredVerifyPause(state, now);
+  if (isVerifyPaused(state, now)) {
+    return {
+      ok: false,
+      reason: "paused",
+      pausedUntil: verify.pausedUntil,
+      pausedReason: verify.pausedReason,
+    };
+  }
+  if (verify.inFlight) {
+    return { ok: false, reason: "busy", inFlight: verify.inFlight };
+  }
+  const card = getIssue(state, issue);
+  const used = shaKeyedCount(card.verifyShellAttempts, sha);
+  if (used >= max) {
+    return { ok: false, reason: "attempts", attempts: used };
+  }
+  verify.inFlight = {
+    runId: String(runId),
+    issue: String(issue),
+    pr: pr == null || pr === "" ? null : String(pr),
+    sha: String(sha),
+    pid: null,
+    startedAt: now,
+    deadlineAt: null,
+    runDir: null,
+    worktree: null,
+  };
+  card.verifyShellAttempts = `${sha}:${used + 1}`;
+  return { ok: true, runId: String(runId), attempt: used + 1 };
+}
+
+// Fill in what is only known once the supervisor has started. Matches on runId
+// so a late attach from a superseded run can't overwrite a newer one. false
+// means the reservation was released while the caller was spawning (an
+// operator's factory:verify-finish on a run still at pid null): nothing tracks
+// that supervisor any more, so the caller must stop it and remove its worktree
+// itself, as coderabbit-cli.mjs's runGate does, or a second run can start
+// beside it.
+export function attachVerifyRun(
+  state,
+  runId,
+  { pid = null, deadlineAt = null, runDir = null, worktree = null } = {},
+) {
+  const verify = getVerify(state);
+  if (!verify.inFlight || verify.inFlight.runId !== String(runId)) return false;
+  Object.assign(verify.inFlight, {
+    pid: Number.isInteger(pid) ? pid : null,
+    deadlineAt: strOrNull(deadlineAt),
+    runDir: strOrNull(runDir),
+    worktree: strOrNull(worktree),
+  });
+  return true;
+}
+
+// Release the lane. refund:
+//   none    — the run happened (whatever its outcome): the attempt is spent.
+//   attempt — it never started, or it was cut short by something that is not
+//             the card's fault (a session limit, the head moving on, an
+//             operator stop): give the attempt back.
+// The refund only touches the counter of the SHA the run was for; once the
+// card has moved to a newer head (or was reset), there is nothing to give back.
+export function finishVerifyRun(state, runId, { refund = "none" } = {}) {
+  if (!VERIFY_REFUNDS.has(refund)) {
+    throw new Error(`finishVerifyRun: invalid refund ${refund} (none|attempt)`);
+  }
+  const verify = getVerify(state);
+  if (!verify.inFlight || verify.inFlight.runId !== String(runId)) {
+    return { ok: false, reason: "run-id-mismatch", inFlight: verify.inFlight };
+  }
+  const { issue, sha } = verify.inFlight;
+  verify.inFlight = null;
+  if (refund === "attempt" && issue != null && sha != null) {
+    const card = getIssue(state, issue);
+    const used = shaKeyedCount(card.verifyShellAttempts, sha);
+    if (used > 0) card.verifyShellAttempts = `${sha}:${used - 1}`;
+  }
+  return { ok: true, runId: String(runId), refund, issue, sha };
+}
+
+// Every issue that carries any verification key, with all of those keys, for
+// factory:verify-status. Issues that never entered Testing are left out.
+export function verifyIssueRecords(state) {
+  const out = {};
+  for (const [n, issue] of Object.entries(state?.issues ?? {})) {
+    if (!issue || typeof issue !== "object") continue;
+    if (!VERIFY_ISSUE_FIELDS.some((f) => issue[f] != null && issue[f] !== "")) continue;
+    out[n] = Object.fromEntries(VERIFY_ISSUE_FIELDS.map((f) => [f, issue[f] ?? null]));
+  }
+  return out;
+}
+
+// What factory:verify-reset clears: the stage's own keys, plus the browser-run
+// keys its browser lane shares with the In Test runner. The runner skips any
+// head that browserRunSha already names, so a reset that kept it would leave
+// the new round waiting for a browser verdict that can never arrive.
+const VERIFY_RESET_FIELDS = Object.freeze([
+  ...VERIFY_ISSUE_FIELDS,
+  "browserRunSha",
+  "browserRunAttempts",
+]);
+
+// Forget the card's verification round so the next tick starts it afresh.
+// Refused while the lane is running for this card: the supervisor's result
+// would land on the cleared record and mark the new round's shell lane done.
+// Stop it with factory:verify-finish first. Everything else on the card
+// (attempts, the In Test and review keys) is left alone. An issue with no
+// record is not created: there is nothing to forget.
+export function resetIssueVerify(state, issueNumber) {
+  const inFlight = getVerify(state).inFlight;
+  if (inFlight && inFlight.issue === String(issueNumber)) {
+    return { ok: false, reason: "run-in-flight", inFlight };
+  }
+  const issue = state?.issues?.[String(issueNumber)];
+  if (!issue || typeof issue !== "object") return { ok: true, cleared: [] };
+  const cleared = VERIFY_RESET_FIELDS.filter((f) => issue[f] != null && issue[f] !== "");
+  for (const f of cleared) issue[f] = null;
+  return { ok: true, cleared };
 }

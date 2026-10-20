@@ -128,7 +128,11 @@
 //                                    crConvergedAt, crCoverageSha, crCoverage,
 //                                    crLastCoveredSha, crCliRuns,
 //                                    crCliFreePassSha, ciRerun,
-//                                    browserRunSha, browserRunAttempts}.
+//                                    browserRunSha, browserRunAttempts,
+//                                    verifySha, verifyStartedAt, verifyShell,
+//                                    verifyShellRunDir, verifyShellAttempts,
+//                                    verifyBrowser, verifyBrowserRunDir,
+//                                    verifyReportSha, verifyBounces}.
 //                                    Empty/`null` clears the field.
 //   factory:get-issue <issue>       Print issues[<n>] as JSON (empty record
 //                                    if absent).
@@ -155,7 +159,7 @@
 //                                    its command line, or the supervisor exited
 //                                    or mid-exit with its group still live (a
 //                                    reused pid is left alone; see
-//                                    crCliRunState) — and waits up to --wait-ms
+//                                    supervisorRunState) — and waits up to --wait-ms
 //                                    (default 10000) for the group to exit.
 //                                    Only then is the run released (killed:
 //                                    true|false). If it is still running, or ps
@@ -175,6 +179,44 @@
 //                                    the only way to clear `disabled` (set when
 //                                    the guard settings failed to load), so run
 //                                    it once the cause is fixed.
+//
+// Pre-In-Test verification stage, the "Testing" column (ADR-0053). The shell
+// lane reserves/attaches/finishes its runs through factory-state.mjs directly;
+// these are the operator's view and escape hatches.
+//
+//   factory:verify-status           Print the verify ledger (inFlight, lane
+//                                    pause, derived `paused`) plus `issues`:
+//                                    every issue carrying any verify* key, with
+//                                    all of them. Clears (and persists) an
+//                                    expired lane pause before reporting.
+//   factory:verify-finish <runId> [--refund none|attempt] [--wait-ms <ms>]
+//                                    Release a stuck in-flight run, exactly as
+//                                    factory:cr-cli-finish does: {ok:false,
+//                                    reason:"run-id-mismatch"} (exit 0) for a
+//                                    runId that isn't in flight; otherwise
+//                                    SIGTERMs the supervisor's process group
+//                                    while the run is still ours, waits up to
+//                                    --wait-ms (default 10000) and only then
+//                                    releases it. --refund attempt gives the
+//                                    card's attempt for that SHA back. If the
+//                                    factory released the run itself during the
+//                                    wait: {ok:true, releasedBy:"factory"}. If it
+//                                    attached a pid this command never checked:
+//                                    {ok:false, reason:"supervisor-attached-
+//                                    meanwhile"}, nothing changed; run it again.
+//                                    The run's worktree is left to housekeeping.
+//   factory:verify-pause-until <iso> [<reason>]
+//                                    Pause ONLY the verification lane until
+//                                    <iso>. Never touches the factory pause.
+//   factory:verify-resume           Clear the lane pause.
+//   factory:verify-reset <issue>    Clear every verify* key on <issue>, plus
+//                                    browserRunSha/-Attempts (the browser runner
+//                                    skips a head browserRunSha names), so the
+//                                    next tick starts its Testing round afresh.
+//                                    Prints {ok:false, reason:"run-in-flight"}
+//                                    (exit 0) and changes nothing while the lane
+//                                    is running for that issue: verify-finish
+//                                    it first.
 //
 // Nightly beta-release retry counters (ADR-0042). These live in
 // logs/support-release-state.json — written only by nightly-support.sh, so they
@@ -237,6 +279,14 @@ import {
   finishCrCliRun,
   emptyBrowser,
   resetBrowser,
+  getVerify,
+  isVerifyPaused,
+  clearExpiredVerifyPause,
+  pauseVerify,
+  resumeVerify,
+  finishVerifyRun,
+  verifyIssueRecords,
+  resetIssueVerify,
 } from "./factory-state.mjs";
 import { bumpNotification, bumpCounters } from "./policy.mjs";
 import { isManualReviewCommand } from "./coderabbit-review.mjs";
@@ -276,10 +326,10 @@ function processGroupExists(pgid) {
 }
 
 // Is the in-flight run still running — the supervisor OR anything in its process
-// group? The supervisor leads its own group, and the CodeRabbit CLI it spawned
-// lives in that group and can outlive it (it may ignore SIGTERM, or be mid-
-// shutdown), so a dead supervisor alone doesn't prove the vendor connection is
-// gone. One process-table snapshot decides:
+// group? The supervisor leads its own group, and the CodeRabbit CLI (or, for the
+// verification lane, the claude session) it spawned lives in that group and can
+// outlive it (it may ignore SIGTERM, or be mid-shutdown), so a dead supervisor
+// alone doesn't prove the work is gone. One process-table snapshot decides:
 //   - leader alive (not a zombie) → "alive" if its command carries the runId,
 //     else "gone" (a reused pid: POSIX never reuses a pid still in use as a
 //     process group id, so our group can't exist alongside it);
@@ -291,7 +341,7 @@ function processGroupExists(pgid) {
 //   - leader exited or an unreaped zombie → "alive" while any non-zombie process
 //     still has pgid == pid (the CLI it started), else "gone".
 // "unknown" when ps fails while the pid or its group still exists.
-function crCliRunState(inFlight) {
+function supervisorRunState(inFlight) {
   const pid = inFlight?.pid;
   // A manual `coderabbit-cli.mjs review` holds the lane from its own process:
   // it is not a group leader and its run id never reaches argv, so it is alive
@@ -324,14 +374,16 @@ function crCliRunState(inFlight) {
 
 // Releasing a run in the ledger without stopping it would leave a vendor review
 // running that nothing collects, and the gate free to start a second one — which
-// the vendor refuses while the first is connected. So the release only happens
-// once the run is verifiably gone: SIGTERM its process group (the supervisor was
-// spawned detached, so -pid reaches the CLI too), then wait, bounded, until no
-// live member of the group is left. Returns {state, signalled, killed}:
-// `signalled` = SIGTERM was sent; `killed` = sent AND the group is now gone, so
-// a group that shrugged off the signal never reads as killed.
-async function stopCrCliSupervisor(inFlight, { waitMs }) {
-  const initial = crCliRunState(inFlight);
+// the vendor refuses while the first is connected. (For the verification lane:
+// a second test run on top of the first, on a Mac mini already short of RAM.)
+// So the release only happens once the run is verifiably gone: SIGTERM its
+// process group (the supervisor was spawned detached, so -pid reaches its child
+// too), then wait, bounded, until no live member of the group is left. Returns
+// {state, signalled, killed}: `signalled` = SIGTERM was sent; `killed` = sent
+// AND the group is now gone, so a group that shrugged off the signal never
+// reads as killed.
+async function stopSupervisor(inFlight, { waitMs }) {
+  const initial = supervisorRunState(inFlight);
   if (initial !== "alive") return { state: initial, signalled: false, killed: false };
   try {
     // A manual review traps SIGTERM itself (stops its CLI child, frees the
@@ -341,10 +393,10 @@ async function stopCrCliSupervisor(inFlight, { waitMs }) {
     // Fall through to the wait: it reports whatever state the group is in.
   }
   const deadline = Date.now() + waitMs;
-  let state = crCliRunState(inFlight);
+  let state = supervisorRunState(inFlight);
   while (state === "alive" && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
-    state = crCliRunState(inFlight);
+    state = supervisorRunState(inFlight);
   }
   return { state, signalled: true, killed: state === "gone" };
 }
@@ -757,7 +809,7 @@ async function main(argv) {
       // a bad invocation fails before anything is signalled.
       const check = finishCrCliRun(structuredClone(snapshot), runId, { refund, now });
       if (!check.ok) return check;
-      const stop = await stopCrCliSupervisor(inFlight, { waitMs });
+      const stop = await stopSupervisor(inFlight, { waitMs });
       if (stop.state !== "gone") {
         // Still running, or unverifiable: keep inFlight, so the gate won't start
         // a second (vendor-refused) run and housekeeping still owns this one.
@@ -790,6 +842,105 @@ async function main(argv) {
       const browser = resetBrowser(state);
       await saveFactoryState(state, file);
       return { ok: true, browser };
+    }
+    case "factory:verify-status": {
+      const state = await loadFactoryState(file);
+      // Auto-resume-on-read, as in factory:cr-cli-status.
+      if (clearExpiredVerifyPause(state, now)) {
+        await saveFactoryState(state, file);
+      }
+      return {
+        ...getVerify(state),
+        paused: isVerifyPaused(state, now),
+        issues: verifyIssueRecords(state),
+      };
+    }
+    case "factory:verify-finish": {
+      const runId = positional[0];
+      if (!runId) {
+        throw new Error("factory:verify-finish requires <runId> [--refund none|attempt]");
+      }
+      const refund = flags.refund ?? "none";
+      const waitMs = flags["wait-ms"] == null ? 10_000 : Number(flags["wait-ms"]);
+      if (!Number.isFinite(waitMs) || waitMs < 0) {
+        throw new Error(`factory:verify-finish: invalid --wait-ms: ${flags["wait-ms"]}`);
+      }
+      const snapshot = await loadFactoryState(file);
+      const inFlight = getVerify(snapshot).inFlight;
+      // Dry-finish a throwaway copy first, as cr-cli-finish does: a bad runId
+      // or --refund fails before anything is signalled.
+      const check = finishVerifyRun(structuredClone(snapshot), runId, { refund });
+      if (!check.ok) return check;
+      // Only the pid and runId decide ownership: this lane has no manual runs.
+      const stop = await stopSupervisor({ runId: inFlight.runId, pid: inFlight.pid }, { waitMs });
+      if (stop.state !== "gone") {
+        // Keep inFlight: the lane must not start a second run beside this one.
+        return {
+          ok: false,
+          reason: stop.state === "alive" ? "supervisor-still-running" : "supervisor-unverifiable",
+          runId,
+          pid: inFlight.pid ?? null,
+          signalled: stop.signalled,
+          killed: stop.killed,
+        };
+      }
+      // Re-load: the wait can take seconds while the factory keeps writing.
+      const state = await loadFactoryState(file);
+      const current = getVerify(state).inFlight;
+      // The factory released the run itself meanwhile (housekeeping saw it
+      // exit): the lane is free, which is what was asked for.
+      if (current?.runId !== runId) {
+        return { ok: true, runId, releasedBy: "factory", killed: stop.killed };
+      }
+      // The tick attached a supervisor after the snapshot was read (the run
+      // was still at pid null, or held a stale pid). That process was never
+      // checked or signalled, so releasing it now would leave it running with
+      // nothing tracking it. Change nothing and let the operator run it again.
+      if ((current.pid ?? null) !== (inFlight.pid ?? null)) {
+        return {
+          ok: false,
+          reason: "supervisor-attached-meanwhile",
+          runId,
+          pid: current.pid ?? null,
+          killed: stop.killed,
+        };
+      }
+      const result = finishVerifyRun(state, runId, { refund });
+      await saveFactoryState(state, file);
+      return { ...result, killed: stop.killed };
+    }
+    case "factory:verify-pause-until": {
+      const until = positional[0];
+      const reason = positional[1] ?? null;
+      if (!until) throw new Error("factory:verify-pause-until requires <until-iso> [<reason>]");
+      if (Number.isNaN(Date.parse(until))) {
+        throw new Error(`factory:verify-pause-until: invalid <until-iso>: ${until}`);
+      }
+      const state = await loadFactoryState(file);
+      const verify = pauseVerify(state, { until, reason });
+      await saveFactoryState(state, file);
+      return { ok: true, pausedUntil: verify.pausedUntil, pausedReason: verify.pausedReason };
+    }
+    case "factory:verify-resume": {
+      const state = await loadFactoryState(file);
+      resumeVerify(state);
+      await saveFactoryState(state, file);
+      return { ok: true, paused: false };
+    }
+    case "factory:verify-reset": {
+      const issueNumber = positional[0];
+      if (!issueNumber) throw new Error("factory:verify-reset requires <issue>");
+      // A typo (`#465`) must fail loudly, not report a reset of a record that
+      // was never the card's.
+      if (!/^[1-9][0-9]*$/.test(issueNumber)) {
+        throw new Error(
+          `factory:verify-reset: invalid issue number ${JSON.stringify(issueNumber)}`,
+        );
+      }
+      const state = await loadFactoryState(file);
+      const result = resetIssueVerify(state, issueNumber);
+      if (result.ok && result.cleared.length > 0) await saveFactoryState(state, file);
+      return { ...result, issueNumber };
     }
     case "record-release-attempt": {
       const issueNumber = positional[0];
@@ -872,7 +1023,12 @@ async function main(argv) {
           "factory:cr-cli-resume|" +
           "factory:cr-cli-finish <runId> [--refund none|spawn|card]|" +
           "factory:browser-status|" +
-          "factory:browser-reset> " +
+          "factory:browser-reset|" +
+          "factory:verify-status|" +
+          "factory:verify-finish <runId> [--refund none|attempt] [--wait-ms <ms>]|" +
+          "factory:verify-pause-until <until-iso> [<reason>]|" +
+          "factory:verify-resume|" +
+          "factory:verify-reset <issue>> " +
           "[--state-file <path>] [--now <iso>]\n",
       );
       return null;
