@@ -257,15 +257,16 @@ FACTORY_INTEST_BETA="${FACTORY_INTEST_BETA:-0}"
 FACTORY_INTEST_BETA_DESKTOP="${FACTORY_INTEST_BETA_DESKTOP:-0}"
 
 # ── Browser runner (Claude in Chrome, ADR-0051) ────────────────────────────
-# Off by default. When on, ONE kind of claude call gets Chrome: run_browser_task,
-# a locked-down session (dontAsk, no built-in tools, a guard hook pinning the
-# Mac mini's browser and the run's exact target host). Every other call passes
-# --no-chrome, because the code-writing stages have Bash and file access and the
-# browser is the operator's own signed-in profile. FACTORY_BROWSER_KINDS picks
-# which uses are live; PR 1 ships only `intest` (the In Test web run).
-FACTORY_BROWSER="${FACTORY_BROWSER:-0}"
+# On by default; FACTORY_BROWSER=0 in the plist turns it off. ONE kind of claude
+# call gets Chrome: run_browser_task, a locked-down session (dontAsk, no built-in
+# tools, a guard hook pinning the Mac mini's browser and the run's exact target
+# host). Every other call passes --no-chrome, because the code-writing stages
+# have Bash and file access and the browser is the operator's own signed-in
+# profile. FACTORY_BROWSER_KINDS picks which uses are live; PR 1 ships only
+# `intest` (the In Test web run).
+FACTORY_BROWSER="${FACTORY_BROWSER:-1}"
 if [[ "$FACTORY_BROWSER" != "0" && "$FACTORY_BROWSER" != "1" ]]; then
-  echo "WARNING: invalid FACTORY_BROWSER='$FACTORY_BROWSER'; defaulting to 0" >&2
+  echo "WARNING: invalid FACTORY_BROWSER='$FACTORY_BROWSER'; turning the browser runner off" >&2
   FACTORY_BROWSER=0
 fi
 # Comma list. Unknown words are dropped (with a warning) rather than failing the

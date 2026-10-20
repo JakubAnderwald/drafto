@@ -420,7 +420,7 @@ Today it has one use, the **In Test web run**:
 
 | Var                               | Default                                   | Purpose                                                                                                                                                                                                                                            |
 | --------------------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FACTORY_BROWSER`                 | `0`                                       | Master switch. Anything but `0`/`1` falls back to `0`.                                                                                                                                                                                             |
+| `FACTORY_BROWSER`                 | `1`                                       | Master switch; `0` turns the runner off. Anything but `0`/`1` falls back to `0`.                                                                                                                                                                   |
 | `FACTORY_BROWSER_KINDS`           | `intest`                                  | Comma list of live uses. Only `intest` exists so far; unknown words are dropped with a warning.                                                                                                                                                    |
 | `FACTORY_BROWSER_DEVICE_ID`       | `9796912b-8977-4d74-9c08-d9bb283b9496`    | The only browser the guard lets the runner select: this Mac mini's Chrome, never the MacBook's. A malformed value turns the runner off.                                                                                                            |
 | `FACTORY_BROWSER_TIMEOUT_SEC`     | `900`                                     | Wall cap per runner session.                                                                                                                                                                                                                       |
@@ -453,7 +453,7 @@ Today it has one use, the **In Test web run**:
      > ~/drafto-secrets/dev-supabase-admin.env && chmod 600 ~/drafto-secrets/dev-supabase-admin.env; unset TOKEN
    ```
    The web app's `/auth/test-sign-in` route must be on the PR's branch: it is on every branch cut after ADR-0051 landed.
-6. **Switch it on.** Add `FACTORY_BROWSER=1` (and `FACTORY_BROWSER_KINDS=intest`) to the plist's `EnvironmentVariables`, then `launchctl unload`/`load` it.
+6. **Nothing to switch on.** The runner is on by default (`FACTORY_BROWSER=1`, `FACTORY_BROWSER_KINDS=intest`), so the next tick after steps 1–5 runs it. To turn it off, set `FACTORY_BROWSER=0` in the plist's `EnvironmentVariables`, then `launchctl unload`/`load` it.
 
 ### What a run leaves behind
 
