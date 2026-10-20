@@ -16,7 +16,8 @@ import { fileURLToPath } from "node:url";
 //   2. the runner is dontAsk with no built-in tools, a generated --settings
 //      guard, a pinned session id, and its prompt on stdin (it carries a
 //      password), and a guard that never loaded turns the runner off;
-//   3. the knobs are off by default and validated under bash 3.2;
+//   3. the switch is on by default, a bad value turns it off, and the knobs
+//      are validated under bash 3.2;
 //   4. the In Test web run is once per head SHA, bounded per SHA, waits for
 //      the scenario and the per-commit preview, never moves the card, and only
 //      posts what browser-report.mjs rendered.
@@ -183,7 +184,7 @@ describe("factory-agent.sh browser runner: static wiring", () => {
 
 describe("factory-agent.sh browser runner: knobs under bash 3.2", () => {
   const block = script.match(
-    /FACTORY_BROWSER="\$\{FACTORY_BROWSER:-0\}"[\s\S]*?FACTORY_BROWSER_MAX_ATTEMPTS=2\n/,
+    /FACTORY_BROWSER="\$\{FACTORY_BROWSER-1\}"[\s\S]*?FACTORY_BROWSER_MAX_ATTEMPTS=2\n/,
   );
 
   function runKnobs(env) {
@@ -201,11 +202,11 @@ describe("factory-agent.sh browser runner: knobs under bash 3.2", () => {
     return r;
   }
 
-  it("is off by default, with intest as the default kind", () => {
+  it("is on by default, with intest as the default kind", () => {
     const r = runKnobs({});
     assert.match(
       r.stdout,
-      /^B=0 K=intest T=900 A=\/home\/test\/drafto-secrets\/browser-account\.env$/m,
+      /^B=1 K=intest T=900 A=\/home\/test\/drafto-secrets\/browser-account\.env$/m,
     );
   });
 
@@ -213,6 +214,12 @@ describe("factory-agent.sh browser runner: knobs under bash 3.2", () => {
     const r = runKnobs({ FACTORY_BROWSER: "yes" });
     assert.match(r.stdout, /^B=0 /m);
     assert.match(r.stderr, /invalid FACTORY_BROWSER='yes'/);
+  });
+
+  it("falls back to off on an empty switch, rather than taking the default", () => {
+    const r = runKnobs({ FACTORY_BROWSER: "" });
+    assert.match(r.stdout, /^B=0 /m);
+    assert.match(r.stderr, /invalid FACTORY_BROWSER=''/);
   });
 
   it("drops unknown kinds and keeps known ones", () => {
