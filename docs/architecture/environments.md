@@ -99,7 +99,7 @@ pnpm supabase:link:prod
 pnpm supabase:push
 ```
 
-The `pnpm migration:check` script runs [`scripts/check-migration-safety.sh`](../../scripts/check-migration-safety.sh) and scans for `DROP TABLE`, `TRUNCATE`, and unqualified `DELETE` patterns.
+The `pnpm migration:check` script runs [`scripts/check-migration-safety.sh`](../../scripts/check-migration-safety.sh) and scans for `DROP TABLE`, `TRUNCATE`, and unqualified `DELETE` patterns, and for `public` tables / views created without an explicit `GRANT` ([ADR 0052](../adr/0052-explicit-data-api-grants.md)).
 
 Full safety rules (never `db reset` against production, confirmation requirements, etc.) live in [`../operations/migrations.md`](../operations/migrations.md) and [ADR 0008](../adr/0008-production-data-safety-guardrails.md).
 

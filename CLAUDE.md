@@ -168,6 +168,7 @@ Common CI failure patterns:
 - Server client: `import { createClient } from "@/lib/supabase/server"`
 - Session refresh handled automatically by middleware
 - Never import `@supabase/supabase-js` directly in components
+- A new table or view in `public` needs explicit `GRANT`s in the migration that creates it, and a view also needs `security_invoker = true`. Supabase stops auto-granting the Data API roles on 2026-10-30, and `pnpm migration:check` fails without them. See [`docs/operations/migrations.md`](./docs/operations/migrations.md#new-tables-need-explicit-grants)
 
 ## Git Conventions
 
@@ -316,7 +317,7 @@ pnpm lint             # ESLint (all packages)
 pnpm format:check     # Prettier check
 pnpm test             # Unit + integration tests (all packages)
 pnpm typecheck        # TypeScript check (all packages)
-pnpm migration:check  # Check migrations for destructive SQL
+pnpm migration:check  # Check migrations for destructive SQL and missing Data API grants
 ```
 
 ## Local Dev Setup
