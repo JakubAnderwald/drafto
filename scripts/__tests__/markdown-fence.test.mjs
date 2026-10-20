@@ -41,10 +41,28 @@ describe("fenceStep", () => {
     assert.equal(stateAfter(["````md", "```js", "x", "```", "````"]), null);
   });
 
+  it("doesn't open on a line four spaces or a tab in: that's indented code", () => {
+    assert.deepEqual(fenceStep(null, "   ```"), { char: "`", len: 3 });
+    assert.equal(fenceStep(null, "    ```"), null);
+    assert.equal(fenceStep(null, "    ~~~~md"), null);
+    assert.equal(fenceStep(null, "\t```"), null);
+  });
+
+  it("doesn't close on a line four spaces or a tab in: that's content", () => {
+    const open = { char: "`", len: 3 };
+    assert.equal(fenceStep(open, "   ```"), null);
+    assert.deepEqual(fenceStep(open, "    ```"), open);
+    assert.deepEqual(fenceStep(open, "\t```"), open);
+    assert.deepEqual(stateAfter(["```", "    ```", "x"]), open);
+  });
+
   it("FENCE_LINE matches what looks like a fence line", () => {
     assert.ok(FENCE_LINE.test("  ```bash"));
+    assert.ok(FENCE_LINE.test("   ~~~"));
     assert.ok(FENCE_LINE.test("~~~"));
     assert.ok(!FENCE_LINE.test("text ```"));
+    assert.ok(!FENCE_LINE.test("    ```bash"));
+    assert.ok(!FENCE_LINE.test("\t~~~"));
   });
 });
 
@@ -59,5 +77,13 @@ describe("closeFences", () => {
     for (const text of ["", "plain", "```\nx\n```", "~~~\n```\n~~~"]) {
       assert.equal(closeFences(text), text);
     }
+  });
+
+  it("adds no closer for a fence-like line four spaces in, and closes past one", () => {
+    // A column-0 closer for a line GitHub reads as text would open a real fence.
+    assert.equal(closeFences("out:\n\n    ```\n    x"), "out:\n\n    ```\n    x");
+    assert.equal(closeFences("\t~~~\nx"), "\t~~~\nx");
+    // ...and an indented "closer" doesn't close a real fence.
+    assert.equal(closeFences("```\nx\n    ```"), "```\nx\n    ```\n```");
   });
 });

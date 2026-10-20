@@ -799,12 +799,13 @@ describe("defanging and markers", () => {
 });
 
 // Lines of <body> that sit inside a fenced code block, by CommonMark's rule
-// (same character, at least as long, nothing after the closer).
+// (at most three spaces in, same character, at least as long, nothing after
+// the closer).
 function linesInsideFences(body) {
   const inside = new Set();
   let open = null;
   for (const line of body.split("\n")) {
-    const m = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
+    const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
     if (open === null) {
       if (m && !(m[1][0] === "`" && m[2].includes("`"))) open = { c: m[1][0], n: m[1].length };
     } else if (m && m[1][0] === open.c && m[1].length >= open.n && !m[2].trim()) {
@@ -874,6 +875,21 @@ describe("rendering stays intact around lane fences", () => {
       },
     });
     assertStructureIntact(r.body);
+  });
+
+  it("a fence-like line four spaces in is text, so no closer is added for it", () => {
+    // GitHub reads it as indented code; a column-0 closer would open a real
+    // fence and swallow the rest of the comment.
+    const r = compose({
+      shell: {
+        state: "reported:pass",
+        text: shellOutput({ extra: "Raw output:\n\n    ```\n    still text\n\n    ~~~~md" }),
+      },
+    });
+    assertStructureIntact(r.body);
+    assert.match(r.body, /\n {4}still text\n/);
+    const lines = r.body.split("\n");
+    assert.ok(!lines.includes("```") && !lines.includes("~~~~"), "no closer was added");
   });
 
   it("a manual step whose first line is a fence reads as text", () => {

@@ -10,10 +10,16 @@
 // fence's info string can't contain a backtick) and closes only on the same
 // character, at least as long, with nothing but whitespace after it. So a
 // ```` ````md ```` block that quotes a ```` ```js ```` block is still open
-// after the inner ```` ``` ````.
+// after the inner ```` ``` ````. Either fence line may be indented at most
+// three spaces: a fourth space or a tab makes the line indented code, i.e.
+// text. That matters most for closeFences, whose closer goes at column 0 — a
+// closer added for a "fence" GitHub reads as text would open a real one and
+// swallow the rest of the comment. Inside a list item the indent counts from
+// the item's content column, so callers pass text with the list indentation
+// already taken off.
 
-// A line that looks like a fence: indent, the marker run, the rest.
-export const FENCE_LINE = /^\s*(`{3,}|~{3,})(.*)$/;
+// A line that looks like a fence: up to three spaces, the marker run, the rest.
+export const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 
 // The fence state after <line>, given the state before it: null when no fence
 // is open, else { char, len } of the open one.

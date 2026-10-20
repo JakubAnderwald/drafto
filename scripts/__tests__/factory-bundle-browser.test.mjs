@@ -238,6 +238,45 @@ describe("extractScenarioSections", () => {
     assert.match(sections[0].text, /### Not a section[\s\S]*2\. Save\./);
   });
 
+  it("reads a fence line four spaces in as text, by CommonMark's rule", () => {
+    // Indented code that shows a fence doesn't open one, so it can't swallow
+    // the next section...
+    const opener = [
+      "## Test scenario",
+      "### Web",
+      "Expected log output:",
+      "",
+      "    ```",
+      "    raw",
+      "",
+      "### iOS",
+      "1. Tap.",
+    ].join("\n");
+    assert.deepEqual(
+      extractScenarioSections(opener).map((s) => s.heading),
+      ["Web", "iOS"],
+    );
+    assert.doesNotMatch(extractWebSection(opener), /Tap\./);
+    // ...and inside a real fence it doesn't close it.
+    const closer = [
+      "## Test scenario",
+      "### Web",
+      "```",
+      "    ```",
+      "### Not a section",
+      "```",
+      "### iOS",
+      "1. Tap.",
+    ].join("\n");
+    const sections = extractScenarioSections(closer);
+    assert.deepEqual(
+      sections.map((s) => s.heading),
+      ["Web", "iOS"],
+    );
+    assert.match(sections[0].text, /### Not a section/);
+    assert.equal(sections[0].text, extractWebSection(closer));
+  });
+
   it("counts a heading only at the start of its line, the rule that ends a section", () => {
     const body = "## Test scenario\n### Web\n1. a\n  ### iOS\n1. b\n### macOS\n1. c";
     assert.deepEqual(extractScenarioSections(body), [
