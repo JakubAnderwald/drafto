@@ -2469,15 +2469,23 @@ preview_url_for_sha() {
 }
 
 # head_has_signin_route <sha> — does this commit have the preview sign-in route?
-# 0 yes; 1 no (GitHub answered 404 for the file at that ref, which is also what
-# an unknown SHA gets); 2 couldn't tell (any other failure). Callers fail open on
-# 2: a GitHub hiccup must not quietly drop a browser run that would have worked.
+# 0 yes; 1 no (GitHub answered 404 for the file at that ref); 2 couldn't tell.
+# Callers fail open on 2: a GitHub hiccup must not quietly drop a browser run
+# that would have worked.
 head_has_signin_route() {
   local err
+  # The factory runs main, so the route is in this checkout. If it isn't, the
+  # path is out of date (the route moved), and every branch would look stale.
+  if [[ ! -f "$REPO_ROOT/$FACTORY_SIGNIN_ROUTE_PATH" ]]; then
+    log "WARNING: $FACTORY_SIGNIN_ROUTE_PATH isn't in $REPO_ROOT; skipping the stale-branch check until FACTORY_SIGNIN_ROUTE_PATH is fixed"
+    return 2
+  fi
   if err=$(gh api "repos/JakubAnderwald/drafto/contents/$FACTORY_SIGNIN_ROUTE_PATH?ref=$1" --silent 2>&1 >/dev/null); then
     return 0
   fi
-  [[ "$err" == *"HTTP 404"* ]] && return 1
+  # An unknown or not-yet-replicated SHA is a 404 too ("No commit found for the
+  # ref"), but it says nothing about the file.
+  [[ "$err" == *"HTTP 404"* && "$err" != *"No commit found"* ]] && return 1
   printf '%s\n' "$err" >>"$LOG_FILE"
   return 2
 }
@@ -2630,32 +2638,6 @@ intest_browser_run() {
     log "Issue #$issue_num: PR #$pr_num head is now ${live_head:0:12} (not ${head_sha:0:12}) or the PR closed; skipping the browser run until --watch catches up"
     return 1
   fi
-  # A branch cut before the sign-in route landed can't sign in on its preview,
-  # and no retry fixes that. Skip it before a session or a health strike, and
-  # say once on the issue how to get a run. A new head re-arms the check.
-  local route_rc=0
-  head_has_signin_route "$head_sha" || route_rc=$?
-  if [[ "$route_rc" -eq 1 ]]; then
-    log "Issue #$issue_num: PR #$pr_num's head ${head_sha:0:12} predates /auth/test-sign-in; no browser run for this commit"
-    if [[ "$DRY_RUN" -eq 0 ]]; then
-      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" browserRunSha "$head_sha" \
-        --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-      if ! issue_has_marker "$issue_num" "drafto-factory-browser-stale-branch"; then
-        gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
-          --body "🏭 **No browser run for \`${head_sha:0:7}\`.**
-
-PR #$pr_num's branch was cut before the preview sign-in route (\`/auth/test-sign-in\`) \
-landed on \`main\`, so the factory's browser runner can't sign in on its preview. \
-Update the branch from \`main\` (the **Update branch** button on PR #$pr_num) and the \
-next commit gets a browser run. The card is unaffected.
-
-<!-- drafto-factory-browser-stale-branch -->" >>"$LOG_FILE" 2>&1 || true
-      fi
-    fi
-    return 1
-  elif [[ "$route_rc" -ne 0 ]]; then
-    log "WARNING: couldn't check whether ${head_sha:0:12} has /auth/test-sign-in; running anyway"
-  fi
 
   if ! preflight=$(node "$SCRIPT_DIR/lib/browser-health.mjs" preflight --state-file "$STATE_FILE" \
       --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
@@ -2698,6 +2680,35 @@ next commit gets a browser run. The card is unaffected.
         --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     fi
     return 1
+  fi
+  # A branch cut before the sign-in route landed can't sign in on its preview,
+  # and no retry fixes that. Checked last, once nothing else stands in the way,
+  # so the note never promises a run that something else would stop. The commit
+  # gets no session and no health strike; the issue gets one note per commit,
+  # and the SHA is recorded only once that note is on the issue.
+  local route_rc=0 stale_marker="drafto-factory-browser-stale-branch:${head_sha:0:12}"
+  head_has_signin_route "$head_sha" || route_rc=$?
+  if [[ "$route_rc" -eq 1 ]]; then
+    log "Issue #$issue_num: PR #$pr_num's head ${head_sha:0:12} predates /auth/test-sign-in; no browser run for this commit"
+    [[ "$DRY_RUN" -eq 1 ]] && return 1
+    if echo "$comments_json" | jq -e --arg m "$stale_marker" 'any(.[]; .body | contains($m))' >/dev/null 2>&1 \
+        || gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+          --body "🏭 **No browser run for \`${head_sha:0:7}\`.**
+
+PR #$pr_num's branch was cut before the preview sign-in route (\`/auth/test-sign-in\`) \
+landed on \`main\`, so the factory's browser runner can't sign in on its preview. \
+Merge \`main\` into the branch (the **Update branch** button on PR #$pr_num, not \
+\"Update with rebase\") and the next commit gets a browser run. The card is unaffected.
+
+<!-- $stale_marker -->" >>"$LOG_FILE" 2>&1; then
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" browserRunSha "$head_sha" \
+        --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    else
+      log "WARNING: posting the stale-branch note on #$issue_num failed; trying again next tick"
+    fi
+    return 1
+  elif [[ "$route_rc" -ne 0 ]]; then
+    log "WARNING: couldn't check whether ${head_sha:0:12} has /auth/test-sign-in; running anyway"
   fi
   if [[ "$DRY_RUN" -eq 1 ]]; then
     log "DRY-RUN: would run the In Test web steps for #$issue_num on $target"
@@ -2769,11 +2780,12 @@ next commit gets a browser run. The card is unaffected.
       return 2
       ;;
     signin-failed)
-      # The route check above already skipped branches without
-      # /auth/test-sign-in, so this is the environment: a preview not on dev
-      # Supabase, or a test account that's gone or unapproved. No retry fixes
-      # that: the attempt stays spent, the issue gets no comment, and the
-      # health tracker tells the operator.
+      # The route check above skips branches without /auth/test-sign-in, so
+      # this is usually the environment: a preview not on dev Supabase, or a
+      # test account that's gone or unapproved. (Or a stale branch the check
+      # couldn't ask GitHub about.) No retry fixes that: the attempt stays
+      # spent, the issue gets no comment, and the health tracker tells the
+      # operator.
       log "Issue #$issue_num: the runner couldn't sign in on the preview with its one-time link; nothing posted (see $run_dir)"
       return 2
       ;;

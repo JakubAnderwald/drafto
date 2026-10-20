@@ -207,8 +207,9 @@ export function describeReason(reason, { accountFile = DEFAULT_ACCOUNT_FILE, at 
         fix:
           "the runner's one-time sign-in link didn't sign it in on the preview. Check that the preview uses " +
           "the dev Supabase project, and that the test account in the account file still exists and is approved. " +
-          "(A branch cut before /auth/test-sign-in landed doesn't end up here: the factory skips it before " +
-          "the run and says so on the issue.)",
+          "A branch cut before /auth/test-sign-in landed is normally skipped before the run (with a note on the " +
+          "issue), but not when GitHub couldn't be asked: if the factory log has a \"couldn't check whether\" " +
+          "warning for this commit, check that the PR's branch has the route.",
       };
     case "preflight:signin-key-missing":
     case "preflight:signin-key-not-a-file":

@@ -161,7 +161,7 @@ The browser run is on by default. It is off when the plist sets `FACTORY_BROWSER
 - a successful `vercel[bot]` deployment of that commit;
 - its turn, since one card runs per tick.
 
-It also skips a scenario without a `### Web` section, and a card with a revision request pending.
+It also skips a scenario without a `### Web` section, and a card with a revision request pending. A PR whose branch was cut before `/auth/test-sign-in` landed gets no run either: the issue gets a "No browser run" note asking for `main` to be merged into the branch (the **Update branch** button), and the next commit gets its run.
 
 When the browser itself is the problem, the issue gets no comment and the operator gets an email after two bad results in a row: Chrome not running, the extension signed out, or the Vercel login expired. Check `node scripts/lib/state-cli.mjs factory:browser-status`, and `factory:get-issue <n>` → `browserRunSha` / `browserRunAttempts`. The runbook's "Browser runner (Claude in Chrome)" lists every reason and its fix.
 

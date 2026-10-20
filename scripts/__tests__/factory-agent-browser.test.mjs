@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { SIGN_IN_PATH } from "../lib/browser-signin.mjs";
+
 // The browser runner's bash wiring (ADR-0051). The guard, the report scanner and
 // the health tracker are tested in their own files; what factory-agent.sh must
 // guarantee is narrower, and is what these tests lock in:
@@ -58,6 +60,8 @@ function claudeCalls(source) {
 
 const SHA = "a".repeat(40);
 const OTHER_SHA = "b".repeat(40);
+const repoRoot = resolve(scriptsDir, "..");
+const SIGNIN_ROUTE_PATH = script.match(/^FACTORY_SIGNIN_ROUTE_PATH="([^"]+)"$/m)?.[1];
 
 describe("factory-agent.sh browser runner: static wiring", () => {
   it("passes bash -n", () => {
@@ -484,6 +488,8 @@ describe("intest_browser_run", () => {
     mintOk = true,
     signinRoute = "present",
     comments = "[]",
+    commentOk = true,
+    routePath = SIGNIN_ROUTE_PATH,
   } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "browser-intest-"));
     const stateFile = join(dir, "state.json");
@@ -519,10 +525,12 @@ gh() {
     case ${JSON.stringify(signinRoute)} in
       present) return 0 ;;
       missing) echo "gh: Not Found (HTTP 404)" >&2; return 1 ;;
+      nocommit) echo "gh: No commit found for the ref $2 (HTTP 404)" >&2; return 1 ;;
       *) echo "gh: Bad Gateway (HTTP 502)" >&2; return 1 ;;
     esac
   fi
   echo "gh $*" >>${JSON.stringify(calls)}
+  ${commentOk ? "" : 'if [[ "$1 $2" == "issue comment" ]]; then return 1; fi'}
 }
 transition_status() { echo "transition $*" >>${JSON.stringify(calls)}; }
 run_browser_task() {
@@ -551,10 +559,10 @@ node() {
     *) command node "$@" ;;
   esac
 }
-FACTORY_SIGNIN_ROUTE_PATH="apps/web/src/app/auth/test-sign-in/route.ts"
+REPO_ROOT=${JSON.stringify(repoRoot)}
+FACTORY_SIGNIN_ROUTE_PATH=${JSON.stringify(routePath)}
 ${extract("browser_record_result")}
 ${extract("browser_refund_attempt")}
-${extract("issue_has_marker")}
 ${extract("head_has_signin_route")}
 ${extract("intest_browser_run")}
 rc=0
@@ -620,16 +628,28 @@ echo "rc=$rc"
     assert.equal(finalState.browserRunAttempts, `${SHA}:1`);
   });
 
-  it("checks the head for the sign-in route before the preflight and the mint", () => {
+  it("checks the head for the sign-in route only once nothing else stands in the way", () => {
+    // After the preflight and the Web-section check, so the note never promises
+    // a run that a disabled runner or a fallback scenario would stop; before
+    // the mint, so a stale branch costs no sign-in link and no session.
     const fn = extract("intest_browser_run");
     const check = fn.indexOf('head_has_signin_route "$head_sha"');
     assert.ok(check > 0, "intest_browser_run must call head_has_signin_route");
-    assert.ok(check < fn.indexOf('browser-health.mjs" preflight'), "before the health preflight");
+    assert.ok(check > fn.indexOf('browser-health.mjs" preflight'), "after the health preflight");
+    assert.ok(check > fn.indexOf(".scenario == null"), "after the Web-section check");
+    assert.ok(check < fn.indexOf("DRY-RUN: would run"), "before the dry-run exit");
     assert.ok(check < fn.indexOf('browser-signin.mjs" mint'), "before minting a sign-in link");
     assert.match(
       extract("head_has_signin_route"),
       /contents\/\$FACTORY_SIGNIN_ROUTE_PATH\?ref=\$1/,
     );
+  });
+
+  it("points the route check at the file that serves the sign-in link's path", () => {
+    // One source of truth: browser-signin.mjs mints links to SIGN_IN_PATH, and
+    // the check must look for the route that serves it, on main.
+    assert.equal(SIGNIN_ROUTE_PATH, `apps/web/src/app${SIGN_IN_PATH}/route.ts`);
+    assert.ok(existsSync(join(repoRoot, SIGNIN_ROUTE_PATH)), `${SIGNIN_ROUTE_PATH} must exist`);
   });
 
   it("skips a branch cut before the sign-in route: no session, no health strike, one note", () => {
@@ -643,37 +663,71 @@ echo "rc=$rc"
         `route repos/JakubAnderwald/drafto/contents/apps/web/src/app/auth/test-sign-in/route\\.ts\\?ref=${SHA}`,
       ),
     );
-    assert.doesNotMatch(callLog, /health |signin |task /);
+    assert.doesNotMatch(callLog, /health record|signin |task /);
     assert.match(
       callLog,
-      /gh issue comment 501 --repo JakubAnderwald\/drafto --body [\s\S]*Update branch[\s\S]*drafto-factory-browser-stale-branch/,
+      /gh issue comment 501 --repo JakubAnderwald\/drafto --body [\s\S]*Update branch[\s\S]*not\s+"Update with rebase"[\s\S]*drafto-factory-browser-stale-branch:a{12} -->/,
     );
     assert.equal(finalState.browserRunSha, SHA, "recorded, so the next tick doesn't re-check");
     assert.equal(finalState.browserRunAttempts ?? null, null, "no attempt spent");
   });
 
-  it("notes a stale branch on the issue only once", () => {
-    const comments = JSON.stringify([
-      { body: "old note\n<!-- drafto-factory-browser-stale-branch -->" },
-    ]);
-    const { r, callLog, finalState } = run({ state: ready, signinRoute: "missing", comments });
+  it("notes each stale commit once", () => {
+    const noteFor = (sha) => ({
+      body: `note\n<!-- drafto-factory-browser-stale-branch:${sha.slice(0, 12)} -->`,
+    });
+    let res = run({
+      state: ready,
+      signinRoute: "missing",
+      comments: JSON.stringify([noteFor(SHA)]),
+    });
+    assert.match(res.r.stdout, /rc=1/);
+    assert.doesNotMatch(res.callLog, /gh issue comment/, "this commit already has its note");
+    assert.equal(res.finalState.browserRunSha, SHA);
+    res = run({
+      state: ready,
+      signinRoute: "missing",
+      comments: JSON.stringify([noteFor(OTHER_SHA)]),
+    });
+    assert.match(res.callLog, /gh issue comment 501 /, "a later stale commit gets its own note");
+  });
+
+  it("records nothing when the stale-branch note didn't post, so the next tick retries", () => {
+    const { r, finalState } = run({ state: ready, signinRoute: "missing", commentOk: false });
     assert.match(r.stdout, /rc=1/);
-    assert.doesNotMatch(callLog, /gh issue comment/);
-    assert.equal(finalState.browserRunSha, SHA);
+    assert.equal(finalState.browserRunSha ?? null, null);
   });
 
   it("writes nothing for a stale branch in a dry run", () => {
     const { r, callLog, finalState } = run({ state: ready, signinRoute: "missing", dryRun: 1 });
     assert.match(r.stdout, /rc=1/);
-    assert.doesNotMatch(callLog, /gh issue comment|health |task /);
+    assert.doesNotMatch(callLog, /gh issue comment|health record|task /);
     assert.equal(finalState.browserRunSha ?? null, null);
   });
 
-  it("runs anyway when GitHub can't say whether the route is there", () => {
-    const { r, callLog, finalState } = run({ state: ready, signinRoute: "error" });
+  for (const [signinRoute, why] of [
+    ["error", "GitHub can't say whether the route is there"],
+    ["nocommit", "GitHub doesn't know the commit yet (a 404 that isn't about the file)"],
+  ]) {
+    it(`runs anyway when ${why}`, () => {
+      const { r, callLog, finalState } = run({ state: ready, signinRoute });
+      assert.match(r.stdout, /rc=0/);
+      assert.match(callLog, /task intest /);
+      assert.equal(finalState.browserRunSha, SHA);
+    });
+  }
+
+  it("runs anyway when the route isn't where the check looks on main", () => {
+    // The route moved and FACTORY_SIGNIN_ROUTE_PATH didn't: calling every
+    // branch stale would quietly stop every browser run.
+    const { r, callLog } = run({
+      state: ready,
+      signinRoute: "missing",
+      routePath: "apps/web/src/app/auth/moved/route.ts",
+    });
     assert.match(r.stdout, /rc=0/);
     assert.match(callLog, /task intest /);
-    assert.equal(finalState.browserRunSha, SHA);
+    assert.doesNotMatch(callLog, /^route /m, "no GitHub call for a path that can't be right");
   });
 
   it("skips a candidate whose PR moved on since --watch listed it", () => {
