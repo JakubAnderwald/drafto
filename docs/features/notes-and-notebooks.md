@@ -57,7 +57,7 @@ Shipped on all four platforms: web, iOS, Android, macOS.
 ## Cross-platform notes
 
 - **Shared contract**: `packages/shared` owns `Database`, `NotebookRow`, `NoteRow`, and their `Insert`/`Update` variants. Every platform imports these; schema drift between Supabase and the WatermelonDB schemas is the top source of sync bugs.
-- **Web** talks to Next.js route handlers which use the authenticated Supabase client. No local cache beyond a module-level `Map` in `note-editor-panel.tsx` / `note-list.tsx` fed by `use()`.
+- **Web** talks to Next.js route handlers which use the authenticated Supabase client. No local cache beyond a module-level `Map` in `note-editor-panel.tsx` / `note-list.tsx` fed by `use()`. The `note-list.tsx` Map is browser-only: the server render (and the first browser render, before any refresh) uses the notes `(app)/layout.tsx` prefetched, and `fetchNotes` throws if a server render reaches it, so nothing is cached across users' requests. Row timestamps render through `relative-time.tsx`, which swaps the server's text for the browser's (clock, timezone, locale) right after hydration.
 - **Mobile and desktop** share identical DB code: schema, models, and sync. The desktop `apps/desktop/src/db/` directory mirrors `apps/mobile/src/db/` — keep them in sync when touching one.
 - **Trash UX** is consistent across platforms, but the 30-day purge runs only server-side; local WatermelonDB records are removed via the next sync pull.
 - **Default notebook** is created only by the web layout today. Mobile and desktop assume at least one notebook exists after the user's first web visit; if a user signs up and opens mobile first, sync will still surface the default notebook once web has run (or once they create one locally).
