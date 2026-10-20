@@ -482,6 +482,8 @@ describe("intest_browser_run", () => {
     dryRun = 0,
     liveHead = SHA,
     mintOk = true,
+    signinRoute = "present",
+    comments = "[]",
   } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "browser-intest-"));
     const stateFile = join(dir, "state.json");
@@ -508,10 +510,18 @@ ADMIN_EMAIL=ops@example.com
 log() { echo "[log] $*"; }
 pause_for_session_limit() { echo "PAUSED"; }
 fetch_issue_record() { echo '{"number":501,"title":"t"}'; }
-fetch_issue_comments() { echo '[]'; }
+fetch_issue_comments() { printf '%s\\n' ${JSON.stringify(comments)}; }
 preview_url_for_sha() { ${preview ? `echo ${JSON.stringify(preview)}` : "return 1"}; }
 gh() {
   if [[ "$1 $2" == "pr view" ]]; then echo ${JSON.stringify(liveHead)}; return 0; fi
+  if [[ "$1" == api && "$2" == *"/contents/"* ]]; then
+    echo "route $2" >>${JSON.stringify(calls)}
+    case ${JSON.stringify(signinRoute)} in
+      present) return 0 ;;
+      missing) echo "gh: Not Found (HTTP 404)" >&2; return 1 ;;
+      *) echo "gh: Bad Gateway (HTTP 502)" >&2; return 1 ;;
+    esac
+  fi
   echo "gh $*" >>${JSON.stringify(calls)}
 }
 transition_status() { echo "transition $*" >>${JSON.stringify(calls)}; }
@@ -541,8 +551,11 @@ node() {
     *) command node "$@" ;;
   esac
 }
+FACTORY_SIGNIN_ROUTE_PATH="apps/web/src/app/auth/test-sign-in/route.ts"
 ${extract("browser_record_result")}
 ${extract("browser_refund_attempt")}
+${extract("issue_has_marker")}
+${extract("head_has_signin_route")}
 ${extract("intest_browser_run")}
 rc=0
 intest_browser_run 501 77 ${SHA} || rc=$?
@@ -599,12 +612,68 @@ echo "rc=$rc"
   });
 
   it("posts nothing when the sign-in link didn't work, and keeps the attempt spent", () => {
-    // Usually a branch cut before /auth/test-sign-in existed: no retry fixes it.
+    // The branch has the route, so this is the environment: no retry fixes it.
     const { r, callLog, finalState } = run({ state: ready, renderStatus: "signin-failed" });
     assert.match(r.stdout, /rc=2/);
     assert.match(callLog, /health record .*--result signin-failed /);
     assert.doesNotMatch(callLog, /gh issue comment/);
     assert.equal(finalState.browserRunAttempts, `${SHA}:1`);
+  });
+
+  it("checks the head for the sign-in route before the preflight and the mint", () => {
+    const fn = extract("intest_browser_run");
+    const check = fn.indexOf('head_has_signin_route "$head_sha"');
+    assert.ok(check > 0, "intest_browser_run must call head_has_signin_route");
+    assert.ok(check < fn.indexOf('browser-health.mjs" preflight'), "before the health preflight");
+    assert.ok(check < fn.indexOf('browser-signin.mjs" mint'), "before minting a sign-in link");
+    assert.match(
+      extract("head_has_signin_route"),
+      /contents\/\$FACTORY_SIGNIN_ROUTE_PATH\?ref=\$1/,
+    );
+  });
+
+  it("skips a branch cut before the sign-in route: no session, no health strike, one note", () => {
+    // #465: its branch predated /auth/test-sign-in, so the runner landed on
+    // /login twice and the operator got a "browser checks failing" email.
+    const { r, callLog, finalState } = run({ state: ready, signinRoute: "missing" });
+    assert.match(r.stdout, /rc=1/, "try the next candidate");
+    assert.match(
+      callLog,
+      new RegExp(
+        `route repos/JakubAnderwald/drafto/contents/apps/web/src/app/auth/test-sign-in/route\\.ts\\?ref=${SHA}`,
+      ),
+    );
+    assert.doesNotMatch(callLog, /health |signin |task /);
+    assert.match(
+      callLog,
+      /gh issue comment 501 --repo JakubAnderwald\/drafto --body [\s\S]*Update branch[\s\S]*drafto-factory-browser-stale-branch/,
+    );
+    assert.equal(finalState.browserRunSha, SHA, "recorded, so the next tick doesn't re-check");
+    assert.equal(finalState.browserRunAttempts ?? null, null, "no attempt spent");
+  });
+
+  it("notes a stale branch on the issue only once", () => {
+    const comments = JSON.stringify([
+      { body: "old note\n<!-- drafto-factory-browser-stale-branch -->" },
+    ]);
+    const { r, callLog, finalState } = run({ state: ready, signinRoute: "missing", comments });
+    assert.match(r.stdout, /rc=1/);
+    assert.doesNotMatch(callLog, /gh issue comment/);
+    assert.equal(finalState.browserRunSha, SHA);
+  });
+
+  it("writes nothing for a stale branch in a dry run", () => {
+    const { r, callLog, finalState } = run({ state: ready, signinRoute: "missing", dryRun: 1 });
+    assert.match(r.stdout, /rc=1/);
+    assert.doesNotMatch(callLog, /gh issue comment|health |task /);
+    assert.equal(finalState.browserRunSha ?? null, null);
+  });
+
+  it("runs anyway when GitHub can't say whether the route is there", () => {
+    const { r, callLog, finalState } = run({ state: ready, signinRoute: "error" });
+    assert.match(r.stdout, /rc=0/);
+    assert.match(callLog, /task intest /);
+    assert.equal(finalState.browserRunSha, SHA);
   });
 
   it("skips a candidate whose PR moved on since --watch listed it", () => {

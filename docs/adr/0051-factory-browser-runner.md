@@ -6,6 +6,8 @@
 
 > **Update 2026-10-20**: The runner is now on by default: `FACTORY_BROWSER` defaults to `1`, so point 9's "off by default" no longer holds. `FACTORY_BROWSER=0` in the plist is still the kill switch, and a value other than `0`/`1` still turns the runner off.
 
+> **Update 2026-10-20 (stale branches)**: Point 6's "When it fails" no longer covers branches cut before `/auth/test-sign-in` existed. Before minting a link, bash asks the GitHub contents API whether the PR head has `apps/web/src/app/auth/test-sign-in/route.ts`. When it doesn't, the commit gets no browser session and no health strike, and the issue gets one `drafto-factory-browser-stale-branch` note asking for the branch to be updated. A `signin-failed` result now points at the environment (the preview's Supabase project, the test account). Prompted by #465, whose branch predated the route and spent two runs and an operator email on it.
+
 ## Context
 
 The dark factory can't look at a web page. The In Test scenario writer has no network access, and the revision prompt tells Claude to skip any step that means "looking at a preview in a browser". So a web card reaches the In Test gate without anyone having opened it in a browser, and a "run the test scenario for me" comment comes back with the web steps skipped. macOS already has hands-off In Test runs ([ADR-0043](./0043-automated-macos-in-test-scenarios.md)). Web had nothing like it.

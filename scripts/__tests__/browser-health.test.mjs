@@ -337,7 +337,11 @@ describe("emailContent", () => {
   it("counts signin-failed as bad, and explains it and the sign-in key problems", () => {
     const d = decideBrowser(emptyBrowser(), "signin-failed", { now: "2026-10-17T10:00:00.000Z" });
     assert.equal(d.next.consecutiveBad, 1);
-    assert.match(describeReason("signin-failed").fix, /\/auth\/test-sign-in/);
+    // Stale branches are skipped before the run, so the fix leads with the
+    // environment, not the branch.
+    assert.match(describeReason("signin-failed").fix, /dev Supabase project/);
+    assert.match(describeReason("signin-failed").fix, /still exists and is approved/);
+    assert.doesNotMatch(describeReason("signin-failed").fix, /rebase|Check that the PR's branch/);
     assert.match(
       describeReason("preflight:signin-key-mode").fix,
       /dev-supabase-admin\.env, mode 600/,
