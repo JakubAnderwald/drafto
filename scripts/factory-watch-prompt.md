@@ -157,7 +157,10 @@ touching the host launchd / other worktrees.
    explain — the operator can re-plan.
 
 4. **Re-run the relevant checks** until they pass locally. If
-   `spec.schemaChanges === true`, run `pnpm migration:check`.
+   `spec.schemaChanges === true`, run `pnpm migration:check`. A new
+   table or view in `public` needs its `GRANT`s in the same migration, and a
+   view needs `security_invoker = true` (docs/operations/migrations.md → "New
+   tables need explicit grants"). The check fails without them.
 
 5. **Commit and push.** One conventional-commit message describing the fix
    (e.g. `fix: resolve typecheck error in note duplication`). Push with
