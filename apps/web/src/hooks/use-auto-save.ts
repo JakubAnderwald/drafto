@@ -11,6 +11,10 @@ interface UseAutoSaveOptions {
 export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
+  // The title the server stored with that save. A PATCH returns the whole row, so this
+  // is set even when only the content changed, and reflects what was persisted
+  // rather than keystrokes still waiting on the debounce.
+  const [lastSavedTitle, setLastSavedTitle] = useState<string | null>(null);
   // Mirrors `pendingData`/`timerRef` as render-visible state. Consumers need to know
   // whether the editor holds unflushed local edits (refs alone never re-render).
   const [hasPendingChanges, setHasPendingChanges] = useState(false);
@@ -52,6 +56,7 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
               const updated = await res.json();
               if (updated?.updated_at) {
                 setLastSavedAt(updated.updated_at);
+                setLastSavedTitle(typeof updated.title === "string" ? updated.title : null);
               }
             } else {
               setSaveStatus("error");
@@ -130,5 +135,12 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
     };
   }, [noteId]);
 
-  return { saveStatus, debouncedSave, lastSavedAt, hasPendingChanges, cancelPendingSave };
+  return {
+    saveStatus,
+    debouncedSave,
+    lastSavedAt,
+    lastSavedTitle,
+    hasPendingChanges,
+    cancelPendingSave,
+  };
 }

@@ -189,11 +189,20 @@ describe("external-change reconciliation in the note editor", () => {
 
     mockFetch.mockImplementation((url: string, init?: RequestInit) => {
       if (init?.method === "PATCH") {
-        patches.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        patches.push(body);
+        // The whole row as stored, like the real route; the panel reads the saved
+        // title from it.
         return Promise.resolve({
           ok: true,
           status: 200,
-          json: () => Promise.resolve({ updated_at: SAVED_AT }),
+          json: () =>
+            Promise.resolve({
+              ...serverNote,
+              id: String(url).split("/").pop(),
+              ...body,
+              updated_at: SAVED_AT,
+            }),
         });
       }
       if (hardDeleted) {
@@ -394,6 +403,64 @@ describe("external-change reconciliation in the note editor", () => {
       // The queued PATCH was cancelled rather than left to 404 into an "Error" badge.
       expect(patches).toHaveLength(0);
       expect(screen.queryByTestId("save-status-badge")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("local saves", () => {
+    async function waitPastDebounce() {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      });
+      await flush();
+    }
+
+    it("reports the title the save stored to the note list", async () => {
+      const noteId = nextNoteId();
+      const onNoteUpdated = vi.fn();
+      await mountPanel(noteId, { onNoteUpdated });
+
+      fireEvent.change(titleInput(), { target: { value: "Typed here" } });
+      await flush();
+      await waitPastDebounce();
+
+      expect(patches).toEqual([{ title: "Typed here" }]);
+      expect(onNoteUpdated).toHaveBeenLastCalledWith({
+        noteId,
+        updatedAt: SAVED_AT,
+        title: "Typed here",
+      });
+
+      // Keep typing. Until that edit is saved, the list keeps the stored title rather
+      // than following keystrokes still waiting on the debounce.
+      const callsAfterFirstSave = onNoteUpdated.mock.calls.length;
+      fireEvent.change(titleInput(), { target: { value: "Typed here, more" } });
+      await flush();
+      expect(onNoteUpdated).toHaveBeenCalledTimes(callsAfterFirstSave);
+
+      await waitPastDebounce();
+
+      expect(patches).toEqual([{ title: "Typed here" }, { title: "Typed here, more" }]);
+      expect(onNoteUpdated).toHaveBeenLastCalledWith({
+        noteId,
+        updatedAt: SAVED_AT,
+        title: "Typed here, more",
+      });
+    });
+
+    it("reports the stored title after a save that only changed the content", async () => {
+      const noteId = nextNoteId();
+      const onNoteUpdated = vi.fn();
+      await mountPanel(noteId, { onNoteUpdated });
+
+      fireEvent.click(screen.getByRole("button", { name: "simulate typing" }));
+      await waitPastDebounce();
+
+      expect(patches).toEqual([{ content: [] }]);
+      expect(onNoteUpdated).toHaveBeenLastCalledWith({
+        noteId,
+        updatedAt: SAVED_AT,
+        title: "Original title",
+      });
     });
   });
 

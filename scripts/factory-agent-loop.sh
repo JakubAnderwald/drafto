@@ -130,3 +130,6 @@ fi
 /bin/bash "$AGENT" --implement --phase "$PHASE" || true
 /bin/bash "$AGENT" --watch     --phase "$PHASE" || true
 /bin/bash "$AGENT" --release   --phase "$PHASE" || true
+# Last, so a Chrome session (up to FACTORY_BROWSER_TIMEOUT_SEC) never delays a
+# merge. A no-op unless FACTORY_BROWSER=1 (ADR-0051).
+/bin/bash "$AGENT" --browser   --phase "$PHASE" || true

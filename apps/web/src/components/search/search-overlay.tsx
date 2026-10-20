@@ -175,7 +175,7 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
         </div>
 
         {/* Results */}
-        <div className="max-h-80 overflow-y-auto p-2">
+        <div className="max-h-80 overflow-y-auto p-2" data-testid="search-results">
           {loading && <p className="text-fg-muted px-3 py-4 text-center text-sm">Searching...</p>}
 
           {!loading && trimmed && results.length === 0 && (

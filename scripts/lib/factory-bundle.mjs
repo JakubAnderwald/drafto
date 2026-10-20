@@ -70,6 +70,7 @@
 //     "repo":          { "nameWithOwner", "headRef" }
 //   }
 
+import { readAccountFile } from "./browser-report.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { parseIssueFooter } from "./parse-issue-footer.mjs";
 
@@ -827,6 +828,128 @@ export function buildFactoryInTestBundle({
   };
 }
 
+// ── Browser runner bundle (ADR-0051) ───────────────────────────────────────
+// The locked-down Chrome runner gets only what it needs to run the Web section
+// of the factory's own In Test scenario on one per-commit preview: the steps,
+// the target, the test account and the pinned browser. No issue body, no
+// comments and no diff — the runner can't act on what it isn't given.
+
+export const SCENARIO_FALLBACK_MARKER = "<!-- drafto-factory-scenario-fallback -->";
+
+// The scenario comment for exactly `headSha`, or null. Three filters, each
+// load-bearing: OWNER (the repo is public, so anyone can paste the factory's
+// markers into a comment of their own), the exact full-SHA marker (a scenario
+// for an older commit describes code that no longer exists), and not the
+// deterministic fallback (it has no steps to run). Newest wins, matching how
+// the scenario writer replaces itself on a refresh.
+export function selectScenarioComment(comments, headSha) {
+  if (!Array.isArray(comments) || typeof headSha !== "string" || !/^[0-9a-f]{40}$/.test(headSha)) {
+    return null;
+  }
+  const marker = `<!-- drafto-factory-scenario-sha:${headSha} -->`;
+  const matches = comments.filter(
+    (c) =>
+      c &&
+      c.authorAssociation === "OWNER" &&
+      typeof c.body === "string" &&
+      c.body.includes(marker) &&
+      !c.body.includes(SCENARIO_FALLBACK_MARKER),
+  );
+  if (matches.length === 0) return null;
+  return matches.reduce((a, b) => (String(b.createdAt) > String(a.createdAt) ? b : a));
+}
+
+// The body of the scenario's `### Web` section: from that heading to the next
+// heading of the same or a higher level, without the heading line itself.
+// The scenario writer is told to use exactly that heading (factory-intest-
+// prompt.md), so anything else means the scenario has no web steps to run.
+export function extractWebSection(body) {
+  if (typeof body !== "string") return null;
+  const lines = body.split("\n");
+  const start = lines.findIndex((l) => /^###\s+Web\s*$/.test(l.trim()));
+  if (start === -1) return null;
+  let end = lines.length;
+  // A web step in a note-taking app often quotes Markdown to type ("# My
+  // heading" inside a fence); a heading inside a fenced block is content, not
+  // the end of the section.
+  let fence = null;
+  for (let i = start + 1; i < lines.length; i++) {
+    const opener = /^\s*(`{3,}|~{3,})/.exec(lines[i]);
+    if (opener) {
+      if (fence === null) fence = opener[1][0];
+      else if (opener[1][0] === fence) fence = null;
+      continue;
+    }
+    if (fence !== null) continue;
+    if (/^#{1,3}\s/.test(lines[i]) || lines[i].trim().startsWith("<!-- drafto-factory")) {
+      end = i;
+      break;
+    }
+  }
+  const text = lines
+    .slice(start + 1, end)
+    .join("\n")
+    .trim();
+  return text || null;
+}
+
+export function buildFactoryBrowserRunBundle({
+  runKind = "intest",
+  issue,
+  comments = [],
+  headSha,
+  prNumber = null,
+  targetUrl,
+  accountFile,
+  deviceId,
+  nowIso,
+} = {}) {
+  if (runKind !== "intest")
+    throw new Error(`buildFactoryBrowserRunBundle: unknown runKind ${runKind}`);
+  if (!issue || !Number.isInteger(issue.number)) {
+    throw new Error("buildFactoryBrowserRunBundle: issue.number is required");
+  }
+  let origin;
+  try {
+    origin = new URL(targetUrl).origin;
+  } catch {
+    throw new Error("buildFactoryBrowserRunBundle: targetUrl must be an absolute URL");
+  }
+  if (!/^https:\/\/drafto-[a-z0-9-]+-jakubanderwalds-projects\.vercel\.app$/.test(origin)) {
+    throw new Error(`buildFactoryBrowserRunBundle: not a Drafto preview origin: ${origin}`);
+  }
+  if (typeof deviceId !== "string" || !deviceId) {
+    throw new Error("buildFactoryBrowserRunBundle: deviceId is required");
+  }
+  const scenario = selectScenarioComment(comments, headSha);
+  const webSteps = scenario ? extractWebSection(scenario.body) : null;
+  return {
+    kind: "factory_browser_run",
+    runKind,
+    issue: { number: issue.number, title: typeof issue.title === "string" ? issue.title : "" },
+    headSha,
+    prNumber: Number.isInteger(prNumber) ? prNumber : null,
+    target: { url: `${origin}/`, origin },
+    // null when there is nothing to run: bash checks this and skips the run
+    // rather than spending a browser session on an empty scenario.
+    scenario:
+      scenario && webSteps
+        ? {
+            commentId: scenario.id ?? null,
+            url: `https://github.com/JakubAnderwald/drafto/issues/${issue.number}#issuecomment-${scenario.id}`,
+            webStepsEnveloped: envelopeBody(webSteps, "scenario-web"),
+          }
+        : null,
+    // Email only. The runner signs in by opening a one-time link that bash
+    // mints after this bundle is built (browser-signin.mjs) and sets here; it
+    // never gets the password, which it couldn't type on a preview anyway.
+    account: { email: readAccountFile(accountFile).email, signInUrl: null },
+    browser: { deviceId },
+    qaTag: `factory-${issue.number}-${String(headSha).slice(0, 7)}`,
+    nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
+  };
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 async function readStdin() {
@@ -912,6 +1035,18 @@ async function main() {
       headSha: input.headSha,
       config: input.config,
       repo: input.repo,
+      nowIso: input.nowIso,
+    });
+  } else if (input.kind === "factory_browser_run") {
+    bundle = buildFactoryBrowserRunBundle({
+      runKind: input.runKind,
+      issue: input.issue,
+      comments: input.comments,
+      headSha: input.headSha,
+      prNumber: input.prNumber,
+      targetUrl: input.targetUrl,
+      accountFile: input.accountFile,
+      deviceId: input.deviceId,
       nowIso: input.nowIso,
     });
   } else {

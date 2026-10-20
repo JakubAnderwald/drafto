@@ -18,6 +18,12 @@ export const env = createEnv({
     APPLE_TEAM_ID: z.string().min(1).optional(),
     APPLE_SIGN_IN_KEY_ID: z.string().min(1).optional(),
     APPLE_SIGN_IN_PRIVATE_KEY: z.string().min(1).optional(),
+    // Vercel system variable naming the deployment's environment. Not set locally. Gates the
+    // preview-only `/auth/test-sign-in` route (src/lib/auth/test-sign-in.ts).
+    // Vercel system variable. Deliberately not an enum: an unexpected value must not fail env
+    // validation for the whole app; only `isTestSignInEnabled` reads it, and it accepts
+    // exactly "preview".
+    VERCEL_ENV: z.string().optional(),
   },
   client: {
     NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
@@ -41,6 +47,7 @@ export const env = createEnv({
     APPLE_TEAM_ID: process.env.APPLE_TEAM_ID,
     APPLE_SIGN_IN_KEY_ID: process.env.APPLE_SIGN_IN_KEY_ID,
     APPLE_SIGN_IN_PRIVATE_KEY: process.env.APPLE_SIGN_IN_PRIVATE_KEY,
+    VERCEL_ENV: process.env.VERCEL_ENV,
     NEXT_PUBLIC_SENTRY_DSN: process.env.NEXT_PUBLIC_SENTRY_DSN,
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
     NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,

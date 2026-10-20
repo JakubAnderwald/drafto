@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { outlineEntry, type OutlineEntry } from "@/components/legal/document-outline";
+import { LegalLinks } from "@/components/legal/legal-links";
 import { NumberedSection } from "@/components/legal/numbered-section";
 import { TableOfContents } from "@/components/legal/table-of-contents";
 import { Badge } from "@/components/ui/badge";
@@ -367,6 +368,18 @@ export default function DesignSystemPage() {
             </a>
             .
           </p>
+        </div>
+      </Section>
+
+      {/* ── Signed-out pages ──────────────────────────────── */}
+      <Section title="Signed-out Pages">
+        <p className="text-fg-muted mb-4 font-mono text-xs">
+          .brand-backdrop · .brand-wordmark · LegalLinks (landing page and auth pages)
+        </p>
+        <div className="brand-backdrop rounded-lg px-6 py-10 text-center">
+          <p className="brand-wordmark text-3xl font-bold tracking-tight">Drafto</p>
+          <p className="text-fg-muted mt-1 text-sm">Your notes, beautifully organized</p>
+          <LegalLinks className="text-fg-muted mt-4 text-xs" />
         </div>
       </Section>
 

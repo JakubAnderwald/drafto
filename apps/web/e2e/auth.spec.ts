@@ -23,6 +23,30 @@ test.describe("Login", () => {
     await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({ timeout: 10000 });
   });
 
+  test("logging in from the landing page opens the app at /, not the landing page", async ({
+    page,
+  }) => {
+    const email = process.env.E2E_TEST_EMAIL;
+    const password = process.env.E2E_TEST_PASSWORD;
+    if (!email || !password) {
+      test.skip();
+      return;
+    }
+
+    // Signed out, `/` is the landing page; the client router may still hold it after login.
+    await page.goto("/");
+    await page.getByRole("link", { name: "Log in" }).click();
+    await expect(page).toHaveURL(/\/login$/);
+
+    await page.getByLabel("Email").fill(email);
+    await page.getByLabel("Password").fill(password);
+    await page.getByRole("button", { name: "Log in" }).click();
+
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({ timeout: 10000 });
+    expect(new URL(page.url()).pathname).toBe("/");
+    await expect(page.getByRole("heading", { name: "What Drafto does" })).toHaveCount(0);
+  });
+
   test("failed login with wrong password shows error", async ({ page }) => {
     const email = process.env.E2E_TEST_EMAIL;
     if (!email) {

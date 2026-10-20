@@ -16,11 +16,13 @@ test.describe("Search engine and app-link files (signed out)", () => {
     expect(await response.text()).toContain("Sitemap: https://drafto.eu/sitemap.xml");
   });
 
-  test("sitemap.xml is served and lists the login page", async ({ request }) => {
+  test("sitemap.xml is served and lists the landing and login pages", async ({ request }) => {
     const response = await request.get("/sitemap.xml", { maxRedirects: 0 });
 
     expect(response.status()).toBe(200);
-    expect(await response.text()).toContain("<loc>https://drafto.eu/login</loc>");
+    const body = await response.text();
+    expect(body).toContain("<loc>https://drafto.eu/</loc>");
+    expect(body).toContain("<loc>https://drafto.eu/login</loc>");
   });
 
   test("the Universal Links association file is served as JSON", async ({ request }) => {

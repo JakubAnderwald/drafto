@@ -133,7 +133,7 @@ describe("SyncStatus", () => {
   it("triggers sync when pressed while online", () => {
     const { getByLabelText } = render(<SyncStatus />);
 
-    fireEvent.press(getByLabelText("Sync status"));
+    fireEvent.press(getByLabelText(/^Sync status/));
 
     expect(mockSync).toHaveBeenCalled();
   });
@@ -143,7 +143,7 @@ describe("SyncStatus", () => {
 
     const { getByLabelText } = render(<SyncStatus />);
 
-    fireEvent.press(getByLabelText("Sync status"));
+    fireEvent.press(getByLabelText(/^Sync status/));
 
     expect(mockSync).not.toHaveBeenCalled();
   });
@@ -153,8 +153,20 @@ describe("SyncStatus", () => {
 
     const { getByLabelText } = render(<SyncStatus />);
 
-    fireEvent.press(getByLabelText("Sync status"));
+    fireEvent.press(getByLabelText(/^Sync status/));
 
     expect(mockSync).not.toHaveBeenCalled();
+  });
+
+  it("tells VoiceOver the sync state, not just that this is the sync status", () => {
+    const { getByLabelText, rerender } = render(<SyncStatus />);
+
+    expect(getByLabelText("Sync status: All synced")).toBeTruthy();
+
+    mockDatabaseContext.pendingChangesCount = 3;
+    mockDatabaseContext.hasPendingChanges = true;
+    rerender(<SyncStatus />);
+
+    expect(getByLabelText("Sync status: 3 pending changes")).toBeTruthy();
   });
 });

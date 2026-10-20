@@ -7,9 +7,13 @@ import SignupLayout, { metadata as signupMetadata } from "@/app/(auth)/signup/la
 import { metadata as privacyMetadata } from "@/app/privacy/page";
 import { metadata as supportMetadata } from "@/app/support/page";
 import { metadata as accountDeleteMetadata } from "@/app/account/delete/page";
+import { metadata as landingMetadata } from "@/app/welcome/page";
 import { INDEXED_PATHS } from "@/lib/site";
 
+// The landing page lives at /welcome but only answers at `/` (middleware rewrites signed-out
+// `/` to it and redirects /welcome to `/`), so `/` is its canonical.
 const INDEXED_PAGE_METADATA: Record<string, Metadata> = {
+  "/": landingMetadata,
   "/login": loginMetadata,
   "/signup": signupMetadata,
   "/privacy": privacyMetadata,

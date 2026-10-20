@@ -40,6 +40,18 @@ describe("factory-agent Claude effort", () => {
     );
   });
 
+  it("runs the browser runner (the seventh call) at the read-only (plan) effort", () => {
+    // ADR-0051: the locked-down Chrome runner has no --dangerously-skip-
+    // permissions, so the counts above don't see it. It reads pages and prints
+    // a report — plan-tier effort, like the scenario writer.
+    const calls = script.match(/run-claude\.mjs" -p\b/g) || [];
+    assert.equal(calls.length, 7, "six stage calls plus the browser runner");
+    assert.match(
+      script,
+      /run-claude\.mjs" -p --chrome(?:[^\n]*\\\n){1,3}[^\n]*--effort "\$FACTORY_PLAN_EFFORT" \)/,
+    );
+  });
+
   it("runs the In Test scenario writer at the read-only (plan) effort", () => {
     // It reads a diff and posts a comment — no code is written, so it must not
     // burn the coding-tier effort budget.

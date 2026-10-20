@@ -125,6 +125,7 @@ describe("useAutoSave", () => {
 
     expect(result.current.saveStatus).toBe("error");
     expect(result.current.lastSavedAt).toBeNull();
+    expect(result.current.lastSavedTitle).toBeNull();
   });
 
   it("does not save when noteId is null", async () => {
@@ -271,6 +272,56 @@ describe("useAutoSave", () => {
       });
 
       expect(result.current.lastSavedAt).toBe("2026-09-06T12:30:00.000+00:00");
+    });
+  });
+
+  // The editor panel forwards this to the note list, so the row shows what the
+  // server stored rather than whatever the list was fetched with.
+  describe("lastSavedTitle", () => {
+    async function saveAndRespondWith(
+      data: Record<string, unknown>,
+      response: Record<string, unknown>,
+    ) {
+      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(response) });
+      const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+      expect(result.current.lastSavedTitle).toBeNull();
+
+      act(() => {
+        result.current.debouncedSave(data);
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+      return result;
+    }
+
+    it("exposes the title the server stored with the latest save", async () => {
+      const result = await saveAndRespondWith(
+        { title: "Groceries" },
+        { updated_at: "2026-10-17T12:00:00.000+00:00", title: "Groceries" },
+      );
+
+      expect(result.current.lastSavedTitle).toBe("Groceries");
+      expect(result.current.lastSavedAt).toBe("2026-10-17T12:00:00.000+00:00");
+    });
+
+    it("takes it from the response, so a content-only save reports the stored title", async () => {
+      const result = await saveAndRespondWith(
+        { content: [] },
+        { updated_at: "2026-10-17T12:00:00.000+00:00", title: "Title on the server" },
+      );
+
+      expect(result.current.lastSavedTitle).toBe("Title on the server");
+    });
+
+    it("stays null when the response carries no title", async () => {
+      const result = await saveAndRespondWith(
+        { title: "Typed" },
+        { updated_at: "2026-10-17T12:00:00.000+00:00" },
+      );
+
+      expect(result.current.lastSavedAt).toBe("2026-10-17T12:00:00.000+00:00");
+      expect(result.current.lastSavedTitle).toBeNull();
     });
   });
 });

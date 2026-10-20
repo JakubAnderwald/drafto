@@ -981,6 +981,81 @@ describe("factory:cr-cli-* (CodeRabbit CLI lane, ADR-0036)", () => {
   });
 });
 
+describe("factory:browser-status / factory:browser-reset (browser runner health)", () => {
+  const disabledRecord = {
+    consecutiveBad: 0,
+    lastResult: "guard-not-loaded",
+    lastResultAt: "2026-10-17T10:00:00.000Z",
+    unavailableSince: null,
+    reason: null,
+    alertedAt: "2026-10-17T10:00:00.000Z",
+    disabled: true,
+    disabledReason: "guard-not-loaded",
+  };
+  const empty = {
+    consecutiveBad: 0,
+    lastResult: null,
+    lastResultAt: null,
+    unavailableSince: null,
+    reason: null,
+    alertedAt: null,
+    disabled: false,
+    disabledReason: null,
+  };
+
+  it("factory:browser-status on a fresh file prints the empty record", () => {
+    const r = run(["factory:browser-status", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), empty);
+  });
+
+  it("factory:browser-status prints the stored record", () => {
+    writeFileSync(stateFile, JSON.stringify({ browser: disabledRecord }));
+    const r = run(["factory:browser-status", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), disabledRecord);
+  });
+
+  it("factory:browser-reset clears the disabled latch and leaves the rest of the state alone", () => {
+    writeFileSync(
+      stateFile,
+      JSON.stringify({ browser: disabledRecord, issues: { 42: { attempts: 2 } }, paused: true }),
+    );
+    const r = run(["factory:browser-reset", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), { ok: true, browser: empty });
+    const state = readState();
+    assert.deepEqual(state.browser, empty);
+    assert.equal(state.issues["42"].attempts, 2);
+    assert.equal(state.paused, true, "never touches the factory pause");
+  });
+
+  it("an unrelated write (factory:bump-attempts) keeps the browser record intact", () => {
+    writeFileSync(stateFile, JSON.stringify({ browser: disabledRecord, issues: {} }));
+    const r = run(["factory:bump-attempts", "42", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(readState().browser, disabledRecord);
+  });
+
+  it("factory:set-issue-field accepts the browser run fields", () => {
+    for (const [field, value] of [
+      ["browserRunSha", "a".repeat(40)],
+      ["browserRunAttempts", `${"a".repeat(40)}:1`],
+    ]) {
+      const r = run(["factory:set-issue-field", "42", field, value, "--state-file", stateFile]);
+      assert.equal(r.status, 0, `${field}: ${r.stderr}`);
+      assert.equal(readState().issues["42"][field], value);
+    }
+  });
+
+  it("--help lists the browser subcommands", () => {
+    const r = run(["--help"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /factory:browser-status/);
+    assert.match(r.stdout, /factory:browser-reset/);
+  });
+});
+
 describe("factory:* writes to logs/factory-state.json by default", () => {
   it("does not touch support-state.json when no --state-file is passed", () => {
     // Use a tmpdir as cwd so the auto-created factory-state.json lands there.

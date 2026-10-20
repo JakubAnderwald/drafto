@@ -24,6 +24,8 @@ import {
   resetIssueAttempts,
   getIssue,
   setIssueField,
+  emptyBrowser,
+  resetBrowser,
 } from "../lib/factory-state.mjs";
 
 let workdir;
@@ -350,6 +352,96 @@ describe("per-issue counters", () => {
     setIssueField(s, 1, "lastError", "boom yet again");
     setIssueField(s, 1, "lastError", null);
     assert.equal(s.issues["1"].lastError, null);
+  });
+});
+
+describe("browser runner record", () => {
+  it("emptyFactoryState carries an empty browser record", () => {
+    assert.deepEqual(emptyFactoryState().browser, emptyBrowser());
+    assert.deepEqual(emptyBrowser(), {
+      consecutiveBad: 0,
+      lastResult: null,
+      lastResultAt: null,
+      unavailableSince: null,
+      reason: null,
+      alertedAt: null,
+      disabled: false,
+      disabledReason: null,
+    });
+  });
+
+  it("a legacy file without browser loads the empty record", async () => {
+    writeFileSync(stateFile, JSON.stringify({ paused: false, issues: {} }));
+    assert.deepEqual((await loadFactoryState(stateFile)).browser, emptyBrowser());
+  });
+
+  it("round-trips a populated record through save/load", async () => {
+    const s = emptyFactoryState();
+    s.browser = {
+      ...emptyBrowser(),
+      consecutiveBad: 2,
+      lastResult: "unavailable",
+      lastResultAt: "2026-10-17T10:05:00.000Z",
+      unavailableSince: "2026-10-17T10:00:00.000Z",
+      reason: "unavailable",
+      alertedAt: "2026-10-17T10:05:00.000Z",
+    };
+    await saveFactoryState(s, stateFile);
+    assert.deepEqual((await loadFactoryState(stateFile)).browser, s.browser);
+  });
+
+  it("normalises garbage fields, fails safe on the latch, and passes unknown keys through", async () => {
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        browser: {
+          consecutiveBad: "3",
+          reason: 7,
+          alertedAt: "",
+          disabled: "yes",
+          disabledReason: "guard-not-loaded",
+          newerField: { kept: true },
+        },
+      }),
+    );
+    const { browser } = await loadFactoryState(stateFile);
+    assert.equal(browser.consecutiveBad, 0);
+    assert.equal(browser.reason, null);
+    assert.equal(browser.alertedAt, null);
+    assert.equal(browser.disabled, true, "truthy garbage keeps the browser off");
+    assert.equal(browser.disabledReason, "guard-not-loaded");
+    assert.deepEqual(browser.newerField, { kept: true });
+  });
+
+  it("a non-object browser (array / string / negative streak) loads as the empty record", async () => {
+    writeFileSync(stateFile, JSON.stringify({ browser: ["nope"] }));
+    assert.deepEqual((await loadFactoryState(stateFile)).browser, emptyBrowser());
+    writeFileSync(stateFile, JSON.stringify({ browser: "nope" }));
+    assert.deepEqual((await loadFactoryState(stateFile)).browser, emptyBrowser());
+    writeFileSync(stateFile, JSON.stringify({ browser: { consecutiveBad: -2 } }));
+    assert.equal((await loadFactoryState(stateFile)).browser.consecutiveBad, 0);
+  });
+
+  it("resetBrowser replaces the record with an empty one", () => {
+    const s = emptyFactoryState();
+    s.browser = { ...emptyBrowser(), disabled: true, disabledReason: "guard-not-loaded" };
+    assert.deepEqual(resetBrowser(s), emptyBrowser());
+    assert.deepEqual(s.browser, emptyBrowser());
+  });
+
+  it("tracks browserRunSha / browserRunAttempts per issue (writable, cleared on empty)", () => {
+    // A rejected write fails silently in bash (`|| true`): the browser would
+    // re-run and re-post its report every tick.
+    const s = emptyFactoryState();
+    assert.equal(getIssue(s, 9).browserRunSha, null);
+    assert.equal(getIssue(s, 9).browserRunAttempts, null);
+    const sha = "5a5201f119ea5c7020b17bc5f098ceed4841c80f";
+    setIssueField(s, 9, "browserRunSha", sha);
+    setIssueField(s, 9, "browserRunAttempts", `${sha}:2`);
+    assert.equal(s.issues["9"].browserRunSha, sha);
+    assert.equal(s.issues["9"].browserRunAttempts, `${sha}:2`);
+    setIssueField(s, 9, "browserRunAttempts", "");
+    assert.equal(s.issues["9"].browserRunAttempts, null);
   });
 });
 

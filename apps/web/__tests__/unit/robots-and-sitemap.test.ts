@@ -15,8 +15,9 @@ describe("robots.txt", () => {
 describe("sitemap.xml", () => {
   const urls = sitemap().map((entry) => entry.url);
 
-  it("lists the public pages as absolute apex URLs", () => {
+  it("lists the public pages as absolute apex URLs, starting with the landing page", () => {
     expect(urls).toEqual([
+      "https://drafto.eu/",
       "https://drafto.eu/login",
       "https://drafto.eu/signup",
       "https://drafto.eu/privacy",
@@ -25,8 +26,7 @@ describe("sitemap.xml", () => {
     ]);
   });
 
-  it("leaves out the home page, which redirects signed-out visitors to /login", () => {
-    expect(urls).not.toContain("https://drafto.eu/");
-    expect(urls).not.toContain("https://drafto.eu");
+  it("never lists the landing page's internal route, which redirects to /", () => {
+    expect(urls).not.toContain("https://drafto.eu/welcome");
   });
 });

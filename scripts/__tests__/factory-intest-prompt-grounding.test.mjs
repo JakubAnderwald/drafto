@@ -108,6 +108,15 @@ describe("In Test prompt — scenario quality rules", () => {
     assert.match(flat, /do not mention the preview at all/);
   });
 
+  it("writes API and Terminal steps against the preview with vercel curl", () => {
+    // Every preview is behind Vercel Authentication: #465's scenario told the
+    // tester to `curl "$MCP"` on the preview, which only ever got a 302 to
+    // vercel.com/sso-api.
+    assert.match(flat, /behind \*\*Vercel Authentication\*\*/);
+    assert.match(flat, /`vercel curl <path> --deployment <previewUrl> -- <curl flags>`/);
+    assert.match(flat, /never as `curl "\$PREVIEW\/…"`/);
+  });
+
   it("requires checking that a step's pass signal can actually appear", () => {
     // #458's scenario expected two signals the desktop app can never show (the
     // "still pending" message, #676; the indicator's pending count, #677).
@@ -155,6 +164,13 @@ describe("In Test prompt — machine contract", () => {
     assert.match(prompt, /<!-- drafto-factory-test-scenario -->/);
     assert.match(prompt, /<!-- drafto-factory-scenario-sha:<full headSha> -->/);
     assert.match(flat, /the \*\*full\*\* `bundle\.headSha` verbatim/);
+  });
+
+  it("puts the web steps under an exact ### Web heading for the browser runner", () => {
+    // intest_browser_run (ADR-0051) runs only that section, found by
+    // extractWebSection in factory-bundle.mjs; any other heading means no run.
+    assert.match(flat, /under a heading that is exactly `### Web`, and nothing else does/);
+    assert.match(flat, /doable in a browser on the preview alone/);
   });
 
   it("allows noop ONLY on an exact full-SHA match, never on judgement", () => {

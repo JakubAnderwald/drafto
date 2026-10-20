@@ -17,7 +17,7 @@ import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useNote } from "@/hooks/use-note";
 import { useKeyboardVisible } from "@/hooks/use-keyboard-visible";
-import { useWindowTop } from "@/hooks/use-window-top";
+import { useKeyboardVerticalOffset } from "@/hooks/use-keyboard-vertical-offset";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { EditorSkeleton } from "@/components/ui/skeleton";
@@ -175,7 +175,7 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   const { semantic, isDark } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
   const headerHeight = useHeaderHeight();
-  const windowTop = useWindowTop();
+  const keyboardOffset = useKeyboardVerticalOffset(headerHeight);
   const insets = useSafeAreaInsets();
   const isKeyboardUp = useKeyboardVisible();
   const [title, setTitle] = useState(initialNote.title);
@@ -410,12 +410,7 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   // No header title here: the title field below is the note's title, and the
   // header (title "", back label "Notes") is set once in app/_layout.tsx.
   return (
-    <View
-      ref={windowTop.ref}
-      testID="editor-window"
-      style={styles.container}
-      onLayout={windowTop.onLayout}
-    >
+    <View testID="editor-window" style={styles.container} onLayout={keyboardOffset.onLayout}>
       <KeyboardAvoidingView
         testID="editor-keyboard-avoiding-view"
         style={styles.fill}
@@ -427,8 +422,8 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
         // top of the window as the offset, the view stops that far short of the
         // keyboard and the toolbar ends up behind it. On a pushed screen that is
         // the header height; a note opened from Search is an iOS sheet, which
-        // starts lower, so the distance is measured (header height until then).
-        keyboardVerticalOffset={windowTop.top ?? headerHeight}
+        // starts lower; useKeyboardVerticalOffset works the distance out.
+        keyboardVerticalOffset={keyboardOffset.offset}
       >
         <View style={styles.titleRow}>
           <TextInput
