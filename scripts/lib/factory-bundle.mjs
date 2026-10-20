@@ -72,6 +72,7 @@
 
 import { readAccountFile } from "./browser-report.mjs";
 import { isMainModule } from "./is-main.mjs";
+import { fenceStep } from "./markdown-fence.mjs";
 import { parseIssueFooter } from "./parse-issue-footer.mjs";
 
 // Marker the factory's planning prompt writes onto the plan comment. The
@@ -859,9 +860,6 @@ export function selectScenarioComment(comments, headSha) {
   return matches.reduce((a, b) => (String(b.createdAt) > String(a.createdAt) ? b : a));
 }
 
-// A fenced-block opener/closer line: ``` or ~~~, three or more, indented or not.
-const FENCE_LINE = /^\s*(`{3,}|~{3,})/;
-
 // The text of the section whose heading is at lines[start]: up to the next
 // heading of level 1-3 or a factory marker line, without the heading line
 // itself, trimmed; null when nothing is left.
@@ -869,16 +867,14 @@ function sectionText(lines, start) {
   let end = lines.length;
   // A web step in a note-taking app often quotes Markdown to type ("# My
   // heading" inside a fence); a heading inside a fenced block is content, not
-  // the end of the section.
+  // the end of the section. Fences close by CommonMark's rule
+  // (markdown-fence.mjs), so a quoted ```js block inside a ````md one doesn't
+  // end it early.
   let fence = null;
   for (let i = start + 1; i < lines.length; i++) {
-    const opener = FENCE_LINE.exec(lines[i]);
-    if (opener) {
-      if (fence === null) fence = opener[1][0];
-      else if (opener[1][0] === fence) fence = null;
-      continue;
-    }
-    if (fence !== null) continue;
+    const wasOpen = fence !== null;
+    fence = fenceStep(fence, lines[i]);
+    if (wasOpen || fence !== null) continue;
     if (/^#{1,3}\s/.test(lines[i]) || lines[i].trim().startsWith("<!-- drafto-factory")) {
       end = i;
       break;
@@ -923,13 +919,9 @@ export function extractScenarioSections(body) {
   const live = [];
   let fence = null;
   for (let i = 0; i < lines.length; i++) {
-    const opener = FENCE_LINE.exec(lines[i]);
-    if (opener) {
-      if (fence === null) fence = opener[1][0];
-      else if (opener[1][0] === fence) fence = null;
-      continue;
-    }
-    if (fence !== null) continue;
+    const wasOpen = fence !== null;
+    fence = fenceStep(fence, lines[i]);
+    if (wasOpen || fence !== null) continue;
     if (lines[i].trim().startsWith("<!-- drafto-factory")) break;
     live.push(i);
   }

@@ -214,6 +214,30 @@ describe("extractScenarioSections", () => {
     assert.match(sections[0].text, /### Not a section/);
   });
 
+  it("closes fences by CommonMark's rule: a quoted ```js block doesn't end a ````md one", () => {
+    const body = [
+      "## Test scenario",
+      "### Web",
+      "1. Paste this note:",
+      "````md",
+      "```js",
+      "### Not a section",
+      "## Not the end of the scenario",
+      "```",
+      "````",
+      "2. Save.",
+      "### macOS",
+      "1. Click.",
+    ].join("\n");
+    const sections = extractScenarioSections(body);
+    assert.deepEqual(
+      sections.map((s) => s.heading),
+      ["Web", "macOS"],
+    );
+    assert.equal(sections[0].text, extractWebSection(body));
+    assert.match(sections[0].text, /### Not a section[\s\S]*2\. Save\./);
+  });
+
   it("counts a heading only at the start of its line, the rule that ends a section", () => {
     const body = "## Test scenario\n### Web\n1. a\n  ### iOS\n1. b\n### macOS\n1. c";
     assert.deepEqual(extractScenarioSections(body), [

@@ -117,6 +117,7 @@ import {
 } from "./browser-report.mjs";
 import { extractScenarioSections } from "./factory-bundle.mjs";
 import { isMainModule } from "./is-main.mjs";
+import { FENCE_LINE, closeFences, fenceStep } from "./markdown-fence.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 
 export const VERIFY_REPORT_MARKER = "<!-- drafto-factory-verify-report -->";
@@ -278,30 +279,7 @@ function sliceSafe(text, n) {
 
 // ── code fences ─────────────────────────────────────────────────────────────
 // Lane text is model output: a fence it leaves open would turn the rest of the
-// comment into code. CommonMark's rule: a fence opens on a line of 3+
-// backticks or tildes (a backtick fence's info string can't contain a
-// backtick) and closes on the same character, at least as long, with nothing
-// after it.
-
-const FENCE = /^\s*(`{3,}|~{3,})(.*)$/;
-
-function fenceStep(open, line) {
-  const m = FENCE.exec(line);
-  if (!m) return open;
-  if (open === null) {
-    if (m[1][0] === "`" && m[2].includes("`")) return null;
-    return { char: m[1][0], len: m[1].length };
-  }
-  return m[1][0] === open.char && m[1].length >= open.len && !m[2].trim() ? null : open;
-}
-
-// <text> with the fence it leaves open (if any) closed. Apply before adding
-// any list indentation, so the closer gets the same indentation as the rest.
-function closeFences(text) {
-  let open = null;
-  for (const line of text.split("\n")) open = fenceStep(open, line);
-  return open ? `${text}\n${open.char.repeat(open.len)}` : text;
-}
+// comment into code. markdown-fence.mjs tracks fences by CommonMark's rule.
 
 // <text> cut to at most <max> characters, the closer of a fence the cut left
 // open included.
@@ -430,7 +408,8 @@ export function parseManualList(text) {
   let cur = null;
   let fence = null;
   for (const line of String(text ?? "").split(/\r?\n/)) {
-    const m = fence === null && !FENCE.test(line) && /^ ?(?:\d+[.)]|[-*+])\s+(.*\S)\s*$/.exec(line);
+    const m =
+      fence === null && !FENCE_LINE.test(line) && /^ ?(?:\d+[.)]|[-*+])\s+(.*\S)\s*$/.exec(line);
     fence = fenceStep(fence, line);
     if (m) {
       if (cur) items.push(cur);
@@ -683,7 +662,7 @@ function laneTable(shell, browser, platforms, betaLanes) {
 // indented under it, with fences closed before the indentation goes on.
 function listItem(label, lines, max) {
   const out = defang(closeFences(capText(lines.join("\n"), max))).split("\n");
-  const head = FENCE.test(out[0]) ? label.trimEnd() : `${label}${out.shift()}`;
+  const head = FENCE_LINE.test(out[0]) ? label.trimEnd() : `${label}${out.shift()}`;
   return [head, ...out.map((l) => (l.trim() ? `  ${l}` : ""))];
 }
 
@@ -725,7 +704,7 @@ function normaliseKey(text) {
 // it — capped, fences closed and defanged before the indentation goes on.
 function renderItem(n, { first, rest }) {
   let head = inline(first, 500);
-  if (FENCE.test(head)) head = `​${head}`;
+  if (FENCE_LINE.test(head)) head = `​${head}`;
   const kept = rest.slice(0, 20);
   const indents = kept.filter((l) => l.trim()).map((l) => /^\s*/.exec(l)[0].length);
   const cut = indents.length ? Math.min(...indents) : 0;
