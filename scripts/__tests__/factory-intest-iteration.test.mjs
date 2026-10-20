@@ -229,9 +229,11 @@ describe("factory-agent.sh structural wiring (In Test iteration)", () => {
   });
 
   it("cleanup keep-set retains slots for in-progress (so the worktree survives a revision bounce)", () => {
+    // status:testing too: a card verifying in the Testing column (ADR-0053)
+    // still owns its slot + worktree.
     assert.match(
       script,
-      /any\(\. == "status:in-progress" or \. == "status:in-review" or \. == "status:in-test"\)/,
+      /any\(\. == "status:in-progress" or \. == "status:in-review" or \. == "status:testing" or \. == "status:in-test"\)/,
     );
   });
 

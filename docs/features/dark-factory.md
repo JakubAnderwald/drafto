@@ -1,6 +1,6 @@
 # Dark factory
 
-**Status:** rolling out (Phase B engine + `--release` auto-merge built; runtime phase set on the plist) **Updated:** 2026-07-15
+**Status:** rolling out (Phase B engine + `--release` auto-merge built; runtime phase set on the plist) **Updated:** 2026-10-20
 
 ## What it is
 
@@ -23,9 +23,9 @@ The runtime phase is set by `FACTORY_PHASE` on the launchd plist (see the runboo
 - **Title**: `Drafto Factory`
 - **URL**: <https://github.com/users/JakubAnderwald/projects/1>
 
-To re-bootstrap (e.g. after a deletion), run `scripts/setup-factory-board.sh`. It is idempotent and prints the URL on success.
+To re-bootstrap (e.g. after a deletion), run `scripts/setup-factory-board.sh`. It is idempotent and prints the URL on success. On a board that's already in use it keeps every existing option's id, so cards keep their Status. It refuses to delete an option unless you pass `--allow-drop`, and `--dry-run` previews the change. To add a column to the live board, follow the runbook's "Changing the board's Status options".
 
-The board has one custom Status field with eleven values:
+The board has one custom Status field with twelve values:
 
 | Status      | Who sets it           | Meaning                                                               |
 | ----------- | --------------------- | --------------------------------------------------------------------- |
@@ -35,6 +35,7 @@ The board has one custom Status field with eleven values:
 | Plan Review | factory               | Plan posted as a comment; awaiting human approval.                    |
 | In Progress | human / allowlisted   | Plan approved; factory implements per the approved plan.              |
 | In Review   | factory               | PR open; factory monitors CI and review comments.                     |
+| Testing     | factory               | Reserved for pre-In-Test verification (ADR-0053); unused for now.     |
 | In Test     | factory               | Testable build + test scenario posted; awaiting human approval.       |
 | Approved    | human / allowlisted   | Authorise prod release. Migration gate enforced.                      |
 | Released    | factory               | PR merged; beta channels dispatched (Phase D).                        |
@@ -54,6 +55,7 @@ The full set is created idempotently by `scripts/setup-factory-labels.sh`. Refer
 | `status:plan-review`  | factory              | Awaiting plan approval.                                              |
 | `status:in-progress`  | human / factory      | Implementation in progress.                                          |
 | `status:in-review`    | factory              | PR open, CI / review comments active.                                |
+| `status:testing`      | factory              | Pre-In-Test verification running (ADR-0053); unused for now.         |
 | `status:in-test`      | factory              | Testable build + scenario posted, awaiting ship approval.            |
 | `status:approved`     | human / factory      | Approved for release; merge + dispatch authorised.                   |
 | `status:released`     | factory              | Merged + beta dispatched.                                            |

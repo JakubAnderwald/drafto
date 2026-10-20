@@ -18,10 +18,11 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
 
    ```bash
    gh auth refresh -s project,read:project   # if you haven't yet
+   scripts/setup-factory-board.sh --dry-run
    scripts/setup-factory-board.sh
    ```
 
-   Prints the board URL on success — paste it into `docs/features/dark-factory.md` ("The board" section).
+   `--dry-run` previews the change and touches nothing; it's optional on a first run. The real run prints the board URL on success — paste it into `docs/features/dark-factory.md` ("The board" section). To add a column to a board that is already in use, follow "Changing the board's Status options" below instead.
 
 3. **Link the repo to the project.**
 
@@ -109,6 +110,82 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
    > npm install -g corepack && corepack enable pnpm
    > pnpm --version   # run inside the repo: must print the packageManager pin (pnpm@10.30.1)
    > ```
+
+## Changing the board's Status options
+
+`scripts/setup-factory-board.sh` is also how a column is added to the live board, for example **Testing**, which is reserved for the pre-In-Test verification stage (ADR-0053, which lands with that stage). `updateProjectV2Field` replaces the Status field's whole option list. GitHub treats an option sent without its `id` as a new option, and every card in the old one loses its Status. Before 2026-10-20 the script sent no ids, so a re-run could clear the Status of every card on the board. Now the script:
+
+- sends every existing option back with its `id`, colour and description. Only a name the board doesn't have yet is sent without an `id`.
+- exits 1 when the board has an option that `STATUS_OPTIONS` doesn't list, because the update would delete it. `--allow-drop` deletes it anyway, so move its cards first.
+- sends no update when the board already matches `STATUS_OPTIONS`.
+- exits 1 when GitHub returns an option with a different `id`. Restore from your backup (below).
+- with `--dry-run`, prints the `updateProjectV2Field` variables (each option with its `id`) and exits. It creates, updates and links nothing.
+
+Only use the script from current `main`. An older copy sends no ids.
+
+**Safe migration.** On the Mac mini. Run one step at a time and stop at the first one that fails. (The blocks carry no `#` comments: with zsh's `interactivecomments` off, a pasted comment becomes arguments.)
+
+1. Go to the factory checkout, which tracks `origin/main`, and set two variables. `FACTORY_PROJECT_ID` saves every later call from looking the board up again; check that it starts with `PVT_`.
+
+   ```bash
+   cd /Users/jakub/code/drafto-factory
+   export FACTORY_PROJECT_ID=$(node scripts/lib/factory-project.mjs find-project | jq -r .projectId)
+   echo "$FACTORY_PROJECT_ID"
+   BACKUP=~/factory-board-backup-$(date +%Y%m%d-%H%M).json
+   ```
+
+2. Create the labels first. The script is idempotent and adds `status:testing`.
+
+   ```bash
+   scripts/setup-factory-labels.sh
+   ```
+
+3. Pause the factory, then wait for runs already in flight. `factory:pause` only stops new ticks, and a run that's still going can move a card, which the diff in step 6 would show as a lost Status. Repeat the `pgrep` until it prints nothing.
+
+   ```bash
+   node scripts/lib/state-cli.mjs factory:pause "board migration"
+   pgrep -fl factory-agent.sh
+   ```
+
+4. Back up every card's Status. Don't go on unless it prints `backup ok`.
+
+   ```bash
+   node scripts/lib/factory-project.mjs export-statuses > "$BACKUP" && jq -e 'length > 0' "$BACKUP" >/dev/null && echo "backup ok"
+   ```
+
+5. Preview the update. Every existing option in the printed `options` must have an `"id"`; only the new column (Testing) has none. Then run it for real.
+
+   ```bash
+   scripts/setup-factory-board.sh --dry-run
+   scripts/setup-factory-board.sh
+   ```
+
+6. Check. The diff must print nothing, and `has-status-option` must print `"present": true` and exit 0.
+
+   ```bash
+   node scripts/lib/factory-project.mjs export-statuses | diff "$BACKUP" -
+   node scripts/lib/factory-project.mjs has-status-option --name Testing
+   ```
+
+7. Resume.
+
+   ```bash
+   node scripts/lib/state-cli.mjs factory:resume
+   ```
+
+`export-statuses` is read-only. It prints every item on the board (`itemId`, `issueNumber`, `status`, `type`), sorted, so two exports diff cleanly. If the diff shows lost Statuses, keep the factory paused and put back each card whose Status changed. In the same shell as the steps above:
+
+```bash
+node scripts/lib/factory-project.mjs export-statuses > ~/factory-board-after.json
+jq -r --slurpfile now ~/factory-board-after.json '($now[0] | map({(.itemId): .status}) | add // {}) as $cur | .[] | select(.status != null and $cur[.itemId] != .status) | [.itemId, .status] | @tsv' "$BACKUP" |
+  while IFS=$'\t' read -r item opt; do
+    node scripts/lib/factory-project.mjs set-status --item-id "$item" --status "$opt"
+  done
+```
+
+`set-status` only moves the board card. The `status:*` labels live on the issues, and a board migration doesn't touch them.
+
+`transition_status` removes only the `status:*` labels an issue actually carries, so a label the repo doesn't have yet doesn't break moving a card **out of** a column. Moving a card **into** Testing still needs the `status:testing` label. When the factory can't read an issue's labels, it falls back to removing every status label, and that fails if one is missing. So run the label script first, as in step 2.
 
 ## Phase progression criteria
 
@@ -610,7 +687,7 @@ The factory's `cleanup()` trap files a `factory-failure`-labelled GitHub issue w
 3. **Common causes** (in approximate order of frequency):
    - Network blip during `gh` call (transient — usually resolves on the next tick).
    - Broken host toolchain: git failing on an unaccepted Xcode license after an Xcode update, missing Command Line Tools, or a binary gone from `PATH`. The toolchain health check pauses the factory and emails the fix; see "Automatic toolchain pause".
-   - Worktree slot leaked (a previous run died without releasing it). `node scripts/lib/state-cli.mjs factory:slot-status` shows each slot's PID + issue; if the PID is dead, `node scripts/lib/state-cli.mjs factory:slot-release <slot>` then `node scripts/lib/worktree-cli.mjs remove --issue <n> --force`. (`--watch`'s cleanup sweep also auto-releases slots whose issue has left the active In Progress/In Review/In Test states — e.g. merged, Blocked, or closed. Since ADR-0033 that sweep removes the worktree but **keeps** the local branch whenever a PR still points at it, so a card dragged back to In Progress resumes on its own commits.)
+   - Worktree slot leaked (a previous run died without releasing it). `node scripts/lib/state-cli.mjs factory:slot-status` shows each slot's PID + issue; if the PID is dead, `node scripts/lib/state-cli.mjs factory:slot-release <slot>` then `node scripts/lib/worktree-cli.mjs remove --issue <n> --force`. (`--watch`'s cleanup sweep also auto-releases slots whose issue has left the active In Progress/In Review/Testing/In Test states — e.g. merged, Blocked, or closed. Since ADR-0033 that sweep removes the worktree but **keeps** the local branch whenever a PR still points at it, so a card dragged back to In Progress resumes on its own commits.)
    - Disk full under `worktrees/` — the factory now refuses to start an implement when free space is below `FACTORY_MIN_FREE_DISK_GB` (it parks the card in Blocked with a `disk-low` comment), so a mid-build ENOSPC should be rare. Reclaim space via `git worktree prune` (and `node scripts/lib/worktree-cli.mjs list` to see the factory's worktrees); see "Worktree installs & disk" for the full reclamation runbook.
    - Claude wall-time cap hit on every retry (the prompt or context bundle is too large). Inspect the bundle in the log; truncate prior PR threads if needed. (A Claude _session usage_ limit is handled separately — the factory auto-pauses until reset instead of failing; see "Automatic pause on a Claude session limit".)
 4. **Close the failure issue** once resolved. The trap doesn't auto-close; that's intentional so the issue is visible until acknowledged.

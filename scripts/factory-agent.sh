@@ -20,7 +20,10 @@
 #                to push a fix; when CI is green AND a Vercel preview is
 #                reachable, advance the card to In Test and post the preview
 #                URL. Also runs a cleanup sweep that releases slots +
-#                removes worktrees for cards that have left In Review/In Test.
+#                removes worktrees for cards that have left the active
+#                states (In Progress/In Review/Testing/In Test). Testing is
+#                reserved for the pre-In-Test verification stage (ADR-0053);
+#                nothing moves a card there yet.
 #
 #   --release    Approved → Released. For each card a human dragged to
 #                Approved: enforce the migration gate, squash-merge the
@@ -629,6 +632,7 @@ status_label_for() {
     "Plan Review") echo "status:plan-review" ;;
     "In Progress") echo "status:in-progress" ;;
     "In Review")   echo "status:in-review" ;;
+    Testing)       echo "status:testing" ;;
     "In Test")     echo "status:in-test" ;;
     Approved)      echo "status:approved" ;;
     Released)      echo "status:released" ;;
@@ -640,7 +644,7 @@ status_label_for() {
 
 # All status:* labels — needed so transition_status can strip the previous
 # label without knowing which one it was.
-ALL_STATUS_LABELS="status:ready,status:planning,status:plan-review,status:in-progress,status:in-review,status:in-test,status:approved,status:released,status:done,status:blocked"
+ALL_STATUS_LABELS="status:ready,status:planning,status:plan-review,status:in-progress,status:in-review,status:testing,status:in-test,status:approved,status:released,status:done,status:blocked"
 
 # transition_status <item-id> <issue-number> <new-status>
 #
@@ -663,18 +667,30 @@ transition_status() {
     log "ERROR: factory-project set-status failed for issue #$issue_num → $new_status"
     return 1
   fi
-  # gh issue edit accepts multiple --remove-label flags. The current label may
-  # not exist (e.g. first transition from Ready, which is human-set), so we
-  # remove every status:* label defensively and let `gh` no-op on absent ones.
-  local remove_args=()
+  # Remove only the status:* labels the issue actually carries. gh resolves
+  # every --remove-label name to a REPO label id first and fails the whole
+  # removal on a name the repo doesn't have ("'status:testing' not found"),
+  # so stripping all of ALL_STATUS_LABELS blindly would break every swap
+  # whenever this list gets ahead of scripts/setup-factory-labels.sh — and a
+  # stale status:in-* label keeps the --watch cleanup sweep holding a slot.
+  # If the issue's labels can't be read, fall back to the full list.
+  local remove_args=() current_labels="" have_current=0 lbl
+  if current_labels=$(gh issue view "$issue_num" --repo JakubAnderwald/drafto \
+      --json labels --jq '.labels[].name' 2>>"$LOG_FILE"); then
+    have_current=1
+  fi
   IFS=',' read -ra _all_status <<< "$ALL_STATUS_LABELS"
   for lbl in "${_all_status[@]}"; do
-    if [[ "$lbl" != "$new_label" ]]; then
-      remove_args+=(--remove-label "$lbl")
+    [[ "$lbl" == "$new_label" ]] && continue
+    if [[ "$have_current" -eq 1 ]] && ! grep -qxF -- "$lbl" <<<"$current_labels"; then
+      continue
     fi
+    remove_args+=(--remove-label "$lbl")
   done
+  # ${arr[@]+...}: an empty array under `set -u` is an unbound-variable error
+  # in bash 3.2 (/bin/bash on macOS, which launchd runs).
   if ! gh issue edit "$issue_num" --repo JakubAnderwald/drafto \
-      --add-label "$new_label" "${remove_args[@]}" >>"$LOG_FILE" 2>&1; then
+      --add-label "$new_label" ${remove_args[@]+"${remove_args[@]}"} >>"$LOG_FILE" 2>&1; then
     log "WARNING: gh issue edit failed for issue #$issue_num (label swap → $new_label); board state still advanced"
   fi
   # Record the transition for the runbook's `factory:status` view.
@@ -4082,8 +4098,10 @@ fi
 # ── --watch mode (Phase B+) ─────────────────────────────────────────────────
 # Two responsibilities each tick:
 #   1. Cleanup sweep — release slots + remove worktrees for any issue that has
-#      left the In Review / In Test states (merged by the operator, Blocked,
-#      Done, or closed). Without this the two slots would leak.
+#      left the active states — In Progress / In Review / Testing / In Test —
+#      (merged by the operator, Blocked, Done, or closed). Without this the two
+#      slots would leak. Testing must stay in the active set: a card verifying
+#      there still owns its slot + worktree (ADR-0053).
 #   2. In Review → In Test — for each open factory PR: if CI is failing or
 #      review comments are unresolved, resume the worktree and invoke Claude
 #      (factory-watch-prompt) to push one fix; once CI is green AND a Vercel
@@ -4122,9 +4140,9 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
       continue
     fi
     STILL_ACTIVE=$(echo "$ISSUE_META" | jq -r \
-      '((.state == "OPEN") and ((.labels | map(.name)) | any(. == "status:in-progress" or . == "status:in-review" or . == "status:in-test")))')
+      '((.state == "OPEN") and ((.labels | map(.name)) | any(. == "status:in-progress" or . == "status:in-review" or . == "status:testing" or . == "status:in-test")))')
     if [[ "$STILL_ACTIVE" != "true" ]]; then
-      log "Slot $SLOT: issue #$SLOT_ISSUE left In Review/In Test; releasing slot + worktree"
+      log "Slot $SLOT: issue #$SLOT_ISSUE left In Progress/In Review/Testing/In Test; releasing slot + worktree"
       if [[ "$DRY_RUN" -eq 0 ]]; then
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         # Not necessarily done with the issue: a card relabelled status:blocked
