@@ -50,7 +50,7 @@ FNR == 1 {
     }
     if (c == "/" && substr($0, i + 1, 1) == "*") { mode = "block"; i++; continue }
     if (c == "'") { add(c); mode = "quote"; continue }
-    if (c == "$" && match(substr($0, i), /^\$[A-Za-z_]*\$/)) {
+    if (c == "$" && match(substr($0, i), /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/)) {
       tag = substr($0, i, RLENGTH); mode = "dollar"; add(" ")
       i += RLENGTH - 1; continue
     }
@@ -88,7 +88,7 @@ function report(finding, message,   tab) {
   print substr(finding, 1, tab - 1) "\t" message "\t" substr(finding, tab + 1)
 }
 
-function handle(raw, loc,   s, snip, head, rest, name, keep, p, q, r) {
+function handle(raw, loc,   s, snip, head, rest, name, keep, p, q, r, privs) {
   s = toupper(raw)
   gsub(/"/, "", s)
   gsub(/[ \t\r\n]+/, " ", s)
@@ -121,14 +121,20 @@ function handle(raw, loc,   s, snip, head, rest, name, keep, p, q, r) {
   if (s ~ /^GRANT / && (p = index(s, " ON ")) && (q = index(s, " TO ")) && q > p) {
     r = substr(s, q + 4)
     sub(/ WITH GRANT OPTION.*$/, "", r); sub(/ GRANTED BY.*$/, "", r)
-    objects(substr(s, p + 4, q - p - 4), "grant", r, loc "\t" snip)
+    # A column-level grant reaches those columns, so it counts like a table grant.
+    privs = substr(s, 7, p - 7); gsub(/\([^)]*\)/, "", privs)
+    objects(substr(s, p + 4, q - p - 4), "grant", r, apiprivs(privs), loc "\t" snip)
     return
   }
 
-  if (s ~ /^REVOKE ALL / && (p = index(s, " ON ")) && (q = index(s, " FROM ")) && q > p) {
+  # GRANT OPTION FOR keeps the privilege; a column-level REVOKE doesn't remove a
+  # table-level grant, so neither changes reachability.
+  if (s ~ /^REVOKE / && s !~ /^REVOKE GRANT OPTION FOR / && (p = index(s, " ON ")) && (q = index(s, " FROM ")) && q > p) {
+    privs = substr(s, 8, p - 8)
+    if (privs ~ /\(/) return
     r = substr(s, q + 6)
     sub(/ (CASCADE|RESTRICT)$/, "", r); sub(/ GRANTED BY.*$/, "", r)
-    objects(substr(s, p + 4, q - p - 4), "revoke", r, loc "\t" snip)
+    objects(substr(s, p + 4, q - p - 4), "revoke", r, apiprivs(privs), loc "\t" snip)
     return
   }
 
@@ -157,8 +163,7 @@ function newobj(name, finding) {
   text[name] = substr(finding, index(finding, "\t") + 1)
   delete skip[name]
   delete noinvoker[name]
-  delete has[name, "ANON"]; delete has[name, "AUTHENTICATED"]
-  delete has[name, "SERVICE_ROLE"]; delete has[name, "PUBLIC"]
+  setprivs(name, "ANON,AUTHENTICATED,SERVICE_ROLE,PUBLIC", "SELECT INSERT UPDATE DELETE", 0)
 }
 
 # "PUBLIC.FOO (" / "FOO AS" -> "FOO"; "" for objects in other schemas.
@@ -174,19 +179,50 @@ function invoker(s) {
   return s ~ /SECURITY_INVOKER ?= ?'?(TRUE|ON|YES|1)'?[ ,)]/ || s ~ /SECURITY_INVOKER ?[,)]/
 }
 
-function reachable(name) {
-  return ((name, "AUTHENTICATED") in has) || ((name, "SERVICE_ROLE") in has) || ((name, "PUBLIC") in has)
+# The Data API reaches a table through SELECT / INSERT / UPDATE / DELETE; TRUNCATE,
+# REFERENCES, TRIGGER and MAINTAIN don't count. "ALL [PRIVILEGES]" means all four.
+function apiprivs(list,   n, parts, k, out) {
+  gsub(/ /, "", list)
+  if (list == "ALL" || list == "ALLPRIVILEGES") return "SELECT INSERT UPDATE DELETE"
+  out = ""
+  n = split(list, parts, ",")
+  for (k = 1; k <= n; k++)
+    if (parts[k] ~ /^(SELECT|INSERT|UPDATE|DELETE)$/) out = out " " parts[k]
+  return out
 }
 
-# Applies a GRANT / REVOKE ALL to its object list ("ALL TABLES IN SCHEMA public"
-# covers only the tables created so far, as in Postgres).
-function objects(list, action, roles, finding,   n, parts, k, name, j, schemas) {
+function reachable(name,   rs, ps, i, j) {
+  split("AUTHENTICATED SERVICE_ROLE PUBLIC", rs, " ")
+  split("SELECT INSERT UPDATE DELETE", ps, " ")
+  for (i = 1; i <= 3; i++)
+    for (j = 1; j <= 4; j++)
+      if ((name, rs[i], ps[j]) in has) return 1
+  return 0
+}
+
+# Sets (on = 1) or clears (on = 0) each privilege for each comma-separated role.
+function setprivs(name, roles, privs, on,   nr, rs, np, ps, i, j) {
+  nr = split(roles, rs, ",")
+  np = split(privs, ps, " ")
+  for (i = 1; i <= nr; i++) {
+    gsub(/ /, "", rs[i])
+    for (j = 1; j <= np; j++) {
+      if (on) has[name, rs[i], ps[j]] = 1
+      else delete has[name, rs[i], ps[j]]
+    }
+  }
+}
+
+# Applies a GRANT / REVOKE to its object list ("ALL TABLES IN SCHEMA public" covers
+# only the tables created so far, as in Postgres).
+function objects(list, action, roles, privs, finding,   n, parts, k, name, j, schemas) {
+  if (privs == "") return
   if (list ~ /^ALL TABLES IN SCHEMA /) {
     schemas = "," substr(list, 22) ","
     gsub(/ /, "", schemas)
     if (index(schemas, ",PUBLIC,") == 0) return
     for (j = 1; j <= nobj; j++)
-      if (live[order[j]]) apply(order[j], action, roles, finding)
+      if (live[order[j]]) apply(order[j], action, roles, privs, finding)
     return
   }
   if (list ~ /^(ALL|FUNCTION|FUNCTIONS|SEQUENCE|SCHEMA|ROUTINE|PROCEDURE|TYPE|DOMAIN|LANGUAGE|LARGE|FOREIGN|DATABASE|TABLESPACE|PARAMETER) /) return
@@ -197,18 +233,17 @@ function objects(list, action, roles, finding,   n, parts, k, name, j, schemas) 
     gsub(/ /, "", name)
     if (name ~ /^PUBLIC\./) name = substr(name, 8)
     if (name ~ /\./ || !live[name]) continue
-    apply(name, action, roles, finding)
+    apply(name, action, roles, privs, finding)
   }
 }
 
-function apply(name, action, roles, finding,   n, rs, k, before) {
-  n = split(roles, rs, ",")
+function apply(name, action, roles, privs, finding,   before) {
   if (action == "grant") {
-    for (k = 1; k <= n; k++) { gsub(/ /, "", rs[k]); has[name, rs[k]] = 1 }
+    setprivs(name, roles, privs, 1)
     return
   }
   before = reachable(name)
-  for (k = 1; k <= n; k++) { gsub(/ /, "", rs[k]); delete has[name, rs[k]] }
+  setprivs(name, roles, privs, 0)
   if (ignored) skip[name] = 1
   # Report a table that lost its last API grant at the REVOKE, not at its CREATE.
   if (before && !reachable(name)) {

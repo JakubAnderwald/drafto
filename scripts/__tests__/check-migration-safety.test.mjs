@@ -134,6 +134,9 @@ describe("check-migration-safety: Data API grants on tables", () => {
       "create function f() returns void language sql as $$",
       "  grant select on public.widgets to authenticated;",
       "$$;",
+      "create function g() returns void language sql as $fn1$",
+      "  grant select on public.widgets to authenticated;",
+      "$fn1$;",
       "",
     ].join("\n");
     assertFails(check({ "001.sql": sql }), NO_GRANT);
@@ -166,6 +169,39 @@ describe("check-migration-safety: Data API grants on tables", () => {
       "002.sql": "revoke all on public.widgets from anon;\n",
     });
     assertPasses(res);
+  });
+
+  it("fails a table whose only privilege a later privilege-specific REVOKE removes", () => {
+    const res = check({
+      "001.sql": table("public.widgets") + grant("public.widgets"),
+      "002.sql": "revoke select on public.widgets from authenticated;\n",
+    });
+    assertFails(res, /002\.sql:1 — public\.widgets has no GRANT/);
+  });
+
+  it("passes a privilege-specific REVOKE that leaves another privilege", () => {
+    const res = check({
+      "001.sql":
+        table("public.widgets") + "grant select, insert on public.widgets to authenticated;\n",
+      "002.sql": "revoke select on public.widgets from authenticated;\n",
+    });
+    assertPasses(res);
+  });
+
+  it("ignores privileges the Data API can't use, and column-level or grant-option revokes", () => {
+    const truncateOnly = table("public.a") + "grant truncate on public.a to authenticated;\n";
+    assertFails(check({ "001.sql": truncateOnly }), NO_GRANT);
+    const columnRevoke =
+      table("public.b") +
+      grant("public.b") +
+      "revoke select (id) on public.b from authenticated;\n" +
+      "revoke grant option for select on public.b from authenticated;\n";
+    assertPasses(check({ "001.sql": columnRevoke }));
+  });
+
+  it("counts a column-level grant", () => {
+    const sql = table("public.widgets") + "grant update (id) on public.widgets to authenticated;\n";
+    assertPasses(check({ "001.sql": sql }));
   });
 
   it("accepts a grant in a later migration of the set, whatever the argument order", () => {
