@@ -859,22 +859,20 @@ export function selectScenarioComment(comments, headSha) {
   return matches.reduce((a, b) => (String(b.createdAt) > String(a.createdAt) ? b : a));
 }
 
-// The body of the scenario's `### Web` section: from that heading to the next
-// heading of the same or a higher level, without the heading line itself.
-// The scenario writer is told to use exactly that heading (factory-intest-
-// prompt.md), so anything else means the scenario has no web steps to run.
-export function extractWebSection(body) {
-  if (typeof body !== "string") return null;
-  const lines = body.split("\n");
-  const start = lines.findIndex((l) => /^###\s+Web\s*$/.test(l.trim()));
-  if (start === -1) return null;
+// A fenced-block opener/closer line: ``` or ~~~, three or more, indented or not.
+const FENCE_LINE = /^\s*(`{3,}|~{3,})/;
+
+// The text of the section whose heading is at lines[start]: up to the next
+// heading of level 1-3 or a factory marker line, without the heading line
+// itself, trimmed; null when nothing is left.
+function sectionText(lines, start) {
   let end = lines.length;
   // A web step in a note-taking app often quotes Markdown to type ("# My
   // heading" inside a fence); a heading inside a fenced block is content, not
   // the end of the section.
   let fence = null;
   for (let i = start + 1; i < lines.length; i++) {
-    const opener = /^\s*(`{3,}|~{3,})/.exec(lines[i]);
+    const opener = FENCE_LINE.exec(lines[i]);
     if (opener) {
       if (fence === null) fence = opener[1][0];
       else if (opener[1][0] === fence) fence = null;
@@ -891,6 +889,63 @@ export function extractWebSection(body) {
     .join("\n")
     .trim();
   return text || null;
+}
+
+// The body of the scenario's `### Web` section: from that heading to the next
+// heading of the same or a higher level, without the heading line itself.
+// The scenario writer is told to use exactly that heading (factory-intest-
+// prompt.md), so anything else means the scenario has no web steps to run.
+export function extractWebSection(body) {
+  if (typeof body !== "string") return null;
+  const lines = body.split("\n");
+  const start = lines.findIndex((l) => /^###\s+Web\s*$/.test(l.trim()));
+  if (start === -1) return null;
+  return sectionText(lines, start);
+}
+
+const SCENARIO_HEADING = /^##\s+Test scenario\b/i;
+
+// Every `###` section of a scenario comment, in order: [{ heading, text }].
+// The scenario writer puts one `###` heading per platform under
+// `## Test scenario` (factory-intest-prompt.md), so only that part is read
+// when the body has one — a `###` under "How to get a build" is not a test
+// section — and the whole body when it has none. Each section's text is what
+// extractWebSection would return for it (same end rule, same fence handling);
+// a section with no text is left out. Headings inside fenced blocks are
+// content, and nothing after the first factory marker line is read.
+// verify-report.mjs turns the non-Web sections into the human's manual steps.
+export function extractScenarioSections(body) {
+  if (typeof body !== "string") return [];
+  const lines = body.split("\n");
+  // Indices of lines outside fenced blocks, up to the first marker line.
+  const live = [];
+  let fence = null;
+  for (let i = 0; i < lines.length; i++) {
+    const opener = FENCE_LINE.exec(lines[i]);
+    if (opener) {
+      if (fence === null) fence = opener[1][0];
+      else if (opener[1][0] === fence) fence = null;
+      continue;
+    }
+    if (fence !== null) continue;
+    if (lines[i].trim().startsWith("<!-- drafto-factory")) break;
+    live.push(i);
+  }
+  const scoped = live.some((i) => SCENARIO_HEADING.test(lines[i]));
+  let inScope = !scoped;
+  const sections = [];
+  for (const i of live) {
+    if (scoped && /^#{1,2}\s/.test(lines[i])) {
+      inScope = SCENARIO_HEADING.test(lines[i]);
+      continue;
+    }
+    if (!inScope) continue;
+    const h = /^###\s+(.*\S)\s*$/.exec(lines[i].trim());
+    if (!h) continue;
+    const text = sectionText(lines, i);
+    if (text) sections.push({ heading: h[1], text });
+  }
+  return sections;
 }
 
 export function buildFactoryBrowserRunBundle({

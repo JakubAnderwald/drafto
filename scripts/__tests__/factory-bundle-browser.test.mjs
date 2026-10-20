@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   SCENARIO_FALLBACK_MARKER,
   buildFactoryBrowserRunBundle,
+  extractScenarioSections,
   extractWebSection,
   selectScenarioComment,
 } from "../lib/factory-bundle.mjs";
@@ -137,6 +138,93 @@ describe("extractWebSection", () => {
     assert.equal(extractWebSection("### Web preview\n\n1. Step."), null);
     assert.equal(extractWebSection("### Web\n\n"), null);
     assert.equal(extractWebSection(undefined), null);
+  });
+});
+
+describe("extractScenarioSections", () => {
+  it("returns every ### section of the scenario in order, Web text identical to extractWebSection", () => {
+    const body = scenarioBody(SHA);
+    const sections = extractScenarioSections(body);
+    assert.deepEqual(
+      sections.map((s) => s.heading),
+      ["Web", "iOS / Android"],
+    );
+    assert.equal(sections[0].text, extractWebSection(body));
+    assert.equal(sections[1].text, "1. Tap the thing — expected: it works.");
+    assert.ok(
+      sections.every((s) => !s.text.includes("drafto-factory")),
+      "stops at the markers",
+    );
+  });
+
+  it("reads only the ## Test scenario part when the body has one", () => {
+    const body = [
+      "🏭 **Ready to test — In Test.**",
+      "",
+      "## How to get a build",
+      "",
+      "### iOS",
+      "TestFlight is building.",
+      "",
+      "## Test scenario",
+      "",
+      "### macOS",
+      "1. Click — expected: it opens.",
+      "",
+      "## What isn't manually testable",
+      "",
+      "### Race",
+      "Covered by unit tests only.",
+      "",
+      "## Test scenario (continued)",
+      "### Android",
+      "1. Tap — expected: done.",
+    ].join("\n");
+    assert.deepEqual(extractScenarioSections(body), [
+      { heading: "macOS", text: "1. Click — expected: it opens." },
+      { heading: "Android", text: "1. Tap — expected: done." },
+    ]);
+  });
+
+  it("reads the whole body when there is no ## Test scenario heading", () => {
+    const body = "### Web\n1. A.\n### macOS\n1. B.\n#### Detail\nstill macOS";
+    assert.deepEqual(extractScenarioSections(body), [
+      { heading: "Web", text: "1. A." },
+      { heading: "macOS", text: "1. B.\n#### Detail\nstill macOS" },
+    ]);
+  });
+
+  it("treats headings inside fenced blocks as content", () => {
+    const body = [
+      "## Test scenario",
+      "### Web",
+      "1. Type:",
+      "   ```markdown",
+      "   ## Test scenario",
+      "   ### Not a section",
+      "   ```",
+      "### iOS",
+      "1. Tap.",
+    ].join("\n");
+    const sections = extractScenarioSections(body);
+    assert.deepEqual(
+      sections.map((s) => s.heading),
+      ["Web", "iOS"],
+    );
+    assert.match(sections[0].text, /### Not a section/);
+  });
+
+  it("leaves out empty sections, reads nothing after a marker line, and needs a string", () => {
+    assert.deepEqual(extractScenarioSections("### Web\n\n### macOS\n1. B."), [
+      { heading: "macOS", text: "1. B." },
+    ]);
+    assert.deepEqual(
+      extractScenarioSections("### iOS\n1. A.\n<!-- drafto-factory-in-test -->\n### Fake\n1. X."),
+      [{ heading: "iOS", text: "1. A." }],
+    );
+    assert.deepEqual(extractScenarioSections("no headings at all"), []);
+    assert.deepEqual(extractScenarioSections(undefined), []);
+    assert.deepEqual(extractScenarioSections("###   \n1. headless"), []);
   });
 });
 
