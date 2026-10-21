@@ -62,8 +62,9 @@
 //      section for, and "run the Web steps by hand" when the browser lane
 //      didn't report. The platform and Web lines, and the pointer to a
 //      withheld lane's local report, are never cut by the cap.
-//   5. Coverage gaps: --gaps, every lane that didn't report or was withheld,
-//      then --cr-note.
+//   5. Coverage gaps: --gaps (a {lane, token} entry reads as the token's
+//      REASONS sentence; a {lane, reason} one as it is), every lane that
+//      didn't report or was withheld, then --cr-note.
 //   6. Each lane's full report in <details>; the body stays within
 //      COMMENT_MAX_CHARS by truncating these first, pointing at the local file.
 //   7. The local evidence paths (they stay on the Mac mini; the repo is public).
@@ -91,7 +92,7 @@
 //        --scenario-file <f|""> --platforms '{"web":…,"mobile":…,"desktop":…[,"webViaShared":…]}'
 //        --beta-lanes <csv> --shell-state <state> --shell-dir <dir|"">
 //        --browser-state <state> --browser-dir <dir|"">
-//        --gaps '[{"lane":…,"reason":…}]' --cr-note <text|"">
+//        --gaps '[{"lane":…,"reason":…} | {"lane":…,"token":…}]' --cr-note <text|"">
 //        --account-file <f|""> --bypass-file <f|""> --signin-key-file <f|"">
 //        --out <body-file>
 //     Writes the comment body to --out and prints one JSON line
@@ -226,6 +227,10 @@ const REASONS = {
   "perl-missing": "perl (the guard's timeout wrapper) wasn't found on the Mac mini",
   "nice-missing": "nice wasn't found on the Mac mini",
   "prompt-missing": "the lane's prompt file is missing",
+  // A run's own fact, sent as a coverage gap token (verify-lane.mjs's runGaps):
+  // the browser runner held the shared sign-in lease past the lane's wait.
+  "signin-busy":
+    "the browser runner was signing in as the same test account for longer than the lane could wait (the sign-in lease), so the lane had no preview session and its signed-in API checks didn't run",
   // A shell attempt that ended without a result, then the hold cap came
   // before another one (verify-decide.mjs maps retry:<why> to after-<why>).
   "after-error": "its run exited with an error, and the hold cap came before another attempt",
@@ -900,7 +905,12 @@ function coverageGaps({ shell, browser, gaps, crNote, scenarioMissing }) {
   for (const raw of gaps) {
     const g = typeof raw === "string" ? { lane: "", reason: raw } : raw;
     const lane = own(LANES, String(g?.lane ?? ""))?.label ?? plainLabel(g?.lane ?? "", 40);
-    const reason = inline(g?.reason ?? "", 300);
+    // A token (a run's own fact, e.g. signin-busy) reads as its sentence; a
+    // reason is free text, shown as it is even when it spells a token.
+    const reason =
+      typeof g?.token === "string" && g.token.trim()
+        ? reasonText(g.token)
+        : inline(g?.reason ?? "", 300);
     if (!reason) continue;
     items.push(lane ? `- **${lane}:** ${reason}` : `- ${reason}`);
     notRun++;
@@ -1014,7 +1024,7 @@ function normaliseBetaLanes(lanes) {
  * @param {string|null} o.scenario the scenario comment body, or null
  * @param {{state:string,dir?:string,text?:string|null}} o.shell
  * @param {{state:string,dir?:string,text?:string|null}} o.browser
- * @param {({lane:string,reason:string}|string)[]} o.gaps
+ * @param {({lane:string,reason?:string,token?:string}|string)[]} o.gaps
  * @param {string} o.crNote
  * @param {{password?:string|null,bypass?:string|null,signinKey?:string|null}} o.secrets
  *   each secret's literal value; "" when the lanes were never given it; null

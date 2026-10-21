@@ -31,12 +31,22 @@ import {
   PREVIEW_CURL_BIN,
   PREVIEW_CURL_ENV,
   curlConfigText,
+  leaseOwnerFor,
+  leaseWaitBudgetMs,
   previewCurlScript,
   revokeLaneKeys,
+  runGaps,
   runPreviewCurl,
   signInPreview,
 } from "../lib/verify-lane.mjs";
 import { writeGuardFiles } from "../lib/verify-guard.mjs";
+import {
+  DEV_SUPABASE_URL,
+  acquireLease,
+  mint as realMint,
+  readLease,
+  releaseLease,
+} from "../lib/browser-signin.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LANE = path.resolve(HERE, "..", "lib", "verify-lane.mjs");
@@ -113,7 +123,9 @@ const args = process.argv.slice(2);
 const cfgs = [];
 args.forEach((a, i) => { if (a === "-K") cfgs.push(fs.readFileSync(args[i + 1], "utf8")); });
 const url = args[args.indexOf("--url") + 1] || "";
-fs.appendFileSync(path.join(here, "curl-calls.jsonl"), JSON.stringify({ args, url, bypass: cfgs.some((c) => c.includes("x-vercel-protection-bypass")), signin: cfgs.some((c) => c.includes("test-sign-in")) }) + "\\n");
+const leaseFile = process.env.FAKE_LEASE_FILE;
+const leaseOwner = leaseFile && fs.existsSync(leaseFile) ? JSON.parse(fs.readFileSync(leaseFile, "utf8")).owner : null;
+fs.appendFileSync(path.join(here, "curl-calls.jsonl"), JSON.stringify({ args, url, bypass: cfgs.some((c) => c.includes("x-vercel-protection-bypass")), signin: cfgs.some((c) => c.includes("test-sign-in")), leaseOwner }) + "\\n");
 if (cfgs.some((c) => c.includes("test-sign-in"))) { process.stdout.write(process.env.FAKE_SIGNIN || "307 ${ORIGIN}/"); process.exit(0); }
 if (args.includes("DELETE")) { process.stdout.write("200"); process.exit(0); }
 if (url.endsWith("/api/api-keys")) {
@@ -171,7 +183,16 @@ function resetFakes() {
   }
 }
 
-function makeRun(name, { deadlineInMs = 60_000, previewOrigin = "", bypassFile = null } = {}) {
+function makeRun(
+  name,
+  {
+    deadlineInMs = 60_000,
+    previewOrigin = "",
+    bypassFile = null,
+    leaseFile = null,
+    signin = null,
+  } = {},
+) {
   const runId = `7-aaaaaaaaaaaa-20261021T0000${String(name).padStart(2, "0")}Z`;
   const repoRoot = path.join(tmp, `factory-${name}`);
   const runDir = path.join(repoRoot, "logs", "factory", "verify", runId);
@@ -217,8 +238,9 @@ function makeRun(name, { deadlineInMs = 60_000, previewOrigin = "", bypassFile =
       module: LANE,
       bypassFile,
       // A key file other users can read: minting refuses it before any request.
-      signinKeyFile: path.join(tmp, "open-key.env"),
-      accountFile: path.join(tmp, "account.env"),
+      signinKeyFile: signin?.keyFile ?? path.join(tmp, "open-key.env"),
+      accountFile: signin?.accountFile ?? path.join(tmp, "account.env"),
+      signinLeaseFile: leaseFile,
     },
     laneFacts: { bypass: bypassFile ? "ok" : "missing" },
   };
@@ -411,7 +433,99 @@ describe("_supervise", () => {
     assert.ok(!input.includes(BYPASS_SECRET), "the secret never reaches the model");
     assert.match(input, /"session": "mint-failed"/);
   });
+
+  it("gives up on a sign-in lease the browser runner still holds, and runs on without a session", async () => {
+    // The browser runner minted a link it hasn't opened yet: minting now would
+    // kill it. The wait is cut to the time left before the cleanup reserve
+    // (a few seconds here), then the run goes on: tests only, the signed-in
+    // API steps manual, and a signin-busy coverage gap.
+    resetFakes();
+    const files = signinFiles(`sup-${Date.now()}`);
+    const leaseFile = path.join(files.dir, "factory-signin.lease");
+    acquireLease({ file: leaseFile, owner: "browser:verify:7:aaaaaaaaaaaa", holdSec: 300 });
+    const bypass = path.join(files.dir, "bypass.env");
+    writeFileSync(bypass, `VERCEL_AUTOMATION_BYPASS_SECRET=${BYPASS_SECRET}\n`, { mode: 0o600 });
+    const { runDir, meta } = makeRun(6, {
+      previewOrigin: ORIGIN,
+      bypassFile: bypass,
+      leaseFile,
+      signin: files,
+      deadlineInMs: 124_000,
+    });
+    assert.ok(leaseWaitBudgetMs(meta) <= 4_000);
+    startSupervisor(runDir);
+    assert.ok(await waitFor(() => existsSync(path.join(runDir, "exit.json"))), "exit.json written");
+    const exit = readJson(path.join(runDir, "exit.json"));
+    const log = readFileSync(path.join(runDir, "supervisor.log"), "utf8");
+    assert.equal(exit.facts.session, "signin-busy", log);
+    assert.match(log, /sign-in lease is held \(browser:verify:7:a{12} until /);
+    assert.match(log, /still held .*going on without a preview session/);
+    assert.ok(!existsSync(path.join(fakeBin, "curl-calls.jsonl")), "no exchange, no revocation");
+    assert.match(
+      readFileSync(path.join(fakeBin, "claude-input.txt"), "utf8"),
+      /"session": "signin-busy"/,
+      "claude still runs, told it has no session",
+    );
+    assert.equal(readLease(leaseFile).owner, "browser:verify:7:aaaaaaaaaaaa", "the runner's lease");
+    assert.deepEqual(runGaps({ runDir }).gaps, [{ lane: "shell", token: "signin-busy" }]);
+  });
+
+  it("stops waiting for the lease at once on a SIGTERM to its group, and still cleans up", async () => {
+    resetFakes();
+    const files = signinFiles(`sup-term-${Date.now()}`);
+    const leaseFile = path.join(files.dir, "factory-signin.lease");
+    acquireLease({ file: leaseFile, owner: "browser:intest:7:aaaaaaaaaaaa", holdSec: 300 });
+    const { runDir } = makeRun(7, {
+      previewOrigin: ORIGIN,
+      leaseFile,
+      signin: files,
+      deadlineInMs: 300_000,
+    });
+    const child = startSupervisor(runDir);
+    const logFile = path.join(runDir, "supervisor.log");
+    assert.ok(
+      await waitFor(
+        () => existsSync(logFile) && /waiting up to/.test(readFileSync(logFile, "utf8")),
+      ),
+      "waiting for the lease",
+    );
+    const t0 = Date.now();
+    process.kill(-child.pid, "SIGTERM");
+    assert.ok(await waitFor(() => existsSync(path.join(runDir, "exit.json")), 10_000));
+    assert.ok(Date.now() - t0 < 5_000, "the wait wakes on the stop, not at its next poll");
+    const exit = readJson(path.join(runDir, "exit.json"));
+    assert.equal(exit.terminated, true);
+    // Its own fact: the report must not blame the runner for a stop.
+    assert.equal(exit.facts.session, "stopped");
+    assert.match(
+      readFileSync(logFile, "utf8"),
+      /stopped while waiting for the preview sign-in lease/,
+    );
+    assert.ok(!existsSync(path.join(fakeBin, "claude-argv.json")), "claude never ran");
+    assert.ok(!existsSync(path.join(runDir, "private")));
+    assert.equal(readLease(leaseFile).owner, "browser:intest:7:aaaaaaaaaaaa");
+  });
 });
+
+// A usable key file and account file (mode 600, the dev project), so minting
+// gets as far as the lease. Requests go to a stubbed fetch, never Supabase.
+function signinFiles(name) {
+  const dir = path.join(tmp, `signin-${name}`);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const keyFile = path.join(dir, "dev-supabase-admin.env");
+  const accountFile = path.join(dir, "browser-account.env");
+  writeFileSync(
+    keyFile,
+    `DEV_SUPABASE_URL=${DEV_SUPABASE_URL}\nDEV_SUPABASE_SERVICE_ROLE_KEY=service-role-test-value-123\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    accountFile,
+    "FACTORY_BROWSER_EMAIL=bot@example.com\nFACTORY_BROWSER_PASSWORD=pw-123456\n",
+    { mode: 0o600 },
+  );
+  return { dir, keyFile, accountFile };
+}
 
 describe("sign-in and key revocation", () => {
   const meta = () => ({
@@ -483,6 +597,131 @@ describe("sign-in and key revocation", () => {
       }),
       "protected",
     );
+  });
+
+  describe("under the sign-in lease", () => {
+    const TOKEN = "t".repeat(40);
+    const okFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ hashed_token: TOKEN }),
+    });
+    // The real mint (local checks, the lease), with the request stubbed.
+    const stubbedMint = (opts) => realMint({ ...opts, fetchImpl: okFetch });
+    const leased = (files, leaseFile) => ({
+      ...meta(),
+      issue: "7",
+      sha: SHA,
+      deadlineAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+      paths: {
+        signinKeyFile: files.keyFile,
+        accountFile: files.accountFile,
+        signinLeaseFile: leaseFile,
+      },
+    });
+
+    it("waits while the browser runner holds the lease, then mints, exchanges and gives it back", async () => {
+      resetFakes();
+      const files = signinFiles(`wait-${Date.now()}`);
+      const leaseFile = path.join(files.dir, "factory-signin.lease");
+      // The runner's lease runs out a second from now (its run released it, or it expired).
+      acquireLease({ file: leaseFile, owner: "browser:verify:7:aaaaaaaaaaaa", holdSec: 1 });
+      const { dir, cfg } = setup();
+      const logFile = path.join(dir, "log");
+      const t0 = Date.now();
+      const session = await signInPreview(leased(files, leaseFile), {
+        cfg,
+        privateDir: dir,
+        env: env({ FAKE_LEASE_FILE: leaseFile }),
+        logFile,
+        mint: stubbedMint,
+        pollMs: 200,
+        waitMs: 10_000,
+      });
+      assert.equal(session, "signed-in");
+      assert.ok(Date.now() - t0 >= 500, "it waited for the runner's lease");
+      const log = readFileSync(logFile, "utf8");
+      assert.match(
+        log,
+        /sign-in lease is held \(browser:verify:7:a{12} until .*\); waiting up to \d+s/,
+      );
+      assert.match(log, /got the preview sign-in lease after \d+s/);
+      const [call] = calls();
+      assert.equal(call.signin, true);
+      assert.equal(
+        call.leaseOwner,
+        leaseOwnerFor({ issue: "7", sha: SHA }),
+        "held during the exchange",
+      );
+      assert.equal(call.leaseOwner, "shell:7:aaaaaaaaaaaa");
+      assert.equal(readLease(leaseFile), null, "released right after the exchange");
+    });
+
+    it("gives up with signin-busy once the wait is spent, without minting or touching the lease", async () => {
+      resetFakes();
+      const files = signinFiles(`busy-${Date.now()}`);
+      const leaseFile = path.join(files.dir, "factory-signin.lease");
+      acquireLease({ file: leaseFile, owner: "browser:intest:7:aaaaaaaaaaaa", holdSec: 300 });
+      const before = readFileSync(leaseFile, "utf8");
+      const { dir, cfg } = setup();
+      let requests = 0;
+      const session = await signInPreview(leased(files, leaseFile), {
+        cfg,
+        privateDir: dir,
+        env: env(),
+        logFile: path.join(dir, "log"),
+        mint: (opts) =>
+          realMint({
+            ...opts,
+            fetchImpl: async (...a) => {
+              requests++;
+              return okFetch(...a);
+            },
+          }),
+        pollMs: 100,
+        waitMs: 400,
+      });
+      assert.equal(session, "signin-busy");
+      assert.equal(requests, 0, "no token minted over the runner's link");
+      assert.deepEqual(calls(), [], "no exchange");
+      assert.equal(readFileSync(leaseFile, "utf8"), before);
+      assert.match(
+        readFileSync(path.join(dir, "log"), "utf8"),
+        /going on without a preview session/,
+      );
+    });
+
+    it("gives the lease back after an exchange that failed too", async () => {
+      resetFakes();
+      const files = signinFiles(`fail-${Date.now()}`);
+      const leaseFile = path.join(files.dir, "factory-signin.lease");
+      const { dir, cfg } = setup();
+      const released = [];
+      const session = await signInPreview(leased(files, leaseFile), {
+        cfg,
+        privateDir: dir,
+        env: env({ FAKE_SIGNIN: `307 ${ORIGIN}/login?next=%2F`, FAKE_LEASE_FILE: leaseFile }),
+        logFile: path.join(dir, "log"),
+        mint: stubbedMint,
+        release: (args) => {
+          released.push(args);
+          return releaseLease(args);
+        },
+      });
+      assert.equal(session, "signin-failed");
+      assert.equal(calls()[0].leaseOwner, "shell:7:aaaaaaaaaaaa");
+      assert.deepEqual(released, [{ file: leaseFile, owner: "shell:7:aaaaaaaaaaaa" }]);
+      assert.equal(readLease(leaseFile), null);
+    });
+
+    it("waits at most six minutes, and never into the run's cleanup reserve", () => {
+      const now = Date.parse("2026-10-21T12:00:00Z");
+      const at = (min) => ({ deadlineAt: new Date(now + min * 60_000).toISOString() });
+      assert.equal(leaseWaitBudgetMs(at(30), now), 6 * 60_000);
+      assert.equal(leaseWaitBudgetMs(at(5), now), 3 * 60_000, "5 min left minus the 2 min reserve");
+      assert.equal(leaseWaitBudgetMs(at(1), now), 0);
+      assert.equal(leaseWaitBudgetMs({}, now), 0);
+    });
   });
 
   it("revokes this run's keys and older lane leftovers, never a newer run's", async () => {
