@@ -73,12 +73,13 @@ describe("verify shell prompt — safety rules", () => {
       ["-S", "/x"],
       ["-f", "/x"],
       ["-w", "%{http_code}", "/x"],
+      ["-o", "/dev/null", "/x"],
     ]) {
       assert.equal(buildPreviewCurlArgs(argv, { origin }).ok, true, argv.join(" "));
     }
     assert.match(
       flat,
-      /It takes `-X`, `-H`, `-d` \/ `--data-raw` \/ `--json`, `-G`, `-s`, `-S`, `-f` and `-w '%\{http_code\}'`/,
+      /It takes `-X`, `-H`, `-d` \/ `--data-raw` \/ `--json`, `-G`, `-s`, `-S`, `-f`, `-o \/dev\/null` and `-w '%\{http_code\}'`/,
     );
     // The prompt's own example for a body from a file must pass the wrapper.
     assert.match(

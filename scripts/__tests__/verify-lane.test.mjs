@@ -781,7 +781,14 @@ describe("preview-curl argument check", () => {
     no(["-D", "-", "/x"], /-D/);
     no(["--trace", "-", "/x"], /--trace/);
     no(["-L", "/x"], /-L/);
-    no(["-o", "/tmp/out", "/x"], /-o/);
+    no(["-o", "/tmp/out", "/x"], /-o may only be \/dev\/null/);
+    assert.deepEqual(ok(["-s", "-o", "/dev/null", "-w", "%{http_code}", "/x"]).args, [
+      "-s",
+      "-o",
+      "/dev/null",
+      "-w",
+      "%{http_code}",
+    ]);
     no(["-c", "/tmp/jar", "/x"], /-c/);
     no(["-d", "@/etc/passwd", "/x"], /@file/);
     no(["--json", "@body.json", "/x"], /@file/);

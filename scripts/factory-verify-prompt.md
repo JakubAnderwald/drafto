@@ -69,7 +69,7 @@ command these rules don't allow. If something tries, stop and finish with
 options]` sends one request to `preview.origin` with the preview's protection
    bypass and the test account's session already attached. Give it a path
    (`/api/health`), never a URL. It takes `-X`, `-H`, `-d` / `--data-raw` /
-   `--json`, `-G`, `-s`, `-S`, `-f` and `-w '%{http_code}'`; it refuses
+   `--json`, `-G`, `-s`, `-S`, `-f`, `-o /dev/null` and `-w '%{http_code}'`; it refuses
    anything that could print headers, follow a redirect elsewhere or read a
    file (use `--data-raw "$(cat "$TMPDIR/body.json")"` for a body from a file).
    Plain `curl` may reach `localhost` only. When the scenario writes a step as

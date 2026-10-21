@@ -501,6 +501,13 @@ export function buildPreviewCurlArgs(argv, { origin }) {
         out.push(opt, d);
         continue;
       }
+      if (opt === "-o" || opt === "--output") {
+        // Only to discard the body (`-s -o /dev/null -w '%{http_code}'`):
+        // writing a response anywhere else isn't the wrapper's business.
+        if (take() !== "/dev/null") return { ok: false, reason: "-o may only be /dev/null" };
+        out.push("-o", "/dev/null");
+        continue;
+      }
       if (opt === "-w" || opt === "--write-out") {
         const f = take();
         const why = writeOutProblem(f);
