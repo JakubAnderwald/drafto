@@ -1415,6 +1415,38 @@ describe("stop", () => {
     assert.equal(getIssue(s, ISSUE).verifyShell, `${SHA}:retry:stopped`);
   });
 
+  it("stops a supervisor that was spawned but not attached yet, found by its run id", async () => {
+    await inFlightRun({ pid: null, startedAt: minutesFrom(NOW, -1) });
+    const { deps, calls } = makeDeps({
+      processes: [
+        { pid: 5151, command: `node verify-lane.mjs _supervise --run-dir ${runRoot}/${RUN_ID}` },
+        { pid: 6161, command: `tail -f ${runRoot}/${RUN_ID}/supervisor.log` },
+        { pid: 7171, command: "/bin/zsh" },
+      ],
+    });
+    const r = await runStop(
+      { issue: ISSUE, sha: SHA, reason: "hold-cap", stateFile, repoRoot, runRoot },
+      deps,
+    );
+    assert.equal(r.state, "stopped");
+    assert.equal(r.signalled, true);
+    // Only the supervisor (run id AND _supervise), as its process group.
+    assert.deepEqual(calls.kill, [{ pid: -5151, signal: "SIGTERM" }]);
+    const s = await state();
+    assert.equal(getVerify(s).inFlight, null);
+    assert.equal(getIssue(s, ISSUE).verifyShellAttempts, `${SHA}:0`);
+  });
+
+  it("keeps an unattached reservation when the process table can't be read", async () => {
+    await inFlightRun({ pid: null, startedAt: minutesFrom(NOW, -1) });
+    const { deps, calls } = makeDeps({ processes: null });
+    const r = await runStop({ issue: ISSUE, stateFile, repoRoot, runRoot }, deps);
+    assert.equal(r.state, "error");
+    assert.equal(r.deferred, "ps-failed");
+    assert.deepEqual(calls.kill, []);
+    assert.ok(getVerify(await state()).inFlight, "the slot stays held for housekeeping");
+  });
+
   it("leaves another card's run alone", async () => {
     await inFlightRun();
     const { deps, calls } = makeDeps();

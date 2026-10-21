@@ -1882,9 +1882,7 @@ export async function runHousekeeping(opts, deps) {
     if (!Array.isArray(procs)) {
       return { ...base, state: "lost", outcome: "unattached", deferred: "ps-failed" };
     }
-    const orphans = procs
-      .filter((p) => p.command.includes(inFlight.runId) && p.command.includes("_supervise"))
-      .map((p) => p.pid);
+    const orphans = supervisorPids(procs, inFlight.runId);
     if (dryRun) return { ...base, state: "lost", outcome: "unattached", orphans, dryRun: true };
     for (const pid of orphans) deps.kill(-pid, "SIGTERM");
     await removeWorktree(repoRoot, worktree, deps);
@@ -1956,6 +1954,20 @@ export async function runHousekeeping(opts, deps) {
 
 // ── stop ────────────────────────────────────────────────────────────────────
 
+// The pids of supervisors running for <runId>: a command line carrying both
+// the run id and `_supervise` (each leads its own process group).
+export function supervisorPids(procs, runId) {
+  return procs
+    .filter(
+      (p) =>
+        typeof p?.command === "string" &&
+        p.command.includes(runId) &&
+        p.command.includes("_supervise"),
+    )
+    .map((p) => p.pid)
+    .filter((pid) => Number.isInteger(pid) && pid > 0);
+}
+
 export async function runStop(opts, deps) {
   const { S } = await libs();
   const { issue, stateFile, repoRoot } = opts;
@@ -1976,6 +1988,20 @@ export async function runStop(opts, deps) {
     // Only the process that is this run (pid reuse after a reboot).
     if ((await deps.psCommand(inFlight.pid)).includes(inFlight.runId)) {
       signalled = deps.kill(-inFlight.pid, "SIGTERM");
+    }
+  }
+  if (inFlight.pid == null) {
+    // Spawned but not yet attached (or the tick died before the attach): the
+    // supervisor may be running with no pid on record. Find it by its run id,
+    // as housekeeping's unattached path does. No process table, no release:
+    // freeing the slot could start a second run beside it, so housekeeping
+    // gets it on a later tick instead.
+    const procs = await deps.listProcesses();
+    if (!Array.isArray(procs)) {
+      return { ...base, state: "error", error: "ps-failed", deferred: "ps-failed" };
+    }
+    for (const pid of supervisorPids(procs, inFlight.runId)) {
+      signalled = deps.kill(-pid, "SIGTERM") || signalled;
     }
   }
   await removeWorktree(
