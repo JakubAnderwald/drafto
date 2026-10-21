@@ -3583,12 +3583,17 @@ verify_shell_work() {
     claude-missing|pnpm-missing|curl-missing|perl-missing|nice-missing|prompt-missing) rec="unavailable:$reason" ;;
     *) rec="" ;;
   esac
+  # A deferral never hides an earlier attempt's outcome: a retry:<why> left by
+  # the last run says more than why this start had to wait.
+  if [[ "$state" == retry:* && "$rec" == deferred:* ]]; then
+    rec=""
+  fi
   if [[ -n "$rec" && "$state" != "$rec" ]]; then
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" verifyShell "$head_sha:$rec" \
       --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   fi
   case "$reason" in
-    running|preview-wait|scenario-wait) ;;
+    running|preview-wait|scenario-wait|hold-cap-near) ;;
     *) log "Issue #$issue_num: verification shell lane not started (${reason:-no reason}${rec:+ → $rec}): $out" ;;
   esac
   return 0

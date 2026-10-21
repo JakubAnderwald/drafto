@@ -62,7 +62,7 @@ A lane's state is read for the card's head as `"<sha>:<state>[:<verdict>]"` (`ve
 
    `-p --no-chrome --strict-mcp-config --setting-sources "" --settings <guard> --permission-mode dontAsk --tools Bash,Read,Grep,Glob --allowedTools Bash,Read,Grep,Glob --session-id <uuid> --effort $FACTORY_PLAN_EFFORT`
 
-   with an allowlisted environment (no tokens), `GH_CONFIG_DIR` pointing at an empty directory, and a cap that ends the call two minutes before the run's deadline (`FACTORY_VERIFY_SHELL_TIMEOUT_MIN`). Afterwards it checks the guard's canary, revokes every API key named `factory-shell-…`, deletes `private/` and writes `exit.json`.
+   with an allowlisted environment (no tokens), `GH_CONFIG_DIR` pointing at an empty directory, and a cap that ends the call two minutes before the run's deadline (`FACTORY_VERIFY_SHELL_TIMEOUT_MIN`). Afterwards it checks the guard's canary, revokes the API keys named with the run's tag (and older `factory-shell-…` leftovers of killed runs, never a newer run's), deletes `private/` and writes `exit.json`. The run's deadline never passes the hold cap, and no run starts with less than 10 minutes of the round left.
 
 3. **Collect** (`verify_shell_housekeeping`, top of every `--watch` tick). Records `verifyShell` and `verifyShellRunDir`, frees the slot, removes the worktree. It kills a run whose PR head moved, whose PR closed or whose card lost `status:testing`, and one past its deadline. A session limit pauses the factory, as any claude call's does, and refunds the attempt. A guard that didn't load pauses the lane for 24 hours.
 4. **Stop** (`verify_shell_stop`, on every exit from Testing). Kills the run, refunds its attempt, removes the worktree.

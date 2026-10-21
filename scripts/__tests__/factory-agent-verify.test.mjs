@@ -1309,6 +1309,7 @@ describe("verify_shell_work (real helper, lane module stubbed)", () => {
       ["start-failed", null],
       ["running", null],
       ["off", null],
+      ["hold-cap-near", null],
     ];
     for (const [reason, want] of rows) {
       const stub = JSON.stringify({ started: false, reason });
@@ -1316,6 +1317,25 @@ describe("verify_shell_work (real helper, lane module stubbed)", () => {
         assert.equal(r.issue.verifyShell ?? null, want, reason);
       });
     }
+  });
+
+  it("never lets a deferral hide an earlier attempt's outcome", () => {
+    const stub = JSON.stringify({ started: false, reason: "busy" });
+    withBash(
+      work(`{"shell":"retry:error"}`),
+      { env: env({ LANE_START_STUB: stub }), state: { verifyShell: `${HEAD}:retry:error` } },
+      (r) => {
+        assert.equal(r.issue.verifyShell, `${HEAD}:retry:error`);
+        assert.doesNotMatch(r.calls, /factory:set-issue-field/);
+      },
+    );
+    // A terminal refusal still lands over a retry.
+    const spent = JSON.stringify({ started: false, reason: "attempts" });
+    withBash(
+      work(`{"shell":"retry:error"}`),
+      { env: env({ LANE_START_STUB: spent }), state: { verifyShell: `${HEAD}:retry:error` } },
+      (r) => assert.equal(r.issue.verifyShell, `${HEAD}:skipped:attempts`),
+    );
   });
 
   it("leaves a deferral that's already recorded alone, and survives a module that fails", () => {

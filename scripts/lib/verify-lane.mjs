@@ -44,7 +44,7 @@
 //       → {started: true, runId, runDir, worktree, deadlineAt, attempt, preview, bypass}
 //         or {started: false, reason, …}. Refusal reasons: off, factory-paused,
 //         lane-paused, running (this card's run is in flight), busy (another
-//         card's), attempts, no-round, scenario-wait, hold-cap, memory, disk,
+//         card's), attempts, no-round, scenario-wait, hold-cap, hold-cap-near, memory, disk,
 //         prompt-missing, <bin>-missing, pr-unreadable, head-moved,
 //         preview-wait, dry-run, start-failed, abandoned. factory-agent.sh
 //         maps each to a lane state or leaves it to retry (verify_shell_work).
@@ -108,9 +108,10 @@ export const SUPERVISED_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/
 export const PREVIEW_ORIGIN_RE =
   /^https:\/\/drafto-[a-z0-9-]+-jakubanderwalds-projects\.vercel\.app$/;
 // Every API key the lane creates carries this prefix in its name (the run's
-// qaTag). Revocation sweeps all of them, so a key left by a run that was
-// SIGKILLed is revoked by the next one: only one shell run exists at a time,
-// and the dev test account is the factory's own.
+// qaTag, unique per run). After a run, its own keys are revoked, and so are
+// lane keys created before it started: those were left by a run that was
+// killed before its own cleanup. Keys newer than the run belong to a run that
+// started after it, and are left alone.
 export const QA_TAG_PREFIX = "factory-shell-";
 export const BYPASS_KEY = "VERCEL_AUTOMATION_BYPASS_SECRET";
 export const BYPASS_HEADER = "x-vercel-protection-bypass";
@@ -142,6 +143,8 @@ const CURL_TIMEOUT_MS = 45_000;
 // (factory:verify-resume); the next try would most likely fail the same way.
 const GUARD_PAUSE_MIN = 24 * 60;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
+// The least time worth starting a run with: an install and a short session.
+const MIN_RUN_MIN = 10;
 
 let libsPromise = null;
 async function libs() {
@@ -219,8 +222,11 @@ export function worktreePathFor(repoRoot, issue, sha) {
   return path.join(repoRoot, "worktrees", `verify-${issue}-${String(sha).slice(0, 12)}`);
 }
 
-export function qaTagFor(issue, sha) {
-  return `${QA_TAG_PREFIX}${issue}-${String(sha).slice(0, 7)}`;
+// Unique per run (the run id's time, HHMMSS): a run on the same commit after
+// a hand-back must never match an earlier run's own-tag revocation.
+export function qaTagFor(issue, sha, runId = "") {
+  const stamp = /T(\d{6})Z$/.exec(String(runId))?.[1];
+  return `${QA_TAG_PREFIX}${issue}-${String(sha).slice(0, 7)}${stamp ? `-${stamp}` : ""}`;
 }
 
 function parseJson(text, fallback = null) {
@@ -422,6 +428,9 @@ const WRITE_OUT_VARS = new Set([
 ]);
 
 function writeOutProblem(fmt) {
+  // curl reads the format from a file when it starts with "@", and prints it:
+  // that would read private/curl.cfg or the cookie jar back to the model.
+  if (String(fmt).startsWith("@")) return "-w @file isn't allowed";
   const stripped = String(fmt).replace(/%\{([a-z_]+)\}/g, (m, v) =>
     WRITE_OUT_VARS.has(v) ? "" : m,
   );
@@ -730,9 +739,16 @@ export function createDeps() {
       const r = await runCommand("ps", ["-o", "command=", "-p", String(pid)]);
       return r.code === 0 ? r.stdout.trim() : "";
     },
-    listProcessCommands: async () => {
-      const r = await runCommand("ps", ["-axww", "-o", "command="]);
-      return r.code === 0 ? r.stdout.split("\n").filter(Boolean) : null;
+    // Every process as {pid, command}, or null when ps fails. `ww` so a long
+    // `--run-dir` path is never cut off before the run id.
+    listProcesses: async () => {
+      const r = await runCommand("ps", ["-axww", "-o", "pid=,command="]);
+      if (r.code !== 0) return null;
+      return r.stdout
+        .split("\n")
+        .map((l) => /^\s*(\d+)\s+(.*)$/.exec(l))
+        .filter(Boolean)
+        .map((m) => ({ pid: Number(m[1]), command: m[2] }));
     },
     kill: (pid, signal) => {
       try {
@@ -985,9 +1001,15 @@ export async function runStart(opts, deps) {
   const roundAgeMin = Number.isFinite(startedMs)
     ? (Date.parse(now) - startedMs) / MINUTE_MS
     : Infinity;
-  // The sweep promotes at the cap whatever runs; a run started now would only
-  // be stopped.
-  if (roundAgeMin >= knobs.holdMaxMin) return refuse("hold-cap");
+  // The sweep promotes at the cap whatever runs, and stops what is still
+  // running. A run gets until the cap at most (its deadline is cut to it), and
+  // none starts with less than MIN_RUN_MIN left: an install and a session
+  // that can only be killed would cost a claude session and hide the previous
+  // attempt's outcome behind "the hold cap was reached first".
+  const holdLeftMin = knobs.holdMaxMin - roundAgeMin;
+  if (holdLeftMin <= 0) return refuse("hold-cap");
+  if (holdLeftMin < MIN_RUN_MIN)
+    return refuse("hold-cap-near", { minutesLeft: Math.floor(holdLeftMin) });
   const pressure = await deps.memoryPressure();
   if (Number.isInteger(pressure) && pressure >= 2) return refuse("memory", { pressure });
   const freeGb = await deps.freeDiskGb(repoRoot);
@@ -1047,7 +1069,7 @@ export async function runStart(opts, deps) {
       readIssueTitle(issue, deps),
       readIssueComments(issue, deps),
     ]);
-    const qaTag = qaTagFor(issue, sha);
+    const qaTag = qaTagFor(issue, sha, runId);
     const bundle = B.buildFactoryVerifyShellBundle({
       issue: { number: Number(issue), title },
       comments,
@@ -1058,7 +1080,7 @@ export async function runStart(opts, deps) {
       previewOrigin,
       qaTag,
       preflightScripts: findPreflightScripts(worktree, issue, files, deps.fs),
-      timeLimitMin: knobs.timeoutMin,
+      timeLimitMin: Math.min(knobs.timeoutMin, Math.floor(holdLeftMin)),
       nowIso: now,
     });
     deps.fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
@@ -1079,7 +1101,7 @@ export async function runStart(opts, deps) {
       nodePath: bins.node,
     });
     const bypassProblem = bypassFileProblem(knobs.bypassFile, deps.fs);
-    const deadlineAt = addMinutes(now, knobs.timeoutMin);
+    const deadlineAt = addMinutes(now, Math.min(knobs.timeoutMin, Math.floor(holdLeftMin)));
     // Paths and facts only: never a secret's value. The supervisor reads the
     // secret files itself, at the moment it needs them.
     const meta = {
@@ -1311,7 +1333,11 @@ export async function signInPreview(meta, { cfg, privateDir, env, logFile, mint 
   return `failed-${/^\d{3}$/.test(code ?? "") ? code : `curl-${r.code}`}`;
 }
 
-// Revoke every API key the lane may have made (named with QA_TAG_PREFIX).
+// Revoke the API keys this run may have made (named with its qaTag), plus any
+// lane key (QA_TAG_PREFIX) created before this run started: leftovers of a run
+// that was killed before its own cleanup. A key created after this run started
+// with another tag belongs to a newer run that may already hold the slot (this
+// cleanup can outlive the slot after a stop), so it is never touched.
 export async function revokeLaneKeys(meta, { cfg, env, cwd }) {
   const list = await runStep(
     meta.bins.curl,
@@ -1324,8 +1350,16 @@ export async function revokeLaneKeys(meta, { cfg, env, cwd }) {
   if (!Array.isArray(keys)) return { revoked: 0, failed: true };
   let revoked = 0;
   let failed = false;
+  const startedMs = Date.parse(meta.startedAt ?? "");
+  const mine = (k) =>
+    typeof meta.qaTag === "string" && meta.qaTag !== "" && k.name.includes(meta.qaTag);
+  const leftover = (k) => {
+    const created = Date.parse(k.created_at ?? "");
+    return Number.isFinite(created) && Number.isFinite(startedMs) && created < startedMs;
+  };
   for (const k of keys) {
     if (typeof k?.name !== "string" || !k.name.includes(QA_TAG_PREFIX) || k.revoked_at) continue;
+    if (!mine(k) && !leftover(k)) continue;
     if (!/^[A-Za-z0-9-]{1,64}$/.test(String(k.id ?? ""))) {
       failed = true;
       continue;
@@ -1372,6 +1406,30 @@ export function findTranscript(sessionId, { env = process.env, fs = nodeFs } = {
     if (fs.existsSync(p)) return p;
   }
   return null;
+}
+
+/**
+ * Did the guard cover the session? The canary proves the settings loaded; pre
+ * records prove the matcher fired. A session that used tools with no pre
+ * record ran unguarded. Null when the guard's log can't be read at all.
+ */
+export async function checkGuard(meta, { env = process.env, fs = nodeFs } = {}) {
+  try {
+    const { verifySession } = await import("./verify-guard.mjs");
+    const counts = verifySession({ configPath: meta.paths.guardConfig, session: meta.sessionId });
+    const transcript = findTranscript(meta.sessionId, { env, fs });
+    const toolUses = transcript
+      ? countToolUses(readText(fs, transcript, 16 * MAX_OUTPUT_BYTES))
+      : 0;
+    return {
+      ...counts,
+      transcript: Boolean(transcript),
+      toolUses,
+      ok: counts.sessionStart && !(toolUses > 0 && counts.pre === 0),
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** How many tool calls the session's transcript records. */
@@ -1566,20 +1624,7 @@ export async function runSupervise({ runDir }, { env = process.env } = {}) {
     signal = r.signal ?? null;
     if (r.code === 124) status.timedOut = true;
     stage = "guard-check";
-    const { verifySession } = await import("./verify-guard.mjs");
-    const counts = verifySession({ configPath: meta.paths.guardConfig, session: meta.sessionId });
-    const transcript = findTranscript(meta.sessionId, { env });
-    const toolUses = transcript
-      ? countToolUses(readText(nodeFs, transcript, 16 * MAX_OUTPUT_BYTES))
-      : 0;
-    guard = {
-      ...counts,
-      transcript: Boolean(transcript),
-      toolUses,
-      // The canary proves the settings loaded; pre records prove the matcher
-      // fired. A session that used tools with no pre record ran unguarded.
-      ok: counts.sessionStart && !(toolUses > 0 && counts.pre === 0),
-    };
+    guard = await checkGuard(meta, { env, fs: nodeFs });
   } catch (err) {
     error = error ?? err.message;
   } finally {
@@ -1635,29 +1680,46 @@ export function classifyRun({
   sessionLimit = null,
   attemptsUsed = 1,
   maxAttempts = 2,
+  pastDeadline = false,
+  guard = null,
 }) {
   if (!parsed || typeof parsed.status !== "string")
     parsed = { status: "malformed", verdict: "none" };
+  const valid = parsed.status !== "malformed";
   const retryOr = (outcome, terminal) => ({
     outcome,
     laneState: attemptsUsed < maxAttempts ? `retry:${outcome}` : terminal,
     refund: "none",
   });
+  const unguarded = {
+    outcome: "guard",
+    laneState: "unavailable:guard",
+    refund: "none",
+    pauseLane: { minutes: GUARD_PAUSE_MIN, reason: "guard-not-loaded" },
+  };
   if (!exit) {
-    if (parsed.status !== "malformed")
-      return { outcome: "salvaged", laneState: `reported:${parsed.verdict}`, refund: "none" };
+    // The supervisor died without exit.json. Its output only counts when the
+    // guard's log vouches for the session (housekeeping checks it: <guard>).
+    if (valid) {
+      if (guard?.ok)
+        return { outcome: "salvaged", laneState: `reported:${parsed.verdict}`, refund: "none" };
+      if (guard) return unguarded;
+      return retryOr("lost", "unavailable:lost");
+    }
+    // Killed after its deadline (housekeeping's overdue SIGKILL leaves no
+    // exit.json): that is a timeout, not a supervisor that died early.
+    if (pastDeadline) return { outcome: "timeout", laneState: "timeout", refund: "none" };
     return retryOr("lost", "unavailable:lost");
   }
   if (exit.error === "install")
     return { outcome: "install", laneState: "unavailable:install", refund: "none" };
-  if (exit.guard && exit.guard.transcript && !exit.guard.ok) {
-    return {
-      outcome: "guard",
-      laneState: "unavailable:guard",
-      refund: "none",
-      pauseLane: { minutes: GUARD_PAUSE_MIN, reason: "guard-not-loaded" },
-    };
-  }
+  // Fail closed: once claude was started (exitCode set) and the session left
+  // evidence it ran (a transcript or a report), its output counts only when
+  // the guard vouches for it. No canary, tool calls with no pre record, or a
+  // guard check that couldn't run (guard null) all mean "ran unguarded". The
+  // canary doesn't depend on the transcript being found.
+  const ran = exit.exitCode != null && (Boolean(exit.guard?.transcript) || valid);
+  if (ran && !exit.guard?.ok) return unguarded;
   if (sessionLimit)
     return { outcome: "session-limit", laneState: "deferred:session-limit", refund: "attempt" };
   // A valid status line means the session finished its report, however the
@@ -1805,7 +1867,19 @@ export async function runHousekeeping(opts, deps) {
     return { ...base, state: "overdue", signal: poll.signal };
   }
   if (poll.unattached) {
-    if (dryRun) return { ...base, state: "lost", outcome: "unattached", dryRun: true };
+    // The tick that reserved this died between the spawn and the attach: a
+    // supervisor may be running that nothing tracks. Find it by its run id
+    // (it leads its own group) and stop it before the slot is freed, or a
+    // second run could start beside it. No process table, no release.
+    const procs = await deps.listProcesses();
+    if (!Array.isArray(procs)) {
+      return { ...base, state: "lost", outcome: "unattached", deferred: "ps-failed" };
+    }
+    const orphans = procs
+      .filter((p) => p.command.includes(inFlight.runId) && p.command.includes("_supervise"))
+      .map((p) => p.pid);
+    if (dryRun) return { ...base, state: "lost", outcome: "unattached", orphans, dryRun: true };
+    for (const pid of orphans) deps.kill(-pid, "SIGTERM");
     await removeWorktree(repoRoot, worktree, deps);
     const finished = await finishRun(S, stateFile, inFlight.runId, { refund: "attempt" });
     return {
@@ -1813,6 +1887,7 @@ export async function runHousekeeping(opts, deps) {
       state: "lost",
       outcome: "unattached",
       refund: "attempt",
+      ...(orphans.length ? { killed: orphans } : {}),
       ...(finished ? {} : { finishedElsewhere: true }),
     };
   }
@@ -1833,12 +1908,16 @@ export async function runHousekeeping(opts, deps) {
     inFlight.sha,
   );
   const { parseShellOutput } = await import("./verify-report.mjs");
+  const parsed = parseShellOutput(outputText);
   const c = classifyRun({
     exit,
-    parsed: parseShellOutput(outputText),
+    parsed,
     sessionLimit,
     attemptsUsed,
     maxAttempts: knobs.maxAttempts,
+    pastDeadline: Date.parse(now) >= Date.parse(inFlight.deadlineAt ?? ""),
+    // No exit.json: ask the guard's log ourselves before trusting any output.
+    guard: !exit && parsed.status !== "malformed" && meta ? await checkGuard(meta, deps) : null,
   });
   const result = { ...base, state: poll.state, outcome: c.outcome, laneState: c.laneState };
   if (dryRun) return { ...result, dryRun: true };
@@ -1945,7 +2024,8 @@ async function reap({ repoRoot, runRoot, inFlight, now }, deps) {
   );
   // One process-table read for both checks: a run dir's supervisor is live
   // while some command line carries its run id. Unreadable → keep everything.
-  const commands = candidates.length || withPrivate.length ? await deps.listProcessCommands() : [];
+  const procs = candidates.length || withPrivate.length ? await deps.listProcesses() : [];
+  const commands = Array.isArray(procs) ? procs.map((p) => p.command) : null;
   const isLive = (runId) => !Array.isArray(commands) || commands.some((c) => c.includes(runId));
 
   const liveWorktrees = new Set();

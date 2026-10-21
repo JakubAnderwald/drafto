@@ -117,10 +117,11 @@ if (cfgs.some((c) => c.includes("test-sign-in"))) { process.stdout.write(process
 if (args.includes("DELETE")) { process.stdout.write("200"); process.exit(0); }
 if (url.endsWith("/api/api-keys")) {
   process.stdout.write(JSON.stringify([
-    { id: "k1", name: "factory-shell-7-aaaaaaa-mcp", revoked_at: null },
-    { id: "k2", name: "factory-shell-3-bbbbbbb", revoked_at: null },
-    { id: "k3", name: "factory-shell-7-old", revoked_at: "2026-10-01T00:00:00Z" },
-    { id: "k4", name: "the operator's own key", revoked_at: null },
+    { id: "k1", name: "factory-shell-7-aaaaaaa-120000-mcp", revoked_at: null, created_at: "2026-10-21T12:05:00Z" },
+    { id: "k2", name: "factory-shell-3-bbbbbbb-090000", revoked_at: null, created_at: "2026-10-21T09:00:00Z" },
+    { id: "k3", name: "factory-shell-7-old", revoked_at: "2026-10-01T00:00:00Z", created_at: "2026-10-01T00:00:00Z" },
+    { id: "k4", name: "the operator's own key", revoked_at: null, created_at: "2026-10-01T00:00:00Z" },
+    { id: "k5", name: "factory-shell-8-ccccccc-121000", revoked_at: null, created_at: "2026-10-21T12:10:00Z" },
   ]) + "\\n200");
   process.exit(0);
 }
@@ -413,6 +414,8 @@ describe("_supervise", () => {
 
 describe("sign-in and key revocation", () => {
   const meta = () => ({
+    qaTag: "factory-shell-7-aaaaaaa-120000",
+    startedAt: "2026-10-21T12:00:00Z",
     previewOrigin: ORIGIN,
     bins: { curl: path.join(fakeBin, "curl") },
     paths: { signinKeyFile: "k", accountFile: "a" },
@@ -481,7 +484,7 @@ describe("sign-in and key revocation", () => {
     );
   });
 
-  it("revokes every live key named with the lane's prefix, and nothing else", async () => {
+  it("revokes this run's keys and older lane leftovers, never a newer run's", async () => {
     resetFakes();
     const { dir, cfg } = setup();
     const r = await revokeLaneKeys(meta(), { cfg, env: env(), cwd: dir });

@@ -82,7 +82,7 @@ The file wires up two hooks:
 
 The file also lists `Edit`, `Write`, `NotebookEdit`, `WebFetch` and `WebSearch` under `permissions.deny`, on top of `--tools Bash,Read,Grep,Glob`.
 
-It is defense in depth, not a sandbox: a shell can run a script it wrote to a file, which no pattern guard follows. The boundaries that hold anyway are the session's allowlisted environment (no tokens), the empty `GH_CONFIG_DIR`, the bypass secret and session cookie kept in a curl config the model reaches only through `preview-curl`, and the report composer's secret scan of the lane's output.
+It is defense in depth, not a sandbox: a shell can run a script it wrote to a file, which no pattern guard follows, and the PR's own code (its install scripts and the tests the lane runs) runs with the factory user's access, outside any hook, as it already does in the implement and fix stages. The boundaries that hold anyway are the session's allowlisted environment (no tokens), the empty `GH_CONFIG_DIR`, the bypass secret and session cookie kept in a curl config the model reaches only through `preview-curl`, and the report composer's secret scan of the lane's output.
 
 The canary check is stricter than the browser runner's: after the session, the supervisor reads `verify-guard.mjs`'s log and the session transcript. No SessionStart record, or tool calls in the transcript with no PreToolUse record, means the session ran unguarded. The lane then reports `unavailable:guard` and pauses itself for 24 hours (`factory:verify-resume` once fixed).
 

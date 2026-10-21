@@ -298,10 +298,10 @@ describe("verify-decide: the rules, in order", () => {
       );
     });
 
-    it("shows why a lane deferred until the hold cap, and keeps the shell lane's retry and deferral pending", () => {
+    it("shows why a lane deferred until the hold cap, or how its last attempt ended, and keeps both pending until then", () => {
       assert.deepEqual(
         run({ now: at(60), lanes: { shell: "deferred:memory", browser: "retry:error" } }).lanes,
-        { shell: "skipped:memory", browser: "skipped:hold-cap" },
+        { shell: "skipped:memory", browser: "skipped:after-error" },
       );
       const pending = run({ lanes: { shell: "deferred:busy", browser: "reported:pass" } });
       assert.equal(pending.action, "work-lanes");

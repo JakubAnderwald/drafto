@@ -65,6 +65,7 @@ import {
   setIssueField,
 } from "../lib/factory-state.mjs";
 import { buildFactoryVerifyShellBundle } from "../lib/factory-bundle.mjs";
+import { writeGuardFiles } from "../lib/verify-guard.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LANE = path.resolve(HERE, "..", "lib", "verify-lane.mjs");
@@ -274,7 +275,10 @@ function makeDeps(over = {}) {
       calls.ps++;
       return cfg.ps;
     },
-    listProcessCommands: async () => cfg.processes,
+    listProcesses: async () =>
+      cfg.processes === null
+        ? null
+        : cfg.processes.map((p, i) => (typeof p === "string" ? { pid: 9000 + i, command: p } : p)),
     kill: (pid, signal) => {
       calls.kill.push({ pid, signal });
       return true;
@@ -403,6 +407,20 @@ describe("start: refusals", () => {
     assert.equal((await runStart(startOpts(), deps)).reason, "preview-wait");
   });
 
+  it("won't start a run the hold cap would cut off, and caps a late run's deadline at it", async () => {
+    await writeState((s) => readyCard(s, { verifyStartedAt: minutesFrom(NOW, -55) }));
+    let { deps, calls } = makeDeps();
+    assert.equal((await runStart(startOpts(), deps)).reason, "hold-cap-near");
+    assert.equal(calls.git.length, 0);
+    await writeState((s) => readyCard(s, { verifyStartedAt: minutesFrom(NOW, -45) }));
+    ({ deps } = makeDeps());
+    const r = await runStart(startOpts(), deps);
+    assert.equal(r.started, true);
+    assert.equal(r.deadlineAt, minutesFrom(NOW, 15).replace(/\.\d{3}Z$/, "Z"));
+    const bundle = JSON.parse(readFileSync(path.join(r.runDir, "bundle.json"), "utf8"));
+    assert.equal(bundle.timeLimitMin, 15);
+  });
+
   it("does nothing under --dry-run", async () => {
     await writeState(readyCard);
     const before = readFileSync(stateFile, "utf8");
@@ -506,7 +524,8 @@ describe("start: a run", () => {
     assert.equal(m.effort, "xhigh");
     assert.equal(m.bins.claude, "/fake/bin/claude");
     assert.equal(m.previewOrigin, ORIGIN);
-    assert.equal(m.qaTag, `${QA_TAG_PREFIX}${ISSUE}-${SHA.slice(0, 7)}`);
+    // Unique per run (the run id's HHMMSS), carrying the lane's revocable prefix.
+    assert.equal(m.qaTag, `${QA_TAG_PREFIX}${ISSUE}-${SHA.slice(0, 7)}-100000`);
   });
 
   it("gives the lane only the factory's scenario for this head, enveloped, and no other comment", async () => {
@@ -795,6 +814,8 @@ describe("preview-curl argument check", () => {
     no(["--data-urlencode", "name@/etc/passwd", "/x"], /name@file/);
     no(["-w", "%header{set-cookie}", "/x"], /written out/);
     no(["-w", "%{header_json}", "/x"], /written out/);
+    no(["-w", "@private/curl.cfg", "/x"], /-w @file/);
+    no(["--write-out=@../cookies.txt", "/x"], /-w @file/);
     no(["-X", "TRACE", "/x"], /method/);
     no(["/x y"], /spaces/);
     no(["-H"], /needs a value/);
@@ -983,8 +1004,30 @@ describe("classifyRun", () => {
         "unavailable:no-result",
         "none",
       ],
-      [{ exit: null, parsed: reported }, "salvaged", "reported:warn", "none"],
+      // No exit.json: output counts only when the guard's log vouches for it.
+      [{ exit: null, parsed: reported, guard: { ok: true } }, "salvaged", "reported:warn", "none"],
+      [{ exit: null, parsed: reported, guard: null }, "lost", "retry:lost", "none"],
+      [
+        { exit: null, parsed: reported, guard: { ok: false } },
+        "guard",
+        "unavailable:guard",
+        "none",
+      ],
       [{ exit: null, parsed: malformed, attemptsUsed: 2 }, "lost", "unavailable:lost", "none"],
+      // Housekeeping's overdue SIGKILL leaves no exit.json: a timeout, not a lost run.
+      [{ exit: null, parsed: malformed, pastDeadline: true }, "timeout", "timeout", "none"],
+      // Fail closed on the guard: no canary even with no transcript found, or a
+      // guard check that couldn't run at all.
+      [
+        {
+          exit: exit({ guard: { ok: false, transcript: false, sessionStart: false } }),
+          parsed: reported,
+        },
+        "guard",
+        "unavailable:guard",
+        "none",
+      ],
+      [{ exit: exit({ guard: null }), parsed: reported }, "guard", "unavailable:guard", "none"],
       // No transcript means claude never started: an error, not a guard failure.
       [
         {
@@ -1246,20 +1289,66 @@ describe("housekeeping", () => {
     assert.equal((await hk(deps)).laneState, "unavailable:no-result");
   });
 
-  it("salvages a dead supervisor's complete output", async () => {
-    await inFlightRun({ output: OUTPUT_OK });
-    const { deps } = makeDeps({ pidAlive: false });
-    const r = await hk(deps);
+  it("salvages a dead supervisor's complete output only when the guard's log vouches for it", async () => {
+    const { runDir, worktree } = await inFlightRun({ output: OUTPUT_OK });
+    const guard = writeGuardFiles({ runDir, worktree, repoRoot, home });
+    const meta = JSON.parse(readFileSync(path.join(runDir, "meta.json"), "utf8"));
+    meta.paths = { ...meta.paths, guardConfig: guard.configPath };
+    writeFileSync(path.join(runDir, "meta.json"), JSON.stringify(meta));
+    // No canary yet: fail closed.
+    let { deps } = makeDeps({ pidAlive: false });
+    let r = await hk(deps);
     assert.equal(r.state, "lost");
+    assert.equal(r.laneState, "unavailable:guard");
+    // With the canary the session's report counts.
+    await inFlightRun({ output: OUTPUT_OK });
+    writeFileSync(path.join(runDir, "meta.json"), JSON.stringify(meta));
+    mkdirSync(guard.logDir, { recursive: true });
+    writeFileSync(
+      path.join(guard.logDir, `${SESSION}.jsonl`),
+      JSON.stringify({ event: "session-start" }) + "\n",
+    );
+    ({ deps } = makeDeps({ pidAlive: false }));
+    r = await hk(deps);
     assert.equal(r.laneState, "reported:pass");
   });
 
-  it("refunds a reservation whose supervisor never attached", async () => {
+  it("doesn't trust a dead supervisor's output when the guard can't be checked", async () => {
+    await inFlightRun({ output: OUTPUT_OK });
+    const { deps } = makeDeps({ pidAlive: false });
+    assert.equal((await hk(deps)).laneState, "retry:lost");
+  });
+
+  it("records a run housekeeping killed as overdue (no exit.json) as a timeout", async () => {
+    await inFlightRun({ startedAt: minutesFrom(NOW, -60), deadlineMin: 30 });
+    const { deps } = makeDeps({ pidAlive: false });
+    const r = await hk(deps);
+    assert.equal(r.state, "lost");
+    assert.equal(r.laneState, "timeout");
+  });
+
+  it("refunds a reservation whose supervisor never attached, stopping it if it runs untracked", async () => {
     await inFlightRun({ pid: null, startedAt: minutesFrom(NOW, -6) });
-    const { deps } = makeDeps();
+    const { deps, calls } = makeDeps({
+      processes: [
+        { pid: 5151, command: `node verify-lane.mjs _supervise --run-dir ${runRoot}/${RUN_ID}` },
+        { pid: 6161, command: "/bin/zsh" },
+      ],
+    });
     const r = await hk(deps);
     assert.equal(r.outcome, "unattached");
+    assert.deepEqual(r.killed, [5151]);
+    assert.deepEqual(calls.kill, [{ pid: -5151, signal: "SIGTERM" }]);
+    assert.equal(getVerify(await state()).inFlight, null);
     assert.equal(getIssue(await state(), ISSUE).verifyShellAttempts, `${SHA}:0`);
+  });
+
+  it("keeps an unattached reservation while the process table can't be read", async () => {
+    await inFlightRun({ pid: null, startedAt: minutesFrom(NOW, -6) });
+    const { deps } = makeDeps({ processes: null });
+    const r = await hk(deps);
+    assert.equal(r.deferred, "ps-failed");
+    assert.ok(getVerify(await state()).inFlight, "the slot stays held");
   });
 
   it("SIGTERMs an overdue run, and SIGKILLs it once it's very late", async () => {
@@ -1438,8 +1527,16 @@ describe("CLI", () => {
     );
   });
 
-  it("qaTagFor names keys with the lane's revocable prefix", () => {
+  it("qaTagFor names keys with the lane's revocable prefix, unique per run", () => {
     assert.equal(qaTagFor(7, SHA), `factory-shell-7-${SHA.slice(0, 7)}`);
+    assert.equal(
+      qaTagFor(7, SHA, makeRunId(7, SHA, NOW)),
+      `factory-shell-7-${SHA.slice(0, 7)}-100000`,
+    );
+    assert.notEqual(
+      qaTagFor(7, SHA, makeRunId(7, SHA, NOW)),
+      qaTagFor(7, SHA, makeRunId(7, SHA, minutesFrom(NOW, 5))),
+    );
     assert.ok(qaTagFor(7, SHA).startsWith(QA_TAG_PREFIX));
   });
 });
