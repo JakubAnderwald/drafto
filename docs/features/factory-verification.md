@@ -20,24 +20,24 @@ All of it runs in `scripts/factory-agent.sh --watch`; the browser half (Wave 5B)
 
    If the move fails, or anything above isn't true, the card is promoted to In Test exactly as before.
 
-2. **The Testing sweep.** Every tick, between the In Review loop and the In Test sweep, `verify_sweep` takes each card in Testing, oldest issue first. It skips `factory-pause` and `support` cards and stops if the factory pauses. For each card it gathers the facts: PR state and head, required CI, review threads, the last reviewed head, new actionable feedback, each lane's state and the hold-cap clock. It then asks `scripts/lib/verify-decide.mjs` for one action:
+2. **The Testing sweep.** Every tick, between the In Review loop and the In Test sweep, `verify_sweep` takes each card in Testing, oldest issue first. It skips `factory-pause` and `support` cards and stops if the factory pauses. Only the switch and the canary label decide whether a card already in Testing is verified: a failed column lookup can't drain it. For each card it gathers the facts: PR state and head, required CI, review threads, the last reviewed head, new actionable feedback, each lane's state and the hold-cap clock. It then asks `scripts/lib/verify-decide.mjs` for one action:
 
-   | Situation (first match wins)                                        | Action                                      |
-   | ------------------------------------------------------------------- | ------------------------------------------- |
-   | PR merged or closed                                                 | leave it for the operator                   |
-   | verification off                                                    | promote (drains the column)                 |
-   | an open round is for another commit (the head moved)                | hand back to In Review                      |
-   | required CI red; head not code-reviewed                             | hand back to In Review                      |
-   | open review threads, fewer than `FACTORY_VERIFY_BOUNCE_MAX` bounces | hand back to In Review                      |
-   | actionable new feedback on the issue                                | promote (the In Test sweep then revises it) |
-   | no round for this head (dragged in, revision no-op)                 | start a round                               |
-   | required CI pending; thread list unreadable                         | wait, or promote at the hold cap            |
-   | every lane done, or the hold cap reached                            | promote                                     |
-   | otherwise                                                           | work the lanes                              |
+   | Situation (first match wins)                                                   | Action                                      |
+   | ------------------------------------------------------------------------------ | ------------------------------------------- |
+   | PR merged or closed                                                            | leave it for the operator                   |
+   | verification off                                                               | promote (drains the column)                 |
+   | actionable new feedback on the issue                                           | promote (the In Test sweep then revises it) |
+   | an open round is for another commit (the head moved)                           | hand back to In Review                      |
+   | required CI red; head not code-reviewed                                        | hand back to In Review                      |
+   | open review threads (read once CI is green), under `FACTORY_VERIFY_BOUNCE_MAX` | hand back to In Review                      |
+   | no round for this head (dragged in)                                            | start a round                               |
+   | required CI pending; thread list or PR head unreadable                         | wait, or promote at the hold cap            |
+   | every lane done, or the hold cap reached                                       | promote                                     |
+   | otherwise                                                                      | work the lanes                              |
 
-3. **Hand-back.** `verify_hand_back` moves the card back to In Review and bumps `verifyBounces`. It posts one comment per commit and reason (`drafto-factory-verify-handback:<sha12>:<reason>`). Attempts aren't reset, so a card that keeps bouncing ends in Blocked rather than looping.
-4. **Promotion.** `verify_promote` composes the report, moves the card to In Test and posts the report once per commit. Its resets match the old promotion's: attempts and the CodeRabbit run cap. If composing fails, a minimal notice goes out. If posting fails, the In Test sweep retries (`verify_report_retry`, at most 3 failed attempts per commit).
-5. **Revision no-op.** When a revision needs no code change, `--implement` sends the card back to Testing if that commit still owes a report, and to In Test otherwise. The sweep starts its round.
+3. **Hand-back.** `verify_hand_back` moves the card back to In Review; a hand-back for review threads also bumps `verifyBounces`, the per-commit budget the bounce cap counts (the other reasons are bounded already: a new commit, the fix loop's attempts, a once-per-commit review). It posts one comment per commit and reason (`drafto-factory-verify-handback:<sha12>:<reason>`). Attempts aren't reset, so a card that keeps bouncing ends in Blocked rather than looping.
+4. **Promotion.** `verify_promote` composes the report, moves the card to In Test and posts the report once per commit. Its resets match the old promotion's: attempts and the CodeRabbit run cap. If composing fails, a minimal notice goes out. If posting fails, the In Test sweep tries three more times, 10, 20 and 30 minutes after the report was composed (`verify_report_retry`). Lanes still running when the card leaves Testing are stopped (`verify_stop_lanes`), on promotion as on a hand-back.
+5. **Revision no-op.** When a revision needs no code change, `--implement` sends the card back to Testing if that commit still owes a report, and to In Test otherwise. It starts the commit's round itself, as entry does.
 
 ## Lanes
 
@@ -84,7 +84,7 @@ Every lane's text is scanned for secrets: the test account's password, the bypas
 The settings table, one-time setup (board, label, bypass secret, canary), triage and the rollback drill are in [the runbook's "Pre-In-Test verification (Testing)"](../operations/factory-runbook.md#pre-in-test-verification-testing). The short version:
 
 - `FACTORY_VERIFY=0` is the default and the kill switch. With it off, the Testing sweep only drains the column.
-- To roll back, set `FACTORY_VERIFY=0`, wait one tick for Testing to empty, and only then revert the code.
+- To roll back, set `FACTORY_VERIFY=0`, wait for the Testing column to empty (move by hand any card the sweep leaves: `factory-pause` or `support` labels, a merged or closed PR, no PR), and only then revert the code.
 
 ## Planned: device lanes (deferred)
 

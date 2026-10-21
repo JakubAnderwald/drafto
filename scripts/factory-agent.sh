@@ -409,9 +409,13 @@ case "$FACTORY_VERIFY_BYPASS_FILE" in "~/"*) FACTORY_VERIFY_BYPASS_FILE="$HOME/$
 export FACTORY_VERIFY FACTORY_VERIFY_LANES FACTORY_VERIFY_ONLY_LABEL FACTORY_VERIFY_HOLD_MAX_MIN \
   FACTORY_VERIFY_SHELL_TIMEOUT_MIN FACTORY_VERIFY_MAX_ATTEMPTS FACTORY_VERIFY_BOUNCE_MAX \
   FACTORY_VERIFY_PREVIEW_WAIT_MIN FACTORY_VERIFY_BYPASS_FILE
-# Failed attempts to post one commit's verification report before the In Test
-# sweep stops retrying it (the report body stays on disk for the operator).
-VERIFY_REPORT_POST_MAX=3
+# Failed attempts to post one commit's verification report: the promotion's own
+# plus three In Test sweep retries, spaced VERIFY_REPORT_RETRY_STEP_MIN apart
+# (10, 20 and 30 minutes after the report was composed), so a GitHub outage of
+# half an hour doesn't lose it. After that the body stays on disk for the
+# operator.
+VERIFY_REPORT_POST_MAX=4
+VERIFY_REPORT_RETRY_STEP_MIN=10
 
 # Where the fossil lives (React 19.1.x, never reinstalled) and the dedicated,
 # persistent build roots the beta lanes run in — DESKTOP_FOSSIL_ROOT,
@@ -3321,37 +3325,40 @@ verify_column_ready() {
   [[ "$VERIFY_COLUMN_READY" == "1" ]]
 }
 
-# verify_wanted <issue> <labels> — should this card be verified? The switch,
-# then the canary label (when one is set), then the column. <labels> is the
-# board item's comma list (a JSON array is accepted too). With the switch off it
-# returns before any lookup, so the off path costs nothing.
-verify_wanted() {
-  local labels="${2:-}"
+# verify_switched_on <labels> — is verification on for a card with these
+# labels? The switch, then the canary label (when one is set). <labels> is the
+# board item's comma list (a JSON array is accepted too). No lookup at all.
+verify_switched_on() {
+  local labels="${1:-}"
   [[ "$FACTORY_VERIFY" == "1" ]] || return 1
   if [[ "$labels" == "["* ]]; then
     labels=$(echo "$labels" | jq -r 'map(tostring) | join(",")' 2>/dev/null || echo "")
   fi
-  if [[ -n "$FACTORY_VERIFY_ONLY_LABEL" && ",$labels," != *",$FACTORY_VERIFY_ONLY_LABEL,"* ]]; then
-    return 1
-  fi
-  verify_column_ready
+  [[ -z "$FACTORY_VERIFY_ONLY_LABEL" || ",$labels," == *",$FACTORY_VERIFY_ONLY_LABEL,"* ]]
+}
+
+# verify_wanted <issue> <labels> — may this card be moved INTO Testing?
+# Switched on for it, and the column ready. With the switch off it returns
+# before any lookup, so the off path costs nothing. The Testing sweep asks only
+# verify_switched_on: a card already in Testing keeps its round even when this
+# tick's column lookup failed, instead of being drained as "verification off".
+verify_wanted() {
+  verify_switched_on "${2:-}" && verify_column_ready
 }
 
 # verify_target_status <issue> <head-sha> <labels> — where a card that is ready
-# for a human goes next: Testing when it is to be verified and <head-sha> has
-# no posted report yet, In Test otherwise (verification off or not wanted, or
-# this commit was already verified and reported, e.g. a revision that changed
-# nothing). Sets VERIFY_TARGET and returns 0 for Testing, 1 for In Test: no
-# stdout, so callers don't run it in a subshell and the column cache survives.
+# for a human goes next: Testing (exit 0) when it is to be verified and
+# <head-sha> has no posted report yet; In Test (exit 1) otherwise: verification
+# off or not wanted, or this commit was already verified and reported (e.g. a
+# revision that changed nothing). No stdout: callers branch on the status and
+# never run it in a subshell, where the column cache would be lost.
 verify_target_status() {
   local issue_num="$1" head_sha="$2" labels="${3:-}" report_sha
-  VERIFY_TARGET="In Test"
   [[ -n "$head_sha" ]] || return 1
   verify_wanted "$issue_num" "$labels" || return 1
   report_sha=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.verifyReportSha // ""' 2>/dev/null || echo "")
-  [[ "$report_sha" != "$head_sha" ]] || return 1
-  VERIFY_TARGET="Testing"
+  [[ "$report_sha" != "$head_sha" ]]
 }
 
 # Is <lane> (shell|browser) in FACTORY_VERIFY_LANES?
@@ -3503,11 +3510,12 @@ verify_work_lanes() {
   return 0
 }
 
-# Seam: stop whatever lane is running for <issue> because its card is leaving
-# Testing for a reason other than its lanes finishing (a hand-back). Wave 5A
-# kills the shell lane here (verify-lane.mjs stop); housekeeping also reaps a
-# run whose card left Testing, so this is the prompt path, not the only one.
-# Args: <issue> <head-sha> <reason>.
+# Seam: stop whatever lane is still running for <issue> because its card is
+# leaving Testing: a hand-back, or a promotion that didn't wait for every lane
+# (hold cap, feedback, verification off). Called on every exit, so a no-op when
+# nothing runs. Wave 5A kills the shell lane here (verify-lane.mjs stop);
+# housekeeping also reaps a run whose card left Testing, so this is the prompt
+# path, not the only one. Args: <issue> <head-sha> <reason>.
 verify_stop_lanes() {
   return 0
 }
@@ -3516,11 +3524,13 @@ verify_stop_lanes() {
 #   [<open-threads>]
 # Testing → In Review, for a reason about the commit rather than the evidence:
 # head-moved, ci-red, not-reviewed or threads. In Review's fix loop is the only
-# place those get fixed. The bounce is counted per commit (verifyBounces), which
-# is what lets verify-decide.mjs stop bouncing on threads; attempts are NOT
-# reset, so an oscillation still burns the fix budget toward Blocked (#463).
-# One short comment per commit and reason; a failed move leaves everything for
-# the next tick.
+# place those get fixed. Thread hand-backs are counted per commit
+# (verifyBounces), the budget verify-decide.mjs stops bouncing on threads at;
+# the others aren't, because each is already bounded (a new commit, the fix
+# loop's attempts, a review that runs once per commit). Attempts are NOT reset,
+# so an oscillation still burns the fix budget toward Blocked (#463). One short
+# comment per commit and reason; a failed move leaves everything for the next
+# tick.
 verify_hand_back() {
   local item_id="$1" issue_num="$2" pr_num="$3" head_sha="$4" reason="$5" state_json="$6"
   local threads="${7:-}" bounces why marker
@@ -3533,11 +3543,15 @@ verify_hand_back() {
     log "WARNING: couldn't hand #$issue_num back to In Review ($reason); it stays in Testing for the next tick"
     return 1
   fi
-  bounces=$(verify_sha_count "$(echo "$state_json" | jq -r '.verifyBounces // ""' 2>/dev/null || echo "")" "$head_sha")
-  bounces=$((bounces + 1))
-  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" verifyBounces "$head_sha:$bounces" \
-    --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-  log "Issue #$issue_num: Testing → In Review ($reason; hand-back $bounces for ${head_sha:0:12})"
+  if [[ "$reason" == "threads" ]]; then
+    bounces=$(verify_sha_count "$(echo "$state_json" | jq -r '.verifyBounces // ""' 2>/dev/null || echo "")" "$head_sha")
+    bounces=$((bounces + 1))
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" verifyBounces "$head_sha:$bounces" \
+      --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    log "Issue #$issue_num: Testing → In Review (threads; thread hand-back $bounces/$FACTORY_VERIFY_BOUNCE_MAX for ${head_sha:0:12})"
+  else
+    log "Issue #$issue_num: Testing → In Review ($reason, ${head_sha:0:12})"
+  fi
   case "$reason" in
     head-moved) why="PR #$pr_num's head moved to \`${head_sha:0:12}\` while the previous commit was being verified." ;;
     ci-red) why="A required check is red on PR #$pr_num at \`${head_sha:0:12}\`." ;;
@@ -3602,13 +3616,15 @@ verify_scenario_file() {
 #   <cr-note> <comments-json> <state-json> <gaps-json> <body-file>
 # Compose the verification report into <body-file> with verify-report.mjs. The
 # secret files are the ones the lanes could have held: the browser runner's
-# test account and sign-in key, always passed (an unreadable one withholds the
-# lane text, failing closed), and the bypass secret only when its file exists
-# ("" says the lanes never had one). Returns 1 when the composer fails.
+# test account and sign-in key, and the bypass secret. Each is passed when its
+# file exists, so an existing but unreadable one withholds the lane text
+# (failing closed); a file that isn't there is passed as "", because the lanes
+# read their secrets from these same paths and so never had it. Returns 1 when
+# the composer fails.
 verify_compose_report() {
   local issue_num="$1" pr_num="$2" head_sha="$3" platforms="$4" lanes="$5" cr_note="$6"
   local comments_json="$7" state_json="$8" gaps="$9" body_file="${10}"
-  local scenario_file beta_lanes="" bypass="" shell_dir="" browser_dir="" out
+  local scenario_file beta_lanes="" bypass="" account="" signin_key="" shell_dir="" browser_dir="" out
   mkdir -p "$VERIFY_DIR" 2>>"$LOG_FILE" || return 1
   scenario_file="$VERIFY_DIR/report-$issue_num-$head_sha.scenario.md"
   verify_scenario_file "$comments_json" "$head_sha" "$scenario_file" || scenario_file=""
@@ -3618,6 +3634,8 @@ verify_compose_report() {
     beta_lanes=$(echo "$state_json" | jq -r '.intestBetaLanes // ""' 2>/dev/null || echo "")
   fi
   [[ -e "$FACTORY_VERIFY_BYPASS_FILE" ]] && bypass="$FACTORY_VERIFY_BYPASS_FILE"
+  [[ -e "$FACTORY_BROWSER_ACCOUNT_FILE" ]] && account="$FACTORY_BROWSER_ACCOUNT_FILE"
+  [[ -e "$FACTORY_BROWSER_SIGNIN_KEY_FILE" ]] && signin_key="$FACTORY_BROWSER_SIGNIN_KEY_FILE"
   # A lane's run dir only belongs in this report when its result is for this commit.
   if [[ -n "$(verify_sha_value "$(echo "$state_json" | jq -r '.verifyShell // ""' 2>/dev/null)" "$head_sha")" ]]; then
     shell_dir=$(echo "$state_json" | jq -r '.verifyShellRunDir // ""' 2>/dev/null || echo "")
@@ -3632,8 +3650,8 @@ verify_compose_report() {
       --shell-dir "$shell_dir" \
       --browser-state "$(echo "$lanes" | jq -r '.browser // "none"' 2>/dev/null || echo none)" \
       --browser-dir "$browser_dir" --gaps "$gaps" --cr-note "$cr_note" \
-      --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" --bypass-file "$bypass" \
-      --signin-key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" --out "$body_file" 2>>"$LOG_FILE"); then
+      --account-file "$account" --bypass-file "$bypass" \
+      --signin-key-file "$signin_key" --out "$body_file" 2>>"$LOG_FILE"); then
     return 1
   fi
   [[ -s "$body_file" ]] || return 1
@@ -3710,6 +3728,10 @@ verify_promote() {
     log "DRY-RUN: would promote #$issue_num Testing → In Test ($reason) and post the verification report for ${head_sha:0:12}"
     return 0
   fi
+  # A lane still running at the hold cap, or cut short by feedback, has nothing
+  # left to contribute: stop it before composing, so its slot (and Chrome) is
+  # free and the report shows it as cut off rather than racing its output.
+  verify_stop_lanes "$issue_num" "$head_sha" "$reason" || true
   if ! verify_pr_platforms "$pr_num"; then
     log "WARNING: couldn't read PR #$pr_num's changed files; the report's platform rows may be wrong"
     gaps='[{"lane":"","reason":"the PR'"'"'s changed files couldn'"'"'t be read, so the platform rows may be wrong"}]'
@@ -3740,7 +3762,11 @@ verify_promote() {
 # post a report that its promotion composed but couldn't post. Only a report
 # the promotion actually wrote to disk is retried (so a card that reached In
 # Test without verification never gets one), at most VERIFY_REPORT_POST_MAX
-# failed attempts per commit. Silent when there is nothing to do.
+# failed attempts per commit, the n-th retry no sooner than
+# n × VERIFY_REPORT_RETRY_STEP_MIN after the report was composed (the body
+# file's mtime): retrying in the promoting tick itself, or on each of the next
+# two, would spend the budget inside one short outage. Silent when there is
+# nothing to do.
 verify_report_retry() {
   local issue_num="$1" head_sha="$2" state_json="$3" body_file n
   [[ "$DRY_RUN" -eq 0 && -n "$head_sha" ]] || return 0
@@ -3749,6 +3775,9 @@ verify_report_retry() {
   [[ "$(echo "$state_json" | jq -r '.verifyReportSha // ""' 2>/dev/null)" != "$head_sha" ]] || return 0
   n=$(verify_sha_count "$(echo "$state_json" | jq -r '.verifyReportPosts // ""' 2>/dev/null || echo "")" "$head_sha")
   [[ "$n" -lt "$VERIFY_REPORT_POST_MAX" ]] || return 0
+  if [[ "$n" -gt 0 && -n "$(find "$body_file" -mmin "-$((n * VERIFY_REPORT_RETRY_STEP_MIN))" 2>/dev/null)" ]]; then
+    return 0
+  fi
   log "Issue #$issue_num: the verification report for ${head_sha:0:12} isn't on the issue yet; posting it (failed attempts so far: $n/$VERIFY_REPORT_POST_MAX)"
   if ! verify_post_report "$issue_num" "$head_sha" "$body_file" && [[ $((n + 1)) -ge "$VERIFY_REPORT_POST_MAX" ]]; then
     log "WARNING: giving up on posting #$issue_num's verification report for ${head_sha:0:12}; it stays in $body_file"
@@ -3778,12 +3807,23 @@ verify_sweep_card() {
   fi
   pr_state=$(echo "$pr_view" | jq -r '.state // ""' 2>/dev/null || echo "")
   head_sha=$(echo "$pr_view" | jq -r '.headRefOid // ""' 2>/dev/null || echo "")
-  state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
-    --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
-  [[ -n "$state_json" ]] || state_json="{}"
+  if [[ "$pr_state" == "OPEN" && -z "$head_sha" ]]; then
+    log "WARNING: PR #$pr_num has no head SHA in the snapshot (transient?); Testing card #$issue_num waits for the next tick"
+    return 0
+  fi
+  # A failed read is not an empty record: read as one, it would hand the card
+  # back as "not reviewed", with a public comment saying so.
+  if ! state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE") || [[ -z "$state_json" ]]; then
+    log "WARNING: couldn't read #$issue_num's factory state; Testing card waits for the next tick"
+    return 0
+  fi
   comments_json=$(fetch_issue_comments "$issue_num" 2>>"$LOG_FILE" || echo "[]")
   [[ -n "$comments_json" ]] || comments_json="[]"
-  verify_wanted "$issue_num" "$labels" && enabled=1
+  # Switched on for this card is enough here: the column lookup only decides
+  # whether a card may ENTER Testing, and a failed lookup must not drain cards
+  # that are already mid-round.
+  verify_switched_on "$labels" && enabled=1
 
   # The rest only matters to a card that is really being verified: with the
   # switch off (or the PR gone) the decision is drain-or-leave either way.
@@ -3798,7 +3838,10 @@ verify_sweep_card() {
     elif [[ "$pending" -eq 0 ]] && ci_required_green "$pr_view"; then
       ci="green"
     fi
-    if threads_json=$(fetch_review_threads "$pr_num" 2>>"$LOG_FILE") && [[ -n "$threads_json" ]]; then
+    # Threads only once CI has settled green, as In Review's fix loop reads
+    # them: a re-run with a thread open waits here rather than bouncing early.
+    if [[ "$ci" == "green" ]] && threads_json=$(fetch_review_threads "$pr_num" 2>>"$LOG_FILE") \
+        && [[ -n "$threads_json" ]]; then
       threads=$(echo "$threads_json" | jq 'length' 2>/dev/null || echo "null")
       [[ "$threads" =~ ^[0-9]+$ ]] || threads="null"
     fi
@@ -3807,23 +3850,21 @@ verify_sweep_card() {
   fi
   bounces=$(verify_sha_count "$(echo "$state_json" | jq -r '.verifyBounces // ""' 2>/dev/null || echo "")" "$head_sha")
   lanes=$(verify_lane_states "$state_json" "$head_sha" "$enabled")
-  facts=$(jq -nc \
+  # One jq pass: the record's own fields straight from state_json, the rest as
+  # arguments.
+  facts=$(echo "$state_json" | jq -c \
     --argjson enabled "$([[ "$enabled" -eq 1 ]] && echo true || echo false)" \
-    --arg prState "$pr_state" --arg headSha "$head_sha" \
-    --arg verifySha "$(echo "$state_json" | jq -r '.verifySha // ""' 2>/dev/null)" \
-    --arg verifyReportSha "$(echo "$state_json" | jq -r '.verifyReportSha // ""' 2>/dev/null)" \
-    --arg requiredCi "$ci" \
-    --arg lastReviewSha "$(echo "$state_json" | jq -r '.lastReviewSha // ""' 2>/dev/null)" \
+    --arg prState "$pr_state" --arg headSha "$head_sha" --arg requiredCi "$ci" \
     --argjson openThreads "$threads" --argjson bounces "$bounces" \
     --argjson bounceMax "$FACTORY_VERIFY_BOUNCE_MAX" --argjson newFeedback "$feedback" \
     --argjson lanes "$lanes" \
-    --arg startedAt "$(echo "$state_json" | jq -r '.verifyStartedAt // ""' 2>/dev/null)" \
     --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson holdMaxMin "$FACTORY_VERIFY_HOLD_MAX_MIN" \
-    '{enabled: $enabled, prState: $prState, headSha: $headSha, verifySha: $verifySha,
-      verifyReportSha: $verifyReportSha, requiredCi: $requiredCi, lastReviewSha: $lastReviewSha,
+    '{enabled: $enabled, prState: $prState, headSha: $headSha,
+      verifySha: (.verifySha // ""), verifyReportSha: (.verifyReportSha // ""),
+      requiredCi: $requiredCi, lastReviewSha: (.lastReviewSha // ""),
       openThreads: $openThreads, bounces: $bounces, bounceMax: $bounceMax,
-      newFeedback: $newFeedback, lanes: $lanes, startedAt: $startedAt, now: $now,
-      holdMaxMin: $holdMaxMin}' 2>>"$LOG_FILE" || echo "")
+      newFeedback: $newFeedback, lanes: $lanes, startedAt: (.verifyStartedAt // ""),
+      now: $now, holdMaxMin: $holdMaxMin}' 2>>"$LOG_FILE" || echo "")
   out=""
   if [[ -n "$facts" ]]; then
     out=$(node "$SCRIPT_DIR/lib/verify-decide.mjs" decide --facts "$facts" 2>>"$LOG_FILE" | tail -1 || true)
@@ -4850,13 +4891,20 @@ drag the card back to **In Progress**.
           fi
           # The feedback needed no code change. The existing PR + preview are
           # still valid, so re-present it instead of re-running CI: in Testing
-          # when this commit still owes a verification report (ADR-0053; the
-          # Testing sweep starts its round), otherwise in In Test as before. A
-          # failed move to Testing falls back to In Test.
+          # when this commit still owes a verification report (ADR-0053),
+          # otherwise in In Test as before. A failed move to Testing falls back
+          # to In Test.
           NOOP_TARGET="In Test"
           if verify_target_status "$ISSUE_NUM" "$PRE_HEAD_OID" "$ITEM_LABELS" \
               && transition_status "$ITEM_ID" "$ISSUE_NUM" "Testing"; then
             NOOP_TARGET="Testing"
+            # Start this commit's round now, as verify_enter does: a round left
+            # in state would otherwise decide for it (an older commit's reads as
+            # "head moved", this one's carries an expired hold-cap clock).
+            NOOP_STATE=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
+              --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
+            verify_begin_round "$ISSUE_NUM" "$PRE_HEAD_OID" \
+              "$(verify_cr_note "$ISSUE_NUM" "$PRE_HEAD_OID" "$NOOP_STATE")" "$NOOP_STATE"
           else
             transition_status "$ITEM_ID" "$ISSUE_NUM" "In Test" || true
           fi

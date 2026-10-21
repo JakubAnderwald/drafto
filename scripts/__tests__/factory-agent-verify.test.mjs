@@ -81,7 +81,7 @@ intest_dispatch_betas() { call "dispatch $*"; echo '{"dispatched":[],"skipped":[
 intest_handoff() { call "handoff stage=\${INTEST_STAGE:-unset} cr_note=\${10:-}"; }
 fetch_issue_comments() { [[ -z "\${COMMENTS_FAIL:-}" ]] || return 1; cat "$COMMENTS_FILE"; }
 find_prior_pr() { echo "\${PR_OBJ_STUB:-null}"; }
-fetch_review_threads() { [[ -z "\${THREADS_FAIL:-}" ]] || return 1; echo "\${THREADS_STUB:-[]}"; }
+fetch_review_threads() { call "threads $1"; [[ -z "\${THREADS_FAIL:-}" ]] || return 1; echo "\${THREADS_STUB:-[]}"; }
 cr_coverage_note() { echo "\${CR_NOTE_STUB:-}"; }
 gh() {
   call "gh $*"
@@ -156,7 +156,8 @@ function runBash(body, { env = {}, state = {}, comments = [], bash = "/bin/bash"
     `FACTORY_BROWSER_SIGNIN_KEY_FILE="${join(dir, "signin.env")}"`,
     "FACTORY_CR_CLI=${FACTORY_CR_CLI:-0}",
     "REQUIRED_CONTEXTS_JSON='[\"Lint\"]'",
-    "VERIFY_REPORT_POST_MAX=3",
+    script.match(/^VERIFY_REPORT_POST_MAX=.*$/m)[0],
+    script.match(/^VERIFY_REPORT_RETRY_STEP_MIN=.*$/m)[0],
     script.match(/^VERIFY_DIR=.*$/m)[0],
     'VERIFY_BUILT_LANES="${VERIFY_BUILT_LANES_STUB:-}"',
     'VERIFY_COLUMN_READY=""',
@@ -171,7 +172,12 @@ function runBash(body, { env = {}, state = {}, comments = [], bash = "/bin/bash"
       env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env },
     });
     const read = (f) => (existsSync(f) ? readFileSync(f, "utf8") : "");
-    const stateOut = JSON.parse(read(files.state) || "{}");
+    let stateOut = {};
+    try {
+      stateOut = JSON.parse(read(files.state) || "{}");
+    } catch {
+      stateOut = {}; // a test that corrupts the state file on purpose
+    }
     return {
       status: r.status,
       stdout: r.stdout,
@@ -304,15 +310,32 @@ describe("factory-agent.sh verification stage: static wiring", () => {
     const noopArm = slice('      noop)\n        if [[ "$IS_REVISION"', "      blocked)");
     assert.match(
       noopArm,
-      /NOOP_TARGET="In Test"\n\s*if verify_target_status "\$ISSUE_NUM" "\$PRE_HEAD_OID" "\$ITEM_LABELS" \\\n\s*&& transition_status "\$ITEM_ID" "\$ISSUE_NUM" "Testing"; then\n\s*NOOP_TARGET="Testing"\n\s*else\n\s*transition_status "\$ITEM_ID" "\$ISSUE_NUM" "In Test" \|\| true\n\s*fi/,
+      /NOOP_TARGET="In Test"\n\s*if verify_target_status "\$ISSUE_NUM" "\$PRE_HEAD_OID" "\$ITEM_LABELS" \\\n\s*&& transition_status "\$ITEM_ID" "\$ISSUE_NUM" "Testing"; then\n\s*NOOP_TARGET="Testing"\n[\s\S]*?\n\s*else\n\s*transition_status "\$ITEM_ID" "\$ISSUE_NUM" "In Test" \|\| true\n\s*fi/,
     );
     assert.match(noopArm, /returned to \$NOOP_TARGET/);
+    // The no-op path starts the commit's round itself, as verify_enter does, so
+    // a round left in state can't read as "head moved" or an expired clock.
+    assert.match(
+      noopArm,
+      /NOOP_TARGET="Testing"\n[\s\S]*?verify_begin_round "\$ISSUE_NUM" "\$PRE_HEAD_OID"[\s\S]*?\n\s*else\n/,
+    );
   });
 
   it("reuses the In Test sweep's feedback filter rather than a copy", () => {
     const sweep = slice("  # ── In Test feedback sweep", "# ── --browser mode");
     assert.match(sweep, /if has_actionable_feedback "\$COMMENTS_JSON" "\$INTEST_HWM"; then/);
     assert.match(extract("verify_sweep_card"), /has_actionable_feedback "\$comments_json" "\$hwm"/);
+  });
+
+  it("stops the lanes on every exit from Testing, promotion included", () => {
+    const promote = extract("verify_promote");
+    const stopIdx = promote.indexOf('verify_stop_lanes "$issue_num" "$head_sha" "$reason"');
+    const composeIdx = promote.indexOf("verify_compose_report ");
+    assert.ok(stopIdx !== -1 && stopIdx < composeIdx, "stopped before composing");
+    assert.match(
+      extract("verify_hand_back"),
+      /verify_stop_lanes "\$issue_num" "\$head_sha" "\$reason"/,
+    );
   });
 
   it("never resets attempts or the CodeRabbit run cap on the way into Testing", () => {
@@ -347,7 +370,7 @@ describe("factory-agent.sh verification stage: static wiring", () => {
 
 describe("settings under /bin/bash 3.2", () => {
   const block = script.match(
-    /FACTORY_VERIFY="\$\{FACTORY_VERIFY:-0\}"[\s\S]*?VERIFY_REPORT_POST_MAX=3\n/,
+    /FACTORY_VERIFY="\$\{FACTORY_VERIFY:-0\}"[\s\S]*?VERIFY_REPORT_RETRY_STEP_MIN=10\n/,
   );
 
   function parse(env) {
@@ -453,7 +476,7 @@ describe("settings under /bin/bash 3.2", () => {
 
 describe("verify_target_status / verify_wanted (real helpers)", () => {
   const target =
-    'if verify_target_status 7 "$HEAD" "$LABELS"; then echo "RC=0 $VERIFY_TARGET"; else echo "RC=1 $VERIFY_TARGET"; fi';
+    'if verify_target_status 7 "$HEAD" "$LABELS"; then echo "RC=0 Testing"; else echo "RC=1 In Test"; fi';
 
   it("does nothing at all with the switch off (the off path costs no lookup)", () => {
     withBash(target, { env: { FACTORY_VERIFY: "0", HEAD, LABELS: "" } }, (r) => {
@@ -594,8 +617,22 @@ describe("verify_hand_back (real helper)", () => {
   });
 
   it("starts a new count for a new commit", () => {
-    withBash(back("head-moved"), { env: { HEAD }, state: { verifyBounces: `${OLD}:2` } }, (r) => {
+    withBash(back("threads", "1"), { env: { HEAD }, state: { verifyBounces: `${OLD}:2` } }, (r) => {
       assert.equal(r.issue.verifyBounces, `${HEAD}:1`);
+    });
+  });
+
+  it("counts only thread hand-backs against the bounce cap", () => {
+    // The others are bounded already (a new commit, the fix loop's attempts, a
+    // once-per-commit review); counting them would eat the thread budget.
+    for (const reason of ["head-moved", "ci-red", "not-reviewed"]) {
+      withBash(back(reason), { env: { HEAD }, state: { verifyBounces: `${HEAD}:1` } }, (r) => {
+        assert.equal(r.issue.verifyBounces, `${HEAD}:1`, reason);
+        assert.match(r.calls, /^transition In Review$/m, reason);
+        assert.equal(r.comments.length, 1, reason);
+      });
+    }
+    withBash(back("head-moved"), { env: { HEAD } }, (r) => {
       assert.match(r.comments[0].body, /head moved to `aaaaaaaaaaaa`/);
     });
   });
@@ -616,7 +653,10 @@ describe("verify_hand_back (real helper)", () => {
 describe("verify_post_report / verify_report_retry (real helpers)", () => {
   const BODY_SETUP = `mkdir -p "$VERIFY_DIR"; printf 'report <!-- drafto-factory-verify-sha:%s -->\\n' "$HEAD" > "$VERIFY_DIR/report-7-$HEAD.md"`;
   const post = `${BODY_SETUP}\nif verify_post_report 7 "$HEAD" "$VERIFY_DIR/report-7-$HEAD.md"; then echo RC=0; else echo RC=1; fi`;
-  const retry = `${BODY_SETUP}\nverify_report_retry 7 "$HEAD" "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")"`;
+  const retryCall = `verify_report_retry 7 "$HEAD" "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")"`;
+  // The report was composed long ago, so every spaced retry is due.
+  const retry = `${BODY_SETUP}\ntouch -t 202601010000 "$VERIFY_DIR/report-7-$HEAD.md"\n${retryCall}`;
+  const retryFresh = `${BODY_SETUP}\n${retryCall}`;
   const marked = (assoc) => [
     {
       id: 1,
@@ -673,15 +713,35 @@ describe("verify_post_report / verify_report_retry (real helpers)", () => {
     });
     withBash(
       retry,
-      { env: { HEAD, FAIL_COMMENT: "1" }, state: { verifyReportPosts: `${HEAD}:2` } },
+      { env: { HEAD, FAIL_COMMENT: "1" }, state: { verifyReportPosts: `${HEAD}:3` } },
       (r) => {
-        assert.equal(r.issue.verifyReportPosts, `${HEAD}:3`);
+        assert.equal(r.issue.verifyReportPosts, `${HEAD}:4`);
         assert.match(r.log, /giving up on posting #7's verification report/);
       },
     );
-    withBash(retry, { env: { HEAD }, state: { verifyReportPosts: `${HEAD}:3` } }, (r) => {
+    withBash(retry, { env: { HEAD }, state: { verifyReportPosts: `${HEAD}:4` } }, (r) => {
       assert.equal(r.calls, "", "spent: not even a comment fetch");
       assert.equal(r.comments.length, 0);
+    });
+  });
+
+  it("spaces the retries, so the promoting tick and the next ones can't spend them all", () => {
+    // Just composed, one failure (the promotion's own): not due for 10 min.
+    withBash(retryFresh, { env: { HEAD }, state: { verifyReportPosts: `${HEAD}:1` } }, (r) => {
+      assert.equal(r.calls, "");
+    });
+    // Nothing recorded as failed yet (the count write itself failed): due now.
+    withBash(retryFresh, { env: { HEAD } }, (r) => {
+      assert.equal(r.comments.length, 1);
+    });
+    // 15 minutes old: the first retry is due, the second isn't.
+    const aged = (min) =>
+      `${BODY_SETUP}\nnode -e 'const t = Date.now() / 1000 - ${min} * 60; require("fs").utimesSync(process.argv[1], t, t)' "$VERIFY_DIR/report-7-$HEAD.md"\n${retryCall}`;
+    withBash(aged(15), { env: { HEAD }, state: { verifyReportPosts: `${HEAD}:1` } }, (r) => {
+      assert.equal(r.comments.length, 1);
+    });
+    withBash(aged(15), { env: { HEAD }, state: { verifyReportPosts: `${HEAD}:2` } }, (r) => {
+      assert.equal(r.calls, "");
     });
   });
 
@@ -871,7 +931,7 @@ describe("verify_sweep_card (real helpers, real verify-decide)", () => {
       { env: base({ FACTORY_VERIFY: "0" }), state: reviewed({ lastReviewSha: OLD }) },
       (r) => {
         assert.match(r.log, /Testing → promote \(verification-off\)/);
-        assert.doesNotMatch(r.calls, /fetch_review_threads|has-status-option/);
+        assert.doesNotMatch(r.calls, /^threads |has-status-option/m);
       },
     );
   });
@@ -898,6 +958,72 @@ describe("verify_sweep_card (real helpers, real verify-decide)", () => {
     const body = `node() { case "$1" in */verify-decide.mjs) echo garbage ;; *) command node "$@" ;; esac; }\n${card}`;
     withBash(body, { env: base(), state: reviewed() }, (r) => {
       assert.match(r.log, /no usable decision for #7; promoting it \(fail open\)/);
+    });
+  });
+
+  it("keeps a mid-round card verifying when this tick's column lookup fails", () => {
+    // The lookup only gates moving cards INTO Testing; a failure must not drain
+    // cards already there as "verification off".
+    const env = base({ NO_OPTION: "1", NO_LABEL: "1", VERIFY_BUILT_LANES_STUB: "shell,browser" });
+    withBash(card, { env, state: reviewed() }, (r) => {
+      assert.match(r.log, /Testing → work-lanes \(lanes-pending\)/);
+      assert.doesNotMatch(r.log, /verification-off/);
+      assert.doesNotMatch(r.calls, /has-status-option/);
+    });
+  });
+
+  it("still honours the canary label for a card already in Testing", () => {
+    const env = base({ FACTORY_VERIFY_ONLY_LABEL: "factory-verify" });
+    withBash(card, { env, state: reviewed() }, (r) => {
+      assert.match(r.log, /Testing → promote \(verification-off\)/);
+    });
+  });
+
+  it("skips the tick when the card's state can't be read (never reads it as empty)", () => {
+    withBash(`printf 'not json' > "$STATE_FILE"\n${card}`, { env: base() }, (r) => {
+      assert.match(r.log, /couldn't read #7's factory state/);
+      assert.doesNotMatch(r.calls, /^transition/m);
+      assert.equal(r.comments.length, 0, "no misleading not-reviewed comment");
+    });
+  });
+
+  it("skips the tick when an open PR's snapshot has no head", () => {
+    withBash(
+      card,
+      { env: base({ PR_VIEW_STUB: prView({ headRefOid: "" }) }), state: reviewed() },
+      (r) => {
+        assert.match(r.log, /has no head SHA in the snapshot/);
+        assert.doesNotMatch(r.calls, /^transition/m);
+      },
+    );
+  });
+
+  it("reads threads only once CI is green: a re-run with a thread open waits, no bounce", () => {
+    const pending = prView({ statusCheckRollup: [{ name: "Lint", status: "IN_PROGRESS" }] });
+    const env = base({ PR_VIEW_STUB: pending, THREADS_STUB: '[{"id":"T1"}]' });
+    withBash(card, { env, state: reviewed() }, (r) => {
+      assert.match(r.log, /Testing → wait \(ci-pending\)/);
+      assert.doesNotMatch(r.calls, /^threads /m);
+    });
+    withBash(card, { env: base({ THREADS_STUB: '[{"id":"T1"}]' }), state: reviewed() }, (r) => {
+      assert.match(r.log, /Testing → hand-back \(threads\)/);
+      assert.equal(r.issue.verifyBounces, `${HEAD}:1`);
+    });
+  });
+
+  it("lets actionable feedback beat a hand-back (the revision replaces the commit)", () => {
+    const red = prView({ statusCheckRollup: [{ name: "Lint", conclusion: "FAILURE" }] });
+    const comments = [
+      {
+        id: 3,
+        body: "please rename the button",
+        createdAt: "2026-06-01T00:00:00Z",
+        authorAssociation: "OWNER",
+      },
+    ];
+    withBash(card, { env: base({ PR_VIEW_STUB: red }), state: reviewed(), comments }, (r) => {
+      assert.match(r.log, /Testing → promote \(feedback\)/);
+      assert.match(r.calls, /^transition In Test$/m);
     });
   });
 

@@ -45,17 +45,24 @@
 // Rules, first match wins:
 //   1. PR not open                              → skip (pr-merged|pr-closed|pr-unknown)
 //   2. verification off                         → promote (verification-off)
-//   3. a round is open for another commit       → hand-back (head-moved)
-//   4. required CI red                          → hand-back (ci-red)
-//   5. head not code-reviewed                   → hand-back (not-reviewed)
-//   6. open threads, bounces < bounceMax        → hand-back (threads)
-//   7. actionable new feedback                  → promote (feedback)
-//   8. no round for this head                   → init (no-round|new-round)
-//   9. required CI pending                      → wait (ci-pending), or promote (hold-cap)
-//  10. thread list unreadable                   → wait (threads-unknown), or promote (hold-cap)
-//  11. every lane terminal                      → promote (lanes-done)
-//  12. hold cap reached                         → promote (hold-cap)
-//  13. otherwise                                → work-lanes (lanes-pending)
+//   3. head unknown                             → wait (head-unknown), or promote (hold-cap)
+//   4. actionable new feedback                  → promote (feedback)
+//   5. a round is open for another commit       → hand-back (head-moved)
+//   6. required CI red                          → hand-back (ci-red)
+//   7. head not code-reviewed                   → hand-back (not-reviewed)
+//   8. open threads, bounces < bounceMax        → hand-back (threads)
+//   9. no round for this head                   → init (no-round|new-round)
+//  10. required CI pending                      → wait (ci-pending), or promote (hold-cap)
+//  11. thread list unreadable                   → wait (threads-unknown), or promote (hold-cap)
+//  12. every lane terminal                      → promote (lanes-done)
+//  13. hold cap reached                         → promote (hold-cap)
+//  14. otherwise                                → work-lanes (lanes-pending)
+//
+// `bounces` counts thread hand-backs only (bash bumps verifyBounces for those):
+// the other hand-backs are bounded already, by a new commit, the fix loop's
+// attempts, or a review that runs once per commit. bash reports `openThreads`
+// only once required CI is green, as In Review's fix loop reads them, so a CI
+// re-run with a thread open waits here instead of bouncing early.
 //
 // Where this departs from the table in the approved plan, and why:
 //   - A closed or merged PR is checked before "verification off": draining such
@@ -68,9 +75,10 @@
 //     is still open (no report posted for it). Once its report is out, the card
 //     has come back for a new commit (the revision no-op path, or a drag), so
 //     it starts a new round instead of being bounced with a misleading comment.
-//   - Feedback promotes before the CI-pending wait and before init: the card is
-//     about to roll back to In Progress, so waiting for a CI re-run or
-//     dispatching betas for this commit would only be wasted.
+//   - Feedback promotes before the hand-backs, init and the CI-pending wait: the
+//     card is about to roll back to In Progress for a revision that replaces
+//     this commit, so a fix pass in In Review, betas for this commit or waiting
+//     for a CI re-run would only be wasted.
 //   - An unreadable thread list waits (bounded by the hold cap) rather than
 //     guessing either way.
 //   - Past the bounce cap, open threads no longer hand back: the card carries
@@ -169,7 +177,8 @@ export function decide(facts = {}) {
     return { action: "skip", reason };
   }
   if (f.enabled !== true) return promote(f, "verification-off");
-  if (!head) return { action: "wait", reason: "head-unknown" };
+  if (!head) return expired ? promote(f, "hold-cap") : { action: "wait", reason: "head-unknown" };
+  if (f.newFeedback === true) return promote(f, "feedback");
 
   const roundOpenForOtherHead = verifySha !== "" && verifySha !== head && reportSha !== verifySha;
   if (roundOpenForOtherHead) return { action: "hand-back", reason: "head-moved" };
@@ -178,7 +187,6 @@ export function decide(facts = {}) {
   if (threads != null && threads > 0 && count(f.bounces) < count(f.bounceMax)) {
     return { action: "hand-back", reason: "threads" };
   }
-  if (f.newFeedback === true) return promote(f, "feedback");
   if (verifySha === "") return { action: "init", reason: "no-round" };
   if (verifySha !== head) return { action: "init", reason: "new-round" };
 

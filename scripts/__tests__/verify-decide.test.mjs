@@ -134,11 +134,42 @@ describe("verify-decide: the rules, in order", () => {
     });
   });
 
-  it("waits when the head is unknown (nothing can be keyed)", () => {
+  it("3. waits when the head is unknown, but not past the hold cap", () => {
     assert.deepEqual(run({ headSha: "" }), { action: "wait", reason: "head-unknown" });
+    assert.equal(run({ headSha: "", now: at(60) }).reason, "hold-cap");
   });
 
-  describe("3. head moved during an open round", () => {
+  describe("4. actionable feedback cuts the round short", () => {
+    it("promotes, with pending lanes skipped:feedback", () => {
+      assert.deepEqual(
+        run({ newFeedback: true, lanes: { shell: "timeout", browser: "running" } }),
+        {
+          action: "promote",
+          reason: "feedback",
+          lanes: { shell: "timeout", browser: "skipped:feedback" },
+        },
+      );
+    });
+
+    it("before the hand-backs: the revision replaces this commit anyway", () => {
+      assert.equal(run({ newFeedback: true, verifySha: OLD }).reason, "feedback");
+      assert.equal(run({ newFeedback: true, requiredCi: "red" }).reason, "feedback");
+      assert.equal(run({ newFeedback: true, lastReviewSha: OLD }).reason, "feedback");
+      assert.equal(run({ newFeedback: true, openThreads: 2 }).reason, "feedback");
+    });
+
+    it("before init, a CI-pending wait or an unknown thread list", () => {
+      assert.equal(run({ newFeedback: true, verifySha: "" }).reason, "feedback");
+      assert.equal(run({ newFeedback: true, requiredCi: "pending" }).reason, "feedback");
+      assert.equal(run({ newFeedback: true, openThreads: null }).reason, "feedback");
+    });
+
+    it("only on a literal true", () => {
+      assert.equal(run({ newFeedback: "true" }).action, "work-lanes");
+    });
+  });
+
+  describe("5. head moved during an open round", () => {
     it("hands back", () => {
       assert.deepEqual(run({ verifySha: OLD }), { action: "hand-back", reason: "head-moved" });
     });
@@ -158,7 +189,7 @@ describe("verify-decide: the rules, in order", () => {
     });
   });
 
-  describe("4–6. the commit isn't ready: hand back to In Review", () => {
+  describe("6–8. the commit isn't ready: hand back to In Review", () => {
     it("required CI red", () => {
       assert.deepEqual(run({ requiredCi: "red" }), { action: "hand-back", reason: "ci-red" });
     });
@@ -208,30 +239,7 @@ describe("verify-decide: the rules, in order", () => {
     });
   });
 
-  describe("7. actionable feedback cuts the round short", () => {
-    it("promotes, with pending lanes skipped:feedback", () => {
-      assert.deepEqual(
-        run({ newFeedback: true, lanes: { shell: "timeout", browser: "running" } }),
-        {
-          action: "promote",
-          reason: "feedback",
-          lanes: { shell: "timeout", browser: "skipped:feedback" },
-        },
-      );
-    });
-
-    it("before init, a CI-pending wait or an unknown thread list", () => {
-      assert.equal(run({ newFeedback: true, verifySha: "" }).reason, "feedback");
-      assert.equal(run({ newFeedback: true, requiredCi: "pending" }).reason, "feedback");
-      assert.equal(run({ newFeedback: true, openThreads: null }).reason, "feedback");
-    });
-
-    it("only on a literal true", () => {
-      assert.equal(run({ newFeedback: "true" }).action, "work-lanes");
-    });
-  });
-
-  describe("8. init", () => {
+  describe("9. init", () => {
     it("starts a round for a card with none (dragged in, or the revision no-op path)", () => {
       assert.deepEqual(run({ verifySha: "" }), { action: "init", reason: "no-round" });
     });
@@ -241,7 +249,7 @@ describe("verify-decide: the rules, in order", () => {
     });
   });
 
-  describe("9. required CI pending", () => {
+  describe("10. required CI pending", () => {
     it("waits", () => {
       assert.deepEqual(run({ requiredCi: "pending" }), { action: "wait", reason: "ci-pending" });
       assert.equal(run({ requiredCi: "" }).reason, "ci-pending", "unknown reads as pending");
@@ -256,7 +264,7 @@ describe("verify-decide: the rules, in order", () => {
     });
   });
 
-  describe("10. an unreadable thread list", () => {
+  describe("11. an unreadable thread list", () => {
     it("waits", () => {
       assert.deepEqual(run({ openThreads: null }), { action: "wait", reason: "threads-unknown" });
       assert.equal(run({ openThreads: undefined }).reason, "threads-unknown");
@@ -267,7 +275,7 @@ describe("verify-decide: the rules, in order", () => {
     });
   });
 
-  describe("11–12. promotion", () => {
+  describe("12–13. promotion", () => {
     it("once every lane is terminal (the not-built and lane-off placeholders included)", () => {
       assert.deepEqual(
         run({ lanes: { shell: "skipped:not-built", browser: "skipped:lane-off" } }),
