@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  BROWSER_RUN_KINDS,
   SCENARIO_FALLBACK_MARKER,
   buildFactoryBrowserRunBundle,
   extractScenarioSections,
@@ -138,6 +139,45 @@ describe("extractWebSection", () => {
     assert.equal(extractWebSection("### Web preview\n\n1. Step."), null);
     assert.equal(extractWebSection("### Web\n\n"), null);
     assert.equal(extractWebSection(undefined), null);
+  });
+
+  it('reads the scenario\'s own ### Web, never one under "How to get a build"', () => {
+    // The build notes may list the preview under a Web heading; running that
+    // as the scenario would send the runner off with no steps at all.
+    const notes = [
+      "🏭 **Ready to test — In Test.**",
+      "",
+      "## How to get a build",
+      "",
+      "### Web",
+      "Preview: https://drafto-git-x.vercel.app",
+      "",
+      "## Test scenario",
+      "",
+    ];
+    const body = [...notes, "### Web", "", "1. Open /notebooks — expected: the list.", ""].join(
+      "\n",
+    );
+    assert.equal(extractWebSection(body), "1. Open /notebooks — expected: the list.");
+    const noSteps = [...notes, "### iOS", "1. Tap — expected: it works."].join("\n");
+    assert.equal(extractWebSection(noSteps), null, "build notes are not steps");
+  });
+
+  it("is the Web entry of extractScenarioSections, fences and markers included", () => {
+    const body = [
+      "## Test scenario",
+      "### iOS",
+      "1. Tap.",
+      "```",
+      "### Web",
+      "```",
+      "### Web",
+      "1. Open.",
+      "<!-- drafto-factory-in-test -->",
+      "### Web",
+      "1. After the marker.",
+    ].join("\n");
+    assert.equal(extractWebSection(body), "1. Open.");
   });
 });
 
@@ -334,14 +374,41 @@ describe("buildFactoryBrowserRunBundle", () => {
     });
   });
 
-  it("returns a null scenario when there is nothing to run", () => {
+  it("returns a null scenario when there is nothing to run, and says why", () => {
+    withAccountFile((accountFile) => {
+      const build = (comments) => buildFactoryBrowserRunBundle({ ...base, accountFile, comments });
+      for (const [comments, why] of [
+        [[comment(9, scenarioBody(OLD_SHA))], "no-scenario"],
+        [[comment(9, scenarioBody(SHA, { fallback: true }))], "no-scenario"],
+        [[], "no-scenario"],
+        [[comment(9, scenarioBody(SHA, { web: false }))], "no-web-steps"],
+      ]) {
+        const b = build(comments);
+        assert.equal(b.scenario, null, why);
+        assert.equal(b.skipReason, why);
+      }
+      assert.equal(build([comment(9, scenarioBody(SHA))]).skipReason, null);
+    });
+  });
+
+  it("takes the verify kind (the Testing column's lane) and refuses any other", () => {
+    assert.deepEqual(BROWSER_RUN_KINDS, ["intest", "verify"]);
     withAccountFile((accountFile) => {
       const b = buildFactoryBrowserRunBundle({
         ...base,
+        runKind: "verify",
         accountFile,
-        comments: [comment(9, scenarioBody(OLD_SHA))],
+        comments: [comment(9, scenarioBody(SHA))],
       });
-      assert.equal(b.scenario, null);
+      assert.equal(b.runKind, "verify");
+      assert.match(b.scenario.webStepsEnveloped, /^<scenario-web>1\. Open the login page/);
+      for (const runKind of ["uicheck", "", "INTEST"]) {
+        assert.throws(
+          () => buildFactoryBrowserRunBundle({ ...base, runKind, accountFile, comments: [] }),
+          /unknown runKind/,
+          runKind,
+        );
+      }
     });
   });
 
@@ -399,6 +466,12 @@ describe("buildFactoryBrowserRunBundle", () => {
       const b = JSON.parse(r.stdout);
       assert.equal(b.kind, "factory_browser_run");
       assert.equal(b.target.origin, PREVIEW);
+      const v = spawnSync(process.execPath, [BUNDLE_CLI], {
+        input: JSON.stringify({ ...input, runKind: "verify" }),
+        encoding: "utf8",
+      });
+      assert.equal(v.status, 0, v.stderr);
+      assert.equal(JSON.parse(v.stdout).runKind, "verify");
     });
   });
 });

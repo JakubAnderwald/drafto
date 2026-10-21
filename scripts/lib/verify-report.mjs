@@ -238,6 +238,21 @@ const REASONS = {
   "lane-off": "the lane is switched off (FACTORY_VERIFY_LANES)",
   "verification-off": "verification is switched off (FACTORY_VERIFY=0)",
   feedback: "new feedback on the issue cut verification short",
+  // The browser lane's own tokens (factory-agent.sh: verify_browser_work and
+  // browser_run's verify kind).
+  "not-web": "the PR's diff doesn't touch the web app (apps/web/)",
+  "browser-off":
+    "the browser runner's verify kind is switched off (FACTORY_BROWSER, FACTORY_BROWSER_KINDS)",
+  "already-run": "the browser runner already handled this commit (see its comment on the issue)",
+  "chrome-not-running": "Chrome wasn't running on the Mac mini",
+  "runner-disabled":
+    "the browser runner is turned off until an operator resets it (factory:browser-reset)",
+  "signin-key": "the dev sign-in key file is missing or unusable",
+  "signin-mint": "the one-time sign-in link couldn't be minted",
+  preflight: "the browser runner's pre-run check failed",
+  "runner-start": "the browser runner couldn't be started",
+  "runner-error": "the browser runner failed on its last attempt",
+  malformed: "the runner's output had no status line, so its result can't be trusted",
 };
 
 // ── small text helpers ──────────────────────────────────────────────────────
@@ -504,6 +519,11 @@ function describeState(state) {
       return "the PR branch predates the preview sign-in route; update the branch from main";
     case "no-preview":
       return "no Vercel preview was ready for this commit";
+    case "waiting-preview":
+      // Non-terminal (the browser lane's preview wait); verify-decide turns it
+      // into skipped:<reason> at promotion, so only a fail-open promotion
+      // shows it.
+      return "was still waiting for this commit's Vercel preview";
     case "skipped":
       return state.detail ? `skipped: ${reasonText(state.detail)}` : "skipped";
     case "none":
@@ -518,6 +538,7 @@ const STATE_STATUS = {
   unavailable: "unavailable",
   "stale-branch": "skipped",
   "no-preview": "skipped",
+  "waiting-preview": "not run",
   skipped: "skipped",
   none: "not run",
 };

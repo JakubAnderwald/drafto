@@ -563,6 +563,90 @@ describe("coverage gaps", () => {
     }
   });
 
+  it("reads the shell lane's own reasons as sentences", () => {
+    // verify-lane.mjs and verify_shell_work send these; verify-decide.mjs turns
+    // a deferred:<why> or retry:<why> lane into skipped:<why> or
+    // skipped:after-<why> at the hold cap.
+    const cases = {
+      "skipped:busy": "skipped: another card's verification run held the lane",
+      "skipped:lane-paused": "skipped: the verification lane was paused",
+      "unavailable:error": "unavailable: it exited with an error on every attempt",
+      "unavailable:no-result": "unavailable: it finished without a result on every attempt",
+      "unavailable:lost": "unavailable: its supervisor died before it reported",
+      "unavailable:claude-missing": "unavailable: the claude CLI wasn't found on the Mac mini",
+      "unavailable:pnpm-missing": "unavailable: pnpm wasn't found on the Mac mini",
+      "unavailable:curl-missing": "unavailable: curl wasn't found on the Mac mini",
+      "unavailable:perl-missing":
+        "unavailable: perl (the guard's timeout wrapper) wasn't found on the Mac mini",
+      "unavailable:nice-missing": "unavailable: nice wasn't found on the Mac mini",
+      "unavailable:prompt-missing": "unavailable: the lane's prompt file is missing",
+      "skipped:after-error":
+        "skipped: its run exited with an error, and the hold cap came before another attempt",
+      "skipped:after-no-result":
+        "skipped: its run ended without a result, and the hold cap came before another attempt",
+      "skipped:after-lost":
+        "skipped: its supervisor died, and the hold cap came before another attempt",
+      "skipped:after-terminated":
+        "skipped: its run was stopped from outside, and the hold cap came before another attempt",
+      "skipped:after-stopped":
+        "skipped: its run was stopped when the card left Testing, and the hold cap came before another attempt",
+    };
+    for (const [state, text] of Object.entries(cases)) {
+      const r = compose({ shell: { state, text: null } });
+      assert.ok(gapsSection(r.body).includes(`- **Repo & API (shell):** ${text}.`), state);
+    }
+  });
+
+  it("reads the browser lane's own reasons as sentences", () => {
+    // factory-agent.sh (verify_browser_work, browser_run verify) sends these.
+    const cases = {
+      "skipped:not-web": "skipped: the PR's diff doesn't touch the web app (apps/web/)",
+      "skipped:browser-off":
+        "skipped: the browser runner's verify kind is switched off (FACTORY_BROWSER, FACTORY_BROWSER_KINDS)",
+      "skipped:already-run":
+        "skipped: the browser runner already handled this commit (see its comment on the issue)",
+      "skipped:no-scenario": "skipped: there was no test scenario for this commit",
+      "skipped:no-web-steps": "skipped: the scenario has no Web steps",
+      "unavailable:chrome-not-running": "unavailable: Chrome wasn't running on the Mac mini",
+      "unavailable:runner-disabled":
+        "unavailable: the browser runner is turned off until an operator resets it (factory:browser-reset)",
+      "unavailable:account": "unavailable: the test account file is missing or unusable",
+      "unavailable:signin-key": "unavailable: the dev sign-in key file is missing or unusable",
+      "unavailable:signin-mint": "unavailable: the one-time sign-in link couldn't be minted",
+      "unavailable:preflight": "unavailable: the browser runner's pre-run check failed",
+      "unavailable:runner-start": "unavailable: the browser runner couldn't be started",
+      "unavailable:runner-error": "unavailable: the browser runner failed on its last attempt",
+      "unavailable:malformed":
+        "unavailable: the runner's output had no status line, so its result can't be trusted",
+      "unavailable:guard": "unavailable: the lane's guard hook didn't load",
+      "unavailable:session-limit": "unavailable: the Claude session limit was reached",
+      "unavailable:attempts": "unavailable: out of attempts",
+      "unavailable:signin-failed":
+        "unavailable: the one-time sign-in link didn't sign the runner in",
+      "unavailable:auth-expired":
+        "unavailable: the Vercel sign-in in the Mac mini's Chrome has expired",
+    };
+    for (const [state, text] of Object.entries(cases)) {
+      const r = compose({ browser: { state, text: null } });
+      assert.ok(gapsSection(r.body).includes(`- **Web (browser):** ${text}.`), state);
+      assert.match(
+        r.body,
+        /Run the \*\*Web\*\* steps in the test scenario by hand on the preview/,
+        state,
+      );
+    }
+  });
+
+  it("names the browser lane's preview wait, should a fail-open promotion show it", () => {
+    const r = compose({ browser: { state: "waiting-preview:2026-10-21T00:00:00Z", text: null } });
+    assert.ok(
+      gapsSection(r.body).includes(
+        "- **Web (browser):** was still waiting for this commit's Vercel preview.",
+      ),
+    );
+    assert.match(tableRow(r.body, "Web (browser)"), /\| not run \|/);
+  });
+
   it("notes a missing scenario", () => {
     const r = compose({ scenario: null });
     assert.match(gapsSection(r.body), /\*\*Test scenario:\*\* none was available for this commit/);

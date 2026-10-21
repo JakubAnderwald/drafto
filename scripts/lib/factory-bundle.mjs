@@ -853,7 +853,7 @@ export function buildFactoryInTestBundle({
 
 // ── Browser runner bundle (ADR-0051) ───────────────────────────────────────
 // The locked-down Chrome runner gets only what it needs to run the Web section
-// of the factory's own In Test scenario on one per-commit preview: the steps,
+// of the factory's own test scenario on one per-commit preview: the steps,
 // the target, the test account and the pinned browser. No issue body, no
 // comments and no diff — the runner can't act on what it isn't given.
 
@@ -909,16 +909,16 @@ function sectionText(lines, start) {
   return text || null;
 }
 
-// The body of the scenario's `### Web` section: from that heading to the next
-// heading of the same or a higher level, without the heading line itself.
+// The body of the scenario's own `### Web` section: from that heading to the
+// next heading of the same or a higher level, without the heading line itself.
 // The scenario writer is told to use exactly that heading (factory-intest-
 // prompt.md), so anything else means the scenario has no web steps to run.
+// It is the "Web" entry of extractScenarioSections, so it reads only the
+// `## Test scenario` part when the body has one: a `### Web` under "How to get
+// a build" (the preview link) is build notes, not steps, and the browser
+// runner must never run it as its scenario. The first such section wins.
 export function extractWebSection(body) {
-  if (typeof body !== "string") return null;
-  const lines = body.split("\n");
-  const start = lines.findIndex((l) => /^###\s+Web\s*$/.test(l.trim()));
-  if (start === -1) return null;
-  return sectionText(lines, start);
+  return extractScenarioSections(body).find((s) => s.heading === "Web")?.text ?? null;
 }
 
 const SCENARIO_HEADING = /^##\s+Test scenario\b/i;
@@ -929,11 +929,11 @@ const SCENARIO_HEADING = /^##\s+Test scenario\b/i;
 // when the body has one — a `###` under "How to get a build" is not a test
 // section — and the whole body when it has none. A heading counts only at the
 // start of its line, the same rule that ends a section, so sections never
-// overlap; each one's text is what extractWebSection would return for it
-// (same end rule, same fence handling), and a section with no text is left
-// out. Headings inside fenced blocks are content, and nothing after the first
-// factory marker line is read.
-// verify-report.mjs turns the non-Web sections into the human's manual steps.
+// overlap, and a section with no text is left out. Headings inside fenced
+// blocks are content (a quoted heading neither starts nor ends a section),
+// and nothing after the first factory marker line is read.
+// verify-report.mjs turns the non-Web sections into the human's manual steps;
+// extractWebSection hands the Web one to the browser runner.
 export function extractScenarioSections(body) {
   if (typeof body !== "string") return [];
   const lines = body.split("\n");
@@ -964,6 +964,13 @@ export function extractScenarioSections(body) {
   return sections;
 }
 
+// The runner's uses (FACTORY_BROWSER_KINDS in factory-agent.sh). Both run the
+// same Web steps the same way; only where bash sends the report differs:
+//   intest — the card is In Test; bash posts the report as its own comment.
+//   verify — the card is in the Testing column (ADR-0053); bash posts nothing,
+//            and the report becomes the Web lane of the verification report.
+export const BROWSER_RUN_KINDS = Object.freeze(["intest", "verify"]);
+
 export function buildFactoryBrowserRunBundle({
   runKind = "intest",
   issue,
@@ -975,7 +982,7 @@ export function buildFactoryBrowserRunBundle({
   deviceId,
   nowIso,
 } = {}) {
-  if (runKind !== "intest")
+  if (!BROWSER_RUN_KINDS.includes(runKind))
     throw new Error(`buildFactoryBrowserRunBundle: unknown runKind ${runKind}`);
   if (!issue || !Number.isInteger(issue.number)) {
     throw new Error("buildFactoryBrowserRunBundle: issue.number is required");
@@ -1011,6 +1018,11 @@ export function buildFactoryBrowserRunBundle({
             webStepsEnveloped: envelopeBody(webSteps, "scenario-web"),
           }
         : null,
+    // Why `scenario` is null, for bash (the verify lane records it as
+    // `skipped:<reason>`, which the verification report reads as a sentence):
+    // "no-scenario" when there is no factory scenario for this commit (none, or
+    // only the fallback comment), "no-web-steps" when it has no Web section.
+    skipReason: scenario ? (webSteps ? null : "no-web-steps") : "no-scenario",
     // Email only. The runner signs in by opening a one-time link that bash
     // mints after this bundle is built (browser-signin.mjs) and sets here; it
     // never gets the password, which it couldn't type on a preview anyway.
