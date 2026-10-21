@@ -182,6 +182,7 @@ function runBash(body, { env = {}, state = {}, comments = [], bash = "/bin/bash"
     `FACTORY_VERIFY_BYPASS_FILE="${join(dir, "no-bypass.env")}"`,
     `FACTORY_BROWSER_ACCOUNT_FILE="${join(dir, "account.env")}"`,
     `FACTORY_BROWSER_SIGNIN_KEY_FILE="${join(dir, "signin.env")}"`,
+    `SIGNIN_LEASE_FILE="${join(dir, "factory-signin.lease")}"`,
     "FACTORY_CR_CLI=${FACTORY_CR_CLI:-0}",
     "FACTORY_BROWSER=${FACTORY_BROWSER:-1}",
     'FACTORY_BROWSER_KINDS="${FACTORY_BROWSER_KINDS-intest,verify}"',
@@ -1242,6 +1243,8 @@ describe("factory-agent.sh shell lane: static wiring", () => {
       '--prompt-file "$VERIFY_PROMPT_FILE"',
       '--account-file "$FACTORY_BROWSER_ACCOUNT_FILE"',
       '--signin-key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE"',
+      // The sign-in lease browser_run also mints under (browser-signin.mjs).
+      '--signin-lease-file "$SIGNIN_LEASE_FILE"',
     ]) {
       assert.ok(work.includes(flag), flag);
     }

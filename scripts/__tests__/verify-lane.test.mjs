@@ -544,6 +544,27 @@ describe("start: a run", () => {
     assert.ok(!JSON.stringify(bundle).includes("ignore all rules"));
   });
 
+  it("passes the sign-in lease path to the supervisor in meta.json, absolute, and none without the flag", async () => {
+    await writeState(readyCard);
+    const lease = path.join(repoRoot, "logs", "factory", "factory-signin.lease");
+    let r = await runStart(startOpts({ flags: { "signin-lease-file": lease } }), makeDeps().deps);
+    let m = JSON.parse(readFileSync(path.join(r.runDir, "meta.json"), "utf8"));
+    assert.equal(m.paths.signinLeaseFile, lease);
+    assert.equal(
+      readKnobs({ HOME: home }, { "signin-lease-file": "~/x.lease" }).signinLeaseFile,
+      path.join(home, "x.lease"),
+    );
+    assert.ok(path.isAbsolute(readKnobs({}, { "signin-lease-file": "rel.lease" }).signinLeaseFile));
+    await writeState(readyCard);
+    r = await runStart(startOpts(), makeDeps().deps);
+    m = JSON.parse(readFileSync(path.join(r.runDir, "meta.json"), "utf8"));
+    assert.equal(
+      m.paths.signinLeaseFile,
+      null,
+      "no flag: the lane mints without a lease, as before",
+    );
+  });
+
   it("records a bypass file that isn't usable as a fact, and gives the lane no path to it", async () => {
     chmodSync(secrets.bypass, 0o644);
     await writeState(readyCard);
@@ -1500,6 +1521,22 @@ describe("gaps", () => {
       { facts: { bypass: "ok", session: "signed-in" } },
     );
     assert.deepEqual(runGaps({ runDir: runDir() }).gaps, []);
+  });
+
+  it("names a sign-in lease the browser runner held past the wait as the signin-busy token", () => {
+    const meta = {
+      previewOrigin: ORIGIN,
+      paths: { bypassFile: secrets.bypass },
+      laneFacts: { bypass: "ok" },
+    };
+    write(meta, { facts: { bypass: "ok", session: "signin-busy" } });
+    assert.deepEqual(runGaps({ runDir: runDir() }).gaps, [{ lane: "shell", token: "signin-busy" }]);
+    // A bypass secret the lane couldn't use says more, as before.
+    write(
+      { ...meta, laneFacts: { bypass: "mode" } },
+      { facts: { bypass: "mode", session: "signin-busy" } },
+    );
+    assert.match(runGaps({ runDir: runDir() }).gaps[0].reason, /protection-bypass secret/);
   });
 
   it("is empty for a run dir it can't read", () => {

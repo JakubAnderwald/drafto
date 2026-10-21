@@ -312,6 +312,18 @@ if ! [[ "$FACTORY_BROWSER_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
   echo "WARNING: invalid FACTORY_BROWSER_TIMEOUT_SEC='$FACTORY_BROWSER_TIMEOUT_SEC'; defaulting to 900" >&2
   FACTORY_BROWSER_TIMEOUT_SEC=900
 fi
+# Seconds the browser runner holds the preview sign-in lease
+# (scripts/lib/browser-signin.mjs). Supabase keeps one live magic-link token
+# per user, so a newer mint kills an older link that hasn't been opened yet.
+# The runner and the verification shell lane sign in as the same test account,
+# so each takes the lease ($SIGNIN_LEASE_FILE) before it mints. The runner
+# opens its link early in its session, so a few minutes covers it; the lease is
+# released when the run ends, and expires on its own if it isn't.
+FACTORY_SIGNIN_LEASE_SEC="${FACTORY_SIGNIN_LEASE_SEC:-300}"
+if ! [[ "$FACTORY_SIGNIN_LEASE_SEC" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_SIGNIN_LEASE_SEC='$FACTORY_SIGNIN_LEASE_SEC'; defaulting to 300" >&2
+  FACTORY_SIGNIN_LEASE_SEC=300
+fi
 # Credentials of the dedicated dev-Supabase account the runner signs in as.
 # Never the CI E2E user and never a prod account. Read by node (the bundle
 # builder and the report scanner), never sourced into this shell.
@@ -538,6 +550,12 @@ VERIFY_PROMPT_FILE="$SCRIPT_DIR/factory-verify-prompt.md"
 umask 077
 LOG_DIR="$REPO_ROOT/logs/factory"
 mkdir -p "$LOG_DIR"
+# The preview sign-in lease, shared by browser_run's mint and the verification
+# shell lane's (passed to verify-lane.mjs start). See FACTORY_SIGNIN_LEASE_SEC.
+SIGNIN_LEASE_FILE="$LOG_DIR/factory-signin.lease"
+# The owner browser_run took the lease as, while it holds it (cleanup() gives
+# it back if this process exits mid-run).
+BROWSER_SIGNIN_LEASE_OWNER=""
 LOG_FILE="$LOG_DIR/factory-agent-$MODE_NAME-$(date +%Y-%m-%d).log"
 touch "$LOG_FILE"
 chmod 600 "$LOG_FILE"
@@ -630,6 +648,14 @@ worktree_cli_error() {
 cleanup() {
   local exit_code=$?
   rm -f "$LOCK_FILE"
+  # A --browser run killed between its mint and the runner's end: give the
+  # sign-in lease back now rather than leave the shell lane waiting it out.
+  # Owner-checked, inline (no function call: this runs on any early exit too),
+  # and never able to change the exit code.
+  if [[ -n "${BROWSER_SIGNIN_LEASE_OWNER:-}" ]]; then
+    node "$SCRIPT_DIR/lib/browser-signin.mjs" release --lease-file "$SIGNIN_LEASE_FILE" \
+      --owner "$BROWSER_SIGNIN_LEASE_OWNER" >>"$LOG_FILE" 2>&1 || true
+  fi
   if [[ $exit_code -ne 0 ]]; then
     log "ERROR: factory-agent --$MODE_NAME exiting with code $exit_code"
     # IMPORTANT: the regex intentionally drops any line that lacks a
@@ -2685,6 +2711,18 @@ browser_record_result() {
     >>"$LOG_FILE" 2>&1 || true
 }
 
+# browser_signin_release — give back the preview sign-in lease browser_run took
+# when it minted (BROWSER_SIGNIN_LEASE_OWNER), once the runner is done with its
+# link. Owner-checked in browser-signin.mjs: a lease that expired during the
+# run and was taken over by the shell lane is left alone. Never fails.
+browser_signin_release() {
+  [[ -n "${BROWSER_SIGNIN_LEASE_OWNER:-}" ]] || return 0
+  node "$SCRIPT_DIR/lib/browser-signin.mjs" release --lease-file "$SIGNIN_LEASE_FILE" \
+    --owner "$BROWSER_SIGNIN_LEASE_OWNER" >>"$LOG_FILE" 2>&1 || true
+  BROWSER_SIGNIN_LEASE_OWNER=""
+  return 0
+}
+
 # run_browser_task <kind> <run-dir> <target-origin> <bundle-json>
 # The ONLY claude call in the factory that gets --chrome. Sets BROWSER_OUT (the
 # runner's stdout) and BROWSER_RESULT: "ran" (read the output for the runner's
@@ -2855,10 +2893,12 @@ intest_browser_run() {
 #
 # Returns 0 when it ran (or found the run can never happen for this SHA), 1 when
 # the card isn't ready this tick (try the next candidate), 2 when the browser
-# itself is unavailable (stop trying candidates this tick). A verify run that
-# finds the browser unavailable before a session ends its lane and returns 1,
-# so the next verify candidate's lane ends this tick too; BROWSER_PREFLIGHT_FAILED
-# keeps that to one preflight and one health record per --browser run.
+# itself is unavailable or the preview sign-in lease is held (stop trying
+# candidates this tick; a busy lease spends, records and posts nothing). A
+# verify run that finds the browser unavailable before a session ends its lane
+# and returns 1, so the next verify candidate's lane ends this tick too;
+# BROWSER_PREFLIGHT_FAILED keeps that to one preflight and one health record per
+# --browser run.
 browser_run() {
   local kind="$1" issue_num="$2" pr_num="$3" head_sha="$4"
   local state_json scenario_sha run_sha attempts_raw attempts=0 preflight target
@@ -3033,10 +3073,35 @@ Merge \`main\` into the branch (the **Update branch** button on PR #$pr_num, not
   # The one-time sign-in link, minted last so it is as fresh as possible when
   # the runner opens it. It is a login token: it lives in the bundle on the
   # runner's stdin and nowhere else, never in the log.
-  local sign_in_url
-  if ! sign_in_url=$(node "$SCRIPT_DIR/lib/browser-signin.mjs" mint \
+  #
+  # Minted under the sign-in lease (SIGNIN_LEASE_FILE): Supabase keeps one live
+  # magic-link token per user, and the verification shell lane signs in as the
+  # same test account from a detached run. A mint of its own between this mint
+  # and the runner opening the link would end this run as signin-failed: an
+  # attempt and a health strike for nothing. Taken here, after every cheap
+  # check, and held FACTORY_SIGNIN_LEASE_SEC (the runner opens its link early);
+  # released once the runner is done (browser_signin_release, and cleanup() if
+  # this process dies first). Busy (exit 3): the holder signs in within seconds
+  # (the shell lane) or its lease expires, so this run waits for the next
+  # --browser tick, spending no attempt and recording, writing and posting
+  # nothing. The verify lane stays non-terminal, so --watch queues it again;
+  # the In Test sweep lists its candidates afresh every tick.
+  local sign_in_url mint_rc=0 lease_owner="browser:$kind:$issue_num:${head_sha:0:12}" holder
+  sign_in_url=$(node "$SCRIPT_DIR/lib/browser-signin.mjs" mint \
       --key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
-      --origin "$target" 2>>"$LOG_FILE") || [[ -z "$sign_in_url" ]]; then
+      --origin "$target" --lease-file "$SIGNIN_LEASE_FILE" --owner "$lease_owner" \
+      --hold-sec "$FACTORY_SIGNIN_LEASE_SEC" 2>>"$LOG_FILE") || mint_rc=$?
+  if [[ "$mint_rc" -eq 3 ]]; then
+    holder=$(printf '%s\n' "$sign_in_url" | tail -1 \
+      | jq -r '"\(.owner // "unknown") until \(.until // "unknown")"' 2>/dev/null || echo "unknown")
+    log "Issue #$issue_num: the preview sign-in lease is held (${holder:-unknown}); browser run ($kind) deferred to the next --browser tick"
+    return 2
+  fi
+  # Exit 0 means the lease is held (or the lease file couldn't be used and the
+  # mint went ahead without it, warning in the log): from here, give it back.
+  [[ "$mint_rc" -ne 0 ]] || BROWSER_SIGNIN_LEASE_OWNER="$lease_owner"
+  if [[ "$mint_rc" -ne 0 || -z "$sign_in_url" ]]; then
+    browser_signin_release
     log "Issue #$issue_num: minting the runner's sign-in link failed (reason above); no browser run"
     browser_record_result "preflight:signin-mint"
     browser_lane_end "$kind" "$issue_num" "$head_sha" "unavailable:signin-mint"
@@ -3044,6 +3109,7 @@ Merge \`main\` into the branch (the **Update branch** button on PR #$pr_num, not
   fi
   if ! bundle=$(echo "$bundle" | jq --arg u "$sign_in_url" '.account.signInUrl = $u'); then
     log "ERROR: could not add the sign-in link to the browser-run bundle for #$issue_num"
+    browser_signin_release
     return 1
   fi
 
@@ -3054,7 +3120,12 @@ Merge \`main\` into the branch (the **Update branch** button on PR #$pr_num, not
   [[ "$kind" == intest ]] || run_tag="$kind-"
   run_dir="$LOG_DIR/browser/issue-$issue_num-${head_sha:0:12}-$run_tag$(date +%Y%m%dT%H%M%S)"
   log "Issue #$issue_num: browser run ($kind) $attempts/$FACTORY_BROWSER_MAX_ATTEMPTS for ${head_sha:0:12} on $origin"
-  if ! run_browser_task "$kind" "$run_dir" "$origin" "$bundle"; then
+  local task_rc=0
+  run_browser_task "$kind" "$run_dir" "$origin" "$bundle" || task_rc=$?
+  # The runner is done with its link, whatever the session did (ran, failed,
+  # timed out, or never started): give the lease back before anything else.
+  browser_signin_release
+  if [[ "$task_rc" -ne 0 ]]; then
     browser_record_result error
     # Nothing ran (the guard or the prompt couldn't be set up): the operator's
     # to fix, so the verify lane ends now and gives the attempt back.
@@ -3770,7 +3841,7 @@ verify_shell_work() {
       --sha "$head_sha" --platforms "$platforms" --state-file "$STATE_FILE" \
       --repo-root "$REPO_ROOT" --run-root "$VERIFY_DIR" --prompt-file "$VERIFY_PROMPT_FILE" \
       --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
-      --signin-key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" \
+      --signin-key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" --signin-lease-file "$SIGNIN_LEASE_FILE" \
       --effort "${FACTORY_PLAN_EFFORT:-xhigh}" --install-timeout-sec "${INSTALL_TIMEOUT_SEC:-600}" \
       --min-free-disk-gb "${FACTORY_MIN_FREE_DISK_GB:-3}" 2>>"$LOG_FILE"); then
     log "WARNING: issue #$issue_num: the verification shell lane couldn't be started (non-fatal; retried next tick)"

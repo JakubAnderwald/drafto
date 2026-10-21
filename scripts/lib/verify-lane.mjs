@@ -17,6 +17,9 @@
 //   - an allowlisted environment: no GH / Vercel / Supabase tokens (the
 //     factory loop sources support secrets into its own env), GH_CONFIG_DIR
 //     pointing at an empty directory;
+//   - the test account's preview session minted under the sign-in lease
+//     (--signin-lease-file, browser-signin.mjs) the browser runner also takes,
+//     so neither lane's mint kills the other's unopened one-time link;
 //   - the preview reachable only through `preview-curl <path>`, a wrapper
 //     (bin/preview-curl → `verify-lane.mjs preview-curl`) that pins the
 //     preview origin and reads the Vercel protection-bypass header and the
@@ -39,7 +42,7 @@
 //
 //   start --issue N --pr P --sha S --platforms '<json>' --state-file F
 //         --repo-root R --run-root D [--prompt-file F] [--account-file F]
-//         [--signin-key-file F] [--bypass-file F] [--effort E]
+//         [--signin-key-file F] [--signin-lease-file F] [--bypass-file F] [--effort E]
 //         [--install-timeout-sec N] [--min-free-disk-gb N] [--dry-run 0|1] [--now ISO]
 //       → {started: true, runId, runDir, worktree, deadlineAt, attempt, preview, bypass}
 //         or {started: false, reason, …}. Refusal reasons: off, factory-paused,
@@ -145,6 +148,17 @@ const GUARD_PAUSE_MIN = 24 * 60;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 // The least time worth starting a run with: an install and a short session.
 const MIN_RUN_MIN = 10;
+// The sign-in lease (browser-signin.mjs), shared with the browser runner:
+// held from this lane's mint to the end of its curl exchange (seconds, and
+// released at once), and waited for, polling, while the runner holds it
+// (FACTORY_SIGNIN_LEASE_SEC, 300 s by default), for at most LEASE_WAIT_MAX_MS
+// and never into the run's cleanup reserve. Still held after that: the run
+// goes on without a session. The hold outlasts the mint's request cap
+// (MINT_TIMEOUT_MS, 30 s) plus the exchange's (CURL_TIMEOUT_MS, 45 s), so it
+// can't expire mid-exchange; it only matters if the supervisor dies holding it.
+const SHELL_LEASE_SEC = 120;
+const LEASE_POLL_MS = 5_000;
+const LEASE_WAIT_MAX_MS = 6 * MINUTE_MS;
 
 let libsPromise = null;
 async function libs() {
@@ -200,6 +214,11 @@ export function readKnobs(env = process.env, flags = {}) {
         path.join(home, "drafto-secrets", "dev-supabase-admin.env"),
       home,
     ),
+    // No default: without the flag the lane mints without a lease, as before.
+    // Absolute, because the supervisor runs in its run dir, not start's cwd.
+    signinLeaseFile: flags["signin-lease-file"]
+      ? path.resolve(expandTilde(flags["signin-lease-file"], home))
+      : null,
   };
 }
 
@@ -1137,6 +1156,7 @@ export async function runStart(opts, deps) {
         bypassFile: bypassProblem ? null : knobs.bypassFile,
         accountFile: knobs.accountFile,
         signinKeyFile: knobs.signinKeyFile,
+        signinLeaseFile: knobs.signinLeaseFile,
       },
       laneFacts: { bypass: bypassProblem ?? "ok" },
     };
@@ -1301,43 +1321,162 @@ async function seedNodeModules(meta, logFile, stopped = () => false) {
   }
 }
 
+/** The shell lane's owner name on the sign-in lease. */
+export function leaseOwnerFor(meta) {
+  return `shell:${meta.issue}:${String(meta.sha ?? "").slice(0, 12)}`;
+}
+
+/**
+ * How long the lane may wait for the sign-in lease: LEASE_WAIT_MAX_MS, cut to
+ * the time left before the run's deadline minus its cleanup reserve.
+ */
+export function leaseWaitBudgetMs(meta, now = Date.now()) {
+  const left = Date.parse(meta.deadlineAt ?? "") - now - CLEANUP_RESERVE_SEC * 1000;
+  return Number.isFinite(left) ? Math.max(0, Math.min(LEASE_WAIT_MAX_MS, left)) : 0;
+}
+
+// Sleep <ms>, waking early once <stopped>() is true (a SIGTERM to the group).
+async function pauseUnlessStopped(ms, stopped) {
+  const end = Date.now() + ms;
+  while (!stopped() && Date.now() < end) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(250, end - Date.now())));
+  }
+}
+
 /**
  * Sign the run's cookie jar in as the dev test account: mint the one-time
  * link (browser-signin.mjs) and open it with curl through the run's config.
- * Returns the session fact: signed-in, mint-failed, signin-failed (the branch
+ * Returns the session fact: signed-in, mint-failed, signin-busy (the browser
+ * runner held the sign-in lease past the wait), stopped (a stop or the
+ * deadline came while waiting for the lease), signin-failed (the branch
  * predates the route, or the account is gone), protected (Vercel's SSO: no
  * usable bypass secret), or failed-<code>.
+ *
+ * With meta.paths.signinLeaseFile, the mint takes the sign-in lease first
+ * (see SHELL_LEASE_SEC), waits for it while the runner holds it (polling
+ * every <pollMs>, for <waitMs>, by default leaseWaitBudgetMs), and gives it
+ * back right after the exchange, whatever its outcome. A stop during the
+ * wait ends it at once.
  */
-export async function signInPreview(meta, { cfg, privateDir, env, logFile, mint = null }) {
-  let link;
+export async function signInPreview(
+  meta,
+  {
+    cfg,
+    privateDir,
+    env,
+    logFile,
+    mint = null,
+    release = null,
+    stopped = () => false,
+    pollMs = LEASE_POLL_MS,
+    waitMs = null,
+  },
+) {
+  let mintFn = mint;
+  let releaseFn = release;
   try {
-    const mintFn = mint ?? (await import("./browser-signin.mjs")).mint;
-    link = await mintFn({
-      keyFile: meta.paths.signinKeyFile,
-      accountFile: meta.paths.accountFile,
-      origin: meta.previewOrigin,
-    });
+    if (!mintFn || !releaseFn) {
+      const lib = await import("./browser-signin.mjs");
+      mintFn ??= lib.mint;
+      releaseFn ??= lib.releaseLease;
+    }
   } catch (err) {
-    // browser-signin's messages name what failed, never a key or token.
-    appendLog(logFile, `minting the preview sign-in link failed: ${err.message}`);
+    appendLog(logFile, `loading browser-signin.mjs failed: ${err.message}`);
     return "mint-failed";
   }
-  // The link is a login token: it goes in a mode-600 config, never on argv.
-  const linkCfg = path.join(privateDir, "signin.cfg");
-  nodeFs.writeFileSync(linkCfg, `url = "${link}"\n`, { mode: 0o600 });
-  const r = await runStep(
-    meta.bins.curl,
-    ["-q", "-K", cfg, "-K", linkCfg, "-s", "-o", "/dev/null", "-w", "%{http_code} %{redirect_url}"],
-    { cwd: privateDir, env, timeoutMs: CURL_TIMEOUT_MS, capture: true },
-  );
-  rmQuiet(nodeFs, linkCfg);
-  const [code, redirect = ""] = r.stdout.trim().split(/\s+/);
-  if (r.code === 0 && /^30[1278]$/.test(code ?? "") && redirect === `${meta.previewOrigin}/`) {
-    return "signed-in";
+  const leaseFile = meta.paths?.signinLeaseFile || null;
+  const lease = leaseFile
+    ? { file: leaseFile, owner: leaseOwnerFor(meta), holdSec: SHELL_LEASE_SEC }
+    : null;
+  const waitUntil = Date.now() + (waitMs ?? leaseWaitBudgetMs(meta));
+  let waitedSince = null;
+  let link;
+  for (;;) {
+    // A stop that came while waiting for the lease: no mint, no session.
+    if (waitedSince !== null && stopped()) {
+      appendLog(logFile, "stopped while waiting for the preview sign-in lease");
+      return "stopped";
+    }
+    try {
+      link = await mintFn({
+        keyFile: meta.paths.signinKeyFile,
+        accountFile: meta.paths.accountFile,
+        origin: meta.previewOrigin,
+        ...(lease ? { lease, onWarning: (m) => appendLog(logFile, m) } : {}),
+      });
+      break;
+    } catch (err) {
+      if (!(lease && err?.busy)) {
+        // browser-signin's messages name what failed, never a key or token.
+        appendLog(logFile, `minting the preview sign-in link failed: ${err.message}`);
+        return "mint-failed";
+      }
+      const holder = `${err.owner ?? "unknown"} until ${err.until ?? "unknown"}`;
+      const left = waitUntil - Date.now();
+      if (waitedSince === null) {
+        waitedSince = Date.now();
+        appendLog(
+          logFile,
+          `the preview sign-in lease is held (${holder}); waiting up to ${Math.max(0, Math.round(left / 1000))}s for it`,
+        );
+      }
+      if (left <= 0 && !stopped()) {
+        appendLog(
+          logFile,
+          `the preview sign-in lease is still held (${holder}); going on without a preview session`,
+        );
+        return "signin-busy";
+      }
+      await pauseUnlessStopped(Math.min(pollMs, left), stopped);
+    }
   }
-  if (redirect.includes("/login")) return "signin-failed";
-  if (/vercel\.com/.test(redirect) || code === "401" || code === "403") return "protected";
-  return `failed-${/^\d{3}$/.test(code ?? "") ? code : `curl-${r.code}`}`;
+  if (waitedSince !== null) {
+    appendLog(
+      logFile,
+      `got the preview sign-in lease after ${Math.round((Date.now() - waitedSince) / 1000)}s`,
+    );
+  }
+  try {
+    // The link is a login token: it goes in a mode-600 config, never on argv.
+    const linkCfg = path.join(privateDir, "signin.cfg");
+    nodeFs.writeFileSync(linkCfg, `url = "${link}"\n`, { mode: 0o600 });
+    const r = await runStep(
+      meta.bins.curl,
+      [
+        "-q",
+        "-K",
+        cfg,
+        "-K",
+        linkCfg,
+        "-s",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code} %{redirect_url}",
+      ],
+      { cwd: privateDir, env, timeoutMs: CURL_TIMEOUT_MS, capture: true },
+    );
+    rmQuiet(nodeFs, linkCfg);
+    const [code, redirect = ""] = r.stdout.trim().split(/\s+/);
+    if (r.code === 0 && /^30[1278]$/.test(code ?? "") && redirect === `${meta.previewOrigin}/`) {
+      return "signed-in";
+    }
+    if (redirect.includes("/login")) return "signin-failed";
+    if (/vercel\.com/.test(redirect) || code === "401" || code === "403") return "protected";
+    return `failed-${/^\d{3}$/.test(code ?? "") ? code : `curl-${r.code}`}`;
+  } finally {
+    // The link is used (or dead): the runner may mint again.
+    if (lease) {
+      try {
+        releaseFn({ file: lease.file, owner: lease.owner });
+      } catch (err) {
+        appendLog(
+          logFile,
+          `releasing the preview sign-in lease failed (it expires on its own): ${err.message}`,
+        );
+      }
+    }
+  }
 }
 
 // Revoke the API keys this run may have made (named with its qaTag), plus any
@@ -1589,7 +1728,13 @@ export async function runSupervise({ runDir }, { env = process.env } = {}) {
     );
     bypassSecret = null;
     if (meta.previewOrigin && !stopped()) {
-      facts.session = await signInPreview(meta, { cfg, privateDir, env: baseEnv, logFile });
+      facts.session = await signInPreview(meta, {
+        cfg,
+        privateDir,
+        env: baseEnv,
+        logFile,
+        stopped,
+      });
     }
     nodeFs.mkdirSync(binDir, { recursive: true, mode: 0o700 });
     nodeFs.writeFileSync(
@@ -2133,6 +2278,9 @@ export function runGaps({ runDir }, { fs = nodeFs } = {}) {
       lane: "shell",
       reason: `the Vercel protection-bypass secret ${why}, so the lane couldn't reach the preview's API (runbook: Pre-In-Test verification)`,
     });
+  } else if (exit?.facts?.session === "signin-busy") {
+    // A token, not a sentence: verify-report.mjs reads it from its REASONS table.
+    gaps.push({ lane: "shell", token: "signin-busy" });
   } else if (exit?.facts?.session && exit.facts.session !== "signed-in") {
     gaps.push({
       lane: "shell",

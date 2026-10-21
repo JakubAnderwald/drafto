@@ -355,6 +355,28 @@ describe("factory-agent.sh browser runner: knobs under bash 3.2", () => {
     assert.match(r.stdout, / T=900 /);
   });
 
+  it("holds the sign-in lease 300 s by default, and validates FACTORY_SIGNIN_LEASE_SEC", () => {
+    const lease = (env) => {
+      const r = spawnSync(
+        "/bin/bash",
+        [
+          "-c",
+          `set -euo pipefail\nHOME=/home/test\n${block[0]}\necho "L=$FACTORY_SIGNIN_LEASE_SEC"`,
+        ],
+        { encoding: "utf8", env: { PATH: process.env.PATH, ...env } },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      return r;
+    };
+    assert.match(lease({}).stdout, /^L=300$/m);
+    assert.match(lease({ FACTORY_SIGNIN_LEASE_SEC: "120" }).stdout, /^L=120$/m);
+    for (const bad of ["0", "08", "5m", "-1", ""]) {
+      const r = lease({ FACTORY_SIGNIN_LEASE_SEC: bad });
+      assert.match(r.stdout, /^L=300$/m, bad);
+      if (bad !== "") assert.match(r.stderr, /invalid FACTORY_SIGNIN_LEASE_SEC/, bad);
+    }
+  });
+
   it("enables a kind only when the master switch is on and the kind is listed", () => {
     const fn = extract("browser_kind_enabled");
     const cases = [
@@ -584,6 +606,8 @@ function runBrowser({
   dryRun = 0,
   liveHead = SHA,
   mintOk = true,
+  mintBusy = false,
+  mintEmpty = false,
   signinRoute = "present",
   comments = "[]",
   commentOk = true,
@@ -623,6 +647,9 @@ FACTORY_BROWSER_ACCOUNT_FILE=/nonexistent/account.env
 FACTORY_BROWSER_SIGNIN_KEY_FILE=/nonexistent/dev-supabase-admin.env
 FACTORY_BROWSER_DEVICE_ID=9796912b-8977-4d74-9c08-d9bb283b9496
 FACTORY_BROWSER_MAX_ATTEMPTS=2
+FACTORY_SIGNIN_LEASE_SEC=300
+SIGNIN_LEASE_FILE=${JSON.stringify(join(dir, "factory-signin.lease"))}
+BROWSER_SIGNIN_LEASE_OWNER=""
 FACTORY_VERIFY_PREVIEW_WAIT_MIN=${previewWaitMin}
 ADMIN_EMAIL=ops@example.com
 log() { echo "[log] $*"; }
@@ -669,7 +696,16 @@ node() {
       printf '%s' ${JSON.stringify(bundle)} ;;
     */browser-signin.mjs)
       echo "signin $(printf '%s ' "\${@:2}")" >>${JSON.stringify(calls)}
-      ${mintOk ? 'echo "https://drafto-x-jakubanderwalds-projects.vercel.app/auth/test-sign-in?token_hash=tok&next=%2F"' : "return 1"} ;;
+      [[ "$2" == mint ]] || { echo '{"released":true}'; return 0; }
+      ${
+        mintBusy
+          ? `echo '{"busy":true,"owner":"shell:501:aaaaaaaaaaaa","until":"2026-10-21T12:01:00.000Z"}'; return 3`
+          : mintEmpty
+            ? "return 0"
+            : mintOk
+              ? 'echo "https://drafto-x-jakubanderwalds-projects.vercel.app/auth/test-sign-in?token_hash=tok&next=%2F"'
+              : "return 1"
+      } ;;
     */browser-report.mjs)
       echo "report $(printf '%s ' "\${@:2}")" >>${JSON.stringify(calls)}
       ${renderFails ? "return 1" : ""}
@@ -686,6 +722,7 @@ node() {
 REPO_ROOT=${JSON.stringify(repoRoot)}
 FACTORY_SIGNIN_ROUTE_PATH=${JSON.stringify(routePath)}
 ${extract("browser_record_result")}
+${extract("browser_signin_release")}
 ${extract("browser_refund_attempt")}
 ${extract("head_has_signin_route")}
 ${extract("iso_age_min")}
@@ -712,6 +749,10 @@ echo "rc=$rc"
     return { r, callLog, finalState };
   }
 }
+
+const LEASE_FLAGS =
+  /--lease-file \S+\/factory-signin\.lease --owner browser:(intest|verify):501:a{12} --hold-sec 300 /;
+const releases = (callLog) => callLog.split("\n").filter((l) => l.startsWith("signin release "));
 
 describe("intest_browser_run", () => {
   const run = (opts) => runBrowser({ ...opts, kind: "intest" });
@@ -757,6 +798,97 @@ describe("intest_browser_run", () => {
     assert.match(callLog, /health record .*--result preflight:signin-mint /);
     assert.doesNotMatch(callLog, /task /);
     assert.equal(finalState.browserRunAttempts ?? null, null, "no attempt spent before a session");
+    assert.deepEqual(releases(callLog), [], "a failed mint holds no lease (mint gives it back)");
+  });
+
+  it("gives the lease back when mint exited 0 but printed no link", () => {
+    const { r, callLog, finalState } = run({ state: ready, mintEmpty: true });
+    assert.match(r.stdout, /rc=2/);
+    assert.match(callLog, /health record .*--result preflight:signin-mint /);
+    assert.equal(releases(callLog).length, 1, "held from exit 0 on, so released");
+    assert.doesNotMatch(callLog, /task /);
+    assert.equal(finalState.browserRunAttempts ?? null, null);
+  });
+
+  it("mints under the sign-in lease, and gives it back once the runner is done", () => {
+    const { r, callLog } = run({ state: ready });
+    assert.match(r.stdout, /rc=0/);
+    const mint = callLog.split("\n").find((l) => l.startsWith("signin mint "));
+    assert.match(mint, LEASE_FLAGS);
+    assert.match(mint, /--owner browser:intest:501:a{12} /);
+    assert.deepEqual(releases(callLog), [
+      `signin release --lease-file ${mint.match(/--lease-file (\S+)/)[1]} --owner browser:intest:501:${SHA.slice(0, 12)} `,
+    ]);
+    assert.ok(
+      callLog.indexOf("task intest") < callLog.indexOf("signin release "),
+      "released after the runner, not before",
+    );
+  });
+
+  for (const [what, opts] of [
+    ["a timeout", { taskResult: "timeout" }],
+    ["a runner error", { taskResult: "error" }],
+    ["a guard that didn't load", { taskResult: "guard-not-loaded" }],
+    ["a session limit", { taskResult: "session-limit" }],
+    ["a runner that never started", { taskRc: 1 }],
+    ["a failed sign-in on the preview", { renderStatus: "signin-failed" }],
+    ["a malformed run", { renderStatus: "malformed" }],
+  ]) {
+    it(`gives the sign-in lease back after ${what}`, () => {
+      const { callLog } = run({ state: ready, ...opts });
+      assert.equal(releases(callLog).length, 1, callLog);
+    });
+  }
+
+  it("defers to the next tick while the sign-in lease is held: no attempt, health record, state write or post", () => {
+    // The shell lane is signing in as the same test account: minting now would
+    // kill its link, or have it kill ours before the runner opens it.
+    const state = { ...ready, browserRunAttempts: `${SHA}:1` };
+    const { r, callLog, finalState } = run({ state, mintBusy: true });
+    assert.match(r.stdout, /rc=2/, "stop trying candidates this tick");
+    assert.match(
+      r.stdout,
+      /the preview sign-in lease is held \(shell:501:a{12} until 2026-10-21T12:01:00\.000Z\); browser run \(intest\) deferred to the next --browser tick/,
+    );
+    assert.doesNotMatch(callLog, /task |health record|gh issue comment|report render/);
+    assert.deepEqual(releases(callLog), [], "it never held the lease");
+    assert.deepEqual(finalState, state, "nothing written to state");
+  });
+
+  it("gives the lease back on exit too, if --browser dies mid-run", () => {
+    // cleanup() runs on any exit; the release there is inline, owner-checked
+    // and can't change the exit code.
+    const cleanup = extract("cleanup");
+    assert.match(
+      cleanup,
+      /if \[\[ -n "\$\{BROWSER_SIGNIN_LEASE_OWNER:-\}" \]\]; then\n\s+node "\$SCRIPT_DIR\/lib\/browser-signin\.mjs" release --lease-file "\$SIGNIN_LEASE_FILE" \\\n\s+--owner "\$BROWSER_SIGNIN_LEASE_OWNER" >>"\$LOG_FILE" 2>&1 \|\| true/,
+    );
+    assert.ok(cleanup.indexOf("browser-signin.mjs") < cleanup.indexOf("exit_code -ne 0"));
+    assert.match(script, /^SIGNIN_LEASE_FILE="\$LOG_DIR\/factory-signin\.lease"$/m);
+    assert.match(script, /^BROWSER_SIGNIN_LEASE_OWNER=""$/m);
+    assert.ok(
+      script.indexOf('BROWSER_SIGNIN_LEASE_OWNER=""') < script.indexOf("\ntrap cleanup EXIT"),
+      "defined before the trap",
+    );
+  });
+
+  it("takes the lease only at the mint, after every cheap check", () => {
+    const fn = extract("browser_run");
+    const mint = fn.indexOf('browser-signin.mjs" mint');
+    for (const [what, at] of [
+      ["the live-head check", fn.indexOf("gh pr view")],
+      ["the health preflight", fn.indexOf('browser-health.mjs" preflight')],
+      ["the stale-branch check", fn.indexOf('head_has_signin_route "$head_sha"')],
+      ["the dry-run exit", fn.indexOf("DRY-RUN: would run")],
+    ]) {
+      assert.ok(at > 0 && at < mint, `the mint comes after ${what}`);
+    }
+    assert.equal(fn.split('browser-signin.mjs" mint').length, 2, "one mint");
+    // Released right after the runner, before any result is handled.
+    assert.match(
+      fn,
+      /run_browser_task "\$kind" "\$run_dir" "\$origin" "\$bundle" \|\| task_rc=\$\?\n(\s*#[^\n]*\n)*\s*browser_signin_release\n/,
+    );
   });
 
   it("posts nothing when the sign-in link didn't work, and keeps the attempt spent", () => {
@@ -1125,6 +1257,22 @@ describe("browser_run verify (the Testing column's browser lane, ADR-0053)", () 
     });
     assert.match(intest.r.stdout, /rc=2/, "an In Test candidate still stops the loop");
     assert.doesNotMatch(intest.callLog, /^health |^task /m);
+  });
+
+  it("leaves the lane non-terminal while the sign-in lease is held, so --watch queues it again", () => {
+    const state = round({ verifyBrowser: `${SHA}:waiting-preview:2026-01-01T00:00:00Z` });
+    const { r, callLog, finalState } = run({ state, mintBusy: true });
+    assert.match(r.stdout, /rc=2/);
+    assert.match(r.stdout, /browser run \(verify\) deferred to the next --browser tick/);
+    assert.doesNotMatch(callLog, /task |health record|^board /m);
+    assert.deepEqual(finalState, state, "no lane result, no attempt, no claim");
+  });
+
+  it("mints under the sign-in lease as browser:verify, and gives it back after the run", () => {
+    const { r, callLog } = run({ state: round() });
+    assert.match(r.stdout, /rc=0/);
+    assert.match(callLog, /signin mint .*--owner browser:verify:501:a{12} --hold-sec 300 /);
+    assert.equal(releases(callLog).length, 1);
   });
 
   it("ends the lane when the sign-in link can't be minted, before any session", () => {

@@ -646,6 +646,26 @@ describe("coverage gaps", () => {
     ]);
   });
 
+  it("reads a gap's token as its sentence, and a reason as it is even when it spells a token", () => {
+    // verify-lane.mjs's runGaps sends the signin-busy token when the browser
+    // runner held the shared sign-in lease past the shell lane's wait.
+    const r = compose({
+      gaps: [
+        { lane: "shell", token: "signin-busy" },
+        { lane: "shell", token: "constructor" },
+        { lane: "shell", reason: "busy" },
+        { lane: "shell", reason: "signin-busy" },
+      ],
+    });
+    const lines = gapsSection(r.body).trim().split("\n");
+    assert.deepEqual(lines, [
+      "- **Repo & API (shell):** the browser runner was signing in as the same test account for longer than the lane could wait (the sign-in lease), so the lane had no preview session and its signed-in API checks didn't run",
+      "- **Repo & API (shell):** constructor",
+      "- **Repo & API (shell):** busy",
+      "- **Repo & API (shell):** signin-busy",
+    ]);
+  });
+
   it("reads the Testing sweep's own skip reasons as sentences", () => {
     // factory-agent.sh (verify_lane_states) and verify-decide.mjs send these.
     const cases = {
