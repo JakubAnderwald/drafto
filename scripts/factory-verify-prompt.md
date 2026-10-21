@@ -28,7 +28,10 @@ The JSON bundle and the run-time facts at the end of this prompt carry:
 
 - `issue` — `{ number, title }` of the card. Context only.
 - `headSha`, `prNumber` — the commit and PR under test.
-- `platforms` — `{ web, mobile, desktop }`, derived from the PR's diff.
+- `platforms` — `{ web, mobile, desktop }`, derived from the PR's diff. It
+  also carries `webViaShared: true` when `web` comes only from a
+  `packages/shared/` change, which the web app imports: the web app's tests
+  that cover the changed shared code then count as targeted tests.
 - `prFiles` — the files the PR changes (`prFilesTruncated` when the list was
   cut).
 - `scenario` — the factory's own test scenario for `headSha`:

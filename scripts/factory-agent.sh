@@ -3657,10 +3657,13 @@ verify_begin_round() {
 # re-arm failed ones, dispatch any beta lane missing for this commit, and write
 # the scenario (Testing wording) if there is none for this commit yet. The same
 # steps the In Test sweep runs, moved earlier so builds start sooner (amends
-# ADR-0030's timing).
+# ADR-0030's timing). <platforms> are the plain ones and drive the betas; the
+# scenario is written with scenario_platforms, the verification variant once
+# the round has started, so a packages/shared/-only PR gets the ### Web section
+# its browser lane walks (ADR-0053, 5C).
 verify_prepare() {
   local issue_num="$1" pr_num="$2" pr_obj="$3" pr_view="$4" head_sha="$5" diff_files="$6"
-  local platforms="$7" cr_note="$8" state_json="$9" beta scenario_sha
+  local platforms="$7" cr_note="$8" state_json="$9" beta scenario_sha scenario_plats
   intest_check_lane_outcomes "$issue_num" "$head_sha" "$pr_num" || true
   beta=$(intest_dispatch_betas "$issue_num" "$pr_num" "$head_sha" "$platforms" 2>>"$LOG_FILE" \
     || echo '{"dispatched":[],"skipped":[],"manualCommands":[]}')
@@ -3669,8 +3672,9 @@ verify_prepare() {
   if [[ "$scenario_sha" == "$head_sha" ]]; then
     return 0
   fi
+  scenario_plats=$(scenario_platforms "$issue_num" "$head_sha" "$diff_files" "$platforms")
   INTEST_STAGE=testing intest_handoff "$issue_num" "$pr_num" "$pr_obj" "$(pr_preview_url "$pr_view")" \
-    "$(pr_failing_advisory "$pr_view")" "$head_sha" "$diff_files" "$platforms" "$beta" "$cr_note" || true
+    "$(pr_failing_advisory "$pr_view")" "$head_sha" "$diff_files" "$scenario_plats" "$beta" "$cr_note" || true
 }
 
 # verify_enter <item-id> <issue> <pr> <pr-obj> <pr-view> <head-sha>
@@ -3706,7 +3710,9 @@ verify_enter() {
 # <head-sha> isn't terminal); the browser lane queues its
 # `verify:<issue>:<pr>:<sha>` candidate for --browser (verify_browser_work).
 # Commentary like the rest of the stage: it must never fail the tick. Args:
-# <issue> <pr> <head-sha> <platforms-json> <lane-states-json>.
+# <issue> <pr> <head-sha> <platforms-json> <lane-states-json>, where the
+# platforms are the verification variant (VERIFY_LANE_PLATFORMS: a
+# packages/shared/ change counts as web, with webViaShared).
 verify_work_lanes() {
   verify_shell_work "$@" || true
   verify_browser_work "$@" || true
@@ -3886,12 +3892,17 @@ verify_state_terminal() {
 # The browser lane's part of working the lanes. For a web card whose lane has
 # no result for this commit yet, queue a `verify` candidate: --browser runs it
 # after --release (browser_run verify), because a Chrome session must never hold
-# up the tick or a merge (ADR-0051). What can be settled here, without Chrome,
-# ends the lane at once instead of leaving it to the hold cap: no web changes
+# up the tick or a merge (ADR-0051). <platforms-json> is the verification
+# variant (verify_platforms_of), so "web" covers a diff that touches apps/web/
+# or packages/shared/, which the web app imports (ADR-0053, 5C). What can be
+# settled here, without Chrome, ends the lane at once instead of leaving it to
+# the hold cap: a diff that reaches the web app through neither
 # (skipped:not-web) and a runner whose verify kind is off (skipped:browser-off).
 # Platforms that couldn't be read ({}) wait for the next tick. A lane switched
 # off or not built does nothing, like verify_shell_work (verify_lane_states
-# already reads it as skipped:lane-off / skipped:not-built).
+# already reads it as skipped:lane-off / skipped:not-built). browser_run's
+# verify kind re-checks no platform: it runs the scenario's ### Web section,
+# which the Testing-stage scenario has for the same variant (verify_prepare).
 verify_browser_work() {
   local issue_num="$1" pr_num="$2" head_sha="$3" platforms="$4" lanes="$5" st web
   verify_lane_enabled browser || return 0
@@ -3922,7 +3933,11 @@ verify_browser_work() {
     *" verify:$issue_num:"*) ;;
     *) VERIFY_BROWSER_CANDIDATES="${VERIFY_BROWSER_CANDIDATES:+$VERIFY_BROWSER_CANDIDATES }verify:$issue_num:$pr_num:$head_sha" ;;
   esac
-  log "Issue #$issue_num: browser lane queued for --browser (${head_sha:0:12})"
+  if [[ "$(echo "$platforms" | jq -r '.webViaShared // false' 2>/dev/null)" == "true" ]]; then
+    log "Issue #$issue_num: browser lane queued for --browser (${head_sha:0:12}; web via packages/shared/)"
+  else
+    log "Issue #$issue_num: browser lane queued for --browser (${head_sha:0:12})"
+  fi
   return 0
 }
 
@@ -4031,7 +4046,7 @@ verify_browser_unclaim() {
   esac
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" browserRunSha "" \
     --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-  log "Issue #$issue_num: the verification report can't show the browser lane's result for ${head_sha:0:12}; the In Test browser run will report instead"
+  log "Issue #$issue_num: the verification report can't show the browser lane's result for ${head_sha:0:12}; the In Test browser run will report instead if the PR touches apps/web/ (a packages/shared/-only PR has no In Test run)"
   return 0
 }
 
@@ -4101,12 +4116,15 @@ This is about the commit, not a test result: verification never holds a card bac
   return 0
 }
 
-# verify_pr_platforms <pr> — set VERIFY_DIFF_FILES and VERIFY_PLATFORMS (the
-# platforms derived from the PR diff, as the In Review path derives them).
-# Returns 1, with VERIFY_PLATFORMS='{}', when the diff can't be read.
+# verify_pr_platforms <pr> — set VERIFY_DIFF_FILES, VERIFY_PLATFORMS (the
+# platforms derived from the PR diff, as the In Review path derives them; the
+# betas use them) and VERIFY_LANE_PLATFORMS (their verification variant,
+# verify_platforms_of; the lanes and the report use it). Returns 1, with both
+# '{}', when the diff can't be read.
 verify_pr_platforms() {
   VERIFY_DIFF_FILES=""
   VERIFY_PLATFORMS='{}'
+  VERIFY_LANE_PLATFORMS='{}'
   if ! VERIFY_DIFF_FILES=$(gh pr diff "$1" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE"); then
     VERIFY_DIFF_FILES=""
     return 1
@@ -4114,7 +4132,51 @@ verify_pr_platforms() {
   VERIFY_PLATFORMS=$(printf '%s\n' "$VERIFY_DIFF_FILES" \
     | node "$SCRIPT_DIR/lib/dispatch-release.mjs" derive-platforms --diff-file - 2>>"$LOG_FILE" || echo '{}')
   [[ -n "$VERIFY_PLATFORMS" ]] || VERIFY_PLATFORMS='{}'
+  VERIFY_LANE_PLATFORMS=$(verify_platforms_of "$VERIFY_DIFF_FILES")
   return 0
+}
+
+# verify_platforms_of <diff-files> — the verification variant of the PR's
+# platforms (derive-platforms --verify, ADR-0053's 5C): mobile and desktop as
+# the plain derivation has them, web also true when packages/shared/ changed
+# (the web app imports it), and webViaShared when that is the only way web
+# came in. Only the verification stage reads it: the betas, the In Test
+# platforms, the parity check and the preview gate keep the plain derivation.
+# '{}' when it can't be derived. Stdout is the value.
+verify_platforms_of() {
+  local out
+  out=$(printf '%s\n' "$1" \
+    | node "$SCRIPT_DIR/lib/dispatch-release.mjs" derive-platforms --verify --diff-file - 2>>"$LOG_FILE") \
+    || out=""
+  [[ -n "$out" ]] || out='{}'
+  printf '%s\n' "$out"
+}
+
+# scenario_platforms <issue> <head-sha> <diff-files> <platforms> — the
+# platforms a test scenario for <head-sha> is written with: <platforms> (the
+# plain ones), unless <head-sha> has a verification round (verifySha). The
+# Testing column's scenario is then written with the verification variant
+# (verify_platforms_of), so a packages/shared/-only PR gets the ### Web section
+# its browser lane walks, and any later rewrite for that same commit keeps it:
+# the In Review promotion re-posts the scenario for a card handed back without
+# a new commit (a thread, a red check, a drag back). Falls back to <platforms>
+# when the state or the variant can't be read. Stdout is the value. Named
+# outside verify_* because every scenario writer calls it, the In Test
+# promotion and the In Test sweep included, not only the Testing stage.
+scenario_platforms() {
+  local issue_num="$1" head_sha="$2" diff_files="$3" platforms="$4" round out
+  if [[ -n "$head_sha" ]]; then
+    round=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.verifySha // ""' 2>/dev/null || echo "")
+    if [[ "$round" == "$head_sha" ]]; then
+      out=$(verify_platforms_of "$diff_files")
+      if [[ "$out" != "{}" ]]; then
+        printf '%s\n' "$out"
+        return 0
+      fi
+    fi
+  fi
+  printf '%s\n' "$platforms"
 }
 
 # verify_scenario_file <comments-json> <head-sha> <out> — write the factory's
@@ -4267,7 +4329,7 @@ verify_post_report() {
 # manual steps.
 verify_promote() {
   local item_id="$1" issue_num="$2" pr_num="$3" head_sha="$4" reason="$5" lanes="$6"
-  local state_json="$7" comments_json="$8" cr_note gaps='[]' body_file minimal=0
+  local state_json="$7" comments_json="$8" cr_note gaps='[]' body_file minimal=0 report_plats
   if [[ "$DRY_RUN" -eq 1 ]]; then
     log "DRY-RUN: would promote #$issue_num Testing → In Test ($reason) and post the verification report for ${head_sha:0:12}"
     return 0
@@ -4280,9 +4342,19 @@ verify_promote() {
     log "WARNING: couldn't read PR #$pr_num's changed files; the report's platform rows may be wrong"
     gaps='[{"lane":"","reason":"the PR'"'"'s changed files couldn'"'"'t be read, so the platform rows may be wrong"}]'
   fi
+  # The report shows the verification platforms (ADR-0053, 5C). When only that
+  # variant couldn't be derived, the plain platforms still give the native
+  # rows, and a gap says the Web row may be wrong.
+  report_plats="$VERIFY_LANE_PLATFORMS"
+  if [[ "$report_plats" == "{}" && "$VERIFY_PLATFORMS" != "{}" ]]; then
+    report_plats="$VERIFY_PLATFORMS"
+    gaps=$(jq -nc --argjson a "$gaps" \
+      --arg r "the verification platforms couldn't be derived from the changed files, so the Web row may miss a packages/shared/ change" \
+      '$a + [{lane: "browser", reason: $r}]' 2>/dev/null || echo "$gaps")
+  fi
   cr_note=$(verify_cr_note "$issue_num" "$head_sha" "$state_json")
   body_file="$VERIFY_DIR/report-$issue_num-$head_sha.md"
-  if ! verify_compose_report "$issue_num" "$pr_num" "$head_sha" "$VERIFY_PLATFORMS" "$lanes" "$cr_note" \
+  if ! verify_compose_report "$issue_num" "$pr_num" "$head_sha" "$report_plats" "$lanes" "$cr_note" \
       "$comments_json" "$state_json" "$gaps" "$body_file"; then
     log "WARNING: composing the verification report for #$issue_num failed; posting the minimal notice instead"
     verify_minimal_report "$pr_num" "$head_sha" "$body_file"
@@ -4454,8 +4526,10 @@ verify_sweep_card() {
       else
         log "WARNING: couldn't read PR #$pr_num's changed files; #$issue_num's betas and scenario wait for the next tick"
       fi
+      # The lanes get the verification variant: a packages/shared/ change
+      # reaches the web app too (ADR-0053, 5C). The betas above keep the plain one.
       if [[ "$action" == "work-lanes" ]]; then
-        verify_work_lanes "$issue_num" "$pr_num" "$head_sha" "$VERIFY_PLATFORMS" "$lanes" || true
+        verify_work_lanes "$issue_num" "$pr_num" "$head_sha" "$VERIFY_LANE_PLATFORMS" "$lanes" || true
       fi
       ;;
     hand-back)
@@ -5909,10 +5983,17 @@ A human should take a look. Reset with \
     # that — a finished CLI run's findings are posted by cr_cli_housekeeping at the
     # top of the tick, before fetch_review_threads reads them.
     log "Issue #$ISSUE_NUM: required CI green (platforms: $(echo "$INTEST_PLATFORMS" | jq -c . 2>/dev/null)) → In Test"
+    # The scenario is re-posted here even for a commit that already has one (a
+    # card handed back to In Review without a new commit). A commit that went
+    # through pre-In-Test verification had its scenario written with the
+    # verification platforms (packages/shared/ counts as web, ADR-0053 5C), so
+    # the re-post keeps that variant and its ### Web section; the betas keep
+    # INTEST_PLATFORMS.
+    SCENARIO_PLATFORMS=$(scenario_platforms "$ISSUE_NUM" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS")
     if [[ "$DRY_RUN" -eq 1 ]]; then
       log "DRY-RUN: would advance #$ISSUE_NUM to In Test and post a test scenario"
       INTEST_BETA=$(intest_dispatch_betas "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "$INTEST_PLATFORMS" 2>>"$LOG_FILE" || echo '{"dispatched":[],"skipped":[],"manualCommands":[]}')
-      intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$(pr_failing_advisory "$PR_VIEW")" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" "$INTEST_BETA" "$CR_NOTE" || true
+      intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$(pr_failing_advisory "$PR_VIEW")" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$SCENARIO_PLATFORMS" "$INTEST_BETA" "$CR_NOTE" || true
       continue
     fi
     # Advance FIRST: the card must reach In Test even if writing the scenario
@@ -5933,7 +6014,7 @@ A human should take a look. Reset with \
     # Dispatch is its own step with its own SHA key, so a lane gated off here
     # (low disk, knob off) can still fire on a later tick.
     INTEST_BETA=$(intest_dispatch_betas "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "$INTEST_PLATFORMS" 2>>"$LOG_FILE" || echo '{"dispatched":[],"skipped":[],"manualCommands":[]}')
-    intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$ADVISORY" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS" "$INTEST_BETA" "$CR_NOTE" || true
+    intest_handoff "$ISSUE_NUM" "$PR_NUM" "$PR_OBJ" "$PREVIEW_URL" "$ADVISORY" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$SCENARIO_PLATFORMS" "$INTEST_BETA" "$CR_NOTE" || true
   done
 
   # ── 2b. Testing sweep (pre-In-Test verification, ADR-0053) ──
@@ -6042,8 +6123,12 @@ A human should take a look. Reset with \
           if [[ "${FACTORY_CR_CLI:-0}" == "1" ]]; then
             INTEST_CR_NOTE=$(cr_coverage_note "$ISSUE_NUM" "$INTEST_HEAD_SHA")
           fi
+          # A commit verified in Testing keeps the platforms its scenario had
+          # there (packages/shared/ counts as web, ADR-0053 5C); the betas and
+          # the In Test browser candidate below keep INTEST_PLATS.
+          INTEST_SCEN_PLATS=$(scenario_platforms "$ISSUE_NUM" "$INTEST_HEAD_SHA" "$INTEST_FILES" "$INTEST_PLATS")
           intest_handoff "$ISSUE_NUM" "$INTEST_PR_NUM" "$INTEST_PR_OBJ" "$INTEST_PREVIEW" \
-            "$(pr_failing_advisory "${INTEST_PR_VIEW:-}")" "$INTEST_HEAD_SHA" "$INTEST_FILES" "$INTEST_PLATS" \
+            "$(pr_failing_advisory "${INTEST_PR_VIEW:-}")" "$INTEST_HEAD_SHA" "$INTEST_FILES" "$INTEST_SCEN_PLATS" \
             "$INTEST_BETA" "$INTEST_CR_NOTE" || true
           # The scenario we just posted carries a drafto-factory marker, so
           # owner_comments_since ignores it — it can never look like feedback.

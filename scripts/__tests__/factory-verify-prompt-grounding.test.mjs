@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { buildFactoryVerifyShellBundle } from "../lib/factory-bundle.mjs";
 import { parseShellOutput } from "../lib/verify-report.mjs";
 import { DENY_COMMANDS, LANE_TOOLS } from "../lib/verify-guard.mjs";
 import { QA_TAG_PREFIX, buildPreviewCurlArgs } from "../lib/verify-lane.mjs";
@@ -110,6 +111,33 @@ describe("verify shell prompt — safety rules", () => {
     assert.match(flat, /\*\*Leave `### Web` to the browser lane\.\*\*/);
     assert.match(flat, /\*\*Mobile and device steps are manual\.\*\*/);
     assert.match(flat, /\*\*Never touch production\.\*\*/);
+  });
+
+  it("documents webViaShared as the bundle builder emits it (ADR-0053, 5C)", () => {
+    assert.match(
+      flat,
+      /`webViaShared: true` when `web` comes only from a `packages\/shared\/` change/,
+    );
+    assert.match(
+      flat,
+      /the web app's tests that cover the changed shared code then count as targeted tests/,
+    );
+    const bundle = (platforms) =>
+      buildFactoryVerifyShellBundle({
+        issue: { number: 7, title: "t" },
+        headSha: "a".repeat(40),
+        platforms,
+        qaTag: "factory-7-aaaaaaa",
+      });
+    assert.deepEqual(
+      bundle({ web: true, mobile: true, desktop: true, webViaShared: true }).platforms,
+      { web: true, mobile: true, desktop: true, webViaShared: true },
+    );
+    assert.deepEqual(bundle({ web: true, mobile: false, desktop: false }).platforms, {
+      web: true,
+      mobile: false,
+      desktop: false,
+    });
   });
 
   it("keeps secrets out of the report", () => {

@@ -299,6 +299,105 @@ describe("lane table", () => {
   });
 });
 
+describe("web reached only through packages/shared/ (webViaShared, ADR-0053 5C)", () => {
+  const viaShared = { web: true, mobile: true, desktop: true, webViaShared: true };
+  const NOTE =
+    "web changes come through `packages/shared/`, which the web app imports (no `apps/web/` files changed)";
+
+  it("says why the browser ran on a PR with no apps/web/ files, before the lane's own note", () => {
+    const r = compose({ platforms: viaShared });
+    const row = tableRow(r.body, "Web (browser)");
+    assert.match(row, /\| ran \| PASS \|/);
+    assert.ok(row.includes(`| ${NOTE}; full report below |`), row);
+    // Only the Web row: the other rows read as they always did.
+    assert.doesNotMatch(tableRow(r.body, "Repo & API (shell)"), /packages\/shared/);
+    assert.doesNotMatch(tableRow(r.body, "iOS / Android"), /packages\/shared/);
+  });
+
+  it("keeps the note beside a lane that didn't report, and the hand-run Web steps", () => {
+    const r = compose({ platforms: viaShared, browser: { state: "no-preview", text: null } });
+    const row = tableRow(r.body, "Web (browser)");
+    assert.ok(row.includes(`${NOTE}; no Vercel preview was ready for this commit`), row);
+    assert.ok(
+      manualLines(r.body).some((l) =>
+        /Run the \*\*Web\*\* steps in the test scenario by hand/.test(l),
+      ),
+    );
+  });
+
+  it("stands alone when the lane has nothing else to say", () => {
+    const r = compose({
+      platforms: viaShared,
+      browser: { state: "reported:pass", dir: "", text: browserOutput() },
+    });
+    assert.ok(tableRow(r.body, "Web (browser)").includes(NOTE));
+  });
+
+  it("is absent for a PR that touches apps/web/ (or without the flag), and needs web", () => {
+    for (const platforms of [
+      { web: true, mobile: true, desktop: true },
+      { web: true, mobile: true, desktop: true, webViaShared: false },
+      // A stray flag without web is ignored: there are no web changes to explain.
+      { web: false, mobile: true, desktop: true, webViaShared: true },
+    ]) {
+      const r = compose({ platforms });
+      assert.doesNotMatch(r.body, /come through `packages\/shared\/`/, JSON.stringify(platforms));
+    }
+  });
+
+  it("is carried by the CLI's --platforms JSON", () => {
+    const dir = mkdtempSync(join(tmpdir(), "verify-report-shared-"));
+    try {
+      const out = join(dir, "body.md");
+      const r = spawnSync(
+        "node",
+        [
+          cli,
+          "render",
+          "--issue",
+          "465",
+          "--pr",
+          "701",
+          "--sha",
+          SHA,
+          "--scenario-file",
+          "",
+          "--platforms",
+          JSON.stringify(viaShared),
+          "--beta-lanes",
+          "",
+          "--shell-state",
+          "none",
+          "--shell-dir",
+          "",
+          "--browser-state",
+          "skipped:no-web-steps",
+          "--browser-dir",
+          "",
+          "--gaps",
+          "[]",
+          "--cr-note",
+          "",
+          "--account-file",
+          "",
+          "--bypass-file",
+          "",
+          "--signin-key-file",
+          "",
+          "--out",
+          out,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      const body = readFileSync(out, "utf8");
+      assert.ok(tableRow(body, "Web (browser)").includes(NOTE));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("assessment", () => {
   it("has each reported lane's summary and the shell lane's assessment", () => {
     const r = compose({
@@ -600,7 +699,8 @@ describe("coverage gaps", () => {
   it("reads the browser lane's own reasons as sentences", () => {
     // factory-agent.sh (verify_browser_work, browser_run verify) sends these.
     const cases = {
-      "skipped:not-web": "skipped: the PR's diff doesn't touch the web app (apps/web/)",
+      "skipped:not-web":
+        "skipped: the PR's diff touches neither the web app (apps/web/) nor packages/shared/",
       "skipped:browser-off":
         "skipped: the browser runner's verify kind is switched off (FACTORY_BROWSER, FACTORY_BROWSER_KINDS)",
       "skipped:already-run":
