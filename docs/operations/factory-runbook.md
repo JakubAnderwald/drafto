@@ -113,7 +113,7 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
 
 ## Changing the board's Status options
 
-`scripts/setup-factory-board.sh` is also how a column is added to the live board, for example **Testing**, which is reserved for the pre-In-Test verification stage (ADR-0053, which lands with that stage). `updateProjectV2Field` replaces the Status field's whole option list. GitHub treats an option sent without its `id` as a new option, and every card in the old one loses its Status. Before 2026-10-20 the script sent no ids, so a re-run could clear the Status of every card on the board. Now the script:
+`scripts/setup-factory-board.sh` is also how a column is added to the live board, for example **Testing**, the pre-In-Test verification column (ADR-0053; see "Pre-In-Test verification (Testing)"). `updateProjectV2Field` replaces the Status field's whole option list. GitHub treats an option sent without its `id` as a new option, and every card in the old one loses its Status. Before 2026-10-20 the script sent no ids, so a re-run could clear the Status of every card on the board. Now the script:
 
 - sends every existing option back with its `id`, colour and description. Only a name the board doesn't have yet is sent without an `id`.
 - exits 1 when the board has an option that `STATUS_OPTIONS` doesn't list, because the update would delete it. `--allow-drop` deletes it anyway, so move its cards first.
@@ -572,11 +572,71 @@ node scripts/lib/state-cli.mjs factory:set-issue-field <n> browserRunSha ""
 
 ## Pre-In-Test verification (Testing)
 
-**Upcoming (ADR-0053).** A "Testing" column between In Review and In Test, where the factory runs the test scenario itself before handing the card over. Only its state has landed so far: nothing reads it yet, and these commands report an idle lane until the stage ships.
+A factory-owned **Testing** column between In Review and In Test ([ADR-0053](../adr/0053-pre-in-test-verification-stage.md), [factory-verification.md](../features/factory-verification.md)). With `FACTORY_VERIFY=1`, a converged In Review card moves to Testing instead of In Test. The scenario is written and the betas dispatched there. The Testing sweep in `--watch` works the verification lanes, then moves the card to In Test with one report comment. Verification is evidence, never a gate. **The lanes aren't built yet** (Waves 5A and 5B). Until they are, a Testing card is promoted on the next sweep with an INCOMPLETE report that lists what to test by hand.
+
+### Settings
+
+All in the launchd plist. A bad value warns in the launchd log and falls back to its default.
+
+| Setting                            | Default                              | What it does                                                                                                                                                        |
+| ---------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FACTORY_VERIFY`                   | `0`                                  | The master switch and kill switch. Off: cards go straight to In Test, and the Testing sweep only drains the column.                                                 |
+| `FACTORY_VERIFY_LANES`             | `shell,browser`                      | Which lanes run. Unknown words are dropped. Set it empty for no lanes: scenario and betas still move to Testing, and the card is promoted on the next sweep.        |
+| `FACTORY_VERIFY_ONLY_LABEL`        | (none)                               | Canary: only issues with this label enter Testing. A label the factory can't match exactly (comma, newline, leading or trailing blank) turns verification off.      |
+| `FACTORY_VERIFY_HOLD_MAX_MIN`      | `60`                                 | Longest stay in Testing, from the start of the card's round. At the cap the card is promoted, lanes still running or not.                                           |
+| `FACTORY_VERIFY_SHELL_TIMEOUT_MIN` | `30`                                 | Per-run cap for the shell lane (Wave 5A).                                                                                                                           |
+| `FACTORY_VERIFY_MAX_ATTEMPTS`      | `2`                                  | Shell-lane runs per commit (Wave 5A).                                                                                                                               |
+| `FACTORY_VERIFY_BOUNCE_MAX`        | `2`                                  | Hand-backs to In Review per commit for open review threads. `0` never hands back for threads. Past it the card carries on, and `--release` still refuses the merge. |
+| `FACTORY_VERIFY_PREVIEW_WAIT_MIN`  | `10`                                 | How long the lanes wait for the commit's Vercel preview (Waves 5A and 5B).                                                                                          |
+| `FACTORY_VERIFY_BYPASS_FILE`       | `~/drafto-secrets/vercel-bypass.env` | The Vercel protection-bypass secret for the shell lane's curl against previews. A missing file means the lane has no bypass secret.                                 |
+
+### One-time setup
+
+1. **Board and label.** Follow "Changing the board's Status options": `scripts/setup-factory-labels.sh` adds `status:testing`, and `scripts/setup-factory-board.sh` adds the Testing option without losing any card's Status. Until both exist, the factory logs a WARNING once per tick and sends cards straight to In Test.
+2. **Bypass secret** (needed by the shell lane, Wave 5A). In the Vercel dashboard, go to the project → **Settings** → **Deployment Protection** → **Protection Bypass for Automation**, and create a secret. **Never use `vercel curl`**: it creates a bypass secret of its own without telling you. Then, on the Mac mini:
+
+   ```bash
+   read -rs VERCEL_SECRET
+   (umask 077 && printf 'VERCEL_AUTOMATION_BYPASS_SECRET=%s\n' "$VERCEL_SECRET" > ~/drafto-secrets/vercel-bypass.env)
+   unset VERCEL_SECRET
+   chmod 600 ~/drafto-secrets/vercel-bypass.env
+   ```
+
+   `read -rs` keeps the secret out of the shell history and off the screen; paste it and press Enter. The report scans every lane's output for the secret and for the bypass header names, and withholds a lane that prints either. Wave 5A adds a `verify-lane.mjs bypass-check` to confirm the file works.
+
+3. **Canary.** Create the label once (`gh label create factory-verify --repo JakubAnderwald/drafto`), set `FACTORY_VERIFY=1` and `FACTORY_VERIFY_ONLY_LABEL=factory-verify` in the plist, and reload. File a small web issue with that label (`gh issue create --project "Drafto Factory" … --label factory-verify`), then watch it go In Review → Testing → In Test. Drop the label gate after several clean runs.
+
+### What a round looks like
+
+- **Entry** (`verify_enter`): the card moves to Testing first. Then `verifySha`, `verifyStartedAt` and `verifyCrNote` are set, and `lastFeedbackAt` too if it was empty. Betas are dispatched and the scenario is written with the Testing title. Attempts and the CodeRabbit run cap aren't reset here; that happens at the move to In Test. If the move to Testing fails, the card is promoted to In Test as before.
+- **The sweep** (`verify_sweep`, every tick, oldest issue first) logs `Issue #N: Testing → <action> (<reason>)`. `verify-decide.mjs` picks the action:
+
+| Action       | Reasons                                                                  | What happens                                                                                                                                     |
+| ------------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `skip`       | `pr-merged`, `pr-closed`, `pr-unknown`                                   | Nothing. The card waits for you.                                                                                                                 |
+| `promote`    | `verification-off`, `feedback`, `lanes-done`, `hold-cap`, `decide-error` | Report composed, card moved to In Test, report posted once, attempts and `crCliRuns` reset.                                                      |
+| `hand-back`  | `head-moved`, `ci-red`, `not-reviewed`, `threads`                        | Back to In Review, `verifyBounces` bumped, one comment per commit and reason (`drafto-factory-verify-handback:<sha12>:<reason>`).                |
+| `init`       | `no-round`, `new-round`                                                  | A round starts for the head (a card dragged in, or the revision no-op path). Betas are checked; the scenario is written if this commit has none. |
+| `wait`       | `ci-pending`, `threads-unknown`, `head-unknown`                          | Nothing this tick. The hold cap still applies.                                                                                                   |
+| `work-lanes` | `lanes-pending`                                                          | Betas re-checked, and the lanes started or polled (Waves 5A and 5B).                                                                             |
+
+- **The report** is composed into `logs/factory/verify/report-<issue>-<sha>.md`, with the scenario it was built from beside it, and kept for 30 days. If posting fails, the In Test sweep posts it again, up to 3 failed attempts per commit (`verifyReportPosts`). If the composer fails, a minimal "INCOMPLETE: couldn't be composed" notice goes out instead, with the same markers.
+
+### Triage
+
+| Symptom                                             | Look at                                                                                                                                                                                              |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cards skip Testing with `FACTORY_VERIFY=1`          | The `--watch` log for `no Testing column` or `no status:testing label` (setup step 1), or the canary label missing on the issue. A commit that already has a posted report goes straight to In Test. |
+| A card sits in Testing                              | Its `Testing → wait/skip/work-lanes` lines. `skip (pr-merged)` is yours to move. Anything else ends at the hold cap.                                                                                 |
+| A card keeps bouncing between Testing and In Review | The hand-back comments. Each bounce is about the commit (CI, review, threads). The fix budget isn't reset on the way in, so a loop ends in Blocked.                                                  |
+| No report on an In Test card that came from Testing | `factory:get-issue <n>` → `verifyReportSha`, `verifyReportPosts`, and the body in `logs/factory/verify/`. After 3 failed posts, post it by hand: `gh issue comment <n> --body-file <that file>`.     |
+| A lane's text says "withheld"                       | The lane printed something that matched a secret pattern, or a secret file was unreadable. Read the lane's local output; the report names the pattern, never the match.                              |
+
+### The ledger and its commands
 
 The stage keeps a `verify` ledger in `factory-state.json`. Like the CodeRabbit lane, it allows one shell-lane run in flight at a time across the whole factory, and has a lane-only pause. Each card gets `verify*` fields for its current round, the one for `verifySha`:
 
-- **Keyed by commit** (a push re-arms them): the lane results `verifyShell` and `verifyBrowser` (`<sha>:<state>[:<verdict>]`), the counters `verifyShellAttempts` and `verifyBounces` (`<sha>:<count>`), and `verifyReportSha`.
+- **Keyed by commit** (a push re-arms them): the lane results `verifyShell` and `verifyBrowser` (`<sha>:<state>[:<verdict>]`), the counters `verifyShellAttempts`, `verifyBounces` and `verifyReportPosts` (`<sha>:<count>`), the CodeRabbit note the card carried in, `verifyCrNote` (`<sha>:<note>`), and `verifyReportSha`.
 - **Not keyed by commit:** `verifyStartedAt`, the hold-cap anchor, and the run directories `verifyShellRunDir` and `verifyBrowserRunDir`. They only mean something while `verifySha` is the card's head; a new round overwrites them.
 
 ```bash
@@ -604,6 +664,7 @@ node scripts/lib/state-cli.mjs factory:verify-reset <n>                    # for
 | Worktree install hangs          | Each `pnpm install` is wrapped by `run-with-timeout.mjs` and capped at `FACTORY_INSTALL_TIMEOUT_SEC` (default 600 s); on cap, `--implement` releases the slot + worktree and bumps the card's attempt budget, while `--watch` logs a warning and proceeds. A cold install should take seconds (clonefile seed + offline reconcile), not minutes — see "Worktree installs & disk".                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | CodeRabbit CLI lane misbehaving | Set `FACTORY_CR_CLI=0` in the plist and reload. Cards then promote without waiting for CodeRabbit. Housekeeping keeps running with the lane off: it terminates an in-flight CLI run (SIGTERM to its process group) and discards any finished run's results — nothing is posted and no coverage is recorded — then removes the run's worktree and frees the slot. To do that by hand right away, see "Killing a wedged run". A lane pause (`factory:cr-cli-pause-until`) only stops new runs; cards still hold for the bot and their own in-flight run (see "What a lane pause does to cards"). See "CodeRabbit CLI gap-fill lane". The kill switch covers factory runs only: a manual `coderabbit-cli.mjs review` (`"manual": true` in `factory:cr-cli-status`) keeps running and posting. Stop one with `factory:cr-cli-finish <runId>`. |
 | Browser runner misbehaving      | Set `FACTORY_BROWSER=0` in the plist and reload. No claude call gets Chrome after that. To stop a run in flight, kill its `run-claude.mjs` process; its tabs stay open in an orphaned group in Chrome. See "Browser runner (Claude in Chrome)".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Verification stage misbehaving  | Set `FACTORY_VERIFY=0` in the plist and reload. Cards go straight to In Test again. Any card already in Testing is promoted on the next tick, with a report saying verification was switched off. **Rollback drill:** set `FACTORY_VERIFY=0`, wait one tick for Testing to drain (the board column is empty and the `--watch` log shows the `promote (verification-off)` lines), and only **then** revert the code. Reverting first strands cards: the old code never looks at Testing. See "Pre-In-Test verification (Testing)".                                                                                                                                                                                                                                                                                                         |
 | Stuck PR with a wrong commit    | `gh pr close <n> --delete-branch`. Drag the card back to Ready. Factory will re-plan on the next tick.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Plan needs a single tweak       | Comment on the issue with the correction; on the next tick the factory edits the existing plan comment in place (preserves the rest, stamps `<!-- drafto-factory-replan-ack:<id> -->` so the same comment doesn't loop). Drag back to Ready only if you want a full restart. See `docs/features/dark-factory.md` → "The plan comment looks wrong".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 

@@ -34,7 +34,10 @@
 //                        platforms derived from it, plus the facts bash
 //                        already knows (preview URL, dispatched beta lanes,
 //                        advisory checks). The model writes the human test
-//                        scenario and posts the In Test comment.
+//                        scenario and posts the In Test comment. With
+//                        `stage: "testing"` the card has just entered the
+//                        Testing column (ADR-0053) and the comment says the
+//                        factory is verifying it now.
 //
 // Pure functions for unit tests, plus a CLI that reads a single JSON object
 // on stdin and prints the resulting bundle JSON to stdout — mirrors
@@ -730,7 +733,16 @@ export function buildFactoryReviewBundle({
 // from that diff, and the facts bash already knows (preview URL, dispatched
 // beta lanes, advisory checks, CodeRabbit coverage note) so the model never
 // invents a URL or build number.
+//
+// `stage` says where the card is while the scenario is written: "intest" (the
+// card is In Test, a human tests it now) or "testing" (it just entered the
+// Testing column, ADR-0053: the factory verifies it first and moves it to In
+// Test with a verification report). Only the comment's wording changes; any
+// other value reads as "intest".
+export const INTEST_STAGES = Object.freeze(["intest", "testing"]);
+
 export function buildFactoryInTestBundle({
+  stage = "intest",
   issue,
   approvedPlan,
   priorPr = null,
@@ -757,6 +769,7 @@ export function buildFactoryInTestBundle({
   const diff = truncateDiff(prDiff);
   return {
     kind: "factory_intest",
+    stage: INTEST_STAGES.includes(stage) ? stage : "intest",
     issue: shapeIssue(issue),
     spec,
     parityOverride: effectiveParityOverride(issue.labels, spec),
@@ -1057,6 +1070,7 @@ async function main() {
     });
   } else if (input.kind === "factory_intest") {
     bundle = buildFactoryInTestBundle({
+      stage: input.stage,
       issue: input.issue,
       approvedPlan: input.approvedPlan,
       priorPr: input.priorPr,

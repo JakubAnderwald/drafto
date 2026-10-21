@@ -213,6 +213,12 @@ function emptyIssue() {
     verifyBrowserRunDir: null, // run dir of the browser lane's latest verify run
     verifyReportSha: null, // head SHA the verification report was posted for (post-once)
     verifyBounces: null, // "<sha>:<count>": hand-backs to In Review for that SHA
+    // "<sha>:<note>": the CodeRabbit coverage note (ADR-0036) the card carried
+    // into Testing, "" when the commit was covered. Kept because the report is
+    // posted on a later tick than the one the note was decided on, and a
+    // fail-open "coverage unknown (lane error)" note is recorded nowhere else.
+    verifyCrNote: null,
+    verifyReportPosts: null, // "<sha>:<count>": failed attempts to post that SHA's report
   };
 }
 
@@ -551,6 +557,8 @@ export const VERIFY_ISSUE_FIELDS = Object.freeze([
   "verifyBrowserRunDir",
   "verifyReportSha",
   "verifyBounces",
+  "verifyCrNote",
+  "verifyReportPosts",
 ]);
 
 // Allowed issue fields a CLI caller may mutate. Restricting the set keeps

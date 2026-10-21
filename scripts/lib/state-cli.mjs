@@ -132,7 +132,8 @@
 //                                    verifySha, verifyStartedAt, verifyShell,
 //                                    verifyShellRunDir, verifyShellAttempts,
 //                                    verifyBrowser, verifyBrowserRunDir,
-//                                    verifyReportSha, verifyBounces}.
+//                                    verifyReportSha, verifyBounces,
+//                                    verifyCrNote, verifyReportPosts}.
 //                                    Empty/`null` clears the field.
 //   factory:get-issue <issue>       Print issues[<n>] as JSON (empty record
 //                                    if absent).

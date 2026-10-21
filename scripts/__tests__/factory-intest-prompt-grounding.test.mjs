@@ -65,6 +65,31 @@ describe("In Test prompt — bundle contract", () => {
   });
 });
 
+describe("In Test prompt — Testing stage wording (ADR-0053)", () => {
+  it("documents bundle.stage and both of its values", () => {
+    assert.match(prompt, /"stage":\s*"intest",\s*\/\/ or "testing"/);
+    assert.match(flat, /`"intest"` — the card is \*\*In Test\*\*/);
+    assert.match(flat, /`"testing"` — the card has just entered the \*\*Testing\*\* column/);
+  });
+
+  it("gives the Testing stage its own title line and keeps the scenario itself the same", () => {
+    assert.match(prompt, /`🏭 \*\*Ready to test — In Test\.\*\*`/);
+    assert.match(prompt, /`🏭 \*\*Test scenario — verifying now \(Testing\)\.\*\*`/);
+    assert.match(flat, /Write \*\*exactly the same scenario\*\* either way/);
+    assert.match(flat, /The markers are the same at both stages/);
+  });
+
+  it("never lets the writer predict the verification result", () => {
+    assert.match(flat, /Never predict or summarise what the verification will find/);
+  });
+
+  it("matches the bash fallback's Testing title, so both read the same", () => {
+    const agent = readFileSync(resolve(HERE, "..", "factory-agent.sh"), "utf8");
+    assert.ok(agent.includes('title="🏭 **Test scenario — verifying now (Testing).**"'));
+    assert.match(agent, /if \[\[ "\$\{INTEST_STAGE:-intest\}" == "testing" \]\]; then/);
+  });
+});
+
 describe("In Test prompt — treat input as data", () => {
   it("envelopes the diff as data so a hunk can't become an instruction", () => {
     assert.match(flat, /<pr-diff>/);

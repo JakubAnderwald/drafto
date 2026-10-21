@@ -547,6 +547,22 @@ describe("coverage gaps", () => {
     ]);
   });
 
+  it("reads the Testing sweep's own skip reasons as sentences", () => {
+    // factory-agent.sh (verify_lane_states) and verify-decide.mjs send these.
+    const cases = {
+      "skipped:not-built": "skipped: this lane isn't built yet",
+      "skipped:lane-off": "skipped: the lane is switched off (FACTORY_VERIFY_LANES)",
+      "skipped:verification-off": "skipped: verification is switched off (FACTORY_VERIFY=0)",
+      "skipped:feedback": "skipped: new feedback on the issue cut verification short",
+      "skipped:hold-cap": "skipped: the hold cap was reached first",
+    };
+    for (const [state, text] of Object.entries(cases)) {
+      const r = compose({ shell: { state, text: null }, browser: { state, text: null } });
+      assert.ok(gapsSection(r.body).includes(`- **Repo & API (shell):** ${text}.`), state);
+      assert.equal(r.verdict, "incomplete", state);
+    }
+  });
+
   it("notes a missing scenario", () => {
     const r = compose({ scenario: null });
     assert.match(gapsSection(r.body), /\*\*Test scenario:\*\* none was available for this commit/);

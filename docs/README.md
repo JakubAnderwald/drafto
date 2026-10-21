@@ -28,6 +28,7 @@ One brief per functional area. Each brief lists the current state, code paths on
 - [`features/privacy-policy.md`](./features/privacy-policy.md) — the public `/privacy` page, processor inventory, maintenance checklist, guard test
 - [`features/seo-and-indexing.md`](./features/seo-and-indexing.md) — canonical host, the signed-out landing page at `/`, robots.txt + sitemap, www/http redirects, `.well-known` app-link files, expected Search Console state
 - [`features/mobile-desktop-apps.md`](./features/mobile-desktop-apps.md) — how iOS / Android / macOS fit together
+- [`features/factory-verification.md`](./features/factory-verification.md) — the dark factory's pre-In-Test verification stage (the Testing column): flow, lanes, the report, settings, planned device lanes
 
 ## Architecture
 
