@@ -529,6 +529,11 @@ function isSecretFileName(base) {
       "support-release-state.json",
       "zoho-oauth.json",
       "google-play-service-account.json",
+      "vercel-bypass.env",
+      "dev-supabase-admin.env",
+      "browser-account.env",
+      "support-env.sh",
+      "android-env.sh",
     ].includes(base)
   ) {
     return true;
@@ -604,6 +609,167 @@ function protectedAbsReason(abs, config) {
   }
   const base = path.basename(abs);
   if (isSecretFileName(base)) return `${base} holds credentials`;
+  return null;
+}
+
+// ── Words the shell will still expand ───────────────────────────────────────
+// A word with an unexpanded variable (`~/${D}rets`, `~/drafto-$X/…`), a glob
+// (`~/drafto-secr*`, `~/.ss?/id_rsa`, `apps/web/.env*`) or a brace expansion
+// (`~/.{ssh,aws}/…`) names paths the literal checks above never see: the
+// shell expands it after this hook has decided. So such a word is judged by
+// what it could become:
+//   - its literal prefix (up to the first `$`, `*`, `?`, `[` or `{`, with a
+//     leading `~` / `$HOME` expanded), when it places the word: denied if a
+//     protected root starts with that prefix (so `ls ~/*` is denied too) or
+//     the prefix is already inside one;
+//   - the literal path segments after it: denied if they spell a protected
+//     $HOME directory (`$S/.ssh/config`);
+//   - its last segment, as a glob: denied if it can match a protected file
+//     name (`.env*`, `.e*`, `[c]url.cfg`, `$X.env`). A segment with fewer than
+//     two literal characters (`*`, `*.*`) is too generic to say anything and
+//     is left to the prefix rule, and a segment that starts with a wildcard
+//     can't match a dotfile, as in the shell.
+// A word that starts with an unknown variable (`"$D/key.json"`, the prompt's
+// own scratch-file pattern) can't be placed, so only the last two rules apply.
+
+const DYNAMIC_CHAR = /[$*?[{]/;
+
+// File names a variable or a glob may stand for. The protected directories
+// cover the rest by the prefix rule (zoho-oauth.json, say, only lives in
+// ~/drafto-secrets; listing it here would deny every `*.json`).
+export const GLOB_PROTECTED_NAMES = Object.freeze([
+  ".env",
+  ".env.local",
+  ".env.development",
+  ".env.development.local",
+  ".env.production",
+  ".env.production.local",
+  ".env.test",
+  ".env.test.local",
+  ".env.local.vercel",
+  ...PRIVATE_FILE_NAMES,
+  "vercel-bypass.env",
+  "dev-supabase-admin.env",
+  "browser-account.env",
+  "id_rsa",
+  "id_ed25519",
+  "id_ecdsa",
+  ".npmrc",
+  ".netrc",
+  ".git-credentials",
+]);
+
+const VAR_RE = /^\$(\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/;
+
+function escapeRe(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+}
+
+/**
+ * A shell glob segment as a RegExp over file names, and how many literal
+ * characters constrain it. Variables match anything. Throws on a pattern it
+ * can't turn into a RegExp (the caller fails closed).
+ */
+export function globSegmentRegex(seg) {
+  const g = String(seg);
+  let re = "";
+  let literal = 0;
+  for (let i = 0; i < g.length; i++) {
+    const c = g[i];
+    if (c === "*") re += ".*";
+    else if (c === "?") re += ".";
+    else if (c === "[") {
+      const end = g.indexOf("]", i + 2);
+      if (end === -1) {
+        re += "\\[";
+        literal++;
+        continue;
+      }
+      let cls = g.slice(i + 1, end);
+      if (cls.startsWith("!")) cls = `^${cls.slice(1)}`;
+      re += `[${cls.replace(/\\/g, "\\\\")}]`;
+      literal++;
+      i = end;
+    } else if (c === "{") {
+      const end = g.indexOf("}", i);
+      const body = end === -1 ? "" : g.slice(i + 1, end);
+      if (!body.includes(",")) {
+        re += "\\{";
+        literal++;
+        continue;
+      }
+      const alts = body.split(",");
+      re += `(?:${alts.map(escapeRe).join("|")})`;
+      literal += Math.min(...alts.map((a) => a.length));
+      i = end;
+    } else if (c === "$") {
+      const m = VAR_RE.exec(g.slice(i));
+      if (m) {
+        re += ".*";
+        i += m[0].length - 1;
+      } else {
+        re += "\\$";
+        literal++;
+      }
+    } else {
+      re += escapeRe(c);
+      literal++;
+    }
+  }
+  // The shell's dotfile rule: a leading wildcard never matches a leading dot.
+  const lead = /^[*?[]/.test(g) ? "(?!\\.)" : "";
+  return { regex: new RegExp(`^${lead}${re}$`), literal };
+}
+
+function protectedRoots(config) {
+  return [
+    [config.privateDir, "the run's private directory holds the curl config"],
+    [path.join(config.repoRoot, "logs"), "the factory's logs and state are off limits"],
+    ...HOME_DENY.map((rel) => [path.join(config.home, rel), `~/${rel} is off limits`]),
+  ];
+}
+
+/** Why a word the shell will still expand could name a protected path, or null. */
+export function dynamicPathReason(word, config, cwd = config.worktree) {
+  let w = String(word ?? "");
+  // An assignment's value is the path (`S=~/drafto-sec*`).
+  const assign = /^[A-Za-z_][A-Za-z0-9_]*=(.*)$/s.exec(w);
+  if (assign) w = assign[1];
+  if (!DYNAMIC_CHAR.test(w)) return null;
+  const expanded = expandHome(w, config.home);
+  const at = expanded.search(DYNAMIC_CHAR);
+  if (at === -1) return null; // only $HOME: the literal checks see it
+  const prefix = expanded.slice(0, at);
+  const placed = !(prefix === "" && expanded.startsWith("$"));
+  if (placed) {
+    // Resolve the directory part only: path.resolve would fold a partial last
+    // segment such as "." (`~/.{ssh,aws}`) into its parent.
+    const slash = prefix.lastIndexOf("/");
+    const dir = path.resolve(cwd, slash === -1 ? "." : prefix.slice(0, slash + 1));
+    const abs = `${dir === "/" ? "" : dir}/${slash === -1 ? prefix : prefix.slice(slash + 1)}`;
+    for (const cfg of [config, realConfig(config)]) {
+      for (const [root, why] of protectedRoots(cfg)) {
+        if (root.startsWith(abs) || abs.startsWith(`${root}/`)) return why;
+      }
+    }
+  }
+  const tail = `/${expanded.slice(at)}/`;
+  for (const rel of HOME_DENY) {
+    if (tail.includes(`/${rel}/`)) return `~/${rel} is off limits`;
+  }
+  const seg = expanded.slice(expanded.lastIndexOf("/") + 1);
+  if (DYNAMIC_CHAR.test(seg)) {
+    let glob;
+    try {
+      glob = globSegmentRegex(seg);
+    } catch {
+      return "the guard couldn't read this pattern; name the file you mean";
+    }
+    if (glob.literal >= 2) {
+      const hit = GLOB_PROTECTED_NAMES.find((name) => glob.regex.test(name));
+      if (hit) return `${seg} could name ${hit}, which holds credentials`;
+    }
+  }
   return null;
 }
 
@@ -1220,7 +1386,8 @@ function checkSimple(words, ctx, targets = []) {
   for (const word of [...words, ...targets]) {
     const why =
       protectedPathReason(word, ctx.config, ctx.config.worktree) ??
-      protectedTextReason(word, ctx.config);
+      protectedTextReason(word, ctx.config) ??
+      dynamicPathReason(word, ctx.config, ctx.config.worktree);
     if (why) return deny(why);
   }
   let w = words.filter((x) => x !== "");
@@ -1302,10 +1469,24 @@ function checkText(text, ctx) {
   return allow("command checked");
 }
 
-function pathInputs(tool, input) {
-  if (tool === "Read") return [input.file_path];
-  if (tool === "Grep") return [input.path, input.glob];
-  if (tool === "Glob") return [input.path, input.pattern];
+// Each path-like input with the directory it is relative to: a Grep glob and
+// a Glob pattern are matched under the tool's `path`, not the worktree.
+function pathInputs(tool, input, config) {
+  const base =
+    typeof input.path === "string" && input.path !== ""
+      ? path.resolve(config.worktree, expandHome(input.path, config.home))
+      : config.worktree;
+  if (tool === "Read") return [[input.file_path, config.worktree]];
+  if (tool === "Grep")
+    return [
+      [input.path, config.worktree],
+      [input.glob, base],
+    ];
+  if (tool === "Glob")
+    return [
+      [input.path, config.worktree],
+      [input.pattern, base],
+    ];
   return [];
 }
 
@@ -1331,13 +1512,14 @@ export function decidePre({ tool, input, config }) {
       }
       return checkText(args.command, { config, depth: 0 });
     }
-    for (const p of pathInputs(tool, args)) {
+    for (const [p, cwd] of pathInputs(tool, args, config)) {
       if (p == null || p === "") continue;
       if (typeof p !== "string") return deny(`${tool} got a path that isn't a string`);
       const why =
         protectedTextReason(p, config) ??
-        protectedPathReason(globPrefix(p) || ".", config) ??
-        protectedPathReason(p, config);
+        protectedPathReason(globPrefix(p) || ".", config, cwd) ??
+        protectedPathReason(p, config, cwd) ??
+        dynamicPathReason(p, config, cwd);
       if (why) return deny(why);
     }
     return allow(`${tool} outside protected paths`);

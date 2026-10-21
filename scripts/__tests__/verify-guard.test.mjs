@@ -32,6 +32,8 @@ import {
   allowedToolsArg,
   buildGuardSettings,
   decidePre,
+  dynamicPathReason,
+  globSegmentRegex,
   protectedPathReason,
   redactForLog,
   splitCommands,
@@ -63,6 +65,8 @@ before(() => {
     mkdirSync(d, { recursive: true });
   }
   writeFileSync(path.join(home, "drafto-secrets", "vercel-bypass.env"), "X=1\n");
+  // An innocuous name, so only the symlink's real path can give it away.
+  writeFileSync(path.join(home, "drafto-secrets", "notes.txt"), "x\n");
   // A symlink into the secrets dir, from somewhere innocent-looking.
   symlinkSync(path.join(home, "drafto-secrets"), path.join(home, "work", "innocent"));
   config = validateConfig({ runDir, worktree, repoRoot, home });
@@ -103,6 +107,14 @@ describe("decidePre: Bash deny/allow matrix", () => {
     "D=$(mktemp -d) && echo $D",
     "for f in a b; do echo $f; done",
     "if [ -f x ]; then echo y; fi",
+    // Globs and variables that can't reach anything protected.
+    "ls apps/web/src/*.ts",
+    "cd scripts && node --test __tests__/*.test.mjs",
+    'rm -rf "$D"/*',
+    "awk '{print $1}' f.txt",
+    "grep -E '^[a-z]+$' x.ts",
+    "cat *.json",
+    "echo $((1 + 2))",
   ];
   for (const command of allowed) {
     it(`allows ${JSON.stringify(command).slice(0, 80)}`, () => {
@@ -112,6 +124,22 @@ describe("decidePre: Bash deny/allow matrix", () => {
   }
 
   const denied = [
+    // Words the shell still expands: globs, variables, brace expansion.
+    ["cat ~/drafto-secr*/x", /drafto-secrets/],
+    ["cat ~/.ss?/id_rsa", /\.ssh|id_rsa/],
+    ["cat apps/web/.env*", /could name \.env/],
+    ["cat /Users/jakub/code/drafto/apps/web/.e*", /could name \.env/],
+    ["D=drafto-sec; cat ~/${D}rets/x", /off limits/],
+    ["cat ~/drafto-$X/vercel-bypass.env", /drafto-secrets|vercel-bypass\.env/],
+    ["cat ~/.{ssh,aws}/config", /off limits/],
+    ["S=~/drafto-sec*; ls $S", /drafto-secrets/],
+    ["cat $S/.ssh/config", /\.ssh/],
+    ["cat $X.env", /could name \.env/],
+    ["ls ~/*", /off limits/],
+    ["ls ../../l*", /logs and state|private directory/],
+    ["find . -name '.env*'", /could name \.env/],
+    ["cat ~/.config/g?/hosts.yml", /\.config/],
+    ["cat [c]url.cfg", /could name curl\.cfg/],
     ["gh pr list", /gh isn't available/],
     ["claude -p hi", /claude isn't available/],
     ["vercel curl /api", /vercel isn't available/],
@@ -190,7 +218,7 @@ describe("decidePre: Bash deny/allow matrix", () => {
     ["cat $HOME/drafto-secrets/x", /drafto-secrets/],
     ["cat ${HOME}/drafto-secrets/x", /drafto-secrets/],
     ["cat ~/drafto-sec''rets/x", /drafto-secrets/],
-    ["cat ~/work/innocent/vercel-bypass.env", /drafto-secrets/],
+    ["cat ~/work/innocent/notes.txt", /drafto-secrets/],
     ["cat ~/.config/gh/hosts.yml", /gh config|\.config/],
     ["ls ~/.ssh", /\.ssh/],
     ["cat ~/.claude/projects/x.jsonl", /\.claude/],
@@ -280,6 +308,8 @@ describe("decidePre: tools and paths", () => {
       ["Glob", { pattern: "apps/**/*.test.ts" }],
       ["Read", { file_path: "/tmp/x.json" }],
       ["Read", { file_path: "apps/desktop/e2e/in-test/scenarios/458-sync-gating.sh" }],
+      ["Grep", { pattern: "x", path: "apps/web", glob: "**/*.ts" }],
+      ["Glob", { pattern: "*.json", path: "apps/web" }],
     ]) {
       const d = decidePre({ tool, input, config });
       assert.equal(d.allow, true, `${tool} ${JSON.stringify(input)}: ${d.reason}`);
@@ -289,11 +319,7 @@ describe("decidePre: tools and paths", () => {
   it("keeps Read, Grep and Glob out of every protected path, through a symlink too", () => {
     for (const [tool, input, why] of [
       ["Read", { file_path: "~/drafto-secrets/vercel-bypass.env" }, /drafto-secrets/],
-      [
-        "Read",
-        { file_path: path.join(home, "work", "innocent", "vercel-bypass.env") },
-        /drafto-secrets/,
-      ],
+      ["Read", { file_path: path.join(home, "work", "innocent", "notes.txt") }, /drafto-secrets/],
       ["Read", { file_path: path.join(config.privateDir, "curl.cfg") }, /private|curl config/],
       ["Read", { file_path: "apps/web/.env.local" }, /holds credentials/],
       [
@@ -309,6 +335,12 @@ describe("decidePre: tools and paths", () => {
         /Application Support/,
       ],
       ["Grep", { pattern: "x", glob: "~/drafto-secrets/*" }, /drafto-secrets/],
+      // A Grep glob and a Glob pattern are matched under the tool's path.
+      ["Grep", { pattern: "x", path: home, glob: "drafto-sec*/*" }, /drafto-secrets/],
+      ["Grep", { pattern: "x", path: "apps/web", glob: ".env*" }, /\.env/],
+      ["Glob", { pattern: ".s*/*", path: home }, /off limits/],
+      ["Glob", { pattern: "**/.env*" }, /could name \.env/],
+      ["Read", { file_path: "~/drafto-secr*/vercel-bypass.env" }, /drafto-secrets|vercel-bypass/],
     ]) {
       const d = decidePre({ tool, input, config });
       assert.equal(d.allow, false, `${tool} ${JSON.stringify(input)}`);
@@ -319,6 +351,30 @@ describe("decidePre: tools and paths", () => {
   it("protectedPathReason lets the run's bin/ through but nothing else under logs/", () => {
     assert.equal(protectedPathReason(path.join(config.binDir, "preview-curl"), config), null);
     assert.match(protectedPathReason(path.join(config.runDir, "meta.json"), config), /logs/);
+  });
+});
+
+describe("globSegmentRegex / dynamicPathReason", () => {
+  it("reads a glob segment the way the shell would, dotfile rule included", () => {
+    const m = (g, name) => globSegmentRegex(g).regex.test(name);
+    assert.ok(m(".env*", ".env.local"));
+    assert.ok(m(".e*", ".env"));
+    assert.ok(m("[c]url.cfg", "curl.cfg"));
+    assert.ok(m("$X.env", ".env"));
+    assert.ok(m("{curl,x}.cfg", "curl.cfg"));
+    assert.ok(!m("*", ".env"), "a leading wildcard never matches a dotfile");
+    assert.ok(!m("*.ts", "curl.cfg"));
+    assert.equal(globSegmentRegex("*").literal, 0);
+    assert.equal(globSegmentRegex(".e*").literal, 2);
+  });
+
+  it("names the protected root a word's literal prefix could reach", () => {
+    assert.match(dynamicPathReason("~/drafto-sec*", config), /drafto-secrets/);
+    assert.match(dynamicPathReason("$HOME/.ss?/x", config), /\.ssh/);
+    assert.match(dynamicPathReason("KEY=~/drafto-*", config), /drafto-secrets/);
+    assert.equal(dynamicPathReason('"$D/key.json"'.replace(/"/g, ""), config), null);
+    assert.equal(dynamicPathReason("apps/web/src/*.ts", config), null);
+    assert.equal(dynamicPathReason("plain-word", config), null);
   });
 });
 
