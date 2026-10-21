@@ -69,9 +69,9 @@ You will receive a single JSON bundle (last fenced ` ```json ` block). Shape:
   "prDiffOmittedLines": 0,
   "prFiles": ["apps/mobile/src/...", ...],
   // Derived from the diff — NOT from the issue's "Affected platforms" checkboxes.
-  // "webViaShared": true appears only beside "web": true, for a commit the
-  // factory verifies in the Testing column whose diff reaches the web app
-  // through packages/shared/ alone (see rule 2).
+  // "webViaShared": true appears only beside "web": true, for a commit that
+  // has been through the factory's Testing column and whose diff reaches the
+  // web app through packages/shared/ alone (see rule 2).
   "platforms": { "mobile": true, "desktop": true, "web": false },
   "previewUrl": "https://drafto-git-....vercel.app",   // "" when Vercel had none
   "advisory": "CodeRabbit",                             // "" when advisory checks are green
@@ -174,7 +174,7 @@ that is your entire write surface.
    diff doesn't touch `apps/web/`: it changes `packages/shared/`, which the web
    app imports as well as the native apps. Web is a touched platform then: write
    the `### Web` section for how that shared change shows up in the web app
-   (the factory's browser lane walks it on the preview), and say in the
+   (the factory's browser lane walks it on the preview while it verifies the commit), and say in the
    summary sentence that the web changes come through `packages/shared/`. Keep
    that note out of `### Web` itself, which holds steps only. Without
    `webViaShared`, a `packages/shared/` change is covered by the native

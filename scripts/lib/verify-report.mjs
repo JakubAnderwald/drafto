@@ -118,7 +118,7 @@ import {
   parseRunnerOutput,
   scanForSecrets,
 } from "./browser-report.mjs";
-import { extractScenarioSections } from "./factory-bundle.mjs";
+import { extractScenarioSections, shapePlatforms } from "./factory-bundle.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { FENCE_LINE, closeFences, fenceStep } from "./markdown-fence.mjs";
 import { parseFlags } from "./parse-flags.mjs";
@@ -991,15 +991,9 @@ function fitDetails(entries, room) {
 
 // webViaShared (the verification variant, derive-platforms --verify): web is
 // true only because the diff changes packages/shared/, which the web app
-// imports. Only meaningful beside web.
+// imports. shapePlatforms keeps it only beside web, as the bundles do.
 function normalisePlatforms(p) {
-  const web = Boolean(p?.web);
-  return {
-    web,
-    mobile: Boolean(p?.mobile),
-    desktop: Boolean(p?.desktop),
-    webViaShared: web && p?.webViaShared === true,
-  };
+  return shapePlatforms(p, ["web", "mobile", "desktop"]);
 }
 
 function normaliseBetaLanes(lanes) {

@@ -4046,7 +4046,7 @@ verify_browser_unclaim() {
   esac
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" browserRunSha "" \
     --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-  log "Issue #$issue_num: the verification report can't show the browser lane's result for ${head_sha:0:12}; the In Test browser run will report instead"
+  log "Issue #$issue_num: the verification report can't show the browser lane's result for ${head_sha:0:12}; the In Test browser run will report instead if the PR touches apps/web/ (a packages/shared/-only PR has no In Test run)"
   return 0
 }
 
@@ -4161,8 +4161,8 @@ verify_platforms_of() {
 # the In Review promotion re-posts the scenario for a card handed back without
 # a new commit (a thread, a red check, a drag back). Falls back to <platforms>
 # when the state or the variant can't be read. Stdout is the value. Named
-# outside verify_* on purpose: the In Test promotion calls it, and that path
-# stays free of the stage's own functions.
+# outside verify_* because every scenario writer calls it, the In Test
+# promotion and the In Test sweep included, not only the Testing stage.
 scenario_platforms() {
   local issue_num="$1" head_sha="$2" diff_files="$3" platforms="$4" round out
   if [[ -n "$head_sha" ]]; then
@@ -4329,7 +4329,7 @@ verify_post_report() {
 # manual steps.
 verify_promote() {
   local item_id="$1" issue_num="$2" pr_num="$3" head_sha="$4" reason="$5" lanes="$6"
-  local state_json="$7" comments_json="$8" cr_note gaps='[]' body_file minimal=0
+  local state_json="$7" comments_json="$8" cr_note gaps='[]' body_file minimal=0 report_plats
   if [[ "$DRY_RUN" -eq 1 ]]; then
     log "DRY-RUN: would promote #$issue_num Testing → In Test ($reason) and post the verification report for ${head_sha:0:12}"
     return 0
@@ -4342,9 +4342,19 @@ verify_promote() {
     log "WARNING: couldn't read PR #$pr_num's changed files; the report's platform rows may be wrong"
     gaps='[{"lane":"","reason":"the PR'"'"'s changed files couldn'"'"'t be read, so the platform rows may be wrong"}]'
   fi
+  # The report shows the verification platforms (ADR-0053, 5C). When only that
+  # variant couldn't be derived, the plain platforms still give the native
+  # rows, and a gap says the Web row may be wrong.
+  report_plats="$VERIFY_LANE_PLATFORMS"
+  if [[ "$report_plats" == "{}" && "$VERIFY_PLATFORMS" != "{}" ]]; then
+    report_plats="$VERIFY_PLATFORMS"
+    gaps=$(jq -nc --argjson a "$gaps" \
+      --arg r "the verification platforms couldn't be derived from the changed files, so the Web row may miss a packages/shared/ change" \
+      '$a + [{lane: "browser", reason: $r}]' 2>/dev/null || echo "$gaps")
+  fi
   cr_note=$(verify_cr_note "$issue_num" "$head_sha" "$state_json")
   body_file="$VERIFY_DIR/report-$issue_num-$head_sha.md"
-  if ! verify_compose_report "$issue_num" "$pr_num" "$head_sha" "$VERIFY_LANE_PLATFORMS" "$lanes" "$cr_note" \
+  if ! verify_compose_report "$issue_num" "$pr_num" "$head_sha" "$report_plats" "$lanes" "$cr_note" \
       "$comments_json" "$state_json" "$gaps" "$body_file"; then
     log "WARNING: composing the verification report for #$issue_num failed; posting the minimal notice instead"
     verify_minimal_report "$pr_num" "$head_sha" "$body_file"

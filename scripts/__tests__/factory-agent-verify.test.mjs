@@ -2035,6 +2035,29 @@ describe("packages/shared/ reaches the web app, for verification only (ADR-0053,
     });
   });
 
+  it("falls back to the plain platforms, with a gap, when only the variant can't be derived", () => {
+    const promote = `verify_promote ITEM 7 70 "$HEAD" lanes-done '{"shell":"skipped:not-built","browser":"no-preview"}' "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")" "$(cat "$COMMENTS_FILE")"`;
+    // The harness's node stub, with derive-platforms --verify failing on top.
+    const failVerify = [
+      'eval "orig_$(declare -f node)"',
+      'node() { if [[ "$1" == */dispatch-release.mjs && " $* " == *" --verify "* ]]; then cat >/dev/null; return 1; fi; orig_node "$@"; }',
+    ].join("\n");
+    withBash(
+      `${failVerify}\n${promote}`,
+      { env: { HEAD, DIFF_STUB: `${SHARED}\napps/mobile/a.ts` } },
+      (r) => {
+        const report = r.comments.at(-1).body;
+        // The native rows still come from the plain platforms.
+        assert.match(report, /\| iOS \/ Android \| manual \|/);
+        assert.match(report, /\| macOS \| manual \|/);
+        assert.match(
+          report,
+          /\*\*Web \(browser\):\*\* the verification platforms couldn't be derived from the changed files/,
+        );
+      },
+    );
+  });
+
   it("keeps the variant for a rewrite of a verified commit's scenario, the plain platforms otherwise", () => {
     const sp = `scenario_platforms 7 "$HEAD" "${SHARED}" '${JSON.stringify(PLAIN)}' | jq -c .`;
     // The commit had a round (e.g. handed back to In Review after its report,
@@ -2137,9 +2160,11 @@ describe("packages/shared/ reaches the web app, for verification only (ADR-0053,
       sweepCard,
       /verify_work_lanes "\$issue_num" "\$pr_num" "\$head_sha" "\$VERIFY_LANE_PLATFORMS" "\$lanes"/,
     );
+    const promote = extract("verify_promote");
+    assert.match(promote, /report_plats="\$VERIFY_LANE_PLATFORMS"/);
     assert.match(
-      extract("verify_promote"),
-      /verify_compose_report "\$issue_num" "\$pr_num" "\$head_sha" "\$VERIFY_LANE_PLATFORMS"/,
+      promote,
+      /verify_compose_report "\$issue_num" "\$pr_num" "\$head_sha" "\$report_plats"/,
     );
   });
 });
