@@ -1,6 +1,6 @@
 # Factory verification before In Test (the Testing column)
 
-**Status:** state machine built, off by default (`FACTORY_VERIFY=0`); lanes not built yet (Waves 5A and 5B) **Updated:** 2026-10-21
+**Status:** state machine and shell lane built, off by default (`FACTORY_VERIFY=0`); browser lane not built yet (Wave 5B) **Updated:** 2026-10-21
 
 ## What it is
 
@@ -10,7 +10,7 @@ Verification is **evidence, never a gate** ([ADR-0035](../adr/0035-factory-code-
 
 ## Flow
 
-All of it runs in `scripts/factory-agent.sh --watch`; the browser half (Wave 5B) runs in `--browser`.
+All of it runs in `scripts/factory-agent.sh --watch`, the shell lane detached from it; the browser half (Wave 5B) runs in `--browser`.
 
 1. **Entry (In Review → Testing).** At the point where a converged card used to be promoted to In Test (CI green, preview up, review done, no open threads, the CodeRabbit gate passed), `verify_target_status` decides where it goes. The card goes to Testing when `FACTORY_VERIFY=1`, the canary label (if one is set) is on the issue, the board has the Testing option, the repo has the `status:testing` label, and this commit has no report yet. `verify_enter` then:
    - moves the card first;
@@ -43,7 +43,7 @@ All of it runs in `scripts/factory-agent.sh --watch`; the browser half (Wave 5B)
 
 | Lane                 | What it does                                                                                                                                                                                                                                                                                                        | Status                         |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| Repo & API (`shell`) | A detached `--no-chrome` claude session with a guard hook, in its own detached worktree with no env files. It runs targeted tests, the scenario's command steps, the macOS `--preflight` (ADR-0043), and API and MCP checks against the per-commit preview through a curl wrapper holding the Vercel bypass secret. | Wave 5A                        |
+| Repo & API (`shell`) | A detached `--no-chrome` claude session with a guard hook, in its own detached worktree with no env files. It runs targeted tests, the scenario's command steps, the macOS `--preflight` (ADR-0043), and API and MCP checks against the per-commit preview through a curl wrapper holding the Vercel bypass secret. | Built (Wave 5A); see below     |
 | Web (`browser`)      | A `verify` kind of the locked-down Claude in Chrome runner (ADR-0051), on the per-commit preview.                                                                                                                                                                                                                   | Wave 5B                        |
 | iOS / Android, macOS | Manual, on the betas dispatched at Testing entry. The report lists the steps.                                                                                                                                                                                                                                       | Deferred (see "Planned" below) |
 
@@ -51,7 +51,25 @@ A lane's state is read for the card's head as `"<sha>:<state>[:<verdict>]"` (`ve
 
 - **Terminal:** `reported[:<verdict>]`, `timeout`, `unavailable:<reason>`, `stale-branch`, `no-preview`, `skipped:<reason>`.
 - **Still running:** anything else.
-- **Filled in by the sweep:** `skipped:not-built` until a lane's wave ships, `skipped:lane-off` when `FACTORY_VERIFY_LANES` leaves the lane out, and `skipped:verification-off` when the card is drained. At promotion, a lane still running becomes `skipped:hold-cap` or `skipped:feedback`.
+- **Filled in by the sweep:** `skipped:not-built` until a lane's wave ships, `skipped:lane-off` when `FACTORY_VERIFY_LANES` leaves the lane out, and `skipped:verification-off` when the card is drained. At promotion, a lane still running becomes `skipped:hold-cap` or `skipped:feedback`; a shell lane still `deferred:<why>` at the hold cap becomes `skipped:<why>` (memory pressure, low disk, another card's run, a session limit).
+
+## The shell lane
+
+`scripts/lib/verify-lane.mjs` (the IO), `scripts/lib/verify-guard.mjs` (its PreToolUse guard) and `scripts/factory-verify-prompt.md` (its prompt). It's run like the CodeRabbit CLI lane ([ADR-0036](../adr/0036-factory-coderabbit-cli-gap-fill.md)): detached, collected later, never blocking a tick.
+
+1. **Start** (`verify_shell_work` on the sweep's `work-lanes` action → `verify-lane.mjs start`). Refused, and tried again next tick, while the factory or the lane is paused, another run holds the lane's single slot, memory pressure is at warn or worse, disk is low, the scenario for this commit isn't written yet, or the preview isn't up and `FACTORY_VERIFY_PREVIEW_WAIT_MIN` hasn't passed. The attempts for this commit (`FACTORY_VERIFY_MAX_ATTEMPTS`) being spent is final (`skipped:attempts`). Otherwise it reserves the slot in the state file before doing anything else, fetches `pull/<pr>/head` into a fresh detached worktree (`worktrees/verify-<issue>-<sha12>`, no env files), writes the run directory (prompt, the `factory_verify_shell` bundle, the guard's files, `meta.json` with secret-file paths only) and spawns the supervisor under `nice -n 10`. The card's shell lane reads `running`.
+2. **Supervise** (detached; never touches git, `gh` or the state file). Clones `node_modules` from the factory checkout and runs `pnpm install --frozen-lockfile --prefer-offline`. With a preview, it mints the one-time sign-in link (`browser-signin.mjs`) and exchanges it with curl into a cookie jar, and writes `private/curl.cfg` (mode 600: the bypass header, the jar, https only, a 30-second cap) and `bin/preview-curl`. Then the claude session, through `run-claude.mjs`:
+
+   `-p --no-chrome --strict-mcp-config --setting-sources "" --settings <guard> --permission-mode dontAsk --tools Bash,Read,Grep,Glob --allowedTools Bash,Read,Grep,Glob --session-id <uuid> --effort $FACTORY_PLAN_EFFORT`
+
+   with an allowlisted environment (no tokens), `GH_CONFIG_DIR` pointing at an empty directory, and a cap that ends the call two minutes before the run's deadline (`FACTORY_VERIFY_SHELL_TIMEOUT_MIN`). Afterwards it checks the guard's canary, revokes every API key named `factory-shell-…`, deletes `private/` and writes `exit.json`.
+
+3. **Collect** (`verify_shell_housekeeping`, top of every `--watch` tick). Records `verifyShell` and `verifyShellRunDir`, frees the slot, removes the worktree. It kills a run whose PR head moved, whose PR closed or whose card lost `status:testing`, and one past its deadline. A session limit pauses the factory, as any claude call's does, and refunds the attempt. A guard that didn't load pauses the lane for 24 hours.
+4. **Stop** (`verify_shell_stop`, on every exit from Testing). Kills the run, refunds its attempt, removes the worktree.
+
+**`preview-curl`** is the lane's only way to the preview. It takes a path, never a URL, and an allowlist of curl options (`-X`, `-H`, `-d` / `--data-raw` / `--json`, `-G`, `-s`, `-S`, `-f`, `-w '%{http_code}'`). It refuses `-K`, proxies, `--url`, `--connect-to`, `@file` bodies, `-i` / `-v` / `-D` and anything else that could print headers, read a file or reach another host, and `x-vercel-*` / `cookie` headers. Scenario steps written as `vercel curl` are translated to it; `vercel curl` itself is never run, because it mints a bypass secret of its own.
+
+The report gets the lane's own facts as coverage gaps (`verify-lane.mjs gaps`): no usable bypass secret, no preview, no session on the preview, key revocation not confirmed. A run that was given the bypass secret has its output scanned for it even if the file is gone by the time the report is composed (fail closed).
 
 ## The report
 
@@ -69,15 +87,16 @@ Every lane's text is scanned for secrets: the test account's password, the bypas
 
 ## Code paths
 
-| Piece                                                                         | Where                                                                                                                                 |
-| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Settings, entry, sweep, hand-back, promotion, report retry, the no-op routing | `scripts/factory-agent.sh` (`verify_*` functions; the sweep is called as step 2b of `--watch`)                                        |
-| The decision table                                                            | `scripts/lib/verify-decide.mjs`                                                                                                       |
-| The report                                                                    | `scripts/lib/verify-report.mjs`, with `parseBlocks()` in `browser-report.mjs` and `extractScenarioSections()` in `factory-bundle.mjs` |
-| Per-card state and the lane ledger                                            | `scripts/lib/factory-state.mjs` (`VERIFY_ISSUE_FIELDS`, the `verify` ledger), `state-cli.mjs factory:verify-*`                        |
-| The column                                                                    | `scripts/setup-factory-board.sh`, `scripts/setup-factory-labels.sh`, `scripts/lib/factory-project.mjs has-status-option`              |
-| The Testing-stage scenario wording                                            | `scripts/factory-intest-prompt.md` ("Stage: In Test or Testing"), `buildFactoryInTestBundle({stage})`, `intest_fallback_comment`      |
-| Tests                                                                         | `scripts/__tests__/verify-decide.test.mjs`, `factory-agent-verify.test.mjs`, `verify-report.test.mjs`                                 |
+| Piece                                                                         | Where                                                                                                                                                                                                                                 |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Settings, entry, sweep, hand-back, promotion, report retry, the no-op routing | `scripts/factory-agent.sh` (`verify_*` functions; the sweep is called as step 2b of `--watch`)                                                                                                                                        |
+| The decision table                                                            | `scripts/lib/verify-decide.mjs`                                                                                                                                                                                                       |
+| The report                                                                    | `scripts/lib/verify-report.mjs`, with `parseBlocks()` in `browser-report.mjs` and `extractScenarioSections()` in `factory-bundle.mjs`                                                                                                 |
+| The shell lane                                                                | `scripts/lib/verify-lane.mjs`, `scripts/lib/verify-guard.mjs`, `scripts/factory-verify-prompt.md`; `verify_shell_*` in `factory-agent.sh`                                                                                             |
+| Per-card state and the lane ledger                                            | `scripts/lib/factory-state.mjs` (`VERIFY_ISSUE_FIELDS`, the `verify` ledger), `state-cli.mjs factory:verify-*`                                                                                                                        |
+| The column                                                                    | `scripts/setup-factory-board.sh`, `scripts/setup-factory-labels.sh`, `scripts/lib/factory-project.mjs has-status-option`                                                                                                              |
+| The Testing-stage scenario wording                                            | `scripts/factory-intest-prompt.md` ("Stage: In Test or Testing"), `buildFactoryInTestBundle({stage})`, `intest_fallback_comment`                                                                                                      |
+| Tests                                                                         | `scripts/__tests__/verify-decide.test.mjs`, `factory-agent-verify.test.mjs`, `verify-report.test.mjs`, `verify-lane.test.mjs`, `verify-lane-supervisor.test.mjs`, `verify-guard.test.mjs`, `factory-verify-prompt-grounding.test.mjs` |
 
 ## Settings and operations
 

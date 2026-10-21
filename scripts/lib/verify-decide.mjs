@@ -38,9 +38,11 @@
 // Lane states are verify-report.mjs's tokens: `reported[:<verdict>]`,
 // `timeout`, `unavailable:<reason>`, `stale-branch`, `no-preview` and
 // `skipped:<reason>` are TERMINAL (the lane has nothing more to do for this
-// commit); anything else (`none`, `running`, an unknown token) is still
-// pending. Bash sends lanes that are switched off as `skipped:lane-off` and
-// lanes that aren't built yet as `skipped:not-built`, so both count as done.
+// commit); anything else (`none`, `running`, the shell lane's `retry:<why>`
+// and `deferred:<why>`, an unknown token) is still pending. Bash sends lanes
+// that are switched off as `skipped:lane-off` and lanes that aren't built yet
+// as `skipped:not-built`, so both count as done. At the hold cap a
+// `deferred:<why>` lane is reported as `skipped:<why>`.
 //
 // Rules, first match wins:
 //   1. PR not open                              → skip (pr-merged|pr-closed|pr-unknown)
@@ -141,12 +143,18 @@ export function holdExpired({ startedAt, now, holdMaxMin }) {
 }
 
 // The lanes as the report should show them: still-pending lanes become
-// `skipped:<reason>`, terminal ones are kept as they are.
+// `skipped:<reason>`, terminal ones are kept as they are. A lane the shell
+// lane left `deferred:<why>` (memory pressure, low disk, another card's run,
+// a session limit) and that never got to run before the hold cap shows that
+// why instead of "the hold cap was reached first": it's the more useful fact.
 function reportLanes(lanes, reason) {
   const out = {};
   for (const lane of LANES) {
     const state = str(lanes?.[lane]) || "none";
-    out[lane] = isTerminalLaneState(state) ? state : `skipped:${reason}`;
+    const deferred = /^deferred:(.+)$/i.exec(state);
+    if (isTerminalLaneState(state)) out[lane] = state;
+    else if (reason === "hold-cap" && deferred) out[lane] = `skipped:${deferred[1]}`;
+    else out[lane] = `skipped:${reason}`;
   }
   return out;
 }

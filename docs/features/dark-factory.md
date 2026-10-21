@@ -142,7 +142,7 @@ With verification on (`FACTORY_VERIFY=1`), the scenario is written earlier, when
 4. **Steps for you to do manually**: what no lane covered, such as the native sections of the scenario on the beta, the Web steps when the browser lane didn't report, and the lanes' own manual list.
 5. **Coverage gaps**: lanes that timed out, were skipped or were unavailable, plus the CodeRabbit note if there is one.
 
-Until the lanes land (Waves 5A and 5B), every report is INCOMPLETE with both lanes "skipped: this lane isn't built yet", which still gives you the manual list. See [factory-verification.md](./factory-verification.md).
+The shell lane (targeted tests, command steps, API checks on the preview, the macOS `--preflight`) is built; until the browser lane lands (Wave 5B), the Web row reads "skipped: this lane isn't built yet" and the manual list asks you to run the Web steps. See [factory-verification.md](./factory-verification.md).
 
 The scenario is refreshed whenever the PR head SHA changes, so an In Test → feedback → In Test round trip gets a new one. If Claude fails or times out, the factory posts a deterministic fallback comment instead — the card still advances, and this stage never consumes the retry budget.
 
@@ -151,7 +151,7 @@ The scenario is refreshed whenever the PR head SHA changes, so an In Test → fe
 Testing is factory-owned and bounded: a card leaves it at the latest `FACTORY_VERIFY_HOLD_MAX_MIN` (default 60) minutes after its round started. The `--watch` log has one `Testing → <action> (<reason>)` line per card per tick:
 
 - **wait (ci-pending)** — a required check is running again on the same commit. **wait (threads-unknown)** — the review-thread query failed. Both end at the hold cap.
-- **work-lanes** — the verification lanes are still running (from Waves 5A and 5B).
+- **work-lanes** — the verification lanes are still running. The shell lane logs `verification shell lane started` or `not started (<reason>)`: `busy` (another card's run holds the lane), `memory` or `disk` (the Mac mini is short), `preview-wait` (the commit's preview isn't up yet).
 - **skip (pr-merged / pr-closed)** — the PR left by another route. The factory leaves the card for you: drag it to the right column.
 - **hand-back (…)** — the card went back to In Review, with one comment on the issue saying why. It comes back to Testing by itself once the fix loop is done.
 
@@ -161,7 +161,9 @@ Nothing in the log at all means the sweep isn't seeing the card. Check for a `fa
 
 INCOMPLETE means no lane reported a verdict for that commit. Its **Coverage gaps** say why, lane by lane:
 
-- **this lane isn't built yet** — expected until Waves 5A and 5B ship.
+- **this lane isn't built yet** — the browser lane, until Wave 5B ships.
+- **deferred under memory pressure / low disk / another card's verification run held the lane** — the shell lane never got its turn before the hold cap.
+- **unavailable: the lane's guard hook didn't load** — the shell lane is paused for 24 hours; see the runbook's "The shell lane".
 - **the hold cap was reached first** — a lane was still running at the cap.
 - **new feedback on the issue cut verification short** — you commented while the card was in Testing. The card went on to In Test, and from there back to In Progress for the revision.
 - **verification is switched off** — the card was drained after `FACTORY_VERIFY=0`.

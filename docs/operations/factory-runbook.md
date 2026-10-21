@@ -572,7 +572,7 @@ node scripts/lib/state-cli.mjs factory:set-issue-field <n> browserRunSha ""
 
 ## Pre-In-Test verification (Testing)
 
-A factory-owned **Testing** column between In Review and In Test ([ADR-0053](../adr/0053-pre-in-test-verification-stage.md), [factory-verification.md](../features/factory-verification.md)). With `FACTORY_VERIFY=1`, a converged In Review card moves to Testing instead of In Test. The scenario is written and the betas dispatched there. The Testing sweep in `--watch` works the verification lanes, then moves the card to In Test with one report comment. Verification is evidence, never a gate. **The lanes aren't built yet** (Waves 5A and 5B). Until they are, a Testing card is promoted on the next sweep with an INCOMPLETE report that lists what to test by hand.
+A factory-owned **Testing** column between In Review and In Test ([ADR-0053](../adr/0053-pre-in-test-verification-stage.md), [factory-verification.md](../features/factory-verification.md)). With `FACTORY_VERIFY=1`, a converged In Review card moves to Testing instead of In Test. The scenario is written and the betas dispatched there. The Testing sweep in `--watch` works the verification lanes, then moves the card to In Test with one report comment. Verification is evidence, never a gate. The **shell lane** is built (Wave 5A; see "The shell lane" below). The browser lane isn't yet (Wave 5B): until it is, its row reads "this lane isn't built yet" and the report asks you to run the Web steps by hand.
 
 ### Settings
 
@@ -584,25 +584,26 @@ All in the launchd plist. A bad value warns in the launchd log and falls back to
 | `FACTORY_VERIFY_LANES`             | `shell,browser`                      | Which lanes run. Unknown words are dropped. Set it empty for no lanes: scenario and betas still move to Testing, and the card is promoted on the next sweep.                                                  |
 | `FACTORY_VERIFY_ONLY_LABEL`        | (none)                               | Canary: only issues with this label enter Testing. A label the factory can't match exactly (comma, newline, leading or trailing blank) turns verification off.                                                |
 | `FACTORY_VERIFY_HOLD_MAX_MIN`      | `60`                                 | Longest stay in Testing, from the start of the card's round. At the cap the card is promoted, lanes still running or not.                                                                                     |
-| `FACTORY_VERIFY_SHELL_TIMEOUT_MIN` | `30`                                 | Per-run cap for the shell lane (Wave 5A).                                                                                                                                                                     |
-| `FACTORY_VERIFY_MAX_ATTEMPTS`      | `2`                                  | Shell-lane runs per commit (Wave 5A).                                                                                                                                                                         |
+| `FACTORY_VERIFY_SHELL_TIMEOUT_MIN` | `30`                                 | Per-run cap for the shell lane: install, sign-in, the claude session and key revocation.                                                                                                                      |
+| `FACTORY_VERIFY_MAX_ATTEMPTS`      | `2`                                  | Shell-lane runs per commit. A run stopped by a push, a session limit or the card leaving Testing gives its attempt back.                                                                                      |
 | `FACTORY_VERIFY_BOUNCE_MAX`        | `2`                                  | Hand-backs to In Review per commit for open review threads (the other hand-back reasons don't count). `0` never hands back for threads. Past it the card carries on, and `--release` still refuses the merge. |
-| `FACTORY_VERIFY_PREVIEW_WAIT_MIN`  | `10`                                 | How long the lanes wait for the commit's Vercel preview (Waves 5A and 5B).                                                                                                                                    |
-| `FACTORY_VERIFY_BYPASS_FILE`       | `~/drafto-secrets/vercel-bypass.env` | The Vercel protection-bypass secret for the shell lane's curl against previews. A missing file means the lane has no bypass secret.                                                                           |
+| `FACTORY_VERIFY_PREVIEW_WAIT_MIN`  | `10`                                 | How long the lanes wait for the commit's Vercel preview. After that the shell lane runs without one (tests only, API steps listed as manual).                                                                 |
+| `FACTORY_VERIFY_BYPASS_FILE`       | `~/drafto-secrets/vercel-bypass.env` | The Vercel protection-bypass secret for the shell lane's curl against previews. A missing or unusable file (not mode 600, no key) means the lane runs without it, and the report says so.                     |
 
 ### One-time setup
 
 1. **Board and label.** Follow "Changing the board's Status options": `scripts/setup-factory-labels.sh` adds `status:testing`, and `scripts/setup-factory-board.sh` adds the Testing option without losing any card's Status. Until both exist, the factory logs a WARNING once per tick and sends cards straight to In Test.
-2. **Bypass secret** (needed by the shell lane, Wave 5A). In the Vercel dashboard, go to the project → **Settings** → **Deployment Protection** → **Protection Bypass for Automation**, and create a secret. **Never use `vercel curl`**: it creates a bypass secret of its own without telling you. Then, on the Mac mini:
+2. **Bypass secret** (needed by the shell lane's API checks). In the Vercel dashboard, go to the project → **Settings** → **Deployment Protection** → **Protection Bypass for Automation**, and create a secret. **Never use `vercel curl`**: it creates a bypass secret of its own without telling you. Then, on the Mac mini:
 
    ```bash
    read -rs VERCEL_SECRET
    (umask 077 && printf 'VERCEL_AUTOMATION_BYPASS_SECRET=%s\n' "$VERCEL_SECRET" > ~/drafto-secrets/vercel-bypass.env)
    unset VERCEL_SECRET
    chmod 600 ~/drafto-secrets/vercel-bypass.env
+   cd ~/code/drafto-factory && node scripts/lib/verify-lane.mjs bypass-check
    ```
 
-   `read -rs` keeps the secret out of the shell history and off the screen; paste it and press Enter. The report scans every lane's output for the secret and for the bypass header names, and withholds a lane that prints either. Wave 5A adds a `verify-lane.mjs bypass-check` to confirm the file works.
+   `read -rs` keeps the secret out of the shell history and off the screen; paste it and press Enter. `bypass-check` prints `{"ok":true,…}` (exit 0) when the file is a regular file, mode 600 or stricter, with a well-formed `VERCEL_AUTOMATION_BYPASS_SECRET`; otherwise `ok:false` and the `problem` (`missing`, `mode`, `no-key`, `empty`, `malformed`), exit 2. It never prints the value. The report scans every lane's output for the secret and for the bypass header names, and withholds a lane that prints either.
 
 3. **Canary.** Create the label once (`gh label create factory-verify --repo JakubAnderwald/drafto`), set `FACTORY_VERIFY=1` and `FACTORY_VERIFY_ONLY_LABEL=factory-verify` in the plist, and reload. File a small web issue with that label (`gh issue create --project "Drafto Factory" … --label factory-verify`), then watch it go In Review → Testing → In Test. Drop the label gate after several clean runs.
 
@@ -618,9 +619,36 @@ All in the launchd plist. A bad value warns in the launchd log and falls back to
 | `hand-back`  | `head-moved`, `ci-red`, `not-reviewed`, `threads`                        | Back to In Review (a `threads` one also bumps `verifyBounces`), one comment per commit and reason (`drafto-factory-verify-handback:<sha12>:<reason>`). |
 | `init`       | `no-round`, `new-round`                                                  | A round starts for the head (a card dragged in, or the revision no-op path). Betas are checked; the scenario is written if this commit has none.       |
 | `wait`       | `ci-pending`, `threads-unknown`, `head-unknown`                          | Nothing this tick. The hold cap still applies.                                                                                                         |
-| `work-lanes` | `lanes-pending`                                                          | Betas re-checked, and the lanes started or polled (Waves 5A and 5B).                                                                                   |
+| `work-lanes` | `lanes-pending`                                                          | Betas re-checked, and the lanes started or polled (the shell lane: `verify_shell_work`; the browser lane comes with Wave 5B).                          |
 
 - **The report** is composed into `logs/factory/verify/report-<issue>-<sha>.md`, with the scenario it was built from beside it, and kept for 30 days. If posting fails, the In Test sweep tries again 10, 20 and 30 minutes after it was composed (4 failed attempts per commit in all, counted in `verifyReportPosts`). If the composer fails, a minimal "INCOMPLETE: couldn't be composed" notice goes out instead, with the same markers.
+
+### The shell lane
+
+A detached claude session that runs the scenario from a terminal: targeted tests, the scenario's command steps, the macOS `--preflight` (ADR-0043) and API / MCP checks against the commit's preview. `scripts/lib/verify-lane.mjs`, guarded by `scripts/lib/verify-guard.mjs`, prompt `scripts/factory-verify-prompt.md`. It never blocks a tick: `--watch` starts it (`verify_shell_work`), collects it at the top of the next ticks (`verify_shell_housekeeping`), and stops it when the card leaves Testing (`verify_shell_stop`).
+
+- **One run at a time, factory-wide** (the `verify` ledger in the state file), under `nice -n 10`. A start is refused (and retried next tick) under memory pressure (`kern.memorystatus_vm_pressure_level` ≥ 2), with less than `FACTORY_MIN_FREE_DISK_GB` free, or while another card's run holds the lane; the card's shell row then reads `deferred:<why>`, which the report shows as `skipped: <why>` if the hold cap comes first.
+- **Where it runs:** a fresh detached worktree, `worktrees/verify-<issue>-<sha12>`, with `node_modules` cloned from the factory checkout and `pnpm install --frozen-lockfile --prefer-offline`. Never the card's slot worktree (its `.env.production` files), and no env file copied in.
+- **What it may do:** `claude -p --no-chrome --strict-mcp-config --setting-sources "" --settings <guard> --permission-mode dontAsk --tools Bash,Read,Grep,Glob`. Never `--chrome`, never `--dangerously-skip-permissions`. The environment is an allowlist (no GH, Vercel or Supabase tokens), `GH_CONFIG_DIR` points at an empty directory, and the guard denies `gh`, `claude`, `vercel`, `supabase`, git writes, installs, releases, `node scripts/…`, secrets paths and any curl but to localhost. See [claude-code-hooks.md](claude-code-hooks.md#the-verification-lanes-guard).
+- **The preview, only through `preview-curl`:** a wrapper on the session's PATH that pins the commit's preview origin and reads the bypass header and the test account's session cookie from `private/curl.cfg` (mode 600). The model never sees the secret. The session comes from the same one-time link the browser runner uses (`browser-signin.mjs`), exchanged by the supervisor with curl. A branch that predates `/auth/test-sign-in` gets no session; the report says so.
+- **API keys:** the lane may create one, named `factory-shell-<issue>-<sha7>…`. After the session the supervisor revokes every live key whose name contains `factory-shell-` (so a key left by a killed run goes too).
+- **Results** (`verifyShell` = `<sha>:<state>`): `reported:<verdict>`; `timeout`; `unavailable:install|guard|error|no-result|lost|claude-missing|…` (the last three only once attempts are spent; before that `retry:<why>`); `skipped:attempts`; `deferred:session-limit` (the factory is paused until the reset and the attempt refunded). A run whose guard didn't load (no SessionStart canary, or tool calls with no guard record) is `unavailable:guard` and **pauses the lane for 24 hours**: find out why, then `node scripts/lib/state-cli.mjs factory:verify-resume`.
+- **Kills:** housekeeping SIGTERMs the run's process group when the PR's head moves, the PR closes or the card loses `status:testing`, and once it is 10 minutes past its deadline (SIGKILL at 20).
+
+Each run has a directory, `logs/factory/verify/<issue>-<sha12>-<timestamp>/` (mode 700, reaped after 30 days):
+
+| File                                       | What it is                                                                                                       |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `meta.json`                                | What `start` decided: worktree, deadline, session id, binaries, secret-file **paths** (never values), lane facts |
+| `prompt.md`, `bundle.json`                 | The prompt and the bundle (`factory_verify_shell`: the scenario sections, files, platforms, preview origin)      |
+| `guard-config.json`, `guard-settings.json` | The guard's config and the `--settings` file; `guard/<session>.jsonl` is its decision log                        |
+| `supervisor.log`, `install.log`            | The supervisor's own log and the pnpm output                                                                     |
+| `shell-output.txt`, `claude-stderr.log`    | The session's report (what the report composer reads) and claude's stderr                                        |
+| `bin/preview-curl`                         | The wrapper                                                                                                      |
+| `exit.json`                                | How it ended: exit code, timeout, termination, install / session / bypass facts, guard counts, keys revoked      |
+| `private/` (`curl.cfg`, `cookies.txt`)     | Only while the run is live. Removed at the end, and by housekeeping if the supervisor was killed                 |
+
+To stop a run by hand: `node scripts/lib/state-cli.mjs factory:verify-status` for its run id, then `factory:verify-finish <runId> --refund attempt`. Housekeeping removes its worktree on the next tick.
 
 ### Triage
 
@@ -630,6 +658,11 @@ All in the launchd plist. A bad value warns in the launchd log and falls back to
 | A card sits in Testing                              | Its `Testing → wait/skip/work-lanes` lines. `skip (pr-merged)` is yours to move. Anything else ends at the hold cap.                                                                                                                                                      |
 | A card keeps bouncing between Testing and In Review | The hand-back comments. Each bounce is about the commit (CI, review, threads). The fix budget isn't reset on the way in, so a loop ends in Blocked.                                                                                                                       |
 | No report on an In Test card that came from Testing | `factory:get-issue <n>` → `verifyReportSha`, `verifyReportPosts`, and the body in `logs/factory/verify/`. After 4 failed attempts (the promotion's, then retries 10, 20 and 30 minutes after composing), post it by hand: `gh issue comment <n> --body-file <that file>`. |
+| Shell lane `deferred:*` or never starting           | The `--watch` log's `verification shell lane not started (<reason>)` lines. `busy`: another card's run (`factory:verify-status`). `memory` / `disk`: the Mac mini (beta builds running?). `lane-paused`: `factory:verify-status` → `pausedReason`.                        |
+| Shell lane `unavailable:guard` (lane paused)        | The run dir's `guard/<session>.jsonl` (no `session-start` record means claude dropped the settings file) and `claude-stderr.log`. A claude update can change the settings schema. Fix, then `factory:verify-resume`.                                                      |
+| Shell lane `unavailable:install`                    | The run dir's `install.log`. Usually a lockfile the offline store can't satisfy; the next commit gets a fresh run.                                                                                                                                                        |
+| Report says no bypass secret / no session           | `node scripts/lib/verify-lane.mjs bypass-check`; the run dir's `exit.json` → `facts.session` (`signin-failed`: the branch predates `/auth/test-sign-in` or the test account is gone; `protected`: Vercel's SSO answered, so the bypass secret is wrong).                  |
+| Shell report withheld                               | The run's `shell-output.txt` printed something secret-shaped (the report names the pattern). The lane's text stays on the Mac mini.                                                                                                                                       |
 | A lane's text says "withheld"                       | The lane printed something that matched a secret pattern, or a secret file was unreadable. Read the lane's local output; the report names the pattern, never the match.                                                                                                   |
 
 ### The ledger and its commands

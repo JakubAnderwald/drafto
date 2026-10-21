@@ -211,6 +211,16 @@ const REASONS = {
   install: "installing dependencies failed",
   "no-scenario": "there was no test scenario for this commit",
   "no-web-steps": "the scenario has no Web steps",
+  // The shell lane's own tokens (verify-lane.mjs, factory-agent.sh's
+  // verify_shell_work).
+  busy: "another card's verification run held the lane",
+  "lane-paused": "the verification lane was paused",
+  error: "it exited with an error on every attempt",
+  "no-result": "it finished without a result on every attempt",
+  lost: "its supervisor died before it reported",
+  "claude-missing": "the claude CLI wasn't found on the Mac mini",
+  "pnpm-missing": "pnpm wasn't found on the Mac mini",
+  "prompt-missing": "the lane's prompt file is missing",
   // The Testing sweep's own tokens (factory-agent.sh, verify-decide.mjs).
   "not-built": "this lane isn't built yet",
   "lane-off": "the lane is switched off (FACTORY_VERIFY_LANES)",
