@@ -16,7 +16,7 @@ All of it runs in `scripts/factory-agent.sh --watch`, the shell lane detached fr
    - moves the card first;
    - starts the round (`verifySha`, `verifyStartedAt`, `verifyCrNote`, and `lastFeedbackAt` if it was empty);
    - dispatches the pre-merge betas;
-   - writes the scenario with the Testing title, "Test scenario — verifying now (Testing)" (`INTEST_STAGE=testing`).
+   - writes the scenario with the Testing title, "Test scenario — verifying now (Testing)" (`INTEST_STAGE=testing`), and the verification platforms (see "Web reached through `packages/shared/`" below).
 
    If the move fails, or anything above isn't true, the card is promoted to In Test exactly as before.
 
@@ -77,7 +77,7 @@ The report gets the lane's own facts as coverage gaps (`verify-lane.mjs gaps`): 
 
 The Web lane is the browser runner's `verify` kind ([ADR-0051](../adr/0051-factory-browser-runner.md)): the same locked-down `claude -p --chrome` session as the In Test web run, with the same prompt, guard, sign-in link and secret scan, running the scenario's own `### Web` section on the commit's per-commit preview. There is still exactly one claude call with `--chrome`.
 
-1. **Queue (`--watch`).** On `work-lanes`, `verify_browser_work` looks at the lane's state for the head. A web card (the PR diff touches `apps/web/`) with no result yet gets a `verify:<issue>:<pr>:<sha>` line in `logs/factory-browser-candidates`. Two outcomes are settled here, without Chrome: a diff that doesn't touch `apps/web/` (`skipped:not-web`) and a runner whose `verify` kind is off (`FACTORY_BROWSER=0`, or `FACTORY_BROWSER_KINDS` without `verify`: `skipped:browser-off`). Platforms that couldn't be read wait a tick. A PR that changes only `packages/shared/` counts as not web, as it does for the In Test run (`derivePlatforms` maps it to mobile and desktop); the optional Wave 5C would widen that for verification.
+1. **Queue (`--watch`).** On `work-lanes`, `verify_browser_work` looks at the lane's state for the head. A web card (the PR diff touches `apps/web/` or `packages/shared/`, see "Web reached through `packages/shared/`" below) with no result yet gets a `verify:<issue>:<pr>:<sha>` line in `logs/factory-browser-candidates`. Two outcomes are settled here, without Chrome: a diff that touches neither (`skipped:not-web`) and a runner whose `verify` kind is off (`FACTORY_BROWSER=0`, or `FACTORY_BROWSER_KINDS` without `verify`: `skipped:browser-off`). Platforms that couldn't be read wait a tick.
 2. **Run (`--browser`).** The loop runs `--browser` after `--release`, so a Chrome session never delays a merge. It takes the `verify` lines first, re-checks that the card is still in Testing (and not paused), and runs at most one candidate per tick, verify or In Test. `browser_run verify` checks that the card's round is for this head, the lane has no result yet and the scenario for the head exists, then does what the In Test run does: the live-head check, the health preflight, the preview lookup, the stale-branch check, the one-time sign-in link, the session.
 3. **Record, never post.** The run's output is rendered with `browser-report.mjs render --kind verify`, which writes a scanned, defanged `section.md` with no factory markers, plus `render.json`, and posts nothing. The lane records `verifyBrowser="<sha>:<state>"` and `verifyBrowserRunDir`. The verification report reads that run dir's `runner-output.txt` and scans it again when the card is promoted. The result is recorded only if, once the session is over, the round is still for that head and the card is still in Testing. A card dragged out mid-run keeps no result, so the In Test run can still report on it.
 4. **Terminal at once.** Anything waiting can't fix ends the lane right away, so the card doesn't sit out the hold cap:
@@ -98,17 +98,36 @@ The Web lane is the browser runner's `verify` kind ([ADR-0051](../adr/0051-facto
 
    Health recording (`browser-health.mjs`) is the same as for an In Test run, so the operator gets the same emails.
 
-5. **The In Test run is the fallback.** Both kinds share `browserRunSha` and the per-commit attempts. The verify lane claims a commit (`browserRunSha`) when it reports for a card the board shows in Testing, or finds a stale branch or nothing to run. A claimed commit isn't run again in In Test. One the lane couldn't report on (unavailable, no preview, a timeout with an attempt left) gets its In Test run once the card is there. So does a claimed one whose result never reached the issue: when the minimal notice goes out instead of the report, or posting the report is given up, `verify_browser_unclaim` releases the claim.
+5. **The In Test run is the fallback.** Both kinds share `browserRunSha` and the per-commit attempts. The verify lane claims a commit (`browserRunSha`) when it reports for a card the board shows in Testing, or finds a stale branch or nothing to run. A claimed commit isn't run again in In Test. One the lane couldn't report on (unavailable, no preview, a timeout with an attempt left) gets its In Test run once the card is there. So does a claimed one whose result never reached the issue: when the minimal notice goes out instead of the report, or posting the report is given up, `verify_browser_unclaim` releases the claim. The In Test run keeps the plain platforms, so a PR that reaches the web app only through `packages/shared/` has no In Test fallback: the report lists its Web steps for the human instead.
 6. **Stopping.** A verify run is synchronous inside `--browser`, which never overlaps `--watch`, so nothing is in flight when a card leaves Testing. `verify_browser_stop` only drops the card's candidate from the tick's list, and `--browser` re-checks the column and the round before every run.
 
 The browser lane reads the scenario's own `### Web` section: `extractWebSection` is the `Web` entry of `extractScenarioSections`, so a `### Web` under "How to get a build" is never taken for steps. That holds for the In Test run too.
+
+## Web reached through `packages/shared/`
+
+`derivePlatforms` (`scripts/lib/dispatch-release.mjs`) maps `packages/shared/` to mobile and desktop only, because nothing is dispatched for web. The web app imports `packages/shared/` too, and Vercel builds a preview for every PR head, a shared-only one included. So the verification stage reads its own variant, `deriveVerifyPlatforms` (`derive-platforms --verify`): mobile and desktop are unchanged, `web` is also true when `packages/shared/` changed, and `webViaShared` is true when that is the only way web came in.
+
+Read the verification variant:
+
+- **Both lanes** (`VERIFY_LANE_PLATFORMS` → `verify_work_lanes`). The browser lane queues; the shell lane's bundle carries `webViaShared`, so it knows the web app's tests that cover the changed shared code are targeted tests.
+- **The report** (`verify_promote` → `verify-report.mjs --platforms`). The Web row says the web changes come through `packages/shared/`.
+- **The scenario for a commit with a verification round** (`scenario_platforms`): the Testing-stage scenario, and any later rewrite for that same commit.
+
+Keep the plain platforms:
+
+- The betas (`intest_dispatch_betas`), whose lanes read only mobile and desktop anyway.
+- `INTEST_PLATFORMS`, the In Review preview gate (`WEB_TOUCHED`) and the post-merge beta dispatch.
+- The parity check, which reads the diff itself (`apps/web/` only).
+- The `intest` browser kind's candidate check.
+
+The scenario matters because the browser lane runs only its `### Web` section: the writer is told to cover only `bundle.platforms`, so without the variant a shared-only PR would get no Web section and the lane would end `skipped:no-web-steps`. With `webViaShared` the writer covers how the shared change shows up in the web app and says in its summary that the web changes come through `packages/shared/`. `scenario_platforms` keys on `verifySha`: the In Review promotion re-posts the scenario for a card handed back without a new commit (a thread, a red check, a drag back), and that re-post keeps the variant, and so the Web section, the commit's Testing scenario had.
 
 ## The report
 
 `scripts/lib/verify-report.mjs` is deterministic (no claude call). It writes one comment, **🏭 Verification before In Test**:
 
 1. **Headline verdict:** PASS / WARN / FAIL (the worst of the lanes that reported), or INCOMPLETE. Then "Evidence, not a gate: the card is now In Test."
-2. **Lane table:** status, verdict and a note for each lane, plus iOS / Android and macOS.
+2. **Lane table:** status, verdict and a note for each lane, plus iOS / Android and macOS. On a PR that reaches the web app only through `packages/shared/`, the Web row's note says so.
 3. **Assessment** from the lanes.
 4. **Steps for you to do manually:** deduplicated, at most 25.
 5. **Coverage gaps**, including the CodeRabbit coverage note the card carried into Testing (`verifyCrNote`).
@@ -129,6 +148,7 @@ Every lane's text is scanned for secrets: the test account's password, the bypas
 | Per-card state and the lane ledger                                            | `scripts/lib/factory-state.mjs` (`VERIFY_ISSUE_FIELDS`, the `verify` ledger), `state-cli.mjs factory:verify-*`                                                                                                                                                          |
 | The column                                                                    | `scripts/setup-factory-board.sh`, `scripts/setup-factory-labels.sh`, `scripts/lib/factory-project.mjs has-status-option`                                                                                                                                                |
 | The Testing-stage scenario wording                                            | `scripts/factory-intest-prompt.md` ("Stage: In Test or Testing"), `buildFactoryInTestBundle({stage})`, `intest_fallback_comment`                                                                                                                                        |
+| Web reached through `packages/shared/`                                        | `deriveVerifyPlatforms` (`dispatch-release.mjs`, `derive-platforms --verify`); `verify_platforms_of`, `scenario_platforms` in `factory-agent.sh`; tests in `dispatch-release.test.mjs`, `factory-intest-prompt-grounding.test.mjs`                                      |
 | Tests                                                                         | `scripts/__tests__/verify-decide.test.mjs`, `factory-agent-verify.test.mjs`, `verify-report.test.mjs`, `verify-lane.test.mjs`, `verify-lane-supervisor.test.mjs`, `verify-guard.test.mjs`, `factory-verify-prompt-grounding.test.mjs`, `factory-agent-browser.test.mjs` |
 
 ## Settings and operations

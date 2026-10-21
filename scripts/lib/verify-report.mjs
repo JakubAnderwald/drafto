@@ -50,7 +50,9 @@
 //      didn't run; "Evidence, not a gate: the card is now In Test."
 //   2. A lane table: Repo & API (shell), Web (browser), iOS / Android, macOS.
 //      No lane runs a device yet, so the last two are manual (macOS notes the
-//      shell lane's --preflight results).
+//      shell lane's --preflight results). With platforms.webViaShared (the
+//      verification variant: web reached only through packages/shared/) the
+//      Web row says so, since the PR has no apps/web/ files.
 //   3. Assessment: each reported lane's Summary, then the shell lane's
 //      Assessment paragraph.
 //   4. Steps for you to do manually (deduplicated, at most MANUAL_MAX): the
@@ -86,7 +88,7 @@
 //
 // CLI:
 //   node verify-report.mjs render --issue <n> --pr <n> --sha <40-hex>
-//        --scenario-file <f|""> --platforms '{"web":…,"mobile":…,"desktop":…}'
+//        --scenario-file <f|""> --platforms '{"web":…,"mobile":…,"desktop":…[,"webViaShared":…]}'
 //        --beta-lanes <csv> --shell-state <state> --shell-dir <dir|"">
 //        --browser-state <state> --browser-dir <dir|"">
 //        --gaps '[{"lane":…,"reason":…}]' --cr-note <text|"">
@@ -240,7 +242,7 @@ const REASONS = {
   feedback: "new feedback on the issue cut verification short",
   // The browser lane's own tokens (factory-agent.sh: verify_browser_work and
   // browser_run's verify kind).
-  "not-web": "the PR's diff doesn't touch the web app (apps/web/)",
+  "not-web": "the PR's diff touches neither the web app (apps/web/) nor packages/shared/",
   "browser-off":
     "the browser runner's verify kind is switched off (FACTORY_BROWSER, FACTORY_BROWSER_KINDS)",
   "already-run": "the browser runner already handled this commit (see its comment on the issue)",
@@ -650,6 +652,11 @@ function platformHow(platform, betaLanes) {
     : "on a build of this branch (no beta was dispatched; the scenario says how to get one)";
 }
 
+// The Web row's note when the web changes come only through packages/shared/:
+// why the browser ran on a PR with no apps/web/ files.
+export const WEB_VIA_SHARED_NOTE =
+  "web changes come through `packages/shared/`, which the web app imports (no `apps/web/` files changed)";
+
 function laneTable(shell, browser, platforms, betaLanes) {
   const rows = [];
   for (const lane of [shell, browser]) {
@@ -660,6 +667,9 @@ function laneTable(shell, browser, platforms, betaLanes) {
     else if (lane.gap) note = lane.gap;
     else if (lane.parsed?.report) note = "full report below";
     else note = "";
+    if (lane.key === "browser" && platforms.webViaShared) {
+      note = note ? `${WEB_VIA_SHARED_NOTE}; ${note}` : WEB_VIA_SHARED_NOTE;
+    }
     rows.push([lane.meta.label, lane.status, verdict, note]);
   }
 
@@ -979,8 +989,17 @@ function fitDetails(entries, room) {
 
 // ── compose ─────────────────────────────────────────────────────────────────
 
+// webViaShared (the verification variant, derive-platforms --verify): web is
+// true only because the diff changes packages/shared/, which the web app
+// imports. Only meaningful beside web.
 function normalisePlatforms(p) {
-  return { web: Boolean(p?.web), mobile: Boolean(p?.mobile), desktop: Boolean(p?.desktop) };
+  const web = Boolean(p?.web);
+  return {
+    web,
+    mobile: Boolean(p?.mobile),
+    desktop: Boolean(p?.desktop),
+    webViaShared: web && p?.webViaShared === true,
+  };
 }
 
 function normaliseBetaLanes(lanes) {
@@ -994,7 +1013,9 @@ function normaliseBetaLanes(lanes) {
  * @param {object} o
  * @param {string} o.sha full 40-hex head SHA (goes into the marker)
  * @param {number|string} o.pr
- * @param {{web?:boolean,mobile?:boolean,desktop?:boolean}} o.platforms
+ * @param {{web?:boolean,mobile?:boolean,desktop?:boolean,webViaShared?:boolean}} o.platforms
+ *   the verification variant: webViaShared marks web reached only through
+ *   packages/shared/
  * @param {string[]|string} o.betaLanes dispatched beta lane ids (mobile, desktop)
  * @param {string|null} o.scenario the scenario comment body, or null
  * @param {{state:string,dir?:string,text?:string|null}} o.shell

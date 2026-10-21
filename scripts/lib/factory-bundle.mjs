@@ -37,7 +37,10 @@
 //                        scenario and posts the In Test comment. With
 //                        `stage: "testing"` the card has just entered the
 //                        Testing column (ADR-0053) and the comment says the
-//                        factory is verifying it now.
+//                        factory is verifying it now. A commit with a
+//                        verification round gets the verification platforms,
+//                        where `webViaShared: true` marks web reached only
+//                        through packages/shared/.
 //
 //   factory_browser_run — for `factory-agent.sh --browser` (ADR-0051): the
 //                        Web section of the scenario for the locked-down
@@ -750,6 +753,18 @@ export function buildFactoryReviewBundle({
 // other value reads as "intest".
 export const INTEST_STAGES = Object.freeze(["intest", "testing"]);
 
+// Pure: a bundle's `platforms`, each of <keys> coerced to a boolean in that
+// order, plus `webViaShared: true` when web is true only because the diff
+// changes packages/shared/ (the verification variant, derive-platforms
+// --verify, ADR-0053's 5C). The flag is left out otherwise, so a bundle built
+// from the plain platforms is exactly what it was before the variant existed.
+export function shapePlatforms(platforms, keys) {
+  const out = {};
+  for (const k of keys) out[k] = Boolean(platforms?.[k]);
+  if (out.web && platforms?.webViaShared === true) out.webViaShared = true;
+  return out;
+}
+
 export function buildFactoryInTestBundle({
   stage = "intest",
   issue,
@@ -815,11 +830,7 @@ export function buildFactoryInTestBundle({
       .filter(Boolean),
     // Derived from the diff, NOT from the issue's "Affected platforms"
     // checkboxes: the scenario must cover what actually changed.
-    platforms: {
-      mobile: Boolean(platforms?.mobile),
-      desktop: Boolean(platforms?.desktop),
-      web: Boolean(platforms?.web),
-    },
+    platforms: shapePlatforms(platforms, ["mobile", "desktop", "web"]),
     previewUrl: typeof previewUrl === "string" ? previewUrl : "",
     advisory: typeof advisory === "string" ? advisory : "",
     // The CodeRabbit CLI lane's one-line coverage note (ADR-0036) — "CodeRabbit
@@ -1085,12 +1096,9 @@ export function buildFactoryVerifyShellBundle({
     headSha,
     prNumber: Number.isInteger(prNumber) ? prNumber : null,
     // Derived from the diff, like the scenario writer's: the lane checks what
-    // actually changed.
-    platforms: {
-      web: Boolean(platforms?.web),
-      mobile: Boolean(platforms?.mobile),
-      desktop: Boolean(platforms?.desktop),
-    },
+    // actually changed. factory-agent.sh passes the verification variant, so
+    // webViaShared can appear (see shapePlatforms).
+    platforms: shapePlatforms(platforms, ["web", "mobile", "desktop"]),
     prFiles: fileList.slice(0, MAX_VERIFY_FILES),
     prFilesTruncated: fileList.length > MAX_VERIFY_FILES,
     // null when there is no OWNER scenario carrying this commit's full-SHA

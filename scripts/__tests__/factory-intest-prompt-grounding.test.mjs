@@ -4,6 +4,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { buildFactoryInTestBundle } from "../lib/factory-bundle.mjs";
+
 // Grounding tests for the In Test scenario writer's prompt. This stage is the
 // only one whose entire product is a comment a human reads before testing by
 // hand, so the invariants pinned here are the ones that keep that comment
@@ -62,6 +64,58 @@ describe("In Test prompt — bundle contract", () => {
     assert.match(flat, /`advisory` never carries it/);
     assert.doesNotMatch(flat, /`advisory` may also carry/);
     assert.doesNotMatch(flat, /If `advisory` carries a CodeRabbit/);
+  });
+});
+
+describe("In Test prompt — web reached through packages/shared/ (ADR-0053, 5C)", () => {
+  // A commit with a verification round gets the verification platforms
+  // (derive-platforms --verify), so a packages/shared/-only PR arrives with
+  // web: true and webViaShared: true. The writer must then write the ### Web
+  // section the browser lane walks; the plain rule stays for everything else.
+  const issue = { number: 7, title: "t", body: "", labels: [] };
+
+  it("keeps the plain rule: cover only bundle.platforms, one section per platform", () => {
+    assert.match(flat, /Cover only the platforms in `bundle\.platforms`/);
+    assert.match(flat, /One section per touched platform/);
+    assert.match(
+      flat,
+      /Without `webViaShared`, a `packages\/shared\/` change is covered by the native sections alone/,
+    );
+  });
+
+  it("documents platforms.webViaShared beside the platforms field", () => {
+    assert.match(prompt, /"webViaShared": true appears only beside "web": true/);
+    assert.match(flat, /through packages\/shared\/ alone \(see rule 2\)/);
+  });
+
+  it("tells the writer to cover the web app, with Web steps only, and say why", () => {
+    assert.match(
+      flat,
+      /When `platforms\.webViaShared` is true, `platforms\.web` is true although the diff doesn't touch `apps\/web\/`/,
+    );
+    assert.match(flat, /Web is a touched platform then: write the `### Web` section/);
+    assert.match(
+      flat,
+      /say in the summary sentence that the web changes come through `packages\/shared\/`/,
+    );
+    assert.match(flat, /Keep that note out of `### Web` itself, which holds steps only/);
+  });
+
+  it("matches the bundle builder: the flag reaches the writer only beside web", () => {
+    // The field the prompt documents is the one the builder emits.
+    const via = buildFactoryInTestBundle({
+      issue,
+      platforms: { mobile: true, desktop: true, web: true, webViaShared: true },
+    });
+    assert.deepEqual(via.platforms, { mobile: true, desktop: true, web: true, webViaShared: true });
+    for (const platforms of [
+      { mobile: true, desktop: true, web: false },
+      { mobile: true, desktop: true, web: true, webViaShared: false },
+      { mobile: true, desktop: true, web: false, webViaShared: true },
+    ]) {
+      const b = buildFactoryInTestBundle({ issue, platforms });
+      assert.equal(Object.hasOwn(b.platforms, "webViaShared"), false, JSON.stringify(platforms));
+    }
   });
 });
 

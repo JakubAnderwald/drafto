@@ -72,6 +72,7 @@ const REAL_HELPERS = [
   "pr_pending_required",
   "ci_required_green",
   "browser_kind_enabled",
+  "scenario_platforms",
 ];
 
 const STUBS = `
@@ -84,8 +85,11 @@ logerr() { echo "ERR: $*" >> "$LOG_FILE"; }
 call() { printf '%s\\n' "$*" >> "$CALLS"; }
 transition_status() { call "transition $3"; [[ "\${FAIL_TRANSITION:-}" != "$3" ]]; }
 intest_check_lane_outcomes() { call "outcomes $*"; }
-intest_dispatch_betas() { call "dispatch $*"; echo '{"dispatched":[],"skipped":[],"manualCommands":[]}'; }
-intest_handoff() { call "handoff stage=\${INTEST_STAGE:-unset} cr_note=\${10:-}"; }
+intest_dispatch_betas() { call "dispatch $1 $2 $3 $(echo "$4" | jq -c . 2>/dev/null || echo "$4")"; echo '{"dispatched":[],"skipped":[],"manualCommands":[]}'; }
+intest_handoff() {
+  call "handoff stage=\${INTEST_STAGE:-unset} cr_note=\${10:-}"
+  call "handoff-platforms $(echo "$8" | jq -c . 2>/dev/null || echo "$8")"
+}
 fetch_issue_comments() { [[ -z "\${COMMENTS_FAIL:-}" ]] || return 1; cat "$COMMENTS_FILE"; }
 find_prior_pr() { echo "\${PR_OBJ_STUB:-null}"; }
 fetch_review_threads() { call "threads $1"; [[ -z "\${THREADS_FAIL:-}" ]] || return 1; echo "\${THREADS_STUB:-[]}"; }
@@ -94,7 +98,7 @@ gh() {
   call "gh $*"
   case "$1 $2" in
     "pr view") echo "$PR_VIEW_STUB" ;;
-    "pr diff") [[ -z "\${DIFF_FAIL:-}" ]] || return 1; printf 'apps/web/a.ts\\n' ;;
+    "pr diff") [[ -z "\${DIFF_FAIL:-}" ]] || return 1; printf '%s\\n' "\${DIFF_STUB:-apps/web/a.ts}" ;;
     "issue comment")
       [[ -z "\${FAIL_COMMENT:-}" ]] || return 1
       # Post it, so a later fetch sees it (OWNER, like the Mac mini's identity).
@@ -121,7 +125,8 @@ node() {
         query-status-items) [[ -z "\${QUERY_FAIL:-}" ]] || return 1; echo "\${TESTING_ITEMS:-[]}" ;;
       esac
       ;;
-    */dispatch-release.mjs) cat > /dev/null; echo '{"web":true,"mobile":false,"desktop":false}' ;;
+    # dispatch-release.mjs is the real module: derive-platforms (and --verify)
+    # reads the stubbed diff on stdin.
     */verify-report.mjs) [[ -z "\${REPORT_FAIL:-}" ]] || return 1; command node "$@" ;;
     */verify-lane.mjs)
       call "lane \${*:2}"
@@ -1896,5 +1901,245 @@ describe("handing a commit back to the In Test browser run (verify_browser_uncla
     withBash(body, { env: { HEAD, FAIL_COMMENT: "1" }, state: early }, (r) => {
       assert.equal(r.issue.browserRunSha, HEAD, "retries left: keep it");
     });
+  });
+});
+
+describe("packages/shared/ reaches the web app, for verification only (ADR-0053, 5C)", () => {
+  // derivePlatforms maps packages/shared/ to the native apps only; the web app
+  // imports it too. The verification stage (and only it) reads the --verify
+  // variant, so a shared-only PR gets a browser run; betas, the In Test
+  // platforms, the preview gate, parity and the intest kind keep the plain one.
+  const SHARED = "packages/shared/src/editor/x.ts";
+  const PLAIN = { mobile: true, desktop: true, web: false };
+  const VIA = { mobile: true, desktop: true, web: true, webViaShared: true };
+  const card = 'verify_sweep_card ITEM 7 "$LABELS"';
+  const base = (over = {}) => ({
+    HEAD,
+    LABELS: "status:testing",
+    PR_OBJ_STUB: PR_OBJ,
+    PR_VIEW_STUB: prView(),
+    DIFF_STUB: SHARED,
+    ...over,
+  });
+  const reviewed = (over = {}) => ({
+    verifySha: HEAD,
+    verifyStartedAt: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+    lastReviewSha: HEAD,
+    lastFeedbackAt: "2026-01-01T00:00:00Z",
+    intestCommentSha: HEAD,
+    ...over,
+  });
+  // The JSON each matching call line carries after <prefix> (the stubs log it compact).
+  const jsonAfter = (calls, prefix) =>
+    calls
+      .split("\n")
+      .filter((l) => l.startsWith(prefix))
+      .map((l) => JSON.parse(l.slice(prefix.length)));
+
+  it("reads both variants from one diff: plain for the betas, verification for the lanes", () => {
+    const body = [
+      "verify_pr_platforms 70",
+      'echo "P=$(echo "$VERIFY_PLATFORMS" | jq -c .)"',
+      'echo "L=$(echo "$VERIFY_LANE_PLATFORMS" | jq -c .)"',
+    ].join("\n");
+    withBash(body, { env: { HEAD, DIFF_STUB: SHARED } }, (r) => {
+      assert.match(
+        r.stdout,
+        new RegExp(`^P=${JSON.stringify(PLAIN).replace(/[{}]/g, "\\$&")}$`, "m"),
+      );
+      assert.match(
+        r.stdout,
+        new RegExp(`^L=${JSON.stringify(VIA).replace(/[{}]/g, "\\$&")}$`, "m"),
+      );
+      assert.equal((r.calls.match(/^gh pr diff /gm) || []).length, 1, "one diff read");
+    });
+    // An unreadable diff leaves both unknown: the browser lane waits, never not-web.
+    withBash(
+      'verify_pr_platforms 70 || echo RC=1\necho "L=$VERIFY_LANE_PLATFORMS"',
+      { env: { HEAD, DIFF_FAIL: "1" } },
+      (r) => {
+        assert.match(r.stdout, /^RC=1$/m);
+        assert.match(r.stdout, /^L=\{\}$/m);
+      },
+    );
+  });
+
+  it("queues the browser candidate for a shared-only PR; the betas still get the plain platforms", () => {
+    withBash(
+      `${card}\necho "C=[$VERIFY_BROWSER_CANDIDATES]"`,
+      { env: base({ VERIFY_BUILT_LANES_STUB: "shell,browser" }), state: reviewed() },
+      (r) => {
+        assert.match(r.log, /Testing → work-lanes \(lanes-pending\)/);
+        assert.equal(r.stdout.trim(), `C=[verify:7:70:${HEAD}]`);
+        assert.match(
+          r.log,
+          /browser lane queued for --browser \(aaaaaaaaaaaa; web via packages\/shared\/\)/,
+        );
+        assert.equal(r.issue.verifyBrowser ?? null, null, "not ended as skipped:not-web");
+        assert.deepEqual(jsonAfter(r.calls, `dispatch 7 70 ${HEAD} `), [PLAIN]);
+        // The shell lane is a verification lane too: it gets the variant.
+        assert.match(
+          r.calls,
+          /^lane start [\s\S]*?--platforms \{[\s\S]*?"webViaShared": true[\s\S]*?\}/m,
+        );
+        assert.doesNotMatch(r.calls, /^handoff/m, "the scenario for this head exists");
+      },
+    );
+  });
+
+  it("writes the Testing-stage scenario with the variant, so it has the ### Web section the lane walks", () => {
+    // A round started by the sweep (init), and the entry from In Review.
+    withBash(
+      card,
+      { env: base(), state: reviewed({ verifySha: null, intestCommentSha: null }) },
+      (r) => {
+        assert.match(r.log, /Testing → init \(no-round\)/);
+        assert.match(r.calls, /^handoff stage=testing /m);
+        assert.deepEqual(jsonAfter(r.calls, "handoff-platforms "), [VIA]);
+        assert.deepEqual(jsonAfter(r.calls, `dispatch 7 70 ${HEAD} `), [PLAIN]);
+      },
+    );
+    const enter = `verify_enter ITEM 7 70 '${PR_OBJ}' '${prView()}' "$HEAD" "${SHARED}" '${JSON.stringify(PLAIN)}' ""`;
+    withBash(enter, { env: { HEAD } }, (r) => {
+      assert.match(r.calls, /^handoff stage=testing /m);
+      assert.deepEqual(jsonAfter(r.calls, "handoff-platforms "), [VIA]);
+      assert.deepEqual(jsonAfter(r.calls, `dispatch 7 70 ${HEAD} `), [PLAIN]);
+    });
+  });
+
+  it("still ends the lane as skipped:not-web when the diff reaches the web app through neither", () => {
+    withBash(
+      `${card}\necho "C=[$VERIFY_BROWSER_CANDIDATES]"`,
+      {
+        env: base({ VERIFY_BUILT_LANES_STUB: "shell,browser", DIFF_STUB: "apps/mobile/a.ts" }),
+        state: reviewed(),
+      },
+      (r) => {
+        assert.equal(r.stdout.trim(), "C=[]");
+        assert.equal(r.issue.verifyBrowser, `${HEAD}:skipped:not-web`);
+      },
+    );
+  });
+
+  it("says in the report that the web changes come through packages/shared/", () => {
+    const promote = `verify_promote ITEM 7 70 "$HEAD" lanes-done '{"shell":"skipped:not-built","browser":"no-preview"}' "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")" "$(cat "$COMMENTS_FILE")"`;
+    withBash(promote, { env: { HEAD, DIFF_STUB: SHARED } }, (r) => {
+      const report = r.comments.at(-1).body;
+      const row = report.split("\n").find((l) => l.startsWith("| Web (browser) |"));
+      assert.match(row, /web changes come through `packages\/shared\/`, which the web app imports/);
+      assert.match(row, /no Vercel preview was ready for this commit/);
+      assert.match(report, /\| iOS \/ Android \| manual \|/);
+    });
+    withBash(promote, { env: { HEAD } }, (r) => {
+      assert.doesNotMatch(r.comments.at(-1).body, /come through `packages\/shared\/`/);
+    });
+  });
+
+  it("keeps the variant for a rewrite of a verified commit's scenario, the plain platforms otherwise", () => {
+    const sp = `scenario_platforms 7 "$HEAD" "${SHARED}" '${JSON.stringify(PLAIN)}' | jq -c .`;
+    // The commit had a round (e.g. handed back to In Review after its report,
+    // then promoted again without a new commit): same platforms as its scenario.
+    withBash(sp, { env: { HEAD }, state: { verifySha: HEAD, verifyReportSha: HEAD } }, (r) => {
+      assert.equal(r.stdout.trim(), JSON.stringify(VIA));
+    });
+    // No round, or a round for another commit: the plain platforms, untouched.
+    for (const state of [{}, { verifySha: OLD }]) {
+      withBash(sp, { env: { HEAD }, state }, (r) => {
+        assert.equal(r.stdout.trim(), JSON.stringify(PLAIN), JSON.stringify(state));
+      });
+    }
+    // No head, or a variant that can't be derived: the plain platforms.
+    withBash(
+      `scenario_platforms 7 "" "${SHARED}" '${JSON.stringify(PLAIN)}' | jq -c .`,
+      { env: { HEAD }, state: { verifySha: HEAD } },
+      (r) => assert.equal(r.stdout.trim(), JSON.stringify(PLAIN)),
+    );
+    withBash(
+      `node() { case "$1" in */dispatch-release.mjs) return 1 ;; *) command node "$@" ;; esac; }\n${sp}`,
+      { env: { HEAD }, state: { verifySha: HEAD } },
+      (r) => assert.equal(r.stdout.trim(), JSON.stringify(PLAIN)),
+    );
+  });
+
+  it("leaves betas, the In Test platforms, the preview gate, parity and the intest kind plain", () => {
+    // Exactly one --verify read, in verify_platforms_of.
+    assert.equal(
+      (script.match(/dispatch-release\.mjs" derive-platforms --verify/g) || []).length,
+      1,
+    );
+    assert.match(extract("verify_platforms_of"), /derive-platforms --verify --diff-file -/);
+    const plainRead = (v, files) =>
+      new RegExp(
+        `${v}=\\$\\(printf '%s\\\\n' "\\$${files}" \\| node "\\$SCRIPT_DIR/lib/dispatch-release\\.mjs" derive-platforms --diff-file - `,
+      );
+    assert.match(script, plainRead("INTEST_PLATFORMS", "INTEST_DIFF_FILES"));
+    assert.match(script, plainRead("INTEST_PLATS", "INTEST_FILES"));
+    assert.match(script, plainRead("DISPATCH_PLATFORMS", "DIFF_FILES"));
+    // The preview gate.
+    assert.match(
+      reviewLoop,
+      /WEB_TOUCHED=\$\(echo "\$INTEST_PLATFORMS" \| jq -r '\.web \/\/ false'/,
+    );
+    // The In Review promotion: betas on INTEST_PLATFORMS; only its scenario
+    // re-post takes the variant a verified commit's scenario had.
+    const promotion = slice(
+      'log "Issue #$ISSUE_NUM: required CI green (platforms:',
+      "  # ── 2b. Testing sweep",
+    );
+    assert.equal(
+      (
+        promotion.match(
+          /intest_dispatch_betas "\$ISSUE_NUM" "\$PR_NUM" "\$HEAD_SHA" "\$INTEST_PLATFORMS"/g,
+        ) || []
+      ).length,
+      2,
+    );
+    assert.match(
+      promotion,
+      /SCENARIO_PLATFORMS=\$\(scenario_platforms "\$ISSUE_NUM" "\$HEAD_SHA" "\$INTEST_DIFF_FILES" "\$INTEST_PLATFORMS"\)/,
+    );
+    const handoffs = promotion.match(/intest_handoff [^\n]*/g) || [];
+    assert.equal(handoffs.length, 2);
+    for (const h of handoffs) {
+      assert.match(h, /"\$INTEST_DIFF_FILES" "\$SCENARIO_PLATFORMS" "\$INTEST_BETA"/);
+    }
+    // The In Test sweep: betas and the intest browser candidate stay plain.
+    const sweep = slice("  # ── In Test feedback sweep", "# ── --browser mode");
+    assert.match(
+      sweep,
+      /intest_dispatch_betas "\$ISSUE_NUM" "\$INTEST_PR_NUM" "\$INTEST_HEAD_SHA" "\$INTEST_PLATS"/,
+    );
+    assert.match(
+      sweep,
+      /\[\[ "\$\(echo "\$INTEST_PLATS" \| jq -r '\.web \/\/ false' 2>\/dev\/null\)" == "true" \]\]; then\n\s*BROWSER_CANDIDATES=/,
+    );
+    assert.match(
+      sweep,
+      /INTEST_SCEN_PLATS=\$\(scenario_platforms "\$ISSUE_NUM" "\$INTEST_HEAD_SHA" "\$INTEST_FILES" "\$INTEST_PLATS"\)/,
+    );
+    assert.match(sweep, /"\$INTEST_FILES" "\$INTEST_SCEN_PLATS" \\\n\s*"\$INTEST_BETA"/);
+    // Parity reads the diff itself, never derived platforms: apps/web/ only.
+    const parity = extract("parity_violation");
+    assert.doesNotMatch(parity, /derive-platforms|scenario_platforms|verify_/);
+    assert.match(parity, /grep -qE '\^apps\/web\/'/);
+    // Inside the stage: betas plain, scenario via scenario_platforms, lanes and
+    // report on the variant.
+    const prep = extract("verify_prepare");
+    assert.match(prep, /intest_dispatch_betas "\$issue_num" "\$pr_num" "\$head_sha" "\$platforms"/);
+    assert.match(
+      prep,
+      /scenario_plats=\$\(scenario_platforms "\$issue_num" "\$head_sha" "\$diff_files" "\$platforms"\)/,
+    );
+    assert.match(prep, /"\$diff_files" "\$scenario_plats" "\$beta" "\$cr_note"/);
+    const sweepCard = extract("verify_sweep_card");
+    assert.match(sweepCard, /"\$VERIFY_DIFF_FILES" \\\n\s*"\$VERIFY_PLATFORMS" "\$cr_note"/);
+    assert.match(
+      sweepCard,
+      /verify_work_lanes "\$issue_num" "\$pr_num" "\$head_sha" "\$VERIFY_LANE_PLATFORMS" "\$lanes"/,
+    );
+    assert.match(
+      extract("verify_promote"),
+      /verify_compose_report "\$issue_num" "\$pr_num" "\$head_sha" "\$VERIFY_LANE_PLATFORMS"/,
+    );
   });
 });
