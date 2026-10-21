@@ -776,7 +776,7 @@ describe("verification stage (ADR-0053): verify ledger", () => {
   });
 
   describe("per-issue keys", () => {
-    it("are the nine documented fields", () => {
+    it("are the eleven documented fields", () => {
       assert.deepEqual(
         [...VERIFY_ISSUE_FIELDS],
         [
@@ -789,6 +789,8 @@ describe("verification stage (ADR-0053): verify ledger", () => {
           "verifyBrowserRunDir",
           "verifyReportSha",
           "verifyBounces",
+          "verifyCrNote",
+          "verifyReportPosts",
         ],
       );
       assert.throws(() => VERIFY_ISSUE_FIELDS.push("x"), TypeError);
@@ -809,7 +811,7 @@ describe("verification stage (ADR-0053): verify ledger", () => {
       }
     });
 
-    it("verifyIssueRecords lists only issues that carry a verify key, with all nine", () => {
+    it("verifyIssueRecords lists only issues that carry a verify key, with all of them", () => {
       const s = emptyFactoryState();
       setIssueField(s, 7, "verifySha", SHA_A);
       setIssueField(s, 8, "lastPlanAt", T0);

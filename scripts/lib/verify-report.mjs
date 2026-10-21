@@ -15,7 +15,8 @@
 // deterministic (no claude call, so composing can't fail on a session limit),
 // and every byte of lane text it posts has been scanned and defanged.
 // Verification is evidence, never a gate: the card is In Test whatever the
-// report says. (The stage's ADR lands with the state machine that calls this.)
+// report says (ADR-0053). factory-agent.sh's verify_promote is the caller; it
+// composes the report before moving the card and posts it once afterwards.
 //
 // Lane output (each lane's status line comes last, outside any block;
 // parseBlocks() in browser-report.mjs reads both formats):
@@ -210,6 +211,11 @@ const REASONS = {
   install: "installing dependencies failed",
   "no-scenario": "there was no test scenario for this commit",
   "no-web-steps": "the scenario has no Web steps",
+  // The Testing sweep's own tokens (factory-agent.sh, verify-decide.mjs).
+  "not-built": "this lane isn't built yet",
+  "lane-off": "the lane is switched off (FACTORY_VERIFY_LANES)",
+  "verification-off": "verification is switched off (FACTORY_VERIFY=0)",
+  feedback: "new feedback on the issue cut verification short",
 };
 
 // ── small text helpers ──────────────────────────────────────────────────────

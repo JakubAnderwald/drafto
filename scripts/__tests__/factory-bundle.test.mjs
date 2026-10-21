@@ -833,6 +833,15 @@ describe("buildFactoryInTestBundle", () => {
     assert.throws(() => buildFactoryInTestBundle({ issue: { title: "x" } }), /issue\.number/);
   });
 
+  it("says which stage the scenario is written at (ADR-0053), intest by default", () => {
+    assert.equal(buildFactoryInTestBundle(base).stage, "intest");
+    assert.equal(buildFactoryInTestBundle({ ...base, stage: "testing" }).stage, "testing");
+    // Anything else reads as In Test, the long-standing wording.
+    for (const stage of ["Testing", "", null, 7, "verify"]) {
+      assert.equal(buildFactoryInTestBundle({ ...base, stage }).stage, "intest", String(stage));
+    }
+  });
+
   it("surfaces host-validated screenshots from the body and comments", () => {
     const bundle = buildFactoryInTestBundle({
       ...base,

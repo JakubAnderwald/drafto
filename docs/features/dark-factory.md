@@ -1,6 +1,6 @@
 # Dark factory
 
-**Status:** rolling out (Phase B engine + `--release` auto-merge built; runtime phase set on the plist) **Updated:** 2026-10-20
+**Status:** rolling out (Phase B engine + `--release` auto-merge built; runtime phase set on the plist) **Updated:** 2026-10-21
 
 ## What it is
 
@@ -15,6 +15,8 @@ The runtime phase is set by `FACTORY_PHASE` on the launchd plist (see the runboo
 
 **Browser checks.** The factory can drive Chrome on the Mac mini through Claude in Chrome, but only from one locked-down **browser runner**. That's a `claude -p --chrome` session in `dontAsk` mode with no built-in tools (no Bash, no files, no `gh`). A guard hook pins this Mac mini's browser and keeps the session to its own tabs and to the run's exact preview origin. The runner prints a report; bash scans it for secrets and posts it. Every other claude call passes `--no-chrome`, and every factory, support and nightly call passes `--strict-mcp-config`, so none of the operator's claude.ai connectors (Gmail, Drive, …) load in an unattended session. Today it does one thing: the **In Test web run** (below). It is on by default (`FACTORY_BROWSER=0` turns it off) and drives the operator's own signed-in Chrome profile, a deliberate tradeoff recorded in [ADR-0051](../adr/0051-factory-browser-runner.md). Knobs, setup and triage are in the runbook's "Browser runner (Claude in Chrome)".
 
+**Verification before In Test (off by default).** With `FACTORY_VERIFY=1`, a converged card stops in a factory-owned **Testing** column before In Test. The factory writes the test scenario and dispatches the betas there, runs its own verification lanes, and then moves the card to In Test with one **verification report** comment. The report is evidence, not a gate: a FAIL doesn't hold the card, and the hold cap (`FACTORY_VERIFY_HOLD_MAX_MIN`, 60 min by default) bounds the stay. The card only goes back to In Review for something wrong with the commit itself: the head moved, required CI is red, the commit missed the code review, or review threads are open. The lanes come in later waves (a shell lane for tests and API checks, and a browser `verify` kind). Until then, a Testing card is promoted on the next sweep with an INCOMPLETE report that lists what to test by hand. See [factory-verification.md](./factory-verification.md) and [ADR-0053](../adr/0053-pre-in-test-verification-stage.md).
+
 **Claude effort.** The two code-writing stages (`--implement`, `--watch`) invoke Claude at **ultracode** effort (xhigh reasoning + dynamic multi-agent workflow orchestration); the read-only planning stages (`--plan`, replan) run at **xhigh** to conserve the shared Claude subscription. Both are env knobs (`FACTORY_EFFORT`, `FACTORY_PLAN_EFFORT`) on the launchd plist, and ultracode degrades safely to plain xhigh if the Workflows feature is unavailable on the account. Because ultracode runs its work in background workflows, the factory lifts `claude -p`'s 600s background-task ceiling (`FACTORY_BG_WAIT_CEILING_MS`, default `0`) and relies on the per-stage wall caps instead. See [ADR-0029](../adr/0029-factory-ultracode-effort.md) and the runbook's "Claude effort & timeouts" knobs.
 
 ## The board
@@ -27,20 +29,20 @@ To re-bootstrap (e.g. after a deletion), run `scripts/setup-factory-board.sh`. I
 
 The board has one custom Status field with twelve values:
 
-| Status      | Who sets it           | Meaning                                                               |
-| ----------- | --------------------- | --------------------------------------------------------------------- |
-| Backlog     | human                 | Filed, not yet specced. Factory ignores.                              |
-| Ready       | human                 | Spec complete; factory may **plan** (read-only).                      |
-| Planning    | factory               | Claude is reading the issue and writing a plan.                       |
-| Plan Review | factory               | Plan posted as a comment; awaiting human approval.                    |
-| In Progress | human / allowlisted   | Plan approved; factory implements per the approved plan.              |
-| In Review   | factory               | PR open; factory monitors CI and review comments.                     |
-| Testing     | factory               | Reserved for pre-In-Test verification (ADR-0053); unused for now.     |
-| In Test     | factory               | Testable build + test scenario posted; awaiting human approval.       |
-| Approved    | human / allowlisted   | Authorise prod release. Migration gate enforced.                      |
-| Released    | factory               | PR merged; beta channels dispatched (Phase D).                        |
-| Done        | human / support-agent | Final acceptance; issue closed.                                       |
-| Blocked     | factory               | Spec incomplete, retry budget exhausted, parity violation, hard gate. |
+| Status      | Who sets it           | Meaning                                                                    |
+| ----------- | --------------------- | -------------------------------------------------------------------------- |
+| Backlog     | human                 | Filed, not yet specced. Factory ignores.                                   |
+| Ready       | human                 | Spec complete; factory may **plan** (read-only).                           |
+| Planning    | factory               | Claude is reading the issue and writing a plan.                            |
+| Plan Review | factory               | Plan posted as a comment; awaiting human approval.                         |
+| In Progress | human / allowlisted   | Plan approved; factory implements per the approved plan.                   |
+| In Review   | factory               | PR open; factory monitors CI and review comments.                          |
+| Testing     | factory               | Factory verifies the change before In Test (ADR-0053; `FACTORY_VERIFY=1`). |
+| In Test     | factory               | Testable build + test scenario posted; awaiting human approval.            |
+| Approved    | human / allowlisted   | Authorise prod release. Migration gate enforced.                           |
+| Released    | factory               | PR merged; beta channels dispatched (Phase D).                             |
+| Done        | human / support-agent | Final acceptance; issue closed.                                            |
+| Blocked     | factory               | Spec incomplete, retry budget exhausted, parity violation, hard gate.      |
 
 The factory agent reads the Status field directly via the GitHub GraphQL API on each 5-min tick. It also writes a matching `status:*` label as a transition side-effect (for filtering on the Issues list); the labels are observability, not the agent's queue.
 
@@ -55,7 +57,7 @@ The full set is created idempotently by `scripts/setup-factory-labels.sh`. Refer
 | `status:plan-review`  | factory              | Awaiting plan approval.                                              |
 | `status:in-progress`  | human / factory      | Implementation in progress.                                          |
 | `status:in-review`    | factory              | PR open, CI / review comments active.                                |
-| `status:testing`      | factory              | Pre-In-Test verification running (ADR-0053); unused for now.         |
+| `status:testing`      | factory              | Pre-In-Test verification running (ADR-0053).                         |
 | `status:in-test`      | factory              | Testable build + scenario posted, awaiting ship approval.            |
 | `status:approved`     | human / factory      | Approved for release; merge + dispatch authorised.                   |
 | `status:released`     | factory              | Merged + beta dispatched.                                            |
@@ -88,6 +90,7 @@ After filing, drag the card to **Ready** on the board. The factory picks it up o
 - **Global**: run `node scripts/lib/state-cli.mjs factory:pause` on the Mac mini. The agent reads the flag every cycle and exits early when set. A manual pause never auto-expires; `factory:resume` to unpause. (Available once Wave 2 lands; until then, unload the launchd plist.)
 - **Automatic (self-healing)**: when a claude call dies on a Claude subscription _session usage_ limit, the factory pauses itself until the limit resets (`factory:pause-until`) instead of burning the card's retry budget, then auto-resumes on the first tick past the deadline. See [factory-runbook.md → "Automatic pause on a Claude session limit"](../operations/factory-runbook.md#automatic-pause-on-a-claude-session-limit-self-healing).
 - **Automatic toolchain pause (self-healing)**: every tick probes git / gh / claude on the Mac mini before running the modes. If one stays broken for two ticks (e.g. git refusing to run on an unaccepted Xcode license after an Xcode update), the factory pauses itself, emails the operator the exact fix and files one `factory-failure` issue, then resumes on its own once the probes pass. See [factory-runbook.md → "Automatic toolchain pause"](../operations/factory-runbook.md#automatic-toolchain-pause-self-healing).
+- **Verification stage**: `FACTORY_VERIFY=0` in the plist (the default). Cards then go straight to In Test, and any card already in **Testing** is promoted on the next tick with a report that says verification was switched off. `FACTORY_VERIFY_ONLY_LABEL` limits the stage to cards carrying one label. Dragging a card out of Testing by hand works too; `factory-pause` on the issue freezes it where it is.
 - **Emergency stop**: `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist` on the Mac mini, or `kill` the active claude PID under `logs/factory.*.pid`.
 
 ## Troubleshooting
@@ -131,7 +134,40 @@ On macOS the scenario can be run hands-off against the posted TestFlight build: 
 
 On web, with the browser runner on (the default: `FACTORY_BROWSER=1`, kind `intest`), the factory runs the scenario's `### Web` steps itself. It runs them in Chrome on the Mac mini, against the **per-commit** Vercel preview, signed in as a dedicated test account in the dev database. It then posts a second comment, **🏭 Browser run — web steps on the preview**, with a PASS / FAIL / WARN / SKIP row per step and the evidence for each (marker `<!-- drafto-factory-browser-report -->`). Screenshots stay on the Mac mini under `logs/factory/browser/`, because the repo is public. The report is evidence for you, not a gate: a FAIL doesn't move the card. It runs once per head commit, at most one card per tick, in a `--browser` step after `--release` so it never delays a merge. It only runs a scenario the factory wrote itself, never the fallback comment. See [ADR-0051](../adr/0051-factory-browser-runner.md).
 
+With verification on (`FACTORY_VERIFY=1`), the scenario is written earlier, when the card enters **Testing**, and is titled "Test scenario — verifying now (Testing)". When the card reaches In Test, a second comment follows: **🏭 Verification before In Test** (markers `<!-- drafto-factory-verify-report -->` and `<!-- drafto-factory-verify-sha:<sha> -->`, posted once per commit). It holds:
+
+1. A headline verdict: **PASS / WARN / FAIL** (the worst of the lanes that reported), or **INCOMPLETE** when none reported. Then "Evidence, not a gate: the card is now In Test."
+2. A lane table: Repo & API (shell), Web (browser), iOS / Android and macOS, each with a status, a verdict and a note.
+3. The assessment the lanes wrote.
+4. **Steps for you to do manually**: what no lane covered, such as the native sections of the scenario on the beta, the Web steps when the browser lane didn't report, and the lanes' own manual list.
+5. **Coverage gaps**: lanes that timed out, were skipped or were unavailable, plus the CodeRabbit note if there is one.
+
+Until the lanes land (Waves 5A and 5B), every report is INCOMPLETE with both lanes "skipped: this lane isn't built yet", which still gives you the manual list. See [factory-verification.md](./factory-verification.md).
+
 The scenario is refreshed whenever the PR head SHA changes, so an In Test → feedback → In Test round trip gets a new one. If Claude fails or times out, the factory posts a deterministic fallback comment instead — the card still advances, and this stage never consumes the retry budget.
+
+### "A card sat in Testing"
+
+Testing is factory-owned and bounded: a card leaves it at the latest `FACTORY_VERIFY_HOLD_MAX_MIN` (default 60) minutes after its round started. The `--watch` log has one `Testing → <action> (<reason>)` line per card per tick:
+
+- **wait (ci-pending)** — a required check is running again on the same commit. **wait (threads-unknown)** — the review-thread query failed. Both end at the hold cap.
+- **work-lanes** — the verification lanes are still running (from Waves 5A and 5B).
+- **skip (pr-merged / pr-closed)** — the PR left by another route. The factory leaves the card for you: drag it to the right column.
+- **hand-back (…)** — the card went back to In Review, with one comment on the issue saying why. It comes back to Testing by itself once the fix loop is done.
+
+Nothing in the log at all means the sweep isn't seeing the card. Check for a `factory-pause` or `support` label, a global pause, or a `query-status-items 'Testing' failed` warning. `node scripts/lib/state-cli.mjs factory:verify-status` shows each card's `verify*` fields. To start a card's round again, run `factory:verify-reset <n>`. To skip verification for it, drag it to In Test. The runbook's "Pre-In-Test verification (Testing)" has the full triage.
+
+### "The verification report says INCOMPLETE"
+
+INCOMPLETE means no lane reported a verdict for that commit. Its **Coverage gaps** say why, lane by lane:
+
+- **this lane isn't built yet** — expected until Waves 5A and 5B ship.
+- **the hold cap was reached first** — a lane was still running at the cap.
+- **new feedback on the issue cut verification short** — you commented while the card was in Testing. The card went on to In Test, and from there back to In Progress for the revision.
+- **verification is switched off** — the card was drained after `FACTORY_VERIFY=0`.
+- **the lane is switched off** — `FACTORY_VERIFY_LANES` leaves it out.
+
+The card is in In Test either way. Follow **Steps for you to do manually**.
 
 ### "Vercel preview never appeared in In Test"
 
@@ -206,6 +242,7 @@ If you hit the old behaviour on a card that predates the fix, the recovery is in
 ## Related
 
 - [ADR-0026](../adr/0026-dark-factory-pipeline.md) — decision record.
+- [factory-verification.md](./factory-verification.md) and [ADR-0053](../adr/0053-pre-in-test-verification-stage.md) — the Testing column (pre-In-Test verification).
 - [`docs/operations/factory-runbook.md`](../operations/factory-runbook.md) — phase promotion criteria, rollback drills, on-call response.
 - [`docs/dark-factory-proposal.md`](../dark-factory-proposal.md) — original proposal (lifecycle table, household autopilot details, implementation waves).
 - [`scripts/setup-factory-labels.sh`](../../scripts/setup-factory-labels.sh) — label bootstrap.
