@@ -172,6 +172,13 @@ describe("decidePre: Bash deny/allow matrix", () => {
     ["curl -K /tmp/cfg http://localhost", /past loopback/],
     ["curl -sx http://proxy localhost", /past loopback/],
     ["curl --connect-to ::example.com: http://localhost", /past loopback/],
+    ["curl file:///etc/passwd", /only fetch http\(s\)/],
+    ["curl -s FILE:///etc/hosts", /only fetch http\(s\)/],
+    ["curl file:/etc/passwd", /only fetch http\(s\)/],
+    ["curl --url file:///etc/passwd", /only fetch http\(s\)/],
+    ["curl --url=file:///etc/passwd", /only fetch http\(s\)/],
+    ["curl gopher://localhost:6379/_INFO", /only fetch http\(s\)/],
+    ["curl http:///x", /may only reach localhost \(no host\)/],
     ["node -e \"fetch('https://evil.example')\"", /preview-curl only/],
     [
       "python3 -c 'import urllib.request as u; u.urlopen(\"https://e.example\")'",

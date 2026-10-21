@@ -942,6 +942,20 @@ function urlHost(word) {
   return null;
 }
 
+// A scheme curl may not use here: anything but http(s). file:// has an empty
+// host, so the loopback rule alone would let curl read any file the factory
+// user can. "file:/path" (one slash) is a file URL to curl too.
+function nonHttpScheme(word) {
+  const w = String(word);
+  if (/^file:/i.test(w)) return "file";
+  const m = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(w);
+  return m && !/^https?$/i.test(m[1]) ? m[1].toLowerCase() : null;
+}
+
+function curlSchemeDenial(scheme) {
+  return deny(`curl may only fetch http(s) from localhost, not ${scheme}:; read files with Read`);
+}
+
 function isLoopback(host) {
   return LOOPBACK_HOSTS.has(String(host).toLowerCase());
 }
@@ -1145,6 +1159,8 @@ function checkCurl(args) {
     }
     if (opt === "--url") {
       const v = a.includes("=") ? a.slice(a.indexOf("=") + 1) : args[++k];
+      const scheme = nonHttpScheme(v ?? "");
+      if (scheme) return curlSchemeDenial(scheme);
       const host = urlHost(v ?? "");
       if (!host || !isLoopback(host)) {
         return deny("curl may only reach localhost; use preview-curl for the preview");
@@ -1156,9 +1172,14 @@ function checkCurl(args) {
       continue;
     }
     if (a.startsWith("-")) continue;
+    const scheme = nonHttpScheme(a);
+    if (scheme) return curlSchemeDenial(scheme);
+    // An empty host ("http:///x") isn't loopback either.
     const host = urlHost(a);
-    if (host && !isLoopback(host)) {
-      return deny(`curl may only reach localhost (${host}); use preview-curl for the preview`);
+    if (host !== null && !isLoopback(host)) {
+      return deny(
+        `curl may only reach localhost (${host || "no host"}); use preview-curl for the preview`,
+      );
     }
   }
   return allow("curl to loopback");

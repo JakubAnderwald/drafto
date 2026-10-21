@@ -591,6 +591,10 @@ export function curlConfigText({ bypassSecret = null, cookieJar }) {
 // the model could have edited for its binary: meta.json sits in a directory
 // the session can write to. The system curl is always there on macOS.
 export const PREVIEW_CURL_BIN = "/usr/bin/curl";
+// Nor its environment, which the session sets: curl reads proxies
+// (HTTPS_PROXY, ALL_PROXY), CA bundles (CURL_CA_BUNDLE, SSL_CERT_FILE) and
+// SSLKEYLOGFILE from it, any of which could expose the bypass header.
+export const PREVIEW_CURL_ENV = Object.freeze({ PATH: "/usr/bin:/bin", LANG: "C" });
 
 export async function runPreviewCurl(
   { runDir, argv },
@@ -612,7 +616,10 @@ export async function runPreviewCurl(
   // -q first: no ~/.curlrc. Then the run's config, the checked options, the URL.
   const args = ["-q", "-K", cfg, ...built.args, "--url", built.url];
   return new Promise((resolve) => {
-    const child = spawnFn(PREVIEW_CURL_BIN, args, { stdio: "inherit" });
+    const child = spawnFn(PREVIEW_CURL_BIN, args, {
+      stdio: "inherit",
+      env: { ...PREVIEW_CURL_ENV },
+    });
     child.once("error", (err) => {
       stderr.write(`preview-curl: ${err.message}\n`);
       resolve(127);

@@ -29,6 +29,7 @@ import { EventEmitter } from "node:events";
 
 import {
   PREVIEW_CURL_BIN,
+  PREVIEW_CURL_ENV,
   curlConfigText,
   previewCurlScript,
   revokeLaneKeys,
@@ -551,6 +552,40 @@ describe("preview-curl", () => {
       `${ORIGIN}/api/health`,
     ]);
     assert.equal(spawned[0].opts.stdio, "inherit", "curl's output is the response");
+    // A fixed environment, never the session's: no proxy, CA bundle or key log.
+    assert.deepEqual(spawned[0].opts.env, { PATH: "/usr/bin:/bin", LANG: "C" });
+    assert.deepEqual(spawned[0].opts.env, { ...PREVIEW_CURL_ENV });
+  });
+
+  it("runs curl without the session's proxy, CA bundle or TLS key log", async () => {
+    const { runDir } = runDirWithSession();
+    const planted = {
+      HTTPS_PROXY: "http://127.0.0.1:8080",
+      ALL_PROXY: "http://127.0.0.1:8080",
+      CURL_CA_BUNDLE: "/tmp/mitm-ca.pem",
+      SSLKEYLOGFILE: "/tmp/keys.log",
+    };
+    const saved = {};
+    for (const [k, v] of Object.entries(planted)) {
+      saved[k] = process.env[k];
+      process.env[k] = v;
+    }
+    try {
+      let opts;
+      const spawnFn = (command, args, o) => {
+        opts = o;
+        const child = new EventEmitter();
+        setImmediate(() => child.emit("exit", 0, null));
+        return child;
+      };
+      assert.equal(await runPreviewCurl({ runDir, argv: ["/api/health"] }, { spawnFn }), 0);
+      for (const k of Object.keys(planted)) assert.equal(opts.env[k], undefined, k);
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
   });
 
   it("refuses a URL or a header dump with exit 2 and never runs curl", () => {
