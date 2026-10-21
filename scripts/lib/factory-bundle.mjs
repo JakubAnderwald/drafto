@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Build a per-issue context bundle for the dark-factory agent.
 //
-// Five kinds today:
+// The kinds:
 //
 //   factory_plan       — for `factory-agent.sh --plan`. Contains the issue
 //                        body + comments, the parsed spec contract sections,
@@ -38,6 +38,15 @@
 //                        `stage: "testing"` the card has just entered the
 //                        Testing column (ADR-0053) and the comment says the
 //                        factory is verifying it now.
+//
+//   factory_browser_run — for `factory-agent.sh --browser` (ADR-0051): the
+//                        Web section of the scenario for the locked-down
+//                        Chrome runner.
+//
+//   factory_verify_shell — for the verification stage's shell lane
+//                        (verify-lane.mjs, ADR-0053): every scenario section
+//                        for the head, the changed files and platforms, the
+//                        preview origin and the macOS --preflight scripts.
 //
 // Pure functions for unit tests, plus a CLI that reads a single JSON object
 // on stdin and prints the resulting bundle JSON to stdout — mirrors
@@ -1012,6 +1021,89 @@ export function buildFactoryBrowserRunBundle({
   };
 }
 
+// ── Verification shell lane bundle (ADR-0053) ──────────────────────────────
+// The shell lane (verify-lane.mjs) runs in a fresh detached worktree of the
+// PR's head with Bash, Read, Grep and Glob, and reaches the per-commit preview
+// only through the `preview-curl` wrapper. It gets the factory's own scenario
+// for exactly this commit (every section, enveloped: it runs the command-type
+// steps and leaves `### Web` to the browser lane), the changed files, the
+// platforms derived from the diff and the macOS scenario scripts it may run
+// with --preflight. No issue body, no comments beyond the scenario, no diff
+// (it has the worktree), and no secret of any kind: the bypass secret and the
+// preview session stay in the supervisor's curl config.
+
+const PREVIEW_ORIGIN_RE = /^https:\/\/drafto-[a-z0-9-]+-jakubanderwalds-projects\.vercel\.app$/;
+const QA_TAG_RE = /^[a-z0-9][a-z0-9-]{2,60}$/;
+const MAX_VERIFY_FILES = 300;
+
+export function buildFactoryVerifyShellBundle({
+  issue,
+  comments = [],
+  headSha,
+  prNumber = null,
+  platforms = {},
+  files = [],
+  previewOrigin = "",
+  qaTag,
+  preflightScripts = [],
+  timeLimitMin = null,
+  nowIso,
+} = {}) {
+  if (!issue || !Number.isInteger(issue.number)) {
+    throw new Error("buildFactoryVerifyShellBundle: issue.number is required");
+  }
+  if (typeof headSha !== "string" || !/^[0-9a-f]{40}$/.test(headSha)) {
+    throw new Error("buildFactoryVerifyShellBundle: headSha must be a full 40-hex SHA");
+  }
+  const origin = typeof previewOrigin === "string" ? previewOrigin : "";
+  if (origin && !PREVIEW_ORIGIN_RE.test(origin)) {
+    throw new Error(`buildFactoryVerifyShellBundle: not a Drafto preview origin: ${origin}`);
+  }
+  if (typeof qaTag !== "string" || !QA_TAG_RE.test(qaTag)) {
+    throw new Error("buildFactoryVerifyShellBundle: qaTag must be a short lowercase token");
+  }
+  const scenario = selectScenarioComment(comments, headSha);
+  const sections = scenario ? extractScenarioSections(scenario.body) : [];
+  const fileList = (Array.isArray(files) ? files : String(files ?? "").split("\n"))
+    .map((f) => String(f ?? "").trim())
+    .filter(Boolean);
+  return {
+    kind: "factory_verify_shell",
+    issue: { number: issue.number, title: typeof issue.title === "string" ? issue.title : "" },
+    headSha,
+    prNumber: Number.isInteger(prNumber) ? prNumber : null,
+    // Derived from the diff, like the scenario writer's: the lane checks what
+    // actually changed.
+    platforms: {
+      web: Boolean(platforms?.web),
+      mobile: Boolean(platforms?.mobile),
+      desktop: Boolean(platforms?.desktop),
+    },
+    prFiles: fileList.slice(0, MAX_VERIFY_FILES),
+    prFilesTruncated: fileList.length > MAX_VERIFY_FILES,
+    // null when there is no OWNER scenario carrying this commit's full-SHA
+    // marker (or only the fallback): the lane then runs targeted tests for the
+    // changed files and says so.
+    scenario: scenario
+      ? {
+          commentId: scenario.id ?? null,
+          url: `https://github.com/JakubAnderwald/drafto/issues/${issue.number}#issuecomment-${scenario.id}`,
+          sections: sections.map((s) =>
+            envelopeBody(`### ${s.heading}\n\n${s.text}`, "scenario-section"),
+          ),
+        }
+      : null,
+    // The per-commit preview, reached only through `preview-curl <path>`.
+    preview: origin ? { origin } : null,
+    qaTag,
+    preflightScripts: (Array.isArray(preflightScripts) ? preflightScripts : [])
+      .map((p) => String(p ?? ""))
+      .filter((p) => /^apps\/desktop\/e2e\/in-test\/scenarios\/[A-Za-z0-9._-]+\.sh$/.test(p)),
+    timeLimitMin: Number.isInteger(timeLimitMin) && timeLimitMin > 0 ? timeLimitMin : null,
+    nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
+  };
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 async function readStdin() {
@@ -1110,6 +1202,20 @@ async function main() {
       targetUrl: input.targetUrl,
       accountFile: input.accountFile,
       deviceId: input.deviceId,
+      nowIso: input.nowIso,
+    });
+  } else if (input.kind === "factory_verify_shell") {
+    bundle = buildFactoryVerifyShellBundle({
+      issue: input.issue,
+      comments: input.comments,
+      headSha: input.headSha,
+      prNumber: input.prNumber,
+      platforms: input.platforms,
+      files: input.files,
+      previewOrigin: input.previewOrigin,
+      qaTag: input.qaTag,
+      preflightScripts: input.preflightScripts,
+      timeLimitMin: input.timeLimitMin,
       nowIso: input.nowIso,
     });
   } else {

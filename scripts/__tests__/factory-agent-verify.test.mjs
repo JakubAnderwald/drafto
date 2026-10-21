@@ -72,6 +72,10 @@ const REAL_HELPERS = [
 ];
 
 const STUBS = `
+LANE_START_DEFAULT='{"started":false,"reason":"busy"}'
+LANE_STOP_DEFAULT='{"state":"idle"}'
+LANE_HK_DEFAULT='{"state":"idle","reaped":{}}'
+LANE_GAPS_DEFAULT='{"gaps":[],"bypassUsed":false}'
 log() { echo "LOG: $*" >> "$LOG_FILE"; }
 logerr() { echo "ERR: $*" >> "$LOG_FILE"; }
 call() { printf '%s\\n' "$*" >> "$CALLS"; }
@@ -116,9 +120,20 @@ node() {
       ;;
     */dispatch-release.mjs) cat > /dev/null; echo '{"web":true,"mobile":false,"desktop":false}' ;;
     */verify-report.mjs) [[ -z "\${REPORT_FAIL:-}" ]] || return 1; command node "$@" ;;
+    */verify-lane.mjs)
+      call "lane \${*:2}"
+      [[ -z "\${LANE_FAIL:-}" ]] || return 1
+      case "$2" in
+        start) printf '%s\\n' "\${LANE_START_STUB:-$LANE_START_DEFAULT}" ;;
+        stop) printf '%s\\n' "\${LANE_STOP_STUB:-$LANE_STOP_DEFAULT}" ;;
+        housekeeping) printf '%s\\n' "\${LANE_HK_STUB:-$LANE_HK_DEFAULT}" ;;
+        gaps) printf '%s\\n' "\${LANE_GAPS_STUB:-$LANE_GAPS_DEFAULT}" ;;
+      esac
+      ;;
     *) command node "$@" ;;
   esac
 }
+pause_for_session_limit() { call "pause until=$SESSION_LIMIT_RESET_AT reason=$SESSION_LIMIT_REASON"; }
 `;
 
 // Run <body> in /bin/bash (3.2 on the Mac mini, which launchd runs) with the
@@ -140,7 +155,12 @@ function runBash(body, { env = {}, state = {}, comments = [], bash = "/bin/bash"
   const harness = [
     "set -euo pipefail",
     `SCRIPT_DIR="${scriptsDir}"`,
+    `REPO_ROOT="${dir}"`,
     `LOG_DIR="${dir}"`,
+    'VERIFY_PROMPT_FILE="$SCRIPT_DIR/factory-verify-prompt.md"',
+    "INSTALL_TIMEOUT_SEC=600",
+    "FACTORY_PLAN_EFFORT=xhigh",
+    "FACTORY_MIN_FREE_DISK_GB=3",
     `LOG_FILE="${files.log}"`,
     `STATE_FILE="${files.state}"`,
     `CALLS="${files.calls}"`,
@@ -1160,5 +1180,327 @@ describe("pr_preview_url (real helper)", () => {
         assert.equal(r.stdout.trim(), `[${want}]`);
       });
     }
+  });
+});
+
+// ── The shell lane (Wave 5A): verify_shell_work / _stop / _housekeeping ────
+
+describe("factory-agent.sh shell lane: static wiring", () => {
+  it("builds the shell lane and calls it from both seams, once each", () => {
+    assert.match(script, /^VERIFY_BUILT_LANES="[^"]*\bshell\b[^"]*"/m);
+    const work = extract("verify_work_lanes");
+    const stop = extract("verify_stop_lanes");
+    assert.equal(work.match(/verify_shell_work "\$@"/g)?.length, 1);
+    assert.equal(stop.match(/verify_shell_stop "\$@"/g)?.length, 1);
+  });
+
+  it("runs housekeeping at the top of --watch, after the CodeRabbit one, before the In Review loop", () => {
+    const cr = script.indexOf("\n  cr_cli_housekeeping\n", watchStart);
+    const hk = script.indexOf("\n  verify_shell_housekeeping\n", watchStart);
+    const review = script.indexOf("  # ── 2. In Review → In Test ──", watchStart);
+    const sweep = script.indexOf("\n  verify_sweep\n", watchStart);
+    assert.ok(cr !== -1 && hk !== -1 && review !== -1 && sweep !== -1);
+    assert.ok(cr < hk && hk < review && review < sweep);
+    // A session limit ends the tick, like every other claude call's.
+    assert.match(
+      script.slice(hk, review),
+      /if \[\[ "\$\{VERIFY_SESSION_LIMITED:-0\}" == "1" \]\]; then\n\s*log "=== factory-agent --\$MODE_NAME completed[^\n]*\n\s*exit 0\n\s*fi/,
+    );
+  });
+
+  it("keeps the lane's claude call in node: no run-claude, no --chrome, no skip-permissions in bash", () => {
+    for (const name of ["verify_shell_work", "verify_shell_stop", "verify_shell_housekeeping"]) {
+      assert.doesNotMatch(
+        extract(name),
+        /run-claude\.mjs|--chrome|dangerously-skip-permissions|claude -p/,
+        name,
+      );
+    }
+  });
+
+  it("starts the lane with the files and knobs the module needs, and never under --dry-run", () => {
+    const work = extract("verify_shell_work");
+    for (const flag of [
+      '--issue "$issue_num"',
+      '--pr "$pr_num"',
+      '--sha "$head_sha"',
+      '--platforms "$platforms"',
+      '--state-file "$STATE_FILE"',
+      '--repo-root "$REPO_ROOT"',
+      '--run-root "$VERIFY_DIR"',
+      '--prompt-file "$VERIFY_PROMPT_FILE"',
+      '--account-file "$FACTORY_BROWSER_ACCOUNT_FILE"',
+      '--signin-key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE"',
+    ]) {
+      assert.ok(work.includes(flag), flag);
+    }
+    assert.ok(work.indexOf('[[ "$DRY_RUN" -eq 1 ]]') < work.indexOf('verify-lane.mjs" start'));
+    assert.match(script, /^VERIFY_PROMPT_FILE="\$SCRIPT_DIR\/factory-verify-prompt\.md"$/m);
+    assert.ok(existsSync(resolve(scriptsDir, "factory-verify-prompt.md")));
+  });
+});
+
+describe("verify_shell_work (real helper, lane module stubbed)", () => {
+  const LANES = '{"shell":"none","browser":"none"}';
+  const work = (lanes = LANES) => `verify_shell_work 7 70 "$HEAD" '{"web":true}' '${lanes}'`;
+  const env = (over = {}) => ({ HEAD, VERIFY_BUILT_LANES_STUB: "shell", ...over });
+
+  it("starts the lane when its state for the head isn't terminal", () => {
+    const started = JSON.stringify({ started: true, runId: "7-aaaaaaaaaaaa-x" });
+    withBash(work(), { env: env({ LANE_START_STUB: started }) }, (r) => {
+      assert.match(
+        r.calls,
+        new RegExp(
+          `^lane start --issue 7 --pr 70 --sha ${HEAD} --platforms \\{"web":true\\} `,
+          "m",
+        ),
+      );
+      assert.match(r.log, /verification shell lane started for aaaaaaaaaaaa/);
+      assert.equal(r.issue.verifyShell ?? null, null, "the module records running itself");
+    });
+  });
+
+  it("does nothing for a terminal state, a lane switched off or not built, or under --dry-run", () => {
+    for (const state of [
+      "reported:pass",
+      "timeout",
+      "unavailable:guard",
+      "skipped:attempts",
+      "no-preview",
+      "stale-branch",
+    ]) {
+      withBash(work(`{"shell":"${state}"}`), { env: env() }, (r) => {
+        assert.doesNotMatch(r.calls, /^lane /m, state);
+      });
+    }
+    withBash(work(), { env: env({ FACTORY_VERIFY_LANES: "browser" }) }, (r) =>
+      assert.doesNotMatch(r.calls, /^lane /m),
+    );
+    withBash(work(), { env: env({ VERIFY_BUILT_LANES_STUB: "" }) }, (r) =>
+      assert.doesNotMatch(r.calls, /^lane /m),
+    );
+    withBash(work(), { env: env({ DRY_RUN: "1" }) }, (r) => {
+      assert.doesNotMatch(r.calls, /^lane /m);
+      assert.match(r.log, /DRY-RUN: would start the verification shell lane for #7/);
+    });
+  });
+
+  it("tries again from a pending state: running, retry, deferred", () => {
+    for (const state of ["running", "retry:error", "deferred:memory"]) {
+      withBash(work(`{"shell":"${state}"}`), { env: env() }, (r) =>
+        assert.match(r.calls, /^lane start /m, state),
+      );
+    }
+  });
+
+  it("maps each refusal to a lane state, or to nothing (retry next tick)", () => {
+    const rows = [
+      ["attempts", `${HEAD}:skipped:attempts`],
+      ["memory", `${HEAD}:deferred:memory`],
+      ["disk", `${HEAD}:deferred:disk`],
+      ["busy", `${HEAD}:deferred:busy`],
+      ["lane-paused", `${HEAD}:deferred:lane-paused`],
+      ["factory-paused", `${HEAD}:deferred:paused`],
+      ["claude-missing", `${HEAD}:unavailable:claude-missing`],
+      ["prompt-missing", `${HEAD}:unavailable:prompt-missing`],
+      ["preview-wait", null],
+      ["scenario-wait", null],
+      ["head-moved", null],
+      ["start-failed", null],
+      ["running", null],
+      ["off", null],
+      ["hold-cap-near", null],
+    ];
+    for (const [reason, want] of rows) {
+      const stub = JSON.stringify({ started: false, reason });
+      withBash(work(), { env: env({ LANE_START_STUB: stub }) }, (r) => {
+        assert.equal(r.issue.verifyShell ?? null, want, reason);
+      });
+    }
+  });
+
+  it("never lets a deferral hide an earlier attempt's outcome", () => {
+    const stub = JSON.stringify({ started: false, reason: "busy" });
+    withBash(
+      work(`{"shell":"retry:error"}`),
+      { env: env({ LANE_START_STUB: stub }), state: { verifyShell: `${HEAD}:retry:error` } },
+      (r) => {
+        assert.equal(r.issue.verifyShell, `${HEAD}:retry:error`);
+        assert.doesNotMatch(r.calls, /factory:set-issue-field/);
+      },
+    );
+    // A terminal refusal still lands over a retry.
+    const spent = JSON.stringify({ started: false, reason: "attempts" });
+    withBash(
+      work(`{"shell":"retry:error"}`),
+      { env: env({ LANE_START_STUB: spent }), state: { verifyShell: `${HEAD}:retry:error` } },
+      (r) => assert.equal(r.issue.verifyShell, `${HEAD}:skipped:attempts`),
+    );
+  });
+
+  it("leaves a deferral that's already recorded alone, and survives a module that fails", () => {
+    const stub = JSON.stringify({ started: false, reason: "memory" });
+    withBash(
+      work(`{"shell":"deferred:memory"}`),
+      { env: env({ LANE_START_STUB: stub }), state: { verifyShell: `${HEAD}:deferred:memory` } },
+      (r) => {
+        assert.doesNotMatch(r.calls, /factory:set-issue-field/);
+      },
+    );
+    withBash(work(), { env: env({ LANE_FAIL: "1" }) }, (r) => {
+      assert.match(r.log, /couldn't be started \(non-fatal; retried next tick\)/);
+    });
+  });
+
+  it("runs from the sweep's work-lanes action", () => {
+    const card = 'verify_sweep_card ITEM 7 "status:testing"';
+    const state = {
+      verifySha: HEAD,
+      verifyStartedAt: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+      lastReviewSha: HEAD,
+      lastFeedbackAt: "2026-01-01T00:00:00Z",
+      intestCommentSha: HEAD,
+    };
+    withBash(
+      card,
+      {
+        env: env({ PR_OBJ_STUB: PR_OBJ, PR_VIEW_STUB: prView(), VERIFY_BUILT_LANES_STUB: "shell" }),
+        state,
+      },
+      (r) => {
+        assert.match(r.log, /Testing → work-lanes \(lanes-pending\)/);
+        assert.match(r.calls, new RegExp(`^lane start --issue 7 --pr 70 --sha ${HEAD} `, "m"));
+      },
+    );
+  });
+});
+
+describe("verify_shell_stop (real helper, lane module stubbed)", () => {
+  it("stops the card's run on its way out of Testing, and logs it", () => {
+    const stub = JSON.stringify({ state: "stopped", runId: "r" });
+    withBash(
+      `verify_shell_stop 7 "$HEAD" hold-cap`,
+      { env: { HEAD, LANE_STOP_STUB: stub } },
+      (r) => {
+        assert.match(
+          r.calls,
+          new RegExp(`^lane stop --issue 7 --sha ${HEAD} --reason hold-cap `, "m"),
+        );
+        assert.match(r.log, /verification shell lane stopped \(hold-cap\)/);
+      },
+    );
+  });
+
+  it("is quiet when nothing ran, does nothing under --dry-run and survives a failure", () => {
+    withBash(`verify_shell_stop 7 "$HEAD" threads`, { env: { HEAD } }, (r) =>
+      assert.doesNotMatch(r.log, /stopped/),
+    );
+    withBash(`verify_shell_stop 7 "$HEAD" threads`, { env: { HEAD, DRY_RUN: "1" } }, (r) =>
+      assert.doesNotMatch(r.calls, /^lane /m),
+    );
+    withBash(`verify_shell_stop 7 "$HEAD" threads`, { env: { HEAD, LANE_FAIL: "1" } }, (r) =>
+      assert.match(r.log, /housekeeping reaps it/),
+    );
+  });
+
+  it("runs on a hand-back and on a promotion", () => {
+    withBash(`verify_hand_back ITEM 7 70 "$HEAD" ci-red '{}'`, { env: { HEAD } }, (r) => {
+      assert.match(r.calls, /^lane stop --issue 7 /m);
+    });
+  });
+});
+
+describe("verify_shell_housekeeping (real helper, lane module stubbed)", () => {
+  const run = 'verify_shell_housekeeping; echo "LIMITED=$VERIFY_SESSION_LIMITED"';
+
+  it("is silent on an idle or running tick", () => {
+    for (const out of [
+      '{"state":"idle","reaped":{"worktrees":[],"runDirs":[]}}',
+      '{"state":"running","runId":"r"}',
+    ]) {
+      withBash(run, { env: { LANE_HK_STUB: out } }, (r) => {
+        assert.doesNotMatch(r.log, /Verification shell lane/);
+        assert.match(r.stdout, /LIMITED=0/);
+      });
+    }
+  });
+
+  it("logs what it collected, reaped or killed", () => {
+    const out = JSON.stringify({ state: "done", outcome: "reported", laneState: "reported:pass" });
+    withBash(run, { env: { LANE_HK_STUB: out } }, (r) =>
+      assert.match(r.log, /Verification shell lane: .*"reported:pass"/),
+    );
+    const reaped = JSON.stringify({
+      state: "idle",
+      reaped: { worktrees: [], runDirs: [], privateDirs: ["/x"] },
+    });
+    withBash(run, { env: { LANE_HK_STUB: reaped } }, (r) => assert.match(r.log, /privateDirs/));
+  });
+
+  it("pauses the factory on a session limit and tells --watch to end the tick", () => {
+    const out = JSON.stringify({
+      state: "done",
+      outcome: "session-limit",
+      sessionLimit: {
+        resetAt: "2026-10-21T15:02:00.000Z",
+        reason: "You've hit your session limit",
+      },
+    });
+    withBash(run, { env: { LANE_HK_STUB: out } }, (r) => {
+      assert.match(
+        r.calls,
+        /^pause until=2026-10-21T15:02:00\.000Z reason=You've hit your session limit$/m,
+      );
+      assert.match(r.stdout, /LIMITED=1/);
+    });
+    withBash(run, { env: { LANE_HK_STUB: out, DRY_RUN: "1" } }, (r) => {
+      assert.doesNotMatch(r.calls, /^pause /m);
+      assert.match(r.calls, /^lane housekeeping .*--dry-run 1/m);
+    });
+  });
+
+  it("warns on an error or a failed module, never failing the tick", () => {
+    withBash(run, { env: { LANE_HK_STUB: '{"state":"error","error":"x"}' } }, (r) =>
+      assert.match(r.log, /housekeeping error \(non-fatal/),
+    );
+    withBash(run, { env: { LANE_FAIL: "1" } }, (r) =>
+      assert.match(r.log, /housekeeping failed \(non-fatal/),
+    );
+  });
+});
+
+describe("verify_compose_report with a shell run (real composer, lane module stubbed)", () => {
+  const scenario = [
+    "## Test scenario",
+    "### Web",
+    "1. Open /notebooks — expected: the list.",
+    `<!-- drafto-factory-scenario-sha:${HEAD} -->`,
+  ].join("\n");
+  const comments = [{ id: 5, body: scenario, createdAt: "t", authorAssociation: "OWNER" }];
+  const output =
+    "<<<REPORT\n**Summary:** 1 PASS\n**Assessment:** fine.\nREPORT>>>\n<<<MANUAL\nMANUAL>>>\nshell=ok verdict=pass\n";
+  const promote = `mkdir -p "$LOG_DIR/run" && printf '%s' '${output}' > "$LOG_DIR/run/shell-output.txt" && node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field 7 verifyShellRunDir "$LOG_DIR/run" --state-file "$STATE_FILE" >/dev/null && verify_promote ITEM 7 70 "$HEAD" lanes-done '{"shell":"reported:pass","browser":"skipped:not-built"}' "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")" "$(cat "$COMMENTS_FILE")"`;
+  const state = { verifyShell: `${HEAD}:reported:pass` };
+
+  it("adds the run's own gaps to the report", () => {
+    const gaps = JSON.stringify({
+      gaps: [{ lane: "shell", reason: "GAP-SENTINEL no bypass secret" }],
+      bypassUsed: false,
+    });
+    withBash(promote, { env: { HEAD, LANE_GAPS_STUB: gaps }, state, comments }, (r) => {
+      const body = r.comments.at(-1).body;
+      assert.match(body, /\*\*Repo & API \(shell\):\*\* GAP-SENTINEL no bypass secret/);
+      assert.match(body, /\*\*Verdict: PASS\*\*/);
+      assert.match(r.calls, /^lane gaps --run-dir .*\/run$/m);
+    });
+  });
+
+  it("scans for the bypass secret the run held even after its file is gone (fails closed)", () => {
+    const gaps = JSON.stringify({ gaps: [], bypassUsed: true });
+    withBash(promote, { env: { HEAD, LANE_GAPS_STUB: gaps }, state, comments }, (r) => {
+      const body = r.comments.at(-1).body;
+      assert.match(body, /report withheld/i);
+      assert.match(body, /bypass secret file/);
+    });
   });
 });

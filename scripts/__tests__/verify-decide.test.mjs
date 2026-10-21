@@ -298,6 +298,22 @@ describe("verify-decide: the rules, in order", () => {
       );
     });
 
+    it("shows why a lane deferred until the hold cap, or how its last attempt ended, and keeps both pending until then", () => {
+      assert.deepEqual(
+        run({ now: at(60), lanes: { shell: "deferred:memory", browser: "retry:error" } }).lanes,
+        { shell: "skipped:memory", browser: "skipped:after-error" },
+      );
+      const pending = run({ lanes: { shell: "deferred:busy", browser: "reported:pass" } });
+      assert.equal(pending.action, "work-lanes");
+      assert.deepEqual(pending.pending, ["shell"]);
+      // Feedback cuts a deferred lane short like any other pending one.
+      assert.deepEqual(
+        run({ newFeedback: true, lanes: { shell: "deferred:disk", browser: "reported:pass" } })
+          .lanes,
+        { shell: "skipped:feedback", browser: "reported:pass" },
+      );
+    });
+
     it("a missing round clock counts as expired, so a card can't be stranded", () => {
       assert.equal(run({ startedAt: "" }).reason, "hold-cap");
     });

@@ -328,9 +328,10 @@ FACTORY_SIGNIN_ROUTE_PATH="apps/web/src/app/auth/test-sign-in/route.ts"
 # ── Pre-In-Test verification, the "Testing" column (ADR-0053) ─────────────
 # Off by default. With FACTORY_VERIFY=1 a converged In Review card moves to
 # Testing instead of In Test: the scenario is written and the betas dispatched
-# there, the verification lanes run (the shell lane and the browser `verify`
-# kind; neither is built yet, so a Testing card promotes on the next sweep), and
-# the card moves on to In Test with one deterministic report comment.
+# there, the verification lanes run (the shell lane, scripts/lib/verify-lane.mjs,
+# and the browser `verify` kind; a lane that isn't built reads
+# skipped:not-built), and the card moves on to In Test with one deterministic
+# report comment.
 # Verification is evidence, never a gate: the hold cap bounds the stay, and a
 # FAIL verdict changes nothing but the report. With the switch off the Testing
 # sweep only drains: any card found there is promoted at once, so switching off
@@ -526,6 +527,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 INTEST_PROMPT_FILE="$SCRIPT_DIR/factory-intest-prompt.md"
 REVIEW_PROMPT_FILE="$SCRIPT_DIR/factory-review-prompt.md"
 BROWSER_PROMPT_FILE="$SCRIPT_DIR/factory-browser-prompt.md"
+VERIFY_PROMPT_FILE="$SCRIPT_DIR/factory-verify-prompt.md"
 umask 077
 LOG_DIR="$REPO_ROOT/logs/factory"
 mkdir -p "$LOG_DIR"
@@ -3298,7 +3300,7 @@ cr_coverage_note() {
 # exist: until a lane is built its state reads skipped:not-built, so a Testing
 # card promotes as soon as the sweep sees it.
 VERIFY_DIR="$LOG_DIR/verify"
-VERIFY_BUILT_LANES=""   # Wave 5A adds shell, 5B browser
+VERIFY_BUILT_LANES="shell"   # Wave 5B adds browser
 VERIFY_COLUMN_READY=""  # per-tick cache: "" unknown, 1 ready, 0 not ready
 
 # Can a card be moved into Testing at all? The board needs the Testing option
@@ -3501,22 +3503,163 @@ verify_enter() {
   return 0
 }
 
-# Seam: start or poll the verification lanes for one card. Wave 5A wires the
-# shell lane here (verify-lane.mjs start when its state for <head-sha> isn't
-# terminal), 5B the browser one (add the `verify:<issue>:<pr>:<sha>` candidate
-# for --browser). Commentary like the rest of the stage: it must never fail the
-# tick. Args: <issue> <pr> <head-sha> <platforms-json> <lane-states-json>.
+# Seam: start or poll the verification lanes for one card. The shell lane
+# starts here (verify_shell_work: verify-lane.mjs start when its state for
+# <head-sha> isn't terminal); 5B adds the browser one (the
+# `verify:<issue>:<pr>:<sha>` candidate for --browser). Commentary like the rest
+# of the stage: it must never fail the tick. Args: <issue> <pr> <head-sha>
+# <platforms-json> <lane-states-json>.
 verify_work_lanes() {
+  verify_shell_work "$@" || true
   return 0
 }
 
 # Seam: stop whatever lane is still running for <issue> because its card is
 # leaving Testing: a hand-back, or a promotion that didn't wait for every lane
 # (hold cap, feedback, verification off). Called on every exit, so a no-op when
-# nothing runs. Wave 5A kills the shell lane here (verify-lane.mjs stop);
-# housekeeping also reaps a run whose card left Testing, so this is the prompt
-# path, not the only one. Args: <issue> <head-sha> <reason>.
+# nothing runs. verify_shell_stop kills the shell lane here; housekeeping also
+# kills a run whose card left Testing, so this is the prompt path, not the only
+# one. Args: <issue> <head-sha> <reason>.
 verify_stop_lanes() {
+  verify_shell_stop "$@" || true
+  return 0
+}
+
+# ── The shell lane (ADR-0053, Wave 5A) ─────────────────────────────────────
+# A detached, guarded `--no-chrome` claude session in its own worktree of the
+# PR head (scripts/lib/verify-lane.mjs, scripts/lib/verify-guard.mjs, prompt
+# scripts/factory-verify-prompt.md): targeted tests, the scenario's command
+# steps, the macOS --preflight, and API checks on the preview through the
+# preview-curl wrapper. Like the CodeRabbit CLI lane (ADR-0036) it never blocks
+# the tick: verify_shell_work starts it, verify_shell_housekeeping (top of
+# --watch) collects it, verify_shell_stop kills it. Its claude call lives in
+# node, never here.
+
+# verify_shell_work <issue> <pr> <head-sha> <platforms-json> <lane-states-json>
+# Start the shell lane for <head-sha> unless its state is already terminal.
+# A refusal becomes a lane state where waiting can't help or the report should
+# say why (attempts spent → skipped:attempts; a missing tool → unavailable:…;
+# memory, disk, another card's run, a pause → deferred:…, which stays pending
+# and reads as skipped:<why> if the hold cap comes first); anything else
+# (a preview or scenario still on its way, a moved head, a failed start) is
+# simply tried again next tick. Never fails the tick; logs only under
+# --dry-run.
+verify_shell_work() {
+  local issue_num="$1" pr_num="$2" head_sha="$3" platforms="${4:-}" lanes="${5:-}"
+  local state out started reason rec
+  [[ -n "$platforms" ]] || platforms='{}'
+  [[ -n "$lanes" ]] || lanes='{}'
+  verify_lane_enabled shell || return 0
+  [[ ",$VERIFY_BUILT_LANES," == *",shell,"* ]] || return 0
+  state=$(echo "$lanes" | jq -r '.shell // "none"' 2>/dev/null || echo "none")
+  case "${state%%:*}" in
+    reported|timeout|unavailable|stale-branch|no-preview|skipped) return 0 ;;
+  esac
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "DRY-RUN: would start the verification shell lane for #$issue_num at ${head_sha:0:12}"
+    return 0
+  fi
+  if ! out=$(node "$SCRIPT_DIR/lib/verify-lane.mjs" start --issue "$issue_num" --pr "$pr_num" \
+      --sha "$head_sha" --platforms "$platforms" --state-file "$STATE_FILE" \
+      --repo-root "$REPO_ROOT" --run-root "$VERIFY_DIR" --prompt-file "$VERIFY_PROMPT_FILE" \
+      --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
+      --signin-key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" \
+      --effort "${FACTORY_PLAN_EFFORT:-xhigh}" --install-timeout-sec "${INSTALL_TIMEOUT_SEC:-600}" \
+      --min-free-disk-gb "${FACTORY_MIN_FREE_DISK_GB:-3}" 2>>"$LOG_FILE"); then
+    log "WARNING: issue #$issue_num: the verification shell lane couldn't be started (non-fatal; retried next tick)"
+    return 0
+  fi
+  out=$(printf '%s\n' "$out" | tail -1)
+  started=$(echo "$out" | jq -r '.started // false' 2>/dev/null || echo "false")
+  if [[ "$started" == "true" ]]; then
+    log "Issue #$issue_num: verification shell lane started for ${head_sha:0:12}: $out"
+    return 0
+  fi
+  reason=$(echo "$out" | jq -r '.reason // ""' 2>/dev/null || echo "")
+  case "$reason" in
+    attempts) rec="skipped:attempts" ;;
+    memory|disk|busy|lane-paused) rec="deferred:$reason" ;;
+    factory-paused) rec="deferred:paused" ;;
+    claude-missing|pnpm-missing|curl-missing|perl-missing|nice-missing|prompt-missing) rec="unavailable:$reason" ;;
+    *) rec="" ;;
+  esac
+  # A deferral never hides an earlier attempt's outcome: a retry:<why> left by
+  # the last run says more than why this start had to wait.
+  if [[ "$state" == retry:* && "$rec" == deferred:* ]]; then
+    rec=""
+  fi
+  if [[ -n "$rec" && "$state" != "$rec" ]]; then
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" verifyShell "$head_sha:$rec" \
+      --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  fi
+  case "$reason" in
+    running|preview-wait|scenario-wait|hold-cap-near) ;;
+    *) log "Issue #$issue_num: verification shell lane not started (${reason:-no reason}${rec:+ → $rec}): $out" ;;
+  esac
+  return 0
+}
+
+# verify_shell_stop <issue> <head-sha> <reason> — stop <issue>'s shell run, if
+# one is in flight (the card is leaving Testing). Its attempt is refunded.
+verify_shell_stop() {
+  local issue_num="$1" head_sha="${2:-}" reason="${3:-stop}" out state
+  [[ "$DRY_RUN" -eq 1 ]] && return 0
+  if ! out=$(node "$SCRIPT_DIR/lib/verify-lane.mjs" stop --issue "$issue_num" --sha "$head_sha" \
+      --reason "$reason" --state-file "$STATE_FILE" --repo-root "$REPO_ROOT" \
+      --run-root "$VERIFY_DIR" 2>>"$LOG_FILE"); then
+    log "WARNING: issue #$issue_num: stopping the verification shell lane failed; housekeeping reaps it"
+    return 0
+  fi
+  out=$(printf '%s\n' "$out" | tail -1)
+  state=$(echo "$out" | jq -r '.state // ""' 2>/dev/null || echo "")
+  if [[ "$state" == "stopped" ]]; then
+    log "Issue #$issue_num: verification shell lane stopped ($reason): $out"
+  elif [[ "$state" == "error" ]]; then
+    log "WARNING: issue #$issue_num: stopping the verification shell lane: $out"
+  fi
+  return 0
+}
+
+# verify_shell_housekeeping — top of every --watch tick, like
+# cr_cli_housekeeping and NOT gated on FACTORY_VERIFY: a run started before the
+# switch was flipped off still owns a worktree and the lane's slot, and the
+# module winds it down itself. Collects a finished run (records verifyShell),
+# kills an overdue one or one whose head moved, PR closed or card left
+# Testing, and reaps old worktrees and run dirs. A run that ended on a Claude
+# session limit comes back with sessionLimit: the factory is paused the same
+# way every other claude call pauses it, and VERIFY_SESSION_LIMITED tells
+# --watch to end the tick.
+verify_shell_housekeeping() {
+  local out state reaped reset
+  VERIFY_SESSION_LIMITED=0
+  if ! out=$(node "$SCRIPT_DIR/lib/verify-lane.mjs" housekeeping --state-file "$STATE_FILE" \
+      --repo-root "$REPO_ROOT" --run-root "$VERIFY_DIR" --dry-run "${DRY_RUN:-0}" 2>>"$LOG_FILE"); then
+    log "WARNING: verification shell-lane housekeeping failed (non-fatal; retried next tick)"
+    return 0
+  fi
+  out=$(printf '%s\n' "$out" | tail -1)
+  [[ -n "$out" ]] || return 0
+  state=$(echo "$out" | jq -r '.state // ""' 2>/dev/null || echo "")
+  reaped=$(echo "$out" | jq -r '((.reaped.worktrees // []) + (.reaped.runDirs // []) + (.reaped.privateDirs // [])) | length' 2>/dev/null || echo "0")
+  [[ -n "$reaped" ]] || reaped="0"
+  reset=$(echo "$out" | jq -r '.sessionLimit.resetAt // ""' 2>/dev/null || echo "")
+  case "$state" in
+    # Every tick, lane on or off: stay quiet unless something happened.
+    idle|starting|running)
+      [[ "$reaped" == "0" ]] && return 0
+      ;;
+    error)
+      log "WARNING: verification shell-lane housekeeping error (non-fatal; retried next tick): $out"
+      return 0
+      ;;
+  esac
+  log "Verification shell lane: $out"
+  if [[ -n "$reset" && "${DRY_RUN:-0}" -eq 0 ]]; then
+    SESSION_LIMIT_RESET_AT="$reset"
+    SESSION_LIMIT_REASON=$(echo "$out" | jq -r '.sessionLimit.reason // ""' 2>/dev/null || echo "")
+    pause_for_session_limit
+    VERIFY_SESSION_LIMITED=1
+  fi
   return 0
 }
 
@@ -3619,12 +3762,17 @@ verify_scenario_file() {
 # test account and sign-in key, and the bypass secret. Each is passed when its
 # file exists, so an existing but unreadable one withholds the lane text
 # (failing closed); a file that isn't there is passed as "", because the lanes
-# read their secrets from these same paths and so never had it. Returns 1 when
-# the composer fails.
+# read their secrets from these same paths and so never had it. The one
+# exception is the bypass secret of a shell run that was given it: its path is
+# passed even if the file has gone since, so the composer fails closed instead
+# of skipping a literal the lane did hold. The shell run's own facts also add
+# their coverage gaps (no bypass secret, no preview, no session). Returns 1
+# when the composer fails.
 verify_compose_report() {
   local issue_num="$1" pr_num="$2" head_sha="$3" platforms="$4" lanes="$5" cr_note="$6"
   local comments_json="$7" state_json="$8" gaps="$9" body_file="${10}"
   local scenario_file beta_lanes="" bypass="" account="" signin_key="" shell_dir="" browser_dir="" out
+  local lane_facts merged
   mkdir -p "$VERIFY_DIR" 2>>"$LOG_FILE" || return 1
   scenario_file="$VERIFY_DIR/report-$issue_num-$head_sha.scenario.md"
   verify_scenario_file "$comments_json" "$head_sha" "$scenario_file" || scenario_file=""
@@ -3642,6 +3790,17 @@ verify_compose_report() {
   fi
   if [[ -n "$(verify_sha_value "$(echo "$state_json" | jq -r '.verifyBrowser // ""' 2>/dev/null)" "$head_sha")" ]]; then
     browser_dir=$(echo "$state_json" | jq -r '.verifyBrowserRunDir // ""' 2>/dev/null || echo "")
+  fi
+  if [[ -n "$shell_dir" && -d "$shell_dir" ]] \
+      && lane_facts=$(node "$SCRIPT_DIR/lib/verify-lane.mjs" gaps --run-dir "$shell_dir" 2>>"$LOG_FILE"); then
+    lane_facts=$(printf '%s\n' "$lane_facts" | tail -1)
+    if [[ "$(echo "$lane_facts" | jq -r '.bypassUsed // false' 2>/dev/null)" == "true" ]]; then
+      bypass="$FACTORY_VERIFY_BYPASS_FILE"
+    fi
+    if merged=$(jq -nc --argjson a "$gaps" --argjson b "$lane_facts" '$a + ($b.gaps // [])' 2>/dev/null) \
+        && [[ -n "$merged" ]]; then
+      gaps="$merged"
+    fi
   fi
   if ! out=$(node "$SCRIPT_DIR/lib/verify-report.mjs" render --issue "$issue_num" --pr "$pr_num" \
       --sha "$head_sha" --scenario-file "$scenario_file" --platforms "$platforms" \
@@ -5010,6 +5169,18 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
   # Runs whether or not FACTORY_CR_CLI is on (off, it only terminates and
   # discards a leftover run, never posts); never fails the tick.
   cr_cli_housekeeping
+
+  # ── 1c. Verification shell-lane housekeeping (ADR-0053) ──
+  # Collect a finished shell run BEFORE the Testing sweep decides, so a lane
+  # that reported since the last tick lets its card promote this tick. Runs
+  # whether or not FACTORY_VERIFY is on (off, it only winds a run down). A run
+  # that hit a Claude session limit pauses the factory; the tick ends there,
+  # as it does when any other claude call hits one.
+  verify_shell_housekeeping
+  if [[ "${VERIFY_SESSION_LIMITED:-0}" == "1" ]]; then
+    log "=== factory-agent --$MODE_NAME completed in $(( $(date +%s) - START_TIME ))s ==="
+    exit 0
+  fi
 
   # ── 2. In Review → In Test ──
   if ! REVIEW_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \

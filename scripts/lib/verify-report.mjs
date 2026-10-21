@@ -211,6 +211,28 @@ const REASONS = {
   install: "installing dependencies failed",
   "no-scenario": "there was no test scenario for this commit",
   "no-web-steps": "the scenario has no Web steps",
+  // The shell lane's own tokens (verify-lane.mjs, factory-agent.sh's
+  // verify_shell_work).
+  busy: "another card's verification run held the lane",
+  "lane-paused": "the verification lane was paused",
+  error: "it exited with an error on every attempt",
+  "no-result": "it finished without a result on every attempt",
+  lost: "its supervisor died before it reported",
+  "claude-missing": "the claude CLI wasn't found on the Mac mini",
+  "pnpm-missing": "pnpm wasn't found on the Mac mini",
+  "curl-missing": "curl wasn't found on the Mac mini",
+  "perl-missing": "perl (the guard's timeout wrapper) wasn't found on the Mac mini",
+  "nice-missing": "nice wasn't found on the Mac mini",
+  "prompt-missing": "the lane's prompt file is missing",
+  // A shell attempt that ended without a result, then the hold cap came
+  // before another one (verify-decide.mjs maps retry:<why> to after-<why>).
+  "after-error": "its run exited with an error, and the hold cap came before another attempt",
+  "after-no-result": "its run ended without a result, and the hold cap came before another attempt",
+  "after-lost": "its supervisor died, and the hold cap came before another attempt",
+  "after-terminated":
+    "its run was stopped from outside, and the hold cap came before another attempt",
+  "after-stopped":
+    "its run was stopped when the card left Testing, and the hold cap came before another attempt",
   // The Testing sweep's own tokens (factory-agent.sh, verify-decide.mjs).
   "not-built": "this lane isn't built yet",
   "lane-off": "the lane is switched off (FACTORY_VERIFY_LANES)",

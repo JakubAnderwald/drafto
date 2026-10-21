@@ -38,9 +38,12 @@
 // Lane states are verify-report.mjs's tokens: `reported[:<verdict>]`,
 // `timeout`, `unavailable:<reason>`, `stale-branch`, `no-preview` and
 // `skipped:<reason>` are TERMINAL (the lane has nothing more to do for this
-// commit); anything else (`none`, `running`, an unknown token) is still
-// pending. Bash sends lanes that are switched off as `skipped:lane-off` and
-// lanes that aren't built yet as `skipped:not-built`, so both count as done.
+// commit); anything else (`none`, `running`, the shell lane's `retry:<why>`
+// and `deferred:<why>`, an unknown token) is still pending. Bash sends lanes
+// that are switched off as `skipped:lane-off` and lanes that aren't built yet
+// as `skipped:not-built`, so both count as done. At the hold cap a
+// `deferred:<why>` lane is reported as `skipped:<why>`, a `retry:<why>` one
+// as `skipped:after-<why>`.
 //
 // Rules, first match wins:
 //   1. PR not open                              → skip (pr-merged|pr-closed|pr-unknown)
@@ -141,12 +144,22 @@ export function holdExpired({ startedAt, now, holdMaxMin }) {
 }
 
 // The lanes as the report should show them: still-pending lanes become
-// `skipped:<reason>`, terminal ones are kept as they are.
+// `skipped:<reason>`, terminal ones are kept as they are. At the hold cap the
+// shell lane's own pending states say more than "the hold cap was reached
+// first": a lane left `deferred:<why>` (memory pressure, low disk, another
+// card's run, a session limit) shows `skipped:<why>`, and one whose last
+// attempt ended `retry:<why>` (an error, no result) shows
+// `skipped:after-<why>`, so that attempt's outcome isn't lost.
 function reportLanes(lanes, reason) {
   const out = {};
   for (const lane of LANES) {
     const state = str(lanes?.[lane]) || "none";
-    out[lane] = isTerminalLaneState(state) ? state : `skipped:${reason}`;
+    const deferred = /^deferred:(.+)$/i.exec(state);
+    const retry = /^retry:(.+)$/i.exec(state);
+    if (isTerminalLaneState(state)) out[lane] = state;
+    else if (reason === "hold-cap" && deferred) out[lane] = `skipped:${deferred[1]}`;
+    else if (reason === "hold-cap" && retry) out[lane] = `skipped:after-${retry[1]}`;
+    else out[lane] = `skipped:${reason}`;
   }
   return out;
 }
