@@ -162,7 +162,7 @@ Nothing in the log at all means the sweep isn't seeing the card. Check for a `fa
 INCOMPLETE means no lane reported a verdict for that commit. Its **Coverage gaps** say why, lane by lane:
 
 - **deferred under memory pressure / low disk / another card's verification run held the lane** — the shell lane never got its turn before the hold cap.
-- **unavailable: the lane's guard hook didn't load** — the shell lane is paused for 24 hours; see the runbook's "The shell lane".
+- **unavailable: the lane's guard hook didn't load** — on the **Repo & API** row, the shell lane is paused for 24 hours: find out why, then `node scripts/lib/state-cli.mjs factory:verify-resume` (the runbook's "The shell lane"). On the **Web** row, the browser runner's guard didn't load and the runner is off: fix its settings file, then `node scripts/lib/state-cli.mjs factory:browser-reset` (the runbook's "Browser runner (Claude in Chrome)", `guard-not-loaded`).
 - **unavailable: …** (Web row) — the browser couldn't run (Chrome not running, the extension signed out, the Vercel login expired, …). The lane ends at once rather than holding the card; the In Test browser run tries again once the browser is fixed. The runbook's "A Testing card's browser lane" lists every reason.
 - **the PR's diff doesn't touch the web app**, **no Vercel preview was ready**, **the PR branch predates the preview sign-in route** — the browser lane had nothing it could run.
 - **the hold cap was reached first** — a lane was still running at the cap.

@@ -1543,25 +1543,52 @@ describe("the browser lane's --watch half (verify_browser_work, verify_browser_s
     });
   });
 
+  it("does nothing, recording nothing, when the browser lane is switched off or not built", () => {
+    const NOT_WEB = '{"web":false,"mobile":true,"desktop":false}';
+    for (const env of [
+      { FACTORY_VERIFY_LANES: "shell", VERIFY_BUILT_LANES_STUB: "shell,browser" },
+      { VERIFY_BUILT_LANES_STUB: "shell" },
+    ]) {
+      withBash(`${work(WEB)}\n${work(NOT_WEB)}\n${show}`, { env: { HEAD, ...env } }, (r) => {
+        assert.equal(r.stdout.trim(), "C=[]", JSON.stringify(env));
+        assert.equal(r.issue.verifyBrowser ?? null, null, JSON.stringify(env));
+      });
+    }
+  });
+
   it("queues a verify candidate for a web card whose lane has no result, once", () => {
-    withBash(`${work(WEB)}\n${work(WEB)}\n${show}`, { env: { HEAD } }, (r) => {
-      assert.equal(r.stdout.trim(), `C=[verify:7:70:${HEAD}]`);
-      assert.equal(r.issue.verifyBrowser ?? null, null, "queueing records nothing");
-      assert.match(r.log, /browser lane queued for --browser/);
-    });
+    withBash(
+      `${work(WEB)}\n${work(WEB)}\n${show}`,
+      { env: { HEAD, VERIFY_BUILT_LANES_STUB: "shell,browser" } },
+      (r) => {
+        assert.equal(r.stdout.trim(), `C=[verify:7:70:${HEAD}]`);
+        assert.equal(r.issue.verifyBrowser ?? null, null, "queueing records nothing");
+        assert.match(r.log, /browser lane queued for --browser/);
+      },
+    );
     withBash(
       `${work(WEB)}\n${show}`,
-      { env: { HEAD, VERIFY_BROWSER_CANDIDATES_STUB: `verify:9:90:${OLD}` } },
+      {
+        env: {
+          HEAD,
+          VERIFY_BUILT_LANES_STUB: "shell,browser",
+          VERIFY_BROWSER_CANDIDATES_STUB: `verify:9:90:${OLD}`,
+        },
+      },
       (r) => assert.equal(r.stdout.trim(), `C=[verify:9:90:${OLD} verify:7:70:${HEAD}]`),
     );
   });
 
   it("leaves a lane alone once it has a result for this commit", () => {
     for (const browser of ["reported:pass", "unavailable:chrome", "skipped:not-built", "timeout"]) {
-      withBash(`${work(WEB, browser)}\n${show}`, { env: { HEAD } }, (r) => {
-        assert.equal(r.stdout.trim(), "C=[]", browser);
-        assert.equal(r.issue.verifyBrowser ?? null, null, browser);
-      });
+      withBash(
+        `${work(WEB, browser)}\n${show}`,
+        { env: { HEAD, VERIFY_BUILT_LANES_STUB: "shell,browser" } },
+        (r) => {
+          assert.equal(r.stdout.trim(), "C=[]", browser);
+          assert.equal(r.issue.verifyBrowser ?? null, null, browser);
+        },
+      );
     }
   });
 
@@ -1569,7 +1596,7 @@ describe("the browser lane's --watch half (verify_browser_work, verify_browser_s
     const state = { verifyBrowserRunDir: "/old/run" };
     withBash(
       `${work('{"web":false,"mobile":true,"desktop":false}')}\n${show}`,
-      { env: { HEAD }, state },
+      { env: { HEAD, VERIFY_BUILT_LANES_STUB: "shell,browser" }, state },
       (r) => {
         assert.equal(r.stdout.trim(), "C=[]");
         assert.equal(r.issue.verifyBrowser, `${HEAD}:skipped:not-web`);
@@ -1580,27 +1607,39 @@ describe("the browser lane's --watch half (verify_browser_work, verify_browser_s
 
   it("ends the lane as skipped:browser-off when the runner or its verify kind is off", () => {
     for (const env of [{ FACTORY_BROWSER: "0" }, { FACTORY_BROWSER_KINDS: "intest" }]) {
-      withBash(`${work(WEB)}\n${show}`, { env: { HEAD, ...env } }, (r) => {
-        assert.equal(r.stdout.trim(), "C=[]", JSON.stringify(env));
-        assert.equal(r.issue.verifyBrowser, `${HEAD}:skipped:browser-off`);
-      });
+      withBash(
+        `${work(WEB)}\n${show}`,
+        { env: { HEAD, VERIFY_BUILT_LANES_STUB: "shell,browser", ...env } },
+        (r) => {
+          assert.equal(r.stdout.trim(), "C=[]", JSON.stringify(env));
+          assert.equal(r.issue.verifyBrowser, `${HEAD}:skipped:browser-off`);
+        },
+      );
     }
   });
 
   it("waits, recording nothing, while the PR's platforms can't be read", () => {
     for (const platforms of ["{}", "not json"]) {
-      withBash(`${work(platforms)}\n${show}`, { env: { HEAD } }, (r) => {
-        assert.equal(r.stdout.trim(), "C=[]", platforms);
-        assert.equal(r.issue.verifyBrowser ?? null, null);
-        assert.match(r.log, /platforms are unknown this tick; the browser lane waits/);
-      });
+      withBash(
+        `${work(platforms)}\n${show}`,
+        { env: { HEAD, VERIFY_BUILT_LANES_STUB: "shell,browser" } },
+        (r) => {
+          assert.equal(r.stdout.trim(), "C=[]", platforms);
+          assert.equal(r.issue.verifyBrowser ?? null, null);
+          assert.match(r.log, /platforms are unknown this tick; the browser lane waits/);
+        },
+      );
     }
   });
 
   it("records nothing in a dry run", () => {
-    withBash(work('{"web":false}'), { env: { HEAD, DRY_RUN: "1" } }, (r) => {
-      assert.equal(r.issue.verifyBrowser ?? null, null);
-    });
+    withBash(
+      work('{"web":false}'),
+      { env: { HEAD, VERIFY_BUILT_LANES_STUB: "shell,browser", DRY_RUN: "1" } },
+      (r) => {
+        assert.equal(r.issue.verifyBrowser ?? null, null);
+      },
+    );
   });
 
   it("drops only the stopped card's candidate", () => {

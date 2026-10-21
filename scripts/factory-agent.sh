@@ -3889,9 +3889,13 @@ verify_state_terminal() {
 # up the tick or a merge (ADR-0051). What can be settled here, without Chrome,
 # ends the lane at once instead of leaving it to the hold cap: no web changes
 # (skipped:not-web) and a runner whose verify kind is off (skipped:browser-off).
-# Platforms that couldn't be read ({}) wait for the next tick.
+# Platforms that couldn't be read ({}) wait for the next tick. A lane switched
+# off or not built does nothing, like verify_shell_work (verify_lane_states
+# already reads it as skipped:lane-off / skipped:not-built).
 verify_browser_work() {
   local issue_num="$1" pr_num="$2" head_sha="$3" platforms="$4" lanes="$5" st web
+  verify_lane_enabled browser || return 0
+  [[ ",$VERIFY_BUILT_LANES," == *",browser,"* ]] || return 0
   st=$(echo "$lanes" | jq -r '.browser // "none"' 2>/dev/null || echo "none")
   if verify_state_terminal "$st"; then
     return 0
