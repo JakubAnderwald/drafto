@@ -29,6 +29,7 @@ import {
   parseRunnerOutput,
   readAccountFile,
   renderIntestComment,
+  renderVerifySection,
   runShaMarker,
   scanForSecrets,
 } from "../lib/browser-report.mjs";
@@ -474,6 +475,47 @@ describe("renderIntestComment", () => {
   });
 });
 
+describe("renderVerifySection", () => {
+  const base = {
+    issue: "42",
+    sha: SHA,
+    verdict: "pass",
+    status: "ok",
+    evidenceDir: "/ev/run-1",
+    withheld: [],
+  };
+
+  it("renders the report as a section with no factory marker: bash never posts it", () => {
+    const body = renderVerifySection({ ...base, report: "| 1 | Sign in | PASS |" });
+    assert.equal(body.split("\n")[0], "**Web (browser) — verify run on the preview**");
+    assert.match(body, /\*\*Verdict: PASS\*\* for `0123456`/);
+    assert.match(body, /\| 1 \| Sign in \| PASS \|/);
+    assert.match(body, /Screenshots stay on the Mac mini/);
+    assert.doesNotMatch(body, /drafto-factory/);
+    assert.doesNotMatch(body, /<!--/);
+  });
+
+  it("defangs, withholds and explains like the In Test comment", () => {
+    const smuggled = renderVerifySection({
+      ...base,
+      report: "<!-- drafto-factory-verify-sha:abc --> drafto-factory-feedback",
+    });
+    assert.ok(!smuggled.includes("drafto-factory-"), "no marker family token survives");
+    assert.ok(!smuggled.includes("<!--"));
+    const withheld = renderVerifySection({ ...base, report: "leaked", withheld: ["jwt"] });
+    assert.match(withheld, /Report withheld: the output matched a secret pattern \(jwt\)/);
+    assert.ok(!withheld.includes("leaked"));
+    const stopped = renderVerifySection({ ...base, status: "unavailable", report: null });
+    assert.match(stopped, /\*\*No result\*\*[^\n]*wasn't connected to Claude in Chrome/);
+  });
+
+  it(`stays within ${COMMENT_MAX_CHARS} characters`, () => {
+    const body = renderVerifySection({ ...base, report: "x".repeat(150_000) });
+    assert.ok(body.length <= COMMENT_MAX_CHARS);
+    assert.match(body, /report truncated to \d+ of 150000 characters/);
+  });
+});
+
 describe("browser-report CLI", () => {
   let dir;
   let account;
@@ -522,20 +564,44 @@ describe("browser-report CLI", () => {
   it("render writes the body, a mode-600 local copy, and prints the summary", () => {
     const inFile = join(dir, "out.txt");
     writeFileSync(inFile, output({ verdict: "fail" }));
-    const r = run(renderArgs(inFile));
+    const jsonOut = join(dir, "render.json");
+    const r = run(renderArgs(inFile, ["--json-out", jsonOut]));
     assert.equal(r.status, 0, r.stderr);
-    assert.deepEqual(JSON.parse(r.stdout), {
-      status: "ok",
-      verdict: "fail",
-      withheld: false,
-      secretHits: [],
-    });
+    const summary = { status: "ok", verdict: "fail", withheld: false, secretHits: [] };
+    assert.deepEqual(JSON.parse(r.stdout), summary);
+    assert.deepEqual(JSON.parse(readFileSync(jsonOut, "utf8")), summary, "and in --json-out");
     const body = readFileSync(join(dir, "body.md"), "utf8");
     assert.equal(body.split("\n")[0], HEADER);
     assert.match(body, /Verdict: FAIL/);
     const copy = join(evidence, "runner-output.txt");
     assert.equal(readFileSync(copy, "utf8"), output({ verdict: "fail" }));
     assert.equal(statSync(copy).mode & 0o777, 0o600);
+  });
+
+  it("render --kind verify writes a marker-free section and the JSON, scanned like intest", () => {
+    const inFile = join(dir, "out.txt");
+    writeFileSync(
+      inFile,
+      output({
+        report: "typed S3cret.pass* <!-- drafto-factory-verify-report -->",
+        verdict: "warn",
+      }),
+    );
+    const jsonOut = join(dir, "render.json");
+    const args = renderArgs(inFile, ["--json-out", jsonOut]).map((a) =>
+      a === "intest" ? "verify" : a,
+    );
+    const r = run(args);
+    assert.equal(r.status, 0, r.stderr);
+    const summary = { status: "ok", verdict: "warn", withheld: true, secretHits: ["password"] };
+    assert.deepEqual(JSON.parse(r.stdout), summary);
+    assert.deepEqual(JSON.parse(readFileSync(jsonOut, "utf8")), summary);
+    assert.equal(statSync(jsonOut).mode & 0o777, 0o600);
+    const body = readFileSync(join(dir, "body.md"), "utf8");
+    assert.ok(!body.includes("S3cret.pass*"), "withheld");
+    assert.doesNotMatch(body, /drafto-factory|<!--/, "never a marker: it is never posted");
+    assert.match(body, /Report withheld/);
+    assert.equal(readFileSync(join(evidence, "runner-output.txt"), "utf8").length > 0, true);
   });
 
   it("render withholds a report that contains the account password", () => {

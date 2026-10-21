@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Parses the locked-down browser runner's output, scans it for secrets and
-// renders the In Test report comment.
+// renders the In Test report comment (or, for the Testing column's `verify`
+// kind, a section that is never posted on its own).
 //
 // Why this exists: the browser runner (`run_browser_task` in factory-agent.sh)
 // is the only claude call that gets Claude in Chrome, and it has no tools to
@@ -38,12 +39,20 @@
 // CLI:
 //   node browser-report.mjs render --kind intest --in <runner-stdout-file>
 //        --issue <n> --sha <sha> --evidence-dir <dir> --account-file <f>
-//        --out <body-file>
+//        --out <body-file> [--json-out <file>]
 //     Writes the comment body to --out and a copy of the runner output to
 //     <evidence-dir>/runner-output.txt (mode 600). Prints one JSON line
-//     {status, verdict, withheld, secretHits}. Exit 0; 1 on an I/O error
-//     (including an unreadable account file: without the password the scan
-//     can't be trusted, so nothing is written); 2 on a usage error.
+//     {status, verdict, withheld, secretHits}, also written to --json-out
+//     (mode 600) when given. Exit 0; 1 on an I/O error (including an
+//     unreadable account file: without the password the scan can't be
+//     trusted, so nothing is written); 2 on a usage error.
+//   node browser-report.mjs render --kind verify … (the same flags)
+//     The Testing column's browser lane (ADR-0053). Same scan, copy and JSON,
+//     but --out gets a section, not a comment: the same scanned, defanged
+//     report with no factory markers, because bash never posts it. The lane's
+//     result reaches the issue only inside the verification report, which
+//     verify-report.mjs composes from <run-dir>/runner-output.txt with its own
+//     scan.
 //   node browser-report.mjs status --in <runner-stdout-file>
 //     Prints the parsed status word (ok|unavailable|auth-expired|signin-failed|blocked|
 //     malformed). Exit 0; 1 on an I/O error.
@@ -66,6 +75,8 @@ export const RUNNER_OUTPUT_FILE = "runner-output.txt";
 export const MIN_PASSWORD_SCAN_LENGTH = 6;
 
 const HEADER = "🏭 **Browser run — web steps on the preview.**";
+const VERIFY_HEADER = "**Web (browser) — verify run on the preview**";
+export const RENDER_KINDS = Object.freeze(["intest", "verify"]);
 const STATUS_LINE =
   /^browser=(ok|unavailable|auth-expired|signin-failed|blocked) verdict=(pass|warn|fail|none)$/;
 const SHA = /^[0-9a-f]{7,40}$/i;
@@ -298,7 +309,33 @@ function truncateReport(report, max) {
   return fences % 2 === 1 ? `${cut}\n\`\`\`` : cut;
 }
 
-export function renderIntestComment({ sha, report, verdict, status, evidenceDir, withheld }) {
+// The In Test comment: posted by bash as is, so it carries the report marker
+// and the run's full-SHA marker as its last two lines.
+export function renderIntestComment(run) {
+  return renderRunReport(run, {
+    header: HEADER,
+    okNote: "This report never moves the card; it stays in In Test either way.",
+    notOkNote: "The card is unaffected.",
+    markers: (sha) => [REPORT_MARKER, runShaMarker(sha)],
+  });
+}
+
+// The verify kind's section (ADR-0053): the same scanned, defanged report, but
+// never posted, so it carries no factory marker at all. The verification
+// report is the only thing that reaches the issue for a Testing card.
+export function renderVerifySection(run) {
+  return renderRunReport(run, {
+    header: VERIFY_HEADER,
+    okNote: "Evidence for the verification report; it never moves the card.",
+    notOkNote: "The card is unaffected.",
+    markers: () => [],
+  });
+}
+
+function renderRunReport(
+  { sha, report, verdict, status, evidenceDir, withheld },
+  { header, okNote, notOkNote, markers },
+) {
   if (!SHA.test(String(sha ?? ""))) throw new Error(`invalid sha: ${sha}`);
   const hits = Array.isArray(withheld) ? withheld : withheld ? ["unspecified"] : [];
   const localCopy = `${evidenceDir}/${RUNNER_OUTPUT_FILE}`;
@@ -306,18 +343,16 @@ export function renderIntestComment({ sha, report, verdict, status, evidenceDir,
   const ok = status === "ok";
 
   const lead = ok
-    ? `**Verdict: ${String(verdict ?? "none").toUpperCase()}** for \`${short}\`. ` +
-      "This report never moves the card; it stays in In Test either way."
+    ? `**Verdict: ${String(verdict ?? "none").toUpperCase()}** for \`${short}\`. ${okNote}`
     : `**No result** for \`${short}\`. ${STATUS_SENTENCE[status] ?? STATUS_SENTENCE.malformed} ` +
-      "The card is unaffected.";
+      notOkNote;
 
-  const head = [HEADER, "", lead, ""];
+  const head = [header, "", lead, ""];
+  const tail = markers(sha);
   const footer = [
     "",
     `<sub>Screenshots stay on the Mac mini (this repo is public): \`${evidenceDir}\`.</sub>`,
-    "",
-    REPORT_MARKER,
-    runShaMarker(sha),
+    ...(tail.length ? ["", ...tail] : []),
   ];
   const assemble = (middle) => [...head, ...middle, ...footer].join("\n");
 
@@ -359,7 +394,9 @@ function required(flags, name) {
 export function render(argv) {
   const { flags } = parseFlags(argv);
   const kind = required(flags, "kind");
-  if (kind !== "intest") throw new UsageError(`unsupported --kind: ${kind} (intest)`);
+  if (!RENDER_KINDS.includes(kind)) {
+    throw new UsageError(`unsupported --kind: ${kind} (${RENDER_KINDS.join("|")})`);
+  }
   const inFile = required(flags, "in");
   const issue = required(flags, "issue");
   if (!/^[1-9][0-9]*$/.test(issue)) throw new UsageError(`invalid --issue: ${issue}`);
@@ -383,7 +420,7 @@ export function render(argv) {
     chmodSync(copy, 0o600);
   }
 
-  const body = renderIntestComment({
+  const run = {
     issue,
     sha,
     report: parsed.report,
@@ -391,19 +428,25 @@ export function render(argv) {
     status: parsed.status,
     evidenceDir,
     withheld: secretHits,
-  });
-  writeFileSync(out, body);
-  return {
+  };
+  writeFileSync(out, kind === "verify" ? renderVerifySection(run) : renderIntestComment(run));
+  const result = {
     status: parsed.status,
     verdict: parsed.verdict,
     withheld: secretHits.length > 0,
     secretHits,
   };
+  if (flags["json-out"]) {
+    writeFileSync(flags["json-out"], JSON.stringify(result) + "\n", { mode: 0o600 });
+    chmodSync(flags["json-out"], 0o600);
+  }
+  return result;
 }
 
 const USAGE =
-  "Usage: browser-report.mjs render --kind intest --in <runner-stdout-file> --issue <n> " +
-  "--sha <sha> --evidence-dir <dir> --account-file <f> --out <body-file>\n" +
+  "Usage: browser-report.mjs render --kind intest|verify --in <runner-stdout-file> --issue <n> " +
+  "--sha <sha> --evidence-dir <dir> --account-file <f> --out <body-file> " +
+  "[--json-out <file>]\n" +
   "       browser-report.mjs status --in <runner-stdout-file>\n" +
   "       browser-report.mjs account-check --account-file <f>\n";
 

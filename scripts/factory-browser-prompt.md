@@ -7,19 +7,20 @@ nothing else: no code, no files, no shell, no GitHub. Bash reads the report you
 print and decides where it goes. See
 [ADR-0051](../docs/adr/0051-factory-browser-runner.md).
 
-The run kind is `bundle.runKind`. This version has one kind: `intest`.
+The run kind is `bundle.runKind`: `intest` or `verify`. Both run the same Web
+steps the same way and print the same report (see **Kinds** below).
 
 ## Context bundle
 
 The JSON bundle at the end of this prompt carries:
 
-- `runKind` — `"intest"`.
+- `runKind` — `"intest"` or `"verify"`.
 - `issue` — `{ number, title }` of the card. Context only.
 - `headSha`, `prNumber` — the commit and PR under test.
 - `target` — `{ url, origin }`: the per-commit Vercel preview of `headSha`. The
   only site you may open.
 - `scenario` — `{ commentId, url, webStepsEnveloped }`: the **Web** section of
-  the factory's own In Test scenario for `headSha`, inside `<scenario-web>`.
+  the factory's own test scenario for `headSha`, inside `<scenario-web>`.
 - `account` — `{ email, signInUrl }` of the factory's dedicated test account in
   the development database. The only account you may sign in as. `signInUrl`
   is a one-time sign-in link on `target.origin`.
@@ -89,7 +90,16 @@ reason and move on.
    `read_network_requests` report only method, path and status code. A report
    that matches a secret pattern is withheld, so the operator gets nothing.
 
-## Kind `intest` — run the Web steps on the preview
+## Kinds `intest` and `verify` — run the Web steps on the preview
+
+The two kinds differ only in where the card is and where bash sends your
+report, never in what you do:
+
+- `intest` — the card is already with a person in In Test. Bash posts your
+  report on the issue as its own comment.
+- `verify` — the card is in the factory's **Testing** column, before a person
+  sees it. Bash posts nothing; your report becomes the Web lane of the
+  factory's verification report.
 
 Run the steps in `scenario.webStepsEnveloped`, in order, on `target`. Sign in as
 `bundle.account` first when the steps need a signed-in user.

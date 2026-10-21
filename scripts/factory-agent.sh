@@ -34,6 +34,10 @@
 #                slot + worktree. Phase A: no-op. Beta-channel dispatch
 #                (iOS/Android/macOS) is a Phase D concern, not built here.
 #
+#   --browser    The web runs in Chrome (ADR-0051), last in the loop: at most
+#                one of the candidates --watch listed per tick, the Testing
+#                column's verify lane first (ADR-0053), then the In Test run.
+#
 # Each mode acquires its own PID-file lock so multiple modes can run
 # back-to-back in one launchd tick without contending. --implement and
 # --watch additionally track per-issue worktree slots (slot0|slot1) in
@@ -267,8 +271,11 @@ FACTORY_INTEST_BETA_DESKTOP="${FACTORY_INTEST_BETA_DESKTOP:-0}"
 # tools, a guard hook pinning the Mac mini's browser and the run's exact target
 # host). Every other call passes --no-chrome, because the code-writing stages
 # have Bash and file access and the browser is the operator's own signed-in
-# profile. FACTORY_BROWSER_KINDS picks which uses are live; PR 1 ships only
-# `intest` (the In Test web run). Only an unset switch gets the default (`-`, not
+# profile. FACTORY_BROWSER_KINDS picks which uses are live: `intest` (the In
+# Test web run, which posts its own report) and `verify` (the Testing column's
+# browser lane, ADR-0053: its report goes into the verification report). Both
+# are on by default; `verify` is inert while FACTORY_VERIFY=0, since only the
+# Testing sweep queues it. Only an unset switch gets the default (`-`, not
 # `:-`): an empty one is invalid and turns the runner off, like any other value.
 FACTORY_BROWSER="${FACTORY_BROWSER-1}"
 if [[ "$FACTORY_BROWSER" != "0" && "$FACTORY_BROWSER" != "1" ]]; then
@@ -278,7 +285,7 @@ fi
 # Comma list. Unknown words are dropped (with a warning) rather than failing the
 # tick, and the result is re-joined with commas so the membership test in
 # browser_kind_enabled can match ",word," exactly.
-FACTORY_BROWSER_KINDS="${FACTORY_BROWSER_KINDS:-intest}"
+FACTORY_BROWSER_KINDS="${FACTORY_BROWSER_KINDS:-intest,verify}"
 _bk_out=""
 _bk_rest="$FACTORY_BROWSER_KINDS,"
 while [[ -n "$_bk_rest" ]]; do
@@ -287,7 +294,7 @@ while [[ -n "$_bk_rest" ]]; do
   _bk_word="${_bk_word// /}"
   [[ -n "$_bk_word" ]] || continue
   case "$_bk_word" in
-    intest) _bk_out="${_bk_out:+$_bk_out,}$_bk_word" ;;
+    intest|verify) [[ ",$_bk_out," == *",$_bk_word,"* ]] || _bk_out="${_bk_out:+$_bk_out,}$_bk_word" ;;
     *) echo "WARNING: unknown FACTORY_BROWSER_KINDS entry '$_bk_word'; ignoring it" >&2 ;;
   esac
 done
@@ -329,9 +336,8 @@ FACTORY_SIGNIN_ROUTE_PATH="apps/web/src/app/auth/test-sign-in/route.ts"
 # Off by default. With FACTORY_VERIFY=1 a converged In Review card moves to
 # Testing instead of In Test: the scenario is written and the betas dispatched
 # there, the verification lanes run (the shell lane, scripts/lib/verify-lane.mjs,
-# and the browser `verify` kind; a lane that isn't built reads
-# skipped:not-built), and the card moves on to In Test with one deterministic
-# report comment.
+# and the browser runner's `verify` kind, run by --browser), and the card moves
+# on to In Test with one deterministic report comment.
 # Verification is evidence, never a gate: the hold cap bounds the stay, and a
 # FAIL verdict changes nothing but the report. With the switch off the Testing
 # sweep only drains: any card found there is promoted at once, so switching off
@@ -447,8 +453,9 @@ Exactly one of --plan, --implement, --release, --watch, --browser is required.
   --watch      In Review → In Test. Phase B+: CI/preview poll + fix loop.
                FACTORY_VERIFY=1: via the Testing column (ADR-0053).
   --release    Approved → Released. Phase B+: migration gate + squash-merge.
-  --browser    In Test web run in Chrome (ADR-0051). Phase B+, FACTORY_BROWSER=1.
-               Runs the candidates --watch found, after --release.
+  --browser    Web runs in Chrome (ADR-0051). Phase B+, FACTORY_BROWSER=1.
+               Runs one of the candidates --watch found, after --release:
+               Testing's verify lane first (ADR-0053), then In Test's run.
   --phase X    Override the phase advertised to Claude (default: A).
   --dry-run    Build context bundles and print them; no board / issue
                mutations and no Claude invocation. Useful for golden-run
@@ -578,9 +585,18 @@ fi
 echo "$$" > "$LOCK_FILE"
 
 STATE_FILE="$REPO_ROOT/logs/factory-state.json"
-# In Test web-run candidates (ADR-0051): written by --watch, read by --browser,
-# which the loop runs after --release so a browser session never delays a merge.
+# Browser-run candidates: written by --watch, read by --browser, which the loop
+# runs after --release so a browser session never delays a merge. One
+# "<kind>:<issue>:<pr>:<sha40>" line each: `verify` lines from the Testing
+# sweep (the browser lane, ADR-0053) first, then `intest` lines from the In
+# Test sweep (ADR-0051). --browser still reads a bare "<issue>:<pr>:<sha40>"
+# line, the format before ADR-0053, as intest.
 BROWSER_CANDIDATES_FILE="$REPO_ROOT/logs/factory-browser-candidates"
+# The Testing sweep's verify candidates for this tick (verify_browser_work).
+# Their own variable, because the In Test sweep, which runs after the Testing
+# sweep, starts BROWSER_CANDIDATES afresh; browser_write_candidates merges the
+# two, verify first.
+VERIFY_BROWSER_CANDIDATES=""
 
 cd "$REPO_ROOT"
 
@@ -2622,14 +2638,16 @@ browser_kind_enabled() {
 # accepts any comment whose author matches /vercel/ and returns the branch
 # alias, which is fine for a link a person clicks but not for the one origin an
 # unattended browser is allowed to open. Prints nothing and fails when there is
-# no successful vercel[bot] deployment for exactly this commit yet.
+# no successful vercel[bot] deployment for exactly this commit yet (1), or when
+# GitHub couldn't be asked (2): the verify lane's preview wait counts only the
+# first.
 preview_url_for_sha() {
   local sha="$1" dep_id url
   dep_id=$(gh api "repos/JakubAnderwald/drafto/deployments?sha=$sha&environment=Preview" \
-    --jq '[.[] | select(.creator.login == "vercel[bot]")][0].id // empty' 2>>"$LOG_FILE") || return 1
+    --jq '[.[] | select(.creator.login == "vercel[bot]")][0].id // empty' 2>>"$LOG_FILE") || return 2
   [[ "$dep_id" =~ ^[0-9]+$ ]] || return 1
   url=$(gh api "repos/JakubAnderwald/drafto/deployments/$dep_id/statuses" \
-    --jq '[.[] | select(.state == "success")][0].environment_url // empty' 2>>"$LOG_FILE") || return 1
+    --jq '[.[] | select(.state == "success")][0].environment_url // empty' 2>>"$LOG_FILE") || return 2
   url="${url%/}"
   [[ "$url" =~ ^https://drafto-[a-z0-9-]+-jakubanderwalds-projects\.vercel\.app$ ]] || return 1
   printf '%s\n' "$url"
@@ -2768,23 +2786,113 @@ browser_refund_attempt() {
     "$2:$left" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
 }
 
-# intest_browser_run <issue> <pr> <head sha> — the In Test web run: the Web
-# section of the factory's own scenario for <head sha>, on that commit's
-# preview, reported as one issue comment. Commentary, like intest_handoff: it
-# never moves the card and never spends the retry budget; a FAIL is for the
-# person at the In Test gate to read.
+# browser_write_candidates — hand this tick's browser-run candidates to
+# --browser: the Testing sweep's verify ones first, then the In Test sweep's.
+# Written whole (a temp file, then mv), so --browser never reads half a list.
+# Never in a dry run.
+browser_write_candidates() {
+  [[ "$DRY_RUN" -eq 0 ]] || return 0
+  # Unquoted on purpose: one candidate per word, one line each.
+  printf '%s\n' ${VERIFY_BROWSER_CANDIDATES:-} ${BROWSER_CANDIDATES:-} \
+    >"$BROWSER_CANDIDATES_FILE.tmp" 2>>"$LOG_FILE" \
+    && mv "$BROWSER_CANDIDATES_FILE.tmp" "$BROWSER_CANDIDATES_FILE" 2>>"$LOG_FILE" || true
+}
+
+# browser_claim_sha <issue> <head sha> — record browserRunSha: the browser
+# runner is done with this commit (a report, or nothing it could ever run), so
+# neither kind starts another session for it.
+browser_claim_sha() {
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$1" browserRunSha "$2" \
+    --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+}
+
+# browser_lane_end <kind> <issue> <head sha> <state> — end the verify lane with
+# <state> before any session ran (the --browser loop has just seen the card in
+# Testing). A no-op for the intest kind, which has no lane.
+browser_lane_end() {
+  [[ "$1" == verify ]] || return 0
+  shift
+  verify_browser_record "$@" || true
+  return 0
+}
+
+# browser_lane_finish <kind> <issue> <head sha> <state> <run dir> — the same
+# after a session: verify_browser_finish, which records only while the card is
+# still in its round in Testing. Returns its status (0 for the intest kind).
+browser_lane_finish() {
+  [[ "$1" == verify ]] || return 0
+  shift
+  verify_browser_finish "$@"
+}
+
+# intest_browser_run <issue> <pr> <head sha> — the In Test web run (ADR-0051),
+# browser_run's `intest` kind.
+intest_browser_run() {
+  browser_run intest "$@"
+}
+
+# browser_run <kind> <issue> <pr> <head sha> — one browser run: the Web section
+# of the factory's own scenario for <head sha>, on that commit's preview.
+# Commentary, like intest_handoff: it never moves the card and never spends the
+# retry budget. The two kinds share every step but where the result goes:
+#
+#   intest  The In Test web run (ADR-0051). The report is posted as one issue
+#           comment; a FAIL is for the person at the In Test gate to read.
+#   verify  The Testing column's browser lane (ADR-0053). It posts nothing: it
+#           records the lane's result for the card's round (browser_lane_end,
+#           browser_lane_finish), which the Testing sweep waits on and the
+#           verification report shows. It runs only for the round's own
+#           commit, and ends the lane at once on anything waiting can't fix (a
+#           stale branch, no preview in time, the browser unavailable…), so a
+#           card never sits out the hold cap for nothing. An exit path that
+#           forgets to end the lane leaves it to the hold cap, never stuck.
+#
+# Both kinds share browserRunSha (the head a run reported on, or found nothing
+# to run for) and the per-SHA attempts, so a head verified in Testing isn't run
+# again in In Test: the intest kind is the fallback for a head the verify lane
+# couldn't report on (verify_browser_unclaim hands a head back to it when the
+# verification report couldn't carry the lane's result).
 #
 # Returns 0 when it ran (or found the run can never happen for this SHA), 1 when
 # the card isn't ready this tick (try the next candidate), 2 when the browser
-# itself is unavailable (stop trying candidates this tick).
-intest_browser_run() {
-  local issue_num="$1" pr_num="$2" head_sha="$3"
+# itself is unavailable (stop trying candidates this tick). A verify run that
+# finds the browser unavailable before a session ends its lane and returns 1,
+# so the next verify candidate's lane ends this tick too; BROWSER_PREFLIGHT_FAILED
+# keeps that to one preflight and one health record per --browser run.
+browser_run() {
+  local kind="$1" issue_num="$2" pr_num="$3" head_sha="$4"
   local state_json scenario_sha run_sha attempts_raw attempts=0 preflight target
   local issue_record comments_json raw bundle origin run_dir body_file render_json status verdict withheld
+  local lane="" run_tag="" skip_reason preview_rc=0 preflight_failed=0 finish_rc=0
+  case "$kind" in
+    intest|verify) ;;
+    *) log "ERROR: unknown browser run kind '$kind' for #$issue_num"; return 1 ;;
+  esac
   state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
+  if [[ "$kind" == verify ]]; then
+    # Only for the card's current round, and only while the lane has no result
+    # for this commit: --watch listed the card a few minutes ago.
+    [[ "$(echo "$state_json" | jq -r '.verifySha // ""' 2>/dev/null)" == "$head_sha" ]] || return 1
+    if verify_state_terminal "$(verify_sha_value \
+        "$(echo "$state_json" | jq -r '.verifyBrowser // ""' 2>/dev/null)" "$head_sha")"; then
+      return 1
+    fi
+  fi
   run_sha=$(echo "$state_json" | jq -r '.browserRunSha // ""' 2>/dev/null || echo "")
-  [[ "$run_sha" == "$head_sha" ]] && return 1
+  if [[ "$run_sha" == "$head_sha" ]]; then
+    [[ "$kind" == verify ]] || return 1
+    # Back in Testing on a head the In Test run already handled (the revision
+    # no-op path). Only its own report counts as "already run": a pass that
+    # found no Web steps, or a stale branch, left none, and this run reaches the
+    # same outcome before any session, with its own reason.
+    comments_json=$(fetch_issue_comments "$issue_num" 2>>"$LOG_FILE") || return 1
+    if echo "$comments_json" | jq -e --arg m "drafto-factory-browser-run-sha:$head_sha" \
+        'any(.[]; .authorAssociation == "OWNER" and ((.body // "") | contains($m)))' >/dev/null 2>&1; then
+      browser_lane_end verify "$issue_num" "$head_sha" "skipped:already-run"
+      return 1
+    fi
+  fi
   # Only after the scenario for this exact commit exists: the runner runs the
   # scenario's own steps, and a refresh may still be pending.
   scenario_sha=$(echo "$state_json" | jq -r '.intestCommentSha // ""' 2>/dev/null || echo "")
@@ -2794,7 +2902,10 @@ intest_browser_run() {
     attempts="${attempts_raw##*:}"
     [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=0
   fi
-  [[ "$attempts" -lt "$FACTORY_BROWSER_MAX_ATTEMPTS" ]] || return 1
+  if [[ "$attempts" -ge "$FACTORY_BROWSER_MAX_ATTEMPTS" ]]; then
+    browser_lane_end "$kind" "$issue_num" "$head_sha" "unavailable:attempts"
+    return 1
+  fi
   # The candidate list is a few minutes old by now (--watch wrote it, --release
   # ran since). A push in between would have the runner spend a whole session
   # on a superseded commit's preview, so check the PR's live head first.
@@ -2806,9 +2917,16 @@ intest_browser_run() {
     return 1
   fi
 
-  if ! preflight=$(node "$SCRIPT_DIR/lib/browser-health.mjs" preflight --state-file "$STATE_FILE" \
+  if [[ -n "${BROWSER_PREFLIGHT_FAILED:-}" ]]; then
+    # This --browser run already found the browser unavailable: no second
+    # check and no second health record.
+    preflight="$BROWSER_PREFLIGHT_FAILED"
+    preflight_failed=1
+    log "Issue #$issue_num: browser run skipped ($preflight)"
+  elif ! preflight=$(node "$SCRIPT_DIR/lib/browser-health.mjs" preflight --state-file "$STATE_FILE" \
       --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
       --signin-key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" 2>>"$LOG_FILE"); then
+    preflight_failed=1
     log "Issue #$issue_num: browser run skipped (${preflight:-preflight failed})"
     # Recorded even while the runner is disabled: that never builds a streak or
     # sends a second alert, but it is the only path that retries a "disabled"
@@ -2816,10 +2934,28 @@ intest_browser_run() {
     if [[ "$DRY_RUN" -eq 0 ]]; then
       browser_record_result "preflight:${preflight:-unknown}"
     fi
-    return 2
+    preflight="${preflight:-unknown}"
+    BROWSER_PREFLIGHT_FAILED="$preflight"
   fi
-  if ! target=$(preview_url_for_sha "$head_sha") || [[ -z "$target" ]]; then
+  if [[ "$preflight_failed" -eq 1 ]]; then
+    [[ "$kind" == verify ]] || return 2
+    # The operator's to fix, and no wait in Testing fixes it: the lane ends now
+    # (the In Test run is the fallback once the browser is back), and so does
+    # the next verify candidate's, this tick.
+    browser_lane_end verify "$issue_num" "$head_sha" \
+      "unavailable:$(verify_browser_preflight_reason "$preflight")"
+    return 1
+  fi
+  target=$(preview_url_for_sha "$head_sha") || preview_rc=$?
+  if [[ "$preview_rc" -ne 0 || -z "$target" ]]; then
+    if [[ "$preview_rc" -eq 2 ]]; then
+      log "Issue #$issue_num: couldn't ask GitHub for ${head_sha:0:12}'s preview deployment; browser run waits"
+      return 1
+    fi
     log "Issue #$issue_num: no successful Vercel preview deployment for ${head_sha:0:12} yet; browser run waits"
+    if [[ "$kind" == verify ]]; then
+      verify_browser_preview_wait "$issue_num" "$head_sha" "$state_json" || true
+    fi
     return 1
   fi
   issue_record=$(fetch_issue_record "$issue_num") || return 1
@@ -2827,7 +2963,8 @@ intest_browser_run() {
   raw=$(jq -n --argjson issue "$issue_record" --argjson comments "$comments_json" \
     --arg headSha "$head_sha" --argjson prNumber "$pr_num" --arg targetUrl "$target" \
     --arg accountFile "$FACTORY_BROWSER_ACCOUNT_FILE" --arg deviceId "$FACTORY_BROWSER_DEVICE_ID" \
-    '{kind: "factory_browser_run", runKind: "intest",
+    --arg runKind "$kind" \
+    '{kind: "factory_browser_run", runKind: $runKind,
       issue: {number: $issue.number, title: $issue.title},
       comments: $comments, headSha: $headSha, prNumber: $prNumber,
       targetUrl: $targetUrl, accountFile: $accountFile, deviceId: $deviceId}') || return 1
@@ -2841,10 +2978,12 @@ intest_browser_run() {
     # Nothing to run for this commit: no OWNER scenario with this SHA, or one
     # without a ### Web section (e.g. the fallback comment). Record it so the
     # sweep doesn't rebuild the bundle every tick; a new commit re-arms it.
-    log "Issue #$issue_num: scenario for ${head_sha:0:12} has no Web section to run; no browser run"
+    skip_reason=$(echo "$bundle" | jq -r '.skipReason // ""' 2>/dev/null || echo "")
+    case "$skip_reason" in no-scenario|no-web-steps) ;; *) skip_reason="no-web-steps" ;; esac
+    log "Issue #$issue_num: scenario for ${head_sha:0:12} has no Web section to run ($skip_reason); no browser run"
     if [[ "$DRY_RUN" -eq 0 ]]; then
-      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" browserRunSha "$head_sha" \
-        --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      browser_claim_sha "$issue_num" "$head_sha"
+      browser_lane_end "$kind" "$issue_num" "$head_sha" "skipped:$skip_reason"
     fi
     return 1
   fi
@@ -2858,6 +2997,13 @@ intest_browser_run() {
   if [[ "$route_rc" -eq 1 ]]; then
     log "Issue #$issue_num: PR #$pr_num's head ${head_sha:0:12} predates /auth/test-sign-in; no browser run for this commit"
     [[ "$DRY_RUN" -eq 1 ]] && return 1
+    if [[ "$kind" == verify ]]; then
+      # No note of its own: the verification report tells the reader to update
+      # the branch. browserRunSha too, so the In Test run doesn't note it again.
+      browser_lane_end verify "$issue_num" "$head_sha" "stale-branch"
+      browser_claim_sha "$issue_num" "$head_sha"
+      return 1
+    fi
     if echo "$comments_json" | jq -e --arg m "$stale_marker" 'any(.[]; .body | contains($m))' >/dev/null 2>&1 \
         || gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
           --body "🏭 **No browser run for \`${head_sha:0:7}\`.**
@@ -2868,8 +3014,7 @@ Merge \`main\` into the branch (the **Update branch** button on PR #$pr_num, not
 \"Update with rebase\") and the next commit gets a browser run. The card is unaffected.
 
 <!-- $stale_marker -->" >>"$LOG_FILE" 2>&1; then
-      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" browserRunSha "$head_sha" \
-        --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      browser_claim_sha "$issue_num" "$head_sha"
     else
       log "WARNING: posting the stale-branch note on #$issue_num failed; trying again next tick"
     fi
@@ -2878,7 +3023,11 @@ Merge \`main\` into the branch (the **Update branch** button on PR #$pr_num, not
     log "WARNING: couldn't check whether ${head_sha:0:12} has /auth/test-sign-in; running anyway"
   fi
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    log "DRY-RUN: would run the In Test web steps for #$issue_num on $target"
+    if [[ "$kind" == verify ]]; then
+      log "DRY-RUN: would run the Testing browser lane (verify) for #$issue_num on $target"
+    else
+      log "DRY-RUN: would run the In Test web steps for #$issue_num on $target"
+    fi
     return 0
   fi
   # The one-time sign-in link, minted last so it is as fresh as possible when
@@ -2890,6 +3039,7 @@ Merge \`main\` into the branch (the **Update branch** button on PR #$pr_num, not
       --origin "$target" 2>>"$LOG_FILE") || [[ -z "$sign_in_url" ]]; then
     log "Issue #$issue_num: minting the runner's sign-in link failed (reason above); no browser run"
     browser_record_result "preflight:signin-mint"
+    browser_lane_end "$kind" "$issue_num" "$head_sha" "unavailable:signin-mint"
     return 2
   fi
   if ! bundle=$(echo "$bundle" | jq --arg u "$sign_in_url" '.account.signInUrl = $u'); then
@@ -2901,34 +3051,64 @@ Merge \`main\` into the branch (the **Update branch** button on PR #$pr_num, not
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" browserRunAttempts \
     "$head_sha:$attempts" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   origin=$(echo "$bundle" | jq -r '.target.origin')
-  run_dir="$LOG_DIR/browser/issue-$issue_num-${head_sha:0:12}-$(date +%Y%m%dT%H%M%S)"
-  log "Issue #$issue_num: browser run $attempts/$FACTORY_BROWSER_MAX_ATTEMPTS for ${head_sha:0:12} on $origin"
-  if ! run_browser_task intest "$run_dir" "$origin" "$bundle"; then
+  [[ "$kind" == intest ]] || run_tag="$kind-"
+  run_dir="$LOG_DIR/browser/issue-$issue_num-${head_sha:0:12}-$run_tag$(date +%Y%m%dT%H%M%S)"
+  log "Issue #$issue_num: browser run ($kind) $attempts/$FACTORY_BROWSER_MAX_ATTEMPTS for ${head_sha:0:12} on $origin"
+  if ! run_browser_task "$kind" "$run_dir" "$origin" "$bundle"; then
     browser_record_result error
+    # Nothing ran (the guard or the prompt couldn't be set up): the operator's
+    # to fix, so the verify lane ends now and gives the attempt back.
+    if [[ "$kind" == verify ]]; then
+      browser_refund_attempt "$issue_num" "$head_sha" "$attempts"
+      browser_lane_end verify "$issue_num" "$head_sha" "unavailable:runner-start"
+    fi
     return 2
   fi
+  # `lane` is the verify lane's result, recorded once the run is over; empty
+  # while the run may still be retried (an attempt is left).
   case "$BROWSER_RESULT" in
     ran) ;;
     session-limit)
       browser_refund_attempt "$issue_num" "$head_sha" "$attempts"
       pause_for_session_limit
-      return 2
+      lane="unavailable:session-limit"
       ;;
     guard-not-loaded)
       # The runner is now off; refund so the card gets its run after the reset.
       browser_refund_attempt "$issue_num" "$head_sha" "$attempts"
       browser_record_result "$BROWSER_RESULT"
-      return 2
+      lane="unavailable:guard"
       ;;
-    *) browser_record_result "$BROWSER_RESULT"; return 2 ;;
+    timeout)
+      # The attempt stays spent, so a hanging runner can't run every tick. The
+      # verify lane ends here; the In Test run may use an attempt that's left.
+      browser_record_result "$BROWSER_RESULT"
+      lane="timeout"
+      ;;
+    *)
+      browser_record_result "$BROWSER_RESULT"
+      [[ "$attempts" -lt "$FACTORY_BROWSER_MAX_ATTEMPTS" ]] || lane="unavailable:runner-error"
+      ;;
   esac
+  if [[ "$BROWSER_RESULT" != "ran" ]]; then
+    [[ -z "$lane" ]] || browser_lane_finish "$kind" "$issue_num" "$head_sha" "$lane" "$run_dir" || true
+    return 2
+  fi
 
-  body_file="$run_dir/comment.md"
-  if ! render_json=$(node "$SCRIPT_DIR/lib/browser-report.mjs" render --kind intest \
+  if [[ "$kind" == verify ]]; then
+    body_file="$run_dir/section.md"
+  else
+    body_file="$run_dir/comment.md"
+  fi
+  if ! render_json=$(node "$SCRIPT_DIR/lib/browser-report.mjs" render --kind "$kind" \
       --in "$BROWSER_OUT" --issue "$issue_num" --sha "$head_sha" --evidence-dir "$run_dir/evidence" \
-      --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" --out "$body_file" 2>>"$LOG_FILE"); then
+      --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" --out "$body_file" \
+      --json-out "$run_dir/render.json" 2>>"$LOG_FILE"); then
     log "ERROR: rendering the browser report failed for #$issue_num (output kept in $run_dir)"
     browser_record_result malformed
+    if [[ "$attempts" -ge "$FACTORY_BROWSER_MAX_ATTEMPTS" ]]; then
+      browser_lane_finish "$kind" "$issue_num" "$head_sha" "unavailable:malformed" "$run_dir" || true
+    fi
     return 2
   fi
   status=$(echo "$render_json" | jq -r '.status // "malformed"' 2>/dev/null || echo "malformed")
@@ -2942,8 +3122,12 @@ Merge \`main\` into the branch (the **Update branch** button on PR #$pr_num, not
       # about it and the issue gets no comment. Refunded, so the card still
       # gets its run once the browser is fixed. These fail fast (the runner
       # stops at the browser check or the first login wall), so retrying each
-      # tick is cheap.
+      # tick is cheap. The verify lane ends at once (the In Test run is the
+      # fallback).
       browser_refund_attempt "$issue_num" "$head_sha" "$attempts"
+      lane="unavailable:auth-expired"
+      [[ "$status" != unavailable ]] || lane="unavailable:chrome"
+      browser_lane_finish "$kind" "$issue_num" "$head_sha" "$lane" "$run_dir" || true
       return 2
       ;;
     signin-failed)
@@ -2954,18 +3138,30 @@ Merge \`main\` into the branch (the **Update branch** button on PR #$pr_num, not
       # spent, the issue gets no comment, and the health tracker tells the
       # operator.
       log "Issue #$issue_num: the runner couldn't sign in on the preview with its one-time link; nothing posted (see $run_dir)"
+      browser_lane_finish "$kind" "$issue_num" "$head_sha" "unavailable:signin-failed" "$run_dir" || true
       return 2
       ;;
     malformed)
       # No status line: nothing trustworthy to post. The attempt stays spent;
       # the next one may produce a report.
       log "Issue #$issue_num: the browser runner's output had no status line; nothing posted (see $run_dir)"
+      if [[ "$attempts" -ge "$FACTORY_BROWSER_MAX_ATTEMPTS" ]]; then
+        browser_lane_finish "$kind" "$issue_num" "$head_sha" "unavailable:malformed" "$run_dir" || true
+      fi
       return 2
       ;;
   esac
+  if [[ "$kind" == verify ]]; then
+    # Nothing is posted: verify_promote posts the verification report, once,
+    # with this run in its Web lane. browserRunSha only once the result is
+    # recorded for a card known to be in Testing: a card that left meanwhile,
+    # or one the board couldn't confirm, still gets its In Test run.
+    browser_lane_finish verify "$issue_num" "$head_sha" "reported:$verdict" "$run_dir" || finish_rc=$?
+    [[ "$finish_rc" -ne 0 ]] || browser_claim_sha "$issue_num" "$head_sha"
+    return 0
+  fi
   if gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body-file "$body_file" >>"$LOG_FILE" 2>&1; then
-    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" browserRunSha "$head_sha" \
-      --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    browser_claim_sha "$issue_num" "$head_sha"
   else
     log "WARNING: posting the browser report on #$issue_num failed; it stays in $body_file"
   fi
@@ -3297,10 +3493,12 @@ cr_coverage_note() {
 # Seams for the lane waves: verify_lane_states reads each lane's result for the
 # head; verify_work_lanes starts or polls the lanes; verify_stop_lanes kills a
 # lane whose card leaves Testing. VERIFY_BUILT_LANES lists the lanes that
-# exist: until a lane is built its state reads skipped:not-built, so a Testing
-# card promotes as soon as the sweep sees it.
+# exist (both are built): a lane missing from it reads skipped:not-built, so it
+# never holds a Testing card. The shell lane runs detached (verify_shell_*); the
+# browser lane (verify_browser_*) queues a candidate for --browser, where
+# browser_run's verify kind records its result.
 VERIFY_DIR="$LOG_DIR/verify"
-VERIFY_BUILT_LANES="shell"   # Wave 5B adds browser
+VERIFY_BUILT_LANES="shell,browser"
 VERIFY_COLUMN_READY=""  # per-tick cache: "" unknown, 1 ready, 0 not ready
 
 # Can a card be moved into Testing at all? The board needs the Testing option
@@ -3505,12 +3703,13 @@ verify_enter() {
 
 # Seam: start or poll the verification lanes for one card. The shell lane
 # starts here (verify_shell_work: verify-lane.mjs start when its state for
-# <head-sha> isn't terminal); 5B adds the browser one (the
-# `verify:<issue>:<pr>:<sha>` candidate for --browser). Commentary like the rest
-# of the stage: it must never fail the tick. Args: <issue> <pr> <head-sha>
-# <platforms-json> <lane-states-json>.
+# <head-sha> isn't terminal); the browser lane queues its
+# `verify:<issue>:<pr>:<sha>` candidate for --browser (verify_browser_work).
+# Commentary like the rest of the stage: it must never fail the tick. Args:
+# <issue> <pr> <head-sha> <platforms-json> <lane-states-json>.
 verify_work_lanes() {
   verify_shell_work "$@" || true
+  verify_browser_work "$@" || true
   return 0
 }
 
@@ -3519,9 +3718,11 @@ verify_work_lanes() {
 # (hold cap, feedback, verification off). Called on every exit, so a no-op when
 # nothing runs. verify_shell_stop kills the shell lane here; housekeeping also
 # kills a run whose card left Testing, so this is the prompt path, not the only
-# one. Args: <issue> <head-sha> <reason>.
+# one. verify_browser_stop drops the card's browser candidate (a browser run is
+# never in flight while --watch runs). Args: <issue> <head-sha> <reason>.
 verify_stop_lanes() {
   verify_shell_stop "$@" || true
+  verify_browser_stop "$@" || true
   return 0
 }
 
@@ -3661,6 +3862,190 @@ verify_shell_housekeeping() {
     VERIFY_SESSION_LIMITED=1
   fi
   return 0
+}
+
+# ── The browser lane (ADR-0053, Wave 5B) ───────────────────────────────────
+# The browser runner's `verify` kind (ADR-0051): verify_browser_work queues a
+# candidate, --browser runs it (browser_run verify), verify_browser_record and
+# verify_browser_finish keep its result. There is still exactly one claude call
+# with --chrome, run_browser_task.
+
+# verify_state_terminal <state> — is a lane state (SHA stripped) final for its
+# commit? The same kinds verify-decide.mjs counts as done (TERMINAL_KINDS
+# there); anything else still has work to do: "none" and "", the shell lane's
+# running, retry:<why> and deferred:<why>, the browser lane's
+# waiting-preview:<iso>.
+verify_state_terminal() {
+  case "${1%%:*}" in
+    reported|timeout|unavailable|stale-branch|no-preview|skipped) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# verify_browser_work <issue> <pr> <head-sha> <platforms-json> <lane-states-json>
+# The browser lane's part of working the lanes. For a web card whose lane has
+# no result for this commit yet, queue a `verify` candidate: --browser runs it
+# after --release (browser_run verify), because a Chrome session must never hold
+# up the tick or a merge (ADR-0051). What can be settled here, without Chrome,
+# ends the lane at once instead of leaving it to the hold cap: no web changes
+# (skipped:not-web) and a runner whose verify kind is off (skipped:browser-off).
+# Platforms that couldn't be read ({}) wait for the next tick. A lane switched
+# off or not built does nothing, like verify_shell_work (verify_lane_states
+# already reads it as skipped:lane-off / skipped:not-built).
+verify_browser_work() {
+  local issue_num="$1" pr_num="$2" head_sha="$3" platforms="$4" lanes="$5" st web
+  verify_lane_enabled browser || return 0
+  [[ ",$VERIFY_BUILT_LANES," == *",browser,"* ]] || return 0
+  st=$(echo "$lanes" | jq -r '.browser // "none"' 2>/dev/null || echo "none")
+  if verify_state_terminal "$st"; then
+    return 0
+  fi
+  web=$(echo "$platforms" | jq -r 'if type == "object" and has("web") then (.web | tostring) else "unknown" end' \
+    2>/dev/null || echo "unknown")
+  case "$web" in
+    true) ;;
+    false)
+      verify_browser_record "$issue_num" "$head_sha" "skipped:not-web" || true
+      return 0
+      ;;
+    *)
+      log "Issue #$issue_num: PR #$pr_num's platforms are unknown this tick; the browser lane waits"
+      return 0
+      ;;
+  esac
+  if ! browser_kind_enabled verify; then
+    verify_browser_record "$issue_num" "$head_sha" "skipped:browser-off" || true
+    return 0
+  fi
+  [[ "$issue_num" =~ ^[0-9]+$ && "$pr_num" =~ ^[0-9]+$ && "$head_sha" =~ ^[0-9a-f]{40}$ ]] || return 0
+  case " ${VERIFY_BROWSER_CANDIDATES:-} " in
+    *" verify:$issue_num:"*) ;;
+    *) VERIFY_BROWSER_CANDIDATES="${VERIFY_BROWSER_CANDIDATES:+$VERIFY_BROWSER_CANDIDATES }verify:$issue_num:$pr_num:$head_sha" ;;
+  esac
+  log "Issue #$issue_num: browser lane queued for --browser (${head_sha:0:12})"
+  return 0
+}
+
+# verify_browser_stop <issue> <head-sha> <reason> — the browser lane's part of
+# stopping the lanes. A verify run is synchronous inside --browser, which never
+# overlaps --watch (the loop runs the modes one after another), so no run is
+# ever in flight when this is called; stopping means not starting one: drop the
+# card's candidate if this tick queued it. --browser re-checks the column and
+# the round before it runs anything anyway.
+verify_browser_stop() {
+  local issue_num="$1" c out=""
+  for c in ${VERIFY_BROWSER_CANDIDATES:-}; do
+    [[ "$c" == "verify:$issue_num:"* ]] || out="${out:+$out }$c"
+  done
+  VERIFY_BROWSER_CANDIDATES="$out"
+  return 0
+}
+
+# verify_browser_record <issue> <head-sha> <state> [<run-dir>] — the browser
+# lane's result for <head-sha> as verify_lane_states reads it
+# (verifyBrowser="<sha>:<state>"), written with its run dir. The dir is always
+# written first, empty when no session ran: verify_compose_report attaches
+# verifyBrowserRunDir to any record for the head, so an older run's dir must
+# never sit beside a newer result (a dir written without its state is never
+# read). Returns 1 when the state itself couldn't be written, so a caller never
+# acts on a result that isn't there. Nothing in a dry run.
+verify_browser_record() {
+  local issue_num="$1" head_sha="$2" st="$3" run_dir="${4:-}"
+  [[ "$DRY_RUN" -eq 0 ]] || return 0
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" verifyBrowserRunDir "$run_dir" \
+    --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  if ! node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" verifyBrowser "$head_sha:$st" \
+      --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+    log "WARNING: couldn't record #$issue_num's browser lane result for ${head_sha:0:12} ($st); the lane stays open"
+    return 1
+  fi
+  log "Issue #$issue_num: browser lane for ${head_sha:0:12}: $st"
+  return 0
+}
+
+# verify_browser_finish <issue> <head-sha> <state> <run-dir> — record the result
+# of a verify run that got a browser session, but only while the run still
+# belongs to the card's round: the round still for <head-sha> and the card
+# still in Testing. A session can take FACTORY_BROWSER_TIMEOUT_SEC, and a card
+# dragged out of Testing meanwhile keeps no result (the evidence stays in
+# <run-dir>), so the In Test run can still report on the commit. Returns 0 when
+# it recorded the result for a card the board shows in Testing, 2 when it
+# recorded it although the board couldn't be read (the round check passed; the
+# caller then doesn't claim the commit for the browser runner, so the In Test
+# run stays possible), and 1 when it recorded nothing.
+verify_browser_finish() {
+  local issue_num="$1" head_sha="$2" st="$3" run_dir="${4:-}" items n confirmed=0
+  if [[ "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" --state-file "$STATE_FILE" \
+      2>>"$LOG_FILE" | jq -r '.verifySha // ""' 2>/dev/null)" != "$head_sha" ]]; then
+    log "Issue #$issue_num: its verification round moved on during the browser run; not recording $st (evidence in $run_dir)"
+    return 1
+  fi
+  if items=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items --status "Testing" 2>>"$LOG_FILE"); then
+    n=$(echo "$items" | jq --argjson n "$issue_num" '[.[] | select(.issueNumber == $n)] | length' 2>/dev/null || echo "")
+    if [[ "$n" == "0" ]]; then
+      log "Issue #$issue_num: left Testing during the browser run; not recording $st (evidence in $run_dir)"
+      return 1
+    fi
+    [[ ! "$n" =~ ^[1-9][0-9]*$ ]] || confirmed=1
+  fi
+  [[ "$confirmed" -eq 1 ]] \
+    || log "WARNING: couldn't check that #$issue_num is still in Testing; recording its browser lane result anyway"
+  verify_browser_record "$issue_num" "$head_sha" "$st" "$run_dir" || return 1
+  [[ "$confirmed" -eq 1 ]] || return 2
+  return 0
+}
+
+# verify_browser_preview_wait <issue> <head-sha> <state-json> — the verify lane
+# found no successful preview deployment of <head-sha>. The wait is counted
+# from the lane's first miss, kept in its state as the non-terminal
+# waiting-preview:<iso>, not from the round's start: a round can start while CI
+# is still running, well before the lane is first queued. After
+# FACTORY_VERIFY_PREVIEW_WAIT_MIN the lane ends as no-preview. (A GitHub error
+# never gets here: preview_url_for_sha returns 2 for it, and the run just waits.)
+verify_browser_preview_wait() {
+  local issue_num="$1" head_sha="$2" state_json="$3" st
+  st=$(verify_sha_value "$(echo "$state_json" | jq -r '.verifyBrowser // ""' 2>/dev/null)" "$head_sha")
+  if [[ "$st" != waiting-preview:* ]]; then
+    verify_browser_record "$issue_num" "$head_sha" "waiting-preview:$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    return
+  fi
+  [[ "$(iso_age_min "${st#waiting-preview:}")" -ge "$FACTORY_VERIFY_PREVIEW_WAIT_MIN" ]] || return 0
+  log "Issue #$issue_num: still no successful Vercel preview deployment for ${head_sha:0:12} ${FACTORY_VERIFY_PREVIEW_WAIT_MIN} min after the browser lane first looked; it ends without a run"
+  verify_browser_record "$issue_num" "$head_sha" "no-preview"
+}
+
+# verify_browser_unclaim <issue> <head-sha> <state-json> — the verification
+# report can't carry the browser lane's result for <head-sha>: the minimal
+# notice went out instead, or posting it was given up. When that result is what
+# claimed the commit for the browser runner (browserRunSha), release it, so the
+# In Test run reports on the commit after all (the fallback). A commit an In
+# Test run claimed itself (skipped:already-run) keeps its claim.
+verify_browser_unclaim() {
+  local issue_num="$1" head_sha="$2" state_json="$3" st
+  [[ -n "$head_sha" && "$DRY_RUN" -eq 0 ]] || return 0
+  [[ "$(echo "$state_json" | jq -r '.browserRunSha // ""' 2>/dev/null)" == "$head_sha" ]] || return 0
+  st=$(verify_sha_value "$(echo "$state_json" | jq -r '.verifyBrowser // ""' 2>/dev/null)" "$head_sha")
+  case "$st" in
+    reported|reported:*|stale-branch) ;;
+    *) return 0 ;;
+  esac
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" browserRunSha "" \
+    --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  log "Issue #$issue_num: the verification report can't show the browser lane's result for ${head_sha:0:12}; the In Test browser run will report instead"
+  return 0
+}
+
+# verify_browser_preflight_reason <preflight-word> — the lane-state reason for a
+# failed browser-health.mjs preflight (verify-report.mjs reads each as a
+# sentence).
+verify_browser_preflight_reason() {
+  case "$1" in
+    chrome-not-running) echo "chrome-not-running" ;;
+    disabled:*) echo "runner-disabled" ;;
+    account-*) echo "account" ;;
+    signin-key-*) echo "signin-key" ;;
+    *) echo "preflight" ;;
+  esac
 }
 
 # verify_hand_back <item-id> <issue> <pr> <head-sha> <reason> <state-json>
@@ -3882,7 +4267,7 @@ verify_post_report() {
 # manual steps.
 verify_promote() {
   local item_id="$1" issue_num="$2" pr_num="$3" head_sha="$4" reason="$5" lanes="$6"
-  local state_json="$7" comments_json="$8" cr_note gaps='[]' body_file
+  local state_json="$7" comments_json="$8" cr_note gaps='[]' body_file minimal=0
   if [[ "$DRY_RUN" -eq 1 ]]; then
     log "DRY-RUN: would promote #$issue_num Testing → In Test ($reason) and post the verification report for ${head_sha:0:12}"
     return 0
@@ -3901,12 +4286,15 @@ verify_promote() {
       "$comments_json" "$state_json" "$gaps" "$body_file"; then
     log "WARNING: composing the verification report for #$issue_num failed; posting the minimal notice instead"
     verify_minimal_report "$pr_num" "$head_sha" "$body_file"
+    minimal=1
   fi
   if ! transition_status "$item_id" "$issue_num" "In Test"; then
     log "WARNING: couldn't move #$issue_num from Testing to In Test ($reason); it stays in Testing for the next tick"
     return 1
   fi
   log "Issue #$issue_num: Testing → In Test ($reason)"
+  # The minimal notice carries no browser result: the In Test run reports.
+  [[ "$minimal" -eq 0 ]] || verify_browser_unclaim "$issue_num" "$head_sha" "$state_json"
   verify_post_report "$issue_num" "$head_sha" "$body_file" || true
   # Today's promotion resets (see the In Review → In Test block): a fresh fix
   # budget and CodeRabbit run cap for the next revision round.
@@ -3940,6 +4328,7 @@ verify_report_retry() {
   log "Issue #$issue_num: the verification report for ${head_sha:0:12} isn't on the issue yet; posting it (failed attempts so far: $n/$VERIFY_REPORT_POST_MAX)"
   if ! verify_post_report "$issue_num" "$head_sha" "$body_file" && [[ $((n + 1)) -ge "$VERIFY_REPORT_POST_MAX" ]]; then
     log "WARNING: giving up on posting #$issue_num's verification report for ${head_sha:0:12}; it stays in $body_file"
+    verify_browser_unclaim "$issue_num" "$head_sha" "$state_json"
   fi
   return 0
 }
@@ -5120,7 +5509,7 @@ fi
 if [[ "$MODE_WATCH" -eq 1 ]]; then
   # Clear the last tick's browser candidates before anything else, so a
   # --watch that exits anywhere (a failed query, a session-limit pause) can
-  # never leave --browser a stale list. Only the In Test sweep refills it.
+  # never leave --browser a stale list. Only browser_write_candidates refills it.
   [[ "$DRY_RUN" -eq 1 ]] || : >"$BROWSER_CANDIDATES_FILE" 2>/dev/null || true
   WATCH_PROMPT_FILE="$SCRIPT_DIR/factory-watch-prompt.md"
   # Re-assert the In Test scenario prompt path for this mode. (It also has a
@@ -5564,15 +5953,18 @@ A human should take a look. Reset with \
   if ! INTEST_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
       --status "In Test" 2>>"$LOG_FILE"); then
     log "WARNING: query-status-items 'In Test' failed (transient?); skipping feedback sweep this tick"
+    # The Testing sweep's verify candidates still go to --browser.
+    browser_write_candidates
     log "=== factory-agent --watch completed in $(( $(date +%s) - START_TIME ))s ==="
     exit 0
   fi
   INTEST_COUNT=$(echo "$INTEST_JSON" | jq 'length' 2>/dev/null || echo "0")
   [[ "$INTEST_COUNT" =~ ^[0-9]+$ ]] || INTEST_COUNT=0
   log "--watch In Test feedback sweep: $INTEST_COUNT item(s)"
-  # In Test web-run candidates (ADR-0051), "issue:pr:sha" words. Collected in
-  # the loop and handed to --browser, which runs after --release: a browser
-  # session can take 15 minutes and must delay neither this sweep nor a merge.
+  # In Test web-run candidates (ADR-0051), "intest:issue:pr:sha" words.
+  # Collected in the loop and handed to --browser, which runs after --release: a
+  # browser session can take 15 minutes and must delay neither this sweep nor a
+  # merge. The Testing sweep's verify ones are in VERIFY_BROWSER_CANDIDATES.
   BROWSER_CANDIDATES=""
 
   for ((IDX=0; IDX<INTEST_COUNT; IDX++)); do
@@ -5664,10 +6056,11 @@ A human should take a look. Reset with \
         verify_report_retry "$ISSUE_NUM" "$INTEST_HEAD_SHA" "$ISSUE_STATE_JSON" || true
 
         # A web change with no revision pending is a browser-run candidate;
-        # intest_browser_run makes the per-SHA checks when its turn comes.
+        # browser_run makes the per-SHA checks when its turn comes, and skips a
+        # head the Testing column's verify lane already reported on.
         if browser_kind_enabled intest && [[ "$INTEST_PENDING_FEEDBACK" -eq 0 ]] \
             && [[ "$(echo "$INTEST_PLATS" | jq -r '.web // false' 2>/dev/null)" == "true" ]]; then
-          BROWSER_CANDIDATES="${BROWSER_CANDIDATES:+$BROWSER_CANDIDATES }$ISSUE_NUM:$INTEST_PR_NUM:$INTEST_HEAD_SHA"
+          BROWSER_CANDIDATES="${BROWSER_CANDIDATES:+$BROWSER_CANDIDATES }intest:$ISSUE_NUM:$INTEST_PR_NUM:$INTEST_HEAD_SHA"
         fi
       fi
     fi
@@ -5728,57 +6121,86 @@ test run, gets a reply here. (To ship as-is instead, drag the card to \
 <!-- drafto-factory-revising -->" >>"$LOG_FILE" 2>&1 || true
   done
 
-  if [[ "$DRY_RUN" -eq 0 ]]; then
-    printf '%s\n' $BROWSER_CANDIDATES >"$BROWSER_CANDIDATES_FILE.tmp" 2>>"$LOG_FILE" \
-      && mv "$BROWSER_CANDIDATES_FILE.tmp" "$BROWSER_CANDIDATES_FILE" 2>>"$LOG_FILE" || true
-  fi
+  browser_write_candidates
 
   log "=== factory-agent --watch completed in $(( $(date +%s) - START_TIME ))s ==="
   exit 0
 fi
 
 # ── --browser mode (Phase B+, ADR-0051) ─────────────────────────────────────
-# The In Test web run. --watch found the candidates; this runs at most one of
+# The web runs in Chrome. --watch found the candidates; this runs at most one of
 # them, after --release in the loop, so a 15-minute Chrome session never holds
-# up a merge. The list is re-checked against the board (a card dragged out of
-# In Test since --watch ran is skipped), and intest_browser_run re-checks
-# every per-SHA condition itself.
+# up a merge. The Testing column's verify candidates go first (ADR-0053): a card
+# there waits on its browser lane, while an In Test card only waits for a
+# report. Each candidate is re-checked against its own column (Testing for
+# verify, In Test for intest: a card dragged out since --watch ran is skipped),
+# and browser_run re-checks every per-SHA condition itself.
 if [[ "$MODE_BROWSER" -eq 1 ]]; then
-  if ! browser_kind_enabled intest; then
+  if ! browser_kind_enabled verify && ! browser_kind_enabled intest; then
     log "Browser runner off (FACTORY_BROWSER=$FACTORY_BROWSER, kinds='$FACTORY_BROWSER_KINDS'); nothing to do"
     log "=== factory-agent --browser completed in $(( $(date +%s) - START_TIME ))s ==="
     exit 0
   fi
   BROWSER_LIST=""
   # A list older than two ticks came from a --watch that didn't finish since:
-  # ignore it rather than act on a board that has moved on.
+  # ignore it rather than act on a board that has moved on. Verify lines first,
+  # whatever order the file has them in. A bare "<issue>:<pr>:<sha>" line, the
+  # format before ADR-0053, is read as intest.
   if [[ -s "$BROWSER_CANDIDATES_FILE" ]] && \
       [[ -z "$(find "$BROWSER_CANDIDATES_FILE" -mmin +10 2>/dev/null)" ]]; then
-    BROWSER_LIST=$(grep -E '^[0-9]+:[0-9]+:[0-9a-f]{40}$' "$BROWSER_CANDIDATES_FILE" 2>/dev/null || true)
+    BROWSER_LIST=$( { grep -E '^verify:[0-9]+:[0-9]+:[0-9a-f]{40}$' "$BROWSER_CANDIDATES_FILE"
+      grep -E '^(intest:)?[0-9]+:[0-9]+:[0-9a-f]{40}$' "$BROWSER_CANDIDATES_FILE"; } 2>/dev/null || true)
   fi
   if [[ -z "$BROWSER_LIST" ]]; then
-    log "--browser: no In Test web-run candidates this tick"
+    log "--browser: no browser-run candidates this tick"
     log "=== factory-agent --browser completed in $(( $(date +%s) - START_TIME ))s ==="
     exit 0
   fi
-  if ! BROWSER_INTEST_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
-      --status "In Test" 2>>"$LOG_FILE"); then
-    log "WARNING: query-status-items 'In Test' failed (transient?); skipping the browser run this tick"
-    log "=== factory-agent --browser completed in $(( $(date +%s) - START_TIME ))s ==="
-    exit 0
-  fi
+  # Each column's board items, read once per run on first need ("!" = the
+  # query failed: that column's candidates wait for the next tick).
+  BROWSER_TESTING_JSON=""
+  BROWSER_INTEST_JSON=""
+  # Set by browser_run when the preflight fails: later candidates reuse it.
+  BROWSER_PREFLIGHT_FAILED=""
   for BROWSER_CAND in $BROWSER_LIST; do
+    case "$BROWSER_CAND" in
+      verify:*) BROWSER_KIND=verify; BROWSER_COLUMN="Testing"; BROWSER_CAND="${BROWSER_CAND#verify:}" ;;
+      *) BROWSER_KIND=intest; BROWSER_COLUMN="In Test"; BROWSER_CAND="${BROWSER_CAND#intest:}" ;;
+    esac
     BROWSER_ISSUE="${BROWSER_CAND%%:*}"
-    # Still In Test, and not paused or support-owned since --watch looked.
-    if [[ "$(echo "$BROWSER_INTEST_JSON" | jq --argjson n "$BROWSER_ISSUE" \
+    if ! browser_kind_enabled "$BROWSER_KIND"; then
+      log "Issue #$BROWSER_ISSUE: the browser runner's $BROWSER_KIND kind is off; skipping its browser run"
+      continue
+    fi
+    if [[ "$BROWSER_KIND" == verify ]]; then
+      if [[ -z "$BROWSER_TESTING_JSON" ]]; then
+        BROWSER_TESTING_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
+          --status "Testing" 2>>"$LOG_FILE") || BROWSER_TESTING_JSON="!"
+        [[ -n "$BROWSER_TESTING_JSON" ]] || BROWSER_TESTING_JSON="!"
+      fi
+      BROWSER_COLUMN_JSON="$BROWSER_TESTING_JSON"
+    else
+      if [[ -z "$BROWSER_INTEST_JSON" ]]; then
+        BROWSER_INTEST_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
+          --status "In Test" 2>>"$LOG_FILE") || BROWSER_INTEST_JSON="!"
+        [[ -n "$BROWSER_INTEST_JSON" ]] || BROWSER_INTEST_JSON="!"
+      fi
+      BROWSER_COLUMN_JSON="$BROWSER_INTEST_JSON"
+    fi
+    if [[ "$BROWSER_COLUMN_JSON" == "!" ]]; then
+      log "WARNING: query-status-items '$BROWSER_COLUMN' failed (transient?); #$BROWSER_ISSUE's browser run waits for the next tick"
+      continue
+    fi
+    # Still in its column, and not paused or support-owned since --watch looked.
+    if [[ "$(echo "$BROWSER_COLUMN_JSON" | jq --argjson n "$BROWSER_ISSUE" \
         '[.[] | select(.issueNumber == $n)
               | select(((.labels // []) | index("factory-pause")) == null)
               | select(((.labels // []) | index("support")) == null)] | length' 2>/dev/null)" != "1" ]]; then
-      log "Issue #$BROWSER_ISSUE: no longer an In Test candidate; skipping its browser run"
+      log "Issue #$BROWSER_ISSUE: no longer a $BROWSER_COLUMN candidate; skipping its browser run"
       continue
     fi
     BROWSER_RC=0
-    intest_browser_run "$BROWSER_ISSUE" "$(echo "$BROWSER_CAND" | cut -d: -f2)" \
+    browser_run "$BROWSER_KIND" "$BROWSER_ISSUE" "$(echo "$BROWSER_CAND" | cut -d: -f2)" \
       "${BROWSER_CAND##*:}" || BROWSER_RC=$?
     [[ "$BROWSER_RC" -eq 1 ]] || break
   done

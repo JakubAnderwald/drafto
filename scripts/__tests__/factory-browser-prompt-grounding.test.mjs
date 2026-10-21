@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseRunnerOutput } from "../lib/browser-report.mjs";
+import { BROWSER_RUN_KINDS } from "../lib/factory-bundle.mjs";
 
 // The browser runner's prompt (ADR-0051). The guard hook enforces the hard
 // limits whatever the prompt says; these lock in the rules the guard can't see
@@ -72,6 +73,27 @@ describe("browser runner prompt — browser rules", () => {
   it("tags its test data and only moves it to Trash", () => {
     assert.match(flat, /Put `bundle\.qaTag` in the name of every note/);
     assert.match(flat, /Don't empty the Trash/);
+  });
+});
+
+describe("browser runner prompt — kinds", () => {
+  it("names every kind the bundle builder accepts", () => {
+    for (const kind of BROWSER_RUN_KINDS) {
+      assert.ok(flat.includes(`\`${kind}\``), `the prompt must name the ${kind} kind`);
+    }
+    assert.match(flat, /The run kind is `bundle\.runKind`: `intest` or `verify`/);
+    assert.match(flat, /`runKind` — `"intest"` or `"verify"`/);
+  });
+
+  it("runs verify exactly like intest, with the same report: only bash's routing differs", () => {
+    // The verify kind's output goes into the verification report through the
+    // same parser (verify-report.mjs reads runner-output.txt with
+    // parseRunnerOutput), so it must not get a format of its own.
+    assert.match(flat, /## Kinds `intest` and `verify` — run the Web steps on the preview/);
+    assert.match(flat, /differ only in where the card is and where bash sends your report/);
+    assert.match(flat, /`verify` — the card is in the factory's \*\*Testing\*\* column/);
+    assert.match(flat, /Bash posts nothing; your report becomes the Web lane/);
+    assert.equal((prompt.match(/^<<<REPORT$/gm) || []).length, 1, "one output contract");
   });
 });
 

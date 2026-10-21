@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { isTerminalLaneState } from "../lib/verify-decide.mjs";
+
 // The pre-In-Test verification stage's bash wiring, the Testing column
 // (ADR-0053). The decisions live in scripts/lib/verify-decide.mjs (its own
 // matrix test); what factory-agent.sh must guarantee is what these lock in:
@@ -69,6 +71,7 @@ const REAL_HELPERS = [
   "pr_failing_required",
   "pr_pending_required",
   "ci_required_green",
+  "browser_kind_enabled",
 ];
 
 const STUBS = `
@@ -175,6 +178,9 @@ function runBash(body, { env = {}, state = {}, comments = [], bash = "/bin/bash"
     `FACTORY_BROWSER_ACCOUNT_FILE="${join(dir, "account.env")}"`,
     `FACTORY_BROWSER_SIGNIN_KEY_FILE="${join(dir, "signin.env")}"`,
     "FACTORY_CR_CLI=${FACTORY_CR_CLI:-0}",
+    "FACTORY_BROWSER=${FACTORY_BROWSER:-1}",
+    'FACTORY_BROWSER_KINDS="${FACTORY_BROWSER_KINDS-intest,verify}"',
+    'VERIFY_BROWSER_CANDIDATES="${VERIFY_BROWSER_CANDIDATES_STUB:-}"',
     "REQUIRED_CONTEXTS_JSON='[\"Lint\"]'",
     script.match(/^VERIFY_REPORT_POST_MAX=.*$/m)[0],
     script.match(/^VERIFY_REPORT_RETRY_STEP_MIN=.*$/m)[0],
@@ -1501,6 +1507,394 @@ describe("verify_compose_report with a shell run (real composer, lane module stu
       const body = r.comments.at(-1).body;
       assert.match(body, /report withheld/i);
       assert.match(body, /bypass secret file/);
+    });
+  });
+});
+
+describe("the browser lane's --watch half (verify_browser_work, verify_browser_stop)", () => {
+  const WEB = '{"web":true,"mobile":false,"desktop":false}';
+  const work = (platforms, browser = "none") =>
+    `verify_browser_work 7 70 "$HEAD" '${platforms}' '{"shell":"none","browser":"${browser}"}'`;
+  const show = 'echo "C=[$VERIFY_BROWSER_CANDIDATES]"';
+
+  it("is wired into the lane seams, and the browser lane counts as built", () => {
+    assert.match(extract("verify_work_lanes"), /^\s+verify_browser_work "\$@" \|\| true$/m);
+    assert.match(extract("verify_stop_lanes"), /^\s+verify_browser_stop "\$@" \|\| true$/m);
+    assert.match(script, /^VERIFY_BUILT_LANES="[^"]*\bbrowser\b[^"]*"/m);
+  });
+
+  it("builds both lanes, so neither reads not-built with the script's own list", () => {
+    const built = script.match(/^VERIFY_BUILT_LANES="([^"]*)"/m)?.[1];
+    assert.equal(built, "shell,browser");
+    // Both seams call both lanes, the shell lane first (it starts a detached
+    // run; the browser lane only queues a candidate).
+    const work = extract("verify_work_lanes");
+    assert.ok(work.indexOf("verify_shell_work") < work.indexOf("verify_browser_work"));
+    const stop = extract("verify_stop_lanes");
+    assert.ok(stop.indexOf("verify_shell_stop") < stop.indexOf("verify_browser_stop"));
+    const states = `verify_lane_states "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")" "$HEAD" 1`;
+    withBash(states, { env: { HEAD, VERIFY_BUILT_LANES_STUB: built } }, (r) => {
+      assert.deepEqual(JSON.parse(r.stdout), { shell: "none", browser: "none" });
+    });
+    // A lane switched off still reads lane-off, and one missing from the list
+    // still reads not-built (the wording a future lane would get).
+    withBash(states, { env: { HEAD, VERIFY_BUILT_LANES_STUB: "browser" } }, (r) => {
+      assert.deepEqual(JSON.parse(r.stdout), { shell: "skipped:not-built", browser: "none" });
+    });
+  });
+
+  it("does nothing, recording nothing, when the browser lane is switched off or not built", () => {
+    const NOT_WEB = '{"web":false,"mobile":true,"desktop":false}';
+    for (const env of [
+      { FACTORY_VERIFY_LANES: "shell", VERIFY_BUILT_LANES_STUB: "shell,browser" },
+      { VERIFY_BUILT_LANES_STUB: "shell" },
+    ]) {
+      withBash(`${work(WEB)}\n${work(NOT_WEB)}\n${show}`, { env: { HEAD, ...env } }, (r) => {
+        assert.equal(r.stdout.trim(), "C=[]", JSON.stringify(env));
+        assert.equal(r.issue.verifyBrowser ?? null, null, JSON.stringify(env));
+      });
+    }
+  });
+
+  it("queues a verify candidate for a web card whose lane has no result, once", () => {
+    withBash(
+      `${work(WEB)}\n${work(WEB)}\n${show}`,
+      { env: { HEAD, VERIFY_BUILT_LANES_STUB: "shell,browser" } },
+      (r) => {
+        assert.equal(r.stdout.trim(), `C=[verify:7:70:${HEAD}]`);
+        assert.equal(r.issue.verifyBrowser ?? null, null, "queueing records nothing");
+        assert.match(r.log, /browser lane queued for --browser/);
+      },
+    );
+    withBash(
+      `${work(WEB)}\n${show}`,
+      {
+        env: {
+          HEAD,
+          VERIFY_BUILT_LANES_STUB: "shell,browser",
+          VERIFY_BROWSER_CANDIDATES_STUB: `verify:9:90:${OLD}`,
+        },
+      },
+      (r) => assert.equal(r.stdout.trim(), `C=[verify:9:90:${OLD} verify:7:70:${HEAD}]`),
+    );
+  });
+
+  it("leaves a lane alone once it has a result for this commit", () => {
+    for (const browser of ["reported:pass", "unavailable:chrome", "skipped:not-built", "timeout"]) {
+      withBash(
+        `${work(WEB, browser)}\n${show}`,
+        { env: { HEAD, VERIFY_BUILT_LANES_STUB: "shell,browser" } },
+        (r) => {
+          assert.equal(r.stdout.trim(), "C=[]", browser);
+          assert.equal(r.issue.verifyBrowser ?? null, null, browser);
+        },
+      );
+    }
+  });
+
+  it("ends the lane as skipped:not-web for a card with no web changes, clearing an old run dir", () => {
+    const state = { verifyBrowserRunDir: "/old/run" };
+    withBash(
+      `${work('{"web":false,"mobile":true,"desktop":false}')}\n${show}`,
+      { env: { HEAD, VERIFY_BUILT_LANES_STUB: "shell,browser" }, state },
+      (r) => {
+        assert.equal(r.stdout.trim(), "C=[]");
+        assert.equal(r.issue.verifyBrowser, `${HEAD}:skipped:not-web`);
+        assert.equal(r.issue.verifyBrowserRunDir ?? null, null);
+      },
+    );
+  });
+
+  it("ends the lane as skipped:browser-off when the runner or its verify kind is off", () => {
+    for (const env of [{ FACTORY_BROWSER: "0" }, { FACTORY_BROWSER_KINDS: "intest" }]) {
+      withBash(
+        `${work(WEB)}\n${show}`,
+        { env: { HEAD, VERIFY_BUILT_LANES_STUB: "shell,browser", ...env } },
+        (r) => {
+          assert.equal(r.stdout.trim(), "C=[]", JSON.stringify(env));
+          assert.equal(r.issue.verifyBrowser, `${HEAD}:skipped:browser-off`);
+        },
+      );
+    }
+  });
+
+  it("waits, recording nothing, while the PR's platforms can't be read", () => {
+    for (const platforms of ["{}", "not json"]) {
+      withBash(
+        `${work(platforms)}\n${show}`,
+        { env: { HEAD, VERIFY_BUILT_LANES_STUB: "shell,browser" } },
+        (r) => {
+          assert.equal(r.stdout.trim(), "C=[]", platforms);
+          assert.equal(r.issue.verifyBrowser ?? null, null);
+          assert.match(r.log, /platforms are unknown this tick; the browser lane waits/);
+        },
+      );
+    }
+  });
+
+  it("records nothing in a dry run", () => {
+    withBash(
+      work('{"web":false}'),
+      { env: { HEAD, VERIFY_BUILT_LANES_STUB: "shell,browser", DRY_RUN: "1" } },
+      (r) => {
+        assert.equal(r.issue.verifyBrowser ?? null, null);
+      },
+    );
+  });
+
+  it("drops only the stopped card's candidate", () => {
+    const env = {
+      HEAD,
+      VERIFY_BROWSER_CANDIDATES_STUB: `verify:9:90:${OLD} verify:7:70:${HEAD} verify:71:7:${OLD}`,
+    };
+    withBash(`verify_browser_stop 7 "$HEAD" hold-cap\n${show}`, { env }, (r) => {
+      assert.equal(r.stdout.trim(), `C=[verify:9:90:${OLD} verify:71:7:${OLD}]`);
+    });
+    withBash(
+      `verify_hand_back ITEM 7 70 "$HEAD" ci-red '{}'\n${show}`,
+      { env: { ...env, PR_OBJ_STUB: PR_OBJ } },
+      (r) => assert.equal(r.stdout.trim(), `C=[verify:9:90:${OLD} verify:71:7:${OLD}]`),
+    );
+  });
+
+  it("agrees with verify-decide.mjs on which lane states are final", () => {
+    const tokens = [
+      "reported:pass",
+      "reported",
+      "timeout",
+      "unavailable:chrome",
+      "stale-branch",
+      "no-preview",
+      "skipped:not-web",
+      "none",
+      "",
+      "running",
+      "queued:x",
+      // The shell lane's pending states (5A) and the browser lane's preview wait.
+      "deferred:memory",
+      "retry:error",
+      "waiting-preview:2026-10-21T00:00:00Z",
+    ];
+    const body = tokens
+      .map((t) => `if verify_state_terminal '${t}'; then echo "T"; else echo "F"; fi`)
+      .join("\n");
+    withBash(body, {}, (r) => {
+      const got = r.stdout.trim().split("\n");
+      tokens.forEach((t, i) => {
+        assert.equal(got[i] === "T", isTerminalLaneState(t), JSON.stringify(t));
+      });
+    });
+  });
+});
+
+describe("the browser lane in the Testing sweep (real helpers, real composer)", () => {
+  const card = 'verify_sweep_card ITEM 7 "$LABELS"';
+  const base = (over = {}) => ({
+    HEAD,
+    LABELS: "status:testing",
+    PR_OBJ_STUB: PR_OBJ,
+    PR_VIEW_STUB: prView(),
+    ...over,
+  });
+  const reviewed = (over = {}) => ({
+    verifySha: HEAD,
+    verifyStartedAt: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+    lastReviewSha: HEAD,
+    lastFeedbackAt: "2026-01-01T00:00:00Z",
+    intestCommentSha: HEAD,
+    ...over,
+  });
+  const scenario = [
+    "🏭 **Test scenario — verifying now (Testing).**",
+    "## Test scenario",
+    "### Web",
+    "1. Open /notebooks — expected: the list.",
+    "<!-- drafto-factory-in-test -->",
+    "<!-- drafto-factory-test-scenario -->",
+    `<!-- drafto-factory-scenario-sha:${HEAD} -->`,
+  ].join("\n");
+  const comments = [{ id: 5, body: scenario, createdAt: "t", authorAssociation: "OWNER" }];
+
+  it("queues the card's verify candidate while its browser lane is pending", () => {
+    withBash(
+      `${card}\necho "C=[$VERIFY_BROWSER_CANDIDATES]"`,
+      { env: base({ VERIFY_BUILT_LANES_STUB: "browser" }), state: reviewed(), comments },
+      (r) => {
+        assert.match(r.log, /Testing → work-lanes \(lanes-pending\)/);
+        assert.equal(r.stdout.trim(), `C=[verify:7:70:${HEAD}]`);
+      },
+    );
+  });
+
+  it("promotes once the lane has reported, with the browser run in the report", () => {
+    const output = [
+      "<<<REPORT",
+      "Ran against the preview as qa@example.com.",
+      "",
+      "| # | Step | Result | Evidence |",
+      "|---|---|---|---|",
+      "| 1 | Open /notebooks | PASS | the list shows |",
+      "",
+      "**Summary:** 1 PASS, 0 FAIL, 0 WARN, 0 SKIP.",
+      "REPORT>>>",
+      "browser=ok verdict=pass",
+    ].join("\n");
+    // The sink's record, as browser_run verify leaves it.
+    const seed = [
+      'RUN="$LOG_DIR/browser/issue-7-aaaaaaaaaaaa-verify-20261021T000000"',
+      'mkdir -p "$RUN"',
+      `printf '%s\\n' '${output}' > "$RUN/runner-output.txt"`,
+      `node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field 7 verifyBrowser "$HEAD:reported:pass" --state-file "$STATE_FILE" >/dev/null`,
+      'node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field 7 verifyBrowserRunDir "$RUN" --state-file "$STATE_FILE" >/dev/null',
+    ].join("\n");
+    withBash(
+      `${seed}\n${card}`,
+      { env: base({ VERIFY_BUILT_LANES_STUB: "browser" }), state: reviewed(), comments },
+      (r) => {
+        assert.match(r.log, /Testing → promote \(lanes-done\)/);
+        assert.match(r.calls, /^transition In Test$/m);
+        const report = r.comments.at(-1).body;
+        assert.match(report, /\*\*Verdict: PASS\*\*/);
+        assert.match(report, /\| Web \(browser\) \| ran \| PASS \|/);
+        assert.match(report, /1 PASS, 0 FAIL, 0 WARN, 0 SKIP/);
+        assert.match(report, /<summary>Web \(browser\): full report<\/summary>/);
+        assert.doesNotMatch(report, /Run the \*\*Web\*\* steps in the test scenario by hand/);
+      },
+    );
+  });
+
+  it("works both lanes from the sweep: starts the shell run and queues the browser candidate", () => {
+    withBash(
+      `${card}\necho "C=[$VERIFY_BROWSER_CANDIDATES]"`,
+      { env: base({ VERIFY_BUILT_LANES_STUB: "shell,browser" }), state: reviewed(), comments },
+      (r) => {
+        assert.match(r.log, /Testing → work-lanes \(lanes-pending\)/);
+        assert.match(r.calls, new RegExp(`^lane start --issue 7 --pr 70 --sha ${HEAD} `, "m"));
+        assert.equal(r.stdout.trim(), `C=[verify:7:70:${HEAD}]`);
+      },
+    );
+  });
+
+  it("promotes once both lanes have reported, with both in the report", () => {
+    const browserOut = [
+      "<<<REPORT",
+      "| # | Step | Result | Evidence |",
+      "|---|---|---|---|",
+      "| 1 | Open /notebooks | PASS | the list shows |",
+      "**Summary:** 1 PASS, 0 FAIL, 0 WARN, 0 SKIP.",
+      "REPORT>>>",
+      "browser=ok verdict=pass",
+    ].join("\n");
+    const shellOut = [
+      "<<<REPORT",
+      "| # | Check | Result | Evidence |",
+      "|---|---|---|---|",
+      "| 1 | pnpm test | PASS | 12 tests |",
+      "**Summary:** 1 PASS, 0 FAIL.",
+      "**Assessment:** fine.",
+      "REPORT>>>",
+      "<<<MANUAL",
+      "MANUAL>>>",
+      "shell=ok verdict=warn",
+    ].join("\n");
+    const set = (field, value) =>
+      `node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field 7 ${field} "${value}" --state-file "$STATE_FILE" >/dev/null`;
+    const seed = [
+      'B="$LOG_DIR/browser/issue-7-aaaaaaaaaaaa-verify-20261021T000000"; S="$LOG_DIR/verify/shell-run"',
+      'mkdir -p "$B" "$S"',
+      `printf '%s\\n' '${browserOut}' > "$B/runner-output.txt"`,
+      `printf '%s\\n' '${shellOut}' > "$S/shell-output.txt"`,
+      set("verifyBrowser", "$HEAD:reported:pass"),
+      set("verifyBrowserRunDir", "$B"),
+      set("verifyShell", "$HEAD:reported:warn"),
+      set("verifyShellRunDir", "$S"),
+    ].join("\n");
+    withBash(
+      `${seed}\n${card}`,
+      { env: base({ VERIFY_BUILT_LANES_STUB: "shell,browser" }), state: reviewed(), comments },
+      (r) => {
+        assert.match(r.log, /Testing → promote \(lanes-done\)/);
+        const report = r.comments.at(-1).body;
+        assert.match(report, /\*\*Verdict: WARN\*\*/, "the worst of the two");
+        assert.match(report, /\| Repo & API \(shell\) \| ran \| WARN \|/);
+        assert.match(report, /\| Web \(browser\) \| ran \| PASS \|/);
+        assert.doesNotMatch(report, /isn't built yet/);
+      },
+    );
+  });
+
+  it("promotes as soon as the lane ends without a report, listing the Web steps for the human", () => {
+    withBash(
+      card,
+      {
+        env: base({ VERIFY_BUILT_LANES_STUB: "browser" }),
+        state: reviewed({ verifyBrowser: `${HEAD}:unavailable:chrome-not-running` }),
+        comments,
+      },
+      (r) => {
+        assert.match(r.log, /Testing → promote \(lanes-done\)/);
+        const report = r.comments.at(-1).body;
+        assert.match(report, /unavailable: Chrome wasn't running on the Mac mini/);
+        assert.match(report, /Run the \*\*Web\*\* steps in the test scenario by hand/);
+      },
+    );
+  });
+});
+
+describe("handing a commit back to the In Test browser run (verify_browser_unclaim)", () => {
+  const promote = (lanes) =>
+    `verify_promote ITEM 7 70 "$HEAD" lanes-done '${lanes}' "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")" "$(cat "$COMMENTS_FILE")"`;
+  const lanes = '{"shell":"skipped:not-built","browser":"reported:pass"}';
+  const claimed = (browser) => ({ browserRunSha: HEAD, verifyBrowser: `${HEAD}:${browser}` });
+
+  it("releases the claim when the minimal notice goes out instead of the report", () => {
+    for (const browser of ["reported:pass", "stale-branch"]) {
+      withBash(
+        promote(lanes),
+        { env: { HEAD, REPORT_FAIL: "1" }, state: claimed(browser) },
+        (r) => {
+          assert.match(r.comments.at(-1).body, /couldn't be composed/);
+          assert.equal(r.issue.browserRunSha ?? null, null, browser);
+          assert.match(r.log, /the In Test browser run will report instead/);
+        },
+      );
+    }
+  });
+
+  it("keeps the claim when the report carries the result, or an In Test run made it", () => {
+    withBash(promote(lanes), { env: { HEAD }, state: claimed("reported:pass") }, (r) => {
+      assert.equal(r.issue.browserRunSha, HEAD);
+    });
+    for (const browser of ["skipped:already-run", "skipped:no-web-steps"]) {
+      withBash(promote(lanes), { env: { HEAD, REPORT_FAIL: "1" }, state: claimed(browser) }, (r) =>
+        assert.equal(r.issue.browserRunSha, HEAD, browser),
+      );
+    }
+    withBash(
+      `${promote(lanes)} || true`,
+      {
+        env: { HEAD, REPORT_FAIL: "1", FAIL_TRANSITION: "In Test" },
+        state: claimed("reported:pass"),
+      },
+      (r) => assert.equal(r.issue.browserRunSha, HEAD, "still in Testing: nothing changes"),
+    );
+  });
+
+  it("releases the claim when posting the report is given up", () => {
+    const body = [
+      'mkdir -p "$VERIFY_DIR"',
+      `printf 'report <!-- drafto-factory-verify-sha:%s -->\\n' "$HEAD" > "$VERIFY_DIR/report-7-$HEAD.md"`,
+      'touch -t 202601010000 "$VERIFY_DIR/report-7-$HEAD.md"',
+      'verify_report_retry 7 "$HEAD" "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")"',
+    ].join("\n");
+    const state = { ...claimed("reported:warn"), verifyReportPosts: `${HEAD}:3` };
+    withBash(body, { env: { HEAD, FAIL_COMMENT: "1" }, state }, (r) => {
+      assert.match(r.log, /giving up on posting/);
+      assert.equal(r.issue.browserRunSha ?? null, null);
+    });
+    const early = { ...claimed("reported:warn"), verifyReportPosts: `${HEAD}:1` };
+    withBash(body, { env: { HEAD, FAIL_COMMENT: "1" }, state: early }, (r) => {
+      assert.equal(r.issue.browserRunSha, HEAD, "retries left: keep it");
     });
   });
 });
