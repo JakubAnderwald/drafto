@@ -36,10 +36,11 @@ The property is verified in Google Search Console as the domain property `drafto
   - The app itself sits behind the session redirect.
 - **`robots.txt`:** allows everything except `/api/` and points at the sitemap.
 - **Files middleware skips:**
-  - `/robots.txt`, `/sitemap.xml`, `/.well-known/apple-app-site-association` and `/.well-known/assetlinks.json` bypass the session middleware, along with `/api/health` and static assets.
+  - `/robots.txt`, `/sitemap.xml` and everything under `/.well-known/` bypass the session middleware, along with `/api/health`, `/api/mcp` and static assets.
   - Crawlers and the Apple and Google app-link verifiers come signed out and do not follow a 307 to `/login`.
-  - The four files are also in `PUBLIC_ROUTES` as a backstop.
-  - Any other `/.well-known/*` path still runs the middleware.
+  - `/robots.txt`, `/sitemap.xml` and the two app-link association files are also in `PUBLIC_ROUTES` as a backstop.
+  - A `/.well-known/*` path with no file behind it, such as the OAuth discovery paths MCP clients probe, gets a static 404.
+  - Signed-out visitors and crawlers on any other path still run the middleware, but without a Supabase cookie it skips the session lookup.
 
 ### Expected Search Console state
 
@@ -85,9 +86,10 @@ Web only. The native apps depend on it in one way: `apps/mobile/app.config.ts` c
   3. If it must be reachable signed out, add it to `PUBLIC_ROUTES` ([privacy-policy.md → Modifying safely](./privacy-policy.md#modifying-safely)).
 - **New page in the `(auth)` group:** it is noindex unless its own metadata sets `robots: { index: true, follow: true }`.
 - **New static file that crawlers or verifiers fetch signed out:**
-  - Skip it in `config.matcher`, anchored with `$`, and add a case to `middleware-matcher.test.ts`.
+  - Under `/.well-known/` it already skips middleware.
+  - Anywhere else, skip it in `config.matcher`, anchored with `$`, and add a case to `middleware-matcher.test.ts`.
   - Also add it to `PUBLIC_ROUTES` and `middleware.test.ts` as a backstop.
-  - Relying on `PUBLIC_ROUTES` alone works, but runs a Supabase session lookup on every fetch.
+  - Relying on `PUBLIC_ROUTES` alone works, but bills a middleware run on every fetch.
 - **Landing page copy:**
   - Keep `LANDING_FEATURES` true on the platforms each entry names, for example "offline" applies to the native apps only.
   - Keep the sign-up note about approval as long as sign-up is gated ([email-and-approval.md](./email-and-approval.md)).

@@ -15,6 +15,7 @@ const PUBLIC_ROUTES = [
   "/auth/test-sign-in",
   "/forgot-password",
   "/reset-password",
+  // `config.matcher` in `middleware.ts` already skips these two, so the entries are a backstop.
   "/api/health",
   "/api/mcp",
   "/api/webhooks",
@@ -43,13 +44,13 @@ function isPublicRoute(pathname: string): boolean {
   return PUBLIC_ROUTES.some((route) => pathname === route || pathname.startsWith(route + "/"));
 }
 
+// Supabase SSR stores the session (and the PKCE verifier) in cookies named `sb-<ref>-auth-token…`.
+function hasSupabaseCookie(request: NextRequest): boolean {
+  return request.cookies.getAll().some(({ name }) => name.startsWith("sb-"));
+}
+
 export async function updateSession(request: NextRequest) {
   const { pathname } = request.nextUrl;
-
-  // Fast-path: MCP uses Bearer token auth, skip Supabase session lookup
-  if (pathname === "/api/mcp" || pathname.startsWith("/api/mcp/")) {
-    return NextResponse.next({ request });
-  }
 
   // The landing page's own route is reached only through the rewrite of signed-out `/` below,
   // which doesn't pass through middleware again. A direct visit goes to `/`, so the page has a
@@ -58,6 +59,24 @@ export async function updateSession(request: NextRequest) {
     const homeUrl = request.nextUrl.clone();
     homeUrl.pathname = "/";
     return NextResponse.redirect(homeUrl, 308);
+  }
+
+  // Without a Supabase cookie there is no session to refresh and getUser() can only return no
+  // user, so skip building the client. Crawlers, bot probes and signed-out visitors take this
+  // path, and each middleware run bills Vercel Active CPU. The outcomes match the signed-out
+  // branches below.
+  if (!hasSupabaseCookie(request)) {
+    if (isPublicRoute(pathname)) {
+      return NextResponse.next({ request });
+    }
+    if (pathname === "/") {
+      const landingUrl = request.nextUrl.clone();
+      landingUrl.pathname = LANDING_PAGE_PATH;
+      return NextResponse.rewrite(landingUrl);
+    }
+    const loginUrl = request.nextUrl.clone();
+    loginUrl.pathname = "/login";
+    return NextResponse.redirect(loginUrl);
   }
 
   // Track cookies set by Supabase SSR so we can re-apply them

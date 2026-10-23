@@ -33,8 +33,14 @@ vi.mock("@supabase/ssr", () => ({
 // Import after mocks are set up
 const { updateSession } = await import("@/lib/supabase/middleware");
 
-function createRequest(path: string): NextRequest {
-  return new NextRequest(new URL(path, "http://localhost:3000"));
+// A Supabase auth cookie. Without one the middleware skips the session lookup entirely.
+const SESSION_COOKIE = "sb-test-auth-token=session";
+
+function createRequest(path: string, { session = false } = {}): NextRequest {
+  return new NextRequest(
+    new URL(path, "http://localhost:3000"),
+    session ? { headers: { cookie: SESSION_COOKIE } } : undefined,
+  );
 }
 
 describe("Auth middleware", () => {
@@ -146,7 +152,7 @@ describe("Auth middleware", () => {
       return { data: { user: null }, error: null };
     });
 
-    const response = await updateSession(createRequest("/"));
+    const response = await updateSession(createRequest("/", { session: true }));
 
     expect(response.headers.get("x-middleware-rewrite")).not.toBeNull();
     expect(response.cookies.get("sb-test-auth-token")?.value).toBe("");
@@ -154,6 +160,56 @@ describe("Auth middleware", () => {
       "private, no-cache, no-store, must-revalidate, max-age=0",
     );
     expect(response.headers.get("expires")).toBe("0");
+  });
+
+  it.each([
+    ["/login", 200, null],
+    ["/api/mcp", 200, null],
+    ["/settings", 307, "/login"],
+    ["/wp-admin/install.php", 307, "/login"],
+  ])(
+    "answers %s without a session lookup when the request has no Supabase cookie",
+    async (route, status, location) => {
+      // Crawlers, bot probes and signed-out visitors carry no session, and every middleware run
+      // bills Vercel Active CPU, so the Supabase client is never built for them.
+      const response = await updateSession(createRequest(route));
+
+      expect(response.status).toBe(status);
+      const header = response.headers.get("location");
+      expect(header && new URL(header).pathname).toBe(location);
+      expect(mockGetUser).not.toHaveBeenCalled();
+      expect(mockFrom).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rewrites cookie-less / to the landing page without a session lookup", async () => {
+    const response = await updateSession(createRequest("/?utm_source=store"));
+
+    const rewrite = new URL(response.headers.get("x-middleware-rewrite")!);
+    expect(rewrite.pathname).toBe("/welcome");
+    expect(rewrite.search).toBe("?utm_source=store");
+    expect(mockGetUser).not.toHaveBeenCalled();
+  });
+
+  it("does not trust a forged verified-user header on a cookie-less request", async () => {
+    const response = await updateSession(
+      new NextRequest(new URL("/api/notes", "http://localhost:3000"), {
+        headers: { "x-verified-user-id": "someone-else" },
+      }),
+    );
+
+    expect(response.status).toBe(307);
+    expect(new URL(response.headers.get("location")!).pathname).toBe("/login");
+  });
+
+  it("still looks up the session when a Supabase cookie is present", async () => {
+    mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+
+    const response = await updateSession(createRequest("/settings", { session: true }));
+
+    expect(mockGetUser).toHaveBeenCalledOnce();
+    expect(response.status).toBe(307);
+    expect(new URL(response.headers.get("location")!).pathname).toBe("/login");
   });
 
   it("sends a direct visit to the landing page's route to / without a session lookup", async () => {
@@ -177,7 +233,7 @@ describe("Auth middleware", () => {
       }),
     });
 
-    const response = await updateSession(createRequest("/"));
+    const response = await updateSession(createRequest("/", { session: true }));
 
     expect(response.status).toBe(307);
     expect(new URL(response.headers.get("location")!).pathname).toBe("/waiting-for-approval");
@@ -196,7 +252,7 @@ describe("Auth middleware", () => {
       }),
     });
 
-    const response = await updateSession(createRequest("/"));
+    const response = await updateSession(createRequest("/", { session: true }));
 
     expect(response.status).toBe(200);
     // Signed in, `/` is the app, not the landing page.
@@ -216,7 +272,7 @@ describe("Auth middleware", () => {
       }),
     });
 
-    const response = await updateSession(createRequest("/waiting-for-approval"));
+    const response = await updateSession(createRequest("/waiting-for-approval", { session: true }));
 
     expect(response.status).toBe(200);
   });
@@ -234,7 +290,7 @@ describe("Auth middleware", () => {
       }),
     });
 
-    const response = await updateSession(createRequest("/"));
+    const response = await updateSession(createRequest("/", { session: true }));
 
     expect(response.status).toBe(307);
     expect(new URL(response.headers.get("location")!).pathname).toBe("/login");
@@ -253,7 +309,7 @@ describe("Auth middleware", () => {
       }),
     });
 
-    const response = await updateSession(createRequest("/waiting-for-approval"));
+    const response = await updateSession(createRequest("/waiting-for-approval", { session: true }));
 
     expect(response.status).toBe(307);
     expect(new URL(response.headers.get("location")!).pathname).toBe("/");
