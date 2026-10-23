@@ -40,7 +40,7 @@ The property is verified in Google Search Console as the domain property `drafto
   - Crawlers and the Apple and Google app-link verifiers come signed out and do not follow a 307 to `/login`.
   - `/robots.txt`, `/sitemap.xml` and the two app-link association files are also in `PUBLIC_ROUTES` as a backstop.
   - The OAuth discovery paths MCP clients probe (`/.well-known/oauth-*`, `/.well-known/openid-configuration`) have no file behind them, so they get a static 404. They are not in `PUBLIC_ROUTES`.
-  - Any other `/.well-known/*` path still runs the middleware.
+  - Any other `/.well-known/*` path still runs the middleware. A route added under one of the OAuth paths would get no session and must authenticate itself.
   - Signed-out visitors and crawlers on any other path still run the middleware, but without a Supabase cookie it skips the session lookup.
 
 ### Expected Search Console state

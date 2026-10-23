@@ -21,7 +21,9 @@ export const config = {
   // - The two `/.well-known` app-link association files: Apple and Google fetch them signed
   //   out and don't follow redirects, so a 307 to /login breaks Universal Links and App Links.
   // Each exclusion is anchored with `$` (or bounded to a prefix like `oauth-`), so lookalike
-  // paths and any future `/.well-known/*` route still get a session. `/api/health`, `/api/mcp`,
+  // paths and any future `/.well-known/*` route still get a session, except under the explicit
+  // `oauth-*` and `openid-configuration` exclusions: a route added there would get no session and
+  // must authenticate itself, never through `x-verified-*` headers. `/api/health`, `/api/mcp`,
   // the two crawler files and the two association files are also in PUBLIC_ROUTES, in case a
   // matcher edit ever drops one of them; the OAuth paths are not, and would go back to /login.
   matcher: [

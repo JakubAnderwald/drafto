@@ -25,7 +25,7 @@ Usage over the 30 days to 2026-10-23 was 3h15m: 2h22m for drafto, 53m for routis
    - `/.well-known/oauth-*` and `/.well-known/openid-configuration`;
    - exactly `/register`, `/authorize` and `/token`.
 
-   None of these OAuth paths is a route, so each becomes a static 404. Every exclusion is anchored or bounded, so lookalike paths and any future `/.well-known/*` route still run the middleware.
+   None of these OAuth paths is a route, so each becomes a static 404. Every exclusion is anchored or bounded, so lookalike paths and any future `/.well-known/*` route still run the middleware. The exception is a route added under `/.well-known/oauth-*` or at `/.well-known/openid-configuration`, `/register`, `/authorize` or `/token`: it gets no session and must authenticate itself, never through `x-verified-*` headers.
 
 2. `updateSession` builds the Supabase client only when the request has an `sb-*` cookie. Without one, `getUser()` could only return no user, so the request goes straight to the existing signed-out branches:
    - public route → pass through
