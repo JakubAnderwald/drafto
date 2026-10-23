@@ -12,16 +12,19 @@ export const config = {
   // - `/api/mcp`: MCP clients authenticate with a Bearer API key that the route checks itself,
   //   and never send a session cookie. A client with a bad key retries every minute or so, which
   //   made it most of the team's middleware runs.
+  // - MCP OAuth probing, which such a client runs after every 401. None of these paths is a
+  //   route, so they get a static 404 instead of a 307 to /login and a second middleware run:
+  //   `/.well-known/oauth-*` and `/.well-known/openid-configuration` (discovery), then `/register`,
+  //   `/authorize` and `/token` (the MCP SDK's fallbacks when discovery finds nothing).
   // - `/robots.txt`, `/sitemap.xml`: crawlers fetch them signed out, so the session check
   //   would send them to /login instead.
-  // - All of `/.well-known/*`: these are machine-read files fetched signed out. Apple and Google
-  //   fetch the app-link association files and don't follow redirects, so a 307 to /login breaks
-  //   Universal Links and App Links. MCP clients probe the OAuth discovery paths
-  //   (`/.well-known/oauth-protected-resource`, …) after every 401, and those now get a static
-  //   404 instead of a 307 to /login and a second middleware run.
-  // `/api/health`, `/api/mcp` and the two files are anchored, so lookalike paths still run the
-  // middleware. They are also in PUBLIC_ROUTES, in case a matcher edit ever drops one of them.
+  // - The two `/.well-known` app-link association files: Apple and Google fetch them signed
+  //   out and don't follow redirects, so a 307 to /login breaks Universal Links and App Links.
+  // Each exclusion is anchored with `$` (or bounded to a prefix like `oauth-`), so lookalike
+  // paths and any future `/.well-known/*` route still get a session. `/api/health`, `/api/mcp`,
+  // the two crawler files and the two association files are also in PUBLIC_ROUTES, in case a
+  // matcher edit ever drops one of them; the OAuth paths are not, and would go back to /login.
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|api/health$|api/mcp(?:/|$)|robots\\.txt$|sitemap\\.xml$|\\.well-known/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|api/health$|api/mcp(?:/|$)|register$|authorize$|token$|robots\\.txt$|sitemap\\.xml$|\\.well-known/(?:apple-app-site-association$|assetlinks\\.json$|oauth-|openid-configuration$)|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

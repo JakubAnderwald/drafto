@@ -44,7 +44,10 @@ function isPublicRoute(pathname: string): boolean {
   return PUBLIC_ROUTES.some((route) => pathname === route || pathname.startsWith(route + "/"));
 }
 
-// Supabase SSR stores the session (and the PKCE verifier) in cookies named `sb-<ref>-auth-token…`.
+// @supabase/ssr names its cookies `sb-<project ref>-auth-token` (chunked as `.0`, `.1`…, plus
+// `-code-verifier` during PKCE) unless a client sets `cookieOptions.name`. None of ours do
+// (`client.ts`, `server.ts`, this file). If one ever does, change this check with it, or every
+// signed-in request is treated as signed out.
 function hasSupabaseCookie(request: NextRequest): boolean {
   return request.cookies.getAll().some(({ name }) => name.startsWith("sb-"));
 }
@@ -61,24 +64,6 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(homeUrl, 308);
   }
 
-  // Without a Supabase cookie there is no session to refresh and getUser() can only return no
-  // user, so skip building the client. Crawlers, bot probes and signed-out visitors take this
-  // path, and each middleware run bills Vercel Active CPU. The outcomes match the signed-out
-  // branches below.
-  if (!hasSupabaseCookie(request)) {
-    if (isPublicRoute(pathname)) {
-      return NextResponse.next({ request });
-    }
-    if (pathname === "/") {
-      const landingUrl = request.nextUrl.clone();
-      landingUrl.pathname = LANDING_PAGE_PATH;
-      return NextResponse.rewrite(landingUrl);
-    }
-    const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = "/login";
-    return NextResponse.redirect(loginUrl);
-  }
-
   // Track cookies set by Supabase SSR so we can re-apply them
   // if we replace supabaseResponse later (e.g., to inject auth headers).
   let pendingCookies: Array<{ name: string; value: string; options?: Record<string, unknown> }> =
@@ -91,37 +76,40 @@ export async function updateSession(request: NextRequest) {
     request,
   });
 
-  const supabase = createServerClient<Database>(
-    env.NEXT_PUBLIC_SUPABASE_URL,
-    env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-    {
-      global: {
-        headers: { "x-drafto-client": "web" },
-      },
-      cookies: {
-        getAll() {
-          return request.cookies.getAll();
+  // Without a Supabase cookie there is no session, so getUser() could only return no user. Skip
+  // building the client: crawlers, bot probes and signed-out visitors take this path, and each
+  // middleware run bills Vercel Active CPU. They then take the same signed-out branches below.
+  const supabase = hasSupabaseCookie(request)
+    ? createServerClient<Database>(
+        env.NEXT_PUBLIC_SUPABASE_URL,
+        env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+        {
+          global: {
+            headers: { "x-drafto-client": "web" },
+          },
+          cookies: {
+            getAll() {
+              return request.cookies.getAll();
+            },
+            setAll(cookiesToSet, headers) {
+              pendingCookies = cookiesToSet;
+              pendingHeaders = { ...pendingHeaders, ...headers };
+              cookiesToSet.forEach(({ name, value }) => {
+                request.cookies.set(name, value);
+              });
+              supabaseResponse = NextResponse.next({
+                request,
+              });
+              cookiesToSet.forEach(({ name, value, options }) => {
+                supabaseResponse.cookies.set(name, value, options);
+              });
+            },
+          },
         },
-        setAll(cookiesToSet, headers) {
-          pendingCookies = cookiesToSet;
-          pendingHeaders = { ...pendingHeaders, ...headers };
-          cookiesToSet.forEach(({ name, value }) => {
-            request.cookies.set(name, value);
-          });
-          supabaseResponse = NextResponse.next({
-            request,
-          });
-          cookiesToSet.forEach(({ name, value, options }) => {
-            supabaseResponse.cookies.set(name, value, options);
-          });
-        },
-      },
-    },
-  );
+      )
+    : null;
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = supabase ? (await supabase.auth.getUser()).data.user : null;
 
   // Public routes: allow access regardless of auth state
   if (isPublicRoute(pathname)) {
@@ -145,8 +133,8 @@ export async function updateSession(request: NextRequest) {
     return landingResponse;
   }
 
-  // No user: redirect to login
-  if (!user) {
+  // No user: redirect to login. (A user implies a client; the check just narrows the type.)
+  if (!user || !supabase) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/login";
     return NextResponse.redirect(loginUrl);

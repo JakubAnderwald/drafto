@@ -191,10 +191,10 @@ describe("Auth middleware", () => {
     expect(mockGetUser).not.toHaveBeenCalled();
   });
 
-  it("does not trust a forged verified-user header on a cookie-less request", async () => {
+  it("redirects a cookie-less request to a protected API route even with a verified-user header", async () => {
     const response = await updateSession(
       new NextRequest(new URL("/api/notes", "http://localhost:3000"), {
-        headers: { "x-verified-user-id": "someone-else" },
+        headers: { "x-verified-user-id": "00000000-0000-0000-0000-000000000001" },
       }),
     );
 
@@ -210,6 +210,48 @@ describe("Auth middleware", () => {
     expect(mockGetUser).toHaveBeenCalledOnce();
     expect(response.status).toBe(307);
     expect(new URL(response.headers.get("location")!).pathname).toBe("/login");
+  });
+
+  it("serves a public route to a visitor whose session cookie is stale", async () => {
+    // getUser() finds no user for the cookie. /login must still answer, not redirect to itself.
+    mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+
+    const response = await updateSession(createRequest("/login", { session: true }));
+
+    expect(mockGetUser).toHaveBeenCalledOnce();
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+  });
+
+  it("overwrites client-sent verified-user headers with the session's user", async () => {
+    mockGetUser.mockResolvedValue({
+      data: { user: { id: "user-1", email: "test@test.com" } },
+      error: null,
+    });
+    mockFrom.mockReturnValue({
+      select: () => ({
+        eq: () => ({
+          single: () => Promise.resolve({ data: { is_approved: true }, error: null }),
+        }),
+      }),
+    });
+
+    const response = await updateSession(
+      new NextRequest(new URL("/api/notes", "http://localhost:3000"), {
+        headers: {
+          cookie: SESSION_COOKIE,
+          "x-verified-user-id": "someone-else",
+          "x-verified-user-email": "someone@else.com",
+        },
+      }),
+    );
+
+    // NextResponse.next({ request: { headers } }) forwards each request header to the route as
+    // `x-middleware-request-<name>`.
+    expect(response.headers.get("x-middleware-request-x-verified-user-id")).toBe("user-1");
+    expect(response.headers.get("x-middleware-request-x-verified-user-email")).toBe(
+      "test@test.com",
+    );
   });
 
   it("sends a direct visit to the landing page's route to / without a session lookup", async () => {
