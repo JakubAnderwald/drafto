@@ -79,6 +79,11 @@ const bash = (command) => decidePre({ tool: "Bash", input: { command }, config }
 describe("decidePre: Bash deny/allow matrix", () => {
   const allowed = [
     "pnpm --filter @drafto/web test -- --maxWorkers=2 src/notes",
+    // The prompt's targeted-test commands (factory-verify-prompt.md, rule 1).
+    "pnpm --filter @drafto/web exec vitest run __tests__/unit/health.test.ts --maxWorkers=2",
+    "pnpm --filter @drafto/shared exec vitest run src/editor/__tests__/x.test.ts --maxWorkers=2",
+    "pnpm --filter @drafto/mobile exec jest --maxWorkers=2 __tests__/unit/x.test.ts",
+    "pnpm --filter @drafto/desktop exec jest --maxWorkers=2 __tests__/unit/x.test.ts",
     "cd scripts && node --test __tests__/verify-lane.test.mjs",
     "git status --porcelain",
     "git log --oneline -5",
