@@ -385,7 +385,7 @@ describe("board options, status labels and factory-agent stay in sync", () => {
     assert.equal(labelFor.Testing, "status:testing");
     assert.match(
       labelsScript,
-      /"status:testing\|D93F0B\|Factory is running automated verification before In Test\."/,
+      /"status:testing\|F9A825\|Factory is running automated verification before In Test\."/,
     );
   });
 });
