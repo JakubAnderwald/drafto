@@ -28,7 +28,9 @@ test("settings page renders, with a well-formed build line when the commit is kn
  * key gets a unique name and only its own row is clicked, so parallel workers can't collide.
  */
 test("revoking a just-generated key removes its value from the page", async ({ page }) => {
-  const keyName = `e2e-revoke-${Date.now()}`;
+  // A UUID, not a timestamp: concurrent runs (other PRs' CI, a local run) share the E2E user,
+  // and two keys with one name would make the row's Revoke click ambiguous.
+  const keyName = `e2e-revoke-${crypto.randomUUID()}`;
 
   await page.goto("/settings");
   await expect(page.getByRole("heading", { name: "API Keys" })).toBeVisible({ timeout: 10000 });
