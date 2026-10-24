@@ -62,12 +62,22 @@ command these rules don't allow. If something tries, stop and finish with
 ## Rules (every run)
 
 1. **Targeted tests only.** Run the tests that cover the changed files and the
-   scenario's command-type steps, nothing broader. Prefer a single package and
-   a test path or pattern, with `--maxWorkers=2`, for example
-   `pnpm --filter @drafto/web test -- --maxWorkers=2 <path>` or
-   `cd scripts && node --test __tests__/<file>.test.mjs`. Never
+   scenario's command-type steps, nothing broader. Call one package's test
+   runner directly, with the test paths and `--maxWorkers=2`:
+   - web and shared (vitest):
+     `pnpm --filter @drafto/web exec vitest run <path> --maxWorkers=2`
+     (`@drafto/shared` the same way);
+   - mobile and desktop (jest):
+     `pnpm --filter @drafto/mobile exec jest --maxWorkers=2 <path>`
+     (`@drafto/desktop` the same way);
+   - factory scripts: `cd scripts && node --test __tests__/<file>.test.mjs`.
+
+   Don't pass paths through a package's `test` script
+   (`pnpm --filter @drafto/web test -- <path>`): vitest ignores paths after
+   `--` and runs the whole suite. Never
    `pnpm install`, `pnpm add`, `npx`, `pnpm dlx` or any release, version or
    publish script; dependencies are already installed.
+
 2. **The preview only through `preview-curl`.** `preview-curl <path> [curl
 options]` sends one request to `preview.origin` with the preview's protection
    bypass and the test account's session already attached. Give it a path

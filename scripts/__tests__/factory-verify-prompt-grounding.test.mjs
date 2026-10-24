@@ -36,6 +36,12 @@ describe("verify shell prompt — where it runs", () => {
     assert.match(flat, /CI is already green on this commit/);
     assert.match(flat, /\*\*Targeted tests only\.\*\*/);
     assert.match(flat, /--maxWorkers=2/);
+    // The runner is called directly: through the package's `test` script,
+    // vitest ignores paths after `--` and runs the whole suite.
+    assert.ok(flat.includes("pnpm --filter @drafto/web exec vitest run <path> --maxWorkers=2"));
+    assert.ok(flat.includes("pnpm --filter @drafto/mobile exec jest --maxWorkers=2 <path>"));
+    assert.match(flat, /Don't pass paths through a package's `test` script/);
+    assert.doesNotMatch(flat, /for example `pnpm --filter @drafto\/web test --/);
     for (const banned of ["pnpm install", "npx", "pnpm dlx"])
       assert.ok(flat.includes(`\`${banned}\``), banned);
     assert.ok(DENY_COMMANDS.includes("npx"));
