@@ -71,6 +71,25 @@ Every hook command uses absolute paths to node and the guard. Only the PreToolUs
 
 Tests: `cd scripts && node --test __tests__/browser-guard.test.mjs`.
 
+## The verification lane's guard
+
+The verification stage's shell lane ([ADR-0053](../adr/0053-pre-in-test-verification-stage.md)) has a seventh guard, `scripts/lib/verify-guard.mjs`, generated per run like the browser one. `verify-lane.mjs start` writes `guard-config.json` and `guard-settings.json` into the run's directory, and the supervisor passes the settings with `--settings` to a session started with `--setting-sources ""`, so the worktree's own `.claude/settings.json` (and any hook a PR adds to it) never loads. Measured on the Mac mini on 2026-10-21 (claude 2.1.305): the `--settings` hooks fire, the matcher `*` covers Bash, and a project hook in the session's working directory does not run.
+
+The file wires up two hooks:
+
+- **SessionStart** writes a canary record to `guard/<session>.jsonl`.
+- **PreToolUse on every tool** (`*`) blocks with exit 2. Only Bash, Read, Grep and Glob are allowed at all. Read, Grep and Glob are kept out of `~/drafto-secrets`, the run's `private/` dir, `.env` files, `~/.config`, `~/.ssh`, `~/.claude`, the keychains and browser profiles under `~/Library`, and the factory's `logs/`, through symlinks too. A Bash command is tokenised (quotes, `$(…)`, backticks, heredocs, redirections) and each simple command checked: `gh`, `claude`, `vercel`, `supabase`, `fastlane`, `sudo`, `osascript`, `launchctl`, `security`, `env`, `printenv`, `npx` and other network or host tools are denied by name; git only with read-only verbs; pnpm / npm never install, publish or run a release-like script; `node scripts/…` only as `node --test`; curl only over http(s) to localhost (no `file://`); a macOS in-test scenario only with `--preflight` (ADR-0043). Wrappers (`timeout`, `nice`, `xargs`, `find -exec`, `bash -c`, `pnpm exec`) are unwrapped first. A word the shell will still expand (a glob, an unexpanded variable, a brace expansion) is judged by what it could become: denied when its literal prefix could reach a protected directory (`~/drafto-secr*`, `~/${D}rets`, so `ls ~/*` too), when its literal segments spell one (`$S/.ssh/…`), or when its last segment could match a credential file name (`.env*`, `[c]url.cfg`). Read, Grep and Glob inputs get the same check, a Grep glob or Glob pattern against the tool's own `path`. Text it can't tokenise is denied. Like the browser guard it runs under a perl `alarm`, and its command ends in `|| exit 2`.
+
+The file also lists `Edit`, `Write`, `NotebookEdit`, `WebFetch` and `WebSearch` under `permissions.deny`, on top of `--tools Bash,Read,Grep,Glob`.
+
+It is defense in depth, not a sandbox. A shell can run a script it wrote to a file, which no pattern guard follows, and the PR's own code (its install scripts and the tests the lane runs) runs with the factory user's access, outside any hook, as it already does in the implement and fix stages. So a session set on misbehaving can read whatever the factory user can: `~/drafto-secrets`, the run's `private/` curl config, the gh credentials. The OS user is the only hard boundary, as it is for the implement stage, which runs with `--dangerously-skip-permissions`.
+
+What the lane adds keeps secrets off its ordinary path: an allowlisted environment (no tokens), an empty `GH_CONFIG_DIR`, the bypass secret and session cookie handed to `preview-curl` through its config and never to the model as text, and the report composer's secret scan, which withholds a lane whose output carries a known secret. That scan matches literals, so a secret encoded on the way out would get past it. Moving the curl config into a supervisor-held proxy wouldn't change this, because the secret's source file stays readable by the same user. The bypass secret only unlocks this project's protected deployments (its previews), and it can be regenerated in the Vercel dashboard. A real wall would be a separate OS user, or a sandbox that denies those reads and limits the network to the preview host. That's a possible follow-up.
+
+The canary check is stricter than the browser runner's: after the session, the supervisor reads `verify-guard.mjs`'s log and the session transcript. No SessionStart record, or tool calls in the transcript with no PreToolUse record, means the session ran unguarded. The lane then reports `unavailable:guard` and pauses itself for 24 hours (`factory:verify-resume` once fixed).
+
+Tests: `cd scripts && node --test __tests__/verify-guard.test.mjs __tests__/verify-lane-supervisor.test.mjs`.
+
 ## Verifying
 
 ```bash

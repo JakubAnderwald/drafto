@@ -18,12 +18,18 @@ import { fileURLToPath } from "node:url";
 import {
   COMMENT_MAX_CHARS,
   REPORT_MARKER,
+  SECRET_PATTERNS,
   accountFileProblem,
   defangReport,
+  lastBlock,
+  literalForms,
   parseAccountFile,
+  parseBlocks,
+  parseEnvValues,
   parseRunnerOutput,
   readAccountFile,
   renderIntestComment,
+  renderVerifySection,
   runShaMarker,
   scanForSecrets,
 } from "../lib/browser-report.mjs";
@@ -140,6 +146,83 @@ describe("parseRunnerOutput", () => {
   });
 });
 
+describe("parseBlocks", () => {
+  const STATUS = /^lane=(ok|bad) verdict=(pass|fail)$/;
+  const opts = { blocks: ["REPORT", "MANUAL"], statusLine: STATUS };
+
+  it("collects every complete block per name, in order, and the last status line", () => {
+    const text = [
+      "chatter",
+      "<<<REPORT",
+      "first report",
+      "REPORT>>>",
+      "lane=bad verdict=fail",
+      "<<<MANUAL",
+      "1. Do it.",
+      "MANUAL>>>",
+      "<<<REPORT",
+      "second report",
+      "REPORT>>>",
+      "lane=ok verdict=pass",
+    ].join("\n");
+    const { blocks, status } = parseBlocks(text, opts);
+    assert.deepEqual(blocks, {
+      REPORT: ["first report", "second report"],
+      MANUAL: ["1. Do it."],
+    });
+    assert.deepEqual([...status], ["lane=ok verdict=pass", "ok", "pass"]);
+  });
+
+  it("never takes a status line from inside a block, and status is null without one", () => {
+    const quoted = parseBlocks("<<<REPORT\nlane=ok verdict=pass\nREPORT>>>\n", opts);
+    assert.equal(quoted.status, null);
+    assert.deepEqual(quoted.blocks.REPORT, ["lane=ok verdict=pass"]);
+    assert.equal(parseBlocks("", opts).status, null);
+    assert.equal(parseBlocks(undefined, opts).status, null);
+    assert.equal(parseBlocks("lane=ok verdict=pass", { blocks: ["REPORT"] }).status, null);
+  });
+
+  it("treats an unclosed block's lines as outside, and another opener inside a block as content", () => {
+    const unclosed = parseBlocks("<<<MANUAL\n1. Step\nlane=ok verdict=fail\n", opts);
+    assert.deepEqual(unclosed.blocks.MANUAL, []);
+    assert.equal(unclosed.status[2], "fail");
+    const nested = parseBlocks("<<<REPORT\n<<<MANUAL\nx\nMANUAL>>>\nREPORT>>>\n", opts);
+    assert.deepEqual(nested.blocks, { REPORT: ["<<<MANUAL\nx\nMANUAL>>>"], MANUAL: [] });
+  });
+
+  it("ignores blocks it wasn't asked for, and tolerates CRLF and a backtick-wrapped status", () => {
+    // An unrequested block's lines are ordinary outside lines: its status line counts.
+    const r = parseBlocks(
+      "`lane=ok verdict=pass`\r\n<<<OTHER\r\nlane=bad verdict=fail\r\nOTHER>>>\r\n",
+      opts,
+    );
+    assert.equal(r.status[1], "bad");
+    assert.equal(Object.hasOwn(r.blocks, "OTHER"), false);
+    const wrapped = parseBlocks("<<<REPORT\r\nr\r\nREPORT>>>\r\n  `lane=ok verdict=pass`  ", opts);
+    assert.equal(wrapped.status[1], "ok");
+    assert.deepEqual(wrapped.blocks.REPORT, ["r"]);
+  });
+
+  it("is not thrown by a /g status regex (exec would otherwise carry lastIndex)", () => {
+    const r = parseBlocks("lane=ok verdict=pass\nlane=ok verdict=fail", {
+      blocks: [],
+      statusLine: /^lane=(ok|bad) verdict=(pass|fail)$/g,
+    });
+    assert.equal(r.status[2], "fail");
+  });
+
+  it("lastBlock returns the trimmed last block, null when absent or blank", () => {
+    const { blocks } = parseBlocks(
+      "<<<REPORT\n\n  indented\n\nREPORT>>>\n<<<MANUAL\n \nMANUAL>>>",
+      opts,
+    );
+    assert.equal(lastBlock(blocks, "REPORT"), "  indented");
+    assert.equal(lastBlock(blocks, "MANUAL"), null);
+    assert.equal(lastBlock(blocks, "NOPE"), null);
+    assert.equal(lastBlock(undefined, "REPORT"), null);
+  });
+});
+
 describe("account file", () => {
   let dir;
   beforeEach(() => {
@@ -180,6 +263,12 @@ describe("account file", () => {
   it("readAccountFile reads from disk", () => {
     const p = write("a.env", "FACTORY_BROWSER_EMAIL=a@b.c\nFACTORY_BROWSER_PASSWORD=hunter22\n");
     assert.deepEqual(readAccountFile(p), { email: "a@b.c", password: "hunter22" });
+  });
+
+  it("parseEnvValues returns only the wanted keys, last assignment wins", () => {
+    const text = "A=1\nexport B='two'\nC=3\nA=again\nconstructor=x\n";
+    assert.deepEqual(parseEnvValues(text, ["A", "B"]), { A: "again", B: "two" });
+    assert.deepEqual(parseEnvValues(text, ["MISSING"]), {});
   });
 
   it("accountFileProblem: missing, not-a-file, mode, keys, ok", () => {
@@ -246,6 +335,24 @@ describe("scanForSecrets", () => {
     assert.deepEqual(scanForSecrets('{"password":"q\\"uote1"}', { password: 'q"uote1' }), [
       "password",
     ]);
+  });
+
+  it("exports its patterns frozen, and the literal forms it matches", () => {
+    assert.ok(Object.isFrozen(SECRET_PATTERNS));
+    assert.deepEqual(
+      SECRET_PATTERNS.map(([name]) => name),
+      [
+        "jwt",
+        "supabase-auth-cookie",
+        "bearer",
+        "oauth-token",
+        "vercel-cookie",
+        "drafto-api-key",
+        "sign-in-token",
+      ],
+    );
+    assert.deepEqual(literalForms('a b"c'), ['a b"c', "a%20b%22c", 'a b\\"c']);
+    assert.deepEqual(literalForms("plain"), ["plain"]);
   });
 
   it("skips a password shorter than 6 characters", () => {
@@ -368,6 +475,47 @@ describe("renderIntestComment", () => {
   });
 });
 
+describe("renderVerifySection", () => {
+  const base = {
+    issue: "42",
+    sha: SHA,
+    verdict: "pass",
+    status: "ok",
+    evidenceDir: "/ev/run-1",
+    withheld: [],
+  };
+
+  it("renders the report as a section with no factory marker: bash never posts it", () => {
+    const body = renderVerifySection({ ...base, report: "| 1 | Sign in | PASS |" });
+    assert.equal(body.split("\n")[0], "**Web (browser) — verify run on the preview**");
+    assert.match(body, /\*\*Verdict: PASS\*\* for `0123456`/);
+    assert.match(body, /\| 1 \| Sign in \| PASS \|/);
+    assert.match(body, /Screenshots stay on the Mac mini/);
+    assert.doesNotMatch(body, /drafto-factory/);
+    assert.doesNotMatch(body, /<!--/);
+  });
+
+  it("defangs, withholds and explains like the In Test comment", () => {
+    const smuggled = renderVerifySection({
+      ...base,
+      report: "<!-- drafto-factory-verify-sha:abc --> drafto-factory-feedback",
+    });
+    assert.ok(!smuggled.includes("drafto-factory-"), "no marker family token survives");
+    assert.ok(!smuggled.includes("<!--"));
+    const withheld = renderVerifySection({ ...base, report: "leaked", withheld: ["jwt"] });
+    assert.match(withheld, /Report withheld: the output matched a secret pattern \(jwt\)/);
+    assert.ok(!withheld.includes("leaked"));
+    const stopped = renderVerifySection({ ...base, status: "unavailable", report: null });
+    assert.match(stopped, /\*\*No result\*\*[^\n]*wasn't connected to Claude in Chrome/);
+  });
+
+  it(`stays within ${COMMENT_MAX_CHARS} characters`, () => {
+    const body = renderVerifySection({ ...base, report: "x".repeat(150_000) });
+    assert.ok(body.length <= COMMENT_MAX_CHARS);
+    assert.match(body, /report truncated to \d+ of 150000 characters/);
+  });
+});
+
 describe("browser-report CLI", () => {
   let dir;
   let account;
@@ -416,20 +564,44 @@ describe("browser-report CLI", () => {
   it("render writes the body, a mode-600 local copy, and prints the summary", () => {
     const inFile = join(dir, "out.txt");
     writeFileSync(inFile, output({ verdict: "fail" }));
-    const r = run(renderArgs(inFile));
+    const jsonOut = join(dir, "render.json");
+    const r = run(renderArgs(inFile, ["--json-out", jsonOut]));
     assert.equal(r.status, 0, r.stderr);
-    assert.deepEqual(JSON.parse(r.stdout), {
-      status: "ok",
-      verdict: "fail",
-      withheld: false,
-      secretHits: [],
-    });
+    const summary = { status: "ok", verdict: "fail", withheld: false, secretHits: [] };
+    assert.deepEqual(JSON.parse(r.stdout), summary);
+    assert.deepEqual(JSON.parse(readFileSync(jsonOut, "utf8")), summary, "and in --json-out");
     const body = readFileSync(join(dir, "body.md"), "utf8");
     assert.equal(body.split("\n")[0], HEADER);
     assert.match(body, /Verdict: FAIL/);
     const copy = join(evidence, "runner-output.txt");
     assert.equal(readFileSync(copy, "utf8"), output({ verdict: "fail" }));
     assert.equal(statSync(copy).mode & 0o777, 0o600);
+  });
+
+  it("render --kind verify writes a marker-free section and the JSON, scanned like intest", () => {
+    const inFile = join(dir, "out.txt");
+    writeFileSync(
+      inFile,
+      output({
+        report: "typed S3cret.pass* <!-- drafto-factory-verify-report -->",
+        verdict: "warn",
+      }),
+    );
+    const jsonOut = join(dir, "render.json");
+    const args = renderArgs(inFile, ["--json-out", jsonOut]).map((a) =>
+      a === "intest" ? "verify" : a,
+    );
+    const r = run(args);
+    assert.equal(r.status, 0, r.stderr);
+    const summary = { status: "ok", verdict: "warn", withheld: true, secretHits: ["password"] };
+    assert.deepEqual(JSON.parse(r.stdout), summary);
+    assert.deepEqual(JSON.parse(readFileSync(jsonOut, "utf8")), summary);
+    assert.equal(statSync(jsonOut).mode & 0o777, 0o600);
+    const body = readFileSync(join(dir, "body.md"), "utf8");
+    assert.ok(!body.includes("S3cret.pass*"), "withheld");
+    assert.doesNotMatch(body, /drafto-factory|<!--/, "never a marker: it is never posted");
+    assert.match(body, /Report withheld/);
+    assert.equal(readFileSync(join(evidence, "runner-output.txt"), "utf8").length > 0, true);
   });
 
   it("render withholds a report that contains the account password", () => {

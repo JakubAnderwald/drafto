@@ -331,6 +331,97 @@ describe("worktree-cli remote branch resolution (--fetch)", () => {
     assert.match(JSON.parse(res.stderr).error, /diverged/);
   });
 
+  // A card's worktree stays registered through In Review and In Test, so a push
+  // to the PR from elsewhere ("Update branch" on GitHub, --release updating a
+  // BEHIND PR) used to leave the reused worktree on a stale tip: the next run's
+  // push was rejected and the agent had no sanctioned way to recover.
+  function pushFromElsewhere(issue, file) {
+    const clone = mkdtempSync(join(tmpdir(), "wt-cli-elsewhere-"));
+    gitIn(clone, ["clone", "-q", bare, "."]);
+    gitIn(clone, ["config", "user.email", "other@example.com"]);
+    gitIn(clone, ["config", "user.name", "Other"]);
+    gitIn(clone, ["checkout", "-q", `factory/issue-${issue}`]);
+    writeFileSync(join(clone, file), "elsewhere\n");
+    gitIn(clone, ["add", "."]);
+    gitIn(clone, ["commit", "-q", "-m", "elsewhere"]);
+    gitIn(clone, ["push", "-q", "origin", `factory/issue-${issue}`]);
+    rmSync(clone, { recursive: true, force: true });
+  }
+
+  function registeredAndPushed(issue) {
+    runCli(["add", "--issue", String(issue), "--root", repo, "--base", "main"]);
+    const wt = worktreePathForIssue(repo, issue);
+    writeFileSync(join(wt, "ours.txt"), "ours\n");
+    gitIn(wt, ["add", "."]);
+    gitIn(wt, ["commit", "-q", "-m", "ours"]);
+    gitIn(wt, ["push", "-q", "origin", `factory/issue-${issue}`]);
+    return wt;
+  }
+
+  it("fast-forwards a registered worktree that is behind origin", () => {
+    const wt = registeredAndPushed(120);
+    pushFromElsewhere(120, "update-branch.txt");
+
+    const res = runCli(["add", "--issue", "120", "--root", repo, "--base", "main", "--fetch"]);
+    assert.equal(res.status, 0, res.stderr);
+    const out = JSON.parse(res.stdout);
+    assert.equal(out.reused, true);
+    assert.equal(out.fastForwarded, true);
+    assert.ok(existsSync(join(wt, "update-branch.txt")), "origin's commit must be in the worktree");
+    assert.equal(
+      gitIn(wt, ["rev-parse", "HEAD"]).trim(),
+      gitIn(repo, ["rev-parse", "refs/remotes/origin/factory/issue-120"]).trim(),
+    );
+  });
+
+  it("leaves a registered worktree alone without --fetch, or when it is level or ahead", () => {
+    const wt = registeredAndPushed(121);
+    pushFromElsewhere(121, "later.txt");
+    let out = JSON.parse(
+      runCli(["add", "--issue", "121", "--root", repo, "--base", "main"]).stdout,
+    );
+    assert.equal(out.fastForwarded, false, "no --fetch, no network, no move");
+    assert.ok(!existsSync(join(wt, "later.txt")));
+
+    gitIn(wt, ["pull", "-q", "--ff-only", "origin", "factory/issue-121"]);
+    writeFileSync(join(wt, "unpushed.txt"), "unpushed\n");
+    gitIn(wt, ["add", "."]);
+    gitIn(wt, ["commit", "-q", "-m", "unpushed"]);
+    const before = gitIn(wt, ["rev-parse", "HEAD"]).trim();
+    out = JSON.parse(
+      runCli(["add", "--issue", "121", "--root", repo, "--base", "main", "--fetch"]).stdout,
+    );
+    assert.equal(out.fastForwarded, false, "ahead of origin: keep the unpushed commit");
+    assert.equal(gitIn(wt, ["rev-parse", "HEAD"]).trim(), before);
+  });
+
+  it("refuses to reuse a registered worktree that has diverged from origin", () => {
+    const wt = registeredAndPushed(122);
+    pushFromElsewhere(122, "remote-side.txt");
+    writeFileSync(join(wt, "local-side.txt"), "local\n");
+    gitIn(wt, ["add", "."]);
+    gitIn(wt, ["commit", "-q", "-m", "local side"]);
+
+    const res = runCli(["add", "--issue", "122", "--root", repo, "--base", "main", "--fetch"]);
+    assert.equal(res.status, 1, "divergence must fail closed, not silently pick a side");
+    assert.match(JSON.parse(res.stderr).error, /diverged/);
+  });
+
+  it("refuses to fast-forward a registered worktree over uncommitted changes", () => {
+    const wt = registeredAndPushed(123);
+    pushFromElsewhere(123, "remote-only.txt");
+    writeFileSync(join(wt, "ours.txt"), "edited, not committed\n");
+
+    const res = runCli(["add", "--issue", "123", "--root", repo, "--base", "main", "--fetch"]);
+    assert.equal(res.status, 1);
+    assert.match(JSON.parse(res.stderr).error, /uncommitted changes/);
+    assert.equal(
+      gitIn(wt, ["status", "--porcelain"]).trim(),
+      "M ours.txt",
+      "the edit must survive",
+    );
+  });
+
   it("reports the deleted branch tip so a mistaken teardown is recoverable", () => {
     runCli(["add", "--issue", "103", "--root", repo, "--base", "main"]);
     const head = gitIn(repo, ["rev-parse", "refs/heads/factory/issue-103"]).trim();
