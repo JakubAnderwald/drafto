@@ -21,6 +21,11 @@ const STYLE_TO_MARK: Record<string, string> = {
 
 function inlineContentToTipTap(inlineContent: BlockNoteInlineContent[]): TipTapNode[] {
   const nodes: TipTapNode[] = [];
+  // ProseMirror rejects an empty text node, and the native editor then loads
+  // an empty document instead of the note. tiptapToBlocknote drops them anyway.
+  const pushText = (node: TipTapNode) => {
+    if (node.text) nodes.push(node);
+  };
 
   for (const item of inlineContent) {
     const marks: TipTapMark[] = [];
@@ -47,31 +52,82 @@ function inlineContentToTipTap(inlineContent: BlockNoteInlineContent[]): TipTapN
           }
           const node: TipTapNode = { type: "text", text: child.text };
           if (childMarks.length > 0) node.marks = childMarks;
-          nodes.push(node);
+          pushText(node);
         }
       } else {
         const node: TipTapNode = { type: "text", text: item.text };
         if (marks.length > 0) node.marks = marks;
-        nodes.push(node);
+        pushText(node);
       }
     } else {
       const node: TipTapNode = { type: "text", text: item.text };
       if (marks.length > 0) node.marks = marks;
-      nodes.push(node);
+      pushText(node);
     }
   }
 
   return nodes;
 }
 
-function blockToTipTapNode(block: BlockNoteBlock): TipTapNode[] {
+function paragraphNode(content: BlockNoteBlock["content"]): TipTapNode {
+  const node: TipTapNode = { type: "paragraph" };
+  if (Array.isArray(content) && content.length > 0) {
+    node.content = inlineContentToTipTap(content);
+  }
+  return node;
+}
+
+// The list and item node each BlockNote list item becomes.
+const LIST_ITEM_NODES: Record<string, { list: string; item: string }> = {
+  bulletListItem: { list: "bulletList", item: "listItem" },
+  numberedListItem: { list: "orderedList", item: "listItem" },
+  checkListItem: { list: "taskList", item: "taskItem" },
+};
+
+/**
+ * The TipTap nodes for one block and its `children`. Only list items can hold
+ * nested blocks in TipTap (`listItem` and `taskItem` are `paragraph block*`),
+ * so the children of any other block follow it as siblings: that level of
+ * nesting is flattened, but no content is lost.
+ *
+ * `nested` is true for a block reached through `children`. tentap's prebuilt
+ * WebView bundle, which mobile and desktop load, has no `codeBlock` or `table`
+ * node, and a single unknown node makes it load an empty document instead of
+ * the note. Nested code blocks and tables are therefore projected to
+ * paragraphs, so nested content written on web or through MCP can't blank a
+ * note that loads today.
+ */
+function blockToTipTapNodes(block: BlockNoteBlock, nested: boolean): TipTapNode[] {
+  const listNodes = LIST_ITEM_NODES[block.type];
+  if (listNodes) {
+    const item: TipTapNode = { type: listNodes.item };
+    if (block.type === "checkListItem") {
+      item.attrs = { checked: (block.props?.checked as boolean) ?? false };
+    }
+    const itemContent: TipTapNode[] = [paragraphNode(block.content)];
+    for (const node of childrenToTipTap(block.children)) itemContent.push(node);
+    item.content = itemContent;
+    return [{ type: listNodes.list, content: [item] }];
+  }
+
+  const nodes = [blockToTipTapNode(block, nested)];
+  for (const node of childrenToTipTap(block.children)) nodes.push(node);
+  return nodes;
+}
+
+function childrenToTipTap(children: BlockNoteBlock[] | undefined): TipTapNode[] {
+  const nodes: TipTapNode[] = [];
+  for (const child of children ?? []) {
+    for (const node of blockToTipTapNodes(child, true)) nodes.push(node);
+  }
+  return mergeAdjacentLists(nodes);
+}
+
+// The node for a block that isn't a list item, without its children.
+function blockToTipTapNode(block: BlockNoteBlock, nested: boolean): TipTapNode {
   switch (block.type) {
     case "paragraph": {
-      const node: TipTapNode = { type: "paragraph" };
-      if (Array.isArray(block.content) && block.content.length > 0) {
-        node.content = inlineContentToTipTap(block.content);
-      }
-      return [node];
+      return paragraphNode(block.content);
     }
 
     case "heading": {
@@ -83,54 +139,12 @@ function blockToTipTapNode(block: BlockNoteBlock): TipTapNode[] {
       if (Array.isArray(block.content) && block.content.length > 0) {
         node.content = inlineContentToTipTap(block.content);
       }
-      return [node];
-    }
-
-    case "bulletListItem": {
-      const li: TipTapNode = { type: "listItem" };
-      const innerParagraph: TipTapNode = { type: "paragraph" };
-      if (Array.isArray(block.content) && block.content.length > 0) {
-        innerParagraph.content = inlineContentToTipTap(block.content);
-      }
-      const liContent: TipTapNode[] = [innerParagraph];
-      if (block.children && block.children.length > 0) {
-        const nestedList = convertChildrenToList(block.children, "bulletList");
-        if (nestedList) liContent.push(nestedList);
-      }
-      li.content = liContent;
-      return [{ type: "bulletList", content: [li] }];
-    }
-
-    case "numberedListItem": {
-      const li: TipTapNode = { type: "listItem" };
-      const innerParagraph: TipTapNode = { type: "paragraph" };
-      if (Array.isArray(block.content) && block.content.length > 0) {
-        innerParagraph.content = inlineContentToTipTap(block.content);
-      }
-      const liContent: TipTapNode[] = [innerParagraph];
-      if (block.children && block.children.length > 0) {
-        const nestedList = convertChildrenToList(block.children, "orderedList");
-        if (nestedList) liContent.push(nestedList);
-      }
-      li.content = liContent;
-      return [{ type: "orderedList", content: [li] }];
-    }
-
-    case "checkListItem": {
-      const checked = (block.props?.checked as boolean) ?? false;
-      const taskItem: TipTapNode = {
-        type: "taskItem",
-        attrs: { checked },
-      };
-      const innerParagraph: TipTapNode = { type: "paragraph" };
-      if (Array.isArray(block.content) && block.content.length > 0) {
-        innerParagraph.content = inlineContentToTipTap(block.content);
-      }
-      taskItem.content = [innerParagraph];
-      return [{ type: "taskList", content: [taskItem] }];
+      return node;
     }
 
     case "codeBlock": {
+      // Nested: a paragraph holding the code's text (see blockToTipTapNodes).
+      if (nested) return paragraphNode(block.content);
       const language = (block.props?.language as string) ?? "";
       const text =
         Array.isArray(block.content) && block.content.length > 0
@@ -143,7 +157,7 @@ function blockToTipTapNode(block: BlockNoteBlock): TipTapNode[] {
       if (text) {
         node.content = [{ type: "text", text }];
       }
-      return [node];
+      return node;
     }
 
     case "image": {
@@ -151,7 +165,7 @@ function blockToTipTapNode(block: BlockNoteBlock): TipTapNode[] {
       const attrs: Record<string, unknown> = { src };
       if (block.props?.caption) attrs.alt = block.props.caption;
       if (block.props?.width) attrs.width = block.props.width;
-      return [{ type: "image", attrs }];
+      return { type: "image", attrs };
     }
 
     case "file": {
@@ -164,24 +178,26 @@ function blockToTipTapNode(block: BlockNoteBlock): TipTapNode[] {
       // to `caption` and then to `href` — otherwise the projection would emit
       // an invisible link with no display text.
       const name = (block.props?.name as string) || (block.props?.caption as string) || href;
-      return [
-        {
-          type: "paragraph",
-          content: [
-            {
-              type: "text",
-              text: name,
-              marks: [{ type: "link", attrs: { href } }],
-            },
-          ],
-        },
-      ];
+      // With no name and no url there is nothing to link, and an empty text node is invalid.
+      if (!name) return { type: "paragraph" };
+      return {
+        type: "paragraph",
+        content: [
+          {
+            type: "text",
+            text: name,
+            marks: [{ type: "link", attrs: { href } }],
+          },
+        ],
+      };
     }
 
     case "table": {
+      // Nested: an empty paragraph, as nested tables have always been projected.
+      if (nested) return { type: "paragraph" };
       const tableContent = block.content as BlockNoteTableContent | undefined;
       if (!tableContent || tableContent.type !== "tableContent") {
-        return [{ type: "table", content: [] }];
+        return { type: "table", content: [] };
       }
       const rows: TipTapNode[] = tableContent.rows.map((row) => {
         const cells: TipTapNode[] = row.cells.map((cell) => {
@@ -200,44 +216,22 @@ function blockToTipTapNode(block: BlockNoteBlock): TipTapNode[] {
         });
         return { type: "tableRow", content: cells };
       });
-      return [{ type: "table", content: rows }];
+      return { type: "table", content: rows };
     }
 
     default: {
       // Unknown block type: convert as paragraph to avoid data loss
-      const node: TipTapNode = { type: "paragraph" };
-      if (Array.isArray(block.content) && block.content.length > 0) {
-        node.content = inlineContentToTipTap(block.content);
-      }
-      return [node];
+      return paragraphNode(block.content);
     }
   }
-}
-
-function convertChildrenToList(children: BlockNoteBlock[], listType: string): TipTapNode | null {
-  const items: TipTapNode[] = [];
-  for (const child of children) {
-    const li: TipTapNode = { type: "listItem" };
-    const innerParagraph: TipTapNode = { type: "paragraph" };
-    if (Array.isArray(child.content) && child.content.length > 0) {
-      innerParagraph.content = inlineContentToTipTap(child.content);
-    }
-    const liContent: TipTapNode[] = [innerParagraph];
-    if (child.children && child.children.length > 0) {
-      const nestedList = convertChildrenToList(child.children, listType);
-      if (nestedList) liContent.push(nestedList);
-    }
-    li.content = liContent;
-    items.push(li);
-  }
-  if (items.length === 0) return null;
-  return { type: listType, content: items };
 }
 
 /**
  * Merge adjacent list nodes of the same type into single lists.
  * BlockNote represents each list item as a separate block, but TipTap
- * expects them grouped under a single list node.
+ * expects them grouped under a single list node. The list nodes are this
+ * converter's own, so their items are appended in place; a loop rather than
+ * a spread, because a long list can hold more items than a call takes arguments.
  */
 function mergeAdjacentLists(nodes: TipTapNode[]): TipTapNode[] {
   const merged: TipTapNode[] = [];
@@ -248,7 +242,9 @@ function mergeAdjacentLists(nodes: TipTapNode[]): TipTapNode[] {
       prev.type === node.type &&
       (node.type === "bulletList" || node.type === "orderedList" || node.type === "taskList")
     ) {
-      prev.content = [...(prev.content ?? []), ...(node.content ?? [])];
+      const items = prev.content ?? [];
+      for (const item of node.content ?? []) items.push(item);
+      prev.content = items;
     } else {
       merged.push(node);
     }
@@ -259,7 +255,7 @@ function mergeAdjacentLists(nodes: TipTapNode[]): TipTapNode[] {
 export function blocknoteToTiptap(blocks: BlockNoteBlock[]): TipTapDoc {
   const nodes: TipTapNode[] = [];
   for (const block of blocks) {
-    nodes.push(...blockToTipTapNode(block));
+    for (const node of blockToTipTapNodes(block, false)) nodes.push(node);
   }
   return { type: "doc", content: mergeAdjacentLists(nodes) };
 }
@@ -323,32 +319,31 @@ function tipTapInlineToBlockNote(nodes: TipTapNode[]): BlockNoteInlineContent[] 
   return result;
 }
 
+/**
+ * A list item is `paragraph block*`: its first paragraph is the item's own
+ * text, and every other node in it is a child block. Children go through
+ * tipTapNodeToBlocks, so a nested list keeps its own item type and `checked`
+ * state, and an item can hold several nested lists and paragraphs.
+ */
 function extractListItems(listNode: TipTapNode, blockType: string): BlockNoteBlock[] {
   const blocks: BlockNoteBlock[] = [];
   for (const item of listNode.content ?? []) {
     if (item.type !== "listItem" && item.type !== "taskItem") continue;
 
-    const block: BlockNoteBlock = { type: blockType, content: [], children: [] };
+    const children: BlockNoteBlock[] = [];
+    const block: BlockNoteBlock = { type: blockType, content: [], children };
 
     if (blockType === "checkListItem") {
       block.props = { checked: (item.attrs?.checked as boolean) ?? false };
     }
 
+    let hasText = false;
     for (const child of item.content ?? []) {
-      if (child.type === "paragraph") {
+      if (!hasText && child.type === "paragraph") {
         block.content = tipTapInlineToBlockNote(child.content ?? []);
-      } else if (
-        child.type === "bulletList" ||
-        child.type === "orderedList" ||
-        child.type === "taskList"
-      ) {
-        const nestedType =
-          child.type === "bulletList"
-            ? "bulletListItem"
-            : child.type === "orderedList"
-              ? "numberedListItem"
-              : "checkListItem";
-        block.children = extractListItems(child, nestedType);
+        hasText = true;
+      } else {
+        for (const nested of tipTapNodeToBlocks(child)) children.push(nested);
       }
     }
 
@@ -483,7 +478,8 @@ function tipTapNodeToBlocks(node: TipTapNode): BlockNoteBlock[] {
 export function tiptapToBlocknote(doc: TipTapDoc): BlockNoteBlock[] {
   const blocks: BlockNoteBlock[] = [];
   for (const node of doc.content) {
-    blocks.push(...tipTapNodeToBlocks(node));
+    // A loop, not push(...blocks): one list can hold more items than a call takes arguments.
+    for (const block of tipTapNodeToBlocks(node)) blocks.push(block);
   }
   return blocks;
 }
