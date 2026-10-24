@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/test";
 
 test.describe("Evernote export", () => {
   test("opens the export dialog from the app menu", async ({ page }) => {

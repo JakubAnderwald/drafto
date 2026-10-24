@@ -1,5 +1,5 @@
-import { test, expect } from "@playwright/test";
 import path from "node:path";
+import { test, expect } from "./helpers/test";
 
 test.describe("Evernote Import", () => {
   test("shows import dialog from app menu", async ({ page }) => {
@@ -40,6 +40,10 @@ test.describe("Evernote Import", () => {
     // Check notebook name was auto-filled from filename
     const nameInput = page.getByTestId("notebook-name-input");
     await expect(nameInput).toHaveValue("sample");
+
+    // Import under a timestamped name, so the stale purge recognises the notebook if the
+    // run-end teardown misses it.
+    await nameInput.fill(`Import NB ${Date.now()}`);
 
     // Import button should be enabled
     const importBtn = page.getByTestId("start-import-button");
