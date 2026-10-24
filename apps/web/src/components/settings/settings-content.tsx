@@ -15,6 +15,13 @@ interface ApiKey {
   revoked_at: string | null;
 }
 
+// A just-generated key, shown once. The id ties the box to the key's row, so revoking that row
+// can clear it.
+interface RevealedKey {
+  id: string;
+  key: string;
+}
+
 interface SettingsContentProps {
   // Short commit SHA of the running build, read on the server by `settings/page.tsx`. The build
   // line is left out when it's unknown (e.g. locally).
@@ -26,7 +33,7 @@ export function SettingsContent({ buildCommit }: Readonly<SettingsContentProps>)
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
-  const [revealedKey, setRevealedKey] = useState<string | null>(null);
+  const [revealedKey, setRevealedKey] = useState<RevealedKey | null>(null);
   const [error, setError] = useState<string | null>(null);
   const hasFetched = useRef(false);
 
@@ -58,8 +65,8 @@ export function SettingsContent({ buildCommit }: Readonly<SettingsContentProps>)
     });
 
     if (res.ok) {
-      const data = await res.json();
-      setRevealedKey(data.key);
+      const data = (await res.json()) as RevealedKey;
+      setRevealedKey({ id: data.id, key: data.key });
       setNewKeyName("");
       await fetchKeys();
     } else {
@@ -72,6 +79,9 @@ export function SettingsContent({ buildCommit }: Readonly<SettingsContentProps>)
   const handleRevoke = async (id: string) => {
     const res = await fetch(`/api/api-keys/${id}`, { method: "DELETE" });
     if (res.ok) {
+      // A revoked key no longer works, so stop offering its value for copying. The functional
+      // update compares against the latest box, in case a new key was generated meanwhile.
+      setRevealedKey((current) => (current?.id === id ? null : current));
       await fetchKeys();
     }
   };
@@ -115,14 +125,14 @@ export function SettingsContent({ buildCommit }: Readonly<SettingsContentProps>)
                 Your new API key (copy it now — it will not be shown again):
               </p>
               <code className="text-fg bg-bg-muted block rounded px-2 py-1 font-mono text-sm break-all">
-                {revealedKey}
+                {revealedKey.key}
               </code>
               <Button
                 size="sm"
                 variant="secondary"
                 className="mt-2"
                 onClick={() => {
-                  void navigator.clipboard.writeText(revealedKey);
+                  void navigator.clipboard.writeText(revealedKey.key);
                 }}
               >
                 Copy to clipboard
