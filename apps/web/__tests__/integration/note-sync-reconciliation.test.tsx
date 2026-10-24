@@ -243,6 +243,27 @@ describe("external-change reconciliation in the note editor", () => {
       });
     });
 
+    it("shows an external edit back to the default title as an empty field", async () => {
+      const noteId = nextNoteId();
+      const onNoteUpdated = vi.fn();
+      await mountPanel(noteId, { onNoteUpdated });
+      expect(titleInput().value).toBe("Original title");
+
+      changeServerNote({ title: "Untitled", updated_at: EXTERNAL_AT });
+      await emitRealtime(externalUpdate(noteId));
+
+      // The placeholder shows "Untitled"; the value stays empty so typing replaces it.
+      expect(titleInput().value).toBe("");
+      expect(titleInput().placeholder).toBe("Untitled");
+      // The list still gets the title as stored.
+      expect(onNoteUpdated).toHaveBeenCalledWith({
+        noteId,
+        updatedAt: EXTERNAL_AT,
+        title: "Untitled",
+      });
+      expect(patches).toEqual([]);
+    });
+
     it("picks up an external edit when the tab regains focus, with no realtime event", async () => {
       const noteId = nextNoteId();
       await mountPanel(noteId);
