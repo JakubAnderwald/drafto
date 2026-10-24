@@ -21,7 +21,7 @@ interface SettingsContentProps {
   buildCommit?: string | null;
 }
 
-export function SettingsContent({ buildCommit }: SettingsContentProps) {
+export function SettingsContent({ buildCommit }: Readonly<SettingsContentProps>) {
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -42,7 +42,7 @@ export function SettingsContent({ buildCommit }: SettingsContentProps) {
   useEffect(() => {
     if (hasFetched.current) return;
     hasFetched.current = true;
-    fetchKeys();
+    void fetchKeys();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -122,7 +122,7 @@ export function SettingsContent({ buildCommit }: SettingsContentProps) {
                 variant="secondary"
                 className="mt-2"
                 onClick={() => {
-                  navigator.clipboard.writeText(revealedKey);
+                  void navigator.clipboard.writeText(revealedKey);
                 }}
               >
                 Copy to clipboard
