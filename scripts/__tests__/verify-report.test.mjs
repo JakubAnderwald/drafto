@@ -491,6 +491,27 @@ describe("manual steps", () => {
     assert.ok(!manualLines(compose().body).some((l) => /\*\*Web\*\* steps/.test(l)));
   });
 
+  it("lists one Web line, not the SKIP rows, when an unavailable browser lane still wrote output", () => {
+    // The runner reports every step SKIP when the pinned browser isn't
+    // connected; none of them was tried.
+    const r = compose({
+      browser: {
+        state: "unavailable:chrome",
+        text: browserOutput({
+          status: "unavailable",
+          verdict: "none",
+          rows: [
+            "| 1 | Open /settings | SKIP | browser not connected |",
+            "| 2 | Revoke | SKIP | not run |",
+          ],
+        }),
+      },
+    });
+    const lines = manualLines(r.body);
+    assert.ok(!lines.some((l) => l.startsWith("Re-check by hand")), lines.join("\n"));
+    assert.equal(lines.filter((l) => /\*\*Web\*\* steps/.test(l)).length, 1);
+  });
+
   it("asks for a web check when the browser lane didn't report and the scenario has no Web section", () => {
     const r = compose({
       scenario: scenario({ web: false }),

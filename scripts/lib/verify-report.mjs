@@ -56,7 +56,8 @@
 //   3. Assessment: each reported lane's Summary, then the shell lane's
 //      Assessment paragraph.
 //   4. Steps for you to do manually (deduplicated, at most MANUAL_MAX): the
-//      shell lane's MANUAL steps, the browser's FAIL and SKIP rows, one line
+//      shell lane's MANUAL steps, the browser's FAIL and SKIP rows when it
+//      reported (one that didn't tried none of its steps), one line
 //      per scenario section (iOS / Android and macOS ones on the beta when one
 //      was dispatched), one line per affected platform the scenario has no
 //      section for, and "run the Web steps by hand" when the browser lane
@@ -803,7 +804,10 @@ function manualSteps({ shell, browser, sections, platforms, betaLanes }) {
     }
   }
 
-  if (browser.text != null) {
+  // A browser lane with no result (unavailable, no status line) never ran its
+  // steps, so its SKIP rows aren't listed one by one as if each had been
+  // tried: the single "run the Web steps by hand" line below covers them.
+  if (browser.text != null && browser.reported) {
     if (browser.withheld) pointer(browser, "the steps it failed or skipped");
     else {
       for (const row of parseResultTable(browser.parsed?.report)) {
