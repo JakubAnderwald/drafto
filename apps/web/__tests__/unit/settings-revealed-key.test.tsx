@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { SettingsContent } from "@/components/settings/settings-content";
 
@@ -125,6 +125,35 @@ describe("Settings revealed API key", () => {
 
     await revokeKey(user, OLD_KEY_NAME, OLD_ROW.id, [NEW_ROW]);
 
+    expect(screen.getByText(NEW_KEY)).toBeInTheDocument();
+    expect(screen.getByText(/copy it now/)).toBeInTheDocument();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText");
+    await user.click(screen.getByRole("button", { name: "Copy to clipboard" }));
+    expect(writeText).toHaveBeenCalledWith(NEW_KEY);
+  });
+
+  it("keeps showing the key when revoking it fails", async () => {
+    const user = userEvent.setup();
+    await renderSettings([]);
+    await generateNewKey(user, [NEW_ROW]);
+
+    // Hold the DELETE open, then fail it inside act() so any state update it causes has landed.
+    let failDelete: (value: unknown) => void = () => {};
+    mockFetch.mockReturnValueOnce(
+      new Promise((resolve) => {
+        failDelete = resolve;
+      }),
+    );
+    await user.click(within(keyRow(NEW_KEY_NAME)).getByRole("button", { name: "Revoke" }));
+    expect(mockFetch).toHaveBeenLastCalledWith(`/api/api-keys/${NEW_ROW.id}`, {
+      method: "DELETE",
+    });
+    await act(async () => {
+      failDelete({ ok: false, json: () => Promise.resolve({ error: "Internal error" }) });
+    });
+
+    // The key is still active, so its row and the box both stay.
+    expect(keyRow(NEW_KEY_NAME)).toBeInTheDocument();
     expect(screen.getByText(NEW_KEY)).toBeInTheDocument();
     expect(screen.getByText(/copy it now/)).toBeInTheDocument();
     const writeText = vi.spyOn(navigator.clipboard, "writeText");
