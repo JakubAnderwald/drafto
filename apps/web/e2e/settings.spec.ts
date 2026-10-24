@@ -39,17 +39,17 @@ test("revoking a just-generated key removes its value from the page", async ({ p
   await page.getByPlaceholder("Key name (e.g. Claude Desktop)").fill(keyName);
   await page.getByRole("button", { name: "Generate key" }).click();
 
-  // Only the box holds a full key; list rows show just the `dk_xxxxx...` prefix.
+  // Only the box holds a full key; list rows show just the `dk_xxxxx...` prefix. Match it by
+  // shape, never by value: a locator built from the key would put it in the step title, and the
+  // CI report scan (scripts/scan-playwright-report.mjs) withholds any report that carries one.
   const revealed = page.getByText(/^dk_[0-9a-f]{48}$/);
   await expect(revealed).toBeVisible({ timeout: 10000 });
-  const keyValue = (await revealed.textContent()) ?? "";
-  expect(keyValue).toMatch(/^dk_[0-9a-f]{48}$/);
 
   const row = page.getByRole("listitem").filter({ hasText: keyName });
   await expect(row).toBeVisible();
   await row.getByRole("button", { name: "Revoke" }).click();
 
   await expect(row).toHaveCount(0);
-  await expect(page.getByText(keyValue, { exact: true })).toHaveCount(0);
+  await expect(revealed).toHaveCount(0);
   await expect(page.getByText(/copy it now/)).toHaveCount(0);
 });
