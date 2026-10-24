@@ -86,3 +86,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0052](./0052-explicit-data-api-grants.md)                           | Explicit Data API Grants in Migrations                | Accepted           | 2026-10-20 |
 | [0053](./0053-pre-in-test-verification-stage.md)                     | Pre-In-Test Verification Stage (Testing Column)       | Accepted           | 2026-10-21 |
 | [0054](./0054-keep-machine-traffic-out-of-session-middleware.md)     | Keep Machine Traffic Out of the Session Middleware    | Accepted           | 2026-10-24 |
+| [0055](./0055-profile-privilege-column-guard.md)                     | Trigger Guard on Profile Privilege Columns            | Accepted           | 2026-09-22 |
