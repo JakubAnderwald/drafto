@@ -270,11 +270,11 @@ Full safety rails + migration workflow: [`docs/operations/migrations.md`](./docs
 
 ## Local Secrets (`~/drafto-secrets/`)
 
-Machine-local secrets live as files in `~/drafto-secrets/` on the MacBook Air and the Mac mini, outside the repo. Never commit them, and never paste a value into a doc, issue, PR or chat. `source` the file and use the variable **without printing it**: no `echo $VAR`, no `cat`, nothing that puts the value in a transcript or log.
+Machine-local secrets live as files in `~/drafto-secrets/` on the MacBook Air and the Mac mini, outside the repo. The folder is mode 700 and each file 600; write new ones under `umask 077`. Never commit them, and never paste a value into a doc, issue, PR or chat. `source` the file and use the variable **without printing it**: no `echo $VAR`, no `cat`, nothing that puts the value in a transcript or log.
 
 The recipes below are for interactive sessions. Unattended factory, support and nightly sessions use only the secrets their own scripts load, and the factory's verify lane reaches previews only through `preview-curl` ([ADR-0053](./docs/adr/0053-pre-in-test-verification-stage.md)).
 
-- **`vercel-env.sh`** → `VERCEL_PROTECTION_BYPASS_DRAFTO`. The Vercel "Protection Bypass for Automation" secret for the drafto project: it lets a request skip the Vercel SSO wall on a protected preview deployment. The factory's verify lane reads its own copy, `vercel-bypass.env`. Previews use the dev Supabase project, so a production `dk_` key gets a 401 there.
+- **`vercel-env.sh`** → `VERCEL_PROTECTION_BYPASS_DRAFTO`. The Vercel "Protection Bypass for Automation" secret for the drafto project: it lets a request skip the Vercel SSO wall on a protected preview deployment. The factory's verify lane reads its own copy, `vercel-bypass.env`. The Mac mini has no `vercel-env.sh`, only that factory copy, so on the Mac mini ask the user before using it. Previews use the dev Supabase project, so a production `dk_` key gets a 401 there.
 
   ```bash
   source ~/drafto-secrets/vercel-env.sh
@@ -289,6 +289,7 @@ The recipes below are for interactive sessions. Unattended factory, support and 
   - The org `jakub-anderwald` is in Sentry's EU region, so call `https://de.sentry.io`. The drafto project ID is `4510937249480784`.
   - The tokens in `~/.sentryclirc` and `apps/web/.env.local` only upload source maps; reads with them get a 403.
   - If the file is missing on a machine, ask the user instead of creating a token.
+  - To filter or group differently, change `query` and `field`. For example, `--data-urlencode 'query=http.target:/api/mcp' --data-urlencode 'field=user.ip'` counts `/api/mcp` spans per client IP.
 
   ```bash
   source ~/drafto-secrets/sentry-read.sh
