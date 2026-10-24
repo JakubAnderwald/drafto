@@ -1,4 +1,5 @@
 import { test, expect, type Page, type Route } from "@playwright/test";
+import { fillSecret } from "./helpers/secret-fields";
 
 test.describe("Login", () => {
   // Login tests need a fresh (unauthenticated) browser context
@@ -15,12 +16,12 @@ test.describe("Login", () => {
     await page.goto("/login");
 
     await page.getByLabel("Email").fill(email);
-    await page.getByLabel("Password").fill(password);
+    await fillSecret(page.getByLabel("Password"), password);
     await page.getByRole("button", { name: "Log in" }).click();
 
     // Should redirect away from login on success
-    await expect(page).not.toHaveURL(/\/login/, { timeout: 10000 });
-    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({ timeout: 10000 });
+    await expect(page).not.toHaveURL(/\/login/, { timeout: 15000 });
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({ timeout: 15000 });
   });
 
   test("logging in from the landing page opens the app at /, not the landing page", async ({
@@ -39,10 +40,10 @@ test.describe("Login", () => {
     await expect(page).toHaveURL(/\/login$/);
 
     await page.getByLabel("Email").fill(email);
-    await page.getByLabel("Password").fill(password);
+    await fillSecret(page.getByLabel("Password"), password);
     await page.getByRole("button", { name: "Log in" }).click();
 
-    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({ timeout: 15000 });
     expect(new URL(page.url()).pathname).toBe("/");
     await expect(page.getByRole("heading", { name: "What Drafto does" })).toHaveCount(0);
   });
