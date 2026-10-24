@@ -48,7 +48,7 @@ LABELS=(
   "status:plan-review|5319E7|Plan posted as a comment; awaiting human approval."
   "status:in-progress|FBCA04|Plan approved; factory is implementing."
   "status:in-review|0052CC|PR open; factory monitoring CI and review comments."
-  "status:testing|D93F0B|Factory is running automated verification before In Test."
+  "status:testing|F9A825|Factory is running automated verification before In Test."
   "status:in-test|006B75|Vercel preview ready; awaiting human approval to ship."
   "status:approved|0E8A16|Approved for release; factory will merge + dispatch."
   "status:released|2E7D32|Merged + beta channels dispatched (Phase D)."
