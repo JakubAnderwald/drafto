@@ -1169,10 +1169,12 @@ has_actionable_feedback() {
 # the round trip is never silent. The ([^0-9]|$) suffix stops reply-123 from
 # matching reply-1234. Unlike issue_has_marker this fails OPEN: if the comments
 # still can't be read after a few tries, the fallback goes out, because a rare
-# extra notice beats a reporter hearing nothing.
+# extra notice beats a reporter hearing nothing. <kind> is "noop" (default) or
+# "declined": feedback the implementer declined as outside the plan comes back
+# the same way (ADR-0058), and its fallback says so.
 revise_noop_reply() {
-  local issue_num="$1" pr_num="$2" marker="$3"
-  local comments="" attempt details=""
+  local issue_num="$1" pr_num="$2" marker="$3" kind="${4:-noop}"
+  local comments="" attempt details="" headline next
   if [[ -n "$marker" ]]; then
     for attempt in 1 2 3; do
       if comments=$(fetch_issue_comments "$issue_num" 2>/dev/null) && [[ -n "$comments" ]]; then
@@ -1195,13 +1197,79 @@ revise_noop_reply() {
   if [[ -n "$pr_num" ]]; then
     details=" If you asked a question or for a check, the run may have left notes in PR #$pr_num's description; if not, comment again."
   fi
+  headline="No code change was made for that, and no reply was found."
+  next="Drag to **Approved** to ship it, or comment a more specific change."
+  if [[ "$kind" == "declined" ]]; then
+    # Rephrasing an out-of-plan request here would only be declined again.
+    headline="The factory declined that as outside this issue's plan, and no reply was found."
+    details=" Open a new issue for that work instead of rephrasing it here."
+    next="Drag to **Approved** to ship this PR as it is."
+  fi
   gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
-    --body "🏭 **No code change was made for that, and no reply was found.**
+    --body "🏭 **$headline**
 
-The preview is unchanged.$details Drag to **Approved** to ship it, or comment \
-a more specific change.
+The preview is unchanged.$details $next
 
 <!-- drafto-factory-revise-noop -->" >>"$LOG_FILE" 2>&1 || true
+}
+
+# worktree_untouched <worktree> <pr-head> — exit 0 only when the worktree holds
+# nothing the PR lacks: HEAD is <pr-head> or an ancestor of it (a worktree
+# merely behind, because someone else pushed, is fine) and `git status` is
+# clean. Fails closed: an empty <pr-head>, or any git error (such as <pr-head>
+# not being in the local object store), counts as touched.
+worktree_untouched() {
+  local wt="$1" pr_head="$2" local_head status
+  [[ -n "$pr_head" ]] || return 1
+  local_head=$(git -C "$wt" rev-parse HEAD 2>>"$LOG_FILE") || return 1
+  if [[ "$local_head" != "$pr_head" ]]; then
+    git -C "$wt" merge-base --is-ancestor "$local_head" "$pr_head" 2>>"$LOG_FILE" || return 1
+  fi
+  status=$(git -C "$wt" status --porcelain 2>>"$LOG_FILE") || return 1
+  [[ -z "$status" ]]
+}
+
+# revision_return_to_test <issue> <item-id> <pr-head> <item-labels> <pr-num>
+#   <reply-marker> <feedback-mark> <kind>
+# A revision run ended with the PR unchanged: <kind> "noop" (the feedback
+# needed no code change) or "declined" (it was outside the plan, ADR-0058).
+# The existing PR + preview are still valid, so re-present it instead of
+# re-running CI: in Testing when this commit still owes a verification report
+# (ADR-0053), otherwise in In Test. A failed move to Testing falls back to In
+# Test. Then mark the feedback consumed, reset attempts and check for the
+# implementer's reply. The slot and worktree stay, as for any In Test card.
+revision_return_to_test() {
+  local issue_num="$1" item_id="$2" pr_head="$3" labels="$4" pr_num="$5"
+  local marker="$6" mark="$7" kind="$8" target="In Test" state
+  if verify_target_status "$issue_num" "$pr_head" "$labels" \
+      && transition_status "$item_id" "$issue_num" "Testing"; then
+    target="Testing"
+    # Start this commit's round now, as verify_enter does: a round left in
+    # state would otherwise decide for it (an older commit's reads as "head
+    # moved", this one's carries an expired hold-cap clock).
+    state=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
+    verify_begin_round "$issue_num" "$pr_head" \
+      "$(verify_cr_note "$issue_num" "$pr_head" "$state")" "$state"
+  else
+    transition_status "$item_id" "$issue_num" "In Test" || true
+  fi
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" lastFeedbackAt "$mark" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$issue_num" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  revise_noop_reply "$issue_num" "$pr_num" "$marker" "$kind"
+  log "Issue #$issue_num: revision $kind; returned to $target"
+}
+
+# implement_park_blocked <item-id> <issue> <slot> <reason> — move an --implement
+# card to Blocked for a human, release its slot and remove its worktree (the
+# branch stays). <reason> is recorded as lastError.
+implement_park_blocked() {
+  local item_id="$1" issue_num="$2" slot="$3" reason="$4"
+  transition_status "$item_id" "$issue_num" "Blocked" || true
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" lastError "$reason" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$slot" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$issue_num" --root "$REPO_ROOT" --force >>"$LOG_FILE" 2>&1 || true
+  log "Issue #$issue_num: $reason → Blocked; slot $slot released"
 }
 
 # Build the factory_watch bundle. $2 approved-plan obj|null, $3 prior-PR obj,
@@ -5585,29 +5653,11 @@ drag the card back to **In Progress**.
             continue
           fi
           # The feedback needed no code change. The existing PR + preview are
-          # still valid, so re-present it instead of re-running CI: in Testing
-          # when this commit still owes a verification report (ADR-0053),
-          # otherwise in In Test as before. A failed move to Testing falls back
-          # to In Test.
-          NOOP_TARGET="In Test"
-          if verify_target_status "$ISSUE_NUM" "$PRE_HEAD_OID" "$ITEM_LABELS" \
-              && transition_status "$ITEM_ID" "$ISSUE_NUM" "Testing"; then
-            NOOP_TARGET="Testing"
-            # Start this commit's round now, as verify_enter does: a round left
-            # in state would otherwise decide for it (an older commit's reads as
-            # "head moved", this one's carries an expired hold-cap clock).
-            NOOP_STATE=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
-              --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
-            verify_begin_round "$ISSUE_NUM" "$PRE_HEAD_OID" \
-              "$(verify_cr_note "$ISSUE_NUM" "$PRE_HEAD_OID" "$NOOP_STATE")" "$NOOP_STATE"
-          else
-            transition_status "$ITEM_ID" "$ISSUE_NUM" "In Test" || true
-          fi
-          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$FEEDBACK_MARK" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-          # The PR number comes from bash's own lookup, not the directive's pr=.
-          revise_noop_reply "$ISSUE_NUM" "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" "$REPLY_MARKER"
-          log "Issue #$ISSUE_NUM: revision no-op; returned to $NOOP_TARGET"
+          # still valid, so re-present them. The PR number comes from bash's own
+          # lookup, not the directive's pr=.
+          revision_return_to_test "$ISSUE_NUM" "$ITEM_ID" "$PRE_HEAD_OID" "$ITEM_LABELS" \
+            "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" \
+            "$REPLY_MARKER" "$FEEDBACK_MARK" noop
         else
           # Fresh idempotency hit: a PR already exists from a prior attempt.
           PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
@@ -5624,11 +5674,28 @@ drag the card back to **In Progress**.
         fi
         ;;
       blocked)
-        transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
-        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastError "implementer returned blocked" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-        node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$ISSUE_NUM" --root "$REPO_ROOT" --force >>"$LOG_FILE" 2>&1 || true
-        log "Issue #$ISSUE_NUM: implementer blocked; slot $SLOT released"
+        implement_park_blocked "$ITEM_ID" "$ISSUE_NUM" "$SLOT" "implementer returned blocked"
+        ;;
+      declined)
+        # Revision feedback the implementer declined as outside the approved
+        # plan, with the PR left as it was (ADR-0058). It goes back where the
+        # reporter tests and ships, with the reply saying why, instead of hiding
+        # a finished PR in Blocked. Only for a head that was already shown at In
+        # Test (a card dragged out of Blocked hasn't been through In Review's
+        # gates on it) and a worktree holding nothing the PR lacks; anything
+        # else parks in Blocked as action=blocked does.
+        DECLINE_SHOWN_SHA=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
+          --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.intestCommentSha // ""' 2>/dev/null || echo "")
+        if [[ "$IS_REVISION" -eq 1 && "$PRE_HEAD_KNOWN" -eq 1 && -n "$PRE_HEAD_OID" \
+              && "$DECLINE_SHOWN_SHA" == "$PRE_HEAD_OID" ]] \
+           && worktree_untouched "$WT_PATH" "$PRE_HEAD_OID"; then
+          revision_return_to_test "$ISSUE_NUM" "$ITEM_ID" "$PRE_HEAD_OID" "$ITEM_LABELS" \
+            "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" \
+            "$REPLY_MARKER" "$FEEDBACK_MARK" declined
+        else
+          implement_park_blocked "$ITEM_ID" "$ISSUE_NUM" "$SLOT" \
+            "implementer declined, but the PR head wasn't the one shown at In Test or the worktree changed"
+        fi
         ;;
       *)
         log "WARNING: unrecognised action '$ACTION' from claude for #$ISSUE_NUM; keeping slot for retry"

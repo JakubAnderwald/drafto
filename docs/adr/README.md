@@ -30,62 +30,63 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 
 ## Index
 
-| #                                                                    | Title                                                 | Status             | Date       |
-| -------------------------------------------------------------------- | ----------------------------------------------------- | ------------------ | ---------- |
-| [0000](./0000-adr-template.md)                                       | ADR Template                                          | N/A                | 2026-02-24 |
-| [0001](./0001-data-model-and-rls-strategy.md)                        | Data Model and RLS Strategy                           | Accepted           | 2026-02-24 |
-| [0002](./0002-api-route-conventions.md)                              | API Route Conventions                                 | Accepted           | 2026-02-24 |
-| [0003](./0003-blocknote-editor-configuration.md)                     | BlockNote Editor Configuration                        | Accepted           | 2026-02-25 |
-| [0004](./0004-design-system-css-variables.md)                        | Design System with CSS Custom Properties              | Superseded by 0014 | 2026-03-03 |
-| [0005](./0005-dark-mode-implementation.md)                           | Dark Mode Implementation                              | Accepted           | 2026-03-04 |
-| [0006](./0006-dev-prod-environment-separation.md)                    | Dev/Prod Environment Separation                       | Accepted           | 2026-03-04 |
-| [0007](./0007-evernote-import.md)                                    | Evernote Import                                       | Accepted           | 2026-03-04 |
-| [0008](./0008-production-data-safety-guardrails.md)                  | Production Data Safety Guardrails                     | Accepted           | 2026-03-07 |
-| [0009](./0009-mobile-app-technology-choices.md)                      | Mobile App Technology Choices                         | Accepted           | 2026-03-07 |
-| [0010](./0010-offline-sync-strategy.md)                              | Offline Sync Strategy with WatermelonDB               | Accepted           | 2026-03-07 |
-| [0011](./0011-app-store-deployment-strategy.md)                      | App Store Deployment Strategy                         | Superseded by 0016 | 2026-03-08 |
-| [0012](./0012-search-implementation.md)                              | Search Implementation                                 | Accepted           | 2026-03-14 |
-| [0013](./0013-automated-support-pipeline.md)                         | Automated Support Pipeline                            | Superseded by 0024 | 2026-03-14 |
-| [0014](./0014-digital-atelier-design-system.md)                      | Digital Atelier Design System                         | Accepted           | 2026-03-19 |
-| [0015](./0015-desktop-app-technology-choice.md)                      | Desktop App Technology Choice                         | Accepted           | 2026-03-29 |
-| [0016](./0016-local-fastlane-builds.md)                              | Local Fastlane Builds                                 | Accepted           | 2026-03-31 |
-| [0017](./0017-mcp-server-for-claude-cowork.md)                       | MCP Server for Claude Cowork                          | Accepted           | 2026-04-11 |
-| [0018](./0018-oauth-google-apple.md)                                 | OAuth with Google and Apple                           | Accepted           | 2026-04-12 |
-| [0019](./0019-email-infrastructure-and-approval-flow.md)             | Email Infrastructure and Account Approval Flow        | Accepted           | 2026-04-20 |
-| [0020](./0020-email-design-tokens.md)                                | Email Design Tokens                                   | Accepted           | 2026-04-21 |
-| [0021](./0021-shared-design-tokens.md)                               | Shared Design Tokens in `@drafto/shared`              | Accepted           | 2026-04-21 |
-| [0022](./0022-note-content-history.md)                               | Note Content History Table                            | Accepted           | 2026-04-25 |
-| [0023](./0023-per-request-client-tagging.md)                         | Per-Request Client Tagging                            | Accepted           | 2026-04-27 |
-| [0024](./0024-realtime-support-agent.md)                             | Real-Time Support Agent                               | Accepted           | 2026-04-28 |
-| [0025](./0025-support-allowlist-from-zoho-sender.md)                 | Support Allowlist Gate from Zoho Sender               | Accepted           | 2026-05-03 |
-| [0026](./0026-dark-factory-pipeline.md)                              | Dark Factory Unattended Development Pipeline          | Accepted           | 2026-05-06 |
-| [0027](./0027-desktop-react-version-locked-to-react-native-macos.md) | Desktop React Version Locked to react-native-macos    | Accepted           | 2026-07-02 |
-| [0028](./0028-desktop-find-in-note.md)                               | Desktop Find-in-Note (and the macOS Cmd+F crash)      | Accepted           | 2026-07-06 |
-| [0029](./0029-factory-ultracode-effort.md)                           | Dark Factory Claude Effort (ultracode coding stages)  | Accepted           | 2026-07-15 |
-| [0030](./0030-in-test-scenarios-and-pre-merge-betas.md)              | In Test Scenarios and Pre-Merge Beta Builds           | Accepted           | 2026-07-30 |
-| [0031](./0031-personal-skills-in-cloud-sessions.md)                  | Personal Skills in Cloud Sessions                     | Accepted           | 2026-08-12 |
-| [0032](./0032-web-realtime-note-sync.md)                             | Web Real-Time Sync for Externally Modified Notes      | Accepted           | 2026-09-06 |
-| [0033](./0033-factory-branch-safety-and-implement-verification.md)   | Factory Branch Safety and Implement Verification      | Accepted           | 2026-09-08 |
-| [0034](./0034-password-recovery-deep-links-on-mobile-and-desktop.md) | Password Recovery via Custom-Scheme Deep Links        | Accepted           | 2026-09-11 |
-| [0035](./0035-factory-code-review-gate.md)                           | Factory Code Review Gate (threads block the merge)    | Accepted           | 2026-09-12 |
-| [0036](./0036-factory-coderabbit-cli-gap-fill.md)                    | Factory CodeRabbit CLI Gap-Fill Review Lane           | Accepted           | 2026-09-12 |
-| [0037](./0037-manual-coderabbit-cli-review.md)                       | Manual CodeRabbit CLI Review for Hand-Made PRs        | Accepted           | 2026-09-14 |
-| [0038](./0038-account-deletion-endpoint.md)                          | Account Deletion Endpoint for All Platforms           | Accepted           | 2026-09-14 |
-| [0039](./0039-privacy-policy-processor-guard.md)                     | Privacy Policy Kept in Step with the Code             | Accepted           | 2026-10-04 |
-| [0040](./0040-app-store-promote-lanes.md)                            | App Store Submission Promotes an Existing Build       | Accepted           | 2026-09-27 |
-| [0041](./0041-factory-ci-red-and-cancelled-checks.md)                | Factory Handling of Red and Cancelled CI              | Accepted           | 2026-10-08 |
-| [0042](./0042-nightly-support-runner-owns-beta-dispatch.md)          | Nightly Support Runner Owns Beta Dispatch             | Accepted           | 2026-10-08 |
-| [0043](./0043-automated-macos-in-test-scenarios.md)                  | Automated macOS In-Test Scenarios                     | Accepted           | 2026-10-10 |
-| [0044](./0044-desktop-auth-web-handoff.md)                           | Desktop Auth Returns Through drafto.eu Hand-off Pages | Accepted           | 2026-10-10 |
-| [0045](./0045-mobile-auth-uses-pkce.md)                              | Mobile Auth Uses the PKCE Flow                        | Accepted           | 2026-10-10 |
-| [0046](./0046-ios-uiscene-lifecycle.md)                              | iOS Adopts the UIScene Lifecycle                      | Accepted           | 2026-10-10 |
-| [0048](./0048-local-writes-trigger-debounced-sync.md)                | Local Writes Trigger a Debounced Sync                 | Accepted           | 2026-10-12 |
-| [0049](./0049-apple-token-revocation-on-account-deletion.md)         | Revoke Sign in with Apple Tokens on Account Deletion  | Accepted           | 2026-10-12 |
-| [0050](./0050-public-landing-page-via-middleware-rewrite.md)         | Public Landing Page at `/` via Middleware Rewrite     | Accepted           | 2026-10-17 |
-| [0051](./0051-factory-browser-runner.md)                             | Factory Browser Access Through a Locked-Down Runner   | Accepted           | 2026-10-17 |
-| [0052](./0052-explicit-data-api-grants.md)                           | Explicit Data API Grants in Migrations                | Accepted           | 2026-10-20 |
-| [0053](./0053-pre-in-test-verification-stage.md)                     | Pre-In-Test Verification Stage (Testing Column)       | Accepted           | 2026-10-21 |
-| [0054](./0054-keep-machine-traffic-out-of-session-middleware.md)     | Keep Machine Traffic Out of the Session Middleware    | Accepted           | 2026-10-24 |
-| [0055](./0055-profile-privilege-column-guard.md)                     | Trigger Guard on Profile Privilege Columns            | Accepted           | 2026-09-22 |
-| [0056](./0056-keep-credentials-out-of-the-e2e-report.md)             | Keep Credentials Out of the E2E Report                | Accepted           | 2026-10-24 |
-| [0057](./0057-new-migrations-sort-after-base.md)                     | New Migrations Must Sort After the Base Branch        | Accepted           | 2026-10-25 |
+| #                                                                    | Title                                                  | Status             | Date       |
+| -------------------------------------------------------------------- | ------------------------------------------------------ | ------------------ | ---------- |
+| [0000](./0000-adr-template.md)                                       | ADR Template                                           | N/A                | 2026-02-24 |
+| [0001](./0001-data-model-and-rls-strategy.md)                        | Data Model and RLS Strategy                            | Accepted           | 2026-02-24 |
+| [0002](./0002-api-route-conventions.md)                              | API Route Conventions                                  | Accepted           | 2026-02-24 |
+| [0003](./0003-blocknote-editor-configuration.md)                     | BlockNote Editor Configuration                         | Accepted           | 2026-02-25 |
+| [0004](./0004-design-system-css-variables.md)                        | Design System with CSS Custom Properties               | Superseded by 0014 | 2026-03-03 |
+| [0005](./0005-dark-mode-implementation.md)                           | Dark Mode Implementation                               | Accepted           | 2026-03-04 |
+| [0006](./0006-dev-prod-environment-separation.md)                    | Dev/Prod Environment Separation                        | Accepted           | 2026-03-04 |
+| [0007](./0007-evernote-import.md)                                    | Evernote Import                                        | Accepted           | 2026-03-04 |
+| [0008](./0008-production-data-safety-guardrails.md)                  | Production Data Safety Guardrails                      | Accepted           | 2026-03-07 |
+| [0009](./0009-mobile-app-technology-choices.md)                      | Mobile App Technology Choices                          | Accepted           | 2026-03-07 |
+| [0010](./0010-offline-sync-strategy.md)                              | Offline Sync Strategy with WatermelonDB                | Accepted           | 2026-03-07 |
+| [0011](./0011-app-store-deployment-strategy.md)                      | App Store Deployment Strategy                          | Superseded by 0016 | 2026-03-08 |
+| [0012](./0012-search-implementation.md)                              | Search Implementation                                  | Accepted           | 2026-03-14 |
+| [0013](./0013-automated-support-pipeline.md)                         | Automated Support Pipeline                             | Superseded by 0024 | 2026-03-14 |
+| [0014](./0014-digital-atelier-design-system.md)                      | Digital Atelier Design System                          | Accepted           | 2026-03-19 |
+| [0015](./0015-desktop-app-technology-choice.md)                      | Desktop App Technology Choice                          | Accepted           | 2026-03-29 |
+| [0016](./0016-local-fastlane-builds.md)                              | Local Fastlane Builds                                  | Accepted           | 2026-03-31 |
+| [0017](./0017-mcp-server-for-claude-cowork.md)                       | MCP Server for Claude Cowork                           | Accepted           | 2026-04-11 |
+| [0018](./0018-oauth-google-apple.md)                                 | OAuth with Google and Apple                            | Accepted           | 2026-04-12 |
+| [0019](./0019-email-infrastructure-and-approval-flow.md)             | Email Infrastructure and Account Approval Flow         | Accepted           | 2026-04-20 |
+| [0020](./0020-email-design-tokens.md)                                | Email Design Tokens                                    | Accepted           | 2026-04-21 |
+| [0021](./0021-shared-design-tokens.md)                               | Shared Design Tokens in `@drafto/shared`               | Accepted           | 2026-04-21 |
+| [0022](./0022-note-content-history.md)                               | Note Content History Table                             | Accepted           | 2026-04-25 |
+| [0023](./0023-per-request-client-tagging.md)                         | Per-Request Client Tagging                             | Accepted           | 2026-04-27 |
+| [0024](./0024-realtime-support-agent.md)                             | Real-Time Support Agent                                | Accepted           | 2026-04-28 |
+| [0025](./0025-support-allowlist-from-zoho-sender.md)                 | Support Allowlist Gate from Zoho Sender                | Accepted           | 2026-05-03 |
+| [0026](./0026-dark-factory-pipeline.md)                              | Dark Factory Unattended Development Pipeline           | Accepted           | 2026-05-06 |
+| [0027](./0027-desktop-react-version-locked-to-react-native-macos.md) | Desktop React Version Locked to react-native-macos     | Accepted           | 2026-07-02 |
+| [0028](./0028-desktop-find-in-note.md)                               | Desktop Find-in-Note (and the macOS Cmd+F crash)       | Accepted           | 2026-07-06 |
+| [0029](./0029-factory-ultracode-effort.md)                           | Dark Factory Claude Effort (ultracode coding stages)   | Accepted           | 2026-07-15 |
+| [0030](./0030-in-test-scenarios-and-pre-merge-betas.md)              | In Test Scenarios and Pre-Merge Beta Builds            | Accepted           | 2026-07-30 |
+| [0031](./0031-personal-skills-in-cloud-sessions.md)                  | Personal Skills in Cloud Sessions                      | Accepted           | 2026-08-12 |
+| [0032](./0032-web-realtime-note-sync.md)                             | Web Real-Time Sync for Externally Modified Notes       | Accepted           | 2026-09-06 |
+| [0033](./0033-factory-branch-safety-and-implement-verification.md)   | Factory Branch Safety and Implement Verification       | Accepted           | 2026-09-08 |
+| [0034](./0034-password-recovery-deep-links-on-mobile-and-desktop.md) | Password Recovery via Custom-Scheme Deep Links         | Accepted           | 2026-09-11 |
+| [0035](./0035-factory-code-review-gate.md)                           | Factory Code Review Gate (threads block the merge)     | Accepted           | 2026-09-12 |
+| [0036](./0036-factory-coderabbit-cli-gap-fill.md)                    | Factory CodeRabbit CLI Gap-Fill Review Lane            | Accepted           | 2026-09-12 |
+| [0037](./0037-manual-coderabbit-cli-review.md)                       | Manual CodeRabbit CLI Review for Hand-Made PRs         | Accepted           | 2026-09-14 |
+| [0038](./0038-account-deletion-endpoint.md)                          | Account Deletion Endpoint for All Platforms            | Accepted           | 2026-09-14 |
+| [0039](./0039-privacy-policy-processor-guard.md)                     | Privacy Policy Kept in Step with the Code              | Accepted           | 2026-10-04 |
+| [0040](./0040-app-store-promote-lanes.md)                            | App Store Submission Promotes an Existing Build        | Accepted           | 2026-09-27 |
+| [0041](./0041-factory-ci-red-and-cancelled-checks.md)                | Factory Handling of Red and Cancelled CI               | Accepted           | 2026-10-08 |
+| [0042](./0042-nightly-support-runner-owns-beta-dispatch.md)          | Nightly Support Runner Owns Beta Dispatch              | Accepted           | 2026-10-08 |
+| [0043](./0043-automated-macos-in-test-scenarios.md)                  | Automated macOS In-Test Scenarios                      | Accepted           | 2026-10-10 |
+| [0044](./0044-desktop-auth-web-handoff.md)                           | Desktop Auth Returns Through drafto.eu Hand-off Pages  | Accepted           | 2026-10-10 |
+| [0045](./0045-mobile-auth-uses-pkce.md)                              | Mobile Auth Uses the PKCE Flow                         | Accepted           | 2026-10-10 |
+| [0046](./0046-ios-uiscene-lifecycle.md)                              | iOS Adopts the UIScene Lifecycle                       | Accepted           | 2026-10-10 |
+| [0048](./0048-local-writes-trigger-debounced-sync.md)                | Local Writes Trigger a Debounced Sync                  | Accepted           | 2026-10-12 |
+| [0049](./0049-apple-token-revocation-on-account-deletion.md)         | Revoke Sign in with Apple Tokens on Account Deletion   | Accepted           | 2026-10-12 |
+| [0050](./0050-public-landing-page-via-middleware-rewrite.md)         | Public Landing Page at `/` via Middleware Rewrite      | Accepted           | 2026-10-17 |
+| [0051](./0051-factory-browser-runner.md)                             | Factory Browser Access Through a Locked-Down Runner    | Accepted           | 2026-10-17 |
+| [0052](./0052-explicit-data-api-grants.md)                           | Explicit Data API Grants in Migrations                 | Accepted           | 2026-10-20 |
+| [0053](./0053-pre-in-test-verification-stage.md)                     | Pre-In-Test Verification Stage (Testing Column)        | Accepted           | 2026-10-21 |
+| [0054](./0054-keep-machine-traffic-out-of-session-middleware.md)     | Keep Machine Traffic Out of the Session Middleware     | Accepted           | 2026-10-24 |
+| [0055](./0055-profile-privilege-column-guard.md)                     | Trigger Guard on Profile Privilege Columns             | Accepted           | 2026-09-22 |
+| [0056](./0056-keep-credentials-out-of-the-e2e-report.md)             | Keep Credentials Out of the E2E Report                 | Accepted           | 2026-10-24 |
+| [0057](./0057-new-migrations-sort-after-base.md)                     | New Migrations Must Sort After the Base Branch         | Accepted           | 2026-10-25 |
+| [0058](./0058-revision-blocks-return-to-test.md)                     | Declined Revision Feedback Returns the Card to In Test | Accepted           | 2026-10-25 |

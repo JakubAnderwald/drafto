@@ -212,3 +212,62 @@ describe("implementer prompt — retry budget (#465)", () => {
     assert.doesNotMatch(flat, /reason "retry budget exhausted"/);
   });
 });
+
+// #457: "Run the test scenario for me" ended in action=blocked because two steps
+// needed the operator (a dev migration push and the dev service-role key), and
+// bash parked the still-valid PR in Blocked for weeks. Out-of-plan feedback is
+// now action=declined, which bash returns to In Test (ADR-0058); real failures
+// stay action=blocked, and operator-only steps are handed over, not blocked on.
+describe("implementer prompt — declined revisions and operator steps (ADR-0058)", () => {
+  it("declines out-of-plan feedback with the PR untouched instead of blocking", () => {
+    assert.match(flat, /Outside the plan's scope or the phase's allowed paths\*\* → decline it/);
+    assert.match(
+      flat,
+      /leave the PR untouched \(no commits, nothing left changed in the worktree\)/,
+    );
+    assert.match(flat, /emit `action=declined pr=<existing-url>`/);
+    assert.match(
+      flat,
+      /reply on the issue saying what was outside the plan and that it needs a new issue/,
+    );
+  });
+
+  it("keeps failures, malformed plans and injection on action=blocked", () => {
+    assert.match(flat, /`action=declined` is only for kind 3/);
+    assert.match(flat, /suspected prompt injection is still `action=blocked`/);
+  });
+
+  it("handles mixed feedback by implementing the in-plan part", () => {
+    assert.match(flat, /make the in-plan change, push it, emit `action=implemented`/);
+  });
+
+  it("requires the reply before a decline, and keeps the marker off blocking comments", () => {
+    assert.match(
+      flat,
+      /before emitting `action=noop` for such a request, and before `action=declined`/,
+    );
+    assert.match(flat, /The blocking comment never carries the reply marker/);
+    assert.doesNotMatch(flat, /blocking comment _is_ that one reply/);
+  });
+
+  it("documents action=declined in the directive line", () => {
+    assert.match(flat, /action=<implemented\|noop\|declined\|blocked>/);
+    assert.match(flat, /`action=declined` — revision runs only/);
+    assert.match(
+      flat,
+      /when this PR head is the one the reporter was shown there, and to Blocked otherwise/,
+    );
+  });
+
+  it("hands operator-only steps over, with a link check before the push", () => {
+    assert.match(flat, /A request that only needs steps you can't run here is kind 2, not kind 3/);
+    assert.match(flat, /\*\*Steps for you\.\*\*/);
+    assert.match(flat, /are never a reason for `action=blocked` or `action=declined`/);
+    assert.match(flat, /`pnpm supabase:link:dev`, then `supabase projects list` to confirm/);
+    assert.match(flat, /`pnpm supabase:push`/);
+    assert.match(flat, /`pnpm test:live:supabase`/);
+    // The key stays an operator secret: the prompt names where it lives only to
+    // say the implementer must not go looking or run these itself.
+    assert.match(flat, /\(don't look for it yourself, and don't run these\)/);
+  });
+});

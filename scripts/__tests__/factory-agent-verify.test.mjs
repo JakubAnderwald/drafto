@@ -342,14 +342,19 @@ describe("factory-agent.sh verification stage: static wiring", () => {
     const noopArm = slice('      noop)\n        if [[ "$IS_REVISION"', "      blocked)");
     assert.match(
       noopArm,
-      /NOOP_TARGET="In Test"\n\s*if verify_target_status "\$ISSUE_NUM" "\$PRE_HEAD_OID" "\$ITEM_LABELS" \\\n\s*&& transition_status "\$ITEM_ID" "\$ISSUE_NUM" "Testing"; then\n\s*NOOP_TARGET="Testing"\n[\s\S]*?\n\s*else\n\s*transition_status "\$ITEM_ID" "\$ISSUE_NUM" "In Test" \|\| true\n\s*fi/,
+      /revision_return_to_test "\$ISSUE_NUM" "\$ITEM_ID" "\$PRE_HEAD_OID" "\$ITEM_LABELS" \\\n[\s\S]*?"\$REPLY_MARKER" "\$FEEDBACK_MARK" noop\n/,
     );
-    assert.match(noopArm, /returned to \$NOOP_TARGET/);
+    const back = extract("revision_return_to_test");
+    assert.match(
+      back,
+      /target="In Test" state\n\s*if verify_target_status "\$issue_num" "\$pr_head" "\$labels" \\\n\s*&& transition_status "\$item_id" "\$issue_num" "Testing"; then\n\s*target="Testing"\n[\s\S]*?\n\s*else\n\s*transition_status "\$item_id" "\$issue_num" "In Test" \|\| true\n\s*fi/,
+    );
+    assert.match(back, /returned to \$target/);
     // The no-op path starts the commit's round itself, as verify_enter does, so
     // a round left in state can't read as "head moved" or an expired clock.
     assert.match(
-      noopArm,
-      /NOOP_TARGET="Testing"\n[\s\S]*?verify_begin_round "\$ISSUE_NUM" "\$PRE_HEAD_OID"[\s\S]*?\n\s*else\n/,
+      back,
+      /target="Testing"\n[\s\S]*?verify_begin_round "\$issue_num" "\$pr_head"[\s\S]*?\n\s*else\n/,
     );
   });
 

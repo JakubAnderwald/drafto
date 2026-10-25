@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -128,7 +128,7 @@ describe("revise_noop_reply (extracted, real bash)", () => {
   // HARD STUB: the fallback path posts an issue comment, and without the stub a
   // unit test would post to a live issue. The fetch stub fails its first
   // `failFirst` calls and counts every call; `sleep` is stubbed out.
-  function runReply({ comments = [], failFirst = 0, pr = "665", marker }) {
+  function runReply({ comments = [], failFirst = 0, pr = "665", marker, kind = "" }) {
     const dir = mkdtempSync(join(tmpdir(), "revise-reply-"));
     const fetches = join(dir, "fetches");
     try {
@@ -146,7 +146,7 @@ fetch_issue_comments() {
   printf '%s' ${JSON.stringify(JSON.stringify(comments))}
 }
 LOG_FILE=${JSON.stringify(join(dir, "agent.log"))}
-revise_noop_reply 659 ${JSON.stringify(pr)} ${JSON.stringify(marker)}
+revise_noop_reply 659 ${JSON.stringify(pr)} ${JSON.stringify(marker)}${kind ? ` ${JSON.stringify(kind)}` : ""}
 `;
       const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
       assert.equal(r.status, 0, `bash failed: ${r.stderr}`);
@@ -220,6 +220,104 @@ revise_noop_reply 659 ${JSON.stringify(pr)} ${JSON.stringify(marker)}
     assert.match(out.log, /WARNING: could not read #659's comments/);
     assert.match(out.posted, /<!-- drafto-factory-revise-noop -->/);
   });
+
+  it("a declined revision with its reply posted gets no fallback (ADR-0058)", () => {
+    const out = runReply({
+      comments: [reply(123)],
+      marker: "drafto-factory-revise-reply-123",
+      kind: "declined",
+    });
+    assert.match(out.log, /revision reply posted/);
+    assert.equal(out.posted, "");
+  });
+
+  it("a declined revision with no reply gets the declined fallback, not the no-op one", () => {
+    const out = runReply({
+      comments: [],
+      marker: "drafto-factory-revise-reply-123",
+      kind: "declined",
+    });
+    assert.match(
+      out.posted,
+      /The factory declined that as outside this issue's plan, and no reply was found/,
+    );
+    assert.match(out.posted, /Open a new issue for that work instead of rephrasing it here/);
+    assert.match(out.posted, /Drag to \*\*Approved\*\* to ship this PR as it is\./);
+    // Rephrasing an out-of-plan request would only be declined again.
+    assert.doesNotMatch(out.posted, /comment a more specific change/);
+    assert.doesNotMatch(out.posted, /No code change was made for that/);
+    assert.match(out.posted, /<!-- drafto-factory-revise-noop -->/);
+  });
+});
+
+describe("worktree_untouched (extracted, real git)", () => {
+  // The guard that decides whether a declined revision may go back to In Test:
+  // only a worktree holding nothing the PR lacks qualifies, and any doubt
+  // (a git error, an unknown PR head) counts as touched.
+  function repo() {
+    const dir = mkdtempSync(join(tmpdir(), "untouched-"));
+    const git = (...args) => {
+      const r = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout.trim();
+    };
+    git("init", "-q");
+    git("config", "user.email", "t@example.com");
+    git("config", "user.name", "t");
+    git("commit", "-q", "--allow-empty", "-m", "one");
+    const one = git("rev-parse", "HEAD");
+    git("commit", "-q", "--allow-empty", "-m", "two");
+    const two = git("rev-parse", "HEAD");
+    return { dir, git, one, two };
+  }
+  const check = (dir, head) =>
+    withFn(
+      "worktree_untouched",
+      `LOG_FILE=/dev/null; worktree_untouched ${JSON.stringify(dir)} ${JSON.stringify(head)} && echo UNTOUCHED || echo TOUCHED`,
+    );
+  const cases = [
+    ["sits on the PR head", "UNTOUCHED", ({ two }) => two],
+    [
+      "is merely behind the PR head",
+      "UNTOUCHED",
+      ({ git, one, two }) => {
+        git("checkout", "-q", one);
+        return two;
+      },
+    ],
+    ["has commits the PR head lacks", "TOUCHED", ({ one }) => one],
+    [
+      "diverged from the PR head",
+      "TOUCHED",
+      ({ git, one, two }) => {
+        git("checkout", "-q", one);
+        git("commit", "-q", "--allow-empty", "-m", "side");
+        return two;
+      },
+    ],
+    [
+      "has uncommitted edits",
+      "TOUCHED",
+      ({ dir, two }) => {
+        writeFileSync(join(dir, "edited.txt"), "half-done change\n");
+        return two;
+      },
+    ],
+    // A PR head that isn't in the local object store makes merge-base error:
+    // undecidable, so fail closed rather than read it as "behind".
+    ["can't see the PR head commit", "TOUCHED", () => "0".repeat(40)],
+    ["has no PR head to compare against", "TOUCHED", () => ""],
+  ];
+  for (const [name, want, setup] of cases) {
+    it(`reads a worktree that ${name} as ${want.toLowerCase()}`, () => {
+      const ctx = repo();
+      try {
+        assert.equal(check(ctx.dir, setup(ctx)), want);
+      } finally {
+        rmSync(ctx.dir, { recursive: true, force: true });
+      }
+    });
+  }
 });
 
 describe("factory-agent.sh structural wiring (In Test iteration)", () => {
@@ -264,14 +362,58 @@ describe("factory-agent.sh structural wiring (In Test iteration)", () => {
       return script.slice(start, end);
     })();
     assert.match(noopArm, /# The feedback needed no code change/);
-    assert.match(noopArm, /transition_status "\$ITEM_ID" "\$ISSUE_NUM" "In Test"/);
-    // The reply check replaced the arm's own fixed comment.
+    // The PR number comes from bash's own lookup, and the shared helper does
+    // the move, the consume and the reply check.
     assert.match(
       noopArm,
-      /revise_noop_reply "\$ISSUE_NUM" "\$\(echo "\$PRIOR_PR" \| jq -r '\.number \/\/ ""'/,
+      /revision_return_to_test "\$ISSUE_NUM" "\$ITEM_ID" "\$PRE_HEAD_OID" "\$ITEM_LABELS" \\\n\s*"\$\(echo "\$PRIOR_PR" \| jq -r '\.number \/\/ ""'[^\n]*\n\s*"\$REPLY_MARKER" "\$FEEDBACK_MARK" noop\n/,
     );
-    assert.match(noopArm, /"\$REPLY_MARKER"\n/);
     assert.doesNotMatch(noopArm, /gh issue comment/);
+    const back = script.slice(
+      script.indexOf("revision_return_to_test() {"),
+      script.indexOf("\n}\n", script.indexOf("revision_return_to_test() {")),
+    );
+    assert.match(back, /transition_status "\$item_id" "\$issue_num" "In Test"/);
+    assert.match(back, /lastFeedbackAt "\$mark"/);
+    assert.match(back, /factory:reset-attempts "\$issue_num"/);
+    // The reply check replaced the arm's own fixed comment.
+    assert.match(back, /revise_noop_reply "\$issue_num" "\$pr_num" "\$marker" "\$kind"/);
+  });
+
+  // --implement's own arms; other stages have blocked) arms of their own.
+  const implementArm = (name) => {
+    const from = script.indexOf('      noop)\n        if [[ "$IS_REVISION" -eq 1 ]]; then');
+    const start = script.indexOf(`      ${name})\n`, from);
+    assert.ok(from !== -1 && start !== -1, `could not find --implement's ${name} arm`);
+    return script.slice(start, script.indexOf("\n        ;;\n", start));
+  };
+
+  it("returns a declined revision to In Test only for the head shown there, untouched (ADR-0058)", () => {
+    const arm = implementArm("declined");
+    assert.match(arm, /jq -r '\.intestCommentSha \/\/ ""'/);
+    assert.match(
+      arm,
+      /if \[\[ "\$IS_REVISION" -eq 1 && "\$PRE_HEAD_KNOWN" -eq 1 && -n "\$PRE_HEAD_OID" \\\n\s*&& "\$DECLINE_SHOWN_SHA" == "\$PRE_HEAD_OID" \]\] \\\n\s*&& worktree_untouched "\$WT_PATH" "\$PRE_HEAD_OID"; then\n\s*revision_return_to_test /,
+    );
+    assert.match(arm, /"\$REPLY_MARKER" "\$FEEDBACK_MARK" declined\n/);
+    // Anything else parks in Blocked, as action=blocked does.
+    assert.match(arm, /else\n\s*implement_park_blocked "\$ITEM_ID" "\$ISSUE_NUM" "\$SLOT" \\/);
+  });
+
+  it("still parks every action=blocked in Blocked, revision or not", () => {
+    const arm = implementArm("blocked");
+    assert.match(
+      arm,
+      /implement_park_blocked "\$ITEM_ID" "\$ISSUE_NUM" "\$SLOT" "implementer returned blocked"/,
+    );
+    assert.doesNotMatch(arm, /revision_return_to_test/);
+    const park = script.slice(
+      script.indexOf("implement_park_blocked() {"),
+      script.indexOf("\n}\n", script.indexOf("implement_park_blocked() {")),
+    );
+    assert.match(park, /transition_status "\$item_id" "\$issue_num" "Blocked"/);
+    assert.match(park, /factory:slot-release "\$slot"/);
+    assert.match(park, /worktree-cli\.mjs" remove --issue "\$issue_num"/);
   });
 
   it("keys the revision reply marker on the newest feedback comment and hands it to the bundle", () => {
