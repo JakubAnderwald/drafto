@@ -115,6 +115,8 @@ describe("decidePre: Bash deny/allow matrix", () => {
     // Globs and variables that can't reach anything protected.
     "ls apps/web/src/*.ts",
     "cd scripts && node --test __tests__/*.test.mjs",
+    // The dev live-test runner's own unit tests use fixtures only.
+    "cd scripts && node --test __tests__/run-dev-live-tests.test.mjs",
     'rm -rf "$D"/*',
     "awk '{print $1}' f.txt",
     "grep -E '^[a-z]+$' x.ts",
@@ -191,6 +193,24 @@ describe("decidePre: Bash deny/allow matrix", () => {
     ["pnpm release:beta:ios", /release:beta:ios script/],
     ["pnpm --filter=@drafto/mobile release:beta:android", /release:beta:android script/],
     ["pnpm run release:production", /release:production script/],
+    // The dev live tests run with the dev service-role key: operator-only.
+    ["pnpm test:live:supabase", /dev live tests .* interactive sessions/],
+    ["pnpm run test:live:supabase", /dev live tests .* interactive sessions/],
+    ["pnpm run test:live:supabase -- --only profile-guard", /dev live tests/],
+    ["pnpm --filter=drafto test:live:supabase", /dev live tests/],
+    ["node scripts/run-dev-live-tests.mjs --dry-run", /dev live tests/],
+    // A file run by node --test is its own main module.
+    ["node --test scripts/run-dev-live-tests.mjs", /dev live tests/],
+    ["node --test --test-isolation=none scripts/run-dev-live-tests.mjs", /dev live tests/],
+    ["pnpm exec node --test scripts/run-dev-live-tests.mjs", /dev live tests/],
+    ["cd scripts && node run-dev-live-tests.mjs", /dev live tests/],
+    ["cd scripts && node --test ./run-dev-live-test''s.mjs", /dev live tests/],
+    ["bash -c 'node scripts/run-dev-live-tests.mjs'", /dev live tests/],
+    ["node <<'EOF'\nimport('./scripts/run-dev-live-tests.mjs')\nEOF", /dev live tests/],
+    // Globs that could expand to the runner.
+    ["cd scripts && node run-*.mjs", /could name the dev live-test runner/],
+    ["node --test 'scripts/run-*.mjs'", /could name the dev live-test runner/],
+    ["node --test scripts/*live*", /could name the dev live-test runner/],
     ["pnpm turbo run release", /release task/],
     ["npm install", /npm install/],
     ["node scripts/lib/state-cli.mjs factory:status", /node scripts/],

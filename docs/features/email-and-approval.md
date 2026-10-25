@@ -55,7 +55,7 @@ Shipped in production. A Postgres `after insert on auth.users` trigger calls `/a
   - `apps/web/__tests__/unit/approve-user-one-click.test.ts` — signed-link verification and approval flow.
   - `apps/web/__tests__/unit/approval-tokens.test.ts` — HMAC signing, TTL, tamper detection.
   - `scripts/__tests__/profile-privilege-guard.test.mjs` — static check of the guard migration (runs in CI): the exact guard condition, the 42501 raise, `SECURITY INVOKER`, and migration ordering.
-  - `scripts/__tests__/profile-privilege-guard.live.test.mjs` — opt-in check against the **dev** project: a user's own `PATCH` of either flag gets 403, a `display_name` edit still works, and an admin session and the service role can still approve. Skips unless the dev URL, anon key and service-role key are all set.
+  - `scripts/__tests__/profile-privilege-guard.live.test.mjs` — opt-in check against the **dev** project: a user's own `PATCH` of either flag gets 403, a `display_name` edit still works, and an admin session and the service role can still approve. Skips unless the dev URL, anon key and service-role key are all set. Run it with `pnpm test:live:supabase -- --only profile-guard`, which sets them from the local key files and fails, rather than skips, when one is missing.
   - `apps/web/__tests__/unit/email-client.test.ts` + `email-templates.test.ts` — Resend transport and template rendering.
 - **Files that must change together:**
   - Changing the webhook payload shape: update `apps/web/src/app/api/webhooks/new-signup/route.ts` **and** `supabase/migrations/20260421000001_new_signup_webhook.sql` (the trigger builds the body). Add a new migration rather than editing the old one.
@@ -71,11 +71,13 @@ cd apps/web && pnpm test
 # Targeted unit tests for this feature
 cd apps/web && pnpm test -- new-signup-webhook admin-approve-user admin-delete-user approve-user-one-click approval-tokens email-client email-templates
 
-# Guard on is_approved / is_admin: static check, then the live check against the DEV project
-# (skips unless all three are set; refuses any other host)
+# Guard on is_approved / is_admin: static check, then the live check against the DEV project.
+# Interactive sessions only. The runner reads the service-role key from
+# ~/drafto-secrets/dev-supabase-admin.env (Mac mini) or the DEV: line of
+# "supabase service keys.txt", and the anon key from apps/web/.env.local. It refuses
+# any other project and fails, rather than skips, when a key is missing.
 node --test scripts/__tests__/profile-privilege-guard.test.mjs
-NEXT_PUBLIC_SUPABASE_URL=https://huhzactreblzcogqkbsd.supabase.co NEXT_PUBLIC_SUPABASE_ANON_KEY=<dev anon key> \
-  SUPABASE_SERVICE_ROLE_KEY=<dev service-role key> node --test scripts/__tests__/profile-privilege-guard.live.test.mjs
+pnpm test:live:supabase -- --only profile-guard
 
 # Web E2E (signup + approval happy path)
 set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e -- auth

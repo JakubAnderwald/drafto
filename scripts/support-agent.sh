@@ -79,6 +79,8 @@ set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
+# Unattended session marker; interactive-only tools like `pnpm test:live:supabase` refuse under it.
+export DRAFTO_UNATTENDED=1
 
 # ── Claude call timeout ─────────────────────────────────────────────────────
 # Single source of truth for the wall-time cap on each `claude -p` invocation.

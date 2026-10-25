@@ -395,8 +395,8 @@ The dark factory's browser runner checks a PR's Vercel preview in Chrome, signed
   - `packages/shared/__tests__/request-account-deletion.test.ts` — every `AccountDeletionResult` branch, including a redirected HTML 200 mapping to `failed`.
   - `apps/web/__tests__/integration/delete-account-section.test.tsx`, `ui/confirm-dialog.test.tsx` (`confirmDisabled`), `login.test.tsx` (the deleted notice), `settings.test.tsx` (section rendered last), `account-delete-page.test.tsx` and `legal-pages.test.tsx` (in-app flow first, `support@drafto.eu` only).
   - `scripts/__tests__/profile-privilege-guard.test.mjs` — static check of the privilege guard migration, run in CI: the exact guard condition, the `42501` raise, `SECURITY INVOKER`, and that it sorts after `public.is_admin()` and the admin bootstrap.
-  - `scripts/__tests__/profile-privilege-guard.live.test.mjs` — creates real users on **dev** and asserts that a user's own `PATCH` of `is_approved` / `is_admin` gets 403 and changes nothing, that a `display_name` edit still works, and that an admin session and the service role can still approve. It **skips** unless `NEXT_PUBLIC_SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are exported and `NEXT_PUBLIC_SUPABASE_URL`'s origin is exactly `https://huhzactreblzcogqkbsd.supabase.co`, so CI skips it. Run it once before the migration reaches a project too: the self-escalation test must fail there, which proves the check can see the hole.
-  - `apps/web/__tests__/integration/account-deletion.live.test.ts` — creates a real user on **dev** with a notebook, note, attachment row and object, and API key, runs `deleteUserAccount`, and asserts everything is gone. It **skips** unless `SUPABASE_SERVICE_ROLE_KEY` is exported and `NEXT_PUBLIC_SUPABASE_URL`'s host is exactly `huhzactreblzcogqkbsd.supabase.co`. Vitest does not load `.env.local`, so a plain `pnpm test` and CI skip it.
+  - `scripts/__tests__/profile-privilege-guard.live.test.mjs` — creates real users on **dev** and asserts that a user's own `PATCH` of `is_approved` / `is_admin` gets 403 and changes nothing, that a `display_name` edit still works, and that an admin session and the service role can still approve. It **skips** unless `NEXT_PUBLIC_SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are exported and `NEXT_PUBLIC_SUPABASE_URL`'s origin is exactly `https://huhzactreblzcogqkbsd.supabase.co`, so CI skips it. Run it with `pnpm test:live:supabase -- --only profile-guard`, which sets the three from the local key files and sets `DRAFTO_LIVE_REQUIRED=1`, so a missing key fails instead of skipping ([testing](../architecture/testing.md#dev-live-tests-pnpm-testlivesupabase)). Run it once before the migration reaches a project too: the self-escalation test must fail there, which proves the check can see the hole.
+  - `apps/web/__tests__/integration/account-deletion.live.test.ts` — creates a real user on **dev** with a notebook, note, attachment row and object, and API key, runs `deleteUserAccount`, and asserts everything is gone. It **skips** unless `SUPABASE_SERVICE_ROLE_KEY` is exported and `NEXT_PUBLIC_SUPABASE_URL`'s origin is exactly `https://huhzactreblzcogqkbsd.supabase.co`. Vitest does not load `.env.local`, so a plain `pnpm test` and CI skip it. `pnpm test:live:supabase -- --only account-deletion` runs it with the keys set and fails, rather than skips, when one is missing.
   - `apps/web/e2e/account-deletion.spec.ts` — Playwright: `/account/delete` loads signed out, and its `#sign-in-with-apple` section (linked from the privacy policy) explains Apple revocation; in settings, typed-`DELETE` gating and cancel work; a mocked success (with the Supabase logout call mocked too) lands on `/login?deleted=1` with the notice. The shared E2E user is never really deleted.
   - `apps/mobile/__tests__/components/delete-account-dialog.test.tsx`, `apps/mobile/__tests__/screens/settings.test.tsx` and `apps/mobile/__tests__/providers/auth-provider.test.tsx` — confirm gating, the offline-disabled row, and `deleteAccount()` resetting only on `ok` with no flush and a local-scope sign-out, while `signOut()` keeps the default scope.
   - `apps/mobile/__tests__/lib/apple-revocation.test.ts`, `apps/mobile/__tests__/hooks/use-apple-deletion-confirmation.test.ts`, and the "Sign in with Apple revocation" cases in `auth-provider.test.tsx` and `delete-account-dialog.test.tsx` — an Apple-linked iOS user is asked for a code that is sent with the request, cancelling still deletes, and non-Apple users and Android never see Apple's sheet or the notice.
@@ -449,15 +449,16 @@ cd apps/web && pnpm test
 # Shared request helper (account deletion result mapping)
 cd packages/shared && pnpm test
 
-# Account deletion against the real DEV project (skips unless both are set; refuses any other host)
-NEXT_PUBLIC_SUPABASE_URL=https://huhzactreblzcogqkbsd.supabase.co SUPABASE_SERVICE_ROLE_KEY=<dev service-role key> \
-  pnpm --filter @drafto/web exec vitest run __tests__/integration/account-deletion.live.test.ts
-
-# Guard on is_approved / is_admin: static check, then the live check against the DEV project
-# (skips unless all three are set; refuses any other host)
+# Guard on is_approved / is_admin: static check
 node --test scripts/__tests__/profile-privilege-guard.test.mjs
-NEXT_PUBLIC_SUPABASE_URL=https://huhzactreblzcogqkbsd.supabase.co NEXT_PUBLIC_SUPABASE_ANON_KEY=<dev anon key> \
-  SUPABASE_SERVICE_ROLE_KEY=<dev service-role key> node --test scripts/__tests__/profile-privilege-guard.live.test.mjs
+
+# Live checks against the real DEV project: the privilege guard and account deletion.
+# Interactive sessions only. The runner reads the service-role key from
+# ~/drafto-secrets/dev-supabase-admin.env (Mac mini) or the DEV: line of
+# "supabase service keys.txt", and the anon key from apps/web/.env.local. It refuses
+# any other project and fails, rather than skips, when a key is missing.
+pnpm test:live:supabase
+# or one of them: pnpm test:live:supabase -- --only profile-guard|account-deletion
 
 # Web E2E (requires E2E_TEST_EMAIL / E2E_TEST_PASSWORD in apps/web/.env.local)
 set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e -- auth

@@ -8,6 +8,10 @@
 // them, so it skips there, and it refuses any other project or a plain-http
 // origin, so it can never touch production or send a key in cleartext.
 //
+// Run it with `pnpm test:live:supabase`, which reads the keys from this
+// machine's files and sets DRAFTO_LIVE_REQUIRED=1, so a missing key fails the
+// run instead of skipping it.
+//
 // Run it once BEFORE applying the migration to dev as well. The self-escalation
 // test must fail then, which proves dev's `authenticated` role really holds
 // UPDATE on profiles and that this check can see the hole.
@@ -34,6 +38,29 @@ function isDevProject(url) {
 
 const canRun = anonKey !== "" && serviceRoleKey !== "" && isDevProject(supabaseUrl);
 const origin = canRun ? new URL(supabaseUrl).origin : "";
+
+// `pnpm test:live:supabase` (scripts/run-dev-live-tests.mjs) sets
+// DRAFTO_LIVE_REQUIRED=1. There a skip would read as a pass, so a run that
+// can't reach dev fails instead, naming the variables (never their values).
+const liveRequired = process.env.DRAFTO_LIVE_REQUIRED === "1";
+
+function missingVars() {
+  const missing = [];
+  if (supabaseUrl === "") missing.push("NEXT_PUBLIC_SUPABASE_URL");
+  else if (!isDevProject(supabaseUrl))
+    missing.push(`NEXT_PUBLIC_SUPABASE_URL (not https://${DEV_PROJECT_REF}.supabase.co)`);
+  if (anonKey === "") missing.push("NEXT_PUBLIC_SUPABASE_ANON_KEY");
+  if (serviceRoleKey === "") missing.push("SUPABASE_SERVICE_ROLE_KEY");
+  return missing;
+}
+
+if (liveRequired && !canRun) {
+  it("has what it needs to run against the dev project (DRAFTO_LIVE_REQUIRED=1)", () => {
+    assert.fail(
+      `DRAFTO_LIVE_REQUIRED=1, but the live test can't run. Missing or wrong: ${missingVars().join(", ")}`,
+    );
+  });
+}
 const SERVICE = { key: serviceRoleKey, token: serviceRoleKey };
 
 async function call(path, { method = "GET", key, token, body, prefer } = {}) {
