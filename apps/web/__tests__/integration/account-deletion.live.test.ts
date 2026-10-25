@@ -2,7 +2,7 @@
  * @vitest-environment node
  */
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, assert, describe, expect, it } from "vitest";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { BUCKET_NAME } from "@drafto/shared";
@@ -16,9 +16,14 @@ import type { Database } from "@/lib/supabase/database.types";
  * deleted, and every trace of it must be gone afterwards.
  *
  * Opt-in: it only runs when `SUPABASE_SERVICE_ROLE_KEY` is exported and
- * `NEXT_PUBLIC_SUPABASE_URL` points at the dev project. Vitest does not load
- * `.env.local`, so a plain `pnpm test` skips it. It refuses any other project,
- * so it can never touch production.
+ * `NEXT_PUBLIC_SUPABASE_URL`'s origin is exactly the dev project over HTTPS.
+ * Vitest does not load `.env.local`, so a plain `pnpm test` skips it. It
+ * refuses any other project or a plain-http origin, so it can never touch
+ * production or send the key in cleartext.
+ *
+ * Run it with `pnpm test:live:supabase`, which reads the keys from this
+ * machine's files and sets `DRAFTO_LIVE_REQUIRED=1`, so a missing key fails the
+ * run instead of skipping it.
  *
  * Creating the user fires the dev project's new-signup webhook, if dev has one
  * configured. The user is usually gone before the webhook looks it up, in which
@@ -31,13 +36,36 @@ const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 
 function isDevProject(url: string): boolean {
   try {
-    return new URL(url).hostname === `${DEV_PROJECT_REF}.supabase.co`;
+    return new URL(url).origin === `https://${DEV_PROJECT_REF}.supabase.co`;
   } catch {
     return false;
   }
 }
 
 const canRun = serviceRoleKey !== "" && isDevProject(supabaseUrl);
+
+// `pnpm test:live:supabase` (scripts/run-dev-live-tests.mjs) sets
+// DRAFTO_LIVE_REQUIRED=1. There a skip would read as a pass, so a run that
+// can't reach dev fails instead, naming the variables (never their values).
+const liveRequired = process.env.DRAFTO_LIVE_REQUIRED === "1";
+
+function missingVars(): string[] {
+  const missing: string[] = [];
+  if (supabaseUrl === "") missing.push("NEXT_PUBLIC_SUPABASE_URL");
+  else if (!isDevProject(supabaseUrl))
+    missing.push(`NEXT_PUBLIC_SUPABASE_URL (not https://${DEV_PROJECT_REF}.supabase.co)`);
+  if (serviceRoleKey === "") missing.push("SUPABASE_SERVICE_ROLE_KEY");
+  return missing;
+}
+
+it.runIf(liveRequired && !canRun)(
+  "has what it needs to run against the dev project (DRAFTO_LIVE_REQUIRED=1)",
+  () => {
+    assert.fail(
+      `DRAFTO_LIVE_REQUIRED=1, but the live test can't run. Missing or wrong: ${missingVars().join(", ")}`,
+    );
+  },
+);
 
 describe.skipIf(!canRun)("deleteUserAccount (live, dev project)", () => {
   let admin: SupabaseClient<Database>;

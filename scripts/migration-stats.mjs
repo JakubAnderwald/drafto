@@ -25,9 +25,11 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 
+import { SERVICE_KEYS_TXT, serviceKeyFromText, serviceKeyTagFor } from "./lib/service-keys-txt.mjs";
+
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PROJECT_REF_FILE = path.join(REPO_ROOT, "supabase", ".temp", "project-ref");
-const KEY_FILE = path.join(os.homedir(), "drafto-secrets", "supabase service keys.txt");
+const KEY_FILE = path.join(os.homedir(), "drafto-secrets", SERVICE_KEYS_TXT);
 
 // Tables to snapshot. `keyAggregates` are PostgREST-friendly aggregations
 // (just row count today; extend with an RPC if/when content-size totals
@@ -62,18 +64,17 @@ async function readProjectRef() {
 }
 
 async function readServiceKey(projectRef) {
-  // The keys file uses "DEV: <key>" / "PROD: <key>" format. Map ref → tag.
+  // The keys file uses "DEV: <key>" / "PROD: <key>" format. Map ref → tag;
+  // any other project gets no key (never dev's by default).
+  const tag = serviceKeyTagFor(projectRef);
+  if (!tag) return null;
   let raw;
   try {
     raw = await fs.readFile(KEY_FILE, "utf8");
   } catch {
     return null;
   }
-  const tag = projectRef === "tbmjbxxseonkciqovnpl" ? "PROD" : "DEV";
-  for (const line of raw.split("\n")) {
-    if (line.startsWith(`${tag}:`)) return line.slice(tag.length + 1).trim();
-  }
-  return null;
+  return serviceKeyFromText(raw, tag);
 }
 
 async function tableCount(projectRef, key, table) {
@@ -157,6 +158,12 @@ async function cmdPre() {
     log(`${COLOR.dim}skip pre-snapshot: no linked project${COLOR.reset}`);
     return;
   }
+  if (!serviceKeyTagFor(ref)) {
+    log(
+      `${COLOR.dim}skip pre-snapshot: ${ref} is neither the dev nor the prod project, so no key maps to it${COLOR.reset}`,
+    );
+    return;
+  }
   const key = await readServiceKey(ref);
   if (!key) {
     log(`${COLOR.dim}skip pre-snapshot: no service-role key for ${ref}${COLOR.reset}`);
@@ -174,6 +181,12 @@ async function cmdPost() {
   const ref = await readProjectRef();
   if (!ref) {
     log(`${COLOR.dim}skip post-snapshot: no linked project${COLOR.reset}`);
+    return;
+  }
+  if (!serviceKeyTagFor(ref)) {
+    log(
+      `${COLOR.dim}skip post-snapshot: ${ref} is neither the dev nor the prod project, so no key maps to it${COLOR.reset}`,
+    );
     return;
   }
   const key = await readServiceKey(ref);

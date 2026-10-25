@@ -86,11 +86,15 @@ echo "sdk.dir=/Users/jakub/Library/Android/sdk" > apps/mobile/android/local.prop
 > Vercel sets the real value at deploy time. Without it, `pnpm dev`, `pnpm test:e2e`
 > and `pnpm --filter @drafto/web build` all fail env validation. The other server-only
 > secrets in `turbo.json`'s `passThroughEnv` (`SUPABASE_SERVICE_ROLE_KEY`,
-> `RESEND_API_KEY`, …) are optional and not stored in any local file, so the features
-> that need them (approval emails, the admin page) stay off locally. CI sets
-> `SKIP_ENV_VALIDATION=true`, so it never notices a required var missing from
-> `.env.local.example`. Keep the two in sync. The bootstrap script only handles the
-> gitignored _files_.
+> `RESEND_API_KEY`, …) are optional and not in `.env.local`, so the features that
+> need them (approval emails, the admin page) stay off locally. The dev live tests are
+> the exception: on the Mac mini the **dev** project's service-role key is in
+> `~/drafto-secrets/dev-supabase-admin.env`, and interactive sessions run those tests
+> with `pnpm test:live:supabase`, which reads it from there (see
+> [Local Secrets](#local-secrets-drafto-secrets)). The other server-only secrets stay
+> unset locally. CI sets `SKIP_ENV_VALIDATION=true`, so it never notices a required
+> var missing from `.env.local.example`. Keep the two in sync. The bootstrap script
+> only handles the gitignored _files_.
 
 **Metro port conflicts:** The main repo may have Metro running on port 8081. In a worktree, start Metro on a different port (`pnpm start --port 8082`) and use `adb reverse tcp:8081 tcp:8082` to redirect the app.
 
@@ -258,7 +262,7 @@ Full safety rails + migration workflow: [`docs/operations/migrations.md`](./docs
 
 - Never run `DROP TABLE`, `TRUNCATE`, or unqualified `DELETE FROM` against production
 - Never run `supabase db reset` against production — it drops and recreates the entire database
-- Always run `pnpm migration:check` before pushing migrations
+- Always run `pnpm migration:check` before pushing migrations. It also fails a new migration whose version doesn't sort after the newest one on main (`supabase db push` refuses those), so update the branch from main first, and rename with the `git mv` it prints. See [`docs/operations/migrations.md`](./docs/operations/migrations.md#migration-versions-must-sort-last)
 - Before `supabase db push`, verify the linked project ref with `supabase projects list` (prod `tbmjbxxseonkciqovnpl`, dev `huhzactreblzcogqkbsd`)
 - Require explicit user "yes" before any production database operation — state the target project, operation, and affected data before asking
 
@@ -299,6 +303,12 @@ The recipes below are for interactive sessions. Unattended factory, support and 
     --data-urlencode 'project=4510937249480784' \
     --data-urlencode 'field=transaction' --data-urlencode 'field=count()' --data-urlencode 'sort=-count()'
   ```
+
+- **`dev-supabase-admin.env`** → `DEV_SUPABASE_URL`, `DEV_SUPABASE_SERVICE_ROLE_KEY`. The **dev** project's URL and service-role key (`huhzactreblzcogqkbsd`, never prod), on the Mac mini. The key bypasses RLS on dev, so use it from interactive sessions only and never print it. The factory reads the file for one thing only: minting the browser runner's one-time preview sign-in link ([ADR-0051](./docs/adr/0051-factory-browser-runner.md)).
+  - Use it through `pnpm test:live:supabase`, which runs the dev live tests, rather than sourcing it. Add `-- --only profile-guard|account-deletion` to run one test, or `-- --dry-run` to see the plan.
+  - The runner falls back to the `DEV:` line of the MacBook Air's `supabase service keys.txt` when this file is missing and no `--key-file` was given, and reads the anon key from `apps/web/.env.local`. It refuses any project but dev and prints file and variable names, never values.
+  - It sets `DRAFTO_LIVE_REQUIRED=1`, so a missing key fails the run instead of skipping it. The tests create users on dev and delete them again.
+  - It refuses unattended sessions, before reading any key file. The factory, support and nightly scripts export `DRAFTO_UNATTENDED=1`, and the verification lane sets it in every process it starts. It also refuses a run under `node --test`. The lane's guard separately denies any command naming the runner or a `test:live` script.
 
 - **Other files** are documented with the feature that uses them; search `docs/` for `drafto-secrets`. They cover signing and App Store Connect ([builds-and-releases.md](./docs/operations/builds-and-releases.md)), the support agent ([support-agent.md](./docs/features/support-agent.md)), the MCP registry key ([mcp-server.md](./docs/features/mcp-server.md)), Sign in with Apple ([auth.md](./docs/features/auth.md)), the Supabase service-role keys ([offline-sync.md](./docs/features/offline-sync.md)) and the account-approval regression tests (`apps/web/e2e/regression/account-approval/README.md`).
 
@@ -352,7 +362,7 @@ pnpm lint             # ESLint (all packages)
 pnpm format:check     # Prettier check
 pnpm test             # Unit + integration tests (all packages)
 pnpm typecheck        # TypeScript check (all packages)
-pnpm migration:check  # Check migrations for destructive SQL and missing Data API grants
+pnpm migration:check  # Check migrations for destructive SQL, missing Data API grants, and new versions that sort before main's newest
 ```
 
 ## Local Dev Setup

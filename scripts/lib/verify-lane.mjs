@@ -281,12 +281,18 @@ function rmQuiet(fs, p) {
 
 // ── environment ─────────────────────────────────────────────────────────────
 
+// Marks every process the lane starts as unattended, so interactive-only
+// tools refuse (pnpm test:live:supabase reads the dev service-role key). Set
+// here because the allowlist would drop the factory's own export of it.
+export const UNATTENDED_ENV = Object.freeze({ DRAFTO_UNATTENDED: "1" });
+
 export function supervisedEnv(env = process.env) {
   const out = {};
   for (const key of ENV_ALLOWLIST) {
     if (typeof env[key] === "string") out[key] = env[key];
   }
   out.PATH = SUPERVISED_PATH;
+  Object.assign(out, UNATTENDED_ENV);
   return out;
 }
 
@@ -301,7 +307,7 @@ export function laneEnv(env, { binDirs = [], ghConfigDir = null, extra = {} } = 
   const dirs = [...new Set(binDirs.filter(Boolean))];
   out.PATH = [...dirs, SUPERVISED_PATH].join(":");
   if (ghConfigDir) out.GH_CONFIG_DIR = ghConfigDir;
-  Object.assign(out, extra);
+  Object.assign(out, extra, UNATTENDED_ENV);
   return out;
 }
 

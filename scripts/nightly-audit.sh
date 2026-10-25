@@ -3,6 +3,8 @@ set -euo pipefail
 
 # Ensure ~/.local/bin is in PATH (gh CLI location; launchd has minimal PATH)
 export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:$PATH"
+# Unattended session marker; interactive-only tools like `pnpm test:live:supabase` refuse under it.
+export DRAFTO_UNATTENDED=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

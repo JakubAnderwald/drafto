@@ -31,6 +31,7 @@ import {
   ENV_ALLOWLIST,
   LANE_TOOL_LIST,
   QA_TAG_PREFIX,
+  UNATTENDED_ENV,
   assertSafeClaudeArgs,
   buildClaudeArgs,
   buildPreviewCurlArgs,
@@ -493,8 +494,13 @@ describe("start: a run", () => {
     assert.equal(spawn.opts.env.GH_TOKEN, undefined);
     assert.deepEqual(
       Object.keys(spawn.opts.env).sort(),
-      [...ENV_ALLOWLIST.filter((k) => k in makeDeps().deps.env), "PATH"].sort(),
+      [
+        ...ENV_ALLOWLIST.filter((k) => k in makeDeps().deps.env),
+        "PATH",
+        "DRAFTO_UNATTENDED",
+      ].sort(),
     );
+    assert.equal(spawn.opts.env.DRAFTO_UNATTENDED, "1");
     const s = await state();
     const inFlight = getVerify(s).inFlight;
     assert.equal(inFlight.pid, 4242);
@@ -726,8 +732,24 @@ describe("environment allowlist", () => {
 
   it("passes only the allowlist, with the supervised PATH", () => {
     const out = supervisedEnv(env);
-    assert.deepEqual(Object.keys(out).sort(), ["HOME", "LANG", "PATH", "TMPDIR", "USER"]);
+    assert.deepEqual(Object.keys(out).sort(), [
+      "DRAFTO_UNATTENDED",
+      "HOME",
+      "LANG",
+      "PATH",
+      "TMPDIR",
+      "USER",
+    ]);
     assert.ok(!out.PATH.includes(".local"));
+  });
+
+  it("marks every process it starts unattended, so interactive-only tools refuse", () => {
+    assert.deepEqual(UNATTENDED_ENV, { DRAFTO_UNATTENDED: "1" });
+    assert.equal(supervisedEnv(env).DRAFTO_UNATTENDED, "1");
+    assert.equal(supervisedEnv({ ...env, DRAFTO_UNATTENDED: "0" }).DRAFTO_UNATTENDED, "1");
+    assert.equal(laneEnv(env).DRAFTO_UNATTENDED, "1");
+    // An extra can't switch it off.
+    assert.equal(laneEnv(env, { extra: { DRAFTO_UNATTENDED: "0" } }).DRAFTO_UNATTENDED, "1");
   });
 
   it("gives claude its bin dirs first and gh an empty config dir", () => {

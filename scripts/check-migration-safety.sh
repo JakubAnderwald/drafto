@@ -4,12 +4,21 @@
 # Exit 1 if any errors are found; warnings are informational only.
 #
 # Usage:
-#   bash scripts/check-migration-safety.sh                 # check all migrations
-#   bash scripts/check-migration-safety.sh path/to/file.sql  # check a single file
+#   bash scripts/check-migration-safety.sh                 # check all migrations + new-version order
+#   bash scripts/check-migration-safety.sh path/to/file.sql  # check a single file (no order rule)
 #
 # The grants rule (scripts/lib/check-migration-grants.awk, ADR 0052) replays the
 # checked files in apply order: a GRANT counts when it follows the CREATE in the same
 # file or a later one, so checking one file requires the GRANT in that same file.
+#
+# The order rule (scripts/lib/check-migration-order.mjs, ADR 0057) runs only when no
+# paths are given. It fails a migration this checkout ADDS relative to a base commit
+# when its version is not newer than the base's newest migration (`supabase db push`
+# refuses to insert it), is shared with another file, isn't 14 digits, or is the
+# renamed copy of a migration the base already has. The base is $MIGRATION_BASE_REF (CI
+# sets it to the PR's base commit, or on a push to main to the commit before the push;
+# an empty value counts as unset), else origin/main; with neither, or outside a git
+# work tree, the rule is skipped with a note.
 
 set -euo pipefail
 
@@ -22,10 +31,12 @@ WARNINGS=0
 if [ -t 1 ]; then
   RED='\033[0;31m'
   YELLOW='\033[0;33m'
+  DIM='\033[2m'
   NC='\033[0m'
 else
   RED=''
   YELLOW=''
+  DIM=''
   NC=''
 fi
 
@@ -164,12 +175,81 @@ while IFS=$'\t' read -r location message statement; do
 done <<< "$GRANT_FINDINGS"
 ERRORS=$((ERRORS + GRANT_ERRORS))
 
+# Migration order (repo mode only): a migration this checkout adds must sort after the
+# base's newest one. The helper prints `error` lines (counted) and `move` lines: fresh
+# migrations renumbered so they stay after a renamed stale one (not errors, but part
+# of the fix, so they are listed under the hint). ORDER_SETUP_ERRORS mean the rule
+# could not run although CI asked for it, so a bad base never reads as a pass.
+ORDER_ERRORS=0
+ORDER_SETUP_ERRORS=0
+ORDER_MOVES=""
+order_check() {
+  local base="${MIGRATION_BASE_REF:-}" findings
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo -e "${DIM}Migration order check skipped (no base ref: not inside a git work tree).${NC}"
+    return 0
+  fi
+  if [ -n "$base" ]; then
+    if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+      echo -e "${RED}ERROR${NC}  MIGRATION_BASE_REF=$base does not resolve to a commit — fetch it, or unset it to use origin/main"
+      ORDER_SETUP_ERRORS=$((ORDER_SETUP_ERRORS + 1))
+      return 0
+    fi
+  elif git rev-parse --verify --quiet "origin/main^{commit}" >/dev/null; then
+    base="origin/main"
+  else
+    echo -e "${DIM}Migration order check skipped (no base ref: set MIGRATION_BASE_REF or fetch origin/main).${NC}"
+    return 0
+  fi
+  echo "Checking migration order against $base..."
+  if ! findings=$(node "$SCRIPT_DIR/lib/check-migration-order.mjs" --base "$base" --dir supabase/migrations); then
+    echo -e "${RED}ERROR${NC}  migration order check failed to run against $base (see the message above)"
+    ORDER_SETUP_ERRORS=$((ORDER_SETUP_ERRORS + 1))
+    return 0
+  fi
+  # `rename` is the last field so an empty one can't shift the others (tab is IFS
+  # whitespace, so empty fields in the middle would collapse).
+  while IFS=$'\t' read -r kind location message rename; do
+    case "$kind" in
+      error)
+        echo -e "${RED}ERROR${NC}  $location — $message"
+        if [ -n "$rename" ]; then
+          echo "        $rename"
+        fi
+        ORDER_ERRORS=$((ORDER_ERRORS + 1))
+        ;;
+      move)
+        ORDER_MOVES="${ORDER_MOVES}        $rename   # $message"$'\n'
+        ;;
+    esac
+  done <<< "$findings"
+}
+if [ $# -eq 0 ]; then
+  order_check
+fi
+ERRORS=$((ERRORS + ORDER_ERRORS + ORDER_SETUP_ERRORS))
+
 echo ""
 echo "Results: $ERRORS error(s), $WARNINGS warning(s)"
 
 if [ "$ERRORS" -gt 0 ]; then
   echo ""
-  echo "Fix errors above or add '-- safety:ignore' to suppress specific lines."
+  if [ "$ERRORS" -gt $((ORDER_ERRORS + ORDER_SETUP_ERRORS)) ]; then
+    echo "Fix errors above or add '-- safety:ignore' to suppress specific lines."
+  fi
+  if [ "$ORDER_ERRORS" -gt 0 ]; then
+    echo "Migration order: a new migration must sort after every migration on the base branch, or"
+    echo "'supabase db push' refuses it once the newer one is applied. Fix each error as its message"
+    echo "says, renaming with the git mv shown under it, then update every reference to an old version"
+    echo "(git grep <old version>). If an old version was already pushed to dev, record the rename there"
+    echo "with the repair recipe in docs/operations/migrations.md, \"Migration versions must sort last\"."
+    echo "If a flagged file came from main rather than this branch, your origin/main is stale:"
+    echo "git fetch origin main, then run the check again."
+    if [ -n "$ORDER_MOVES" ]; then
+      echo "Also renumber these later migrations from this branch, so they stay in their current order:"
+      printf '%s' "$ORDER_MOVES"
+    fi
+  fi
   if [ "$GRANT_ERRORS" -gt 0 ]; then
     echo "Data API grants: grant the table to the roles that use it, in the migration that creates it,"
     echo "e.g. grant select, insert, update, delete on table public.<name> to authenticated, service_role;"
