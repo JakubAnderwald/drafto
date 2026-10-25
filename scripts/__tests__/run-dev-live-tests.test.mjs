@@ -428,9 +428,19 @@ describe("run-dev-live-tests refuses unattended and test-runner sessions", () =>
   });
 
   it("refuses when started as a test file by node --test, in either isolation", () => {
+    // Node 22 spells the no-isolation flag --experimental-test-isolation (CI's
+    // version); later releases spell it --test-isolation. Use whichever this
+    // node accepts.
+    const noIsolation = ["--test-isolation=none", "--experimental-test-isolation=none"].find(
+      (flag) =>
+        !/bad option/.test(
+          spawnSync(process.execPath, [flag, "-e", "0"], { encoding: "utf8" }).stderr,
+        ),
+    );
+    assert.ok(noIsolation, "this node accepts neither spelling of the test-isolation flag");
     withFixture(
       (fx) => {
-        for (const isolation of [[], ["--test-isolation=none"]]) {
+        for (const isolation of [[], [noIsolation]]) {
           const r = spawnSync(process.execPath, ["--test", ...isolation, RUNNER], {
             encoding: "utf8",
             env: cleanEnv({ HOME: fx.home }),
