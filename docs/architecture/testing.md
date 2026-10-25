@@ -49,6 +49,11 @@ To check the account stays at its baseline, read the `[e2e cleanup]` lines in th
 
 Only pass `--no-deps` together with `--project` or a spec file. That combination skips the purge and the run-end teardown. Each test still deletes its own notes, and the notebooks it creates wait for the 24-hour purge. Without a filter, `--no-deps` runs `purge-stale` and `cleanup-run` as ordinary projects alongside the tests, so the teardown can delete this run's notebooks while tests are still using them.
 
+- **Credentials stay out of the CI report.** When E2E fails, CI uploads `apps/web/playwright-report` as an artifact, and anyone can download it from this public repo. So:
+  - CI records no traces (`trace` is `off` when `CI` is set), because a trace holds request bodies and the Supabase session cookie. To trace a CI failure, reproduce it locally, where traces stay on.
+  - A spec that types a real credential uses `fillSecret()` (`apps/web/e2e/helpers/secret-fields.ts`) instead of `fill()`. `fill()` titles its report step `Fill "<value>"`, and a failure saves the page's ARIA snapshot (`error-context.md`, or the assertion's own snapshot), which lists the field's value. `fillSecret()` puts the value in React state, then swaps the input for a copy showing `hidden-by-fillSecret`.
+  - Before uploading, CI runs `scripts/scan-playwright-report.mjs`. If it finds an E2E password, the service-role key or a Supabase session token, it withholds the report and lists the files, without the values. A failure involving an API request is withheld this way: a `page.request…` or `request`-fixture call that errors or times out, or a failing `expect(response).toBeOK()`. Playwright puts that request's headers, session cookie included, in the error message. Reproduce such a failure locally. Why it works this way: [ADR-0056](../adr/0056-keep-credentials-out-of-the-e2e-report.md).
+
 ### Maestro (mobile E2E)
 
 - A running Android emulator (or physical device with USB debugging).

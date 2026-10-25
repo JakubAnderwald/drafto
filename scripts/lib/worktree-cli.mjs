@@ -22,7 +22,10 @@
 //
 // `add` is idempotent, resolving the branch in four tiers so a revision run
 // always lands on the PR's own commits:
-//   1. the worktree is already registered  → reuse it as-is
+//   1. the worktree is already registered  → reuse it (with --fetch, first
+//                                            fast-forwarded when strictly
+//                                            behind origin; diverged or dirty
+//                                            throws)
 //   2. the local branch exists             → re-attach it (with --fetch, first
 //                                            reconciled against origin: behind
 //                                            defers to tier 3, ahead is kept,
@@ -195,6 +198,47 @@ function isAncestor(root, maybeAncestor, descendant) {
   );
 }
 
+// A registered worktree stays put while its card is In Review or In Test, so
+// anything that pushes to the PR meanwhile ("Update branch" on GitHub, --release
+// updating a BEHIND PR, a human) leaves it on a stale tip. The next run would
+// commit there and its push would be rejected, with no sanctioned way for the
+// agent to recover. Fast-forward it when it is strictly behind and clean; keep
+// it when ahead (unpushed commits); throw when diverged or dirty, like the
+// re-attach path. Returns whether it moved.
+function syncRegisteredWorktree(root, wtPath, branch) {
+  const probe = remoteBranchState(root, branch);
+  if (probe.state === "unreachable") {
+    throw new Error(
+      `could not reach origin to check ${branch} before reusing ${wtPath}` +
+        (probe.detail ? ` (git: ${probe.detail})` : ""),
+    );
+  }
+  if (probe.state !== "present") return false;
+  git(["fetch", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`], {
+    cwd: root,
+    timeoutMs: NETWORK_TIMEOUT_MS,
+  });
+  const localSha = revParse(wtPath, "HEAD");
+  const remoteSha = revParse(root, `refs/remotes/origin/${branch}`);
+  if (!localSha || !remoteSha || localSha === remoteSha) return false;
+  if (isAncestor(root, remoteSha, localSha)) return false;
+  if (!isAncestor(root, localSha, remoteSha)) {
+    throw new Error(
+      `worktree ${wtPath} (${localSha.slice(0, 12)}) has diverged from ` +
+        `origin/${branch} (${remoteSha.slice(0, 12)}); refusing to guess which is right — ` +
+        `reconcile the branch by hand`,
+    );
+  }
+  if (git(["status", "--porcelain"], { cwd: wtPath }).stdout.trim()) {
+    throw new Error(
+      `worktree ${wtPath} is behind origin/${branch} and has uncommitted changes; ` +
+        `reconcile it by hand`,
+    );
+  }
+  git(["merge", "--ff-only", "--quiet", `origin/${branch}`], { cwd: wtPath });
+  return true;
+}
+
 export function addWorktree({
   root = DEFAULT_ROOT,
   issueNumber,
@@ -211,11 +255,13 @@ export function addWorktree({
   // after an aborted run doesn't trip over a ghost entry.
   git(["worktree", "prune"], { cwd: root, allowFail: true });
 
-  // Already registered at the canonical path → reuse as-is. This is the retry
-  // path: --watch resumes in the same worktree --implement created.
+  // Already registered at the canonical path → reuse it. This is the retry
+  // path: --watch resumes in the same worktree --implement created. With
+  // --fetch it is first brought level with origin, like the re-attach path.
   const existing = listWorktrees(root).find((w) => canonical(w.path) === canonical(wtPath));
   if (existing) {
-    return { path: wtPath, branch, reused: true, created: false };
+    const fastForwarded = fetchRemote ? syncRegisteredWorktree(root, wtPath, branch) : false;
+    return { path: wtPath, branch, reused: true, created: false, fastForwarded };
   }
 
   // A leftover directory that git doesn't know about would make `worktree add`

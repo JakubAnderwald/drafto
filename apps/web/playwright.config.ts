@@ -15,7 +15,10 @@ export default defineConfig({
   reporter: "html",
   use: {
     baseURL: "http://localhost:3000",
-    trace: "on-first-retry",
+    // CI uploads the HTML report as a public artifact, and a trace records
+    // request headers and bodies: the Supabase session cookie and, on a login,
+    // the password. Keep traces for local runs only.
+    trace: process.env.CI ? "off" : "on-first-retry",
   },
   projects: [
     // Auth setup — runs first, saves storage state for other projects

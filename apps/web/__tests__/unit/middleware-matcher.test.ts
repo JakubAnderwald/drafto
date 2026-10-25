@@ -27,9 +27,20 @@ describe("middleware matcher", () => {
     },
   );
 
-  it.each(["/", "/login", "/api/notes/abc", "/api/mcp", "/api/account"])("runs on %s", (path) => {
+  it.each(["/", "/login", "/api/notes/abc", "/api/account"])("runs on %s", (path) => {
     expect(matches(path)).toBe(true);
   });
+
+  it("skips /api/mcp, which authenticates its own Bearer API key", () => {
+    expect(matches("/api/mcp")).toBe(false);
+  });
+
+  it.each(["/api/mcp-tools", "/api/mcpx"])(
+    "still runs on %s, which only shares the /api/mcp prefix",
+    (path) => {
+      expect(matches(path)).toBe(true);
+    },
+  );
 
   it.each(["/_next/static/chunks/app.js", "/_next/image", "/favicon.ico", "/logo.svg"])(
     "skips static asset %s",
@@ -48,12 +59,31 @@ describe("middleware matcher", () => {
   });
 
   it.each([
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-protected-resource/api/mcp",
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/openid-configuration",
+    // The MCP SDK's fallback endpoints when discovery finds nothing.
+    "/register",
+    "/authorize",
+    "/token",
+  ])("skips %s, which MCP clients probe after a 401", (path) => {
+    expect(matches(path)).toBe(false);
+  });
+
+  it.each([
     "/robots.txt.bak",
     "/sitemap.xml/extra",
     "/well-known/x",
-    "/.well-known/oauth-protected-resource",
+    "/api/.well-known/x",
     "/.well-known/assetlinks.json.bak",
+    "/register/extra",
+    "/tokens",
   ])("still runs on %s, which only resembles a skipped path", (path) => {
     expect(matches(path)).toBe(true);
+  });
+
+  it("still runs on any other /.well-known path, so a future route there gets a session", () => {
+    expect(matches("/.well-known/some-future-route")).toBe(true);
   });
 });

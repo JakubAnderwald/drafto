@@ -119,10 +119,18 @@ test.describe("Note editing flow", () => {
     const titleInput = page.getByRole("textbox", { name: "Note title" });
     await expect(titleInput).toBeVisible({ timeout: 5000 });
 
+    // A new note's title field starts empty, with "Untitled" only as its placeholder,
+    // so typing replaces it rather than appending to it.
+    await expect(titleInput).toHaveValue("");
+    await expect(titleInput).toHaveAttribute("placeholder", "Untitled");
+
     // --- Edit the title ---
+    // Type key by key with no clear() first. fill() empties the field itself, so it
+    // would pass even if the title were still "Untitled" text that typing appends to.
     const noteTitle = `E2E Test Note ${Date.now()}`;
-    await titleInput.clear();
-    await titleInput.fill(noteTitle);
+    await titleInput.click();
+    await titleInput.pressSequentially(noteTitle);
+    await expect(titleInput).toHaveValue(noteTitle);
 
     // --- Type content in the BlockNote editor ---
     // BlockNote renders a contenteditable div
@@ -207,7 +215,6 @@ test.describe("Note editing flow", () => {
     await expect(titleInput).toBeVisible({ timeout: 5000 });
 
     const noteTitle = `Move Me ${Date.now()}`;
-    await titleInput.clear();
     await titleInput.fill(noteTitle);
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 
@@ -252,16 +259,17 @@ test.describe("Note editing flow", () => {
     await expect(titleInput).toBeVisible({ timeout: 5000 });
 
     const noteTitle = `Trash Test ${Date.now()}`;
-    await titleInput.clear();
     await titleInput.fill(noteTitle);
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 
     // Create a second note to test permanent delete
     await page.getByRole("button", { name: "New note", exact: true }).click();
-    await expect(titleInput).toHaveValue("Untitled", { timeout: 5000 });
+    // The editor has switched once the first note's title is gone and the new note's
+    // empty title shows its placeholder.
+    await expect(titleInput).toHaveValue("", { timeout: 5000 });
+    await expect(titleInput).toHaveAttribute("placeholder", "Untitled");
 
     const noteTitle2 = `Trash Perm ${Date.now()}`;
-    await titleInput.clear();
     await titleInput.fill(noteTitle2);
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 
@@ -341,17 +349,17 @@ test.describe("Note editing flow", () => {
     await expect(titleInput).toBeVisible({ timeout: 5000 });
 
     const title1 = `First Note ${Date.now()}`;
-    await titleInput.clear();
     await titleInput.fill(title1);
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 
     // Create second note
     await page.getByRole("button", { name: "New note", exact: true }).click();
-    // Wait for the new note editor to load (title should reset)
-    await expect(titleInput).toHaveValue("Untitled", { timeout: 5000 });
+    // Wait for the new note editor to load: the first note's title gives way to the
+    // new note's empty title and its placeholder.
+    await expect(titleInput).toHaveValue("", { timeout: 5000 });
+    await expect(titleInput).toHaveAttribute("placeholder", "Untitled");
 
     const title2 = `Second Note ${Date.now()}`;
-    await titleInput.clear();
     await titleInput.fill(title2);
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 

@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   ALERT_THRESHOLD,
+  chromeIsRunning,
   decideBrowser,
   describeReason,
   emailContent,
@@ -286,7 +287,8 @@ describe("emailContent", () => {
 
   it("gives a concrete fix for each reason", () => {
     const cases = {
-      "preflight:chrome-not-running": /open Chrome on the Mac mini/,
+      "preflight:chrome-not-running":
+        /another account.s Chrome doesn.t count\): open Chrome in that account/,
       "preflight:account-missing":
         /create \/Users\/x\/drafto-secrets\/browser-account\.env \(mode 600\) with FACTORY_BROWSER_EMAIL/,
       "preflight:account-mode": /chmod 600 \/Users\/x\/drafto-secrets\/browser-account\.env/,
@@ -337,7 +339,16 @@ describe("emailContent", () => {
   it("counts signin-failed as bad, and explains it and the sign-in key problems", () => {
     const d = decideBrowser(emptyBrowser(), "signin-failed", { now: "2026-10-17T10:00:00.000Z" });
     assert.equal(d.next.consecutiveBad, 1);
-    assert.match(describeReason("signin-failed").fix, /\/auth\/test-sign-in/);
+    // Stale branches are skipped before the run, so the fix leads with the
+    // environment, not the branch.
+    const fix = describeReason("signin-failed").fix;
+    assert.match(fix, /^the runner's one-time sign-in link.*dev Supabase project/);
+    assert.match(fix, /still exists and is approved/);
+    assert.ok(
+      fix.indexOf("dev Supabase project") < fix.indexOf("check that the PR's branch"),
+      "the branch check comes last, for when GitHub couldn't be asked",
+    );
+    assert.doesNotMatch(fix, /rebase/i);
     assert.match(
       describeReason("preflight:signin-key-mode").fix,
       /dev-supabase-admin\.env, mode 600/,
@@ -408,6 +419,36 @@ describe("preflight", () => {
   });
 });
 
+describe("chromeIsRunning", () => {
+  function spawnStub(result) {
+    const calls = [];
+    const spawn = (cmd, args) => {
+      calls.push([cmd, ...args]);
+      return result;
+    };
+    return { spawn, calls };
+  }
+
+  it("asks pgrep about this user's Chrome only", () => {
+    // Another account's Chrome (fast user switching) must not count: the
+    // runner can't reach its extension.
+    const { spawn, calls } = spawnStub({ status: 0 });
+    assert.equal(chromeIsRunning(spawn, 501), true);
+    assert.deepEqual(calls, [["pgrep", "-u", "501", "-x", "Google Chrome"]]);
+  });
+
+  it("defaults to the current user's uid", () => {
+    const { spawn, calls } = spawnStub({ status: 0 });
+    chromeIsRunning(spawn);
+    assert.equal(calls[0][2], String(process.getuid()));
+  });
+
+  it("is false when no match is found or pgrep can't run", () => {
+    assert.equal(chromeIsRunning(spawnStub({ status: 1 }).spawn, 501), false);
+    assert.equal(chromeIsRunning(spawnStub({ error: new Error("ENOENT") }).spawn, 501), false);
+  });
+});
+
 describe("browser-health CLI end to end (stub zoho-cli, PATH-stubbed pgrep)", () => {
   let dir;
   let bin;
@@ -461,7 +502,10 @@ describe("browser-health CLI end to end (stub zoho-cli, PATH-stubbed pgrep)", ()
 
   function stubPgrep(code) {
     const p = join(bin, "pgrep");
-    writeFileSync(p, `#!/bin/bash\n[[ "$1 $2" == "-x Google Chrome" ]] || exit 9\nexit ${code}\n`);
+    writeFileSync(
+      p,
+      `#!/bin/bash\n[[ "$*" == "-u ${process.getuid()} -x Google Chrome" ]] || exit 9\nexit ${code}\n`,
+    );
     chmodSync(p, 0o755);
   }
 

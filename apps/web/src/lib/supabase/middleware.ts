@@ -15,6 +15,7 @@ const PUBLIC_ROUTES = [
   "/auth/test-sign-in",
   "/forgot-password",
   "/reset-password",
+  // `config.matcher` in `middleware.ts` already skips these two, so the entries are a backstop.
   "/api/health",
   "/api/mcp",
   "/api/webhooks",
@@ -43,13 +44,16 @@ function isPublicRoute(pathname: string): boolean {
   return PUBLIC_ROUTES.some((route) => pathname === route || pathname.startsWith(route + "/"));
 }
 
+// @supabase/ssr names its cookies `sb-<project ref>-auth-token` (chunked as `.0`, `.1`…, plus
+// `-code-verifier` during PKCE) unless a client sets `cookieOptions.name`. None of ours do
+// (`client.ts`, `server.ts`, this file). If one ever does, change this check with it, or every
+// signed-in request is treated as signed out.
+function hasSupabaseCookie(request: NextRequest): boolean {
+  return request.cookies.getAll().some(({ name }) => name.startsWith("sb-"));
+}
+
 export async function updateSession(request: NextRequest) {
   const { pathname } = request.nextUrl;
-
-  // Fast-path: MCP uses Bearer token auth, skip Supabase session lookup
-  if (pathname === "/api/mcp" || pathname.startsWith("/api/mcp/")) {
-    return NextResponse.next({ request });
-  }
 
   // The landing page's own route is reached only through the rewrite of signed-out `/` below,
   // which doesn't pass through middleware again. A direct visit goes to `/`, so the page has a
@@ -72,37 +76,40 @@ export async function updateSession(request: NextRequest) {
     request,
   });
 
-  const supabase = createServerClient<Database>(
-    env.NEXT_PUBLIC_SUPABASE_URL,
-    env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-    {
-      global: {
-        headers: { "x-drafto-client": "web" },
-      },
-      cookies: {
-        getAll() {
-          return request.cookies.getAll();
+  // Without a Supabase cookie there is no session, so getUser() could only return no user. Skip
+  // building the client: crawlers, bot probes and signed-out visitors take this path, and each
+  // middleware run bills Vercel Active CPU. They then take the same signed-out branches below.
+  const supabase = hasSupabaseCookie(request)
+    ? createServerClient<Database>(
+        env.NEXT_PUBLIC_SUPABASE_URL,
+        env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+        {
+          global: {
+            headers: { "x-drafto-client": "web" },
+          },
+          cookies: {
+            getAll() {
+              return request.cookies.getAll();
+            },
+            setAll(cookiesToSet, headers) {
+              pendingCookies = cookiesToSet;
+              pendingHeaders = { ...pendingHeaders, ...headers };
+              cookiesToSet.forEach(({ name, value }) => {
+                request.cookies.set(name, value);
+              });
+              supabaseResponse = NextResponse.next({
+                request,
+              });
+              cookiesToSet.forEach(({ name, value, options }) => {
+                supabaseResponse.cookies.set(name, value, options);
+              });
+            },
+          },
         },
-        setAll(cookiesToSet, headers) {
-          pendingCookies = cookiesToSet;
-          pendingHeaders = { ...pendingHeaders, ...headers };
-          cookiesToSet.forEach(({ name, value }) => {
-            request.cookies.set(name, value);
-          });
-          supabaseResponse = NextResponse.next({
-            request,
-          });
-          cookiesToSet.forEach(({ name, value, options }) => {
-            supabaseResponse.cookies.set(name, value, options);
-          });
-        },
-      },
-    },
-  );
+      )
+    : null;
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = supabase ? (await supabase.auth.getUser()).data.user : null;
 
   // Public routes: allow access regardless of auth state
   if (isPublicRoute(pathname)) {
@@ -126,8 +133,8 @@ export async function updateSession(request: NextRequest) {
     return landingResponse;
   }
 
-  // No user: redirect to login
-  if (!user) {
+  // No user: redirect to login. (A user implies a client; the check just narrows the type.)
+  if (!user || !supabase) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/login";
     return NextResponse.redirect(loginUrl);

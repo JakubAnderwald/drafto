@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   derivePlatforms,
+  deriveVerifyPlatforms,
   platformsToLanes,
   assertBetaOnly,
   resolveLaneRoot,
@@ -72,6 +73,103 @@ describe("derivePlatforms", () => {
       desktop: false,
       web: false,
     });
+  });
+});
+
+// The verification stage's variant (ADR-0053, 5C): packages/shared/ reaches the
+// web app too. derivePlatforms above must stay exactly as it is.
+describe("deriveVerifyPlatforms", () => {
+  it("counts a packages/shared/-only diff as web, flagged webViaShared", () => {
+    assert.deepEqual(deriveVerifyPlatforms("packages/shared/src/x.ts\n"), {
+      mobile: true,
+      desktop: true,
+      web: true,
+      webViaShared: true,
+    });
+    // The plain derivation of the same diff is unchanged.
+    assert.deepEqual(derivePlatforms("packages/shared/src/x.ts\n"), {
+      mobile: true,
+      desktop: true,
+      web: false,
+    });
+  });
+
+  it("is web without webViaShared when apps/web/ changed too (either order)", () => {
+    for (const diff of [
+      "apps/web/a.ts\npackages/shared/b.ts",
+      "packages/shared/b.ts\napps/web/a.ts",
+      "apps/web/a.ts",
+    ]) {
+      assert.equal(deriveVerifyPlatforms(diff).web, true, diff);
+      assert.equal(deriveVerifyPlatforms(diff).webViaShared, false, diff);
+    }
+  });
+
+  it("agrees with derivePlatforms on mobile and desktop, and on web without shared", () => {
+    for (const diff of [
+      "",
+      "scripts/x.mjs\ndocs/y.md",
+      "apps/mobile/a.ts",
+      "apps/desktop/a.ts",
+      "apps/web/a.ts\napps/mobile/b.ts\ndocs/x.md\n",
+      "packages/shared/a.ts\napps/mobile/b.ts",
+      "  packages/shared/padded.ts  ",
+    ]) {
+      const plain = derivePlatforms(diff);
+      const v = deriveVerifyPlatforms(diff);
+      assert.equal(v.mobile, plain.mobile, diff);
+      assert.equal(v.desktop, plain.desktop, diff);
+      if (!v.webViaShared) assert.equal(v.web, plain.web, diff);
+      assert.deepEqual(Object.keys(v), ["mobile", "desktop", "web", "webViaShared"]);
+    }
+    assert.equal(deriveVerifyPlatforms("  packages/shared/padded.ts  ").webViaShared, true);
+  });
+
+  it("is all-false for an empty, missing or unrelated diff", () => {
+    const none = { mobile: false, desktop: false, web: false, webViaShared: false };
+    assert.deepEqual(deriveVerifyPlatforms(""), none);
+    assert.deepEqual(deriveVerifyPlatforms(undefined), none);
+    // A path that merely contains the words, not under packages/shared/.
+    assert.deepEqual(deriveVerifyPlatforms("docs/packages/shared/x.md\nscripts/x.mjs"), none);
+  });
+});
+
+describe("derive-platforms CLI", () => {
+  const CLI = fileURLToPath(new URL("../lib/dispatch-release.mjs", import.meta.url));
+  const run = (args, input) => spawnSync("node", [CLI, ...args], { encoding: "utf8", input });
+
+  it("prints derivePlatforms, byte for byte as before, without --verify", () => {
+    for (const diff of ["packages/shared/a.ts\n", "apps/web/a.ts\napps/mobile/b.ts\n", ""]) {
+      const r = run(["derive-platforms", "--diff-file", "-"], diff);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout, JSON.stringify(derivePlatforms(diff), null, 2) + "\n");
+      assert.doesNotMatch(r.stdout, /webViaShared/);
+    }
+    const r = run(["derive-platforms", "--diff", "packages/shared/a.ts"]);
+    assert.equal(r.stdout, '{\n  "mobile": true,\n  "desktop": true,\n  "web": false\n}\n');
+  });
+
+  it("prints the verification variant with --verify, wherever the flag sits", () => {
+    for (const args of [
+      ["derive-platforms", "--verify", "--diff-file", "-"],
+      ["derive-platforms", "--diff-file", "-", "--verify"],
+    ]) {
+      const r = run(args, "packages/shared/a.ts\n");
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(JSON.parse(r.stdout), {
+        mobile: true,
+        desktop: true,
+        web: true,
+        webViaShared: true,
+      });
+    }
+  });
+
+  it("refuses --verify on any other subcommand (a dispatch never builds from it)", () => {
+    const r = run(["dispatch", "--verify", "--platforms", "mobile", "--dry-run"]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /--verify is only valid with derive-platforms/);
+    assert.equal(r.stdout, "");
   });
 });
 

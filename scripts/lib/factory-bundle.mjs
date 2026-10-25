@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Build a per-issue context bundle for the dark-factory agent.
 //
-// Five kinds today:
+// The kinds:
 //
 //   factory_plan       — for `factory-agent.sh --plan`. Contains the issue
 //                        body + comments, the parsed spec contract sections,
@@ -34,7 +34,22 @@
 //                        platforms derived from it, plus the facts bash
 //                        already knows (preview URL, dispatched beta lanes,
 //                        advisory checks). The model writes the human test
-//                        scenario and posts the In Test comment.
+//                        scenario and posts the In Test comment. With
+//                        `stage: "testing"` the card has just entered the
+//                        Testing column (ADR-0053) and the comment says the
+//                        factory is verifying it now. A commit with a
+//                        verification round gets the verification platforms,
+//                        where `webViaShared: true` marks web reached only
+//                        through packages/shared/.
+//
+//   factory_browser_run — for `factory-agent.sh --browser` (ADR-0051): the
+//                        Web section of the scenario for the locked-down
+//                        Chrome runner.
+//
+//   factory_verify_shell — for the verification stage's shell lane
+//                        (verify-lane.mjs, ADR-0053): every scenario section
+//                        for the head, the changed files and platforms, the
+//                        preview origin and the macOS --preflight scripts.
 //
 // Pure functions for unit tests, plus a CLI that reads a single JSON object
 // on stdin and prints the resulting bundle JSON to stdout — mirrors
@@ -72,6 +87,7 @@
 
 import { readAccountFile } from "./browser-report.mjs";
 import { isMainModule } from "./is-main.mjs";
+import { fenceStep } from "./markdown-fence.mjs";
 import { parseIssueFooter } from "./parse-issue-footer.mjs";
 
 // Marker the factory's planning prompt writes onto the plan comment. The
@@ -729,7 +745,28 @@ export function buildFactoryReviewBundle({
 // from that diff, and the facts bash already knows (preview URL, dispatched
 // beta lanes, advisory checks, CodeRabbit coverage note) so the model never
 // invents a URL or build number.
+//
+// `stage` says where the card is while the scenario is written: "intest" (the
+// card is In Test, a human tests it now) or "testing" (it just entered the
+// Testing column, ADR-0053: the factory verifies it first and moves it to In
+// Test with a verification report). Only the comment's wording changes; any
+// other value reads as "intest".
+export const INTEST_STAGES = Object.freeze(["intest", "testing"]);
+
+// Pure: a bundle's `platforms`, each of <keys> coerced to a boolean in that
+// order, plus `webViaShared: true` when web is true only because the diff
+// changes packages/shared/ (the verification variant, derive-platforms
+// --verify, ADR-0053's 5C). The flag is left out otherwise, so a bundle built
+// from the plain platforms is exactly what it was before the variant existed.
+export function shapePlatforms(platforms, keys) {
+  const out = {};
+  for (const k of keys) out[k] = Boolean(platforms?.[k]);
+  if (out.web && platforms?.webViaShared === true) out.webViaShared = true;
+  return out;
+}
+
 export function buildFactoryInTestBundle({
+  stage = "intest",
   issue,
   approvedPlan,
   priorPr = null,
@@ -756,6 +793,7 @@ export function buildFactoryInTestBundle({
   const diff = truncateDiff(prDiff);
   return {
     kind: "factory_intest",
+    stage: INTEST_STAGES.includes(stage) ? stage : "intest",
     issue: shapeIssue(issue),
     spec,
     parityOverride: effectiveParityOverride(issue.labels, spec),
@@ -792,11 +830,7 @@ export function buildFactoryInTestBundle({
       .filter(Boolean),
     // Derived from the diff, NOT from the issue's "Affected platforms"
     // checkboxes: the scenario must cover what actually changed.
-    platforms: {
-      mobile: Boolean(platforms?.mobile),
-      desktop: Boolean(platforms?.desktop),
-      web: Boolean(platforms?.web),
-    },
+    platforms: shapePlatforms(platforms, ["mobile", "desktop", "web"]),
     previewUrl: typeof previewUrl === "string" ? previewUrl : "",
     advisory: typeof advisory === "string" ? advisory : "",
     // The CodeRabbit CLI lane's one-line coverage note (ADR-0036) — "CodeRabbit
@@ -830,7 +864,7 @@ export function buildFactoryInTestBundle({
 
 // ── Browser runner bundle (ADR-0051) ───────────────────────────────────────
 // The locked-down Chrome runner gets only what it needs to run the Web section
-// of the factory's own In Test scenario on one per-commit preview: the steps,
+// of the factory's own test scenario on one per-commit preview: the steps,
 // the target, the test account and the pinned browser. No issue body, no
 // comments and no diff — the runner can't act on what it isn't given.
 
@@ -859,28 +893,21 @@ export function selectScenarioComment(comments, headSha) {
   return matches.reduce((a, b) => (String(b.createdAt) > String(a.createdAt) ? b : a));
 }
 
-// The body of the scenario's `### Web` section: from that heading to the next
-// heading of the same or a higher level, without the heading line itself.
-// The scenario writer is told to use exactly that heading (factory-intest-
-// prompt.md), so anything else means the scenario has no web steps to run.
-export function extractWebSection(body) {
-  if (typeof body !== "string") return null;
-  const lines = body.split("\n");
-  const start = lines.findIndex((l) => /^###\s+Web\s*$/.test(l.trim()));
-  if (start === -1) return null;
+// The text of the section whose heading is at lines[start]: up to the next
+// heading of level 1-3 or a factory marker line, without the heading line
+// itself, trimmed; null when nothing is left.
+function sectionText(lines, start) {
   let end = lines.length;
   // A web step in a note-taking app often quotes Markdown to type ("# My
   // heading" inside a fence); a heading inside a fenced block is content, not
-  // the end of the section.
+  // the end of the section. Fences close by CommonMark's rule
+  // (markdown-fence.mjs), so a quoted ```js block inside a ````md one doesn't
+  // end it early.
   let fence = null;
   for (let i = start + 1; i < lines.length; i++) {
-    const opener = /^\s*(`{3,}|~{3,})/.exec(lines[i]);
-    if (opener) {
-      if (fence === null) fence = opener[1][0];
-      else if (opener[1][0] === fence) fence = null;
-      continue;
-    }
-    if (fence !== null) continue;
+    const wasOpen = fence !== null;
+    fence = fenceStep(fence, lines[i]);
+    if (wasOpen || fence !== null) continue;
     if (/^#{1,3}\s/.test(lines[i]) || lines[i].trim().startsWith("<!-- drafto-factory")) {
       end = i;
       break;
@@ -893,6 +920,68 @@ export function extractWebSection(body) {
   return text || null;
 }
 
+// The body of the scenario's own `### Web` section: from that heading to the
+// next heading of the same or a higher level, without the heading line itself.
+// The scenario writer is told to use exactly that heading (factory-intest-
+// prompt.md), so anything else means the scenario has no web steps to run.
+// It is the "Web" entry of extractScenarioSections, so it reads only the
+// `## Test scenario` part when the body has one: a `### Web` under "How to get
+// a build" (the preview link) is build notes, not steps, and the browser
+// runner must never run it as its scenario. The first such section wins.
+export function extractWebSection(body) {
+  return extractScenarioSections(body).find((s) => s.heading === "Web")?.text ?? null;
+}
+
+const SCENARIO_HEADING = /^##\s+Test scenario\b/i;
+
+// Every `###` section of a scenario comment, in order: [{ heading, text }].
+// The scenario writer puts one `###` heading per platform under
+// `## Test scenario` (factory-intest-prompt.md), so only that part is read
+// when the body has one — a `###` under "How to get a build" is not a test
+// section — and the whole body when it has none. A heading counts only at the
+// start of its line, the same rule that ends a section, so sections never
+// overlap, and a section with no text is left out. Headings inside fenced
+// blocks are content (a quoted heading neither starts nor ends a section),
+// and nothing after the first factory marker line is read.
+// verify-report.mjs turns the non-Web sections into the human's manual steps;
+// extractWebSection hands the Web one to the browser runner.
+export function extractScenarioSections(body) {
+  if (typeof body !== "string") return [];
+  const lines = body.split("\n");
+  // Indices of lines outside fenced blocks, up to the first marker line.
+  const live = [];
+  let fence = null;
+  for (let i = 0; i < lines.length; i++) {
+    const wasOpen = fence !== null;
+    fence = fenceStep(fence, lines[i]);
+    if (wasOpen || fence !== null) continue;
+    if (lines[i].trim().startsWith("<!-- drafto-factory")) break;
+    live.push(i);
+  }
+  const scoped = live.some((i) => SCENARIO_HEADING.test(lines[i]));
+  let inScope = !scoped;
+  const sections = [];
+  for (const i of live) {
+    if (scoped && /^#{1,2}\s/.test(lines[i])) {
+      inScope = SCENARIO_HEADING.test(lines[i]);
+      continue;
+    }
+    if (!inScope) continue;
+    const h = /^###\s+(.*\S)\s*$/.exec(lines[i]);
+    if (!h) continue;
+    const text = sectionText(lines, i);
+    if (text) sections.push({ heading: h[1], text });
+  }
+  return sections;
+}
+
+// The runner's uses (FACTORY_BROWSER_KINDS in factory-agent.sh). Both run the
+// same Web steps the same way; only where bash sends the report differs:
+//   intest — the card is In Test; bash posts the report as its own comment.
+//   verify — the card is in the Testing column (ADR-0053); bash posts nothing,
+//            and the report becomes the Web lane of the verification report.
+export const BROWSER_RUN_KINDS = Object.freeze(["intest", "verify"]);
+
 export function buildFactoryBrowserRunBundle({
   runKind = "intest",
   issue,
@@ -904,7 +993,7 @@ export function buildFactoryBrowserRunBundle({
   deviceId,
   nowIso,
 } = {}) {
-  if (runKind !== "intest")
+  if (!BROWSER_RUN_KINDS.includes(runKind))
     throw new Error(`buildFactoryBrowserRunBundle: unknown runKind ${runKind}`);
   if (!issue || !Number.isInteger(issue.number)) {
     throw new Error("buildFactoryBrowserRunBundle: issue.number is required");
@@ -940,12 +1029,97 @@ export function buildFactoryBrowserRunBundle({
             webStepsEnveloped: envelopeBody(webSteps, "scenario-web"),
           }
         : null,
+    // Why `scenario` is null, for bash (the verify lane records it as
+    // `skipped:<reason>`, which the verification report reads as a sentence):
+    // "no-scenario" when there is no factory scenario for this commit (none, or
+    // only the fallback comment), "no-web-steps" when it has no Web section.
+    skipReason: scenario ? (webSteps ? null : "no-web-steps") : "no-scenario",
     // Email only. The runner signs in by opening a one-time link that bash
     // mints after this bundle is built (browser-signin.mjs) and sets here; it
     // never gets the password, which it couldn't type on a preview anyway.
     account: { email: readAccountFile(accountFile).email, signInUrl: null },
     browser: { deviceId },
     qaTag: `factory-${issue.number}-${String(headSha).slice(0, 7)}`,
+    nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
+  };
+}
+
+// ── Verification shell lane bundle (ADR-0053) ──────────────────────────────
+// The shell lane (verify-lane.mjs) runs in a fresh detached worktree of the
+// PR's head with Bash, Read, Grep and Glob, and reaches the per-commit preview
+// only through the `preview-curl` wrapper. It gets the factory's own scenario
+// for exactly this commit (every section, enveloped: it runs the command-type
+// steps and leaves `### Web` to the browser lane), the changed files, the
+// platforms derived from the diff and the macOS scenario scripts it may run
+// with --preflight. No issue body, no comments beyond the scenario, no diff
+// (it has the worktree), and no secret of any kind: the bypass secret and the
+// preview session stay in the supervisor's curl config.
+
+const PREVIEW_ORIGIN_RE = /^https:\/\/drafto-[a-z0-9-]+-jakubanderwalds-projects\.vercel\.app$/;
+const QA_TAG_RE = /^[a-z0-9][a-z0-9-]{2,60}$/;
+const MAX_VERIFY_FILES = 300;
+
+export function buildFactoryVerifyShellBundle({
+  issue,
+  comments = [],
+  headSha,
+  prNumber = null,
+  platforms = {},
+  files = [],
+  previewOrigin = "",
+  qaTag,
+  preflightScripts = [],
+  timeLimitMin = null,
+  nowIso,
+} = {}) {
+  if (!issue || !Number.isInteger(issue.number)) {
+    throw new Error("buildFactoryVerifyShellBundle: issue.number is required");
+  }
+  if (typeof headSha !== "string" || !/^[0-9a-f]{40}$/.test(headSha)) {
+    throw new Error("buildFactoryVerifyShellBundle: headSha must be a full 40-hex SHA");
+  }
+  const origin = typeof previewOrigin === "string" ? previewOrigin : "";
+  if (origin && !PREVIEW_ORIGIN_RE.test(origin)) {
+    throw new Error(`buildFactoryVerifyShellBundle: not a Drafto preview origin: ${origin}`);
+  }
+  if (typeof qaTag !== "string" || !QA_TAG_RE.test(qaTag)) {
+    throw new Error("buildFactoryVerifyShellBundle: qaTag must be a short lowercase token");
+  }
+  const scenario = selectScenarioComment(comments, headSha);
+  const sections = scenario ? extractScenarioSections(scenario.body) : [];
+  const fileList = (Array.isArray(files) ? files : String(files ?? "").split("\n"))
+    .map((f) => String(f ?? "").trim())
+    .filter(Boolean);
+  return {
+    kind: "factory_verify_shell",
+    issue: { number: issue.number, title: typeof issue.title === "string" ? issue.title : "" },
+    headSha,
+    prNumber: Number.isInteger(prNumber) ? prNumber : null,
+    // Derived from the diff, like the scenario writer's: the lane checks what
+    // actually changed. factory-agent.sh passes the verification variant, so
+    // webViaShared can appear (see shapePlatforms).
+    platforms: shapePlatforms(platforms, ["web", "mobile", "desktop"]),
+    prFiles: fileList.slice(0, MAX_VERIFY_FILES),
+    prFilesTruncated: fileList.length > MAX_VERIFY_FILES,
+    // null when there is no OWNER scenario carrying this commit's full-SHA
+    // marker (or only the fallback): the lane then runs targeted tests for the
+    // changed files and says so.
+    scenario: scenario
+      ? {
+          commentId: scenario.id ?? null,
+          url: `https://github.com/JakubAnderwald/drafto/issues/${issue.number}#issuecomment-${scenario.id}`,
+          sections: sections.map((s) =>
+            envelopeBody(`### ${s.heading}\n\n${s.text}`, "scenario-section"),
+          ),
+        }
+      : null,
+    // The per-commit preview, reached only through `preview-curl <path>`.
+    preview: origin ? { origin } : null,
+    qaTag,
+    preflightScripts: (Array.isArray(preflightScripts) ? preflightScripts : [])
+      .map((p) => String(p ?? ""))
+      .filter((p) => /^apps\/desktop\/e2e\/in-test\/scenarios\/[A-Za-z0-9._-]+\.sh$/.test(p)),
+    timeLimitMin: Number.isInteger(timeLimitMin) && timeLimitMin > 0 ? timeLimitMin : null,
     nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
   };
 }
@@ -1008,6 +1182,7 @@ async function main() {
     });
   } else if (input.kind === "factory_intest") {
     bundle = buildFactoryInTestBundle({
+      stage: input.stage,
       issue: input.issue,
       approvedPlan: input.approvedPlan,
       priorPr: input.priorPr,
@@ -1047,6 +1222,20 @@ async function main() {
       targetUrl: input.targetUrl,
       accountFile: input.accountFile,
       deviceId: input.deviceId,
+      nowIso: input.nowIso,
+    });
+  } else if (input.kind === "factory_verify_shell") {
+    bundle = buildFactoryVerifyShellBundle({
+      issue: input.issue,
+      comments: input.comments,
+      headSha: input.headSha,
+      prNumber: input.prNumber,
+      platforms: input.platforms,
+      files: input.files,
+      previewOrigin: input.previewOrigin,
+      qaTag: input.qaTag,
+      preflightScripts: input.preflightScripts,
+      timeLimitMin: input.timeLimitMin,
       nowIso: input.nowIso,
     });
   } else {

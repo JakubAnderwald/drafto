@@ -21,6 +21,13 @@
 //        platforms. apps/mobile/→mobile, apps/desktop/→desktop, apps/web/→web,
 //        packages/shared/→both native (shared ships to both apps). web is
 //        informational only — Vercel auto-deploys main, nothing to dispatch.
+//   deriveVerifyPlatforms(diffFiles) → {mobile, desktop, web, webViaShared} (pure)
+//        The pre-In-Test verification stage's variant (ADR-0053, 5C): the same
+//        mobile and desktop, but web is also true when packages/shared/ changed,
+//        because the web app imports it too. webViaShared says web came ONLY
+//        through packages/shared/. Verification alone uses it; beta dispatch,
+//        the In Test platforms, the parity check and the preview gate keep
+//        derivePlatforms.
 //   platformsToLanes(platforms) → [{id, cwd, command, args}]   (pure)
 //        mobile → apps/mobile `pnpm release:beta:all` (iOS TestFlight + Android
 //        internal); desktop → apps/desktop `pnpm release:beta` (macOS TestFlight).
@@ -52,7 +59,9 @@
 //
 // CLI (called from scripts/factory-agent.sh --release / --watch, and from
 // scripts/nightly-support.sh Phase 4):
-//   derive-platforms (--diff-file <path|-> | --diff <str>)
+//   derive-platforms (--diff-file <path|-> | --diff <str>) [--verify]
+//        --verify prints deriveVerifyPlatforms instead (factory-agent.sh's
+//        verification stage); without it the output is derivePlatforms'.
 //   dispatch (--diff-file <path|-> | --platforms mobile,desktop) [--repo-root <dir>]
 //           [--desktop-root <dir>] [--release-issues <n,n,…>]
 //        --release-issues becomes DRAFTO_RELEASE_ISSUES in the lane env, so the
@@ -133,6 +142,27 @@ export function derivePlatforms(diffFiles) {
     }
   }
   return { mobile, desktop, web };
+}
+
+// Pure: the verification stage's platforms (ADR-0053, 5C). derivePlatforms
+// maps packages/shared/ to the two native apps only, because nothing is
+// dispatched for web; but the web app imports packages/shared/ too, so a
+// shared-only PR does change what the Vercel preview runs, and the browser
+// lane should walk it. web is true when apps/web/ OR packages/shared/ changed;
+// webViaShared is true when only packages/shared/ brought it in, so the
+// scenario writer and the report can say why a browser run happened on a PR
+// with no apps/web/ files.
+export function deriveVerifyPlatforms(diffFiles) {
+  const plain = derivePlatforms(diffFiles);
+  const shared = String(diffFiles ?? "")
+    .split("\n")
+    .some((l) => /^packages\/shared\//.test(l.trim()));
+  return {
+    mobile: plain.mobile,
+    desktop: plain.desktop,
+    web: plain.web || shared,
+    webViaShared: shared && !plain.web,
+  };
 }
 
 // Pure: beta lanes for the changed native platforms. web is intentionally absent
@@ -469,14 +499,22 @@ function parsePlatforms(csv) {
 
 async function main(argv) {
   const [sub, ...rawRest] = argv;
-  // parseFlags requires a value for every flag by design, so pull the one bare
-  // boolean out before handing it the rest.
+  // parseFlags requires a value for every flag by design, so pull the bare
+  // booleans out before handing it the rest.
   const dryRun = rawRest.includes("--dry-run");
-  const rest = rawRest.filter((a) => a !== "--dry-run");
+  const verify = rawRest.includes("--verify");
+  const rest = rawRest.filter((a) => a !== "--dry-run" && a !== "--verify");
   const { flags } = parseFlags(rest);
+  // Only derive-platforms has a verification variant: a dispatch must never
+  // build from it (web is never dispatched, but a typo should fail loudly).
+  if (verify && sub !== "derive-platforms") {
+    throw new Error("--verify is only valid with derive-platforms");
+  }
   switch (sub) {
-    case "derive-platforms":
-      return derivePlatforms(await readDiff(flags));
+    case "derive-platforms": {
+      const diff = await readDiff(flags);
+      return verify ? deriveVerifyPlatforms(diff) : derivePlatforms(diff);
+    }
     case "dispatch": {
       const platforms = flags.platforms ? parsePlatforms(flags.platforms) : undefined;
       const diffFiles = platforms ? undefined : await readDiff(flags);
@@ -529,7 +567,7 @@ async function main(argv) {
     case "-h":
     case undefined:
       process.stdout.write(
-        "Usage: dispatch-release.mjs <derive-platforms (--diff-file <path|-> | --diff <str>)|" +
+        "Usage: dispatch-release.mjs <derive-platforms (--diff-file <path|-> | --diff <str>) [--verify]|" +
           "dispatch (--diff-file <path|-> | --platforms mobile,desktop) [--repo-root <dir>] " +
           "[--desktop-root <dir>] [--log-dir <dir>] [--log-key <key>] [--release-issues <n,n>] [--dry-run]|" +
           "dispatch-premerge (same flags) --issue <n> [--pr <n>] [--sha <sha>] [--only <ids>]>\n",

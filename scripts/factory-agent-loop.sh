@@ -6,7 +6,8 @@
 # Modes (per scripts/factory-agent.sh):
 #   --plan       Ready → Plan Review (or Blocked). Real work in every phase.
 #   --implement  In Progress → In Review. Phase A: no-op (logged + exit 0).
-#   --watch      In Review → In Test. Phase B+ feature; Phase A: no-op.
+#   --watch      In Review → In Test (via Testing with FACTORY_VERIFY=1,
+#                ADR-0053). Phase B+ feature; Phase A: no-op.
 #   --release    Approved → Released. Phase B+: migration gate + squash-merge
 #                of the green PR a human dragged to Approved; Phase A: no-op.
 #

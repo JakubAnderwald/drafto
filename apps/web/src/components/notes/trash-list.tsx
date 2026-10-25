@@ -3,6 +3,7 @@
 import { use, useState, useCallback } from "react";
 import { formatRelativeTime } from "@drafto/shared";
 import { handleAuthError } from "@/lib/handle-auth-error";
+import { displayNoteTitle } from "@/lib/note-title";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
@@ -129,7 +130,9 @@ export function TrashList({
                 key={note.id}
                 className="bg-bg-muted hover:bg-bg-subtle rounded-lg px-3 py-2.5 transition-colors duration-[var(--transition-fast)]"
               >
-                <p className="text-fg truncate text-sm font-medium">{note.title}</p>
+                <p className="text-fg truncate text-sm font-medium">
+                  {displayNoteTitle(note.title)}
+                </p>
                 <div className="text-fg-muted mt-1 flex items-center gap-2 text-xs">
                   <Badge>{getNotebookName(note.notebook_id)}</Badge>
                   <span>
