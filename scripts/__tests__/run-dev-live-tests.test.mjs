@@ -409,17 +409,23 @@ describe("run-dev-live-tests refuses unattended and test-runner sessions", () =>
     // fail with "is missing" instead of the refusal.
     withFixture(
       (fx) => {
-        for (const env of [{ DRAFTO_UNATTENDED: "1" }, { NODE_TEST_CONTEXT: "child-v8" }]) {
+        // Any value of the marker refuses, so an unexpected one fails closed.
+        for (const env of [
+          { DRAFTO_UNATTENDED: "1" },
+          { DRAFTO_UNATTENDED: "true" },
+          { DRAFTO_UNATTENDED: "0" },
+          { NODE_TEST_CONTEXT: "child-v8" },
+        ]) {
           const r = runCli(fx, ["--dry-run"], { keyFileFlag: false, env });
           assert.equal(r.status, 1, r.all);
           assert.match(r.stderr, /run-dev-live-tests: refused: /);
           assert.doesNotMatch(r.stderr, /is missing/);
           assert.equal(r.stdout, "");
         }
-        // Any other value of the marker is not unattended.
+        // An empty marker is no marker: the run goes on and finds no key.
         const r = runCli(fx, ["--dry-run"], {
           keyFileFlag: false,
-          env: { DRAFTO_UNATTENDED: "0" },
+          env: { DRAFTO_UNATTENDED: "" },
         });
         assert.match(r.stderr, /is missing/);
       },
@@ -457,11 +463,13 @@ describe("run-dev-live-tests refuses unattended and test-runner sessions", () =>
 
   it("refusalReason names the marker and the test runner", () => {
     assert.equal(refusalReason({ env: {}, execArgv: [] }), null);
-    assert.equal(refusalReason({ env: { DRAFTO_UNATTENDED: "0" }, execArgv: [] }), null);
-    assert.match(
-      refusalReason({ env: { DRAFTO_UNATTENDED: "1" }, execArgv: [] }),
-      /DRAFTO_UNATTENDED=1/,
-    );
+    assert.equal(refusalReason({ env: { DRAFTO_UNATTENDED: "" }, execArgv: [] }), null);
+    for (const value of ["1", "0", "true"]) {
+      assert.match(
+        refusalReason({ env: { DRAFTO_UNATTENDED: value }, execArgv: [] }),
+        /DRAFTO_UNATTENDED is set/,
+      );
+    }
     assert.match(
       refusalReason({ env: { NODE_TEST_CONTEXT: "child" }, execArgv: [] }),
       /node --test/,

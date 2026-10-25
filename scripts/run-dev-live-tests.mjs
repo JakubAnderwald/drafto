@@ -154,9 +154,11 @@ export function parseArgs(argv, defaults = defaultPaths()) {
  * makes the file its own main module).
  */
 export function refusalReason({ env = process.env, execArgv = process.execArgv } = {}) {
-  if (env[UNATTENDED_VAR] === "1") {
+  // Any value counts: an unexpected one ("true", "yes") must fail closed, not
+  // let an unattended session through.
+  if (env[UNATTENDED_VAR]) {
     return (
-      `${UNATTENDED_VAR}=1: this is an unattended session, and the dev live tests ` +
+      `${UNATTENDED_VAR} is set: this is an unattended session, and the dev live tests ` +
       "run only from interactive sessions. Ask the operator to run pnpm test:live:supabase."
     );
   }
