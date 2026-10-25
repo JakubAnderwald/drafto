@@ -183,7 +183,7 @@ export function describeReason(reason, { accountFile = DEFAULT_ACCOUNT_FILE, at 
   if (r === "preflight:chrome-not-running") {
     return {
       label: "Chrome not running",
-      fix: "Google Chrome isn't running on the Mac mini: open Chrome on the Mac mini and leave it running.",
+      fix: "Google Chrome isn't running in the factory's macOS account on the Mac mini (another account's Chrome doesn't count): open Chrome in that account and leave it running.",
     };
   }
   if (r.startsWith("preflight:account-")) {
@@ -326,9 +326,15 @@ export function preflight({ accountFile = DEFAULT_ACCOUNT_FILE, signInKeyFile, i
   return null;
 }
 
-// A pgrep that can't run counts as "not running": skipping a run is the safe side.
-export function chromeIsRunning(spawn = spawnSync) {
-  const res = spawn("pgrep", ["-x", "Google Chrome"], { encoding: "utf8", timeout: 10_000 });
+// Only this user's Chrome counts. With fast user switching another account's
+// Chrome shows up in a bare pgrep, but the runner can only reach the Claude in
+// Chrome extension in its own user's Chrome. A pgrep that can't run counts as
+// "not running": skipping a run is the safe side.
+export function chromeIsRunning(spawn = spawnSync, uid = process.getuid()) {
+  const res = spawn("pgrep", ["-u", String(uid), "-x", "Google Chrome"], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
   return !res.error && res.status === 0;
 }
 
