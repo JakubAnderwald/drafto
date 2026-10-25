@@ -3,7 +3,13 @@ import { createClient } from "@supabase/supabase-js";
 import type { Database } from "@drafto/shared";
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { installCryptoRandom } from "@/lib/crypto-random";
 import { supabaseUrl, supabaseAnonKey } from "./config";
+
+// Before any auth call: supabase-js draws the PKCE `code_verifier` from it, and
+// hashes it into an S256 challenge with `crypto.subtle` (ADR-0059). `subtle`
+// lands a moment later, once the native SHA-256 passes its self-test.
+void installCryptoRandom();
 
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error(
