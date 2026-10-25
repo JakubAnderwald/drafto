@@ -376,6 +376,35 @@ describe("NoteList", () => {
     expect(screen.getByLabelText("Actions for Second Note")).toBeInTheDocument();
   });
 
+  it("shows an empty-titled note as Untitled, in the row and its actions label", async () => {
+    const trigger = nextTrigger();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve([{ id: "note-blank", title: "", updated_at: new Date().toISOString() }]),
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<Skeleton height="2.5rem" />}>
+          <NoteList
+            notebookId="nb-1"
+            selectedNoteId={null}
+            onSelectNote={vi.fn()}
+            onCreateNote={vi.fn()}
+            onDeleteNote={vi.fn()}
+            refreshTrigger={trigger}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Untitled")).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText("Actions for Untitled")).toBeInTheDocument();
+  });
+
   it("opens move menu and shows other notebooks", async () => {
     const trigger = nextTrigger();
     const user = userEvent.setup();

@@ -2,6 +2,7 @@
 
 import { use, useState, useCallback } from "react";
 import { handleAuthError } from "@/lib/handle-auth-error";
+import { displayNoteTitle } from "@/lib/note-title";
 import { IconButton } from "@/components/ui/icon-button";
 import { DropdownMenu, DropdownMenuItem, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
 import { RelativeTime } from "@/components/notes/relative-time";
@@ -191,7 +192,7 @@ export function NoteList({
                       : "text-fg hover:bg-bg-muted"
                   }`}
                 >
-                  <p className="truncate text-sm font-medium">{note.title}</p>
+                  <p className="truncate text-sm font-medium">{displayNoteTitle(note.title)}</p>
                   <p className="text-fg-subtle mt-0.5 flex items-center gap-1 text-xs">
                     <svg
                       aria-hidden="true"
@@ -220,7 +221,7 @@ export function NoteList({
                       setMenuOpenForNote(menuOpenForNote === note.id ? null : note.id);
                     }}
                     className="absolute top-2 right-2 opacity-0 transition-opacity duration-[var(--transition-fast)] group-focus-within:opacity-100 group-hover:opacity-100"
-                    aria-label={`Actions for ${note.title}`}
+                    aria-label={`Actions for ${displayNoteTitle(note.title)}`}
                   >
                     <svg
                       aria-hidden="true"

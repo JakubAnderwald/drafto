@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
+import { DEFAULT_NOTE_TITLE } from "@/lib/note-title";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -39,7 +40,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     .insert({
       notebook_id: notebookId,
       user_id: user.id,
-      title: "Untitled",
+      title: DEFAULT_NOTE_TITLE,
     })
     .select()
     .single();
