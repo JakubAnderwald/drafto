@@ -71,15 +71,15 @@ Open [http://localhost:3000](http://localhost:3000).
 
 Dev commands live here. Build / release / deployment commands live in [`docs/operations/builds-and-releases.md`](./docs/operations/builds-and-releases.md).
 
-| Command                | Description                          |
-| ---------------------- | ------------------------------------ |
-| `pnpm dev`             | Start dev server (all apps)          |
-| `pnpm build`           | Production build                     |
-| `pnpm lint`            | ESLint (all packages)                |
-| `pnpm format:check`    | Prettier check                       |
-| `pnpm test`            | Unit + integration tests             |
-| `pnpm typecheck`       | TypeScript check                     |
-| `pnpm migration:check` | Check migrations for destructive SQL |
+| Command                | Description                                                      |
+| ---------------------- | ---------------------------------------------------------------- |
+| `pnpm dev`             | Start dev server (all apps)                                      |
+| `pnpm build`           | Production build                                                 |
+| `pnpm lint`            | ESLint (all packages)                                            |
+| `pnpm format:check`    | Prettier check                                                   |
+| `pnpm test`            | Unit + integration tests                                         |
+| `pnpm typecheck`       | TypeScript check                                                 |
+| `pnpm migration:check` | Check migrations for destructive SQL and missing Data API grants |
 
 Per-app test commands: [`docs/architecture/testing.md`](./docs/architecture/testing.md).
 

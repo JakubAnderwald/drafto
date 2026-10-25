@@ -23,9 +23,9 @@ globalThis.fetch = mockFetch;
 
 const { NoteList } = await import("@/components/notes/note-list");
 
-// The component uses a module-level Map cache (`notesCache`). We need to
-// bust it by varying the `refreshTrigger` prop between tests so each test
-// gets a fresh fetch.
+// The component caches fetched lists in a module-level Map (`notesCache`). We
+// need to bust it by varying the `refreshTrigger` prop between tests so each
+// test gets a fresh fetch. `initialNotes` never enters the cache.
 let triggerCounter = 100;
 
 function nextTrigger() {
@@ -762,6 +762,52 @@ describe("NoteList", () => {
 
     // Should NOT have made a client-side fetch — data came from server
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("does not cache initialNotes", async () => {
+    mockFetch.mockReset();
+    mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(mockNotes) });
+    const serverNotes = [
+      { id: "server-2", title: "Uncached Server Note", updated_at: new Date().toISOString() },
+    ];
+
+    const { unmount } = await act(async () =>
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteList
+            notebookId="nb-uncached"
+            selectedNoteId={null}
+            onSelectNote={vi.fn()}
+            onCreateNote={vi.fn()}
+            refreshTrigger={0}
+            initialNotes={serverNotes}
+          />
+        </Suspense>,
+      ),
+    );
+    expect(screen.getByText("Uncached Server Note")).toBeInTheDocument();
+    unmount();
+
+    // The same key without the server notes finds nothing cached, so it fetches.
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteList
+            notebookId="nb-uncached"
+            selectedNoteId={null}
+            onSelectNote={vi.fn()}
+            onCreateNote={vi.fn()}
+            refreshTrigger={0}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("First Note")).toBeInTheDocument();
+    });
+    expect(mockFetch).toHaveBeenCalledWith("/api/notebooks/nb-uncached/notes");
+    expect(screen.queryByText("Uncached Server Note")).not.toBeInTheDocument();
   });
 
   it("fetches fresh data on refreshTrigger > 0 even with initialNotes", async () => {

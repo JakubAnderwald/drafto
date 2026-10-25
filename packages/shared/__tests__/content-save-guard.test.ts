@@ -11,9 +11,9 @@ import {
   type ContentBaseline,
 } from "../src/editor/content-save-guard";
 import { toAttachmentUrl } from "../src/editor/attachment-url";
-import { tiptapToBlocknote } from "../src/editor/format-converter";
+import { contentToTiptap, tiptapToBlocknote } from "../src/editor/format-converter";
 import { migrateSignedUrlsToAttachmentUrls } from "../src/editor/resolve-urls";
-import type { TipTapDoc } from "../src/editor/types";
+import type { BlockNoteBlock, TipTapDoc, TipTapNode } from "../src/editor/types";
 
 import { jsonbReordered } from "./helpers/jsonb";
 
@@ -209,6 +209,105 @@ describe("isNoOpContentSave", () => {
       ["note-1", { stored: STORED, serializations: [] }],
     ]);
     expect(isNoOpContentSave(baselines, { noteId: "note-1", content }, STORED)).toBe(false);
+  });
+});
+
+describe("a web note with nested content", () => {
+  const text = (value: string) => ({ type: "text" as const, text: value, styles: {} });
+  // Shaped like the web editor stores it: block ids and default props everywhere.
+  const webBlock = (
+    id: string,
+    type: string,
+    value: string,
+    children: BlockNoteBlock[] = [],
+    props: Record<string, unknown> = {},
+  ): BlockNoteBlock => ({
+    id,
+    type,
+    props: { textColor: "default", backgroundColor: "default", textAlignment: "left", ...props },
+    content: [text(value)],
+    children,
+  });
+  // A nested check list, and a paragraph with a child, which TipTap can only
+  // show as the paragraph's next sibling.
+  const STORED = JSON.stringify([
+    webBlock(
+      "a",
+      "checkListItem",
+      "a",
+      [
+        webBlock(
+          "b",
+          "checkListItem",
+          "b",
+          [webBlock("c", "checkListItem", "c", [], { checked: false })],
+          {
+            checked: true,
+          },
+        ),
+      ],
+      { checked: false },
+    ),
+    webBlock("p", "paragraph", "intro", [webBlock("q", "bulletListItem", "point")]),
+  ]);
+
+  // What the editor panel does on load: the converter's serialisation goes into
+  // the baseline before setContent, and the editor's read-back after it.
+  function openNote() {
+    const doc = contentToTiptap(JSON.parse(STORED));
+    const readBack = JSON.parse(JSON.stringify(doc)) as TipTapDoc;
+    const baselines = new Map<string, ContentBaseline>([
+      [
+        "note-1",
+        {
+          stored: STORED,
+          serializations: [serializeLoadedDoc(doc), serializeEditorContent(readBack)],
+        },
+      ],
+    ]);
+    return { doc, baselines };
+  }
+
+  function findText(nodes: TipTapNode[] | undefined, value: string): TipTapNode | undefined {
+    for (const node of nodes ?? []) {
+      if (node.type === "text" && node.text === value) return node;
+      const found = findText(node.content, value);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
+  it("writes nothing when the note is opened and its load echo saved", () => {
+    const { doc, baselines } = openNote();
+    const content = serializeEditorContent(doc);
+    // The echo differs from the stored row (ids, default props, the flattened
+    // paragraph child), so only the baseline keeps it from being written.
+    expect(sameStoredContent(content, STORED)).toBe(false);
+    expect(isNoOpContentSave(baselines, { noteId: "note-1", content }, STORED)).toBe(true);
+    expect(
+      isNoOpContentSave(baselines, { noteId: "note-1", content }, jsonbReordered(STORED)),
+    ).toBe(true);
+  });
+
+  it("keeps the nested check items and their checked states through a real edit", () => {
+    const { doc, baselines } = openNote();
+    const deepest = findText(doc.content, "c");
+    expect(deepest).toBeDefined();
+    if (deepest) deepest.text = "c edited";
+    const content = serializeEditorContent(doc);
+
+    expect(isNoOpContentSave(baselines, { noteId: "note-1", content }, STORED)).toBe(false);
+    const check = (value: string, checked: boolean, children: BlockNoteBlock[] = []) => ({
+      type: "checkListItem",
+      content: [text(value)],
+      children,
+      props: { checked },
+    });
+    expect(JSON.parse(content)).toEqual([
+      check("a", false, [check("b", true, [check("c edited", false)])]),
+      { type: "paragraph", content: [text("intro")], children: [] },
+      { type: "bulletListItem", content: [text("point")], children: [] },
+    ]);
   });
 });
 

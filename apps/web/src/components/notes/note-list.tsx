@@ -1,11 +1,11 @@
 "use client";
 
 import { use, useState, useCallback } from "react";
-import { formatRelativeTime } from "@drafto/shared";
 import { handleAuthError } from "@/lib/handle-auth-error";
 import { displayNoteTitle } from "@/lib/note-title";
 import { IconButton } from "@/components/ui/icon-button";
 import { DropdownMenu, DropdownMenuItem, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
+import { RelativeTime } from "@/components/notes/relative-time";
 import type { NoteListPatch } from "@/lib/note-patch";
 
 interface NoteListItem {
@@ -32,9 +32,21 @@ interface NoteListProps {
   initialNotes?: NoteListItem[];
 }
 
+// Browser-only. On the server this Map would live for the whole process and be
+// shared by every user's request, so a server render never reads or writes it.
 const notesCache = new Map<string, Promise<NoteListItem[]>>();
 
 function fetchNotes(notebookId: string, cacheKey: string): Promise<NoteListItem[]> {
+  // A server render has no origin to resolve the relative URL against, and the
+  // layout already prefetches the notes it shows (`initialNotes`). Failing here,
+  // before the cache is touched, lets the Suspense boundary fall back to a client
+  // render instead of caching a rejected promise for every later request.
+  if (typeof window === "undefined") {
+    throw new Error(
+      "NoteList fetched notes during a server render. Pass the server-fetched notes as initialNotes.",
+    );
+  }
+
   const cached = notesCache.get(cacheKey);
   if (cached) return cached;
 
@@ -64,19 +76,12 @@ export function NoteList({
 }: NoteListProps) {
   const cacheKey = `${notebookId}-${refreshTrigger}`;
 
-  // Pre-populate cache with server-fetched data to skip the initial client fetch.
-  // Only on the client (to avoid SSR hydration mismatch), and only for the very first
-  // render (refreshTrigger === 0) — subsequent triggers must fetch fresh data.
-  if (
-    typeof window !== "undefined" &&
-    serverNotes &&
-    refreshTrigger === 0 &&
-    !notesCache.has(cacheKey)
-  ) {
-    notesCache.set(cacheKey, Promise.resolve(serverNotes));
-  }
-
-  const initialNotes = use(fetchNotes(notebookId, cacheKey));
+  // Before the first refresh, the layout's prefetched notes are used as they are, on
+  // the server and in the browser alike: nothing is fetched or cached, and hydration
+  // sees the list the server sent. Every refresh fetches fresh data. `use()` may be
+  // called conditionally, unlike the other hooks.
+  const initialNotes =
+    serverNotes && refreshTrigger === 0 ? serverNotes : use(fetchNotes(notebookId, cacheKey));
   const [notes, setNotes] = useState(initialNotes);
   const [prevInitialNotes, setPrevInitialNotes] = useState(initialNotes);
   const [prevNoteUpdate, setPrevNoteUpdate] = useState(lastNoteUpdate);
@@ -203,7 +208,7 @@ export function NoteList({
                         d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
                       />
                     </svg>
-                    {formatRelativeTime(note.updated_at)}
+                    <RelativeTime value={note.updated_at} />
                   </p>
                 </button>
 

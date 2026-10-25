@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Parses the locked-down browser runner's output, scans it for secrets and
-// renders the In Test report comment.
+// renders the In Test report comment (or, for the Testing column's `verify`
+// kind, a section that is never posted on its own).
 //
 // Why this exists: the browser runner (`run_browser_task` in factory-agent.sh)
 // is the only claude call that gets Claude in Chrome, and it has no tools to
@@ -24,7 +25,9 @@
 //
 // The status line is the last line, outside any block, matching that exact
 // shape. Without one the run is "malformed" and its report is not trusted as
-// a result.
+// a result. The block/status-line parser itself is generic (parseBlocks), and
+// verify-report.mjs reuses it — with the secret scan and defanging below — for
+// the Testing stage's verification lanes.
 //
 // The report is model output built from page text, which is untrusted. Before
 // it goes into a comment, HTML comments are neutralised and every
@@ -36,12 +39,20 @@
 // CLI:
 //   node browser-report.mjs render --kind intest --in <runner-stdout-file>
 //        --issue <n> --sha <sha> --evidence-dir <dir> --account-file <f>
-//        --out <body-file>
+//        --out <body-file> [--json-out <file>]
 //     Writes the comment body to --out and a copy of the runner output to
 //     <evidence-dir>/runner-output.txt (mode 600). Prints one JSON line
-//     {status, verdict, withheld, secretHits}. Exit 0; 1 on an I/O error
-//     (including an unreadable account file: without the password the scan
-//     can't be trusted, so nothing is written); 2 on a usage error.
+//     {status, verdict, withheld, secretHits}, also written to --json-out
+//     (mode 600) when given. Exit 0; 1 on an I/O error (including an
+//     unreadable account file: without the password the scan can't be
+//     trusted, so nothing is written); 2 on a usage error.
+//   node browser-report.mjs render --kind verify … (the same flags)
+//     The Testing column's browser lane (ADR-0053). Same scan, copy and JSON,
+//     but --out gets a section, not a comment: the same scanned, defanged
+//     report with no factory markers, because bash never posts it. The lane's
+//     result reaches the issue only inside the verification report, which
+//     verify-report.mjs composes from <run-dir>/runner-output.txt with its own
+//     scan.
 //   node browser-report.mjs status --in <runner-stdout-file>
 //     Prints the parsed status word (ok|unavailable|auth-expired|signin-failed|blocked|
 //     malformed). Exit 0; 1 on an I/O error.
@@ -64,6 +75,8 @@ export const RUNNER_OUTPUT_FILE = "runner-output.txt";
 export const MIN_PASSWORD_SCAN_LENGTH = 6;
 
 const HEADER = "🏭 **Browser run — web steps on the preview.**";
+const VERIFY_HEADER = "**Web (browser) — verify run on the preview**";
+export const RENDER_KINDS = Object.freeze(["intest", "verify"]);
 const STATUS_LINE =
   /^browser=(ok|unavailable|auth-expired|signin-failed|blocked) verdict=(pass|warn|fail|none)$/;
 const SHA = /^[0-9a-f]{7,40}$/i;
@@ -80,9 +93,21 @@ function trimBlock(text) {
   return text.replace(/^(?:[ \t]*\r?\n)+/, "").replace(/\s+$/, "");
 }
 
-export function parseRunnerOutput(text) {
+// The generic shape every locked-down runner prints (this runner, and the
+// verification lanes in verify-report.mjs): `<<<NAME … NAME>>>` blocks, each
+// opener and closer alone on its line, plus a status line outside them.
+//
+// Returns { blocks: { NAME: [body, …] }, status }: every complete block's body
+// per name, in order, and `status` — the RegExp match of the LAST line outside
+// complete blocks that matches `statusLine` (a backtick-wrapped line counts),
+// or null. A block that never closed is not a block: its lines count as
+// outside, so a status line printed after a forgotten closer is still found.
+// Only lines outside complete blocks can be the status line: page text the
+// model quoted inside its report must not be able to supply one. Inside an
+// open block, another block's opener is just content.
+export function parseBlocks(text, { blocks: names = [], statusLine = null } = {}) {
   const lines = String(text ?? "").split(/\r?\n/);
-  const blocks = { REPORT: [], FINDINGS: [] };
+  const blocks = Object.fromEntries(names.map((name) => [name, []]));
   const outside = [];
   let open = null;
   let buf = [];
@@ -98,7 +123,7 @@ export function parseRunnerOutput(text) {
       }
       continue;
     }
-    const opener = BLOCKS.find((b) => t === `<<<${b}`);
+    const opener = names.find((b) => t === `<<<${b}`);
     if (opener) {
       open = opener;
       buf = [];
@@ -106,21 +131,33 @@ export function parseRunnerOutput(text) {
       outside.push(t);
     }
   }
-  // A block that never closed is not a block: its lines count as outside, so
-  // a status line printed after a forgotten `REPORT>>>` is still found.
   if (open) outside.push(...buf.map((l) => l.trim()));
 
-  // Only lines outside complete blocks can be the status line: page text the
-  // model quoted inside its report must not be able to supply one.
-  let status = "malformed";
-  let verdict = "none";
-  for (const raw of outside) {
-    const m = STATUS_LINE.exec(raw.replace(/^`(.*)`$/, "$1"));
-    if (m) [, status, verdict] = m;
+  let status = null;
+  if (statusLine) {
+    // exec on a /g or /y regex is stateful; a status line must not depend on
+    // what the previous line matched.
+    const re = new RegExp(statusLine.source, statusLine.flags.replace(/[gy]/g, ""));
+    for (const raw of outside) {
+      const m = re.exec(raw.replace(/^`(.*)`$/, "$1"));
+      if (m) status = m;
+    }
   }
+  return { blocks, status };
+}
 
-  const lastReport = blocks.REPORT.at(-1);
-  const report = lastReport == null || !lastReport.trim() ? null : trimBlock(lastReport);
+// The last complete <name> block, trimmed, or null when there is none or it is
+// blank.
+export function lastBlock(blocks, name) {
+  const last = blocks?.[name]?.at(-1);
+  return last == null || !last.trim() ? null : trimBlock(last);
+}
+
+export function parseRunnerOutput(text) {
+  const { blocks, status: m } = parseBlocks(text, { blocks: BLOCKS, statusLine: STATUS_LINE });
+  const status = m ? m[1] : "malformed";
+  const verdict = m ? m[2] : "none";
+  const report = lastBlock(blocks, "REPORT");
 
   let findings = null;
   const lastFindings = blocks.FINDINGS.at(-1);
@@ -146,16 +183,27 @@ const ACCOUNT_KEYS = { FACTORY_BROWSER_EMAIL: "email", FACTORY_BROWSER_PASSWORD:
 
 // KEY=VALUE lines, `#` comments, an optional `export ` prefix and optional
 // matching quotes around the value. No escapes or interpolation: a quoted
-// value is taken verbatim, an unquoted one is trimmed.
-export function parseAccountFile(text) {
+// value is taken verbatim, an unquoted one is trimmed. Returns { KEY: value }
+// for the wanted keys only (the last assignment wins); the caller decides what
+// a missing key means.
+export function parseEnvValues(text, keys) {
   const out = {};
   for (const line of String(text ?? "").split(/\r?\n/)) {
     const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/.exec(line);
-    if (!m || !(m[1] in ACCOUNT_KEYS)) continue;
+    if (!m || !keys.includes(m[1])) continue;
     let value = m[2].trim();
     const q = /^(["'])(.*)\1$/.exec(value);
     if (q) value = q[2];
-    out[ACCOUNT_KEYS[m[1]]] = value;
+    out[m[1]] = value;
+  }
+  return out;
+}
+
+export function parseAccountFile(text) {
+  const values = parseEnvValues(text, Object.keys(ACCOUNT_KEYS));
+  const out = {};
+  for (const [key, field] of Object.entries(ACCOUNT_KEYS)) {
+    if (key in values) out[field] = values[key];
   }
   // Name the missing key, never echo a value: this message reaches logs.
   for (const [key, field] of Object.entries(ACCOUNT_KEYS)) {
@@ -190,7 +238,9 @@ export function accountFileProblem(file) {
 
 // ── secret scan ─────────────────────────────────────────────────────────────
 
-const SECRET_PATTERNS = [
+// [name, pattern] pairs, in scan order. Exported (frozen) for verify-report.mjs,
+// which scans the verification lanes with these plus its own.
+export const SECRET_PATTERNS = Object.freeze([
   ["jwt", /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/],
   ["supabase-auth-cookie", /sb-[a-z0-9]+-auth-token/i],
   // Case-insensitive: the auth scheme is, and a network log may print it lower-case.
@@ -203,17 +253,14 @@ const SECRET_PATTERNS = [
   // The runner's one-time sign-in link (browser-signin.mjs). Single-use and
   // consumed when opened, but still a login token: never posted.
   ["sign-in-token", /token_hash=[A-Za-z0-9_-]{8,}/],
-];
+]);
 
 // The password is matched as a literal substring — never compiled into a
 // regex, so its characters can't change what is matched — in the forms it can
 // take in a page or a network log: as typed, URL-encoded and JSON-escaped.
-function passwordForms(password) {
-  const forms = new Set([
-    password,
-    encodeURIComponent(password),
-    JSON.stringify(password).slice(1, -1),
-  ]);
+// verify-report.mjs matches its other secret literals the same way.
+export function literalForms(secret) {
+  const forms = new Set([secret, encodeURIComponent(secret), JSON.stringify(secret).slice(1, -1)]);
   return [...forms];
 }
 
@@ -221,7 +268,7 @@ export function scanForSecrets(text, { password } = {}) {
   const s = String(text ?? "");
   const hits = [];
   if (typeof password === "string" && password.length >= MIN_PASSWORD_SCAN_LENGTH) {
-    if (passwordForms(password).some((form) => s.includes(form))) hits.push("password");
+    if (literalForms(password).some((form) => s.includes(form))) hits.push("password");
   }
   for (const [name, re] of SECRET_PATTERNS) {
     if (re.test(s)) hits.push(name);
@@ -262,7 +309,33 @@ function truncateReport(report, max) {
   return fences % 2 === 1 ? `${cut}\n\`\`\`` : cut;
 }
 
-export function renderIntestComment({ sha, report, verdict, status, evidenceDir, withheld }) {
+// The In Test comment: posted by bash as is, so it carries the report marker
+// and the run's full-SHA marker as its last two lines.
+export function renderIntestComment(run) {
+  return renderRunReport(run, {
+    header: HEADER,
+    okNote: "This report never moves the card; it stays in In Test either way.",
+    notOkNote: "The card is unaffected.",
+    markers: (sha) => [REPORT_MARKER, runShaMarker(sha)],
+  });
+}
+
+// The verify kind's section (ADR-0053): the same scanned, defanged report, but
+// never posted, so it carries no factory marker at all. The verification
+// report is the only thing that reaches the issue for a Testing card.
+export function renderVerifySection(run) {
+  return renderRunReport(run, {
+    header: VERIFY_HEADER,
+    okNote: "Evidence for the verification report; it never moves the card.",
+    notOkNote: "The card is unaffected.",
+    markers: () => [],
+  });
+}
+
+function renderRunReport(
+  { sha, report, verdict, status, evidenceDir, withheld },
+  { header, okNote, notOkNote, markers },
+) {
   if (!SHA.test(String(sha ?? ""))) throw new Error(`invalid sha: ${sha}`);
   const hits = Array.isArray(withheld) ? withheld : withheld ? ["unspecified"] : [];
   const localCopy = `${evidenceDir}/${RUNNER_OUTPUT_FILE}`;
@@ -270,18 +343,16 @@ export function renderIntestComment({ sha, report, verdict, status, evidenceDir,
   const ok = status === "ok";
 
   const lead = ok
-    ? `**Verdict: ${String(verdict ?? "none").toUpperCase()}** for \`${short}\`. ` +
-      "This report never moves the card; it stays in In Test either way."
+    ? `**Verdict: ${String(verdict ?? "none").toUpperCase()}** for \`${short}\`. ${okNote}`
     : `**No result** for \`${short}\`. ${STATUS_SENTENCE[status] ?? STATUS_SENTENCE.malformed} ` +
-      "The card is unaffected.";
+      notOkNote;
 
-  const head = [HEADER, "", lead, ""];
+  const head = [header, "", lead, ""];
+  const tail = markers(sha);
   const footer = [
     "",
     `<sub>Screenshots stay on the Mac mini (this repo is public): \`${evidenceDir}\`.</sub>`,
-    "",
-    REPORT_MARKER,
-    runShaMarker(sha),
+    ...(tail.length ? ["", ...tail] : []),
   ];
   const assemble = (middle) => [...head, ...middle, ...footer].join("\n");
 
@@ -323,7 +394,9 @@ function required(flags, name) {
 export function render(argv) {
   const { flags } = parseFlags(argv);
   const kind = required(flags, "kind");
-  if (kind !== "intest") throw new UsageError(`unsupported --kind: ${kind} (intest)`);
+  if (!RENDER_KINDS.includes(kind)) {
+    throw new UsageError(`unsupported --kind: ${kind} (${RENDER_KINDS.join("|")})`);
+  }
   const inFile = required(flags, "in");
   const issue = required(flags, "issue");
   if (!/^[1-9][0-9]*$/.test(issue)) throw new UsageError(`invalid --issue: ${issue}`);
@@ -347,7 +420,7 @@ export function render(argv) {
     chmodSync(copy, 0o600);
   }
 
-  const body = renderIntestComment({
+  const run = {
     issue,
     sha,
     report: parsed.report,
@@ -355,19 +428,25 @@ export function render(argv) {
     status: parsed.status,
     evidenceDir,
     withheld: secretHits,
-  });
-  writeFileSync(out, body);
-  return {
+  };
+  writeFileSync(out, kind === "verify" ? renderVerifySection(run) : renderIntestComment(run));
+  const result = {
     status: parsed.status,
     verdict: parsed.verdict,
     withheld: secretHits.length > 0,
     secretHits,
   };
+  if (flags["json-out"]) {
+    writeFileSync(flags["json-out"], JSON.stringify(result) + "\n", { mode: 0o600 });
+    chmodSync(flags["json-out"], 0o600);
+  }
+  return result;
 }
 
 const USAGE =
-  "Usage: browser-report.mjs render --kind intest --in <runner-stdout-file> --issue <n> " +
-  "--sha <sha> --evidence-dir <dir> --account-file <f> --out <body-file>\n" +
+  "Usage: browser-report.mjs render --kind intest|verify --in <runner-stdout-file> --issue <n> " +
+  "--sha <sha> --evidence-dir <dir> --account-file <f> --out <body-file> " +
+  "[--json-out <file>]\n" +
   "       browser-report.mjs status --in <runner-stdout-file>\n" +
   "       browser-report.mjs account-check --account-file <f>\n";
 

@@ -73,9 +73,12 @@ describe("--implement engine", () => {
 });
 
 describe("--watch engine", () => {
-  it("runs a cleanup sweep that releases slots leaving In Review/In Test", () => {
+  it("runs a cleanup sweep that releases slots leaving the active states", () => {
     assert.match(script, /Cleanup sweep/);
-    assert.match(script, /left In Review\/In Test; releasing slot \+ worktree/);
+    assert.match(
+      script,
+      /left In Progress\/In Review\/Testing\/In Test; releasing slot \+ worktree/,
+    );
   });
 
   it("advances to In Test only when CI is green AND a preview exists", () => {

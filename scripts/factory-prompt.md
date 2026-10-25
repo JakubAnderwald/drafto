@@ -332,7 +332,11 @@ For a first implementation, `revisionComments` is empty; ignore this section.
    - `pnpm --filter <app> test`
    - `pnpm format:check` (root)
 
-   If `spec.schemaChanges === true`, also run `pnpm migration:check`.
+   If `spec.schemaChanges === true`, also run `pnpm migration:check`. A new
+   table or view in `public` needs its `GRANT`s in the same migration, or the
+   app can't reach it, and a view needs `security_invoker = true`
+   (docs/operations/migrations.md → "New tables need explicit grants"). The
+   check fails without them.
 
    On failure, fix the underlying issue and re-run. Don't swallow errors,
    don't add `// @ts-ignore`, don't suppress lint rules without a `-- <reason>`

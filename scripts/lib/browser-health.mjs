@@ -183,7 +183,7 @@ export function describeReason(reason, { accountFile = DEFAULT_ACCOUNT_FILE, at 
   if (r === "preflight:chrome-not-running") {
     return {
       label: "Chrome not running",
-      fix: "Google Chrome isn't running on the Mac mini: open Chrome on the Mac mini and leave it running.",
+      fix: "Google Chrome isn't running in the factory's macOS account on the Mac mini (another account's Chrome doesn't count): open Chrome in that account and leave it running.",
     };
   }
   if (r.startsWith("preflight:account-")) {
@@ -205,9 +205,11 @@ export function describeReason(reason, { accountFile = DEFAULT_ACCOUNT_FILE, at 
       return {
         label: "preview sign-in failed",
         fix:
-          "the runner's one-time sign-in link didn't sign it in on the preview. Check that the PR's branch " +
-          "includes /auth/test-sign-in (ADR-0051; branches cut before it landed don't), that the preview " +
-          "uses the dev Supabase project, and that the test account in the account file still exists and is approved.",
+          "the runner's one-time sign-in link didn't sign it in on the preview. Check that the preview uses " +
+          "the dev Supabase project, and that the test account in the account file still exists and is approved. " +
+          "A branch cut before /auth/test-sign-in landed is normally skipped before the run (with a note on the " +
+          "issue), but not when GitHub couldn't be asked: if the factory log has a \"couldn't check whether\" " +
+          "warning for this commit, check that the PR's branch has the route.",
       };
     case "preflight:signin-key-missing":
     case "preflight:signin-key-not-a-file":
@@ -324,9 +326,15 @@ export function preflight({ accountFile = DEFAULT_ACCOUNT_FILE, signInKeyFile, i
   return null;
 }
 
-// A pgrep that can't run counts as "not running": skipping a run is the safe side.
-export function chromeIsRunning(spawn = spawnSync) {
-  const res = spawn("pgrep", ["-x", "Google Chrome"], { encoding: "utf8", timeout: 10_000 });
+// Only this user's Chrome counts. With fast user switching another account's
+// Chrome shows up in a bare pgrep, but the runner can only reach the Claude in
+// Chrome extension in its own user's Chrome. A pgrep that can't run counts as
+// "not running": skipping a run is the safe side.
+export function chromeIsRunning(spawn = spawnSync, uid = process.getuid()) {
+  const res = spawn("pgrep", ["-u", String(uid), "-x", "Google Chrome"], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
   return !res.error && res.status === 0;
 }
 

@@ -33,9 +33,25 @@
 //        Combines getStatusFieldMeta + setItemStatus when you don't already
 //        hold the meta. Caches meta per-projectId per-process.
 //
+//   hasStatusOption(projectId, name) → boolean (read-only)
+//        Whether the Status field has an option with exactly this name. Lets
+//        a caller check a column exists (e.g. "Testing") before moving a card
+//        there, so set-status can't throw and strand the card.
+//
+//   exportStatuses(projectId) → [{itemId, issueNumber, status, type}] (read-only)
+//        Every item on the board, any repo or content type, sorted by
+//        issueNumber then itemId. A backup taken before a board migration
+//        (scripts/setup-factory-board.sh) and diffed against a re-export
+//        after it. type is the content's __typename; issueNumber is the
+//        issue's (or a PR's) number and null for a draft item; status is
+//        null for an item with no Status.
+//
 // CLI (called from scripts/factory-agent.sh):
 //   find-project [--owner <login>] [--title <title>]
 //   get-status-meta [--project-id <id>] [--owner <login>] [--title <title>]
+//   has-status-option --name <option> [--project-id <id>]
+//                     [--owner <login>] [--title <title>]
+//   export-statuses [--project-id <id>] [--owner <login>] [--title <title>]
 //   query-status-items --status <name> [--project-id <id>]
 //                      [--owner <login>] [--title <title>]
 //                      [--repo <owner/name>] [--limit <n>]
@@ -44,7 +60,9 @@
 //
 // All subcommands print JSON to stdout and exit 0; errors print
 // `{"error": "..."}` to stderr and exit non-zero — same shape as
-// github-sync.mjs / state-cli.mjs.
+// github-sync.mjs / state-cli.mjs. The one exception is has-status-option:
+// it prints {"name", "present"} and exits 1 when the option is absent, so
+// bash can branch on the exit code (non-zero = absent or the lookup failed).
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -394,6 +412,107 @@ export async function setItemStatusByName({ projectId, itemId, statusName }) {
   });
 }
 
+export async function hasStatusOption(projectId, name) {
+  if (!name) throw new Error("hasStatusOption requires an option name");
+  const meta = await getStatusFieldMeta(projectId);
+  return Object.prototype.hasOwnProperty.call(meta.optionsByName, name);
+}
+
+// Pure: shape item nodes from EXPORT_QUERY into the backup rows. Unlike
+// shapeItems this keeps every item (any repo, PRs, drafts, no Status) — a
+// migration that clears a Status clears it on all of them.
+export function shapeStatusExport(nodes) {
+  const out = [];
+  for (const node of Array.isArray(nodes) ? nodes : []) {
+    if (!node?.id) continue;
+    const content = node.content ?? null;
+    const number = Number.isInteger(content?.number) ? content.number : null;
+    const status = node.status;
+    out.push({
+      itemId: node.id,
+      issueNumber: number,
+      status:
+        status?.__typename === "ProjectV2ItemFieldSingleSelectValue" &&
+        typeof status.name === "string"
+          ? status.name
+          : null,
+      type: content?.__typename ?? null,
+    });
+  }
+  return out;
+}
+
+function compareExportRows(a, b) {
+  // Numbered items first, ascending; then itemId, so the order is stable
+  // across exports however the board was re-sorted in between.
+  if (a.issueNumber !== b.issueNumber) {
+    if (a.issueNumber === null) return 1;
+    if (b.issueNumber === null) return -1;
+    return a.issueNumber - b.issueNumber;
+  }
+  return a.itemId < b.itemId ? -1 : a.itemId > b.itemId ? 1 : 0;
+}
+
+// The Status is read by field name, not from a fieldValues(first: N) page: a
+// backup can't afford to miss a Status that sits past the first N values.
+const EXPORT_QUERY = `query($projectId: ID!, $cursor: String, $pageSize: Int!) {
+  node(id: $projectId) {
+    ... on ProjectV2 {
+      items(first: $pageSize, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          content {
+            __typename
+            ... on Issue { number }
+            ... on PullRequest { number }
+          }
+          status: fieldValueByName(name: "Status") {
+            __typename
+            ... on ProjectV2ItemFieldSingleSelectValue { name optionId }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+// 50 pages × 100 items. A backup must be complete, so running past the cap
+// throws instead of returning a silently truncated list.
+const EXPORT_MAX_PAGES = 50;
+
+export async function exportStatuses(projectId) {
+  if (!projectId) throw new Error("exportStatuses requires projectId");
+  const all = [];
+  let cursor = null;
+  for (let page = 0; page < EXPORT_MAX_PAGES; page++) {
+    const args = [
+      "api",
+      "graphql",
+      "-f",
+      `query=${EXPORT_QUERY}`,
+      "-f",
+      `projectId=${projectId}`,
+      "-F",
+      `pageSize=${ITEMS_PAGE_SIZE}`,
+    ];
+    if (cursor) args.push("-f", `cursor=${cursor}`);
+    const data = JSON.parse(await runGh(args));
+    if (data?.errors?.length) {
+      throw new Error(`exportStatuses failed: ${JSON.stringify(data.errors)}`);
+    }
+    const items = data?.data?.node?.items;
+    if (!items) throw new Error(`Project ${projectId} returned no items connection`);
+    all.push(...shapeStatusExport(items.nodes));
+    if (!items.pageInfo?.hasNextPage) return all.sort(compareExportRows);
+    cursor = items.pageInfo.endCursor;
+  }
+  throw new Error(
+    `exportStatuses: board has more than ${EXPORT_MAX_PAGES * ITEMS_PAGE_SIZE} items; ` +
+      "refusing to return an incomplete backup",
+  );
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 async function main(argv) {
@@ -412,6 +531,25 @@ async function main(argv) {
         title: flags.title,
       });
       return getStatusFieldMeta(projectId);
+    }
+    case "has-status-option": {
+      if (!flags.name) throw new Error("has-status-option requires --name <option>");
+      const projectId = await resolveProjectId({
+        projectId: flags["project-id"],
+        owner: flags.owner,
+        title: flags.title,
+      });
+      const present = await hasStatusOption(projectId, flags.name);
+      if (!present) process.exitCode = 1;
+      return { name: flags.name, present };
+    }
+    case "export-statuses": {
+      const projectId = await resolveProjectId({
+        projectId: flags["project-id"],
+        owner: flags.owner,
+        title: flags.title,
+      });
+      return exportStatuses(projectId);
     }
     case "query-status-items": {
       if (!flags.status) throw new Error("query-status-items requires --status <name>");
@@ -445,6 +583,8 @@ async function main(argv) {
       process.stdout.write(
         "Usage: factory-project.mjs <find-project [--owner <login>] [--title <title>]|" +
           "get-status-meta [--project-id <id>] [--owner <login>] [--title <title>]|" +
+          "has-status-option --name <option> [--project-id <id>] [--owner <login>] [--title <title>]|" +
+          "export-statuses [--project-id <id>] [--owner <login>] [--title <title>]|" +
           "query-status-items --status <name> [--project-id <id>] [--owner <login>] [--title <title>] [--repo <owner/name>] [--limit <n>]|" +
           "set-status --item-id <id> --status <name> [--project-id <id>] [--owner <login>] [--title <title>]>\n",
       );

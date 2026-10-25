@@ -1,5 +1,6 @@
 import { test as setup, expect } from "@playwright/test";
 import { ADMIN_E2E_SKIP_REASON, getAdminCredentials } from "./helpers/admin-credentials";
+import { fillSecret } from "./helpers/secret-fields";
 
 /**
  * Authenticate as the E2E admin user and save storage state for `admin.spec.ts`.
@@ -26,11 +27,12 @@ setup("authenticate as admin", async ({ page }) => {
   await page.goto("/login");
 
   await page.getByLabel("Email").fill(credentials.email);
-  await page.getByLabel("Password").fill(credentials.password);
+  await fillSecret(page.getByLabel("Password"), credentials.password);
   await page.getByRole("button", { name: "Log in" }).click();
 
-  // Wait until we're redirected away from the login page
-  await expect(page).not.toHaveURL(/\/login/);
+  // Wait until we're redirected away from the login page (same headroom as
+  // auth.setup.ts — the 5s default is too tight on CI)
+  await expect(page).not.toHaveURL(/\/login/, { timeout: 15000 });
 
   // Save signed-in admin state to file
   await page.context().storageState({ path: "e2e/.auth/admin.json" });

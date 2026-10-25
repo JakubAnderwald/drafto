@@ -168,6 +168,7 @@ Common CI failure patterns:
 - Server client: `import { createClient } from "@/lib/supabase/server"`
 - Session refresh handled automatically by middleware
 - Never import `@supabase/supabase-js` directly in components
+- A new table or view in `public` needs explicit `GRANT`s in the migration that creates it, and a view also needs `security_invoker = true`. Supabase stops auto-granting the Data API roles on 2026-10-30, and `pnpm migration:check` fails without them. See [`docs/operations/migrations.md`](./docs/operations/migrations.md#new-tables-need-explicit-grants)
 
 ## Git Conventions
 
@@ -199,7 +200,7 @@ The invariant is the installed React version, not one blessed directory: **build
 
 ## Dark Factory
 
-Drafto runs an unattended development pipeline on the Mac mini ("dark factory") that watches a GitHub Projects v2 board and drives issues through plan → implement → preview → ship. State lives in `status:*` labels mirrored from the board's Status field, plus `logs/factory-state.json`. See [`docs/features/dark-factory.md`](./docs/features/dark-factory.md) for the operator manual, [`docs/operations/factory-runbook.md`](./docs/operations/factory-runbook.md) for phase promotion + rollback, and [ADR-0026](./docs/adr/0026-dark-factory-pipeline.md) for the decision.
+Drafto runs an unattended development pipeline on the Mac mini ("dark factory") that watches a GitHub Projects v2 board and drives issues through plan → implement → preview → **verify** → ship. State lives in `status:*` labels mirrored from the board's Status field, plus `logs/factory-state.json`. The verify step is the factory-owned **Testing** column (off unless `FACTORY_VERIFY=1`): the factory runs the test scenario itself and posts a report before a human tests at In Test. The report is evidence, never a gate ([`docs/features/factory-verification.md`](./docs/features/factory-verification.md), [ADR-0053](./docs/adr/0053-pre-in-test-verification-stage.md)). See [`docs/features/dark-factory.md`](./docs/features/dark-factory.md) for the operator manual, [`docs/operations/factory-runbook.md`](./docs/operations/factory-runbook.md) for phase promotion + rollback, and [ADR-0026](./docs/adr/0026-dark-factory-pipeline.md) for the decision.
 
 **Creating factory issues:** Issues are **not** auto-added to the board — neither `gh issue create` nor the web issue form adds them. Always pass `--project "Drafto Factory"` when creating one via the CLI so the card lands on the [board](https://github.com/users/JakubAnderwald/projects/1) and the factory can pick it up:
 
@@ -215,7 +216,7 @@ gh issue create --project "Drafto Factory" --title "feat: ..." --body-file spec.
 
 **Kill switches**: per-card via `factory-pause` label or dragging to **Blocked**; global via `node scripts/lib/state-cli.mjs factory:pause`; emergency via `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist`.
 
-**Browser access**: only the locked-down browser runner (`run_browser_task` in `scripts/factory-agent.sh`) may pass `--chrome`; every other `claude` call in the factory, support and nightly scripts passes `--no-chrome`. Every factory, support and nightly call also passes `--strict-mcp-config`, so the operator's claude.ai connectors (Gmail, Drive, Calendar…) never load in an unattended session. It drives this Mac mini's own Chrome profile, so keep it that way. See [ADR-0051](./docs/adr/0051-factory-browser-runner.md).
+**Browser access**: only the locked-down browser runner (`run_browser_task` in `scripts/factory-agent.sh`) may pass `--chrome`; every other `claude` call in the factory, support and nightly scripts passes `--no-chrome`. Every factory, support and nightly call also passes `--strict-mcp-config`, so the operator's claude.ai connectors (Gmail, Drive, Calendar…) never load in an unattended session. It drives this Mac mini's own Chrome profile, so keep it that way. See [ADR-0051](./docs/adr/0051-factory-browser-runner.md). The one exception to "previews through the browser's Vercel login" is the verification shell lane: it reaches per-commit previews with the Vercel protection-bypass secret, from a mode-600 file and only through its curl wrapper (`preview-curl`). Never create or fetch that secret with `vercel curl` ([ADR-0053](./docs/adr/0053-pre-in-test-verification-stage.md)). That lane's claude call lives in node (`scripts/lib/verify-lane.mjs`), not in the bash scripts: `--no-chrome --strict-mcp-config`, `dontAsk` with Bash/Read/Grep/Glob only, under its own guard hook (`scripts/lib/verify-guard.mjs`), never `--dangerously-skip-permissions`.
 
 **Parity-mandate enforcement**: the factory's `--implement` post-check diffs the PR against the issue's "Affected platforms" checkboxes and blocks the card if a claimed platform has no code changes. To run a legitimate single-platform feature, apply `parity:web-only` / `parity:mobile-only` / `parity:desktop-only` to the issue. For a factory-internal change that touches no app platform (under `scripts/`, docs, CI), tick the **None** box in the issue form (or apply the `parity:infra-only` label) — the spec gate skips the "Affected platforms" requirement and the parity check passes as long as the PR stays out of `apps/` and `packages/shared/`.
 
@@ -267,12 +268,47 @@ Full safety rails + migration workflow: [`docs/operations/migrations.md`](./docs
 - Access via `import { env } from "@/env"` — never use `process.env` directly
 - See `.env.local.example` for required variables
 
+## Local Secrets (`~/drafto-secrets/`)
+
+Machine-local secrets live as files in `~/drafto-secrets/` on the MacBook Air and the Mac mini, outside the repo. The folder is mode 700 and each file 600; write new ones under `umask 077`. Never commit them, and never paste a value into a doc, issue, PR or chat. `source` the file and use the variable **without printing it**: no `echo $VAR`, no `cat`, nothing that puts the value in a transcript or log.
+
+The recipes below are for interactive sessions. Unattended factory, support and nightly sessions use only the secrets their own scripts load, and the factory's verify lane reaches previews only through `preview-curl` ([ADR-0053](./docs/adr/0053-pre-in-test-verification-stage.md)).
+
+- **`vercel-env.sh`** → `VERCEL_PROTECTION_BYPASS_DRAFTO`. The Vercel "Protection Bypass for Automation" secret for the drafto project: it lets a request skip the Vercel SSO wall on a protected preview deployment. The factory's verify lane reads its own copy, `vercel-bypass.env`. The Mac mini has no `vercel-env.sh`, only that factory copy, so on the Mac mini ask the user before using it. Previews use the dev Supabase project, so a production `dk_` key gets a 401 there.
+
+  ```bash
+  source ~/drafto-secrets/vercel-env.sh
+  curl "https://drafto-git-<branch>-jakubanderwalds-projects.vercel.app/api/mcp" \
+    -H "x-vercel-protection-bypass: $VERCEL_PROTECTION_BYPASS_DRAFTO" \
+    -H "Authorization: Bearer <dk_ app key>" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" -d '{...}'
+  ```
+
+- **`sentry-read.sh`** → `SENTRY_READ_TOKEN`. A read-only Sentry personal token (`event:read org:read project:read`), one per machine, named `claude-code read-only (<machine>)`. Use it to query errors, traces and spans.
+  - The org `jakub-anderwald` is in Sentry's EU region, so call `https://de.sentry.io`. The drafto project ID is `4510937249480784`.
+  - The tokens in `~/.sentryclirc` and `apps/web/.env.local` only upload source maps; reads with them get a 403.
+  - If the file is missing on a machine, ask the user instead of creating a token.
+  - To filter or group differently, change `query` and `field`. For example, `--data-urlencode 'query=http.target:/api/mcp' --data-urlencode 'field=user.ip'` counts `/api/mcp` spans per client IP.
+
+  ```bash
+  source ~/drafto-secrets/sentry-read.sh
+  curl -s -G -H "Authorization: Bearer $SENTRY_READ_TOKEN" \
+    "https://de.sentry.io/api/0/organizations/jakub-anderwald/events/" \
+    --data-urlencode 'dataset=spans' --data-urlencode 'statsPeriod=24h' \
+    --data-urlencode 'project=4510937249480784' \
+    --data-urlencode 'field=transaction' --data-urlencode 'field=count()' --data-urlencode 'sort=-count()'
+  ```
+
+- **Other files** are documented with the feature that uses them; search `docs/` for `drafto-secrets`. They cover signing and App Store Connect ([builds-and-releases.md](./docs/operations/builds-and-releases.md)), the support agent ([support-agent.md](./docs/features/support-agent.md)), the MCP registry key ([mcp-server.md](./docs/features/mcp-server.md)), Sign in with Apple ([auth.md](./docs/features/auth.md)), the Supabase service-role keys ([offline-sync.md](./docs/features/offline-sync.md)) and the account-approval regression tests (`apps/web/e2e/regression/account-approval/README.md`).
+
 ## Error Handling
 
 - Errors flow through Sentry automatically (`@sentry/nextjs`)
 - Client config: `instrumentation-client.ts` (NOT `sentry.client.config.ts` — Turbopack ignores the old webpack convention)
 - Server/edge configs: `sentry.server.config.ts`, `sentry.edge.config.ts` (loaded via `instrumentation.ts`)
 - Do not swallow errors silently — let them propagate to Sentry
+- To read Sentry data from a session, use the read-only token in [Local Secrets](#local-secrets-drafto-secrets)
 
 ## MCP Server (Claude Cowork Integration)
 
@@ -316,7 +352,7 @@ pnpm lint             # ESLint (all packages)
 pnpm format:check     # Prettier check
 pnpm test             # Unit + integration tests (all packages)
 pnpm typecheck        # TypeScript check (all packages)
-pnpm migration:check  # Check migrations for destructive SQL
+pnpm migration:check  # Check migrations for destructive SQL and missing Data API grants
 ```
 
 ## Local Dev Setup
