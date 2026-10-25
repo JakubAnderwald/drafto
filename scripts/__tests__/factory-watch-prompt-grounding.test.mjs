@@ -90,6 +90,75 @@ describe("watcher prompt — review-comment data and CodeRabbit CLI threads", ()
   });
 });
 
+// ADR 0057: `pnpm migration:check` fails a migration a PR adds whose version is not
+// newer than main's newest (#646 sat open while main gained a newer one, and
+// `supabase db push` then refused it). `--release` merges main into a BEHIND PR, so
+// the fix loop is where that red lands; without a scoped `git mv` it can't recover.
+describe("watcher prompt — migration order (ADR 0057)", () => {
+  it("allows git mv only for renumbering a migration", () => {
+    assert.match(
+      flat,
+      /`git mv` \*\*only\*\* as `git mv supabase\/migrations\/<old>\.sql supabase\/migrations\/<new>\.sql`/,
+    );
+    assert.match(flat, /and any other `git mv`/);
+    // The rest of the refuse-list still stands.
+    assert.match(
+      flat,
+      /Refuse `git push --force`, `git reset --hard`, `git checkout <branch>`, `git rebase`/,
+    );
+  });
+
+  it("fetches main before reproducing, so a stale origin/main can't hide the error", () => {
+    assert.match(flat, /`git fetch origin main`/);
+    assert.match(flat, /run `git fetch origin main` before `pnpm migration:check`/);
+  });
+
+  it("names the check's error and the full renumber recipe", () => {
+    assert.match(flat, /`new migration version <v> is not newer than <base>'s newest migration`/);
+    assert.match(flat, /`git grep <old version>`/);
+    assert.match(flat, /`fix: renumber migration after main moved`/);
+  });
+
+  // A stale CREATE renamed past a fresh ALTER from the same PR would apply after it,
+  // so the check also prints moves for later migrations; skipping them breaks order.
+  it("applies every printed git mv, moves included, in the order printed", () => {
+    assert.match(flat, /apply \*\*every\*\* `git mv` the check prints, in the order printed/);
+    assert.match(flat, /the ones listed under the hint/);
+  });
+
+  // With a stale origin/main, a migration main already has looks "added" to the
+  // check. Renaming it would rewrite applied history, so only the PR's own files move.
+  it("renames only files in the PR's own changed files, else fetches, else blocks", () => {
+    assert.match(flat, /`gh pr view <n> --repo JakubAnderwald\/drafto --json files`/);
+    assert.match(flat, /\*\*Every file you rename must be in that list\.\*\*/);
+    assert.match(
+      flat,
+      /If a flagged file isn't, your `origin\/main` is stale: `git fetch origin main` and re-run `pnpm migration:check`/,
+    );
+    assert.match(
+      flat,
+      /If a flagged file is still not one of the PR's own, rename nothing and emit `action=blocked`/,
+    );
+    assert.match(flat, /never renumber a migration main already has/);
+  });
+
+  it("blocks on an order error the check can't give a git mv for", () => {
+    assert.match(
+      flat,
+      /an order error with no `git mv` under it .* needs a human: rename nothing and emit `action=blocked`/,
+    );
+  });
+
+  it("leaves the dev repair to the operator and never runs supabase itself", () => {
+    assert.match(
+      flat,
+      /two `supabase migration repair` commands in docs\/operations\/migrations\.md/,
+    );
+    assert.match(flat, /"Migration versions must sort last"\. Never run them yourself/);
+    assert.match(flat, /any `supabase` CLI command/);
+  });
+});
+
 // #465: the prompt said "attempts > 3 → blocked" while bash allowed up to
 // FACTORY_MAX_ATTEMPTS (5), so a pass bash started at attempts=4 refused and
 // parked the card early. Bash owns the budget.

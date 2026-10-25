@@ -338,6 +338,14 @@ For a first implementation, `revisionComments` is empty; ignore this section.
    (docs/operations/migrations.md → "New tables need explicit grants"). The
    check fails without them.
 
+   A new migration's version must be 14 digits and newer than the newest file
+   in `supabase/migrations/` on `origin/main` — normally today's UTC date as
+   `YYYYMMDD000001_<name>.sql`; if main already has a file dated today or
+   later, the next version after it. `supabase db push` refuses a migration
+   that sorts before one already applied, and `pnpm migration:check` fails it
+   with the `git mv` to apply (docs/operations/migrations.md → "Migration
+   versions must sort last").
+
    On failure, fix the underlying issue and re-run. Don't swallow errors,
    don't add `// @ts-ignore`, don't suppress lint rules without a `-- <reason>`
    comment explaining why.

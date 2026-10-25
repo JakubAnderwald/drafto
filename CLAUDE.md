@@ -258,7 +258,7 @@ Full safety rails + migration workflow: [`docs/operations/migrations.md`](./docs
 
 - Never run `DROP TABLE`, `TRUNCATE`, or unqualified `DELETE FROM` against production
 - Never run `supabase db reset` against production — it drops and recreates the entire database
-- Always run `pnpm migration:check` before pushing migrations
+- Always run `pnpm migration:check` before pushing migrations. It also fails a new migration whose version doesn't sort after the newest one on main (`supabase db push` refuses those), so update the branch from main first, and rename with the `git mv` it prints. See [`docs/operations/migrations.md`](./docs/operations/migrations.md#migration-versions-must-sort-last)
 - Before `supabase db push`, verify the linked project ref with `supabase projects list` (prod `tbmjbxxseonkciqovnpl`, dev `huhzactreblzcogqkbsd`)
 - Require explicit user "yes" before any production database operation — state the target project, operation, and affected data before asking
 
@@ -352,7 +352,7 @@ pnpm lint             # ESLint (all packages)
 pnpm format:check     # Prettier check
 pnpm test             # Unit + integration tests (all packages)
 pnpm typecheck        # TypeScript check (all packages)
-pnpm migration:check  # Check migrations for destructive SQL and missing Data API grants
+pnpm migration:check  # Check migrations for destructive SQL, missing Data API grants, and new versions that sort before main's newest
 ```
 
 ## Local Dev Setup
