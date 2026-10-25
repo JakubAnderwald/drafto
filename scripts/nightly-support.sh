@@ -9,6 +9,8 @@ export PATH="$HOME/.local/bin:$PATH:/usr/sbin:/sbin"
 # Ensure UTF-8 locale for CocoaPods (launchd provides minimal C/POSIX locale)
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
+# Unattended session marker; interactive-only tools like `pnpm test:live:supabase` refuse under it.
+export DRAFTO_UNATTENDED=1
 
 # Initialize rbenv so Fastlane uses the project Ruby (3.3.7), not system Ruby (2.6)
 # rbenv may be in ~/.rbenv/bin (manual install) or /opt/homebrew/bin (Homebrew)

@@ -6,6 +6,17 @@
 
 export const SERVICE_KEYS_TXT = "supabase service keys.txt";
 
+// The file's tag for each project ref (docs/architecture/environments.md).
+export const SERVICE_KEY_TAGS = Object.freeze({
+  huhzactreblzcogqkbsd: "DEV",
+  tbmjbxxseonkciqovnpl: "PROD",
+});
+
+/** "DEV" or "PROD" for the two known refs; null for any other project. */
+export function serviceKeyTagFor(projectRef) {
+  return Object.hasOwn(SERVICE_KEY_TAGS, String(projectRef)) ? SERVICE_KEY_TAGS[projectRef] : null;
+}
+
 /**
  * The key on the first "<tag>:" line of <text>, trimmed, or null when no line
  * starts with that tag. Pure: the caller reads the file and never prints the

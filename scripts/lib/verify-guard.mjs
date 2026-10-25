@@ -780,6 +780,11 @@ export function protectedTextReason(text, config) {
   const s = String(text ?? "");
   const lower = s.toLowerCase();
   if (lower.includes("drafto-secrets")) return "~/drafto-secrets is off limits";
+  // The dev live tests run with the dev service-role key: operators only. The
+  // runner's own unit tests (fixtures only) stay runnable.
+  if (/run-dev-live-tests(?!\.test\.mjs)/.test(lower) || lower.includes("test:live")) {
+    return "the dev live tests (pnpm test:live:supabase) run only from interactive sessions";
+  }
   if (/drafto\.eu\b/i.test(s))
     return "production (drafto.eu) is off limits; the preview is the only target";
   if (lower.includes(".config/gh")) return "the gh config is off limits";
@@ -1280,10 +1285,28 @@ const NODE_VALUE_OPTS = new Set([
   "--test-reporter-destination",
 ]);
 
+// The dev live-test runner. The text rule catches its name; this catches a
+// glob that could expand to it (`cd scripts && node run-*`, or node --test's
+// own globbing of `'scripts/run-*.mjs'`).
+const LIVE_RUNNER_FILE = "run-dev-live-tests.mjs";
+
+function globCouldNameLiveRunner(word) {
+  const seg = String(word).slice(String(word).lastIndexOf("/") + 1);
+  if (!DYNAMIC_CHAR.test(seg)) return false;
+  try {
+    return globSegmentRegex(seg).regex.test(LIVE_RUNNER_FILE);
+  } catch {
+    return true;
+  }
+}
+
 function checkNode(args, ctx) {
   if (args.some((a) => a.startsWith("--env-file"))) return deny("--env-file reads an env file");
   const url = remoteUrlIn(args.join(" "));
   if (url) return deny(`network access goes through preview-curl only (${url})`);
+  if (args.some((a) => !a.startsWith("-") && globCouldNameLiveRunner(a))) {
+    return deny("this pattern could name the dev live-test runner, which is for operators only");
+  }
   if (args.includes("--test")) return allow("node --test");
   if (args.some((a) => ["-e", "--eval", "-p", "--print"].includes(a)))
     return allow("node one-liner");

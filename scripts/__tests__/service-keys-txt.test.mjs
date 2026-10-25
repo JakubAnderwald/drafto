@@ -5,7 +5,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { SERVICE_KEYS_TXT, serviceKeyFromText } from "../lib/service-keys-txt.mjs";
+import {
+  SERVICE_KEYS_TXT,
+  serviceKeyFromText,
+  serviceKeyTagFor,
+} from "../lib/service-keys-txt.mjs";
 
 describe("serviceKeyFromText", () => {
   const text = "PROD: fake-prod-key\nDEV:   fake-dev-key  \n";
@@ -32,5 +36,18 @@ describe("serviceKeyFromText", () => {
 
   it("names the file migration-stats.mjs has always read", () => {
     assert.equal(SERVICE_KEYS_TXT, "supabase service keys.txt");
+  });
+});
+
+describe("serviceKeyTagFor", () => {
+  it("maps the dev and prod refs to their tags", () => {
+    assert.equal(serviceKeyTagFor("huhzactreblzcogqkbsd"), "DEV");
+    assert.equal(serviceKeyTagFor("tbmjbxxseonkciqovnpl"), "PROD");
+  });
+
+  it("maps any other project to null, never to DEV", () => {
+    for (const ref of ["abcdefghijklmnopqrst", "", undefined, null, "toString", "__proto__"]) {
+      assert.equal(serviceKeyTagFor(ref), null, String(ref));
+    }
   });
 });
