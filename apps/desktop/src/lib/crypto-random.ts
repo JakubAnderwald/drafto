@@ -106,14 +106,27 @@ function canDrawRandomBytes(native: CryptoModule): boolean {
 const SELF_TEST_INPUT = [0x61, 0x62, 0x63];
 const SELF_TEST_DIGEST = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
-/** Whether the async `sha256` round trip works, so a broken one never reaches auth-js. */
+/**
+ * How long the self-test may take. Sign-in waits for the install (`cryptoReady`
+ * in `supabase.ts`), so a native promise that never settles must not hold it:
+ * past this, `subtle` is skipped and the challenge stays `plain`.
+ */
+export const SELF_TEST_TIMEOUT_MS = 5000;
+
+/** Whether the async `sha256` round trip works, in time, so a broken one never reaches auth-js. */
 async function hashesCorrectly(native: CryptoModule): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), SELF_TEST_TIMEOUT_MS);
+  });
   try {
-    const hash = await native.sha256(SELF_TEST_INPUT);
+    const hash = await Promise.race([native.sha256(SELF_TEST_INPUT), timedOut]);
     if (!isByteArray(hash, SHA256_BYTES)) return false;
     return hash.map((byte) => byte.toString(16).padStart(2, "0")).join("") === SELF_TEST_DIGEST;
   } catch {
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -151,8 +164,9 @@ function addMember(target: InstalledCrypto, name: keyof InstalledCrypto, value: 
  * - Installs nothing when the module is absent (Jest, CI) or fails a one-byte
  *   probe.
  * - `getRandomValues` is installed at once. `subtle` follows when the returned
- *   promise settles, and only after a native SHA-256 self-test passes, because
- *   supabase-js stops falling back to `plain` as soon as `crypto.subtle` exists.
+ *   promise settles, and only after a native SHA-256 self-test passes within
+ *   `SELF_TEST_TIMEOUT_MS`, because supabase-js stops falling back to `plain`
+ *   as soon as `crypto.subtle` exists.
  * - `subtle` also needs `TextEncoder` and `btoa`: supabase-js checks for the
  *   first but calls `btoa` unguarded, so `subtle` without it would throw
  *   mid-sign-in.
@@ -160,6 +174,9 @@ function addMember(target: InstalledCrypto, name: keyof InstalledCrypto, value: 
  * `subtle` has `digest` only. `supabase.auth.getClaims()` would see it and try
  * `subtle.importKey` on an asymmetric JWT, so add `importKey` and `verify`
  * before the app ever calls it. `generateId` also picks up `getRandomValues`.
+ *
+ * The returned promise never rejects and settles within `SELF_TEST_TIMEOUT_MS`,
+ * so a call that starts a PKCE flow can await it.
  */
 export async function installCryptoRandom(): Promise<void> {
   const scope = globalThis as { crypto?: InstalledCrypto };

@@ -1,7 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const mockCreateClient = jest.fn(() => ({ auth: {} }));
-const mockInstallCryptoRandom = jest.fn();
+const mockInstalled = Promise.resolve();
+const mockInstallCryptoRandom = jest.fn(() => mockInstalled);
 
 jest.mock("@/lib/crypto-random", () => ({
   installCryptoRandom: () => mockInstallCryptoRandom(),
@@ -19,9 +20,10 @@ jest.mock("@/lib/config", () => ({
 describe("supabase client", () => {
   it("installs the CSPRNG before creating the PKCE client (ADR-0059)", () => {
     // Required lazily: a static import would run createClient before `mockCreateClient` exists.
+    let client: { cryptoReady?: unknown } = {};
     jest.isolateModules(() => {
       // eslint-disable-next-line @typescript-eslint/no-require-imports -- see above
-      require("@/lib/supabase");
+      client = require("@/lib/supabase");
     });
 
     expect(mockCreateClient).toHaveBeenCalledTimes(1);
@@ -30,6 +32,8 @@ describe("supabase client", () => {
     expect(mockInstallCryptoRandom.mock.invocationCallOrder[0]).toBeLessThan(
       mockCreateClient.mock.invocationCallOrder[0],
     );
+    // `subtle` lands only when the install settles, so PKCE flow starts await this.
+    expect(client.cryptoReady).toBe(mockInstalled);
     const [url, key, options] = mockCreateClient.mock.calls[0] as unknown as [
       string,
       string,

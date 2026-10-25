@@ -6,10 +6,16 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { installCryptoRandom } from "@/lib/crypto-random";
 import { supabaseUrl, supabaseAnonKey } from "./config";
 
-// Before any auth call: supabase-js draws the PKCE `code_verifier` from it, and
-// hashes it into an S256 challenge with `crypto.subtle` (ADR-0059). `subtle`
-// lands a moment later, once the native SHA-256 passes its self-test.
-void installCryptoRandom();
+/**
+ * Settles once the PKCE crypto is in place (ADR-0059). supabase-js draws the
+ * `code_verifier` from `crypto.getRandomValues`, installed at once, and hashes
+ * it into an S256 challenge with `crypto.subtle`, which lands only after the
+ * native SHA-256 self-test. Await this before any call that starts a PKCE flow
+ * (`signInWithOAuth`, `signUp`, `resetPasswordForEmail`): one started while it
+ * is pending sends a `plain` challenge. It never rejects, and settles within
+ * the self-test's time limit.
+ */
+export const cryptoReady: Promise<void> = installCryptoRandom();
 
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error(

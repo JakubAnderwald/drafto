@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { RECOVERY_REDIRECT_URL } from "@/lib/auth-recovery";
-import { supabase } from "@/lib/supabase";
+import { cryptoReady, supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
@@ -47,6 +47,8 @@ export function ForgotPasswordScreen({ onNavigateToLogin }: ForgotPasswordScreen
     setLoading(true);
 
     try {
+      // The reset link is a PKCE flow: wait for the S256 crypto (ADR-0059).
+      await cryptoReady;
       const { error: resetError } = await supabase.auth.resetPasswordForEmail(trimmed, {
         redirectTo: RECOVERY_REDIRECT_URL,
       });

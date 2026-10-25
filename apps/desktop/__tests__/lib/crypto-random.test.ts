@@ -13,7 +13,7 @@ jest.mock("@/lib/native/crypto-module", () => ({
   getCryptoModule: () => mockModule,
 }));
 
-import { installCryptoRandom } from "@/lib/crypto-random";
+import { SELF_TEST_TIMEOUT_MS, installCryptoRandom } from "@/lib/crypto-random";
 
 type InstalledCrypto = {
   getRandomValues?: <T extends ArrayBufferView | null>(array: T) => T;
@@ -165,6 +165,58 @@ describe("installCryptoRandom", () => {
         expect(warn).toHaveBeenCalledWith(expect.stringContaining("SHA-256 self-test"));
       },
     );
+
+    it("settles without subtle when the SHA-256 self-test never settles, so sign-in is not held", async () => {
+      jest.useFakeTimers();
+      try {
+        mockSha256.mockImplementationOnce(() => new Promise<number[]>(() => undefined));
+
+        const pending = installCryptoRandom();
+        await jest.advanceTimersByTimeAsync(SELF_TEST_TIMEOUT_MS);
+        await expect(pending).resolves.toBeUndefined();
+
+        expect(typeof scope.crypto?.getRandomValues).toBe("function");
+        expect(scope.crypto?.subtle).toBeUndefined();
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("SHA-256 self-test"));
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it("still installs subtle when a slow launch delays the self-test's answer by a second", async () => {
+      // The real bridge answers in a later JS task, not a microtask, so the limit must leave room.
+      jest.useFakeTimers();
+      try {
+        mockSha256.mockImplementationOnce(
+          (bytes: number[]) =>
+            new Promise<number[]>((resolve) => {
+              const hash = createHash("sha256").update(Uint8Array.from(bytes)).digest();
+              setTimeout(() => resolve(Array.from(hash) as number[]), 1000);
+            }),
+        );
+
+        const pending = installCryptoRandom();
+        await jest.advanceTimersByTimeAsync(1000);
+        await pending;
+
+        expect(typeof scope.crypto?.subtle?.digest).toBe("function");
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it("leaves no self-test timer behind once the self-test answers", async () => {
+      jest.useFakeTimers();
+      try {
+        await installCryptoRandom();
+
+        expect(jest.getTimerCount()).toBe(0);
+        expect(typeof scope.crypto?.subtle?.digest).toBe("function");
+      } finally {
+        jest.useRealTimers();
+      }
+    });
 
     it("leaves a complete existing implementation alone", async () => {
       const existing = { getRandomValues: jest.fn(), subtle: { digest: jest.fn() } };

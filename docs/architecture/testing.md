@@ -132,7 +132,7 @@ Some behaviour cannot be scripted deterministically and is verified by hand. Not
     - Web (`s256`) and mobile (`plain`) write to the same table. Match the row by its time and `provider_type`, and repeat the check if more than one Google row lands in the window.
   - **If the row says `plain`**, sign-in still works, but part of the module was skipped. The app's `[crypto]` warning in Console.app (subsystem `com.facebook.react.log`) says which part:
     - "DraftoCrypto returned no random bytes": the synchronous `randomBytes` call is broken, and the verifier still comes from `Math.random`.
-    - "failed its SHA-256 self-test": the async `sha256` is broken. The verifier comes from the CSPRNG, but `subtle` was not installed.
+    - "failed its SHA-256 self-test": the async `sha256` is broken, or didn't answer within 5 seconds. The verifier comes from the CSPRNG, but `subtle` was not installed.
     - No `[crypto]` line at all: the module isn't linked. Check its `project.pbxproj` entries.
   - **If sign-in fails before the browser opens**, the login screen shows "Failed to open sign-in. Please try again." and nothing is logged, because `signInWithOAuthBrowser` (`apps/desktop/src/lib/oauth.ts`) swallows the error. There are three possible causes:
     - `getRandomValues` threw on the full-size request after the one-byte probe passed.

@@ -1,12 +1,16 @@
 import React from "react";
 import { SIGNUP_CONFIRMATION_SENT, SIGNUP_EMAIL_REDIRECT_URL } from "@drafto/shared";
 
-import { render, fireEvent, waitFor } from "../helpers/test-utils";
+import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import { SignupScreen } from "../../src/screens/signup";
 
 const mockSignUp = jest.fn();
+let mockCryptoReady: Promise<void> = Promise.resolve();
 
 jest.mock("@/lib/supabase", () => ({
+  get cryptoReady() {
+    return mockCryptoReady;
+  },
   supabase: {
     auth: {
       signUp: (...args: unknown[]) => mockSignUp(...args),
@@ -25,6 +29,7 @@ function fillAndSubmit({ getByPlaceholderText, getByText }: ReturnType<typeof re
 describe("SignupScreen", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockCryptoReady = Promise.resolve();
     mockSignUp.mockResolvedValue({ data: { user: NEW_USER, session: null }, error: null });
   });
 
@@ -72,6 +77,26 @@ describe("SignupScreen", () => {
         options: { emailRedirectTo: SIGNUP_EMAIL_REDIRECT_URL },
       });
     });
+  });
+
+  it("waits for the PKCE crypto before signing up, so its challenge is S256", async () => {
+    let settle = () => {};
+    mockCryptoReady = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const screen = render(<SignupScreen />);
+
+    fillAndSubmit(screen);
+    await act(async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+    expect(mockSignUp).not.toHaveBeenCalled();
+
+    settle();
+    await waitFor(() => {
+      expect(screen.getByTestId("signup-check-email")).toBeTruthy();
+    });
+    expect(mockSignUp).toHaveBeenCalledTimes(1);
   });
 
   it("switches to the check-email state when sign-up returns no session (#675)", async () => {

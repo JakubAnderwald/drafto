@@ -2,7 +2,7 @@ import { Linking } from "react-native";
 
 import { isRecoveryUrl } from "@/lib/auth-recovery";
 import { apiUrl } from "@/lib/config";
-import { supabase } from "@/lib/supabase";
+import { cryptoReady, supabase } from "@/lib/supabase";
 
 /**
  * Supabase ends the OAuth redirect on this drafto.eu hand-off page, not on the
@@ -19,6 +19,8 @@ export async function signInWithOAuthBrowser(
   provider: OAuthProvider,
 ): Promise<{ error: string | null }> {
   try {
+    // A click right after launch would otherwise get a plain PKCE challenge.
+    await cryptoReady;
     const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
       provider,
       options: {
