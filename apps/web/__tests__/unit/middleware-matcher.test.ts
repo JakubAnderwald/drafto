@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { NextRequest, NextResponse } from "next/server";
 import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 
 // Importing the middleware module pulls in `@/env`, which validates real env vars.
@@ -9,7 +10,10 @@ vi.mock("@/env", () => ({
   },
 }));
 
-const { config } = await import("../../middleware");
+const { updateSession } = vi.hoisted(() => ({ updateSession: vi.fn() }));
+vi.mock("@/lib/supabase/middleware", () => ({ updateSession }));
+
+const { config, middleware } = await import("@/middleware");
 
 function matches(path: string): boolean {
   return unstable_doesMiddlewareMatch({ config, url: `https://drafto.eu${path}` });
@@ -85,5 +89,16 @@ describe("middleware matcher", () => {
 
   it("still runs on any other /.well-known path, so a future route there gets a session", () => {
     expect(matches("/.well-known/some-future-route")).toBe(true);
+  });
+});
+
+describe("middleware entrypoint", () => {
+  it("hands every matched request to updateSession and returns its response", async () => {
+    const request = new NextRequest("https://drafto.eu/notes");
+    const response = NextResponse.next();
+    updateSession.mockResolvedValueOnce(response);
+
+    await expect(middleware(request)).resolves.toBe(response);
+    expect(updateSession).toHaveBeenCalledWith(request);
   });
 });
