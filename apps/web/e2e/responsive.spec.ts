@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/test";
 
 /**
  * Responsive E2E tests for mobile and tablet viewports.

@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/test";
 
 test.describe("Notebook management lifecycle", () => {
   test("create, rename, and delete a notebook", async ({ page }) => {

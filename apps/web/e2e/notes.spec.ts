@@ -1,4 +1,6 @@
-import { test, expect, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { recordRunNotebook } from "./helpers/run-notebooks";
+import { test, expect } from "./helpers/test";
 
 /**
  * The /api/notebooks endpoint and the SSR layout prefetch both order by
@@ -27,18 +29,20 @@ const HYDRATION_ERROR =
 test.describe("Server-rendered note list", () => {
   test("first page load serves the notes in the HTML and hydrates without errors", async ({
     page,
-  }) => {
+  }, testInfo) => {
     // A notebook holding one known note, so the server's HTML can be checked for its
-    // row. Neither is deleted afterwards: the test keeps its notebook on top, so other
-    // workers' tests open it by default. Deleting it could pull it out from under a test
-    // that hasn't added its note yet, or take that test's trashed notes with it (the API
-    // only refuses while a notebook holds live notes).
+    // row. Neither is deleted when the test ends: the test keeps its notebook on top, so
+    // other workers' tests open it by default. Deleting it could pull it out from under a
+    // test that hasn't added its note yet, or take that test's trashed notes with it (the
+    // API only refuses while a notebook holds live notes). The run-end teardown deletes
+    // it once every test has finished.
     const stamp = Date.now();
     const notebookName = `SSR NB ${stamp}`;
     const noteTitle = `SSR Note ${stamp}`;
     const notebookRes = await page.request.post("/api/notebooks", { data: { name: notebookName } });
     expect(notebookRes.ok()).toBe(true);
     const notebookId = ((await notebookRes.json()) as { id: string }).id;
+    recordRunNotebook(testInfo, notebookId);
 
     const noteRes = await page.request.post(`/api/notebooks/${notebookId}/notes`);
     expect(noteRes.ok()).toBe(true);
@@ -167,7 +171,7 @@ test.describe("Note editing flow", () => {
     await expect(page.getByText("Hello from E2E test")).toBeVisible({ timeout: 5000 });
   });
 
-  test("move a note between notebooks", async ({ page }) => {
+  test("move a note between notebooks", async ({ page }, testInfo) => {
     // The note starts in a notebook made for this test. One picked from the sidebar
     // can be gone after the reload below: the e2e account can hold more notebooks than
     // a query returns (Supabase caps it at 1000 rows, most recently updated first), and
@@ -175,15 +179,17 @@ test.describe("Note editing flow", () => {
     // oldest one listed, which the new notebook has already pushed out of the query.
     // Another worker can also delete a notebook it created.
     //
-    // The source isn't deleted afterwards: until Target exists it can be the newest
-    // notebook, which other workers' tests open by default. Deleting it could pull it
-    // out from under a test that hasn't added its note yet, or take that test's trashed
-    // notes with it (the API only refuses while a notebook holds live notes).
+    // The source isn't deleted when the test ends: until Target exists it can be the
+    // newest notebook, which other workers' tests open by default. Deleting it could pull
+    // it out from under a test that hasn't added its note yet, or take that test's trashed
+    // notes with it (the API only refuses while a notebook holds live notes). The run-end
+    // teardown deletes it once every test has finished.
     const sourceNotebookName = `Move Source ${Date.now()}`;
     const sourceRes = await page.request.post("/api/notebooks", {
       data: { name: sourceNotebookName },
     });
     expect(sourceRes.ok()).toBe(true);
+    recordRunNotebook(testInfo, ((await sourceRes.json()) as { id: string }).id);
 
     await page.goto("/");
 
