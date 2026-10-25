@@ -165,9 +165,15 @@ describe("factory-agent.sh --implement verification", () => {
   }
 
   it("leaves the legitimate noop paths advancing as before", () => {
-    assert.match(noopArm, /transition_status "\$ITEM_ID" "\$ISSUE_NUM" "In Test"/);
-    // Revision noop: only the feedback the run was given is consumed.
-    assert.match(noopArm, /lastFeedbackAt "\$FEEDBACK_MARK"/);
+    // Revision noop: revision_return_to_test re-presents the PR and consumes
+    // only the feedback the run was given (its <feedback-mark> argument).
+    assert.match(noopArm, /revision_return_to_test [\s\S]*?"\$FEEDBACK_MARK" noop\n/);
+    const back = script.slice(
+      script.indexOf("revision_return_to_test() {"),
+      script.indexOf("\n}\n", script.indexOf("revision_return_to_test() {")),
+    );
+    assert.match(back, /transition_status "\$item_id" "\$issue_num" "In Test"/);
+    assert.match(back, /lastFeedbackAt "\$mark"/);
     // Fresh idempotency noop: there is no feedback, so "now" is the baseline.
     assert.match(noopArm, /lastFeedbackAt "\$NOW_ISO"/);
   });

@@ -160,14 +160,15 @@ describe("Testing column wiring", () => {
   });
 
   it("moves a card into Testing only on the verification stage's two paths (ADR-0053)", () => {
-    // verify_enter (In Review → Testing) and the revision no-op path, both
-    // behind verify_target_status, so FACTORY_VERIFY=0 never reaches either.
+    // verify_enter (In Review → Testing) and revision_return_to_test (the
+    // revision no-op / declined path), both behind verify_target_status, so
+    // FACTORY_VERIFY=0 never reaches either.
     const moves = script.match(/transition_status "[^"]*" "[^"]*" "Testing"/g) || [];
     assert.equal(moves.length, 2, moves.join("\n"));
     assert.match(extract("verify_enter"), /transition_status "\$item_id" "\$issue_num" "Testing"/);
     assert.match(
-      script,
-      /if verify_target_status "\$ISSUE_NUM" "\$PRE_HEAD_OID" "\$ITEM_LABELS" \\\n\s*&& transition_status "\$ITEM_ID" "\$ISSUE_NUM" "Testing"; then/,
+      extract("revision_return_to_test"),
+      /if verify_target_status "\$issue_num" "\$pr_head" "\$labels" \\\n\s*&& transition_status "\$item_id" "\$issue_num" "Testing"; then/,
     );
   });
 });
