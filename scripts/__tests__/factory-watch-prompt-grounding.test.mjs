@@ -119,6 +119,36 @@ describe("watcher prompt — migration order (ADR 0057)", () => {
     assert.match(flat, /`fix: renumber migration after main moved`/);
   });
 
+  // A stale CREATE renamed past a fresh ALTER from the same PR would apply after it,
+  // so the check also prints moves for later migrations; skipping them breaks order.
+  it("applies every printed git mv, moves included, in the order printed", () => {
+    assert.match(flat, /apply \*\*every\*\* `git mv` the check prints, in the order printed/);
+    assert.match(flat, /the ones listed under the hint/);
+  });
+
+  // With a stale origin/main, a migration main already has looks "added" to the
+  // check. Renaming it would rewrite applied history, so only the PR's own files move.
+  it("renames only files in the PR's own changed files, else fetches, else blocks", () => {
+    assert.match(flat, /`gh pr view <n> --repo JakubAnderwald\/drafto --json files`/);
+    assert.match(flat, /\*\*Every file you rename must be in that list\.\*\*/);
+    assert.match(
+      flat,
+      /If a flagged file isn't, your `origin\/main` is stale: `git fetch origin main` and re-run `pnpm migration:check`/,
+    );
+    assert.match(
+      flat,
+      /If a flagged file is still not one of the PR's own, rename nothing and emit `action=blocked`/,
+    );
+    assert.match(flat, /never renumber a migration main already has/);
+  });
+
+  it("blocks on an order error the check can't give a git mv for", () => {
+    assert.match(
+      flat,
+      /an order error with no `git mv` under it .* needs a human: rename nothing and emit `action=blocked`/,
+    );
+  });
+
   it("leaves the dev repair to the operator and never runs supabase itself", () => {
     assert.match(
       flat,

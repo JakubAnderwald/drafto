@@ -86,8 +86,10 @@ Always apply migrations to dev first, verify, then to prod:
 
 ```bash
 # 1. Bring the branch up to date with main, then scan the migration
-#    (destructive SQL, missing grants, a version that sorts before main's newest)
-git fetch origin main && git rebase origin/main
+#    (destructive SQL, missing grants, a version that sorts before main's newest).
+#    Merge rather than rebase a pushed PR branch (or use GitHub's "Update branch"):
+#    a rebase needs a force-push, which the agents refuse.
+git fetch origin main && git merge origin/main
 pnpm migration:check
 
 # 2. Apply to dev

@@ -9,14 +9,25 @@
 //
 // Only files that are present locally but absent from the base tree are judged. That
 // covers untracked files, uncommitted files and CI's merge ref alike, and it leaves
-// main's own history alone (it already holds that out-of-order pair).
+// main's own history alone (it already holds that out-of-order pair). For each added
+// file it reports:
+//   - a version that isn't 14 digits (the Supabase CLI orders versions as strings, so
+//     only equal-length versions sort the way they read);
+//   - a version that a base file has under another name: a rename of a migration
+//     main already has, which must be reverted, not renumbered;
+//   - a version not newer than the base's newest, or shared with another file.
+// When any added file needs a new version, the branch's added migrations are
+// renumbered together, in their current order, so a stale CREATE never lands after
+// the fresh ALTER that depends on it. Files that only move to keep that order are
+// reported as `move`, not as errors.
 //
 // CLI:
 //   node scripts/lib/check-migration-order.mjs --base <ref> [--dir supabase/migrations]
 //
 // Prints one tab-separated line per finding, in the shape the safety script renders:
-//   <dir>/<file>\t<message>\tgit mv <dir>/<file> <dir>/<suggested>_<rest>.sql
-// No output and exit 0 when clean. Exit 2 when <ref> does not resolve to a commit.
+//   <error|move>\t<dir>/<file>\t<message>\t[git mv <dir>/<file> <dir>/<new>_<name>.sql]
+// The last field is empty when there is nothing to rename. No output and exit 0 when
+// clean. Exit 2 when <ref> does not resolve to a commit.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
@@ -26,6 +37,8 @@ import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 
 const VERSION_RE = /^(\d+)_(.+)$/;
+const VALID_NAME_RE = /^(\d{14})_(.+)$/;
+const VERSION_DIGITS = 14;
 const DEFAULT_DIR = "supabase/migrations";
 
 // The leading digits of a `<version>_<name>.sql` file name, or null when it has none.
@@ -34,60 +47,132 @@ export function versionOf(fileName) {
   return match ? match[1] : null;
 }
 
+// True for `<14-digit version>_<name>` — the only shape whose string order (the
+// Supabase CLI's) matches its numeric order.
+export function isValidMigrationName(fileName) {
+  return VALID_NAME_RE.test(fileName);
+}
+
 // YYYYMMDD of `date` in UTC, so the suggestion doesn't depend on the runner's zone.
 function utcDay(date) {
   return date.toISOString().slice(0, 10).replaceAll("-", "");
 }
 
-// The repo's next free version: today's first slot (YYYYMMDD000001), or one past
-// the base's newest version when that is already today or later. Versions are
-// compared as BigInt and returned as a 14-digit string.
-export function suggestVersion(baseMax, today = new Date()) {
-  const todayFirst = BigInt(`${utcDay(today)}000001`);
-  const next = baseMax === null || baseMax === undefined ? 0n : BigInt(baseMax) + 1n;
-  const pick = next > todayFirst ? next : todayFirst;
-  return pick.toString().padStart(14, "0");
+// The 14-digit version after `version`. 14 digits stay below 2^53, so Number is exact.
+function nextVersion(version) {
+  const next = String(Number(version) + 1).padStart(VERSION_DIGITS, "0");
+  if (next.length !== VERSION_DIGITS) {
+    throw new Error(`no 14-digit migration version follows ${version}`);
+  }
+  return next;
 }
 
-// Files in `localFiles` but not in `baseFiles` whose version is <= the newest base
-// version. Each finding carries a suggested version that is unique: it skips every
-// version already used locally and every earlier suggestion, so two stale files on
-// one branch never get the same new name.
-export function findOutOfOrder({ localFiles, baseFiles, today = new Date() }) {
+// Equal-length version strings compare the way the Supabase CLI orders them.
+function later(a, b) {
+  return a > b ? a : b;
+}
+
+// The repo's next free version: today's first slot (YYYYMMDD000001), or one past
+// the base's newest version when that is already today or later. Always 14 digits.
+export function suggestVersion(baseMax, today = new Date()) {
+  const todayFirst = `${utcDay(today)}000001`;
+  return baseMax ? later(nextVersion(baseMax), todayFirst) : todayFirst;
+}
+
+function byVersionThenName(a, b) {
+  if (a.version !== b.version) return a.version < b.version ? -1 : 1;
+  if (a.file !== b.file) return a.file < b.file ? -1 : 1;
+  return 0;
+}
+
+// Judges the files in `localFiles` that `baseFiles` lacks. Returns findings
+// `{ kind: "error" | "move", reason, file, version?, suggested?, baseMax?, others?, after? }`:
+//   shape         error  the version isn't 14 digits (no suggestion)
+//   renamed-base  error  a base file with this version is gone locally (no suggestion)
+//   duplicate-base error the version is also a base file's that is still present
+//   stale         error  the version is not newer than the base's newest
+//   duplicate     error  the version is also an earlier added file's
+//   order         move   a fresh file renumbered to stay after a renamed one
+// Every suggestion is free: it skips the versions of every local and base file and
+// every earlier suggestion, so no `git mv` target collides with an existing file.
+export function checkMigrationOrder({ localFiles, baseFiles, today = new Date() }) {
   const baseSet = new Set(baseFiles);
+  const localSet = new Set(localFiles);
+  const baseByVersion = new Map();
   let baseMax = null;
   for (const name of baseFiles) {
+    if (!isValidMigrationName(name)) continue;
     const version = versionOf(name);
-    if (version !== null && (baseMax === null || BigInt(version) > baseMax)) {
-      baseMax = BigInt(version);
-    }
+    baseByVersion.set(version, [...(baseByVersion.get(version) ?? []), name]);
+    if (baseMax === null || version > baseMax) baseMax = version;
   }
-  if (baseMax === null) return [];
+
+  const findings = [];
+  const candidates = [];
+  for (const file of localFiles.filter((name) => !baseSet.has(name)).sort()) {
+    if (!isValidMigrationName(file)) {
+      findings.push({ kind: "error", reason: "shape", file });
+      continue;
+    }
+    const version = versionOf(file);
+    const sameVersionOnBase = baseByVersion.get(version) ?? [];
+    const keptBase = sameVersionOnBase.filter((name) => localSet.has(name));
+    if (sameVersionOnBase.length > 0 && keptBase.length === 0) {
+      findings.push({
+        kind: "error",
+        reason: "renamed-base",
+        file,
+        version,
+        others: sameVersionOnBase,
+      });
+      continue;
+    }
+    candidates.push({ file, version, keptBase });
+  }
+  candidates.sort(byVersionThenName);
+
+  const isStale = (c) => baseMax !== null && c.version <= baseMax;
+  const uses = new Map();
+  for (const c of candidates) uses.set(c.version, (uses.get(c.version) ?? 0) + 1);
+  const needsRenumber = candidates.some(
+    (c) => isStale(c) || c.keptBase.length > 0 || uses.get(c.version) > 1,
+  );
+  if (!needsRenumber) return findings;
 
   const taken = new Set();
   for (const name of [...localFiles, ...baseFiles]) {
-    const version = versionOf(name);
-    if (version !== null) taken.add(BigInt(version));
+    if (isValidMigrationName(name)) taken.add(versionOf(name));
   }
-
-  const stale = localFiles
-    .filter((name) => !baseSet.has(name))
-    .map((name) => ({ name, version: versionOf(name) }))
-    .filter(({ version }) => version !== null && BigInt(version) <= baseMax)
-    .sort((a, b) => {
-      const diff = BigInt(a.version) - BigInt(b.version);
-      if (diff !== 0n) return diff < 0n ? -1 : 1;
-      return a.name < b.name ? -1 : 1;
-    });
-
-  const baseMaxText = baseMax.toString().padStart(14, "0");
-  let floor = BigInt(suggestVersion(baseMax, today));
-  return stale.map(({ name, version }) => {
-    while (taken.has(floor)) floor += 1n;
-    const suggested = floor.toString().padStart(14, "0");
-    taken.add(floor);
-    return { file: name, version, baseMax: baseMaxText, suggested };
-  });
+  const floor = suggestVersion(baseMax, today);
+  const seen = new Map();
+  let prev = baseMax;
+  let prevFile = null;
+  for (const c of candidates) {
+    const earlier = seen.get(c.version) ?? [];
+    seen.set(c.version, [...earlier, c.file]);
+    // A fresh file already after the previous one keeps its version.
+    if (!isStale(c) && c.keptBase.length === 0 && (prev === null || c.version > prev)) {
+      prev = c.version;
+      prevFile = c.file;
+      continue;
+    }
+    let suggested = prev === null ? floor : later(nextVersion(prev), floor);
+    while (taken.has(suggested)) suggested = nextVersion(suggested);
+    taken.add(suggested);
+    const base = { file: c.file, version: c.version, suggested, baseMax };
+    if (c.keptBase.length > 0) {
+      findings.push({ kind: "error", reason: "duplicate-base", ...base, others: c.keptBase });
+    } else if (isStale(c)) {
+      findings.push({ kind: "error", reason: "stale", ...base });
+    } else if (earlier.length > 0) {
+      findings.push({ kind: "error", reason: "duplicate", ...base, others: earlier });
+    } else {
+      findings.push({ kind: "move", reason: "order", ...base, after: prevFile });
+    }
+    prev = suggested;
+    prevFile = c.file;
+  }
+  return findings;
 }
 
 function git(args) {
@@ -116,14 +201,41 @@ function refLabel(ref) {
   return /^[0-9a-f]{40}$/.test(ref) ? ref.slice(0, 12) : ref;
 }
 
+function messageFor(finding, label) {
+  const others = (finding.others ?? []).join(", ");
+  switch (finding.reason) {
+    case "shape":
+      return "version must be 14 digits, YYYYMMDDHHMMSS (name it <version>_<name>.sql)";
+    case "renamed-base":
+      return (
+        `renames ${others}, which ${label} already has — migration files on main ` +
+        "must not be renamed; revert the rename"
+      );
+    case "duplicate-base":
+      return (
+        `new migration version ${finding.version} is already used by ${others}, which ` +
+        `${label} has; it must be newer than ${label}'s newest migration (${finding.baseMax})`
+      );
+    case "stale":
+      return (
+        `new migration version ${finding.version} is not newer than ${label}'s newest ` +
+        `migration (${finding.baseMax}); supabase db push would refuse it`
+      );
+    case "duplicate":
+      return `version ${finding.version} is also used by ${others}; every migration needs its own version`;
+    case "order":
+      return `renumbered to stay after ${finding.after}`;
+    default:
+      throw new Error(`unknown finding reason: ${finding.reason}`);
+  }
+}
+
 export function formatFinding(finding, { dir, ref }) {
-  const rest = finding.file.slice(finding.version.length + 1);
   const path = `${dir}/${finding.file}`;
-  const message =
-    `new migration version ${finding.version} is not newer than ${refLabel(ref)}'s ` +
-    `newest migration (${finding.baseMax}); supabase db push would refuse it`;
-  const hint = `git mv ${path} ${dir}/${finding.suggested}_${rest}`;
-  return `${path}\t${message}\t${hint}`;
+  const rename = finding.suggested
+    ? `git mv ${path} ${dir}/${finding.suggested}_${VALID_NAME_RE.exec(finding.file)[2]}`
+    : "";
+  return [finding.kind, path, messageFor(finding, refLabel(ref)), rename].join("\t");
 }
 
 function main(argv) {
@@ -146,7 +258,7 @@ function main(argv) {
   }
   let findings;
   try {
-    findings = findOutOfOrder({
+    findings = checkMigrationOrder({
       localFiles: localFileNames(dir),
       baseFiles: baseFileNames(ref, dir),
     });

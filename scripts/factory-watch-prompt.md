@@ -168,15 +168,28 @@ touching the host launchd / other worktrees.
    `new migration version <v> is not newer than <base>'s newest migration`,
    main gained a newer migration after this PR's was written (often because
    `--release` merged main into the branch), and `supabase db push` would
-   refuse this one. Renumbering the PR's own migration is in scope; nothing
+   refuse this one. Renumbering the PR's own migrations is in scope; nothing
    else changes:
-   - rename it with the exact `git mv` line the check prints
-     (`git mv supabase/migrations/<old>.sql supabase/migrations/<new>.sql`);
-   - update every reference to the old version or file name
+   - list the PR's own changed files with
+     `gh pr view <n> --repo JakubAnderwald/drafto --json files`. **Every file
+     you rename must be in that list.** If a flagged file isn't, your
+     `origin/main` is stale: `git fetch origin main` and re-run
+     `pnpm migration:check`. If a flagged file is still not one of the PR's
+     own, rename nothing and emit `action=blocked`, naming the file — never
+     renumber a migration main already has;
+   - apply **every** `git mv` the check prints, in the order printed: the one
+     under each `ERROR` line and the ones listed under the hint (later
+     migrations from this PR, renumbered so they stay in their current order).
+     Each has the shape
+     `git mv supabase/migrations/<old>.sql supabase/migrations/<new>.sql`;
+   - an order error with no `git mv` under it (a renamed migration main
+     already has, or a version that isn't 14 digits) needs a human: rename
+     nothing and emit `action=blocked` with the check's message;
+   - update every reference to each old version or file name
      (`git grep <old version>`): docs, tests, comments;
    - re-run `pnpm migration:check` until it passes;
    - commit as `fix: renumber migration after main moved` and push;
-   - post one PR comment naming the old and new versions and saying: if the old
+   - post one PR comment naming each old and new version and saying: if an old
      version was already applied to dev, the operator records the rename with
      the two `supabase migration repair` commands in docs/operations/migrations.md
      → "Migration versions must sort last". Never run them yourself.

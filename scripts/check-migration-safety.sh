@@ -13,10 +13,12 @@
 #
 # The order rule (scripts/lib/check-migration-order.mjs, ADR 0057) runs only when no
 # paths are given. It fails a migration this checkout ADDS relative to a base commit
-# when its version is not newer than the base's newest migration, because
-# `supabase db push` refuses to insert it. The base is $MIGRATION_BASE_REF (CI sets it
-# to the PR's base commit; an empty value counts as unset), else origin/main; with
-# neither, or outside a git work tree, the rule is skipped with a note.
+# when its version is not newer than the base's newest migration (`supabase db push`
+# refuses to insert it), is shared with another file, isn't 14 digits, or is the
+# renamed copy of a migration the base already has. The base is $MIGRATION_BASE_REF (CI
+# sets it to the PR's base commit, or on a push to main to the commit before the push;
+# an empty value counts as unset), else origin/main; with neither, or outside a git
+# work tree, the rule is skipped with a note.
 
 set -euo pipefail
 
@@ -174,10 +176,13 @@ done <<< "$GRANT_FINDINGS"
 ERRORS=$((ERRORS + GRANT_ERRORS))
 
 # Migration order (repo mode only): a migration this checkout adds must sort after the
-# base's newest one. ORDER_ERRORS are stale versions; ORDER_SETUP_ERRORS mean the rule
+# base's newest one. The helper prints `error` lines (counted) and `move` lines: fresh
+# migrations renumbered so they stay after a renamed stale one (not errors, but part
+# of the fix, so they are listed under the hint). ORDER_SETUP_ERRORS mean the rule
 # could not run although CI asked for it, so a bad base never reads as a pass.
 ORDER_ERRORS=0
 ORDER_SETUP_ERRORS=0
+ORDER_MOVES=""
 order_check() {
   local base="${MIGRATION_BASE_REF:-}" findings
   if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -202,11 +207,21 @@ order_check() {
     ORDER_SETUP_ERRORS=$((ORDER_SETUP_ERRORS + 1))
     return 0
   fi
-  while IFS=$'\t' read -r location message rename; do
-    [ -n "$location" ] || continue
-    echo -e "${RED}ERROR${NC}  $location — $message"
-    echo "        $rename"
-    ORDER_ERRORS=$((ORDER_ERRORS + 1))
+  # `rename` is the last field so an empty one can't shift the others (tab is IFS
+  # whitespace, so empty fields in the middle would collapse).
+  while IFS=$'\t' read -r kind location message rename; do
+    case "$kind" in
+      error)
+        echo -e "${RED}ERROR${NC}  $location — $message"
+        if [ -n "$rename" ]; then
+          echo "        $rename"
+        fi
+        ORDER_ERRORS=$((ORDER_ERRORS + 1))
+        ;;
+      move)
+        ORDER_MOVES="${ORDER_MOVES}        $rename   # $message"$'\n'
+        ;;
+    esac
   done <<< "$findings"
 }
 if [ $# -eq 0 ]; then
@@ -224,11 +239,16 @@ if [ "$ERRORS" -gt 0 ]; then
   fi
   if [ "$ORDER_ERRORS" -gt 0 ]; then
     echo "Migration order: a new migration must sort after every migration on the base branch, or"
-    echo "'supabase db push' refuses it once the newer one is applied. Rename it with the git mv shown,"
-    echo "then update every reference to the old version (git grep <old version>). If the old version"
-    echo "was already pushed to dev, record the rename there with the repair recipe in"
-    echo "docs/operations/migrations.md, \"Migration versions must sort last\". If the flagged file came"
-    echo "from main rather than this branch, your origin/main is stale: git fetch origin main."
+    echo "'supabase db push' refuses it once the newer one is applied. Fix each error as its message"
+    echo "says, renaming with the git mv shown under it, then update every reference to an old version"
+    echo "(git grep <old version>). If an old version was already pushed to dev, record the rename there"
+    echo "with the repair recipe in docs/operations/migrations.md, \"Migration versions must sort last\"."
+    echo "If a flagged file came from main rather than this branch, your origin/main is stale:"
+    echo "git fetch origin main, then run the check again."
+    if [ -n "$ORDER_MOVES" ]; then
+      echo "Also renumber these later migrations from this branch, so they stay in their current order:"
+      printf '%s' "$ORDER_MOVES"
+    fi
   fi
   if [ "$GRANT_ERRORS" -gt 0 ]; then
     echo "Data API grants: grant the table to the roles that use it, in the migration that creates it,"
