@@ -5682,12 +5682,18 @@ drag the card back to **In Progress**.
         # reporter tests and ships, with the reply saying why, instead of hiding
         # a finished PR in Blocked. Only for a head that was already shown at In
         # Test (a card dragged out of Blocked hasn't been through In Review's
-        # gates on it) and a worktree holding nothing the PR lacks; anything
-        # else parks in Blocked as action=blocked does.
+        # gates on it), that is still the PR's head now the run is over (nobody
+        # pushed meanwhile; an unreadable head counts as moved), and a worktree
+        # holding nothing the PR lacks. Anything else parks in Blocked as
+        # action=blocked does.
         DECLINE_SHOWN_SHA=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
           --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.intestCommentSha // ""' 2>/dev/null || echo "")
+        DECLINE_NOW_SHA=""
+        if [[ "$IS_REVISION" -eq 1 && "$PRE_HEAD_KNOWN" -eq 1 && -n "$PRE_HEAD_OID" ]]; then
+          DECLINE_NOW_SHA=$(pr_head_oid "$(echo "$PRIOR_PR" | jq -r '.number')")
+        fi
         if [[ "$IS_REVISION" -eq 1 && "$PRE_HEAD_KNOWN" -eq 1 && -n "$PRE_HEAD_OID" \
-              && "$DECLINE_SHOWN_SHA" == "$PRE_HEAD_OID" ]] \
+              && "$DECLINE_SHOWN_SHA" == "$PRE_HEAD_OID" && "$DECLINE_NOW_SHA" == "$PRE_HEAD_OID" ]] \
            && worktree_untouched "$WT_PATH" "$PRE_HEAD_OID"; then
           revision_return_to_test "$ISSUE_NUM" "$ITEM_ID" "$PRE_HEAD_OID" "$ITEM_LABELS" \
             "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" \

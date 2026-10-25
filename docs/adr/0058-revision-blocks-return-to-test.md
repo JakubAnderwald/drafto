@@ -25,6 +25,7 @@ Bash honours a decline only when all of these hold. Otherwise the card parks in 
 
 - it is a revision run with a known PR head;
 - that head is the one the reporter was shown at In Test (`intestCommentSha`). A card dragged out of Blocked hasn't been through In Review's CI, review and parity gates on its head, so it must not jump to In Test;
+- it is still the PR's head after the run: bash reads it again, and a push made during the run (or an unreadable head) parks the card in Blocked;
 - the worktree holds nothing the PR lacks: HEAD is the PR head or behind it, and `git status` is clean. Any git error counts as touched.
 
 `action=blocked` keeps its meaning and always parks the card in Blocked. That covers a change the implementer started but couldn't finish, a rejected push, a malformed plan and suspected prompt injection, because a human has to look at those.

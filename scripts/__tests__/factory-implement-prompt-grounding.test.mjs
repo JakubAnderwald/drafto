@@ -186,7 +186,14 @@ describe("implementer prompt — revision replies on the issue (#659)", () => {
   it("doesn't redo work an earlier attempt already answered", () => {
     assert.match(
       flat,
-      /an earlier attempt already answered this feedback: don't redo the work or post again/,
+      /an earlier attempt already answered this feedback: don't post again, and don't redo no-code work/,
+    );
+    // The marker proves only the reply went out: an unfinished change request
+    // must still be finished on a retry, not skipped as a no-op.
+    assert.match(flat, /The marker only proves the reply went out/);
+    assert.match(
+      flat,
+      /finish it if it isn't there\. Emit `action=noop` only when no work remains/,
     );
   });
 
@@ -238,7 +245,12 @@ describe("implementer prompt — declined revisions and operator steps (ADR-0058
   });
 
   it("handles mixed feedback by implementing the in-plan part", () => {
-    assert.match(flat, /make the in-plan change, push it, emit `action=implemented`/);
+    // Push first: a reply posted before a push that then fails would let a
+    // retry's no-duplicates check skip the change.
+    assert.match(
+      flat,
+      /make the in-plan change and push it \*\*before\*\* posting the reply, emit `action=implemented`/,
+    );
   });
 
   it("requires the reply before a decline, and keeps the marker off blocking comments", () => {

@@ -391,9 +391,15 @@ describe("factory-agent.sh structural wiring (In Test iteration)", () => {
   it("returns a declined revision to In Test only for the head shown there, untouched (ADR-0058)", () => {
     const arm = implementArm("declined");
     assert.match(arm, /jq -r '\.intestCommentSha \/\/ ""'/);
+    // The PR head is read again after the run: a push meanwhile (or an
+    // unreadable head) must not send an unreviewed head to In Test.
     assert.match(
       arm,
-      /if \[\[ "\$IS_REVISION" -eq 1 && "\$PRE_HEAD_KNOWN" -eq 1 && -n "\$PRE_HEAD_OID" \\\n\s*&& "\$DECLINE_SHOWN_SHA" == "\$PRE_HEAD_OID" \]\] \\\n\s*&& worktree_untouched "\$WT_PATH" "\$PRE_HEAD_OID"; then\n\s*revision_return_to_test /,
+      /DECLINE_NOW_SHA=\$\(pr_head_oid "\$\(echo "\$PRIOR_PR" \| jq -r '\.number'\)"\)/,
+    );
+    assert.match(
+      arm,
+      /if \[\[ "\$IS_REVISION" -eq 1 && "\$PRE_HEAD_KNOWN" -eq 1 && -n "\$PRE_HEAD_OID" \\\n\s*&& "\$DECLINE_SHOWN_SHA" == "\$PRE_HEAD_OID" && "\$DECLINE_NOW_SHA" == "\$PRE_HEAD_OID" \]\] \\\n\s*&& worktree_untouched "\$WT_PATH" "\$PRE_HEAD_OID"; then\n\s*revision_return_to_test /,
     );
     assert.match(arm, /"\$REPLY_MARKER" "\$FEEDBACK_MARK" declined\n/);
     // Anything else parks in Blocked, as action=blocked does.
