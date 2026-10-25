@@ -13,27 +13,34 @@ See [ADR 0008: Production Data Safety Guardrails](../adr/0008-production-data-sa
 
 ## Migration workflow
 
-1. Write the migration SQL under `supabase/migrations/`. A new table or view in `public` needs its `GRANT`s in the same migration — see [New tables need explicit grants](#new-tables-need-explicit-grants).
-2. Scan for destructive patterns and missing grants:
+1. Write the migration SQL under `supabase/migrations/` as `YYYYMMDD000001_<name>.sql`, dated today and newer than every migration on main — see [Migration versions must sort last](#migration-versions-must-sort-last). A new table or view in `public` needs its `GRANT`s in the same migration — see [New tables need explicit grants](#new-tables-need-explicit-grants).
+2. Scan for destructive patterns, missing grants and a stale version:
 
    ```bash
    pnpm migration:check
    ```
 
-3. Verify the linked project ref:
+3. Before the first `supabase db push` of a PR's migration to dev, bring the branch up to date with current main and check again. Once dev has applied a version, renaming it takes a [repair](#renaming-a-migration-dev-already-applied):
+
+   ```bash
+   git fetch origin main && git rebase origin/main   # or merge origin/main
+   pnpm migration:check
+   ```
+
+4. Verify the linked project ref:
 
    ```bash
    supabase projects list
    ```
 
-4. Apply to **dev** first:
+5. Apply to **dev** first:
 
    ```bash
    pnpm supabase:link:dev && pnpm supabase:push
    ```
 
-5. Verify on dev (run affected queries, check RLS, run E2E if relevant).
-6. Apply to **prod** only after explicit user "yes":
+6. Verify on dev (run affected queries, check RLS, run E2E if relevant).
+7. Apply to **prod** only after explicit user "yes":
 
    ```bash
    pnpm supabase:link:prod && pnpm supabase:push
@@ -73,6 +80,39 @@ alter table public.widgets enable row level security;
 - **Views** need the same grants and must be created `with (security_invoker = true)`. A default view runs with its owner's privileges, so granting it to `authenticated` would bypass RLS on every table it reads. Materialized views can't apply RLS at all, so keep them off the API and don't grant them.
 - **Keys**: use `uuid` (or `generated … as identity`). A `serial` column's sequence would need its own `grant usage, select on sequence`.
 - `pnpm migration:check` replays the migrations in order. It fails a `public` table or view that ends with no `GRANT` to `authenticated` or `service_role`, a view without `security_invoker`, and a `serial` column. A `GRANT` counts when it follows the `create`, in the same file or a later one. A table-level `revoke` and `drop` take access away again. Only `select` / `insert` / `update` / `delete` give Data API access. A table deliberately kept off the Data API takes `-- safety:ignore` in its `create` statement, with a comment saying why. The check matches patterns and doesn't parse SQL, so DDL run from inside a `DO $$ … $$` block goes unseen.
+
+## Migration versions must sort last
+
+PR #646, the fix for issue #457, added `20260922000001_guard_profile_privilege_columns.sql` on 2026-09-22 and stayed open for a month. Meanwhile main gained `20261020000001_explicit_data_api_grants.sql`. After the rebase, the PR's version was older than the newest migration the databases had applied, so `supabase db push` refused it ("Found local migration files to be inserted before the last migration on remote database") until it was forced with `--include-all`. Renaming it to a newer version was costly because dev had already applied the old one, so the rename would have had to be recorded there by hand. Main's history still holds that pair out of order. See [ADR 0057](../adr/0057-new-migrations-sort-after-base.md).
+
+- Name a new migration `YYYYMMDD000001_<name>.sql` with today's date. If main already has a file dated today or later, take the next number after the newest one.
+- The version must be newer than every migration on main **when the PR merges**, not only when it was written. A long-lived PR has to be checked again each time it takes in main.
+- Renumber only your branch's own migrations. Never rename or edit one that main already has.
+- Before the first `supabase db push` of a PR's migration to dev, update the branch onto current main and run `pnpm migration:check` (step 3 of the [workflow](#migration-workflow)). After dev applies a version, renaming it needs the [repair below](#renaming-a-migration-dev-already-applied).
+- `pnpm migration:check` enforces this when it runs with no file arguments, which is how CI runs it:
+  - It finds the migrations this checkout **adds** relative to a base commit. Those are the files in `supabase/migrations/` that the base's tree doesn't have, whether they are committed, staged or untracked.
+  - Each added file whose version is not newer than the base's newest version is an error. The error carries the `git mv` to a free version: today's `YYYYMMDD000001` or one past the base's newest, whichever is later, skipping versions already in use.
+  - The base is `MIGRATION_BASE_REF` when it is set and not empty. On pull requests CI sets it to the first parent of GitHub's test merge commit, which is the exact main commit the PR is being merged into. Locally the base is `origin/main`.
+  - With neither base, or outside a git work tree, the rule is skipped with a note. A `MIGRATION_BASE_REF` that doesn't resolve is an error, so CI can't skip it silently.
+  - It judges only added files, never the order of the whole folder. Main's own out-of-order pair passes, and so does an edit to an existing migration.
+- The check's limits:
+  - It only knows the base you have. A stale local `origin/main` can miss a newer migration on GitHub, or flag a file you merged from a newer main. `git fetch origin main` fixes both.
+  - It can't see other open PRs. Two PRs can each pass with versions that collide or interleave, and whichever merges second fails CI once branch protection makes it update from main.
+  - Checking explicit paths (`bash scripts/check-migration-safety.sh <file>`) skips the rule.
+
+### Renaming a migration dev already applied
+
+Rename the file with the `git mv` the check prints, update every reference to the old version (`git grep <old version>`), and commit. If the old version already reached dev, record the rename in dev's migration history:
+
+```bash
+pnpm supabase:link:dev
+supabase migration repair --status reverted <old version>
+supabase migration repair --status applied <new version>
+```
+
+`repair` only edits the migration history table (`supabase_migrations.schema_migrations`). The first command removes the old version's row, and the second adds the new one. No SQL runs again, which is right: the file's SQL is unchanged and dev already ran it. Afterwards `supabase migration list` should show local and remote in step.
+
+Never run this against prod unless prod applied the old version too. Then it is a production database operation, and the [confirmation rules](#production-operation-confirmation-rules) apply: state the project ref, both commands and both versions, and wait for an explicit "yes".
 
 ## Production operation confirmation rules
 
@@ -168,7 +208,7 @@ Production is on the Free tier today, so this is the _normal_ case for damage ol
 
 ### Preventative guardrails to lean on
 
-- `pnpm migration:check` — inspects all `supabase/migrations/*.sql` files (or explicitly passed paths) and blocks `DROP TABLE`, `TRUNCATE`, bare `DELETE`, and `public` tables / views the Data API can't reach (no `GRANT`) or shouldn't (a view without `security_invoker`).
+- `pnpm migration:check` — inspects all `supabase/migrations/*.sql` files (or explicitly passed paths) and blocks `DROP TABLE`, `TRUNCATE`, bare `DELETE`, and `public` tables / views the Data API can't reach (no `GRANT`) or shouldn't (a view without `security_invoker`). Run with no paths, it also blocks a new migration whose version doesn't sort after the base branch's newest (see [Migration versions must sort last](#migration-versions-must-sort-last)).
 - `supabase projects list` before every prod push — confirms which ref is currently linked. Easy to forget when switching between dev and prod.
 - Require explicit user "yes" before any prod database operation; state the project ref, operation, and affected data first.
 - Apply every migration to dev first and verify before touching prod.
@@ -179,4 +219,5 @@ Production is on the Free tier today, so this is the _normal_ case for damage ol
 - [ADR 0008: Production Data Safety Guardrails](../adr/0008-production-data-safety-guardrails.md)
 - [ADR 0006: Dev/Prod Environment Separation](../adr/0006-dev-prod-environment-separation.md)
 - [ADR 0052: Explicit Data API Grants in Migrations](../adr/0052-explicit-data-api-grants.md)
+- [ADR 0057: New Migrations Must Sort After the Base Branch](../adr/0057-new-migrations-sort-after-base.md)
 - [Local dev setup](./local-dev-setup.md) — installing the Supabase CLI

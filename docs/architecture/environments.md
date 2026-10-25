@@ -85,7 +85,9 @@ The scripts are defined in the root [`package.json`](../../package.json) so the 
 Always apply migrations to dev first, verify, then to prod:
 
 ```bash
-# 1. Scan the migration for destructive SQL
+# 1. Bring the branch up to date with main, then scan the migration
+#    (destructive SQL, missing grants, a version that sorts before main's newest)
+git fetch origin main && git rebase origin/main
 pnpm migration:check
 
 # 2. Apply to dev
@@ -99,7 +101,7 @@ pnpm supabase:link:prod
 pnpm supabase:push
 ```
 
-The `pnpm migration:check` script runs [`scripts/check-migration-safety.sh`](../../scripts/check-migration-safety.sh) and scans for `DROP TABLE`, `TRUNCATE`, and unqualified `DELETE` patterns, and for `public` tables / views created without an explicit `GRANT` ([ADR 0052](../adr/0052-explicit-data-api-grants.md)).
+The `pnpm migration:check` script runs [`scripts/check-migration-safety.sh`](../../scripts/check-migration-safety.sh) and scans for `DROP TABLE`, `TRUNCATE`, and unqualified `DELETE` patterns, and for `public` tables / views created without an explicit `GRANT` ([ADR 0052](../adr/0052-explicit-data-api-grants.md)). Run with no paths, it also fails a migration the branch adds whose version isn't newer than the newest one on main (`MIGRATION_BASE_REF` in CI, `origin/main` locally), because `supabase db push` would refuse it ([ADR 0057](../adr/0057-new-migrations-sort-after-base.md), [Migration versions must sort last](../operations/migrations.md#migration-versions-must-sort-last)).
 
 Full safety rules (never `db reset` against production, confirmation requirements, etc.) live in [`../operations/migrations.md`](../operations/migrations.md) and [ADR 0008](../adr/0008-production-data-safety-guardrails.md).
 

@@ -90,6 +90,45 @@ describe("watcher prompt — review-comment data and CodeRabbit CLI threads", ()
   });
 });
 
+// ADR 0057: `pnpm migration:check` fails a migration a PR adds whose version is not
+// newer than main's newest (#646 sat open while main gained a newer one, and
+// `supabase db push` then refused it). `--release` merges main into a BEHIND PR, so
+// the fix loop is where that red lands; without a scoped `git mv` it can't recover.
+describe("watcher prompt — migration order (ADR 0057)", () => {
+  it("allows git mv only for renumbering a migration", () => {
+    assert.match(
+      flat,
+      /`git mv` \*\*only\*\* as `git mv supabase\/migrations\/<old>\.sql supabase\/migrations\/<new>\.sql`/,
+    );
+    assert.match(flat, /and any other `git mv`/);
+    // The rest of the refuse-list still stands.
+    assert.match(
+      flat,
+      /Refuse `git push --force`, `git reset --hard`, `git checkout <branch>`, `git rebase`/,
+    );
+  });
+
+  it("fetches main before reproducing, so a stale origin/main can't hide the error", () => {
+    assert.match(flat, /`git fetch origin main`/);
+    assert.match(flat, /run `git fetch origin main` before `pnpm migration:check`/);
+  });
+
+  it("names the check's error and the full renumber recipe", () => {
+    assert.match(flat, /`new migration version <v> is not newer than <base>'s newest migration`/);
+    assert.match(flat, /`git grep <old version>`/);
+    assert.match(flat, /`fix: renumber migration after main moved`/);
+  });
+
+  it("leaves the dev repair to the operator and never runs supabase itself", () => {
+    assert.match(
+      flat,
+      /two `supabase migration repair` commands in docs\/operations\/migrations\.md/,
+    );
+    assert.match(flat, /"Migration versions must sort last"\. Never run them yourself/);
+    assert.match(flat, /any `supabase` CLI command/);
+  });
+});
+
 // #465: the prompt said "attempts > 3 → blocked" while bash allowed up to
 // FACTORY_MAX_ATTEMPTS (5), so a pass bash started at attempts=4 refused and
 // parked the card early. Bash owns the budget.

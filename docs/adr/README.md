@@ -88,3 +88,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0054](./0054-keep-machine-traffic-out-of-session-middleware.md)     | Keep Machine Traffic Out of the Session Middleware    | Accepted           | 2026-10-24 |
 | [0055](./0055-profile-privilege-column-guard.md)                     | Trigger Guard on Profile Privilege Columns            | Accepted           | 2026-09-22 |
 | [0056](./0056-keep-credentials-out-of-the-e2e-report.md)             | Keep Credentials Out of the E2E Report                | Accepted           | 2026-10-24 |
+| [0057](./0057-new-migrations-sort-after-base.md)                     | New Migrations Must Sort After the Base Branch        | Accepted           | 2026-10-25 |

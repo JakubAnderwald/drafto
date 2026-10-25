@@ -91,11 +91,15 @@ already handled.
 - `Read`, `Write`, `Edit`, `Grep`, `Glob` inside the worktree.
 - `Bash` for: `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm --filter <app> …`,
   `pnpm format:check`, `pnpm migration:check`, `git add`, `git commit`,
-  `git push`, `git status`, `git diff`, `git log`. Refuse `git push --force`,
-  `git reset --hard`, `git checkout <branch>`, `git rebase`, `git config`.
+  `git push`, `git status`, `git diff`, `git log`, `git fetch origin main`.
+  `git mv` **only** as `git mv supabase/migrations/<old>.sql supabase/migrations/<new>.sql`,
+  to renumber this PR's own migration (decision-flow step 3, "Migration order").
+  Refuse `git push --force`, `git reset --hard`, `git checkout <branch>`,
+  `git rebase`, `git config`, and any other `git mv`.
 - `gh pr view <n> --repo JakubAnderwald/drafto --json ...` — inspect PR / checks.
 - `gh pr comment <n> --repo JakubAnderwald/drafto --body "..."` — only to post a
-  one-line note when emitting `action=blocked`.
+  one-line note when emitting `action=blocked`, or the migration-renumber note
+  in decision-flow step 3.
 - `gh api graphql` — **only** the two mutations in decision-flow step 6:
   `addPullRequestReviewThreadReply` (reply on a review thread) and
   `resolveReviewThread` (resolve one you have answered). Any other GraphQL
@@ -132,7 +136,8 @@ already handled.
 
 Refuse: `gh pr merge` (that is the operator's Approved drag), `gh workflow run`,
 `gh release create`, `pnpm release:*`, `pnpm version:*`, fastlane, any
-deployment command, any `claude` / `node scripts/...` subprocess, and anything
+deployment command, any `supabase` CLI command (the factory never applies or
+repairs migrations), any `claude` / `node scripts/...` subprocess, and anything
 touching the host launchd / other worktrees.
 
 ## Decision flow
@@ -147,7 +152,10 @@ touching the host launchd / other worktrees.
    is a normal run, not an error.
 
 2. **Reproduce locally.** Run the failing check in the worktree (e.g.
-   `pnpm --filter @drafto/web typecheck`). Don't fix blind.
+   `pnpm --filter @drafto/web typecheck`). Don't fix blind. When
+   `Lint & Typecheck` is red, run `git fetch origin main` before
+   `pnpm migration:check`: the worktree's `origin/main` can be stale, and the
+   check compares new migrations against it.
 
 3. **Fix minimally, in scope.** Only edit files within the approved plan's
    scope and the phase's allowed paths. Honour every CLAUDE.md rule (strict
@@ -155,6 +163,23 @@ touching the host launchd / other worktrees.
    raw greys / hex / arbitrary radius-shadow). If addressing a review comment
    would require going outside the approved plan, emit `action=blocked` and
    explain — the operator can re-plan.
+
+   **Migration order.** When `pnpm migration:check` reports
+   `new migration version <v> is not newer than <base>'s newest migration`,
+   main gained a newer migration after this PR's was written (often because
+   `--release` merged main into the branch), and `supabase db push` would
+   refuse this one. Renumbering the PR's own migration is in scope; nothing
+   else changes:
+   - rename it with the exact `git mv` line the check prints
+     (`git mv supabase/migrations/<old>.sql supabase/migrations/<new>.sql`);
+   - update every reference to the old version or file name
+     (`git grep <old version>`): docs, tests, comments;
+   - re-run `pnpm migration:check` until it passes;
+   - commit as `fix: renumber migration after main moved` and push;
+   - post one PR comment naming the old and new versions and saying: if the old
+     version was already applied to dev, the operator records the rename with
+     the two `supabase migration repair` commands in docs/operations/migrations.md
+     → "Migration versions must sort last". Never run them yourself.
 
 4. **Re-run the relevant checks** until they pass locally. If
    `spec.schemaChanges === true`, run `pnpm migration:check`. A new

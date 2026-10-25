@@ -21,6 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Keeps the parents of a PR's test merge commit for the migration order check.
+          fetch-depth: 2
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -30,8 +33,23 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm typecheck
+      # The migration order rule (ADR 0057) judges only the migrations a PR adds
+      # relative to its base. A PR checkout is GitHub's test merge of the head into the
+      # base ("Merge <head> into <base>"), so its first parent is the exact base commit
+      # the checked tree was built on. The event's pull_request.base.sha is only logged:
+      # it is a payload snapshot and need not match that merge. On a push there is no
+      # output, MIGRATION_BASE_REF is empty, and the check falls back to origin/main.
+      - name: Resolve the PR base for the migration order check
+        id: migration-base
+        if: github.event_name == 'pull_request'
+        run: |
+          base=$(git rev-parse --verify HEAD^1)
+          echo "Migration order base: $base (event base.sha ${{ github.event.pull_request.base.sha }})"
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
       - name: Check migration safety
         run: pnpm migration:check
+        env:
+          MIGRATION_BASE_REF: ${{ steps.migration-base.outputs.sha }}
       - run: pnpm audit --audit-level=high
         continue-on-error: true
 
