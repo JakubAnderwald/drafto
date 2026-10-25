@@ -27,6 +27,20 @@ export default defineConfig({
       testMatch: /auth\.setup\.ts/,
     },
 
+    // E2E data cleanup (see "E2E data hygiene" in docs/architecture/testing.md). Every
+    // project that signs in as the E2E user depends on purge-stale, which deletes
+    // E2E-named data earlier runs left untouched for a day. Its teardown, cleanup-run,
+    // deletes the notebooks this run created once all of those projects have finished.
+    {
+      name: "purge-stale",
+      testMatch: /purge\.setup\.ts/,
+      teardown: "cleanup-run",
+    },
+    {
+      name: "cleanup-run",
+      testMatch: /cleanup-run\.teardown\.ts/,
+    },
+
     // Desktop — runs all tests except auth setup, responsive-only and admin-only tests
     {
       name: "chromium",
@@ -34,7 +48,7 @@ export default defineConfig({
         ...devices["Desktop Chrome"],
         storageState: "e2e/.auth/user.json",
       },
-      dependencies: ["setup"],
+      dependencies: ["setup", "purge-stale"],
       testIgnore: [/auth\.setup\.ts/, /responsive\.spec\.ts/, /admin\.spec\.ts/],
     },
 
@@ -67,7 +81,7 @@ export default defineConfig({
         ...devices["Pixel 5"],
         storageState: "e2e/.auth/user.json",
       },
-      dependencies: ["setup"],
+      dependencies: ["setup", "purge-stale"],
       testMatch: /responsive\.spec\.ts/,
     },
     {
@@ -76,7 +90,7 @@ export default defineConfig({
         ...devices["iPhone 13"],
         storageState: "e2e/.auth/user.json",
       },
-      dependencies: ["setup"],
+      dependencies: ["setup", "purge-stale"],
       testMatch: /responsive\.spec\.ts/,
     },
 
@@ -87,7 +101,7 @@ export default defineConfig({
         ...devices["iPad (gen 7)"],
         storageState: "e2e/.auth/user.json",
       },
-      dependencies: ["setup"],
+      dependencies: ["setup", "purge-stale"],
       testMatch: /responsive\.spec\.ts/,
     },
   ],

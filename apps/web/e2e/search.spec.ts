@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/test";
 
 test.describe("Search functionality", () => {
   test("open search with Cmd+K, search for a note, and select it", async ({ page }) => {

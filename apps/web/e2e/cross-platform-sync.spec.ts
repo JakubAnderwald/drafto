@@ -1,4 +1,5 @@
-import { test, expect } from "@playwright/test";
+import { recordRunNotebook } from "./helpers/run-notebooks";
+import { test, expect } from "./helpers/test";
 
 /**
  * Cross-platform data consistency E2E tests.
@@ -95,12 +96,11 @@ test.describe("Cross-platform format sync", () => {
   let notebookId: string;
   let notebookName: string;
 
-  test.beforeAll(async ({ request }) => {
+  test.beforeAll(async ({ request }, testInfo) => {
     // Create a dedicated notebook for this test suite. Using the API directly
     // (rather than picking notebooks[0]) is robust to the /api/notebooks
-    // updated_at-desc ordering and to leftover dev-DB notebooks whose names
-    // don't match the cleanup helper's ephemeral patterns. The "XPlat NB"
-    // prefix matches cleanup.ts so this notebook is auto-deleted between runs.
+    // updated_at-desc ordering and to leftover dev-DB notebooks. The run-end
+    // teardown deletes it with its notes.
     notebookName = `XPlat NB ${Date.now()}`;
     const createRes = await request.post("/api/notebooks", {
       data: { name: notebookName },
@@ -108,13 +108,7 @@ test.describe("Cross-platform format sync", () => {
     expect(createRes.ok()).toBe(true);
     const created: { id: string } = await createRes.json();
     notebookId = created.id;
-  });
-
-  test.afterAll(async ({ request }) => {
-    // Best-effort: cleanup helper also catches "XPlat NB" by pattern.
-    if (notebookId) {
-      await request.delete(`/api/notebooks/${notebookId}`).catch(() => {});
-    }
+    recordRunNotebook(testInfo, notebookId);
   });
 
   test("TipTap content injected via API renders correctly on web and is repaired to BlockNote", async ({
@@ -312,7 +306,10 @@ test.describe("Cross-platform format sync", () => {
     }
 
     // Create a dedicated notebook for this test run so it has the newest
-    // updated_at and appears at the top of the mobile list (sorted by updated_at DESC)
+    // updated_at and appears at the top of the mobile list (sorted by updated_at DESC).
+    // Deliberately not recorded for the run-end teardown: the runner's later steps are
+    // separate Playwright runs that read it back. The stale purge removes it once it has
+    // sat untouched for a day.
     const nbName = `XPlat NB ${runId}`;
     const nbRes = await request.post("/api/notebooks", { data: { name: nbName } });
     expect(nbRes.ok()).toBe(true);
