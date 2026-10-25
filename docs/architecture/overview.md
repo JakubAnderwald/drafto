@@ -26,7 +26,7 @@ Within each app:
 
 - `apps/web/src/app/` — App Router pages and API routes (`api/notes/`, `api/notebooks/`, `api/attachments/`, `api/mcp/`, `api/webhooks/`, `api/admin/`, `api/cron/`, `api/import/`, `api/api-keys/`, `api/health/`).
 - `apps/web/src/lib/` — shared libraries (Supabase clients, PostHog, email, MCP auth). Components depend on these abstractions, not on vendor SDKs directly.
-- `apps/web/middleware.ts` — Supabase session refresh.
+- `apps/web/src/middleware.ts` — Supabase session refresh. It sits next to `src/app` because `next dev` only looks for the middleware there.
 - `apps/mobile/src/` — `components/`, `db/`, `hooks/`, `lib/`, `providers/`, `theme/`.
 - `apps/desktop/src/` — `components/`, `db/`, `hooks/`, `lib/`, `providers/`, `screens/`, `navigation/`, `theme/`, `types/`.
 - `apps/mobile/src/db/` and `apps/desktop/src/db/` — **mirrored**: `schema.ts`, `migrations.ts`, `models/`, `sync.ts`, `index.ts`. Changes in either must be kept in lockstep.

@@ -98,6 +98,7 @@ Some behaviour cannot be scripted deterministically and is verified by hand. Not
 - **Module-level state in React 19 tests** — components using `use()` with a module-level promise cache need `vi.resetModules()` + re-import between tests, or state leaks across cases.
 - **Locator overlap** — Playwright `getByRole("button", { name: "New note" })` also matches "New notebook". Use `{ exact: true }`.
 - **Worktree + Metro** — port 8081 clashes with the main checkout. Start Metro on a different port and use `adb reverse`.
+- **Web E2E passes in CI but fails under `pnpm dev`** — check that the middleware still runs locally. It must sit at `apps/web/src/middleware.ts`, next to `src/app`. At the web root `next dev` ignores it, while `next build` still finds it. So CI's production build passes and local signed-out specs fail: `/` redirects to `/login` instead of showing the landing page. `__tests__/unit/next-convention-files.test.ts` guards the location.
 
 ## Related
 
