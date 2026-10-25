@@ -55,6 +55,26 @@ Never skip a suite because "it's unrelated" — CI will run all of them and a fa
 - Vitest against `packages/shared/__tests__/` and `packages/shared/src/editor/__tests__/` (attachment-url, format-converter, resolve-urls, and the editor-local tests).
 - No external services required.
 
+### Dev live tests (`pnpm test:live:supabase`)
+
+Two opt-in tests run against the real **dev** Supabase project (`huhzactreblzcogqkbsd`). They aren't in the matrix above, and CI skips them. Run them when you change what they cover, as the feature docs' Verify blocks say:
+
+- `scripts/__tests__/profile-privilege-guard.live.test.mjs` (`--only profile-guard`) checks the `profiles` privilege guard ([auth](../features/auth.md)).
+- `apps/web/__tests__/integration/account-deletion.live.test.ts` (`--only account-deletion`) checks `deleteUserAccount`.
+
+```bash
+pnpm test:live:supabase                          # both
+pnpm test:live:supabase -- --only profile-guard  # one
+pnpm test:live:supabase -- --dry-run             # print the commands and env var names, run nothing
+```
+
+- **They write to dev.** Each run creates users on dev and deletes them again. Creating a user fires dev's new-signup webhook, if one is configured.
+- **Where the keys come from.** `scripts/run-dev-live-tests.mjs` finds them itself:
+  - The service-role key comes from `~/drafto-secrets/dev-supabase-admin.env`, which is on the Mac mini. If that file is missing, the runner reads the `DEV:` line of `~/drafto-secrets/supabase service keys.txt` instead. Either file must be mode 600.
+  - The anon key comes from `apps/web/.env.local`. In a worktree, `scripts/worktree-bootstrap.sh` copies it there.
+  - The runner refuses any project but dev and prints names, never values. It runs only from interactive sessions: the factory's verification lane can't call it ([ADR-0053](../adr/0053-pre-in-test-verification-stage.md)).
+- **A missing key fails the run; it doesn't skip.** The runner sets `DRAFTO_LIVE_REQUIRED=1`. With that set, a live test that can't reach dev fails and names the missing variables, so a skipped run can't pass for a green one. Without it, as in CI and a plain `pnpm test`, both tests skip.
+
 ## Coverage
 
 Web coverage is enforced by SonarCloud with a target of roughly 80% on new code. To see why a specific PR failed the quality gate:

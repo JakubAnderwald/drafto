@@ -25,9 +25,11 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 
+import { SERVICE_KEYS_TXT, serviceKeyFromText } from "./lib/service-keys-txt.mjs";
+
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PROJECT_REF_FILE = path.join(REPO_ROOT, "supabase", ".temp", "project-ref");
-const KEY_FILE = path.join(os.homedir(), "drafto-secrets", "supabase service keys.txt");
+const KEY_FILE = path.join(os.homedir(), "drafto-secrets", SERVICE_KEYS_TXT);
 
 // Tables to snapshot. `keyAggregates` are PostgREST-friendly aggregations
 // (just row count today; extend with an RPC if/when content-size totals
@@ -70,10 +72,7 @@ async function readServiceKey(projectRef) {
     return null;
   }
   const tag = projectRef === "tbmjbxxseonkciqovnpl" ? "PROD" : "DEV";
-  for (const line of raw.split("\n")) {
-    if (line.startsWith(`${tag}:`)) return line.slice(tag.length + 1).trim();
-  }
-  return null;
+  return serviceKeyFromText(raw, tag);
 }
 
 async function tableCount(projectRef, key, table) {

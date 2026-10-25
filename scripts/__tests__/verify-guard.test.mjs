@@ -191,6 +191,10 @@ describe("decidePre: Bash deny/allow matrix", () => {
     ["pnpm release:beta:ios", /release:beta:ios script/],
     ["pnpm --filter=@drafto/mobile release:beta:android", /release:beta:android script/],
     ["pnpm run release:production", /release:production script/],
+    // The dev live tests run with the dev service-role key: operator-only.
+    ["pnpm test:live:supabase", /test:live:supabase script/],
+    ["pnpm run test:live:supabase -- --only profile-guard", /test:live:supabase script/],
+    ["node scripts/run-dev-live-tests.mjs --dry-run", /node scripts/],
     ["pnpm turbo run release", /release task/],
     ["npm install", /npm install/],
     ["node scripts/lib/state-cli.mjs factory:status", /node scripts/],
