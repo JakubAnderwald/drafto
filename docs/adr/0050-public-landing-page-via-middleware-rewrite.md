@@ -1,6 +1,6 @@
 # 0050 — Serve a Public Landing Page at `/` Through a Middleware Rewrite
 
-- **Status**: Accepted (`/login` indexing amended by [0059](./0059-keep-login-page-out-of-search-index.md))
+- **Status**: Accepted
 - **Date**: 2026-10-17
 - **Authors**: Jakub Anderwald, with Claude Code
 
