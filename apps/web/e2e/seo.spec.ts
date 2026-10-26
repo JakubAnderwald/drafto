@@ -16,13 +16,16 @@ test.describe("Search engine and app-link files (signed out)", () => {
     expect(await response.text()).toContain("Sitemap: https://drafto.eu/sitemap.xml");
   });
 
-  test("sitemap.xml is served and lists the landing and login pages", async ({ request }) => {
+  test("sitemap.xml is served and lists the landing and sign-up pages, not login", async ({
+    request,
+  }) => {
     const response = await request.get("/sitemap.xml", { maxRedirects: 0 });
 
     expect(response.status()).toBe(200);
     const body = await response.text();
     expect(body).toContain("<loc>https://drafto.eu/</loc>");
-    expect(body).toContain("<loc>https://drafto.eu/login</loc>");
+    expect(body).toContain("<loc>https://drafto.eu/signup</loc>");
+    expect(body).not.toContain("<loc>https://drafto.eu/login</loc>");
   });
 
   test("the Universal Links association file is served as JSON", async ({ request }) => {
@@ -35,14 +38,23 @@ test.describe("Search engine and app-link files (signed out)", () => {
     expect(await response.json()).toHaveProperty("applinks");
   });
 
-  test("the login page declares its apex URL as canonical", async ({ page }) => {
+  test("the sign-up page declares its apex URL as canonical", async ({ page }) => {
+    await page.goto("/signup");
+
+    await expect(page).toHaveTitle("Sign up — Drafto");
+    await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
+      "href",
+      "https://drafto.eu/signup",
+    );
+  });
+
+  // Google folded the thin login form into `/` despite its self-canonical (ADR-0059).
+  test("the login page is kept out of search results", async ({ page }) => {
     await page.goto("/login");
 
     await expect(page).toHaveTitle("Log in — Drafto");
-    await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
-      "href",
-      "https://drafto.eu/login",
-    );
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", /noindex/);
+    await expect(page.locator('link[rel="canonical"]')).toHaveCount(0);
   });
 
   test("auth utility pages are kept out of search results", async ({ page }) => {

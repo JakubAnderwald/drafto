@@ -18,7 +18,7 @@ describe("sitemap.xml", () => {
   it("lists the public pages as absolute apex URLs, starting with the landing page", () => {
     expect(urls).toEqual([
       "https://drafto.eu/",
-      "https://drafto.eu/login",
+      // No /login: it is noindex (ADR-0059).
       "https://drafto.eu/signup",
       "https://drafto.eu/privacy",
       "https://drafto.eu/support",
