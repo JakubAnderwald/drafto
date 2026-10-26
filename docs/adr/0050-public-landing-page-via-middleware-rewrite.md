@@ -1,8 +1,10 @@
 # 0050 — Serve a Public Landing Page at `/` Through a Middleware Rewrite
 
-- **Status**: Accepted
+- **Status**: Accepted (`/login` indexing amended by [0059](./0059-keep-login-page-out-of-search-index.md))
 - **Date**: 2026-10-17
 - **Authors**: Jakub Anderwald, with Claude Code
+
+> **Amended by [ADR-0059](./0059-keep-login-page-out-of-search-index.md)** (2026-10-26): Google kept choosing `/` as the canonical for `/login` even after the landing page shipped, so `/login` is now noindex and out of the sitemap. The landing page and the rewrite are unchanged.
 
 ## Context
 

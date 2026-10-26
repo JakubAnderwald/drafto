@@ -5,5 +5,6 @@ export const SITE_URL = "https://drafto.eu";
 
 // The public pages search engines should index, listed in the sitemap. Each one declares
 // itself as its canonical URL. `/` is the landing page that middleware serves to signed-out
-// visitors, crawlers included; signed-in users get the app there.
-export const INDEXED_PATHS = ["/", "/login", "/signup", "/privacy", "/support", "/account/delete"];
+// visitors, crawlers included; signed-in users get the app there. `/login` is noindex and stays
+// out (ADR-0059): a noindex URL in the sitemap is a Search Console error.
+export const INDEXED_PATHS = ["/", "/signup", "/privacy", "/support", "/account/delete"];
