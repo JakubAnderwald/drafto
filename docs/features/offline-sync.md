@@ -80,11 +80,17 @@ it. This file is hand-maintained, not generated: when a column changes, update
   update path).
 - The pull timestamp comes from Supabase (`get_server_time` RPC); never use
   client `Date.now()` unless the RPC fails (then fall back to `Date.now() - 5s`).
-- Every pull sends rows as `updated`, including the first — WatermelonDB
-  auto-creates missing locals. WatermelonDB passes `lastPulledAt: null` (not
-  `undefined`) on a first sync, so both drivers' `lastPulledAt === undefined`
-  check never fires: a first sync pulls incrementally from the epoch, and the
-  `created` branch of `splitChanges` stays unused.
+- Every pull sends rows as `updated`, the first sync included, and both drivers
+  pass `sendCreatedAsUpdated: true` to `synchronize()`. With that flag,
+  WatermelonDB creates a missing local record without logging
+  `[Sync] Server wants client to update record …`. Rows created on another
+  device reach incremental pulls this way. `created` stays empty, because with
+  the flag on WatermelonDB logs an error for any `created` row.
+- A first sync is `lastPulledAt == null`: WatermelonDB passes `null`, not the
+  `undefined` its type suggests, when a database has never pulled. A first sync
+  pulls with no `updated_at` / `created_at` cursor, still capped at `max_rows`
+  (see "Open investigation" below), and desktop skips server-deletion detection
+  on it.
 - Push order: notebooks -> notes -> attachments (notes depend on notebooks;
   attachments on notes).
 - Attachments only push when `upload_status === "uploaded"`; pending blobs stay
@@ -156,9 +162,13 @@ it. This file is hand-maintained, not generated: when a column changes, update
 - `apps/desktop/__tests__/db/sync.test.ts` and `apps/mobile/__tests__/db/sync.test.ts`
   — the remote-change counter (own-push echoes are not counted), coalescing,
   and on desktop first-sync vs. incremental, the pull's session gate and the
-  empty-server-ID-set guard on deletion detection.
-- `apps/desktop/__tests__/db/sync-mappers.test.ts` — column mapping drift and
-  the attachment push's `ignoreDuplicates`.
+  empty-server-ID-set guard on deletion detection. Mobile's file also covers
+  the pull shape and cursor.
+- `apps/desktop/__tests__/db/sync-mappers.test.ts` — column mapping drift, the
+  pull shape and cursor, and the attachment push's `ignoreDuplicates`.
+- `apps/{mobile,desktop}/__tests__/db/sync-diagnostics.test.ts` — the real
+  `synchronize()` over an in-memory LokiJS database: a first sync and an
+  incremental pull of a note from another device log no `[Sync]` diagnostic.
 - `apps/{mobile,desktop}/__tests__/providers/database-provider.test.tsx` — the
   identity guard, the local-edit debounce, joining a running sync, no loop after
   a clean sync, and `lastSyncError`.
