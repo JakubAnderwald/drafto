@@ -38,12 +38,12 @@ Add a second APFS volume, **`DraftoFactory`**, to the X9 Pro's existing containe
 
 Code changes:
 
-- **`scripts/lib/beta-build-root.sh`.** `BETA_BUILDS_VOLUME_DIR` defaults to `/Volumes/DraftoFactory`, and while it is mounted both roots default to it. The mobile root follows the volume again, and the non-ASCII refusal stays as a backstop.
+- **`scripts/lib/beta-build-root.sh`.** `BETA_BUILDS_VOLUME_DIR` defaults to `/Volumes/DraftoFactory`, and while it is mounted (present and writable: a stale, root-owned mount point doesn't count) both roots default to it. The mobile root follows the volume again, and the non-ASCII refusal stays as a backstop.
 - **Free-disk guard.** `free_disk_gb` in `factory-agent.sh` and the verify lane's start gate now report the fuller of `$REPO_ROOT`'s volume and `$HOME`'s. With the checkout off the internal disk, measuring `$REPO_ROOT` alone would stop protecting the internal disk, where TMPDIR, Claude transcripts and simulators still live.
 - **`scripts/nightly-support.sh`.**
   - Session worktrees go to `<volume>/worktrees` while the volume is mounted, else `~/code` (`SUPPORT_WORKTREE_PARENT` overrides both).
-  - `session_worktree_path` reuses a registered worktree for the same item from either parent.
-  - `sweep_session_worktrees` runs before Phase 2. It removes every `drafto-dependabot-<n>` whose PR is merged or closed and every `drafto-support-<n>` whose issue is closed, whether or not the item is in tonight's queue.
+  - `session_worktree_path` reuses a registered worktree for the same item from either parent. If that worktree's directory is gone (its volume isn't mounted), the item is skipped until a later night, because git still has its branch checked out there.
+  - `sweep_session_worktrees` runs before the no-items exit and Phase 2. It removes every `drafto-dependabot-<n>` whose PR is merged or closed and every `drafto-support-<n>` whose issue is closed, whether or not the item is in tonight's queue. A worktree with uncommitted changes, or with commits on no remote-tracking ref, is kept and logged: an issue closed by hand may still hold an unfinished fix.
 
 The launchd plist runs the factory from `/Volumes/DraftoFactory/drafto-factory` and pins both roots there. It skips the tick unless both `/Volumes/DraftoFactory/drafto-factory` and `/Volumes/Zewnętrzny/Developer` exist: Gradle, DerivedData and the Android SDK stay on `Zewnętrzny`, shared with interactive work. The launchd stdout/stderr logs stay on the internal disk, so the "not mounted" line can always be written.
 

@@ -296,6 +296,29 @@ describe("beta-build-root.sh — root lock (real bash)", () => {
     }
   });
 
+  it("treats a present but unwritable volume dir as not mounted", () => {
+    // A stale, root-owned mount point left behind by an unclean eject.
+    const vol = mkdtempSync(join(tmpdir(), "builds-volume-stale-"));
+    try {
+      spawnSync("chmod", ["555", vol]);
+      const r = runLib('echo "$BETA_MOBILE_ROOT|$BETA_DESKTOP_ROOT"', {
+        env: {
+          DRAFTO_BETA_MOBILE_ROOT: "",
+          DRAFTO_DESKTOP_BUILD_ROOT: "",
+          DRAFTO_BUILDS_VOLUME_DIR: vol,
+        },
+      });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(
+        r.stdout.trim(),
+        "/Users/jakub/code/drafto-beta-mobile|/Users/jakub/code/drafto-beta-desktop",
+      );
+    } finally {
+      spawnSync("chmod", ["755", vol]);
+      rmSync(vol, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a non-ASCII mobile root before locking; desktop may use one", () => {
     // 2026-10-09: React Native 0.83's iOS pods (URI::File.build) failed on
     // /Volumes/Zewnętrzny — the #658 iOS beta never built there. The unique
@@ -591,14 +614,16 @@ describe("session worktrees (real git)", () => {
     const git = (...a) => spawnSync("git", ["-C", repo, ...a], { encoding: "utf8" });
     git("init", "-q", "-b", "main");
     git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+    // The sweep only removes work that is on a remote-tracking ref.
+    git("update-ref", "refs/remotes/origin/main", "HEAD");
     return { dir, repo, git };
   }
-  // gh stubbed by item: dependabot PRs 746 CLOSED, 747 MERGED, 754 OPEN; support
-  // issue 700 CLOSED, 701 OPEN; anything else unreadable (empty).
+  // gh stubbed by item: dependabot PRs 746/748 CLOSED, 747 MERGED, 754 OPEN;
+  // support issues 700/702 CLOSED, 701 OPEN; anything else unreadable (empty).
   const GH_STUB = `gh() {
   case "$1 $2 $3" in
-    "pr view 746") echo CLOSED ;; "pr view 747") echo MERGED ;; "pr view 754") echo OPEN ;;
-    "issue view 700") echo CLOSED ;; "issue view 701") echo OPEN ;;
+    "pr view 746"|"pr view 748") echo CLOSED ;; "pr view 747") echo MERGED ;; "pr view 754") echo OPEN ;;
+    "issue view 700"|"issue view 702") echo CLOSED ;; "issue view 701") echo OPEN ;;
     *) return 1 ;;
   esac
 }`;
@@ -614,7 +639,9 @@ describe("session worktrees (real git)", () => {
           'log() { echo "$*"; }',
           ...extra,
           fnSource(nightly, "remove_session_worktree"),
+          fnSource(nightly, "registered_worktree_paths"),
           fnSource(nightly, "session_worktree_path"),
+          fnSource(nightly, "session_worktree_has_local_work"),
           fnSource(nightly, "sweep_session_worktrees"),
           body,
         ].join("\n"),
@@ -635,7 +662,7 @@ describe("session worktrees (real git)", () => {
           BASH,
           [
             "-c",
-            `BETA_BUILDS_VOLUME_DIR=${JSON.stringify(volDir)}\nHOME=/home/x\nSUPPORT_WORKTREE_PARENT=${JSON.stringify(override)}\n${block[0]}echo "$SUPPORT_WORKTREE_PARENT"`,
+            `BETA_BUILDS_VOLUME_DIR=${JSON.stringify(volDir)}\nHOME=/home/x\nSUPPORT_WORKTREE_PARENT=${JSON.stringify(override)}\n${fnSource(lib, "build_volume_mounted")}\n${block[0]}echo "$SUPPORT_WORKTREE_PARENT"`,
           ],
           { encoding: "utf8" },
         ).stdout.trim();
@@ -672,6 +699,18 @@ describe("session worktrees (real git)", () => {
         join(dir, "new-parent", "drafto-dependabot-760"),
         join(dir, "new-parent", "drafto-dependabot-75"),
       ]);
+
+      // Registered, but its volume is gone: the path comes back with exit 1, so
+      // the caller skips the item instead of colliding on the checked-out branch.
+      rmSync(old, { recursive: true, force: true });
+      const gone = runFns(
+        repo,
+        dir,
+        'if p=$(session_worktree_path drafto-dependabot-754); then echo "OK $p"; else echo "GONE $p"; fi',
+        [`SUPPORT_WORKTREE_PARENT=${JSON.stringify(join(dir, "new-parent"))}`],
+      );
+      assert.equal(gone.status, 0, gone.stderr);
+      assert.equal(gone.stdout.trim(), `GONE ${old}`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -688,34 +727,80 @@ describe("session worktrees (real git)", () => {
         closedIssue: join(dir, "b", "drafto-support-700"),
         openIssue: join(dir, "b", "drafto-support-701"),
         other: join(dir, "a", "drafto-factory"),
+        dirtyClosedPr: join(dir, "b", "drafto-dependabot-748"),
+        unpushedClosedIssue: join(dir, "b", "drafto-support-702"),
       };
       const branch = {
         closedIssue: "fix/support-700",
         openIssue: "fix/support-701",
+        unpushedClosedIssue: "fix/support-702",
       };
       for (const [k, p] of Object.entries(wts)) {
         assert.equal(git("worktree", "add", "-q", "-b", branch[k] ?? `b-${k}`, p).status, 0);
       }
+      // Local work the sweep must never destroy, whatever the item's state.
+      writeFileSync(join(wts.dirtyClosedPr, "pnpm-lock.yaml"), "uncommitted\n");
+      const wtGit = (p, ...a) => spawnSync("git", ["-C", p, ...a], { encoding: "utf8" });
+      wtGit(
+        wts.unpushedClosedIssue,
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "fix",
+      );
+      // A registered worktree whose directory is gone (volume not mounted).
+      const goneWt = join(dir, "c", "drafto-dependabot-749");
+      assert.equal(git("worktree", "add", "-q", "-b", "b-gone", goneWt).status, 0);
+      rmSync(goneWt, { recursive: true, force: true });
       const r = runFns(repo, dir, "sweep_session_worktrees", [GH_STUB]);
       assert.equal(r.status, 0, r.stderr);
       for (const k of ["closedPr", "mergedPr", "closedIssue"]) {
         assert.ok(!existsSync(wts[k]), `${k} worktree swept`);
       }
-      for (const k of ["openPr", "unreadablePr", "openIssue", "other"]) {
+      for (const k of [
+        "openPr",
+        "unreadablePr",
+        "openIssue",
+        "other",
+        "dirtyClosedPr",
+        "unpushedClosedIssue",
+      ]) {
         assert.ok(existsSync(wts[k]), `${k} worktree kept`);
       }
+      assert.match(
+        git("worktree", "list").stdout,
+        /drafto-dependabot-749/,
+        "a gone worktree stays registered",
+      );
+      assert.match(
+        r.stdout,
+        /Keeping .*drafto-dependabot-748: #748 is CLOSED, but it holds uncommitted/,
+      );
+      assert.match(r.stdout, /Keeping .*drafto-support-702/);
       assert.equal(git("branch", "--list", "fix/support-700").stdout.trim(), "");
       assert.notEqual(git("branch", "--list", "fix/support-701").stdout.trim(), "");
-      assert.match(r.stdout, /Dependabot PR #746 \(CLOSED\)/);
+      assert.match(r.stdout, /Sweeping .*drafto-dependabot-746: #746 is CLOSED/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("runs the sweep before Phase 2 and never prunes", () => {
+  it("runs the sweep before the no-items exit and Phase 2, and never prunes", () => {
     const code = stripComments(nightly);
+    const sweepAt = code.indexOf("\nsweep_session_worktrees\n");
+    assert.ok(sweepAt !== -1, "sweep must be called");
+    // A quiet night is exactly when the queue no longer names finished items.
     assert.ok(
-      code.indexOf("\nsweep_session_worktrees\n") < code.indexOf("for PR_NUMBER in"),
+      sweepAt < code.indexOf('log "No items to process."'),
+      "sweep must precede the early exit",
+    );
+    assert.ok(
+      sweepAt < code.indexOf("for PR_NUMBER in"),
       "sweep must run before the Dependabot loop",
     );
     assert.doesNotMatch(code, /worktree prune/);
@@ -763,6 +848,7 @@ LANE_desktop=${JSON.stringify(lanes.desktop ?? "exit:0")}
 ENSURE_FAIL=${JSON.stringify(ensureFail.join(" "))}
 log() { echo "[log] $*" >>"$LOG_FILE"; }
 logerr() { echo "[logerr] $*" >>"$LOG_FILE"; }
+${fnSource(lib, "build_volume_mounted")}
 ensure_beta_build_root() {
   echo "ensure $1 $2" >>"$DIR/calls"
   [[ " $ENSURE_FAIL " == *" $1 "* ]] && return 1

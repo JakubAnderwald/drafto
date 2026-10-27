@@ -60,13 +60,20 @@ BETA_FETCH_TIMEOUT_SEC="${DRAFTO_BETA_FETCH_TIMEOUT_SEC:-300}"
 # keeps a wedged ruby from holding the build-root lock (see ensure_beta_build_root).
 BETA_BUNDLE_CHECK_TIMEOUT_SEC="${DRAFTO_BETA_BUNDLE_CHECK_TIMEOUT_SEC:-120}"
 
+# Whether the build volume is mounted and usable. Writable, not just present:
+# after an unclean eject macOS can leave a stale, root-owned mount-point
+# directory behind, and building "on the volume" there would only fail.
+build_volume_mounted() {
+  [[ -d "$BETA_BUILDS_VOLUME_DIR" && -w "$BETA_BUILDS_VOLUME_DIR" ]]
+}
+
 # (Re)compute BETA_MOBILE_ROOT / BETA_DESKTOP_ROOT. Runs once at source time; a
 # long-running caller re-runs it right before preparing a root, because "is the
 # build volume mounted" can change between the two (nightly-support.sh sources
 # at 00:03 and reaches its builds hours later).
 resolve_beta_build_roots() {
   local parent
-  if [[ -d "$BETA_BUILDS_VOLUME_DIR" ]]; then
+  if build_volume_mounted; then
     parent="$BETA_BUILDS_VOLUME_DIR"
   else
     parent="/Users/jakub/code"
