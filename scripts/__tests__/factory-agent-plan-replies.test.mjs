@@ -301,6 +301,26 @@ ${final ? `plan_reply_check 718 ${markers} ${final}` : ""}
     assert.match(out.posted, /<!-- drafto-factory-plan-blocked-reply-11 -->/);
   });
 
+  it("doesn't take acks or the plan link from someone else's plan-looking comment", () => {
+    const fake = { ...plan(777, "10"), authorAssociation: "NONE" };
+    // Unacked by the real plan: the planner's reply is held back.
+    const held = runCheck({ comments: [plan(500), fake], files: { 10: "🏭 Answer." } });
+    assert.equal(held.posts, 0);
+    // And a fallback links the real plan, never the impostor.
+    const out = runCheck({ comments: [plan(500, "10"), fake] });
+    assert.equal(out.posts, 1);
+    assert.match(out.posted, /\[the plan\]\([^)]*#issuecomment-500\)/);
+    assert.doesNotMatch(out.posted, /#issuecomment-777/);
+  });
+
+  it("doesn't repeat a fallback when the Blocked check runs right after it", () => {
+    // The comment list (a stub) never shows the first call's fallback, as when
+    // GitHub's listing lags.
+    const out = runCheck({ comments: [plan(500, "10")], twice: true });
+    assert.equal(out.posts, 1);
+    assert.match(out.posted, /No reply was posted to \[your comment\]/);
+  });
+
   it("omits the plan link when there is no plan comment", () => {
     const out = runCheck({ comments: [], final: "1" });
     assert.equal(out.posts, 1);

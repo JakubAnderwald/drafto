@@ -1172,8 +1172,10 @@ plan_reply_check() {
     log "WARNING: could not read #$issue_num's comments to check the plan replies; skipping"
     return 0
   fi
+  # Plan comments are the factory's own (OWNER): on a public repo anyone can
+  # post one that looks like a plan and acks a comment.
   acked=$(extract_acked_comment_ids "$(echo "$comments" | jq -r \
-    '[.[] | select((.body // "") | startswith("<!-- drafto-factory-plan -->")) | .body] | join("\n")')")
+    '[.[] | select(.authorAssociation == "OWNER" and ((.body // "") | startswith("<!-- drafto-factory-plan -->"))) | .body] | join("\n")')")
   [[ -n "$acked" ]] || acked='[]'
   # Which reply each comment is due: its own marker once acked, the Blocked one
   # when final; none yet otherwise.
@@ -1190,7 +1192,7 @@ plan_reply_check() {
   done
   post_issue_replies "$issue_num" "$comments" "$to_post"
   plan_id=$(echo "$comments" | jq -r \
-    '[.[] | select((.body // "") | startswith("<!-- drafto-factory-plan -->"))] | last | .id // "" | tostring')
+    '[.[] | select(.authorAssociation == "OWNER" and ((.body // "") | startswith("<!-- drafto-factory-plan -->")))] | last | .id // "" | tostring')
   url="https://github.com/JakubAnderwald/drafto/issues/$issue_num"
   plan_link="the plan"
   [[ "$plan_id" =~ ^[0-9]+$ ]] && plan_link="[the plan]($url#issuecomment-$plan_id)"
@@ -1204,20 +1206,26 @@ plan_reply_check() {
       continue
     fi
     log "Issue #$issue_num: no plan reply found for $marker; posting the fallback"
+    # Recorded like a posted reply, so the Blocked path's second call can't
+    # post it again while GitHub's listing lags.
     if [[ "$blocked" == "true" ]]; then
-      gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+      if gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
         --body "🏭 **The factory couldn't revise the plan for [your comment]($url#issuecomment-$id), and no reply to it was posted.**
 
 The card is in **Blocked**, and $plan_link is as it was. The factory log on the Mac mini has the details; once the card is back in **Plan Review**, the factory looks at your comment again.
 
-<!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
+<!-- $marker -->" >>"$LOG_FILE" 2>&1; then
+        POSTED_REPLY_IDS+="$id "
+      fi
     else
-      gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+      if gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
         --body "🏭 **No reply was posted to [your comment]($url#issuecomment-$id).**
 
 The factory handled it in $plan_link, which is current. If the plan doesn't answer your comment, comment again.
 
-<!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
+<!-- $marker -->" >>"$LOG_FILE" 2>&1; then
+        POSTED_REPLY_IDS+="$id "
+      fi
     fi
   done
 }
