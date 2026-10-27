@@ -583,8 +583,14 @@ describe("remove_session_worktree (real git)", () => {
       git("update-ref", "refs/remotes/origin/main", "HEAD");
       const wt = join(dir, "drafto-support-658");
       assert.equal(git("worktree", "add", "-q", "-b", "fix/support-658", wt).status, 0);
-      // Untracked tool output (next dev's AGENTS.md) doesn't count as work.
-      writeFileSync(join(wt, "AGENTS.md"), "generated\n");
+      // next dev's generated files don't count as work...
+      mkdirSync(join(wt, "apps/web"), { recursive: true });
+      writeFileSync(join(wt, "apps/web/AGENTS.md"), "generated\n");
+      writeFileSync(join(wt, "apps/web/CLAUDE.md"), "@AGENTS.md\n");
+      // ...but any other new file does: an uncommitted new source file.
+      const newFile = join(dir, "drafto-support-660");
+      assert.equal(git("worktree", "add", "-q", "-b", "fix/support-660", newFile).status, 0);
+      writeFileSync(join(newFile, "new-source.ts"), "export const x = 1;\n");
       const stray = join(dir, "drafto-support-999");
       mkdirSync(stray);
       // An unpushed fix: kept, with its branch.
@@ -623,6 +629,7 @@ describe("remove_session_worktree (real git)", () => {
             `remove_session_worktree ${JSON.stringify(stray)}`,
             `remove_session_worktree ${JSON.stringify(wt)} fix/support-658`,
             `remove_session_worktree ${JSON.stringify(unpushed)} fix/support-659`,
+            `remove_session_worktree ${JSON.stringify(newFile)} fix/support-660`,
           ].join("\n"),
         ],
         { encoding: "utf8" },
@@ -632,6 +639,7 @@ describe("remove_session_worktree (real git)", () => {
       assert.ok(existsSync(stray), "an unregistered directory is never touched");
       assert.equal(git("branch", "--list", "fix/support-658").stdout.trim(), "");
       assert.ok(existsSync(unpushed), "a worktree with unpushed commits is kept");
+      assert.ok(existsSync(newFile), "a worktree with a new untracked source file is kept");
       assert.notEqual(git("branch", "--list", "fix/support-659").stdout.trim(), "");
       assert.match(
         r.stdout,
@@ -782,8 +790,9 @@ describe("session worktrees (real git)", () => {
       }
       // Local work the sweep must never destroy, whatever the item's state.
       writeFileSync(join(wts.dirtyClosedPr, "pnpm-lock.yaml"), "uncommitted\n");
-      // Untracked tool output alone doesn't keep a finished item's worktree.
-      writeFileSync(join(wts.closedPr, "AGENTS.md"), "generated\n");
+      // next dev's generated files alone don't keep a finished item's worktree.
+      mkdirSync(join(wts.closedPr, "apps/web"), { recursive: true });
+      writeFileSync(join(wts.closedPr, "apps/web/AGENTS.md"), "generated\n");
       const wtGit = (p, ...a) => spawnSync("git", ["-C", p, ...a], { encoding: "utf8" });
       wtGit(
         wts.unpushedClosedIssue,

@@ -234,14 +234,17 @@ else
   log "WARNING: could not list merged support fixes awaiting a beta; Phase 4 will retry"
 fi
 
-# Whether <worktree> holds work that exists nowhere else: changes to tracked
-# files, or commits on no remote-tracking ref (unpushed). Untracked files don't
-# count: tools leave them behind in every session (`next dev` writes
-# apps/web/AGENTS.md), and counting them would keep every worktree forever.
-# Unreadable counts as holding work.
+# Whether <worktree> holds work that exists nowhere else: any change git sees,
+# new files included, or commits on no remote-tracking ref (unpushed). The one
+# exception is output a tool writes into every session that runs the web E2E
+# suite: `next dev` generates apps/web/AGENTS.md and apps/web/CLAUDE.md, and
+# counting those would keep every such worktree forever. Pushed commits stay on
+# their remote-tracking ref, since nothing here prunes them, so a fix /push
+# pushed before its squash-merge counts as pushed. Unreadable counts as work.
 session_worktree_has_local_work() {
   local wt="$1" dirty unpushed
-  dirty=$(git -C "$wt" status --porcelain --untracked-files=no 2>/dev/null) || return 0
+  dirty=$(git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null) || return 0
+  dirty=$(grep -vxF -e '?? apps/web/AGENTS.md' -e '?? apps/web/CLAUDE.md' <<<"$dirty" || true)
   [[ -z "$dirty" ]] || return 0
   unpushed=$(git -C "$wt" rev-list --count HEAD --not --remotes 2>/dev/null) || return 0
   [[ "$unpushed" == "0" ]] || return 0
