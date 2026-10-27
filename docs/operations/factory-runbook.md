@@ -62,7 +62,10 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
    them across volumes. The build toolchain lives on the same volume too:
    `~/.gradle`, Xcode's `DerivedData` / `Archives` / `iOS DeviceSupport`,
    `~/Library/Caches/CocoaPods`, `~/Library/Android/sdk` and `~/.android/avd` are
-   symlinks into `/Volumes/DraftoFactory/{Developer,Android,android-avd}`:
+   symlinks into `/Volumes/DraftoFactory/{Developer,Android,android-avd}`. Keep
+   `/Volumes/DraftoFactory/Developer/Xcode/Archives` in IDrive's backup set. The
+   macOS archives hold the only copy of the macOS dSYMs, and every distributed
+   build's archive must be retained:
 
    ```bash
    cd /Users/jakub/code/drafto
