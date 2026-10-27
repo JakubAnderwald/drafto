@@ -15,10 +15,11 @@ env:
   SKIP_ENV_VALIDATION: "true"
   TURBO_TELEMETRY_DISABLED: 1
 
-# Every job has a timeout a few times its usual run on main (about 4 minutes for
-# E2E, 1 to 2 for the rest). Without one GitHub waits 6 hours, so a job hung on,
-# say, the browser install holds the PR's checks that long. The factory re-runs a
-# job that timed out in a step that can't be the code's fault
+# Every job has a timeout well above its usual run on main (about 4 minutes for
+# E2E, 1 to 2 for the rest). Without one GitHub waits 6 hours, so a hung job holds
+# the PR's checks that long. E2E gets the most room: its browser install fetches
+# system packages from Ubuntu's mirror, which on a slow day takes 15+ minutes. The
+# factory re-runs a job that timed out in a step that can't be the code's fault
 # (classify_failing_required in scripts/factory-agent.sh, ADR-0041).
 jobs:
   lint-and-typecheck:
@@ -108,7 +109,7 @@ jobs:
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Check for required secrets
         id: check-secrets
