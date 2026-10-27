@@ -234,11 +234,27 @@ else
   log "WARNING: could not list merged support fixes awaiting a beta; Phase 4 will retry"
 fi
 
+# Whether <worktree> holds work that exists nowhere else: changes to tracked
+# files, or commits on no remote-tracking ref (unpushed). Untracked files don't
+# count: tools leave them behind in every session (`next dev` writes
+# apps/web/AGENTS.md), and counting them would keep every worktree forever.
+# Unreadable counts as holding work.
+session_worktree_has_local_work() {
+  local wt="$1" dirty unpushed
+  dirty=$(git -C "$wt" status --porcelain --untracked-files=no 2>/dev/null) || return 0
+  [[ -z "$dirty" ]] || return 0
+  unpushed=$(git -C "$wt" rev-list --count HEAD --not --remotes 2>/dev/null) || return 0
+  [[ "$unpushed" == "0" ]] || return 0
+  return 1
+}
+
 # Remove a session's fixed-path worktree once its work has landed. Only that
 # exact path, and only when git has it registered as a worktree of this repo —
-# never a directory that merely happens to exist there. A fix/support-<n>
-# branch the session created is dropped with it (the PR is merged; the remote
-# keeps the history). $1 path, $2 branch to delete with it (optional).
+# never a directory that merely happens to exist there — and never while it
+# holds local work (an issue closed by hand, or a PR merged mid-session, may
+# leave an unfinished fix there). A fix/support-<n> branch the session created
+# is dropped with it (the PR is merged; the remote keeps the history).
+# $1 path, $2 branch to delete with it (optional).
 remove_session_worktree() {
   local wt="$1" branch="${2:-}" canon listing match wt_branch
   # Nothing on disk → nothing to remove. git may list the path as given or
@@ -250,6 +266,10 @@ remove_session_worktree() {
   elif grep -Fxq "worktree $canon" <<<"$listing"; then
     match="$canon"
   else
+    return 0
+  fi
+  if session_worktree_has_local_work "$match"; then
+    log "Keeping worktree $match: it holds uncommitted changes or unpushed commits"
     return 0
   fi
   wt_branch=$(awk -v wt="worktree $match" '$0 == wt {f=1; next} f && /^branch / {sub(/^branch refs\/heads\//, ""); print; exit} f && /^$/ {exit}' <<<"$listing")
@@ -289,19 +309,6 @@ session_worktree_path() {
   printf '%s/%s\n' "$SUPPORT_WORKTREE_PARENT" "$name"
 }
 
-# Whether <worktree> holds work that exists nowhere else: uncommitted changes,
-# or commits on no remote-tracking ref (unpushed). The sweep keeps such a
-# worktree whatever the item's state — an issue closed by hand may still have an
-# unfinished fix in it. Unreadable counts as holding work.
-session_worktree_has_local_work() {
-  local wt="$1" dirty unpushed
-  dirty=$(git -C "$wt" status --porcelain 2>/dev/null) || return 0
-  [[ -z "$dirty" ]] || return 0
-  unpushed=$(git -C "$wt" rev-list --count HEAD --not --remotes 2>/dev/null) || return 0
-  [[ "$unpushed" == "0" ]] || return 0
-  return 1
-}
-
 # Remove the support / Dependabot worktrees whose item is finished. The removals
 # in Phases 2 and 3 only run for an item processed tonight, and a finished item
 # usually drops out of tonight's queue first: closed PRs aren't listed, and PRs
@@ -309,7 +316,8 @@ session_worktree_has_local_work() {
 # worktrees used to stay forever (drafto-dependabot-746: 3.5 GB of internal
 # disk). Runs before the no-items exit, since a quiet night is exactly when the
 # queue no longer names them. Matched by basename in any parent. An unreadable
-# state, a directory that is gone, or local work keeps the worktree. Never
+# state or a directory that is gone keeps the worktree, and so does local work
+# (remove_session_worktree checks). Never
 # `git worktree prune` here: it would also drop the registrations of worktrees on
 # a build volume that isn't mounted right now.
 sweep_session_worktrees() {
@@ -328,10 +336,6 @@ sweep_session_worktrees() {
     else
       state=$(gh issue view "$num" --repo JakubAnderwald/drafto --json state --jq .state 2>/dev/null || echo "")
       [[ "$state" == "CLOSED" ]] || continue
-    fi
-    if session_worktree_has_local_work "$wt"; then
-      log "Keeping $wt: #$num is $state, but it holds uncommitted or unpushed work"
-      continue
     fi
     log "Sweeping $wt: #$num is $state"
     remove_session_worktree "$wt" "$branch"
@@ -494,6 +498,13 @@ for ((IDX=0; IDX<SUPPORT_COUNT; IDX++)); do
 
   log "--- Processing support issue #$ISSUE_NUMBER (gate passed) ---"
 
+  # Before the "working on it" ping, so a reporter never hears that while the
+  # item is then skipped for the night.
+  if ! SUPPORT_WT=$(session_worktree_path "drafto-support-${ISSUE_NUMBER}"); then
+    log "Issue #$ISSUE_NUMBER: its worktree $SUPPORT_WT is on a volume that isn't mounted; retry next night."
+    continue
+  fi
+
   # Phase G progress comment (a): "Working on it now" before Claude starts.
   # Idempotent — skip if a previous nightly run already posted one (or if the
   # earlier "Hit a blocker" comment is present, in which case we'd be
@@ -506,10 +517,6 @@ for ((IDX=0; IDX<SUPPORT_COUNT; IDX++)); do
       2>/dev/null || log "WARNING: failed to post 'working on it' comment on issue #$ISSUE_NUMBER"
   fi
 
-  if ! SUPPORT_WT=$(session_worktree_path "drafto-support-${ISSUE_NUMBER}"); then
-    log "Issue #$ISSUE_NUMBER: its worktree $SUPPORT_WT is on a volume that isn't mounted; retry next night."
-    continue
-  fi
   SUPPORT_BRANCH="fix/support-${ISSUE_NUMBER}"
   IFS= read -r -d '' SUPPORT_PROMPT <<PROMPT || true
 You are an automated nightly job. Process ONLY support issue #${ISSUE_NUMBER} for JakubAnderwald/drafto.

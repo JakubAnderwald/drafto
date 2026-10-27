@@ -97,6 +97,12 @@ describe("the Claude session no longer ships anything", () => {
     assert.match(supportPrompt, /Never start a background task that must outlive this session/);
   });
 
+  it("resolves the support worktree before telling the reporter it's working on it", () => {
+    const resolveAt = nightly.indexOf('SUPPORT_WT=$(session_worktree_path "drafto-support-');
+    assert.ok(resolveAt !== -1);
+    assert.ok(resolveAt < nightly.indexOf("Working on it now (from the nightly agent)."));
+  });
+
   it("puts the session in a fixed worktree and keeps it out of the fossil checkout", () => {
     assert.match(
       nightly,
@@ -573,11 +579,38 @@ describe("remove_session_worktree (real git)", () => {
         "-m",
         "init",
       );
+      // Pushed: the commit is on a remote-tracking ref.
+      git("update-ref", "refs/remotes/origin/main", "HEAD");
       const wt = join(dir, "drafto-support-658");
       assert.equal(git("worktree", "add", "-q", "-b", "fix/support-658", wt).status, 0);
+      // Untracked tool output (next dev's AGENTS.md) doesn't count as work.
+      writeFileSync(join(wt, "AGENTS.md"), "generated\n");
       const stray = join(dir, "drafto-support-999");
       mkdirSync(stray);
-      const fn = fnSource(nightly, "remove_session_worktree");
+      // An unpushed fix: kept, with its branch.
+      const unpushed = join(dir, "drafto-support-659");
+      assert.equal(git("worktree", "add", "-q", "-b", "fix/support-659", unpushed).status, 0);
+      spawnSync(
+        "git",
+        [
+          "-C",
+          unpushed,
+          "-c",
+          "user.email=t@t",
+          "-c",
+          "user.name=t",
+          "commit",
+          "-q",
+          "--allow-empty",
+          "-m",
+          "wip",
+        ],
+        { encoding: "utf8" },
+      );
+      const fn = [
+        fnSource(nightly, "session_worktree_has_local_work"),
+        fnSource(nightly, "remove_session_worktree"),
+      ].join("\n");
       const r = spawnSync(
         BASH,
         [
@@ -589,6 +622,7 @@ describe("remove_session_worktree (real git)", () => {
             fn,
             `remove_session_worktree ${JSON.stringify(stray)}`,
             `remove_session_worktree ${JSON.stringify(wt)} fix/support-658`,
+            `remove_session_worktree ${JSON.stringify(unpushed)} fix/support-659`,
           ].join("\n"),
         ],
         { encoding: "utf8" },
@@ -597,6 +631,12 @@ describe("remove_session_worktree (real git)", () => {
       assert.ok(!existsSync(wt), "registered worktree removed");
       assert.ok(existsSync(stray), "an unregistered directory is never touched");
       assert.equal(git("branch", "--list", "fix/support-658").stdout.trim(), "");
+      assert.ok(existsSync(unpushed), "a worktree with unpushed commits is kept");
+      assert.notEqual(git("branch", "--list", "fix/support-659").stdout.trim(), "");
+      assert.match(
+        r.stdout,
+        /Keeping worktree .*drafto-support-659: it holds uncommitted changes or unpushed commits/,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -613,7 +653,9 @@ describe("session worktrees (real git)", () => {
     mkdirSync(repo);
     const git = (...a) => spawnSync("git", ["-C", repo, ...a], { encoding: "utf8" });
     git("init", "-q", "-b", "main");
-    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+    writeFileSync(join(repo, "pnpm-lock.yaml"), "lock\n");
+    git("add", "pnpm-lock.yaml");
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init");
     // The sweep only removes work that is on a remote-tracking ref.
     git("update-ref", "refs/remotes/origin/main", "HEAD");
     return { dir, repo, git };
@@ -638,10 +680,10 @@ describe("session worktrees (real git)", () => {
           `LOG_FILE=${JSON.stringify(join(dir, "log"))}`,
           'log() { echo "$*"; }',
           ...extra,
+          fnSource(nightly, "session_worktree_has_local_work"),
           fnSource(nightly, "remove_session_worktree"),
           fnSource(nightly, "registered_worktree_paths"),
           fnSource(nightly, "session_worktree_path"),
-          fnSource(nightly, "session_worktree_has_local_work"),
           fnSource(nightly, "sweep_session_worktrees"),
           body,
         ].join("\n"),
@@ -740,6 +782,8 @@ describe("session worktrees (real git)", () => {
       }
       // Local work the sweep must never destroy, whatever the item's state.
       writeFileSync(join(wts.dirtyClosedPr, "pnpm-lock.yaml"), "uncommitted\n");
+      // Untracked tool output alone doesn't keep a finished item's worktree.
+      writeFileSync(join(wts.closedPr, "AGENTS.md"), "generated\n");
       const wtGit = (p, ...a) => spawnSync("git", ["-C", p, ...a], { encoding: "utf8" });
       wtGit(
         wts.unpushedClosedIssue,
@@ -777,11 +821,8 @@ describe("session worktrees (real git)", () => {
         /drafto-dependabot-749/,
         "a gone worktree stays registered",
       );
-      assert.match(
-        r.stdout,
-        /Keeping .*drafto-dependabot-748: #748 is CLOSED, but it holds uncommitted/,
-      );
-      assert.match(r.stdout, /Keeping .*drafto-support-702/);
+      assert.match(r.stdout, /Keeping worktree .*drafto-dependabot-748: it holds uncommitted/);
+      assert.match(r.stdout, /Keeping worktree .*drafto-support-702/);
       assert.equal(git("branch", "--list", "fix/support-700").stdout.trim(), "");
       assert.notEqual(git("branch", "--list", "fix/support-701").stdout.trim(), "");
       assert.match(r.stdout, /Sweeping .*drafto-dependabot-746: #746 is CLOSED/);
