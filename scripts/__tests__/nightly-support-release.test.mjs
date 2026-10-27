@@ -1,7 +1,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync } from "node:fs";
+import {
+  readFileSync,
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+  existsSync,
+  mkdirSync,
+  realpathSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -92,7 +100,11 @@ describe("the Claude session no longer ships anything", () => {
   it("puts the session in a fixed worktree and keeps it out of the fossil checkout", () => {
     assert.match(
       nightly,
-      /SUPPORT_WT="\$SUPPORT_WORKTREE_PARENT\/drafto-support-\$\{ISSUE_NUMBER\}"/,
+      /SUPPORT_WT=\$\(session_worktree_path "drafto-support-\$\{ISSUE_NUMBER\}"\)/,
+    );
+    assert.match(
+      nightly,
+      /DEPENDABOT_WT=\$\(session_worktree_path "drafto-dependabot-\$\{PR_NUMBER\}"\)/,
     );
     assert.match(
       supportPrompt,
@@ -255,7 +267,7 @@ function runLib(body, { env = {} } = {}) {
 }
 
 describe("beta-build-root.sh — root lock (real bash)", () => {
-  it("defaults the desktop root to the build volume only when it is mounted", () => {
+  it("defaults both roots to the build volume only when it is mounted", () => {
     const r = runLib('echo "$BETA_MOBILE_ROOT|$BETA_DESKTOP_ROOT"', {
       env: {
         DRAFTO_BETA_MOBILE_ROOT: "",
@@ -277,11 +289,8 @@ describe("beta-build-root.sh — root lock (real bash)", () => {
           DRAFTO_BUILDS_VOLUME_DIR: vol,
         },
       });
-      // Mobile never follows the volume: iOS pods need an ASCII path.
-      assert.equal(
-        r2.stdout.trim(),
-        `/Users/jakub/code/drafto-beta-mobile|${vol}/drafto-beta-desktop`,
-      );
+      // The volume's name is ASCII (ADR-0060), so the mobile root follows it too.
+      assert.equal(r2.stdout.trim(), `${vol}/drafto-beta-mobile|${vol}/drafto-beta-desktop`);
     } finally {
       rmSync(vol, { recursive: true, force: true });
     }
@@ -360,13 +369,19 @@ kill "$OTHER"`);
     rmSync(vol, { recursive: true, force: true });
     try {
       const r = runLib(
-        `echo "$BETA_DESKTOP_ROOT"; mkdir -p "$BETA_BUILDS_VOLUME_DIR"; resolve_beta_build_roots; echo "$BETA_DESKTOP_ROOT"`,
-        { env: { DRAFTO_DESKTOP_BUILD_ROOT: "", DRAFTO_BUILDS_VOLUME_DIR: vol } },
+        `echo "$BETA_MOBILE_ROOT|$BETA_DESKTOP_ROOT"; mkdir -p "$BETA_BUILDS_VOLUME_DIR"; resolve_beta_build_roots; echo "$BETA_MOBILE_ROOT|$BETA_DESKTOP_ROOT"`,
+        {
+          env: {
+            DRAFTO_BETA_MOBILE_ROOT: "",
+            DRAFTO_DESKTOP_BUILD_ROOT: "",
+            DRAFTO_BUILDS_VOLUME_DIR: vol,
+          },
+        },
       );
       assert.equal(r.status, 0, r.stderr);
       assert.deepEqual(r.stdout.trim().split("\n"), [
-        "/Users/jakub/code/drafto-beta-desktop",
-        `${vol}/drafto-beta-desktop`,
+        "/Users/jakub/code/drafto-beta-mobile|/Users/jakub/code/drafto-beta-desktop",
+        `${vol}/drafto-beta-mobile|${vol}/drafto-beta-desktop`,
       ]);
     } finally {
       rmSync(vol, { recursive: true, force: true });
@@ -562,6 +577,148 @@ describe("remove_session_worktree (real git)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ── session worktree parent, reuse and sweep against a real git repo ────────
+
+describe("session worktrees (real git)", () => {
+  function setupRepo() {
+    // git records worktree paths symlink-resolved (/var → /private/var on macOS).
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "nightly-sweep-")));
+    const repo = join(dir, "repo");
+    mkdirSync(repo);
+    const git = (...a) => spawnSync("git", ["-C", repo, ...a], { encoding: "utf8" });
+    git("init", "-q", "-b", "main");
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+    return { dir, repo, git };
+  }
+  // gh stubbed by item: dependabot PRs 746 CLOSED, 747 MERGED, 754 OPEN; support
+  // issue 700 CLOSED, 701 OPEN; anything else unreadable (empty).
+  const GH_STUB = `gh() {
+  case "$1 $2 $3" in
+    "pr view 746") echo CLOSED ;; "pr view 747") echo MERGED ;; "pr view 754") echo OPEN ;;
+    "issue view 700") echo CLOSED ;; "issue view 701") echo OPEN ;;
+    *) return 1 ;;
+  esac
+}`;
+  function runFns(repo, dir, body, extra = []) {
+    return spawnSync(
+      BASH,
+      [
+        "-c",
+        [
+          "set -euo pipefail",
+          `REPO_ROOT=${JSON.stringify(repo)}`,
+          `LOG_FILE=${JSON.stringify(join(dir, "log"))}`,
+          'log() { echo "$*"; }',
+          ...extra,
+          fnSource(nightly, "remove_session_worktree"),
+          fnSource(nightly, "session_worktree_path"),
+          fnSource(nightly, "sweep_session_worktrees"),
+          body,
+        ].join("\n"),
+      ],
+      { encoding: "utf8" },
+    );
+  }
+
+  it("defaults the parent to the build volume's worktrees/ when mounted, else ~/code", () => {
+    const block = nightly.match(
+      /if \[\[ -z "\$\{SUPPORT_WORKTREE_PARENT:-\}" \]\]; then[\s\S]*?\nfi\n/,
+    );
+    assert.ok(block, "parent resolution block not found");
+    const vol = mkdtempSync(join(tmpdir(), "builds-volume-wt-"));
+    try {
+      const resolveWith = (volDir, override = "") =>
+        spawnSync(
+          BASH,
+          [
+            "-c",
+            `BETA_BUILDS_VOLUME_DIR=${JSON.stringify(volDir)}\nHOME=/home/x\nSUPPORT_WORKTREE_PARENT=${JSON.stringify(override)}\n${block[0]}echo "$SUPPORT_WORKTREE_PARENT"`,
+          ],
+          { encoding: "utf8" },
+        ).stdout.trim();
+      assert.equal(resolveWith(vol), `${vol}/worktrees`);
+      assert.equal(resolveWith("/nonexistent-volume-for-test"), "/home/x/code");
+      assert.equal(resolveWith(vol, "/custom"), "/custom", "an explicit override wins");
+    } finally {
+      rmSync(vol, { recursive: true, force: true });
+    }
+    // Resolved only after the lib that defines BETA_BUILDS_VOLUME_DIR is sourced.
+    assert.ok(
+      nightly.indexOf('source "$SCRIPT_DIR/lib/beta-build-root.sh"') < nightly.indexOf(block[0]),
+    );
+  });
+
+  it("reuses a registered worktree from another parent, else a fresh path", () => {
+    const { dir, repo, git } = setupRepo();
+    try {
+      const old = join(dir, "old-parent", "drafto-dependabot-754");
+      assert.equal(git("worktree", "add", "-q", "-b", "dep-754", old).status, 0);
+      const r = runFns(
+        repo,
+        dir,
+        [
+          "session_worktree_path drafto-dependabot-754",
+          "session_worktree_path drafto-dependabot-760",
+          "session_worktree_path drafto-dependabot-75",
+        ].join("\n"),
+        [`SUPPORT_WORKTREE_PARENT=${JSON.stringify(join(dir, "new-parent"))}`],
+      );
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(r.stdout.trim().split("\n"), [
+        old,
+        join(dir, "new-parent", "drafto-dependabot-760"),
+        join(dir, "new-parent", "drafto-dependabot-75"),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sweeps finished items' worktrees in any parent and keeps open or unreadable ones", () => {
+    const { dir, repo, git } = setupRepo();
+    try {
+      const wts = {
+        closedPr: join(dir, "a", "drafto-dependabot-746"),
+        mergedPr: join(dir, "b", "drafto-dependabot-747"),
+        openPr: join(dir, "a", "drafto-dependabot-754"),
+        unreadablePr: join(dir, "a", "drafto-dependabot-999"),
+        closedIssue: join(dir, "b", "drafto-support-700"),
+        openIssue: join(dir, "b", "drafto-support-701"),
+        other: join(dir, "a", "drafto-factory"),
+      };
+      const branch = {
+        closedIssue: "fix/support-700",
+        openIssue: "fix/support-701",
+      };
+      for (const [k, p] of Object.entries(wts)) {
+        assert.equal(git("worktree", "add", "-q", "-b", branch[k] ?? `b-${k}`, p).status, 0);
+      }
+      const r = runFns(repo, dir, "sweep_session_worktrees", [GH_STUB]);
+      assert.equal(r.status, 0, r.stderr);
+      for (const k of ["closedPr", "mergedPr", "closedIssue"]) {
+        assert.ok(!existsSync(wts[k]), `${k} worktree swept`);
+      }
+      for (const k of ["openPr", "unreadablePr", "openIssue", "other"]) {
+        assert.ok(existsSync(wts[k]), `${k} worktree kept`);
+      }
+      assert.equal(git("branch", "--list", "fix/support-700").stdout.trim(), "");
+      assert.notEqual(git("branch", "--list", "fix/support-701").stdout.trim(), "");
+      assert.match(r.stdout, /Dependabot PR #746 \(CLOSED\)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs the sweep before Phase 2 and never prunes", () => {
+    const code = stripComments(nightly);
+    assert.ok(
+      code.indexOf("\nsweep_session_worktrees\n") < code.indexOf("for PR_NUMBER in"),
+      "sweep must run before the Dependabot loop",
+    );
+    assert.doesNotMatch(code, /worktree prune/);
   });
 });
 

@@ -51,6 +51,10 @@ The first live Phase 4 run shipped #658 to the Play internal track (build 50), b
 
 So the mobile root always defaults to `/Users/jakub/code/drafto-beta-mobile`, and `ensure_beta_build_root` refuses a mobile root with any non-ASCII byte before it takes the lock. That counts as "retry next night" for the nightly and as a failed preparation for the factory. The desktop root still defaults to the build volume, because its fossil replica builds fine there. Renaming the volume to an ASCII name was considered and rejected. A full-system scan found that IDrive keys its backup set by path (it would re-upload about 310 GB), and that a Google Drive two-way mirror, calibre, Image Capture, Claude desktop, two backup scripts, four symlinks, pnpm `.modules.yaml` files and the git worktree links all store the old path. The cost of this choice is about 7 GB on the internal disk.
 
+## Update 2026-10-27: every root moves to an ASCII build volume
+
+[ADR-0060](./0060-dedicated-factory-build-volume.md) adds a second APFS volume with an ASCII name, `DraftoFactory`, in the external drive's container. Both build roots, the factory checkout, the nightly's session worktrees and the pnpm store move onto it. The mobile root follows the build volume again, which resolves the 2026-10-10 update's internal-disk cost. The non-ASCII refusal stays as a backstop. `Zewnętrzny` keeps its name.
+
 ## Alternatives Considered
 
 - **Keep the LLM running the builds, with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`.** This would have saved #658's lanes. It still leaves a 40-minute build, its retries, and the question of whether it shipped to a model that can end its turn, misreport an outcome or skip a platform. Rejected. The wait ceiling is still exported, as defence in depth for the session's own work.

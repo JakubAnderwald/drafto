@@ -234,7 +234,7 @@ The toolchain health check found a broken tool on the Mac mini, typically git fa
 
 ### "A card moved to Blocked saying 'low disk'"
 
-Before starting an implementation the factory checks free space on the build volume and, if it's below `FACTORY_MIN_FREE_DISK_GB` (default 3 GB), parks the card in **Blocked** with a `<!-- drafto-factory-disk-low -->` comment instead of failing mid-build. Reclaim space on the Mac mini (`git worktree prune`; clear Xcode `DerivedData`, old simulators, and `~/.gradle/caches`; strip `node_modules` from stale `.claude/worktrees/*` and `worktrees/*`), then drag the card back to **In Progress**. See [`docs/operations/factory-runbook.md`](../operations/factory-runbook.md) → "Worktree installs & disk" for the full reclamation + pnpm-store runbook.
+Before starting an implementation the factory checks free space on both the build volume (`/Volumes/DraftoFactory`) and the Mac mini's internal disk. If the fuller of the two is below `FACTORY_MIN_FREE_DISK_GB` (default 3 GB), it parks the card in **Blocked** with a `<!-- drafto-factory-disk-low -->` comment instead of failing mid-build. Reclaim space on the Mac mini (`git worktree prune`, only while the build volume is mounted; clear Xcode `DerivedData`, old simulators, and `~/.gradle/caches`; strip `node_modules` from stale `.claude/worktrees/*` and `worktrees/*`), then drag the card back to **In Progress**. See [`docs/operations/factory-runbook.md`](../operations/factory-runbook.md) → "Worktree installs & disk" for the full reclamation + pnpm-store runbook.
 
 ### "I asked for a change, the factory said it did it, and nothing changed"
 

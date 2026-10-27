@@ -199,7 +199,7 @@ The invariant is the installed React version, not one blessed directory: **build
 
 - **NEVER** `pnpm install` in the primary checkout, and **never build/release desktop from a worktree, fresh install, or CI.**
 - Build/ship desktop **only** from the primary checkout: `cd /Users/jakub/code/drafto && git pull && cd apps/desktop && pnpm release:beta` (source via `git pull`, **never** `pnpm install`).
-- The factory's desktop build root `/Users/jakub/code/drafto-beta-desktop` is a clonefile replica of that fossil and is under the same **never `pnpm install`** rule. `assertDesktopFossil()` in `scripts/lib/dispatch-release.mjs` enforces the 19.1.x check before any lane is spawned.
+- The factory's desktop build root `/Volumes/DraftoFactory/drafto-beta-desktop` (on the factory's build volume, [ADR-0060](./docs/adr/0060-dedicated-factory-build-volume.md)) is a copy of that fossil's `node_modules` and is under the same **never `pnpm install`** rule. `assertDesktopFossil()` in `scripts/lib/dispatch-release.mjs` enforces the 19.1.x check before any lane is spawned.
 - Full rules: [`docs/operations/desktop-build-fossil.md`](./docs/operations/desktop-build-fossil.md) · [ADR-0027](./docs/adr/0027-desktop-react-version-locked-to-react-native-macos.md) · [ADR-0030](./docs/adr/0030-in-test-scenarios-and-pre-merge-betas.md) · [`apps/desktop/CLAUDE.md`](./apps/desktop/CLAUDE.md).
 
 ## Dark Factory

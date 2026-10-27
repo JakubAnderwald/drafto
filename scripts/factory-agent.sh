@@ -1707,10 +1707,15 @@ pr_head_oid() {
 # copy_worktree_env / seed_worktree_node_modules / run_pnpm_install live in
 # scripts/lib/beta-build-root.sh (sourced above), shared with nightly-support.sh.
 
-# Free space (whole GiB) on the volume backing the repo/worktrees. POSIX
-# `df -Pk` guarantees a single data row in 1024-byte blocks; $4 is available.
+# Free space (whole GiB) on the fuller of the two volumes a run writes to: the
+# build volume backing the repo/worktrees, and the internal disk behind $HOME
+# (TMPDIR, Claude transcripts, simulators) — ADR-0060 put the factory checkout on
+# an external volume, which says nothing about the internal disk. POSIX `df -Pk`
+# guarantees a single data row in 1024-byte blocks; $4 is available. Prints ""
+# when neither path can be measured.
 free_disk_gb() {
-  df -Pk "$REPO_ROOT" 2>/dev/null | awk 'NR==2 { print int($4 / 1024 / 1024) }'
+  df -Pk "$REPO_ROOT" "$HOME" 2>/dev/null \
+    | awk 'NR > 1 { gb = int($4 / 1024 / 1024); if (min == "" || gb < min) min = gb } END { print min }'
 }
 
 # Pick the slot index (0|1) to use for <issue>: the slot already assigned to it
@@ -5619,7 +5624,7 @@ the card back to **In Progress** to retry.
           gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
             --body "🏭 **Paused — low disk on the build machine.**
 
-Only ${FREE_GB} GB free on the factory volume (need ≥ ${FACTORY_MIN_FREE_DISK_GB} GB). \
+Only ${FREE_GB} GB free on the Mac mini's internal disk or the factory's build volume (need ≥ ${FACTORY_MIN_FREE_DISK_GB} GB). \
 Reclaim space on the Mac mini, then drag this card back to **In Progress** to retry.
 
 <!-- drafto-factory-disk-low -->" >>"$LOG_FILE" 2>&1 || true
