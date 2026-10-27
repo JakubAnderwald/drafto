@@ -4,6 +4,8 @@
 - **Date**: 2026-10-08
 - **Authors**: Jakub Anderwald
 
+> **Update 2026-10-27**: Every job in `.github/workflows/ci.yml` now has a `timeout-minutes`, well above its usual run. Before, a job slowed to a crawl in the Playwright browser install held a PR's checks with no end in sight, because GitHub's default limit is 6 hours. This amends Decision point 1 and point 2, and the "Treat every `CANCELLED` as infra" alternative. A job that **timed out** (`CANCELLED` or `TIMED_OUT`, confirmed by its "exceeded the maximum execution time" annotation) in a step that can't be the code's fault now joins point 1 as "CI couldn't run" and is re-run under the same budget. Those steps (`is_ci_infra_step`) are the runner's set-up and cleanup, checkout, toolchain setup, cache and artifact transfers, the browser install and SonarCloud. Everything else in point 2 stands: a timeout in `pnpm install`, the build or the tests is still red, and a job someone cancelled by hand is still never re-run, so the alternative's reasoning still holds for both.
+
 ## Context
 
 On 2026-10-05 GitHub cancelled three required checks (E2E Tests, Scripts Tests, SonarCloud) on PR #657, the PR for factory card #654. The annotation read "The job was not acquired by Runner of type hosted even after multiple attempts": the jobs never got a runner, never ran a step, and so never judged the code. The card was already in **Approved**.
