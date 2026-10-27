@@ -1711,8 +1711,8 @@ pr_head_oid() {
 # build volume backing the repo/worktrees, and the internal disk behind $HOME
 # (TMPDIR, Claude transcripts, simulators) — ADR-0060 put the factory checkout on
 # an external volume, which says nothing about the internal disk. The toolchain
-# volume (Zewnętrzny: DerivedData, Gradle) shares the build volume's APFS
-# container, and so its free space, so it needs no row of its own. POSIX `df -Pk`
+# (DerivedData, Gradle, the Android SDK) lives on the build volume too, so it
+# needs no row of its own. POSIX `df -Pk`
 # guarantees a single data row in 1024-byte blocks; $4 is available. Prints ""
 # when neither path can be measured.
 free_disk_gb() {

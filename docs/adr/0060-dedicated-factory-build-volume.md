@@ -65,6 +65,12 @@ The launchd plist runs the factory from `/Volumes/DraftoFactory/drafto-factory` 
   - Interactive worktrees in `~/code` still install across volumes, as before.
   - The free-disk guard's threshold now applies to both volumes. The external one has hundreds of GB, so in practice it guards the internal disk.
 
+## Update 2026-10-27: the toolchain moved too
+
+The same day, the build toolchain followed the checkouts onto `DraftoFactory`: Gradle home, Xcode `DerivedData` / `Archives` / `iOS DeviceSupport`, the CocoaPods cache, the Android SDK and the AVDs (about 43 GB, all of it already off the internal disk). They are reached through the same home-directory symlinks as before, now pointing into `/Volumes/DraftoFactory/{Developer,Android,android-avd}`, so every other project on the Mac mini, kindle-decryptor's emulator included, finds them unchanged. The factory now depends on one volume: the plist's gate checks only `/Volumes/DraftoFactory/drafto-factory`, and `Zewnętrzny` holds nothing the automation uses. A side effect is that IDrive, which keys its backup set by path, no longer backs up these caches, nor the Xcode archives. Every archive's build is also in App Store Connect.
+
+A correction to the layout above: the store location is set in pnpm's global config (`~/Library/Preferences/pnpm/rc`, via `pnpm config set store-dir … --location=global`), not in `~/.npmrc`.
+
 ## Alternatives Considered
 
 - **Rename `Zewnętrzny` to an ASCII name.** Rejected in ADR-0042: IDrive would re-upload about 310 GB, and too many tools store the path.
