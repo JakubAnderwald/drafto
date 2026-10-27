@@ -15,10 +15,16 @@ env:
   SKIP_ENV_VALIDATION: "true"
   TURBO_TELEMETRY_DISABLED: 1
 
+# Every job has a timeout a few times its usual run on main (about 4 minutes for
+# E2E, 1 to 2 for the rest). Without one GitHub waits 6 hours, so a job hung on,
+# say, the browser install holds the PR's checks that long. The factory re-runs a
+# job that timed out in a step that can't be the code's fault
+# (classify_failing_required in scripts/factory-agent.sh, ADR-0041).
 jobs:
   lint-and-typecheck:
     name: Lint & Typecheck
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -81,6 +87,7 @@ jobs:
   unit-and-integration-tests:
     name: Unit & Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -101,6 +108,7 @@ jobs:
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Check for required secrets
         id: check-secrets
@@ -165,6 +173,7 @@ jobs:
   mobile-checks:
     name: Mobile Checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -183,6 +192,7 @@ jobs:
   desktop-checks:
     name: Desktop Checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -201,6 +211,7 @@ jobs:
   scripts-tests:
     name: Scripts Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -215,6 +226,7 @@ jobs:
   sonarcloud:
     name: SonarCloud
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: unit-and-integration-tests
     steps:
       - uses: actions/checkout@v4

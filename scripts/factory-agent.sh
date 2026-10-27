@@ -2061,31 +2061,67 @@ pr_failing_required_summary() {
 }
 
 # Did CI judge the code? Prints one word for the failing required checks:
-#   infra   — every one is a GitHub Actions job that was CANCELLED before any
-#             runner picked it up ("The job was not acquired by Runner of type
-#             hosted": no runner, no steps). Re-running is the fix, not a code
-#             change. This is what parked #654 in Approved for days.
-#   red     — anything else: a FAILURE / TIMED_OUT / ERROR / STARTUP_FAILURE (a
-#             workflow the PR itself may have broken), a job cancelled after it
-#             started (a job-level timeout or a manual cancel is a CANCELLED that
-#             ran — likely a hang in the code), or a non-Actions check.
+#   infra   — every one is a GitHub Actions job that never judged the code:
+#             either no runner ever picked it up ("The job was not acquired by
+#             Runner of type hosted": no runner, no steps — what parked #654 in
+#             Approved for days), or it ran out of time (its timeout-minutes) in
+#             a step that can't be the code's fault (is_ci_infra_step: checkout,
+#             toolchain setup, caches and artifacts, the browser install,
+#             SonarCloud), as a job hung on a download does. Re-running is the
+#             fix, not a code change.
+#   red     — anything else: a FAILURE / ERROR / STARTUP_FAILURE (a workflow the
+#             PR itself may have broken), a job that ran out of time in the
+#             install, build or tests (likely a hang in the code), a job someone
+#             cancelled by hand (ADR-0041 never re-runs those), or a non-Actions
+#             check.
 #   unknown — a job lookup failed; the caller retries next tick rather than guess.
 classify_failing_required() {
-  local checks jobs job started
+  local checks jobs job cut timed_out
   checks=$(pr_failing_required_checks "$1")
-  if ! echo "$checks" | jq -e 'length > 0 and all(.c == "CANCELLED")' >/dev/null 2>&1; then
+  # A timed-out job may report CANCELLED or TIMED_OUT; both get the step check.
+  if ! echo "$checks" | jq -e 'length > 0 and all(.c == "CANCELLED" or .c == "TIMED_OUT")' >/dev/null 2>&1; then
     echo "red"; return 0
   fi
   jobs=$(echo "$checks" | jq -r '.[] | ((.url | capture("/actions/runs/[0-9]+/job/(?<j>[0-9]+)") | .j) // "none")' 2>/dev/null)
   while IFS= read -r job; do
     [[ "$job" =~ ^[0-9]+$ ]] || { echo "red"; return 0; }
-    if ! started=$(gh api "repos/JakubAnderwald/drafto/actions/jobs/$job" \
-        --jq '((.steps // []) | length > 0) or ((.runner_name // "") != "")' 2>>"$LOG_FILE"); then
+    # "never" when no runner picked the job up, otherwise the step it stopped
+    # in: the first that neither succeeded nor was skipped ("" when none).
+    if ! cut=$(gh api "repos/JakubAnderwald/drafto/actions/jobs/$job" \
+        --jq 'if ((.steps // []) | length) == 0 and ((.runner_name // "") == "") then "never"
+              else ([(.steps // [])[] | select((.conclusion // "") != "success" and (.conclusion // "") != "skipped")
+                     | .name][0] // "") end' 2>>"$LOG_FILE"); then
       echo "unknown"; return 0
     fi
-    [[ "$started" == "false" ]] || { echo "red"; return 0; }
+    [[ "$cut" == "never" ]] && continue
+    is_ci_infra_step "$cut" || { echo "red"; return 0; }
+    # Only a timeout: a job someone cancelled by hand stays cancelled. The job
+    # id is also its check-run id.
+    if ! timed_out=$(gh api "repos/JakubAnderwald/drafto/check-runs/$job/annotations" \
+        --jq 'any(.[]; (.message // "") | test("exceeded the maximum execution time"; "i"))' 2>>"$LOG_FILE"); then
+      echo "unknown"; return 0
+    fi
+    [[ "$timed_out" == "true" ]] || { echo "red"; return 0; }
   done <<< "$jobs"
   echo "infra"
+}
+
+# is_ci_infra_step <step-name> — exit 0 for a CI step whose hang can't be the
+# code's fault: the runner's own set-up, the secrets check, checkout, toolchain
+# setup, cache and artifact transfers, the Playwright browser install, and the
+# SonarCloud scan and gate (an outside service). The names are the ones GitHub
+# gives the steps of .github/workflows/ci.yml ("Run <uses>" or "Run <command>"
+# for an unnamed step); a test ties this list to that file. `pnpm install` is
+# not on it: a dependency or lockfile change in the PR can hang it.
+is_ci_infra_step() {
+  case "$1" in
+    "Set up job" | "Check for required secrets" | "Run actions/checkout@"* | \
+    "Run actions/setup-"* | "Run actions/cache@"* | "Run pnpm/action-setup@"* | \
+    "Run actions/download-artifact@"* | "Run actions/upload-artifact@"* | \
+    "Run SonarSource/"* | *"playwright install"*)
+      return 0 ;;
+  esac
+  return 1
 }
 
 # The GitHub Actions run IDs behind the failing required checks, deduped, one per
@@ -2145,7 +2181,7 @@ rerun_infra_failures() {
   fi
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" ciRerun "$head_sha:$count" \
     --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-  log "Issue #$issue_num: PR #$pr_num required check(s) were cancelled before a runner picked them up; re-running (attempt $count/$FACTORY_CI_RERUN_MAX)"
+  log "Issue #$issue_num: PR #$pr_num required check(s) were cancelled before they ran the code (no runner, or timed out while setting up); re-running (attempt $count/$FACTORY_CI_RERUN_MAX)"
   while IFS= read -r id; do
     gh run rerun "$id" --failed --repo JakubAnderwald/drafto >>"$LOG_FILE" 2>&1 \
       || log "WARNING: gh run rerun $id --failed refused for PR #$pr_num (counted against the re-run budget)"
@@ -2174,8 +2210,8 @@ comment_ci_infra_hold() {
   gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
     --body "🏭 **CI couldn't run on \`$sha12\`.**
 
-These required checks on PR #$pr_num were cancelled before any runner picked \
-them up, so CI never judged the code:
+These required checks on PR #$pr_num never judged the code: no runner picked \
+them up, or they timed out while setting up.
 
 $summary
 
@@ -6138,10 +6174,11 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
       [[ "$THREAD_COUNT" =~ ^[0-9]+$ ]] || THREAD_COUNT=0
     fi
 
-    # Required checks GitHub cancelled before any runner picked them up are not
-    # something a fix pass can repair: re-run them instead of spending a Claude
-    # attempt, and once the re-runs are spent tell the operator rather than loop
-    # the fix agent. Only with a known required set — the all-checks fallback
+    # Required checks that never judged the code (no runner, or timed out while
+    # setting up — classify_failing_required) are not something a fix pass can
+    # repair: re-run them instead of spending a Claude attempt, and
+    # once the re-runs are spent tell the operator rather than loop the fix
+    # agent. Only with a known required set — the all-checks fallback
     # would classify advisory bots too.
     if [[ "$FAILING" -gt 0 && "${REQUIRED_CONTEXTS_JSON:-[]}" != "[]" ]]; then
       WATCH_HEAD_SHA=$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')
@@ -6857,9 +6894,10 @@ PR #$PR_NUM $PARITY_VIOLATION, which this phase doesn't allow. The card stays in
 
     # CI gate. A failing *required* check never parks the card silently (#654 sat
     # in Approved for days on checks GitHub had cancelled — ADR-0041):
-    #  - cancelled before any runner picked them up: CI didn't judge the code, so
-    #    re-run them; once re-runs are spent, comment once and hold in Approved
-    #    (a stale branch is refreshed by the BEHIND step below once green);
+    #  - never judged the code (no runner, or timed out while setting up): re-run
+    #    them; once re-runs are spent,
+    #    comment once and hold in Approved (a stale branch is refreshed by the
+    #    BEHIND step below once green);
     #  - anything else red: comment once and hand the card back to In Review for
     #    the fix loop, re-requiring approval (the diff will change).
     # With an unknown required set the fallback counts advisory bots too, so the

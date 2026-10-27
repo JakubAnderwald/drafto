@@ -22,6 +22,7 @@ describe("factory-agent required-context gating: static wiring", () => {
     assert.match(script, /^pr_failing_advisory\(\) \{/m);
     assert.match(script, /^pr_failing_required_checks\(\) \{/m);
     assert.match(script, /^pr_failing_required_summary\(\) \{/m);
+    assert.match(script, /^is_ci_infra_step\(\) \{/m);
     assert.match(script, /^classify_failing_required\(\) \{/m);
     assert.match(script, /^pr_infra_rerun_ids\(\) \{/m);
     assert.match(script, /^ci_rerun_count\(\) \{/m);
@@ -301,38 +302,139 @@ describe("cancelled-check recovery helpers (real helpers, jq) — #654", () => {
   });
 
   describe("classify_failing_required", () => {
-    // gh stub for the job lookup: <started> maps job id → "true"/"false"; an id
-    // missing from the map makes the lookup fail. Calls are logged on fd 3 (a
-    // dup of stderr), apart from the log file the harness prints on stdout.
-    const classify = (view, started) => {
+    // gh stub for the two lookups, fed real-shaped API responses and run through
+    // the script's own --jq filter with real jq: <jobs> maps job id → the jobs
+    // API body, <notes> maps job id → its check-run annotations. An id missing
+    // from a map makes that lookup fail. Calls are logged on fd 3 (a dup of
+    // stderr), apart from the log file the harness prints on stdout.
+    const classify = (view, jobs, notes = {}) => {
+      const cases = [
+        ...Object.entries(jobs).map(
+          ([id, j]) => `*/actions/jobs/${id}) json='${JSON.stringify(j)}' ;;`,
+        ),
+        ...Object.entries(notes).map(
+          ([id, a]) => `*/check-runs/${id}/annotations) json='${JSON.stringify(a)}' ;;`,
+        ),
+      ].join("\n    ");
       const res = runBash(
-        ["pr_failing_required_checks", "classify_failing_required"],
+        ["pr_failing_required_checks", "is_ci_infra_step", "classify_failing_required"],
         `classify_failing_required ${q(view)}`,
         {
-          pre: `exec 3>&2\ngh() { echo "GH $*" >&3; case "$2" in ${Object.entries(started)
-            .map(([id, v]) => `*/jobs/${id}) echo ${v} ;;`)
-            .join(" ")} *) return 1 ;; esac; }`,
+          pre: `exec 3>&2
+gh() {
+  echo "GH $*" >&3
+  local json
+  case "$2" in
+    ${cases}
+    *) return 1 ;;
+  esac
+  printf '%s' "$json" | jq -r "$4"
+}`,
         },
       );
       return { verdict: res.stdout.trim(), calls: res.stderr };
     };
-    const NEVER_STARTED = { 111967959901: "false", 111967959971: "false", 111970417220: "false" };
+    // The jobs API for a job no runner picked up (#654's three) …
+    const NEVER = { runner_name: null, steps: [] };
+    // … and for one stopped in <step>, shaped like the E2E job cancelled on
+    // PR #760: the steps before it succeeded, the ones after were skipped.
+    const stoppedIn = (step, conclusion = "cancelled") => ({
+      runner_name: "GitHub Actions 1000011044",
+      steps: [
+        { number: 1, name: "Set up job", status: "completed", conclusion: "success" },
+        { number: 3, name: "Run actions/checkout@v4", status: "completed", conclusion: "success" },
+        {
+          number: 6,
+          name: "Run pnpm install --frozen-lockfile",
+          status: "completed",
+          conclusion: "success",
+        },
+        ...(step ? [{ number: 7, name: step, status: "completed", conclusion }] : []),
+        {
+          number: 8,
+          name: "Run cd apps/web && pnpm build",
+          status: "completed",
+          conclusion: "skipped",
+        },
+        {
+          number: 22,
+          name: "Post Run actions/checkout@v4",
+          status: "completed",
+          conclusion: "success",
+        },
+        { number: 23, name: "Complete job", status: "completed", conclusion: "success" },
+      ],
+    });
+    const TIMED_OUT = [
+      {
+        annotation_level: "failure",
+        message: "The job has exceeded the maximum execution time of 15m0s",
+      },
+    ];
+    const BY_HAND = [
+      { annotation_level: "failure", message: "The run was canceled by @JakubAnderwald." },
+      { annotation_level: "failure", message: "The operation was canceled." },
+    ];
+    const E2E = 111967959901;
+    const NEVER_STARTED = { 111967959901: NEVER, 111967959971: NEVER, 111970417220: NEVER };
+    const INSTALL = "Run cd apps/web && pnpm exec playwright install --with-deps chromium webkit";
 
     it("#657: every cancelled job never got a runner → infra", () => {
-      assert.equal(classify(PR_657, NEVER_STARTED).verdict, "infra");
+      const { verdict, calls } = classify(PR_657, NEVER_STARTED);
+      assert.equal(verdict, "infra");
+      assert.doesNotMatch(calls, /annotations/, "a job that never ran has no timeout to check");
     });
 
-    it("a cancelled job that had started (job timeout, manual cancel) → red", () => {
-      assert.equal(classify(PR_657, { ...NEVER_STARTED, 111967959971: "true" }).verdict, "red");
+    it("a job that timed out in the browser install → infra", () => {
+      const jobs = { ...NEVER_STARTED, [E2E]: stoppedIn(INSTALL) };
+      assert.equal(classify(PR_657, jobs, { [E2E]: TIMED_OUT }).verdict, "infra");
     });
 
-    it("a failed job lookup → unknown (retry next tick, don't guess)", () => {
-      const partial = { 111967959901: "false", 111967959971: "false" }; // no 111970417220
+    it("finds the step it stopped in even when GitHub left no conclusion on it", () => {
+      const jobs = { ...NEVER_STARTED, [E2E]: stoppedIn(INSTALL, null) };
+      assert.equal(classify(PR_657, jobs, { [E2E]: TIMED_OUT }).verdict, "infra");
+    });
+
+    it("a timeout reported as TIMED_OUT gets the same check", () => {
+      const view = withCheck("E2E Tests", { conclusion: "TIMED_OUT" });
+      const jobs = { ...NEVER_STARTED, [E2E]: stoppedIn(INSTALL) };
+      assert.equal(classify(view, jobs, { [E2E]: TIMED_OUT }).verdict, "infra");
+      assert.equal(
+        classify(view, { ...jobs, [E2E]: stoppedIn("Run cd apps/web && pnpm test:e2e") }).verdict,
+        "red",
+      );
+    });
+
+    it("a job that timed out in the install, build or tests → red (likely a hang in the code)", () => {
+      for (const step of [
+        "Run pnpm install --frozen-lockfile",
+        "Run cd apps/web && pnpm build",
+        "Run cd apps/web && pnpm test:e2e",
+      ]) {
+        const jobs = { ...NEVER_STARTED, [E2E]: stoppedIn(step) };
+        assert.equal(classify(PR_657, jobs, { [E2E]: TIMED_OUT }).verdict, "red", step);
+      }
+    });
+
+    it("a job someone cancelled by hand stays red, even in a setup step (ADR-0041)", () => {
+      const jobs = { ...NEVER_STARTED, [E2E]: stoppedIn(INSTALL) };
+      assert.equal(classify(PR_657, jobs, { [E2E]: BY_HAND }).verdict, "red");
+    });
+
+    it("a started job with no step left unfinished → red", () => {
+      const jobs = { ...NEVER_STARTED, [E2E]: stoppedIn(null) };
+      assert.equal(classify(PR_657, jobs).verdict, "red");
+    });
+
+    it("a failed lookup → unknown (retry next tick, don't guess)", () => {
+      const { 111970417220: _, ...partial } = NEVER_STARTED;
       assert.equal(classify(PR_657, partial).verdict, "unknown");
+      const jobs = { ...NEVER_STARTED, [E2E]: stoppedIn(INSTALL) };
+      assert.equal(classify(PR_657, jobs, {}).verdict, "unknown", "no annotations");
     });
 
     it("any real red among them → red, without looking jobs up", () => {
-      for (const c of ["FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ERROR", "ACTION_REQUIRED"]) {
+      for (const c of ["FAILURE", "STARTUP_FAILURE", "ERROR", "ACTION_REQUIRED"]) {
         const { verdict, calls } = classify(
           withCheck("E2E Tests", { conclusion: c }),
           NEVER_STARTED,
@@ -355,6 +457,103 @@ describe("cancelled-check recovery helpers (real helpers, jq) — #654", () => {
         ],
       };
       assert.equal(classify(view, {}).verdict, "red");
+    });
+  });
+
+  describe("is_ci_infra_step, against .github/workflows/ci.yml", () => {
+    const ci = readFileSync(
+      resolve(dirname(scriptPath), "..", ".github", "workflows", "ci.yml"),
+      "utf8",
+    );
+    // Every step of every job, with the name the jobs API reports for it: its
+    // `name:`, else "Run <uses>" or "Run <first line of run>".
+    const steps = (() => {
+      const out = [];
+      const lines = ci.slice(ci.indexOf("\njobs:\n")).split("\n");
+      let step = null;
+      const set = (key, value, i) => {
+        if (!step || !["name", "uses", "run"].includes(key)) return;
+        let v = value.trim().replace(/^["']|["']$/g, "");
+        if (key === "run" && /^[|>]-?$/.test(v)) {
+          v = lines
+            .slice(i + 1)
+            .find((l) => l.trim() !== "")
+            .trim();
+        }
+        step[key] = v;
+      };
+      lines.forEach((line, i) => {
+        let m;
+        if ((m = line.match(/^ {6}- ([\w-]+):(.*)$/))) {
+          step = {};
+          out.push(step);
+          set(m[1], m[2], i);
+        } else if ((m = line.match(/^ {8}([\w-]+):(.*)$/))) {
+          set(m[1], m[2], i);
+        } else if (/^ {0,4}\S/.test(line)) {
+          step = null;
+        }
+      });
+      return out.map((s) => ({
+        ...s,
+        shown: s.name ?? (s.uses ? `Run ${s.uses}` : `Run ${s.run}`),
+      }));
+    })();
+    // A step's hang can't be the code's fault when it sets the job up or talks
+    // to an outside service — never when it runs the repo's install, build,
+    // lint, tests or scripts.
+    const infra = (s) =>
+      /^(actions\/(checkout|setup-[\w-]+|cache|download-artifact|upload-artifact)|pnpm\/action-setup|SonarSource\/)/.test(
+        s.uses ?? "",
+      ) ||
+      /playwright install/.test(s.run ?? "") ||
+      s.shown === "Check for required secrets";
+    const verdicts = () => {
+      const res = runBash(
+        ["is_ci_infra_step"],
+        `while IFS= read -r n; do is_ci_infra_step "$n" && echo yes || echo no; done <<'EOF'
+${steps.map((s) => s.shown).join("\n")}
+EOF`,
+      );
+      return res.stdout.trim().split("\n");
+    };
+
+    it("finds the workflow's steps", () => {
+      assert.ok(steps.length >= 30, `expected the CI steps, found ${steps.length}`);
+      assert.ok(steps.some((s) => s.shown === "Run pnpm install --frozen-lockfile"));
+    });
+
+    it("counts exactly the set-up and outside-service steps, by the names GitHub gives them", () => {
+      const got = verdicts();
+      steps.forEach((s, i) => {
+        assert.equal(got[i], infra(s) ? "yes" : "no", `${s.shown}`);
+      });
+      assert.ok(got.includes("yes") && got.includes("no"));
+    });
+
+    it("leaves pnpm install out: a dependency or lockfile change in the PR can hang it", () => {
+      const got = verdicts();
+      const i = steps.findIndex((s) => s.shown === "Run pnpm install --frozen-lockfile");
+      assert.equal(got[i], "no");
+    });
+  });
+
+  describe(".github/workflows/ci.yml", () => {
+    // Without a timeout GitHub waits 6 hours, so a hung job holds the PR's
+    // checks (and the factory's card) that long.
+    it("gives every job a timeout", () => {
+      const ci = readFileSync(
+        resolve(dirname(scriptPath), "..", ".github", "workflows", "ci.yml"),
+        "utf8",
+      );
+      const jobs = ci
+        .slice(ci.indexOf("\njobs:\n"))
+        .split(/\n(?= {2}[a-z0-9-]+:\n)/)
+        .slice(1);
+      assert.ok(jobs.length >= 7, `expected the CI jobs, found ${jobs.length}`);
+      for (const job of jobs) {
+        assert.match(job, /^ {4}timeout-minutes: \d+$/m, job.split("\n")[0]);
+      }
     });
   });
 
