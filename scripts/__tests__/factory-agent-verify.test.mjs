@@ -342,7 +342,7 @@ describe("factory-agent.sh verification stage: static wiring", () => {
     const noopArm = slice('      noop)\n        if [[ "$IS_REVISION"', "      blocked)");
     assert.match(
       noopArm,
-      /revision_return_to_test "\$ISSUE_NUM" "\$ITEM_ID" "\$PRE_HEAD_OID" "\$ITEM_LABELS" \\\n[\s\S]*?"\$REPLY_MARKER" "\$FEEDBACK_MARK" noop\n/,
+      /revision_return_to_test "\$ISSUE_NUM" "\$ITEM_ID" "\$PRE_HEAD_OID" "\$ITEM_LABELS" \\\n[\s\S]*?"\$REPLY_MARKERS" "\$FEEDBACK_MARK" noop\n/,
     );
     const back = extract("revision_return_to_test");
     assert.match(

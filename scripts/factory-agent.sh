@@ -1023,7 +1023,10 @@ extract_acked_comment_ids() {
 # array of stringified comment IDs (kept as strings to dodge int64 rounding).
 # Bots and non-owner commenters are ignored — a customer reply forwarded by
 # support-agent step 4.5 IS posted under the Mac mini's gh identity (OWNER),
-# so the email-replan path still works without a separate check.
+# so the email-replan path still works without a separate check. The factory
+# posts under that same identity, so its own marker comments are skipped too
+# (as owner_comments_since does): the reply the planner posts to each trigger
+# comment must not read as fresh feedback and start another replan.
 unacked_owner_comments() {
   local comments_json="$1"
   local plan_created_at="$2"
@@ -1035,10 +1038,188 @@ unacked_owner_comments() {
       map(select(
         (.authorAssociation == "OWNER")
         and ((.createdAt) > $planAt)
+        and (((.body // "") | test("<!-- drafto-factory")) | not)
         and (((.id | tostring)) as $id | ($acked | index($id)) | not)
       ))
       | map(.id | tostring)
     '
+}
+
+# ── Replies to operator comments (Plan Review + In Test) ───────────────────
+# Every operator comment gets its own reply on the issue. The model (planner or
+# implementer) writes each one to <reply-dir>/<commentId>.md and never posts it:
+# bash posts it with the comment's marker appended (lib/issue-reply.mjs). So a
+# reply never depends on the model remembering the marker — a reply without one
+# would read back as fresh OWNER feedback and start another replan or revision —
+# and bash posts a fixed fallback for any comment left without a reply.
+
+# reply_dir_for <issue> — where the model writes its replies for this issue:
+# under the factory's own logs/ (mode 700, gitignored), not a guessable /tmp
+# path another account on this Mac could write into first. Whatever is in it is
+# posted on the public issue.
+reply_dir_for() { printf '%s/logs/factory/replies/issue-%s' "$REPO_ROOT" "$1"; }
+
+# reset_reply_dir <issue> — empty the reply directory before a run, so a reply
+# left from an earlier run can't be posted as this run's.
+reset_reply_dir() {
+  local dir
+  dir=$(reply_dir_for "$1")
+  rm -rf "$dir" && mkdir -p "$(dirname "$dir")" && mkdir -m 700 "$dir"
+}
+
+# reply_markers_for <comments-json> <marker-prefix> — {commentId, marker} for
+# each comment that needs an answer: approval noise ("thanks", "lgtm") needs
+# none. One jq pass for the ids and bodies (base64, so tabs and newlines in a
+# body survive), and the result is always valid JSON ("[]" at worst).
+reply_markers_for() {
+  local comments="$1" prefix="$2" ids="" id body64 out
+  while IFS=$'\t' read -r id body64; do
+    [[ "$id" =~ ^[0-9]+$ ]] || continue
+    if is_noise_comment "$(printf '%s' "$body64" | base64 --decode 2>/dev/null)"; then
+      continue
+    fi
+    ids+="$id "
+  done < <(echo "$comments" | jq -r '.[] | [(.id | tostring), ((.body // "") | @base64)] | @tsv' 2>/dev/null)
+  out=$(jq -cn --arg ids "$ids" --arg p "$prefix" \
+    '$ids | split(" ") | map(select(test("^[0-9]+$")) | {commentId: ., marker: ($p + .)})' 2>/dev/null) || out=""
+  printf '%s' "${out:-[]}"
+}
+
+# fetch_comments_retry <issue> — the issue's comments, as fetch_issue_comments
+# prints them, retried twice on failure. Prints nothing and returns 1 when they
+# still can't be read.
+fetch_comments_retry() {
+  local issue_num="$1" comments attempt
+  for attempt in 1 2 3; do
+    if comments=$(fetch_issue_comments "$issue_num" 2>/dev/null) && [[ -n "$comments" ]]; then
+      printf '%s' "$comments"
+      return 0
+    fi
+    if [[ "$attempt" -lt 3 ]]; then sleep 2; fi
+  done
+  return 1
+}
+
+# comments_have_marker <comments-json> <marker> — exit 0 when a comment from the
+# factory's identity (OWNER) carries <marker>. The repo is public, so another
+# user's comment quoting a marker must not count as a reply. The ([^0-9]|$)
+# suffix stops reply-123 from matching reply-1234.
+comments_have_marker() {
+  echo "$1" | jq -e --arg m "${2}([^0-9]|\$)" \
+    'any(.[]; .authorAssociation == "OWNER" and ((.body // "") | test($m)))' >/dev/null 2>&1
+}
+
+# post_issue_replies <issue> <comments-json|""> <markers-json>
+# Post each reply the model wrote — <reply-dir>/<commentId>.md for each
+# {commentId, marker} in <markers-json> — as its own comment, defanged and with
+# the marker appended. A reply whose marker is already on the issue (an earlier
+# attempt) isn't posted again; with no comments to check against, it is posted.
+# A posted file is deleted, so a second call can't post it twice while GitHub's
+# listing lags. Appends each id posted to POSTED_REPLY_IDS (space-padded; the
+# caller starts it as " " for the run).
+post_issue_replies() {
+  local issue_num="$1" comments="$2" markers="${3:-[]}" dir n i id marker file body
+  dir=$(reply_dir_for "$issue_num")
+  n=$(echo "$markers" | jq 'length' 2>/dev/null || echo "0")
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  for ((i=0; i<n; i++)); do
+    id=$(echo "$markers" | jq -r ".[${i}].commentId // \"\"" 2>/dev/null || echo "")
+    marker=$(echo "$markers" | jq -r ".[${i}].marker // \"\"" 2>/dev/null || echo "")
+    [[ "$id" =~ ^[0-9]+$ && -n "$marker" ]] || continue
+    file="$dir/$id.md"
+    [[ -s "$file" ]] || continue
+    if [[ -n "$comments" ]] && comments_have_marker "$comments" "$marker"; then
+      log "Issue #$issue_num: the reply to comment $id is already posted; not posting it again"
+      continue
+    fi
+    if ! body=$(node "$SCRIPT_DIR/lib/issue-reply.mjs" compose --file "$file" --marker "$marker" 2>>"$LOG_FILE"); then
+      log "WARNING: the reply to comment $id on #$issue_num is empty or unreadable; not posting it"
+      continue
+    fi
+    if printf '%s' "$body" | gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body-file - >>"$LOG_FILE" 2>&1; then
+      log "Issue #$issue_num: posted the reply to comment $id ($marker)"
+      POSTED_REPLY_IDS+="$id "
+      rm -f "$file"
+    else
+      log "WARNING: posting the reply to comment $id on #$issue_num failed"
+    fi
+  done
+}
+
+# plan_reply_check <issue> <reply-markers-json> [final]
+# After a replan run, every trigger comment that needs an answer (one
+# {commentId, marker} entry, built by reply_markers_for) gets its own reply:
+# editing the plan alone notifies nobody and buries the answer, which is how
+# #718's question went unanswered. The planner's reply for a comment is posted
+# only once the plan acks that comment (in any plan comment: the planner may
+# post a fresh one, action=planned): before that, the edit it describes hasn't
+# landed, and the next tick's replan writes a fresh reply. A handled comment
+# with no reply gets a fixed fallback.
+# With [final] 1 the card is leaving Plan Review (Blocked) and no replan will
+# come, so an unacked comment is answered too: with the planner's reply if it
+# wrote one, otherwise a fallback, under drafto-factory-plan-blocked-reply-<id>
+# — a different marker, so that if the card comes back the next replan of the
+# same comment still gets its own reply. Fails CLOSED when the comments can't
+# be read: without them the acks are unknown.
+plan_reply_check() {
+  local issue_num="$1" markers="${2:-[]}" final="${3:-0}"
+  local comments acked plan_id plan_link url n i id marker blocked to_post="[]"
+  [[ "$DRY_RUN" -eq 1 ]] && return 0
+  n=$(echo "$markers" | jq 'length' 2>/dev/null || echo "0")
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  [[ "$n" -gt 0 ]] || return 0
+  if ! comments=$(fetch_comments_retry "$issue_num"); then
+    log "WARNING: could not read #$issue_num's comments to check the plan replies; skipping"
+    return 0
+  fi
+  acked=$(extract_acked_comment_ids "$(echo "$comments" | jq -r \
+    '[.[] | select((.body // "") | startswith("<!-- drafto-factory-plan -->")) | .body] | join("\n")')")
+  [[ -n "$acked" ]] || acked='[]'
+  # Which reply each comment is due: its own marker once acked, the Blocked one
+  # when final; none yet otherwise.
+  for ((i=0; i<n; i++)); do
+    id=$(echo "$markers" | jq -r ".[${i}].commentId // \"\"")
+    marker=$(echo "$markers" | jq -r ".[${i}].marker // \"\"")
+    [[ "$id" =~ ^[0-9]+$ && -n "$marker" ]] || continue
+    if echo "$acked" | jq -e --arg id "$id" 'index($id) != null' >/dev/null 2>&1; then
+      to_post=$(echo "$to_post" | jq -c --arg id "$id" --arg m "$marker" '. + [{commentId: $id, marker: $m, final: false}]')
+    elif [[ "$final" -eq 1 ]]; then
+      to_post=$(echo "$to_post" | jq -c --arg id "$id" --arg m "drafto-factory-plan-blocked-reply-$id" \
+        '. + [{commentId: $id, marker: $m, final: true}]')
+    fi
+  done
+  post_issue_replies "$issue_num" "$comments" "$to_post"
+  plan_id=$(echo "$comments" | jq -r \
+    '[.[] | select((.body // "") | startswith("<!-- drafto-factory-plan -->"))] | last | .id // "" | tostring')
+  url="https://github.com/JakubAnderwald/drafto/issues/$issue_num"
+  plan_link="the plan"
+  [[ "$plan_id" =~ ^[0-9]+$ ]] && plan_link="[the plan]($url#issuecomment-$plan_id)"
+  n=$(echo "$to_post" | jq 'length')
+  for ((i=0; i<n; i++)); do
+    id=$(echo "$to_post" | jq -r ".[${i}].commentId")
+    marker=$(echo "$to_post" | jq -r ".[${i}].marker")
+    blocked=$(echo "$to_post" | jq -r ".[${i}].final")
+    # Posted just now: GitHub may not list it yet.
+    if [[ "$POSTED_REPLY_IDS" == *" $id "* ]] || comments_have_marker "$comments" "$marker"; then
+      continue
+    fi
+    log "Issue #$issue_num: no plan reply found for $marker; posting the fallback"
+    if [[ "$blocked" == "true" ]]; then
+      gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+        --body "🏭 **The factory couldn't revise the plan for [your comment]($url#issuecomment-$id), and no reply to it was posted.**
+
+The card is in **Blocked**, and $plan_link is as it was. The factory log on the Mac mini has the details; once the card is back in **Plan Review**, the factory looks at your comment again.
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
+    else
+      gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+        --body "🏭 **No reply was posted to [your comment]($url#issuecomment-$id).**
+
+The factory handled it in $plan_link, which is current. If the plan doesn't answer your comment, comment again.
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
+    fi
+  done
 }
 
 # Has the issue already received the Phase A implement-stub comment? Used so
@@ -1057,7 +1238,9 @@ issue_already_impl_stubbed() {
 # Build the factory_implement bundle. $2 is the approved-plan comment object
 # (from extract_plan_comment: {id,user,body,createdAt}) or "null"; $3 is the
 # prior-PR object or "null"; $4 is the attempts counter; $7 is the revision
-# reply marker ("" on a first implementation — see revise_noop_reply).
+# reply markers, a JSON array of {commentId, marker} ("[]" on a first
+# implementation — see revise_replies_check); $8 is the directory the
+# implementer writes those replies to (reply_dir_for).
 build_implement_bundle() {
   local issue_entry="$1"
   local approved_plan="${2:-null}"
@@ -1065,7 +1248,8 @@ build_implement_bundle() {
   local attempts="${4:-0}"
   local revision_comments="${5:-[]}"
   local screenshot_sources="${6:-[]}"
-  local reply_marker="${7:-}"
+  local reply_markers="${7:-[]}"
+  local reply_dir="${8:-}"
   local repo_head_ref
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   jq -n \
@@ -1075,7 +1259,8 @@ build_implement_bundle() {
     --arg attempts "$attempts" \
     --argjson revisionComments "$revision_comments" \
     --argjson screenshotSources "$screenshot_sources" \
-    --arg replyMarker "$reply_marker" \
+    --argjson replyMarkers "$reply_markers" \
+    --arg replyDir "$reply_dir" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
     --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
     --arg phase "$PHASE" \
@@ -1095,7 +1280,8 @@ build_implement_bundle() {
        comments: [],
        revisionComments: $revisionComments,
        screenshotSources: $screenshotSources,
-       replyMarker: (if $replyMarker == "" then null else $replyMarker end),
+       replyMarkers: $replyMarkers,
+       replyDir: (if $replyDir == "" then null else $replyDir end),
        config: {
          phase: $phase,
          allowlist: ($allowlist | split(",") | map(ascii_downcase | sub("^\\s+";"") | sub("\\s+$";""))),
@@ -1160,57 +1346,97 @@ has_actionable_feedback() {
   return 1
 }
 
-# A revision run returned action=noop: the feedback needed no code change (a
-# question, "run the test scenario for me"). The implementer answers on the
-# issue itself, in a comment carrying <marker> (bundle.replyMarker, keyed on the
-# feedback comment it answers), so the results land where the reporter asked
-# instead of only in the PR body. Trust the marker, not the directive line (as
-# intest_handoff does): only when no reply is found, post the fixed fallback, so
-# the round trip is never silent. The ([^0-9]|$) suffix stops reply-123 from
-# matching reply-1234. Unlike issue_has_marker this fails OPEN: if the comments
-# still can't be read after a few tries, the fallback goes out, because a rare
-# extra notice beats a reporter hearing nothing. <kind> is "noop" (default) or
-# "declined": feedback the implementer declined as outside the plan comes back
-# the same way (ADR-0058), and its fallback says so.
-revise_noop_reply() {
-  local issue_num="$1" pr_num="$2" marker="$3" kind="${4:-noop}"
-  local comments="" attempt details="" headline next
-  if [[ -n "$marker" ]]; then
-    for attempt in 1 2 3; do
-      if comments=$(fetch_issue_comments "$issue_num" 2>/dev/null) && [[ -n "$comments" ]]; then
-        break
-      fi
-      comments=""
-      if [[ "$attempt" -lt 3 ]]; then sleep 2; fi
-    done
-    if [[ -z "$comments" ]]; then
-      log "WARNING: could not read #$issue_num's comments to look for $marker; posting the fallback"
-    elif echo "$comments" | jq -e --arg m "${marker}([^0-9]|\$)" 'any(.[]; .body | test($m))' >/dev/null 2>&1; then
-      log "Issue #$issue_num: revision reply posted ($marker)"
+# revise_replies_check <issue> <pr-num> <reply-markers-json> <kind>
+# After a revision run, post the implementer's replies, then make sure every
+# feedback comment that needed an answer (one {commentId, marker} entry in
+# bundle.replyMarkers) has one on the issue, where the reporter asked, instead
+# of only in the PR body. Trust the markers, not the directive line (as
+# intest_handoff does): for each comment with no reply, post the fixed fallback
+# for <kind>, so no comment goes unanswered. <kind> is "noop" (no code change),
+# "declined" (outside the plan, ADR-0058) or "implemented" (a revision was
+# pushed). No entries means the round was all approval noise: nothing to
+# answer. When the comments can't be read afterwards, noop and declined fail
+# OPEN — a fallback for each comment whose reply wasn't posted just now,
+# because a rare extra notice beats a reporter hearing nothing — while a pushed
+# revision fails closed: its new preview and scenario comment follow anyway.
+revise_replies_check() {
+  local issue_num="$1" pr_num="$2" markers="${3:-[]}" kind="${4:-noop}"
+  local comments n i id marker
+  n=$(echo "$markers" | jq 'length' 2>/dev/null || echo "0")
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  [[ "$n" -gt 0 ]] || return 0
+  POSTED_REPLY_IDS=" "
+  comments=$(fetch_comments_retry "$issue_num") || comments=""
+  post_issue_replies "$issue_num" "$comments" "$markers"
+  if ! comments=$(fetch_comments_retry "$issue_num"); then
+    comments=""
+    if [[ "$kind" == "implemented" ]]; then
+      log "WARNING: could not read #$issue_num's comments to look for the revision replies; skipping the fallbacks"
       return 0
-    else
+    fi
+    log "WARNING: could not read #$issue_num's comments to look for the revision replies; posting the fallbacks"
+  fi
+  for ((i=0; i<n; i++)); do
+    id=$(echo "$markers" | jq -r ".[${i}].commentId // \"\"" 2>/dev/null || echo "")
+    marker=$(echo "$markers" | jq -r ".[${i}].marker // \"\"" 2>/dev/null || echo "")
+    [[ "$id" =~ ^[0-9]+$ && -n "$marker" ]] || continue
+    if [[ "$POSTED_REPLY_IDS" == *" $id "* ]]; then
+      continue
+    fi
+    if [[ -n "$comments" ]]; then
+      if comments_have_marker "$comments" "$marker"; then
+        log "Issue #$issue_num: revision reply posted ($marker)"
+        continue
+      fi
       log "Issue #$issue_num: no revision reply found for $marker; posting the fallback"
     fi
-  else
-    log "Issue #$issue_num: no reply marker for this revision; posting the fallback"
+    revise_fallback_reply "$issue_num" "$pr_num" "$id" "$kind"
+  done
+}
+
+# revise_fallback_reply <issue> <pr-num> <comment-id> <kind> — the fixed notice
+# for a feedback comment that got no reply. It links that comment and carries
+# its reply marker, so each comment is answered once. Noop and declined notices
+# also carry drafto-factory-revise-noop.
+revise_fallback_reply() {
+  local issue_num="$1" pr_num="$2" id="$3" kind="${4:-noop}"
+  local about="" details="" headline next="" body markers=""
+  if [[ -n "$id" ]]; then
+    about="About [your comment](https://github.com/JakubAnderwald/drafto/issues/$issue_num#issuecomment-$id): "
+    markers="<!-- drafto-factory-revise-reply-$id -->"
   fi
-  if [[ -n "$pr_num" ]]; then
-    details=" If you asked a question or for a check, the run may have left notes in PR #$pr_num's description; if not, comment again."
-  fi
-  headline="No code change was made for that, and no reply was found."
-  next="Drag to **Approved** to ship it, or comment a more specific change."
-  if [[ "$kind" == "declined" ]]; then
-    # Rephrasing an out-of-plan request here would only be declined again.
-    headline="The factory declined that as outside this issue's plan, and no reply was found."
-    details=" Open a new issue for that work instead of rephrasing it here."
-    next="Drag to **Approved** to ship this PR as it is."
+  case "$kind" in
+    declined)
+      # Rephrasing an out-of-plan request here would only be declined again.
+      headline="The factory declined that as outside this issue's plan, and no reply was found."
+      details=" Open a new issue for that work instead of rephrasing it here."
+      next="Drag to **Approved** to ship this PR as it is."
+      body="${about}The preview is unchanged.$details $next"
+      ;;
+    implemented)
+      headline="A revision was pushed for that, but no reply was found."
+      [[ -n "$pr_num" ]] && details=" PR #$pr_num's description records what changed."
+      body="${about}The card goes back through review, then comes back for you to test with a new preview.$details"
+      ;;
+    *)
+      headline="No code change was made for that, and no reply was found."
+      if [[ -n "$pr_num" ]]; then
+        details=" If you asked a question or for a check, the run may have left notes in PR #$pr_num's description; if not, comment again."
+      fi
+      next="Drag to **Approved** to ship it, or comment a more specific change."
+      body="${about}The preview is unchanged.$details $next"
+      ;;
+  esac
+  if [[ "$kind" != "implemented" ]]; then
+    [[ -n "$markers" ]] && markers+=$'\n'
+    markers+="<!-- drafto-factory-revise-noop -->"
   fi
   gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
     --body "🏭 **$headline**
 
-The preview is unchanged.$details $next
+$body
 
-<!-- drafto-factory-revise-noop -->" >>"$LOG_FILE" 2>&1 || true
+$markers" >>"$LOG_FILE" 2>&1 || true
 }
 
 # worktree_untouched <worktree> <pr-head> — exit 0 only when the worktree holds
@@ -1230,17 +1456,17 @@ worktree_untouched() {
 }
 
 # revision_return_to_test <issue> <item-id> <pr-head> <item-labels> <pr-num>
-#   <reply-marker> <feedback-mark> <kind>
+#   <reply-markers-json> <feedback-mark> <kind>
 # A revision run ended with the PR unchanged: <kind> "noop" (the feedback
 # needed no code change) or "declined" (it was outside the plan, ADR-0058).
 # The existing PR + preview are still valid, so re-present it instead of
 # re-running CI: in Testing when this commit still owes a verification report
 # (ADR-0053), otherwise in In Test. A failed move to Testing falls back to In
 # Test. Then mark the feedback consumed, reset attempts and check for the
-# implementer's reply. The slot and worktree stay, as for any In Test card.
+# implementer's replies. The slot and worktree stay, as for any In Test card.
 revision_return_to_test() {
   local issue_num="$1" item_id="$2" pr_head="$3" labels="$4" pr_num="$5"
-  local marker="$6" mark="$7" kind="$8" target="In Test" state
+  local markers="$6" mark="$7" kind="$8" target="In Test" state
   if verify_target_status "$issue_num" "$pr_head" "$labels" \
       && transition_status "$item_id" "$issue_num" "Testing"; then
     target="Testing"
@@ -1256,7 +1482,7 @@ revision_return_to_test() {
   fi
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" lastFeedbackAt "$mark" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$issue_num" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-  revise_noop_reply "$issue_num" "$pr_num" "$marker" "$kind"
+  revise_replies_check "$issue_num" "$pr_num" "$markers" "$kind"
   log "Issue #$issue_num: revision $kind; returned to $target"
 }
 
@@ -5103,16 +5329,25 @@ and drag the card back to **Ready** to retry.
 
     log "Issue #$ISSUE_NUM: $UNACKED_COUNT unacked OWNER comment(s) → replanning in place"
 
+    # One reply per trigger comment that needs an answer, built here once for
+    # the planner's bundle and the reply check after its run.
+    PLAN_REPLY_MARKERS=$(reply_markers_for \
+      "$(echo "$COMMENTS_JSON" | jq -c --argjson t "$UNACKED_JSON" '[.[] | select((.id | tostring) as $i | $t | index($i))]')" \
+      "drafto-factory-plan-reply-")
     REPLAN_JSON=$(jq -n \
       --arg id "$PLAN_COMMENT_ID" \
       --arg issueNum "$ISSUE_NUM" \
       --arg body "$PLAN_BODY" \
       --argjson triggers "$UNACKED_JSON" \
+      --arg replyDir "$(reply_dir_for "$ISSUE_NUM")" \
+      --argjson replyMarkers "$PLAN_REPLY_MARKERS" \
       '{
          planCommentId: $id,
          planCommentUrl: ("https://github.com/JakubAnderwald/drafto/issues/" + $issueNum + "#issuecomment-" + $id),
          planCommentBody: $body,
-         triggerCommentIds: $triggers
+         triggerCommentIds: $triggers,
+         replyMarkers: $replyMarkers,
+         replyDir: $replyDir
        }')
 
     if ! BUNDLE=$(build_plan_bundle "$ISSUE_RECORD" "$COMMENTS_JSON" "$REPLAN_JSON"); then
@@ -5135,12 +5370,18 @@ and drag the card back to **Ready** to retry.
 
     CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
       "$PROMPT_TEXT" "$BUNDLE")
+    reset_reply_dir "$ISSUE_NUM"
+    POSTED_REPLY_IDS=" "
     log "Invoking claude for #$ISSUE_NUM (--plan replan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
     node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
+
+    # Whatever the run returned, a trigger it acked has been handled, so it
+    # gets its reply now, before any early exit.
+    plan_reply_check "$ISSUE_NUM" "$PLAN_REPLY_MARKERS"
 
     if [[ $EXIT_CODE -eq 124 ]]; then
       log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC}s) for #$ISSUE_NUM --plan replan — skipping; next tick retries"
@@ -5176,6 +5417,8 @@ and drag the card back to **Plan Review** (or **Ready** for a full restart).
 
 <!-- drafto-factory-retry-exhausted -->" >>"$LOG_FILE" 2>&1 || true
         transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+        # No replan will come for these comments now.
+        plan_reply_check "$ISSUE_NUM" "$PLAN_REPLY_MARKERS" 1
       fi
       continue
     fi
@@ -5209,6 +5452,8 @@ and drag the card back to **Plan Review** (or **Ready** for a full restart).
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field \
           "$ISSUE_NUM" lastError "replanner returned blocked" \
           --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        # The card leaves Plan Review, so no replan will answer these comments.
+        plan_reply_check "$ISSUE_NUM" "$PLAN_REPLY_MARKERS" 1
         ;;
       noop)
         # Claude decided no plan change was warranted (e.g. the operator's
@@ -5404,7 +5649,7 @@ Drag it back to **Ready** so the factory can plan it first.
     # plan is the source of truth there.
     REVISION_COMMENTS="[]"
     IS_REVISION=0
-    REPLY_MARKER=""
+    REPLY_MARKERS="[]"
     FEEDBACK_CONSUMED_AT=""
     if [[ "$PRIOR_PR" != "null" ]]; then
       FEEDBACK_HWM=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
@@ -5416,12 +5661,10 @@ Drag it back to **Ready** so the factory can plan it first.
       if [[ "$REV_COUNT" -gt 0 ]]; then
         IS_REVISION=1
         log "Issue #$ISSUE_NUM: revision run ($REV_COUNT new feedback comment(s) on the open PR)"
-        # One reply per feedback round, keyed on the newest comment it answers,
-        # so a retry of the same feedback finds the reply it already posted.
-        REPLY_ID=$(echo "$REVISION_COMMENTS" | jq -r 'sort_by(.createdAt) | .[-1].id // ""' 2>/dev/null || echo "")
-        if [[ "$REPLY_ID" =~ ^[0-9]+$ ]]; then
-          REPLY_MARKER="drafto-factory-revise-reply-$REPLY_ID"
-        fi
+        # One reply per feedback comment, keyed on that comment, so a retry of
+        # the same feedback finds the replies it already posted. Approval noise
+        # ("thanks", "lgtm") needs no answer.
+        REPLY_MARKERS=$(reply_markers_for "$REVISION_COMMENTS" "drafto-factory-revise-reply-")
         FEEDBACK_CONSUMED_AT=$(echo "$REVISION_COMMENTS" | jq -r 'sort_by(.createdAt) | .[-1].createdAt // ""' 2>/dev/null || echo "")
       fi
     fi
@@ -5433,7 +5676,7 @@ Drag it back to **Ready** so the factory can plan it first.
       break
     fi
 
-    if ! BUNDLE=$(build_implement_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PRIOR_PR" "$ATTEMPTS" "$REVISION_COMMENTS" "$COMMENTS_JSON" "$REPLY_MARKER"); then
+    if ! BUNDLE=$(build_implement_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PRIOR_PR" "$ATTEMPTS" "$REVISION_COMMENTS" "$COMMENTS_JSON" "$REPLY_MARKERS" "$(reply_dir_for "$ISSUE_NUM")"); then
       log "ERROR: build_implement_bundle failed for #$ISSUE_NUM"; continue
     fi
     AFFECTED=$(echo "$BUNDLE" | jq -r '.spec.affectedPlatforms // [] | join(",")')
@@ -5496,6 +5739,7 @@ Drag it back to **Ready** so the factory can plan it first.
     # Invoke claude inside the worktree with the implementer prompt + bundle.
     CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
       "$PROMPT_TEXT" "$BUNDLE")
+    reset_reply_dir "$ISSUE_NUM"
     log "Invoking claude for #$ISSUE_NUM (--implement, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s, effort=$FACTORY_EFFORT)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -5626,6 +5870,11 @@ drag the card back to **In Progress**.
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         if [[ "$IS_REVISION" -eq 1 ]]; then
           log "Issue #$ISSUE_NUM: revision pushed → In Review (PR $PR_URL; slot $SLOT retained)"
+          # Each feedback comment gets its own reply saying what changed, even
+          # when the change answers it: the new In Test scenario comes later.
+          revise_replies_check "$ISSUE_NUM" \
+            "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" \
+            "$REPLY_MARKERS" implemented
         else
           log "Issue #$ISSUE_NUM: advanced to In Review (PR $PR_URL; slot $SLOT retained for --watch)"
         fi
@@ -5657,7 +5906,7 @@ drag the card back to **In Progress**.
           # lookup, not the directive's pr=.
           revision_return_to_test "$ISSUE_NUM" "$ITEM_ID" "$PRE_HEAD_OID" "$ITEM_LABELS" \
             "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" \
-            "$REPLY_MARKER" "$FEEDBACK_MARK" noop
+            "$REPLY_MARKERS" "$FEEDBACK_MARK" noop
         else
           # Fresh idempotency hit: a PR already exists from a prior attempt.
           PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
@@ -5697,7 +5946,7 @@ drag the card back to **In Progress**.
            && worktree_untouched "$WT_PATH" "$PRE_HEAD_OID"; then
           revision_return_to_test "$ISSUE_NUM" "$ITEM_ID" "$PRE_HEAD_OID" "$ITEM_LABELS" \
             "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" \
-            "$REPLY_MARKER" "$FEEDBACK_MARK" declined
+            "$REPLY_MARKERS" "$FEEDBACK_MARK" declined
         else
           implement_park_blocked "$ITEM_ID" "$ISSUE_NUM" "$SLOT" \
             "implementer declined, but the PR head wasn't the one shown at In Test or the worktree changed"
@@ -6345,9 +6594,9 @@ A human should take a look. Reset with \
       --body "🏭 **Revising — picking up your feedback.**
 
 A code change goes onto the open PR's branch and comes back through In Review \
-to In Test with the preview redeployed. Anything else, such as a question or a \
-test run, gets a reply here. (To ship as-is instead, drag the card to \
-**Approved**.)
+to In Test with the preview redeployed. Each comment that asks for something \
+gets its own reply here, saying what changed or answering it. (To ship as-is \
+instead, drag the card to **Approved**.)
 
 <!-- drafto-factory-revising -->" >>"$LOG_FILE" 2>&1 || true
   done

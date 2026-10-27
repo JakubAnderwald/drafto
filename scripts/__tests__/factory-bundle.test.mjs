@@ -470,6 +470,56 @@ describe("buildFactoryPlanBundle", () => {
     });
     assert.deepEqual(bundle.replan.triggerCommentIds, ["222", "333"]);
   });
+
+  it("passes the planner's reply directory through only in the shape bash builds", () => {
+    const build = (replyDir) =>
+      buildFactoryPlanBundle({
+        issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+        config: { phase: "A" },
+        repo: { nameWithOwner: "JakubAnderwald/drafto" },
+        replan: {
+          planCommentId: "111",
+          planCommentBody: "x",
+          triggerCommentIds: ["222"],
+          replyDir,
+        },
+      }).replan.replyDir;
+    assert.equal(
+      build("/Users/x/drafto-factory/logs/factory/replies/issue-718"),
+      "/Users/x/drafto-factory/logs/factory/replies/issue-718",
+    );
+    for (const bad of [
+      "/Users/x/drafto-factory/logs/factory/replies/../issue-718",
+      "/etc",
+      "",
+      undefined,
+      7,
+    ]) {
+      assert.equal(build(bad), null, JSON.stringify(bad));
+    }
+  });
+
+  it("passes the plan-reply markers bash built through, and drops anything else", () => {
+    const bundle = buildFactoryPlanBundle({
+      issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "A" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+      replan: {
+        planCommentId: "111",
+        planCommentBody: "x",
+        triggerCommentIds: ["222", "333"],
+        replyMarkers: [
+          { commentId: "222", marker: "drafto-factory-plan-reply-222" },
+          // Bash looks each marker up as a regex: only the exact shape passes.
+          { commentId: "333", marker: "drafto-factory-revise-reply-333" },
+          { commentId: "4.*", marker: "drafto-factory-plan-reply-4.*" },
+        ],
+      },
+    });
+    assert.deepEqual(bundle.replan.replyMarkers, [
+      { commentId: "222", marker: "drafto-factory-plan-reply-222" },
+    ]);
+  });
 });
 
 describe("buildFactoryImplementBundle", () => {
@@ -540,35 +590,66 @@ describe("buildFactoryImplementBundle", () => {
     );
   });
 
-  it("passes a well-formed replyMarker through and nulls anything else", () => {
+  it("passes the implementer's reply directory through only in the shape bash builds", () => {
     const base = {
       issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
       config: { phase: "B" },
       repo: { nameWithOwner: "JakubAnderwald/drafto" },
     };
-    assert.equal(buildFactoryImplementBundle(base).replyMarker, null, "first run has none");
+    assert.equal(buildFactoryImplementBundle(base).replyDir, null);
     assert.equal(
       buildFactoryImplementBundle({
         ...base,
-        replyMarker: "drafto-factory-revise-reply-6067249983",
-      }).replyMarker,
-      "drafto-factory-revise-reply-6067249983",
+        replyDir: "/Users/x/drafto-factory/logs/factory/replies/issue-9",
+      }).replyDir,
+      "/Users/x/drafto-factory/logs/factory/replies/issue-9",
     );
-    // Bash looks the marker up as a regex, so only the exact shape it builds
-    // may reach the implementer.
+    assert.equal(buildFactoryImplementBundle({ ...base, replyDir: "/home/x" }).replyDir, null);
+  });
+
+  it("passes well-formed reply markers through and drops anything else", () => {
+    const base = {
+      issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "B" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    };
+    assert.deepEqual(buildFactoryImplementBundle(base).replyMarkers, [], "first run has none");
+    assert.deepEqual(
+      buildFactoryImplementBundle({
+        ...base,
+        replyMarkers: [
+          { commentId: "6067249983", marker: "drafto-factory-revise-reply-6067249983" },
+          { commentId: 77, marker: "drafto-factory-revise-reply-77" },
+        ],
+      }).replyMarkers,
+      [
+        { commentId: "6067249983", marker: "drafto-factory-revise-reply-6067249983" },
+        { commentId: "77", marker: "drafto-factory-revise-reply-77" },
+      ],
+    );
+    // Bash looks each marker up as a regex, so only the exact shape it builds
+    // for that comment may reach the implementer.
     for (const bad of [
-      "drafto-factory-revise-reply-1.*",
-      "drafto-factory-revise-reply-",
-      "drafto-factory-revise-noop",
-      "",
-      123,
+      { commentId: "1", marker: "drafto-factory-revise-reply-1.*" },
+      { commentId: "1", marker: "drafto-factory-revise-reply-2" },
+      { commentId: "", marker: "drafto-factory-revise-reply-" },
+      { commentId: "1", marker: "drafto-factory-revise-noop" },
+      { commentId: "1.*", marker: "drafto-factory-revise-reply-1.*" },
+      "drafto-factory-revise-reply-1",
+      null,
     ]) {
-      assert.equal(
-        buildFactoryImplementBundle({ ...base, replyMarker: bad }).replyMarker,
-        null,
+      assert.deepEqual(
+        buildFactoryImplementBundle({ ...base, replyMarkers: [bad] }).replyMarkers,
+        [],
         JSON.stringify(bad),
       );
     }
+    assert.deepEqual(
+      buildFactoryImplementBundle({ ...base, replyMarkers: "drafto-factory-revise-reply-1" })
+        .replyMarkers,
+      [],
+      "a bare string is not a list",
+    );
   });
 
   it("surfaces host-validated screenshots from the body and every comment slice", () => {
@@ -1004,12 +1085,16 @@ describe("factory-bundle CLI", () => {
         planCommentId: "999",
         planCommentBody: "prior plan",
         triggerCommentIds: ["888"],
+        replyMarkers: [{ commentId: "888", marker: "drafto-factory-plan-reply-888" }],
       },
     });
     assert.equal(r.status, 0, r.stderr);
     const bundle = JSON.parse(r.stdout);
     assert.equal(bundle.replan.planCommentId, "999");
     assert.deepEqual(bundle.replan.triggerCommentIds, ["888"]);
+    assert.deepEqual(bundle.replan.replyMarkers, [
+      { commentId: "888", marker: "drafto-factory-plan-reply-888" },
+    ]);
   });
 
   it("emits a factory_implement bundle and forwards screenshotSources", () => {
@@ -1037,18 +1122,20 @@ describe("factory-bundle CLI", () => {
     assert.deepEqual(bundle.comments, []);
   });
 
-  it("forwards a factory_implement replyMarker through the CLI", () => {
+  it("forwards factory_implement replyMarkers through the CLI", () => {
     const r = run({
       kind: "factory_implement",
       issue: { number: 42, title: "x", body: SAMPLE_BODY, labels: [] },
       priorPr: { number: 7, url: "https://x/y/pull/7", headRef: "factory/issue-42", state: "OPEN" },
       revisionComments: [{ id: 88, user: { login: "x" }, body: "run the scenario for me" }],
-      replyMarker: "drafto-factory-revise-reply-88",
+      replyMarkers: [{ commentId: "88", marker: "drafto-factory-revise-reply-88" }],
       config: { phase: "B" },
       repo: { nameWithOwner: "JakubAnderwald/drafto" },
     });
     assert.equal(r.status, 0, r.stderr);
-    assert.equal(JSON.parse(r.stdout).replyMarker, "drafto-factory-revise-reply-88");
+    assert.deepEqual(JSON.parse(r.stdout).replyMarkers, [
+      { commentId: "88", marker: "drafto-factory-revise-reply-88" },
+    ]);
   });
 
   it("emits a factory_watch bundle and forwards screenshotSources", () => {
