@@ -55,9 +55,17 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
    doesn't collide with `main` being checked out in the primary repo). It lives on
    the factory's build volume, `/Volumes/DraftoFactory` (an encrypted APFS volume on
    the external drive, [ADR-0060](../adr/0060-dedicated-factory-build-volume.md)),
-   beside the pnpm store (`store-dir=/Volumes/DraftoFactory/pnpm-store` in
-   `~/.npmrc`). So `pnpm install` there, and in every worktree under it, clones
-   packages from the store instead of copying them across volumes:
+   beside the pnpm store (`store-dir=/Volumes/DraftoFactory/pnpm-store` in pnpm's
+   global config, `~/Library/Preferences/pnpm/rc`; set it with
+   `pnpm config set store-dir … --location=global`). So `pnpm install` there, and
+   in every worktree under it, clones packages from the store instead of copying
+   them across volumes. The build toolchain lives on the same volume too:
+   `~/.gradle`, Xcode's `DerivedData` / `Archives` / `iOS DeviceSupport`,
+   `~/Library/Caches/CocoaPods`, `~/Library/Android/sdk` and `~/.android/avd` are
+   symlinks into `/Volumes/DraftoFactory/{Developer,Android,android-avd}`. Keep
+   `/Volumes/DraftoFactory/Developer/Xcode/Archives` in IDrive's backup set. The
+   macOS archives hold the only copy of the macOS dSYMs, and every distributed
+   build's archive must be retained:
 
    ```bash
    cd /Users/jakub/code/drafto
@@ -79,7 +87,7 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
 
    On the Mac mini, drop a plist at `~/Library/LaunchAgents/eu.drafto.factory.plist` modelled on `eu.drafto.support-agent.plist` with:
    - `Label = eu.drafto.factory`
-   - `ProgramArguments = [/bin/bash, -c, <gate>; exec /bin/bash /Volumes/DraftoFactory/drafto-factory/scripts/factory-agent-loop.sh]` (the **dedicated** checkout from step 5, not the dev tree). The gate skips the tick with a log line unless both `/Volumes/DraftoFactory/drafto-factory` and `/Volumes/Zewnętrzny/Developer` exist. The second volume holds the toolchain the builds use: Gradle home, Xcode DerivedData and the Android SDK.
+   - `ProgramArguments = [/bin/bash, -c, <gate>; exec /bin/bash /Volumes/DraftoFactory/drafto-factory/scripts/factory-agent-loop.sh]` (the **dedicated** checkout from step 5, not the dev tree). The gate skips the tick with a log line unless `/Volumes/DraftoFactory/drafto-factory` exists. That one volume also holds the toolchain the builds use (Gradle home, Xcode DerivedData, the CocoaPods cache, the Android SDK and AVDs), so nothing else needs checking.
    - `StartInterval = 300` (5 min)
    - `EnvironmentVariables.FACTORY_PHASE = A`
    - Stdout/stderr paths under the primary checkout's `logs/launchd-factory-*.log`, on the internal disk, so launchd can still write the gate's "not mounted" line while the volume is missing
