@@ -416,6 +416,17 @@ gh() {
       }
     });
 
+    it("a job that timed out in an action's cleanup → infra", () => {
+      for (const step of [
+        "Post Run actions/checkout@v4",
+        "Post Run pnpm/action-setup@v4",
+        "Complete job",
+      ]) {
+        const jobs = { ...NEVER_STARTED, [E2E]: stoppedIn(step) };
+        assert.equal(classify(PR_657, jobs, { [E2E]: TIMED_OUT }).verdict, "infra", step);
+      }
+    });
+
     it("a job someone cancelled by hand stays red, even in a setup step (ADR-0041)", () => {
       const jobs = { ...NEVER_STARTED, [E2E]: stoppedIn(INSTALL) };
       assert.equal(classify(PR_657, jobs, { [E2E]: BY_HAND }).verdict, "red");
@@ -529,6 +540,14 @@ EOF`,
         assert.equal(got[i], infra(s) ? "yes" : "no", `${s.shown}`);
       });
       assert.ok(got.includes("yes") && got.includes("no"));
+    });
+
+    it("counts an action's cleanup step as the action itself, never a command's", () => {
+      const res = runBash(
+        ["is_ci_infra_step"],
+        `for n in "Post Run actions/setup-node@v4" "Post Run actions/upload-artifact@v4" "Complete job" "Post Run pnpm install --frozen-lockfile"; do is_ci_infra_step "$n" && echo yes || echo no; done`,
+      );
+      assert.deepEqual(res.stdout.trim().split("\n"), ["yes", "yes", "yes", "no"]);
     });
 
     it("leaves pnpm install out: a dependency or lockfile change in the PR can hang it", () => {

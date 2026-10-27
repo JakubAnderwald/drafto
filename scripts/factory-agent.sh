@@ -2111,11 +2111,13 @@ classify_failing_required() {
 # setup, cache and artifact transfers, the Playwright browser install, and the
 # SonarCloud scan and gate (an outside service). The names are the ones GitHub
 # gives the steps of .github/workflows/ci.yml ("Run <uses>" or "Run <command>"
-# for an unnamed step); a test ties this list to that file. `pnpm install` is
-# not on it: a dependency or lockfile change in the PR can hang it.
+# for an unnamed step); a test ties this list to that file. An action's own
+# cleanup ("Post Run <uses>") counts as the action does, and so does the
+# runner's "Complete job". `pnpm install` is not on it: a dependency or
+# lockfile change in the PR can hang it.
 is_ci_infra_step() {
-  case "$1" in
-    "Set up job" | "Check for required secrets" | "Run actions/checkout@"* | \
+  case "${1#Post }" in
+    "Set up job" | "Complete job" | "Check for required secrets" | "Run actions/checkout@"* | \
     "Run actions/setup-"* | "Run actions/cache@"* | "Run pnpm/action-setup@"* | \
     "Run actions/download-artifact@"* | "Run actions/upload-artifact@"* | \
     "Run SonarSource/"* | *"playwright install"*)
