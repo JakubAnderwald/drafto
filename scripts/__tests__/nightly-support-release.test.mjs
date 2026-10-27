@@ -1,7 +1,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync } from "node:fs";
+import {
+  readFileSync,
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+  existsSync,
+  mkdirSync,
+  realpathSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -89,10 +97,20 @@ describe("the Claude session no longer ships anything", () => {
     assert.match(supportPrompt, /Never start a background task that must outlive this session/);
   });
 
+  it("resolves the support worktree before telling the reporter it's working on it", () => {
+    const resolveAt = nightly.indexOf('SUPPORT_WT=$(session_worktree_path "drafto-support-');
+    assert.ok(resolveAt !== -1);
+    assert.ok(resolveAt < nightly.indexOf("Working on it now (from the nightly agent)."));
+  });
+
   it("puts the session in a fixed worktree and keeps it out of the fossil checkout", () => {
     assert.match(
       nightly,
-      /SUPPORT_WT="\$SUPPORT_WORKTREE_PARENT\/drafto-support-\$\{ISSUE_NUMBER\}"/,
+      /SUPPORT_WT=\$\(session_worktree_path "drafto-support-\$\{ISSUE_NUMBER\}"\)/,
+    );
+    assert.match(
+      nightly,
+      /DEPENDABOT_WT=\$\(session_worktree_path "drafto-dependabot-\$\{PR_NUMBER\}"\)/,
     );
     assert.match(
       supportPrompt,
@@ -255,7 +273,7 @@ function runLib(body, { env = {} } = {}) {
 }
 
 describe("beta-build-root.sh — root lock (real bash)", () => {
-  it("defaults the desktop root to the build volume only when it is mounted", () => {
+  it("defaults both roots to the build volume only when it is mounted", () => {
     const r = runLib('echo "$BETA_MOBILE_ROOT|$BETA_DESKTOP_ROOT"', {
       env: {
         DRAFTO_BETA_MOBILE_ROOT: "",
@@ -277,12 +295,32 @@ describe("beta-build-root.sh — root lock (real bash)", () => {
           DRAFTO_BUILDS_VOLUME_DIR: vol,
         },
       });
-      // Mobile never follows the volume: iOS pods need an ASCII path.
+      // The volume's name is ASCII (ADR-0060), so the mobile root follows it too.
+      assert.equal(r2.stdout.trim(), `${vol}/drafto-beta-mobile|${vol}/drafto-beta-desktop`);
+    } finally {
+      rmSync(vol, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a present but unwritable volume dir as not mounted", () => {
+    // A stale, root-owned mount point left behind by an unclean eject.
+    const vol = mkdtempSync(join(tmpdir(), "builds-volume-stale-"));
+    try {
+      spawnSync("chmod", ["555", vol]);
+      const r = runLib('echo "$BETA_MOBILE_ROOT|$BETA_DESKTOP_ROOT"', {
+        env: {
+          DRAFTO_BETA_MOBILE_ROOT: "",
+          DRAFTO_DESKTOP_BUILD_ROOT: "",
+          DRAFTO_BUILDS_VOLUME_DIR: vol,
+        },
+      });
+      assert.equal(r.status, 0, r.stderr);
       assert.equal(
-        r2.stdout.trim(),
-        `/Users/jakub/code/drafto-beta-mobile|${vol}/drafto-beta-desktop`,
+        r.stdout.trim(),
+        "/Users/jakub/code/drafto-beta-mobile|/Users/jakub/code/drafto-beta-desktop",
       );
     } finally {
+      spawnSync("chmod", ["755", vol]);
       rmSync(vol, { recursive: true, force: true });
     }
   });
@@ -360,13 +398,19 @@ kill "$OTHER"`);
     rmSync(vol, { recursive: true, force: true });
     try {
       const r = runLib(
-        `echo "$BETA_DESKTOP_ROOT"; mkdir -p "$BETA_BUILDS_VOLUME_DIR"; resolve_beta_build_roots; echo "$BETA_DESKTOP_ROOT"`,
-        { env: { DRAFTO_DESKTOP_BUILD_ROOT: "", DRAFTO_BUILDS_VOLUME_DIR: vol } },
+        `echo "$BETA_MOBILE_ROOT|$BETA_DESKTOP_ROOT"; mkdir -p "$BETA_BUILDS_VOLUME_DIR"; resolve_beta_build_roots; echo "$BETA_MOBILE_ROOT|$BETA_DESKTOP_ROOT"`,
+        {
+          env: {
+            DRAFTO_BETA_MOBILE_ROOT: "",
+            DRAFTO_DESKTOP_BUILD_ROOT: "",
+            DRAFTO_BUILDS_VOLUME_DIR: vol,
+          },
+        },
       );
       assert.equal(r.status, 0, r.stderr);
       assert.deepEqual(r.stdout.trim().split("\n"), [
-        "/Users/jakub/code/drafto-beta-desktop",
-        `${vol}/drafto-beta-desktop`,
+        "/Users/jakub/code/drafto-beta-mobile|/Users/jakub/code/drafto-beta-desktop",
+        `${vol}/drafto-beta-mobile|${vol}/drafto-beta-desktop`,
       ]);
     } finally {
       rmSync(vol, { recursive: true, force: true });
@@ -535,11 +579,44 @@ describe("remove_session_worktree (real git)", () => {
         "-m",
         "init",
       );
+      // Pushed: the commit is on a remote-tracking ref.
+      git("update-ref", "refs/remotes/origin/main", "HEAD");
       const wt = join(dir, "drafto-support-658");
       assert.equal(git("worktree", "add", "-q", "-b", "fix/support-658", wt).status, 0);
+      // next dev's generated files don't count as work...
+      mkdirSync(join(wt, "apps/web"), { recursive: true });
+      writeFileSync(join(wt, "apps/web/AGENTS.md"), "generated\n");
+      writeFileSync(join(wt, "apps/web/CLAUDE.md"), "@AGENTS.md\n");
+      // ...but any other new file does: an uncommitted new source file.
+      const newFile = join(dir, "drafto-support-660");
+      assert.equal(git("worktree", "add", "-q", "-b", "fix/support-660", newFile).status, 0);
+      writeFileSync(join(newFile, "new-source.ts"), "export const x = 1;\n");
       const stray = join(dir, "drafto-support-999");
       mkdirSync(stray);
-      const fn = fnSource(nightly, "remove_session_worktree");
+      // An unpushed fix: kept, with its branch.
+      const unpushed = join(dir, "drafto-support-659");
+      assert.equal(git("worktree", "add", "-q", "-b", "fix/support-659", unpushed).status, 0);
+      spawnSync(
+        "git",
+        [
+          "-C",
+          unpushed,
+          "-c",
+          "user.email=t@t",
+          "-c",
+          "user.name=t",
+          "commit",
+          "-q",
+          "--allow-empty",
+          "-m",
+          "wip",
+        ],
+        { encoding: "utf8" },
+      );
+      const fn = [
+        fnSource(nightly, "session_worktree_has_local_work"),
+        fnSource(nightly, "remove_session_worktree"),
+      ].join("\n");
       const r = spawnSync(
         BASH,
         [
@@ -551,6 +628,8 @@ describe("remove_session_worktree (real git)", () => {
             fn,
             `remove_session_worktree ${JSON.stringify(stray)}`,
             `remove_session_worktree ${JSON.stringify(wt)} fix/support-658`,
+            `remove_session_worktree ${JSON.stringify(unpushed)} fix/support-659`,
+            `remove_session_worktree ${JSON.stringify(newFile)} fix/support-660`,
           ].join("\n"),
         ],
         { encoding: "utf8" },
@@ -559,9 +638,222 @@ describe("remove_session_worktree (real git)", () => {
       assert.ok(!existsSync(wt), "registered worktree removed");
       assert.ok(existsSync(stray), "an unregistered directory is never touched");
       assert.equal(git("branch", "--list", "fix/support-658").stdout.trim(), "");
+      assert.ok(existsSync(unpushed), "a worktree with unpushed commits is kept");
+      assert.ok(existsSync(newFile), "a worktree with a new untracked source file is kept");
+      assert.notEqual(git("branch", "--list", "fix/support-659").stdout.trim(), "");
+      assert.match(
+        r.stdout,
+        /Keeping worktree .*drafto-support-659: it holds uncommitted changes or unpushed commits/,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ── session worktree parent, reuse and sweep against a real git repo ────────
+
+describe("session worktrees (real git)", () => {
+  function setupRepo() {
+    // git records worktree paths symlink-resolved (/var → /private/var on macOS).
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "nightly-sweep-")));
+    const repo = join(dir, "repo");
+    mkdirSync(repo);
+    const git = (...a) => spawnSync("git", ["-C", repo, ...a], { encoding: "utf8" });
+    git("init", "-q", "-b", "main");
+    writeFileSync(join(repo, "pnpm-lock.yaml"), "lock\n");
+    git("add", "pnpm-lock.yaml");
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init");
+    // The sweep only removes work that is on a remote-tracking ref.
+    git("update-ref", "refs/remotes/origin/main", "HEAD");
+    return { dir, repo, git };
+  }
+  // gh stubbed by item: dependabot PRs 746/748 CLOSED, 747 MERGED, 754 OPEN;
+  // support issues 700/702 CLOSED, 701 OPEN; anything else unreadable (empty).
+  const GH_STUB = `gh() {
+  case "$1 $2 $3" in
+    "pr view 746"|"pr view 748") echo CLOSED ;; "pr view 747") echo MERGED ;; "pr view 754") echo OPEN ;;
+    "issue view 700"|"issue view 702") echo CLOSED ;; "issue view 701") echo OPEN ;;
+    *) return 1 ;;
+  esac
+}`;
+  function runFns(repo, dir, body, extra = []) {
+    return spawnSync(
+      BASH,
+      [
+        "-c",
+        [
+          "set -euo pipefail",
+          `REPO_ROOT=${JSON.stringify(repo)}`,
+          `LOG_FILE=${JSON.stringify(join(dir, "log"))}`,
+          'log() { echo "$*"; }',
+          ...extra,
+          fnSource(nightly, "session_worktree_has_local_work"),
+          fnSource(nightly, "remove_session_worktree"),
+          fnSource(nightly, "registered_worktree_paths"),
+          fnSource(nightly, "session_worktree_path"),
+          fnSource(nightly, "sweep_session_worktrees"),
+          body,
+        ].join("\n"),
+      ],
+      { encoding: "utf8" },
+    );
+  }
+
+  it("defaults the parent to the build volume's worktrees/ when mounted, else ~/code", () => {
+    const block = nightly.match(
+      /if \[\[ -z "\$\{SUPPORT_WORKTREE_PARENT:-\}" \]\]; then[\s\S]*?\nfi\n/,
+    );
+    assert.ok(block, "parent resolution block not found");
+    const vol = mkdtempSync(join(tmpdir(), "builds-volume-wt-"));
+    try {
+      const resolveWith = (volDir, override = "") =>
+        spawnSync(
+          BASH,
+          [
+            "-c",
+            `BETA_BUILDS_VOLUME_DIR=${JSON.stringify(volDir)}\nHOME=/home/x\nSUPPORT_WORKTREE_PARENT=${JSON.stringify(override)}\n${fnSource(lib, "build_volume_mounted")}\n${block[0]}echo "$SUPPORT_WORKTREE_PARENT"`,
+          ],
+          { encoding: "utf8" },
+        ).stdout.trim();
+      assert.equal(resolveWith(vol), `${vol}/worktrees`);
+      assert.equal(resolveWith("/nonexistent-volume-for-test"), "/home/x/code");
+      assert.equal(resolveWith(vol, "/custom"), "/custom", "an explicit override wins");
+    } finally {
+      rmSync(vol, { recursive: true, force: true });
+    }
+    // Resolved only after the lib that defines BETA_BUILDS_VOLUME_DIR is sourced.
+    assert.ok(
+      nightly.indexOf('source "$SCRIPT_DIR/lib/beta-build-root.sh"') < nightly.indexOf(block[0]),
+    );
+  });
+
+  it("reuses a registered worktree from another parent, else a fresh path", () => {
+    const { dir, repo, git } = setupRepo();
+    try {
+      const old = join(dir, "old-parent", "drafto-dependabot-754");
+      assert.equal(git("worktree", "add", "-q", "-b", "dep-754", old).status, 0);
+      const r = runFns(
+        repo,
+        dir,
+        [
+          "session_worktree_path drafto-dependabot-754",
+          "session_worktree_path drafto-dependabot-760",
+          "session_worktree_path drafto-dependabot-75",
+        ].join("\n"),
+        [`SUPPORT_WORKTREE_PARENT=${JSON.stringify(join(dir, "new-parent"))}`],
+      );
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(r.stdout.trim().split("\n"), [
+        old,
+        join(dir, "new-parent", "drafto-dependabot-760"),
+        join(dir, "new-parent", "drafto-dependabot-75"),
+      ]);
+
+      // Registered, but its volume is gone: the path comes back with exit 1, so
+      // the caller skips the item instead of colliding on the checked-out branch.
+      rmSync(old, { recursive: true, force: true });
+      const gone = runFns(
+        repo,
+        dir,
+        'if p=$(session_worktree_path drafto-dependabot-754); then echo "OK $p"; else echo "GONE $p"; fi',
+        [`SUPPORT_WORKTREE_PARENT=${JSON.stringify(join(dir, "new-parent"))}`],
+      );
+      assert.equal(gone.status, 0, gone.stderr);
+      assert.equal(gone.stdout.trim(), `GONE ${old}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sweeps finished items' worktrees in any parent and keeps open or unreadable ones", () => {
+    const { dir, repo, git } = setupRepo();
+    try {
+      const wts = {
+        closedPr: join(dir, "a", "drafto-dependabot-746"),
+        mergedPr: join(dir, "b", "drafto-dependabot-747"),
+        openPr: join(dir, "a", "drafto-dependabot-754"),
+        unreadablePr: join(dir, "a", "drafto-dependabot-999"),
+        closedIssue: join(dir, "b", "drafto-support-700"),
+        openIssue: join(dir, "b", "drafto-support-701"),
+        other: join(dir, "a", "drafto-factory"),
+        dirtyClosedPr: join(dir, "b", "drafto-dependabot-748"),
+        unpushedClosedIssue: join(dir, "b", "drafto-support-702"),
+      };
+      const branch = {
+        closedIssue: "fix/support-700",
+        openIssue: "fix/support-701",
+        unpushedClosedIssue: "fix/support-702",
+      };
+      for (const [k, p] of Object.entries(wts)) {
+        assert.equal(git("worktree", "add", "-q", "-b", branch[k] ?? `b-${k}`, p).status, 0);
+      }
+      // Local work the sweep must never destroy, whatever the item's state.
+      writeFileSync(join(wts.dirtyClosedPr, "pnpm-lock.yaml"), "uncommitted\n");
+      // next dev's generated files alone don't keep a finished item's worktree.
+      mkdirSync(join(wts.closedPr, "apps/web"), { recursive: true });
+      writeFileSync(join(wts.closedPr, "apps/web/AGENTS.md"), "generated\n");
+      const wtGit = (p, ...a) => spawnSync("git", ["-C", p, ...a], { encoding: "utf8" });
+      wtGit(
+        wts.unpushedClosedIssue,
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "fix",
+      );
+      // A registered worktree whose directory is gone (volume not mounted).
+      const goneWt = join(dir, "c", "drafto-dependabot-749");
+      assert.equal(git("worktree", "add", "-q", "-b", "b-gone", goneWt).status, 0);
+      rmSync(goneWt, { recursive: true, force: true });
+      const r = runFns(repo, dir, "sweep_session_worktrees", [GH_STUB]);
+      assert.equal(r.status, 0, r.stderr);
+      for (const k of ["closedPr", "mergedPr", "closedIssue"]) {
+        assert.ok(!existsSync(wts[k]), `${k} worktree swept`);
+      }
+      for (const k of [
+        "openPr",
+        "unreadablePr",
+        "openIssue",
+        "other",
+        "dirtyClosedPr",
+        "unpushedClosedIssue",
+      ]) {
+        assert.ok(existsSync(wts[k]), `${k} worktree kept`);
+      }
+      assert.match(
+        git("worktree", "list").stdout,
+        /drafto-dependabot-749/,
+        "a gone worktree stays registered",
+      );
+      assert.match(r.stdout, /Keeping worktree .*drafto-dependabot-748: it holds uncommitted/);
+      assert.match(r.stdout, /Keeping worktree .*drafto-support-702/);
+      assert.equal(git("branch", "--list", "fix/support-700").stdout.trim(), "");
+      assert.notEqual(git("branch", "--list", "fix/support-701").stdout.trim(), "");
+      assert.match(r.stdout, /Sweeping .*drafto-dependabot-746: #746 is CLOSED/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs the sweep before the no-items exit and Phase 2, and never prunes", () => {
+    const code = stripComments(nightly);
+    const sweepAt = code.indexOf("\nsweep_session_worktrees\n");
+    assert.ok(sweepAt !== -1, "sweep must be called");
+    // A quiet night is exactly when the queue no longer names finished items.
+    assert.ok(
+      sweepAt < code.indexOf('log "No items to process."'),
+      "sweep must precede the early exit",
+    );
+    assert.ok(
+      sweepAt < code.indexOf("for PR_NUMBER in"),
+      "sweep must run before the Dependabot loop",
+    );
+    assert.doesNotMatch(code, /worktree prune/);
   });
 });
 
@@ -606,6 +898,7 @@ LANE_desktop=${JSON.stringify(lanes.desktop ?? "exit:0")}
 ENSURE_FAIL=${JSON.stringify(ensureFail.join(" "))}
 log() { echo "[log] $*" >>"$LOG_FILE"; }
 logerr() { echo "[logerr] $*" >>"$LOG_FILE"; }
+${fnSource(lib, "build_volume_mounted")}
 ensure_beta_build_root() {
   echo "ensure $1 $2" >>"$DIR/calls"
   [[ " $ENSURE_FAIL " == *" $1 "* ]] && return 1

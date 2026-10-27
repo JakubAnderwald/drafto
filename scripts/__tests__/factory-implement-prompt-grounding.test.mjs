@@ -99,21 +99,39 @@ describe("implementer prompt — privacy check fits the other rules (#648)", () 
 // #659: "execute the test scenarios for me" was run, but the results went only
 // into the PR body and bash posted "No code change was needed for that", so the
 // reporter saw nothing. Feedback that needs no code change now gets a reply on
-// the issue, which bash finds by bundle.replyMarker (see revise_noop_reply).
+// the issue, which bash finds by its marker (see revise_replies_check). Since
+// then every feedback comment gets its own reply, one per bundle.replyMarkers
+// entry, whatever the action: a question answered only inside one batch reply,
+// or not at all when the run pushed code, left the reporter guessing. The
+// implementer writes each reply to bundle.replyDir and bash posts it with the
+// marker appended, so a reply never depends on the model remembering it.
 describe("implementer prompt — revision replies on the issue (#659)", () => {
-  it("documents replyMarker in the bundle shape", () => {
-    assert.match(prompt, /"replyMarker": "drafto-factory-revise-reply-<commentId>" \| null/);
+  it("documents replyMarkers and replyDir in the bundle shape", () => {
+    assert.match(
+      prompt,
+      /"replyMarkers": \[ \{ "commentId": "<id>", "marker": "drafto-factory-revise-reply-<commentId>" \} \]/,
+    );
+    assert.match(prompt, /"replyDir": "<factory>\/logs\/factory\/replies\/issue-<n>" \| null/);
   });
 
-  it("allows exactly one issue reply on a revision run, alongside the blocking comment", () => {
-    assert.match(flat, /used \*\*only\*\* for two things: the blocking comment/);
-    assert.match(flat, /on a revision run, \*\*one\*\* reply to the reporter/);
+  it("keeps gh issue comment for the blocking comment; replies are files bash posts", () => {
+    assert.match(flat, /used \*\*only\*\* for the blocking comment when emitting `action=blocked`/);
+    assert.match(flat, /Replies to feedback are files that bash posts/);
   });
 
-  it("requires the reply before a noop and pins its marker line", () => {
-    assert.match(flat, /The reply is \*\*required\*\* before emitting `action=noop`/);
-    assert.match(flat, /The reply's last line is `<!-- <bundle\.replyMarker> -->`/);
-    assert.match(flat, /If a comment already carries `bundle\.replyMarker`/);
+  it("answers every comment with its own reply file, whatever the action", () => {
+    assert.match(flat, /Answer \*\*every\*\* entry in `bundle\.replyMarkers` with its own reply/);
+    assert.match(flat, /One comment from the reporter, one reply, whatever its kind/);
+    assert.match(flat, /Write each reply to `<bundle\.replyDir>\/<commentId>\.md`\. Don't post it/);
+    assert.match(
+      flat,
+      /when your run ends with `action=implemented`, `action=noop` or `action=declined`, bash posts each file as its own comment and adds the entry's marker/,
+    );
+    assert.match(flat, /The replies are \*\*required\*\* for those actions/);
+    assert.match(flat, /after pushing, say what you changed for it/);
+    assert.match(flat, /Add no marker or HTML comment yourself/);
+    // The old rule that skipped the reply when code was pushed is gone.
+    assert.doesNotMatch(flat, /reply only when the feedback also asked something/);
   });
 
   it("puts the results on the issue, not only in the PR body", () => {
@@ -186,7 +204,7 @@ describe("implementer prompt — revision replies on the issue (#659)", () => {
   it("doesn't redo work an earlier attempt already answered", () => {
     assert.match(
       flat,
-      /an earlier attempt already answered this feedback: don't post again, and don't redo no-code work/,
+      /an earlier attempt already answered that comment: write no reply for it, and don't redo its no-code work/,
     );
     // The marker proves only the reply went out: an unfinished change request
     // must still be finished on a retry, not skipped as a no-op.
@@ -249,16 +267,16 @@ describe("implementer prompt — declined revisions and operator steps (ADR-0058
     // retry's no-duplicates check skip the change.
     assert.match(
       flat,
-      /make the in-plan change and push it \*\*before\*\* posting the reply, emit `action=implemented`/,
+      /make the in-plan change and push it \*\*before\*\* writing the replies, emit `action=implemented`/,
     );
   });
 
   it("requires the reply before a decline, and keeps the marker off blocking comments", () => {
+    assert.match(flat, /The replies are \*\*required\*\* for those actions/);
     assert.match(
       flat,
-      /before emitting `action=noop` for such a request, and before `action=declined`/,
+      /It never carries a reply marker: a marker means "this comment was answered"/,
     );
-    assert.match(flat, /The blocking comment never carries the reply marker/);
     assert.doesNotMatch(flat, /blocking comment _is_ that one reply/);
   });
 

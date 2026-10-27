@@ -52,13 +52,26 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
    crash to production — the dedicated tree exists to make that impossible.)
 
    Create it once as a **detached** worktree at `origin/main` (detached so it
-   doesn't collide with `main` being checked out in the primary repo):
+   doesn't collide with `main` being checked out in the primary repo). It lives on
+   the factory's build volume, `/Volumes/DraftoFactory` (an encrypted APFS volume on
+   the external drive, [ADR-0060](../adr/0060-dedicated-factory-build-volume.md)),
+   beside the pnpm store (`store-dir=/Volumes/DraftoFactory/pnpm-store` in pnpm's
+   global config, `~/Library/Preferences/pnpm/rc`; set it with
+   `pnpm config set store-dir … --location=global`). So `pnpm install` there, and
+   in every worktree under it, clones packages from the store instead of copying
+   them across volumes. The build toolchain lives on the same volume too:
+   `~/.gradle`, Xcode's `DerivedData` / `Archives` / `iOS DeviceSupport`,
+   `~/Library/Caches/CocoaPods`, `~/Library/Android/sdk` and `~/.android/avd` are
+   symlinks into `/Volumes/DraftoFactory/{Developer,Android,android-avd}`. Keep
+   `/Volumes/DraftoFactory/Developer/Xcode/Archives` in IDrive's backup set. The
+   macOS archives hold the only copy of the macOS dSYMs, and every distributed
+   build's archive must be retained:
 
    ```bash
    cd /Users/jakub/code/drafto
    git fetch origin main
-   git worktree add --detach /Users/jakub/code/drafto-factory origin/main
-   cd /Users/jakub/code/drafto-factory
+   git worktree add --detach /Volumes/DraftoFactory/drafto-factory origin/main
+   cd /Volumes/DraftoFactory/drafto-factory
    pnpm install                       # worktrees don't share node_modules
    bash scripts/worktree-bootstrap.sh # gitignored env/config files
    ```
@@ -74,10 +87,10 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
 
    On the Mac mini, drop a plist at `~/Library/LaunchAgents/eu.drafto.factory.plist` modelled on `eu.drafto.support-agent.plist` with:
    - `Label = eu.drafto.factory`
-   - `ProgramArguments = [/bin/bash, /Users/jakub/code/drafto-factory/scripts/factory-agent-loop.sh]` (the **dedicated** checkout from step 5, not the dev tree)
+   - `ProgramArguments = [/bin/bash, -c, <gate>; exec /bin/bash /Volumes/DraftoFactory/drafto-factory/scripts/factory-agent-loop.sh]` (the **dedicated** checkout from step 5, not the dev tree). The gate skips the tick with a log line unless `/Volumes/DraftoFactory/drafto-factory` exists. That one volume also holds the toolchain the builds use (Gradle home, Xcode DerivedData, the CocoaPods cache, the Android SDK and AVDs), so nothing else needs checking.
    - `StartInterval = 300` (5 min)
    - `EnvironmentVariables.FACTORY_PHASE = A`
-   - Stdout/stderr paths under `logs/launchd-factory-*.log`
+   - Stdout/stderr paths under the primary checkout's `logs/launchd-factory-*.log`, on the internal disk, so launchd can still write the gate's "not mounted" line while the volume is missing
 
    Then load and smoke-test:
 
@@ -128,7 +141,7 @@ Only use the script from current `main`. An older copy sends no ids.
 1. Go to the factory checkout, which tracks `origin/main`, and set two variables. `FACTORY_PROJECT_ID` saves every later call from looking the board up again; check that it starts with `PVT_`.
 
    ```bash
-   cd /Users/jakub/code/drafto-factory
+   cd /Volumes/DraftoFactory/drafto-factory
    export FACTORY_PROJECT_ID=$(node scripts/lib/factory-project.mjs find-project | jq -r .projectId)
    echo "$FACTORY_PROJECT_ID"
    BACKUP=~/factory-board-backup-$(date +%Y%m%d-%H%M).json
@@ -235,20 +248,21 @@ It is idempotent (an already-merged PR just finishes the Released transition + s
 
 A card in **In Test** needs a build a human can actually install. `--watch` therefore dispatches beta builds **from the PR head, before the merge**, for the native platforms the diff touched (ADR-0030). This is separate from the Phase-D post-merge lane above and has its own knobs — enabling pre-merge betas must not silently switch on post-merge auto-dispatch.
 
-| Var                           | Default                                 | Purpose                                                                                                                                                                                                                                         |
-| ----------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FACTORY_INTEST_BETA`         | `0`                                     | Master switch. `1` + Phase C/D dispatches the **mobile** lane (iOS TestFlight + Play internal).                                                                                                                                                 |
-| `FACTORY_INTEST_BETA_DESKTOP` | `0`                                     | Additionally dispatch the **macOS** lane. Only turn on after the fossil validation below.                                                                                                                                                       |
-| `FACTORY_INTEST_TIMEOUT_SEC`  | `600`                                   | Wall-clock cap for the In Test scenario writer (read-only stage).                                                                                                                                                                               |
-| `FACTORY_LANE_STALE_MIN`      | `120`                                   | A lane silent this long with no exit code is declared dead and retried.                                                                                                                                                                         |
-| `FACTORY_LANE_MAX_MIN`        | `240`                                   | A lane still running this long after ITS dispatch is killed (whole process group) and retried.                                                                                                                                                  |
-| `FACTORY_LSOF_BIN`            | unset                                   | Path to `lsof`, used to kill hung lanes; no fallback when set. Unset: PATH, then `/usr/sbin/lsof`. None found: WARNING in the agent log, no kill.                                                                                               |
-| `FACTORY_LANE_MAX_ATTEMPTS`   | `3`                                     | Retry budget per lane per commit; a new commit resets it.                                                                                                                                                                                       |
-| `DRAFTO_BETA_MOBILE_ROOT`     | `/Users/jakub/code/drafto-beta-mobile`  | Dedicated mobile build root. Must be an **ASCII-only path**: React Native 0.83's iOS pods reject non-ASCII paths, so `ensure_beta_build_root` refuses one. It never moves to the build volume (`Zewnętrzny`); the plist sets it to the default. |
-| `DRAFTO_DESKTOP_BUILD_ROOT`   | `/Users/jakub/code/drafto-beta-desktop` | Dedicated macOS build root (clonefile replica of the fossil). Defaults under `/Volumes/Zewnętrzny/drafto-builds/` instead while that volume is mounted; the plist sets it.                                                                      |
-| `DRAFTO_DESKTOP_FOSSIL_ROOT`  | `/Users/jakub/code/drafto`              | The fossil the desktop root is seeded **from**. Never built in.                                                                                                                                                                                 |
+| Var                           | Default                        | Purpose                                                                                                                                                                                                                                                   |
+| ----------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FACTORY_INTEST_BETA`         | `0`                            | Master switch. `1` + Phase C/D dispatches the **mobile** lane (iOS TestFlight + Play internal).                                                                                                                                                           |
+| `FACTORY_INTEST_BETA_DESKTOP` | `0`                            | Additionally dispatch the **macOS** lane. Only turn on after the fossil validation below.                                                                                                                                                                 |
+| `FACTORY_INTEST_TIMEOUT_SEC`  | `600`                          | Wall-clock cap for the In Test scenario writer (read-only stage).                                                                                                                                                                                         |
+| `FACTORY_LANE_STALE_MIN`      | `120`                          | A lane silent this long with no exit code is declared dead and retried.                                                                                                                                                                                   |
+| `FACTORY_LANE_MAX_MIN`        | `240`                          | A lane still running this long after ITS dispatch is killed (whole process group) and retried.                                                                                                                                                            |
+| `FACTORY_LSOF_BIN`            | unset                          | Path to `lsof`, used to kill hung lanes; no fallback when set. Unset: PATH, then `/usr/sbin/lsof`. None found: WARNING in the agent log, no kill.                                                                                                         |
+| `FACTORY_LANE_MAX_ATTEMPTS`   | `3`                            | Retry budget per lane per commit; a new commit resets it.                                                                                                                                                                                                 |
+| `DRAFTO_BUILDS_VOLUME_DIR`    | `/Volumes/DraftoFactory`       | The factory's build volume. While it is mounted, both build roots and the nightly's session worktrees default to it; otherwise they default to `/Users/jakub/code`. Its name must stay ASCII ([ADR-0060](../adr/0060-dedicated-factory-build-volume.md)). |
+| `DRAFTO_BETA_MOBILE_ROOT`     | `<volume>/drafto-beta-mobile`  | Dedicated mobile build root. Must be an **ASCII-only path**: React Native 0.83's iOS pods reject non-ASCII paths, so `ensure_beta_build_root` refuses one. The plist sets it.                                                                             |
+| `DRAFTO_DESKTOP_BUILD_ROOT`   | `<volume>/drafto-beta-desktop` | Dedicated macOS build root (a copy of the fossil's `node_modules`). The plist sets it.                                                                                                                                                                    |
+| `DRAFTO_DESKTOP_FOSSIL_ROOT`  | `/Users/jakub/code/drafto`     | The fossil the desktop root is seeded **from**. Never built in.                                                                                                                                                                                           |
 
-**The build roots.** Each is a detached git worktree that the factory hard-resets to the PR head SHA, with `node_modules` clonefile-seeded (`cp -c -R` — O(1) space). They are **dedicated and disposable**: `ensure_beta_build_root` refuses, by canonical path, to use the factory checkout or the fossil as a build root, because it resets what it is given and the fossil is your working tree. The helpers live in `scripts/lib/beta-build-root.sh`, which `nightly-support.sh` sources too: it ships merged support fixes into the **same** two roots ([ADR-0042](../adr/0042-nightly-support-runner-owns-beta-dispatch.md)). Each root has a pid lock at `<root>.lock`. `ensure_beta_build_root` takes it atomically, with its own pid, before touching the root. `claim_beta_build_root` hands it to the lane's pid, and `release_beta_build_root` drops a lock its holder no longer needs. A root locked by a live pid is skipped, by either scheduler, until a later tick or night. The issue's own worktree is deliberately not used either — the next `--watch` tick may install and edit files in it, and the cleanup sweep deletes it when the card leaves In Test.
+**The build roots.** Each is a detached git worktree that the factory hard-resets to the PR head SHA, with `node_modules` seeded by `cp -c -R`. A root created by the factory is seeded from the factory checkout on the same volume, so its seed is an O(1) clone. One the nightly creates is seeded from the primary checkout on the internal disk, which makes it a full copy, and so is the desktop root, which is always seeded from the fossil. They are **dedicated and disposable**: `ensure_beta_build_root` refuses, by canonical path, to use the factory checkout or the fossil as a build root, because it resets what it is given and the fossil is your working tree. The helpers live in `scripts/lib/beta-build-root.sh`, which `nightly-support.sh` sources too: it ships merged support fixes into the **same** two roots ([ADR-0042](../adr/0042-nightly-support-runner-owns-beta-dispatch.md)). Each root has a pid lock at `<root>.lock`. `ensure_beta_build_root` takes it atomically, with its own pid, before touching the root. `claim_beta_build_root` hands it to the lane's pid, and `release_beta_build_root` drops a lock its holder no longer needs. A root locked by a live pid is skipped, by either scheduler, until a later tick or night. The issue's own worktree is deliberately not used either — the next `--watch` tick may install and edit files in it, and the cleanup sweep deletes it when the card leaves In Test.
 
 > ### ⚠️ NEVER `pnpm install` in `drafto-beta-desktop`
 >
@@ -257,8 +271,8 @@ A card in **In Test** needs a build a human can actually install. `--watch` ther
 **One-time fossil validation before `FACTORY_INTEST_BETA_DESKTOP=1`.** A green compile is not proof; only an installed build that opens a note is.
 
 ```bash
-git -C /Users/jakub/code/drafto worktree add --detach /Users/jakub/code/drafto-beta-desktop origin/main
-cd /Users/jakub/code/drafto-beta-desktop
+git -C /Users/jakub/code/drafto worktree add --detach /Volumes/DraftoFactory/drafto-beta-desktop origin/main
+cd /Volumes/DraftoFactory/drafto-beta-desktop
 for d in node_modules apps/desktop/node_modules packages/*/node_modules; do
   [ -d "/Users/jakub/code/drafto/$d" ] && cp -c -R "/Users/jakub/code/drafto/$d" "$d"
 done
@@ -282,7 +296,7 @@ Test 6 is the fossil check: it opens the app, requires it to survive 15 s, and f
 
 **It still cannot prove the app renders** — a blank window is a healthy process — so finish by opening the app and **opening a note** yourself. Confirm `git -C /Users/jakub/code/drafto status --porcelain` is unchanged before and after. Only then add the knob to the plist and reload.
 
-> Validated on **2026-08-06**: macOS build 48, built from `drafto-beta-desktop`, installs and opens a note. The replica is proven.
+> Validated on **2026-08-06**: macOS build 48, built from `drafto-beta-desktop`, installs and opens a note. The replica is proven. A replica re-created elsewhere (as when it moved to `/Volumes/DraftoFactory` under [ADR-0060](../adr/0060-dedicated-factory-build-volume.md)) is a new replica: keep the old root until a beta built from the new one has opened a note.
 
 **Identifying a pre-merge build.** Release notes begin `PRE-MERGE TEST BUILD — issue #N / PR #M (sha)` (prepended before the char trim, so it survives Play's 500-char cap), and the Fastlane post-hook `comment-intest-build.mjs` posts the build number on the card when the lane lands.
 
@@ -391,7 +405,7 @@ A vendor rate-limit (`errorType:"rate_limit"`, with a `waitTime` such as "50 min
 
 `factory:cr-cli-pause-until` is therefore not a way to stop cards holding. Use `FACTORY_CR_CLI=0` for that.
 
-**Where things live** (in the factory checkout, `/Users/jakub/code/drafto-factory`):
+**Where things live** (in the factory checkout, `/Volumes/DraftoFactory/drafto-factory`):
 
 - `logs/factory/cr-cli/<runId>/` — `meta.json` (binary, args, base commit, deadline), `events.ndjson` (the CLI's `--agent` event stream), `stderr.log`, and `exit.json` (`exitCode`, `signal`, `timedOut`, written when the run ends). Reaped after 30 days by the lane's housekeeping, which runs at the top of every `--watch` tick (the only retention rule for these dirs).
 - `worktrees/cr-cli-<issue>-<sha12>` — the detached checkout the CLI reviews. Removed when the run is processed; orphans are reaped by the next tick. A worktree is never reaped while a supervisor for it is still alive (a run dir's `meta.json` names the worktree, and a live process's command line carries that run id), even after its ledger entry was released; if the process table can't be read, every worktree a run dir claims is kept.
@@ -465,7 +479,7 @@ The lane only reviews factory cards. For a PR opened by hand whose head has not 
 
 ```bash
 node scripts/lib/coderabbit-cli.mjs review --pr 637 --repo-root "$PWD" \
-  --state-file /Users/jakub/code/drafto-factory/logs/factory-state.json --timeout-min 30
+  --state-file /Volumes/DraftoFactory/drafto-factory/logs/factory-state.json --timeout-min 30
 # {"pr":637,"headSha":"…","ran":true,"reason":"reviewed","outcome":"ok","coverage":"cli","posted":{"inline":1,…}}
 ```
 
@@ -644,7 +658,7 @@ All in the launchd plist. A bad value warns in the launchd log and falls back to
    (umask 077 && printf 'VERCEL_AUTOMATION_BYPASS_SECRET=%s\n' "$VERCEL_SECRET" > ~/drafto-secrets/vercel-bypass.env)
    unset VERCEL_SECRET
    chmod 600 ~/drafto-secrets/vercel-bypass.env
-   cd ~/code/drafto-factory && node scripts/lib/verify-lane.mjs bypass-check
+   cd /Volumes/DraftoFactory/drafto-factory && node scripts/lib/verify-lane.mjs bypass-check
    ```
 
    `read -rs` keeps the secret out of the shell history and off the screen; paste it and press Enter. `bypass-check` prints `{"ok":true,…}` (exit 0) when the file is a regular file, mode 600 or stricter, with a well-formed `VERCEL_AUTOMATION_BYPASS_SECRET`; otherwise `ok:false` and the `problem` (`missing`, `mode`, `no-key`, `empty`, `malformed`), exit 2. It never prints the value. The report scans every lane's output for the secret and for the bypass header names, and withholds a lane that prints either.
@@ -744,7 +758,7 @@ node scripts/lib/state-cli.mjs factory:verify-reset <n>                    # for
 | Browser runner misbehaving      | Set `FACTORY_BROWSER=0` in the plist and reload. No claude call gets Chrome after that, and a Testing card's browser lane ends as `skipped:browser-off`. To stop a run in flight, kill its `run-claude.mjs` process; its tabs stay open in an orphaned group in Chrome. See "Browser runner (Claude in Chrome)".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Verification stage misbehaving  | Set `FACTORY_VERIFY=0` in the plist and reload. Cards go straight to In Test again. Any card already in Testing is promoted on the next tick, with a report saying verification was switched off. **Rollback drill:** set `FACTORY_VERIFY=0`, wait for Testing to drain (the `--watch` log shows `promote (verification-off)` lines), then check the board column is **empty**. The sweep leaves some cards there: ones with a `factory-pause` or `support` label, a merged or closed PR, or no PR, and any whose move failed. Move those by hand. Only **then** revert the code. Reverting first strands cards: the old code never looks at Testing. See "Pre-In-Test verification (Testing)".                                                                                                                                           |
 | Stuck PR with a wrong commit    | `gh pr close <n> --delete-branch`. Drag the card back to Ready. Factory will re-plan on the next tick.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Plan needs a single tweak       | Comment on the issue with the correction; on the next tick the factory edits the existing plan comment in place (preserves the rest, stamps `<!-- drafto-factory-replan-ack:<id> -->` so the same comment doesn't loop). Drag back to Ready only if you want a full restart. See `docs/features/dark-factory.md` → "The plan comment looks wrong".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Plan needs a single tweak       | Comment on the issue with the correction; on the next tick the factory edits the existing plan comment in place (preserves the rest, stamps `<!-- drafto-factory-replan-ack:<id> -->` so the same comment doesn't loop) and posts one reply per comment you wrote (`<!-- drafto-factory-plan-reply-<id> -->`). Drag back to Ready only if you want a full restart. See `docs/features/dark-factory.md` → "The plan comment looks wrong".                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 ### Automatic pause on a Claude session limit (self-healing)
 
@@ -793,11 +807,11 @@ On 2026-10-05 GitHub cancelled three required checks on #654's PR because it had
 
 Now `--watch` and `--release` sort failing **required** checks into two kinds (`classify_failing_required`). Advisory checks such as CodeRabbit still never count. If branch protection can't be read, the required set is unknown and the fallback would count advisory bots too, so the card simply waits, as before.
 
-- **CI couldn't run.** Every failing required check is `CANCELLED`, and the GitHub Actions job behind each one never got a runner. The job API shows no `runner_name` and no steps, which is exactly how #654's three jobs look.
+- **CI couldn't run.** Every failing required check is `CANCELLED` (or `TIMED_OUT`), and the GitHub Actions job behind each one never judged the code. Either it never got a runner (the job API shows no `runner_name` and no steps, which is exactly how #654's three jobs look), or it ran out of time in a step that can't be the code's fault (`is_ci_infra_step`: checkout, toolchain setup, cache and artifact transfers, the Playwright browser install, the SonarCloud steps). The job's annotation must say it "exceeded the maximum execution time": a job someone cancelled by hand is never re-run. Every job in `ci.yml` has a `timeout-minutes` a few times its usual run, so a hung job ends in minutes instead of GitHub's 6 hours. A test ties `is_ci_infra_step` to the step names in `ci.yml`.
   - Both modes re-run the cancelled jobs with `gh run rerun <run> --failed`. They make at most `FACTORY_CI_RERUN_MAX` re-runs per head SHA (default 2) and spend no fix attempt. They wait until the whole workflow run has finished first, because GitHub refuses to re-run a run that still has jobs going. A stale branch is not updated at this point: the existing BEHIND step does that once the checks are green.
   - When the re-runs are spent, the factory posts one comment (`<!-- drafto-factory-ci-infra:<sha12> -->`) with the `gh run rerun` commands. The card **stays where it is**: Approved, or In Review. The Claude fix agent is never spawned for it. A card held in In Review keeps its worktree slot. During a runner outage nothing can get through CI anyway, but if you need the slot back, re-run the checks or drag the card to Blocked.
   - If the job lookup fails, the tick is skipped and the next one classifies again.
-- **CI is red.** Anything else: `FAILURE`, `TIMED_OUT`, `ERROR`, `ACTION_REQUIRED`, `STARTUP_FAILURE` (often a workflow file the PR itself broke), a job cancelled after it had started (a job-level timeout or a manual cancel), or a cancelled check that isn't an Actions job.
+- **CI is red.** Anything else: `FAILURE`, `ERROR`, `ACTION_REQUIRED`, `STARTUP_FAILURE` (often a workflow file the PR itself broke), a job that timed out (`CANCELLED` or `TIMED_OUT`) in `pnpm install`, the build or the tests (likely a hang in the code; a PR's dependency or lockfile change can hang the install), a job someone cancelled by hand, or a cancelled check that isn't an Actions job.
   - `--watch` runs its fix loop as before. A `noop` pass on red CI now spends an attempt, so a red the agent can't fix ends in **Blocked** instead of looping every tick.
   - `--release` posts one comment (`<!-- drafto-factory-ci-red:<sha12> -->`) listing the failures and moves the card back to **In Review** for the fix loop, the same as an unresolved review thread. It comes back to In Test, and the Approved drag is required again. See [ADR-0041](../adr/0041-factory-ci-red-and-cancelled-checks.md).
 
@@ -899,17 +913,17 @@ The factory runs its **code-writing** stages (`--implement`, `--watch`) at **ult
 
 ## Worktree installs & disk
 
-The factory implements each card in a throwaway git worktree that needs its own `node_modules`. The pnpm store lives on an external volume (`/Volumes/Zewnętrzny/pnpm-store`), so a cold `pnpm install` can't hardlink and cross-device-copies ~2000 packages — on #451 this ran **3.5+ hours** and silently held the implement lock, starving every other card. Two mitigations are built in:
+The factory implements each card in a throwaway git worktree that needs its own `node_modules`. The pnpm store and every factory checkout now share one volume, `/Volumes/DraftoFactory` ([ADR-0060](../adr/0060-dedicated-factory-build-volume.md)), so installs clone from the store. Before that, the store was on the external drive and the checkouts were on the internal disk. A cold `pnpm install` then couldn't clone or hardlink and cross-device-copied ~2000 packages. On #451 this ran **3.5+ hours** and silently held the implement lock, starving every other card. Two mitigations are built in:
 
 - **Clonefile seed.** Before installing, `seed_worktree_node_modules` clones the main checkout's `node_modules` (repo root + `apps/*` + `packages/*`) into the worktree with APFS `cp -c` (O(1), copy-on-write, ~0 bytes). The subsequent install is a fast **offline reconcile** (`pnpm install --frozen-lockfile --offline`), falling back to frozen-online then unfrozen-online for genuine lockfile drift. A cold install now takes seconds.
-- **Bounded install + disk guard.** Every install is wrapped by `run-with-timeout.mjs` and capped at `FACTORY_INSTALL_TIMEOUT_SEC`. Before starting, the factory checks free space and parks the card in **Blocked** with a `disk-low` comment if it's below `FACTORY_MIN_FREE_DISK_GB`.
+- **Bounded install + disk guard.** Every install is wrapped by `run-with-timeout.mjs` and capped at `FACTORY_INSTALL_TIMEOUT_SEC`. Before starting, the factory checks free space on both the build volume and the internal disk behind `$HOME` (TMPDIR, Claude transcripts, simulators). It parks the card in **Blocked** with a `disk-low` comment if the fuller of the two is below `FACTORY_MIN_FREE_DISK_GB`. In Test betas and the verify lane use the same check.
 
-> **Do not delete the beta build roots** (`drafto-beta-mobile`, `drafto-beta-desktop`) when reclaiming space. They live outside `<repoRoot>/worktrees/` and carry no `factory/issue-*` branch, so `worktree-cli.mjs list` never reports them — but a broad `rm -rf` would destroy the desktop fossil replica, which can only be rebuilt by re-cloning from `/Users/jakub/code/drafto` and re-validating with a TestFlight build. Their `node_modules` costs ~0 bytes (clonefile); the space is in **build artefacts**, so prune those instead:
+> **Do not delete the beta build roots** (`drafto-beta-mobile`, `drafto-beta-desktop`) when reclaiming space. They live outside `<repoRoot>/worktrees/` and carry no `factory/issue-*` branch, so `worktree-cli.mjs list` never reports them — but a broad `rm -rf` would destroy the desktop fossil replica, which can only be rebuilt by re-cloning from `/Users/jakub/code/drafto` and re-validating with a TestFlight build. They are not small. On the internal disk, the mobile root held 6.8 GB that no other checkout shared: every install drifts its `node_modules` away from the seed, and `android/app/build` alone was 1.9 GB. Prune the **build artefacts** instead:
 >
 > ```bash
-> rm -rf /Users/jakub/code/drafto-beta-desktop/apps/desktop/macos/build
-> rm -rf /Users/jakub/code/drafto-beta-mobile/apps/mobile/ios/build
-> rm -rf /Users/jakub/code/drafto-beta-mobile/apps/mobile/android/.gradle
+> rm -rf /Volumes/DraftoFactory/drafto-beta-desktop/apps/desktop/macos/build
+> rm -rf /Volumes/DraftoFactory/drafto-beta-mobile/apps/mobile/ios/build
+> rm -rf /Volumes/DraftoFactory/drafto-beta-mobile/apps/mobile/android/.gradle
 > ```
 
 **Env knobs** (set in the launchd plist's `EnvironmentVariables`, alongside `FACTORY_PHASE`):
@@ -920,6 +934,8 @@ The factory implements each card in a throwaway git worktree that needs its own 
 | `FACTORY_MIN_FREE_DISK_GB`    | `3`     | Free-disk floor below which a card is Blocked instead of started. |
 
 **Reclaiming disk:**
+
+Run `git worktree prune` only while `/Volumes/DraftoFactory` is mounted. Without the volume it treats every worktree on it as deleted and drops the registrations of the factory checkout, both build roots and every card worktree.
 
 ```bash
 git worktree prune                       # drop metadata for removed worktrees
@@ -932,7 +948,7 @@ xcrun simctl delete unavailable
 #   rm -rf .claude/worktrees/<name>/node_modules .claude/worktrees/<name>/{apps,packages}/*/node_modules
 ```
 
-**Durable fix (optional):** move the pnpm store onto the internal volume so installs hardlink in seconds even without the clonefile seed — `pnpm config set store-dir ~/Library/pnpm/store && pnpm store prune && pnpm install` at the repo root (needs free internal space first). The clonefile seed then remains a cheap safety net regardless of store location.
+The pnpm store sits on the same volume as the factory's checkouts, so installs clone from it even without the seed. The seed remains a cheap safety net. Interactive worktrees in `~/code` still install across volumes.
 
 ## Related
 

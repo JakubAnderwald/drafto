@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -123,20 +123,47 @@ describe("owner_comments_since (extracted from factory-agent.sh)", () => {
   });
 });
 
-describe("revise_noop_reply (extracted, real bash)", () => {
-  // Runs the real revise_noop_reply against a stubbed comment list. `gh` is a
-  // HARD STUB: the fallback path posts an issue comment, and without the stub a
-  // unit test would post to a live issue. The fetch stub fails its first
-  // `failFirst` calls and counts every call; `sleep` is stubbed out.
-  function runReply({ comments = [], failFirst = 0, pr = "665", marker, kind = "" }) {
+describe("revise_replies_check (extracted, real bash)", () => {
+  // Runs the real revise_replies_check, with the helpers it calls, against a
+  // stubbed comment list and a temporary reply directory. `gh` is a HARD STUB:
+  // this posts issue comments, and without the stub a unit test would post to a
+  // live issue. It echoes a --body-file - body from stdin so the test can read
+  // what was posted. The fetch stub fails its first `failFirst` calls and
+  // counts every call; `sleep` is stubbed out.
+  const scriptsDir = dirname(agentPath);
+  const extract = (name) =>
+    `eval "$(awk '/^${name}\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"`;
+  function runReply({
+    comments = [],
+    failFirst = 0,
+    pr = "665",
+    ids = ["123"],
+    files = {},
+    kind = "",
+  }) {
     const dir = mkdtempSync(join(tmpdir(), "revise-reply-"));
     const fetches = join(dir, "fetches");
+    const replies = join(dir, "replies");
+    mkdirSync(replies);
+    for (const [id, text] of Object.entries(files)) writeFileSync(join(replies, `${id}.md`), text);
+    const markers = JSON.stringify(
+      ids.map((id) => ({ commentId: id, marker: `drafto-factory-revise-reply-${id}` })),
+    );
     try {
       const snippet = `
 set -euo pipefail
-eval "$(awk '/^revise_noop_reply\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
+${extract("revise_replies_check")}
+${extract("revise_fallback_reply")}
+${extract("post_issue_replies")}
+${extract("fetch_comments_retry")}
+${extract("comments_have_marker")}
+reply_dir_for() { printf '%s' ${JSON.stringify(replies)}; }
 log() { echo "[log] $*"; }
-gh() { printf '[gh-stub] %s\\n' "$*"; return 0; }
+gh() {
+  printf '[gh-stub] %s\\n' "$*"
+  if [[ "$*" == *"--body-file -"* ]]; then cat; printf '\\n'; fi
+  return 0
+}
 sleep() { :; }
 fetch_issue_comments() {
   local n
@@ -145,8 +172,9 @@ fetch_issue_comments() {
   if [[ "$n" -le ${failFirst} ]]; then return 1; fi
   printf '%s' ${JSON.stringify(JSON.stringify(comments))}
 }
+SCRIPT_DIR=${JSON.stringify(scriptsDir)}
 LOG_FILE=${JSON.stringify(join(dir, "agent.log"))}
-revise_noop_reply 659 ${JSON.stringify(pr)} ${JSON.stringify(marker)}${kind ? ` ${JSON.stringify(kind)}` : ""}
+revise_replies_check 659 ${JSON.stringify(pr)} ${JSON.stringify(markers)}${kind ? ` ${JSON.stringify(kind)}` : ""}
 `;
       const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
       assert.equal(r.status, 0, `bash failed: ${r.stderr}`);
@@ -157,86 +185,121 @@ revise_noop_reply 659 ${JSON.stringify(pr)} ${JSON.stringify(marker)}${kind ? ` 
           return "";
         }
       };
+      const posted = read(join(dir, "agent.log"));
       return {
         log: r.stdout,
-        posted: read(join(dir, "agent.log")),
+        posted,
+        posts: (posted.match(/\[gh-stub\] issue comment/g) || []).length,
         fetches: Number(read(fetches) || 0),
       };
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   }
-  const reply = (id) => ({ id: 9, body: `🏭 Done.\n\n<!-- drafto-factory-revise-reply-${id} -->` });
-
-  it("posts nothing when the implementer's reply is on the issue", () => {
-    const out = runReply({ comments: [reply(123)], marker: "drafto-factory-revise-reply-123" });
-    assert.match(out.log, /revision reply posted \(drafto-factory-revise-reply-123\)/);
-    assert.equal(out.posted, "");
+  const reply = (id, authorAssociation = "OWNER") => ({
+    id: 9,
+    authorAssociation,
+    body: `🏭 Done.\n\n<!-- drafto-factory-revise-reply-${id} -->`,
   });
 
-  it("posts the fallback, naming the PR, when no reply was left", () => {
-    const out = runReply({ comments: [], marker: "drafto-factory-revise-reply-123" });
-    assert.match(out.log, /no revision reply found for drafto-factory-revise-reply-123/);
+  it("posts each reply the implementer wrote as its own comment, with the marker appended", () => {
+    const out = runReply({
+      ids: ["123", "124"],
+      files: { 123: "🏭 Moved the button.", 124: "🏭 Ran the scenario: 11/11 passed." },
+      kind: "implemented",
+    });
+    assert.equal(out.posts, 2);
+    assert.match(out.posted, /🏭 Moved the button\.\n\n<!-- drafto-factory-revise-reply-123 -->/);
+    assert.match(out.posted, /<!-- drafto-factory-revise-reply-124 -->/);
+    // Posted just now: no fallback, even though the comment list doesn't show them yet.
+    assert.doesNotMatch(out.posted, /no reply was found/);
+  });
+
+  it("posts nothing when every comment's reply is already on the issue", () => {
+    const out = runReply({
+      comments: [reply(123), reply(124)],
+      ids: ["123", "124"],
+      files: { 123: "🏭 Again." },
+    });
+    assert.match(out.log, /revision reply posted \(drafto-factory-revise-reply-124\)/);
+    assert.match(out.log, /the reply to comment 123 is already posted/);
+    assert.equal(out.posts, 0);
+  });
+
+  it("posts a fallback only for the comment that got no reply, linking it", () => {
+    const out = runReply({ comments: [reply(123)], ids: ["123", "124"] });
+    assert.match(out.log, /no revision reply found for drafto-factory-revise-reply-124/);
+    assert.equal(out.posts, 1);
     assert.match(out.posted, /\[gh-stub\] issue comment 659 --repo JakubAnderwald\/drafto/);
     assert.match(out.posted, /No code change was made for that, and no reply was found/);
+    assert.match(
+      out.posted,
+      /\[your comment\]\(https:\/\/github\.com\/JakubAnderwald\/drafto\/issues\/659#issuecomment-124\)/,
+    );
     assert.match(out.posted, /notes in PR #665's description; if not, comment again/);
+    assert.match(out.posted, /<!-- drafto-factory-revise-reply-124 -->/);
     assert.match(out.posted, /<!-- drafto-factory-revise-noop -->/);
+    assert.doesNotMatch(out.posted, /drafto-factory-revise-reply-123 -->/);
   });
 
-  it("does not take another round's reply for this one (reply-1234 is not reply-123)", () => {
-    const out = runReply({ comments: [reply(1234)], marker: "drafto-factory-revise-reply-123" });
+  it("doesn't count a marker in someone else's comment (the repo is public)", () => {
+    const out = runReply({ comments: [reply(123, "NONE")] });
+    assert.equal(out.posts, 1);
     assert.match(out.posted, /no reply was found/);
   });
 
-  it("posts the fallback without a marker to look for, and fetches nothing", () => {
-    const out = runReply({ comments: [reply(123)], marker: "" });
-    assert.match(out.log, /no reply marker for this revision; posting the fallback/);
-    assert.match(out.posted, /<!-- drafto-factory-revise-noop -->/);
-    assert.equal(out.fetches, 0);
+  it("does not take another comment's reply for this one (reply-1234 is not reply-123)", () => {
+    const out = runReply({ comments: [reply(1234)] });
+    assert.equal(out.posts, 1);
+    assert.match(out.posted, /no reply was found/);
+  });
+
+  it("posts nothing, and fetches nothing, when the round was all approval noise", () => {
+    for (const kind of ["noop", "declined", "implemented"]) {
+      const out = runReply({ ids: [], kind });
+      assert.equal(out.posts, 0, kind);
+      assert.equal(out.fetches, 0, kind);
+    }
   });
 
   it("drops the PR sentence when the PR number is unknown", () => {
-    const out = runReply({ comments: [], pr: "", marker: "drafto-factory-revise-reply-123" });
+    const out = runReply({ comments: [], pr: "" });
     assert.match(out.posted, /The preview is unchanged\. Drag to/);
     assert.doesNotMatch(out.posted, /notes in PR/);
   });
 
   it("retries a failed comment fetch before deciding", () => {
-    const out = runReply({
-      comments: [reply(123)],
-      failFirst: 2,
-      marker: "drafto-factory-revise-reply-123",
-    });
-    assert.equal(out.fetches, 3);
+    const out = runReply({ comments: [reply(123)], failFirst: 2 });
+    assert.ok(out.fetches >= 3);
     assert.match(out.log, /revision reply posted/);
-    assert.equal(out.posted, "");
+    assert.equal(out.posts, 0);
   });
 
-  it("fails open: posts the fallback when the comments still can't be read", () => {
+  it("fails open for a no-op: a fallback per unanswered comment when the comments can't be read", () => {
     // A silent round trip is the bug this exists to fix, so an unreadable
-    // thread must not count as "replied".
-    const out = runReply({ failFirst: 99, marker: "drafto-factory-revise-reply-123" });
-    assert.equal(out.fetches, 3);
+    // thread must not count as "replied". A reply posted just now still counts.
+    const out = runReply({ failFirst: 99, ids: ["123", "124"], files: { 123: "🏭 Answer." } });
     assert.match(out.log, /WARNING: could not read #659's comments/);
-    assert.match(out.posted, /<!-- drafto-factory-revise-noop -->/);
+    assert.equal(out.posts, 2);
+    assert.match(out.posted, /🏭 Answer\.\n\n<!-- drafto-factory-revise-reply-123 -->/);
+    assert.match(out.posted, /About \[your comment\][^\n]*#issuecomment-124\)/);
+    assert.doesNotMatch(out.posted, /About \[your comment\][^\n]*#issuecomment-123\)/);
+  });
+
+  it("fails closed for a pushed revision: its new preview and scenario follow anyway", () => {
+    const out = runReply({ failFirst: 99, ids: ["123"], kind: "implemented" });
+    assert.match(out.log, /skipping the fallbacks/);
+    assert.equal(out.posts, 0);
   });
 
   it("a declined revision with its reply posted gets no fallback (ADR-0058)", () => {
-    const out = runReply({
-      comments: [reply(123)],
-      marker: "drafto-factory-revise-reply-123",
-      kind: "declined",
-    });
+    const out = runReply({ comments: [reply(123)], kind: "declined" });
     assert.match(out.log, /revision reply posted/);
-    assert.equal(out.posted, "");
+    assert.equal(out.posts, 0);
   });
 
   it("a declined revision with no reply gets the declined fallback, not the no-op one", () => {
-    const out = runReply({
-      comments: [],
-      marker: "drafto-factory-revise-reply-123",
-      kind: "declined",
-    });
+    const out = runReply({ comments: [], kind: "declined" });
     assert.match(
       out.posted,
       /The factory declined that as outside this issue's plan, and no reply was found/,
@@ -247,6 +310,20 @@ revise_noop_reply 659 ${JSON.stringify(pr)} ${JSON.stringify(marker)}${kind ? ` 
     assert.doesNotMatch(out.posted, /comment a more specific change/);
     assert.doesNotMatch(out.posted, /No code change was made for that/);
     assert.match(out.posted, /<!-- drafto-factory-revise-noop -->/);
+  });
+
+  it("a pushed revision whose comment got no reply gets the revision fallback", () => {
+    const out = runReply({ comments: [], kind: "implemented" });
+    assert.equal(out.posts, 1);
+    assert.match(out.posted, /A revision was pushed for that, but no reply was found/);
+    assert.match(
+      out.posted,
+      /comes back for you to test with a new preview\. PR #665's description records what changed/,
+    );
+    assert.match(out.posted, /<!-- drafto-factory-revise-reply-123 -->/);
+    // The preview did change, so none of the no-change wording applies.
+    assert.doesNotMatch(out.posted, /The preview is unchanged/);
+    assert.doesNotMatch(out.posted, /drafto-factory-revise-noop/);
   });
 });
 
@@ -366,7 +443,7 @@ describe("factory-agent.sh structural wiring (In Test iteration)", () => {
     // the move, the consume and the reply check.
     assert.match(
       noopArm,
-      /revision_return_to_test "\$ISSUE_NUM" "\$ITEM_ID" "\$PRE_HEAD_OID" "\$ITEM_LABELS" \\\n\s*"\$\(echo "\$PRIOR_PR" \| jq -r '\.number \/\/ ""'[^\n]*\n\s*"\$REPLY_MARKER" "\$FEEDBACK_MARK" noop\n/,
+      /revision_return_to_test "\$ISSUE_NUM" "\$ITEM_ID" "\$PRE_HEAD_OID" "\$ITEM_LABELS" \\\n\s*"\$\(echo "\$PRIOR_PR" \| jq -r '\.number \/\/ ""'[^\n]*\n\s*"\$REPLY_MARKERS" "\$FEEDBACK_MARK" noop\n/,
     );
     assert.doesNotMatch(noopArm, /gh issue comment/);
     const back = script.slice(
@@ -377,7 +454,7 @@ describe("factory-agent.sh structural wiring (In Test iteration)", () => {
     assert.match(back, /lastFeedbackAt "\$mark"/);
     assert.match(back, /factory:reset-attempts "\$issue_num"/);
     // The reply check replaced the arm's own fixed comment.
-    assert.match(back, /revise_noop_reply "\$issue_num" "\$pr_num" "\$marker" "\$kind"/);
+    assert.match(back, /revise_replies_check "\$issue_num" "\$pr_num" "\$markers" "\$kind"/);
   });
 
   // --implement's own arms; other stages have blocked) arms of their own.
@@ -401,7 +478,7 @@ describe("factory-agent.sh structural wiring (In Test iteration)", () => {
       arm,
       /if \[\[ "\$IS_REVISION" -eq 1 && "\$PRE_HEAD_KNOWN" -eq 1 && -n "\$PRE_HEAD_OID" \\\n\s*&& "\$DECLINE_SHOWN_SHA" == "\$PRE_HEAD_OID" && "\$DECLINE_NOW_SHA" == "\$PRE_HEAD_OID" \]\] \\\n\s*&& worktree_untouched "\$WT_PATH" "\$PRE_HEAD_OID"; then\n\s*revision_return_to_test /,
     );
-    assert.match(arm, /"\$REPLY_MARKER" "\$FEEDBACK_MARK" declined\n/);
+    assert.match(arm, /"\$REPLY_MARKERS" "\$FEEDBACK_MARK" declined\n/);
     // Anything else parks in Blocked, as action=blocked does.
     assert.match(arm, /else\n\s*implement_park_blocked "\$ITEM_ID" "\$ISSUE_NUM" "\$SLOT" \\/);
   });
@@ -422,23 +499,48 @@ describe("factory-agent.sh structural wiring (In Test iteration)", () => {
     assert.match(park, /worktree-cli\.mjs" remove --issue "\$issue_num"/);
   });
 
-  it("keys the revision reply marker on the newest feedback comment and hands it to the bundle", () => {
+  it("keys one reply marker on each feedback comment that isn't noise and hands them to the bundle", () => {
     const start = script.indexOf('    REVISION_COMMENTS="[]"');
     assert.ok(start !== -1, "could not find the revision-feedback block");
     const block = script.slice(start, script.indexOf("    # Acquire a slot", start));
-    // Reset per issue, so one card's marker can't leak into the next card's run.
-    assert.match(block, /REPLY_MARKER=""\n/);
-    assert.match(block, /sort_by\(\.createdAt\) \| \.\[-1\]\.id/);
-    assert.match(block, /REPLY_MARKER="drafto-factory-revise-reply-\$REPLY_ID"/);
+    // Reset per issue, so one card's markers can't leak into the next card's run.
+    assert.match(block, /REPLY_MARKERS="\[\]"\n/);
+    assert.match(
+      block,
+      /REPLY_MARKERS=\$\(reply_markers_for "\$REVISION_COMMENTS" "drafto-factory-revise-reply-"\)/,
+    );
+    // reply_markers_for itself (noise filtering, odd bodies) is covered in
+    // factory-agent-plan-replies.test.mjs.
     assert.match(
       script,
-      /build_implement_bundle "\$ISSUE_RECORD" "\$PLAN_COMMENT_JSON" "\$PRIOR_PR" "\$ATTEMPTS" "\$REVISION_COMMENTS" "\$COMMENTS_JSON" "\$REPLY_MARKER"\)/,
+      /build_implement_bundle "\$ISSUE_RECORD" "\$PLAN_COMMENT_JSON" "\$PRIOR_PR" "\$ATTEMPTS" "\$REVISION_COMMENTS" "\$COMMENTS_JSON" "\$REPLY_MARKERS" "\$\(reply_dir_for "\$ISSUE_NUM"\)"\)/,
     );
-    assert.match(script, /--arg replyMarker "\$reply_marker"/);
+    assert.match(script, /--argjson replyMarkers "\$reply_markers"/);
   });
 
-  it("the revising notice says non-code feedback gets a reply on the issue", () => {
-    assert.match(script, /Anything else, such as a question or a \\\ntest run, gets a reply here/);
+  it("gives the implementer an empty reply directory before its run", () => {
+    const reset = script.indexOf(
+      '    reset_reply_dir "$ISSUE_NUM"\n    log "Invoking claude for #$ISSUE_NUM (--implement',
+    );
+    assert.ok(reset !== -1, "reset_reply_dir must come right before the implement run");
+  });
+
+  it("checks a pushed revision's replies too, one per feedback comment", () => {
+    // The implemented arm comes before the noop arm that implementArm starts from.
+    const from = script.indexOf("revision pushed → In Review");
+    assert.ok(from !== -1, "could not find the revision-pushed branch");
+    const arm = script.slice(from, script.indexOf("\n        ;;\n", from));
+    assert.match(
+      arm,
+      /revision pushed → In Review[^\n]*\n[\s\S]*?revise_replies_check "\$ISSUE_NUM" \\\n[^\n]*\n\s*"\$REPLY_MARKERS" implemented\n/,
+    );
+  });
+
+  it("the revising notice says each comment gets its own reply on the issue", () => {
+    assert.match(
+      script,
+      /Each comment that asks for something \\\ngets its own reply here, saying what changed or answering it/,
+    );
   });
 
   it("advances the feedback high-water mark only after consuming comments", () => {
