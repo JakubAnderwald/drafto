@@ -416,11 +416,13 @@ gh() {
       }
     });
 
-    it("a job that timed out in an action's cleanup → infra", () => {
+    it("a job that timed out in an action's cleanup or its container start or stop → infra", () => {
       for (const step of [
         "Post Run actions/checkout@v4",
         "Post Run pnpm/action-setup@v4",
         "Complete job",
+        "Initialize containers",
+        "Stop containers",
       ]) {
         const jobs = { ...NEVER_STARTED, [E2E]: stoppedIn(step) };
         assert.equal(classify(PR_657, jobs, { [E2E]: TIMED_OUT }).verdict, "infra", step);
@@ -558,6 +560,27 @@ EOF`,
   });
 
   describe(".github/workflows/ci.yml", () => {
+    // The E2E job runs in Playwright's image, which carries one Playwright
+    // version's browsers: a @playwright/test bump must bump the tag with it, or
+    // the tests look for browsers the image doesn't have.
+    it("runs E2E in the Playwright image of the locked @playwright/test version", () => {
+      const root = resolve(dirname(scriptPath), "..");
+      const ci = readFileSync(resolve(root, ".github", "workflows", "ci.yml"), "utf8");
+      const lock = readFileSync(resolve(root, "pnpm-lock.yaml"), "utf8");
+      const locked = [
+        ...new Set([...lock.matchAll(/@playwright\/test@(\d+\.\d+\.\d+)/g)].map((m) => m[1])),
+      ];
+      assert.equal(locked.length, 1, `one locked @playwright/test version, found ${locked}`);
+      const e2e = ci.slice(ci.indexOf("\n  e2e-tests:\n"), ci.indexOf("\n  mobile-checks:\n"));
+      assert.match(
+        e2e,
+        new RegExp(
+          `image: mcr\\.microsoft\\.com/playwright:v${locked[0].replace(/\./g, "\\.")}-noble\\n`,
+        ),
+      );
+      assert.doesNotMatch(e2e, /run: .*playwright install/, "the image already has the browsers");
+    });
+
     // Without a timeout GitHub waits 6 hours, so a hung job holds the PR's
     // checks (and the factory's card) that long.
     it("gives every job a timeout", () => {
