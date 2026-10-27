@@ -1,9 +1,10 @@
 import { expect, test } from "@playwright/test";
 
 // What React logs when hydration fails or a boundary falls back to a client render: production
-// builds (CI's `pnpm start`) print the minified codes, #418 for a mismatch and #419 for a server
-// render error, and `pnpm dev` prints the full text ("Hydration failed because ...").
-const HYDRATION_ERROR = /#41[89]\b|hydrat|Switched to client rendering/i;
+// builds (CI's `pnpm start`) print the minified codes, #418 for a mismatch, #419 for a server
+// render error, #422 and #423 for a hydration error recovered by a client render, and React 18's
+// #425 for a text mismatch. `pnpm dev` prints the full text ("Hydration failed because ...").
+const HYDRATION_ERROR = /#(?:418|419|422|423|425)\b|hydrat|Switched to client rendering/i;
 
 interface McpConfig {
   mcpServers: { drafto: { url: string } };
