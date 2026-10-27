@@ -1,5 +1,14 @@
 import { expect, test } from "@playwright/test";
 
+// What React logs when hydration fails or a boundary falls back to a client render: production
+// builds (CI's `pnpm start`) print the minified codes, #418 for a mismatch and #419 for a server
+// render error, and `pnpm dev` prints the full text ("Hydration failed because ...").
+const HYDRATION_ERROR = /#41[89]\b|hydrat|Switched to client rendering/i;
+
+interface McpConfig {
+  mcpServers: { drafto: { url: string } };
+}
+
 /**
  * The Settings page: a server wrapper that reads the running build's commit and renders the
  * client settings UI. Runs signed in as the shared E2E user (the chromium project's storage
@@ -20,6 +29,40 @@ test("settings page renders, with a well-formed build line when the commit is kn
   if ((await buildLine.count()) > 0) {
     await expect(buildLine).toHaveText(/^Build [0-9a-f]{7}$/);
   }
+});
+
+/**
+ * The "Connect to Claude" snippet points at the origin the page is served from (#748). The
+ * server renders drafto.eu's origin and the browser hydrates that before switching to its own,
+ * so the page loads without a hydration error on localhost and on previews too.
+ */
+test("the MCP snippet shows the page's own origin, and the page hydrates without errors", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  page.on("pageerror", (error) => errors.push(error.message));
+
+  await page.goto("/settings");
+
+  // Before hydration the snippet still shows drafto.eu, so wait for the switch rather than
+  // reading it once.
+  const expectedUrl = `${new URL(page.url()).origin}/api/mcp`;
+  const snippet = page.locator("code", { hasText: "mcpServers" });
+  await expect(snippet).toContainText(`"url": "${expectedUrl}"`, { timeout: 10000 });
+  const config = JSON.parse((await snippet.textContent()) ?? "") as McpConfig;
+  expect(config.mcpServers.drafto.url).toBe(expectedUrl);
+
+  // React reports a failed hydration when it commits. Let the page finish loading and the main
+  // thread go idle so that has happened before checking.
+  await page.waitForLoadState("load");
+  await page.evaluate(
+    () => new Promise<void>((resolve) => requestIdleCallback(() => resolve(), { timeout: 5000 })),
+  );
+
+  expect(errors.filter((text) => HYDRATION_ERROR.test(text))).toEqual([]);
 });
 
 /**
