@@ -91,3 +91,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0057](./0057-new-migrations-sort-after-base.md)                     | New Migrations Must Sort After the Base Branch         | Accepted           | 2026-10-25 |
 | [0058](./0058-revision-blocks-return-to-test.md)                     | Declined Revision Feedback Returns the Card to In Test | Accepted           | 2026-10-25 |
 | [0059](./0059-keep-login-page-out-of-search-index.md)                | Keep `/login` Out of the Search Index                  | Accepted           | 2026-10-26 |
+| [0060](./0060-dedicated-factory-build-volume.md)                     | A Dedicated ASCII Build Volume for the Factory         | Accepted           | 2026-10-27 |

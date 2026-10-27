@@ -96,9 +96,9 @@ for _knob in SUPPORT_CLAUDE_TIMEOUT_SEC:7200 DEPENDABOT_CLAUDE_TIMEOUT_SEC:3600 
   fi
 done
 unset _knob _name _default
-# Where the support / Dependabot sessions create their worktrees. Fixed paths,
-# so the runner can remove exactly that worktree once the work is merged.
-SUPPORT_WORKTREE_PARENT="${SUPPORT_WORKTREE_PARENT:-$HOME/code}"
+# Where the support / Dependabot sessions create their worktrees
+# (SUPPORT_WORKTREE_PARENT) is resolved below, once the build-root lib that owns
+# BETA_BUILDS_VOLUME_DIR is sourced.
 
 # In `-p` mode claude kills background tasks 600 s after its final turn. Wait
 # without a ceiling instead — every call below is bounded by run-claude.mjs's
@@ -168,6 +168,20 @@ trap cleanup EXIT
 # shellcheck source=lib/beta-build-root.sh
 source "$SCRIPT_DIR/lib/beta-build-root.sh"
 
+# Session worktrees go on the build volume when it is mounted, beside the pnpm
+# store, so their `pnpm install` clones packages instead of copying ~3 GB across
+# volumes onto the internal disk (ADR-0060); else beside the checkouts in ~/code.
+# One fixed path per item, so the runner can remove exactly that worktree once
+# the work is merged — session_worktree_path reuses one an earlier night left
+# under the other parent.
+if [[ -z "${SUPPORT_WORKTREE_PARENT:-}" ]]; then
+  if build_volume_mounted; then
+    SUPPORT_WORKTREE_PARENT="$BETA_BUILDS_VOLUME_DIR/worktrees"
+  else
+    SUPPORT_WORKTREE_PARENT="$HOME/code"
+  fi
+fi
+
 # ── Phase 1: Gather items ──
 START_TIME=$(date +%s)
 log "=== Nightly support run started ==="
@@ -220,17 +234,30 @@ else
   log "WARNING: could not list merged support fixes awaiting a beta; Phase 4 will retry"
 fi
 
-if [[ "$DEPENDABOT_COUNT" -eq 0 && "$SUPPORT_COUNT" -eq 0 && "$PENDING_COUNT" -eq 0 ]]; then
-  log "No items to process."
-  log "=== Nightly support run completed (no items) ==="
-  exit 0
-fi
+# Whether <worktree> holds work that exists nowhere else: any change git sees,
+# new files included, or commits on no remote-tracking ref (unpushed). The one
+# exception is output a tool writes into every session that runs the web E2E
+# suite: `next dev` generates apps/web/AGENTS.md and apps/web/CLAUDE.md, and
+# counting those would keep every such worktree forever. Pushed commits stay on
+# their remote-tracking ref, since nothing here prunes them, so a fix /push
+# pushed before its squash-merge counts as pushed. Unreadable counts as work.
+session_worktree_has_local_work() {
+  local wt="$1" dirty unpushed
+  dirty=$(git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null) || return 0
+  dirty=$(grep -vxF -e '?? apps/web/AGENTS.md' -e '?? apps/web/CLAUDE.md' <<<"$dirty" || true)
+  [[ -z "$dirty" ]] || return 0
+  unpushed=$(git -C "$wt" rev-list --count HEAD --not --remotes 2>/dev/null) || return 0
+  [[ "$unpushed" == "0" ]] || return 0
+  return 1
+}
 
 # Remove a session's fixed-path worktree once its work has landed. Only that
 # exact path, and only when git has it registered as a worktree of this repo —
-# never a directory that merely happens to exist there. A fix/support-<n>
-# branch the session created is dropped with it (the PR is merged; the remote
-# keeps the history). $1 path, $2 branch to delete with it (optional).
+# never a directory that merely happens to exist there — and never while it
+# holds local work (an issue closed by hand, or a PR merged mid-session, may
+# leave an unfinished fix there). A fix/support-<n> branch the session created
+# is dropped with it (the PR is merged; the remote keeps the history).
+# $1 path, $2 branch to delete with it (optional).
 remove_session_worktree() {
   local wt="$1" branch="${2:-}" canon listing match wt_branch
   # Nothing on disk → nothing to remove. git may list the path as given or
@@ -244,6 +271,10 @@ remove_session_worktree() {
   else
     return 0
   fi
+  if session_worktree_has_local_work "$match"; then
+    log "Keeping worktree $match: it holds uncommitted changes or unpushed commits"
+    return 0
+  fi
   wt_branch=$(awk -v wt="worktree $match" '$0 == wt {f=1; next} f && /^branch / {sub(/^branch refs\/heads\//, ""); print; exit} f && /^$/ {exit}' <<<"$listing")
   if git -C "$REPO_ROOT" worktree remove --force "$match" >>"$LOG_FILE" 2>&1; then
     log "Removed worktree $match"
@@ -254,6 +285,72 @@ remove_session_worktree() {
     log "WARNING: could not remove worktree $wt; leaving it for the operator"
   fi
 }
+
+# Every worktree path git has registered for this repo, one per line, as git
+# records it (symlink-resolved). Includes ones whose directory is gone, e.g. on
+# a build volume that isn't mounted right now.
+registered_worktree_paths() {
+  git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' || true
+}
+
+# The path a session should use for the worktree named <basename>: one git
+# already has registered under that name, in any parent — SUPPORT_WORKTREE_PARENT
+# follows the build volume, so an earlier night may have used the other one, and
+# a second `worktree add` of the same branch would fail — else a fresh path under
+# SUPPORT_WORKTREE_PARENT. Prints the path; returns 1 when it is registered but
+# its directory is gone (its volume isn't mounted). The branch is still checked
+# out there as far as git knows, so the caller skips the item until it is back.
+session_worktree_path() {
+  local name="$1" wt
+  while IFS= read -r wt; do
+    if [[ "${wt##*/}" == "$name" ]]; then
+      printf '%s\n' "$wt"
+      [[ -d "$wt" ]]
+      return
+    fi
+  done < <(registered_worktree_paths)
+  printf '%s/%s\n' "$SUPPORT_WORKTREE_PARENT" "$name"
+}
+
+# Remove the support / Dependabot worktrees whose item is finished. The removals
+# in Phases 2 and 3 only run for an item processed tonight, and a finished item
+# usually drops out of tonight's queue first: closed PRs aren't listed, and PRs
+# labeled needs-review or carrying the nightly marker are skipped. Their
+# worktrees used to stay forever (drafto-dependabot-746: 3.5 GB of internal
+# disk). Runs before the no-items exit, since a quiet night is exactly when the
+# queue no longer names them. Matched by basename in any parent. An unreadable
+# state or a directory that is gone keeps the worktree, and so does local work
+# (remove_session_worktree checks). Never
+# `git worktree prune` here: it would also drop the registrations of worktrees on
+# a build volume that isn't mounted right now.
+sweep_session_worktrees() {
+  local wt name num state branch
+  while IFS= read -r wt; do
+    name="${wt##*/}"
+    case "$name" in
+      drafto-dependabot-*) num="${name#drafto-dependabot-}"; branch="" ;;
+      drafto-support-*) num="${name#drafto-support-}"; branch="fix/support-$num" ;;
+      *) continue ;;
+    esac
+    [[ "$num" =~ ^[0-9]+$ && -d "$wt" ]] || continue
+    if [[ -z "$branch" ]]; then
+      state=$(gh pr view "$num" --repo JakubAnderwald/drafto --json state --jq .state 2>/dev/null || echo "")
+      [[ "$state" =~ ^(MERGED|CLOSED)$ ]] || continue
+    else
+      state=$(gh issue view "$num" --repo JakubAnderwald/drafto --json state --jq .state 2>/dev/null || echo "")
+      [[ "$state" == "CLOSED" ]] || continue
+    fi
+    log "Sweeping $wt: #$num is $state"
+    remove_session_worktree "$wt" "$branch"
+  done < <(registered_worktree_paths)
+}
+sweep_session_worktrees
+
+if [[ "$DEPENDABOT_COUNT" -eq 0 && "$SUPPORT_COUNT" -eq 0 && "$PENDING_COUNT" -eq 0 ]]; then
+  log "No items to process."
+  log "=== Nightly support run completed (no items) ==="
+  exit 0
+fi
 
 # ── Phase 2: Process Dependabot PRs (one session each, 2h cap) ──
 PHASE2_DEADLINE=$(( $(date +%s) + 7200 ))  # 2 hours max for all Dependabot PRs
@@ -275,7 +372,10 @@ for PR_NUMBER in $(echo "$DEPENDABOT_PRS" | jq -r '.[].number'); do
     continue
   fi
   log "--- Processing Dependabot PR #$PR_NUMBER (${REMAINING}s remaining, poll timeout ${POLL_TIMEOUT}s) ---"
-  DEPENDABOT_WT="$SUPPORT_WORKTREE_PARENT/drafto-dependabot-${PR_NUMBER}"
+  if ! DEPENDABOT_WT=$(session_worktree_path "drafto-dependabot-${PR_NUMBER}"); then
+    log "PR #$PR_NUMBER: its worktree $DEPENDABOT_WT is on a volume that isn't mounted; retry next night."
+    continue
+  fi
   # Read both prompts straight from the heredoc, never through $(cat <<PROMPT).
   # macOS /bin/bash 3.2 pairs up the apostrophes in a heredoc inside $(…), and
   # here that ran "to" from "Safe to merge" as a command (exit 127, #691).
@@ -401,6 +501,13 @@ for ((IDX=0; IDX<SUPPORT_COUNT; IDX++)); do
 
   log "--- Processing support issue #$ISSUE_NUMBER (gate passed) ---"
 
+  # Before the "working on it" ping, so a reporter never hears that while the
+  # item is then skipped for the night.
+  if ! SUPPORT_WT=$(session_worktree_path "drafto-support-${ISSUE_NUMBER}"); then
+    log "Issue #$ISSUE_NUMBER: its worktree $SUPPORT_WT is on a volume that isn't mounted; retry next night."
+    continue
+  fi
+
   # Phase G progress comment (a): "Working on it now" before Claude starts.
   # Idempotent — skip if a previous nightly run already posted one (or if the
   # earlier "Hit a blocker" comment is present, in which case we'd be
@@ -413,7 +520,6 @@ for ((IDX=0; IDX<SUPPORT_COUNT; IDX++)); do
       2>/dev/null || log "WARNING: failed to post 'working on it' comment on issue #$ISSUE_NUMBER"
   fi
 
-  SUPPORT_WT="$SUPPORT_WORKTREE_PARENT/drafto-support-${ISSUE_NUMBER}"
   SUPPORT_BRANCH="fix/support-${ISSUE_NUMBER}"
   IFS= read -r -d '' SUPPORT_PROMPT <<PROMPT || true
 You are an automated nightly job. Process ONLY support issue #${ISSUE_NUMBER} for JakubAnderwald/drafto.
@@ -593,7 +699,7 @@ ship_support_betas() {
   # at 00:03, and the volume may have been (un)mounted since — the roots must be
   # the very paths the factory's plist pins, or the shared lock means nothing.
   if [[ -z "${DRAFTO_BETA_MOBILE_ROOT:-}" || -z "${DRAFTO_DESKTOP_BUILD_ROOT:-}" ]] \
-      && [[ ! -d "$BETA_BUILDS_VOLUME_DIR" ]]; then
+      && ! build_volume_mounted; then
     log "Phase 4: build volume $BETA_BUILDS_VOLUME_DIR is not mounted; retry next night"
     return 0
   fi

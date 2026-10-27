@@ -1044,8 +1044,15 @@ export async function runStart(opts, deps) {
     return refuse("hold-cap-near", { minutesLeft: Math.floor(holdLeftMin) });
   const pressure = await deps.memoryPressure();
   if (Number.isInteger(pressure) && pressure >= 2) return refuse("memory", { pressure });
-  const freeGb = await deps.freeDiskGb(repoRoot);
-  if (Number.isInteger(freeGb) && freeGb < knobs.minFreeDiskGb) return refuse("disk", { freeGb });
+  // The fuller of the build volume behind the repo root (the run's worktree) and
+  // the internal disk behind $HOME (TMPDIR, Claude transcripts). They are
+  // different volumes on the Mac mini since ADR-0060.
+  const home = deps.env?.HOME || os.homedir();
+  const freeGbs = (await Promise.all([repoRoot, home].map((dir) => deps.freeDiskGb(dir)))).filter(
+    Number.isInteger,
+  );
+  const freeGb = freeGbs.length > 0 ? Math.min(...freeGbs) : null;
+  if (freeGb !== null && freeGb < knobs.minFreeDiskGb) return refuse("disk", { freeGb });
   if (!deps.fs.existsSync(promptFile)) return refuse("prompt-missing");
   const bins = resolveBins({ env: deps.env, isExecutable: deps.isExecutable });
   for (const name of ["claude", "pnpm", "curl", "perl", "nice"]) {
