@@ -259,6 +259,9 @@ describe("pullChanges guards against an empty RLS result", () => {
     return { id, remoteId, _status: "synced" };
   }
 
+  /** Every `select()` the pull made, as `<table>:<columns>`. */
+  let selects: string[] = [];
+
   /**
    * Answers `select("id")` (deletion detection) with the given server IDs and
    * the incremental `select("*")...gt()` pull with no changed rows.
@@ -266,6 +269,7 @@ describe("pullChanges guards against an empty RLS result", () => {
   function mockServerIds(ids: Partial<Record<SyncTable, string[]>>) {
     mockSupabaseFrom.mockImplementation((table: SyncTable) => ({
       select: (columns: string) => {
+        selects.push(`${table}:${columns}`);
         const data = columns === "id" ? (ids[table] ?? []).map((id) => ({ id })) : [];
         const result = Promise.resolve({ data, error: null });
         return Object.assign(result, { gt: () => result });
@@ -298,6 +302,7 @@ describe("pullChanges guards against an empty RLS result", () => {
     jest.clearAllMocks();
     mockSynchronize.mockReset();
     resetSyncState();
+    selects = [];
     mockGetSession.mockResolvedValue({ data: { session: SESSION }, error: null });
     mockSupabaseRpc.mockResolvedValue({ data: "2025-06-10T00:00:00.000Z", error: null });
     warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
@@ -456,18 +461,24 @@ describe("pullChanges guards against an empty RLS result", () => {
       expect(warnSpy).not.toHaveBeenCalled();
     });
 
-    it("flags nothing on a real first pull (lastPulledAt: null) either", async () => {
-      // Desktop's `isFirstSync` checks `=== undefined`, so a real first pull runs
-      // deletion detection too; the empty-server-ID guard is what keeps it safe.
-      mockServerIds({});
+    it.each([null, undefined])(
+      "skips deletion detection on a first pull (lastPulledAt: %p)",
+      async (lastPulledAt) => {
+        // WatermelonDB passes null when it has never pulled. A first pull makes
+        // none of the three ID queries and never reads the local tables, so the
+        // synced nb-2 the server doesn't list is not flagged.
+        mockServerIds({ notebooks: ["nb-1"] });
+        const db = makeDb({ notebooks: [synced("nb-1"), synced("nb-2")] });
+        const getSpy = jest.spyOn(db, "get");
 
-      const result = await pull(makeDb({ notebooks: [synced("nb-1")], notes: [synced("n-1")] }), {
-        lastPulledAt: null,
-      });
+        const result = await pull(db, { lastPulledAt });
 
-      expect(result.changes.notebooks.deleted).toEqual([]);
-      expect(result.changes.notes.deleted).toEqual([]);
-    });
+        expect(selects.filter((select) => select.endsWith(":id"))).toEqual([]);
+        expect(selects.sort()).toEqual(["attachments:*", "notebooks:*", "notes:*"]);
+        expect(getSpy).not.toHaveBeenCalled();
+        expect(result.changes.notebooks.deleted).toEqual([]);
+      },
+    );
 
     it("leaves real WatermelonDB records alone until detection is deliberately switched on", async () => {
       // Pins the dormant behaviour documented on detectServerDeletions: models

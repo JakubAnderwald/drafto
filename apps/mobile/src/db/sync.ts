@@ -73,11 +73,14 @@ function mapAttachmentRow(row: AttachmentRow): SyncRecord {
 async function fetchTable<T>(
   table: "notebooks" | "notes" | "attachments",
   timestampCol: string,
-  lastPulledAt: number | undefined,
+  lastPulledAt: number | null | undefined,
   mapFn: (row: T) => SyncRecord,
 ): Promise<SyncRecord[]> {
   let query = supabase.from(table).select("*");
-  if (lastPulledAt !== undefined) {
+  // A first sync applies no cursor; the unpaged query is still capped at the
+  // API's max_rows. WatermelonDB passes `lastPulledAt: null`, not `undefined`
+  // as its type suggests, when this database has never pulled.
+  if (lastPulledAt != null) {
     query = query.gt(timestampCol, toISO(lastPulledAt));
   }
   const { data, error } = await query;
@@ -85,13 +88,17 @@ async function fetchTable<T>(
   return (data as T[]).map(mapFn);
 }
 
-function splitChanges(records: SyncRecord[], isFirstSync: boolean): SyncTableChanges {
-  if (isFirstSync) {
-    return { created: records, updated: [], deleted: [] };
-  }
-  // On incremental sync, all returned records are treated as updated.
-  // WatermelonDB handles the case where an "updated" record doesn't
-  // exist locally — it creates it automatically.
+/**
+ * Every pulled record goes to WatermelonDB as `updated`, on a first sync too,
+ * and runSync passes `sendCreatedAsUpdated: true` to synchronize(). An
+ * incremental pull can't tell a row created on another device from one this
+ * device already has, so WatermelonDB creates any `updated` record missing
+ * locally; the flag stops it logging "[Sync] Server wants client to update
+ * record …, but it doesn't exist locally" for each one. While the flag is on,
+ * WatermelonDB logs an error whenever a pull sends `created` records, so
+ * `created` stays empty.
+ */
+function splitChanges(records: SyncRecord[]): SyncTableChanges {
   return { created: [], updated: records, deleted: [] };
 }
 
@@ -107,9 +114,11 @@ async function getServerTimestamp(): Promise<number> {
   return Date.now() - 5000;
 }
 
-async function pullChanges({ lastPulledAt }: { lastPulledAt?: number }): Promise<SyncPullResult> {
-  const isFirstSync = lastPulledAt === undefined;
-
+async function pullChanges({
+  lastPulledAt,
+}: {
+  lastPulledAt?: number | null;
+}): Promise<SyncPullResult> {
   const [notebooks, notes, attachments, serverTimestamp] = await Promise.all([
     fetchTable<NotebookRow>("notebooks", "updated_at", lastPulledAt, mapNotebookRow),
     fetchTable<NoteRow>("notes", "updated_at", lastPulledAt, mapNoteRow),
@@ -119,9 +128,9 @@ async function pullChanges({ lastPulledAt }: { lastPulledAt?: number }): Promise
 
   return {
     changes: {
-      notebooks: splitChanges(notebooks, isFirstSync),
-      notes: splitChanges(notes, isFirstSync),
-      attachments: splitChanges(attachments, isFirstSync),
+      notebooks: splitChanges(notebooks),
+      notes: splitChanges(notes),
+      attachments: splitChanges(attachments),
     },
     timestamp: serverTimestamp,
   };
@@ -286,6 +295,8 @@ async function runSync(db: WMDatabase): Promise<SyncResult> {
       pullChanges,
       pushChanges,
       migrationsEnabledAtVersion: 1,
+      // Pulls send every record as `updated`; see splitChanges.
+      sendCreatedAsUpdated: true,
       conflictResolver: (table, local, _remote, resolved) => {
         // Keep WatermelonDB's resolution (remote values, except for columns
         // this device changed since its last push), and count it only when it
