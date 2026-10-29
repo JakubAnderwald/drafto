@@ -232,7 +232,7 @@ A dated record of actual phase changes so the current operating phase is auditab
 
 1. It only ever acts on a card a human (or an allowlisted reporter) moved to **Approved** — the Approved drag _is_ the merge-authorisation gate (ADR-0026); the factory never moves a card to Approved itself.
 2. It refuses to merge a PR touching `supabase/migrations/**` until `migration-approved` is on the PR — it leaves the card in Approved and comments once (`<!-- drafto-factory-migration-gate -->`).
-3. It won't merge unless CI is green and the branch is conflict-free. A conflict leaves the card in Approved for you (a transient merge error is retried next tick, comment `<!-- drafto-factory-merge-failed -->`). Red CI moves the card back to **In Review** for the fix loop, and required checks GitHub cancelled before any runner picked them up are re-run first. See "Red or cancelled CI on a factory PR" below.
+3. It won't merge unless CI is green and the branch is conflict-free (a transient merge error is retried next tick, comment `<!-- drafto-factory-merge-failed -->`). Red CI moves the card back to **In Review** for the fix loop, and required checks GitHub cancelled before any runner picked them up are re-run first. See "Red or cancelled CI on a factory PR" below. A conflict with `main` moves the card back to **In Review** too, checked before the CI gate because a conflicting head gets no CI. See "A PR that conflicts with main" below.
 
 **"CI is green" means the branch-protection _required_ contexts only** — both `--watch` (In Review → In Test) and `--release` (the merge gate) count only failing/pending checks whose context is in `required_status_checks`, fetched once per run (`fetch_required_contexts` → `pr_failing_required` / `pr_pending_required`). An advisory bot like **CodeRabbit** is never a required context, so its red — including its **"Review rate limited"** status when it can't review — never triggers the `--watch` fix loop, blocks the In Test advance, or blocks the merge. Advisory reds are instead surfaced in the In Test hand-off comment for the operator to glance at before Approving. **A review _comment_ is a different thing from a review _check_:** the check status stays advisory and never gates anything, but an unresolved review **thread** is a hard block on the merge (see `--release` below). (Before this, a rate-limited CodeRabbit check would loop `--watch`'s fix path to exhaustion and park the card in Blocked — the #463 failure of 2026-07-22.) When branch protection is unreadable/empty the helpers fall back to counting all checks, so an unknown required set can't silently pass a red PR.
 
@@ -816,6 +816,21 @@ Now `--watch` and `--release` sort failing **required** checks into two kinds (`
   - `--release` posts one comment (`<!-- drafto-factory-ci-red:<sha12> -->`) listing the failures and moves the card back to **In Review** for the fix loop, the same as an unresolved review thread. It comes back to In Test, and the Approved drag is required again. See [ADR-0041](../adr/0041-factory-ci-red-and-cancelled-checks.md).
 
 Both markers are keyed on the head SHA, so a new push re-arms them. The re-run budget is stored per issue as `ciRerun` (`"<sha>:<count>"`) in the **live** state file in `drafto-factory`. To grant a fresh budget on the same commit, run `node scripts/lib/state-cli.mjs factory:set-issue-field <n> ciRerun "" --state-file logs/factory-state.json` there.
+
+### A PR that conflicts with main (self-healing)
+
+On 2026-10-27 #688 was approved while its PR #755 conflicted with `main`: it and #757 had both added an ADR numbered 0059. `--release` commented once and left the card in Approved, where it kept its worktree slot. With the other slot held by an In Test card, #718 couldn't start for two days. Nothing in the factory merged `main` into a PR branch, and the comment's advice, to comment a change request, reached no mode.
+
+Now a conflict is handed back to the fix loop like red CI ([ADR-0061](../adr/0061-factory-resolves-merge-conflicts.md)):
+
+- **Approved and In Test.** `--release`, and the In Test sweep when no feedback is pending, post one comment per head SHA (`<!-- drafto-factory-conflict:<sha12> -->`) and move the card back to **In Review**. `--release` checks this before the CI gate, because GitHub runs no `pull_request` CI on a conflicting head.
+- **In Review.** `--watch` runs a conflict pass before any CI wait. Bash merges `origin/main` into the branch (`worktree-cli.mjs merge-main`). A failed fetch of main skips the tick at no cost.
+  - **Clean merge.** Bash pushes it, with no Claude run and no attempt spent.
+  - **Conflicts, or two ADRs sharing a number.** The watch agent resolves them, renumbering the PR's own ADR, and commits the merge without pushing. A conflicted `pnpm-lock.yaml` is regenerated with `pnpm install`, never hand-edited. Bash then checks the commit with `merge-check`: merge committed with nothing left uncommitted, main in `HEAD`, no conflict markers, and no ADR clash in `HEAD`. Only then does bash push it, so a failed resolution never reaches the PR. A verified resolution spends no attempt.
+  - **Any other ending.** Bash rolls the worktree back (`merge-abort --to <pre-merge head>`, which also removes untracked leftovers) and spends one attempt. A conflict where main rewrote the code the plan changes, or a lockfile `pnpm install` can't produce, ends in **Blocked** with a PR comment.
+- The card then goes through CI, review and In Test again, and needs a fresh **Approved** drag.
+
+The `--watch` log says what happened: `merged origin/main into PR #<n>'s branch: <status> (conflicted: …; ADR clashes: N)`, followed by `pushed the merge`, `conflict pass merged main`, or the reason it rolled back. To resolve a conflict by hand instead, merge `main` into `factory/issue-<n>` and push. The next tick sees a mergeable PR and carries on.
 
 ## Rollback drills
 

@@ -92,3 +92,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0058](./0058-revision-blocks-return-to-test.md)                     | Declined Revision Feedback Returns the Card to In Test | Accepted           | 2026-10-25 |
 | [0059](./0059-keep-login-page-out-of-search-index.md)                | Keep `/login` Out of the Search Index                  | Accepted           | 2026-10-26 |
 | [0060](./0060-dedicated-factory-build-volume.md)                     | A Dedicated ASCII Build Volume for the Factory         | Accepted           | 2026-10-27 |
+| [0061](./0061-factory-resolves-merge-conflicts.md)                   | The Factory Resolves Merge Conflicts With Main         | Accepted           | 2026-10-29 |

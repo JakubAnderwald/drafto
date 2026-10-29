@@ -978,6 +978,37 @@ describe("buildFactoryWatchBundle", () => {
     assert.throws(() => buildFactoryWatchBundle({ issue: { title: "x" } }), /issue\.number/);
   });
 
+  // ADR-0061: a conflict pass hands the agent the merge-main result.
+  it("carries the conflict pass's merge result, and null on any other pass", () => {
+    const base = {
+      issue: { number: 688, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "C" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    };
+    assert.equal(buildFactoryWatchBundle(base).mergeConflict, null);
+
+    const bundle = buildFactoryWatchBundle({
+      ...base,
+      mergeConflict: {
+        status: "conflicts",
+        before: "b".repeat(40),
+        mainSha: "a".repeat(40),
+        conflictedFiles: ["docs/adr/README.md", 42, ""],
+        adrCollisions: [
+          { number: "0059", files: ["0059-desktop-pkce.md", "0059-keep-login.md"] },
+          { number: "not-a-number", files: ["x.md"] },
+        ],
+        nextFreeAdr: "0061",
+      },
+    });
+    assert.deepEqual(bundle.mergeConflict, {
+      mainSha: "a".repeat(40),
+      conflictedFiles: ["docs/adr/README.md"],
+      adrCollisions: [{ number: "0059", files: ["0059-desktop-pkce.md", "0059-keep-login.md"] }],
+      nextFreeAdr: "0061",
+    });
+  });
+
   it("surfaces host-validated screenshots from the body and every comment slice", () => {
     const bundle = buildFactoryWatchBundle({
       issue: {

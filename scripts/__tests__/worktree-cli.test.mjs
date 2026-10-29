@@ -1,7 +1,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -429,5 +429,313 @@ describe("worktree-cli remote branch resolution (--fetch)", () => {
     const out = JSON.parse(res.stdout);
     assert.equal(out.branchDeleted, true);
     assert.equal(out.branchHead, head, "the pre-delete tip must be reported for recovery");
+  });
+});
+
+// The --watch conflict pass (ADR-0061): bash merges origin/main into a PR
+// branch GitHub reports as CONFLICTING, the agent resolves what git couldn't,
+// and bash checks the result before trusting the agent's "fixed".
+describe("worktree-cli merge-main / merge-abort / merge-check / push", () => {
+  let repo;
+  let bare;
+
+  function commitAll(cwd, message) {
+    gitIn(cwd, ["add", "-A"]);
+    gitIn(cwd, ["commit", "-q", "-m", message]);
+  }
+
+  function write(dir, rel, content) {
+    mkdirSync(dirname(join(dir, rel)), { recursive: true });
+    writeFileSync(join(dir, rel), content);
+  }
+
+  // Another contributor lands <files> on main, as #757 and #762 did under #755.
+  function advanceMain(files) {
+    const clone = mkdtempSync(join(tmpdir(), "wt-cli-main-"));
+    gitIn(clone, ["clone", "-q", bare, "."]);
+    gitIn(clone, ["config", "user.email", "other@example.com"]);
+    gitIn(clone, ["config", "user.name", "Other"]);
+    for (const [rel, content] of Object.entries(files)) write(clone, rel, content);
+    commitAll(clone, "main moves on");
+    gitIn(clone, ["push", "-q", "origin", "main"]);
+    const sha = gitIn(clone, ["rev-parse", "HEAD"]).trim();
+    rmSync(clone, { recursive: true, force: true });
+    return sha;
+  }
+
+  // A factory card's worktree with the PR's commit pushed, as --implement leaves it.
+  function prWorktree(issue, files) {
+    runCli(["add", "--issue", String(issue), "--root", repo, "--base", "main", "--fetch"]);
+    const wt = worktreePathForIssue(repo, issue);
+    for (const [rel, content] of Object.entries(files)) write(wt, rel, content);
+    commitAll(wt, "pr work");
+    gitIn(wt, ["push", "-q", "origin", `factory/issue-${issue}`]);
+    return wt;
+  }
+
+  function json(res) {
+    assert.equal(res.status, 0, res.stderr);
+    return JSON.parse(res.stdout);
+  }
+
+  before(() => {
+    bare = mkdtempSync(join(tmpdir(), "wt-cli-merge-origin-"));
+    gitIn(bare, ["init", "--bare", "-q", "-b", "main"]);
+    repo = mkdtempSync(join(tmpdir(), "wt-cli-merge-"));
+    gitIn(repo, ["init", "-q", "-b", "main"]);
+    gitIn(repo, ["config", "user.email", "test@example.com"]);
+    gitIn(repo, ["config", "user.name", "Test"]);
+    write(repo, "docs/adr/0001-first.md", "# 1\n");
+    write(repo, "docs/adr/README.md", "| 0001 | first |\n");
+    commitAll(repo, "seed");
+    gitIn(repo, ["remote", "add", "origin", bare]);
+    gitIn(repo, ["push", "-q", "-u", "origin", "main"]);
+  });
+
+  after(() => {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(bare, { recursive: true, force: true });
+  });
+
+  it("reports up-to-date when main has nothing new", () => {
+    const wt = prWorktree(200, { "pr.txt": "pr\n" });
+    const before = gitIn(wt, ["rev-parse", "HEAD"]).trim();
+    const out = json(runCli(["merge-main", "--path", wt]));
+    assert.equal(out.status, "up-to-date");
+    assert.equal(out.branch, "factory/issue-200");
+    assert.equal(out.ahead, false);
+    assert.deepEqual(out.adrCollisions, []);
+    assert.equal(gitIn(wt, ["rev-parse", "HEAD"]).trim(), before);
+  });
+
+  it("merges a main that moved without conflicts, then pushes the merge", () => {
+    const wt = prWorktree(201, { "pr-201.txt": "pr\n" });
+    const mainSha = advanceMain({ "unrelated.txt": "main\n" });
+
+    const out = json(runCli(["merge-main", "--path", wt]));
+    assert.equal(out.status, "clean");
+    assert.equal(out.mainSha, mainSha, "it must fetch main itself — a resumed worktree never does");
+    assert.equal(out.ahead, true, "the merge commit is not on origin yet");
+    assert.ok(existsSync(join(wt, "unrelated.txt")));
+
+    const pushed = json(runCli(["push", "--path", wt]));
+    assert.equal(pushed.branch, "factory/issue-201");
+    assert.equal(
+      gitIn(bare, ["rev-parse", "refs/heads/factory/issue-201"]).trim(),
+      gitIn(wt, ["rev-parse", "HEAD"]).trim(),
+    );
+    const check = json(runCli(["merge-check", "--path", wt, "--main-sha", mainSha]));
+    assert.equal(check.resolved, true);
+    assert.equal(check.mainIsAncestor, true);
+  });
+
+  it("leaves a conflicting merge in progress and reports the files and the ADR clash", () => {
+    // #755's shape: the PR and main each took the next ADR number and added an
+    // index row on the same line.
+    const wt = prWorktree(202, {
+      "docs/adr/0002-from-the-pr.md": "# 2 (pr)\n",
+      "docs/adr/README.md": "| 0001 | first |\n| 0002 | from the pr |\n",
+    });
+    const mainSha = advanceMain({
+      "docs/adr/0002-from-main.md": "# 2 (main)\n",
+      "docs/adr/README.md": "| 0001 | first |\n| 0002 | from main |\n",
+    });
+
+    const out = json(runCli(["merge-main", "--path", wt]));
+    assert.equal(out.status, "conflicts");
+    assert.equal(out.mainSha, mainSha);
+    assert.deepEqual(out.conflictedFiles, ["docs/adr/README.md"]);
+    assert.deepEqual(out.adrCollisions, [
+      { number: "0002", files: ["0002-from-main.md", "0002-from-the-pr.md"] },
+    ]);
+    assert.equal(out.nextFreeAdr, "0003");
+
+    const midway = json(
+      runCli([
+        "merge-check",
+        "--path",
+        wt,
+        "--main-sha",
+        mainSha,
+        "--files-json",
+        JSON.stringify(["docs/adr/README.md"]),
+      ]),
+    );
+    assert.equal(midway.inProgress, true);
+    assert.deepEqual(midway.unmergedFiles, ["docs/adr/README.md"]);
+    assert.equal(midway.resolved, false);
+
+    const again = runCli(["merge-main", "--path", wt]);
+    assert.equal(again.status, 1, "never start a second merge over an unfinished one");
+    assert.match(JSON.parse(again.stderr).error, /already in progress/);
+  });
+
+  it("merge-abort restores the branch, and is a no-op when nothing is in progress", () => {
+    const wt = worktreePathForIssue(repo, 202);
+    const prHead = gitIn(bare, ["rev-parse", "refs/heads/factory/issue-202"]).trim();
+    assert.deepEqual(json(runCli(["merge-abort", "--path", wt])), { aborted: true });
+    assert.equal(gitIn(wt, ["rev-parse", "HEAD"]).trim(), prHead);
+    assert.equal(gitIn(wt, ["status", "--porcelain"]).trim(), "");
+    assert.deepEqual(json(runCli(["merge-abort", "--path", wt])), { aborted: false });
+  });
+
+  it("accepts a resolution only once it is committed with no markers or ADR clash left", () => {
+    const wt = worktreePathForIssue(repo, 202);
+    const { mainSha } = json(runCli(["merge-main", "--path", wt]));
+    const files = ["--files-json", JSON.stringify(["docs/adr/README.md"])];
+
+    // An agent that `git add`s the file with the markers still in it.
+    gitIn(wt, ["add", "docs/adr/README.md"]);
+    gitIn(wt, ["commit", "-q", "--no-edit"]);
+    let check = json(runCli(["merge-check", "--path", wt, "--main-sha", mainSha, ...files]));
+    assert.equal(check.inProgress, false);
+    assert.equal(check.mainIsAncestor, true);
+    assert.deepEqual(check.filesWithMarkers, ["docs/adr/README.md"]);
+    assert.equal(check.adrCollisions.length, 1);
+    assert.equal(check.resolved, false);
+
+    // The fix made in the working tree only: what bash would push (HEAD) still
+    // has the markers and the clash, so it must not pass.
+    gitIn(wt, ["mv", "docs/adr/0002-from-the-pr.md", "docs/adr/0003-from-the-pr.md"]);
+    write(
+      wt,
+      "docs/adr/README.md",
+      "| 0001 | first |\n| 0002 | from main |\n| 0003 | from the pr |\n",
+    );
+    check = json(runCli(["merge-check", "--path", wt, "--main-sha", mainSha, ...files]));
+    assert.equal(check.adrCollisions.length, 1, "judged on HEAD, not the working tree");
+    assert.ok(check.uncommittedFiles.length > 0);
+    assert.equal(check.resolved, false);
+
+    // Committed: keep both rows, renumber the PR's own ADR.
+    commitAll(wt, "fix: renumber ADR after main moved");
+    check = json(runCli(["merge-check", "--path", wt, "--main-sha", mainSha, ...files]));
+    assert.deepEqual(check.filesWithMarkers, []);
+    assert.deepEqual(check.adrCollisions, []);
+    assert.deepEqual(check.uncommittedFiles, []);
+    assert.equal(check.resolved, true);
+  });
+
+  it("merge-check reads a path with a comma in it whole", () => {
+    const wt = worktreePathForIssue(repo, 202);
+    write(wt, "docs/a,b.md", "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> main\n");
+    commitAll(wt, "a file with a comma");
+    const head = gitIn(wt, ["rev-parse", "HEAD"]).trim();
+    const check = json(
+      runCli(["merge-check", "--path", wt, "--main-sha", head, "--files-json", '["docs/a,b.md"]']),
+    );
+    assert.deepEqual(check.filesWithMarkers, ["docs/a,b.md"]);
+    gitIn(wt, ["reset", "-q", "--hard", "HEAD~1"]);
+  });
+
+  it("does not count an untracked stray ADR as a clash", () => {
+    const wt = prWorktree(208, { "pr-208.txt": "pr\n" });
+    advanceMain({ "main-208.txt": "main\n" });
+    write(wt, "docs/adr/0001-stray-copy.md", "# left behind by a failed pass\n");
+    const out = json(runCli(["merge-main", "--path", wt]));
+    assert.equal(out.status, "clean");
+    assert.deepEqual(out.adrCollisions, []);
+  });
+
+  it("reports an unreachable origin as transient, touching nothing", () => {
+    const wt = prWorktree(209, { "pr-209.txt": "pr\n" });
+    const before = gitIn(wt, ["rev-parse", "HEAD"]).trim();
+    gitIn(repo, ["remote", "set-url", "origin", join(tmpdir(), "wt-cli-no-such-origin")]);
+    try {
+      const out = json(runCli(["merge-main", "--path", wt]));
+      assert.equal(out.status, "unreachable");
+      assert.ok(out.detail);
+      assert.equal(gitIn(wt, ["rev-parse", "HEAD"]).trim(), before);
+    } finally {
+      gitIn(repo, ["remote", "set-url", "origin", bare]);
+    }
+  });
+
+  it("flags an ADR number clash that git merged without a conflict", () => {
+    const wt = prWorktree(203, { "docs/adr/0009-pr.md": "# 9 (pr)\n" });
+    advanceMain({ "docs/adr/0009-main.md": "# 9 (main)\n" });
+    const out = json(runCli(["merge-main", "--path", wt]));
+    assert.equal(out.status, "clean", "different file names never conflict textually");
+    assert.deepEqual(out.adrCollisions, [
+      { number: "0009", files: ["0009-main.md", "0009-pr.md"] },
+    ]);
+    assert.equal(out.nextFreeAdr, "0010");
+  });
+
+  it("ignores an ADR number clash that main already has", () => {
+    const wt = prWorktree(204, { "pr-204.txt": "pr\n" });
+    advanceMain({ "docs/adr/0020-one.md": "# a\n", "docs/adr/0020-two.md": "# b\n" });
+    const out = json(runCli(["merge-main", "--path", wt]));
+    assert.equal(out.status, "clean");
+    assert.deepEqual(out.adrCollisions, [], "main's own duplicate is not this PR's to fix");
+  });
+
+  it("reports an error and leaves the tree as it was when git refuses to merge", () => {
+    const wt = prWorktree(205, { "pr-205.txt": "pr\n" });
+    advanceMain({ "shared.txt": "main's version\n" });
+    write(wt, "shared.txt", "an uncommitted local file\n");
+    const before = gitIn(wt, ["rev-parse", "HEAD"]).trim();
+
+    const out = json(runCli(["merge-main", "--path", wt]));
+    assert.equal(out.status, "error");
+    assert.ok(out.detail, "git's reason must be passed on for the log");
+    assert.equal(gitIn(wt, ["rev-parse", "HEAD"]).trim(), before);
+    assert.equal(
+      spawnSync("git", ["rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd: wt }).status,
+      1,
+      "no half-merge may be left behind",
+    );
+    assert.equal(gitIn(wt, ["status", "--porcelain"]).trim(), "?? shared.txt");
+  });
+
+  it("refuses to push anything but a factory branch", () => {
+    const res = runCli(["push", "--path", repo]);
+    assert.equal(res.status, 1);
+    assert.match(JSON.parse(res.stderr).error, /not a factory branch/);
+  });
+
+  // A failed pass must not strand a local merge commit the PR never got: once
+  // anyone else pushes, the branch has diverged and `add` refuses it every tick.
+  it("merge-abort --to drops a committed merge that never reached origin", () => {
+    const wt = prWorktree(206, { "pr-206.txt": "pr\n" });
+    advanceMain({ "main-206.txt": "main\n" });
+    const out = json(runCli(["merge-main", "--path", wt]));
+    assert.equal(out.status, "clean");
+    assert.equal(out.before, gitIn(bare, ["rev-parse", "refs/heads/factory/issue-206"]).trim());
+    write(wt, "pr-206.txt", "half-done edit\n");
+    write(wt, "docs/adr/0002-stray.md", "# an untracked copy\n");
+
+    const res = json(runCli(["merge-abort", "--path", wt, "--to", out.before]));
+    assert.deepEqual(res, { aborted: false, rolledBackTo: out.before });
+    assert.equal(gitIn(wt, ["rev-parse", "HEAD"]).trim(), out.before);
+    assert.equal(
+      gitIn(wt, ["status", "--porcelain"]).trim(),
+      "",
+      "leftover edits and untracked files go too",
+    );
+  });
+
+  it("merge-abort --to also undoes an amend that rewrote the branch", () => {
+    const wt = prWorktree(210, { "pr-210.txt": "pr\n" });
+    const before = gitIn(wt, ["rev-parse", "HEAD"]).trim();
+    write(wt, "pr-210.txt", "rewritten\n");
+    gitIn(wt, ["commit", "-q", "-a", "--amend", "--no-edit"]);
+    assert.notEqual(gitIn(wt, ["rev-parse", "HEAD"]).trim(), before);
+
+    const res = json(runCli(["merge-abort", "--path", wt, "--to", before]));
+    assert.deepEqual(res, { aborted: false, rolledBackTo: before });
+    assert.equal(gitIn(wt, ["rev-parse", "HEAD"]).trim(), before, "no longer diverged");
+  });
+
+  it("merge-abort --to never touches a merge that is already on the PR", () => {
+    const wt = prWorktree(207, { "pr-207.txt": "pr\n" });
+    advanceMain({ "main-207.txt": "main\n" });
+    const out = json(runCli(["merge-main", "--path", wt]));
+    json(runCli(["push", "--path", wt]));
+    const pushed = gitIn(wt, ["rev-parse", "HEAD"]).trim();
+
+    const res = json(runCli(["merge-abort", "--path", wt, "--to", out.before]));
+    assert.deepEqual(res, { aborted: false, rolledBackTo: null });
+    assert.equal(gitIn(wt, ["rev-parse", "HEAD"]).trim(), pushed);
   });
 });

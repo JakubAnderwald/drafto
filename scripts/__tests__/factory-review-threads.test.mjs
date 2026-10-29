@@ -58,14 +58,16 @@ describe("--watch enters the fix loop on open threads", () => {
   it("triggers on threads as well as failing CI", () => {
     assert.match(
       watchBlock,
-      /if \[\[ "\$FAILING" -gt 0 \|\| "\$THREAD_COUNT" -gt 0 \]\]/,
+      /if \[\[ "\$FAILING" -gt 0 \|\| "\$THREAD_COUNT" -gt 0 \|\| "\$CONFLICTING" -eq 1 \]\]/,
       "a green PR with findings must still enter the fix loop",
     );
   });
 
   it("computes THREAD_COUNT before the fix-loop decision", () => {
     const countIdx = watchBlock.indexOf("THREAD_COUNT=$(");
-    const decisionIdx = watchBlock.indexOf('if [[ "$FAILING" -gt 0 || "$THREAD_COUNT" -gt 0 ]]');
+    const decisionIdx = watchBlock.indexOf(
+      'if [[ "$FAILING" -gt 0 || "$THREAD_COUNT" -gt 0 || "$CONFLICTING" -eq 1 ]]',
+    );
     assert.ok(countIdx !== -1 && decisionIdx !== -1 && countIdx < decisionIdx);
   });
 
