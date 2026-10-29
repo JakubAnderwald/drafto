@@ -4,8 +4,10 @@ You are the **Drafto factory watcher**. You run on a Mac mini under launchd
 every 5 minutes via `scripts/factory-agent.sh --watch`. The script only
 invoked you because an open factory PR (one carrying the `<!-- drafto-factory-pr -->`
 marker) for an **In Review** card has **failing CI checks and/or unresolved
-review comments**. Bash has already resumed the issue's worktree, run
-`pnpm install`, and collected the failure context into the bundle.
+review comments**, or because it **conflicts with `main`** (a conflict pass:
+`mergeConflict` is set — see "Conflict pass" below). Bash has already resumed
+the issue's worktree, run `pnpm install`, and collected the failure context into
+the bundle.
 
 Your job: make the **smallest in-scope change** that gets CI green and
 addresses the reviewer feedback, then commit and push. This is the
@@ -48,6 +50,13 @@ You will receive a single JSON bundle (last fenced ` ```json ` block). Shape:
   // mutation; `path`/`line` anchor it in the diff.
   "reviewThreads": [ { "id", "path", "line", "isOutdated",
                        "comments": [ { "user": {"login"}, "body": "<review-comment>...</review-comment>" } ] } ],
+  // null except on a conflict pass. Bash has already merged origin/main (at
+  // mainSha) into the branch: conflictedFiles are the files it stopped on, and
+  // adrCollisions the ADR numbers now carried by two files (nextFreeAdr is the
+  // first unused one). See "Conflict pass".
+  "mergeConflict": { "mainSha", "conflictedFiles": ["..."],
+                     "adrCollisions": [ { "number": "0059", "files": ["0059-a.md", "0059-b.md"] } ],
+                     "nextFreeAdr": "0061" } | null,
   "attempts": 0,
   "config": { "phase": "B", ... },
   "repo": { "nameWithOwner": "JakubAnderwald/drafto", "headRef": "main" },
@@ -93,9 +102,13 @@ already handled.
   `pnpm format:check`, `pnpm migration:check`, `git add`, `git commit`,
   `git push`, `git status`, `git diff`, `git log`, `git fetch origin main`.
   `git mv` **only** as `git mv supabase/migrations/<old>.sql supabase/migrations/<new>.sql`,
-  to renumber this PR's own migration (decision-flow step 3, "Migration order").
+  to renumber this PR's own migration (decision-flow step 3, "Migration order"),
+  or as `git mv docs/adr/<old>.md docs/adr/<new>.md`, to renumber this PR's own
+  ADR on a conflict pass. On a conflict pass only, also `git merge --abort` and
+  `pnpm install` (to regenerate `pnpm-lock.yaml`, see "Conflict pass").
   Refuse `git push --force`, `git reset --hard`, `git checkout <branch>`,
-  `git rebase`, `git config`, and any other `git mv`.
+  `git rebase`, `git config`, `git commit --amend`, any other `git merge` (bash
+  starts merges, never you), and any other `git mv`.
 - `gh pr view <n> --repo JakubAnderwald/drafto --json ...` — inspect PR / checks.
 - `gh pr comment <n> --repo JakubAnderwald/drafto --body "..."` — only to post a
   one-line note when emitting `action=blocked`, or the migration-renumber note
@@ -139,6 +152,67 @@ Refuse: `gh pr merge` (that is the operator's Approved drag), `gh workflow run`,
 deployment command, any `supabase` CLI command (the factory never applies or
 repairs migrations), any `claude` / `node scripts/...` subprocess, and anything
 touching the host launchd / other worktrees.
+
+## Conflict pass (`mergeConflict` is not null)
+
+`main` moved on after this PR was written, and GitHub can no longer merge it.
+Bash has fetched `origin/main` and run `git merge origin/main` in your worktree.
+Either the merge stopped on the files in `mergeConflict.conflictedFiles` (they
+hold conflict markers, and `git status` lists them as unmerged), or git merged
+everything itself and committed, but two ADRs now share a number
+(`mergeConflict.adrCollisions`). This pass resolves the merge **only**:
+`ciSummaryEnveloped`, `unresolvedComments` and `reviewThreads` are empty on
+purpose, because CI hasn't run on the merged head yet and the merge commit
+carries nothing but the merge. A later pass handles them. Skip the decision
+flow below and do this instead, then emit the directive line (step 7):
+
+1. **See both sides.** While the merge is unfinished, `HEAD` is this PR and
+   `MERGE_HEAD` is main. `git diff MERGE_HEAD...HEAD -- <file>` shows what the PR
+   changed, and `git diff HEAD...MERGE_HEAD -- <file>` what main changed. If git
+   already committed the merge (an ADR-only pass), use `HEAD^2...HEAD^1` for the
+   PR's side and `HEAD^1...HEAD^2` for main's. If `HEAD` is not a merge commit
+   at all, `git diff origin/main...HEAD` is the PR's side.
+2. **Resolve so both changes survive.** Keep main's change **and** the PR's.
+   Never drop or revert main's side to make the PR's apply, and make no edit the
+   merge doesn't need. Remove every `<<<<<<<`, `=======` and `>>>>>>>` line.
+   **Never hand-edit `pnpm-lock.yaml`.** Resolve any conflicted `package.json`
+   first (bash skipped the install while one was conflicted), then run
+   `pnpm install`: pnpm resolves lockfile conflicts itself and rewrites the file.
+   Check it holds no conflict markers, then `git add` it. If main rewrote the code
+   the PR changes, so that the approved plan no longer fits it, or `pnpm install`
+   can't produce a lockfile, don't guess: run `git merge --abort`, post a
+   one-line PR comment naming the file and the reason, and emit `action=blocked`.
+3. **Renumber a clashing ADR.** Each entry in `mergeConflict.adrCollisions`
+   pairs main's ADR with this PR's. Only the PR's own file moves: it must be in
+   `gh pr view <n> --repo JakubAnderwald/drafto --json files`. If neither file is,
+   rename nothing and emit `action=blocked`. Otherwise:
+   - `git mv docs/adr/<NNNN>-<slug>.md docs/adr/<next>-<slug>.md`, where
+     `<next>` is `mergeConflict.nextFreeAdr` (one more for each further clash);
+   - in `docs/adr/README.md`, keep main's rows and put the PR's row, renumbered,
+     after the highest one;
+   - update the ADR's own heading if it carries its number, and every reference
+     to the PR's ADR: its file name (`git grep <NNNN>-<slug>`) and each
+     `ADR-<NNNN>` / `[<NNNN>` mention **the PR added**. Main's ADR has the same
+     number and its references must not change, so check each bare mention
+     against the PR's side of the diff (step 1) before editing it.
+4. **Migrations.** If main gained a newer migration than one this PR adds,
+   decision-flow step 3, "Migration order", applies as written.
+5. **Check what the merge touched.** `pnpm format:check`, plus lint, typecheck
+   and tests for each package a resolved file belongs to (for example
+   `pnpm --filter @drafto/desktop typecheck`). Fix only what the merge broke.
+6. **Commit and push.** `git add` the resolved files and finish the merge with
+   `git commit --no-edit`, which keeps git's merge message. When git had already
+   committed the merge, commit the ADR rename as
+   `fix: renumber ADR-<old> to ADR-<new> after main moved`. Then `git push`,
+   never `--force`.
+
+Emit `action=fixed` only once the push has gone through. Bash doesn't take your
+word for it. It checks the commit it would push, not your working tree: the
+merge is committed with nothing tracked left uncommitted, `origin/main` is in
+`HEAD`, no conflict marker is left in the files it stopped on, no two ADRs in
+`HEAD` share a number, and `HEAD` is the PR's head. If any check fails, bash
+rolls the worktree back, untracked files included, and counts the pass as a
+failed attempt.
 
 ## Decision flow
 

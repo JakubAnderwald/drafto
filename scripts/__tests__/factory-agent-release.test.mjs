@@ -190,9 +190,24 @@ describe("--release engine wiring", () => {
     );
   });
 
-  it("only merges a MERGEABLE PR and parks conflicts", () => {
+  it("only merges a MERGEABLE PR", () => {
     assert.match(releaseBlock, /MERGEABLE=\$\(echo "\$PR_VIEW" \| jq -r '\.mergeable/);
-    assert.match(releaseBlock, /drafto-factory-merge-conflict/);
+    assert.match(releaseBlock, /if \[\[ "\$MERGEABLE" != "MERGEABLE" \]\]; then/);
+  });
+
+  // ADR-0061. A conflict used to park the card in Approved with a comment that
+  // told the operator to "comment a change request" — which no mode reads on
+  // an Approved card — and sat behind a CI gate a conflicting head never passes.
+  it("hands a conflicting PR back to In Review, ahead of the CI gate", () => {
+    const conflictAt = releaseBlock.search(/if \[\[ "\$MERGEABLE" == "CONFLICTING" \]\]; then/);
+    const ciGateAt = releaseBlock.indexOf('FAILING=$(pr_failing_required "$PR_VIEW")');
+    assert.ok(conflictAt > 0 && ciGateAt > 0, "conflict gate or CI gate not found");
+    assert.ok(conflictAt < ciGateAt, "a conflicting head gets no CI, so it must be caught first");
+    const gate = releaseBlock.slice(conflictAt, conflictAt + 400);
+    assert.match(gate, /conflict_handback "\$ITEM_ID" "\$ISSUE_NUM" "\$PR_NUM" .* "Approved"/);
+    assert.match(gate, /continue/);
+    assert.doesNotMatch(releaseBlock, /drafto-factory-merge-conflict/);
+    assert.doesNotMatch(script, /comment a change request/);
   });
 
   it("squash-merges via the GitHub API PUT form, not gh pr merge", () => {

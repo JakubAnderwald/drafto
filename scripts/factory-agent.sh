@@ -1509,7 +1509,8 @@ implement_park_blocked() {
 # Build the factory_watch bundle. $2 approved-plan obj|null, $3 prior-PR obj,
 # $4 CI summary text, $5 unresolved-comments JSON array, $6 attempts,
 # $7 screenshot-sources (full issue-comment thread) JSON array,
-# $8 unresolved review threads JSON array (from fetch_review_threads).
+# $8 unresolved review threads JSON array (from fetch_review_threads),
+# $9 the conflict pass's `worktree-cli.mjs merge-main` result, or empty.
 build_watch_bundle() {
   local issue_entry="$1"
   local approved_plan="${2:-null}"
@@ -1519,6 +1520,7 @@ build_watch_bundle() {
   local attempts="${6:-0}"
   local screenshot_sources="${7:-[]}"
   local review_threads="${8:-[]}"
+  local merge_conflict="${9:-null}"
   local repo_head_ref
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   jq -n \
@@ -1528,6 +1530,7 @@ build_watch_bundle() {
     --arg ciSummary "$ci_summary" \
     --argjson unresolved "$unresolved" \
     --argjson reviewThreads "$review_threads" \
+    --argjson mergeConflict "$merge_conflict" \
     --argjson screenshotSources "$screenshot_sources" \
     --arg attempts "$attempts" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
@@ -1548,6 +1551,7 @@ build_watch_bundle() {
        ciSummary: $ciSummary,
        unresolvedComments: $unresolved,
        reviewThreads: $reviewThreads,
+       mergeConflict: $mergeConflict,
        comments: [],
        screenshotSources: $screenshotSources,
        attempts: ($attempts | tonumber? // 0),
@@ -1932,6 +1936,93 @@ issue_has_marker() {
     return 0
   fi
   echo "$comments" | jq -e --arg m "$marker" 'any(.[]; .body | test($m))' >/dev/null 2>&1
+}
+
+# ── Merge conflicts with main (ADR-0061) ────────────────────────────────────
+# A PR that conflicts with main can't merge, and GitHub runs no pull_request CI
+# on it either, so nothing downstream of In Review can move it on. Wherever a
+# conflict turns up — Approved (--release) or In Test (the feedback sweep) — the
+# card goes back to In Review, where --watch merges main in and resolves it.
+
+# conflict_handback <item-id> <issue> <pr> <head-sha> <from-column>
+# Comment once per PR head (so a second conflict on a later head is announced
+# too) and move the card back to In Review. Returns 1 without acting when the
+# head SHA is unknown: the marker would be ambiguous, so wait for a clean read.
+conflict_handback() {
+  local item_id="$1" issue_num="$2" pr_num="$3" head_sha="$4" from="$5"
+  if [[ -z "$head_sha" ]]; then
+    log "WARNING: PR #$pr_num conflicts but its head SHA is unknown (transient?); retrying next tick"
+    return 1
+  fi
+  local sha12="${head_sha:0:12}"
+  log "Issue #$issue_num: PR #$pr_num conflicts with main; moving the card from $from back to In Review"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "DRY-RUN: would comment on #$issue_num and move it from $from to In Review"
+    return 0
+  fi
+  if ! issue_has_marker "$issue_num" "drafto-factory-conflict:$sha12"; then
+    local after
+    if [[ "$from" == "In Test" ]]; then
+      after="It comes back to **In Test** with a fresh preview, so there's no point testing \
+this version further."
+    else
+      after="Merging \`main\` changes the diff, so your approval doesn't carry over: the card \
+comes back to **In Test** for you to approve again."
+    fi
+    gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+      --body "🏭 **PR #$pr_num conflicts with \`main\`.**
+
+Moving the card from **$from** back to **In Review**: the factory merges \`main\` \
+into the branch and resolves the conflicts there. $after
+
+<!-- drafto-factory-conflict:$sha12 -->" >>"$LOG_FILE" 2>&1 || true
+  fi
+  transition_status "$item_id" "$issue_num" "In Review" || true
+}
+
+# rollback_conflict_pass <worktree> <pre-merge-head>
+# Undo a conflict pass that didn't finish: abort a merge still in progress and
+# drop any commit made on top of <pre-merge-head> that never reached origin. A
+# half-merged or diverged worktree would otherwise fail every later tick's
+# resume (worktree-cli `add` refuses both), silently and without spending budget.
+rollback_conflict_pass() {
+  local wt_path="$1" before="$2"
+  [[ -n "$wt_path" ]] || return 0
+  local args=(merge-abort --path "$wt_path")
+  [[ -n "$before" ]] && args+=(--to "$before")
+  node "$SCRIPT_DIR/lib/worktree-cli.mjs" "${args[@]}" >>"$LOG_FILE" 2>&1 || true
+}
+
+# conflict_pass_verified <worktree> <pr> <merge-json>
+# Don't take the agent's "fixed" on trust: the merge must be committed with main
+# in it, no conflict marker or new ADR-number clash left, and the result on the
+# PR. A verified resolution the agent forgot to push is pushed here. Sets
+# CONFLICT_PASS_WHY on failure.
+conflict_pass_verified() {
+  local wt_path="$1" pr_num="$2" merge_json="$3"
+  local main_sha files check head pr_head
+  CONFLICT_PASS_WHY=""
+  main_sha=$(echo "$merge_json" | jq -r '.mainSha // ""')
+  files=$(echo "$merge_json" | jq -c '.conflictedFiles // []')
+  if ! check=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" merge-check --path "$wt_path" \
+      --main-sha "$main_sha" --files-json "$files" 2>>"$LOG_FILE"); then
+    CONFLICT_PASS_WHY="merge-check failed to run"; return 1
+  fi
+  if [[ "$(echo "$check" | jq -r '.resolved')" != "true" ]]; then
+    CONFLICT_PASS_WHY="unresolved: $(echo "$check" | jq -c '{inProgress, unmergedFiles, uncommittedFiles, mainIsAncestor, filesWithMarkers, adrCollisions}')"
+    return 1
+  fi
+  head=$(echo "$check" | jq -r '.head // ""')
+  pr_head=$(pr_head_oid "$pr_num")
+  if [[ -n "$head" && "$pr_head" != "$head" ]]; then
+    log "Conflict pass for PR #$pr_num resolved but not on the PR yet; pushing it"
+    node "$SCRIPT_DIR/lib/worktree-cli.mjs" push --path "$wt_path" >>"$LOG_FILE" 2>&1 || true
+    pr_head=$(pr_head_oid "$pr_num")
+  fi
+  if [[ -z "$head" || "$pr_head" != "$head" ]]; then
+    CONFLICT_PASS_WHY="the resolution never reached the PR (local ${head:0:12}, PR ${pr_head:0:12})"
+    return 1
+  fi
 }
 
 # True (exit 0) when the PR's CI is genuinely green: every branch-protection
@@ -6025,8 +6116,9 @@ fi
 #      (merged by the operator, Blocked, Done, or closed). Without this the two
 #      slots would leak. Testing must stay in the active set: a card verifying
 #      there still owns its slot + worktree (ADR-0053).
-#   2. In Review → In Test — for each open factory PR: if CI is failing or
-#      review comments are unresolved, resume the worktree and invoke Claude
+#   2. In Review → In Test — for each open factory PR: if it conflicts with
+#      main, merge main in first (ADR-0061); if CI is failing or review
+#      comments are unresolved, resume the worktree and invoke Claude
 #      (factory-watch-prompt) to push one fix; once CI is green AND a Vercel
 #      preview is reachable, advance the card to In Test and post the URL.
 # PHASE is guaranteed != "A" here (Phase A --watch no-op'd at the gate above).
@@ -6156,6 +6248,17 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
     # and the deployment also surfaces as a rollup target URL. Search both.
     PREVIEW_URL=$(pr_preview_url "$PR_VIEW")
 
+    # A PR that conflicts with main is a fix-loop trigger of its own, handled
+    # before anything that reads CI (ADR-0061). GitHub runs no pull_request
+    # workflows on a conflicting head, so its rollup is stale or empty: the
+    # PENDING / ci_required_green waits below would hold it forever, and stale
+    # green checks would wave it on to In Test. UNKNOWN (GitHub still computing)
+    # is not a conflict; the next tick reads it again.
+    CONFLICTING=0
+    if [[ "$(echo "$PR_VIEW" | jq -r '.mergeable // ""')" == "CONFLICTING" ]]; then
+      CONFLICTING=1
+    fi
+
     # Unresolved inline review threads are a fix-loop trigger in their own right.
     # Before this, the whole fix path was gated on failing CI, so a green PR with
     # ten findings sailed through to In Test and the findings were force-resolved
@@ -6168,10 +6271,11 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
     # in-flight run, invalidate it, and — since watch_bound_thread_loop spends an
     # attempt whenever FAILING is 0 — burn the retry budget toward Blocked while
     # CI never gets a stable head to finish against. Failing CI is handled first
-    # on its own; threads are a green-PR concern.
+    # on its own; threads are a green-PR concern. A conflict pass leaves them
+    # for the pass after it, once CI has run on the merged head.
     REVIEW_THREADS="[]"
     THREAD_COUNT=0
-    if [[ "$FAILING" -eq 0 && "$PENDING" -eq 0 ]] && ci_required_green "$PR_VIEW"; then
+    if [[ "$CONFLICTING" -eq 0 && "$FAILING" -eq 0 && "$PENDING" -eq 0 ]] && ci_required_green "$PR_VIEW"; then
       REVIEW_THREADS=$(fetch_review_threads "$PR_NUM" 2>>"$LOG_FILE" || echo "[]")
       [[ -n "$REVIEW_THREADS" ]] || REVIEW_THREADS="[]"
       THREAD_COUNT=$(echo "$REVIEW_THREADS" | jq 'length' 2>/dev/null || echo "0")
@@ -6183,8 +6287,9 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
     # repair: re-run them instead of spending a Claude attempt, and
     # once the re-runs are spent tell the operator rather than loop the fix
     # agent. Only with a known required set — the all-checks fallback
-    # would classify advisory bots too.
-    if [[ "$FAILING" -gt 0 && "${REQUIRED_CONTEXTS_JSON:-[]}" != "[]" ]]; then
+    # would classify advisory bots too. Not on a conflicting head: re-running
+    # checks there judges code that is about to be replaced by the merge.
+    if [[ "$CONFLICTING" -eq 0 && "$FAILING" -gt 0 && "${REQUIRED_CONTEXTS_JSON:-[]}" != "[]" ]]; then
       WATCH_HEAD_SHA=$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')
       if [[ -z "$WATCH_HEAD_SHA" ]]; then
         log "WARNING: PR #$PR_NUM has no head SHA in the snapshot (transient?); skipping this tick"; continue
@@ -6199,8 +6304,10 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
       esac
     fi
 
-    if [[ "$FAILING" -gt 0 || "$THREAD_COUNT" -gt 0 ]]; then
-      if [[ "$FAILING" -gt 0 ]]; then
+    if [[ "$FAILING" -gt 0 || "$THREAD_COUNT" -gt 0 || "$CONFLICTING" -eq 1 ]]; then
+      if [[ "$CONFLICTING" -eq 1 ]]; then
+        log "Issue #$ISSUE_NUM: PR #$PR_NUM conflicts with main → conflict pass"
+      elif [[ "$FAILING" -gt 0 ]]; then
         log "Issue #$ISSUE_NUM: PR #$PR_NUM has $FAILING failing check(s), $THREAD_COUNT open thread(s) → fix loop"
       else
         log "Issue #$ISSUE_NUM: PR #$PR_NUM is green but has $THREAD_COUNT open review thread(s) → fix loop"
@@ -6213,11 +6320,15 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
       if [[ "$ATTEMPTS" -ge "$FACTORY_MAX_ATTEMPTS" ]]; then
         log "Issue #$ISSUE_NUM: watch retry budget exhausted ($ATTEMPTS); advancing to Blocked"
         if [[ "$DRY_RUN" -eq 0 ]]; then
+          if [[ "$CONFLICTING" -eq 1 ]]; then
+            EXHAUSTED_WHAT="merge \`main\` into PR #$PR_NUM and resolve its conflicts"
+          else
+            EXHAUSTED_WHAT="get PR #$PR_NUM to green CI with every review thread answered"
+          fi
           gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
             --body "🏭 **Fix retry budget exhausted ($ATTEMPTS attempts).**
 
-The factory could not get PR #$PR_NUM to green CI with every review thread \
-answered after $ATTEMPTS fix passes. \
+The factory could not $EXHAUSTED_WHAT after $ATTEMPTS fix passes. \
 A human should take a look. Reset with \
 \`node scripts/lib/state-cli.mjs factory:reset-attempts $ISSUE_NUM\` once fixed.
 
@@ -6242,8 +6353,10 @@ A human should take a look. Reset with \
       [[ -n "$PLAN_COMMENT_JSON" ]] || PLAN_COMMENT_JSON="null"
       # Only the required failures the fix agent can act on — never hand it an
       # advisory bot's red (e.g. CodeRabbit) to "fix". Falls back to all reds
-      # when the required set is unknown.
-      CI_SUMMARY=$(pr_failing_required_summary "$PR_VIEW")
+      # when the required set is unknown. None on a conflict pass: they belong
+      # to the head the merge replaces, and the pass resolves the merge only.
+      CI_SUMMARY=""
+      [[ "$CONFLICTING" -eq 1 ]] || CI_SUMMARY=$(pr_failing_required_summary "$PR_VIEW")
       # Also drop the CodeRabbit CLI lane's PR-conversation summary (ADR-0036).
       # It lists the findings that did NOT become threads (lower severities,
       # outside the diff, next to an existing thread, past the thread cap,
@@ -6259,12 +6372,21 @@ A human should take a look. Reset with \
                     and ((.body // "") | contains("<!-- drafto-factory-cr-cli sha="))) | not)
           | { id: .id, user: { login: (.author.login // "") }, body: (.body // "") } ]')
       [[ -n "$UNRESOLVED" ]] || UNRESOLVED="[]"
+      # A conflict pass commits nothing but the merge, so it gets no feedback
+      # to act on; a later pass picks the comments up again.
+      [[ "$CONFLICTING" -eq 1 ]] && UNRESOLVED="[]"
 
-      if ! BUNDLE=$(build_watch_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PR_OBJ" "$CI_SUMMARY" "$UNRESOLVED" "$ATTEMPTS" "$COMMENTS_JSON" "$REVIEW_THREADS"); then
-        log "ERROR: build_watch_bundle failed for #$ISSUE_NUM"; continue
+      # A conflict pass builds its bundle after the merge, with the result in
+      # it (below); only a dry run, which never merges, needs one here.
+      BUNDLE=""
+      if [[ "$CONFLICTING" -eq 0 || "$DRY_RUN" -eq 1 ]]; then
+        if ! BUNDLE=$(build_watch_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PR_OBJ" "$CI_SUMMARY" "$UNRESOLVED" "$ATTEMPTS" "$COMMENTS_JSON" "$REVIEW_THREADS"); then
+          log "ERROR: build_watch_bundle failed for #$ISSUE_NUM"; continue
+        fi
       fi
 
       if [[ "$DRY_RUN" -eq 1 ]]; then
+        [[ "$CONFLICTING" -eq 1 ]] && log "DRY-RUN: would merge origin/main into PR #$PR_NUM's branch before invoking claude"
         log "DRY-RUN: watch bundle for #$ISSUE_NUM (printed to stdout only)"
         echo "$BUNDLE"; continue
       fi
@@ -6290,10 +6412,79 @@ A human should take a look. Reset with \
       cat "$WT_ERR_FILE" >>"$LOG_FILE" 2>/dev/null || true; rm -f "$WT_ERR_FILE"
       WT_PATH=$(echo "$WT_JSON" | jq -r '.path')
       log "Issue #$ISSUE_NUM: worktree $WT_PATH (branchReused=$(echo "$WT_JSON" | jq -r '.branchReused // false'), fromRemote=$(echo "$WT_JSON" | jq -r '.fromRemote // false'), base=$(echo "$WT_JSON" | jq -r '.base // ""'))"
+
+      # Conflict pass (ADR-0061): bash merges main in, before the install so
+      # the agent's checks run against the merged lockfile. What git merges on
+      # its own is pushed without a Claude run or an attempt; the agent gets
+      # the merge only when it stopped on conflicts or left two ADRs sharing a
+      # number. Every way out of the pass below rolls back what didn't land.
+      MERGE_JSON=""
+      MERGE_BEFORE=""
+      if [[ "$CONFLICTING" -eq 1 ]]; then
+        MERGE_ERR_FILE=$(mktemp -t factory-merge-err)
+        if ! MERGE_JSON=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" merge-main --path "$WT_PATH" 2>"$MERGE_ERR_FILE"); then
+          log "ERROR: merging main into PR #$PR_NUM failed for #$ISSUE_NUM: $(worktree_cli_error "$MERGE_ERR_FILE"); spending one attempt"
+          rm -f "$MERGE_ERR_FILE"
+          rollback_conflict_pass "$WT_PATH" ""
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          continue
+        fi
+        rm -f "$MERGE_ERR_FILE"
+        MERGE_STATUS=$(echo "$MERGE_JSON" | jq -r '.status // ""' 2>/dev/null || echo "")
+        MERGE_BEFORE=$(echo "$MERGE_JSON" | jq -r '.before // ""' 2>/dev/null || echo "")
+        ADR_CLASHES=$(echo "$MERGE_JSON" | jq '(.adrCollisions // []) | length' 2>/dev/null || echo "0")
+        [[ "$ADR_CLASHES" =~ ^[0-9]+$ ]] || ADR_CLASHES=0
+        log "Issue #$ISSUE_NUM: merged origin/main into PR #$PR_NUM's branch: $MERGE_STATUS (conflicted: $(echo "$MERGE_JSON" | jq -r '(.conflictedFiles // []) | join(", ")'); ADR clashes: $ADR_CLASHES)"
+        case "$MERGE_STATUS" in
+          unreachable)
+            # Nothing was touched; like a failed worktree resume, a network
+            # blip is no reason to spend the card's budget.
+            log "WARNING: couldn't fetch origin/main for PR #$PR_NUM ($(echo "$MERGE_JSON" | jq -r '.detail // "no detail"')); retrying next tick"
+            continue
+            ;;
+          up-to-date|clean)
+            if [[ "$ADR_CLASHES" -eq 0 ]]; then
+              if [[ "$(echo "$MERGE_JSON" | jq -r '.ahead')" == "true" ]]; then
+                if ! node "$SCRIPT_DIR/lib/worktree-cli.mjs" push --path "$WT_PATH" >>"$LOG_FILE" 2>&1; then
+                  log "WARNING: pushing the merge to PR #$PR_NUM failed; rolling it back, spending one attempt"
+                  rollback_conflict_pass "$WT_PATH" "$MERGE_BEFORE"
+                  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+                  continue
+                fi
+                log "Issue #$ISSUE_NUM: pushed the merge to PR #$PR_NUM; CI runs on the new head"
+              else
+                # GitHub's mergeability lags a push by a moment; nothing to do.
+                log "Issue #$ISSUE_NUM: PR #$PR_NUM already contains main; waiting for GitHub to recompute mergeability"
+              fi
+              continue
+            fi
+            ;;
+          conflicts) ;;
+          *)
+            log "ERROR: git refused to merge main into PR #$PR_NUM ($(echo "$MERGE_JSON" | jq -r '.detail // "no detail"')); spending one attempt"
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+            continue
+            ;;
+        esac
+        if ! BUNDLE=$(build_watch_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PR_OBJ" "$CI_SUMMARY" "$UNRESOLVED" "$ATTEMPTS" "$COMMENTS_JSON" "$REVIEW_THREADS" "$MERGE_JSON"); then
+          log "ERROR: build_watch_bundle (conflict pass) failed for #$ISSUE_NUM; rolling the merge back"
+          rollback_conflict_pass "$WT_PATH" "$MERGE_BEFORE"
+          continue
+        fi
+      fi
+
       copy_worktree_env "$WT_PATH"
       seed_worktree_node_modules "$WT_PATH"
-      log "Issue #$ISSUE_NUM: seeding node_modules (clonefile) + reconciling deps (--watch, slot $SLOT, cap ${INSTALL_TIMEOUT_SEC}s)"
-      run_pnpm_install "$WT_PATH" || log "WARNING: install failed/timed out for #$ISSUE_NUM --watch; proceeding"
+      # A package.json still holding conflict markers fails every install
+      # attempt, each up to the cap; the agent installs once it has resolved
+      # it. A conflicted pnpm-lock.yaml alone is fine: pnpm rewrites it.
+      if [[ "$CONFLICTING" -eq 1 ]] \
+          && echo "$MERGE_JSON" | jq -e '(.conflictedFiles // []) | any(test("(^|/)package\\.json$"))' >/dev/null 2>&1; then
+        log "Issue #$ISSUE_NUM: package.json conflicts; leaving the install to the agent after it resolves them"
+      else
+        log "Issue #$ISSUE_NUM: seeding node_modules (clonefile) + reconciling deps (--watch, slot $SLOT, cap ${INSTALL_TIMEOUT_SEC}s)"
+        run_pnpm_install "$WT_PATH" || log "WARNING: install failed/timed out for #$ISSUE_NUM --watch; proceeding"
+      fi
 
       CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
         "$WATCH_PROMPT_TEXT" "$BUNDLE")
@@ -6309,6 +6500,8 @@ A human should take a look. Reset with \
         [[ $EXIT_CODE -eq 124 ]] && log "WARNING: claude timed out for #$ISSUE_NUM --watch fix" \
           || log "ERROR: claude exited $EXIT_CODE for #$ISSUE_NUM --watch fix"
         cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
+        # Never leave the worktree mid-merge: the next tick's resume would refuse it.
+        [[ "$CONFLICTING" -eq 1 ]] && rollback_conflict_pass "$WT_PATH" "$MERGE_BEFORE"
         # Session limit (never a 124 timeout)? Pause until reset, don't bump.
         if [[ $EXIT_CODE -ne 124 ]] && check_session_limit "$WT_PATH" "$CLAUDE_START_ISO"; then
           rm -f "$CLAUDE_OUTPUT_FILE"
@@ -6324,6 +6517,32 @@ A human should take a look. Reset with \
       SUMMARY_LINE=$(grep -E '^issue=[0-9]+ action=[a-z]+ pr=[^ ]+$' "$CLAUDE_OUTPUT_FILE" | tail -1 || true)
       rm -f "$CLAUDE_OUTPUT_FILE"
       WACTION=$(echo "${SUMMARY_LINE:-}" | sed -E 's/.*action=([^ ]+).*/\1/')
+
+      # A conflict pass is judged by its result, not the agent's word. Only a
+      # pass that didn't land spends an attempt: a verified merge is progress,
+      # and charging it would let one resolution tip a card that spent its
+      # budget on CI fixes into Blocked. A run that can't resolve still ends
+      # there, after FACTORY_MAX_ATTEMPTS failed passes.
+      if [[ "$CONFLICTING" -eq 1 ]]; then
+        if [[ "$WACTION" == "fixed" ]] && conflict_pass_verified "$WT_PATH" "$PR_NUM" "$MERGE_JSON"; then
+          log "Issue #$ISSUE_NUM: conflict pass merged main into PR #$PR_NUM; leaving In Review for CI on the new head"
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastWatchAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        else
+          if [[ "$WACTION" == "fixed" ]]; then
+            log "WARNING: conflict pass for #$ISSUE_NUM said fixed, but $CONFLICT_PASS_WHY; rolling back, spending one attempt"
+          else
+            log "Issue #$ISSUE_NUM: conflict pass ended '${WACTION:-no directive}'; rolling back, spending one attempt"
+          fi
+          rollback_conflict_pass "$WT_PATH" "$MERGE_BEFORE"
+          if [[ "$WACTION" == "blocked" ]]; then
+            transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastError "watcher returned blocked (conflict pass)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          fi
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        fi
+        continue
+      fi
+
       case "$WACTION" in
         fixed)
           log "Issue #$ISSUE_NUM: pushed a fix; leaving In Review for CI re-check next tick"
@@ -6530,7 +6749,7 @@ A human should take a look. Reset with \
     if [[ -n "$INTEST_PR_OBJ" && "$INTEST_PR_OBJ" != "null" ]]; then
       INTEST_PR_NUM=$(echo "$INTEST_PR_OBJ" | jq -r '.number')
       INTEST_PR_VIEW=$(gh pr view "$INTEST_PR_NUM" --repo JakubAnderwald/drafto \
-        --json statusCheckRollup,comments,headRefOid 2>>"$LOG_FILE" || echo "")
+        --json statusCheckRollup,comments,headRefOid,mergeable 2>>"$LOG_FILE" || echo "")
       INTEST_HEAD_SHA=$(echo "${INTEST_PR_VIEW:-}" | jq -r '.headRefOid // ""' 2>/dev/null || echo "")
       if [[ -n "$INTEST_HEAD_SHA" ]]; then
         INTEST_FILES=$(gh pr diff "$INTEST_PR_NUM" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE" || echo "")
@@ -6545,6 +6764,18 @@ A human should take a look. Reset with \
         INTEST_PENDING_FEEDBACK=0
         if has_actionable_feedback "$COMMENTS_JSON" "$INTEST_HWM"; then
           INTEST_PENDING_FEEDBACK=1
+        fi
+
+        # Main moved under the PR and it no longer merges (ADR-0061): don't ask
+        # anyone to approve, or build a beta of, a head that has to change.
+        # Back to In Review, where --watch merges main in; the card returns with
+        # a fresh preview and scenario. Pending feedback goes first: the revision
+        # runs as usual and the conflict is resolved once it reaches In Review,
+        # so the reporter's comments are never dropped.
+        if [[ "$INTEST_PENDING_FEEDBACK" -eq 0 ]] \
+            && [[ "$(echo "${INTEST_PR_VIEW:-}" | jq -r '.mergeable // ""' 2>/dev/null)" == "CONFLICTING" ]]; then
+          conflict_handback "$ITEM_ID" "$ISSUE_NUM" "$INTEST_PR_NUM" "$INTEST_HEAD_SHA" "In Test" || true
+          continue
         fi
 
         # Learn how previously-dispatched lanes ended BEFORE deciding what to
@@ -6755,10 +6986,11 @@ fi
 #
 # The Approved drag is the human merge-authorisation gate (ADR-0026); --release
 # only ever acts on a card a human already moved. Anything that can't merge
-# cleanly (conflicts, missing migration approval, no PR, CI that couldn't run) is
-# left in Approved for the operator. The two exceptions need a code change, so
-# they hand the card back to In Review for the fix loop and re-require the
-# Approved drag: a genuinely red required check and an unresolved review thread.
+# cleanly (missing migration approval, no PR, CI that couldn't run) is left in
+# Approved for the operator. The three exceptions need a code change, so they
+# hand the card back to In Review for the fix loop and re-require the Approved
+# drag: a conflict with main (ADR-0061), a genuinely red required check, and an
+# unresolved review thread.
 # PHASE is guaranteed != "A" here (Phase A --release no-op'd at the gate above).
 if [[ "$MODE_RELEASE" -eq 1 ]]; then
   if ! APPROVED_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
@@ -6896,6 +7128,16 @@ PR #$PR_NUM $PARITY_VIOLATION, which this phase doesn't allow. The card stays in
       continue
     fi
 
+    # Conflict gate, ahead of the CI gate (ADR-0061). A conflicting head gets no
+    # pull_request CI, so behind the CI gate it would wait for checks that never
+    # come. Hand it back to --watch, which merges main in and resolves it; the
+    # diff changes, so the Approved drag is re-required (ADR-0026).
+    MERGEABLE=$(echo "$PR_VIEW" | jq -r '.mergeable // ""')
+    if [[ "$MERGEABLE" == "CONFLICTING" ]]; then
+      conflict_handback "$ITEM_ID" "$ISSUE_NUM" "$PR_NUM" "$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')" "Approved" || true
+      continue
+    fi
+
     # CI gate. A failing *required* check never parks the card silently (#654 sat
     # in Approved for days on checks GitHub had cancelled — ADR-0041):
     #  - never judged the code (no runner, or timed out while setting up): re-run
@@ -6955,21 +7197,6 @@ comes back to In Test for your approval once CI is green again.
       continue
     fi
 
-    MERGEABLE=$(echo "$PR_VIEW" | jq -r '.mergeable // ""')
-    if [[ "$MERGEABLE" == "CONFLICTING" ]]; then
-      log "Issue #$ISSUE_NUM: PR #$PR_NUM has merge conflicts; leaving for the operator"
-      if [[ "$DRY_RUN" -eq 0 ]] && ! issue_has_marker "$ISSUE_NUM" "drafto-factory-merge-conflict"; then
-        gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
-          --body "🏭 **Can't merge — the branch has conflicts.**
-
-PR #$PR_NUM no longer merges cleanly into \`main\`. Rebase/resolve it (or comment \
-a change request to have the factory revise it), then it merges on the next \
-cycle. The card stays in **Approved**.
-
-<!-- drafto-factory-merge-conflict -->" >>"$LOG_FILE" 2>&1 || true
-      fi
-      continue
-    fi
     if [[ "$MERGEABLE" != "MERGEABLE" ]]; then
       log "Issue #$ISSUE_NUM: PR #$PR_NUM mergeable=$MERGEABLE (GitHub still computing?); waiting"
       continue
