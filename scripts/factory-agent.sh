@@ -188,6 +188,17 @@ if ! [[ "$INSTALL_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
   INSTALL_TIMEOUT_SEC=600
 fi
 
+# Wall-clock cap per gh call, enforced by the gh() wrapper below. On #748 one
+# `gh issue comment` sat idle for 2+ days and, with nothing bounding it, held
+# the loop lock and froze every card until it was killed by hand. Exported so
+# the node helpers this script starts apply the same cap (lib/gh-timeout.mjs).
+FACTORY_GH_TIMEOUT_SEC="${FACTORY_GH_TIMEOUT_SEC:-120}"
+if ! [[ "$FACTORY_GH_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_GH_TIMEOUT_SEC='$FACTORY_GH_TIMEOUT_SEC'; defaulting to 120" >&2
+  FACTORY_GH_TIMEOUT_SEC=120
+fi
+export FACTORY_GH_TIMEOUT_SEC
+
 # Minimum free disk (whole GiB) on the worktree volume before the factory will
 # start implementing a card. Below this, the card is parked in Blocked with a
 # comment rather than failing mid-build on a full disk (#451). The clonefile
@@ -541,6 +552,16 @@ OAUTH_USER_EMAIL="${OAUTH_USER_EMAIL:-support@drafto.eu}"
 # ── Paths, logs, lock ───────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Every gh call in this script, in $(…) and in the sourced lib/*.sh included,
+# goes through this function, so none can hang a tick past
+# FACTORY_GH_TIMEOUT_SEC. run-with-timeout.mjs runs the real binary from PATH
+# with stdio inherited, SIGTERMs it at the cap (gh is a Go program: TERM ends
+# it, SIGALRM wouldn't) and exits 124, which every caller already handles as
+# a failed gh call. Use `type -P gh`, not `command -v gh`, to test for the
+# binary: the function makes the latter always succeed.
+gh() {
+  node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$FACTORY_GH_TIMEOUT_SEC" gh "$@"
+}
 # The In Test scenario writer's prompt. Defined here (not only inside --watch) so
 # intest_handoff can reference it without tripping `set -u`. A missing file
 # degrades to the deterministic fallback comment rather than failing the mode —
@@ -667,7 +688,7 @@ cleanup() {
     local sanitized_log
     sanitized_log=$(grep -E '^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]' "$LOG_FILE" 2>/dev/null | tail -20 \
       || echo "No log available")
-    if command -v gh &>/dev/null; then
+    if type -P gh &>/dev/null; then
       gh issue create \
         --repo JakubAnderwald/drafto \
         --title "factory-agent --$MODE_NAME failed ($(date +%Y-%m-%d))" \

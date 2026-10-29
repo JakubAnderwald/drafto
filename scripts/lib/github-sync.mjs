@@ -48,6 +48,7 @@
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { promisify } from "node:util";
+import { ghTimeoutMs } from "./gh-timeout.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 import { parseIssueFooter } from "./parse-issue-footer.mjs";
@@ -114,8 +115,12 @@ async function runGh(args) {
   for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
     try {
       // 16 MiB output cap — gh api --paginate can return large JSON arrays for
-      // long-lived issues; the default 1 MiB cap was hit during dev.
-      const { stdout } = await fn("gh", args, { maxBuffer: 16 * 1024 * 1024 });
+      // long-lived issues; the default 1 MiB cap was hit during dev. A hung gh
+      // is SIGTERMed at the cap and fails fast, unretried (gh-timeout.mjs).
+      const { stdout } = await fn("gh", args, {
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: ghTimeoutMs(),
+      });
       return stdout;
     } catch (err) {
       lastError = err;
