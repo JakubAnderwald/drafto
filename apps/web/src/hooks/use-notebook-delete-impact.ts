@@ -39,7 +39,7 @@ async function fetchList<T>(url: string): Promise<T[] | null> {
   if (handleAuthError(res)) return null;
   if (!res.ok) throw new Error(`Failed to load ${url}: ${res.status}`);
   const body: unknown = await res.json();
-  if (!Array.isArray(body)) throw new Error(`Expected a list from ${url}`);
+  if (!Array.isArray(body)) throw new TypeError(`Expected a list from ${url}`);
   return body as T[];
 }
 
@@ -91,7 +91,7 @@ export function useNotebookDeleteImpact(notebookId: string | null): NotebookDele
     if (!notebookId) return;
     let cancelled = false;
 
-    checkTrashedNotes(notebookId).then((warnTrashedNotes) => {
+    void checkTrashedNotes(notebookId).then((warnTrashedNotes) => {
       if (cancelled || warnTrashedNotes === null) return;
       setResult({ notebookId, warnTrashedNotes });
     });
