@@ -84,7 +84,7 @@ You will receive a single JSON bundle (last fenced ` ```json ` block). Shape:
     "dispatched": [ { "id": "mobile", "command": "pnpm release:beta:all" } ],
     "skipped":    [ { "id": "desktop", "reason": "..." } ],
     // Keyed by platform — match on `id`, never on list order.
-    "manualCommands": [ { "id": "desktop", "command": "cd /Users/jakub/code/drafto-beta-desktop && ..." } ]
+    "manualCommands": [ { "id": "desktop", "command": "cd /Volumes/DraftoFactory/drafto-beta-desktop && ..." } ]
   },
   "config": { "phase": "C", ... },
   "repo": { "nameWithOwner": "JakubAnderwald/drafto", "headRef": "main" },

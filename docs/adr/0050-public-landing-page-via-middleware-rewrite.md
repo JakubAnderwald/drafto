@@ -4,6 +4,8 @@
 - **Date**: 2026-10-17
 - **Authors**: Jakub Anderwald, with Claude Code
 
+> **Amended by [ADR-0059](./0059-keep-login-page-out-of-search-index.md)** (2026-10-26): Google kept choosing `/` as the canonical for `/login` even after the landing page shipped, so `/login` is now noindex and out of the sitemap. The landing page and the rewrite are unchanged.
+
 ## Context
 
 drafto.eu had no home page for signed-out visitors. The session middleware answered signed-out `/` with a 307 to `/login`. The redirect had to be temporary, because signed-in users get the app at the same URL.

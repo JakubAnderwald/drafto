@@ -2,7 +2,7 @@ import { NativeModules } from "react-native";
 
 /**
  * The in-project `DraftoCrypto` native module (`macos/Drafto-macOS/DraftoCrypto.mm`,
- * ADR-0059). Bytes cross the bridge as plain arrays of numbers (0–255); a typed
+ * ADR-0062). Bytes cross the bridge as plain arrays of numbers (0–255); a typed
  * array would arrive natively as a dictionary.
  *
  * Pass exactly the declared arguments. The interop layer converts them before its

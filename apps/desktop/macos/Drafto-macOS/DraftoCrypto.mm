@@ -29,7 +29,7 @@ RCT_EXPORT_MODULE();
 
 // Blocking and synchronous because getRandomValues is: auth-js fills its
 // verifier inline and reads it on the next line. A pre-seeded JS pool was
-// rejected (ADR-0059): it needs refill logic and keeps future secret bytes on
+// rejected (ADR-0062): it needs refill logic and keeps future secret bytes on
 // the JS heap, while a sync call costs one JS-thread round trip per sign-in.
 // Under the new-architecture interop layer it runs inline on the JS thread, so
 // keep it cheap.

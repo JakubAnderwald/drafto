@@ -31,11 +31,12 @@ The invariant is about the **installed React version**, not about one blessed di
   desktop build.
 - Build desktop releases from that checkout's existing `node_modules`:
   `cd apps/desktop && pnpm release:beta`.
-- **Nor in `/Users/jakub/code/drafto-beta-desktop`** — the factory's desktop build root. Its
-  `node_modules` is a byte-faithful APFS clonefile copy of the fossil (the repo is
+- **Nor in `/Volumes/DraftoFactory/drafto-beta-desktop`** — the factory's desktop build root on
+  its build volume ([ADR-0060](../adr/0060-dedicated-factory-build-volume.md)). Its
+  `node_modules` is a byte-faithful copy of the fossil (the repo is
   `node-linker=hoisted`, so packages are real directories rather than store symlinks — the only
-  symlinks are the relative ones under `.bin/`, which keep resolving inside the copy, so the clone is
-  faithful and costs ~0 bytes). The
+  symlinks are the relative ones under `.bin/`, which keep resolving inside the copy, so the copy is
+  faithful). The
   factory hard-resets that worktree's _source_ to the commit under test but never reinstalls its
   dependencies. Installing there recreates the 19.2 breakage.
 - **Enforced in code.** `assertDesktopFossil()` in `scripts/lib/dispatch-release.mjs` reads the

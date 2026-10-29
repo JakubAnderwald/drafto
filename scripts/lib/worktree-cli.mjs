@@ -15,10 +15,20 @@
 //   - worktree: <repoRoot>/worktrees/factory-issue-<n>
 //
 // Commands (each prints a single JSON object, or an array for `list`):
-//   add    --issue <n> [--base <ref>] [--root <repoRoot>] [--fetch]
-//   remove --issue <n> [--root <repoRoot>] [--force] [--delete-branch]
-//   path   --issue <n> [--root <repoRoot>]
-//   list   [--root <repoRoot>]
+//   add         --issue <n> [--base <ref>] [--root <repoRoot>] [--fetch]
+//   remove      --issue <n> [--root <repoRoot>] [--force] [--delete-branch]
+//   path        --issue <n> [--root <repoRoot>]
+//   list        [--root <repoRoot>]
+//   merge-main  --path <worktree> [--main <branch>]
+//   merge-abort --path <worktree> [--to <sha>]
+//   merge-check --path <worktree> --main-sha <sha> [--files-json '["a","b"]']
+//   push        --path <worktree>
+//
+// The merge-* commands and `push` are the --watch conflict pass (ADR-0061):
+// bash starts the merge of origin/main into a PR branch that GitHub reports as
+// CONFLICTING, the agent resolves what git couldn't, and bash checks the
+// result. Bash, not the agent, starts merges, so a run never ends mid-merge
+// with nobody to clean up.
 //
 // `add` is idempotent, resolving the branch in four tiers so a revision run
 // always lands on the PR's own commits:
@@ -47,6 +57,7 @@ import path from "node:path";
 import { existsSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./is-main.mjs";
+import { ADR_DIR, newAdrCollisions, nextFreeAdrNumber } from "./adr-numbers.mjs";
 
 // Canonicalise a path for comparison: git stores worktree paths fully
 // resolved (e.g. macOS /var → /private/var), so a raw path.resolve compare
@@ -427,7 +438,261 @@ export function removeWorktree({
   };
 }
 
+// ── Merging main into a PR branch (ADR-0061) ───────────────────────────────
+
+// MERGE_HEAD is a per-worktree ref, so this sees only this worktree's merge.
+function mergeInProgress(wtPath) {
+  return revParse(wtPath, "MERGE_HEAD") !== null;
+}
+
+function unmergedFiles(wtPath) {
+  const res = git(["diff", "--name-only", "--diff-filter=U"], { cwd: wtPath, allowFail: true });
+  return [
+    ...new Set(
+      String(res.stdout ?? "")
+        .split("\n")
+        .map((f) => f.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function currentBranch(wtPath) {
+  const res = git(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: wtPath, allowFail: true });
+  return res.status === 0 ? res.stdout.trim() : null;
+}
+
+// ADR file names in <ref>'s tree, so a collision main already has can be told
+// apart from one this merge created (adr-numbers.mjs newAdrCollisions).
+function adrFileNamesAt(wtPath, ref) {
+  if (!ref) return [];
+  const res = git(["ls-tree", "--name-only", ref, `${ADR_DIR}/`], { cwd: wtPath, allowFail: true });
+  if (res.status !== 0) return [];
+  return String(res.stdout)
+    .split("\n")
+    .filter(Boolean)
+    .map((f) => path.basename(f));
+}
+
+// Does HEAD carry commits origin/<branch> doesn't? Reads the remote-tracking
+// ref, which `add --fetch` refreshed earlier in the same tick.
+function hasUnpushedCommits(wtPath, branch) {
+  const head = revParse(wtPath, "HEAD");
+  const remote = revParse(wtPath, `refs/remotes/origin/${branch}`);
+  if (!head) return false;
+  if (!remote) return true;
+  return head !== remote && !isAncestor(wtPath, head, remote);
+}
+
+// ADR file names git is tracking in the index, which mid-merge holds both
+// sides' added files. Untracked strays (a copy a failed pass left behind) are
+// not part of any commit, so they must not count as a clash.
+function adrFileNamesInIndex(wtPath) {
+  const res = git(["ls-files", "--", `${ADR_DIR}/`], { cwd: wtPath, allowFail: true });
+  if (res.status !== 0) return [];
+  // A conflicted path is listed once per stage; one name is one file.
+  return [
+    ...new Set(
+      String(res.stdout)
+        .split("\n")
+        .filter(Boolean)
+        .map((f) => path.basename(f)),
+    ),
+  ];
+}
+
+function adrState(files, wtPath, mainSha) {
+  return {
+    adrCollisions: newAdrCollisions(files, adrFileNamesAt(wtPath, mainSha)),
+    nextFreeAdr: nextFreeAdrNumber(files),
+  };
+}
+
+function firstLine(res) {
+  return String(res.stderr || res.stdout || "")
+    .trim()
+    .split("\n")[0];
+}
+
+// Fetch origin/<mainBranch> and merge it into the worktree's branch. The
+// statuses:
+//   up-to-date — main is already in the branch; nothing changed
+//   clean      — git merged it on its own and committed the merge
+//   conflicts  — the merge is left in progress for the agent to resolve
+//   error      — git refused to merge (e.g. a dirty tree); the tree is as before
+//   unreachable — origin/main couldn't be fetched; nothing was touched. It is
+//                 transient, so the caller retries without spending budget.
+// `adrCollisions` lists numbers the merge left on two ADR files that main
+// doesn't itself duplicate — a clean merge can produce one, so it is reported
+// for every status. `ahead` says whether HEAD still has to be pushed.
+export function mergeMain({ wtPath, mainBranch = "main" } = {}) {
+  if (!wtPath) throw new Error("mergeMain requires a worktree path");
+  if (mergeInProgress(wtPath)) {
+    throw new Error(`a merge is already in progress in ${wtPath}; run merge-abort first`);
+  }
+  const branch = currentBranch(wtPath);
+  if (!branch) throw new Error(`${wtPath} is on a detached HEAD; refusing to merge into it`);
+
+  // Resumed worktrees never refresh main on their own (see `add` tier 4), so
+  // without this fetch the merge would bring in whatever main was at the last
+  // release and GitHub would still report the PR as conflicting.
+  const mainRef = `refs/remotes/origin/${mainBranch}`;
+  const fetched = git(["fetch", "origin", `+refs/heads/${mainBranch}:${mainRef}`], {
+    cwd: wtPath,
+    allowFail: true,
+    timeoutMs: NETWORK_TIMEOUT_MS,
+  });
+  if (fetched.status !== 0) {
+    return { status: "unreachable", branch, detail: firstLine(fetched) };
+  }
+  const mainSha = revParse(wtPath, mainRef);
+  const before = revParse(wtPath, "HEAD");
+  // The short name keeps git's default message readable: "Merge
+  // remote-tracking branch 'origin/main' into factory/issue-<n>".
+  const res = git(["merge", "--no-edit", `origin/${mainBranch}`], {
+    cwd: wtPath,
+    allowFail: true,
+  });
+
+  // `before` is what merge-abort --to rolls back to if the pass fails.
+  const base = { branch, mainSha, before };
+  if (res.status === 0) {
+    const status = revParse(wtPath, "HEAD") === before ? "up-to-date" : "clean";
+    return {
+      status,
+      ...base,
+      conflictedFiles: [],
+      ...adrState(adrFileNamesInIndex(wtPath), wtPath, mainSha),
+      ahead: hasUnpushedCommits(wtPath, branch),
+    };
+  }
+  const conflicted = mergeInProgress(wtPath) ? unmergedFiles(wtPath) : [];
+  if (conflicted.length > 0) {
+    return {
+      status: "conflicts",
+      ...base,
+      conflictedFiles: conflicted,
+      ...adrState(adrFileNamesInIndex(wtPath), wtPath, mainSha),
+      ahead: true,
+    };
+  }
+  // Leave the worktree exactly as it was: the next tick's `add` refuses to
+  // fast-forward a dirty tree, and a half-merge nobody owns would be one.
+  abortMerge({ wtPath });
+  return {
+    status: "error",
+    ...base,
+    detail: firstLine(res),
+    conflictedFiles: [],
+    adrCollisions: [],
+    ahead: false,
+  };
+}
+
+// Abort an unfinished merge, if there is one. Safe to call at any time.
+//
+// With `to` (the HEAD merge-main started from), also roll back a pass whose
+// result never reached origin: reset to `to`, dropping whatever HEAD carries
+// that origin lacks (an unpushed merge, or an amend that rewrote history), then
+// remove the untracked files the pass left. Without this, a local merge commit
+// the PR never received leaves the branch diverged as soon as anyone else
+// pushes, and `add` refuses a diverged worktree on every later tick; a stray
+// file can block the next merge outright. Ignored files (env, node_modules)
+// are kept, and a HEAD that did reach origin is never touched.
+export function abortMerge({ wtPath, to } = {}) {
+  if (!wtPath) throw new Error("abortMerge requires a worktree path");
+  const aborted = mergeInProgress(wtPath)
+    ? git(["merge", "--abort"], { cwd: wtPath, allowFail: true }).status === 0
+    : false;
+  if (!to) return { aborted };
+
+  const head = revParse(wtPath, "HEAD");
+  const branch = currentBranch(wtPath);
+  const onlyLocal = head === to || (branch !== null && hasUnpushedCommits(wtPath, branch));
+  if (!onlyLocal) return { aborted, rolledBackTo: null };
+  git(["reset", "--hard", "--quiet", to], { cwd: wtPath });
+  git(["clean", "-fd", "--quiet"], { cwd: wtPath, allowFail: true });
+  return { aborted, rolledBackTo: to };
+}
+
+// A conflict marker left in a file the agent `git add`ed still commits. Only
+// the opening and closing markers count: a bare "=======" is also a Markdown
+// heading underline.
+const CONFLICT_MARKER = /^(<{7}|>{7})( |$)/m;
+
+function filesWithMarkers(wtPath, files) {
+  return files.filter((file) => {
+    const res = git(["show", `HEAD:${file}`], { cwd: wtPath, allowFail: true });
+    return res.status === 0 && CONFLICT_MARKER.test(String(res.stdout));
+  });
+}
+
+// What bash checks after the agent says it resolved the merge. `files` is the
+// conflicted-file list merge-main returned. Everything is judged on HEAD — the
+// commit bash will push — never the working tree: the resolution is accepted
+// only when the merge is committed, nothing tracked is left uncommitted, main
+// is in HEAD, none of those files kept a conflict marker, and HEAD's ADRs share
+// no number main doesn't already duplicate.
+export function checkMerge({ wtPath, mainSha, files = [] } = {}) {
+  if (!wtPath) throw new Error("checkMerge requires a worktree path");
+  const head = revParse(wtPath, "HEAD");
+  const inProgress = mergeInProgress(wtPath);
+  const unmerged = inProgress ? unmergedFiles(wtPath) : [];
+  // No allowFail: a status that can't be read must fail the check (the CLI
+  // exits non-zero), never pass as "nothing uncommitted".
+  const uncommitted = String(
+    git(["status", "--porcelain", "--untracked-files=no"], { cwd: wtPath }).stdout ?? "",
+  )
+    .split("\n")
+    .map((l) => l.slice(3).trim())
+    .filter(Boolean);
+  const mainIsAncestor = Boolean(mainSha && head && isAncestor(wtPath, mainSha, head));
+  const markers = filesWithMarkers(wtPath, files);
+  const { adrCollisions } = adrState(adrFileNamesAt(wtPath, "HEAD"), wtPath, mainSha);
+  return {
+    head,
+    inProgress,
+    unmergedFiles: unmerged,
+    uncommittedFiles: uncommitted,
+    mainIsAncestor,
+    filesWithMarkers: markers,
+    adrCollisions,
+    resolved:
+      !inProgress &&
+      uncommitted.length === 0 &&
+      mainIsAncestor &&
+      markers.length === 0 &&
+      adrCollisions.length === 0,
+  };
+}
+
+// Push HEAD to the branch's own ref on origin. Only factory branches: this
+// runs unattended, and a worktree that somehow sits on main must never push.
+export function pushBranch({ wtPath } = {}) {
+  if (!wtPath) throw new Error("pushBranch requires a worktree path");
+  const branch = currentBranch(wtPath);
+  if (!branch || !/^factory\/issue-\d+$/.test(branch)) {
+    throw new Error(`refusing to push ${branch ?? "a detached HEAD"}: not a factory branch`);
+  }
+  git(["push", "origin", `HEAD:refs/heads/${branch}`], {
+    cwd: wtPath,
+    timeoutMs: NETWORK_TIMEOUT_MS,
+  });
+  const head = revParse(wtPath, "HEAD");
+  // Keep the remote-tracking ref level with what we just pushed, so a later
+  // merge-main in the same tick doesn't report the branch as still ahead.
+  git(["update-ref", `refs/remotes/origin/${branch}`, head], { cwd: wtPath, allowFail: true });
+  return { pushed: true, branch, head };
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────────
+
+function parseFileList(json) {
+  if (!json) return [];
+  const list = JSON.parse(json);
+  if (!Array.isArray(list)) throw new Error("--files-json must be a JSON array of paths");
+  return list.filter((f) => typeof f === "string" && f.length > 0);
+}
 
 // Local arg parser: parse-flags.mjs throws on value-less flags, but `add` /
 // `remove` take the boolean flags --force / --delete-branch, so we walk argv
@@ -475,13 +740,28 @@ function main(argv) {
       return { path: worktreePathForIssue(root, flags.issue), branch: branchForIssue(flags.issue) };
     case "list":
       return listFactoryWorktrees(root);
+    case "merge-main":
+      return mergeMain({ wtPath: flags.path, mainBranch: flags.main ?? "main" });
+    case "merge-abort":
+      return abortMerge({ wtPath: flags.path, to: flags.to });
+    case "merge-check":
+      return checkMerge({
+        wtPath: flags.path,
+        mainSha: flags["main-sha"],
+        // JSON, not a delimited list: a path may contain any delimiter.
+        files: parseFileList(flags["files-json"]),
+      });
+    case "push":
+      return pushBranch({ wtPath: flags.path });
     case "--help":
     case "-h":
     case undefined:
       process.stdout.write(
         "Usage: worktree-cli.mjs <add --issue <n> [--base <ref>] [--root <dir>] [--fetch]|" +
           "remove --issue <n> [--root <dir>] [--force] [--delete-branch]|" +
-          "path --issue <n> [--root <dir>]|list [--root <dir>]>\n",
+          "path --issue <n> [--root <dir>]|list [--root <dir>]|" +
+          "merge-main --path <wt> [--main <branch>]|merge-abort --path <wt> [--to <sha>]|" +
+          "merge-check --path <wt> --main-sha <sha> [--files-json <json array>]|push --path <wt>>\n",
       );
       return null;
     default:

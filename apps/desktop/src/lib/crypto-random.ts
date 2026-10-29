@@ -152,7 +152,7 @@ function addMember(target: InstalledCrypto, name: keyof InstalledCrypto, value: 
 /**
  * Gives supabase-js a cryptographic random source for its PKCE `code_verifier`,
  * and SHA-256 for an S256 challenge, from the in-project `DraftoCrypto` native
- * module (ADR-0059).
+ * module (ADR-0062).
  *
  * Hermes on react-native-macos has no global `crypto`, and without one
  * supabase-js builds the verifier from `Math.random()` and sends it as a

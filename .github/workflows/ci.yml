@@ -15,10 +15,16 @@ env:
   SKIP_ENV_VALIDATION: "true"
   TURBO_TELEMETRY_DISABLED: 1
 
+# Every job has a timeout well above its usual run on main (about 5 minutes for
+# E2E, 1 to 2 for the rest). Without one GitHub waits 6 hours, so a hung job holds
+# the PR's checks that long. The factory re-runs a job that timed out in a step
+# that can't be the code's fault (classify_failing_required in
+# scripts/factory-agent.sh, ADR-0041).
 jobs:
   lint-and-typecheck:
     name: Lint & Typecheck
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -81,6 +87,7 @@ jobs:
   unit-and-integration-tests:
     name: Unit & Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -101,6 +108,16 @@ jobs:
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Playwright's own image already has the browsers and the system libraries
+    # they need. Installing them per run (`playwright install --with-deps`)
+    # fetched those libraries from Ubuntu's mirror, which on a slow day took 15+
+    # minutes. Keep the tag equal to the locked @playwright/test version (a
+    # scripts test checks it). --user 1001 is the runner's own user, as
+    # Playwright's CI docs recommend, so the checkout stays writable.
+    container:
+      image: mcr.microsoft.com/playwright:v1.63.0-noble
+      options: --user 1001
     steps:
       - name: Check for required secrets
         id: check-secrets
@@ -121,8 +138,6 @@ jobs:
           node-version-file: ".nvmrc"
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
-        if: steps.check-secrets.outputs.has_secrets == 'true'
-      - run: cd apps/web && pnpm exec playwright install --with-deps chromium webkit
         if: steps.check-secrets.outputs.has_secrets == 'true'
       - run: cd apps/web && pnpm build
         if: steps.check-secrets.outputs.has_secrets == 'true'
@@ -165,6 +180,7 @@ jobs:
   mobile-checks:
     name: Mobile Checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -183,6 +199,7 @@ jobs:
   desktop-checks:
     name: Desktop Checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -201,6 +218,7 @@ jobs:
   scripts-tests:
     name: Scripts Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -215,6 +233,7 @@ jobs:
   sonarcloud:
     name: SonarCloud
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: unit-and-integration-tests
     steps:
       - uses: actions/checkout@v4

@@ -29,15 +29,15 @@
 #   BETA_FETCH_TIMEOUT_SEC  DRAFTO_BETA_FETCH_TIMEOUT_SEC  (default 300)
 #   BETA_BUNDLE_CHECK_TIMEOUT_SEC  DRAFTO_BETA_BUNDLE_CHECK_TIMEOUT_SEC  (default 120)
 #
-# The DESKTOP root defaults to the external build volume when it is mounted
-# (that is where the Mac mini keeps it), else beside the checkouts in ~/code.
-# The MOBILE root always defaults to ~/code/drafto-beta-mobile: its iOS lane
-# cannot build from a path with non-ASCII bytes. React Native 0.83's CocoaPods
-# scripts (rncore.rb / rndependencies.rb) build file URLs with URI::File.build,
-# which rejects them ("bad component(expected absolute path component)"), so
-# `pod install` fails on the volume's "Zewnętrzny" mount point. That is what
-# broke the first nightly iOS beta (#658, 2026-10-09); ensure_beta_build_root
-# refuses such a mobile root outright (see ADR-0042).
+# Both roots default to the factory's build volume when it is mounted (that is
+# where the Mac mini keeps them, beside the factory checkout and the pnpm store),
+# else beside the checkouts in ~/code. The volume has an ASCII name on purpose:
+# the mobile root's iOS lane cannot build from a path with non-ASCII bytes. React
+# Native 0.83's CocoaPods scripts (rncore.rb / rndependencies.rb) build file URLs
+# with URI::File.build, which rejects them ("bad component(expected absolute path
+# component)"). That broke the first nightly iOS beta (#658, 2026-10-09) on the
+# old "Zewnętrzny" volume; ensure_beta_build_root still refuses such a mobile
+# root outright (see ADR-0042 and ADR-0060).
 #
 # macOS /bin/bash 3.2 compatible: no ${VAR,,}, no declare -A, no mapfile.
 
@@ -52,7 +52,7 @@
 # caller's checkout — ensure_beta_build_root refuses to touch either, because a
 # `reset --hard` there would destroy the operator's working tree and any
 # uncommitted edits in it.
-BETA_BUILDS_VOLUME_DIR="${DRAFTO_BUILDS_VOLUME_DIR:-/Volumes/Zewnętrzny/drafto-builds}"
+BETA_BUILDS_VOLUME_DIR="${DRAFTO_BUILDS_VOLUME_DIR:-/Volumes/DraftoFactory}"
 DESKTOP_FOSSIL_ROOT="${DRAFTO_DESKTOP_FOSSIL_ROOT:-/Users/jakub/code/drafto}"
 # Wall-clock cap for the one network call made while a build-root lock is held.
 BETA_FETCH_TIMEOUT_SEC="${DRAFTO_BETA_FETCH_TIMEOUT_SEC:-300}"
@@ -60,19 +60,25 @@ BETA_FETCH_TIMEOUT_SEC="${DRAFTO_BETA_FETCH_TIMEOUT_SEC:-300}"
 # keeps a wedged ruby from holding the build-root lock (see ensure_beta_build_root).
 BETA_BUNDLE_CHECK_TIMEOUT_SEC="${DRAFTO_BETA_BUNDLE_CHECK_TIMEOUT_SEC:-120}"
 
+# Whether the build volume is mounted and usable. Writable, not just present:
+# after an unclean eject macOS can leave a stale, root-owned mount-point
+# directory behind, and building "on the volume" there would only fail.
+build_volume_mounted() {
+  [[ -d "$BETA_BUILDS_VOLUME_DIR" && -w "$BETA_BUILDS_VOLUME_DIR" ]]
+}
+
 # (Re)compute BETA_MOBILE_ROOT / BETA_DESKTOP_ROOT. Runs once at source time; a
 # long-running caller re-runs it right before preparing a root, because "is the
 # build volume mounted" can change between the two (nightly-support.sh sources
 # at 00:03 and reaches its builds hours later).
 resolve_beta_build_roots() {
   local parent
-  if [[ -d "$BETA_BUILDS_VOLUME_DIR" ]]; then
+  if build_volume_mounted; then
     parent="$BETA_BUILDS_VOLUME_DIR"
   else
     parent="/Users/jakub/code"
   fi
-  # Mobile never follows the volume: iOS pods need an ASCII path (see header).
-  BETA_MOBILE_ROOT="${DRAFTO_BETA_MOBILE_ROOT:-/Users/jakub/code/drafto-beta-mobile}"
+  BETA_MOBILE_ROOT="${DRAFTO_BETA_MOBILE_ROOT:-$parent/drafto-beta-mobile}"
   BETA_DESKTOP_ROOT="${DRAFTO_DESKTOP_BUILD_ROOT:-$parent/drafto-beta-desktop}"
 }
 resolve_beta_build_roots
@@ -104,9 +110,12 @@ copy_worktree_env() {
 }
 
 # Seed a fresh worktree's node_modules from the main checkout via APFS clonefile
-# (`cp -c`: O(1), copy-on-write, same volume). The pnpm store lives on an
-# external volume on the Mac mini, so a cold `pnpm install` cross-device-copies
-# ~2000 packages and ran for 3.5+ hours on #451. Cloning the main checkout's
+# (`cp -c`: O(1), copy-on-write, same volume). A cold `pnpm install` into a
+# checkout on a different volume from the pnpm store cross-device-copies ~2000
+# packages: it ran for 3.5+ hours on #451, when the store was on the external
+# drive and the factory's checkouts were not (ADR-0060 moved them all onto the
+# store's volume). The desktop root still seeds across volumes, from the fossil
+# on the internal disk. Cloning the main checkout's
 # already-materialized trees turns the subsequent install into a fast offline
 # reconcile that adds ~0 bytes. Best-effort: on any failure the partial dir is
 # removed and `pnpm install` repopulates it normally. Only the pnpm workspace
@@ -206,7 +215,7 @@ ensure_beta_build_root() {
   # non-ASCII path (see the header). Fail before touching anything rather than
   # spend a full Android build only to die in `pod install`.
   if [[ "$platform" == "mobile" ]] && printf '%s' "$root" | LC_ALL=C grep -q '[^ -~]'; then
-    logerr "ERROR: refusing mobile beta build root $root — it contains non-ASCII characters, and React Native 0.83's iOS pods reject non-ASCII paths (URI::File.build). Set DRAFTO_BETA_MOBILE_ROOT to an ASCII path, e.g. /Users/jakub/code/drafto-beta-mobile."
+    logerr "ERROR: refusing mobile beta build root $root — it contains non-ASCII characters, and React Native 0.83's iOS pods reject non-ASCII paths (URI::File.build). Set DRAFTO_BETA_MOBILE_ROOT to an ASCII path, e.g. /Volumes/DraftoFactory/drafto-beta-mobile."
     return 1
   fi
 

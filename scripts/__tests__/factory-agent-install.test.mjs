@@ -211,3 +211,54 @@ describe("seed_worktree_node_modules (real helper, macOS clonefile)", () => {
     },
   );
 });
+
+describe("free_disk_gb (real helper, stubbed df)", () => {
+  // ADR-0060 put the factory checkout on an external build volume, so the guard
+  // must report the fuller of that volume and the internal disk behind $HOME.
+  // A fake `df` on PATH prints one data row per path, in the order asked.
+  function runFreeDisk(rowsKb) {
+    const fn = script.match(/free_disk_gb\(\) \{[\s\S]*?\n\}/);
+    assert.ok(fn, "could not extract free_disk_gb from the script");
+    const bin = mkdtempSync(join(tmpdir(), "factory-df-"));
+    try {
+      const rows = rowsKb.map((kb, i) => `/dev/disk${i} 999999999 1 ${kb} 1% /mnt/${i}\n`);
+      writeFileSync(
+        join(bin, "df"),
+        `#!/bin/bash\ncat <<'ROWS'\nFilesystem 1024-blocks Used Available Capacity Mounted\n${rows.join("")}ROWS\n`,
+        { mode: 0o755 },
+      );
+      const harness = [
+        "set -euo pipefail",
+        "REPO_ROOT=/build-volume/drafto-factory",
+        "HOME=/Users/someone",
+        fn[0],
+        "free_disk_gb",
+      ].join("\n");
+      return spawnSync("bash", ["-c", harness], {
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      });
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
+    }
+  }
+
+  const GB = 1024 * 1024; // df -Pk reports 1024-byte blocks
+
+  it("asks df about both the repo root and $HOME", () => {
+    assert.match(script, /df -Pk "\$REPO_ROOT" "\$HOME"/);
+  });
+
+  it("reports the smaller of the two volumes", () => {
+    const res = runFreeDisk([563 * GB, 21 * GB]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(res.stdout.trim(), "21");
+    assert.equal(runFreeDisk([12 * GB, 40 * GB]).stdout.trim(), "12");
+  });
+
+  it("prints nothing when df gives no data rows, so callers skip the guard", () => {
+    const res = runFreeDisk([]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(res.stdout.trim(), "");
+  });
+});

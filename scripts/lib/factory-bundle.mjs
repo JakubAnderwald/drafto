@@ -64,6 +64,10 @@
 //     "repo":     { "nameWithOwner", "headRef" },
 //     "replan"?:  { "planCommentId", "planCommentUrl", "planCommentBody",
 //                   "triggerCommentIds": [<id>, ...] }
+//                   plus "replyMarkers": [{ "commentId", "marker" }], one
+//                   drafto-factory-plan-reply-<id> per trigger comment that
+//                   needs an answer, and "replyDir", where the planner writes
+//                   the replies)
 //   }
 //
 // `replan` is set only when the bash side detected unacked OWNER comments
@@ -78,7 +82,8 @@
 //     "approvedPlan":  { "commentId", "url", "body", "createdAt" },
 //     "comments":      [...],
 //     "revisionComments": [...],
-//     "replyMarker":   "drafto-factory-revise-reply-<commentId>" | null,
+//     "replyMarkers":  [{ "commentId", "marker": "drafto-factory-revise-reply-<commentId>" }],
+//     "replyDir":      "<factory>/logs/factory/replies/issue-<n>" | null,
 //     "priorPr":       { "number", "url", "headRef", "state" } | null,
 //     "attempts":      <number>,
 //     "config":        { "phase", ... },
@@ -442,6 +447,38 @@ function shapeRepo(repo) {
 // trigger comment after a successful replan.
 export const FACTORY_REPLAN_ACK_PREFIX = "<!-- drafto-factory-replan-ack:";
 
+// Every operator comment gets its own reply comment, ending with the marker
+// built here from the comment's id. The planner (plan comments) or the
+// implementer (In Test ones) writes the reply; bash posts it with the marker
+// appended, posts a fallback when one is missing, and never reads a marked
+// comment back as new feedback.
+export const FACTORY_PLAN_REPLY_PREFIX = "drafto-factory-plan-reply-";
+export const FACTORY_REVISE_REPLY_PREFIX = "drafto-factory-revise-reply-";
+
+// Where the model writes its replies, one <commentId>.md each, for bash to post
+// (scripts/lib/issue-reply.mjs): <factory checkout>/logs/factory/replies/
+// issue-<n>. Only that shape gets through, absolute and with no "..".
+function shapeReplyDir(dir) {
+  return typeof dir === "string" &&
+    /^\/(?:[^/]+\/)*logs\/factory\/replies\/issue-\d+$/.test(dir) &&
+    !dir.split("/").includes("..")
+    ? dir
+    : null;
+}
+
+// Keep only { commentId, marker } pairs whose marker is exactly the one bash
+// builds for that comment (<prefix><commentId>), so nothing else can pass for
+// a reply marker.
+function shapeReplyMarkers(replyMarkers, prefix) {
+  if (!Array.isArray(replyMarkers)) return [];
+  return replyMarkers
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => ({ commentId: String(entry.commentId ?? ""), marker: entry.marker }))
+    .filter(
+      ({ commentId, marker }) => /^\d+$/.test(commentId) && marker === `${prefix}${commentId}`,
+    );
+}
+
 function shapeReplan(replan) {
   if (!replan || typeof replan !== "object") return null;
   const planCommentId = replan.planCommentId ?? replan.commentId ?? null;
@@ -459,6 +496,8 @@ function shapeReplan(replan) {
     // directive) can't escape into the model's instruction stream.
     planCommentBodyEnveloped: envelopeBody(replan.planCommentBody ?? "", "prior-plan"),
     triggerCommentIds: triggerIds,
+    replyMarkers: shapeReplyMarkers(replan.replyMarkers, FACTORY_PLAN_REPLY_PREFIX),
+    replyDir: shapeReplyDir(replan.replyDir),
   };
 }
 
@@ -499,7 +538,8 @@ export function buildFactoryImplementBundle({
   comments = [],
   revisionComments = [],
   screenshotSources = [],
-  replyMarker = null,
+  replyMarkers = [],
+  replyDir = null,
   priorPr = null,
   attempts = 0,
   config,
@@ -544,13 +584,12 @@ export function buildFactoryImplementBundle({
     // Reporter change requests from the In Test preview, to apply on top of the
     // approved plan, on the existing PR branch. Empty on a first implementation.
     revisionComments: envelopeComments(revisionComments),
-    // The marker the implementer's issue reply must carry when the feedback
-    // needs no code change; bash checks for it as a regex and posts a fallback
-    // when it's missing, so only the exact shape bash builds gets through.
-    replyMarker:
-      typeof replyMarker === "string" && /^drafto-factory-revise-reply-\d+$/.test(replyMarker)
-        ? replyMarker
-        : null,
+    // One entry per revision comment that needs an answer: the implementer
+    // posts one issue reply per entry, ending with its marker. Bash checks each
+    // marker as a regex and posts a fallback for any that's missing, so only
+    // the exact shape bash builds gets through. Empty on a first implementation.
+    replyMarkers: shapeReplyMarkers(replyMarkers, FACTORY_REVISE_REPLY_PREFIX),
+    replyDir: shapeReplyDir(replyDir),
     reporter: reporterFromBody(issue.body ?? ""),
     priorPr: priorPr
       ? {
@@ -579,6 +618,7 @@ export function buildFactoryWatchBundle({
   ciSummary = "",
   unresolvedComments = [],
   reviewThreads = [],
+  mergeConflict = null,
   comments = [],
   screenshotSources = [],
   attempts = 0,
@@ -633,12 +673,37 @@ export function buildFactoryWatchBundle({
     // review stage, and any human's). Each one blocks the merge until the
     // watcher answers and resolves it — see factory-watch-prompt.md.
     reviewThreads: envelopeReviewThreads(reviewThreads),
+    // Set only on a conflict pass (ADR-0061): bash has merged origin/main into
+    // the branch and stopped on these files, or git merged cleanly but left two
+    // ADRs sharing a number. null on every other pass.
+    mergeConflict: shapeMergeConflict(mergeConflict),
     comments: envelopeComments(comments),
     reporter: reporterFromBody(issue.body ?? ""),
     attempts: Number.isInteger(attempts) ? attempts : 0,
     config: shapeConfig(config),
     repo: shapeRepo(repo),
     nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
+  };
+}
+
+// The fields of `worktree-cli.mjs merge-main`'s result the agent needs. File
+// names come from git, not from a person, but they are still capped and
+// type-checked so a pathological tree can't flood the prompt.
+const MAX_CONFLICT_FILES = 200;
+
+function shapeMergeConflict(mc) {
+  if (!mc || typeof mc !== "object") return null;
+  const names = (list) =>
+    (Array.isArray(list) ? list : [])
+      .filter((f) => typeof f === "string" && f.length > 0 && f.length <= 300)
+      .slice(0, MAX_CONFLICT_FILES);
+  return {
+    mainSha: typeof mc.mainSha === "string" ? mc.mainSha : "",
+    conflictedFiles: names(mc.conflictedFiles),
+    adrCollisions: (Array.isArray(mc.adrCollisions) ? mc.adrCollisions : [])
+      .filter((c) => c && typeof c.number === "string" && /^\d{4}$/.test(c.number))
+      .map((c) => ({ number: c.number, files: names(c.files) })),
+    nextFreeAdr: /^\d{4}$/.test(mc.nextFreeAdr ?? "") ? mc.nextFreeAdr : null,
   };
 }
 
@@ -1158,7 +1223,8 @@ async function main() {
       comments: input.comments,
       revisionComments: input.revisionComments,
       screenshotSources: input.screenshotSources,
-      replyMarker: input.replyMarker,
+      replyMarkers: input.replyMarkers,
+      replyDir: input.replyDir,
       priorPr: input.priorPr,
       attempts: input.attempts,
       config: input.config,
@@ -1173,6 +1239,7 @@ async function main() {
       ciSummary: input.ciSummary,
       unresolvedComments: input.unresolvedComments,
       reviewThreads: input.reviewThreads,
+      mergeConflict: input.mergeConflict,
       comments: input.comments,
       screenshotSources: input.screenshotSources,
       attempts: input.attempts,

@@ -1,6 +1,6 @@
 # SEO and indexing
 
-**Status:** shipped **Updated:** 2026-10-17
+**Status:** shipped **Updated:** 2026-10-26
 
 ## What it is
 
@@ -29,9 +29,10 @@ The property is verified in Google Search Console as the domain property `drafto
   - A direct request for `/welcome` gets a 308 to `/`, so the page has one public URL. It declares `/` as its canonical.
   - Until 2026-10-17, signed-out `/` was a 307 to `/login`. Google then indexed the login form under `/` and overrode `/login`'s self-canonical ("Duplicate, Google chose different canonical than user").
 - **Indexed pages:**
-  - `/`, `/login`, `/signup`, `/privacy`, `/support` and `/account/delete` each declare themselves canonical. For `/`, the declaration is on the landing page.
+  - `/`, `/signup`, `/privacy`, `/support` and `/account/delete` each declare themselves canonical. For `/`, the declaration is on the landing page.
   - They are listed in `INDEXED_PATHS`, which feeds the sitemap.
 - **Not indexed:**
+  - `/login` ([ADR-0059](../adr/0059-keep-login-page-out-of-search-index.md)). It inherits `noindex, follow` from the `(auth)` group, declares no canonical, and is not in the sitemap. Even after the landing page went live, Google kept choosing `/` as its canonical. Searches for Drafto land on `/`, which links to Log in.
   - Every other page in the `(auth)` route group (forgot/reset password, waiting for approval, the desktop hand-off) inherits `noindex, follow` from the group layout.
   - The app itself sits behind the session redirect.
 - **`robots.txt`:** allows everything except `/api/` and points at the sitemap.
@@ -45,16 +46,19 @@ The property is verified in Google Search Console as the domain property `drafto
 
 ### Expected Search Console state
 
-| Report                                             | URLs                                                      | Meaning                                                                                                                                                                                   |
-| -------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Indexed                                            | The `INDEXED_PATHS` pages, `https://drafto.eu/` included  | Correct                                                                                                                                                                                   |
-| Page with redirect (Strona zawiera przekierowanie) | `http://drafto.eu/`, `https://www.drafto.eu/`, `/welcome` | Correct. These are permanent 308 redirects (protocol, host, and the landing page's own route), so the URLs are never indexed. Don't start "Validate fix" on this group: it can only fail. |
-| Excluded by noindex                                | `/forgot-password` and the other `(auth)` utility pages   | Correct                                                                                                                                                                                   |
+| Report                                             | URLs                                                              | Meaning                                                                                                                                                                                   |
+| -------------------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Indexed                                            | The `INDEXED_PATHS` pages, `https://drafto.eu/` included          | Correct                                                                                                                                                                                   |
+| Page with redirect (Strona zawiera przekierowanie) | `http://drafto.eu/`, `https://www.drafto.eu/`, `/welcome`         | Correct. These are permanent 308 redirects (protocol, host, and the landing page's own route), so the URLs are never indexed. Don't start "Validate fix" on this group: it can only fail. |
+| Excluded by noindex                                | `/login`, `/forgot-password` and the other `(auth)` utility pages | Correct                                                                                                                                                                                   |
 
 - A new "Duplicate without user-selected canonical" entry means a public page is missing its `alternates.canonical`.
-- "Duplicate, Google chose different canonical than user" on `/login` dates from the 307 era, before 2026-10-17. It should clear once Google recrawls `/` and finds the landing page.
-  - If it comes back, check that signed-out `/` still answers 200 with `<link rel="canonical" href="https://drafto.eu"/>` (Next.js drops the trailing slash on the root URL; it is the same URL).
-  - Also check that its content still differs clearly from `/login`.
+- "Duplicate, Google chose different canonical than user" on `/login`:
+  - It first appeared in the 307 era, before 2026-10-17. It survived the landing page: on 2026-10-17 Google crawled `/` and `/login` in the same second, indexed `/` as the landing page, and still chose `/` as the canonical for `/login`. The fix validation failed on 2026-10-20.
+  - Since 2026-10-26 `/login` is noindex ([ADR-0059](../adr/0059-keep-login-page-out-of-search-index.md)), so once Google recrawls it, it moves to "Excluded by noindex" and the duplicate group empties.
+  - After that recrawl, inspect `https://drafto.eu/` and confirm it is still "URL is on Google". Google had clustered `/login` with `/`. It normally drops only the noindex URL, but a noindex on a cluster member is a mixed signal.
+  - If the group shows a different page, check that signed-out `/` still answers 200 with `<link rel="canonical" href="https://drafto.eu"/>` (Next.js drops the trailing slash on the root URL; it is the same URL). Also check that the flagged page's content differs clearly from `/`.
+- **Sitemap "Couldn't fetch":** the sitemap submitted on 2026-10-17 was still unread on 2026-10-26, although it answers 200 with `application/xml`. `/privacy`, `/support` and `/account/delete` were in no Page indexing report at all, so Google had not picked them up yet, although the landing page links the first two. A sitemap Google can read is the cheapest way to surface them. Remove it under **Sitemaps** and submit `https://drafto.eu/sitemap.xml` again.
 
 ## Code paths
 
@@ -65,7 +69,7 @@ The property is verified in Google Search Console as the domain property `drafto
 | `metadataBase`                  | `apps/web/src/app/layout.tsx`                                                                                                                                                                                                                                                                                                      |
 | `robots.txt`, `sitemap.xml`     | `apps/web/src/app/robots.ts`, `apps/web/src/app/sitemap.ts`                                                                                                                                                                                                                                                                        |
 | Auth group noindex default      | `apps/web/src/app/(auth)/layout.tsx`                                                                                                                                                                                                                                                                                               |
-| Login / sign-up metadata        | `apps/web/src/app/(auth)/{login,signup}/layout.tsx`. The pages are client components and can't export `metadata`.                                                                                                                                                                                                                  |
+| Login / sign-up metadata        | `apps/web/src/app/(auth)/{login,signup}/layout.tsx`. The pages are client components and can't export `metadata`. Login sets only its title; sign-up also opts back into indexing.                                                                                                                                                 |
 | Other page canonicals           | `metadata` in `apps/web/src/app/{privacy,support,account/delete}/page.tsx`                                                                                                                                                                                                                                                         |
 | Middleware skip list            | `apps/web/src/middleware.ts` → `config.matcher`                                                                                                                                                                                                                                                                                    |
 | App-link association files      | `apps/web/public/.well-known/`; the AASA `Content-Type` header is set in `apps/web/next.config.ts`                                                                                                                                                                                                                                 |
@@ -74,6 +78,7 @@ The property is verified in Google Search Console as the domain property `drafto
 ## Related ADRs
 
 - [ADR-0050](../adr/0050-public-landing-page-via-middleware-rewrite.md): signed-out `/` serves a public landing page through a middleware rewrite.
+- [ADR-0059](../adr/0059-keep-login-page-out-of-search-index.md): `/login` is noindex and out of the sitemap.
 
 ## Cross-platform notes
 
@@ -86,6 +91,7 @@ Web only. The native apps depend on it in one way: `apps/mobile/app.config.ts` c
   2. Add its path to `INDEXED_PATHS`. `seo-metadata.test.tsx` fails until the two lists agree.
   3. If it must be reachable signed out, add it to `PUBLIC_ROUTES` ([privacy-policy.md → Modifying safely](./privacy-policy.md#modifying-safely)).
 - **New page in the `(auth)` group:** it is noindex unless its own metadata sets `robots: { index: true, follow: true }`.
+- **`/login`:** don't give it a canonical or opt it back into indexing ([ADR-0059](../adr/0059-keep-login-page-out-of-search-index.md)). If it must be indexed again, it first needs enough content of its own to stand apart from `/`.
 - **New static file that crawlers or verifiers fetch signed out:**
   - Skip it in `config.matcher`, anchored with `$`, and add a case to `middleware-matcher.test.ts`.
   - Also add it to `PUBLIC_ROUTES` and `middleware.test.ts` as a backstop.
@@ -112,7 +118,8 @@ curl -s https://drafto.eu/ | grep -o '<link rel="canonical"[^>]*>'   # href="htt
 curl -sI https://drafto.eu/welcome | grep -iE '^(HTTP|location)'    # 308 → /
 curl -sI https://drafto.eu/robots.txt | head -1          # 200
 curl -sI https://drafto.eu/sitemap.xml | head -1         # 200
-curl -s https://drafto.eu/login | grep -o '<link rel="canonical"[^>]*>'
+curl -s https://drafto.eu/login | grep -o '<meta name="robots"[^>]*>'   # content="noindex, follow"
+curl -s https://drafto.eu/sitemap.xml | grep -c '/login<'   # 0
 curl -sI https://www.drafto.eu/ | grep -iE '^(HTTP|location)'   # 308 → https://drafto.eu/, no TLS error
 curl -sI https://drafto.eu/.well-known/apple-app-site-association | head -1   # 200
 curl -s -o /dev/null -w '%{http_code}\n' https://app-site-association.cdn-apple.com/a/v1/drafto.eu  # 200 once Apple's CDN refreshes

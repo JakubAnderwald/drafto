@@ -140,7 +140,6 @@ Remove a line once its fix ships, and turn the WARN back into a PASS/FAIL check.
 | #675  | After Sign up with e-mail confirmation on, the app shows no feedback and stays on the form                                             |
 | #676  | "Check approval status" never shows "still pending approval": the screen is replaced by a spinner during the check and loses its state |
 | #677  | The indicator reads "Synced" while local edits are unsynced, and shows "N pending" only after a failed sync                            |
-| #678  | Every first sync runs as incremental, and the app logs one `[Sync] Server wants client to update record …` error per pulled record     |
 
 ## Shell gotchas
 

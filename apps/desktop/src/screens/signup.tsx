@@ -39,7 +39,7 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
     setLoading(true);
 
     try {
-      // Sign-up starts a PKCE flow too: wait for the S256 crypto (ADR-0059).
+      // Sign-up starts a PKCE flow too: wait for the S256 crypto (ADR-0062).
       await cryptoReady;
       const { data, error: signUpError } = await supabase.auth.signUp({
         email: trimmedEmail,

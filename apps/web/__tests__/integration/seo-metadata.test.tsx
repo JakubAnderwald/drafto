@@ -14,7 +14,6 @@ import { INDEXED_PATHS } from "@/lib/site";
 // `/` to it and redirects /welcome to `/`), so `/` is its canonical.
 const INDEXED_PAGE_METADATA: Record<string, Metadata> = {
   "/": landingMetadata,
-  "/login": loginMetadata,
   "/signup": signupMetadata,
   "/privacy": privacyMetadata,
   "/support": supportMetadata,
@@ -39,12 +38,16 @@ describe("SEO metadata", () => {
     expect(authGroupMetadata.robots).toEqual({ index: false, follow: true });
   });
 
-  it.each([
-    ["/login", loginMetadata, "Log in — Drafto"],
-    ["/signup", signupMetadata, "Sign up — Drafto"],
-  ])("%s opts back into indexing with its own title", (_path, metadata, title) => {
-    expect(metadata.robots).toEqual({ index: true, follow: true });
-    expect(metadata.title).toBe(title);
+  it("/signup opts back into indexing with its own title", () => {
+    expect(signupMetadata.robots).toEqual({ index: true, follow: true });
+    expect(signupMetadata.title).toBe("Sign up — Drafto");
+  });
+
+  // Google folded the thin login form into `/` despite its self-canonical (ADR-0059).
+  it("/login keeps the auth group's noindex and declares no canonical", () => {
+    expect(loginMetadata.title).toBe("Log in — Drafto");
+    expect(loginMetadata.robots).toBeUndefined();
+    expect(loginMetadata.alternates).toBeUndefined();
   });
 
   it.each([

@@ -47,7 +47,7 @@ Both link the same `@nozbe/watermelondb@0.28.x` native module and reuse the
 - [0010 — Offline Sync Strategy with WatermelonDB](../adr/0010-offline-sync-strategy.md)
 - [0015 — Desktop App Technology Choice](../adr/0015-desktop-app-technology-choice.md)
 - [0016 — Local Fastlane Builds](../adr/0016-local-fastlane-builds.md) (supersedes [0011](../adr/0011-app-store-deployment-strategy.md))
-- [0059 — Desktop PKCE Draws From a Native CSPRNG](../adr/0059-desktop-pkce-native-csprng.md) (in-project native modules)
+- [0062 — Desktop PKCE Draws From a Native CSPRNG](../adr/0062-desktop-pkce-native-csprng.md) (in-project native modules)
 
 ## Cross-platform notes
 
@@ -73,7 +73,7 @@ Both link the same `@nozbe/watermelondb@0.28.x` native module and reuse the
 - **Native shell**: mobile has no custom native code beyond Expo plugins;
   desktop has Swift/Obj-C in `apps/desktop/macos/Drafto-macOS/` for the app
   menu (`DraftoMenuManager`), the PKCE random source and SHA-256
-  (`DraftoCrypto`, [ADR-0059](../adr/0059-desktop-pkce-native-csprng.md)),
+  (`DraftoCrypto`, [ADR-0062](../adr/0062-desktop-pkce-native-csprng.md)),
   entitlements, and sandbox configuration.
 - **Navigation**: mobile uses file-based routes under `apps/mobile/app/`;
   desktop uses imperative stack navigation rooted in `apps/desktop/src/App.tsx`.
@@ -111,7 +111,7 @@ prebuild`. If you add native config, write a config plugin rather than
 - **New desktop native capability** goes into an in-project module next to
   `DraftoMenuManager` and `DraftoCrypto`, not an npm package with native code,
   which would need a `pnpm install` in the fossil
-  ([ADR-0059](../adr/0059-desktop-pkce-native-csprng.md),
+  ([ADR-0062](../adr/0062-desktop-pkce-native-csprng.md),
   [ADR-0027](../adr/0027-desktop-react-version-locked-to-react-native-macos.md)).
   Add each new file to `apps/desktop/macos/Drafto.xcodeproj/project.pbxproj`:
   a file reference and group entry, plus a build file and Drafto-macOS Sources

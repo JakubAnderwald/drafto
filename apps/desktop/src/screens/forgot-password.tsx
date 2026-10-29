@@ -47,7 +47,7 @@ export function ForgotPasswordScreen({ onNavigateToLogin }: ForgotPasswordScreen
     setLoading(true);
 
     try {
-      // The reset link is a PKCE flow: wait for the S256 crypto (ADR-0059).
+      // The reset link is a PKCE flow: wait for the S256 crypto (ADR-0062).
       await cryptoReady;
       const { error: resetError } = await supabase.auth.resetPasswordForEmail(trimmed, {
         redirectTo: RECOVERY_REDIRECT_URL,

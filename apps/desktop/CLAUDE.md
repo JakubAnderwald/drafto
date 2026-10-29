@@ -30,10 +30,10 @@ that opens a note is.**
 - Doing desktop **code / unit-test / typecheck** work in a worktree is fine (JS tooling runs there);
   just never treat a worktree's native build as shippable, and route the actual release through the
   fossil.
-- The dark factory builds desktop from `/Users/jakub/code/drafto-beta-desktop`, a **clonefile replica**
-  of the fossil `node_modules` (exact and ~0 bytes — the repo is `node-linker=hoisted`, so packages are
-  real directories; the only symlinks are the relative ones in `.bin/`, which keep resolving inside the
-  copy). The factory resets that worktree's _source_ to the commit under test but never reinstalls its
+- The dark factory builds desktop from `/Volumes/DraftoFactory/drafto-beta-desktop`, a **replica**
+  of the fossil `node_modules` on the factory's build volume (exact — the repo is `node-linker=hoisted`,
+  so packages are real directories; the only symlinks are the relative ones in `.bin/`, which keep
+  resolving inside the copy). The factory resets that worktree's _source_ to the commit under test but never reinstalls its
   dependencies. **The never-`pnpm install` rule applies there too.** See [ADR-0030].
 
 The precise invariant, and how it is enforced: build macOS only from a checkout whose hoisted

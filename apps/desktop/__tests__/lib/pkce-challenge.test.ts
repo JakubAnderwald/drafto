@@ -2,7 +2,7 @@
  * Runs the real supabase-js PKCE start (signInWithOAuth with
  * skipBrowserRedirect, which makes no network call) against the installed
  * crypto, with the DraftoCrypto native module faked on NativeModules by Node's
- * crypto. Proves the end-to-end claim of ADR-0059: verifier from the native
+ * crypto. Proves the end-to-end claim of ADR-0062: verifier from the native
  * CSPRNG, challenge sent as S256.
  */
 import { createHash, randomBytes } from "crypto";

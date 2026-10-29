@@ -18,7 +18,7 @@ jest.mock("@/lib/config", () => ({
 }));
 
 describe("supabase client", () => {
-  it("installs the CSPRNG before creating the PKCE client (ADR-0059)", () => {
+  it("installs the CSPRNG before creating the PKCE client (ADR-0062)", () => {
     // Required lazily: a static import would run createClient before `mockCreateClient` exists.
     let client: { cryptoReady?: unknown } = {};
     jest.isolateModules(() => {

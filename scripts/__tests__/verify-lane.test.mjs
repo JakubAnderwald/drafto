@@ -380,6 +380,28 @@ describe("start: refusals", () => {
     assert.equal((await runStart(startOpts(), deps)).reason, "claude-missing");
   });
 
+  it("measures free disk on both the repo root's volume and $HOME's, refusing on the fuller", async () => {
+    await writeState(readyCard);
+    const { deps, calls } = makeDeps();
+    const asked = [];
+    deps.freeDiskGb = async (dir) => {
+      asked.push(dir);
+      return dir === repoRoot ? 500 : 1;
+    };
+    const r = await runStart(startOpts(), deps);
+    assert.equal(r.reason, "disk");
+    assert.equal(r.freeGb, 1);
+    assert.deepEqual(asked.sort(), [deps.env.HOME, repoRoot].sort());
+    assert.equal(calls.gh.length + calls.git.length + calls.spawn.length, 0);
+  });
+
+  it("ignores a volume df can't read and still checks the other", async () => {
+    await writeState(readyCard);
+    const { deps } = makeDeps();
+    deps.freeDiskGb = async (dir) => (dir === repoRoot ? null : 1);
+    assert.equal((await runStart(startOpts(), deps)).reason, "disk");
+  });
+
   it("refuses when the PR's head moved or the PR closed, and when it can't be read", async () => {
     await writeState(readyCard);
     let { deps, calls } = makeDeps({ prView: { state: "OPEN", headRefOid: OTHER, files: [] } });

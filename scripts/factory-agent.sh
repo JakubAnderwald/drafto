@@ -188,6 +188,19 @@ if ! [[ "$INSTALL_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
   INSTALL_TIMEOUT_SEC=600
 fi
 
+# Wall-clock cap per gh call, enforced by the gh() wrapper below. On #748 one
+# `gh issue comment` sat idle for 2+ days and, with nothing bounding it, held
+# the loop lock and froze every card until it was killed by hand. Exported so
+# the node helpers this script starts apply the same cap (lib/gh-timeout.mjs).
+# At most five digits: from 2147484 s up, node's timer overflows and fires
+# after 1 ms, which would kill every gh call at once.
+FACTORY_GH_TIMEOUT_SEC="${FACTORY_GH_TIMEOUT_SEC:-120}"
+if ! [[ "$FACTORY_GH_TIMEOUT_SEC" =~ ^[1-9][0-9]{0,4}$ ]]; then
+  echo "WARNING: invalid FACTORY_GH_TIMEOUT_SEC='$FACTORY_GH_TIMEOUT_SEC'; defaulting to 120" >&2
+  FACTORY_GH_TIMEOUT_SEC=120
+fi
+export FACTORY_GH_TIMEOUT_SEC
+
 # Minimum free disk (whole GiB) on the worktree volume before the factory will
 # start implementing a card. Below this, the card is parked in Blocked with a
 # comment rather than failing mid-build on a full disk (#451). The clonefile
@@ -541,6 +554,22 @@ OAUTH_USER_EMAIL="${OAUTH_USER_EMAIL:-support@drafto.eu}"
 # ── Paths, logs, lock ───────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Every gh call in this script, in $(…) and in the sourced lib/*.sh included,
+# goes through this function, so none can hang a tick past
+# FACTORY_GH_TIMEOUT_SEC. run-with-timeout.mjs runs the real binary from PATH
+# with stdio inherited, SIGTERMs it at the cap (gh is a Go program: TERM ends
+# it, SIGALRM wouldn't) and exits 124, which every caller already handles as
+# a failed gh call. The warning names only the subcommand: later args can
+# carry issue bodies. Use `type -P gh`, not `command -v gh`, to test for the
+# binary: the function makes the latter always succeed.
+gh() {
+  local rc=0
+  node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$FACTORY_GH_TIMEOUT_SEC" gh "$@" || rc=$?
+  if [[ $rc -eq 124 ]]; then
+    echo "WARNING: gh ${1:-} ${2:-} timed out after ${FACTORY_GH_TIMEOUT_SEC}s" >&2
+  fi
+  return $rc
+}
 # The In Test scenario writer's prompt. Defined here (not only inside --watch) so
 # intest_handoff can reference it without tripping `set -u`. A missing file
 # degrades to the deterministic fallback comment rather than failing the mode —
@@ -667,7 +696,7 @@ cleanup() {
     local sanitized_log
     sanitized_log=$(grep -E '^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]' "$LOG_FILE" 2>/dev/null | tail -20 \
       || echo "No log available")
-    if command -v gh &>/dev/null; then
+    if type -P gh &>/dev/null; then
       gh issue create \
         --repo JakubAnderwald/drafto \
         --title "factory-agent --$MODE_NAME failed ($(date +%Y-%m-%d))" \
@@ -705,8 +734,10 @@ START_TIME=$(date +%s)
 log "=== factory-agent --$MODE_NAME run started (phase=$PHASE, dry-run=$DRY_RUN) ==="
 
 # ── Pre-flight: required CLIs ───────────────────────────────────────────────
+# type -P, not command -v: the gh() wrapper would satisfy command -v even with
+# the gh binary missing.
 for required in gh jq node; do
-  if ! command -v "$required" >/dev/null 2>&1; then
+  if ! type -P "$required" >/dev/null 2>&1; then
     log "ERROR: $required not on PATH (PATH=$PATH)"
     exit 1
   fi
@@ -1023,7 +1054,10 @@ extract_acked_comment_ids() {
 # array of stringified comment IDs (kept as strings to dodge int64 rounding).
 # Bots and non-owner commenters are ignored — a customer reply forwarded by
 # support-agent step 4.5 IS posted under the Mac mini's gh identity (OWNER),
-# so the email-replan path still works without a separate check.
+# so the email-replan path still works without a separate check. The factory
+# posts under that same identity, so its own marker comments are skipped too
+# (as owner_comments_since does): the reply the planner posts to each trigger
+# comment must not read as fresh feedback and start another replan.
 unacked_owner_comments() {
   local comments_json="$1"
   local plan_created_at="$2"
@@ -1035,10 +1069,196 @@ unacked_owner_comments() {
       map(select(
         (.authorAssociation == "OWNER")
         and ((.createdAt) > $planAt)
+        and (((.body // "") | test("<!-- drafto-factory")) | not)
         and (((.id | tostring)) as $id | ($acked | index($id)) | not)
       ))
       | map(.id | tostring)
     '
+}
+
+# ── Replies to operator comments (Plan Review + In Test) ───────────────────
+# Every operator comment gets its own reply on the issue. The model (planner or
+# implementer) writes each one to <reply-dir>/<commentId>.md and never posts it:
+# bash posts it with the comment's marker appended (lib/issue-reply.mjs). So a
+# reply never depends on the model remembering the marker — a reply without one
+# would read back as fresh OWNER feedback and start another replan or revision —
+# and bash posts a fixed fallback for any comment left without a reply.
+
+# reply_dir_for <issue> — where the model writes its replies for this issue:
+# under the factory's own logs/ (mode 700, gitignored), not a guessable /tmp
+# path another account on this Mac could write into first. Whatever is in it is
+# posted on the public issue.
+reply_dir_for() { printf '%s/logs/factory/replies/issue-%s' "$REPO_ROOT" "$1"; }
+
+# reset_reply_dir <issue> — empty the reply directory before a run, so a reply
+# left from an earlier run can't be posted as this run's.
+reset_reply_dir() {
+  local dir
+  dir=$(reply_dir_for "$1")
+  rm -rf "$dir" && mkdir -p "$(dirname "$dir")" && mkdir -m 700 "$dir"
+}
+
+# reply_markers_for <comments-json> <marker-prefix> — {commentId, marker} for
+# each comment that needs an answer: approval noise ("thanks", "lgtm") needs
+# none. One jq pass for the ids and bodies (base64, so tabs and newlines in a
+# body survive), and the result is always valid JSON ("[]" at worst).
+reply_markers_for() {
+  local comments="$1" prefix="$2" ids="" id body64 out
+  while IFS=$'\t' read -r id body64; do
+    [[ "$id" =~ ^[0-9]+$ ]] || continue
+    if is_noise_comment "$(printf '%s' "$body64" | base64 --decode 2>/dev/null)"; then
+      continue
+    fi
+    ids+="$id "
+  done < <(echo "$comments" | jq -r '.[] | [(.id | tostring), ((.body // "") | @base64)] | @tsv' 2>/dev/null)
+  out=$(jq -cn --arg ids "$ids" --arg p "$prefix" \
+    '$ids | split(" ") | map(select(test("^[0-9]+$")) | {commentId: ., marker: ($p + .)})' 2>/dev/null) || out=""
+  printf '%s' "${out:-[]}"
+}
+
+# fetch_comments_retry <issue> — the issue's comments, as fetch_issue_comments
+# prints them, retried twice on failure. Prints nothing and returns 1 when they
+# still can't be read.
+fetch_comments_retry() {
+  local issue_num="$1" comments attempt
+  for attempt in 1 2 3; do
+    if comments=$(fetch_issue_comments "$issue_num" 2>/dev/null) && [[ -n "$comments" ]]; then
+      printf '%s' "$comments"
+      return 0
+    fi
+    if [[ "$attempt" -lt 3 ]]; then sleep 2; fi
+  done
+  return 1
+}
+
+# comments_have_marker <comments-json> <marker> — exit 0 when a comment from the
+# factory's identity (OWNER) carries <marker>. The repo is public, so another
+# user's comment quoting a marker must not count as a reply. The ([^0-9]|$)
+# suffix stops reply-123 from matching reply-1234.
+comments_have_marker() {
+  echo "$1" | jq -e --arg m "${2}([^0-9]|\$)" \
+    'any(.[]; .authorAssociation == "OWNER" and ((.body // "") | test($m)))' >/dev/null 2>&1
+}
+
+# post_issue_replies <issue> <comments-json|""> <markers-json>
+# Post each reply the model wrote — <reply-dir>/<commentId>.md for each
+# {commentId, marker} in <markers-json> — as its own comment, defanged and with
+# the marker appended. A reply whose marker is already on the issue (an earlier
+# attempt) isn't posted again; with no comments to check against, it is posted.
+# A posted file is deleted, so a second call can't post it twice while GitHub's
+# listing lags. Appends each id posted to POSTED_REPLY_IDS (space-padded; the
+# caller starts it as " " for the run).
+post_issue_replies() {
+  local issue_num="$1" comments="$2" markers="${3:-[]}" dir n i id marker file body
+  dir=$(reply_dir_for "$issue_num")
+  n=$(echo "$markers" | jq 'length' 2>/dev/null || echo "0")
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  for ((i=0; i<n; i++)); do
+    id=$(echo "$markers" | jq -r ".[${i}].commentId // \"\"" 2>/dev/null || echo "")
+    marker=$(echo "$markers" | jq -r ".[${i}].marker // \"\"" 2>/dev/null || echo "")
+    [[ "$id" =~ ^[0-9]+$ && -n "$marker" ]] || continue
+    file="$dir/$id.md"
+    [[ -s "$file" ]] || continue
+    if [[ -n "$comments" ]] && comments_have_marker "$comments" "$marker"; then
+      log "Issue #$issue_num: the reply to comment $id is already posted; not posting it again"
+      continue
+    fi
+    if ! body=$(node "$SCRIPT_DIR/lib/issue-reply.mjs" compose --file "$file" --marker "$marker" 2>>"$LOG_FILE"); then
+      log "WARNING: the reply to comment $id on #$issue_num is empty or unreadable; not posting it"
+      continue
+    fi
+    if printf '%s' "$body" | gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body-file - >>"$LOG_FILE" 2>&1; then
+      log "Issue #$issue_num: posted the reply to comment $id ($marker)"
+      POSTED_REPLY_IDS+="$id "
+      rm -f "$file"
+    else
+      log "WARNING: posting the reply to comment $id on #$issue_num failed"
+    fi
+  done
+}
+
+# plan_reply_check <issue> <reply-markers-json> [final]
+# After a replan run, every trigger comment that needs an answer (one
+# {commentId, marker} entry, built by reply_markers_for) gets its own reply:
+# editing the plan alone notifies nobody and buries the answer, which is how
+# #718's question went unanswered. The planner's reply for a comment is posted
+# only once the plan acks that comment (in any plan comment: the planner may
+# post a fresh one, action=planned): before that, the edit it describes hasn't
+# landed, and the next tick's replan writes a fresh reply. A handled comment
+# with no reply gets a fixed fallback.
+# With [final] 1 the card is leaving Plan Review (Blocked) and no replan will
+# come, so an unacked comment is answered too: with the planner's reply if it
+# wrote one, otherwise a fallback, under drafto-factory-plan-blocked-reply-<id>
+# — a different marker, so that if the card comes back the next replan of the
+# same comment still gets its own reply. Fails CLOSED when the comments can't
+# be read: without them the acks are unknown.
+plan_reply_check() {
+  local issue_num="$1" markers="${2:-[]}" final="${3:-0}"
+  local comments acked plan_id plan_link url n i id marker blocked to_post="[]"
+  [[ "$DRY_RUN" -eq 1 ]] && return 0
+  n=$(echo "$markers" | jq 'length' 2>/dev/null || echo "0")
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  [[ "$n" -gt 0 ]] || return 0
+  if ! comments=$(fetch_comments_retry "$issue_num"); then
+    log "WARNING: could not read #$issue_num's comments to check the plan replies; skipping"
+    return 0
+  fi
+  # Plan comments are the factory's own (OWNER): on a public repo anyone can
+  # post one that looks like a plan and acks a comment.
+  acked=$(extract_acked_comment_ids "$(echo "$comments" | jq -r \
+    '[.[] | select(.authorAssociation == "OWNER" and ((.body // "") | startswith("<!-- drafto-factory-plan -->"))) | .body] | join("\n")')")
+  [[ -n "$acked" ]] || acked='[]'
+  # Which reply each comment is due: its own marker once acked, the Blocked one
+  # when final; none yet otherwise.
+  for ((i=0; i<n; i++)); do
+    id=$(echo "$markers" | jq -r ".[${i}].commentId // \"\"")
+    marker=$(echo "$markers" | jq -r ".[${i}].marker // \"\"")
+    [[ "$id" =~ ^[0-9]+$ && -n "$marker" ]] || continue
+    if echo "$acked" | jq -e --arg id "$id" 'index($id) != null' >/dev/null 2>&1; then
+      to_post=$(echo "$to_post" | jq -c --arg id "$id" --arg m "$marker" '. + [{commentId: $id, marker: $m, final: false}]')
+    elif [[ "$final" -eq 1 ]]; then
+      to_post=$(echo "$to_post" | jq -c --arg id "$id" --arg m "drafto-factory-plan-blocked-reply-$id" \
+        '. + [{commentId: $id, marker: $m, final: true}]')
+    fi
+  done
+  post_issue_replies "$issue_num" "$comments" "$to_post"
+  plan_id=$(echo "$comments" | jq -r \
+    '[.[] | select(.authorAssociation == "OWNER" and ((.body // "") | startswith("<!-- drafto-factory-plan -->")))] | last | .id // "" | tostring')
+  url="https://github.com/JakubAnderwald/drafto/issues/$issue_num"
+  plan_link="the plan"
+  [[ "$plan_id" =~ ^[0-9]+$ ]] && plan_link="[the plan]($url#issuecomment-$plan_id)"
+  n=$(echo "$to_post" | jq 'length')
+  for ((i=0; i<n; i++)); do
+    id=$(echo "$to_post" | jq -r ".[${i}].commentId")
+    marker=$(echo "$to_post" | jq -r ".[${i}].marker")
+    blocked=$(echo "$to_post" | jq -r ".[${i}].final")
+    # Posted just now: GitHub may not list it yet.
+    if [[ "$POSTED_REPLY_IDS" == *" $id "* ]] || comments_have_marker "$comments" "$marker"; then
+      continue
+    fi
+    log "Issue #$issue_num: no plan reply found for $marker; posting the fallback"
+    # Recorded like a posted reply, so the Blocked path's second call can't
+    # post it again while GitHub's listing lags.
+    if [[ "$blocked" == "true" ]]; then
+      if gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+        --body "🏭 **The factory couldn't revise the plan for [your comment]($url#issuecomment-$id), and no reply to it was posted.**
+
+The card is in **Blocked**, and $plan_link is as it was. The factory log on the Mac mini has the details; once the card is back in **Plan Review**, the factory looks at your comment again.
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1; then
+        POSTED_REPLY_IDS+="$id "
+      fi
+    else
+      if gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+        --body "🏭 **No reply was posted to [your comment]($url#issuecomment-$id).**
+
+The factory handled it in $plan_link, which is current. If the plan doesn't answer your comment, comment again.
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1; then
+        POSTED_REPLY_IDS+="$id "
+      fi
+    fi
+  done
 }
 
 # Has the issue already received the Phase A implement-stub comment? Used so
@@ -1057,7 +1277,9 @@ issue_already_impl_stubbed() {
 # Build the factory_implement bundle. $2 is the approved-plan comment object
 # (from extract_plan_comment: {id,user,body,createdAt}) or "null"; $3 is the
 # prior-PR object or "null"; $4 is the attempts counter; $7 is the revision
-# reply marker ("" on a first implementation — see revise_noop_reply).
+# reply markers, a JSON array of {commentId, marker} ("[]" on a first
+# implementation — see revise_replies_check); $8 is the directory the
+# implementer writes those replies to (reply_dir_for).
 build_implement_bundle() {
   local issue_entry="$1"
   local approved_plan="${2:-null}"
@@ -1065,7 +1287,8 @@ build_implement_bundle() {
   local attempts="${4:-0}"
   local revision_comments="${5:-[]}"
   local screenshot_sources="${6:-[]}"
-  local reply_marker="${7:-}"
+  local reply_markers="${7:-[]}"
+  local reply_dir="${8:-}"
   local repo_head_ref
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   jq -n \
@@ -1075,7 +1298,8 @@ build_implement_bundle() {
     --arg attempts "$attempts" \
     --argjson revisionComments "$revision_comments" \
     --argjson screenshotSources "$screenshot_sources" \
-    --arg replyMarker "$reply_marker" \
+    --argjson replyMarkers "$reply_markers" \
+    --arg replyDir "$reply_dir" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
     --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
     --arg phase "$PHASE" \
@@ -1095,7 +1319,8 @@ build_implement_bundle() {
        comments: [],
        revisionComments: $revisionComments,
        screenshotSources: $screenshotSources,
-       replyMarker: (if $replyMarker == "" then null else $replyMarker end),
+       replyMarkers: $replyMarkers,
+       replyDir: (if $replyDir == "" then null else $replyDir end),
        config: {
          phase: $phase,
          allowlist: ($allowlist | split(",") | map(ascii_downcase | sub("^\\s+";"") | sub("\\s+$";""))),
@@ -1160,57 +1385,97 @@ has_actionable_feedback() {
   return 1
 }
 
-# A revision run returned action=noop: the feedback needed no code change (a
-# question, "run the test scenario for me"). The implementer answers on the
-# issue itself, in a comment carrying <marker> (bundle.replyMarker, keyed on the
-# feedback comment it answers), so the results land where the reporter asked
-# instead of only in the PR body. Trust the marker, not the directive line (as
-# intest_handoff does): only when no reply is found, post the fixed fallback, so
-# the round trip is never silent. The ([^0-9]|$) suffix stops reply-123 from
-# matching reply-1234. Unlike issue_has_marker this fails OPEN: if the comments
-# still can't be read after a few tries, the fallback goes out, because a rare
-# extra notice beats a reporter hearing nothing. <kind> is "noop" (default) or
-# "declined": feedback the implementer declined as outside the plan comes back
-# the same way (ADR-0058), and its fallback says so.
-revise_noop_reply() {
-  local issue_num="$1" pr_num="$2" marker="$3" kind="${4:-noop}"
-  local comments="" attempt details="" headline next
-  if [[ -n "$marker" ]]; then
-    for attempt in 1 2 3; do
-      if comments=$(fetch_issue_comments "$issue_num" 2>/dev/null) && [[ -n "$comments" ]]; then
-        break
-      fi
-      comments=""
-      if [[ "$attempt" -lt 3 ]]; then sleep 2; fi
-    done
-    if [[ -z "$comments" ]]; then
-      log "WARNING: could not read #$issue_num's comments to look for $marker; posting the fallback"
-    elif echo "$comments" | jq -e --arg m "${marker}([^0-9]|\$)" 'any(.[]; .body | test($m))' >/dev/null 2>&1; then
-      log "Issue #$issue_num: revision reply posted ($marker)"
+# revise_replies_check <issue> <pr-num> <reply-markers-json> <kind>
+# After a revision run, post the implementer's replies, then make sure every
+# feedback comment that needed an answer (one {commentId, marker} entry in
+# bundle.replyMarkers) has one on the issue, where the reporter asked, instead
+# of only in the PR body. Trust the markers, not the directive line (as
+# intest_handoff does): for each comment with no reply, post the fixed fallback
+# for <kind>, so no comment goes unanswered. <kind> is "noop" (no code change),
+# "declined" (outside the plan, ADR-0058) or "implemented" (a revision was
+# pushed). No entries means the round was all approval noise: nothing to
+# answer. When the comments can't be read afterwards, noop and declined fail
+# OPEN — a fallback for each comment whose reply wasn't posted just now,
+# because a rare extra notice beats a reporter hearing nothing — while a pushed
+# revision fails closed: its new preview and scenario comment follow anyway.
+revise_replies_check() {
+  local issue_num="$1" pr_num="$2" markers="${3:-[]}" kind="${4:-noop}"
+  local comments n i id marker
+  n=$(echo "$markers" | jq 'length' 2>/dev/null || echo "0")
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  [[ "$n" -gt 0 ]] || return 0
+  POSTED_REPLY_IDS=" "
+  comments=$(fetch_comments_retry "$issue_num") || comments=""
+  post_issue_replies "$issue_num" "$comments" "$markers"
+  if ! comments=$(fetch_comments_retry "$issue_num"); then
+    comments=""
+    if [[ "$kind" == "implemented" ]]; then
+      log "WARNING: could not read #$issue_num's comments to look for the revision replies; skipping the fallbacks"
       return 0
-    else
+    fi
+    log "WARNING: could not read #$issue_num's comments to look for the revision replies; posting the fallbacks"
+  fi
+  for ((i=0; i<n; i++)); do
+    id=$(echo "$markers" | jq -r ".[${i}].commentId // \"\"" 2>/dev/null || echo "")
+    marker=$(echo "$markers" | jq -r ".[${i}].marker // \"\"" 2>/dev/null || echo "")
+    [[ "$id" =~ ^[0-9]+$ && -n "$marker" ]] || continue
+    if [[ "$POSTED_REPLY_IDS" == *" $id "* ]]; then
+      continue
+    fi
+    if [[ -n "$comments" ]]; then
+      if comments_have_marker "$comments" "$marker"; then
+        log "Issue #$issue_num: revision reply posted ($marker)"
+        continue
+      fi
       log "Issue #$issue_num: no revision reply found for $marker; posting the fallback"
     fi
-  else
-    log "Issue #$issue_num: no reply marker for this revision; posting the fallback"
+    revise_fallback_reply "$issue_num" "$pr_num" "$id" "$kind"
+  done
+}
+
+# revise_fallback_reply <issue> <pr-num> <comment-id> <kind> — the fixed notice
+# for a feedback comment that got no reply. It links that comment and carries
+# its reply marker, so each comment is answered once. Noop and declined notices
+# also carry drafto-factory-revise-noop.
+revise_fallback_reply() {
+  local issue_num="$1" pr_num="$2" id="$3" kind="${4:-noop}"
+  local about="" details="" headline next="" body markers=""
+  if [[ -n "$id" ]]; then
+    about="About [your comment](https://github.com/JakubAnderwald/drafto/issues/$issue_num#issuecomment-$id): "
+    markers="<!-- drafto-factory-revise-reply-$id -->"
   fi
-  if [[ -n "$pr_num" ]]; then
-    details=" If you asked a question or for a check, the run may have left notes in PR #$pr_num's description; if not, comment again."
-  fi
-  headline="No code change was made for that, and no reply was found."
-  next="Drag to **Approved** to ship it, or comment a more specific change."
-  if [[ "$kind" == "declined" ]]; then
-    # Rephrasing an out-of-plan request here would only be declined again.
-    headline="The factory declined that as outside this issue's plan, and no reply was found."
-    details=" Open a new issue for that work instead of rephrasing it here."
-    next="Drag to **Approved** to ship this PR as it is."
+  case "$kind" in
+    declined)
+      # Rephrasing an out-of-plan request here would only be declined again.
+      headline="The factory declined that as outside this issue's plan, and no reply was found."
+      details=" Open a new issue for that work instead of rephrasing it here."
+      next="Drag to **Approved** to ship this PR as it is."
+      body="${about}The preview is unchanged.$details $next"
+      ;;
+    implemented)
+      headline="A revision was pushed for that, but no reply was found."
+      [[ -n "$pr_num" ]] && details=" PR #$pr_num's description records what changed."
+      body="${about}The card goes back through review, then comes back for you to test with a new preview.$details"
+      ;;
+    *)
+      headline="No code change was made for that, and no reply was found."
+      if [[ -n "$pr_num" ]]; then
+        details=" If you asked a question or for a check, the run may have left notes in PR #$pr_num's description; if not, comment again."
+      fi
+      next="Drag to **Approved** to ship it, or comment a more specific change."
+      body="${about}The preview is unchanged.$details $next"
+      ;;
+  esac
+  if [[ "$kind" != "implemented" ]]; then
+    [[ -n "$markers" ]] && markers+=$'\n'
+    markers+="<!-- drafto-factory-revise-noop -->"
   fi
   gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
     --body "🏭 **$headline**
 
-The preview is unchanged.$details $next
+$body
 
-<!-- drafto-factory-revise-noop -->" >>"$LOG_FILE" 2>&1 || true
+$markers" >>"$LOG_FILE" 2>&1 || true
 }
 
 # worktree_untouched <worktree> <pr-head> — exit 0 only when the worktree holds
@@ -1230,17 +1495,17 @@ worktree_untouched() {
 }
 
 # revision_return_to_test <issue> <item-id> <pr-head> <item-labels> <pr-num>
-#   <reply-marker> <feedback-mark> <kind>
+#   <reply-markers-json> <feedback-mark> <kind>
 # A revision run ended with the PR unchanged: <kind> "noop" (the feedback
 # needed no code change) or "declined" (it was outside the plan, ADR-0058).
 # The existing PR + preview are still valid, so re-present it instead of
 # re-running CI: in Testing when this commit still owes a verification report
 # (ADR-0053), otherwise in In Test. A failed move to Testing falls back to In
 # Test. Then mark the feedback consumed, reset attempts and check for the
-# implementer's reply. The slot and worktree stay, as for any In Test card.
+# implementer's replies. The slot and worktree stay, as for any In Test card.
 revision_return_to_test() {
   local issue_num="$1" item_id="$2" pr_head="$3" labels="$4" pr_num="$5"
-  local marker="$6" mark="$7" kind="$8" target="In Test" state
+  local markers="$6" mark="$7" kind="$8" target="In Test" state
   if verify_target_status "$issue_num" "$pr_head" "$labels" \
       && transition_status "$item_id" "$issue_num" "Testing"; then
     target="Testing"
@@ -1256,7 +1521,7 @@ revision_return_to_test() {
   fi
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" lastFeedbackAt "$mark" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$issue_num" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-  revise_noop_reply "$issue_num" "$pr_num" "$marker" "$kind"
+  revise_replies_check "$issue_num" "$pr_num" "$markers" "$kind"
   log "Issue #$issue_num: revision $kind; returned to $target"
 }
 
@@ -1275,7 +1540,8 @@ implement_park_blocked() {
 # Build the factory_watch bundle. $2 approved-plan obj|null, $3 prior-PR obj,
 # $4 CI summary text, $5 unresolved-comments JSON array, $6 attempts,
 # $7 screenshot-sources (full issue-comment thread) JSON array,
-# $8 unresolved review threads JSON array (from fetch_review_threads).
+# $8 unresolved review threads JSON array (from fetch_review_threads),
+# $9 the conflict pass's `worktree-cli.mjs merge-main` result, or empty.
 build_watch_bundle() {
   local issue_entry="$1"
   local approved_plan="${2:-null}"
@@ -1285,6 +1551,7 @@ build_watch_bundle() {
   local attempts="${6:-0}"
   local screenshot_sources="${7:-[]}"
   local review_threads="${8:-[]}"
+  local merge_conflict="${9:-null}"
   local repo_head_ref
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   jq -n \
@@ -1294,6 +1561,7 @@ build_watch_bundle() {
     --arg ciSummary "$ci_summary" \
     --argjson unresolved "$unresolved" \
     --argjson reviewThreads "$review_threads" \
+    --argjson mergeConflict "$merge_conflict" \
     --argjson screenshotSources "$screenshot_sources" \
     --arg attempts "$attempts" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
@@ -1314,6 +1582,7 @@ build_watch_bundle() {
        ciSummary: $ciSummary,
        unresolvedComments: $unresolved,
        reviewThreads: $reviewThreads,
+       mergeConflict: $mergeConflict,
        comments: [],
        screenshotSources: $screenshotSources,
        attempts: ($attempts | tonumber? // 0),
@@ -1473,10 +1742,17 @@ pr_head_oid() {
 # copy_worktree_env / seed_worktree_node_modules / run_pnpm_install live in
 # scripts/lib/beta-build-root.sh (sourced above), shared with nightly-support.sh.
 
-# Free space (whole GiB) on the volume backing the repo/worktrees. POSIX
-# `df -Pk` guarantees a single data row in 1024-byte blocks; $4 is available.
+# Free space (whole GiB) on the fuller of the two volumes a run writes to: the
+# build volume backing the repo/worktrees, and the internal disk behind $HOME
+# (TMPDIR, Claude transcripts, simulators) — ADR-0060 put the factory checkout on
+# an external volume, which says nothing about the internal disk. The toolchain
+# (DerivedData, Gradle, the Android SDK) lives on the build volume too, so it
+# needs no row of its own. POSIX `df -Pk`
+# guarantees a single data row in 1024-byte blocks; $4 is available. Prints ""
+# when neither path can be measured.
 free_disk_gb() {
-  df -Pk "$REPO_ROOT" 2>/dev/null | awk 'NR==2 { print int($4 / 1024 / 1024) }'
+  df -Pk "$REPO_ROOT" "$HOME" 2>/dev/null \
+    | awk 'NR > 1 { gb = int($4 / 1024 / 1024); if (min == "" || gb < min) min = gb } END { print min }'
 }
 
 # Pick the slot index (0|1) to use for <issue>: the slot already assigned to it
@@ -1693,6 +1969,95 @@ issue_has_marker() {
   echo "$comments" | jq -e --arg m "$marker" 'any(.[]; .body | test($m))' >/dev/null 2>&1
 }
 
+# ── Merge conflicts with main (ADR-0061) ────────────────────────────────────
+# A PR that conflicts with main can't merge, and GitHub runs no pull_request CI
+# on it either, so nothing downstream of In Review can move it on. Wherever a
+# conflict turns up — Approved (--release) or In Test (the feedback sweep) — the
+# card goes back to In Review, where --watch merges main in and resolves it.
+
+# conflict_handback <item-id> <issue> <pr> <head-sha> <from-column>
+# Comment once per PR head (so a second conflict on a later head is announced
+# too) and move the card back to In Review. Returns 1 without acting when the
+# head SHA is unknown: the marker would be ambiguous, so wait for a clean read.
+conflict_handback() {
+  local item_id="$1" issue_num="$2" pr_num="$3" head_sha="$4" from="$5"
+  if [[ -z "$head_sha" ]]; then
+    log "WARNING: PR #$pr_num conflicts but its head SHA is unknown (transient?); retrying next tick"
+    return 1
+  fi
+  local sha12="${head_sha:0:12}"
+  log "Issue #$issue_num: PR #$pr_num conflicts with main; moving the card from $from back to In Review"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "DRY-RUN: would comment on #$issue_num and move it from $from to In Review"
+    return 0
+  fi
+  if ! issue_has_marker "$issue_num" "drafto-factory-conflict:$sha12"; then
+    local after
+    if [[ "$from" == "In Test" ]]; then
+      after="It comes back to **In Test** with a fresh preview, so there's no point testing \
+this version further."
+    else
+      after="Merging \`main\` changes the diff, so your approval doesn't carry over: the card \
+comes back to **In Test** for you to approve again."
+    fi
+    gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+      --body "🏭 **PR #$pr_num conflicts with \`main\`.**
+
+Moving the card from **$from** back to **In Review**: the factory merges \`main\` \
+into the branch and resolves the conflicts there. $after
+
+<!-- drafto-factory-conflict:$sha12 -->" >>"$LOG_FILE" 2>&1 || true
+  fi
+  transition_status "$item_id" "$issue_num" "In Review" || true
+}
+
+# rollback_conflict_pass <worktree> <pre-merge-head>
+# Undo a conflict pass that didn't finish: abort a merge still in progress and
+# drop any commit made on top of <pre-merge-head> that never reached origin. A
+# half-merged or diverged worktree would otherwise fail every later tick's
+# resume (worktree-cli `add` refuses both), silently and without spending budget.
+rollback_conflict_pass() {
+  local wt_path="$1" before="$2"
+  [[ -n "$wt_path" ]] || return 0
+  local args=(merge-abort --path "$wt_path")
+  [[ -n "$before" ]] && args+=(--to "$before")
+  node "$SCRIPT_DIR/lib/worktree-cli.mjs" "${args[@]}" >>"$LOG_FILE" 2>&1 || true
+}
+
+# conflict_pass_verified <worktree> <pr> <merge-json>
+# Don't take the agent's "fixed" on trust: the merge must be committed with main
+# in it, no conflict marker or new ADR-number clash left. Only then is it pushed
+# (the agent commits but never pushes on a conflict pass), so a resolution that
+# fails the check never reaches the PR and the rollback can undo all of it.
+# Succeeds once the PR's head is the verified commit. Sets CONFLICT_PASS_WHY on
+# failure.
+conflict_pass_verified() {
+  local wt_path="$1" pr_num="$2" merge_json="$3"
+  local main_sha files check head pr_head
+  CONFLICT_PASS_WHY=""
+  main_sha=$(echo "$merge_json" | jq -r '.mainSha // ""')
+  files=$(echo "$merge_json" | jq -c '.conflictedFiles // []')
+  if ! check=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" merge-check --path "$wt_path" \
+      --main-sha "$main_sha" --files-json "$files" 2>>"$LOG_FILE"); then
+    CONFLICT_PASS_WHY="merge-check failed to run"; return 1
+  fi
+  if [[ "$(echo "$check" | jq -r '.resolved')" != "true" ]]; then
+    CONFLICT_PASS_WHY="unresolved: $(echo "$check" | jq -c '{inProgress, unmergedFiles, uncommittedFiles, mainIsAncestor, filesWithMarkers, adrCollisions}')"
+    return 1
+  fi
+  head=$(echo "$check" | jq -r '.head // ""')
+  pr_head=$(pr_head_oid "$pr_num")
+  if [[ -n "$head" && "$pr_head" != "$head" ]]; then
+    log "Conflict pass for PR #$pr_num verified; pushing ${head:0:12}"
+    node "$SCRIPT_DIR/lib/worktree-cli.mjs" push --path "$wt_path" >>"$LOG_FILE" 2>&1 || true
+    pr_head=$(pr_head_oid "$pr_num")
+  fi
+  if [[ -z "$head" || "$pr_head" != "$head" ]]; then
+    CONFLICT_PASS_WHY="the resolution never reached the PR (local ${head:0:12}, PR ${pr_head:0:12})"
+    return 1
+  fi
+}
+
 # True (exit 0) when the PR's CI is genuinely green: every branch-protection
 # *required* status context is SUCCESS in the rollup. With no required contexts
 # configured, falls back to "rollup non-empty, ≥1 SUCCESS, nothing pending". An
@@ -1820,31 +2185,71 @@ pr_failing_required_summary() {
 }
 
 # Did CI judge the code? Prints one word for the failing required checks:
-#   infra   — every one is a GitHub Actions job that was CANCELLED before any
-#             runner picked it up ("The job was not acquired by Runner of type
-#             hosted": no runner, no steps). Re-running is the fix, not a code
-#             change. This is what parked #654 in Approved for days.
-#   red     — anything else: a FAILURE / TIMED_OUT / ERROR / STARTUP_FAILURE (a
-#             workflow the PR itself may have broken), a job cancelled after it
-#             started (a job-level timeout or a manual cancel is a CANCELLED that
-#             ran — likely a hang in the code), or a non-Actions check.
+#   infra   — every one is a GitHub Actions job that never judged the code:
+#             either no runner ever picked it up ("The job was not acquired by
+#             Runner of type hosted": no runner, no steps — what parked #654 in
+#             Approved for days), or it ran out of time (its timeout-minutes) in
+#             a step that can't be the code's fault (is_ci_infra_step: checkout,
+#             toolchain setup, caches and artifacts, the browser install,
+#             SonarCloud), as a job hung on a download does. Re-running is the
+#             fix, not a code change.
+#   red     — anything else: a FAILURE / ERROR / STARTUP_FAILURE (a workflow the
+#             PR itself may have broken), a job that ran out of time in the
+#             install, build or tests (likely a hang in the code), a job someone
+#             cancelled by hand (ADR-0041 never re-runs those), or a non-Actions
+#             check.
 #   unknown — a job lookup failed; the caller retries next tick rather than guess.
 classify_failing_required() {
-  local checks jobs job started
+  local checks jobs job cut timed_out
   checks=$(pr_failing_required_checks "$1")
-  if ! echo "$checks" | jq -e 'length > 0 and all(.c == "CANCELLED")' >/dev/null 2>&1; then
+  # A timed-out job may report CANCELLED or TIMED_OUT; both get the step check.
+  if ! echo "$checks" | jq -e 'length > 0 and all(.c == "CANCELLED" or .c == "TIMED_OUT")' >/dev/null 2>&1; then
     echo "red"; return 0
   fi
   jobs=$(echo "$checks" | jq -r '.[] | ((.url | capture("/actions/runs/[0-9]+/job/(?<j>[0-9]+)") | .j) // "none")' 2>/dev/null)
   while IFS= read -r job; do
     [[ "$job" =~ ^[0-9]+$ ]] || { echo "red"; return 0; }
-    if ! started=$(gh api "repos/JakubAnderwald/drafto/actions/jobs/$job" \
-        --jq '((.steps // []) | length > 0) or ((.runner_name // "") != "")' 2>>"$LOG_FILE"); then
+    # "never" when no runner picked the job up, otherwise the step it stopped
+    # in: the first that neither succeeded nor was skipped ("" when none).
+    if ! cut=$(gh api "repos/JakubAnderwald/drafto/actions/jobs/$job" \
+        --jq 'if ((.steps // []) | length) == 0 and ((.runner_name // "") == "") then "never"
+              else ([(.steps // [])[] | select((.conclusion // "") != "success" and (.conclusion // "") != "skipped")
+                     | .name][0] // "") end' 2>>"$LOG_FILE"); then
       echo "unknown"; return 0
     fi
-    [[ "$started" == "false" ]] || { echo "red"; return 0; }
+    [[ "$cut" == "never" ]] && continue
+    is_ci_infra_step "$cut" || { echo "red"; return 0; }
+    # Only a timeout: a job someone cancelled by hand stays cancelled. The job
+    # id is also its check-run id.
+    if ! timed_out=$(gh api "repos/JakubAnderwald/drafto/check-runs/$job/annotations" \
+        --jq 'any(.[]; (.message // "") | test("exceeded the maximum execution time"; "i"))' 2>>"$LOG_FILE"); then
+      echo "unknown"; return 0
+    fi
+    [[ "$timed_out" == "true" ]] || { echo "red"; return 0; }
   done <<< "$jobs"
   echo "infra"
+}
+
+# is_ci_infra_step <step-name> — exit 0 for a CI step whose hang can't be the
+# code's fault: the runner's own set-up, starting or stopping a job container
+# (pulling its image), the secrets check, checkout, toolchain setup, cache and
+# artifact transfers, a Playwright browser install, and the SonarCloud scan and
+# gate (an outside service). The names are the ones GitHub gives the steps of
+# .github/workflows/ci.yml ("Run <uses>" or "Run <command>" for an unnamed
+# step); a test ties this list to that file. An action's own
+# cleanup ("Post Run <uses>") counts as the action does, and so does the
+# runner's "Complete job". `pnpm install` is not on it: a dependency or
+# lockfile change in the PR can hang it.
+is_ci_infra_step() {
+  case "${1#Post }" in
+    "Set up job" | "Complete job" | "Initialize containers" | "Stop containers" | \
+    "Check for required secrets" | "Run actions/checkout@"* | \
+    "Run actions/setup-"* | "Run actions/cache@"* | "Run pnpm/action-setup@"* | \
+    "Run actions/download-artifact@"* | "Run actions/upload-artifact@"* | \
+    "Run SonarSource/"* | *"playwright install"*)
+      return 0 ;;
+  esac
+  return 1
 }
 
 # The GitHub Actions run IDs behind the failing required checks, deduped, one per
@@ -1904,7 +2309,7 @@ rerun_infra_failures() {
   fi
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" ciRerun "$head_sha:$count" \
     --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-  log "Issue #$issue_num: PR #$pr_num required check(s) were cancelled before a runner picked them up; re-running (attempt $count/$FACTORY_CI_RERUN_MAX)"
+  log "Issue #$issue_num: PR #$pr_num required check(s) were cancelled before they ran the code (no runner, or timed out while setting up); re-running (attempt $count/$FACTORY_CI_RERUN_MAX)"
   while IFS= read -r id; do
     gh run rerun "$id" --failed --repo JakubAnderwald/drafto >>"$LOG_FILE" 2>&1 \
       || log "WARNING: gh run rerun $id --failed refused for PR #$pr_num (counted against the re-run budget)"
@@ -1933,8 +2338,8 @@ comment_ci_infra_hold() {
   gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
     --body "🏭 **CI couldn't run on \`$sha12\`.**
 
-These required checks on PR #$pr_num were cancelled before any runner picked \
-them up, so CI never judged the code:
+These required checks on PR #$pr_num never judged the code: no runner picked \
+them up, or they timed out while setting up.
 
 $summary
 
@@ -5103,16 +5508,25 @@ and drag the card back to **Ready** to retry.
 
     log "Issue #$ISSUE_NUM: $UNACKED_COUNT unacked OWNER comment(s) → replanning in place"
 
+    # One reply per trigger comment that needs an answer, built here once for
+    # the planner's bundle and the reply check after its run.
+    PLAN_REPLY_MARKERS=$(reply_markers_for \
+      "$(echo "$COMMENTS_JSON" | jq -c --argjson t "$UNACKED_JSON" '[.[] | select((.id | tostring) as $i | $t | index($i))]')" \
+      "drafto-factory-plan-reply-")
     REPLAN_JSON=$(jq -n \
       --arg id "$PLAN_COMMENT_ID" \
       --arg issueNum "$ISSUE_NUM" \
       --arg body "$PLAN_BODY" \
       --argjson triggers "$UNACKED_JSON" \
+      --arg replyDir "$(reply_dir_for "$ISSUE_NUM")" \
+      --argjson replyMarkers "$PLAN_REPLY_MARKERS" \
       '{
          planCommentId: $id,
          planCommentUrl: ("https://github.com/JakubAnderwald/drafto/issues/" + $issueNum + "#issuecomment-" + $id),
          planCommentBody: $body,
-         triggerCommentIds: $triggers
+         triggerCommentIds: $triggers,
+         replyMarkers: $replyMarkers,
+         replyDir: $replyDir
        }')
 
     if ! BUNDLE=$(build_plan_bundle "$ISSUE_RECORD" "$COMMENTS_JSON" "$REPLAN_JSON"); then
@@ -5135,12 +5549,18 @@ and drag the card back to **Ready** to retry.
 
     CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
       "$PROMPT_TEXT" "$BUNDLE")
+    reset_reply_dir "$ISSUE_NUM"
+    POSTED_REPLY_IDS=" "
     log "Invoking claude for #$ISSUE_NUM (--plan replan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
     node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
+
+    # Whatever the run returned, a trigger it acked has been handled, so it
+    # gets its reply now, before any early exit.
+    plan_reply_check "$ISSUE_NUM" "$PLAN_REPLY_MARKERS"
 
     if [[ $EXIT_CODE -eq 124 ]]; then
       log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC}s) for #$ISSUE_NUM --plan replan — skipping; next tick retries"
@@ -5176,6 +5596,8 @@ and drag the card back to **Plan Review** (or **Ready** for a full restart).
 
 <!-- drafto-factory-retry-exhausted -->" >>"$LOG_FILE" 2>&1 || true
         transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+        # No replan will come for these comments now.
+        plan_reply_check "$ISSUE_NUM" "$PLAN_REPLY_MARKERS" 1
       fi
       continue
     fi
@@ -5209,6 +5631,8 @@ and drag the card back to **Plan Review** (or **Ready** for a full restart).
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field \
           "$ISSUE_NUM" lastError "replanner returned blocked" \
           --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        # The card leaves Plan Review, so no replan will answer these comments.
+        plan_reply_check "$ISSUE_NUM" "$PLAN_REPLY_MARKERS" 1
         ;;
       noop)
         # Claude decided no plan change was warranted (e.g. the operator's
@@ -5366,7 +5790,7 @@ the card back to **In Progress** to retry.
           gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
             --body "🏭 **Paused — low disk on the build machine.**
 
-Only ${FREE_GB} GB free on the factory volume (need ≥ ${FACTORY_MIN_FREE_DISK_GB} GB). \
+Only ${FREE_GB} GB free on the Mac mini's internal disk or the factory's build volume (need ≥ ${FACTORY_MIN_FREE_DISK_GB} GB). \
 Reclaim space on the Mac mini, then drag this card back to **In Progress** to retry.
 
 <!-- drafto-factory-disk-low -->" >>"$LOG_FILE" 2>&1 || true
@@ -5404,7 +5828,7 @@ Drag it back to **Ready** so the factory can plan it first.
     # plan is the source of truth there.
     REVISION_COMMENTS="[]"
     IS_REVISION=0
-    REPLY_MARKER=""
+    REPLY_MARKERS="[]"
     FEEDBACK_CONSUMED_AT=""
     if [[ "$PRIOR_PR" != "null" ]]; then
       FEEDBACK_HWM=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
@@ -5416,12 +5840,10 @@ Drag it back to **Ready** so the factory can plan it first.
       if [[ "$REV_COUNT" -gt 0 ]]; then
         IS_REVISION=1
         log "Issue #$ISSUE_NUM: revision run ($REV_COUNT new feedback comment(s) on the open PR)"
-        # One reply per feedback round, keyed on the newest comment it answers,
-        # so a retry of the same feedback finds the reply it already posted.
-        REPLY_ID=$(echo "$REVISION_COMMENTS" | jq -r 'sort_by(.createdAt) | .[-1].id // ""' 2>/dev/null || echo "")
-        if [[ "$REPLY_ID" =~ ^[0-9]+$ ]]; then
-          REPLY_MARKER="drafto-factory-revise-reply-$REPLY_ID"
-        fi
+        # One reply per feedback comment, keyed on that comment, so a retry of
+        # the same feedback finds the replies it already posted. Approval noise
+        # ("thanks", "lgtm") needs no answer.
+        REPLY_MARKERS=$(reply_markers_for "$REVISION_COMMENTS" "drafto-factory-revise-reply-")
         FEEDBACK_CONSUMED_AT=$(echo "$REVISION_COMMENTS" | jq -r 'sort_by(.createdAt) | .[-1].createdAt // ""' 2>/dev/null || echo "")
       fi
     fi
@@ -5433,7 +5855,7 @@ Drag it back to **Ready** so the factory can plan it first.
       break
     fi
 
-    if ! BUNDLE=$(build_implement_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PRIOR_PR" "$ATTEMPTS" "$REVISION_COMMENTS" "$COMMENTS_JSON" "$REPLY_MARKER"); then
+    if ! BUNDLE=$(build_implement_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PRIOR_PR" "$ATTEMPTS" "$REVISION_COMMENTS" "$COMMENTS_JSON" "$REPLY_MARKERS" "$(reply_dir_for "$ISSUE_NUM")"); then
       log "ERROR: build_implement_bundle failed for #$ISSUE_NUM"; continue
     fi
     AFFECTED=$(echo "$BUNDLE" | jq -r '.spec.affectedPlatforms // [] | join(",")')
@@ -5496,6 +5918,7 @@ Drag it back to **Ready** so the factory can plan it first.
     # Invoke claude inside the worktree with the implementer prompt + bundle.
     CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
       "$PROMPT_TEXT" "$BUNDLE")
+    reset_reply_dir "$ISSUE_NUM"
     log "Invoking claude for #$ISSUE_NUM (--implement, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s, effort=$FACTORY_EFFORT)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -5626,6 +6049,11 @@ drag the card back to **In Progress**.
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         if [[ "$IS_REVISION" -eq 1 ]]; then
           log "Issue #$ISSUE_NUM: revision pushed → In Review (PR $PR_URL; slot $SLOT retained)"
+          # Each feedback comment gets its own reply saying what changed, even
+          # when the change answers it: the new In Test scenario comes later.
+          revise_replies_check "$ISSUE_NUM" \
+            "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" \
+            "$REPLY_MARKERS" implemented
         else
           log "Issue #$ISSUE_NUM: advanced to In Review (PR $PR_URL; slot $SLOT retained for --watch)"
         fi
@@ -5657,7 +6085,7 @@ drag the card back to **In Progress**.
           # lookup, not the directive's pr=.
           revision_return_to_test "$ISSUE_NUM" "$ITEM_ID" "$PRE_HEAD_OID" "$ITEM_LABELS" \
             "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" \
-            "$REPLY_MARKER" "$FEEDBACK_MARK" noop
+            "$REPLY_MARKERS" "$FEEDBACK_MARK" noop
         else
           # Fresh idempotency hit: a PR already exists from a prior attempt.
           PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
@@ -5697,7 +6125,7 @@ drag the card back to **In Progress**.
            && worktree_untouched "$WT_PATH" "$PRE_HEAD_OID"; then
           revision_return_to_test "$ISSUE_NUM" "$ITEM_ID" "$PRE_HEAD_OID" "$ITEM_LABELS" \
             "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" \
-            "$REPLY_MARKER" "$FEEDBACK_MARK" declined
+            "$REPLY_MARKERS" "$FEEDBACK_MARK" declined
         else
           implement_park_blocked "$ITEM_ID" "$ISSUE_NUM" "$SLOT" \
             "implementer declined, but the PR head wasn't the one shown at In Test or the worktree changed"
@@ -5721,8 +6149,9 @@ fi
 #      (merged by the operator, Blocked, Done, or closed). Without this the two
 #      slots would leak. Testing must stay in the active set: a card verifying
 #      there still owns its slot + worktree (ADR-0053).
-#   2. In Review → In Test — for each open factory PR: if CI is failing or
-#      review comments are unresolved, resume the worktree and invoke Claude
+#   2. In Review → In Test — for each open factory PR: if it conflicts with
+#      main, merge main in first (ADR-0061); if CI is failing or review
+#      comments are unresolved, resume the worktree and invoke Claude
 #      (factory-watch-prompt) to push one fix; once CI is green AND a Vercel
 #      preview is reachable, advance the card to In Test and post the URL.
 # PHASE is guaranteed != "A" here (Phase A --watch no-op'd at the gate above).
@@ -5852,6 +6281,17 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
     # and the deployment also surfaces as a rollup target URL. Search both.
     PREVIEW_URL=$(pr_preview_url "$PR_VIEW")
 
+    # A PR that conflicts with main is a fix-loop trigger of its own, handled
+    # before anything that reads CI (ADR-0061). GitHub runs no pull_request
+    # workflows on a conflicting head, so its rollup is stale or empty: the
+    # PENDING / ci_required_green waits below would hold it forever, and stale
+    # green checks would wave it on to In Test. UNKNOWN (GitHub still computing)
+    # is not a conflict; the next tick reads it again.
+    CONFLICTING=0
+    if [[ "$(echo "$PR_VIEW" | jq -r '.mergeable // ""')" == "CONFLICTING" ]]; then
+      CONFLICTING=1
+    fi
+
     # Unresolved inline review threads are a fix-loop trigger in their own right.
     # Before this, the whole fix path was gated on failing CI, so a green PR with
     # ten findings sailed through to In Test and the findings were force-resolved
@@ -5864,22 +6304,25 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
     # in-flight run, invalidate it, and — since watch_bound_thread_loop spends an
     # attempt whenever FAILING is 0 — burn the retry budget toward Blocked while
     # CI never gets a stable head to finish against. Failing CI is handled first
-    # on its own; threads are a green-PR concern.
+    # on its own; threads are a green-PR concern. A conflict pass leaves them
+    # for the pass after it, once CI has run on the merged head.
     REVIEW_THREADS="[]"
     THREAD_COUNT=0
-    if [[ "$FAILING" -eq 0 && "$PENDING" -eq 0 ]] && ci_required_green "$PR_VIEW"; then
+    if [[ "$CONFLICTING" -eq 0 && "$FAILING" -eq 0 && "$PENDING" -eq 0 ]] && ci_required_green "$PR_VIEW"; then
       REVIEW_THREADS=$(fetch_review_threads "$PR_NUM" 2>>"$LOG_FILE" || echo "[]")
       [[ -n "$REVIEW_THREADS" ]] || REVIEW_THREADS="[]"
       THREAD_COUNT=$(echo "$REVIEW_THREADS" | jq 'length' 2>/dev/null || echo "0")
       [[ "$THREAD_COUNT" =~ ^[0-9]+$ ]] || THREAD_COUNT=0
     fi
 
-    # Required checks GitHub cancelled before any runner picked them up are not
-    # something a fix pass can repair: re-run them instead of spending a Claude
-    # attempt, and once the re-runs are spent tell the operator rather than loop
-    # the fix agent. Only with a known required set — the all-checks fallback
-    # would classify advisory bots too.
-    if [[ "$FAILING" -gt 0 && "${REQUIRED_CONTEXTS_JSON:-[]}" != "[]" ]]; then
+    # Required checks that never judged the code (no runner, or timed out while
+    # setting up — classify_failing_required) are not something a fix pass can
+    # repair: re-run them instead of spending a Claude attempt, and
+    # once the re-runs are spent tell the operator rather than loop the fix
+    # agent. Only with a known required set — the all-checks fallback
+    # would classify advisory bots too. Not on a conflicting head: re-running
+    # checks there judges code that is about to be replaced by the merge.
+    if [[ "$CONFLICTING" -eq 0 && "$FAILING" -gt 0 && "${REQUIRED_CONTEXTS_JSON:-[]}" != "[]" ]]; then
       WATCH_HEAD_SHA=$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')
       if [[ -z "$WATCH_HEAD_SHA" ]]; then
         log "WARNING: PR #$PR_NUM has no head SHA in the snapshot (transient?); skipping this tick"; continue
@@ -5894,8 +6337,10 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
       esac
     fi
 
-    if [[ "$FAILING" -gt 0 || "$THREAD_COUNT" -gt 0 ]]; then
-      if [[ "$FAILING" -gt 0 ]]; then
+    if [[ "$FAILING" -gt 0 || "$THREAD_COUNT" -gt 0 || "$CONFLICTING" -eq 1 ]]; then
+      if [[ "$CONFLICTING" -eq 1 ]]; then
+        log "Issue #$ISSUE_NUM: PR #$PR_NUM conflicts with main → conflict pass"
+      elif [[ "$FAILING" -gt 0 ]]; then
         log "Issue #$ISSUE_NUM: PR #$PR_NUM has $FAILING failing check(s), $THREAD_COUNT open thread(s) → fix loop"
       else
         log "Issue #$ISSUE_NUM: PR #$PR_NUM is green but has $THREAD_COUNT open review thread(s) → fix loop"
@@ -5908,11 +6353,15 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
       if [[ "$ATTEMPTS" -ge "$FACTORY_MAX_ATTEMPTS" ]]; then
         log "Issue #$ISSUE_NUM: watch retry budget exhausted ($ATTEMPTS); advancing to Blocked"
         if [[ "$DRY_RUN" -eq 0 ]]; then
+          if [[ "$CONFLICTING" -eq 1 ]]; then
+            EXHAUSTED_WHAT="merge \`main\` into PR #$PR_NUM and resolve its conflicts"
+          else
+            EXHAUSTED_WHAT="get PR #$PR_NUM to green CI with every review thread answered"
+          fi
           gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
             --body "🏭 **Fix retry budget exhausted ($ATTEMPTS attempts).**
 
-The factory could not get PR #$PR_NUM to green CI with every review thread \
-answered after $ATTEMPTS fix passes. \
+The factory could not $EXHAUSTED_WHAT after $ATTEMPTS fix passes. \
 A human should take a look. Reset with \
 \`node scripts/lib/state-cli.mjs factory:reset-attempts $ISSUE_NUM\` once fixed.
 
@@ -5937,8 +6386,10 @@ A human should take a look. Reset with \
       [[ -n "$PLAN_COMMENT_JSON" ]] || PLAN_COMMENT_JSON="null"
       # Only the required failures the fix agent can act on — never hand it an
       # advisory bot's red (e.g. CodeRabbit) to "fix". Falls back to all reds
-      # when the required set is unknown.
-      CI_SUMMARY=$(pr_failing_required_summary "$PR_VIEW")
+      # when the required set is unknown. None on a conflict pass: they belong
+      # to the head the merge replaces, and the pass resolves the merge only.
+      CI_SUMMARY=""
+      [[ "$CONFLICTING" -eq 1 ]] || CI_SUMMARY=$(pr_failing_required_summary "$PR_VIEW")
       # Also drop the CodeRabbit CLI lane's PR-conversation summary (ADR-0036).
       # It lists the findings that did NOT become threads (lower severities,
       # outside the diff, next to an existing thread, past the thread cap,
@@ -5954,12 +6405,21 @@ A human should take a look. Reset with \
                     and ((.body // "") | contains("<!-- drafto-factory-cr-cli sha="))) | not)
           | { id: .id, user: { login: (.author.login // "") }, body: (.body // "") } ]')
       [[ -n "$UNRESOLVED" ]] || UNRESOLVED="[]"
+      # A conflict pass commits nothing but the merge, so it gets no feedback
+      # to act on; a later pass picks the comments up again.
+      [[ "$CONFLICTING" -eq 1 ]] && UNRESOLVED="[]"
 
-      if ! BUNDLE=$(build_watch_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PR_OBJ" "$CI_SUMMARY" "$UNRESOLVED" "$ATTEMPTS" "$COMMENTS_JSON" "$REVIEW_THREADS"); then
-        log "ERROR: build_watch_bundle failed for #$ISSUE_NUM"; continue
+      # A conflict pass builds its bundle after the merge, with the result in
+      # it (below); only a dry run, which never merges, needs one here.
+      BUNDLE=""
+      if [[ "$CONFLICTING" -eq 0 || "$DRY_RUN" -eq 1 ]]; then
+        if ! BUNDLE=$(build_watch_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PR_OBJ" "$CI_SUMMARY" "$UNRESOLVED" "$ATTEMPTS" "$COMMENTS_JSON" "$REVIEW_THREADS"); then
+          log "ERROR: build_watch_bundle failed for #$ISSUE_NUM"; continue
+        fi
       fi
 
       if [[ "$DRY_RUN" -eq 1 ]]; then
+        [[ "$CONFLICTING" -eq 1 ]] && log "DRY-RUN: would merge origin/main into PR #$PR_NUM's branch before invoking claude"
         log "DRY-RUN: watch bundle for #$ISSUE_NUM (printed to stdout only)"
         echo "$BUNDLE"; continue
       fi
@@ -5985,10 +6445,79 @@ A human should take a look. Reset with \
       cat "$WT_ERR_FILE" >>"$LOG_FILE" 2>/dev/null || true; rm -f "$WT_ERR_FILE"
       WT_PATH=$(echo "$WT_JSON" | jq -r '.path')
       log "Issue #$ISSUE_NUM: worktree $WT_PATH (branchReused=$(echo "$WT_JSON" | jq -r '.branchReused // false'), fromRemote=$(echo "$WT_JSON" | jq -r '.fromRemote // false'), base=$(echo "$WT_JSON" | jq -r '.base // ""'))"
+
+      # Conflict pass (ADR-0061): bash merges main in, before the install so
+      # the agent's checks run against the merged lockfile. What git merges on
+      # its own is pushed without a Claude run or an attempt; the agent gets
+      # the merge only when it stopped on conflicts or left two ADRs sharing a
+      # number. Every way out of the pass below rolls back what didn't land.
+      MERGE_JSON=""
+      MERGE_BEFORE=""
+      if [[ "$CONFLICTING" -eq 1 ]]; then
+        MERGE_ERR_FILE=$(mktemp -t factory-merge-err)
+        if ! MERGE_JSON=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" merge-main --path "$WT_PATH" 2>"$MERGE_ERR_FILE"); then
+          log "ERROR: merging main into PR #$PR_NUM failed for #$ISSUE_NUM: $(worktree_cli_error "$MERGE_ERR_FILE"); spending one attempt"
+          rm -f "$MERGE_ERR_FILE"
+          rollback_conflict_pass "$WT_PATH" ""
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          continue
+        fi
+        rm -f "$MERGE_ERR_FILE"
+        MERGE_STATUS=$(echo "$MERGE_JSON" | jq -r '.status // ""' 2>/dev/null || echo "")
+        MERGE_BEFORE=$(echo "$MERGE_JSON" | jq -r '.before // ""' 2>/dev/null || echo "")
+        ADR_CLASHES=$(echo "$MERGE_JSON" | jq '(.adrCollisions // []) | length' 2>/dev/null || echo "0")
+        [[ "$ADR_CLASHES" =~ ^[0-9]+$ ]] || ADR_CLASHES=0
+        log "Issue #$ISSUE_NUM: merged origin/main into PR #$PR_NUM's branch: $MERGE_STATUS (conflicted: $(echo "$MERGE_JSON" | jq -r '(.conflictedFiles // []) | join(", ")'); ADR clashes: $ADR_CLASHES)"
+        case "$MERGE_STATUS" in
+          unreachable)
+            # Nothing was touched; like a failed worktree resume, a network
+            # blip is no reason to spend the card's budget.
+            log "WARNING: couldn't fetch origin/main for PR #$PR_NUM ($(echo "$MERGE_JSON" | jq -r '.detail // "no detail"')); retrying next tick"
+            continue
+            ;;
+          up-to-date|clean)
+            if [[ "$ADR_CLASHES" -eq 0 ]]; then
+              if [[ "$(echo "$MERGE_JSON" | jq -r '.ahead')" == "true" ]]; then
+                if ! node "$SCRIPT_DIR/lib/worktree-cli.mjs" push --path "$WT_PATH" >>"$LOG_FILE" 2>&1; then
+                  log "WARNING: pushing the merge to PR #$PR_NUM failed; rolling it back, spending one attempt"
+                  rollback_conflict_pass "$WT_PATH" "$MERGE_BEFORE"
+                  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+                  continue
+                fi
+                log "Issue #$ISSUE_NUM: pushed the merge to PR #$PR_NUM; CI runs on the new head"
+              else
+                # GitHub's mergeability lags a push by a moment; nothing to do.
+                log "Issue #$ISSUE_NUM: PR #$PR_NUM already contains main; waiting for GitHub to recompute mergeability"
+              fi
+              continue
+            fi
+            ;;
+          conflicts) ;;
+          *)
+            log "ERROR: git refused to merge main into PR #$PR_NUM ($(echo "$MERGE_JSON" | jq -r '.detail // "no detail"')); spending one attempt"
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+            continue
+            ;;
+        esac
+        if ! BUNDLE=$(build_watch_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PR_OBJ" "$CI_SUMMARY" "$UNRESOLVED" "$ATTEMPTS" "$COMMENTS_JSON" "$REVIEW_THREADS" "$MERGE_JSON"); then
+          log "ERROR: build_watch_bundle (conflict pass) failed for #$ISSUE_NUM; rolling the merge back"
+          rollback_conflict_pass "$WT_PATH" "$MERGE_BEFORE"
+          continue
+        fi
+      fi
+
       copy_worktree_env "$WT_PATH"
       seed_worktree_node_modules "$WT_PATH"
-      log "Issue #$ISSUE_NUM: seeding node_modules (clonefile) + reconciling deps (--watch, slot $SLOT, cap ${INSTALL_TIMEOUT_SEC}s)"
-      run_pnpm_install "$WT_PATH" || log "WARNING: install failed/timed out for #$ISSUE_NUM --watch; proceeding"
+      # A package.json still holding conflict markers fails every install
+      # attempt, each up to the cap; the agent installs once it has resolved
+      # it. A conflicted pnpm-lock.yaml alone is fine: pnpm rewrites it.
+      if [[ "$CONFLICTING" -eq 1 ]] \
+          && echo "$MERGE_JSON" | jq -e '(.conflictedFiles // []) | any(test("(^|/)package\\.json$"))' >/dev/null 2>&1; then
+        log "Issue #$ISSUE_NUM: package.json conflicts; leaving the install to the agent after it resolves them"
+      else
+        log "Issue #$ISSUE_NUM: seeding node_modules (clonefile) + reconciling deps (--watch, slot $SLOT, cap ${INSTALL_TIMEOUT_SEC}s)"
+        run_pnpm_install "$WT_PATH" || log "WARNING: install failed/timed out for #$ISSUE_NUM --watch; proceeding"
+      fi
 
       CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
         "$WATCH_PROMPT_TEXT" "$BUNDLE")
@@ -6004,6 +6533,8 @@ A human should take a look. Reset with \
         [[ $EXIT_CODE -eq 124 ]] && log "WARNING: claude timed out for #$ISSUE_NUM --watch fix" \
           || log "ERROR: claude exited $EXIT_CODE for #$ISSUE_NUM --watch fix"
         cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
+        # Never leave the worktree mid-merge: the next tick's resume would refuse it.
+        [[ "$CONFLICTING" -eq 1 ]] && rollback_conflict_pass "$WT_PATH" "$MERGE_BEFORE"
         # Session limit (never a 124 timeout)? Pause until reset, don't bump.
         if [[ $EXIT_CODE -ne 124 ]] && check_session_limit "$WT_PATH" "$CLAUDE_START_ISO"; then
           rm -f "$CLAUDE_OUTPUT_FILE"
@@ -6019,6 +6550,32 @@ A human should take a look. Reset with \
       SUMMARY_LINE=$(grep -E '^issue=[0-9]+ action=[a-z]+ pr=[^ ]+$' "$CLAUDE_OUTPUT_FILE" | tail -1 || true)
       rm -f "$CLAUDE_OUTPUT_FILE"
       WACTION=$(echo "${SUMMARY_LINE:-}" | sed -E 's/.*action=([^ ]+).*/\1/')
+
+      # A conflict pass is judged by its result, not the agent's word. Only a
+      # pass that didn't land spends an attempt: a verified merge is progress,
+      # and charging it would let one resolution tip a card that spent its
+      # budget on CI fixes into Blocked. A run that can't resolve still ends
+      # there, after FACTORY_MAX_ATTEMPTS failed passes.
+      if [[ "$CONFLICTING" -eq 1 ]]; then
+        if [[ "$WACTION" == "fixed" ]] && conflict_pass_verified "$WT_PATH" "$PR_NUM" "$MERGE_JSON"; then
+          log "Issue #$ISSUE_NUM: conflict pass merged main into PR #$PR_NUM; leaving In Review for CI on the new head"
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastWatchAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        else
+          if [[ "$WACTION" == "fixed" ]]; then
+            log "WARNING: conflict pass for #$ISSUE_NUM said fixed, but $CONFLICT_PASS_WHY; rolling back, spending one attempt"
+          else
+            log "Issue #$ISSUE_NUM: conflict pass ended '${WACTION:-no directive}'; rolling back, spending one attempt"
+          fi
+          rollback_conflict_pass "$WT_PATH" "$MERGE_BEFORE"
+          if [[ "$WACTION" == "blocked" ]]; then
+            transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastError "watcher returned blocked (conflict pass)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          fi
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        fi
+        continue
+      fi
+
       case "$WACTION" in
         fixed)
           log "Issue #$ISSUE_NUM: pushed a fix; leaving In Review for CI re-check next tick"
@@ -6225,7 +6782,7 @@ A human should take a look. Reset with \
     if [[ -n "$INTEST_PR_OBJ" && "$INTEST_PR_OBJ" != "null" ]]; then
       INTEST_PR_NUM=$(echo "$INTEST_PR_OBJ" | jq -r '.number')
       INTEST_PR_VIEW=$(gh pr view "$INTEST_PR_NUM" --repo JakubAnderwald/drafto \
-        --json statusCheckRollup,comments,headRefOid 2>>"$LOG_FILE" || echo "")
+        --json statusCheckRollup,comments,headRefOid,mergeable 2>>"$LOG_FILE" || echo "")
       INTEST_HEAD_SHA=$(echo "${INTEST_PR_VIEW:-}" | jq -r '.headRefOid // ""' 2>/dev/null || echo "")
       if [[ -n "$INTEST_HEAD_SHA" ]]; then
         INTEST_FILES=$(gh pr diff "$INTEST_PR_NUM" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE" || echo "")
@@ -6240,6 +6797,18 @@ A human should take a look. Reset with \
         INTEST_PENDING_FEEDBACK=0
         if has_actionable_feedback "$COMMENTS_JSON" "$INTEST_HWM"; then
           INTEST_PENDING_FEEDBACK=1
+        fi
+
+        # Main moved under the PR and it no longer merges (ADR-0061): don't ask
+        # anyone to approve, or build a beta of, a head that has to change.
+        # Back to In Review, where --watch merges main in; the card returns with
+        # a fresh preview and scenario. Pending feedback goes first: the revision
+        # runs as usual and the conflict is resolved once it reaches In Review,
+        # so the reporter's comments are never dropped.
+        if [[ "$INTEST_PENDING_FEEDBACK" -eq 0 ]] \
+            && [[ "$(echo "${INTEST_PR_VIEW:-}" | jq -r '.mergeable // ""' 2>/dev/null)" == "CONFLICTING" ]]; then
+          conflict_handback "$ITEM_ID" "$ISSUE_NUM" "$INTEST_PR_NUM" "$INTEST_HEAD_SHA" "In Test" || true
+          continue
         fi
 
         # Learn how previously-dispatched lanes ended BEFORE deciding what to
@@ -6345,9 +6914,9 @@ A human should take a look. Reset with \
       --body "🏭 **Revising — picking up your feedback.**
 
 A code change goes onto the open PR's branch and comes back through In Review \
-to In Test with the preview redeployed. Anything else, such as a question or a \
-test run, gets a reply here. (To ship as-is instead, drag the card to \
-**Approved**.)
+to In Test with the preview redeployed. Each comment that asks for something \
+gets its own reply here, saying what changed or answering it. (To ship as-is \
+instead, drag the card to **Approved**.)
 
 <!-- drafto-factory-revising -->" >>"$LOG_FILE" 2>&1 || true
   done
@@ -6450,10 +7019,11 @@ fi
 #
 # The Approved drag is the human merge-authorisation gate (ADR-0026); --release
 # only ever acts on a card a human already moved. Anything that can't merge
-# cleanly (conflicts, missing migration approval, no PR, CI that couldn't run) is
-# left in Approved for the operator. The two exceptions need a code change, so
-# they hand the card back to In Review for the fix loop and re-require the
-# Approved drag: a genuinely red required check and an unresolved review thread.
+# cleanly (missing migration approval, no PR, CI that couldn't run) is left in
+# Approved for the operator. The three exceptions need a code change, so they
+# hand the card back to In Review for the fix loop and re-require the Approved
+# drag: a conflict with main (ADR-0061), a genuinely red required check, and an
+# unresolved review thread.
 # PHASE is guaranteed != "A" here (Phase A --release no-op'd at the gate above).
 if [[ "$MODE_RELEASE" -eq 1 ]]; then
   if ! APPROVED_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
@@ -6591,11 +7161,22 @@ PR #$PR_NUM $PARITY_VIOLATION, which this phase doesn't allow. The card stays in
       continue
     fi
 
+    # Conflict gate, ahead of the CI gate (ADR-0061). A conflicting head gets no
+    # pull_request CI, so behind the CI gate it would wait for checks that never
+    # come. Hand it back to --watch, which merges main in and resolves it; the
+    # diff changes, so the Approved drag is re-required (ADR-0026).
+    MERGEABLE=$(echo "$PR_VIEW" | jq -r '.mergeable // ""')
+    if [[ "$MERGEABLE" == "CONFLICTING" ]]; then
+      conflict_handback "$ITEM_ID" "$ISSUE_NUM" "$PR_NUM" "$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')" "Approved" || true
+      continue
+    fi
+
     # CI gate. A failing *required* check never parks the card silently (#654 sat
     # in Approved for days on checks GitHub had cancelled — ADR-0041):
-    #  - cancelled before any runner picked them up: CI didn't judge the code, so
-    #    re-run them; once re-runs are spent, comment once and hold in Approved
-    #    (a stale branch is refreshed by the BEHIND step below once green);
+    #  - never judged the code (no runner, or timed out while setting up): re-run
+    #    them; once re-runs are spent,
+    #    comment once and hold in Approved (a stale branch is refreshed by the
+    #    BEHIND step below once green);
     #  - anything else red: comment once and hand the card back to In Review for
     #    the fix loop, re-requiring approval (the diff will change).
     # With an unknown required set the fallback counts advisory bots too, so the
@@ -6649,21 +7230,6 @@ comes back to In Test for your approval once CI is green again.
       continue
     fi
 
-    MERGEABLE=$(echo "$PR_VIEW" | jq -r '.mergeable // ""')
-    if [[ "$MERGEABLE" == "CONFLICTING" ]]; then
-      log "Issue #$ISSUE_NUM: PR #$PR_NUM has merge conflicts; leaving for the operator"
-      if [[ "$DRY_RUN" -eq 0 ]] && ! issue_has_marker "$ISSUE_NUM" "drafto-factory-merge-conflict"; then
-        gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
-          --body "🏭 **Can't merge — the branch has conflicts.**
-
-PR #$PR_NUM no longer merges cleanly into \`main\`. Rebase/resolve it (or comment \
-a change request to have the factory revise it), then it merges on the next \
-cycle. The card stays in **Approved**.
-
-<!-- drafto-factory-merge-conflict -->" >>"$LOG_FILE" 2>&1 || true
-      fi
-      continue
-    fi
     if [[ "$MERGEABLE" != "MERGEABLE" ]]; then
       log "Issue #$ISSUE_NUM: PR #$PR_NUM mergeable=$MERGEABLE (GitHub still computing?); waiting"
       continue

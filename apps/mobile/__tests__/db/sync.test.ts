@@ -86,6 +86,128 @@ describe("remoteChangeCount (the 'updated from another device' toast)", () => {
   });
 });
 
+// Mirror of the pull tests in apps/desktop/__tests__/db/sync-mappers.test.ts.
+describe("pullChanges", () => {
+  type Changes = { created: unknown[]; updated: unknown[]; deleted: string[] };
+  type PullChanges = (params: { lastPulledAt?: number | null }) => Promise<{
+    changes: Record<"notebooks" | "notes" | "attachments", Changes>;
+    timestamp: number;
+  }>;
+
+  const NOTEBOOK = {
+    id: "nb-1",
+    user_id: "user-1",
+    name: "Work",
+    created_at: "2025-06-01T12:00:00.000Z",
+    updated_at: "2025-06-02T14:30:00.000Z",
+  };
+  const NOTE = {
+    id: "note-1",
+    notebook_id: "nb-1",
+    user_id: "user-1",
+    title: "Groceries",
+    content: { type: "doc", content: [] },
+    is_trashed: false,
+    trashed_at: null,
+    created_at: "2025-06-01T12:00:00.000Z",
+    updated_at: "2025-06-02T14:30:00.000Z",
+  };
+  const ATTACHMENT = {
+    id: "att-1",
+    note_id: "note-1",
+    user_id: "user-1",
+    file_name: "photo.jpg",
+    file_path: "user-1/note-1/photo.jpg",
+    file_size: 100,
+    mime_type: "image/jpeg",
+    created_at: "2025-06-02T15:00:00.000Z",
+  };
+  const ROWS: Record<string, unknown[]> = {
+    notebooks: [NOTEBOOK],
+    notes: [NOTE],
+    attachments: [ATTACHMENT],
+  };
+
+  /** Every cursor filter the pull applied, as `[table, column, iso]`. */
+  let cursors: [string, string, string][];
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSynchronize.mockReset();
+    resetSyncState();
+    cursors = [];
+    mockSupabaseFrom.mockImplementation((table: string) => ({
+      select: () => {
+        const result = Promise.resolve({ data: ROWS[table], error: null });
+        return Object.assign(result, {
+          gt: (column: string, iso: string) => {
+            cursors.push([table, column, iso]);
+            return result;
+          },
+        });
+      },
+    }));
+    mockSupabaseRpc.mockResolvedValue({ data: "2025-06-10T00:00:00.000Z", error: null });
+  });
+
+  /** Runs syncDatabase with synchronize() driving one pull, and returns it. */
+  async function pull(lastPulledAt: number | null | undefined) {
+    let result: Awaited<ReturnType<PullChanges>> | undefined;
+    mockSynchronize.mockImplementation(async (opts: { pullChanges: PullChanges }) => {
+      result = await opts.pullChanges({ lastPulledAt });
+    });
+    await syncDatabase(mockDb);
+    if (!result) throw new Error("pullChanges was not called");
+    return result;
+  }
+
+  // WatermelonDB passes null; undefined (what its type suggests) works the same.
+  it.each([null, undefined])(
+    "pulls every row, with no cursor, as updated on a first sync (lastPulledAt: %p)",
+    async (lastPulledAt) => {
+      const { changes, timestamp } = await pull(lastPulledAt);
+
+      expect(cursors).toEqual([]);
+      for (const table of ["notebooks", "notes", "attachments"] as const) {
+        expect(changes[table].created).toEqual([]);
+        expect(changes[table].updated).toHaveLength(1);
+        expect(changes[table].deleted).toEqual([]);
+      }
+      expect(changes.notes.updated[0]).toMatchObject({
+        id: "note-1",
+        remote_id: "note-1",
+        content: JSON.stringify(NOTE.content),
+      });
+      expect(timestamp).toBe(Date.parse("2025-06-10T00:00:00.000Z"));
+    },
+  );
+
+  it("pulls from the cursor and sends rows as updated on an incremental sync", async () => {
+    const lastPulledAt = Date.parse("2025-06-01T00:00:00.000Z");
+
+    const { changes } = await pull(lastPulledAt);
+
+    const since = new Date(lastPulledAt).toISOString();
+    expect(cursors).toEqual([
+      ["notebooks", "updated_at", since],
+      ["notes", "updated_at", since],
+      ["attachments", "created_at", since],
+    ]);
+    expect(changes.notes.created).toEqual([]);
+    expect(changes.notes.updated).toHaveLength(1);
+  });
+
+  it("tells synchronize that pulled records arrive as updated (sendCreatedAsUpdated)", async () => {
+    mockSynchronize.mockResolvedValue(undefined);
+
+    await syncDatabase(mockDb);
+
+    expect(mockSynchronize).toHaveBeenCalledWith(
+      expect.objectContaining({ sendCreatedAsUpdated: true }),
+    );
+  });
+});
+
 describe("pushChanges: attachments", () => {
   type PushChanges = (params: {
     changes: Record<string, { created: unknown[]; updated: unknown[]; deleted: string[] }>;
