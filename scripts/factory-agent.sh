@@ -192,8 +192,10 @@ fi
 # `gh issue comment` sat idle for 2+ days and, with nothing bounding it, held
 # the loop lock and froze every card until it was killed by hand. Exported so
 # the node helpers this script starts apply the same cap (lib/gh-timeout.mjs).
+# At most five digits: from 2147484 s up, node's timer overflows and fires
+# after 1 ms, which would kill every gh call at once.
 FACTORY_GH_TIMEOUT_SEC="${FACTORY_GH_TIMEOUT_SEC:-120}"
-if ! [[ "$FACTORY_GH_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
+if ! [[ "$FACTORY_GH_TIMEOUT_SEC" =~ ^[1-9][0-9]{0,4}$ ]]; then
   echo "WARNING: invalid FACTORY_GH_TIMEOUT_SEC='$FACTORY_GH_TIMEOUT_SEC'; defaulting to 120" >&2
   FACTORY_GH_TIMEOUT_SEC=120
 fi
@@ -557,10 +559,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # FACTORY_GH_TIMEOUT_SEC. run-with-timeout.mjs runs the real binary from PATH
 # with stdio inherited, SIGTERMs it at the cap (gh is a Go program: TERM ends
 # it, SIGALRM wouldn't) and exits 124, which every caller already handles as
-# a failed gh call. Use `type -P gh`, not `command -v gh`, to test for the
+# a failed gh call. The warning names only the subcommand: later args can
+# carry issue bodies. Use `type -P gh`, not `command -v gh`, to test for the
 # binary: the function makes the latter always succeed.
 gh() {
-  node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$FACTORY_GH_TIMEOUT_SEC" gh "$@"
+  local rc=0
+  node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$FACTORY_GH_TIMEOUT_SEC" gh "$@" || rc=$?
+  if [[ $rc -eq 124 ]]; then
+    echo "WARNING: gh ${1:-} ${2:-} timed out after ${FACTORY_GH_TIMEOUT_SEC}s" >&2
+  fi
+  return $rc
 }
 # The In Test scenario writer's prompt. Defined here (not only inside --watch) so
 # intest_handoff can reference it without tripping `set -u`. A missing file
@@ -726,8 +734,10 @@ START_TIME=$(date +%s)
 log "=== factory-agent --$MODE_NAME run started (phase=$PHASE, dry-run=$DRY_RUN) ==="
 
 # ── Pre-flight: required CLIs ───────────────────────────────────────────────
+# type -P, not command -v: the gh() wrapper would satisfy command -v even with
+# the gh binary missing.
 for required in gh jq node; do
-  if ! command -v "$required" >/dev/null 2>&1; then
+  if ! type -P "$required" >/dev/null 2>&1; then
     log "ERROR: $required not on PATH (PATH=$PATH)"
     exit 1
   fi

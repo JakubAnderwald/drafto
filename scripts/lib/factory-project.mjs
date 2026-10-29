@@ -111,9 +111,15 @@ async function runGh(args, { stdin } = {}) {
   let lastError;
   for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
     try {
-      // A hung gh is SIGTERMed at the cap and rejects as a non-transient
-      // error, so it fails fast instead of being retried (gh-timeout.mjs).
-      const opts = { maxBuffer: 16 * 1024 * 1024, timeout: ghTimeoutMs() };
+      // A hung gh is killed at the cap and rejects as a non-transient error,
+      // so it fails fast instead of being retried (gh-timeout.mjs). SIGKILL,
+      // as in comment-intest-build.mjs: execFile never escalates past its
+      // killSignal, so a gh that ignored TERM would still hang the caller.
+      const opts = {
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: ghTimeoutMs(),
+        killSignal: "SIGKILL",
+      };
       if (stdin != null) opts.input = stdin;
       const { stdout } = await fn("gh", args, opts);
       return stdout;

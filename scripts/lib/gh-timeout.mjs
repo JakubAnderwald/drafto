@@ -11,10 +11,12 @@
 
 export const GH_TIMEOUT_SEC_DEFAULT = 120;
 
-// Pure: the cap in ms from FACTORY_GH_TIMEOUT_SEC (whole seconds, ≥ 1), or the
-// default when unset or invalid. Exported for tests.
+// Pure: the cap in ms from FACTORY_GH_TIMEOUT_SEC (whole seconds, 1–99999), or
+// the default when unset or invalid. Five digits at most, as in factory-agent.sh:
+// from 2147484 s up, node's timer overflows and fires after 1 ms, which would
+// kill every gh call at once. Exported for tests.
 export function ghTimeoutMs(env = process.env) {
   const raw = env.FACTORY_GH_TIMEOUT_SEC ?? "";
-  const sec = /^[1-9][0-9]*$/.test(raw) ? Number(raw) : GH_TIMEOUT_SEC_DEFAULT;
+  const sec = /^[1-9][0-9]{0,4}$/.test(raw) ? Number(raw) : GH_TIMEOUT_SEC_DEFAULT;
   return sec * 1000;
 }

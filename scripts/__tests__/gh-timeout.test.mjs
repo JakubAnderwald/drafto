@@ -24,9 +24,11 @@ describe("ghTimeoutMs", () => {
 
   it("uses a valid override", () => {
     assert.equal(ghTimeoutMs({ FACTORY_GH_TIMEOUT_SEC: "45" }), 45_000);
+    assert.equal(ghTimeoutMs({ FACTORY_GH_TIMEOUT_SEC: "99999" }), 99_999_000);
   });
 
-  for (const bad of ["", "0", "-5", "1.5", "abc", "12s", " 30"]) {
+  // 100000+ is refused: from 2147484 s node's timer overflows to 1 ms.
+  for (const bad of ["", "0", "-5", "1.5", "abc", "12s", " 30", "100000", "2147484"]) {
     it(`falls back to the default for ${JSON.stringify(bad)}`, () => {
       assert.equal(ghTimeoutMs({ FACTORY_GH_TIMEOUT_SEC: bad }), 120_000);
     });
@@ -47,22 +49,47 @@ async function execFileOptsFor(modulePath, call) {
   return seen;
 }
 
-describe("node gh runners pass the cap to execFile", () => {
-  it("factory-project runGh", async () => {
+describe("factory-project runGh passes the cap to execFile", () => {
+  it("sets timeout and a SIGKILL killSignal", async () => {
     const seen = await execFileOptsFor("../lib/factory-project.mjs", (lib) =>
       lib.getStatusFieldMeta("PVT_x"),
     );
     assert.equal(seen.length, 1);
     assert.equal(seen[0].cmd, "gh");
     assert.equal(seen[0].opts.timeout, ghTimeoutMs());
+    assert.equal(seen[0].opts.killSignal, "SIGKILL");
   });
+});
 
-  it("github-sync runGh", async () => {
-    const seen = await execFileOptsFor("../lib/github-sync.mjs", (lib) => lib.getIssueBody(1));
-    assert.equal(seen.length, 1);
-    assert.equal(seen[0].cmd, "gh");
-    assert.equal(seen[0].opts.timeout, ghTimeoutMs());
-  });
+// The real deps.gh against a fake gh that never returns, with a 1 s cap.
+async function withHungGhOnPath(fn) {
+  const saved = { PATH: process.env.PATH, cap: process.env.FACTORY_GH_TIMEOUT_SEC };
+  const dir = mkdtempSync(join(tmpdir(), "gh-timeout-deps-"));
+  try {
+    writeFileSync(join(dir, "gh"), "#!/bin/bash\nexec sleep 60\n");
+    chmodSync(join(dir, "gh"), 0o755);
+    process.env.PATH = `${dir}:${saved.PATH}`;
+    process.env.FACTORY_GH_TIMEOUT_SEC = "1";
+    return await fn();
+  } finally {
+    process.env.PATH = saved.PATH;
+    if (saved.cap == null) delete process.env.FACTORY_GH_TIMEOUT_SEC;
+    else process.env.FACTORY_GH_TIMEOUT_SEC = saved.cap;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe("createDeps().gh is capped", () => {
+  for (const mod of ["coderabbit-cli", "verify-lane"]) {
+    it(`${mod}: a hung gh is killed at the cap`, async () => {
+      const { createDeps } = await import(`../lib/${mod}.mjs`);
+      const started = Date.now();
+      const res = await withHungGhOnPath(() => createDeps().gh(["api", "user"]));
+      assert.equal(res.code, 124);
+      assert.equal(res.timedOut, true);
+      assert.ok(Date.now() - started < 15_000, `took ${Date.now() - started}ms`);
+    });
+  }
 });
 
 function extract(awkProgram) {
@@ -121,6 +148,9 @@ describe("factory-agent.sh gh() wrapper", () => {
       const elapsedMs = Date.now() - started;
       assert.equal(res.status, 124, res.stderr);
       assert.match(res.stderr, /wall-time cap reached/);
+      // Names the subcommand, never the later args (they can carry bodies).
+      assert.match(res.stderr, /WARNING: gh issue comment timed out after 1s\n/);
+      assert.doesNotMatch(res.stderr, /748/);
       assert.ok(elapsedMs < 15_000, `took ${elapsedMs}ms`);
     });
   });
@@ -152,21 +182,40 @@ describe("FACTORY_GH_TIMEOUT_SEC validation in factory-agent.sh", () => {
     assert.equal(res.stdout, "45\nchild:45\n");
   });
 
-  it("warns and falls back to 120 on an invalid override", () => {
-    const res = runBash(show, { env: { FACTORY_GH_TIMEOUT_SEC: "2m" } });
-    assert.equal(res.stdout, "120\nchild:120\n");
-    assert.match(res.stderr, /invalid FACTORY_GH_TIMEOUT_SEC='2m'; defaulting to 120/);
-  });
+  for (const bad of ["2m", "100000"]) {
+    it(`warns and falls back to 120 on ${JSON.stringify(bad)}`, () => {
+      const res = runBash(show, { env: { FACTORY_GH_TIMEOUT_SEC: bad } });
+      assert.equal(res.stdout, "120\nchild:120\n");
+      assert.match(
+        res.stderr,
+        new RegExp(`invalid FACTORY_GH_TIMEOUT_SEC='${bad}'; defaulting to 120`),
+      );
+    });
+  }
 });
 
+// The gh() function satisfies `command -v gh`, so a check for the binary must
+// use `type -P`.
 describe("factory-agent.sh gh binary checks", () => {
-  it("never tests for gh with `command -v`, which the gh() function always satisfies", () => {
-    const code = readFileSync(agentPath, "utf8")
-      .split("\n")
-      .filter((line) => !line.trimStart().startsWith("#"));
+  const code = readFileSync(agentPath, "utf8")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("#"));
+
+  it("never tests for gh with `command -v gh`", () => {
     assert.deepEqual(
       code.filter((line) => /command -v gh\b/.test(line)),
       [],
     );
+  });
+
+  it("checks every `for required in …` loop that lists gh with type -P", () => {
+    const loops = code
+      .map((line, i) => ({ line, next: code[i + 1] ?? "" }))
+      .filter(({ line }) => /^\s*for required in .*\bgh\b/.test(line));
+    assert.ok(loops.length > 0, "expected the pre-flight loop over gh");
+    for (const { next } of loops) {
+      assert.match(next, /type -P "\$required"/);
+      assert.doesNotMatch(next, /command -v/);
+    }
   });
 });
