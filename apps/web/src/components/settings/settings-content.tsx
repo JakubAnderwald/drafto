@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardBody } from "@/components/ui/card";
 import { DeleteAccountSection } from "@/components/settings/delete-account-section";
+import { usePageOrigin } from "@/hooks/use-page-origin";
 
 interface ApiKey {
   id: string;
@@ -36,6 +37,7 @@ export function SettingsContent({ buildCommit }: Readonly<SettingsContentProps>)
   const [revealedKey, setRevealedKey] = useState<RevealedKey | null>(null);
   const [error, setError] = useState<string | null>(null);
   const hasFetched = useRef(false);
+  const origin = usePageOrigin();
 
   async function fetchKeys() {
     const res = await fetch("/api/api-keys");
@@ -191,7 +193,7 @@ export function SettingsContent({ buildCommit }: Readonly<SettingsContentProps>)
               {
                 mcpServers: {
                   drafto: {
-                    url: `${typeof window !== "undefined" ? window.location.origin : "https://drafto.eu"}/api/mcp`,
+                    url: `${origin}/api/mcp`,
                     headers: {
                       Authorization: "Bearer YOUR_API_KEY",
                     },
