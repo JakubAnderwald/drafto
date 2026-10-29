@@ -1,6 +1,6 @@
 # Notes and Notebooks
 
-**Status:** shipped **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-10-29
 
 ## What it is
 
@@ -13,7 +13,7 @@ Shipped on all four platforms: web, iOS, Android, macOS.
 - Notebooks are a single flat level (no nesting). Each note belongs to exactly one notebook.
 - Soft delete: `DELETE /api/notes/:id` sets `is_trashed = true` and stamps `trashed_at`. Trashed notes live in a dedicated trash view and are permanently purged after 30 days by a `pg_cron` job.
 - Permanent delete is available from trash via `DELETE /api/notes/:id/permanent`.
-- Deleting a notebook is blocked while it holds non-trashed notes. Web enforces this in the API (`DELETE /api/notebooks/:id` → 409 "Cannot delete notebook with notes. Move or delete notes first."); mobile and desktop enforce the same rule client-side before their WatermelonDB delete syncs (they never hit the API route). When an eligible notebook is deleted, its remaining trashed notes and attachments are cascade-removed locally so the client matches the server-side `on delete cascade` after sync. The client guard is a point-in-time check against the local copy, so a note synced from another device between the check and the delete can still slip past it (unlike the web API's DB-backed 409); mobile additionally lacks server-deletion self-heal to clean up the resulting orphan row ([#462](https://github.com/JakubAnderwald/drafto/issues/462)).
+- Deleting a notebook is blocked while it holds non-trashed notes. Web enforces this in the API (`DELETE /api/notebooks/:id` → 409 "Cannot delete notebook with notes. Move or delete notes first."); mobile and desktop enforce the same rule client-side before their WatermelonDB delete syncs (they never hit the API route). When an eligible notebook is deleted, its remaining trashed notes and attachments go with it: the server's `on delete cascade` removes them, and mobile and desktop also remove them locally so the client matches after sync. The client guard is a point-in-time check against the local copy, so a note synced from another device between the check and the delete can still slip past it (unlike the web API's DB-backed 409); mobile additionally lacks server-deletion self-heal to clean up the resulting orphan row ([#462](https://github.com/JakubAnderwald/drafto/issues/462)). Every platform's delete confirm warns that the trashed notes go too: "Trashed notes inside will be permanently deleted." Mobile and desktop show the line in every delete confirm. Web shows it only when the notebook holds trashed notes and no active ones, and keeps Delete disabled until it has checked (`apps/web/src/hooks/use-notebook-delete-impact.ts`). The notebook's notes can change while the confirm is open, so web checks again when the user confirms: if the delete would now take trashed notes with it and the line isn't on show yet (notes in it were trashed, or its active notes were moved out), the confirm shows the line instead of deleting, and the user confirms again. Web also shows the line when it can't be sure: when the check fails, or when the trash list reaches PostgREST's 1,000-row cap and may be incomplete.
 - The default notebook is provisioned server-side in the App Router layout if the user has zero notebooks.
 - Mobile and desktop hold a full local copy in WatermelonDB and sync via pull/push against Supabase; web reads/writes directly through the API.
 - The web editor watches the open note for changes made elsewhere (another device, another tab): a Supabase Realtime subscription filtered to that note, plus a re-check when the tab regains focus. When the editor has no unsaved edits the fresh content is applied in place; when it does, an inline banner offers "Discard mine" / "Keep mine" rather than overwriting. An external trash or permanent delete is surfaced the same way. See [ADR-0032](../adr/0032-web-realtime-note-sync.md).
@@ -36,6 +36,7 @@ Shipped on all four platforms: web, iOS, Android, macOS.
 | Permanent delete                         | `apps/web/src/app/api/notes/[id]/permanent/route.ts`                                                                                           |
 | Default notebook provisioning            | `apps/web/src/app/(app)/layout.tsx`                                                                                                            |
 | Web sidebar + note list + trash list     | `apps/web/src/components/notebooks/notebooks-sidebar.tsx`, `apps/web/src/components/notes/`                                                    |
+| Web notebook delete confirm warning      | `apps/web/src/hooks/use-notebook-delete-impact.ts`                                                                                             |
 | Shared types (rows, inserts, updates)    | `packages/shared/src/types/api.ts`, `packages/shared/src/index.ts`                                                                             |
 | Shared constants (title/name limits)     | `packages/shared/src/constants.ts`                                                                                                             |
 | Mobile WatermelonDB schema + models      | `apps/mobile/src/db/schema.ts`, `apps/mobile/src/db/models/note.ts`, `models/notebook.ts`                                                      |
@@ -72,6 +73,7 @@ Shipped on all four platforms: web, iOS, Android, macOS.
   - `updated_at` is maintained by the `handle_updated_at` trigger; do not set it manually.
 - Tests that catch regressions:
   - `apps/web/__tests__/unit/notebooks-api.test.ts`, `notes-api.test.ts`, `trash-api.test.ts`, `trash-cleanup.test.ts`.
+  - `apps/web/__tests__/unit/use-notebook-delete-impact.test.ts` and `apps/web/__tests__/integration/notebooks-sidebar.test.tsx` (the web delete confirm's trashed-notes warning).
   - `apps/web/e2e/notebooks.spec.ts`, `notes.spec.ts`, `cross-platform-sync.spec.ts`.
   - `apps/mobile/__tests__/screens/notebooks.test.tsx`, `notes.test.tsx`.
 - Files that must change together when altering the schema:

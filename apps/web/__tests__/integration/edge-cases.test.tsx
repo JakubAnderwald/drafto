@@ -48,6 +48,38 @@ globalThis.fetch = mockFetch;
 
 let NotebooksSidebar: typeof import("@/components/notebooks/notebooks-sidebar").NotebooksSidebar;
 
+const myNotebook = {
+  id: "nb-1",
+  name: "My Notebook",
+  created_at: "2026-01-01",
+  updated_at: "2026-01-01",
+};
+
+/**
+ * Answers each request by its URL: the notebook list, the delete confirm's trashed-notes
+ * check (an empty notebook) and the DELETE, which can land in any order.
+ */
+function routeNotebookDelete(deleteResponse: {
+  ok: boolean;
+  status: number;
+  json?: () => unknown;
+}) {
+  mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+    if (init?.method === "DELETE") return Promise.resolve(deleteResponse);
+    const body = url === "/api/notebooks" ? [myNotebook] : [];
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+  });
+}
+
+/** Clicks the delete confirm's Delete once its trashed-notes check has enabled it. */
+async function confirmDelete(user: ReturnType<typeof userEvent.setup>) {
+  const confirmButton = screen.getByRole("button", { name: "Delete" });
+  await waitFor(() => {
+    expect(confirmButton).toBeEnabled();
+  });
+  await user.click(confirmButton);
+}
+
 describe("NotebooksSidebar — edge cases", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -129,22 +161,14 @@ describe("NotebooksSidebar — edge cases", () => {
   it("shows error when delete returns 409 (notebook has notes)", async () => {
     const user = userEvent.setup();
 
-    mockFetch
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () =>
-          Promise.resolve([
-            { id: "nb-1", name: "My Notebook", created_at: "2026-01-01", updated_at: "2026-01-01" },
-          ]),
-      })
-      .mockResolvedValueOnce({
-        ok: false,
-        status: 409,
-        json: () =>
-          Promise.resolve({
-            error: "Cannot delete notebook with notes. Move or delete notes first.",
-          }),
-      });
+    routeNotebookDelete({
+      ok: false,
+      status: 409,
+      json: () =>
+        Promise.resolve({
+          error: "Cannot delete notebook with notes. Move or delete notes first.",
+        }),
+    });
 
     await act(async () => {
       render(<NotebooksSidebar selectedNotebookId="nb-1" onSelectNotebook={vi.fn()} />);
@@ -157,7 +181,7 @@ describe("NotebooksSidebar — edge cases", () => {
     // Click delete
     await user.click(screen.getByLabelText("Delete My Notebook"));
     // Confirm delete
-    await user.click(screen.getByText("Delete"));
+    await confirmDelete(user);
 
     // Error should appear
     await waitFor(() => {
@@ -175,15 +199,7 @@ describe("NotebooksSidebar — edge cases", () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
 
-    mockFetch
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () =>
-          Promise.resolve([
-            { id: "nb-1", name: "My Notebook", created_at: "2026-01-01", updated_at: "2026-01-01" },
-          ]),
-      })
-      .mockResolvedValueOnce({ ok: true });
+    routeNotebookDelete({ ok: true, status: 200 });
 
     await act(async () => {
       render(<NotebooksSidebar selectedNotebookId="nb-1" onSelectNotebook={onSelect} />);
@@ -196,7 +212,7 @@ describe("NotebooksSidebar — edge cases", () => {
     // Click delete
     await user.click(screen.getByLabelText("Delete My Notebook"));
     // Confirm delete
-    await user.click(screen.getByText("Delete"));
+    await confirmDelete(user);
 
     await waitFor(() => {
       expect(mockFetch).toHaveBeenCalledWith("/api/notebooks/nb-1", { method: "DELETE" });
