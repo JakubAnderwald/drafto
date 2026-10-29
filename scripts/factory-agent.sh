@@ -1995,9 +1995,11 @@ rollback_conflict_pass() {
 
 # conflict_pass_verified <worktree> <pr> <merge-json>
 # Don't take the agent's "fixed" on trust: the merge must be committed with main
-# in it, no conflict marker or new ADR-number clash left, and the result on the
-# PR. A verified resolution the agent forgot to push is pushed here. Sets
-# CONFLICT_PASS_WHY on failure.
+# in it, no conflict marker or new ADR-number clash left. Only then is it pushed
+# (the agent commits but never pushes on a conflict pass), so a resolution that
+# fails the check never reaches the PR and the rollback can undo all of it.
+# Succeeds once the PR's head is the verified commit. Sets CONFLICT_PASS_WHY on
+# failure.
 conflict_pass_verified() {
   local wt_path="$1" pr_num="$2" merge_json="$3"
   local main_sha files check head pr_head
@@ -2015,7 +2017,7 @@ conflict_pass_verified() {
   head=$(echo "$check" | jq -r '.head // ""')
   pr_head=$(pr_head_oid "$pr_num")
   if [[ -n "$head" && "$pr_head" != "$head" ]]; then
-    log "Conflict pass for PR #$pr_num resolved but not on the PR yet; pushing it"
+    log "Conflict pass for PR #$pr_num verified; pushing ${head:0:12}"
     node "$SCRIPT_DIR/lib/worktree-cli.mjs" push --path "$wt_path" >>"$LOG_FILE" 2>&1 || true
     pr_head=$(pr_head_oid "$pr_num")
   fi

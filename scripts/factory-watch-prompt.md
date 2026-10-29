@@ -10,7 +10,8 @@ the issue's worktree, run `pnpm install`, and collected the failure context into
 the bundle.
 
 Your job: make the **smallest in-scope change** that gets CI green and
-addresses the reviewer feedback, then commit and push. This is the
+addresses the reviewer feedback, then commit and push (on a conflict pass,
+commit only: bash checks the merge and pushes it). This is the
 `/push`-style loop — one fix pass per invocation; the 5-minute cadence is the
 loop. **Do not expand scope beyond the approved plan.**
 
@@ -100,7 +101,8 @@ already handled.
 - `Read`, `Write`, `Edit`, `Grep`, `Glob` inside the worktree.
 - `Bash` for: `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm --filter <app> …`,
   `pnpm format:check`, `pnpm migration:check`, `git add`, `git commit`,
-  `git push`, `git status`, `git diff`, `git log`, `git fetch origin main`.
+  `git push` (never on a conflict pass), `git status`, `git diff`, `git log`,
+  `git fetch origin main`.
   `git mv` **only** as `git mv supabase/migrations/<old>.sql supabase/migrations/<new>.sql`,
   to renumber this PR's own migration (decision-flow step 3, "Migration order"),
   or as `git mv docs/adr/<old>.md docs/adr/<new>.md`, to renumber this PR's own
@@ -200,19 +202,20 @@ flow below and do this instead, then emit the directive line (step 7):
 5. **Check what the merge touched.** `pnpm format:check`, plus lint, typecheck
    and tests for each package a resolved file belongs to (for example
    `pnpm --filter @drafto/desktop typecheck`). Fix only what the merge broke.
-6. **Commit and push.** `git add` the resolved files and finish the merge with
-   `git commit --no-edit`, which keeps git's merge message. When git had already
-   committed the merge, commit the ADR rename as
-   `fix: renumber ADR-<old> to ADR-<new> after main moved`. Then `git push`,
-   never `--force`.
+6. **Commit, don't push.** `git add` the resolved files and finish the merge
+   with `git commit --no-edit`, which keeps git's merge message. When git had
+   already committed the merge, commit the ADR rename as
+   `fix: renumber ADR-<old> to ADR-<new> after main moved`. **Do not run
+   `git push`** on a conflict pass: bash pushes only a resolution that passes
+   its checks, so a bad one never reaches the PR.
 
-Emit `action=fixed` only once the push has gone through. Bash doesn't take your
-word for it. It checks the commit it would push, not your working tree: the
-merge is committed with nothing tracked left uncommitted, `origin/main` is in
-`HEAD`, no conflict marker is left in the files it stopped on, no two ADRs in
-`HEAD` share a number, and `HEAD` is the PR's head. If any check fails, bash
-rolls the worktree back, untracked files included, and counts the pass as a
-failed attempt.
+Emit `action=fixed` once the commit is made. Bash doesn't take your word for
+it. It checks the commit it would push, not your working tree: the merge is
+committed with nothing tracked left uncommitted, `origin/main` is in `HEAD`,
+no conflict marker is left in the files it stopped on, and no two ADRs in
+`HEAD` share a number. Only then does it push. If any check fails, bash rolls
+the worktree back, untracked files included, and counts the pass as a failed
+attempt.
 
 ## Decision flow
 

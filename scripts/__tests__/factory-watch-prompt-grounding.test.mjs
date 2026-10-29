@@ -211,6 +211,13 @@ describe("watcher prompt — conflict pass (ADR-0061)", () => {
     assert.match(flat, /\*\*Never hand-edit `pnpm-lock\.yaml`\.\*\*/);
   });
 
+  it("commits but never pushes a conflict pass: bash pushes after its check", () => {
+    assert.match(flat, /`git push` \(never on a conflict pass\)/);
+    assert.match(flat, /\*\*Do not run `git push`\*\* on a conflict pass/);
+    assert.match(flat, /Only then does it push/);
+    assert.doesNotMatch(flat, /Emit `action=fixed` only once the push has gone through/);
+  });
+
   it("forbids rewriting history the rollback relies on", () => {
     assert.match(flat, /`git commit --amend`, any other `git merge`/);
   });

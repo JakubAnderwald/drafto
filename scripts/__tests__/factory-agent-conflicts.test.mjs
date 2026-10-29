@@ -138,7 +138,25 @@ node() {
 pr_head_oid() { cat "$PR_HEAD_FILE"; }
 `;
 
-  it("accepts a resolution that is committed and on the PR", () => {
+  // The agent commits but never pushes on a conflict pass: bash checks first
+  // and pushes only what passes, so a bad resolution never reaches the PR.
+  it("checks the committed resolution, then pushes it", () => {
+    const out = run(
+      ["conflict_pass_verified"],
+      `${stubs}
+       LOCAL=abc; echo old >"$PR_HEAD_FILE"; CHECK='${resolved("abc")}'
+       conflict_pass_verified /wt 755 '${merge}' && echo VERIFIED`,
+    );
+    const checkAt = out.indexOf("CHECK ");
+    const pushAt = out.indexOf("PUSH ");
+    assert.ok(checkAt !== -1 && pushAt > checkAt, "merge-check must run before the push");
+    assert.match(out, /PUSH .*push --path \/wt/);
+    assert.match(out, /VERIFIED/);
+    // The conflicted files go over as JSON, so a comma in a path survives.
+    assert.match(out, /CHECK .* --files-json \["docs\/adr\/README\.md"\]/);
+  });
+
+  it("accepts a verified resolution already on the PR without pushing again", () => {
     const out = run(
       ["conflict_pass_verified"],
       `${stubs}
@@ -147,19 +165,6 @@ pr_head_oid() { cat "$PR_HEAD_FILE"; }
     );
     assert.match(out, /VERIFIED/);
     assert.doesNotMatch(out, /PUSH/);
-    // The conflicted files go over as JSON, so a comma in a path survives.
-    assert.match(out, /CHECK .* --files-json \["docs\/adr\/README\.md"\]/);
-  });
-
-  it("pushes a verified resolution the agent forgot to push", () => {
-    const out = run(
-      ["conflict_pass_verified"],
-      `${stubs}
-       LOCAL=abc; echo old >"$PR_HEAD_FILE"; CHECK='${resolved("abc")}'
-       conflict_pass_verified /wt 755 '${merge}' && echo VERIFIED`,
-    );
-    assert.match(out, /PUSH .*push --path \/wt/);
-    assert.match(out, /VERIFIED/);
   });
 
   it("rejects a merge that is not resolved, whatever the agent said", () => {
@@ -179,6 +184,7 @@ pr_head_oid() { cat "$PR_HEAD_FILE"; }
        conflict_pass_verified /wt 755 '${merge}' || echo "WHY=$CONFLICT_PASS_WHY"`,
     );
     assert.match(out, /WHY=unresolved: .*filesWithMarkers.*README/);
+    assert.doesNotMatch(out, /PUSH/, "a failed check never reaches the PR");
   });
 
   it("rejects a resolution that never reaches the PR", () => {

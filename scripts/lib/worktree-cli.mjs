@@ -638,9 +638,10 @@ export function checkMerge({ wtPath, mainSha, files = [] } = {}) {
   const head = revParse(wtPath, "HEAD");
   const inProgress = mergeInProgress(wtPath);
   const unmerged = inProgress ? unmergedFiles(wtPath) : [];
+  // No allowFail: a status that can't be read must fail the check (the CLI
+  // exits non-zero), never pass as "nothing uncommitted".
   const uncommitted = String(
-    git(["status", "--porcelain", "--untracked-files=no"], { cwd: wtPath, allowFail: true })
-      .stdout ?? "",
+    git(["status", "--porcelain", "--untracked-files=no"], { cwd: wtPath }).stdout ?? "",
   )
     .split("\n")
     .map((l) => l.slice(3).trim())
