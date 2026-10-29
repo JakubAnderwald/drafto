@@ -618,6 +618,7 @@ export function buildFactoryWatchBundle({
   ciSummary = "",
   unresolvedComments = [],
   reviewThreads = [],
+  mergeConflict = null,
   comments = [],
   screenshotSources = [],
   attempts = 0,
@@ -672,12 +673,37 @@ export function buildFactoryWatchBundle({
     // review stage, and any human's). Each one blocks the merge until the
     // watcher answers and resolves it — see factory-watch-prompt.md.
     reviewThreads: envelopeReviewThreads(reviewThreads),
+    // Set only on a conflict pass (ADR-0061): bash has merged origin/main into
+    // the branch and stopped on these files, or git merged cleanly but left two
+    // ADRs sharing a number. null on every other pass.
+    mergeConflict: shapeMergeConflict(mergeConflict),
     comments: envelopeComments(comments),
     reporter: reporterFromBody(issue.body ?? ""),
     attempts: Number.isInteger(attempts) ? attempts : 0,
     config: shapeConfig(config),
     repo: shapeRepo(repo),
     nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
+  };
+}
+
+// The fields of `worktree-cli.mjs merge-main`'s result the agent needs. File
+// names come from git, not from a person, but they are still capped and
+// type-checked so a pathological tree can't flood the prompt.
+const MAX_CONFLICT_FILES = 200;
+
+function shapeMergeConflict(mc) {
+  if (!mc || typeof mc !== "object") return null;
+  const names = (list) =>
+    (Array.isArray(list) ? list : [])
+      .filter((f) => typeof f === "string" && f.length > 0 && f.length <= 300)
+      .slice(0, MAX_CONFLICT_FILES);
+  return {
+    mainSha: typeof mc.mainSha === "string" ? mc.mainSha : "",
+    conflictedFiles: names(mc.conflictedFiles),
+    adrCollisions: (Array.isArray(mc.adrCollisions) ? mc.adrCollisions : [])
+      .filter((c) => c && typeof c.number === "string" && /^\d{4}$/.test(c.number))
+      .map((c) => ({ number: c.number, files: names(c.files) })),
+    nextFreeAdr: /^\d{4}$/.test(mc.nextFreeAdr ?? "") ? mc.nextFreeAdr : null,
   };
 }
 
@@ -1213,6 +1239,7 @@ async function main() {
       ciSummary: input.ciSummary,
       unresolvedComments: input.unresolvedComments,
       reviewThreads: input.reviewThreads,
+      mergeConflict: input.mergeConflict,
       comments: input.comments,
       screenshotSources: input.screenshotSources,
       attempts: input.attempts,

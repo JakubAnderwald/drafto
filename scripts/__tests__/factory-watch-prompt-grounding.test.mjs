@@ -175,3 +175,57 @@ describe("watcher prompt — retry budget (#465)", () => {
     assert.doesNotMatch(flat, /reason "retry budget exhausted"/);
   });
 });
+
+// ADR-0061: a PR that conflicts with main gets a conflict pass. Bash starts the
+// merge; the agent resolves it, renumbers a clashing ADR, and pushes.
+describe("watcher prompt — conflict pass (ADR-0061)", () => {
+  it("documents the mergeConflict field and when it is set", () => {
+    assert.match(prompt, /"mergeConflict": \{ "mainSha", "conflictedFiles"/);
+    assert.match(flat, /## Conflict pass \(`mergeConflict` is not null\)/);
+    assert.match(flat, /This pass resolves the merge \*\*only\*\*/);
+  });
+
+  it("keeps merges in bash's hands: the agent may only abort one", () => {
+    assert.match(flat, /On a conflict pass only, also `git merge --abort`/);
+    assert.match(flat, /any other `git merge` \(bash starts merges, never you\)/);
+    assert.match(flat, /finish the merge with `git commit --no-edit`/);
+  });
+
+  it("allows git mv for the PR's own ADR, and nothing else new", () => {
+    assert.match(flat, /or as `git mv docs\/adr\/<old>\.md docs\/adr\/<new>\.md`/);
+    assert.match(flat, /Only the PR's own file moves/);
+    assert.match(flat, /and any other `git mv`/);
+  });
+
+  it("leaves main's references to its same-numbered ADR alone", () => {
+    assert.match(flat, /Main's ADR has the same number and its references must not change/);
+  });
+
+  it("never drops main's side to make the PR apply", () => {
+    assert.match(flat, /Never drop or revert main's side/);
+    assert.match(flat, /run `git merge --abort`, post a one-line PR comment/);
+  });
+
+  it("regenerates a conflicted lockfile with pnpm instead of hand-editing it", () => {
+    assert.match(flat, /On a conflict pass only, also `git merge --abort` and `pnpm install`/);
+    assert.match(flat, /\*\*Never hand-edit `pnpm-lock\.yaml`\.\*\*/);
+  });
+
+  it("commits but never pushes a conflict pass: bash pushes after its check", () => {
+    assert.match(flat, /`git push` \(never on a conflict pass\)/);
+    assert.match(flat, /\*\*Do not run `git push`\*\* on a conflict pass/);
+    assert.match(flat, /Only then does it push/);
+    assert.doesNotMatch(flat, /Emit `action=fixed` only once the push has gone through/);
+  });
+
+  it("forbids rewriting history the rollback relies on", () => {
+    assert.match(flat, /`git commit --amend`, any other `git merge`/);
+  });
+
+  it("hands a conflict pass no feedback to act on", () => {
+    assert.match(
+      flat,
+      /`ciSummaryEnveloped`, `unresolvedComments` and `reviewThreads` are empty on purpose/,
+    );
+  });
+});

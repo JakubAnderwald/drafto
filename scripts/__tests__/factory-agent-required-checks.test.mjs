@@ -109,7 +109,7 @@ describe("factory-agent required-context gating: static wiring", () => {
 
   it("--watch re-runs cancelled-before-a-runner checks instead of starting the fix loop", () => {
     const infraAt = script.search(
-      /if \[\[ "\$FAILING" -gt 0 && "\$\{REQUIRED_CONTEXTS_JSON:-\[\]\}" != "\[\]" \]\]; then/,
+      /if \[\[ "\$CONFLICTING" -eq 0 && "\$FAILING" -gt 0 && "\$\{REQUIRED_CONTEXTS_JSON:-\[\]\}" != "\[\]" \]\]; then/,
     );
     const fixLoopAt = script.search(
       /failing check\(s\), \$THREAD_COUNT open thread\(s\) → fix loop/,
