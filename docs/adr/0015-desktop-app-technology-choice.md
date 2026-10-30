@@ -50,7 +50,7 @@ Key decisions:
 | `expo-crypto`       | `react-native-get-random-values` + `crypto.randomUUID()` |
 | `expo-constants`    | Environment variables via config                         |
 
-> **Update (2026-10-25)**: the `expo-crypto` row was never installed, and an npm package with native code can no longer be added to the fossil desktop build ([ADR-0027](./0027-desktop-react-version-locked-to-react-native-macos.md)). Desktop gets its random bytes and SHA-256 from the in-project `DraftoCrypto` native module instead ([ADR-0062](./0062-desktop-pkce-native-csprng.md)).
+> **Update (2026-10-25)**: `react-native-get-random-values`, the `expo-crypto` row's replacement, was never installed, and an npm package with native code can no longer be added to the fossil desktop build ([ADR-0027](./0027-desktop-react-version-locked-to-react-native-macos.md)). Desktop gets its random bytes and SHA-256 from the in-project `DraftoCrypto` native module instead ([ADR-0062](./0062-desktop-pkce-native-csprng.md)).
 
 ## Consequences
 
