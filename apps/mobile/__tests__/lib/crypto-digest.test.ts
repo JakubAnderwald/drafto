@@ -72,12 +72,37 @@ describe("installCryptoDigest", () => {
 
   it("keeps the getRandomValues already installed on crypto", () => {
     const getRandomValues = jest.fn(<T>(array: T): T => array);
-    setGlobal("crypto", { getRandomValues });
+    const existing = { getRandomValues };
+    setGlobal("crypto", existing);
 
     installCryptoDigest();
 
+    expect(installedCrypto()).toBe(existing);
     expect(installedCrypto()?.getRandomValues).toBe(getRandomValues);
     expect(typeof installedCrypto()?.subtle?.digest).toBe("function");
+  });
+
+  it("adds subtle to a host crypto in place, keeping the getRandomValues it inherits", () => {
+    const getRandomValues = jest.fn(<T>(array: T): T => array);
+    // A host `Crypto` keeps its methods on the prototype, which a spread copy drops.
+    const host: object = Object.create({ getRandomValues });
+    setGlobal("crypto", host);
+
+    installCryptoDigest();
+
+    expect(installedCrypto()).toBe(host);
+    expect(installedCrypto()?.getRandomValues).toBe(getRandomValues);
+    expect(typeof installedCrypto()?.subtle?.digest).toBe("function");
+  });
+
+  it("installs nothing on a crypto that can't take a new property", () => {
+    const frozen = Object.freeze({ getRandomValues: jest.fn(<T>(array: T): T => array) });
+    setGlobal("crypto", frozen);
+
+    expect(() => installCryptoDigest()).not.toThrow();
+
+    expect(installedCrypto()).toBe(frozen);
+    expect(installedCrypto()?.subtle).toBeUndefined();
   });
 
   it("hashes an ArrayBuffer, handing expo-crypto a typed array", async () => {

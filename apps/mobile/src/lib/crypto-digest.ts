@@ -51,10 +51,13 @@ async function digestSha256(
  *
  * Hermes has no `crypto.subtle`. Without it, supabase-js sends the verifier
  * itself as a `plain` challenge, so anyone who sees the authorize request also
- * learns the verifier. This installs a `crypto.subtle` with `digest` only,
- * keeping the `crypto` members already there (such as the `getRandomValues`
- * from `installCryptoRandom`).
+ * learns the verifier. This installs a `crypto.subtle` with `digest` only.
  *
+ * - Adds `subtle` to the `crypto` object already there (such as the one from
+ *   `installCryptoRandom`) instead of replacing it with a copy. A spread copy
+ *   keeps only own enumerable members, so it would drop a `getRandomValues`
+ *   that a host `crypto` inherits from its prototype. A `crypto` that can't
+ *   take a new property gets nothing, and supabase-js stays on `plain`.
  * - Leaves a runtime that already has `crypto.subtle` untouched.
  * - Installs nothing without `TextEncoder` and `btoa`. supabase-js checks for
  *   `TextEncoder` before hashing, but calls `btoa` on the S256 path without
@@ -72,5 +75,16 @@ export function installCryptoDigest(): void {
   const scope = globalThis as CryptoScope;
   if (typeof scope.crypto?.subtle !== "undefined") return;
   if (typeof TextEncoder !== "function" || typeof btoa !== "function") return;
-  scope.crypto = { ...scope.crypto, subtle: { digest: digestSha256 } };
+  const subtle: DigestOnlySubtle = { digest: digestSha256 };
+  if (!scope.crypto) {
+    scope.crypto = { subtle };
+    return;
+  }
+  if (!Object.isExtensible(scope.crypto)) return;
+  Object.defineProperty(scope.crypto, "subtle", {
+    value: subtle,
+    configurable: true,
+    enumerable: true,
+    writable: true,
+  });
 }
