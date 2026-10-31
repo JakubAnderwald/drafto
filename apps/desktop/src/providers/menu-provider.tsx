@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useCallback } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import { Linking } from "react-native";
 
 import { supportUrl } from "@/lib/config";
@@ -32,12 +32,16 @@ const PROVIDER_ACTIONS: readonly MenuAction[] = [
   "openHelp",
 ];
 
-/** The provider's own actions plus whatever the mounted screen registered. */
-function handledActions(handlers: MenuActionHandlers): MenuAction[] {
-  const screenActions = (Object.keys(handlers) as MenuAction[]).filter(
+/** The actions a screen supplied a handler for. An `undefined` handler leaves its item disabled. */
+function screenActions(handlers: MenuActionHandlers): MenuAction[] {
+  return (Object.keys(handlers) as MenuAction[]).filter(
     (action) => typeof handlers[action] === "function",
   );
-  return [...PROVIDER_ACTIONS, ...screenActions];
+}
+
+/** The provider's own actions plus whatever the mounted screen registered. */
+function handledActions(handlers: MenuActionHandlers): MenuAction[] {
+  return [...PROVIDER_ACTIONS, ...screenActions(handlers)];
 }
 
 function openHelp(): void {
@@ -98,8 +102,12 @@ export function MenuProvider({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * Hook to register menu action handlers from a component.
- * Replaces all handlers on each call; cleans up on unmount.
+ * Hook to register menu action handlers from a component; cleans up on unmount.
+ *
+ * One screen registers at a time: registering replaces every handler the provider holds.
+ * A menu command always runs the handler from the latest committed render, so handlers may
+ * close over state. Passing `undefined` for an action disables its menu item until a later
+ * render supplies a handler.
  */
 export function useMenuActions(handlers: MenuActionHandlers): void {
   const context = useContext(MenuContext);
@@ -109,10 +117,27 @@ export function useMenuActions(handlers: MenuActionHandlers): void {
 
   const { registerHandlers } = context;
   const handlersRef = useRef(handlers);
-  handlersRef.current = handlers;
+  // Updated after commit, not during render, so a render React discards can't leave its
+  // closures behind for the next menu command. Layout effects run before the effects below.
+  useLayoutEffect(() => {
+    handlersRef.current = handlers;
+  });
+
+  // Re-register only when the set of handled actions changes, not on every render. Sorted so
+  // the same set in a different key order doesn't count as a change.
+  const actionsKey = screenActions(handlers).sort().join(",");
 
   useEffect(() => {
-    registerHandlers(handlersRef.current);
-    return () => registerHandlers({});
-  }, [registerHandlers]);
+    // The provider keeps the object it is given, so give it delegates that look up the current
+    // handler when the command arrives. Registering `handlers` itself kept the first render's
+    // closures forever: File → New Note always saw "no notebook selected" and did nothing.
+    // No cleanup here: the new set replaces the old one in a single native update.
+    const delegates: MenuActionHandlers = {};
+    for (const action of screenActions(handlersRef.current)) {
+      delegates[action] = () => handlersRef.current[action]?.();
+    }
+    registerHandlers(delegates);
+  }, [registerHandlers, actionsKey]);
+
+  useEffect(() => () => registerHandlers({}), [registerHandlers]);
 }
