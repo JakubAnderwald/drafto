@@ -259,8 +259,12 @@ Compose it in Markdown from the bundle's facts. Structure:
     under a macOS heading.
   - if a native platform is in `platforms` but appears in neither list, say it
     must be run locally from the branch. For **mobile**, give: a worktree +
-    `pnpm install` + `bash scripts/worktree-bootstrap.sh` + `pnpm ios` /
-    `pnpm android`.
+    `pnpm install` + `bash scripts/worktree-bootstrap.sh`, then a debug build
+    on a simulator or emulator, linking the absolute URL
+    `https://github.com/JakubAnderwald/drafto/blob/main/docs/architecture/testing.md#mobile-debug-builds`
+    (a relative link breaks in an issue comment). Never tell anyone to run
+    `pnpm ios`: under Xcode 27 it fails with "Can't determine id of Simulator
+    app".
 
     For **macOS**, do **NOT** tell anyone to `git checkout` in
     `/Users/jakub/code/drafto`. That is the operator's working tree and the
