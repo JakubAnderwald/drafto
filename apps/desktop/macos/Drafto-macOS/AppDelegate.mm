@@ -30,8 +30,9 @@
 
   [super applicationDidFinishLaunching:notification];
 
-  // Window frame persistence + minimum size
-  NSWindow *window = NSApp.windows.firstObject;
+  // Window frame persistence + minimum size. self.window is the window RCTAppDelegate created
+  // in loadReactNativeWindow — the one showMainWindow: brings back.
+  NSWindow *window = self.window;
   if (window) {
     [window setFrameAutosaveName:@"DraftoMainWindow"];
     window.minSize = NSMakeSize(800, 500);
@@ -39,6 +40,9 @@
     // Keep it alive on close so showMainWindow: can bring the same window (and the running
     // React tree) back instead of leaving the app windowless.
     window.releasedWhenClosed = NO;
+    // Window → Drafto (⌘0) is this window's Window-menu entry; without this AppKit would also
+    // list it there by title, showing "Drafto" twice while it is open.
+    window.excludedFromWindowsMenu = YES;
   }
 }
 
@@ -48,6 +52,7 @@
 {
   if (!hasVisibleWindows) {
     [self showMainWindow:sender];
+    return NO; // handled — skip AppKit's own reopen behaviour
   }
   return YES;
 }
