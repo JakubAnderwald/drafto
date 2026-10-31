@@ -31,7 +31,7 @@ jest.mock("@/providers/theme-provider", () => ({
   useTheme: () => ({ theme: "system", setTheme: mockSetTheme }),
 }));
 
-function ScreenWithHandlers({ onNewNote }: { onNewNote: () => void }) {
+function ScreenWithHandlers({ onNewNote }: { onNewNote: (() => void) | undefined }) {
   useMenuActions({ newNote: onNewNote });
   return null;
 }
@@ -86,6 +86,73 @@ describe("MenuProvider", () => {
 
     expect(onNewNote).toHaveBeenCalledTimes(1);
     expect(openURL).not.toHaveBeenCalled();
+  });
+
+  it("runs the handler from the latest render, not the one registered on mount", () => {
+    const firstRender = jest.fn();
+    const latestRender = jest.fn();
+    const { rerender } = render(
+      <MenuProvider>
+        <ScreenWithHandlers onNewNote={firstRender} />
+      </MenuProvider>,
+    );
+    rerender(
+      <MenuProvider>
+        <ScreenWithHandlers onNewNote={latestRender} />
+      </MenuProvider>,
+    );
+
+    act(() => mockEmitMenuAction("newNote"));
+
+    expect(latestRender).toHaveBeenCalledTimes(1);
+    expect(firstRender).not.toHaveBeenCalled();
+  });
+
+  it("does not re-report enabled actions when only a handler's identity changes", () => {
+    const { rerender } = render(
+      <MenuProvider>
+        <ScreenWithHandlers onNewNote={jest.fn()} />
+      </MenuProvider>,
+    );
+    const reports = jest.mocked(setEnabledMenuActions).mock.calls.length;
+
+    rerender(
+      <MenuProvider>
+        <ScreenWithHandlers onNewNote={jest.fn()} />
+      </MenuProvider>,
+    );
+
+    expect(jest.mocked(setEnabledMenuActions).mock.calls).toHaveLength(reports);
+  });
+
+  it("disables an action while its handler is undefined and enables it once one is supplied", () => {
+    const onNewNote = jest.fn();
+    const { rerender } = render(
+      <MenuProvider>
+        <ScreenWithHandlers onNewNote={undefined} />
+      </MenuProvider>,
+    );
+
+    expect(lastEnabledActions()).toEqual(PROVIDER_ACTIONS);
+    act(() => mockEmitMenuAction("newNote"));
+
+    rerender(
+      <MenuProvider>
+        <ScreenWithHandlers onNewNote={onNewNote} />
+      </MenuProvider>,
+    );
+
+    expect(lastEnabledActions()).toEqual([...PROVIDER_ACTIONS, "newNote"]);
+    act(() => mockEmitMenuAction("newNote"));
+    expect(onNewNote).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <MenuProvider>
+        <ScreenWithHandlers onNewNote={undefined} />
+      </MenuProvider>,
+    );
+
+    expect(lastEnabledActions()).toEqual(PROVIDER_ACTIONS);
   });
 
   it("logs instead of leaving an unhandled rejection when the support page can't open", async () => {

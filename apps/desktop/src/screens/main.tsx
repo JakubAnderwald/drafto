@@ -100,7 +100,9 @@ export function MainScreen() {
   }, []);
 
   useMenuActions({
-    newNote: handleNewNote,
+    // A new note needs a notebook to go in. Until one is selected, File → New Note is disabled
+    // instead of enabled and doing nothing.
+    newNote: selectedNotebookId ? handleNewNote : undefined,
     newNotebook: handleNewNotebook,
     openSearch: handleOpenSearch,
     toggleSidebar: handleToggleSidebar,
