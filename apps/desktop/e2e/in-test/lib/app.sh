@@ -64,8 +64,9 @@ poll_synced() {
   SAW_PENDING=no
   while [ "$(date +%s)" -lt "$end" ]; do
     h=$(sync_help)
-    # The indicator only refreshes its pending count after a sync attempt
-    # (#677), so the local DB is the oracle for "a change was waiting".
+    # Builds without the #677 fix refresh the indicator's pending count only
+    # after a sync attempt, and with it "N pending" shows for about 1 s online,
+    # so the local DB is the oracle for "a change was waiting".
     { [[ "$h" == *pending* ]] || [ "$(db_pending)" -gt 0 ] 2> /dev/null; } && SAW_PENDING=yes
     if [ "$h" = Synced ] && [ "$(db_pending)" = 0 ] && [ $(($(date +%s) - last_srv)) -ge 2 ]; then
       last_srv=$(date +%s)

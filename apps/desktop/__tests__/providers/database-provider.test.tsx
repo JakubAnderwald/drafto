@@ -11,6 +11,7 @@ import { useAuth } from "@/providers/auth-provider";
 import {
   AUTO_SYNC_DEBOUNCE_MS,
   DatabaseProvider,
+  PENDING_REFRESH_DEBOUNCE_MS,
   useDatabase,
 } from "@/providers/database-provider";
 
@@ -25,12 +26,21 @@ jest.mock("@nozbe/watermelondb/sync", () => ({
 // Subscribers to database.withChangesForTables(), so a test can emit the
 // changes a local write (or a sync's own writes) would produce.
 const mockChangeListeners: ((changes: unknown[] | null) => void)[] = [];
+// What the pending count reads, per table: unpushed records (fetchCount) and
+// local deletions (the adapter's deleted IDs, which queries leave out).
+const mockDirtyCounts = new Map<string, number>();
+const mockDeletedIds = new Map<string, string[]>();
 
 jest.mock("@/db", () => ({
   database: {
-    get: jest.fn(() => ({
-      query: jest.fn(() => ({ fetchCount: jest.fn().mockResolvedValue(0) })),
+    get: jest.fn((table: string) => ({
+      query: jest.fn(() => ({
+        fetchCount: jest.fn(async () => mockDirtyCounts.get(table) ?? 0),
+      })),
     })),
+    adapter: {
+      getDeletedRecords: jest.fn(async (table: string) => mockDeletedIds.get(table) ?? []),
+    },
     withChangesForTables: jest.fn(() => ({
       subscribe: (listener: (changes: unknown[] | null) => void) => {
         mockChangeListeners.push(listener);
@@ -386,6 +396,8 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
   const UPLOAD_STATUS: Change[] = [
     { table: "attachments", type: "updated", syncStatus: "updated" },
   ];
+  /** What a local deletion (markAsDeleted) produces. */
+  const LOCAL_DELETE: Change[] = [{ table: "notes", type: "destroyed", syncStatus: "deleted" }];
 
   function emitChanges(changes: Change[] | null): void {
     const payload =
@@ -418,6 +430,14 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
     await waitFor(() => expect(result.current.isSyncing).toBe(false));
   }
 
+  /** Whether anything is left to push, as the pending checks would see it. */
+  function hasUnpushedRecords(): boolean {
+    return (
+      [...mockDirtyCounts.values()].some((count) => count > 0) ||
+      [...mockDeletedIds.values()].some((ids) => ids.length > 0)
+    );
+  }
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockUseAuth.mockReturnValue({ user: TEST_USER, isApproved: true });
@@ -426,6 +446,8 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
     mockCleanupOrphanedFiles.mockResolvedValue(undefined);
     mockEnsureLocalIdentity.mockResolvedValue("ready");
     mockHasUnsyncedChanges.mockResolvedValue(false);
+    mockDirtyCounts.clear();
+    mockDeletedIds.clear();
     netInfoListener = undefined;
     mockNetInfoAddEventListener.mockImplementation(
       (listener: (state: { isConnected: boolean | null }) => void) => {
@@ -563,6 +585,8 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
     });
     await flushEffects();
     expect(mockSyncDatabase).toHaveBeenCalledTimes(2);
+    // Nor does A's pending check report into B's session.
+    expect(result.current.hasPendingChanges).toBe(false);
 
     // B's run still honours its own follow-up.
     mockHasUnsyncedChanges.mockResolvedValueOnce(true);
@@ -573,13 +597,32 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
     expect(mockSyncDatabase).toHaveBeenCalledTimes(3);
   });
 
+  it("starts no pending check for a previous user's pass whose upload outlasts the session", async () => {
+    // Desktop uploads after synchronize(), so the session can end mid-upload.
+    const upload = deferred<number>();
+    mockProcessPendingUploads.mockReturnValueOnce(upload.promise);
+    const { rerender } = renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(mockProcessPendingUploads).toHaveBeenCalledTimes(1));
+
+    mockUseAuth.mockReturnValue({ user: null, isApproved: false });
+    rerender(undefined);
+    await flushEffects();
+    await act(async () => {
+      upload.resolve(1);
+    });
+    await flushEffects();
+
+    expect(mockHasUnsyncedChanges).not.toHaveBeenCalled();
+  });
+
   it("still pushes a local edit when the pending check itself fails", async () => {
     jest.useFakeTimers();
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const { result } = renderHook(() => useDatabase(), { wrapper });
     await settleInitialSync(result);
 
-    mockHasUnsyncedChanges.mockRejectedValueOnce(new Error("adapter unavailable"));
+    // Every check fails: the pending-count refresh, then the sync trigger's.
+    mockHasUnsyncedChanges.mockRejectedValue(new Error("adapter unavailable"));
     act(() => emitChanges(LOCAL_EDIT));
     await advance(AUTO_SYNC_DEBOUNCE_MS);
 
@@ -623,7 +666,9 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
 
     // A local edit syncs once. That sync's own writes leave nothing pending,
     // so nothing follows it.
-    mockHasUnsyncedChanges.mockResolvedValueOnce(true);
+    mockHasUnsyncedChanges
+      .mockResolvedValueOnce(true) // the pending-count refresh
+      .mockResolvedValueOnce(true); // the sync trigger's check
     mockSyncDatabase.mockImplementationOnce(async () => {
       emitChanges(SYNC_WRITE);
       return { remoteChangeCount: 0 };
@@ -684,7 +729,7 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
     expect(mockSyncDatabase).toHaveBeenCalledTimes(1);
   });
 
-  it("does not push local edits for an unapproved user", async () => {
+  it("does not push or count local edits for an unapproved user", async () => {
     jest.useFakeTimers();
     mockUseAuth.mockReturnValue({ user: TEST_USER, isApproved: false });
     renderHook(() => useDatabase(), { wrapper });
@@ -695,6 +740,7 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
     await advance(AUTO_SYNC_DEBOUNCE_MS * 2);
 
     expect(mockSyncDatabase).not.toHaveBeenCalled();
+    expect(mockHasUnsyncedChanges).not.toHaveBeenCalled();
   });
 
   it("surfaces a failed sync, skips the requested extra pass, and clears it on success", async () => {
@@ -734,5 +780,194 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
 
     expect(mockEnsureLocalIdentity).toHaveBeenCalledTimes(1);
     expect(mockSyncDatabase).toHaveBeenCalledTimes(1);
+  });
+  it("shows a local edit as pending before its sync runs", async () => {
+    jest.useFakeTimers();
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await settleInitialSync(result);
+    expect(result.current.hasPendingChanges).toBe(false);
+
+    mockHasUnsyncedChanges.mockResolvedValue(true);
+    mockDirtyCounts.set("notes", 1);
+    mockDirtyCounts.set("attachments", 1);
+    act(() => emitChanges(LOCAL_EDIT));
+    await advance(PENDING_REFRESH_DEBOUNCE_MS);
+
+    expect(result.current.hasPendingChanges).toBe(true);
+    expect(result.current.pendingChangesCount).toBe(2);
+    // Only the login sync has run: the edit's own sync is still debounced.
+    expect(mockSyncDatabase).toHaveBeenCalledTimes(1);
+    expect(result.current.isSyncing).toBe(false);
+  });
+
+  it("clears the pending state once the edit's sync succeeds", async () => {
+    jest.useFakeTimers();
+    mockHasUnsyncedChanges.mockImplementation(async () => hasUnpushedRecords());
+    mockSyncDatabase.mockImplementation(async () => {
+      // The push marks every local change synced.
+      mockDirtyCounts.clear();
+      mockDeletedIds.clear();
+      return { remoteChangeCount: 0 };
+    });
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await settleInitialSync(result);
+
+    mockDirtyCounts.set("notes", 1);
+    act(() => emitChanges(LOCAL_EDIT));
+    await advance(PENDING_REFRESH_DEBOUNCE_MS);
+    expect(result.current.hasPendingChanges).toBe(true);
+    expect(result.current.pendingChangesCount).toBe(1);
+
+    await advance(AUTO_SYNC_DEBOUNCE_MS - PENDING_REFRESH_DEBOUNCE_MS);
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.isSyncing).toBe(false));
+    expect(result.current.hasPendingChanges).toBe(false);
+    expect(result.current.pendingChangesCount).toBe(0);
+  });
+
+  it("counts a local deletion, which queries leave out, as pending", async () => {
+    jest.useFakeTimers();
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await settleInitialSync(result);
+
+    mockHasUnsyncedChanges.mockResolvedValue(true);
+    mockDeletedIds.set("notes", ["note-1"]);
+    act(() => emitChanges(LOCAL_DELETE));
+    await advance(PENDING_REFRESH_DEBOUNCE_MS);
+
+    expect(result.current.hasPendingChanges).toBe(true);
+    expect(result.current.pendingChangesCount).toBe(1);
+  });
+
+  it("runs one pending check for a burst of edits, not one per edit", async () => {
+    // Autosave writes are already 500 ms apart; a shorter wait would count more often.
+    expect(PENDING_REFRESH_DEBOUNCE_MS).toBeGreaterThanOrEqual(500);
+    jest.useFakeTimers();
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await settleInitialSync(result);
+    mockHasUnsyncedChanges.mockClear();
+    mockHasUnsyncedChanges.mockResolvedValue(true);
+
+    act(() => emitChanges(LOCAL_EDIT));
+    await advance(PENDING_REFRESH_DEBOUNCE_MS - 1);
+    act(() => emitChanges(LOCAL_EDIT)); // a further edit restarts the wait
+    await advance(PENDING_REFRESH_DEBOUNCE_MS - 1);
+    act(() => emitChanges(LOCAL_EDIT));
+    await advance(PENDING_REFRESH_DEBOUNCE_MS - 1);
+    expect(mockHasUnsyncedChanges).not.toHaveBeenCalled();
+
+    await advance(1);
+    expect(mockHasUnsyncedChanges).toHaveBeenCalledTimes(1);
+    expect(result.current.hasPendingChanges).toBe(true);
+  });
+
+  it("refreshes the pending count for an edit made while a sync runs", async () => {
+    jest.useFakeTimers();
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await settleInitialSync(result);
+
+    const running = deferred<{ remoteChangeCount: number }>();
+    mockSyncDatabase.mockReturnValueOnce(running.promise);
+    let syncing: Promise<unknown> = Promise.resolve();
+    act(() => {
+      syncing = result.current.sync();
+    });
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(2));
+
+    mockHasUnsyncedChanges.mockResolvedValue(true);
+    mockDirtyCounts.set("notes", 1);
+    act(() => emitChanges(LOCAL_EDIT));
+    await advance(PENDING_REFRESH_DEBOUNCE_MS);
+
+    expect(result.current.isSyncing).toBe(true);
+    expect(result.current.hasPendingChanges).toBe(true);
+    expect(result.current.pendingChangesCount).toBe(1);
+
+    await act(async () => {
+      running.resolve({ remoteChangeCount: 0 });
+      await syncing;
+    });
+  });
+
+  it("does not refresh the pending count for a sync's own writes or upload-status updates", async () => {
+    jest.useFakeTimers();
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await settleInitialSync(result);
+    mockHasUnsyncedChanges.mockClear();
+
+    act(() => {
+      emitChanges(null); // the subscription's initial emission
+      emitChanges(SYNC_WRITE);
+      emitChanges(UPLOAD_STATUS);
+    });
+    await advance(AUTO_SYNC_DEBOUNCE_MS * 2);
+
+    expect(mockHasUnsyncedChanges).not.toHaveBeenCalled();
+  });
+
+  it("does not refresh the pending count before the identity guard clears", async () => {
+    jest.useFakeTimers();
+    // The guard is still resolving, so the local rows may be the previous user's.
+    mockEnsureLocalIdentity.mockReturnValue(deferred<string>().promise);
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await flushEffects();
+
+    mockHasUnsyncedChanges.mockResolvedValue(true);
+    act(() => emitChanges(LOCAL_EDIT));
+    await advance(AUTO_SYNC_DEBOUNCE_MS * 2);
+
+    expect(mockHasUnsyncedChanges).not.toHaveBeenCalled();
+    expect(result.current.hasPendingChanges).toBe(false);
+  });
+
+  it("does not let a slow pending check overwrite a newer one", async () => {
+    jest.useFakeTimers();
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await settleInitialSync(result);
+    mockDirtyCounts.set("notes", 1);
+
+    // A first edit shows as pending...
+    mockHasUnsyncedChanges.mockResolvedValueOnce(true);
+    act(() => emitChanges(LOCAL_EDIT));
+    await advance(PENDING_REFRESH_DEBOUNCE_MS);
+    expect(result.current.hasPendingChanges).toBe(true);
+    expect(result.current.pendingChangesCount).toBe(1);
+
+    // ...a second edit's refresh reads it as unpushed, but its read is slow...
+    const slowCheck = deferred<boolean>();
+    mockHasUnsyncedChanges.mockReturnValueOnce(slowCheck.promise);
+    act(() => emitChanges(LOCAL_EDIT));
+    await advance(PENDING_REFRESH_DEBOUNCE_MS);
+
+    // ...and a sync that pushes both edits checks again and reports first.
+    await act(async () => {
+      await result.current.sync();
+    });
+    expect(result.current.hasPendingChanges).toBe(false);
+    expect(result.current.pendingChangesCount).toBe(0);
+
+    // The slow check's stale reading (pending, 1) is dropped.
+    await act(async () => {
+      slowCheck.resolve(true);
+    });
+    await flushEffects();
+
+    expect(result.current.hasPendingChanges).toBe(false);
+    expect(result.current.pendingChangesCount).toBe(0);
+  });
+
+  it("removes the change subscription and the pending refresh on unmount", async () => {
+    jest.useFakeTimers();
+    const { result, unmount } = renderHook(() => useDatabase(), { wrapper });
+    await settleInitialSync(result);
+    expect(mockChangeListeners).toHaveLength(1);
+    mockHasUnsyncedChanges.mockClear();
+
+    act(() => emitChanges(LOCAL_EDIT));
+    unmount();
+    expect(mockChangeListeners).toHaveLength(0);
+    await advance(AUTO_SYNC_DEBOUNCE_MS * 2);
+
+    expect(mockHasUnsyncedChanges).not.toHaveBeenCalled();
   });
 });

@@ -20,6 +20,13 @@ const PERIODIC_SYNC_MS = 30_000;
  */
 export const AUTO_SYNC_DEBOUNCE_MS = 1_500;
 /**
+ * Quiet period after a local edit before the pending count is refreshed, so
+ * the sync status shows an unpushed edit before its sync starts. Debounced so
+ * that typing (whose autosave writes are already 500 ms apart) runs one count
+ * per write, not one per keystroke.
+ */
+export const PENDING_REFRESH_DEBOUNCE_MS = 500;
+/**
  * Extra passes one sync() may chain for writes that landed while it ran.
  * Belt and braces: a pass only chains while such a write is still unpushed.
  */
@@ -72,6 +79,12 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const periodicTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Bumped by every pending check and by a session change. Only the most
+  // recently started check of the current session reports: an older one (a
+  // refresh that read the rows just before a push marked them synced) must not
+  // overwrite a newer reading.
+  const pendingCheckRef = useRef(0);
   const syncLocalEditsRef = useRef<() => Promise<void>>(async () => {});
   const identityReadyRef = useRef(false);
   const isOnlineRef = useRef(true);
@@ -88,22 +101,28 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   const [isSyncing, setIsSyncing] = useState(false);
 
   const checkPendingChanges = useCallback(async (): Promise<boolean> => {
+    pendingCheckRef.current += 1;
+    const check = pendingCheckRef.current;
     try {
       const pending = await hasUnsyncedChanges({ database });
-      setHasPendingChanges(pending);
-
+      let count = 0;
       if (pending) {
-        let count = 0;
         for (const table of SYNCED_TABLES) {
           const dirtyRecords = await database
             .get(table)
             .query(Q.where("_status", Q.notEq("synced")))
             .fetchCount();
-          count += dirtyRecords;
+          // Queries leave out deleted records, so a local deletion (which
+          // hasUnsyncedChanges does see) is counted separately.
+          const deletedRecords = await database.adapter.getDeletedRecords(table);
+          count += dirtyRecords + deletedRecords.length;
         }
+      }
+      // WatermelonDB runs reads in order, so a check started later saw a later
+      // state. The caller still gets its own reading.
+      if (pendingCheckRef.current === check) {
+        setHasPendingChanges(pending);
         setPendingChangesCount(count);
-      } else {
-        setPendingChangesCount(0);
       }
       return pending;
     } catch (err) {
@@ -122,6 +141,18 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       void syncLocalEditsRef.current();
     }, AUTO_SYNC_DEBOUNCE_MS);
   }, []);
+
+  /** (Re)starts the quiet period after which the pending count is refreshed. */
+  const schedulePendingRefresh = useCallback(() => {
+    if (pendingRefreshTimerRef.current) clearTimeout(pendingRefreshTimerRef.current);
+    pendingRefreshTimerRef.current = setTimeout(() => {
+      pendingRefreshTimerRef.current = null;
+      // Until the identity guard clears, the local rows may still be the
+      // previous user's, so there is nothing of this user's to count.
+      if (!identityReadyRef.current) return;
+      void checkPendingChanges();
+    }, PENDING_REFRESH_DEBOUNCE_MS);
+  }, [checkPendingChanges]);
 
   const sync = useCallback((): Promise<void> => {
     // The cross-account identity guard gates every sync, not just the automatic
@@ -156,6 +187,9 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
         } catch (uploadErr) {
           console.error("[DatabaseProvider] Attachment upload processing failed:", uploadErr);
         }
+        // An upload can outlast the session; a check started now would report
+        // into the next one.
+        if (!isCurrentSession()) return { ok: false, pending: false, uploaded: 0 };
 
         const pending = await checkPendingChanges();
         // The session can end during any await; a stale pass reports nothing.
@@ -256,6 +290,9 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       // own writes leave records synced, so hasLocalEdit() filters them out;
       // that is what stops this from re-triggering itself.
       if (!changes || !hasLocalEdit(changes)) return;
+      // Shown as pending before its sync starts, on a shorter debounce of its
+      // own, and also while a sync runs: that sync may not push this edit.
+      schedulePendingRefresh();
       if (inFlightSyncRef.current) {
         // The running sync goes round again if this edit is still unpushed.
         editedDuringSyncRef.current = true;
@@ -269,8 +306,12 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
         clearTimeout(autoSyncTimerRef.current);
         autoSyncTimerRef.current = null;
       }
+      if (pendingRefreshTimerRef.current) {
+        clearTimeout(pendingRefreshTimerRef.current);
+        pendingRefreshTimerRef.current = null;
+      }
     };
-  }, [scheduleLocalEditSync]);
+  }, [scheduleLocalEditSync, schedulePendingRefresh]);
 
   useEffect(() => {
     canSyncRef.current = Boolean(userId && isApproved);
@@ -324,11 +365,16 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
         clearTimeout(autoSyncTimerRef.current);
         autoSyncTimerRef.current = null;
       }
+      if (pendingRefreshTimerRef.current) {
+        clearTimeout(pendingRefreshTimerRef.current);
+        pendingRefreshTimerRef.current = null;
+      }
       // End this session's sync state. A sync still running for the previous
       // user settles in the background without being joined by the next one
       // or reporting into its UI (db/sync.ts's resetSyncState does the same
-      // for the module-level latch).
+      // for the module-level latch). Neither does a pending check it started.
       sessionRef.current += 1;
+      pendingCheckRef.current += 1;
       inFlightSyncRef.current = null;
       rerunRequestedRef.current = false;
       editedDuringSyncRef.current = false;

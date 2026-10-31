@@ -114,7 +114,7 @@ These are measured behaviours of the TestFlight build, not guesses:
   - window activation and network reconnect each trigger a sync;
   - so does the manual indicator button.
 - **The 30 s timer runs on a fixed beat** from when the account became approved. That's how the 2026-10-10 run proved its sign-out flush: the last edit and the sign-out both fell between two ticks.
-- **Read pending state from the database.** The indicator's pending count only refreshes after a sync attempt (#677), so `db_pending` is the reliable signal.
+- **Read pending state from the database.** Builds without the #677 fix refresh the indicator's pending count only after a sync attempt. With it, the count refreshes about 0.5 s after a local edit, but shows for only about 1 s online before "Syncing...". Either way `db_pending` is the reliable signal.
   - `db_pending` also counts attachments whose file hasn't uploaded. The push skips those rows but still marks them synced, and sign-out deletes local attachment files.
   - It is the guard before a scenario signs out your own account.
 - **`poll` takes whole seconds** (`date +%s` arithmetic).
