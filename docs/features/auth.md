@@ -195,7 +195,7 @@ Signing out wipes the local database, and the provider's own pre-sign-out flush 
 
 Having just synced and counted, the hook calls `signOut({ skipFinalSync: true })`, so the provider does not spend up to another 10 s repeating a sync whose outcome is known. If the count itself fails, it signs out unwarned with the provider's flush, as before, rather than trap the user in the account. If sign-out throws, the user gets a "Couldn't sign out" alert and stays signed in. The waiting screen's and the reset screen's "Sign out" buttons still call `signOut()` directly, since an unapproved or recovering user has nothing to sync.
 
-The count is its own definition, not the "N pending changes" the sync status shows: that number leaves out pending deletions and uploads. Folding the provider's `checkPendingChanges` onto `countUnsyncedChanges`, so the two numbers agree, is a follow-up.
+The count is its own definition, not the "N pending changes" the sync status shows: that number counts pending deletions too, but leaves out attachments whose row has synced while the file is still waiting to upload (or failed to). Folding the provider's `checkPendingChanges` onto `countUnsyncedChanges`, so the two numbers agree, is a follow-up.
 
 ## Account deletion
 
