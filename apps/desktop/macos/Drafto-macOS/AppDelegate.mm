@@ -35,7 +35,26 @@
   if (window) {
     [window setFrameAutosaveName:@"DraftoMainWindow"];
     window.minSize = NSMakeSize(800, 500);
+    // RCTAppDelegate creates the window in code, where releasedWhenClosed defaults to YES.
+    // Keep it alive on close so showMainWindow: can bring the same window (and the running
+    // React tree) back instead of leaving the app windowless.
+    window.releasedWhenClosed = NO;
   }
+}
+
+// Clicking the Dock icon while the window is closed brings it back. Without this the app keeps
+// running with no window and no way to reopen it, which Mac App Review rejects.
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)hasVisibleWindows
+{
+  if (!hasVisibleWindows) {
+    [self showMainWindow:sender];
+  }
+  return YES;
+}
+
+- (IBAction)showMainWindow:(id)sender
+{
+  [self.window makeKeyAndOrderFront:sender];
 }
 
 - (NSURL *)sourceURLForBridge:(RCTBridge *)bridge

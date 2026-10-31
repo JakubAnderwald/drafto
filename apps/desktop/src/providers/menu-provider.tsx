@@ -1,5 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useCallback } from "react";
+import { Linking } from "react-native";
 
+import { supportUrl } from "@/lib/config";
 import { useTheme } from "@/providers/theme-provider";
 import type { ThemePreference } from "@/providers/theme-provider";
 import {
@@ -43,6 +45,13 @@ export function MenuProvider({ children }: { children: React.ReactNode }) {
       // Handle theme actions directly in the provider
       if (action in themeActionMap) {
         setTheme(themeActionMap[action]!);
+        return;
+      }
+
+      // Help works on every screen (login included), so it can't wait for a screen to register
+      // a handler. A Help item that does nothing is a Mac App Review rejection.
+      if (action === "openHelp") {
+        void Linking.openURL(supportUrl);
         return;
       }
 

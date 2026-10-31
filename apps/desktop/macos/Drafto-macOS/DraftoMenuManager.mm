@@ -1,4 +1,5 @@
 #import "DraftoMenuManager.h"
+#import "AppDelegate.h"
 #import <Cocoa/Cocoa.h>
 
 @implementation DraftoMenuManager {
@@ -73,13 +74,9 @@ RCT_EXPORT_MODULE();
   [menu addItem:about];
   [menu addItem:[NSMenuItem separatorItem]];
 
-  // Preferences placeholder
-  NSMenuItem *prefs = [self menuItemWithTitle:@"Settings..."
-                                       action:@"openSettings"
-                                keyEquivalent:@","
-                                modifierMask:NSEventModifierFlagCommand];
-  [menu addItem:prefs];
-  [menu addItem:[NSMenuItem separatorItem]];
+  // No Settings… item: the app has no settings window. Appearance lives in View → Appearance
+  // and the account actions in the sidebar's account menu. A Settings… item that does nothing
+  // is a Mac App Review rejection.
 
   NSMenuItem *services = [[NSMenuItem alloc] initWithTitle:@"Services"
                                                     action:nil
@@ -246,6 +243,10 @@ RCT_EXPORT_MODULE();
 
   [menu addItem:[self standardItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"]];
   [menu addItem:[self standardItemWithTitle:@"Zoom" action:@selector(performZoom:) keyEquivalent:@""]];
+  [menu addItem:[NSMenuItem separatorItem]];
+  // Reopens the main window after it was closed (AppKit drops a closed window from this menu's
+  // window list). Nil-targeted, so the app delegate's showMainWindow: handles it.
+  [menu addItem:[self standardItemWithTitle:@"Drafto" action:@selector(showMainWindow:) keyEquivalent:@"0"]];
   [menu addItem:[NSMenuItem separatorItem]];
   [menu addItem:[self standardItemWithTitle:@"Bring All to Front" action:@selector(arrangeInFront:) keyEquivalent:@""]];
 

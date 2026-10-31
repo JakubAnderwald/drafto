@@ -18,3 +18,6 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY, API_URL } from "@env";
 export const supabaseUrl = SUPABASE_URL;
 export const supabaseAnonKey = SUPABASE_ANON_KEY;
 export const apiUrl = API_URL || "https://drafto.eu";
+
+/** Help → Drafto Help opens this page. Always prod: help content is not per-environment. */
+export const supportUrl = "https://drafto.eu/support";

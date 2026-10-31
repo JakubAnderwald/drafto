@@ -15,7 +15,6 @@ export type MenuAction =
   | "themeLight"
   | "themeDark"
   | "themeSystem"
-  | "openSettings"
   | "openHelp";
 
 export function setupMenus(): void {
