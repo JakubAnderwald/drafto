@@ -129,7 +129,7 @@ Some behaviour cannot be scripted deterministically and is verified by hand. Not
   - **Check the PKCE challenge method** ([ADR-0062](../adr/0062-desktop-pkce-native-csprng.md)). Note the time and start a Google sign-in. While the browser is on Google's account chooser, find the `auth.flow_state` row the click created and check its `code_challenge_method`. It should be `s256`.
     - Read it before finishing the sign-in, because Supabase Auth may delete the row once the app exchanges the code.
     - TestFlight builds use the prod project (`tbmjbxxseonkciqovnpl`), so this is a read-only `SELECT` in the dashboard's SQL editor: `select code_challenge_method, provider_type, created_at from auth.flow_state where created_at > now() - interval '2 minutes' order by created_at desc;`.
-    - Web (`s256`) and mobile (`plain`) write to the same table. Match the row by its time and `provider_type`, and repeat the check if more than one Google row lands in the window.
+    - Web and mobile write to the same table, both with `s256` (mobile builds from before [#686](https://github.com/JakubAnderwald/drafto/issues/686) send `plain`). Match the row by its time and `provider_type`, and repeat the check if more than one Google row lands in the window.
   - **If the row says `plain`**, sign-in still works, but part of the module was skipped. The app's `[crypto]` warning in Console.app (subsystem `com.facebook.react.log`) says which part:
     - "DraftoCrypto returned no random bytes": the synchronous `randomBytes` call is broken, and the verifier still comes from `Math.random`.
     - "failed its SHA-256 self-test": the async `sha256` is broken, or didn't answer within 5 seconds. The verifier comes from the CSPRNG, but `subtle` was not installed.
