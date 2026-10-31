@@ -2948,7 +2948,7 @@ intest_fallback_comment() {
 - **iOS / Android** — beta builds are building now from PR #$pr_num${head_sha:+ (\`${head_sha:0:12}\`)}; you'll get a follow-up comment with each build number (~20-40 min)."
     else
       build_note="$build_note
-- **iOS / Android** — run the branch locally: worktree \`factory/issue-$issue_num\`, \`pnpm install\`, \`bash scripts/worktree-bootstrap.sh\`, then \`cd apps/mobile && pnpm ios\` (or \`pnpm android\`)."
+- **iOS / Android** — run the branch locally: worktree \`factory/issue-$issue_num\`, \`pnpm install\`, \`bash scripts/worktree-bootstrap.sh\`, then a debug build on a simulator or emulator as in [Mobile debug builds](https://github.com/JakubAnderwald/drafto/blob/main/docs/architecture/testing.md#mobile-debug-builds). Not \`pnpm ios\`: it fails under Xcode 27."
     fi
   fi
   if [[ "$desktop" == "true" ]]; then

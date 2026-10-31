@@ -96,7 +96,7 @@ echo "sdk.dir=/Users/jakub/Library/Android/sdk" > apps/mobile/android/local.prop
 > var missing from `.env.local.example`. Keep the two in sync. The bootstrap script
 > only handles the gitignored _files_.
 
-**Metro port conflicts:** The main repo may have Metro running on port 8081. In a worktree, start Metro on a different port (`pnpm start --port 8082`) and use `adb reverse tcp:8081 tcp:8082` to redirect the app.
+**Metro port conflicts:** The main repo may have Metro running on port 8081. On Android, in a worktree, start Metro on a different port (`pnpm start --port 8082`) and use `adb reverse tcp:8081 tcp:8082` to redirect the app. `adb reverse` doesn't exist for the iOS simulator, which always loads from 8081, so stop the other Metro first. Under Xcode 27, `pnpm ios` fails; see [Mobile debug builds](./docs/architecture/testing.md#mobile-debug-builds).
 
 **Worktree git gotchas:**
 
