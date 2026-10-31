@@ -66,6 +66,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { ghTimeoutMs } from "./gh-timeout.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 
@@ -110,7 +111,15 @@ async function runGh(args, { stdin } = {}) {
   let lastError;
   for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
     try {
-      const opts = { maxBuffer: 16 * 1024 * 1024 };
+      // A hung gh is killed at the cap and rejects as a non-transient error,
+      // so it fails fast instead of being retried (gh-timeout.mjs). SIGKILL,
+      // as in comment-intest-build.mjs: execFile never escalates past its
+      // killSignal, so a gh that ignored TERM would still hang the caller.
+      const opts = {
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: ghTimeoutMs(),
+        killSignal: "SIGKILL",
+      };
       if (stdin != null) opts.input = stdin;
       const { stdout } = await fn("gh", args, opts);
       return stdout;

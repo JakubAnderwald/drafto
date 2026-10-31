@@ -78,6 +78,7 @@ import * as nodeFs from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ghTimeoutMs } from "./gh-timeout.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 
@@ -346,7 +347,7 @@ export function createDeps() {
       };
     },
     fs: nodeFs,
-    gh: (args, { input } = {}) => runCommand("gh", args, { input }),
+    gh: (args, { input } = {}) => runCommand("gh", args, { input, timeoutMs: ghTimeoutMs() }),
     git: (args, { cwd } = {}) => runCommand("git", args, { cwd }),
     spawnDetached: realSpawnDetached,
     isPidAlive: realIsPidAlive,
