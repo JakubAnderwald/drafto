@@ -117,6 +117,21 @@ prebuild`. If you add native config, write a config plugin rather than
   a file reference and group entry, plus a build file and Drafto-macOS Sources
   entry for a `.mm`. CI never builds the macOS target, so a missed entry shows
   up only in the fossil's beta build, as a `null` module.
+- **Mac App Review checks the menu bar and the window.** Every enabled menu
+  item must do something. `MenuProvider` reports which actions are handled
+  (its own theme and Help actions, plus whatever the mounted screen registered
+  with `useMenuActions`), and `DraftoMenuManager`'s `validateMenuItem:` disables
+  the rest, so New Note, Search and Find are greyed out on the login screen.
+  A screen disables one of its own items by passing `undefined` for that
+  action: New Note is greyed out unless a notebook that still exists is
+  selected and Trash isn't showing. A command always runs the handler from the
+  screen's latest render, so handlers may read state. Only one screen registers
+  at a time. App-wide actions such as Help → Drafto Help belong in `MenuProvider` itself,
+  so they work on every screen. Don't add a Settings… item until there is a
+  settings window. After the user closes the main window, the Dock icon and
+  Window → Drafto (⌘0) bring it back (`showMainWindow:` in `AppDelegate.mm`),
+  and any Drafto menu command reopens it first. Without that the app runs with
+  no window, which App Review rejects.
 - **Versioning:** bump `apps/mobile/package.json` or `apps/desktop/package.json`
   per the rules in `CLAUDE.md` ("Mobile Versioning" / "Desktop Versioning").
   Build numbers are auto-incremented by Fastlane — do not bump manually.
