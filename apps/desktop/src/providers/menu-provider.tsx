@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useCallback } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import { Linking } from "react-native";
 
 import { supportUrl } from "@/lib/config";
@@ -104,9 +104,10 @@ export function MenuProvider({ children }: { children: React.ReactNode }) {
 /**
  * Hook to register menu action handlers from a component; cleans up on unmount.
  *
- * A menu command always runs the handler from the latest render, so handlers may close over
- * state. Passing `undefined` for an action disables its menu item until a later render supplies
- * a handler.
+ * One screen registers at a time: registering replaces every handler the provider holds.
+ * A menu command always runs the handler from the latest committed render, so handlers may
+ * close over state. Passing `undefined` for an action disables its menu item until a later
+ * render supplies a handler.
  */
 export function useMenuActions(handlers: MenuActionHandlers): void {
   const context = useContext(MenuContext);
@@ -116,20 +117,27 @@ export function useMenuActions(handlers: MenuActionHandlers): void {
 
   const { registerHandlers } = context;
   const handlersRef = useRef(handlers);
-  handlersRef.current = handlers;
+  // Updated after commit, not during render, so a render React discards can't leave its
+  // closures behind for the next menu command. Layout effects run before the effects below.
+  useLayoutEffect(() => {
+    handlersRef.current = handlers;
+  });
 
-  // Re-register only when the set of handled actions changes, not on every render.
-  const actionsKey = screenActions(handlers).join(",");
+  // Re-register only when the set of handled actions changes, not on every render. Sorted so
+  // the same set in a different key order doesn't count as a change.
+  const actionsKey = screenActions(handlers).sort().join(",");
 
   useEffect(() => {
     // The provider keeps the object it is given, so give it delegates that look up the current
     // handler when the command arrives. Registering `handlers` itself kept the first render's
     // closures forever: File → New Note always saw "no notebook selected" and did nothing.
+    // No cleanup here: the new set replaces the old one in a single native update.
     const delegates: MenuActionHandlers = {};
-    for (const action of actionsKey.split(",").filter(Boolean) as MenuAction[]) {
+    for (const action of screenActions(handlersRef.current)) {
       delegates[action] = () => handlersRef.current[action]?.();
     }
     registerHandlers(delegates);
-    return () => registerHandlers({});
   }, [registerHandlers, actionsKey]);
+
+  useEffect(() => () => registerHandlers({}), [registerHandlers]);
 }

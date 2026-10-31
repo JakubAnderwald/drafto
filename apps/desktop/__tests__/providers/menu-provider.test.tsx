@@ -125,34 +125,43 @@ describe("MenuProvider", () => {
     expect(jest.mocked(setEnabledMenuActions).mock.calls).toHaveLength(reports);
   });
 
-  it("disables an action while its handler is undefined and enables it once one is supplied", () => {
+  it("disables an action while its handler is undefined and enables it again once one is supplied", () => {
     const onNewNote = jest.fn();
-    const { rerender } = render(
+    const screen = (handler: (() => void) | undefined) => (
       <MenuProvider>
-        <ScreenWithHandlers onNewNote={undefined} />
-      </MenuProvider>,
+        <ScreenWithHandlers onNewNote={handler} />
+      </MenuProvider>
     );
+    const { rerender } = render(screen(onNewNote));
+    expect(lastEnabledActions()).toEqual([...PROVIDER_ACTIONS, "newNote"]);
+
+    rerender(screen(undefined));
 
     expect(lastEnabledActions()).toEqual(PROVIDER_ACTIONS);
     act(() => mockEmitMenuAction("newNote"));
+    expect(onNewNote).not.toHaveBeenCalled();
 
-    rerender(
-      <MenuProvider>
-        <ScreenWithHandlers onNewNote={onNewNote} />
-      </MenuProvider>,
-    );
+    rerender(screen(onNewNote));
 
     expect(lastEnabledActions()).toEqual([...PROVIDER_ACTIONS, "newNote"]);
     act(() => mockEmitMenuAction("newNote"));
     expect(onNewNote).toHaveBeenCalledTimes(1);
+  });
 
-    rerender(
+  it("reports a changed action set in one update rather than clearing it first", () => {
+    const screen = (handler: (() => void) | undefined) => (
       <MenuProvider>
-        <ScreenWithHandlers onNewNote={undefined} />
-      </MenuProvider>,
+        <ScreenWithHandlers onNewNote={handler} />
+      </MenuProvider>
     );
+    const { rerender } = render(screen(undefined));
+    const reports = jest.mocked(setEnabledMenuActions).mock.calls.length;
 
-    expect(lastEnabledActions()).toEqual(PROVIDER_ACTIONS);
+    rerender(screen(jest.fn()));
+
+    expect(jest.mocked(setEnabledMenuActions).mock.calls.slice(reports)).toEqual([
+      [[...PROVIDER_ACTIONS, "newNote"]],
+    ]);
   });
 
   it("logs instead of leaving an unhandled rejection when the support page can't open", async () => {

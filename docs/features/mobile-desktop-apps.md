@@ -123,9 +123,10 @@ prebuild`. If you add native config, write a config plugin rather than
   with `useMenuActions`), and `DraftoMenuManager`'s `validateMenuItem:` disables
   the rest, so New Note, Search and Find are greyed out on the login screen.
   A screen disables one of its own items by passing `undefined` for that
-  action: New Note stays greyed out until a notebook is selected. A command
-  always runs the handler from the screen's latest render, so handlers may read
-  state. App-wide actions such as Help → Drafto Help belong in `MenuProvider` itself,
+  action: New Note is greyed out unless a notebook that still exists is
+  selected and Trash isn't showing. A command always runs the handler from the
+  screen's latest render, so handlers may read state. Only one screen registers
+  at a time. App-wide actions such as Help → Drafto Help belong in `MenuProvider` itself,
   so they work on every screen. Don't add a Settings… item until there is a
   settings window. After the user closes the main window, the Dock icon and
   Window → Drafto (⌘0) bring it back (`showMainWindow:` in `AppDelegate.mm`),
