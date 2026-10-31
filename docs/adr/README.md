@@ -94,3 +94,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0060](./0060-dedicated-factory-build-volume.md)                     | A Dedicated ASCII Build Volume for the Factory         | Accepted           | 2026-10-27 |
 | [0061](./0061-factory-resolves-merge-conflicts.md)                   | The Factory Resolves Merge Conflicts With Main         | Accepted           | 2026-10-29 |
 | [0062](./0062-desktop-pkce-native-csprng.md)                         | Desktop PKCE Draws From a Native CSPRNG                | Accepted           | 2026-10-25 |
+| [0063](./0063-desktop-native-runtime-patches.md)                     | Desktop Patches RN Native Bugs From the App Target     | Accepted           | 2026-10-31 |
