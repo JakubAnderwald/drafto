@@ -1,10 +1,14 @@
 import React from "react";
 
-import { render, fireEvent, waitFor } from "../helpers/test-utils";
+import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import { ForgotPasswordScreen } from "@/screens/forgot-password";
 
 const mockResetPasswordForEmail = jest.fn();
+let mockCryptoReady: Promise<void> = Promise.resolve();
 jest.mock("@/lib/supabase", () => ({
+  get cryptoReady() {
+    return mockCryptoReady;
+  },
   supabase: {
     auth: {
       resetPasswordForEmail: (...args: unknown[]) => mockResetPasswordForEmail(...args),
@@ -24,6 +28,7 @@ jest.mock("@/hooks/use-network-status", () => ({
 describe("ForgotPasswordScreen", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockCryptoReady = Promise.resolve();
     mockResetPasswordForEmail.mockResolvedValue({ error: null });
     mockUseNetworkStatus.mockReturnValue({ isConnected: true, isInternetReachable: true });
   });
@@ -67,6 +72,27 @@ describe("ForgotPasswordScreen", () => {
       expect(getByText("Check Your Email")).toBeTruthy();
     });
     expect(getByText("test@example.com")).toBeTruthy();
+  });
+
+  it("waits for the PKCE crypto before requesting the link, so its challenge is S256", async () => {
+    let settle = () => {};
+    mockCryptoReady = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const { getByText, getByTestId } = render(<ForgotPasswordScreen />);
+
+    fireEvent.changeText(getByTestId("forgot-password-email-input"), "test@example.com");
+    fireEvent.press(getByText("Send reset link"));
+    await act(async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+    expect(mockResetPasswordForEmail).not.toHaveBeenCalled();
+
+    settle();
+    await waitFor(() => {
+      expect(getByText("Check Your Email")).toBeTruthy();
+    });
+    expect(mockResetPasswordForEmail).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces a Supabase error instead of confirming", async () => {

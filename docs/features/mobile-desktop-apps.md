@@ -1,6 +1,6 @@
 # Mobile and Desktop Apps
 
-**Status:** shipped **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-10-25
 
 ## What it is
 
@@ -31,7 +31,7 @@ Both link the same `@nozbe/watermelondb@0.28.x` native module and reuse the
 | Mobile Maestro E2E                 | `apps/mobile/e2e/`                                                                                                            |
 | Desktop package manifest           | `apps/desktop/package.json`                                                                                                   |
 | Desktop Xcode workspace            | `apps/desktop/macos/Drafto.xcworkspace`                                                                                       |
-| Desktop native target              | `apps/desktop/macos/Drafto-macOS/` (AppDelegate, Info.plist, entitlements, menu manager)                                      |
+| Desktop native target              | `apps/desktop/macos/Drafto-macOS/` (AppDelegate, Info.plist, entitlements, menu manager, crypto)                              |
 | Desktop source tree                | `apps/desktop/src/{components,db,helpers,hooks,lib,screens}/` plus `App.tsx`, `navigation/`, `providers/`, `theme/`, `types/` |
 | Desktop Fastlane                   | `apps/desktop/fastlane/{Fastfile,Appfile,Matchfile,Pluginfile}`                                                               |
 | Desktop release-notes scripts      | `apps/desktop/scripts/{generate-release-notes.sh,post-release-notes.mjs}`                                                     |
@@ -47,6 +47,7 @@ Both link the same `@nozbe/watermelondb@0.28.x` native module and reuse the
 - [0010 — Offline Sync Strategy with WatermelonDB](../adr/0010-offline-sync-strategy.md)
 - [0015 — Desktop App Technology Choice](../adr/0015-desktop-app-technology-choice.md)
 - [0016 — Local Fastlane Builds](../adr/0016-local-fastlane-builds.md) (supersedes [0011](../adr/0011-app-store-deployment-strategy.md))
+- [0062 — Desktop PKCE Draws From a Native CSPRNG](../adr/0062-desktop-pkce-native-csprng.md) (in-project native modules)
 
 ## Cross-platform notes
 
@@ -71,7 +72,9 @@ Both link the same `@nozbe/watermelondb@0.28.x` native module and reuse the
   `react-native-fs`, and `react-native-document-picker-macos`.
 - **Native shell**: mobile has no custom native code beyond Expo plugins;
   desktop has Swift/Obj-C in `apps/desktop/macos/Drafto-macOS/` for the app
-  menu (`DraftoMenuManager`), entitlements, and sandbox configuration.
+  menu (`DraftoMenuManager`), the PKCE random source and SHA-256
+  (`DraftoCrypto`, [ADR-0062](../adr/0062-desktop-pkce-native-csprng.md)),
+  entitlements, and sandbox configuration.
 - **Navigation**: mobile uses file-based routes under `apps/mobile/app/`;
   desktop uses imperative stack navigation rooted in `apps/desktop/src/App.tsx`.
 - **Auth storage**: `expo-secure-store` (iOS/Android) vs. `react-native-keychain`
@@ -105,6 +108,15 @@ prebuild`. If you add native config, write a config plugin rather than
 - **Desktop native code** under `apps/desktop/macos/Drafto-macOS/` is checked
   in directly (no prebuild). Update `Info.plist` and `Drafto.entitlements`
   together when adding new permissions or capabilities.
+- **New desktop native capability** goes into an in-project module next to
+  `DraftoMenuManager` and `DraftoCrypto`, not an npm package with native code,
+  which would need a `pnpm install` in the fossil
+  ([ADR-0062](../adr/0062-desktop-pkce-native-csprng.md),
+  [ADR-0027](../adr/0027-desktop-react-version-locked-to-react-native-macos.md)).
+  Add each new file to `apps/desktop/macos/Drafto.xcodeproj/project.pbxproj`:
+  a file reference and group entry, plus a build file and Drafto-macOS Sources
+  entry for a `.mm`. CI never builds the macOS target, so a missed entry shows
+  up only in the fossil's beta build, as a `null` module.
 - **Versioning:** bump `apps/mobile/package.json` or `apps/desktop/package.json`
   per the rules in `CLAUDE.md` ("Mobile Versioning" / "Desktop Versioning").
   Build numbers are auto-incremented by Fastlane — do not bump manually.

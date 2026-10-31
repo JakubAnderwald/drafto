@@ -3,8 +3,12 @@ import { Linking } from "react-native";
 const mockExchangeCodeForSession = jest.fn();
 const mockSetSession = jest.fn();
 const mockSignInWithOAuth = jest.fn();
+let mockCryptoReady: Promise<void> = Promise.resolve();
 
 jest.mock("@/lib/supabase", () => ({
+  get cryptoReady() {
+    return mockCryptoReady;
+  },
   supabase: {
     auth: {
       exchangeCodeForSession: (...args: unknown[]) => mockExchangeCodeForSession(...args),
@@ -29,6 +33,7 @@ describe("signInWithOAuthBrowser", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockCryptoReady = Promise.resolve();
     openURL = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
     mockSignInWithOAuth.mockResolvedValue({
       data: { url: "https://supabase.test/auth/v1/authorize?provider=google" },
@@ -57,6 +62,21 @@ describe("signInWithOAuthBrowser", () => {
     });
     expect(openURL).toHaveBeenCalledWith("https://supabase.test/auth/v1/authorize?provider=google");
     expect(result).toEqual({ error: null });
+  });
+
+  it("waits for the PKCE crypto before starting the flow, so the challenge is S256", async () => {
+    let settle = () => {};
+    mockCryptoReady = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+
+    const pending = signInWithOAuthBrowser("google");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockSignInWithOAuth).not.toHaveBeenCalled();
+
+    settle();
+    await expect(pending).resolves.toEqual({ error: null });
+    expect(mockSignInWithOAuth).toHaveBeenCalledTimes(1);
   });
 
   it("passes the provider through for Apple", async () => {

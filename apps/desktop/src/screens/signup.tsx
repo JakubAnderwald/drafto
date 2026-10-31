@@ -2,7 +2,7 @@ import { useState, useMemo } from "react";
 import { Text, View, Pressable, StyleSheet } from "react-native";
 import { SIGNUP_CONFIRMATION_SENT, SIGNUP_EMAIL_REDIRECT_URL } from "@drafto/shared";
 
-import { supabase } from "@/lib/supabase";
+import { cryptoReady, supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
@@ -39,6 +39,8 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
     setLoading(true);
 
     try {
+      // Sign-up starts a PKCE flow too: wait for the S256 crypto (ADR-0062).
+      await cryptoReady;
       const { data, error: signUpError } = await supabase.auth.signUp({
         email: trimmedEmail,
         password,

@@ -1,6 +1,6 @@
 # Authentication
 
-**Status:** shipped **Updated:** 2026-10-24
+**Status:** shipped **Updated:** 2026-10-25
 
 ## What it is
 
@@ -84,6 +84,8 @@ A signed-in user can permanently delete their own account from inside the app on
 | Desktop forgot password                                                                                                                                      | `apps/desktop/src/screens/forgot-password.tsx`                                                                                                                     |
 | Desktop reset password                                                                                                                                       | `apps/desktop/src/screens/reset-password.tsx`                                                                                                                      |
 | Desktop OAuth (`redirectTo` + `eu.drafto.desktop://auth/callback` handler)                                                                                   | `apps/desktop/src/lib/oauth.ts`                                                                                                                                    |
+| Desktop Supabase client (`flowType: "pkce"`, AsyncStorage session storage)                                                                                   | `apps/desktop/src/lib/supabase.ts`                                                                                                                                 |
+| Desktop PKCE randomness and S256 hashing (`crypto.getRandomValues`, `crypto.subtle.digest`) from the `DraftoCrypto` native module                            | `apps/desktop/src/lib/crypto-random.ts`, `apps/desktop/src/lib/native/crypto-module.ts`, `apps/desktop/macos/Drafto-macOS/DraftoCrypto.{h,mm}`                     |
 | Desktop recovery deep-link parsing                                                                                                                           | `apps/desktop/src/lib/auth-recovery.ts`                                                                                                                            |
 | Desktop route switch (recovery branch, approval hold)                                                                                                        | `apps/desktop/src/navigation/app-navigator.tsx`                                                                                                                    |
 | Desktop waiting-for-approval                                                                                                                                 | `apps/desktop/src/screens/waiting-for-approval.tsx`                                                                                                                |
@@ -110,6 +112,7 @@ A signed-in user can permanently delete their own account from inside the app on
 - [0049 — Revoke Sign in with Apple Tokens on Account Deletion](../adr/0049-apple-token-revocation-on-account-deletion.md)
 - [0051 — Factory Browser Access Through a Locked-Down Claude in Chrome Runner](../adr/0051-factory-browser-runner.md) (the preview-only test sign-in)
 - [0055 — Trigger Guard on Profile Privilege Columns](../adr/0055-profile-privilege-column-guard.md)
+- [0062 — Desktop PKCE Draws From a Native CSPRNG](../adr/0062-desktop-pkce-native-csprng.md)
 
 ## Cross-platform notes
 
@@ -129,6 +132,7 @@ A signed-in user can permanently delete their own account from inside the app on
     - The app exchanges each code once, so the page's "Open Drafto" button cannot re-send a spent code.
     - The app ignores `access_token`/`refresh_token` in the URL: any website can open the scheme, so only a PKCE code is a credential.
     - The hand-off URL, code included, can appear in Sentry traces and replays. That is acceptable because the code is useless without the app's `code_verifier`.
+    - The `code_verifier` comes from `SecRandomCopyBytes`, and the challenge is S256 ([ADR-0062](../adr/0062-desktop-pkce-native-csprng.md)). Hermes has no global `crypto`, so `apps/desktop/src/lib/crypto-random.ts` installs one from the in-project `DraftoCrypto` native module: `getRandomValues` before the client is created, and `subtle` once a native SHA-256 self-test passes. OAuth sign-in, sign-up and the reset-link request await `cryptoReady` from `apps/desktop/src/lib/supabase.ts` first, so a flow started right after launch still gets S256. The self-test gives up after 5 seconds, so a hung native call delays sign-in by at most that long. Without the module (Jest, CI), supabase-js falls back to a `Math.random()` verifier and a `plain` challenge. The module is compiled from the Xcode project, not `node_modules`, so it is safe for the [fossil build](../operations/desktop-build-fossil.md).
   - **Google's account chooser names the app from the Branding page** of the Cloud project, but only once it is verified; until then it shows the Supabase redirect host (`tbmjbxxseonkciqovnpl.supabase.co`). See [Google OAuth branding](../operations/builds-and-releases.md#google-oauth-branding).
 - **The native ID-token legs depend on two Supabase Auth provider settings.** They must be set in **both** projects: prod `tbmjbxxseonkciqovnpl` and dev `huhzactreblzcogqkbsd`. Nothing in the repo or CI can see them. Both were found missing on 2026-10-10, when iOS 1.4.3 was first tested on a device.
   - **Apple → Client IDs** must be `eu.drafto.web.auth,eu.drafto.mobile`, in that order.
@@ -417,6 +421,9 @@ The dark factory's browser runner checks a PR's Vercel preview in Chrome, signed
   - `apps/mobile/__tests__/screens/waiting-for-approval.test.tsx` — the "still pending" and "unable to check" messages.
   - `apps/mobile/e2e/01-login.yaml` (and flow 01 in `ios-all.yaml` / `android-all.yaml`) — Maestro: signs up with the existing test address, which sends no mail and creates no user, and expects "Check Your Email".
   - `apps/{mobile,desktop}/__tests__/lib/auth-recovery.test.ts` — recovery-URL parsing, OAuth/recovery disambiguation, expired-link handling.
+  - `apps/desktop/__tests__/lib/crypto-random.test.ts` — the desktop `crypto` installer with the native module mocked: typed-array checks, the 65536-byte quota, offset views, a failed or short native result throwing instead of returning unfilled bytes, SHA-256 against Node's, `subtle` added only after the native SHA-256 self-test passes, and skipped when the self-test never settles or without `btoa` or `TextEncoder`, an existing `crypto` extended in place (prototype and non-enumerable members kept), and nothing installed when the module is absent or fails its probe.
+  - `apps/desktop/__tests__/lib/pkce-challenge.test.ts` — real supabase-js `signInWithOAuth` with the native module faked on `NativeModules`: the URL carries `code_challenge_method=s256` and the base64url SHA-256 of the stored verifier, and sign-in still starts with a `plain` challenge when the module is missing or its SHA-256 is broken.
+  - `apps/{mobile,desktop}/__tests__/lib/supabase.test.ts` — `flowType: "pkce"`, and the CSPRNG installed before `createClient` (desktop: and exported as `cryptoReady`). Desktop's `lib/oauth.test.ts` and `screens/{signup,forgot-password}.test.tsx` check that each PKCE flow start waits for `cryptoReady`.
   - `apps/mobile/__tests__/screens/route-guard.test.tsx` + `apps/desktop/__tests__/navigation/app-navigator.test.tsx` — a recovery session reaches the reset screen instead of the main app or the approval screen. This is the regression the `isRecovering` flag exists to prevent. They also cover the approval hold: the spinner only for `isLoading`, screens kept mounted (desktop counts mounts of the waiting screen) and routing held during a check, no hold for a signed-out user, and mobile's `dismissTo` to login.
   - `apps/{mobile,desktop}/__tests__/screens/{forgot-password,reset-password}.test.tsx` — request, confirmation, validation, expired-link and offline-retry states.
   - `apps/mobile/e2e/06-forgot-password.yaml` — Maestro: the recovery deep link opens in-app rather than bouncing to the website.
@@ -435,6 +442,7 @@ The dark factory's browser runner checks a PR's Vercel preview in Chrome, signed
   - Changing the database provider's `sync()` contract or the synced tables: `useSafeSignOut` relies on `sync()` joining a running sync and never rejecting, and `countUnsyncedChanges` lists the synced tables and the attachment `upload_status` values itself. Keep them in step on mobile and desktop.
   - Moving the macOS account actions (`app-menu.tsx` / `notebooks-sidebar.tsx`): update the Mac steps on `apps/web/src/app/account/delete/page.tsx` and `apps/web/src/app/support/page.tsx` (and `legal-pages.test.tsx` / `account-delete-page.test.tsx`), and the element checks in `apps/desktop/e2e/run-e2e.sh`.
   - Changing the web API origin variables: `apps/mobile/app.config.ts`, `apps/desktop/src/types/env.d.ts`, `apps/desktop/src/lib/config.ts`, and [environments](../architecture/environments.md#web-api-origin-for-native-apps).
+  - Adding, renaming or removing a file in `apps/desktop/macos/Drafto-macOS/` (such as `DraftoCrypto.{h,mm}`): update `apps/desktop/macos/Drafto.xcodeproj/project.pbxproj` in the same commit (file reference, group, and for `.mm` files the build file and Sources phase entry). CI never builds the macOS target, so a missed entry shows up only in the fossil's beta build. Renaming the `DraftoCrypto` module or its methods also means updating `apps/desktop/src/lib/native/crypto-module.ts`.
   - Adding a new OAuth provider: update both `apps/web/src/components/auth/oauth-buttons.tsx` and `apps/mobile/src/components/auth/oauth-buttons.tsx`, plus the Supabase dashboard config for each environment.
   - Changing a recovery redirect URL: update `RECOVERY_REDIRECT_URL` in the platform's `auth-recovery.ts`, its `RECOVERY_PATHS` set, **and** the Redirect URLs allowlist in both Supabase projects. The desktop `handleOAuthCallback` defers to `isRecoveryUrl()` to avoid consuming the recovery code — keep the two path sets consistent or the OAuth handler will burn it.
 

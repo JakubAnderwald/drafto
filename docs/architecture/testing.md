@@ -126,6 +126,22 @@ Some behaviour cannot be scripted deterministically and is verified by hand. Not
   - **On macOS**, the link first lands on the drafto.eu hand-off page (`/auth/desktop/recovery`, [ADR-0044](../adr/0044-desktop-auth-web-handoff.md)), which opens the app. Confirm three things: the tab shows "Opening Drafto to reset your password", not a blank loading tab; clicking its "Open Drafto" button afterwards leaves the reset form in place (the app ignores the repeated, already-used link); and opening the same email on a phone shows "Open this link on your Mac".
   - `apps/web/e2e/desktop-handoff.spec.ts` covers the page itself, but not the browser-to-app hand-off.
 - **The desktop OAuth leg** ([ADR-0044](../adr/0044-desktop-auth-web-handoff.md)). Sign in to the macOS app with Google and with Apple, in Chrome and with Safari as the default browser. Confirm three things: after the account click the tab ends on "Finishing sign-in in Drafto", not Google's frozen "in progress" page; the app signs in; and clicking "Open Drafto" again does nothing harmful. The real provider round trip cannot be automated.
+  - **Check the PKCE challenge method** ([ADR-0062](../adr/0062-desktop-pkce-native-csprng.md)). Note the time and start a Google sign-in. While the browser is on Google's account chooser, find the `auth.flow_state` row the click created and check its `code_challenge_method`. It should be `s256`.
+    - Read it before finishing the sign-in, because Supabase Auth may delete the row once the app exchanges the code.
+    - TestFlight builds use the prod project (`tbmjbxxseonkciqovnpl`), so this is a read-only `SELECT` in the dashboard's SQL editor: `select code_challenge_method, provider_type, created_at from auth.flow_state where created_at > now() - interval '2 minutes' order by created_at desc;`.
+    - Web (`s256`) and mobile (`plain`) write to the same table. Match the row by its time and `provider_type`, and repeat the check if more than one Google row lands in the window.
+  - **If the row says `plain`**, sign-in still works, but part of the module was skipped. The app's `[crypto]` warning in Console.app (subsystem `com.facebook.react.log`) says which part:
+    - "DraftoCrypto returned no random bytes": the synchronous `randomBytes` call is broken, and the verifier still comes from `Math.random`.
+    - "failed its SHA-256 self-test": the async `sha256` is broken, or didn't answer within 5 seconds. The verifier comes from the CSPRNG, but `subtle` was not installed.
+    - No `[crypto]` line at all: the module isn't linked. Check its `project.pbxproj` entries.
+  - **If sign-in fails before the browser opens**, the login screen shows "Failed to open sign-in. Please try again." and nothing is logged, because `signInWithOAuthBrowser` (`apps/desktop/src/lib/oauth.ts`) swallows the error. There are three possible causes:
+    - `getRandomValues` threw on the full-size request after the one-byte probe passed.
+    - A `sha256` call failed after the self-test passed. Once `subtle` exists, supabase-js no longer falls back to `plain`.
+    - The browser could not be opened.
+
+    The first two are not expected. If a build that signed in before now fails this way, suspect the crypto path.
+
+  - `apps/desktop/__tests__/lib/pkce-challenge.test.ts` checks the same outcomes against supabase-js in Jest, but not the native module itself, which CI does not build.
 - **The Supabase redirect-URL allowlist.** Each must be allowed under Supabase Auth → URL Configuration → Redirect URLs in dev (`huhzactreblzcogqkbsd`) and prod (`tbmjbxxseonkciqovnpl`):
   - `drafto://reset-password` (mobile recovery).
   - `https://drafto.eu/auth/desktop/recovery` and `https://drafto.eu/auth/desktop/callback` (desktop). Both hosted projects already allow `https://drafto.eu/**`, which covers these.
