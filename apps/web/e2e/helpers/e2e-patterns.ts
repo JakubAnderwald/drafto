@@ -13,6 +13,7 @@ const E2E_NAME_PREFIXES = [
   "Target",
   "Move Source",
   "Test Notebook",
+  "Decoy NB",
   "Renamed",
   "Export NB",
   "Import NB",

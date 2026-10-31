@@ -2,10 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import { handleAuthError } from "@/lib/handle-auth-error";
+import { useNotebookDeleteImpact } from "@/hooks/use-notebook-delete-impact";
 import { IconButton } from "@/components/ui/icon-button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MAX_NOTEBOOK_NAME_LENGTH } from "@drafto/shared";
+
+// The same wording as the mobile and desktop delete confirms.
+const TRASHED_NOTES_WARNING = "Trashed notes inside will be permanently deleted.";
 
 interface Notebook {
   id: string;
@@ -40,9 +44,15 @@ export function NotebooksSidebar({
   const [editingName, setEditingName] = useState("");
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const deleteImpact = useNotebookDeleteImpact(confirmingDeleteId);
   const createInputRef = useRef<HTMLInputElement>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
   const hasFetched = useRef(initialNotebooks.length > 0);
+  // Bumped each time a delete confirm opens or closes. A delete that finishes after the user
+  // cancelled, or opened another confirm, leaves the confirm now on show alone. One still at
+  // its confirm-time check by then sends no DELETE.
+  const deleteSession = useRef(0);
 
   useEffect(() => {
     if (hasFetched.current) return;
@@ -160,23 +170,36 @@ export function NotebooksSidebar({
   }
 
   function requestDelete(id: string) {
+    deleteSession.current += 1;
+    setDeleting(false);
     setDeleteError(null);
     setConfirmingDeleteId(id);
   }
 
   function cancelDelete() {
+    deleteSession.current += 1;
+    setDeleting(false);
     setConfirmingDeleteId(null);
     setDeleteError(null);
   }
 
   async function confirmDelete(id: string) {
+    const session = deleteSession.current;
+    const confirmStillOpen = () => deleteSession.current === session;
     setDeleteError(null);
+    setDeleting(true);
     try {
+      // The notebook's notes may have changed while the confirm was open. If the delete would
+      // now take trashed notes with it and the warning isn't on show, the confirm shows it
+      // instead of deleting, and the user confirms again.
+      const proceed = await deleteImpact.checkBeforeDelete();
+      if (!proceed || !confirmStillOpen()) return;
+
       const res = await fetch(`/api/notebooks/${id}`, { method: "DELETE" });
 
       if (handleAuthError(res)) return;
       if (res.ok) {
-        setConfirmingDeleteId(null);
+        setConfirmingDeleteId((current) => (current === id ? null : current));
         setNotebooks((prev) => {
           const updated = prev.filter((n) => n.id !== id);
           onNotebooksChange?.(updated.map((n) => ({ id: n.id, name: n.name })));
@@ -188,10 +211,12 @@ export function NotebooksSidebar({
       } else {
         const body = await res.json().catch(() => null);
         const message = body?.error || "Failed to delete notebook";
-        setDeleteError(message);
+        if (confirmStillOpen()) setDeleteError(message);
       }
     } catch {
-      setDeleteError("Network error. Please try again.");
+      if (confirmStillOpen()) setDeleteError("Network error. Please try again.");
+    } finally {
+      if (confirmStillOpen()) setDeleting(false);
     }
   }
 
@@ -336,7 +361,11 @@ export function NotebooksSidebar({
           onCancel={cancelDelete}
           variant="danger"
           error={deleteError}
-        />
+          loading={deleting}
+          confirmDisabled={deleteImpact.checking}
+        >
+          {deleteImpact.warnTrashedNotes && TRASHED_NOTES_WARNING}
+        </ConfirmDialog>
       )}
 
       {onSelectTrash && (
