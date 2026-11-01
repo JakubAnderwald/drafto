@@ -171,8 +171,15 @@ paste_text() {
 }
 
 db_trashed_live() { db_q "select count(*) from notes where is_trashed = 1 and _status != 'deleted'"; }
-srv_trashed() { sb_rest GET "notes?select=id&is_trashed=eq.true" | jq 'length'; }
-srv_live() { sb_rest GET "notes?select=id&is_trashed=eq.false" | jq 'length'; }
+# Server-side note counts for the throwaway user; empty when the request fails
+# (never the key count of an error object).
+srv_notes_count() {
+  local out
+  out=$(sb_rest GET "notes?select=id&is_trashed=eq.$1") || return 1
+  jq 'if type == "array" then length else empty end' <<< "$out"
+}
+srv_trashed() { srv_notes_count true; }
+srv_live() { srv_notes_count false; }
 
 # The Trash list's per-row "Delete" control has text but no label. Prefer an
 # element that itself reads "Delete"; otherwise take the parent of the "Delete"
@@ -249,6 +256,10 @@ press_until 5 nb_selected desc "$NB_NAME" || fail_step "could not select noteboo
 settle 30 || fail_step "did not settle before the test (now '$(sync_help)')"
 NOTES_BEFORE=$(db_count notes)
 SRV_LIVE_BEFORE=$(srv_live)
+# A bad baseline would make every press look ineffective and create a note per
+# retry, or compare the server against the wrong count.
+[[ "$NOTES_BEFORE" =~ ^[0-9]+$ ]] || fail_step "could not read the local note count (DB unreadable)"
+[[ "$SRV_LIVE_BEFORE" =~ ^[0-9]+$ ]] || fail_step "could not read the server's live-note count"
 note_added() { [ "$(db_count notes)" -gt "$NOTES_BEFORE" ]; }
 sampler_start P0
 press_until 6 note_added id new-note-button || press_until 6 note_added desc "New note" ||
@@ -414,7 +425,9 @@ sampler_stop
 eval "$(tl_stats)"
 srv_left=$(srv_trashed)
 counts=$(awk -F'\t' '$2 ~ /^[0-9]+ pending$/ { sub(/ pending$/, "", $2); if (!seen[$2]++) printf "%s%s", (n++ ? "," : ""), $2 }' "$SAMPLES")
-if [ "$srv_left" != 0 ]; then
+if [ -z "$srv_left" ]; then
+  step_end FAIL "could not read the server's trashed-note count after Synced. Indicator: $TL_SEQ"
+elif [ "$srv_left" != 0 ]; then
   step_end FAIL "$srv_left trashed note(s) still on the server after Synced. Indicator: $TL_SEQ"
 elif [ "$TL_ZERO" -gt 0 ]; then
   step_end FAIL "the indicator read '0 pending' while deletions were unpushed: deletions are not counted. Indicator: $TL_SEQ"
