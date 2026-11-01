@@ -225,7 +225,9 @@ describe("In Test prompt — scenario quality rules", () => {
     // "never pnpm install" caveat. It now refuses to send anyone into the
     // fossil at all and points at the runbook instead — the caveat is moot
     // because no macOS build command is offered.
-    assert.match(flat, /needs either a dispatched beta/);
+    assert.match(flat, /macOS needs a pre-merge beta/);
+    // A desktop build root is no option for a human: the factory hard-resets it.
+    assert.match(flat, /Nor point anyone at a desktop build root/);
     assert.match(prompt, /docs\/operations\/factory-runbook\.md/);
     assert.ok(
       !/git checkout` of the branch/.test(flat),
