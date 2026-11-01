@@ -13,6 +13,8 @@ Both projects run on the Supabase **Pro plan**, which provides daily automatic b
 
 Supabase `config.toml` lives at [`supabase/config.toml`](../../supabase/config.toml). Its auth settings (email confirmations enabled, MFA TOTP enabled, `otp_length=8`, `max_frequency=1m0s`) must match production.
 
+**Auth email works only on production.** Prod sends confirmation and password-reset emails through Resend's SMTP (`smtp.resend.com`, from `hello@drafto.eu`). Dev has no custom SMTP, so it falls back to Supabase's built-in mailer. That mailer delivers only to addresses of the Supabase org's team members and allows 2 emails an hour for the whole project. A reset for the E2E account comes back `400 email_address_invalid`, and past the hourly cap requests fail with `email rate limit exceeded`. So auth email from dev, a Vercel preview or a debug build reaches almost no one; test an emailed link on a beta build, which runs against prod. A request for an address with no account still returns `200` and sends nothing, the same answer as prod, which is what `apps/mobile/e2e/06-forgot-password.yaml` relies on.
+
 ## Where each environment is used
 
 ### Web — `apps/web/`

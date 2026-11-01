@@ -232,6 +232,23 @@ describe("intest_fallback_comment — always usable", () => {
     assert.match(body, /never\*\*[^\n]*pnpm install/);
   });
 
+  it("never tells anyone to check the PR branch out in the primary checkout", () => {
+    // factory-intest-prompt.md forbids it: /Users/jakub/code/drafto is the
+    // operator's working tree and the desktop fossil. The macOS fallback points
+    // at the runbook's pre-merge beta section instead.
+    assert.doesNotMatch(body, /git (?:-C \S+ )?(?:checkout|switch)\b[^\n]*factory\/issue-/);
+    assert.match(body, /factory-runbook\.md#pre-merge-beta-dispatch-in-test/);
+    // The fossil path is configurable; the warning names the configured one.
+    assert.match(body, /\$\{DRAFTO_DESKTOP_FOSSIL_ROOT:-\/Users\/jakub\/code\/drafto\}/);
+  });
+
+  it("names the gate's reason when the macOS beta was skipped", () => {
+    // More than one switch gates the lane (FACTORY_INTEST_BETA, the phase, free
+    // disk, FACTORY_INTEST_BETA_DESKTOP), so the reason is what's actionable.
+    assert.match(body, /select\(\.id == "desktop"\) \| \.reason/);
+    assert.match(body, /\$\{desktop_skip:\+/);
+  });
+
   it("surfaces advisory reds", () => {
     assert.match(body, /Advisory \(non-required\) checks are not green: \$advisory/);
   });

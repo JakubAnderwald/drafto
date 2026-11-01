@@ -269,10 +269,11 @@ Compose it in Markdown from the bundle's facts. Structure:
     For **macOS**, do **NOT** tell anyone to `git checkout` in
     `/Users/jakub/code/drafto`. That is the operator's working tree and the
     fossil every desktop build root is cloned from; moving it to a PR branch can
-    disrupt in-flight work and leave the fossil stranded. Say instead that macOS
-    needs either a dispatched beta (ask the operator to enable
-    `FACTORY_INTEST_BETA_DESKTOP`) or a build from the dedicated desktop build
-    root, and point at
+    disrupt in-flight work and leave the fossil stranded. (The desktop
+    `manualCommands` entry for a _skipped_ lane is fine: it builds from the
+    fossil replica, not from this checkout.) Here, with no command to give, say
+    instead that macOS needs a pre-merge beta (ask the operator to turn on the
+    switches; `FACTORY_INTEST_BETA_DESKTOP` alone is not enough), and point at
     [`docs/operations/factory-runbook.md`](docs/operations/factory-runbook.md)
     → "Pre-merge beta dispatch (In Test)" rather than inventing a command.
 - `## Test scenario` — the numbered, per-platform steps, one `###` heading per

@@ -2927,7 +2927,7 @@ intest_dispatch_betas() {
 intest_fallback_comment() {
   local issue_num="$1" pr_num="$2" preview_url="$3" advisory="$4" head_sha="$5" platforms="$6"
   local beta="${7:-}" cr_note="${8:-}"
-  local web mobile desktop dispatched build_note="" advisory_note=""
+  local web mobile desktop dispatched desktop_skip build_note="" advisory_note=""
   local title="🏭 **Ready to test — In Test.**" stage_note=""
   if [[ "${INTEST_STAGE:-intest}" == "testing" ]]; then
     title="🏭 **Test scenario — verifying now (Testing).**"
@@ -2956,8 +2956,11 @@ intest_fallback_comment() {
       build_note="$build_note
 - **macOS** — a TestFlight build is building now from PR #$pr_num${head_sha:+ (\`${head_sha:0:12}\`)}; you'll get a follow-up comment with the build number (~20-40 min)."
     else
+      # The gate's reason (FACTORY_INTEST_BETA=0, phase-B, low-disk-…, …) tells
+      # the operator which switch to flip; there's more than one.
+      desktop_skip=$(echo "${beta:-{\}}" | jq -r '[.skipped[]? | select(.id == "desktop") | .reason] | first // empty' 2>/dev/null || echo "")
       build_note="$build_note
-- **macOS** — build ONLY from the primary checkout \`/Users/jakub/code/drafto\` (\`git checkout factory/issue-$issue_num\`, **never** \`pnpm install\` — the desktop fossil), then \`pnpm --filter @drafto/desktop start\`."
+- **macOS** — no TestFlight build was dispatched for this PR${desktop_skip:+ (\`$desktop_skip\`)}. Testing it on macOS needs a pre-merge beta, so ask the operator; [Pre-merge beta dispatch (In Test)](https://github.com/JakubAnderwald/drafto/blob/main/docs/operations/factory-runbook.md#pre-merge-beta-dispatch-in-test) lists the switches. Don't \`git checkout\` the branch in \`${DRAFTO_DESKTOP_FOSSIL_ROOT:-/Users/jakub/code/drafto}\` (the operator's working tree, and the desktop fossil every build root is cloned from), and **never** \`pnpm install\` there or in a desktop build root."
     fi
   fi
   [[ -n "$advisory" ]] && advisory_note="
