@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/nextjs";
+import { scrubAppleGrantRequest } from "@/lib/sentry/scrub-apple-grant";
 import { sentryEnabled, sentryEnvironment } from "@/lib/sentry-environment";
 
 Sentry.init({
@@ -8,4 +9,7 @@ Sentry.init({
   environment: sentryEnvironment,
   tracesSampleRate: 1,
   debug: false,
+  // Sign in with Apple codes travel in /api/account's body and the relay's form post.
+  beforeSend: (event) => scrubAppleGrantRequest(event),
+  beforeSendTransaction: (event) => scrubAppleGrantRequest(event),
 });

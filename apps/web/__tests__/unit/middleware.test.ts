@@ -58,6 +58,7 @@ describe("Auth middleware", () => {
       "/auth/desktop/callback",
       "/auth/desktop/recovery",
       "/auth/test-sign-in",
+      "/auth/apple/revocation",
       "/forgot-password",
       "/reset-password",
       "/api/health",
@@ -115,6 +116,22 @@ describe("Auth middleware", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("location")).toBeNull();
+    expect(mockFrom).not.toHaveBeenCalled();
+  });
+
+  it("passes Apple's cookie-less form POST to /auth/apple/revocation through to the route", async () => {
+    // Apple posts the revocation answer cross-site, so no session cookie comes with it.
+    const response = await updateSession(
+      new NextRequest(new URL("/auth/apple/revocation", "http://localhost:3000"), {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "state=android.abcdefghijklmnop&code=c.apple",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+    expect(mockGetUser).not.toHaveBeenCalled();
     expect(mockFrom).not.toHaveBeenCalled();
   });
 

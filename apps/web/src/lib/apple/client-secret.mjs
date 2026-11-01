@@ -15,7 +15,12 @@ export const MAX_LIFETIME_SECONDS = 15_777_000;
 /**
  * The Services ID. Browser sign-in (web, macOS, Apple on Android) goes through
  * Supabase with this client, and it must stay the first Apple Client ID there.
- * The native client, the iOS bundle ID, is `APPLE_NATIVE_CLIENT_ID` in
+ * Account deletion on those platforms also gets its revocation code for it.
+ *
+ * A copy of `APPLE_SERVICES_ID` in `@drafto/shared`, kept as a literal because
+ * plain `node` (which runs `scripts/apple-client-secret.mjs`) cannot import the
+ * shared TypeScript. `apple-client-secret.test.ts` pins the two together. The
+ * native client, the iOS bundle ID, is `APPLE_NATIVE_CLIENT_ID` in
  * `@drafto/shared`, which the iOS app and the revocation code both read.
  */
 export const APPLE_SERVICES_ID = "eu.drafto.web.auth";

@@ -1,7 +1,12 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
 import { Linking } from "react-native";
 import type { Session, User } from "@supabase/supabase-js";
-import { requestAccountDeletion, withTimeout, type AccountDeletionResult } from "@drafto/shared";
+import {
+  requestAccountDeletion,
+  withTimeout,
+  type AccountDeletionResult,
+  type AppleRevocationGrant,
+} from "@drafto/shared";
 
 import { database } from "@/db";
 import { syncDatabase, resetSyncState } from "@/db/sync";
@@ -60,8 +65,16 @@ interface AuthContextValue {
    * Permanently deletes the signed-in user's account on the server. Only an `ok`
    * result signs out and wipes local data; any other result leaves the session
    * and the local database untouched so the user can retry.
+   *
+   * `appleRevocation` is the code an Apple-linked user got from Apple's browser step;
+   * the server revokes it once the account is gone. `confirmedUserId` is the user who
+   * started that step: if the session switched meanwhile (a password-recovery link, a
+   * sign-in), nothing is deleted and the result is `unauthorized`.
    */
-  deleteAccount: () => Promise<AccountDeletionResult>;
+  deleteAccount: (
+    appleRevocation?: AppleRevocationGrant,
+    confirmedUserId?: string,
+  ) => Promise<AccountDeletionResult>;
   refreshApprovalStatus: () => Promise<boolean>;
 }
 
@@ -234,37 +247,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [session?.user?.id, resetLocalSession],
   );
 
-  const deleteAccount = useCallback(async (): Promise<AccountDeletionResult> => {
-    // Ask the client rather than React state: getSession() refreshes an expiring
-    // access token, so the server receives one it will still accept.
-    const {
-      data: { session: currentSession },
-    } = await supabase.auth.getSession();
-    const accessToken = currentSession?.access_token;
-    if (!accessToken) return { status: "unauthorized" };
+  const deleteAccount = useCallback(
+    async (
+      appleRevocation?: AppleRevocationGrant,
+      confirmedUserId?: string,
+    ): Promise<AccountDeletionResult> => {
+      // Ask the client rather than React state: getSession() refreshes an expiring
+      // access token, so the server receives one it will still accept. Apple's browser
+      // step can stay open a while, so this read comes after it.
+      const {
+        data: { session: currentSession },
+      } = await supabase.auth.getSession();
+      const accessToken = currentSession?.access_token;
+      if (!accessToken) return { status: "unauthorized" };
+      // Only the account that confirmed with Apple may be deleted.
+      if (confirmedUserId !== undefined && currentSession.user.id !== confirmedUserId) {
+        return { status: "unauthorized" };
+      }
 
-    const result = await requestAccountDeletion({ baseUrl: apiUrl, accessToken });
-    if (result.status !== "ok") return result;
+      const result = await requestAccountDeletion({
+        baseUrl: apiUrl,
+        accessToken,
+        ...(appleRevocation ? { appleRevocation } : {}),
+      });
+      if (result.status !== "ok") return result;
 
-    // Set before the session clears, so the login screen the navigator shows next already
-    // carries the confirmation.
-    reportAccountDeleted();
+      // Set before the session clears, so the login screen the navigator shows next already
+      // carries the confirmation.
+      reportAccountDeleted();
 
-    // No pre-sign-out flush: the account and every server row are already gone,
-    // so a sync would only fail and stall for up to FINAL_SYNC_TIMEOUT_MS.
-    // Unsynced local edits are discarded on purpose. Local scope: deleteUser has
-    // already ended the server sessions, so only this device's stored session
-    // needs clearing; a global sign-out would ask the server to revoke every
-    // session of a user that no longer exists. Best-effort — the account is gone
-    // either way, so a failure here must not skip the local wipe below.
-    try {
-      await supabase.auth.signOut({ scope: "local" });
-    } catch (error) {
-      console.error("Local sign-out after account deletion failed:", error);
-    }
-    await resetLocalSession(currentSession.user.id);
-    return result;
-  }, [resetLocalSession]);
+      // No pre-sign-out flush: the account and every server row are already gone,
+      // so a sync would only fail and stall for up to FINAL_SYNC_TIMEOUT_MS.
+      // Unsynced local edits are discarded on purpose. Local scope: deleteUser has
+      // already ended the server sessions, so only this device's stored session
+      // needs clearing; a global sign-out would ask the server to revoke every
+      // session of a user that no longer exists. Best-effort — the account is gone
+      // either way, so a failure here must not skip the local wipe below.
+      try {
+        await supabase.auth.signOut({ scope: "local" });
+      } catch (error) {
+        console.error("Local sign-out after account deletion failed:", error);
+      }
+      await resetLocalSession(currentSession.user.id);
+      return result;
+    },
+    [resetLocalSession],
+  );
 
   // Password-recovery deep links. The flag has to flip the moment the link is
   // recognised — before the session lands — or the guard would route the user

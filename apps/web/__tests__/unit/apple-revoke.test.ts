@@ -11,7 +11,10 @@ vi.mock("@sentry/nextjs", () => ({
   captureMessage: (...args: unknown[]) => captureMessageMock(...args),
 }));
 
-const { APPLE_REVOKE_URL, APPLE_TOKEN_URL, revokeAppleSignIn } = await import("@/lib/apple/revoke");
+const { APPLE_REVOKE_URL, APPLE_TOKEN_URL, REVOCABLE_CLIENT_IDS, revokeAppleSignIn } =
+  await import("@/lib/apple/revoke");
+const { APPLE_NATIVE_CLIENT_ID, APPLE_REVOCATION_REDIRECT_URI, APPLE_SERVICES_ID } =
+  await import("@drafto/shared");
 
 const { privateKey, publicKey } = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
 const KEY = {
@@ -25,6 +28,7 @@ const CODE = "c0de-from-apple";
 const REFRESH_TOKEN = "r.refresh-token-secret";
 const ACCESS_TOKEN = "a.access-token-secret";
 const GRANT = { authorizationCode: CODE, clientId: "eu.drafto.mobile" };
+const SERVICES_GRANT = { authorizationCode: CODE, clientId: "eu.drafto.web.auth" };
 
 const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
 const decode = (part: string) => JSON.parse(Buffer.from(part, "base64url").toString("utf8"));
@@ -162,6 +166,78 @@ describe("revokeAppleSignIn", () => {
     });
   });
 
+  describe("Services ID codes (web, Android, macOS)", () => {
+    function revokeServicesCode(overrides: Partial<Parameters<typeof revokeAppleSignIn>[1]> = {}) {
+      return revokeAppleSignIn(SERVICES_GRANT, {
+        key: KEY,
+        appleSubjects: [APPLE_SUB],
+        userId: USER_ID,
+        fetchImpl: fetchMock,
+        ...overrides,
+      });
+    }
+
+    it("is a client the server redeems codes for", () => {
+      expect(REVOCABLE_CLIENT_IDS).toEqual([APPLE_NATIVE_CLIENT_ID, APPLE_SERVICES_ID]);
+    });
+
+    it("redeems the code with the registered redirect_uri, then revokes it", async () => {
+      expect(await revokeServicesCode()).toBe("revoked");
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const tokenForm = formOf(0);
+      expect(tokenForm.get("client_id")).toBe(APPLE_SERVICES_ID);
+      expect(tokenForm.get("code")).toBe(CODE);
+      expect(tokenForm.get("grant_type")).toBe("authorization_code");
+      expect(tokenForm.get("redirect_uri")).toBe(APPLE_REVOCATION_REDIRECT_URI);
+      expect(tokenForm.get("redirect_uri")).toBe("https://drafto.eu/auth/apple/revocation");
+
+      const revokeForm = formOf(1);
+      expect(revokeForm.get("client_id")).toBe(APPLE_SERVICES_ID);
+      expect(revokeForm.get("token")).toBe(REFRESH_TOKEN);
+      expect(revokeForm.has("redirect_uri")).toBe(false);
+
+      // The client secret is signed for the Services ID.
+      const [, claims] = (tokenForm.get("client_secret") ?? "").split(".");
+      expect(decode(claims).sub).toBe(APPLE_SERVICES_ID);
+
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(captureMessageMock).not.toHaveBeenCalled();
+    });
+
+    it("still revokes, and warns, when the code is for another Apple ID", async () => {
+      fetchMock.mockReset();
+      fetchMock
+        .mockResolvedValueOnce(tokenSuccess({ id_token: idToken({ sub: "someone-else" }) }))
+        .mockResolvedValueOnce(new Response(null, { status: 200 }));
+
+      expect(await revokeServicesCode()).toBe("revoked-other-apple-id");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(captureMessageMock).toHaveBeenCalledWith(
+        "Revoked Sign in with Apple for an Apple ID the account was not linked to",
+        { level: "warning", extra: { where: "apple-revoke:subject-mismatch", userId: USER_ID } },
+      );
+      expectNoSecretsReported();
+    });
+
+    it("reports a failed exchange without the code or redirect", async () => {
+      fetchMock.mockReset();
+      fetchMock.mockResolvedValueOnce(jsonResponse(400, { error: "invalid_grant" }));
+
+      expect(await revokeServicesCode()).toBe("token-exchange-failed");
+      expect(captureExceptionMock).toHaveBeenCalledWith(expect.any(Error), {
+        extra: {
+          where: "apple-revoke:token",
+          userId: USER_ID,
+          clientId: APPLE_SERVICES_ID,
+          status: 400,
+          appleError: "invalid_grant",
+        },
+      });
+      expectNoSecretsReported();
+    });
+  });
+
   describe("skipped without calling Apple", () => {
     it("reports a warning when no Apple key is configured", async () => {
       expect(await revoke({ key: null })).toBe("not-configured");
@@ -175,7 +251,7 @@ describe("revokeAppleSignIn", () => {
 
     it("refuses a client it does not redeem codes for", async () => {
       const outcome = await revokeAppleSignIn(
-        { ...GRANT, clientId: "eu.drafto.web.auth" },
+        { ...GRANT, clientId: "eu.drafto.other" },
         { key: KEY, appleSubjects: [APPLE_SUB], userId: USER_ID, fetchImpl: fetchMock },
       );
 
@@ -186,7 +262,7 @@ describe("revokeAppleSignIn", () => {
         extra: {
           where: "apple-revoke:unsupported-client",
           userId: USER_ID,
-          clientId: "eu.drafto.web.auth",
+          clientId: "eu.drafto.other",
         },
       });
     });

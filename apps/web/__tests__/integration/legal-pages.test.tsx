@@ -96,7 +96,7 @@ describe("Privacy policy page", () => {
     render(<PrivacyPolicyPage />);
 
     expect(screen.getByText(/Effective date: March 8, 2026/)).toHaveTextContent(
-      "Last updated: October 12, 2026",
+      "Last updated: November 1, 2026",
     );
   });
 
@@ -270,11 +270,24 @@ describe("Privacy policy page", () => {
       screen.getByText(/we then ask Apple to end Drafto.s access to your Apple ID/),
     ).toBeInTheDocument();
     expect(
+      screen.getByText(
+        /Ending that access is best effort: if you skip that step, or something goes wrong with it or with our request to Apple, your account is still deleted/,
+      ),
+    ).toBeInTheDocument();
+    expect(
       screen.getByRole("link", { name: "how to remove Drafto from your Apple ID" }),
     ).toHaveAttribute("href", "/account/delete#sign-in-with-apple");
     expect(rowFor("Apple")).toHaveTextContent(
-      /When you delete your account in the iPhone or iPad app, we ask Apple to end Drafto.s access/,
+      /When you delete an Apple-linked account on the web, iOS, Android or macOS, we ask Apple to end Drafto.s access/,
     );
+    expect(rowFor("Apple")).toHaveTextContent(
+      /On the web, Apple.s sign-in script loads from Apple.s servers when you open the delete-account dialog, so Apple receives your IP address and browser details/,
+    );
+    expect(
+      screen.getByText(
+        /If you use Sign in with Apple and delete your account[\s\S]*Apple.s sign-in script loads from Apple.s servers\s+when you open the delete-account dialog/,
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "how to delete your account" })).toHaveAttribute(
       "href",
       "/account/delete",

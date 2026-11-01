@@ -264,17 +264,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let currentSession = await readClientSession();
     if (!currentSession?.access_token) return { status: "unauthorized" };
 
-    // An Apple-linked iOS user confirms with Apple for a fresh code, which the server revokes
-    // once the account is gone (App Store guideline 5.1.1(v)). Null when the user cancels or
-    // Apple fails: the deletion goes ahead either way. Apple's sheet can stay open a while, so
-    // the session is read again afterwards and a token that expired meanwhile is refreshed.
+    // An Apple-linked user confirms with Apple for a fresh code, which the server revokes once
+    // the account is gone (App Store guideline 5.1.1(v)): through the native sheet on iOS, and
+    // through Apple's page in the browser on Android, relayed back by drafto.eu. Null when the
+    // user cancels or Apple fails: the deletion goes ahead either way. Apple's sheet or page can
+    // stay open a while, so the session is read again afterwards and a token that expired
+    // meanwhile is refreshed.
     let appleRevocation: AppleRevocationGrant | null = null;
     if (needsAppleConfirmation(currentSession.user)) {
       const confirmedUserId = currentSession.user.id;
       appleRevocation = await requestAppleRevocationGrant(currentSession.user);
       currentSession = await readClientSession();
       // Only the account the user confirmed may be deleted. Something that switched the
-      // session while the sheet was open, such as a password-recovery link, stops it here.
+      // session while Apple's step was open, such as a password-recovery link, stops it here.
       if (!currentSession?.access_token || currentSession.user.id !== confirmedUserId) {
         return { status: "unauthorized" };
       }

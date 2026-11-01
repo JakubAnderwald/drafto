@@ -9,6 +9,7 @@ import {
   Alert,
 } from "react-native";
 import { Q } from "@nozbe/watermelondb";
+import type { AppleRevocationGrant } from "@drafto/shared";
 
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { useNotebooks } from "@/hooks/use-notebooks";
@@ -189,18 +190,23 @@ export function NotebooksSidebar({
   // letting a second DELETE go out.
   const openDeleteAccountPanel = useCallback(() => setIsDeletingAccount(true), []);
 
-  // Sign-out and account deletion both wipe the device, so they never overlap: the panel's
-  // confirm is disabled during a sign-out, and Sign out does nothing while a deletion request
-  // is in flight (a successful deletion signs out by itself; after a failure it works again).
+  // Sign-out and account deletion both wipe the device, so they never overlap. During a
+  // sign-out the panel cannot start a deletion: its confirm and Continue without Apple are
+  // disabled, and an Apple answer that lands meanwhile is dropped. Sign out does nothing while
+  // a deletion request is in flight (a successful deletion signs out by itself; after a failure
+  // it works again). It still works while the panel waits for Apple, before any request.
   const deletionPendingRef = useRef(false);
-  const confirmDeleteAccount = useCallback(async () => {
-    deletionPendingRef.current = true;
-    try {
-      return await deleteAccount();
-    } finally {
-      deletionPendingRef.current = false;
-    }
-  }, [deleteAccount]);
+  const confirmDeleteAccount = useCallback(
+    async (appleRevocation?: AppleRevocationGrant, confirmedUserId?: string) => {
+      deletionPendingRef.current = true;
+      try {
+        return await deleteAccount(appleRevocation, confirmedUserId);
+      } finally {
+        deletionPendingRef.current = false;
+      }
+    },
+    [deleteAccount],
+  );
   const signOutUnlessDeleting = useCallback(() => {
     if (deletionPendingRef.current) return;
     void signOut();

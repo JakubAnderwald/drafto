@@ -41,6 +41,32 @@ export type {
   AppleRevocationGrant,
   RequestAccountDeletionOptions,
 } from "./account/request-account-deletion";
+export {
+  APPLE_SERVICES_ID,
+  APPLE_REVOCATION_ORIGIN,
+  APPLE_REVOCATION_REDIRECT_URI,
+  APPLE_AUTHORIZE_URL,
+  APPLE_REVOCATION_DEEP_LINK_PATH,
+  APPLE_REVOCATION_RETURN_URLS,
+  isAppleAuthorizationCode,
+  isAppleErrorCode,
+  isAppleRevocationNonce,
+  buildAppleRevocationState,
+  parseAppleRevocationState,
+  buildAppleRevocationAuthorizeUrl,
+  buildAppleRevocationDeepLink,
+  isAppleRevocationDeepLink,
+  readAppleRevocationCallback,
+  hasAppleIdentity,
+  appleDeletionNotice,
+} from "./account/apple-revocation";
+export type {
+  AppleRevocationPlatform,
+  AppleRevocationRelayFields,
+  AppleRevocationCallback,
+  AppleLinkableUser,
+  AppleConfirmationKind,
+} from "./account/apple-revocation";
 export { formatRelativeTime } from "./formatters";
 export {
   blocknoteToTiptap,

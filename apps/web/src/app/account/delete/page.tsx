@@ -129,18 +129,24 @@ export default function DeleteAccountInfoPage() {
         <section id="sign-in-with-apple">
           <h2>If you use Sign in with Apple</h2>
           <p>
-            In the iPhone and iPad app, Apple asks you to confirm before your account is deleted.
-            Drafto then asks Apple to end its access to your Apple ID. If you cancel that step, your
-            account is still deleted.
+            On every platform (the web, iPhone and iPad, Android and Mac), Apple asks you to confirm
+            before your account is deleted: in the app on iPhone and iPad, in a pop-up window on the
+            web, and in your browser on Android and Mac. Drafto then asks Apple to end its access to
+            your Apple ID. If you cancel that step, your account is still deleted.
           </p>
           <p>
-            If you delete your account on the web, on Android or on a Mac, or cancel Apple&apos;s
-            confirmation, you can remove Drafto from your Apple ID yourself. On an iPhone or iPad,
-            open <strong>Settings</strong>, tap your name, then{" "}
-            <strong>Sign-In &amp; Security</strong> and <strong>Sign in with Apple</strong>, choose
-            Drafto and stop using your Apple ID with it. On any device, sign in at{" "}
-            <a href="https://account.apple.com">account.apple.com</a> and do the same under{" "}
-            <strong>Sign-In and Security</strong>.
+            On a Mac, Drafto waits while Apple&apos;s page is open in your browser. If you close
+            that page without confirming, choose <strong>Continue without Apple</strong> in Drafto
+            to delete your account anyway, or <strong>Cancel</strong> to stop and keep your account.
+          </p>
+          <p>
+            Ending Drafto&apos;s access is best effort. If you cancel Apple&apos;s confirmation, or
+            something goes wrong with it or with Drafto&apos;s request to Apple, Drafto can still be
+            listed under your Apple ID. You can remove it yourself: on an iPhone or iPad, open{" "}
+            <strong>Settings</strong>, tap your name, then <strong>Sign-In &amp; Security</strong>{" "}
+            and <strong>Sign in with Apple</strong>, choose Drafto and stop using your Apple ID with
+            it. On any device, sign in at <a href="https://account.apple.com">account.apple.com</a>{" "}
+            and do the same under <strong>Sign-In and Security</strong>.
           </p>
         </section>
 

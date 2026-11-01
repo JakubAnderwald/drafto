@@ -79,16 +79,30 @@ describe("Account deletion page (/account/delete)", () => {
     );
   });
 
-  it("explains Apple revocation on iOS and how to remove Drafto from an Apple ID elsewhere", () => {
+  it("explains Apple revocation on every platform, the Mac controls and the manual fallback", () => {
     render(<DeleteAccountInfoPage />);
 
     const section = screen
       .getByRole("heading", { level: 2, name: "If you use Sign in with Apple" })
       .closest("section") as HTMLElement;
     expect(section).toHaveAttribute("id", "sign-in-with-apple");
-    expect(section).toHaveTextContent(/In the iPhone and iPad app, Apple asks you to confirm/);
+    expect(section).toHaveTextContent(
+      /On every platform \(the web, iPhone and iPad, Android and Mac\), Apple asks you to confirm/,
+    );
+    expect(section).toHaveTextContent(/in a pop-up window on the web/);
+    expect(section).toHaveTextContent(/in your browser on Android and Mac/);
     expect(section).toHaveTextContent(/If you cancel that step, your account is still deleted/);
-    expect(section).toHaveTextContent(/on the web, on Android or on a Mac/);
+    expect(section).toHaveTextContent(
+      /On a Mac, Drafto waits while Apple.s page is open in your browser/,
+    );
+    expect(section).toHaveTextContent(
+      /choose Continue without Apple in Drafto to delete your account anyway, or Cancel to stop and keep your account/,
+    );
+    expect(section).toHaveTextContent(/Ending Drafto.s access is best effort/);
+    expect(section).toHaveTextContent(
+      /If you cancel Apple.s confirmation, or something goes wrong with it or with Drafto.s request to Apple, Drafto can still be listed under your Apple ID\. You can remove it yourself/,
+    );
+    expect(section).toHaveTextContent(/open Settings, tap your name, then Sign-In & Security/);
     expect(section).toHaveTextContent(/Sign-In & Security/);
     expect(within(section).getByRole("link", { name: "account.apple.com" })).toHaveAttribute(
       "href",

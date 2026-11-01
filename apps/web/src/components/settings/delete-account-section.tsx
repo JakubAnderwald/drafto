@@ -5,14 +5,19 @@ import { useRouter } from "next/navigation";
 import * as Sentry from "@sentry/nextjs";
 import {
   ACCOUNT_DELETE_CONFIRMATION,
+  appleDeletionNotice,
   describeAccountDeletionFailure,
   requestAccountDeletion,
+  type AppleRevocationGrant,
 } from "@drafto/shared";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useAppleDeletionConfirmation } from "@/hooks/use-apple-deletion-confirmation";
+import { getLoadedAppleIdAuth } from "@/lib/apple/apple-js";
+import { requestAppleRevocationGrant } from "@/lib/apple/request-apple-revocation-grant";
 import { cn } from "@/lib/cn";
 import { createClient } from "@/lib/supabase/client";
 
@@ -21,6 +26,21 @@ const DELETE_ACCOUNT_WARNING =
   "This permanently deletes your Drafto account and all of your notebooks, notes and attachments. This cannot be undone.";
 const CONFIRMATION_PROMPT = `Type ${ACCOUNT_DELETE_CONFIRMATION} to confirm`;
 const ACCOUNT_DELETED_URL = "/login?deleted=1";
+const APPLE_NOTICE = appleDeletionNotice("popup");
+
+/**
+ * True while the browser is still signed in as `userId`. Apple's popup can take a
+ * while, and the deletion uses this browser's session cookie, so it must not run
+ * for a different account than the one the user confirmed for.
+ */
+async function isStillSignedInAs(userId: string): Promise<boolean> {
+  try {
+    const { data } = await createClient().auth.getUser();
+    return data.user?.id === userId;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Ends the browser session after the server has deleted the account. `local`
@@ -50,8 +70,12 @@ export function DeleteAccountSection({ className }: DeleteAccountSectionProps) {
   const [confirmation, setConfirmation] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const appleStep = useAppleDeletionConfirmation(confirming);
 
-  const canConfirm = !pending && confirmation.trim() === ACCOUNT_DELETE_CONFIRMATION;
+  // Waits for the Apple lookup and Apple's script too, so an Apple-linked user
+  // can't confirm before the dialog knows to show the notice and can ask Apple.
+  const canConfirm =
+    !pending && appleStep.ready && confirmation.trim() === ACCOUNT_DELETE_CONFIRMATION;
 
   function closeDialog() {
     // The request is already on its way; closing the dialog would hide its outcome.
@@ -66,7 +90,20 @@ export function DeleteAccountSection({ className }: DeleteAccountSectionProps) {
     setPending(true);
     setError(null);
 
-    const result = await requestAccountDeletion({ baseUrl: "" });
+    let appleRevocation: AppleRevocationGrant | undefined;
+    if (appleStep.applies && appleStep.userId) {
+      // Opens Apple's popup before the first await, so the browser allows it. A
+      // cancelled or failed step resolves null and the account is still deleted.
+      const grant = await requestAppleRevocationGrant(getLoadedAppleIdAuth());
+      if (!(await isStillSignedInAs(appleStep.userId))) {
+        setError(describeAccountDeletionFailure({ status: "unauthorized" }));
+        setPending(false);
+        return;
+      }
+      appleRevocation = grant ?? undefined;
+    }
+
+    const result = await requestAccountDeletion({ baseUrl: "", appleRevocation });
     if (result.status !== "ok") {
       setError(describeAccountDeletionFailure(result));
       setPending(false);
@@ -98,6 +135,11 @@ export function DeleteAccountSection({ className }: DeleteAccountSectionProps) {
             onCancel={closeDialog}
           >
             <p className="mb-3">{DELETE_ACCOUNT_WARNING}</p>
+            {appleStep.applies && (
+              <p className="mb-3" data-testid="delete-account-apple-notice">
+                {APPLE_NOTICE}
+              </p>
+            )}
             <Label htmlFor={inputId} className="mb-1 block">
               {CONFIRMATION_PROMPT}
             </Label>

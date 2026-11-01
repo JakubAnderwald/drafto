@@ -28,6 +28,16 @@ jest.mock("@/providers/auth-provider", () => ({
   }),
 }));
 
+// Apple-linked only where a test says so; the Apple step is settled by hand.
+const mockAppleState = { required: false, userId: "user-1" as string | null };
+jest.mock("@/hooks/use-apple-deletion-confirmation", () => ({
+  useAppleDeletionConfirmation: () => mockAppleState,
+}));
+const mockStartAppleConfirmation = jest.fn();
+jest.mock("@/lib/apple-revocation", () => ({
+  startAppleConfirmation: () => mockStartAppleConfirmation(),
+}));
+
 const mockSync = jest.fn();
 jest.mock("@/providers/database-provider", () => ({
   useDatabase: () => ({ database: {}, sync: mockSync }),
@@ -223,6 +233,7 @@ describe("NotebooksSidebar — app menu and delete account", () => {
     mockLoading = false;
     mockIsConnected = true;
     mockIsInternetReachable = true;
+    mockAppleState.required = false;
     mockDeleteAccount.mockResolvedValue({ status: "ok" });
     mockSignOut.mockResolvedValue(undefined);
     mockSync.mockResolvedValue(undefined);
@@ -317,6 +328,60 @@ describe("NotebooksSidebar — app menu and delete account", () => {
     expect(utils.getByTestId("delete-account-input")).toBeTruthy();
     expect(isDisabled(utils.getByTestId("delete-account-confirm"))).toBe(true);
     expect(utils.queryByText(DELETE_ACCOUNT_OFFLINE_NOTE)).toBeNull();
+
+    await act(async () => {
+      finishSync();
+    });
+    await waitFor(() => {
+      expect(mockSignOut).toHaveBeenCalledWith({ skipFinalSync: true });
+    });
+    expect(mockDeleteAccount).not.toHaveBeenCalled();
+  });
+
+  it("never deletes from the Apple wait while a sign-out runs", async () => {
+    mockAppleState.required = true;
+    let answerApple: (
+      grant: { authorizationCode: string; clientId: string } | null,
+    ) => void = () => {};
+    const skip = jest.fn(() => answerApple(null));
+    mockStartAppleConfirmation.mockReturnValue({
+      grant: new Promise((resolve) => {
+        answerApple = resolve;
+      }),
+      skip,
+    });
+    let finishSync: () => void = () => {};
+    mockSync.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishSync = resolve;
+      }),
+    );
+    mockCountUnsyncedChanges.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    chooseDeleteAccount(utils);
+    fireEvent.changeText(utils.getByTestId("delete-account-input"), "DELETE");
+    await act(async () => {
+      fireEvent.press(utils.getByTestId("delete-account-confirm"));
+    });
+    expect(utils.getByTestId("delete-account-apple-waiting")).toBeTruthy();
+
+    // Sign out still works during the wait, since no request is out yet.
+    openAppMenu(utils);
+    fireEvent.press(utils.getByTestId("logout-button"));
+    await waitFor(() => {
+      expect(utils.getByTestId("sign-out-progress")).toBeTruthy();
+    });
+
+    // Neither way out of the Apple step deletes while the sign-out's last sync runs.
+    const skipButton = utils.getByTestId("delete-account-apple-skip");
+    expect(isDisabled(skipButton)).toBe(true);
+    fireEvent.press(skipButton);
+    expect(skip).not.toHaveBeenCalled();
+    await act(async () => {
+      answerApple({ authorizationCode: "apple-code", clientId: "eu.drafto.web.auth" });
+    });
+    expect(mockDeleteAccount).not.toHaveBeenCalled();
 
     await act(async () => {
       finishSync();

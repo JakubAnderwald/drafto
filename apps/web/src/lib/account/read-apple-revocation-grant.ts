@@ -18,10 +18,15 @@ const bodySchema = z.object({
 /**
  * Reads the optional Apple revocation grant from a `DELETE /api/account` body.
  *
+ * Every platform sends one for an Apple-linked account: iOS a code for the
+ * native client (`APPLE_NATIVE_CLIENT_ID`), and the web, Android and macOS a
+ * code for the Services ID (`APPLE_SERVICES_ID`). The client ID is not checked
+ * here; `revokeAppleSignIn` decides which clients it redeems codes for.
+ *
  * The body is advisory: it can only ask for Apple tokens to be revoked, never
- * name an account. A missing body (web, macOS, older apps) means no grant. A
- * malformed one is reported to Sentry, without its contents, and also means no
- * grant, so it can never stop a deletion.
+ * name an account. A missing body (no Apple identity, a cancelled Apple step,
+ * older apps) means no grant. A malformed one is reported to Sentry, without its
+ * contents, and also means no grant, so it can never stop a deletion.
  */
 export async function readAppleRevocationGrant(
   request: NextRequest,
