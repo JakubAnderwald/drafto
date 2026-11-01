@@ -72,8 +72,8 @@ export function DeleteAccountSection({ className }: DeleteAccountSectionProps) {
   const [error, setError] = useState<string | null>(null);
   const appleStep = useAppleDeletionConfirmation(confirming);
 
-  // Waits for the Apple lookup too, so an Apple-linked user can't confirm before
-  // the dialog knows to show the notice and ask Apple first.
+  // Waits for the Apple lookup and Apple's script too, so an Apple-linked user
+  // can't confirm before the dialog knows to show the notice and can ask Apple.
   const canConfirm =
     !pending && appleStep.ready && confirmation.trim() === ACCOUNT_DELETE_CONFIRMATION;
 

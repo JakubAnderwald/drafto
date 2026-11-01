@@ -12,12 +12,22 @@ export interface AppleDeletionConfirmation {
   /** The Apple-linked user the step was decided for, so the flow can check it did not change. */
   userId: string | null;
   /**
-   * False while the user lookup that decides `applies` is still running. The
-   * dialog must not confirm before then, or an Apple-linked user could delete
-   * without the notice and without Apple's confirmation.
+   * False while the user lookup that decides `applies` is still running, and,
+   * when the step applies, while Apple's script is still loading (for at most
+   * `APPLE_SCRIPT_WAIT_MS`). The dialog must not confirm before then, or an
+   * Apple-linked user could delete without the notice and without Apple's
+   * confirmation.
    */
   ready: boolean;
 }
+
+/**
+ * How long the confirm button waits for Apple's script. A load that fails
+ * settles at once; this only bounds one that stalls, so it can't block the
+ * deletion. Confirming after the wait deletes without the Apple step, as a
+ * failed load does.
+ */
+export const APPLE_SCRIPT_WAIT_MS = 5_000;
 
 interface AppleUserLookup {
   settled: boolean;
@@ -38,6 +48,7 @@ const LOOKUP_PENDING: AppleUserLookup = { settled: false, appleUserId: null };
 export function useAppleDeletionConfirmation(open: boolean): AppleDeletionConfirmation {
   const onAppleOrigin = usePageOrigin() === APPLE_REVOCATION_ORIGIN;
   const [lookup, setLookup] = useState<AppleUserLookup>(LOOKUP_PENDING);
+  const [scriptSettled, setScriptSettled] = useState(false);
 
   useEffect(() => {
     if (!open || !onAppleOrigin) return;
@@ -65,11 +76,28 @@ export function useAppleDeletionConfirmation(open: boolean): AppleDeletionConfir
     };
   }, [open, onAppleOrigin]);
 
-  const ready = !open || !onAppleOrigin || lookup.settled;
   const applies = open && onAppleOrigin && lookup.appleUserId !== null;
+  const ready = !open || !onAppleOrigin || (lookup.settled && (!applies || scriptSettled));
 
   useEffect(() => {
-    if (applies) void loadAppleIdAuth();
+    if (!applies) return;
+    let cancelled = false;
+    const settle = () => {
+      if (!cancelled) setScriptSettled(true);
+    };
+    const timer = setTimeout(settle, APPLE_SCRIPT_WAIT_MS);
+    const loaded = () => {
+      clearTimeout(timer);
+      settle();
+    };
+    // Resolves null on a failed load, so a blocked script still unblocks the button.
+    loadAppleIdAuth().then(loaded, loaded);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      // The next time the step applies, it waits for the script again.
+      setScriptSettled(false);
+    };
   }, [applies]);
 
   return applies

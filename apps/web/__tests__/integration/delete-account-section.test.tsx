@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const mockReplace = vi.fn();
@@ -40,6 +40,7 @@ vi.mock("@sentry/nextjs", () => ({
 }));
 
 const { DeleteAccountSection } = await import("@/components/settings/delete-account-section");
+const { APPLE_SCRIPT_WAIT_MS } = await import("@/hooks/use-apple-deletion-confirmation");
 
 const WARNING =
   "This permanently deletes your Drafto account and all of your notebooks, notes and attachments. This cannot be undone.";
@@ -368,8 +369,67 @@ describe("DeleteAccountSection", () => {
       resolveLookup({ data: { user: APPLE_USER }, error: null });
 
       expect(await within(dialog).findByText(APPLE_NOTICE)).toBeInTheDocument();
-      expect(confirmButton(dialog)).toBeEnabled();
+      await waitFor(() => expect(confirmButton(dialog)).toBeEnabled());
       expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it("keeps confirm disabled until Apple's script loads, then asks Apple", async () => {
+      let resolveLoad: (value: unknown) => void = () => {};
+      mockLoadAppleIdAuth.mockReturnValue(
+        new Promise((resolve) => {
+          resolveLoad = resolve;
+        }),
+      );
+      mockFetch.mockResolvedValueOnce(jsonResponse(200, { success: true }));
+      const user = userEvent.setup();
+      render(<DeleteAccountSection />);
+
+      const dialog = await openDialog(user);
+      await within(dialog).findByTestId("delete-account-apple-notice");
+      await user.type(within(dialog).getByLabelText("Type DELETE to confirm"), "DELETE");
+      expect(confirmButton(dialog)).toBeDisabled();
+
+      const api = fakeAppleApi((state) =>
+        Promise.resolve({ authorization: { code: APPLE_CODE, state } }),
+      );
+      mockGetLoadedAppleIdAuth.mockReturnValue(api);
+      resolveLoad(api);
+      await waitFor(() => expect(confirmButton(dialog)).toBeEnabled());
+      await user.click(confirmButton(dialog));
+
+      await waitFor(() => expect(mockReplace).toHaveBeenCalledWith("/login?deleted=1"));
+      expect(api.signIn).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({
+        apple: { authorizationCode: APPLE_CODE, clientId: "eu.drafto.web.auth" },
+      });
+    });
+
+    it("unblocks confirm after the wait when Apple's script stalls, and still deletes", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        // A load that never settles.
+        mockLoadAppleIdAuth.mockReturnValue(new Promise(() => {}));
+        mockFetch.mockResolvedValueOnce(jsonResponse(200, { success: true }));
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        render(<DeleteAccountSection />);
+
+        const dialog = await openDialog(user);
+        await within(dialog).findByTestId("delete-account-apple-notice");
+        await user.type(within(dialog).getByLabelText("Type DELETE to confirm"), "DELETE");
+        expect(confirmButton(dialog)).toBeDisabled();
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(APPLE_SCRIPT_WAIT_MS);
+        });
+        expect(confirmButton(dialog)).toBeEnabled();
+        await user.click(confirmButton(dialog));
+
+        await waitFor(() => expect(mockReplace).toHaveBeenCalledWith("/login?deleted=1"));
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        expect(mockFetch.mock.calls[0][1].body).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("keeps confirm disabled until the lookup resolves on reopening the dialog", async () => {
