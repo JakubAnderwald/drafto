@@ -105,7 +105,11 @@ it. This file is hand-maintained, not generated: when a column changes, update
   attachment; see `hasLocalEdit`) restarts a 1.5 s debounce. A sync's own writes
   leave records synced, so they never schedule another sync. Do not add
   sync-on-any-change triggers: after a partly failed push, the re-pulled notes
-  change on every pass and the sync would loop.
+  change on every pass and the sync would loop. The pending count the sync
+  status shows (`hasPendingChanges` / `pendingChangesCount`, local deletions
+  included) refreshes 0.5 s after the last local edit, separately from the 1.5 s
+  sync trigger and also while a sync runs, so an unpushed edit shows as pending
+  before its sync starts. Only the most recently started check updates it.
 - `sync()` never rejects. A failure is stored in `lastSyncError` and the sync
   status shows "Sync failed". A failed pass is not repeated back to back and
   reschedules nothing; the network retry timer or the next trigger runs it
@@ -170,8 +174,8 @@ it. This file is hand-maintained, not generated: when a column changes, update
   `synchronize()` over an in-memory LokiJS database: a first sync and an
   incremental pull of a note from another device log no `[Sync]` diagnostic.
 - `apps/{mobile,desktop}/__tests__/providers/database-provider.test.tsx` — the
-  identity guard, the local-edit debounce, joining a running sync, no loop after
-  a clean sync, and `lastSyncError`.
+  identity guard, the local-edit debounce, the pending-count refresh, joining a
+  running sync, no loop after a clean sync, and `lastSyncError`.
 - `packages/shared/__tests__/{remote-change,local-edit}.test.ts` — which pulled
   records count as visible changes, and which local changes schedule a sync.
 - `apps/desktop/__tests__/db/{schema,migrations,models}.test.ts` — structural
