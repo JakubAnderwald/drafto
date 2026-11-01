@@ -3,7 +3,7 @@
  */
 import crypto from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { APPLE_NATIVE_CLIENT_ID } from "@drafto/shared";
+import { APPLE_NATIVE_CLIENT_ID, APPLE_SERVICES_ID as SHARED_SERVICES_ID } from "@drafto/shared";
 import {
   APPLE_SERVICES_ID,
   MAX_LIFETIME_SECONDS,
@@ -20,6 +20,11 @@ describe("Apple client secret", () => {
   it("names the two Sign in with Apple clients", () => {
     expect(APPLE_NATIVE_CLIENT_ID).toBe("eu.drafto.mobile");
     expect(APPLE_SERVICES_ID).toBe("eu.drafto.web.auth");
+  });
+
+  it("keeps its Services ID literal equal to the shared constant", () => {
+    // Plain node cannot import the shared TS, so the .mjs keeps a copy; this pins them together.
+    expect(APPLE_SERVICES_ID).toBe(SHARED_SERVICES_ID);
   });
 
   it("signs a verifiable ES256 JWT with the claims Apple checks", () => {

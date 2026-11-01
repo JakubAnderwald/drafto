@@ -150,7 +150,10 @@ preflight() {
     pid=$(drafto_pid)
     exe=$(ps -o comm= -p "$pid")
     started=$(LC_ALL=C date -j -f "%a %b %d %T %Y" "$(LC_ALL=C ps -o lstart= -p "$pid" | sed 's/[[:space:]]*$//')" +%s 2> /dev/null)
-    written=$(stat -f %m "$APP/Contents/Info.plist" 2> /dev/null)
+    # The receipt is rewritten at install time. Info.plist keeps the build's
+    # mtime, which can be older than a process still running the previous build.
+    written=$(stat -f %m "$APP/Contents/_MASReceipt/receipt" 2> /dev/null ||
+      stat -f %m "$APP/Contents/Info.plist" 2> /dev/null)
     if [[ "$exe" != "$APP/"* ]]; then
       pf fail "the running Drafto (pid $pid) is $exe, not $APP"
     elif [ -n "$started" ] && [ -n "$written" ] && [ "$started" -ge "$written" ]; then

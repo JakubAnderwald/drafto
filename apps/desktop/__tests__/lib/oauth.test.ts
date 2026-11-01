@@ -127,6 +127,15 @@ describe("handleOAuthCallback", () => {
   // `handleOAuthCallback` remembers exchanged codes for the life of the module,
   // so every test uses its own code unless it is testing that memory.
 
+  it("never exchanges the Apple code of a Sign in with Apple revocation link", () => {
+    handleOAuthCallback(
+      "eu.drafto.desktop://auth/apple-revocation?code=apple-code&state=macos.abc",
+    );
+    handleOAuthCallback("EU.DRAFTO.DESKTOP://auth/apple-revocation/?code=apple-code-2");
+
+    expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
+  });
+
   it("ignores URLs that are not the desktop callback scheme", () => {
     handleOAuthCallback("https://drafto.eu/auth/callback?code=abc");
     expect(mockExchangeCodeForSession).not.toHaveBeenCalled();

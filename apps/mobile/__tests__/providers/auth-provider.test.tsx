@@ -1,9 +1,14 @@
 import React from "react";
 import { Linking, Platform } from "react-native";
 import * as AppleAuthentication from "expo-apple-authentication";
+import * as WebBrowser from "expo-web-browser";
 import { renderHook, act, waitFor } from "@testing-library/react-native";
 import type { User } from "@supabase/supabase-js";
-import { requestAccountDeletion, type AccountDeletionResult } from "@drafto/shared";
+import {
+  buildAppleRevocationDeepLink,
+  requestAccountDeletion,
+  type AccountDeletionResult,
+} from "@drafto/shared";
 
 import { database } from "@/db";
 import { syncDatabase, resetSyncState } from "@/db/sync";
@@ -50,6 +55,12 @@ jest.mock("@/lib/data/attachment-queue", () => ({
   processPendingUploads: jest.fn(),
   deleteAllLocalAttachments: jest.fn(),
 }));
+
+jest.mock("expo-crypto", () => ({
+  getRandomValues: <T extends Uint8Array>(array: T): T => array.fill(7) as T,
+}));
+
+const mockOpenAuthSession = jest.mocked(WebBrowser.openAuthSessionAsync);
 
 jest.mock("@drafto/shared", () => ({
   ...jest.requireActual("@drafto/shared"),
@@ -805,8 +816,15 @@ describe("AuthProvider — account deletion", () => {
       expect(mockRequestAccountDeletion.mock.calls[0][0]).not.toHaveProperty("appleRevocation");
     });
 
-    it("never opens Apple's sheet on Android", async () => {
+    it("confirms in the browser on Android, never Apple's sheet, and sends the Services ID code", async () => {
       platformOs.replaceValue("android");
+      mockOpenAuthSession.mockImplementationOnce(async (authorizeUrl: string) => {
+        const state = decodeURIComponent(/[?&]state=([^&]+)/.exec(authorizeUrl)?.[1] ?? "");
+        return {
+          type: "success",
+          url: buildAppleRevocationDeepLink("android", { code: "relayed-code", state }),
+        };
+      });
       const { result } = await renderSignedIn();
 
       await act(async () => {
@@ -814,6 +832,27 @@ describe("AuthProvider — account deletion", () => {
       });
 
       expect(mockAppleSignIn).not.toHaveBeenCalled();
+      expect(mockOpenAuthSession).toHaveBeenCalledTimes(1);
+      expect(mockRequestAccountDeletion).toHaveBeenCalledWith(
+        expect.objectContaining({
+          appleRevocation: { authorizationCode: "relayed-code", clientId: "eu.drafto.web.auth" },
+        }),
+      );
+    });
+
+    it("still deletes the account on Android when the user closes Apple's page", async () => {
+      platformOs.replaceValue("android");
+      mockOpenAuthSession.mockResolvedValueOnce({
+        type: "dismiss",
+      } as WebBrowser.WebBrowserAuthSessionResult);
+      const { result } = await renderSignedIn();
+
+      let outcome: AccountDeletionResult | undefined;
+      await act(async () => {
+        outcome = await result.current.deleteAccount();
+      });
+
+      expect(outcome).toEqual({ status: "ok" });
       expect(mockRequestAccountDeletion.mock.calls[0][0]).not.toHaveProperty("appleRevocation");
     });
   });

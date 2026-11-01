@@ -10,6 +10,7 @@ import {
 } from "react-native";
 import {
   ACCOUNT_DELETE_CONFIRMATION,
+  appleDeletionNotice,
   describeAccountDeletionFailure,
   type AccountDeletionResult,
 } from "@drafto/shared";
@@ -30,10 +31,6 @@ export interface DeleteAccountDialogProps {
 
 const CONFIRM_PROMPT = `Type ${ACCOUNT_DELETE_CONFIRMATION} to confirm`;
 
-export const APPLE_CONFIRMATION_NOTICE =
-  "You use Sign in with Apple, so Apple will ask you to confirm. This lets Drafto stop using " +
-  "your Apple ID. If you cancel that step, your account is still deleted.";
-
 /**
  * Type-to-confirm dialog for permanent account deletion. The destructive button
  * stays disabled until the exact confirmation word is entered, and while a
@@ -42,8 +39,9 @@ export const APPLE_CONFIRMATION_NOTICE =
 export function DeleteAccountDialog({ visible, onCancel, onConfirm }: DeleteAccountDialogProps) {
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
-  // On iOS, deleting an Apple-linked account opens Apple's sheet so its tokens can be revoked.
-  const confirmsWithApple = useAppleDeletionConfirmation();
+  // Deleting an Apple-linked account asks Apple to confirm first, so its tokens can be revoked:
+  // the native sheet on iOS, Apple's page in the browser on Android.
+  const appleConfirmation = useAppleDeletionConfirmation();
   const [confirmation, setConfirmation] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -130,9 +128,9 @@ export function DeleteAccountDialog({ visible, onCancel, onConfirm }: DeleteAcco
               This permanently deletes your Drafto account and all of your notebooks, notes and
               attachments. This cannot be undone.
             </Text>
-            {confirmsWithApple ? (
+            {appleConfirmation ? (
               <Text style={styles.warning} testID="delete-account-apple-notice">
-                {APPLE_CONFIRMATION_NOTICE}
+                {appleDeletionNotice(appleConfirmation)}
               </Text>
             ) : null}
 

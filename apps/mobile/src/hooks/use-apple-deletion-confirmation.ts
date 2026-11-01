@@ -1,11 +1,12 @@
-import { needsAppleConfirmation } from "@/lib/apple-revocation";
+import { appleConfirmationKind, type MobileAppleConfirmationKind } from "@/lib/apple-revocation";
 import { useAuth } from "@/providers/auth-provider";
 
 /**
- * True when deleting the signed-in account will ask the user to confirm with
- * Apple first, so the delete dialog can say so before they start.
+ * How deleting the signed-in account will ask the user to confirm with Apple first
+ * (`"sheet"` on iOS, `"browser"` on Android), or `null` when it will not, so the delete
+ * dialog can say so before they start.
  */
-export function useAppleDeletionConfirmation(): boolean {
+export function useAppleDeletionConfirmation(): MobileAppleConfirmationKind | null {
   const { user } = useAuth();
-  return needsAppleConfirmation(user);
+  return appleConfirmationKind(user);
 }

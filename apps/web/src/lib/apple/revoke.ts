@@ -1,5 +1,10 @@
 import * as Sentry from "@sentry/nextjs";
-import { APPLE_NATIVE_CLIENT_ID, type AppleRevocationGrant } from "@drafto/shared";
+import {
+  APPLE_NATIVE_CLIENT_ID,
+  APPLE_REVOCATION_REDIRECT_URI,
+  APPLE_SERVICES_ID,
+  type AppleRevocationGrant,
+} from "@drafto/shared";
 import { buildClientSecret } from "@/lib/apple/client-secret.mjs";
 import type { AppleSignInKey } from "@/lib/apple/config";
 
@@ -7,11 +12,13 @@ export const APPLE_TOKEN_URL = "https://appleid.apple.com/auth/token";
 export const APPLE_REVOKE_URL = "https://appleid.apple.com/auth/revoke";
 
 /**
- * Clients whose authorization codes the server redeems. Only the native iOS sheet
- * sends one today. A Services ID code (web) would also need the `redirect_uri` it
- * was issued for, so adding `APPLE_SERVICES_ID` here is not enough on its own.
+ * Clients whose authorization codes the server redeems: the native iOS sheet's
+ * bundle ID, and the Services ID that the web (Apple JS pop-up), Android and
+ * macOS (Apple's page in the browser, relayed by `/auth/apple/revocation`) get
+ * their codes for. A Services ID code is bound to the return URL it was issued
+ * for, so it is redeemed with `redirect_uri` (see `tokenRequestFor`).
  */
-export const REVOCABLE_CLIENT_IDS: readonly string[] = [APPLE_NATIVE_CLIENT_ID];
+export const REVOCABLE_CLIENT_IDS: readonly string[] = [APPLE_NATIVE_CLIENT_ID, APPLE_SERVICES_ID];
 
 /** Per request to Apple, so a slow Apple can delay the deletion response by at most twice this. */
 export const APPLE_REQUEST_TIMEOUT_MS = 5_000;
@@ -71,11 +78,15 @@ type AppleResponse =
  * that token is revoked at `/auth/revoke`, which removes Drafto from the user's
  * "Sign in with Apple" apps.
  *
+ * A native (iOS) code is redeemed without `redirect_uri`. A Services ID code
+ * (web, Android, macOS) is redeemed with `APPLE_REVOCATION_REDIRECT_URI`, the
+ * return URL registered on the Services ID, which Apple requires to match.
+ *
  * The token is revoked even when the ID token names an Apple ID the account was
- * never linked to: a phone signed in to another Apple ID. The person on that
- * phone has just authenticated as that Apple ID in Apple's sheet, and the sheet
- * may have authorized Drafto for it on the spot, so leaving the token live would
- * leave Drafto in that Apple ID's list. Revoking costs that Apple ID nothing but
+ * never linked to: a phone signed in to another Apple ID, or a browser signed in
+ * to Apple as someone else. That person has just authenticated as that Apple ID
+ * in Apple's sheet or page, which may have authorized Drafto for it on the spot,
+ * so leaving the token live would leave Drafto in that Apple ID's list. Revoking costs that Apple ID nothing but
  * a fresh consent prompt at its next Apple sign-in. That case is reported as a
  * warning, because the account's own Apple authorization was not revoked.
  *
@@ -163,12 +174,7 @@ async function runRevocation(
   if (exchangeTimeout === null) return outOfTime("token");
   const exchange = await postToApple(
     APPLE_TOKEN_URL,
-    {
-      client_id: clientId,
-      client_secret: clientSecret,
-      code: grant.authorizationCode,
-      grant_type: "authorization_code",
-    },
+    tokenRequestFor(clientId, clientSecret, grant.authorizationCode),
     fetchImpl,
     exchangeTimeout,
   );
@@ -214,6 +220,25 @@ async function runRevocation(
   }
 
   return "revoked";
+}
+
+/**
+ * The `/auth/token` form for a code. Only a Services ID code carries
+ * `redirect_uri`: Apple checks it against the URL the code was issued for, and a
+ * native code was issued for none.
+ */
+function tokenRequestFor(
+  clientId: string,
+  clientSecret: string,
+  code: string,
+): Record<string, string> {
+  return {
+    client_id: clientId,
+    client_secret: clientSecret,
+    code,
+    grant_type: "authorization_code",
+    ...(clientId === APPLE_SERVICES_ID ? { redirect_uri: APPLE_REVOCATION_REDIRECT_URI } : {}),
+  };
 }
 
 /** POSTs a form to Apple. Never throws: network errors, timeouts and non-2xx come back as `ok: false`. */

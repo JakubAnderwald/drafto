@@ -4,7 +4,11 @@
 import crypto from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
-import { requestAccountDeletion } from "@drafto/shared";
+import {
+  APPLE_REVOCATION_REDIRECT_URI,
+  APPLE_SERVICES_ID,
+  requestAccountDeletion,
+} from "@drafto/shared";
 
 // The real route, body reader, key config and Apple client run together; only
 // Supabase and the network are stubbed.
@@ -127,6 +131,60 @@ describe("DELETE /api/account with a Sign in with Apple code", () => {
     expect(revokeForm.get("token")).toBe("apple-refresh");
     expect(captureExceptionMock).not.toHaveBeenCalled();
     expect(captureMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("redeems a Services ID code (web, Android, macOS) with the registered redirect_uri", async () => {
+    appleFetch
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: "apple-access",
+            refresh_token: "apple-refresh",
+            id_token: `${encode({ alg: "RS256" })}.${encode({ sub: APPLE_SUB })}.sig`,
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+
+    const result = await requestAccountDeletion({
+      baseUrl: "http://localhost:3000",
+      accessToken: "supabase-access-token",
+      appleRevocation: { authorizationCode: "services-id-code", clientId: APPLE_SERVICES_ID },
+      fetchImpl: (input, init) => DELETE(new NextRequest(input, init)),
+    });
+
+    expect(result).toEqual({ status: "ok" });
+    expect(deleteUserMock).toHaveBeenCalledWith(USER_ID);
+    expect(deleteUserMock.mock.invocationCallOrder[0]).toBeLessThan(
+      appleFetch.mock.invocationCallOrder[0],
+    );
+    expect(appleFetch.mock.calls.map(([url]) => url)).toEqual([
+      "https://appleid.apple.com/auth/token",
+      "https://appleid.apple.com/auth/revoke",
+    ]);
+    const tokenForm = new URLSearchParams(String(appleFetch.mock.calls[0][1]?.body));
+    expect(tokenForm.get("client_id")).toBe("eu.drafto.web.auth");
+    expect(tokenForm.get("code")).toBe("services-id-code");
+    expect(tokenForm.get("redirect_uri")).toBe(APPLE_REVOCATION_REDIRECT_URI);
+    const revokeForm = new URLSearchParams(String(appleFetch.mock.calls[1][1]?.body));
+    expect(revokeForm.get("client_id")).toBe("eu.drafto.web.auth");
+    expect(revokeForm.get("token")).toBe("apple-refresh");
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(captureMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("does not redeem the native code with a redirect_uri", async () => {
+    appleFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ refresh_token: "apple-refresh" }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+
+    await deleteFromIos();
+
+    const tokenForm = new URLSearchParams(String(appleFetch.mock.calls[0][1]?.body));
+    expect(tokenForm.has("redirect_uri")).toBe(false);
   });
 
   it("still reports the deletion as done when Apple rejects the code", async () => {

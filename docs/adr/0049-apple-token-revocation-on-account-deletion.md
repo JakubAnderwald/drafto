@@ -4,6 +4,8 @@
 - **Date**: 2026-10-12
 - **Authors**: Jakub Anderwald, with Claude Code
 
+> **Extended by [ADR-0064](./0064-apple-revocation-on-web-android-macos.md)** (2026-11-01): web, Android and macOS now revoke too. Each gets a fresh Services ID code at deletion time, through Apple JS on the web and a `form_post` relay at `https://drafto.eu/auth/apple/revocation` on Android and macOS. The deletion-then-revoke order and the server flow are unchanged.
+
 ## Context
 
 App Store Review Guideline 5.1.1(v) requires an app that offers Sign in with Apple to revoke the user's Apple tokens through `POST https://appleid.apple.com/auth/revoke` when the account is deleted. [ADR-0038](./0038-account-deletion-endpoint.md) shipped in-app deletion on every platform but left revocation as an open gap, because of three facts:

@@ -30,21 +30,21 @@ describe("useAppleDeletionConfirmation", () => {
     platformOs.restore();
   });
 
-  it("is true for a signed-in Apple user on iOS", () => {
+  it("is the native sheet for a signed-in Apple user on iOS", () => {
     mockUser = APPLE_USER;
-    expect(renderHook(() => useAppleDeletionConfirmation()).result.current).toBe(true);
+    expect(renderHook(() => useAppleDeletionConfirmation()).result.current).toBe("sheet");
   });
 
-  it("is false for a user without Apple, or with no user", () => {
+  it("is null for a user without Apple, or with no user", () => {
     mockUser = EMAIL_USER;
-    expect(renderHook(() => useAppleDeletionConfirmation()).result.current).toBe(false);
+    expect(renderHook(() => useAppleDeletionConfirmation()).result.current).toBeNull();
     mockUser = null;
-    expect(renderHook(() => useAppleDeletionConfirmation()).result.current).toBe(false);
+    expect(renderHook(() => useAppleDeletionConfirmation()).result.current).toBeNull();
   });
 
-  it("is false on Android", () => {
+  it("is the browser for a signed-in Apple user on Android", () => {
     platformOs.replaceValue("android");
     mockUser = APPLE_USER;
-    expect(renderHook(() => useAppleDeletionConfirmation()).result.current).toBe(false);
+    expect(renderHook(() => useAppleDeletionConfirmation()).result.current).toBe("browser");
   });
 });

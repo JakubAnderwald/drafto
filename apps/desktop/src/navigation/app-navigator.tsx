@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { ActivityIndicator, View, StyleSheet, Linking } from "react-native";
 
 import { useAuth } from "@/providers/auth-provider";
+import { handleAppleRevocationLink } from "@/lib/apple-revocation";
 import { handleOAuthCallback } from "@/lib/oauth";
 import { colors } from "@/theme/tokens";
 import { useTheme } from "@/providers/theme-provider";
@@ -28,17 +29,22 @@ export function RootNavigator() {
   const [authRoute, setAuthRoute] = useState<AuthRoute>("Login");
 
   useEffect(() => {
-    // Handle OAuth callback deep links (eu.drafto.desktop://auth/callback)
-    const subscription = Linking.addEventListener("url", ({ url }) => {
+    // Apple revocation links (eu.drafto.desktop://auth/apple-revocation) are claimed
+    // first, so their Apple code never reaches the OAuth exchange. Everything else is
+    // an OAuth callback candidate (eu.drafto.desktop://auth/callback).
+    const routeLink = (url: string) => {
+      if (handleAppleRevocationLink(url)) return;
       handleOAuthCallback(url);
-    });
+    };
+    const subscription = Linking.addEventListener("url", ({ url }) => routeLink(url));
 
     // Check if the app was opened via a deep link. Recovery callbacks share this
     // scheme but are consumed by AuthProvider's own listener — handleOAuthCallback
-    // ignores them so the single-use code is not spent twice.
+    // ignores them so the single-use code is not spent twice. A cold-start Apple
+    // revocation link has no confirmation waiting, so it is claimed and dropped.
     Linking.getInitialURL()
       .then((url) => {
-        if (url) handleOAuthCallback(url);
+        if (url) routeLink(url);
       })
       .catch((error) => {
         console.error("Failed to read the initial deep link:", error);

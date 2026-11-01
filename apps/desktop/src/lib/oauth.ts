@@ -1,5 +1,7 @@
 import { Linking } from "react-native";
 
+import { isAppleRevocationDeepLink } from "@drafto/shared";
+
 import { isRecoveryUrl } from "@/lib/auth-recovery";
 import { apiUrl } from "@/lib/config";
 import { cryptoReady, supabase } from "@/lib/supabase";
@@ -79,6 +81,13 @@ export function handleOAuthCallback(url: string): void {
     // `auth-recovery.ts`. Exchanging the code here as well would burn it and
     // drop the user into a plain signed-in session instead of the reset screen.
     if (isRecoveryUrl(url)) {
+      return;
+    }
+
+    // Sign in with Apple revocation links carry Apple's code for the account-deletion
+    // step (`apple-revocation.ts`). It is not a Supabase code: exchanging it would only
+    // fail and log, so it must never reach `exchangeCodeForSession`.
+    if (isAppleRevocationDeepLink(url)) {
       return;
     }
 
