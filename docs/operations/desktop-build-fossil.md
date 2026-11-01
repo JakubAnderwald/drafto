@@ -68,6 +68,23 @@ If the fossil is ever lost, this is the working set to reconstruct:
 | `react-native-svg`                            | `15.15.4`       |
 | `@react-native-async-storage/async-storage`   | `3.0.2`         |
 | `react-native-screens`                        | `4.24.0`        |
+| `react-native-keychain`                       | `9.2.3`         |
 
 Mobile and web use React `19.2.x` and newer native modules — that is correct and unaffected. Only the
 macOS desktop app is pinned to this older, `react-native-macos`-compatible set.
+
+### Every build machine's fossil must match
+
+The MacBook Air's fossil is a separate install (May 2026), not a copy of the Mac mini's. It had
+`react-native-keychain` 10.0.0, so desktop 0.4.4 builds 74 and 76, released from that laptop,
+shipped keychain 10 while every other build shipped 9.2.3, and each release rewrote the committed
+`Podfile.lock`. Its keychain was replaced in place with the 9.2.3 tarball that `pnpm-lock.yaml`
+pins, after checking the tarball's integrity hash against the lockfile. That is not a reinstall.
+Keychain items are stored the same way in both versions, so a session saved by 10.0.0 still opens.
+Build 77, the first one released after the fix, started signed in, opened a note, and left the lock
+untouched.
+
+Before releasing from a machine, check it against the table above. `git status` must also show
+`apps/desktop/macos/Podfile.lock` unchanged after `pod install`. The committed lock comes from the
+Mac mini's fossil, so a rewrite means that machine's native modules differ. Fix the package in
+`node_modules`, not the lock.
