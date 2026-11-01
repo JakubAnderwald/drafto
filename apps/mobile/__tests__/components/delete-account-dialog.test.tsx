@@ -1,16 +1,22 @@
 import React from "react";
-import { describeAccountDeletionFailure, type AccountDeletionResult } from "@drafto/shared";
+import {
+  appleDeletionNotice,
+  describeAccountDeletionFailure,
+  type AccountDeletionResult,
+} from "@drafto/shared";
 
 import { render, fireEvent, waitFor, act, within } from "../helpers/test-utils";
-import {
-  APPLE_CONFIRMATION_NOTICE,
-  DeleteAccountDialog,
-} from "../../src/components/delete-account-dialog";
+import { DeleteAccountDialog } from "../../src/components/delete-account-dialog";
 
-let mockConfirmsWithApple = false;
+let mockConfirmsWithApple: "sheet" | "browser" | null = null;
 jest.mock("@/hooks/use-apple-deletion-confirmation", () => ({
   useAppleDeletionConfirmation: () => mockConfirmsWithApple,
 }));
+
+/** The iOS notice as it read before Android confirmed with Apple too. It must not change. */
+const IOS_NOTICE =
+  "You use Sign in with Apple, so Apple will ask you to confirm. This lets Drafto stop using " +
+  "your Apple ID. If you cancel that step, your account is still deleted.";
 
 function renderDialog(overrides: Partial<React.ComponentProps<typeof DeleteAccountDialog>> = {}) {
   const onCancel = jest.fn();
@@ -23,20 +29,29 @@ function renderDialog(overrides: Partial<React.ComponentProps<typeof DeleteAccou
 describe("DeleteAccountDialog", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockConfirmsWithApple = false;
+    mockConfirmsWithApple = null;
   });
 
-  it("says Apple will ask to confirm, and that cancelling still deletes, for an Apple user", () => {
-    mockConfirmsWithApple = true;
+  it("says Apple will ask to confirm, and that cancelling still deletes, for an iOS Apple user", () => {
+    mockConfirmsWithApple = "sheet";
     const { getByTestId } = renderDialog();
 
-    expect(getByTestId("delete-account-apple-notice")).toHaveTextContent(APPLE_CONFIRMATION_NOTICE);
-    expect(APPLE_CONFIRMATION_NOTICE).toContain("Apple will ask you to confirm");
-    expect(APPLE_CONFIRMATION_NOTICE).toContain("your account is still deleted");
+    expect(appleDeletionNotice("sheet")).toBe(IOS_NOTICE);
+    expect(getByTestId("delete-account-apple-notice")).toHaveTextContent(IOS_NOTICE);
+  });
+
+  it("says Apple will ask to confirm in the browser for an Android Apple user", () => {
+    mockConfirmsWithApple = "browser";
+    const { getByTestId } = renderDialog();
+    const notice = getByTestId("delete-account-apple-notice");
+
+    expect(notice).toHaveTextContent(appleDeletionNotice("browser"));
+    expect(notice).toHaveTextContent(/Apple will ask you to confirm in your browser/);
+    expect(notice).toHaveTextContent(/your account is still deleted/);
   });
 
   it("scrolls the text and keeps both actions outside it, so they stay reachable", () => {
-    mockConfirmsWithApple = true;
+    mockConfirmsWithApple = "sheet";
     const { getByTestId } = renderDialog();
     const scroll = getByTestId("delete-account-scroll");
 

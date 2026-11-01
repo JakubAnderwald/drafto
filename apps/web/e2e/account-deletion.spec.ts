@@ -114,6 +114,10 @@ test.describe("Delete account in settings", () => {
     const input = dialog.getByLabel("Type DELETE to confirm");
     const confirm = dialog.getByRole("button", { name: "Delete account" });
 
+    // The seeded E2E user signs in with a password, so there is no Sign in with Apple step.
+    await expect(dialog.getByTestId("delete-account-apple-notice")).toHaveCount(0);
+    await expect(dialog).not.toContainText("Sign in with Apple");
+
     await expect(confirm).toBeDisabled();
     await input.fill("delete");
     await expect(confirm).toBeDisabled();

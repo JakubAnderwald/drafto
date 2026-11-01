@@ -129,14 +129,14 @@ export default function DeleteAccountInfoPage() {
         <section id="sign-in-with-apple">
           <h2>If you use Sign in with Apple</h2>
           <p>
-            In the iPhone and iPad app, Apple asks you to confirm before your account is deleted.
-            Drafto then asks Apple to end its access to your Apple ID. If you cancel that step, your
-            account is still deleted.
+            On every platform (the web, iPhone and iPad, Android and Mac), Apple asks you to confirm
+            before your account is deleted: in the app on iPhone and iPad, in a pop-up window on the
+            web, and in your browser on Android and Mac. Drafto then asks Apple to end its access to
+            your Apple ID. If you cancel that step, your account is still deleted.
           </p>
           <p>
-            If you delete your account on the web, on Android or on a Mac, or cancel Apple&apos;s
-            confirmation, you can remove Drafto from your Apple ID yourself. On an iPhone or iPad,
-            open <strong>Settings</strong>, tap your name, then{" "}
+            If you cancel Apple&apos;s confirmation, you can remove Drafto from your Apple ID
+            yourself. On an iPhone or iPad, open <strong>Settings</strong>, tap your name, then{" "}
             <strong>Sign-In &amp; Security</strong> and <strong>Sign in with Apple</strong>, choose
             Drafto and stop using your Apple ID with it. On any device, sign in at{" "}
             <a href="https://account.apple.com">account.apple.com</a> and do the same under{" "}

@@ -4,10 +4,33 @@ import { describeAccountDeletionFailure, type AccountDeletionResult } from "@dra
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import {
   DeleteAccountPanel,
+  DELETE_ACCOUNT_APPLE_NOTICE,
+  DELETE_ACCOUNT_APPLE_WAITING,
   DELETE_ACCOUNT_OFFLINE_NOTE,
   DELETE_ACCOUNT_PROMPT,
   DELETE_ACCOUNT_WARNING,
 } from "@/components/sidebar/delete-account-panel";
+
+const mockAppleState = { required: false, userId: "user-123" as string | null };
+jest.mock("@/hooks/use-apple-deletion-confirmation", () => ({
+  useAppleDeletionConfirmation: () => mockAppleState,
+}));
+
+type Grant = { authorizationCode: string; clientId: string } | null;
+const mockStartAppleConfirmation = jest.fn();
+jest.mock("@/lib/apple-revocation", () => ({
+  startAppleConfirmation: () => mockStartAppleConfirmation(),
+}));
+
+/** A confirmation the test settles by hand, as the relay link or a skip would. */
+function controlledConfirmation() {
+  let resolve: (grant: Grant) => void = () => undefined;
+  const grant = new Promise<Grant>((r) => {
+    resolve = r;
+  });
+  const skip = jest.fn(() => resolve(null));
+  return { confirmation: { grant, skip }, resolve, skip };
+}
 
 type TestInstance = ReturnType<ReturnType<typeof render>["getByTestId"]>;
 
@@ -30,6 +53,99 @@ function renderPanel({
 describe("DeleteAccountPanel", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockAppleState.required = false;
+  });
+
+  it("shows no Apple notice and calls onConfirm without a grant for a non-Apple user", async () => {
+    const { getByTestId, queryByText, onConfirm } = renderPanel();
+
+    expect(queryByText(DELETE_ACCOUNT_APPLE_NOTICE)).toBeNull();
+    fireEvent.changeText(getByTestId("delete-account-input"), "DELETE");
+    await act(async () => {
+      fireEvent.press(getByTestId("delete-account-confirm"));
+    });
+
+    expect(mockStartAppleConfirmation).not.toHaveBeenCalled();
+    expect(onConfirm).toHaveBeenCalledWith();
+  });
+
+  describe("for an Apple-linked user", () => {
+    beforeEach(() => {
+      mockAppleState.required = true;
+    });
+
+    async function startDeletion() {
+      const controlled = controlledConfirmation();
+      mockStartAppleConfirmation.mockReturnValue(controlled.confirmation);
+      const utils = renderPanel();
+      fireEvent.changeText(utils.getByTestId("delete-account-input"), "DELETE");
+      await act(async () => {
+        fireEvent.press(utils.getByTestId("delete-account-confirm"));
+      });
+      return { ...utils, ...controlled };
+    }
+
+    it("explains the browser step before the user starts", () => {
+      const { getByText } = renderPanel();
+
+      expect(getByText(DELETE_ACCOUNT_APPLE_NOTICE)).toBeTruthy();
+      expect(mockStartAppleConfirmation).not.toHaveBeenCalled();
+    });
+
+    it("waits for Apple, then deletes with the grant for the user who started", async () => {
+      const { getByText, onConfirm, resolve } = await startDeletion();
+
+      expect(getByText(DELETE_ACCOUNT_APPLE_WAITING)).toBeTruthy();
+      expect(onConfirm).not.toHaveBeenCalled();
+
+      const grant = { authorizationCode: "apple-code", clientId: "eu.drafto.web.auth" };
+      await act(async () => {
+        resolve(grant);
+      });
+
+      expect(onConfirm).toHaveBeenCalledWith(grant, "user-123");
+    });
+
+    it("deletes without a grant on Continue without Apple", async () => {
+      const { getByTestId, onConfirm, skip } = await startDeletion();
+
+      await act(async () => {
+        fireEvent.press(getByTestId("delete-account-apple-skip"));
+      });
+
+      expect(skip).toHaveBeenCalled();
+      expect(onConfirm).toHaveBeenCalledWith(undefined, "user-123");
+    });
+
+    it("deletes nothing on Cancel, even if Apple answers afterwards", async () => {
+      const { getByTestId, queryByText, onConfirm, onCancel, skip, resolve } =
+        await startDeletion();
+
+      await act(async () => {
+        fireEvent.press(getByTestId("delete-account-apple-cancel"));
+      });
+      await act(async () => {
+        resolve({ authorizationCode: "late", clientId: "eu.drafto.web.auth" });
+      });
+
+      expect(skip).toHaveBeenCalled();
+      expect(onConfirm).not.toHaveBeenCalled();
+      expect(onCancel).not.toHaveBeenCalled();
+      expect(queryByText(DELETE_ACCOUNT_APPLE_WAITING)).toBeNull();
+      expect(isDisabled(getByTestId("delete-account-confirm"))).toBe(false);
+    });
+
+    it("releases the pending confirmation when the panel unmounts", async () => {
+      const { unmount, onConfirm, skip } = await startDeletion();
+
+      unmount();
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(skip).toHaveBeenCalled();
+      expect(onConfirm).not.toHaveBeenCalled();
+    });
   });
 
   it("warns about what is deleted and prompts for DELETE", () => {

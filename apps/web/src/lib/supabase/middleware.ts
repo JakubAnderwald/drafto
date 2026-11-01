@@ -13,6 +13,9 @@ const PUBLIC_ROUTES = [
   // The factory browser runner's one-time-link sign-in: the browser that lands here is signed
   // out. The route itself answers 404 outside dev-backed Vercel previews.
   "/auth/test-sign-in",
+  // Sign in with Apple's return URL for account deletion on Android and macOS: Apple POSTs
+  // the answer cross-site, so the request carries no session. The route relays it to the app.
+  "/auth/apple/revocation",
   "/forgot-password",
   "/reset-password",
   // `config.matcher` in `middleware.ts` already skips these two, so the entries are a backstop.

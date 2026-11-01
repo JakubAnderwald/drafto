@@ -9,6 +9,7 @@ import {
   Alert,
 } from "react-native";
 import { Q } from "@nozbe/watermelondb";
+import type { AppleRevocationGrant } from "@drafto/shared";
 
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { useNotebooks } from "@/hooks/use-notebooks";
@@ -193,14 +194,17 @@ export function NotebooksSidebar({
   // confirm is disabled during a sign-out, and Sign out does nothing while a deletion request
   // is in flight (a successful deletion signs out by itself; after a failure it works again).
   const deletionPendingRef = useRef(false);
-  const confirmDeleteAccount = useCallback(async () => {
-    deletionPendingRef.current = true;
-    try {
-      return await deleteAccount();
-    } finally {
-      deletionPendingRef.current = false;
-    }
-  }, [deleteAccount]);
+  const confirmDeleteAccount = useCallback(
+    async (appleRevocation?: AppleRevocationGrant, confirmedUserId?: string) => {
+      deletionPendingRef.current = true;
+      try {
+        return await deleteAccount(appleRevocation, confirmedUserId);
+      } finally {
+        deletionPendingRef.current = false;
+      }
+    },
+    [deleteAccount],
+  );
   const signOutUnlessDeleting = useCallback(() => {
     if (deletionPendingRef.current) return;
     void signOut();

@@ -1,7 +1,7 @@
 import React from "react";
 import { Text, Linking } from "react-native";
 
-import { render, fireEvent } from "../helpers/test-utils";
+import { render, fireEvent, waitFor } from "../helpers/test-utils";
 import { RootNavigator } from "@/navigation/app-navigator";
 
 const mockUseAuth = jest.fn();
@@ -11,6 +11,11 @@ jest.mock("@/providers/auth-provider", () => ({
 
 jest.mock("@/lib/oauth", () => ({
   handleOAuthCallback: jest.fn(),
+}));
+
+const mockHandleAppleRevocationLink = jest.fn((url: string) => url.includes("apple-revocation"));
+jest.mock("@/lib/apple-revocation", () => ({
+  handleAppleRevocationLink: (url: string) => mockHandleAppleRevocationLink(url),
 }));
 
 // Screens are stubbed so this suite exercises the routing decision only — the
@@ -343,5 +348,43 @@ describe("RootNavigator", () => {
     );
 
     expect(Linking.addEventListener).toHaveBeenCalledWith("url", expect.any(Function));
+  });
+
+  describe("deep-link routing", () => {
+    const APPLE_LINK = "eu.drafto.desktop://auth/apple-revocation?code=apple&state=macos.x";
+    const OAUTH_LINK = "eu.drafto.desktop://auth/callback?code=oauth";
+
+    function urlListener(): (event: { url: string }) => void {
+      const call = (Linking.addEventListener as jest.Mock).mock.calls.find(
+        ([type]) => type === "url",
+      );
+      return call?.[1] as (event: { url: string }) => void;
+    }
+
+    it("gives Apple revocation links to the Apple handler, never to the OAuth exchange", () => {
+      const { handleOAuthCallback } = jest.requireMock("@/lib/oauth") as {
+        handleOAuthCallback: jest.Mock;
+      };
+      render(<RootNavigator />);
+
+      urlListener()({ url: APPLE_LINK });
+      expect(mockHandleAppleRevocationLink).toHaveBeenCalledWith(APPLE_LINK);
+      expect(handleOAuthCallback).not.toHaveBeenCalled();
+
+      urlListener()({ url: OAUTH_LINK });
+      expect(handleOAuthCallback).toHaveBeenCalledWith(OAUTH_LINK);
+    });
+
+    it("routes a cold-start Apple revocation link the same way", async () => {
+      const { handleOAuthCallback } = jest.requireMock("@/lib/oauth") as {
+        handleOAuthCallback: jest.Mock;
+      };
+      jest.spyOn(Linking, "getInitialURL").mockResolvedValue(APPLE_LINK);
+
+      render(<RootNavigator />);
+
+      await waitFor(() => expect(mockHandleAppleRevocationLink).toHaveBeenCalledWith(APPLE_LINK));
+      expect(handleOAuthCallback).not.toHaveBeenCalled();
+    });
   });
 });

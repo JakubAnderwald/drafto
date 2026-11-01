@@ -579,6 +579,41 @@ describe("AuthProvider — deleteAccount", () => {
     expectNothingReset();
     expect(result.current.user?.id).toBe("user-123");
   });
+
+  it("forwards the Apple grant with the request", async () => {
+    mockRequestAccountDeletion.mockResolvedValue({ status: "ok" });
+    const grant = { authorizationCode: "apple-code", clientId: "eu.drafto.web.auth" };
+    const { result } = await renderSignedIn();
+
+    await act(async () => {
+      await result.current.deleteAccount(grant, "user-123");
+    });
+
+    expect(mockRequestAccountDeletion).toHaveBeenCalledWith({
+      baseUrl: "https://api.drafto.test",
+      accessToken: "access-token-123",
+      appleRevocation: grant,
+    });
+  });
+
+  it("deletes nothing when the session switched to another user during the Apple step", async () => {
+    const { result } = await renderSignedIn();
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+      data: { session: { access_token: "other-token", user: { ...TEST_USER, id: "user-999" } } },
+    });
+
+    let outcome: AccountDeletionResult | undefined;
+    await act(async () => {
+      outcome = await result.current.deleteAccount(
+        { authorizationCode: "apple-code", clientId: "eu.drafto.web.auth" },
+        "user-123",
+      );
+    });
+
+    expect(outcome).toEqual({ status: "unauthorized" });
+    expect(mockRequestAccountDeletion).not.toHaveBeenCalled();
+    expectNothingReset();
+  });
 });
 
 const RECOVERY_LINK = "eu.drafto.desktop://auth/recovery?code=recovery-code";

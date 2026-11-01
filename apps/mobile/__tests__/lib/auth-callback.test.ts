@@ -226,6 +226,22 @@ describe("redirectSystemPath", () => {
     expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the router off the Apple revocation relay link, without exchanging anything", () => {
+    expect(
+      redirectSystemPath({
+        path: "drafto://auth/apple-revocation?code=apple-code&state=android.nonce",
+        initial: false,
+      }),
+    ).toBeNull();
+    expect(
+      redirectSystemPath({
+        path: "/auth/apple-revocation?error=user_cancelled_authorize",
+        initial: true,
+      }),
+    ).toBeNull();
+    expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
+  });
+
   it("leaves every other link to the router", () => {
     expect(redirectSystemPath({ path: "drafto://reset-password?code=abc", initial: true })).toBe(
       "drafto://reset-password?code=abc",

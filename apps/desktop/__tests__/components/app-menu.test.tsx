@@ -5,6 +5,11 @@ import { render, fireEvent, act } from "../helpers/test-utils";
 import { AppMenu } from "@/components/sidebar/app-menu";
 import { DELETE_ACCOUNT_OFFLINE_NOTE } from "@/components/sidebar/delete-account-panel";
 
+// The panel asks the auth provider whether the Apple step applies; the provider opens the database.
+jest.mock("@/hooks/use-apple-deletion-confirmation", () => ({
+  useAppleDeletionConfirmation: () => ({ required: false, userId: null }),
+}));
+
 type TestInstance = ReturnType<ReturnType<typeof render>["getByTestId"]>;
 
 const isDisabled = (node: TestInstance) => node.props.accessibilityState?.disabled === true;
