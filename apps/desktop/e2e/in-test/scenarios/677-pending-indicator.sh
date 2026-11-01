@@ -79,6 +79,9 @@ sampler_stop() {
   [ -n "$SAMPLER_PID" ] || return 0
   kill "$SAMPLER_PID" 2> /dev/null
   wait "$SAMPLER_PID" 2> /dev/null
+  # Reaped: the EXIT trap must not signal a PID the system may have reused.
+  BG_PIDS=" $BG_PIDS "
+  BG_PIDS=${BG_PIDS/ $SAMPLER_PID / }
   SAMPLER_PID=""
 }
 
@@ -95,12 +98,17 @@ sampler_stop() {
 #                   after those rows appeared or the last sync ended (the bug)
 #   TL_STALE_MS     time it read "N pending" with nothing unpushed, more than
 #                   GRACE_MS after the DB emptied (a stale count)
+#   TL_LAT          ms from TL_FIRST_DB to TL_FIRST_SHOWN (-1 when either is missing
+#                   or "pending" was read before any unpushed row was sampled)
+#   TL_FIRST_CLEAN  first sample reading "Synced" with nothing unpushed (-1 when none)
 #   TL_SEQ          the indicator's states in order, e.g. "Synced → 1 pending → Syncing..."
+# Samples whose DB read failed (empty count, e.g. a lock timeout) are skipped
+# rather than read as "nothing unpushed".
 tl_stats() {
   awk -F'\t' -v from="${1:-0}" -v to="${2:-99999999999999}" -v grace="$GRACE_MS" '
-    BEGIN { n = 0; first_db = -1; first_shown = -1; first_sync = -1; maxdb = 0; maxshown = -1
-            zero = 0; db_ms = 0; shown_ms = 0; bug_ms = 0; stale_ms = 0; seq = ""; last = "" }
-    $1 >= from && $1 <= to {
+    BEGIN { n = 0; first_db = -1; first_shown = -1; first_sync = -1; first_clean = -1; maxdb = 0
+            maxshown = -1; zero = 0; db_ms = 0; shown_ms = 0; bug_ms = 0; stale_ms = 0; seq = ""; last = "" }
+    $1 >= from && $1 <= to && $3 ~ /^[0-9]+$/ {
       t = $1; h = $2; d = $3 + 0
       if (n == 0) { t0 = t; onset = t; empty_since = t }
       if (n > 0) {
@@ -124,6 +132,7 @@ tl_stats() {
         if (c == 0) zero++
       }
       if (h == "Syncing..." && first_sync < 0) first_sync = t
+      if (h == "Synced" && d == 0 && first_clean < 0) first_clean = t
       if (h != last) { seq = seq (seq == "" ? "" : " → ") (h == "" ? "(none)" : h); last = h }
       pt = t; ph = h; pd = d; n++
     }
@@ -133,11 +142,27 @@ tl_stats() {
         n, (n > 1 ? (pt - t0) / (n - 1) : 0), db_ms, maxdb, first_db, first_shown
       printf "TL_SHOWN_MS=%d\nTL_MAXSHOWN=%d\nTL_ZERO=%d\nTL_FIRST_SYNC=%d\nTL_BUG_MS=%d\nTL_STALE_MS=%d\n", \
         shown_ms, maxshown, zero, first_sync, bug_ms, stale_ms
+      printf "TL_LAT=%d\nTL_FIRST_CLEAN=%d\n", \
+        (first_db >= 0 && first_shown >= first_db ? first_shown - first_db : -1), first_clean
       printf "TL_SEQ=\x27%s\x27\n", seq
     }' "$SAMPLES"
 }
 
 fmt_s() { LC_ALL=C awk -v m="$1" 'BEGIN { printf "%.1f", m / 1000 }'; }
+
+# lat_txt — how long after the first unpushed row "pending" first showed.
+lat_txt() {
+  if [ "$TL_LAT" -ge 0 ]; then
+    printf '%s ms after the first unpushed row' "$TL_LAT"
+  else
+    printf 'with no unpushed row sampled before it'
+  fi
+}
+
+# shown_before_sync — "N pending" was read before the first "Syncing...".
+shown_before_sync() {
+  [ "$TL_FIRST_SHOWN" -ge 0 ] && { [ "$TL_FIRST_SYNC" -lt 0 ] || [ "$TL_FIRST_SHOWN" -lt "$TL_FIRST_SYNC" ]; }
+}
 
 # paste_text <text> — paste at the editor's caret (the caret is already there).
 paste_text() {
@@ -145,7 +170,6 @@ paste_text() {
   osascript -e 'tell application "System Events" to keystroke "v" using command down'
 }
 
-db_deleted_notes() { db_q "select count(*) from notes where _status = 'deleted'"; }
 db_trashed_live() { db_q "select count(*) from notes where is_trashed = 1 and _status != 'deleted'"; }
 srv_trashed() { sb_rest GET "notes?select=id&is_trashed=eq.true" | jq 'length'; }
 srv_live() { sb_rest GET "notes?select=id&is_trashed=eq.false" | jq 'length'; }
@@ -235,12 +259,12 @@ sleep 2
 sampler_stop
 eval "$(tl_stats)"
 [ "$(srv_live)" = $((SRV_LIVE_BEFORE + 1)) ] || fail_step "the new note is not on the server (live notes $SRV_LIVE_BEFORE → $(srv_live))"
-if [ "$TL_FIRST_SHOWN" -ge 0 ] && [ "$TL_ZERO" = 0 ]; then
-  step_end PASS "'$TL_MAXSHOWN pending' shown $((TL_FIRST_SHOWN - TL_FIRST_DB)) ms after the row appeared, for ~$(fmt_s "$TL_SHOWN_MS") s; then Synced and on the server. Indicator: $TL_SEQ"
-elif [ "$TL_ZERO" -gt 0 ]; then
+if [ "$TL_ZERO" -gt 0 ]; then
   step_end FAIL "the indicator read '0 pending' ($TL_ZERO samples). Indicator: $TL_SEQ"
+elif shown_before_sync; then
+  step_end PASS "'$TL_MAXSHOWN pending' before Syncing..., $(lat_txt), for ~$(fmt_s "$TL_SHOWN_MS") s; then Synced and on the server. Indicator: $TL_SEQ"
 else
-  step_end WARN "no 'N pending' sample caught (the window is ~1 s online by design; sampling every ~${TL_IVL} ms); DB had the unpushed row for ~$(fmt_s "$TL_DB_MS") s. Indicator: $TL_SEQ"
+  step_end WARN "no 'N pending' caught before Syncing... (the window is ~1 s online by design; sampling every ~${TL_IVL} ms); DB had the unpushed row for ~$(fmt_s "$TL_DB_MS") s. Indicator: $TL_SEQ"
 fi
 
 # ── P1. Slow typing ─────────────────────────────────────────────────────────
@@ -268,10 +292,10 @@ elif [ "$TL_FIRST_SHOWN" -lt 0 ]; then
   step_end FAIL "the #677 bug: $P1_DETAIL — never 'pending'. Indicator: $TL_SEQ"
 elif [ "$TL_ZERO" -gt 0 ]; then
   step_end FAIL "the indicator read '0 pending' ($TL_ZERO samples); $P1_DETAIL. Indicator: $TL_SEQ"
-elif [ $((TL_FIRST_SHOWN - TL_FIRST_DB)) -gt "$GRACE_MS" ] || [ "$TL_BUG_MS" -gt 1000 ]; then
-  step_end FAIL "$P1_DETAIL; first 'pending' $((TL_FIRST_SHOWN - TL_FIRST_DB)) ms after the first unpushed row; 'Synced' with unpushed rows beyond the ${GRACE_MS} ms grace for ~$(fmt_s "$TL_BUG_MS") s. Indicator: $TL_SEQ"
+elif [ "$TL_LAT" -gt "$GRACE_MS" ] || [ "$TL_BUG_MS" -gt 1000 ]; then
+  step_end FAIL "$P1_DETAIL; first 'pending' $(lat_txt); 'Synced' with unpushed rows beyond the ${GRACE_MS} ms grace for ~$(fmt_s "$TL_BUG_MS") s. Indicator: $TL_SEQ"
 else
-  step_end PASS "$P1_DETAIL; first '$TL_MAXSHOWN pending' $((TL_FIRST_SHOWN - TL_FIRST_DB)) ms after the first unpushed row; 'Synced' with unpushed rows beyond the grace ~$(fmt_s "$TL_BUG_MS") s. Indicator: $TL_SEQ"
+  step_end PASS "$P1_DETAIL; first '$TL_MAXSHOWN pending' $(lat_txt); 'Synced' with unpushed rows beyond the grace ~$(fmt_s "$TL_BUG_MS") s. Indicator: $TL_SEQ"
 fi
 
 # ── P2. Stop typing ─────────────────────────────────────────────────────────
@@ -291,13 +315,19 @@ poll_synced 30 "$FINAL" || {
 sleep 3
 sampler_stop
 eval "$(tl_stats "$T_LAST")"
+# Timed from the last key (T_LAST), not from when poll_synced started.
+if [ "$TL_FIRST_CLEAN" -ge 0 ]; then
+  P2_MS=$((TL_FIRST_CLEAN - T_LAST))
+else
+  P2_MS=$(($(now_ms) - T_LAST))
+fi
 ocr_has "Just now" && jn="'Just now' shown" || jn="(last-synced text not read)"
 if [ "$TL_STALE_MS" -gt 600 ]; then
   step_end FAIL "a stale 'N pending' stayed ~$(fmt_s "$TL_STALE_MS") s after the DB emptied; $P2_NOTE. Indicator: $TL_SEQ"
-elif [ "$ELAPSED" -le 10 ]; then
-  step_end PASS "Synced, 0 unpushed and the text on the server ${ELAPSED}s after the last key; $jn; $P2_NOTE. Indicator: $TL_SEQ"
+elif [ "$P2_MS" -le 10000 ]; then
+  step_end PASS "Synced with 0 unpushed $(fmt_s "$P2_MS") s after the last key, and the text on the server; $jn; $P2_NOTE. Indicator: $TL_SEQ"
 else
-  step_end WARN "Synced and on the server, but only ${ELAPSED}s after the last key (expected ~2–3 s); $P2_NOTE. Indicator: $TL_SEQ"
+  step_end WARN "Synced and on the server, but only $(fmt_s "$P2_MS") s after the last key (expected ~2–3 s); $P2_NOTE. Indicator: $TL_SEQ"
 fi
 
 # ── P3. One word ────────────────────────────────────────────────────────────
@@ -315,8 +345,8 @@ sampler_stop
 eval "$(tl_stats)"
 if [ "$TL_STALE_MS" -gt 600 ]; then
   step_end FAIL "a stale 'N pending' stayed ~$(fmt_s "$TL_STALE_MS") s after the DB emptied. Indicator: $TL_SEQ"
-elif [ "$TL_FIRST_SHOWN" -ge 0 ] && { [ "$TL_FIRST_SYNC" -lt 0 ] || [ "$TL_FIRST_SHOWN" -lt "$TL_FIRST_SYNC" ]; }; then
-  step_end PASS "'$TL_MAXSHOWN pending' for ~$(fmt_s "$TL_SHOWN_MS") s before Syncing..., $((TL_FIRST_SHOWN - TL_FIRST_DB)) ms after the save; Synced and on the server ${ELAPSED}s after the paste. Indicator: $TL_SEQ"
+elif shown_before_sync; then
+  step_end PASS "'$TL_MAXSHOWN pending' for ~$(fmt_s "$TL_SHOWN_MS") s before Syncing..., $(lat_txt); Synced and on the server ${ELAPSED}s after the paste. Indicator: $TL_SEQ"
 else
   step_end WARN "no 'N pending' caught before Syncing... (~1 s window by design; sampling every ~${TL_IVL} ms; P1 is the main check); Synced and on the server ${ELAPSED}s after the paste. Indicator: $TL_SEQ"
 fi
@@ -331,27 +361,45 @@ press_until 5 trash_open desc "Trash" || {
 ax_dump > "$RUN_DIR/trash-ax.json" 2> /dev/null
 sleep 1
 settle 15 || fail_step "opening Trash left the indicator at '$(sync_help)'"
+TRASH0=$(db_trashed_live)
+# Notes that have left Trash. Unlike a count of `_status = 'deleted'` rows, a
+# push can't undo it: WatermelonDB destroys deleted rows once they are synced.
+removed() {
+  local left _
+  for _ in 1 2 3; do
+    left=$(db_trashed_live)
+    [ -n "$left" ] && break
+    sleep 0.3
+  done
+  # An unreadable DB counts as "nothing new", never as a reason to press again.
+  echo $((TRASH0 - ${left:-$TRASH0}))
+}
 sampler_start P4
-for i in 1 2 3; do
+presses=0
+while [ "$(removed)" -lt 3 ]; do
+  [ "$presses" -lt 5 ] || {
+    sampler_stop
+    fail_step "only $(removed) of 3 notes left Trash after $presses presses on Delete"
+  }
   t_press=$(now_ms)
+  before=$(removed)
   btn=$(trash_delete_btn)
   [ -n "$btn" ] || {
     sampler_stop
-    fail_step "no Delete button left in Trash after $((i - 1)) deletion(s)"
+    fail_step "no Delete button left in Trash after $before deletion(s)"
   }
   press_el "$btn"
-  deleted_enough() { [ "$(db_deleted_notes)" -ge "$i" ]; }
-  if ! poll 3 deleted_enough; then
-    log "   Delete $i had no effect; pressing again"
-    press_el "$(trash_delete_btn)"
-    poll 3 deleted_enough || {
-      sampler_stop
-      fail_step "Delete $i did not mark a note deleted in the local DB"
-    }
-  fi
+  presses=$((presses + 1))
+  # Wait long enough that a slow write isn't mistaken for a missed press, which
+  # would delete one note too many on the retry.
+  removed_more() { [ "$(removed)" -gt "$before" ]; }
+  poll 5 removed_more || {
+    log "   Delete press $presses had no effect; pressing again"
+    continue
+  }
   # About one deletion a second, from press to press.
   wait_ms=$((1000 - ($(now_ms) - t_press)))
-  [ "$wait_ms" -gt 0 ] && [ "$i" -lt 3 ] && sleep "$(LC_ALL=C awk -v m="$wait_ms" 'BEGIN { printf "%.2f", m / 1000 }')"
+  [ "$wait_ms" -gt 0 ] && [ "$(removed)" -lt 3 ] && sleep "$(LC_ALL=C awk -v m="$wait_ms" 'BEGIN { printf "%.2f", m / 1000 }')"
 done
 poll 20 synced_idle || {
   sampler_stop
@@ -382,9 +430,8 @@ if [ "$WITH_OFFLINE" != 1 ]; then
   step_end SKIP "not run (set WITH_OFFLINE=1; it needs sudo and takes the Mac offline)"
 else
   # Back to the note: the Trash view has no editor.
-  qa_note_open() { editor_present; }
   press_until 5 nb_selected desc "$NB_NAME" || fail_step "could not reselect notebook '$NB_NAME'"
-  press_until 5 qa_note_open desc "Untitled" || press_contains_until 5 qa_note_open "$M1" ||
+  press_until 5 editor_present desc "Untitled" || press_contains_until 5 editor_present "$M1" ||
     fail_step "could not reopen the test note"
   settle 30 || fail_step "did not settle before the test"
   if ! net_wait_idle 600; then
@@ -399,14 +446,7 @@ else
     T_ON=$(now_ms)
     net_on
     synced=no
-    end=$(($(date +%s) + 60))
-    while [ "$(date +%s)" -lt "$end" ]; do
-      if synced_idle; then
-        synced=yes
-        break
-      fi
-      sleep 0.3
-    done
+    poll 60 synced_idle && synced=yes
     sampler_stop
     secs_on=$((($(now_ms) - T_ON) / 1000))
     eval "$(tl_stats 0 "$T_ON")"
