@@ -43,6 +43,7 @@ CALLS="${dir}/calls"; : >"$CALLS"
 LOG_FILE="${dir}/log"
 STATE_FILE="${dir}/state.json"
 SCRIPT_DIR=/factory/scripts
+DIFF_FILE="${dir}/diff"
 DRY_RUN=${dryRun}
 logerr() { echo "LOG $*" >>"$CALLS"; }
 shasum() { echo "${HEAD_HASH}fffffff  $2"; }
@@ -122,7 +123,12 @@ describe("hosted_config_gate (extracted, real bash)", () => {
       "supabase/config.toml",
       ...Array.from({ length: 20000 }, (_, i) => `apps/web/f${i}.ts`),
     ].join("\n");
-    const out = run(gate({ diff: big }), { nodeRc: 0, nodeOut: '{"status":"ok"}' });
+    // The diff is read from a file inside bash: inlined into `bash -c` it would
+    // exceed Linux's 128 KB per-argument limit and the spawn itself would fail.
+    const out = run(
+      `hosted_config_gate 685 778 ${q(SHA)} "$(cat "$DIFF_FILE")" "status:in-review" "In Review"`,
+      { prDiff: big, nodeRc: 0, nodeOut: '{"status":"ok"}' },
+    );
     assert.match(out, /^GH compare main\.\.\.1d3f/m, "the gate must run, not pass early");
   });
 
