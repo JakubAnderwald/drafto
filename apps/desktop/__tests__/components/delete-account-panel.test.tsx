@@ -135,6 +135,57 @@ describe("DeleteAccountPanel", () => {
       expect(isDisabled(getByTestId("delete-account-confirm"))).toBe(false);
     });
 
+    it("deletes nothing when Apple answers during a sign-out, and can be retried after it", async () => {
+      const { getByTestId, queryByTestId, onConfirm, onCancel, skip, resolve, rerender } =
+        await startDeletion();
+
+      // The sidebar disables the panel while a sign-out runs.
+      rerender(<DeleteAccountPanel onCancel={onCancel} onConfirm={onConfirm} disabled />);
+      const skipButton = getByTestId("delete-account-apple-skip");
+      expect(isDisabled(skipButton)).toBe(true);
+      fireEvent.press(skipButton);
+      expect(skip).not.toHaveBeenCalled();
+
+      await act(async () => {
+        resolve({ authorizationCode: "apple-code", clientId: "eu.drafto.web.auth" });
+      });
+
+      expect(onConfirm).not.toHaveBeenCalled();
+      expect(queryByTestId("delete-account-apple-waiting")).toBeNull();
+      expect(isDisabled(getByTestId("delete-account-confirm"))).toBe(true);
+
+      // The sign-out ended without signing out (e.g. "Sign out?" was cancelled).
+      rerender(<DeleteAccountPanel onCancel={onCancel} onConfirm={onConfirm} />);
+      expect(isDisabled(getByTestId("delete-account-confirm"))).toBe(false);
+      const retry = controlledConfirmation();
+      mockStartAppleConfirmation.mockReturnValue(retry.confirmation);
+      await act(async () => {
+        fireEvent.press(getByTestId("delete-account-confirm"));
+      });
+      await act(async () => {
+        retry.resolve(null);
+      });
+
+      expect(onConfirm).toHaveBeenCalledTimes(1);
+      expect(onConfirm).toHaveBeenCalledWith(undefined, "user-123");
+    });
+
+    it("keeps waiting for Apple through a sign-out that ends without signing out", async () => {
+      const { getByTestId, onConfirm, onCancel, resolve, rerender } = await startDeletion();
+
+      rerender(<DeleteAccountPanel onCancel={onCancel} onConfirm={onConfirm} disabled />);
+      rerender(<DeleteAccountPanel onCancel={onCancel} onConfirm={onConfirm} />);
+
+      expect(getByTestId("delete-account-apple-waiting")).toBeTruthy();
+      expect(isDisabled(getByTestId("delete-account-apple-skip"))).toBe(false);
+      const grant = { authorizationCode: "apple-code", clientId: "eu.drafto.web.auth" };
+      await act(async () => {
+        resolve(grant);
+      });
+
+      expect(onConfirm).toHaveBeenCalledWith(grant, "user-123");
+    });
+
     it("releases the pending confirmation when the panel unmounts", async () => {
       const { unmount, onConfirm, skip } = await startDeletion();
 

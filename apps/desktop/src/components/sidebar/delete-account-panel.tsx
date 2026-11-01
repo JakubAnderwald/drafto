@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { StyleSheet, Text, TextInput, View } from "react-native";
 import {
   ACCOUNT_DELETE_CONFIRMATION,
@@ -35,7 +35,11 @@ interface DeleteAccountPanelProps {
   ) => Promise<AccountDeletionResult>;
   /** Deletion needs the server, so the confirm button stays disabled while offline. */
   isOffline?: boolean;
-  /** Keeps the confirm button disabled without the offline note, e.g. during a sign-out. */
+  /**
+   * Stops the panel from starting a deletion, without the offline note, e.g. during a sign-out:
+   * confirm and Continue without Apple are disabled, and an Apple answer that lands meanwhile
+   * deletes nothing.
+   */
   disabled?: boolean;
 }
 
@@ -47,7 +51,10 @@ interface DeleteAccountPanelProps {
  * An Apple-linked user first confirms with Apple in the browser. The browser tells the
  * app nothing when its tab is closed, so the waiting state offers **Continue without
  * Apple** (deletes now) and **Cancel** (deletes nothing). There is no timeout: it would
- * delete the account with no one watching.
+ * delete the account with no one watching. Sign out still works during the wait. Both wipe
+ * the device, so while a sign-out runs Continue without Apple is disabled, and an Apple answer
+ * that lands then is dropped and deletes nothing. A sign-out that ends without signing out
+ * leaves the wait open.
  */
 export function DeleteAccountPanel({
   onCancel,
@@ -69,6 +76,12 @@ export function DeleteAccountPanel({
   // A ref, not state, so a double click inside one frame cannot send two requests.
   const inFlightRef = useRef(false);
   const mountedRef = useRef(true);
+  // `disabled` for the end of the Apple step, which runs outside a render. Updated after
+  // commit, so a render React discards cannot leave its value behind.
+  const disabledRef = useRef(disabled);
+  useLayoutEffect(() => {
+    disabledRef.current = disabled;
+  }, [disabled]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -103,6 +116,12 @@ export function DeleteAccountPanel({
     if (!mountedRef.current || appleConfirmationRef.current !== appleConfirmation) return;
     appleConfirmationRef.current = null;
     setIsWaitingForApple(false);
+    // A sign-out is running (the sidebar disables the panel meanwhile). Both wipe the device, so
+    // they never overlap: Apple's answer is dropped, as on Cancel, and nothing is deleted.
+    if (disabledRef.current) {
+      inFlightRef.current = false;
+      return;
+    }
     await sendDeletion(grant ?? undefined, confirmedUserId);
   };
 
@@ -184,6 +203,7 @@ export function DeleteAccountPanel({
             size="sm"
             fullWidth
             onPress={continueWithoutApple}
+            disabled={disabled}
           />
           <Button
             testID="delete-account-apple-cancel"
