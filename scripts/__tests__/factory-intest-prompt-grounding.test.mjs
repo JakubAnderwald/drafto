@@ -226,8 +226,10 @@ describe("In Test prompt — scenario quality rules", () => {
     // fossil at all and points at the runbook instead — the caveat is moot
     // because no macOS build command is offered.
     assert.match(flat, /macOS needs a pre-merge beta/);
-    // A desktop build root is no option for a human: the factory hard-resets it.
-    assert.match(flat, /Nor point anyone at a desktop build root/);
+    // The skipped-lane rule hands out manualCommands.desktop, which builds from
+    // the fossil replica; the "neither list" rule must not contradict it.
+    assert.doesNotMatch(flat, /Nor point anyone at a desktop build root/);
+    assert.match(flat, /`manualCommands` entry for a _skipped_ lane is fine/);
     assert.match(prompt, /docs\/operations\/factory-runbook\.md/);
     assert.ok(
       !/git checkout` of the branch/.test(flat),
