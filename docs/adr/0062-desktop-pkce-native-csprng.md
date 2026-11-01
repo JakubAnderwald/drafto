@@ -4,6 +4,8 @@
 - **Date**: 2026-10-25
 - **Authors**: Jakub Anderwald, Claude
 
+> **Update 2026-10-31**: Mobile no longer keeps the `plain` challenge that "Alternatives Considered" below compares against. It now also installs a SHA-256-only `crypto.subtle.digest`, from expo-crypto, in `apps/mobile/src/lib/crypto-digest.ts`, and sends S256 ([ADR-0045 update](./0045-mobile-auth-uses-pkce.md), [#686](https://github.com/JakubAnderwald/drafto/issues/686)). Desktop is unchanged.
+
 ## Context
 
 The macOS app signs in with PKCE (`apps/desktop/src/lib/supabase.ts`, [ADR-0044](./0044-desktop-auth-web-handoff.md)). The `code_verifier` that supabase-js writes to this Mac's storage is what binds an OAuth or password-reset code to the device.

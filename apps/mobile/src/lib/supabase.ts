@@ -4,11 +4,15 @@ import { Platform } from "react-native";
 
 import type { Database } from "@drafto/shared";
 
+import { installCryptoDigest } from "@/lib/crypto-digest";
 import { installCryptoRandom } from "@/lib/crypto-random";
 import { secureStoreAdapter } from "./secure-store-adapter";
 
-// Before any auth call: supabase-js draws the PKCE `code_verifier` from it.
+// Before any auth call: supabase-js draws the PKCE `code_verifier` from
+// `crypto.getRandomValues`, and hashes it into an S256 challenge with
+// `crypto.subtle.digest` (ADR-0045). Without the digest it sends `plain`.
 installCryptoRandom();
+installCryptoDigest();
 
 const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl as string;
 const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey as string;

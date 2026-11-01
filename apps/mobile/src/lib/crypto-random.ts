@@ -29,9 +29,9 @@ function fillRandom<T extends ArrayBufferView | null>(array: T): T {
  * (ADR-0045).
  *
  * Hermes has no global `crypto`, and without one supabase-js builds the verifier
- * from `Math.random()`. Only `getRandomValues` is installed. With no
- * `crypto.subtle`, supabase-js still sends a `plain` challenge, which ties the
- * code to this device's stored verifier all the same. Leaves a runtime that
+ * from `Math.random()`. Only `getRandomValues` is installed here. The
+ * `crypto.subtle.digest` that supabase-js needs for an S256 challenge comes
+ * from `installCryptoDigest` in `crypto-digest.ts`. Leaves a runtime that
  * already has `crypto.getRandomValues` untouched.
  */
 export function installCryptoRandom(): void {

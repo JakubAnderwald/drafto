@@ -54,12 +54,49 @@ Only pass `--no-deps` together with `--project` or a spec file. That combination
   - A spec that types a real credential uses `fillSecret()` (`apps/web/e2e/helpers/secret-fields.ts`) instead of `fill()`. `fill()` titles its report step `Fill "<value>"`, and a failure saves the page's ARIA snapshot (`error-context.md`, or the assertion's own snapshot), which lists the field's value. `fillSecret()` puts the value in React state, then swaps the input for a copy showing `hidden-by-fillSecret`.
   - Before uploading, CI runs `scripts/scan-playwright-report.mjs`. If it finds an E2E password, the service-role key or a Supabase session token, it withholds the report and lists the files, without the values. A failure involving an API request is withheld this way: a `page.request…` or `request`-fixture call that errors or times out, or a failing `expect(response).toBeOK()`. Playwright puts that request's headers, session cookie included, in the error message. Reproduce such a failure locally. Why it works this way: [ADR-0056](../adr/0056-keep-credentials-out-of-the-e2e-report.md).
 
+### Mobile debug builds
+
+A debug build of a branch runs against the **dev** Supabase project, through the `apps/mobile/.env` that `scripts/worktree-bootstrap.sh` copies. The app has no `expo-dev-client`, so a debug build loads its JavaScript straight from Metro and shows no dev-client launcher. Start Metro first, in its own terminal: `cd apps/mobile && npx expo start`.
+
+- **iOS simulator: don't use `pnpm ios`.** Xcode 27 ships no `Simulator.app` (its `Contents/Applications` has `DeviceHub.app` instead). `expo run:ios` still looks for `Simulator.app` after it installs the pods, and fails with "Can't determine id of Simulator app". `open -a Simulator` fails the same way. Build and install by hand instead:
+
+  ```bash
+  cd apps/mobile
+  npx expo prebuild --platform ios --clean   # regenerates ios/ and installs the pods
+  xcrun simctl list devices available        # pick an iPhone's UDID
+  xcrun simctl bootstatus <udid> -b          # boots it unless it's already up
+  xcodebuild -workspace ios/Drafto.xcworkspace -scheme Drafto -configuration Debug \
+    -sdk iphonesimulator -destination "id=<udid>" -derivedDataPath ios/build build
+  xcrun simctl install <udid> ios/build/Build/Products/Debug-iphonesimulator/Drafto.app
+  xcrun simctl launch <udid> eu.drafto.mobile
+  ```
+
+  - `ios/` is generated and gitignored, so `--clean` loses nothing. It keeps a stale `ios/` from an earlier branch out of the build.
+  - The build loads from Metro on port 8081, and the `adb reverse` redirect below is Android-only. So in a worktree, stop any other Metro on 8081 before you launch.
+  - To see the screen from a terminal, run `xcrun simctl io <udid> screenshot <file>.png`.
+
+- **Android emulator: Gradle needs JDK 17–24.** On JDK 26, the build fails with `Failed to apply plugin 'com.facebook.react.rootproject'` and then `Unsupported class file major version 70`. Point `JAVA_HOME` at Android Studio's bundled JBR, then build, install and launch with `pnpm android`:
+
+  ```bash
+  export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+  cd apps/mobile && pnpm android
+  ```
+
+  See [Android build prerequisites](../operations/builds-and-releases.md#android-build-prerequisites).
+
 ### Maestro (mobile E2E)
 
-- A running Android emulator (or physical device with USB debugging).
-- The Expo dev client must be running: `cd apps/mobile && npx expo start --dev-client`.
-- `E2E_TEST_EMAIL` and `E2E_TEST_PASSWORD` must be exported in the shell.
-- In a worktree, Metro on port 8081 may clash with the main checkout's Metro. Start on a different port and redirect: `pnpm start --port 8082 && adb reverse tcp:8081 tcp:8082`.
+- A device with a debug build of the branch on it (see [Mobile debug builds](#mobile-debug-builds)): a booted iOS simulator, a running Android emulator, or an Android phone with USB debugging. Metro must be serving the build.
+- With more than one device up, pick one with `maestro --device <id> test …`. The id is the simulator's UDID, or the `adb devices` serial (such as `emulator-5554`).
+- The flows read the test account from Maestro's `-e` variables, not from the shell's environment (`06-forgot-password.yaml` takes none). Load them from the web app's env file and pass them on, from the repo root:
+
+  ```bash
+  set -a && source apps/web/.env.local && set +a
+  maestro test -e E2E_TEST_EMAIL="$E2E_TEST_EMAIL" -e E2E_TEST_PASSWORD="$E2E_TEST_PASSWORD" \
+    -e RUN_ID="$(date +%s)" apps/mobile/e2e/<flow>.yaml
+  ```
+
+- In a worktree on Android, Metro on port 8081 may clash with the main checkout's Metro. Start Metro on another port with `pnpm start --port 8082`, then, in a second terminal, redirect the app with `adb reverse tcp:8081 tcp:8082`. Metro stays in the foreground, so chaining the two with `&&` never runs `adb reverse`.
 - **Before shipping an iOS release, launch a Release build on the iOS 27 simulator** (runtime `com.apple.CoreSimulator.SimRuntime.iOS-27-0`). Build it with `xcodebuild … -configuration Release -sdk iphonesimulator` after `expo prebuild` with `.env.production` sourced, then check that the app reaches the Log In screen. Then quit it with `xcrun simctl terminate <sim> eu.drafto.mobile` and check that `xcrun simctl openurl <sim> "drafto://reset-password"` lands on the reset screen. Quitting first makes this a true cold start, through `scene(_:willConnectTo:options:)`. With the app still running, the link goes through `scene(_:openURLContexts:)` instead. iOS 27 stops apps built with its SDK that skip the UIScene lifecycle, and older simulators don't show it ([ADR-0046](../adr/0046-ios-uiscene-lifecycle.md)).
 
 ### Mobile / desktop unit tests
@@ -119,7 +156,7 @@ Some behaviour cannot be scripted deterministically and is verified by hand. Not
 
 - **Realtime push for externally modified notes** (web, [ADR-0032](../adr/0032-web-realtime-note-sync.md)). `apps/web/e2e/note-sync.spec.ts` covers the `visibilitychange` / `focus` half of the feature — an edit made by a second HTTP client surfaces in the open editor with no page reload. The Supabase `postgres_changes` push itself needs two live authenticated clients and a websocket round-trip, so it is checked manually: open the same note on the web and on a phone, edit on the phone, and confirm the web editor updates within a second or two without touching the tab. Both signals funnel into one reconciliation handler, so the E2E test does cover the shared apply path.
 - **No-clobber conflict prompt.** The dirty window is one 500 ms autosave debounce wide, which is too tight to hit reliably from Playwright. It is covered deterministically instead in `apps/web/__tests__/integration/note-sync-reconciliation.test.tsx`.
-- **The real password-recovery link on mobile and desktop** ([ADR-0034](../adr/0034-password-recovery-deep-links-on-mobile-and-desktop.md)). `apps/mobile/e2e/06-forgot-password.yaml` covers everything up to and including the deep link being claimed by the app: it opens `drafto://reset-password` with no credentials and asserts the in-app reset screen renders rather than an unmatched route, the website, or the notebook list. It then opens a forged link carrying session tokens and asserts it signs no one in ([ADR-0045](../adr/0045-mobile-auth-uses-pkce.md)). What it cannot do is mint a real code — a genuine link arrives by email and is single-use. So the last leg is checked by hand, once per platform: request a reset in the app, open the emailed link on that same device, confirm it lands on the reset screen (not the browser, not the main app), set a new password, and confirm the old one no longer signs in.
+- **The real password-recovery link on mobile and desktop** ([ADR-0034](../adr/0034-password-recovery-deep-links-on-mobile-and-desktop.md)). `apps/mobile/e2e/06-forgot-password.yaml` covers everything up to and including the deep link being claimed by the app: it opens `drafto://reset-password` with no credentials and asserts the in-app reset screen renders rather than an unmatched route, the website, or the notebook list. It then opens a forged link carrying session tokens and asserts it signs no one in ([ADR-0045](../adr/0045-mobile-auth-uses-pkce.md)). Its request step uses an address with no account, which Supabase answers with the usual confirmation without sending anything, so it needs no mailbox and no email quota. What it cannot do is mint a real code — a genuine link arrives by email and is single-use. So the last leg is checked by hand, once per platform, on a beta build (betas run against production; dev's built-in mailer won't deliver the email, see [environments.md](./environments.md#supabase-projects)): request a reset in the app, open the emailed link on that same device, confirm it lands on the reset screen (not the browser, not the main app), set a new password, and confirm the old one no longer signs in.
   - It must be the same device that requested the reset, on mobile as well as macOS, because both apps run PKCE and the `code_verifier` is local to that install.
   - Open one link more than 5 minutes after requesting it. Supabase times a PKCE reset from the request, so this measures the hosted flow-state window ([ADR-0045](../adr/0045-mobile-auth-uses-pkce.md)), and the app should say the link expired, not show a raw error.
   - **On Android, also sign in with Apple** once. It is the only mobile flow that returns through a `drafto://` redirect, and before PKCE it most likely signed nobody in.
@@ -129,7 +166,7 @@ Some behaviour cannot be scripted deterministically and is verified by hand. Not
   - **Check the PKCE challenge method** ([ADR-0062](../adr/0062-desktop-pkce-native-csprng.md)). Note the time and start a Google sign-in. While the browser is on Google's account chooser, find the `auth.flow_state` row the click created and check its `code_challenge_method`. It should be `s256`.
     - Read it before finishing the sign-in, because Supabase Auth may delete the row once the app exchanges the code.
     - TestFlight builds use the prod project (`tbmjbxxseonkciqovnpl`), so this is a read-only `SELECT` in the dashboard's SQL editor: `select code_challenge_method, provider_type, created_at from auth.flow_state where created_at > now() - interval '2 minutes' order by created_at desc;`.
-    - Web (`s256`) and mobile (`plain`) write to the same table. Match the row by its time and `provider_type`, and repeat the check if more than one Google row lands in the window.
+    - Web and mobile write to the same table, both with `s256` (mobile builds from before [#686](https://github.com/JakubAnderwald/drafto/issues/686) send `plain`). Match the row by its time and `provider_type`, and repeat the check if more than one Google row lands in the window.
   - **If the row says `plain`**, sign-in still works, but part of the module was skipped. The app's `[crypto]` warning in Console.app (subsystem `com.facebook.react.log`) says which part:
     - "DraftoCrypto returned no random bytes": the synchronous `randomBytes` call is broken, and the verifier still comes from `Math.random`.
     - "failed its SHA-256 self-test": the async `sha256` is broken, or didn't answer within 5 seconds. The verifier comes from the CSPRNG, but `subtle` was not installed.

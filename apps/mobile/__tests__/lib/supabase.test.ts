@@ -1,8 +1,13 @@
 const mockCreateClient = jest.fn(() => ({ auth: {} }));
 const mockInstallCryptoRandom = jest.fn();
+const mockInstallCryptoDigest = jest.fn();
 
 jest.mock("@/lib/crypto-random", () => ({
   installCryptoRandom: () => mockInstallCryptoRandom(),
+}));
+
+jest.mock("@/lib/crypto-digest", () => ({
+  installCryptoDigest: () => mockInstallCryptoDigest(),
 }));
 
 jest.mock("@supabase/supabase-js", () => ({
@@ -30,6 +35,11 @@ describe("supabase client", () => {
     // The CSPRNG must be in place before supabase-js generates any code verifier.
     expect(mockInstallCryptoRandom).toHaveBeenCalledTimes(1);
     expect(mockInstallCryptoRandom.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCreateClient.mock.invocationCallOrder[0],
+    );
+    // So must the SHA-256 digest, or supabase-js sends a `plain` challenge.
+    expect(mockInstallCryptoDigest).toHaveBeenCalledTimes(1);
+    expect(mockInstallCryptoDigest.mock.invocationCallOrder[0]).toBeLessThan(
       mockCreateClient.mock.invocationCallOrder[0],
     );
     const [url, key, options] = mockCreateClient.mock.calls[0] as unknown as [

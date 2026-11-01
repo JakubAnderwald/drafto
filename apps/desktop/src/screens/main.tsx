@@ -4,6 +4,7 @@ import { View, StyleSheet } from "react-native";
 import { useTheme } from "@/providers/theme-provider";
 import { useMenuActions } from "@/providers/menu-provider";
 import { useAuth } from "@/providers/auth-provider";
+import { useNotebooks } from "@/hooks/use-notebooks";
 import { database, Note } from "@/db";
 import { generateId } from "@/lib/generate-id";
 import type { SemanticColors } from "@/theme/tokens";
@@ -20,6 +21,7 @@ const NOTE_LIST_WIDTH = 280;
 export function MainScreen() {
   const { semantic } = useTheme();
   const { user } = useAuth();
+  const { notebooks } = useNotebooks();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
 
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | undefined>();
@@ -56,8 +58,17 @@ export function MainScreen() {
     setSearchVisible(true);
   }, []);
 
+  // A notebook deleted here or by a sync from another device can still be the selected one.
+  // Treat it as unselected: a note created in it would fail the server's notebook foreign key
+  // and block every later sync.
+  const activeNotebookId = notebooks.some((nb) => nb.id === selectedNotebookId)
+    ? selectedNotebookId
+    : undefined;
+  // New Note needs a notebook the user can see it go into; none is highlighted in Trash.
+  const canCreateNote = activeNotebookId !== undefined && user !== null && !showTrash;
+
   const handleNewNote = useCallback(async () => {
-    if (!selectedNotebookId || !user) return;
+    if (!activeNotebookId || !user) return;
     try {
       const noteId = generateId();
       await database.write(async () => {
@@ -65,18 +76,17 @@ export function MainScreen() {
           n._raw.id = noteId;
           n.remoteId = noteId;
           n.userId = user.id;
-          n.notebookId = selectedNotebookId;
+          n.notebookId = activeNotebookId;
           n.title = "Untitled";
           n.content = null;
           n.isTrashed = false;
         });
       });
-      setShowTrash(false);
       setSelectedNoteId(noteId);
     } catch (err) {
       console.error("Failed to create note from menu:", err);
     }
-  }, [selectedNotebookId, user]);
+  }, [activeNotebookId, user]);
 
   const handleNewNotebook = useCallback(() => {
     setSidebarVisible(true);
@@ -100,7 +110,8 @@ export function MainScreen() {
   }, []);
 
   useMenuActions({
-    newNote: handleNewNote,
+    // Disabled, not enabled and doing nothing, while there is nowhere to put a new note.
+    newNote: canCreateNote ? handleNewNote : undefined,
     newNotebook: handleNewNotebook,
     openSearch: handleOpenSearch,
     toggleSidebar: handleToggleSidebar,
@@ -136,7 +147,7 @@ export function MainScreen() {
             <TrashList />
           ) : (
             <NoteList
-              notebookId={selectedNotebookId}
+              notebookId={activeNotebookId}
               selectedNoteId={selectedNoteId}
               onSelectNote={setSelectedNoteId}
             />

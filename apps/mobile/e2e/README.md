@@ -120,8 +120,10 @@ The main navigation difference between platforms:
 - Tests are designed to run **sequentially** (each builds on state from the previous flow)
 - Flow 01 clears app state and logs in fresh; flows 02+ assume prior login
 - Flow 06 is the exception: it clears state and runs **signed out**, so run it on its own
-  (`maestro test apps/mobile/e2e/06-forgot-password.yaml --platform ios -e E2E_TEST_EMAIL=...`)
-  rather than in the middle of the sequence
+  (`maestro test apps/mobile/e2e/06-forgot-password.yaml --platform ios`, no `-e` vars)
+  rather than in the middle of the sequence. It requests the reset for an address with no account,
+  because dev's mailer won't send to the E2E account (see
+  [environments.md](../../../docs/architecture/environments.md#supabase-projects))
 - `android-only/07-auth-callback-link.yaml` also clears state and runs signed out, so run it on its own
   too (`maestro test apps/mobile/e2e/android-only/07-auth-callback-link.yaml --platform android`)
 - Flow 07 only ever **cancels** the account-deletion dialog — it must never tap an enabled

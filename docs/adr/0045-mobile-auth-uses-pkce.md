@@ -4,6 +4,8 @@
 - **Date**: 2026-10-10
 - **Authors**: Jakub Anderwald, Claude
 
+> **Update 2026-10-31**: The mobile client now sends an **S256** challenge, not `plain` ([#686](https://github.com/JakubAnderwald/drafto/issues/686)). `apps/mobile/src/lib/crypto-digest.ts` installs a `crypto.subtle` with a SHA-256-only `digest` backed by expo-crypto, and `supabase.ts` calls it right after `installCryptoRandom()` and before `createClient`. It leaves a runtime that already has `crypto.subtle` untouched. It also installs nothing without `TextEncoder` and `btoa`: supabase-js calls `btoa` on the S256 path without checking for it, so a `subtle` without `btoa` would break sign-in instead of falling back to `plain`. Verifier generation and storage are unchanged, and the server checks each code against the method stored with its own flow, so a reset requested as `plain` before the update still completes. The `subtle` has `digest` only. `supabase.auth.getClaims()` sees `crypto.subtle` and then calls `subtle.importKey` on an asymmetric JWT, which throws a `TypeError`. `getClaims()` returns only auth errors as `{ error }`, so the call rejects instead of falling back to `getUser()`. Nothing on mobile calls it today; add those two methods before anything does. The Neutral bullet below about `plain` describes the state before this update.
+
 ## Context
 
 The mobile client in `apps/mobile/src/lib/supabase.ts` never set `flowType`, so supabase-js used its default, the **implicit** flow. Two flows on mobile hand Supabase a `drafto://` redirect:

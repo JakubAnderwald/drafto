@@ -48,6 +48,10 @@ The invariant is about the **installed React version**, not about one blessed di
   React 19.2 — that produced a compiling, crashing app and is fixed (ADR-0030). It now builds
   from the fossil-derived root above.
 
+- **Native bugs in React Native or a native dependency** can't be fixed with `pnpm patch`
+  while the fossil stands. Patch them at runtime from the app target instead
+  ([ADR-0063](../adr/0063-desktop-native-runtime-patches.md)), and list each patch on #558.
+
 Reminder: **a green compile is not proof.** Only a TestFlight build that opens and renders a
 note validates a desktop build root — including after re-cloning the replica.
 
