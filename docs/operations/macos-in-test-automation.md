@@ -4,6 +4,7 @@ A harness that runs a dark-factory **In Test** scenario against the installed ma
 
 - Code: [`apps/desktop/e2e/in-test/`](../../apps/desktop/e2e/in-test/)
 - First scenario: [`scenarios/458-sync-gating.sh`](../../apps/desktop/e2e/in-test/scenarios/458-sync-gating.sh), for #458 / PR #673. Its first green run was on 2026-10-10 against build 0.4.1 (59): 14 checks (step 0, the scenario's steps and an extra A1b check), 11 PASS, 3 WARN. The WARNs were #675, #676 and a sign-out check that now reads the local database instead of the indicator.
+- [`scenarios/677-pending-indicator.sh`](../../apps/desktop/e2e/in-test/scenarios/677-pending-indicator.sh), for #677 / PR #772. A background sampler records the indicator's `AXHelp` and `db_pending` about every 0.3 s, and each step judges that timeline (`timeline-<step>.tsv` in the run directory). On 2026-11-01 build 0.4.4 (73) passed P0–P4. The negative control on build 72 (`ISSUE= PR=`) failed P1 and P4.
 
 It is not part of the [test matrix](../architecture/testing.md), because it writes to production. Nothing runs it in CI or before a push.
 
@@ -28,6 +29,15 @@ An agent may write or adapt a scenario and run `--preflight`, which is read-only
 - **Session:** the screen unlocked, because a locked console can't be driven or captured.
 
 The Swift helpers (`axq`, `ocr`) are compiled into `apps/desktop/e2e/in-test/bin/` (gitignored) on first use.
+
+## Getting the build from TestFlight
+
+- **TestFlight swaps the bundle in when Drafto quits.** It downloads an update while the app runs and installs it the moment the app exits. So the build on disk can change between two runs. Read it with PlistBuddy (`app_plist CFBundleVersion`).
+- **Install time is the receipt's mtime** (`Contents/_MASReceipt/receipt`). `Info.plist` keeps the mtime it had at build time, so preflight compares the process start with the receipt.
+- **A build that won't open** fails in four ways at once. `open` fails with `-10673`. A dialog says "The beta app … is no longer available. The provisioning profile is invalid". `taskgated-helper` logs `Profile does not have matching hash` and `Disallowing: eu.drafto.mobile`. On 2026-11-01 this happened to build 73 after TestFlight's install-on-quit.
+  - Fix: install another build in TestFlight, then reinstall the one you want from **Previous builds**. Each reinstall registers that build's profile.
+  - Don't retry `open`. Each failure queues one more dialog, and a launch made while they're queued stays suspended (`ps` state `T`). Dismiss them all, kill the suspended process, then open the app again.
+- **TestFlight can be driven:** `bin/axq <TestFlight pid> press <path>` works on its buttons. Unlike in Drafto, AXPress is supported there. Find the paths with `bin/axq <pid> dump`.
 
 ## Running a scenario
 
