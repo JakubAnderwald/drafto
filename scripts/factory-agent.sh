@@ -548,7 +548,11 @@ SUPPORT_ALLOWLIST="${SUPPORT_ALLOWLIST:-jakub@anderwald.info,joanna@anderwald.in
 # PRIMARY checkout, which support-agent.sh runs from, not under $REPO_ROOT: the
 # factory runs from its own volume (ADR-0060), and that checkout's logs/ has no
 # support-state.json, so the default path would read an empty state. Read only.
+# A launchd plist doesn't expand `~`, so a leading `~/` is expanded here, as for
+# the other path overrides. Otherwise the gate's -r test fails and the
+# recorded-reporter check is silently skipped.
 SUPPORT_STATE_FILE="${DRAFTO_SUPPORT_STATE_FILE:-$HOME/code/drafto/logs/support-state.json}"
+case "$SUPPORT_STATE_FILE" in "~/"*) SUPPORT_STATE_FILE="$HOME/${SUPPORT_STATE_FILE#\~/}" ;; esac
 ADMIN_EMAIL="${SUPPORT_ADMIN_EMAIL:-jakub@anderwald.info}"
 OAUTH_FILE="$HOME/drafto-secrets/zoho-oauth.json"
 OAUTH_USER_EMAIL=""
@@ -1126,9 +1130,10 @@ support_forward_filter() {
 # The gate both comment detectors apply. Prints <comments-json> minus the
 # forwards support_forward_filter drops, and logs one line per dropped comment:
 # its id and the reason, never its body or the sender. The failure notice posts
-# the log's tail to a public issue. Given an <issue>, and only when a comment
-# looks like a forward, it first reads the reporter email the support state
-# recorded for that issue. A forward on an issue a non-allowlisted customer
+# the log's tail to a public issue. Each line is written once per daily log
+# file, not once per call (see the loop below). Given an <issue>, and only when
+# a comment looks like a forward, it first reads the reporter email the support
+# state recorded for that issue. A forward on an issue a non-allowlisted customer
 # filed is then never actionable, whatever its marker says. With no <issue>, or
 # a state file it can't read (logged), only the marker is checked, and that
 # still denies a forward by default. Operator comments cost nothing extra: the
@@ -1151,10 +1156,18 @@ gate_support_forwards() {
     logerr "ERROR: support-forward gate: filter failed for #${issue:-?}"
     return 1
   fi
-  local id reason
+  # Once per daily log file, as support-agent.sh does for its unrouted issues.
+  # The detectors run every 5-minute tick, and twice per tick for an In Test
+  # card (has_actionable_feedback, then the sweep). A forward that stays
+  # dropped would otherwise repeat until it filled the 20-line tail the
+  # failure notice posts. A newly dropped comment, or a new reason for an old
+  # one, still logs. `#<issue>:`, `comment <id> ` and `(<reason>)` delimit
+  # every field, so one line can't match another.
+  local id reason msg
   while read -r id reason; do
     [[ -n "$id" ]] || continue
-    logerr "Issue #${issue:-?}: support-forwarded comment $id is not replan or revision feedback ($reason)"
+    msg="Issue #${issue:-?}: support-forwarded comment $id is not replan or revision feedback ($reason)"
+    grep -qF -- "$msg" "${LOG_FILE:-}" 2>/dev/null || logerr "$msg"
   done < <(echo "$result" | jq -r '.dropped[] | "\(.id) \(.reason)"')
   echo "$result" | jq -c '.kept'
 }

@@ -30,10 +30,12 @@ const extract = (name) =>
   `eval "$(awk '/^${name}\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"`;
 
 // logerr is a one-line function, which the awk range above would over-read, so
-// take its line verbatim. SUPPORT_STATE_FILE is the real assignment, so the
-// DRAFTO_SUPPORT_STATE_FILE override is what points the gate at the fixture.
+// take its line verbatim. SUPPORT_STATE_FILE is the real assignment, plus the
+// line that expands a leading `~/`, so the DRAFTO_SUPPORT_STATE_FILE override
+// is what points the gate at the fixture.
 const logerrDef = script.match(/^logerr\(\) \{.*\}$/m)?.[0];
 const stateFileDef = script.match(/^SUPPORT_STATE_FILE=.*$/m)?.[0];
+const stateFileTildeDef = script.match(/^case "\$SUPPORT_STATE_FILE" in .*$/m)?.[0];
 
 const HELPERS = [
   "support_forward_filter",
@@ -67,10 +69,13 @@ const forward = (sender, text) =>
 // Run <body> in /bin/bash (3.2, which launchd runs the factory under) with the
 // gate, the detectors and the real logerr loaded. `node` is wrapped to record
 // every call, then runs the real one, so get-reporter-email reads the fixture
-// support state. `reporters` maps issue → its recorded reporterEmail.
-function run(body, { comments = [], reporters = {}, stateFile } = {}) {
+// support state. `reporters` maps issue → its recorded reporterEmail. `log` is
+// what earlier ticks already wrote to today's log. `stateFromHome` points HOME
+// at the run's dir and the override at `~/support-state.json`.
+function run(body, { comments = [], reporters = {}, stateFile, log = "", stateFromHome } = {}) {
   assert.ok(logerrDef, "could not find logerr() in factory-agent.sh");
   assert.ok(stateFileDef, "could not find SUPPORT_STATE_FILE= in factory-agent.sh");
+  assert.ok(stateFileTildeDef, "could not find the SUPPORT_STATE_FILE ~ expansion");
   const dir = mkdtempSync(join(tmpdir(), "factory-forward-gate-"));
   try {
     const files = {
@@ -79,7 +84,7 @@ function run(body, { comments = [], reporters = {}, stateFile } = {}) {
       comments: join(dir, "comments.json"),
       state: join(dir, "support-state.json"),
     };
-    writeFileSync(files.log, "");
+    writeFileSync(files.log, log);
     writeFileSync(files.calls, "");
     writeFileSync(files.comments, JSON.stringify(comments));
     const issues = Object.fromEntries(
@@ -94,15 +99,16 @@ function run(body, { comments = [], reporters = {}, stateFile } = {}) {
       `COMMENTS_FILE="${files.comments}"`,
       `SUPPORT_ALLOWLIST="${ALLOWLIST}"`,
       stateFileDef,
+      stateFileTildeDef,
       logerrDef,
       'node() { printf "%s\\n" "$*" >> "$CALLS"; command node "$@"; }',
       ...HELPERS.map(extract),
       body,
     ].join("\n");
-    const r = spawnSync("/bin/bash", ["-c", snippet], {
-      encoding: "utf8",
-      env: { ...process.env, DRAFTO_SUPPORT_STATE_FILE: stateFile ?? files.state },
-    });
+    const env = stateFromHome
+      ? { ...process.env, HOME: dir, DRAFTO_SUPPORT_STATE_FILE: "~/support-state.json" }
+      : { ...process.env, DRAFTO_SUPPORT_STATE_FILE: stateFile ?? files.state };
+    const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8", env });
     return {
       status: r.status,
       stdout: r.stdout.trim(),
@@ -301,6 +307,68 @@ describe("support-forward gate, through the comment detectors", () => {
     assert.match(r.log, new RegExp(`comment ${bad.id} .*\\(sender-not-allowlisted\\)`));
   });
 
+  it("expands a leading ~/ in DRAFTO_SUPPORT_STATE_FILE, as launchd won't", () => {
+    const f = forward("jakub@anderwald.info");
+    const r = run(since(), {
+      comments: [f],
+      reporters: { 7: "customer@example.com" },
+      stateFromHome: true,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    // The recorded reporter was read, so the cross-check still ran.
+    assert.deepEqual(JSON.parse(r.stdout), []);
+    assert.match(r.log, new RegExp(`comment ${f.id} .*\\(reporter-not-allowlisted\\)`));
+    assert.doesNotMatch(r.log, /WARNING/);
+    assert.ok(
+      r.calls.includes(`get-reporter-email 7 --state-file ${join(r.dir, "support-state.json")}`),
+      r.calls,
+    );
+  });
+
+  it("logs a dropped forward once per daily log, not on every detector call", () => {
+    const bad = forward("stranger@example.com");
+    const bare = comment(`${PREFIX}\n\n> no marker`);
+    // One In Test tick calls the gate twice (pre-beta check, then the sweep),
+    // and the next tick does it again.
+    const body = [actionable(), since(), actionable(), since(), unacked(), since("17")].join("\n");
+    const r = run(body, { comments: [bad, bare] });
+    assert.equal(r.status, 0, r.stderr);
+    const count = (needle) => r.log.split("\n").filter((l) => l.includes(needle)).length;
+    assert.equal(count(`Issue #7: support-forwarded comment ${bad.id} `), 1, r.log);
+    assert.equal(count(`Issue #7: support-forwarded comment ${bare.id} `), 1, r.log);
+    assert.equal(count(`Issue #17: support-forwarded comment ${bad.id} `), 1, r.log);
+    assert.equal(count(`Issue #17: support-forwarded comment ${bare.id} `), 1, r.log);
+    assert.equal(r.log.trim().split("\n").length, 4, r.log);
+  });
+
+  it("skips a line an earlier tick already wrote today, and only that line", () => {
+    const line = (issue, id, reason) =>
+      `[09:00:00] Issue #${issue}: support-forwarded comment ${id} is not replan or revision feedback (${reason})\n`;
+    const earlier =
+      line(7, 10, "sender-not-allowlisted") +
+      line(17, 100, "sender-not-allowlisted") +
+      line(7, 1000, "no-marker");
+    const stranger = forward("stranger@example.com");
+    const comments = [10, 100, 1000, 1].map((id) => ({ ...stranger, id }));
+    const r = run(since(), { comments, log: earlier });
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), []);
+    const added = r.log.slice(earlier.length);
+    // Already logged for #7 with this reason: skipped.
+    assert.doesNotMatch(added, /comment 10 /);
+    // Logged before only for another issue, another reason, or as a longer id.
+    for (const id of [100, 1000, 1]) {
+      assert.match(
+        added,
+        new RegExp(
+          `Issue #7: support-forwarded comment ${id} .*\\(sender-not-allowlisted\\)$`,
+          "m",
+        ),
+        `comment ${id}`,
+      );
+    }
+  });
+
   it("keeps a stranger's forward from counting as actionable In Test / Testing feedback", () => {
     const cases = [
       [[forward("stranger@example.com", "the button is wrong, redo it")], "NO"],
@@ -398,6 +466,8 @@ describe("support-forward gate wiring in factory-agent.sh", () => {
       stateFileDef,
       'SUPPORT_STATE_FILE="${DRAFTO_SUPPORT_STATE_FILE:-$HOME/code/drafto/logs/support-state.json}"',
     );
+    // The ~ expansion runs straight after it, before anything reads the path.
+    assert.ok(script.includes(`${stateFileDef}\n${stateFileTildeDef}\n`));
     const gate = script.match(/^gate_support_forwards\(\) \{[\s\S]*?\n\}/m)?.[0] ?? "";
     assert.match(gate, /state_file="\$\{SUPPORT_STATE_FILE:-\}"/);
     assert.match(
