@@ -362,6 +362,10 @@ ax_dump > "$RUN_DIR/trash-ax.json" 2> /dev/null
 sleep 1
 settle 15 || fail_step "opening Trash left the indicator at '$(sync_help)'"
 TRASH0=$(db_trashed_live)
+# The loop counts down from the 3 seeded notes; any other baseline would make
+# it press Delete until it gives up, or break the arithmetic in removed().
+[ -n "$TRASH0" ] || fail_step "could not read the local Trash count (DB unreadable)"
+[ "$TRASH0" = 3 ] || fail_step "expected the 3 seeded notes in the local Trash, found $TRASH0"
 # Notes that have left Trash. Unlike a count of `_status = 'deleted'` rows, a
 # push can't undo it: WatermelonDB destroys deleted rows once they are synced.
 removed() {
