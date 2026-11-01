@@ -58,8 +58,9 @@ export function SearchOverlay({ visible, onClose, onSelectNote }: SearchOverlayP
             onChangeText={setQuery}
             placeholder="Search notes..."
             placeholderTextColor={semantic.fgSubtle}
-            // @ts-expect-error -- RN macOS supports onKeyDown but types are incomplete
-            onKeyDown={(e: { nativeEvent: { key: string } }) => {
+            // AppKit turns Escape into cancelOperation:, which a single-line macOS field
+            // reports as an "Escape" onKeyPress, never as onKeyDown.
+            onKeyPress={(e) => {
               if (e.nativeEvent.key === "Escape") {
                 onClose();
               }

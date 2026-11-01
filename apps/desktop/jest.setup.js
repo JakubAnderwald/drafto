@@ -149,6 +149,11 @@ jest.mock("react-native-svg", () => {
   };
 });
 
+// The react-native preset's TextInput mock leaves out setSelection, which the
+// real component has (the find bar puts the caret back after Return)
+const { TextInput } = require("react-native");
+TextInput.prototype.setSelection = jest.fn();
+
 // Silence console.error for act warnings in tests
 const originalError = console.error;
 console.error = (...args) => {
