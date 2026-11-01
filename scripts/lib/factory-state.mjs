@@ -598,6 +598,10 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   "crLastCoveredSha",
   "crCliRuns",
   "crCliFreePassSha",
+  // Hosted-config gate (ADR-0065): hash of the supabase/config.toml that the
+  // hosted-config-applied label vouched for. A rejected write would make the
+  // label vouch for every later version, the hole this field closes.
+  "hostedConfigVouched",
   // Cancelled-check re-run budget. A rejected write leaves the count at zero,
   // so the factory would re-run CI on every tick and never tell the operator.
   "ciRerun",

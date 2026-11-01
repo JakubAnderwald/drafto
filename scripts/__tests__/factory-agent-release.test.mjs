@@ -211,9 +211,10 @@ describe("--release engine wiring", () => {
   });
 
   it("squash-merges via the GitHub API PUT form, not gh pr merge", () => {
+    assert.match(releaseBlock, /MERGE_ARGS=\(-f merge_method=squash\)/);
     assert.match(
       releaseBlock,
-      /gh api --method PUT "repos\/JakubAnderwald\/drafto\/pulls\/\$PR_NUM\/merge" \\?\s*\n?\s*-f merge_method=squash/,
+      /gh api --method PUT "repos\/JakubAnderwald\/drafto\/pulls\/\$PR_NUM\/merge" \\?\s*\n?\s*"\$\{MERGE_ARGS\[@\]\}"/,
     );
     // No actual `gh pr merge` invocation (only the explanatory comment mentions
     // it). A real call would start a line, after optional indentation.

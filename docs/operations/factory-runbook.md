@@ -228,11 +228,12 @@ A dated record of actual phase changes so the current operating phase is auditab
 | ---------- | ------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2026-06-23 | B → C  | Jakub    | Unblock native (mobile/desktop) parity work — notably #537 (forgot-password parity), which the Phase-B web-only scope had blocked at plan time. Phase C implementation code (#535) was already merged. Beta dispatch stays dormant until a later C → D promotion. |
 
-**`--release` runs at Phase B+.** The A→B→C→D phases control implementation _scope_ (web → web+mobile/desktop → beta dispatch); `--release` is the merge step layered on top. Each tick it scans the **Approved** column and, for a card a human dragged there, squash-merges the green PR via the GitHub API (`gh api --method PUT …/merge -f merge_method=squash`) and advances it to **Released** (Vercel auto-deploys main → prod for web). It is bounded by three hard rules:
+**`--release` runs at Phase B+.** The A→B→C→D phases control implementation _scope_ (web → web+mobile/desktop → beta dispatch); `--release` is the merge step layered on top. Each tick it scans the **Approved** column and, for a card a human dragged there, squash-merges the green PR via the GitHub API (`gh api --method PUT …/merge -f merge_method=squash`) and advances it to **Released** (Vercel auto-deploys main → prod for web). It is bounded by four hard rules:
 
 1. It only ever acts on a card a human (or an allowlisted reporter) moved to **Approved** — the Approved drag _is_ the merge-authorisation gate (ADR-0026); the factory never moves a card to Approved itself.
 2. It refuses to merge a PR touching `supabase/migrations/**` until `migration-approved` is on the PR — it leaves the card in Approved and comments once (`<!-- drafto-factory-migration-gate -->`).
-3. It won't merge unless CI is green and the branch is conflict-free (a transient merge error is retried next tick, comment `<!-- drafto-factory-merge-failed -->`). Red CI moves the card back to **In Review** for the fix loop, and required checks GitHub cancelled before any runner picked them up are re-run first. See "Red or cancelled CI on a factory PR" below. A conflict with `main` moves the card back to **In Review** too, checked before the CI gate because a conflicting head gets no CI. See "A PR that conflicts with main" below.
+3. It refuses to merge a PR that changes `supabase/config.toml` until the hosted projects match it. This is the last check before the merge. It leaves the card in Approved, comments once per head SHA, and pins the merge to that SHA. See "Hosted Supabase config gate" below.
+4. It won't merge unless CI is green and the branch is conflict-free (a transient merge error is retried next tick, comment `<!-- drafto-factory-merge-failed -->`). Red CI moves the card back to **In Review** for the fix loop, and required checks GitHub cancelled before any runner picked them up are re-run first. See "Red or cancelled CI on a factory PR" below. A conflict with `main` moves the card back to **In Review** too, checked before the CI gate because a conflicting head gets no CI. See "A PR that conflicts with main" below.
 
 **"CI is green" means the branch-protection _required_ contexts only** — both `--watch` (In Review → In Test) and `--release` (the merge gate) count only failing/pending checks whose context is in `required_status_checks`, fetched once per run (`fetch_required_contexts` → `pr_failing_required` / `pr_pending_required`). An advisory bot like **CodeRabbit** is never a required context, so its red — including its **"Review rate limited"** status when it can't review — never triggers the `--watch` fix loop, blocks the In Test advance, or blocks the merge. Advisory reds are instead surfaced in the In Test hand-off comment for the operator to glance at before Approving. **A review _comment_ is a different thing from a review _check_:** the check status stays advisory and never gates anything, but an unresolved review **thread** is a hard block on the merge (see `--release` below). (Before this, a rate-limited CodeRabbit check would loop `--watch`'s fix path to exhaustion and park the card in Blocked — the #463 failure of 2026-07-22.) When branch protection is unreadable/empty the helpers fall back to counting all checks, so an unknown required set can't silently pass a red PR.
 
@@ -346,6 +347,39 @@ node scripts/lib/state-cli.mjs factory:set-issue-field <n> intestBetaLanes ""   
 ```
 
 Lanes are still skipped up front — with the reason in the In Test comment — when a knob is off, the phase is B, free disk is below `FACTORY_MIN_FREE_DISK_GB`, a build root can't be prepared, or the fossil assertion fails.
+
+## Hosted Supabase config gate
+
+Pre-merge betas run against prod, so a PR that needs a new Redirect URL in the hosted projects must not reach testers before the entry exists. On #685 / PR #778 the betas went out while dev and prod both lacked `?sb_flow_id=*` entries, and their reset links would have opened drafto.eu instead of the app ([ADR-0065](../adr/0065-factory-hosted-config-gate.md)).
+
+For a PR that changes `supabase/config.toml`, `hosted_config_gate` compares the PR head with its merge base on `main`. It runs in three places:
+
+- in **In Review**, as the last check before Testing or In Test;
+- in `intest_dispatch_betas`, before every pre-merge beta;
+- in `--release`, as the last check before the merge, which is then pinned to the checked SHA.
+
+What it checks:
+
+- **Redirect URLs the PR adds.** The gate probes each one on dev and prod with an unauthenticated `/verify` request. Supabase redirects an allowlisted `redirect_to` to itself, and anything else to the project's Site URL.
+- **Anything else it changes**, and Redirect URLs the probe can't sample, need the **`hosted-config-applied`** label on the PR. Comments, spacing and local-only tables such as `[db]` and `[studio]` don't count.
+  - The label covers one version of `config.toml`. If a later commit changes the file, the factory removes the label, logging `removing the label`, and asks again.
+  - The label also overrules an inconclusive check, though never a confirmed missing entry.
+
+A held card stays where it is, with one comment per column (`in-review`, `beta`, `approved`) and head SHA:
+
+- `<!-- drafto-factory-hosted-config-hold:<column>:<sha12> -->` lists each missing entry per project, with a dashboard link.
+- `<!-- drafto-factory-hosted-config-unverified:<column>:<sha12> -->` means a probe failed, or a control probe misbehaved. The gate holds in this case too.
+- A failure to read the merge base or `config.toml` from GitHub holds the card for that tick, with a `WARNING: hosted-config gate:` log line and no comment.
+- A held beta lane shows up in the scenario as skipped with `hosted-config-hold`, and is dispatched on a later tick once the gate passes.
+
+**To clear a hold:**
+
+1. Add the listed entries under Authentication → URL Configuration → Redirect URLs in each project. Keep the existing entries. A prod change needs the operator.
+2. For the label case, apply the other changes in both dashboards, then add `hosted-config-applied` to the PR.
+
+The next cycle re-checks and the card carries on. **Don't use `supabase config push`**: it pushes the whole file, and `config.toml` doesn't configure prod's Resend SMTP.
+
+To run the check yourself, from a checkout of the PR branch: `pnpm hosted-config:check`. It compares `HEAD` with its merge base on `origin/main`, probes both projects, prints JSON, and exits `0` (ok), `3` (hold) or `4` (unknown). To simulate the label, add `--labels hosted-config-applied`. The `--watch` and `--release` logs say `hosted-config gate passed` or `hosted-config gate held PR #<n>`.
 
 ## CodeRabbit CLI gap-fill lane
 
