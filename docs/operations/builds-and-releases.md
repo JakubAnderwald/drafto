@@ -98,6 +98,12 @@ Xcode 27 (installed on the Mac mini on 2026-10-04) breaks every iOS build in two
 
 These files hold Expo public env vars (Supabase URL/anon key, Google iOS URL scheme) and are gitignored. They are **not** in `~/drafto-secrets/` — restore from a personal backup. Worktree copy steps for these files are in [`CLAUDE.md`](../../CLAUDE.md) → "Worktree Workflow".
 
+### macOS TestFlight upload: `CDUploaderStateInfoResumeFilePath` after "UPLOAD SUCCEEDED"
+
+altool sometimes uploads the `.pkg`, prints `UPLOAD SUCCEEDED with no errors`, and then logs `ERROR: … Failed to create URL for 'CDUploaderStateInfoResumeFilePath'. The file doesn't exist.` fastlane fails the upload on that line. Desktop 0.4.4 builds 74 and 76 hit it: the builds were in App Store Connect, but the lane stopped before the release notes, the released-issue comments and the `desktop@` tag.
+
+`mac beta` now treats that one error as spurious if App Store Connect lists the build it just uploaded, under the same build number and version. It polls for up to 10 minutes, logs `altool's error was spurious — continuing`, and finishes the lane. Any other upload error still fails the lane. So does this one if the build never shows up, or if Apple has already marked it `INVALID`.
+
 ### Android build hangs with `OutOfMemoryError: Metaspace`
 
 `expo prebuild --clean` regenerates `android/gradle.properties` with Expo's template `org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m`, and 512 MiB of Metaspace is too little for `bundleRelease`. The symptom is Gradle's _"The Daemon will expire after the build after running out of JVM Metaspace"_, then a failed task (e.g. `:app:compileReleaseArtProfile FAILED`) followed by repeated `Exception in thread "RMI TCP Connection(idle)" java.lang.OutOfMemoryError: Metaspace`. The build does not exit; it goes silent until something kills it. `release:beta:all` runs Android first, so iOS never starts either.
