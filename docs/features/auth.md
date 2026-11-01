@@ -366,7 +366,7 @@ Cancelling the sheet must still delete the account and leave Drafto in that list
 
 3. Apple POSTs the code to the relay, which answers with a small HTML page that opens `eu.drafto.desktop://auth/apple-revocation?code=…&state=…`, automatically and again from a button. A server redirect straight to the scheme would freeze the tab ([ADR-0044](../adr/0044-desktop-auth-web-handoff.md)).
 4. `app-navigator.tsx` sends `auth/apple-revocation` links to `handleAppleRevocationLink` before `handleOAuthCallback`, and `handleOAuthCallback` ignores that path, so an Apple code never reaches `exchangeCodeForSession`. `handleAppleRevocationLink` resolves the pending confirmation once; the second copy of the link, a cold-start link or a stale tab with no pending confirmation is ignored.
-5. The panel calls `onConfirm(appleRevocation)`. The desktop `deleteAccount(appleRevocation?)` re-reads the session, returns `unauthorized` if the user changed (as mobile does), and forwards the grant.
+5. The panel calls `onConfirm(appleRevocation, confirmedUserId)`. The desktop `deleteAccount(appleRevocation?, confirmedUserId?)` re-reads the session, returns `unauthorized` if it no longer belongs to `confirmedUserId` (as mobile does), and forwards the grant. The user-switch check runs only when `confirmedUserId` is passed.
 
 **The relay route** (`apps/web/src/app/auth/apple/revocation/route.ts`, pure helpers in `apps/web/src/lib/apple/revocation-relay.ts`).
 

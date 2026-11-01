@@ -64,9 +64,10 @@ const RETURN_LINK_ID = "return-to-drafto";
  */
 export const APPLE_RELAY_SCRIPT = `(function(){var a=document.getElementById("${RETURN_LINK_ID}");var h=a&&a.getAttribute("href");if(h){window.location.href=h;}})();`;
 
+// The page's CSP rules out `globals.css`, so the button repeats `--color-primary-500` (#4a35e0) as a literal.
 const APPLE_RELAY_STYLE =
   "body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;box-sizing:border-box}" +
-  "a{display:inline-block;margin-top:16px;padding:10px 20px;border-radius:8px;background:#4f46e5;color:#fff;text-decoration:none;font-weight:600}";
+  "a{display:inline-block;margin-top:16px;padding:10px 20px;border-radius:8px;background:#4a35e0;color:#fff;text-decoration:none;font-weight:600}";
 
 function cspHash(source: string): string {
   return `'sha256-${createHash("sha256").update(source, "utf8").digest("base64")}'`;
