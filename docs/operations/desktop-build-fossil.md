@@ -84,7 +84,8 @@ Keychain items are stored the same way in both versions, so a session saved by 1
 Build 77, the first one released after the fix, started signed in, opened a note, and left the lock
 untouched.
 
-Before releasing from a machine, check it against the table above. `git status` must also show
-`apps/desktop/macos/Podfile.lock` unchanged after `pod install`. The committed lock comes from the
-Mac mini's fossil, so a rewrite means that machine's native modules differ. Fix the package in
+Before releasing from a machine, check it against the table above. Then, from `apps/desktop/macos`,
+run `bundle exec pod install --deployment`: it must succeed, because CocoaPods refuses to change
+`Podfile.lock` in that mode. The committed lock comes from the Mac mini's fossil, so a failure there
+means that machine's native modules differ. Fix the package in
 `node_modules`, not the lock.
