@@ -68,7 +68,7 @@ describe("FindBar", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("handles Enter (next), Shift+Enter (prev), and Escape (close)", () => {
+  it("steps to the next match on Return and keeps the input focused", () => {
     const onNext = jest.fn();
     const onPrev = jest.fn();
     const onClose = jest.fn();
@@ -83,11 +83,30 @@ describe("FindBar", () => {
       />,
     );
     const input = screen.getByPlaceholderText("Find in note");
-    fireEvent(input, "keyDown", { nativeEvent: { key: "Enter" } });
-    fireEvent(input, "keyDown", { nativeEvent: { key: "Enter", shiftKey: true } });
-    fireEvent(input, "keyDown", { nativeEvent: { key: "Escape" } });
+    expect(input.props.submitBehavior).toBe("submit");
+    // The mocked TextInput's `focus` is what `inputRef.current.focus()` calls.
+    const [mockInput] = screen.UNSAFE_root.findAll(
+      (node) => node.props.placeholder === "Find in note" && typeof node.type !== "string",
+    );
+    const instance = mockInput.instance as { focus: jest.Mock; setSelection: jest.Mock };
+    instance.focus.mockClear();
+    instance.setSelection.mockClear();
+    fireEvent(input, "submitEditing", { nativeEvent: { text: "foo" } });
     expect(onNext).toHaveBeenCalledTimes(1);
-    expect(onPrev).toHaveBeenCalledTimes(1);
+    expect(onPrev).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(instance.focus).toHaveBeenCalledTimes(1);
+    // Caret at the end, not AppKit's select-all on refocus, so typing refines the query.
+    expect(instance.setSelection).toHaveBeenCalledWith(3, 3);
+  });
+
+  it("closes on Escape, which macOS reports as a keyPress", () => {
+    const onClose = jest.fn();
+    render(<FindBar {...baseProps} onClose={onClose} />);
+    const input = screen.getByPlaceholderText("Find in note");
+    fireEvent(input, "keyPress", { nativeEvent: { key: "a" } });
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent(input, "keyPress", { nativeEvent: { key: "Escape" } });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
