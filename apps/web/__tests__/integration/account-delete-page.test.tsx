@@ -79,7 +79,7 @@ describe("Account deletion page (/account/delete)", () => {
     );
   });
 
-  it("explains Apple revocation on every platform and the manual fallback after cancelling", () => {
+  it("explains Apple revocation on every platform, the Mac controls and the manual fallback", () => {
     render(<DeleteAccountInfoPage />);
 
     const section = screen
@@ -92,7 +92,17 @@ describe("Account deletion page (/account/delete)", () => {
     expect(section).toHaveTextContent(/in a pop-up window on the web/);
     expect(section).toHaveTextContent(/in your browser on Android and Mac/);
     expect(section).toHaveTextContent(/If you cancel that step, your account is still deleted/);
-    expect(section).toHaveTextContent(/If you cancel Apple.s confirmation, you can remove Drafto/);
+    expect(section).toHaveTextContent(
+      /On a Mac, Drafto waits while Apple.s page is open in your browser/,
+    );
+    expect(section).toHaveTextContent(
+      /choose Continue without Apple in Drafto to delete your account anyway, or Cancel to stop and keep your account/,
+    );
+    expect(section).toHaveTextContent(/Ending Drafto.s access is best effort/);
+    expect(section).toHaveTextContent(
+      /If you cancel Apple.s confirmation, or something goes wrong with it or with Drafto.s request to Apple, Drafto can still be listed under your Apple ID\. You can remove it yourself/,
+    );
+    expect(section).toHaveTextContent(/open Settings, tap your name, then Sign-In & Security/);
     expect(section).toHaveTextContent(/Sign-In & Security/);
     expect(within(section).getByRole("link", { name: "account.apple.com" })).toHaveAttribute(
       "href",

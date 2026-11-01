@@ -270,6 +270,11 @@ describe("Privacy policy page", () => {
       screen.getByText(/we then ask Apple to end Drafto.s access to your Apple ID/),
     ).toBeInTheDocument();
     expect(
+      screen.getByText(
+        /Ending that access is best effort: if you skip that step, or something goes wrong with it or with our request to Apple, your account is still deleted/,
+      ),
+    ).toBeInTheDocument();
+    expect(
       screen.getByRole("link", { name: "how to remove Drafto from your Apple ID" }),
     ).toHaveAttribute("href", "/account/delete#sign-in-with-apple");
     expect(rowFor("Apple")).toHaveTextContent(

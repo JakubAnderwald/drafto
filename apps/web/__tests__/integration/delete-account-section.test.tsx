@@ -349,6 +349,68 @@ describe("DeleteAccountSection", () => {
       await waitFor(() => expect(mockLoadAppleIdAuth).toHaveBeenCalled());
     });
 
+    it("keeps confirm disabled until the Apple lookup resolves", async () => {
+      let resolveLookup: (value: unknown) => void = () => {};
+      mockGetUser.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveLookup = resolve;
+        }),
+      );
+      const user = userEvent.setup();
+      render(<DeleteAccountSection />);
+
+      const dialog = await openDialog(user);
+      await user.type(within(dialog).getByLabelText("Type DELETE to confirm"), "DELETE");
+
+      expect(confirmButton(dialog)).toBeDisabled();
+      expect(within(dialog).queryByTestId("delete-account-apple-notice")).not.toBeInTheDocument();
+
+      resolveLookup({ data: { user: APPLE_USER }, error: null });
+
+      expect(await within(dialog).findByText(APPLE_NOTICE)).toBeInTheDocument();
+      expect(confirmButton(dialog)).toBeEnabled();
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it("keeps confirm disabled until the lookup resolves on reopening the dialog", async () => {
+      const user = userEvent.setup();
+      render(<DeleteAccountSection />);
+
+      let dialog = await openDialog(user);
+      await within(dialog).findByTestId("delete-account-apple-notice");
+      await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+      let resolveLookup: (value: unknown) => void = () => {};
+      mockGetUser.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveLookup = resolve;
+        }),
+      );
+      dialog = await openDialog(user);
+      await user.type(within(dialog).getByLabelText("Type DELETE to confirm"), "DELETE");
+      expect(confirmButton(dialog)).toBeDisabled();
+
+      resolveLookup({ data: { user: APPLE_USER }, error: null });
+      await waitFor(() => expect(confirmButton(dialog)).toBeEnabled());
+    });
+
+    it("lets a user confirm without the Apple step when the lookup fails", async () => {
+      mockGetUser.mockRejectedValueOnce(new Error("network"));
+      mockFetch.mockResolvedValueOnce(jsonResponse(200, { success: true }));
+      const user = userEvent.setup();
+      render(<DeleteAccountSection />);
+
+      const dialog = await openDialog(user);
+      await user.type(within(dialog).getByLabelText("Type DELETE to confirm"), "DELETE");
+      await waitFor(() => expect(confirmButton(dialog)).toBeEnabled());
+      expect(within(dialog).queryByTestId("delete-account-apple-notice")).not.toBeInTheDocument();
+      await user.click(confirmButton(dialog));
+
+      await waitFor(() => expect(mockReplace).toHaveBeenCalledWith("/login?deleted=1"));
+      expect(mockGetLoadedAppleIdAuth).not.toHaveBeenCalled();
+      expect(mockFetch.mock.calls[0][1].body).toBeUndefined();
+    });
+
     it("forwards Apple's code with the deletion", async () => {
       const api = fakeAppleApi((state) =>
         Promise.resolve({ authorization: { code: APPLE_CODE, state } }),

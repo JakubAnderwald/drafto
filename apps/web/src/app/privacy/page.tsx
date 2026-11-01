@@ -556,8 +556,9 @@ export default function PrivacyPolicyPage() {
               macOS, Apple asks you to confirm, and we then ask Apple to end Drafto&apos;s access to
               your Apple ID. On the web, Apple&apos;s sign-in script loads from Apple&apos;s servers
               when you open the delete-account dialog, so Apple receives your IP address and browser
-              details. If you skip that step, your account is still deleted, and you can remove
-              Drafto yourself in your Apple ID settings (see{" "}
+              details. Ending that access is best effort: if you skip that step, or something goes
+              wrong with it or with our request to Apple, your account is still deleted, and you can
+              remove Drafto yourself in your Apple ID settings (see{" "}
               <Link href="/account/delete#sign-in-with-apple">
                 how to remove Drafto from your Apple ID
               </Link>

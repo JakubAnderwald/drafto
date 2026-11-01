@@ -11,9 +11,20 @@ export interface AppleDeletionConfirmation {
   applies: boolean;
   /** The Apple-linked user the step was decided for, so the flow can check it did not change. */
   userId: string | null;
+  /**
+   * False while the user lookup that decides `applies` is still running. The
+   * dialog must not confirm before then, or an Apple-linked user could delete
+   * without the notice and without Apple's confirmation.
+   */
+  ready: boolean;
 }
 
-const NO_APPLE_STEP: AppleDeletionConfirmation = { applies: false, userId: null };
+interface AppleUserLookup {
+  settled: boolean;
+  appleUserId: string | null;
+}
+
+const LOOKUP_PENDING: AppleUserLookup = { settled: false, appleUserId: null };
 
 /**
  * Whether deleting the account should first ask Apple to confirm, so the server
@@ -26,7 +37,7 @@ const NO_APPLE_STEP: AppleDeletionConfirmation = { applies: false, userId: null 
  */
 export function useAppleDeletionConfirmation(open: boolean): AppleDeletionConfirmation {
   const onAppleOrigin = usePageOrigin() === APPLE_REVOCATION_ORIGIN;
-  const [appleUserId, setAppleUserId] = useState<string | null>(null);
+  const [lookup, setLookup] = useState<AppleUserLookup>(LOOKUP_PENDING);
 
   useEffect(() => {
     if (!open || !onAppleOrigin) return;
@@ -37,23 +48,31 @@ export function useAppleDeletionConfirmation(open: boolean): AppleDeletionConfir
         ({ data }) => {
           if (cancelled) return;
           const user = data.user;
-          setAppleUserId(user && hasAppleIdentity(user) ? user.id : null);
+          setLookup({
+            settled: true,
+            appleUserId: user && hasAppleIdentity(user) ? user.id : null,
+          });
         },
         () => {
           // Without the user there is no Apple step; the deletion still works.
-          if (!cancelled) setAppleUserId(null);
+          if (!cancelled) setLookup({ settled: true, appleUserId: null });
         },
       );
     return () => {
       cancelled = true;
+      // The next time the dialog opens, it waits for a fresh lookup.
+      setLookup(LOOKUP_PENDING);
     };
   }, [open, onAppleOrigin]);
 
-  const applies = open && onAppleOrigin && appleUserId !== null;
+  const ready = !open || !onAppleOrigin || lookup.settled;
+  const applies = open && onAppleOrigin && lookup.appleUserId !== null;
 
   useEffect(() => {
     if (applies) void loadAppleIdAuth();
   }, [applies]);
 
-  return applies ? { applies, userId: appleUserId } : NO_APPLE_STEP;
+  return applies
+    ? { applies, userId: lookup.appleUserId, ready }
+    : { applies: false, userId: null, ready };
 }

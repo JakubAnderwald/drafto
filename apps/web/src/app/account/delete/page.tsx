@@ -135,12 +135,18 @@ export default function DeleteAccountInfoPage() {
             your Apple ID. If you cancel that step, your account is still deleted.
           </p>
           <p>
-            If you cancel Apple&apos;s confirmation, you can remove Drafto from your Apple ID
-            yourself. On an iPhone or iPad, open <strong>Settings</strong>, tap your name, then{" "}
-            <strong>Sign-In &amp; Security</strong> and <strong>Sign in with Apple</strong>, choose
-            Drafto and stop using your Apple ID with it. On any device, sign in at{" "}
-            <a href="https://account.apple.com">account.apple.com</a> and do the same under{" "}
-            <strong>Sign-In and Security</strong>.
+            On a Mac, Drafto waits while Apple&apos;s page is open in your browser. If you close
+            that page without confirming, choose <strong>Continue without Apple</strong> in Drafto
+            to delete your account anyway, or <strong>Cancel</strong> to stop and keep your account.
+          </p>
+          <p>
+            Ending Drafto&apos;s access is best effort. If you cancel Apple&apos;s confirmation, or
+            something goes wrong with it or with Drafto&apos;s request to Apple, Drafto can still be
+            listed under your Apple ID. You can remove it yourself: on an iPhone or iPad, open{" "}
+            <strong>Settings</strong>, tap your name, then <strong>Sign-In &amp; Security</strong>{" "}
+            and <strong>Sign in with Apple</strong>, choose Drafto and stop using your Apple ID with
+            it. On any device, sign in at <a href="https://account.apple.com">account.apple.com</a>{" "}
+            and do the same under <strong>Sign-In and Security</strong>.
           </p>
         </section>
 
