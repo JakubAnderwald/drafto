@@ -1,4 +1,10 @@
-import { APP_SCHEME_PREFIX, parseAppDeepLink } from "@/lib/app-deep-link";
+import {
+  APP_SCHEME_PREFIX,
+  PKCE_FLOW_ID_PARAM,
+  type AppDeepLink,
+  parseAppDeepLink,
+  readPkceFlowId,
+} from "@/lib/app-deep-link";
 
 describe("parseAppDeepLink", () => {
   it("only accepts the app's own scheme", () => {
@@ -49,5 +55,41 @@ describe("parseAppDeepLink", () => {
 
     expect(link?.path).toBe("reset-password");
     expect(link?.params.size).toBe(0);
+  });
+});
+
+describe("readPkceFlowId", () => {
+  const flowIdOf = (url: string) => readPkceFlowId(parseAppDeepLink(url) as AppDeepLink);
+
+  it("reads auth-js's reserved sb_flow_id param", () => {
+    expect(PKCE_FLOW_ID_PARAM).toBe("sb_flow_id");
+  });
+
+  it("reads the flow id from the query, next to the code Supabase appends", () => {
+    expect(flowIdOf("drafto://reset-password?code=abc&sb_flow_id=0123abcd")).toBe("0123abcd");
+  });
+
+  it("reads it from the fragment too", () => {
+    expect(flowIdOf("drafto://auth/callback?code=abc#sb_flow_id=0123abcd")).toBe("0123abcd");
+  });
+
+  it("decodes it like any other param", () => {
+    expect(flowIdOf("drafto://auth/callback?sb_flow_id=flow%2Did")).toBe("flow-id");
+  });
+
+  it.each(["drafto://reset-password?code=abc&sb_flow_id=", "drafto://reset-password?sb_flow_id"])(
+    "treats an empty flow id as none: %s",
+    (url) => {
+      expect(flowIdOf(url)).toBeNull();
+    },
+  );
+
+  it("returns null when the link carries none", () => {
+    expect(flowIdOf("drafto://reset-password?code=abc")).toBeNull();
+  });
+
+  it("passes an id auth-js would reject through unchanged, for auth-js to refuse", () => {
+    // Validating here and dropping the id would fall back to another flow's verifier.
+    expect(flowIdOf("drafto://reset-password?code=abc&sb_flow_id=../x")).toBe("../x");
   });
 });

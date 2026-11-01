@@ -9,6 +9,14 @@
 
 export const APP_SCHEME_PREFIX = "drafto://";
 
+/**
+ * The query param auth-js appends to a PKCE redirect when
+ * `experimental.appendPkceFlowIdToRedirects` is on (`src/lib/supabase.ts`). It
+ * names the verifier slot the flow stored when it started, so the callback can
+ * be exchanged with its own verifier after a newer flow has started.
+ */
+export const PKCE_FLOW_ID_PARAM = "sb_flow_id";
+
 export interface AppDeepLink {
   /** Path after the scheme, lower-cased, without leading or trailing slashes. */
   path: string;
@@ -60,4 +68,16 @@ export function parseAppDeepLink(url: string): AppDeepLink | null {
   parseParams(fragment, params);
 
   return { path: rawPath.replace(/^\/+|\/+$/g, "").toLowerCase(), params };
+}
+
+/**
+ * The PKCE flow id a redirect carries, or `null` when it has none: the flow was
+ * started by a build without the flag, or the link is forged.
+ *
+ * Returned as-is, not validated: auth-js checks the shape itself, and fails an
+ * unusable id without trying another flow's verifier. A mismatched verifier
+ * would burn the single-use code.
+ */
+export function readPkceFlowId(link: AppDeepLink): string | null {
+  return link.params.get(PKCE_FLOW_ID_PARAM) || null;
 }

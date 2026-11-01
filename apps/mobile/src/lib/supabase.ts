@@ -44,6 +44,15 @@ export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
     // only the `code_verifier` in this device's SecureStore can redeem. They never
     // carry session tokens, which any website could forge into a `drafto://` link.
     flowType: "pkce",
+    // auth-js keeps one verifier per pending PKCE flow (up to 5), and this flag
+    // appends that flow's id to the redirect as `sb_flow_id`. The deep-link
+    // handlers pass it back to `exchangeCodeForSession`, so a pending reset or
+    // Apple sign-in still completes after a newer flow has started on this
+    // device. Supabase matches redirect URLs including the query string, so
+    // both hosted projects' Redirect URLs must allow `drafto://reset-password?sb_flow_id=*`
+    // and `drafto://auth/callback?sb_flow_id=*`. Without them Supabase drops
+    // the redirect for the Site URL (docs/features/auth.md, ADR-0045).
+    experimental: { appendPkceFlowIdToRedirects: true },
   },
   global: {
     headers: { "x-drafto-client": clientTag },

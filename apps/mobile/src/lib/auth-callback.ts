@@ -8,9 +8,13 @@
  * session resolved as "dismiss" because the app came to the foreground before the
  * redirect arrived. Both copies go through `completeAuthCallback`, which
  * exchanges each code once.
+ *
+ * The redirect carries the PKCE flow id (`sb_flow_id`) next to the code, and the
+ * exchange passes it on. The code then meets the verifier its own sign-in
+ * stored, even if a password reset was requested after the sign-in started.
  */
 
-import { parseAppDeepLink } from "@/lib/app-deep-link";
+import { type AppDeepLink, parseAppDeepLink, readPkceFlowId } from "@/lib/app-deep-link";
 import { clearAuthCallbackError, reportAuthCallbackError } from "@/lib/auth-callback-errors";
 import { supabase } from "@/lib/supabase";
 
@@ -54,9 +58,13 @@ function browserSessionsIdle(): Promise<void> {
   return new Promise((resolve) => idleWaiters.push(resolve));
 }
 
-async function exchangeCode(code: string): Promise<AuthCallbackResult> {
+async function exchangeCode(code: string, flowId: string | null): Promise<AuthCallbackResult> {
   try {
-    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    // With a flow id, auth-js reads only that flow's verifier and never falls
+    // back to another one. Without it, the call stays exactly as before.
+    const { error } = flowId
+      ? await supabase.auth.exchangeCodeForSession(code, { flowId })
+      : await supabase.auth.exchangeCodeForSession(code);
     if (!error) {
       clearAuthCallbackError();
     }
@@ -66,10 +74,11 @@ async function exchangeCode(code: string): Promise<AuthCallbackResult> {
   }
 }
 
-function resolveCallback(params: Map<string, string>): Promise<AuthCallbackResult> {
+function resolveCallback(link: AppDeepLink): Promise<AuthCallbackResult> {
+  const { params } = link;
   const code = params.get("code");
   if (code) {
-    return exchangeCode(code);
+    return exchangeCode(code, readPkceFlowId(link));
   }
 
   // No code: Supabase or Apple sent an error back.
@@ -98,7 +107,7 @@ export function completeAuthCallback(url: string): Promise<AuthCallbackResult> |
   const key = link.params.get("code") || url;
   let outcome = outcomes.get(key);
   if (!outcome) {
-    outcome = resolveCallback(link.params);
+    outcome = resolveCallback(link);
     outcomes.set(key, outcome);
   }
   return outcome;
