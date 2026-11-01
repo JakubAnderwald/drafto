@@ -1,4 +1,4 @@
-import { parseAppDeepLink } from "@/lib/app-deep-link";
+import { parseAppDeepLink, readPkceFlowId } from "@/lib/app-deep-link";
 import { supabase } from "@/lib/supabase";
 
 /**
@@ -19,6 +19,15 @@ import { supabase } from "@/lib/supabase";
  * requested on this phone can only be completed on this phone. The request
  * screen says so.
  *
+ * auth-js keeps one verifier per pending flow, and the redirect carries that
+ * flow's id as `sb_flow_id` (`experimental.appendPkceFlowIdToRedirects` in
+ * `src/lib/supabase.ts`). The exchange passes it on, so a flow started on this
+ * device after the reset (an Apple sign-in on Android, a sign-up, a reset for
+ * another account) does not spoil this link. A second reset for the same address
+ * still does: Supabase ties the first email's code to the newer request on the
+ * server. A link without a flow id falls back to the most recent verifier, as
+ * before.
+ *
  * The redirect target is `drafto://reset-password`, i.e. the Expo Router path of
  * `app/(auth)/reset-password.tsx` (route groups are not part of the URL). A cold
  * start therefore lands on the reset screen natively instead of Expo Router's
@@ -38,6 +47,11 @@ const RECOVERY_PATHS = new Set(["reset-password", "auth/recovery"]);
 export interface RecoveryLink {
   /** PKCE authorization code, when present. Session tokens in the URL are never read. */
   code: string | null;
+  /**
+   * PKCE flow id (`sb_flow_id`) naming the verifier this reset stored, when the
+   * redirect carries one.
+   */
+  flowId: string | null;
   /** Message Supabase returned instead of credentials (expired or already-used link). */
   errorMessage: string | null;
 }
@@ -88,6 +102,7 @@ export function parseRecoveryLink(url: string): RecoveryLink | null {
   const { params } = parts;
   return {
     code: params.get("code") || null,
+    flowId: readPkceFlowId(parts),
     errorMessage: params.get("error_description") || params.get("error") || null,
   };
 }
@@ -104,7 +119,11 @@ async function establishRecoverySession(link: RecoveryLink): Promise<string | nu
   if (!link.code) return MISSING_CREDENTIALS_MESSAGE;
 
   try {
-    const { error } = await supabase.auth.exchangeCodeForSession(link.code);
+    // With a flow id, auth-js reads only that flow's verifier and never falls
+    // back to another one. Without it, the call stays exactly as before.
+    const { error } = link.flowId
+      ? await supabase.auth.exchangeCodeForSession(link.code, { flowId: link.flowId })
+      : await supabase.auth.exchangeCodeForSession(link.code);
     return error ? describeExchangeError(error) : null;
   } catch (error) {
     return error instanceof Error ? error.message : EXCHANGE_FAILED_MESSAGE;

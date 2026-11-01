@@ -65,11 +65,27 @@ describe("parseRecoveryLink", () => {
   });
 
   it("extracts a PKCE code from the query string", () => {
-    expect(parseRecoveryLink(PKCE_LINK)).toEqual({ code: "pkce-123", errorMessage: null });
+    expect(parseRecoveryLink(PKCE_LINK)).toEqual({
+      code: "pkce-123",
+      flowId: null,
+      errorMessage: null,
+    });
+  });
+
+  it("extracts the PKCE flow id that names this reset's verifier", () => {
+    expect(parseRecoveryLink(`${PKCE_LINK}&sb_flow_id=flow-a`)).toEqual({
+      code: "pkce-123",
+      flowId: "flow-a",
+      errorMessage: null,
+    });
   });
 
   it("never reads session tokens, so a forged token link carries no credentials", () => {
-    expect(parseRecoveryLink(TOKEN_LINK)).toEqual({ code: null, errorMessage: null });
+    expect(parseRecoveryLink(TOKEN_LINK)).toEqual({
+      code: null,
+      flowId: null,
+      errorMessage: null,
+    });
   });
 
   it("decodes the error description Supabase returns for an expired link", () => {
@@ -92,6 +108,7 @@ describe("parseRecoveryLink", () => {
   it("treats an empty code as no code", () => {
     expect(parseRecoveryLink("drafto://reset-password?code=")).toEqual({
       code: null,
+      flowId: null,
       errorMessage: null,
     });
   });
@@ -105,6 +122,7 @@ describe("parseRecoveryLink", () => {
   it("survives a malformed percent-escape instead of throwing", () => {
     expect(parseRecoveryLink("drafto://reset-password?code=%zz")).toEqual({
       code: "%zz",
+      flowId: null,
       errorMessage: null,
     });
   });
@@ -112,6 +130,7 @@ describe("parseRecoveryLink", () => {
   it("reports no credentials when the link carries none", () => {
     expect(parseRecoveryLink("drafto://reset-password")).toEqual({
       code: null,
+      flowId: null,
       errorMessage: null,
     });
   });
@@ -157,6 +176,22 @@ describe("completeRecoveryFromUrl", () => {
     expect(mockExchangeCodeForSession).toHaveBeenCalledWith("pkce-123");
     expect(mockSetSession).not.toHaveBeenCalled();
   });
+
+  it("exchanges the code with its own flow's verifier when the link names the flow", async () => {
+    // A second reset request, or an Apple sign-in on Android, may have started since.
+    await completeRecoveryFromUrl(`${RECOVERY_REDIRECT_URL}?code=pkce-123&sb_flow_id=flow-a`);
+
+    expect(mockExchangeCodeForSession).toHaveBeenCalledWith("pkce-123", { flowId: "flow-a" });
+  });
+
+  it.each([PKCE_LINK, `${PKCE_LINK}&sb_flow_id=`])(
+    "keeps the single-argument exchange, and so the newest verifier, without a flow id: %s",
+    async (url) => {
+      await completeRecoveryFromUrl(url);
+
+      expect(mockExchangeCodeForSession.mock.calls).toEqual([["pkce-123"]]);
+    },
+  );
 
   it.each([TOKEN_LINK, `${RECOVERY_REDIRECT_URL}?access_token=AAA&refresh_token=RRR`])(
     "never signs in with session tokens taken from the URL: %s",
@@ -409,6 +444,17 @@ describe("createRecoveryLinkHandler", () => {
     await flush();
 
     expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats the same code with a flow id as a repeat too", async () => {
+    const handler = createRecoveryLinkHandler();
+
+    handler.handle(`${linkFor("spent")}&sb_flow_id=flow-a`);
+    await flush();
+    handler.handle(linkFor("spent"));
+    await flush();
+
+    expect(mockExchangeCodeForSession.mock.calls).toEqual([["spent", { flowId: "flow-a" }]]);
   });
 
   it("still handles a different link after a finished one", async () => {

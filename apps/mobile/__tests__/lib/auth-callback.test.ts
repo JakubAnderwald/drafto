@@ -58,6 +58,25 @@ describe("completeAuthCallback", () => {
     expect(mockExchangeCodeForSession).toHaveBeenCalledWith(code);
   });
 
+  it("exchanges the code with its own sign-in's verifier when the callback names the flow", async () => {
+    // A password reset may have been requested while the user was on Apple's page.
+    const code = freshCode();
+
+    expect(
+      await completeAuthCallback(`drafto://auth/callback?code=${code}&sb_flow_id=flow-b`),
+    ).toEqual({ error: null });
+
+    expect(mockExchangeCodeForSession.mock.calls).toEqual([[code, { flowId: "flow-b" }]]);
+  });
+
+  it("keeps the single-argument exchange for an empty flow id", async () => {
+    const code = freshCode();
+
+    await completeAuthCallback(`drafto://auth/callback?code=${code}&sb_flow_id=`);
+
+    expect(mockExchangeCodeForSession.mock.calls).toEqual([[code]]);
+  });
+
   it("remembers a failed exchange instead of retrying a spent code", async () => {
     const code = freshCode();
     mockExchangeCodeForSession.mockResolvedValue({ data: {}, error: { message: "flow expired" } });
@@ -117,6 +136,28 @@ describe("claimAuthCallbackDelivery (the router's copy)", () => {
     expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(1);
     expect(mockExchangeCodeForSession).toHaveBeenCalledWith(code);
     expect(getAuthCallbackError()).toBeNull();
+  });
+
+  it("passes the flow id from a cold-start delivery", async () => {
+    // Android killed the app on Apple's page, so the router's copy is the only one.
+    const code = freshCode();
+
+    claimAuthCallbackDelivery(`drafto://auth/callback?code=${code}&sb_flow_id=flow-b`);
+    await settle();
+
+    expect(mockExchangeCodeForSession.mock.calls).toEqual([[code, { flowId: "flow-b" }]]);
+  });
+
+  it("exchanges once when the session and the router both get a redirect with a flow id", async () => {
+    const url = `drafto://auth/callback?code=${freshCode()}&sb_flow_id=flow-b`;
+
+    const inSession = await withBrowserSignIn(async () => {
+      claimAuthCallbackDelivery(url);
+      return takeAuthCallback(url);
+    });
+
+    expect(inSession).toEqual({ error: null });
+    expect(mockExchangeCodeForSession).toHaveBeenCalledTimes(1);
   });
 
   it("exchanges a duplicate delivery once", async () => {
