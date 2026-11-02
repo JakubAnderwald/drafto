@@ -27,8 +27,9 @@
 > - **Unmergeable:** a lockfile-only override edit aborts every install with
 >   `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` and fails the Vercel preview (#609).
 >
-> React still moves the deliberate way: edit `pnpm.overrides`, regenerate the lockfile, verify
-> (#441, #610). Ignoring it doesn't conflict with decision 5, which forbids letting React silently
+> React still moves the deliberate way: edit `pnpm.overrides`, set every workspace's React
+> declarations to the same versions (the alignment test fails otherwise), regenerate the lockfile,
+> verify (#441, #610). Ignoring it doesn't conflict with decision 5, which forbids letting React silently
 > rot, not suppressing a mechanism that can't move it.
 >
 > The same change ignores `react-native-macos` minor and major bumps. Patches still flow. A minor
