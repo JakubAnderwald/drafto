@@ -22,6 +22,8 @@ cd apps/desktop && bundle install
 pnpm release:beta
 ```
 
+A normal release builds merged `main`, because the lane tags the commit and pushes the tag. To build an unmerged branch for testing, run `DRAFTO_INTEST_ISSUE=<issue> pnpm release:beta`. The lane then skips the tag and posts the build number on the card.
+
 The Fastfile's `build_and_submit` checks two things before CocoaPods runs:
 
 - **Dependency preflight.** The installed `node_modules/react-native-macos` must equal the version

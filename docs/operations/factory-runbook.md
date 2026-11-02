@@ -269,28 +269,46 @@ A card in **In Test** needs a build a human can actually install. `--watch` ther
 >
 > Until #558 the desktop root was a clonefile replica of the React 19.1 fossil and must never be installed into. That rule is retired ([ADR-0067](../adr/0067-desktop-moves-to-react-native-macos-0-83.md)). The root now seeds from the caller's checkout and runs `pnpm install` like the mobile root. Before spawning the lane, `assertDesktopDeps()` in `dispatch-release.mjs` checks that the root's installed `react-native-macos` equals the version `apps/desktop/package.json` declares and that React is 19.2.x. A mismatch refuses the lane loudly, and the refusal is reported on the issue. The Fastfile's dependency preflight checks the same thing again before CocoaPods.
 
-**One-time desktop validation before `FACTORY_INTEST_BETA_DESKTOP=1`.** A green compile is not proof; only an installed build that opens a note is. Run it with the factory idle, so no lane holds `drafto-beta-desktop.lock`.
+**One-time desktop validation before `FACTORY_INTEST_BETA_DESKTOP=1`.** A green compile is not proof; only an installed build that opens a note is. Two schedulers reset this root: the factory's lanes, and `nightly-support.sh` at 00:03. An idle factory therefore isn't enough.
+
+The block below prepares the root with the factory's own `ensure_beta_build_root`, so it validates the root exactly as a lane gets it:
+
+- **Preparation.** It resets the root to `origin/main`, seeds and installs it, and copies the env files from the factory checkout, as for a lane.
+- **The lock.** It takes the root's lock with the pid of the `bash` process that runs the block. While the block runs, both schedulers skip the root. The lock dies with that process, Ctrl-C included, and the schedulers reap a lock whose pid is gone, so there is nothing to clean up by hand.
+- **A busy root.** If a live lane holds the lock, the block stops at once with `in use by pid N`. Run it again once that lane has finished. Don't delete the lock yourself.
+- **Versions.** It prints the installed `react-native-macos` and React versions. The first must equal the version `apps/desktop/package.json` pins, and the second must be 19.2.x. The lane's dependency preflight refuses a mismatch before CocoaPods anyway.
+- **The log.** It writes to `~/drafto-desktop-validation.log`.
 
 ```bash
-ROOT=/Volumes/DraftoFactory/drafto-beta-desktop
-[ -e "$ROOT" ] || git -C /Volumes/DraftoFactory/drafto-factory worktree add --detach "$ROOT" origin/main
-cd "$ROOT" && git fetch origin main && git reset --hard origin/main
-pnpm install
-node -p "require('./node_modules/react-native-macos/package.json').version"   # must equal apps/desktop/package.json's pin
-node -p "require('./node_modules/react/package.json').version"                # must print 19.2.x
-bash scripts/worktree-bootstrap.sh
-cd apps/desktop && bundle install && pnpm release:beta
+cd /Volumes/DraftoFactory/drafto-factory && git fetch origin main
+bash -c "$(cat <<'EOF'
+set -uo pipefail
+REPO_ROOT=/Volumes/DraftoFactory/drafto-factory
+SCRIPT_DIR=$REPO_ROOT/scripts
+LOG_FILE=$HOME/drafto-desktop-validation.log
+INSTALL_TIMEOUT_SEC=1800
+DRAFTO_DESKTOP_BUILD_ROOT=/Volumes/DraftoFactory/drafto-beta-desktop
+log() { echo "$*" | tee -a "$LOG_FILE"; }
+logerr() { echo "$*" | tee -a "$LOG_FILE" >&2; }
+source "$SCRIPT_DIR/lib/beta-build-root.sh"
+trap 'release_beta_build_root desktop' EXIT
+ROOT=$(ensure_beta_build_root desktop "$(git -C "$REPO_ROOT" rev-parse origin/main)") || exit 1
+cd "$ROOT" || exit 1
+node -p "require('./node_modules/react-native-macos/package.json').version"
+node -p "require('./node_modules/react/package.json').version"
+cd apps/desktop && pnpm release:beta
+EOF
+)"
 ```
 
-Then install that TestFlight build and run the verifier, which launches the app rather than only inspecting its bundle:
+Then install that TestFlight build and run the verifier, which launches the app rather than only inspecting its bundle. Run it from the factory checkout, not the build root, because the schedulers may reset the root once the block above has ended.
+
+- **The password** is not an argument, because argv is world-readable via `ps`. Supply it in the env var, or leave the variable out and the script prompts for it silently.
+- **Production.** The verifier signs in to production, so it asks you to type `sign in to production`. To run it unattended, also set `DRAFTO_VERIFY_CONFIRM='sign in to production'`.
 
 ```bash
-cd "$ROOT"   # the preceding block leaves you in apps/desktop
-# The password is NOT an argument (argv is world-readable via `ps`): supply it
-# via the env var, or omit it and the script prompts silently.
+cd /Volumes/DraftoFactory/drafto-factory
 DRAFTO_VERIFY_PASSWORD='...' apps/desktop/scripts/verify-testflight-build.sh <email>
-# It signs in to PRODUCTION, so it asks you to type "sign in to production".
-# Unattended: also set DRAFTO_VERIFY_CONFIRM='sign in to production'.
 ```
 
 Test 6 is the launch check: it opens the app, requires it to survive 15 s, and fails on any new crash report. A React/JSI mismatch dies right after launch, and everything before test 6 passes on such a build, because the "login" test is a `curl` against Supabase rather than the app signing in.

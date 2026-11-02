@@ -2881,18 +2881,34 @@ intest_dispatch_betas() {
   # primary checkout (a `git checkout` there would move the operator's working
   # tree onto a PR branch) and never in a factory build root (the factory
   # hard-resets those). Desktop installs like mobile since ADR-0067.
+  #
+  # With both natives skipped the tester runs both commands, one after the
+  # other and often in one shell, so they share ONE worktree. Each starts from
+  # its checkout's top level (the first leaves the shell in apps/mobile) and
+  # reuses ../drafto-<n> when it exists. Inside it, the command fetches the PR
+  # branch and checks out exactly what it fetched (FETCH_HEAD, detached), so it
+  # builds the current PR head:
+  #   - after an earlier In Test round, or a rebase;
+  #   - when the shell started in another repo.
+  # Detached also means no local branch to go stale, and no clash with the
+  # factory's own worktree, which has factory/issue-<n> checked out.
+  # DRAFTO_INTEST_ISSUE marks it a pre-merge build, as dispatch-premerge does:
+  # the lane posts the build number on the card and never tags the unmerged
+  # commit as a release.
   manual=$(jq -nc --arg skipped "$skipped" --arg issue "$issue_num" '
-    [ ($skipped | split(",") | .[] | select(length > 0) | split(":")[0]) ]
+    ("cd \"$(git rev-parse --show-toplevel)\"" +
+     " && { [ -d ../drafto-" + $issue + " ] || git worktree add --detach ../drafto-" + $issue + "; }" +
+     " && cd ../drafto-" + $issue + " && git fetch origin factory/issue-" + $issue +
+     " && git checkout --detach FETCH_HEAD" +
+     " && pnpm install && bash scripts/worktree-bootstrap.sh") as $setup
+    | [ ($skipped | split(",") | .[] | select(length > 0) | split(":")[0]) ]
     | map(if . == "desktop" then
             { id: ., command:
-              ("git worktree add ../drafto-" + $issue + " factory/issue-" + $issue +
-               " && cd ../drafto-" + $issue + " && pnpm install && bash scripts/worktree-bootstrap.sh" +
-               " && cd apps/desktop && bundle install && pnpm release:beta") }
+              ($setup + " && cd apps/desktop && bundle install && DRAFTO_INTEST_ISSUE=" + $issue +
+               " pnpm release:beta") }
           else
             { id: ., command:
-              ("git worktree add ../drafto-" + $issue + " factory/issue-" + $issue +
-               " && cd ../drafto-" + $issue + " && pnpm install && bash scripts/worktree-bootstrap.sh" +
-               " && cd apps/mobile && pnpm release:beta:all") }
+              ($setup + " && cd apps/mobile && DRAFTO_INTEST_ISSUE=" + $issue + " pnpm release:beta:all") }
           end)' 2>/dev/null || echo "[]")
 
   skipped_json=$(jq -nc --arg skipped "$skipped" '
@@ -3113,7 +3129,7 @@ intest_fallback_comment() {
       # the operator which switch to flip; there's more than one.
       desktop_skip=$(echo "${beta:-{\}}" | jq -r '[.skipped[]? | select(.id == "desktop") | .reason] | first // empty' 2>/dev/null || echo "")
       build_note="$build_note
-- **macOS** — no TestFlight build was dispatched for this PR${desktop_skip:+ (\`$desktop_skip\`)}. To test it on macOS, ask the operator for a pre-merge beta ([Pre-merge beta dispatch (In Test)](https://github.com/JakubAnderwald/drafto/blob/main/docs/operations/factory-runbook.md#pre-merge-beta-dispatch-in-test) lists the switches), or build one yourself from a worktree of \`factory/issue-$issue_num\`: \`pnpm install\`, \`bash scripts/worktree-bootstrap.sh\`, then \`cd apps/desktop && bundle install && pnpm release:beta\`. Don't \`git checkout\` the branch in \`${PRIMARY_CHECKOUT_ROOT:-/Users/jakub/code/drafto}\` (the operator's working tree), and **never** build in a factory build root: the factory hard-resets those."
+- **macOS** — no TestFlight build was dispatched for this PR${desktop_skip:+ (\`$desktop_skip\`)}. To test it on macOS, ask the operator for a pre-merge beta ([Pre-merge beta dispatch (In Test)](https://github.com/JakubAnderwald/drafto/blob/main/docs/operations/factory-runbook.md#pre-merge-beta-dispatch-in-test) lists the switches), or build one yourself from a worktree of \`factory/issue-$issue_num\`: \`pnpm install\`, \`bash scripts/worktree-bootstrap.sh\`, then \`cd apps/desktop && bundle install && DRAFTO_INTEST_ISSUE=$issue_num pnpm release:beta\` (the variable keeps the lane from tagging the unmerged commit as a release). Don't \`git checkout\` the branch in \`${PRIMARY_CHECKOUT_ROOT:-/Users/jakub/code/drafto}\` (the operator's working tree), and **never** build in a factory build root: the factory hard-resets those."
     fi
   fi
   [[ -n "$advisory" ]] && advisory_note="

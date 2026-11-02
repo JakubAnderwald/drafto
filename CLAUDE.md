@@ -40,7 +40,7 @@ If a feature genuinely requires paid infrastructure, surface that explicitly as 
 Never work directly on `main`. For every new task (feature, fix, chore, docs):
 
 1. Use the `/worktree` command to create an isolated branch and worktree
-2. **Immediately run `pnpm install`** in the new worktree — worktrees do not share `node_modules`, so all tooling (`turbo`, `tsc`, etc.) will fail without this step, then run `bash scripts/worktree-bootstrap.sh` to copy the gitignored env/config files (see below). The macOS desktop app builds and releases from a worktree too: after these two steps, run `bundle install` in `apps/desktop`, then `pnpm release:beta` — see [Release Authorization](#release-authorization) and [`apps/desktop/CLAUDE.md`](./apps/desktop/CLAUDE.md).
+2. **Immediately run `pnpm install`** in the new worktree — worktrees do not share `node_modules`, so all tooling (`turbo`, `tsc`, etc.) will fail without this step, then run `bash scripts/worktree-bootstrap.sh` to copy the gitignored env/config files (see below). A worktree can build the macOS desktop app too. Only when the task calls for a desktop build, also run `bundle install` in `apps/desktop` after these two steps; [Release Authorization](#release-authorization) says which commits `pnpm release:beta` may build. See also [`apps/desktop/CLAUDE.md`](./apps/desktop/CLAUDE.md).
 3. Do all work (commits, edits, tests) in that worktree
 4. Open a PR to merge into `main` — never push directly to `main`
 
@@ -195,7 +195,9 @@ Production / public-store releases still require explicit user approval — thos
 
 The macOS desktop app is on `react-native-macos` 0.83.0, which uses the same React 19.2 and `react-native` 0.83.10 as mobile ([ADR-0067](./docs/adr/0067-desktop-moves-to-react-native-macos-0-83.md)). The old "fossil" rule — build only from the primary checkout's never-reinstalled `node_modules` — is retired.
 
-- Build from any checkout, worktrees included: `pnpm install` → `bash scripts/worktree-bootstrap.sh` → `cd apps/desktop && bundle install` → `pnpm release:beta`. In the primary checkout, that means `git pull && pnpm install` before a release.
+- Build from any checkout, worktrees included: `pnpm install` → `bash scripts/worktree-bootstrap.sh` → `cd apps/desktop && bundle install` → `pnpm release:beta`.
+- A normal beta release builds merged `main`: the primary checkout after `git pull && pnpm install`, or a worktree of `origin/main`. The lane tags that commit `desktop@<version>+<build>` and pushes the tag, and the next release's notes start from it.
+- A pre-merge test build of an unmerged branch (a card in In Test) runs as `DRAFTO_INTEST_ISSUE=<issue> pnpm release:beta`. The lane then skips the tag and posts the build number on the card. The factory's pre-merge dispatch and the In Test manual commands set it. Without it, the lane tags the unmerged commit as a release.
 - The Fastfile's `build_and_submit` lane runs a dependency preflight before CocoaPods. It refuses to build unless the installed `node_modules/react-native-macos` matches the version in `apps/desktop/package.json` and `node_modules/react` is 19.2.x. If it refuses, run `pnpm install`. `assertDesktopDeps()` in `scripts/lib/dispatch-release.mjs` checks the same thing before the factory spawns a desktop lane.
 - The factory's desktop build root `/Volumes/DraftoFactory/drafto-beta-desktop` (on the factory's build volume, [ADR-0060](./docs/adr/0060-dedicated-factory-build-volume.md)) installs dependencies like the mobile one.
 - Native fixes to `react-native-macos` go in `patches/` as a `pnpm patch`. Each `react-native-macos` release arrives as its own Dependabot PR; merge it only after a TestFlight build that opens a note.

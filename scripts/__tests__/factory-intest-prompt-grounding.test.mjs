@@ -224,7 +224,12 @@ describe("In Test prompt — scenario quality rules", () => {
     // ADR-0067 retired the fossil: macOS installs and builds from a worktree
     // like mobile. The prompt offers that, or the runbook's pre-merge beta.
     assert.match(flat, /macOS needs a TestFlight build: either a pre-merge beta/);
-    assert.match(flat, /`cd apps\/desktop && bundle install && pnpm release:beta`/);
+    assert.match(
+      flat,
+      /`cd apps\/desktop && bundle install && DRAFTO_INTEST_ISSUE=<n> pnpm release:beta`/,
+    );
+    // Both skipped-lane commands build in one shared worktree.
+    assert.match(flat, /\*\*one after the other, never at the same time\*\*/);
     // The skipped-lane rule hands out manualCommands.desktop, which builds in
     // a fresh worktree; a factory build root is hard-reset, so never send
     // anyone there.

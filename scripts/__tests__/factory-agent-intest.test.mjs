@@ -1,7 +1,16 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, mkdtempSync, writeFileSync, rmSync, utimesSync, existsSync } from "node:fs";
+import {
+  readFileSync,
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  utimesSync,
+  existsSync,
+  realpathSync,
+} from "node:fs";
 import { dirname, resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -231,7 +240,10 @@ describe("intest_fallback_comment — always usable", () => {
     assert.match(body, /if \[\[ "\$desktop" == "true" \]\]; then/);
     // ADR-0067: macOS installs and builds from a worktree like mobile, but
     // never in a factory build root, which the factory hard-resets.
-    assert.match(body, /cd apps\/desktop && bundle install && pnpm release:beta/);
+    assert.match(
+      body,
+      /cd apps\/desktop && bundle install && DRAFTO_INTEST_ISSUE=\$issue_num pnpm release:beta/,
+    );
     assert.match(body, /\*\*never\*\* build in a factory build root/);
   });
 
@@ -591,13 +603,17 @@ describe("intest_dispatch_betas — idempotency and reporting", () => {
     assert.match(body, /manualCommands/);
     assert.match(body, /\{ id: \., command:/);
     // ADR-0067: desktop installs in a fresh worktree, like mobile.
-    assert.match(body, /cd apps\/desktop && bundle install && pnpm release:beta/);
+    assert.match(body, /cd apps\/desktop && bundle install && DRAFTO_INTEST_ISSUE=/);
     assert.ok(!/NEVER pnpm install/.test(body), "the fossil caveat is retired");
   });
 
   it("never sends a human to the operator's working tree or a factory build root", () => {
-    // Both manual commands build in a fresh worktree of the PR branch.
-    assert.equal((body.match(/"git worktree add \.\.\/drafto-" \+ \$issue/g) || []).length, 2);
+    // Both manual commands build in one worktree of the PR branch ($setup).
+    assert.equal(
+      (body.match(/git worktree add --detach \.\.\/drafto-" \+ \$issue/g) || []).length,
+      1,
+    );
+    assert.equal((body.match(/\(\$setup \+ " && cd apps\//g) || []).length, 2);
     assert.ok(
       !/\$desktopRoot|BETA_DESKTOP_ROOT/.test(body),
       "a build root is hard-reset by the factory",
@@ -606,6 +622,95 @@ describe("intest_dispatch_betas — idempotency and reporting", () => {
       !/cd \/Users\/jakub\/code\/drafto && git checkout/.test(body),
       "must not move the operator's working tree onto a PR branch",
     );
+  });
+
+  it("runs both manual commands in one shell, sharing a worktree at the PR head (real git)", () => {
+    // With both natives skipped the tester runs both commands, the second from
+    // wherever the first left the shell. A later In Test round must build the
+    // new head, not whatever an earlier round's worktree held: also after a
+    // rebase, and also when the shell sits in some other repo.
+    const jq = body.match(/manual=\$\(jq -nc [\s\S]*?\|\| echo "\[\]"\)/);
+    assert.ok(jq, "could not extract the manual-command jq");
+    const gen = spawnSync(
+      "bash",
+      ["-c", `skipped='mobile:phase-B,desktop:knob-off'; issue_num=7\n${jq[0]}\necho "$manual"`],
+      { encoding: "utf8" },
+    );
+    assert.equal(gen.status, 0, gen.stderr);
+    const cmd = Object.fromEntries(JSON.parse(gen.stdout).map((c) => [c.id, c.command]));
+    assert.match(cmd.mobile, /&& DRAFTO_INTEST_ISSUE=7 pnpm release:beta:all$/);
+    assert.match(cmd.desktop, /&& DRAFTO_INTEST_ISSUE=7 pnpm release:beta$/);
+
+    const dir = mkdtempSync(join(tmpdir(), "intest-manual-"));
+    try {
+      const git = (cwd, ...a) =>
+        spawnSync("git", ["-C", cwd, "-c", "user.email=t@t", "-c", "user.name=t", ...a], {
+          encoding: "utf8",
+        });
+      const origin = join(dir, "origin");
+      for (const d of ["scripts", "apps/mobile", "apps/desktop"]) {
+        mkdirSync(join(origin, d), { recursive: true });
+      }
+      writeFileSync(join(origin, "scripts", "worktree-bootstrap.sh"), "exit 0\n");
+      writeFileSync(join(origin, "apps", "mobile", "keep"), "");
+      writeFileSync(join(origin, "apps", "desktop", "keep"), "");
+      git(origin, "init", "-q", "-b", "main");
+      git(origin, "add", "-A");
+      git(origin, "commit", "-q", "-m", "one");
+      git(origin, "checkout", "-q", "-b", "factory/issue-7");
+      git(origin, "commit", "-q", "--allow-empty", "-m", "pr head");
+      git(origin, "checkout", "-q", "main");
+      const code = join(dir, "code");
+      mkdirSync(code);
+      const primary = join(code, "primary");
+      assert.equal(spawnSync("git", ["clone", "-q", origin, primary]).status, 0);
+      // Fake pnpm / bundle record where they ran and the issue they were given.
+      const bin = join(dir, "bin");
+      const calls = join(dir, "calls");
+      mkdirSync(bin);
+      for (const tool of ["pnpm", "bundle"]) {
+        writeFileSync(
+          join(bin, tool),
+          `#!/bin/sh\necho "${tool} $* @ $PWD issue=$DRAFTO_INTEST_ISSUE" >> "${calls}"\n`,
+          { mode: 0o755 },
+        );
+      }
+      const run = (script, from = primary) =>
+        spawnSync("bash", ["-c", `cd ${JSON.stringify(from)} || exit 10\n${script}`], {
+          encoding: "utf8",
+          env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+        });
+
+      const both = run(`${cmd.mobile} || exit 11\n${cmd.desktop} || exit 12`);
+      assert.equal(both.status, 0, both.stderr);
+      const wt = join(realpathSync(code), "drafto-7");
+      const ran = readFileSync(calls, "utf8").split("\n");
+      assert.ok(ran.includes(`pnpm release:beta:all @ ${wt}/apps/mobile issue=7`), ran.join("\n"));
+      assert.ok(ran.includes(`bundle install @ ${wt}/apps/desktop issue=`), ran.join("\n"));
+      assert.ok(ran.includes(`pnpm release:beta @ ${wt}/apps/desktop issue=7`), ran.join("\n"));
+
+      // The next round: the PR moved on, and the old worktree is still there.
+      git(origin, "checkout", "-q", "factory/issue-7");
+      git(origin, "commit", "-q", "--allow-empty", "-m", "feedback fix");
+      const head = git(origin, "rev-parse", "HEAD").stdout.trim();
+      const again = run(`${cmd.desktop} || exit 12`);
+      assert.equal(again.status, 0, again.stderr);
+      assert.equal(git(wt, "rev-parse", "HEAD").stdout.trim(), head);
+
+      // Then the branch is rebased (no fast-forward), and the tester pastes the
+      // command in another project's checkout next to the worktree.
+      git(origin, "reset", "-q", "--hard", "main");
+      git(origin, "commit", "-q", "--allow-empty", "-m", "rebased");
+      const rebased = git(origin, "rev-parse", "HEAD").stdout.trim();
+      const other = join(code, "other");
+      mkdirSync(other);
+      git(other, "init", "-q");
+      const third = run(`${cmd.desktop} || exit 12`, other);
+      assert.equal(third.status, 0, third.stderr);
+      assert.equal(git(wt, "rev-parse", "HEAD").stdout.trim(), rebased);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("merges node-side lane refusals with bash-side gate skips", () => {

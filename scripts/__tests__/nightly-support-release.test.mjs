@@ -576,10 +576,15 @@ if out=$(ensure_beta_build_root mobile deadbeef); then echo "OK:$out"; else echo
       const r = ensure(sha, { env: { PATH: `${bin}:${process.env.PATH}` } });
       assert.equal(r.status, 0, r.stderr + r.log);
       assert.equal(r.stdout.trim(), root);
-      assert.equal(
-        readFileSync(join(root, "node_modules", "react", "marker"), "utf8"),
-        "repo-root\n",
-      );
+      // The seed is an APFS clonefile (`cp -c`), which only macOS has: GNU cp
+      // on the Linux CI runner rejects -c, the seed falls back to the install,
+      // and the factory only ever runs on the Mac mini.
+      if (process.platform === "darwin") {
+        assert.equal(
+          readFileSync(join(root, "node_modules", "react", "marker"), "utf8"),
+          "repo-root\n",
+        );
+      }
       const ran = readFileSync(calls, "utf8").split("\n");
       assert.ok(
         ran.some(
