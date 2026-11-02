@@ -34,6 +34,7 @@ function run(call, opts = {}) {
     dryRun = 0,
     prDiff = CONFIG_DIFF,
     prLabels = "",
+    editFail = false,
   } = opts;
   const dir = mkdtempSync(join(tmpdir(), "factory-hosted-config-"));
   writeFileSync(join(dir, "diff"), prDiff);
@@ -60,7 +61,7 @@ gh() {
       printf '%s' ${JSON.stringify(HEAD_CONFIG)}; return 0 ;;
     "pr diff") echo "GH pr diff" >>"$CALLS"; cat "${dir}/diff"; return 0 ;;
     "pr view") echo "GH pr view" >>"$CALLS"; echo ${JSON.stringify(prLabels)}; return 0 ;;
-    "pr edit") echo "GH pr edit $*" >>"$CALLS"; return 0 ;;
+    "pr edit") echo "GH pr edit $*" >>"$CALLS"; return ${editFail ? 1 : 0} ;;
     "issue comment")
       echo "GH issue comment $3" >>"$CALLS"
       printf '%s\\n' "$*" | grep -o 'drafto-factory-hosted-config-[a-z]*:[a-z-]*:[0-9a-f]*' >>"$CALLS" || true
@@ -256,6 +257,19 @@ describe("hosted_config_gate — the label vouches for one config.toml", () => {
     );
     assert.match(out, /^STATE factory:set-issue-field 685 hostedConfigVouched $/m);
     assert.match(out, /--labels status:in-review --pr/);
+  });
+
+  it("keeps the old hash when the label can't be removed, so the next tick retries", () => {
+    const out = run(gate({ labels: labelled }), {
+      vouched: "older-hash",
+      editFail: true,
+      nodeRc: 3,
+      nodeOut: '{"status":"hold","comment":"x"}',
+    });
+    assert.match(out, /^GH pr edit .*--remove-label hosted-config-applied$/m);
+    assert.doesNotMatch(out, /^STATE factory:set-issue-field 685 hostedConfigVouched/m);
+    assert.match(out, /couldn't remove hosted-config-applied from PR #778/);
+    assert.match(out, /--labels status:in-review --pr/, "this tick still checks without it");
   });
 
   it("forgets the vouched content once the label is gone", () => {

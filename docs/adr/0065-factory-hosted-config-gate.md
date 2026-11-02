@@ -33,7 +33,7 @@ A PR that changes `supabase/config.toml` passes a **hosted-config gate** (`hoste
   - a hosted setting outside `additional_redirect_urls`, such as rate limits, email templates or providers;
   - a Redirect URL with no valid sample, such as character classes, alternations or a `*` in a port.
 
-  These need the `hosted-config-applied` PR label, which the operator adds once they have applied the change to both projects. Comments, spacing, and tables that only configure the local stack (`[db]`, `[studio]`, `[inbucket]`, `[edge_runtime]`, `[analytics]`, `[experimental]`, `project_id`) don't count.
+  These need the `hosted-config-applied` PR label, which the operator adds once they have applied the change to both projects. Comments, spacing, and settings that only configure the local stack don't count: `[studio]`, `[inbucket]`, `[analytics]`, `[edge_runtime]`, `[db.migrations]`, `[db.seed]`, the local ports in `[db]`, and `project_id`. Every other table counts, including `[db.settings]` and `[db.network_restrictions]`, which `supabase config push` applies to a hosted project, and any table the gate doesn't recognise, so a gap in the list asks for the label instead of letting a change through.
 
 - **The label vouches for one version of `config.toml`.** The gate records a hash of the file the label was first seen with, in the factory state field `hostedConfigVouched`. If a later commit changes the file, the factory removes the label and asks again.
 - **The label can overrule an inconclusive check, never a confirmed miss.** It is the operator saying that the change is applied, and without it a probe that keeps failing would hold the card for good.

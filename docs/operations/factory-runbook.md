@@ -361,7 +361,7 @@ For a PR that changes `supabase/config.toml`, `hosted_config_gate` compares the 
 What it checks:
 
 - **Redirect URLs the PR adds.** The gate probes each one on dev and prod with an unauthenticated `/verify` request. Supabase redirects an allowlisted `redirect_to` to itself, and anything else to the project's Site URL.
-- **Anything else it changes**, and Redirect URLs the probe can't sample, need the **`hosted-config-applied`** label on the PR. Comments, spacing and local-only tables such as `[db]` and `[studio]` don't count.
+- **Anything else it changes**, and Redirect URLs the probe can't sample, need the **`hosted-config-applied`** label on the PR. Comments, spacing and local-only settings such as `[studio]`, `[db.seed]` and the local ports in `[db]` don't count. `[db.settings]` and `[db.network_restrictions]` do: `supabase config push` applies them to a hosted project.
   - The label covers one version of `config.toml`. If a later commit changes the file, the factory removes the label, logging `removing the label`, and asks again.
   - The label also overrules an inconclusive check, though never a confirmed missing entry.
 

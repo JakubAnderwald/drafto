@@ -37,11 +37,25 @@ export const CONTROL_REJECTED = "drafto://factory-probe-not-allowlisted";
 export const FALLBACK_CONTROL_ALLOWED = "drafto://reset-password";
 const PROBE_TIMEOUT_MS = 8_000;
 
-// Tables and keys that configure only the local `supabase start` stack, so
-// changing them needs nothing in the hosted projects.
-const LOCAL_ONLY_TABLE =
-  /^(db|db\..+|studio|inbucket|edge_runtime|edge_runtime\..+|analytics|experimental)$/;
-const LOCAL_ONLY_TOP_LEVEL_KEYS = new Set(["project_id"]);
+// Tables that configure only the local `supabase start` stack, so changing them
+// needs nothing in the hosted projects. Every other table counts as hosted,
+// including ones this list doesn't know, so a mistake here asks for the label
+// rather than letting an unapplied change through. `[db.settings]` and
+// `[db.network_restrictions]` are hosted: `supabase config push` applies them.
+const LOCAL_ONLY_TABLES = new Set([
+  "studio",
+  "inbucket",
+  "analytics",
+  "edge_runtime",
+  "edge_runtime.secrets",
+  "db.migrations",
+  "db.seed",
+]);
+// Local-only keys inside tables that otherwise count ("" is the top level).
+const LOCAL_ONLY_KEYS = new Map([
+  ["", new Set(["project_id"])],
+  ["db", new Set(["port", "shadow_port", "health_timeout"])],
+]);
 
 // ── config.toml parsing ─────────────────────────────────────────────────────
 
@@ -153,12 +167,12 @@ function hostedSettings(text) {
     const header = line.match(/^\[([^\]]+)\]$/);
     if (header) {
       table = header[1].trim();
-      if (!LOCAL_ONLY_TABLE.test(table)) out.push(`[${table}]`);
+      if (!LOCAL_ONLY_TABLES.has(table)) out.push(`[${table}]`);
       continue;
     }
-    if (LOCAL_ONLY_TABLE.test(table)) continue;
+    if (LOCAL_ONLY_TABLES.has(table)) continue;
     const key = line.split("=")[0].trim();
-    if (table === "" && LOCAL_ONLY_TOP_LEVEL_KEYS.has(key)) continue;
+    if (LOCAL_ONLY_KEYS.get(table)?.has(key)) continue;
     out.push(line.replace(/\s*=\s*/, " = ").replace(/\s+/g, " "));
   }
   return out.join("\n");

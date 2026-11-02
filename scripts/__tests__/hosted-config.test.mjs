@@ -169,6 +169,30 @@ describe("addedRedirectUrls / nonRedirectConfigChanged", () => {
     assert.notEqual(changed, REAL_CONFIG);
     assert.equal(nonRedirectConfigChanged(REAL_CONFIG, changed), true);
   });
+
+  it("counts the [db] tables that config push applies to a hosted project", () => {
+    const settings = `${REAL_CONFIG}\n[db.settings]\nmax_connections = 200\n`;
+    assert.equal(nonRedirectConfigChanged(REAL_CONFIG, settings), true, "adding [db.settings]");
+    assert.equal(
+      nonRedirectConfigChanged(settings, settings.replace("= 200", "= 300")),
+      true,
+      "editing [db.settings]",
+    );
+    const restricted = REAL_CONFIG.replace(
+      /(\[db\.network_restrictions\]\n(?:#.*\n)*)enabled = false/,
+      "$1enabled = true",
+    );
+    assert.notEqual(restricted, REAL_CONFIG);
+    assert.equal(nonRedirectConfigChanged(REAL_CONFIG, restricted), true);
+    const majorVersion = REAL_CONFIG.replace(/^major_version = \d+/m, "major_version = 99");
+    assert.notEqual(majorVersion, REAL_CONFIG);
+    assert.equal(nonRedirectConfigChanged(REAL_CONFIG, majorVersion), true);
+  });
+
+  it("counts a table it doesn't recognise, so a gap in the local-only list fails closed", () => {
+    const unknown = `${REAL_CONFIG}\n[db.something_new]\nx = 1\n`;
+    assert.equal(nonRedirectConfigChanged(REAL_CONFIG, unknown), true);
+  });
 });
 
 describe("probeUrlFor", () => {

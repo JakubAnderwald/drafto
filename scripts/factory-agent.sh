@@ -1899,9 +1899,14 @@ hosted_config_gate() {
     elif [[ "$vouched" != "$head_hash" ]]; then
       logerr "Issue #$issue_num: config.toml changed since hosted-config-applied was added; removing the label from PR #$pr_num"
       if [[ "$DRY_RUN" -eq 0 ]]; then
-        gh pr edit "$pr_num" --repo JakubAnderwald/drafto --remove-label hosted-config-applied >>"$LOG_FILE" 2>&1 || true
-        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" hostedConfigVouched "" \
-          --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        # Forget the vouched hash only once the label is really gone: keeping it
+        # makes the next tick see the mismatch again and retry the removal.
+        if gh pr edit "$pr_num" --repo JakubAnderwald/drafto --remove-label hosted-config-applied >>"$LOG_FILE" 2>&1; then
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" hostedConfigVouched "" \
+            --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        else
+          logerr "WARNING: couldn't remove hosted-config-applied from PR #$pr_num; retrying next tick"
+        fi
       fi
       pr_labels=$(tr ',' '\n' <<<"$pr_labels" | grep -vxF hosted-config-applied | paste -sd, - || true)
     fi
