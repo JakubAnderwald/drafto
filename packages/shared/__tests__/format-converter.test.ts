@@ -995,6 +995,24 @@ describe("round-trip fidelity", () => {
     expect(roundTripped).toEqual(original);
   });
 
+  // BlockNote 0.56 gives a code block created without a language
+  // `language: "text"`. Mobile and desktop save through this converter, so the
+  // value has to survive their round trip unchanged.
+  it('code block with BlockNote\'s default "text" language round-trips', () => {
+    const original: BlockNoteBlock[] = [
+      {
+        type: "codeBlock",
+        props: { language: "text" },
+        content: [{ type: "text", text: "plain code", styles: {} }],
+        children: [],
+      },
+    ];
+
+    expect(blocknoteToTiptap(original).content?.[0]?.attrs).toEqual({ language: "text" });
+    const roundTripped = tiptapToBlocknote(blocknoteToTiptap(original));
+    expect(roundTripped).toEqual(original);
+  });
+
   it("heading levels 1-3 round-trip", () => {
     const original: BlockNoteBlock[] = [
       {
