@@ -13,17 +13,31 @@
 > Expo SDK again (`.github/dependabot.yml`). References to "RN 0.86" below reflect the state when this
 > ADR was written.
 
-> **Update (2026-08-19)**: Dependabot no longer proposes React bumps at all (`react`, `react-dom`,
+> **Update (2026-11-02)**: Dependabot no longer proposes React bumps (`react`, `react-dom` and
 > `react-test-renderer` are in `.github/dependabot.yml`'s ignore list). React's version lives in the
-> root `package.json`'s `pnpm.overrides` — the mechanism that enforces the single shared instance
-> this ADR requires — and Dependabot cannot edit that key. It can only rewrite `pnpm-lock.yaml`'s
-> `overrides:` block, so its React PRs were either inert (bumping `apps/*/package.json` while the
-> override silently overruled them, #593) or unmergeable (a lockfile-only override edit that aborts
-> every install with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` and failed the Vercel preview deployment,
-> #609). This does **not** contradict decision 5 below: 5 forbids freezing React so it silently
-> rots, whereas this suppresses a mechanism structurally incapable of moving it correctly. The
-> deliberate coordinated bump — edit `pnpm.overrides`, regenerate the lockfile, verify — remains the
-> way React moves (#441, #610), and is still the prerequisite for adopting `react-native-macos@0.83`.
+> root `package.json`'s `pnpm.overrides`, the mechanism that enforces the single shared instance
+> this ADR requires, and Dependabot can't edit that key. It can only rewrite `pnpm-lock.yaml`'s
+> `overrides:` block, so its React PRs were either inert or unmergeable:
+>
+> - **Inert:** a PR bumps `apps/*/package.json` and the override silently overrules it (#593). #635
+>   (2026-09-16) left the web, mobile and desktop files declaring `19.3.0` while `19.2.8` was
+>   installed. This change sets them back to `19.2.8`, and
+>   `scripts/__tests__/react-override-alignment.test.mjs` now fails if they drift from the
+>   override again.
+> - **Unmergeable:** a lockfile-only override edit aborts every install with
+>   `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` and fails the Vercel preview (#609).
+>
+> React still moves the deliberate way: edit `pnpm.overrides`, regenerate the lockfile, verify
+> (#441, #610). Ignoring it doesn't conflict with decision 5, which forbids letting React silently
+> rot, not suppressing a mechanism that can't move it.
+>
+> The same change ignores `react-native-macos` minor and major bumps. Patches still flow. A minor
+> moves rnm's exact `react-native` peer and needs the native migration and the TestFlight check
+> decision 5 asks for. Dependabot can't do that; it only changed the declared version while the
+> fossil kept shipping 0.81 (#754). This does pause decision 5's Dependabot signal for new rnm
+> minors. That's acceptable only while #558 is open: rnm 0.83 shipped on 2026-09-30, and #558 is
+> adopting it, against the React 19.2.8 the override already installs. When #558 lands, it must lift
+> this ignore or replace it with another way to track rnm releases.
 
 ## Context
 
