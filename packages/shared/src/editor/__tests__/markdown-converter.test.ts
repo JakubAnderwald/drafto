@@ -1093,6 +1093,15 @@ describe("round-trip stability", () => {
       expect((parsed[0].content as { text: string }[])[0].text).toBe(value);
     });
 
+    // BlockNote 0.56 gives a code block created without a language
+    // `language: "text"`, while older notes, MCP writes and imports carry "".
+    // Both must survive a round trip as they are (#701's stability guarantee).
+    it('keeps BlockNote 0.56\'s default "text" language through a round trip', () => {
+      const blocks = [code("plain words", "text")];
+      expect(blockNoteToMarkdown(blocks)).toBe("```text\nplain words\n```");
+      expectBlocksToRoundTrip(blocks);
+    });
+
     it("lengthens the fence past the longest backtick run", () => {
       expect(blockNoteToMarkdown([code("a\n```\nb")])).toBe("````\na\n```\nb\n````");
       expect(blockNoteToMarkdown([code("x ````` y")])).toBe("``````\nx ````` y\n``````");
