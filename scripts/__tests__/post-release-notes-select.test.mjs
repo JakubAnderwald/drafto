@@ -548,7 +548,7 @@ describe("App Store promote lanes", () => {
       ]) {
         assert.ok(
           !lane.includes(builder),
-          `promote must not build: found ${builder}. A build step re-imposes the desktop fossil rule.`,
+          `promote must not build: found ${builder}. A build step ships a freshly compiled binary nobody tested.`,
         );
       }
     });
