@@ -59,7 +59,7 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0024](./0024-realtime-support-agent.md)                             | Real-Time Support Agent                                | Accepted           | 2026-04-28 |
 | [0025](./0025-support-allowlist-from-zoho-sender.md)                 | Support Allowlist Gate from Zoho Sender                | Accepted           | 2026-05-03 |
 | [0026](./0026-dark-factory-pipeline.md)                              | Dark Factory Unattended Development Pipeline           | Accepted           | 2026-05-06 |
-| [0027](./0027-desktop-react-version-locked-to-react-native-macos.md) | Desktop React Version Locked to react-native-macos     | Accepted           | 2026-07-02 |
+| [0027](./0027-desktop-react-version-locked-to-react-native-macos.md) | Desktop React Version Locked to react-native-macos     | Superseded by 0067 | 2026-07-02 |
 | [0028](./0028-desktop-find-in-note.md)                               | Desktop Find-in-Note (and the macOS Cmd+F crash)       | Accepted           | 2026-07-06 |
 | [0029](./0029-factory-ultracode-effort.md)                           | Dark Factory Claude Effort (ultracode coding stages)   | Accepted           | 2026-07-15 |
 | [0030](./0030-in-test-scenarios-and-pre-merge-betas.md)              | In Test Scenarios and Pre-Merge Beta Builds            | Accepted           | 2026-07-30 |
@@ -94,6 +94,7 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0060](./0060-dedicated-factory-build-volume.md)                     | A Dedicated ASCII Build Volume for the Factory         | Accepted           | 2026-10-27 |
 | [0061](./0061-factory-resolves-merge-conflicts.md)                   | The Factory Resolves Merge Conflicts With Main         | Accepted           | 2026-10-29 |
 | [0062](./0062-desktop-pkce-native-csprng.md)                         | Desktop PKCE Draws From a Native CSPRNG                | Accepted           | 2026-10-25 |
-| [0063](./0063-desktop-native-runtime-patches.md)                     | Desktop Patches RN Native Bugs From the App Target     | Accepted           | 2026-10-31 |
+| [0063](./0063-desktop-native-runtime-patches.md)                     | Desktop Patches RN Native Bugs From the App Target     | Superseded by 0067 | 2026-10-31 |
 | [0064](./0064-apple-revocation-on-web-android-macos.md)              | Revoke Sign in with Apple on Web, Android and macOS    | Accepted           | 2026-11-01 |
 | [0065](./0065-factory-hosted-config-gate.md)                         | Gate Factory Cards on the Hosted Supabase Config       | Accepted           | 2026-11-01 |
+| [0067](./0067-desktop-moves-to-react-native-macos-0-83.md)           | Desktop Moves to react-native-macos 0.83               | Accepted           | 2026-11-02 |

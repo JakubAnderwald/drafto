@@ -1,6 +1,6 @@
 # 0027 — Desktop's React version is locked to react-native-macos; defer reproducibility to rnm 0.83
 
-- **Status**: Accepted
+- **Status**: Superseded by [0067](./0067-desktop-moves-to-react-native-macos-0-83.md)
 - **Date**: 2026-07-02
 - **Authors**: Jakub Anderwald
 
@@ -39,6 +39,10 @@
 > minors. That's acceptable only while #558 is open: rnm 0.83 shipped on 2026-09-30, and #558 is
 > adopting it, against the React 19.2.8 the override already installs. When #558 lands, it must lift
 > this ignore or replace it with another way to track rnm releases.
+
+> **Update (2026-11-02, #558)**: The temporary `react-native-macos` ignore is lifted. Desktop moved to
+> rnm 0.83.0, and [ADR-0067](./0067-desktop-moves-to-react-native-macos-0-83.md) says how rnm
+> releases are tracked now.
 
 ## Context
 

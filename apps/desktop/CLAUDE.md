@@ -1,58 +1,57 @@
 # Desktop (macOS) app — read before any build or release
 
-## ⚠️ The desktop build is a FOSSIL — do not reinstall, do not build from a worktree
+## Desktop builds like mobile: from any checkout, after `pnpm install`
 
-`react-native-macos@0.81` (the macOS RN fork this app uses) requires **React 19.1.x**. The monorepo's
-_declared_ React is **19.2.x** — mobile's `react-native@0.86` needs it, and React must be a single
-shared instance across the monorepo ([ADR-0027], [#558]). The **only** working desktop build is the
-**fossil `node_modules` in the primary checkout** (`/Users/jakub/code/drafto`), installed before the
-React bump and **never reinstalled**.
+The desktop app runs `react-native-macos@0.83` on the monorepo's single React 19.2 and
+`react-native` 0.83, the same versions mobile uses ([ADR-0067]). A plain `pnpm install` gives one
+consistent dependency graph, so desktop builds from any checkout: a worktree, the primary checkout,
+or the factory's build root.
 
-A clean `pnpm install` — **including any fresh git worktree** — pulls React **19.2.x**, which the 0.81
-fork cannot run: the app **compiles green but crashes at runtime** (Hermes `EXC_BAD_ACCESS`, blank
-screen, crash-on-note-open). **A green native build is NOT proof it works — only a TestFlight build
-that opens a note is.**
+The old "fossil" rule is retired. The primary checkout is no longer special: install there like
+anywhere else. [ADR-0027] records why it existed (#558).
+
+**A green native build is still not proof it works. Only a TestFlight build that opens a note is.**
+A React/JSI mismatch compiles cleanly and then crashes at launch.
+
+## Build and release
+
+```bash
+pnpm install                         # at the repo root
+bash scripts/worktree-bootstrap.sh   # copies apps/desktop/.env and .env.production
+cd apps/desktop && bundle install
+pnpm release:beta
+```
+
+The Fastfile's `build_and_submit` checks two things before CocoaPods runs:
+
+- **Dependency preflight.** The installed `node_modules/react-native-macos` must equal the version
+  `apps/desktop/package.json` declares, and `node_modules/react` must be 19.2.x. Otherwise the lane
+  stops and tells you to run `pnpm install` at the repo root. This catches a `git pull` with no
+  install after it. `assertDesktopDeps()` in `scripts/lib/dispatch-release.mjs` runs the same check
+  before the factory spawns a desktop lane.
+- **`NODE_BINARY`.** If `macos/.xcode.env.local` is missing, or its `NODE_BINARY` is not an
+  executable file, the lane rewrites it from `node -p process.execPath`.
 
 ## Rules
 
-- **NEVER** run `pnpm install` in the primary checkout (`/Users/jakub/code/drafto`) — it overwrites
-  the fossil and destroys the only shippable desktop build.
-- **NEVER** build or release the desktop app from a worktree, a fresh install, or CI — all of them
-  resolve React 19.2 and produce the crashing build.
-- Build/ship desktop **only** from the primary checkout's existing fossil `node_modules`:
+- `react-native-macos` is pinned to an exact version, so every native change is a visible diff.
+  `react-native` and the `@react-native/*` tooling match the version rnm peers, which is mobile's.
+- A native module's codegen spec must parse with rnm's `@react-native/codegen` (0.83). That is why
+  `react-native-screens` is pinned to `~4.24.0`: 4.26's Android-only spec fails `pod install` with
+  `setToolbarMenuElementOptions must be of type React.ElementRef<>`.
+- A native bug in React Native goes in a `pnpm patch` under `patches/`, registered in the root
+  `package.json`'s `pnpm.patchedDependencies` under a range key that covers the exact pinned version
+  (`react-native-macos@~0.83.0`). Never patch it at runtime from `macos/Drafto-macOS/`.
+- `@react-native-community/cli` and `@react-native-community/cli-platform-ios` move together, never
+  one alone. `use_native_modules!` runs the core's `config`, which builds the macOS config through
+  `cli-platform-ios`. A split version is an untested combination.
+- Each `react-native-macos` release arrives as its own Dependabot PR. Before it merges, the patch
+  must be re-made (minor) or still apply (patch), and a TestFlight build must open a note. CI does
+  not build macOS.
+- macOS has no `tentap` pod: its podspec is iOS-only, so autolinking skips it and tentap uses its
+  JS keyboard driver. If a `tentap` pod appears in `macos/Podfile.lock`, the platform filter changed.
 
-  ```bash
-  cd /Users/jakub/code/drafto     # primary checkout — the fossil (React 19.1.4)
-  git pull                        # source only — NEVER `pnpm install`
-  cd apps/desktop && pnpm release:beta
-  ```
-
-- Doing desktop **code / unit-test / typecheck** work in a worktree is fine (JS tooling runs there);
-  just never treat a worktree's native build as shippable, and route the actual release through the
-  fossil.
-- The dark factory builds desktop from `/Volumes/DraftoFactory/drafto-beta-desktop`, a **replica**
-  of the fossil `node_modules` on the factory's build volume (exact — the repo is `node-linker=hoisted`,
-  so packages are real directories; the only symlinks are the relative ones in `.bin/`, which keep
-  resolving inside the copy). The factory resets that worktree's _source_ to the commit under test but never reinstalls its
-  dependencies. **The never-`pnpm install` rule applies there too.** See [ADR-0030].
-- A native bug in React Native or a native dependency can't take a `pnpm patch` here. Patch it at
-  runtime from `macos/Drafto-macOS/` ([ADR-0063]) and list it on [#558].
-
-The precise invariant, and how it is enforced: build macOS only from a checkout whose hoisted
-`node_modules/react` is **19.1.x**. `assertDesktopFossil()` in `scripts/lib/dispatch-release.mjs`
-checks that before spawning any desktop lane and refuses loudly otherwise, so a stray install fails
-visibly instead of shipping a crashing app.
-
-## Why not just fix it?
-
-React cannot be split per-app (multiple React instances break hooks/Context — the empty-screen
-failure in [#558]), and we will not drag mobile/web back to React 19.1. The real fix is a one-line
-bump to `react-native-macos@0.83` (React 19.2) **once it ships**. Until then, the fossil stands.
-
-Full detail: [`../../docs/operations/desktop-build-fossil.md`](../../docs/operations/desktop-build-fossil.md)
-· [ADR-0027](../../docs/adr/0027-desktop-react-version-locked-to-react-native-macos.md).
+Full detail: [ADR-0067] · [`../../docs/operations/builds-and-releases.md`](../../docs/operations/builds-and-releases.md).
 
 [ADR-0027]: ../../docs/adr/0027-desktop-react-version-locked-to-react-native-macos.md
-[ADR-0030]: ../../docs/adr/0030-in-test-scenarios-and-pre-merge-betas.md
-[ADR-0063]: ../../docs/adr/0063-desktop-native-runtime-patches.md
-[#558]: https://github.com/JakubAnderwald/drafto/issues/558
+[ADR-0067]: ../../docs/adr/0067-desktop-moves-to-react-native-macos-0-83.md

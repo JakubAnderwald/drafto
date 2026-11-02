@@ -9,6 +9,15 @@ updates:
         update-types:
           - "minor"
           - "patch"
+        # react-native-macos gets its own PR for every release: that PR is how rnm releases
+        # are tracked (ADR-0067). It stays out of this group because it can fail the group's
+        # `pnpm install`: the desktop patch is keyed `react-native-macos@~0.83.0`. Before such
+        # a PR merges, a minor needs the patch re-made with `pnpm patch` (or dropped if
+        # upstream now guards a nil reactTag), and a patch release needs the patch to still
+        # apply. Either way it also needs a TestFlight build that opens a note, because CI
+        # does not build macOS.
+        exclude-patterns:
+          - "react-native-macos"
     ignore:
       # Expo-SDK-aligned packages must track the pinned Expo SDK (~55); the SDK is bumped
       # deliberately as one coordinated step. Major bumps ahead of the SDK break the React
@@ -50,18 +59,24 @@ updates:
       # transform profile from `default` to `hermes-stable`, which drops
       # @babel/plugin-transform-class-properties and so breaks the legacy decorators that
       # WatermelonDB models depend on (`@field("remote_id") remoteId!: string`). That fails
-      # desktop's Jest run outright, and would change the bundle the fossil
-      # react-native-macos 0.81 app ships (see docs/operations/desktop-build-fossil.md),
-      # which CI cannot verify. Suppress minor + major; patches still flow through the group.
+      # desktop's Jest run outright, and would change the bundle the react-native-macos app
+      # ships, which CI cannot verify because it does not build macOS. Desktop pins these to
+      # the react-native version react-native-macos peers (ADR-0067). Suppress minor + major;
+      # patches still flow through the group.
       - dependency-name: "@react-native/*"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
-      # react-native-macos: a minor (0.81 → 0.83) moves its exact react-native peer and needs
-      # the macOS project upgraded and a TestFlight build that opens a note, so it's the #558
-      # migration, not a group bump. Patches stay on the same line and flow through the group,
-      # as for the rest of the family. TEMPORARY: this pauses ADR-0027 decision 5's Dependabot
-      # signal for new rnm minors, so #558 must lift or replace it when it lands.
-      - dependency-name: "react-native-macos"
-        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # The React Native CLI core and its iOS platform package are one pipeline:
+      # `use_native_modules!` in desktop's Podfile runs the core's `config`, which builds
+      # the macOS config through cli-platform-ios and its exact-pinned cli-platform-apple.
+      # Desktop pins both to one version and they move together, never one alone. Majors
+      # fall outside the group, so Dependabot would open one PR per package and either
+      # could merge alone. Suppress majors; a major moves deliberately, with
+      # react-native-macos (ADR-0067). Minor and patch updates of both still arrive together
+      # in the group. `cli-*` matches cli-platform-ios but not @react-native-community/netinfo.
+      - dependency-name: "@react-native-community/cli"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@react-native-community/cli-*"
+        update-types: ["version-update:semver-major"]
       # React (`react`, `react-dom`, `react-test-renderer`) is governed by the root
       # package.json's `pnpm.overrides`, not by the apps' own declarations — the override is
       # what forces a single shared React instance across all four workspaces, which

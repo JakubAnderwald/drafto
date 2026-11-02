@@ -282,10 +282,9 @@ describe("Phase-D beta dispatch (gap 1)", () => {
     assert.equal(releaseBlock.match(/DIFF_FILES=\$\(gh pr diff/g)?.length, 1);
   });
 
-  it("never builds desktop from the factory checkout (the fossil rule)", () => {
-    // $REPO_ROOT is a normal install carrying React 19.2: a macOS build from it
-    // compiles and then crashes at runtime. The desktop lane must be pointed at
-    // a fossil-derived build root instead.
+  it("builds desktop in its dedicated build root, not the factory checkout", () => {
+    // $REPO_ROOT is live (other cards install and edit there), so the desktop
+    // lane gets its own disposable root, installed like mobile's (ADR-0067).
     assert.match(releaseBlock, /--repo-root "\$REPO_ROOT" \$DESKTOP_ROOT_FLAG/);
     assert.match(releaseBlock, /DESKTOP_ROOT_FLAG="--desktop-root \$DESKTOP_ROOT_READY"/);
     const lib = readFileSync(resolve(HERE, "..", "lib", "beta-build-root.sh"), "utf8");
@@ -293,8 +292,7 @@ describe("Phase-D beta dispatch (gap 1)", () => {
   });
 
   it("prepares the desktop build root at the merged commit, or skips the lane", () => {
-    // The factory can't update the fossil checkout itself (it is the operator's
-    // working tree), so it builds from a disposable replica reset to the merge.
+    // A disposable root, reset to the merge commit and installed there.
     assert.match(releaseBlock, /ensure_beta_build_root desktop "\$\{MERGE_SHA:-origin\/main\}"/);
     assert.match(
       releaseBlock,

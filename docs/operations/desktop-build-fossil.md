@@ -1,96 +1,68 @@
-# ⚠️ macOS desktop build — do NOT reinstall main's `node_modules`
+# macOS desktop build fossil (retired)
 
-**Status:** the working macOS desktop build is a **fossil**. `apps/desktop` only builds and runs
-correctly from the `node_modules` already present in the build machine's primary checkout
-(`/Users/jakub/code/drafto` on the current release machine), which was installed months ago and
-**must not be reinstalled**. This is resolved for good by upgrading
-desktop to `react-native-macos@0.83` (React 19.2) once it ships — see
-[ADR-0027](../adr/0027-desktop-react-version-locked-to-react-native-macos.md) and
-[#558](https://github.com/JakubAnderwald/drafto/issues/558).
+**Status:** retired by [ADR-0067](../adr/0067-desktop-moves-to-react-native-macos-0-83.md)
+([#558](https://github.com/JakubAnderwald/drafto/issues/558)). Desktop now builds from any
+checkout after a plain `pnpm install`, like mobile. This page stays so links from older ADRs and
+docs still resolve.
 
-## Why
+## What the fossil was
 
-`react-native-macos@0.81.6` requires **React 19.1.x** and crashes at runtime on React **19.2.x**. The
-monorepo's _declared_ versions have since drifted forward (React 19.2.x, newer native modules — via
-Dependabot) because mobile's `react-native@0.86` needs React 19.2. Main's `node_modules` was never
-reinstalled, so it kept the working React-19.1.x set. A clean `pnpm install` pulls the current
-versions → **crashing / blank build** (crash on note-open, then crash on launch, then empty screen as
-each layer is pinned). Full analysis: [#558](https://github.com/JakubAnderwald/drafto/issues/558).
+`react-native-macos` 0.81 needed React 19.1, but the monorepo moved to React 19.2 for mobile, and
+React must be one shared instance ([ADR-0027](../adr/0027-desktop-react-version-locked-to-react-native-macos.md)).
+The only working desktop `node_modules` was the primary checkout's (`/Users/jakub/code/drafto`),
+installed before the React bump and never reinstalled. It carried React 19.1.4 and a hand-placed
+`react-native` 0.81.6 fork under `apps/desktop/node_modules/react-native`.
 
-## The rule
+A fresh install couldn't reproduce it, so desktop shipped only from that checkout or from the
+factory's clonefile replica, `/Volumes/DraftoFactory/drafto-beta-desktop`. Anywhere else the build
+failed at the Hermes phase (`with-environment.sh: No such file`), or compiled and then crashed.
 
-The invariant is about the **installed React version**, not about one blessed directory:
+## What replaced it
 
-> Build macOS **only** from a checkout whose hoisted `node_modules/react` is **19.1.x** — the
-> primary checkout, or a clonefile replica of it. Never from a fresh install, a worktree
-> install, or CI.
+Desktop is on `react-native-macos` 0.83.0, which uses React 19.2 and `react-native` 0.83.10, the
+same as mobile. The build reads `react-native-macos` directly, so it no longer needs a per-app
+`react-native`. Build from any checkout:
 
-- **Do NOT run `pnpm install` in the build machine's primary checkout**
-  (`/Users/jakub/code/drafto` on the current release machine) until desktop is upgraded to
-  `react-native-macos@0.83`. It overwrites the working set and destroys the only shippable
-  desktop build.
-- Build desktop releases from that checkout's existing `node_modules`:
-  `cd apps/desktop && pnpm release:beta`.
-- **Nor in `/Volumes/DraftoFactory/drafto-beta-desktop`** — the factory's desktop build root on
-  its build volume ([ADR-0060](../adr/0060-dedicated-factory-build-volume.md)). Its
-  `node_modules` is a byte-faithful copy of the fossil (the repo is
-  `node-linker=hoisted`, so packages are real directories rather than store symlinks — the only
-  symlinks are the relative ones under `.bin/`, which keep resolving inside the copy, so the copy is
-  faithful). The
-  factory hard-resets that worktree's _source_ to the commit under test but never reinstalls its
-  dependencies. Installing there recreates the 19.2 breakage.
-- **Enforced in code.** `assertDesktopFossil()` in `scripts/lib/dispatch-release.mjs` reads the
-  build root's `node_modules/react/package.json` and refuses to spawn the lane unless it is
-  19.1.x. This is the enforcement point for the rule above — it turns a silently-crashing build
-  into a loud refusal, reported on the issue. Bump `DESKTOP_REACT_RANGE` there (and ADR-0027)
-  when `react-native-macos` moves.
-- The factory previously built desktop from its own checkout, which is a normal install carrying
-  React 19.2 — that produced a compiling, crashing app and is fixed (ADR-0030). It now builds
-  from the fossil-derived root above.
+```bash
+pnpm install
+bash scripts/worktree-bootstrap.sh
+cd apps/desktop && bundle install
+pnpm release:beta
+```
 
-- **Native bugs in React Native or a native dependency** can't be fixed with `pnpm patch`
-  while the fossil stands. Patch them at runtime from the app target instead
-  ([ADR-0063](../adr/0063-desktop-native-runtime-patches.md)), and list each patch on #558.
+- The Fastfile's `build_and_submit` lane runs a dependency preflight before CocoaPods. It refuses
+  to build unless the installed `react-native-macos` matches `apps/desktop/package.json` and React
+  is 19.2.x. If it fails, run `pnpm install`.
+- The same lane writes `NODE_BINARY` into `macos/.xcode.env.local` when the file is missing or
+  stale.
+- The factory checks the same invariant with `assertDesktopDeps()` in
+  `scripts/lib/dispatch-release.mjs`, and its desktop build root now installs like the mobile one.
+- Native fixes to `react-native-macos` go in `patches/` as a `pnpm patch`. See ADR-0067.
 
-Reminder: **a green compile is not proof.** Only a TestFlight build that opens and renders a
-note validates a desktop build root — including after re-cloning the replica.
+A green compile is still not proof. Only a TestFlight build that opens a note validates a desktop
+build.
 
-## The known-good version set (build 34 / build 40)
+## One-time step: the primary checkout
 
-If the fossil is ever lost, this is the working set to reconstruct:
+The primary checkout's first post-merge `pnpm install` destroys the fossil. Before running it,
+take a clonefile snapshot of the fossil's `node_modules` trees:
 
-| package                                       | working version |
-| --------------------------------------------- | --------------- |
-| `react`                                       | `19.1.4`        |
-| `react-native` (`apps/desktop/node_modules/`) | `0.81.6`        |
-| `react-native-macos`                          | `0.81.6`        |
-| `react-native-safe-area-context`              | `5.7.0`         |
-| `react-native-svg`                            | `15.15.4`       |
-| `@react-native-async-storage/async-storage`   | `3.0.2`         |
-| `react-native-screens`                        | `4.24.0`        |
-| `react-native-keychain`                       | `9.2.3`         |
-| `@10play/tentap-editor`                       | `1.0.1`         |
+```bash
+cd /Users/jakub/code/drafto
+cp -c -R node_modules ../drafto-fossil-snapshot-node_modules
+cp -c -R apps/desktop/node_modules ../drafto-fossil-snapshot-desktop-node_modules
+```
 
-`apps/desktop/package.json` declares `@10play/tentap-editor` `^1.1.0` since #785. The fossil keeps 1.0.1,
-whose `RichText` and prebuilt editor bundle desktop has shipped with. 1.1.0 rebuilt `RichText`, so
-check it with a TestFlight build when the fossil is retired (#558).
+Then install. The fossil's `node_modules` record the old store (`/Volumes/Zewnętrzny/pnpm-store`),
+so pnpm asks to remove them first. Answer yes, or in a session without a TTY run
+`pnpm install --config.confirm-modules-purge=false`, which otherwise aborts with
+`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`.
 
-Mobile and web use React `19.2.x` and newer native modules — that is correct and unaffected. Only the
-macOS desktop app is pinned to this older, `react-native-macos`-compatible set.
+Keep the snapshot until a post-merge TestFlight build opens a note. To roll back, revert the
+ADR-0067 PR and restore the snapshot. `drafto-beta-desktop` is not a backup: the factory
+reinstalls it on its first post-merge build, purging its old `node_modules` without a prompt
+(`run_pnpm_install` passes the same flag).
 
-### Every build machine's fossil must match
-
-The MacBook Air's fossil is a separate install (May 2026), not a copy of the Mac mini's. It had
-`react-native-keychain` 10.0.0, so desktop 0.4.4 builds 74 and 76, released from that laptop,
-shipped keychain 10 while every other build shipped 9.2.3, and each release rewrote the committed
-`Podfile.lock`. Its keychain was replaced in place with the 9.2.3 tarball that `pnpm-lock.yaml`
-pins, after checking the tarball's integrity hash against the lockfile. That is not a reinstall.
-Keychain items are stored the same way in both versions, so a session saved by 10.0.0 still opens.
-Build 77, the first one released after the fix, started signed in, opened a note, and left the lock
-untouched.
-
-Before releasing from a machine, check it against the table above. Then, from `apps/desktop/macos`,
-run `bundle exec pod install --deployment`: it must succeed, because CocoaPods refuses to change
-`Podfile.lock` in that mode. The committed lock comes from the Mac mini's fossil, so a failure there
-means that machine's native modules differ. Fix the package in
-`node_modules`, not the lock.
+Until that TestFlight build has opened a note, keep the factory's macOS lane off: set
+`FACTORY_INTEST_BETA_DESKTOP=0` in the factory plist before merging, and turn it back on after the
+validation in [`factory-runbook.md`](./factory-runbook.md#pre-merge-beta-dispatch-in-test).

@@ -220,20 +220,22 @@ describe("In Test prompt — scenario quality rules", () => {
     }
   });
 
-  it("routes macOS testing away from ad-hoc local builds", () => {
-    // The prompt used to hand out a primary-checkout build command carrying the
-    // "never pnpm install" caveat. It now refuses to send anyone into the
-    // fossil at all and points at the runbook instead — the caveat is moot
-    // because no macOS build command is offered.
-    assert.match(flat, /macOS needs a pre-merge beta/);
-    // The skipped-lane rule hands out manualCommands.desktop, which builds from
-    // the fossil replica; the "neither list" rule must not contradict it.
-    assert.doesNotMatch(flat, /Nor point anyone at a desktop build root/);
+  it("routes macOS testing to a pre-merge beta or a worktree build", () => {
+    // ADR-0067 retired the fossil: macOS installs and builds from a worktree
+    // like mobile. The prompt offers that, or the runbook's pre-merge beta.
+    assert.match(flat, /macOS needs a TestFlight build: either a pre-merge beta/);
+    assert.match(flat, /`cd apps\/desktop && bundle install && pnpm release:beta`/);
+    // The skipped-lane rule hands out manualCommands.desktop, which builds in
+    // a fresh worktree; a factory build root is hard-reset, so never send
+    // anyone there.
+    assert.match(flat, /Never point anyone at a factory\s+build root/);
     assert.match(flat, /`manualCommands` entry for a _skipped_ lane is fine/);
     assert.match(prompt, /docs\/operations\/factory-runbook\.md/);
+    assert.doesNotMatch(flat, /fossil/i);
+    assert.doesNotMatch(prompt, /drafto-beta-desktop/);
     assert.ok(
       !/git checkout` of the branch/.test(flat),
-      "must not hand out a fossil-checkout build recipe",
+      "must not hand out a primary-checkout build recipe",
     );
   });
 });
@@ -266,12 +268,12 @@ describe("In Test prompt — machine contract", () => {
     assert.match(flat, /never assume list order/);
   });
 
-  it("forbids directing a human to git-checkout the fossil checkout", () => {
+  it("forbids directing a human to git-checkout the primary checkout", () => {
     assert.match(
       flat,
       /do \*\*NOT\*\* tell anyone to `git checkout` in `\/Users\/jakub\/code\/drafto`/,
     );
-    assert.match(flat, /operator's working tree and the fossil/);
+    assert.match(flat, /That is the operator's working tree;/);
   });
 
   it("pins the directive line and the exact bash regex", () => {
