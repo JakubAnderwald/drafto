@@ -1846,6 +1846,143 @@ migration_violation() {
   echo ""
 }
 
+# Hosted-config gate (ADR-0065). A PR that changes supabase/config.toml may need
+# settings that live only in the hosted projects' dashboards, chiefly Redirect
+# URL allowlist entries. Until dev and prod have them, a pre-merge beta (which
+# runs against prod) or a merge ships a build whose auth redirects fall back to
+# the Site URL: #685 / PR #778. scripts/lib/hosted-config.mjs probes each added
+# Redirect URL on both projects (no credentials needed) and requires the
+# hosted-config-applied PR label for anything it can't probe.
+# Args: $1 issue  $2 PR  $3 head SHA  $4 newline-separated changed files
+#       $5 PR labels CSV  $6 where it holds: "In Review" | "Approved" | "beta"
+# Returns 0 to let the caller go on, 1 to hold this tick. It holds whenever it
+# can't decide: failing open is what shipped the #778 betas. Logs only through
+# logerr, because intest_dispatch_betas's stdout is its JSON result.
+hosted_config_gate() {
+  local issue_num="$1" pr_num="$2" sha="$3" diff_files="$4" pr_labels="$5" where="$6"
+  local tmp out rc=0 marker body base_sha head_hash vouched slug
+  # A here-string, not a pipe: under pipefail, `grep -q` closing a long pipe
+  # early fails the printf with SIGPIPE, which would skip the gate.
+  grep -qxF 'supabase/config.toml' <<<"$diff_files" || return 0
+
+  if [[ -z "$sha" ]]; then
+    logerr "WARNING: hosted-config gate: no head SHA for PR #$pr_num; holding #$issue_num this tick"
+    return 1
+  fi
+  # The base is where the branch left main. main's tip would count everything
+  # main gained since as this PR's change (or as its revert).
+  if ! base_sha=$(gh api "repos/JakubAnderwald/drafto/compare/main...$sha" \
+      --jq '.merge_base_commit.sha' 2>>"$LOG_FILE") || [[ -z "$base_sha" ]]; then
+    logerr "WARNING: hosted-config gate: no merge base for PR #$pr_num at ${sha:0:12} (transient?); holding #$issue_num this tick"
+    return 1
+  fi
+  if ! tmp=$(mktemp -d 2>>"$LOG_FILE"); then
+    logerr "WARNING: hosted-config gate: mktemp failed; holding #$issue_num this tick"
+    return 1
+  fi
+  if ! hosted_config_fetch "$base_sha" "$tmp/base" || ! hosted_config_fetch "$sha" "$tmp/head"; then
+    rm -rf "$tmp"
+    logerr "WARNING: hosted-config gate: couldn't fetch supabase/config.toml for PR #$pr_num (transient?); holding #$issue_num this tick"
+    return 1
+  fi
+
+  # The label vouches for one version of config.toml: the one it was first seen
+  # with. A later commit that changes the file again voids it, so the operator
+  # is asked again instead of an unapplied change riding on an old label.
+  head_hash=$(shasum -a 256 "$tmp/head" 2>/dev/null | cut -c1-16)
+  vouched=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.hostedConfigVouched // ""' 2>/dev/null || echo "")
+  if [[ ",$pr_labels," == *",hosted-config-applied,"* ]]; then
+    if [[ -z "$vouched" ]]; then
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" hostedConfigVouched "$head_hash" \
+        --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    elif [[ "$vouched" != "$head_hash" ]]; then
+      logerr "Issue #$issue_num: config.toml changed since hosted-config-applied was added; removing the label from PR #$pr_num"
+      if [[ "$DRY_RUN" -eq 0 ]]; then
+        # Forget the vouched hash only once the label is really gone: keeping it
+        # makes the next tick see the mismatch again and retry the removal.
+        if gh pr edit "$pr_num" --repo JakubAnderwald/drafto --remove-label hosted-config-applied >>"$LOG_FILE" 2>&1; then
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" hostedConfigVouched "" \
+            --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        else
+          logerr "WARNING: couldn't remove hosted-config-applied from PR #$pr_num; retrying next tick"
+        fi
+      fi
+      pr_labels=$(tr ',' '\n' <<<"$pr_labels" | grep -vxF hosted-config-applied | paste -sd, - || true)
+    fi
+  elif [[ -n "$vouched" ]]; then
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" hostedConfigVouched "" \
+      --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  fi
+
+  out=$(node "$SCRIPT_DIR/lib/hosted-config.mjs" check --base-file "$tmp/base" --head-file "$tmp/head" \
+    --labels "$pr_labels" --pr "$pr_num" --where "$where" 2>>"$LOG_FILE") || rc=$?
+  rm -rf "$tmp"
+
+  case "$rc" in
+    0)
+      logerr "Issue #$issue_num: hosted-config gate passed for PR #$pr_num at ${sha:0:12} ($where)"
+      return 0
+      ;;
+    3) marker="hold" ;;
+    *) marker="unverified" ;;
+  esac
+  # One comment per column and head SHA: a card held again in Approved, after
+  # passing In Review on the same commit, still says why.
+  slug=$(tr '[:upper:] ' '[:lower:]-' <<<"$where")
+  marker="drafto-factory-hosted-config-$marker:$slug:${sha:0:12}"
+  body=$(printf '%s' "$out" | jq -r '.comment // ""' 2>/dev/null || echo "")
+  if [[ -z "$body" ]]; then
+    body="🏭 **Hold — couldn't verify the hosted Supabase config.**
+
+PR #$pr_num changes \`supabase/config.toml\`, and the check failed to run (exit $rc). \
+The factory retries every cycle. If this persists, run \`pnpm hosted-config:check\` \
+on the Mac mini (ADR-0065)."
+  fi
+  logerr "Issue #$issue_num: hosted-config gate held PR #$pr_num at ${sha:0:12} ($marker)"
+  if [[ "$DRY_RUN" -eq 0 ]] && ! issue_has_marker "$issue_num" "$marker"; then
+    gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "$body
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
+  fi
+  return 1
+}
+
+# supabase/config.toml at <ref>, written to <file>. A ref without the file (a
+# PR that deletes it) yields an empty file; any other failure returns 1.
+hosted_config_fetch() {
+  local ref="$1" file="$2" err
+  err=$(gh api "repos/JakubAnderwald/drafto/contents/supabase/config.toml?ref=$ref" \
+    -H "Accept: application/vnd.github.raw" 2>&1 >"$file") && return 0
+  printf '%s\n' "$err" >>"$LOG_FILE"
+  # A ref GitHub can't resolve yet (a SHA pushed a moment ago) is a 404 too, but
+  # says nothing about the file: read as "deleted", it would skip every probe.
+  if [[ "$err" == *"HTTP 404"* && "$err" != *"No commit found"* ]]; then
+    : >"$file"
+    return 0
+  fi
+  return 1
+}
+
+# hosted_config_gate for a caller that has only the PR: fetches the changed
+# files and labels itself. intest_dispatch_betas uses it, because every beta
+# dispatch goes through there, whichever path led to it.
+# Args: $1 issue  $2 PR  $3 head SHA  $4 where (see hosted_config_gate)
+hosted_config_gate_pr() {
+  local issue_num="$1" pr_num="$2" sha="$3" where="$4" diff_files labels
+  if ! diff_files=$(gh pr diff "$pr_num" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE"); then
+    logerr "WARNING: hosted-config gate: gh pr diff #$pr_num failed (transient?); holding #$issue_num this tick"
+    return 1
+  fi
+  grep -qxF 'supabase/config.toml' <<<"$diff_files" || return 0
+  if ! labels=$(gh pr view "$pr_num" --repo JakubAnderwald/drafto --json labels \
+      --jq '[.labels[].name] | join(",")' 2>>"$LOG_FILE"); then
+    logerr "WARNING: hosted-config gate: gh pr view #$pr_num failed (transient?); holding #$issue_num this tick"
+    return 1
+  fi
+  hosted_config_gate "$issue_num" "$pr_num" "$sha" "$diff_files" "$labels" "$where"
+}
+
 # Slot index (0|1) currently assigned to <issue>, or "" if none. Unlike
 # slot_for_issue (which falls back to the first FREE slot for acquisition), this
 # only ever returns a slot the issue actually holds — safe for teardown.
@@ -2807,6 +2944,21 @@ intest_dispatch_betas() {
   [[ "$to_dispatch" == "$lanes" ]] \
     || logerr "Issue #$issue_num: re-dispatching only the missing lane(s) '$to_dispatch' (already started: '${prior_lanes:-none}')"
   lanes="$to_dispatch"
+
+  # Hosted-config gate (ADR-0065). Every beta dispatch comes through here: the
+  # In Test promotion, Testing, and the In Test sweep, which also builds a new
+  # head pushed while the card sits in In Test. Betas run against prod, so a
+  # head whose config.toml additions prod lacks gets none. The lanes aren't
+  # recorded as started, so a later tick dispatches them once the gate passes.
+  # No manual build commands either: a local beta would hit the same gap.
+  if ! hosted_config_gate_pr "$issue_num" "$pr_num" "$sha" "beta"; then
+    logerr "Issue #$issue_num: hosted-config gate held pre-merge beta lane(s) '$lanes' at ${sha:0:12}"
+    skipped_json=$(jq -nc --argjson skipped "$skipped_json" --arg lanes "$lanes" '
+      $skipped + [ $lanes | split(",") | .[] | select(length > 0) | { id: ., reason: "hosted-config-hold" } ]' \
+      2>/dev/null || echo "$skipped_json")
+    jq -nc --argjson skipped "$skipped_json" '{ dispatched: [], skipped: $skipped, manualCommands: [] }'
+    return 0
+  fi
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     logerr "DRY-RUN: would dispatch pre-merge beta lane(s) '$lanes' for #$issue_num at ${sha:0:12}"
@@ -6264,8 +6416,9 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
     # Pull CI rollup + the Vercel preview URL from the PR in one call.
     # headRefOid rides along (no extra API call): the In Test hand-off keys its
     # scenario/beta idempotency on the exact commit that CI went green on.
+    # labels feed the hosted-config gate's hosted-config-applied check.
     PR_VIEW=$(gh pr view "$PR_NUM" --repo JakubAnderwald/drafto \
-      --json state,mergeable,statusCheckRollup,comments,headRefOid 2>>"$LOG_FILE" || echo "")
+      --json state,mergeable,statusCheckRollup,comments,headRefOid,labels 2>>"$LOG_FILE" || echo "")
     if [[ -z "$PR_VIEW" ]]; then
       log "WARNING: gh pr view #$PR_NUM failed (transient?); skipping this tick"; continue
     fi
@@ -6668,6 +6821,16 @@ A human should take a look. Reset with \
       if ! cr_lane_gate "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA"; then
         continue
       fi
+    fi
+
+    # Hosted-config gate (ADR-0065), the last stop before both promotion paths:
+    # Testing (verify_enter) and In Test each dispatch betas that run against
+    # prod. A PR whose supabase/config.toml adds hosted settings stays in In
+    # Review until dev and prod have them. Every new commit comes back through
+    # here, so the In Test sweep's re-dispatch never needs its own check.
+    IR_PR_LABELS=$(echo "$PR_VIEW" | jq -r '(.labels // []) | map(.name) | join(",")' 2>/dev/null || echo "")
+    if ! hosted_config_gate "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$IR_PR_LABELS" "In Review"; then
+      continue
     fi
 
     # Pre-In-Test verification (ADR-0053). With FACTORY_VERIFY=1 (and the canary
@@ -7308,12 +7471,25 @@ to In Test for your approval once they are all answered.
       continue
     fi
 
+    # Hosted-config gate (ADR-0065) — hard stop, the last check before the
+    # merge, so the conflict, CI and review-thread hand-backs above still run
+    # for a held card. It catches a card dragged to Approved without passing
+    # the In Review check, and a hosted entry removed since then. The card
+    # stays in Approved. The merge below is pinned to the SHA checked here.
+    MERGE_SHA=$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')
+    if ! hosted_config_gate "$ISSUE_NUM" "$PR_NUM" "$MERGE_SHA" "$DIFF_FILES" "$PR_LABELS" "Approved"; then
+      continue
+    fi
+
     # Squash-merge via the API form. gh pr merge --delete-branch fails in
     # worktrees (it tries to check out main locally — CLAUDE.md gotcha); the
-    # merge endpoint is a PUT, so --method PUT is required.
+    # merge endpoint is a PUT, so --method PUT is required. `sha` makes GitHub
+    # refuse the merge if the head moved after the gates above read it.
+    MERGE_ARGS=(-f merge_method=squash)
+    [[ -n "$MERGE_SHA" ]] && MERGE_ARGS+=(-f "sha=$MERGE_SHA")
     MERGE_OK=0
     if MERGE_OUT=$(gh api --method PUT "repos/JakubAnderwald/drafto/pulls/$PR_NUM/merge" \
-        -f merge_method=squash 2>>"$LOG_FILE"); then
+        "${MERGE_ARGS[@]}" 2>>"$LOG_FILE"); then
       if [[ "$(echo "$MERGE_OUT" | jq -r '.merged // false')" == "true" ]]; then MERGE_OK=1; fi
     else
       # The merge may have landed even if the HTTP response was lost (network

@@ -58,6 +58,7 @@ LABELS=(
   # Operator gates.
   "factory-pause|D93F0B|Global kill switch — factory exits early when set."
   "migration-approved|0052CC|Authorises factory to merge a PR with supabase/migrations changes."
+  "hosted-config-applied|0052CC|Operator applied this PR's supabase/config.toml changes to dev and prod."
   "factory-failure|B60205|Filed by the factory failure trap when a run errors out."
 
   # Parity overrides — set by the operator to disable the cross-platform
