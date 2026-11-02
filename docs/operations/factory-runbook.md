@@ -273,14 +273,13 @@ A card in **In Test** needs a build a human can actually install. `--watch` ther
 
 The block below prepares the root with the factory's own `ensure_beta_build_root`, so it validates the root exactly as a lane gets it:
 
-- **Preparation.** It resets the root to `origin/main`, seeds and installs it, and copies the env files from the factory checkout, as for a lane.
+- **Preparation.** It fetches `origin/main` and stops if the fetch fails, so it never validates an older commit. It then resets the root to that commit, seeds and installs it, and copies the env files from the factory checkout, as for a lane.
 - **The lock.** It takes the root's lock with the pid of the `bash` process that runs the block. While the block runs, both schedulers skip the root. The lock dies with that process, Ctrl-C included, and the schedulers reap a lock whose pid is gone, so there is nothing to clean up by hand.
 - **A busy root.** If a live lane holds the lock, the block stops at once with `in use by pid N`. Run it again once that lane has finished. Don't delete the lock yourself.
 - **Versions.** It prints the installed `react-native-macos` and React versions. The first must equal the version `apps/desktop/package.json` pins, and the second must be 19.2.x. The lane's dependency preflight refuses a mismatch before CocoaPods anyway.
 - **The log.** It writes to `~/drafto-desktop-validation.log`.
 
 ```bash
-cd /Volumes/DraftoFactory/drafto-factory && git fetch origin main
 bash -c "$(cat <<'EOF'
 set -uo pipefail
 REPO_ROOT=/Volumes/DraftoFactory/drafto-factory
@@ -290,6 +289,7 @@ INSTALL_TIMEOUT_SEC=1800
 DRAFTO_DESKTOP_BUILD_ROOT=/Volumes/DraftoFactory/drafto-beta-desktop
 log() { echo "$*" | tee -a "$LOG_FILE"; }
 logerr() { echo "$*" | tee -a "$LOG_FILE" >&2; }
+git -C "$REPO_ROOT" fetch origin main || exit 1
 source "$SCRIPT_DIR/lib/beta-build-root.sh"
 trap 'release_beta_build_root desktop' EXIT
 ROOT=$(ensure_beta_build_root desktop "$(git -C "$REPO_ROOT" rev-parse origin/main)") || exit 1
