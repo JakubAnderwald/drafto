@@ -1955,7 +1955,9 @@ hosted_config_fetch() {
   err=$(gh api "repos/JakubAnderwald/drafto/contents/supabase/config.toml?ref=$ref" \
     -H "Accept: application/vnd.github.raw" 2>&1 >"$file") && return 0
   printf '%s\n' "$err" >>"$LOG_FILE"
-  if grep -q "HTTP 404" <<<"$err"; then
+  # A ref GitHub can't resolve yet (a SHA pushed a moment ago) is a 404 too, but
+  # says nothing about the file: read as "deleted", it would skip every probe.
+  if [[ "$err" == *"HTTP 404"* && "$err" != *"No commit found"* ]]; then
     : >"$file"
     return 0
   fi

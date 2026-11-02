@@ -12,11 +12,13 @@
 // probing one sample URL per added entry tells us whether the entry is live.
 // Each project is first probed with a known-rejected control, whose redirect
 // reveals that project's Site URL, and a known-allowed one. A change in that
-// behaviour reads as "unknown", never as a false pass or hold.
+// behaviour reads as "unknown", never as a false pass or hold. The
+// `hosted-config-applied` label overrules "unknown", never a confirmed miss.
 //
 // Anything else in config.toml (rate limits, templates, providers) can't be
-// probed. A change there needs the `hosted-config-applied` PR label, set by the
-// operator once they have applied it to both projects.
+// probed, and neither can a Redirect URL with no valid sample. Those need the
+// `hosted-config-applied` PR label, set by the operator once they have applied
+// the change to both projects.
 
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";

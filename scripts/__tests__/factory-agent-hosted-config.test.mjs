@@ -29,7 +29,7 @@ function run(call, opts = {}) {
     nodeOut = "",
     markerExists = false,
     compareFail = false,
-    contentsFail = "", // "" | "404" | "500"
+    contentsFail = "", // "" | "404" | "404-ref" | "500"
     vouched = "",
     dryRun = 0,
     prDiff = CONFIG_DIFF,
@@ -57,6 +57,7 @@ gh() {
     "api repos/JakubAnderwald/drafto/contents/"*)
       echo "GH contents \${2##*=}" >>"$CALLS"
       if [[ "${contentsFail}" == "404" && "\${2##*=}" == "${SHA}" ]]; then echo "gh: Not Found (HTTP 404)" >&2; return 1; fi
+      if [[ "${contentsFail}" == "404-ref" && "\${2##*=}" == "${SHA}" ]]; then echo "gh: No commit found for the ref ${SHA} (HTTP 404)" >&2; return 1; fi
       if [[ "${contentsFail}" == "500" ]]; then echo "gh: Server Error (HTTP 500)" >&2; return 1; fi
       printf '%s' ${JSON.stringify(HEAD_CONFIG)}; return 0 ;;
     "pr diff") echo "GH pr diff" >>"$CALLS"; cat "${dir}/diff"; return 0 ;;
@@ -201,7 +202,12 @@ describe("hosted_config_gate (extracted, real bash)", () => {
   });
 
   it("holds quietly, without running the check, when GitHub fails", () => {
-    for (const opts of [{ contentsFail: "500" }, { compareFail: true }]) {
+    for (const opts of [
+      { contentsFail: "500" },
+      { compareFail: true },
+      // An unresolved ref is a 404 too; it must not read as a deleted config.toml.
+      { contentsFail: "404-ref", vouched: "", nodeRc: 0, nodeOut: '{"status":"ok"}' },
+    ]) {
       const out = run(gate(), opts);
       assert.match(out, /^RC 1$/m);
       assert.doesNotMatch(out, /^CHECK /m);

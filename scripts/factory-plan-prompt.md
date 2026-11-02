@@ -217,8 +217,11 @@ here let the operator catch issues before approval rather than after.
 A new Supabase Redirect URL, or any other hosted auth setting, belongs in
 `supabase/config.toml` (list the file under "Files to touch"). The factory
 holds the card in In Review until the dev and prod projects have it, and
-posts what the operator must add (ADR-0065). Never plan to change hosted
-Supabase config from the factory.>
+posts what the operator must add (ADR-0065). It probes Redirect URLs with
+plain `*` / `**` globs only; one it can't sample (a character class, `{a,b}`,
+a `*` in a port) and any other hosted setting also wait for the operator's
+`hosted-config-applied` label. Never plan to change hosted Supabase config
+from the factory.>
 
 ### Parity checklist
 

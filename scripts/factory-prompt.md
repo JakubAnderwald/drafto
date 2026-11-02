@@ -393,7 +393,10 @@ For a first implementation, `revisionComments` is empty; ignore this section.
    hosted auth setting there too. Never change hosted config yourself: no
    Supabase Management API calls and no `supabase config push`. The factory
    holds the card in In Review until dev and prod have it, and tells the
-   operator exactly what to add (ADR-0065).
+   operator exactly what to add (ADR-0065). Use plain `*` / `**` globs in a
+   Redirect URL: one it can't probe (a character class, `{a,b}`, a `*` in a
+   port), like any other hosted setting, waits for the operator's
+   `hosted-config-applied` label.
 
    A new migration's version must be 14 digits and newer than the newest file
    in `supabase/migrations/` on `origin/main` — normally today's UTC date as
