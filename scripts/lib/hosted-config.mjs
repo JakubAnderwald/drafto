@@ -69,8 +69,8 @@ function redirectArraySpan(text) {
   let table = "";
   let offset = 0;
   for (const line of text.split("\n")) {
-    const header = line.match(/^\s*\[([^\]]+)\]\s*(#.*)?$/);
-    if (header) table = header[1].trim();
+    const header = tableHeader(line);
+    if (header) table = header.key;
     if (table === "auth" && /^\s*additional_redirect_urls\s*=\s*\[/.test(line)) {
       const open = offset + line.indexOf("[");
       const end = scanArray(text, open);
@@ -79,6 +79,19 @@ function redirectArraySpan(text) {
     offset += line.length + 1;
   }
   return null;
+}
+
+// A `[table]` or `[[array.of.tables]]` header line, or null. `key` names the
+// section: the table's name, or the name in `[[…]]` for an array of tables, so
+// an array section never passes for the plain table of the same name.
+function tableHeader(line) {
+  const m = stripComment(line)
+    .trim()
+    .match(/^(?:\[\[\s*([^[\]]+?)\s*\]\]|\[\s*([^[\]]+?)\s*\])$/);
+  if (!m) return null;
+  return m[1] === undefined
+    ? { key: m[2], line: `[${m[2]}]` }
+    : { key: `[[${m[1]}]]`, line: `[[${m[1]}]]` };
 }
 
 // Index just past the `]` that closes the array opened at `open`, or -1.
@@ -166,10 +179,10 @@ function hostedSettings(text) {
   for (const raw of rest.split("\n")) {
     const line = stripComment(raw).trim();
     if (line === "") continue;
-    const header = line.match(/^\[([^\]]+)\]$/);
+    const header = tableHeader(line);
     if (header) {
-      table = header[1].trim();
-      if (!LOCAL_ONLY_TABLES.has(table)) out.push(`[${table}]`);
+      table = header.key;
+      if (!LOCAL_ONLY_TABLES.has(table)) out.push(header.line);
       continue;
     }
     if (LOCAL_ONLY_TABLES.has(table)) continue;

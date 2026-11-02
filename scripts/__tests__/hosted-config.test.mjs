@@ -193,6 +193,26 @@ describe("addedRedirectUrls / nonRedirectConfigChanged", () => {
     const unknown = `${REAL_CONFIG}\n[db.something_new]\nx = 1\n`;
     assert.equal(nonRedirectConfigChanged(REAL_CONFIG, unknown), true);
   });
+
+  it("reads an array-of-tables header as a new section, not as part of the table before it", () => {
+    // In the real file [db.network_restrictions] follows [db.seed] directly.
+    const withArray = REAL_CONFIG.replace(
+      "[db.network_restrictions]",
+      "[[x]] # an array section\nname = 1\n\n[db.network_restrictions]",
+    );
+    assert.match(withArray, /\[db\.seed\]\n(?:.*\n)*?\[\[x\]\]/, "an [[x]] after [db.seed]");
+    assert.equal(nonRedirectConfigChanged(REAL_CONFIG, withArray), true);
+    assert.equal(
+      nonRedirectConfigChanged(withArray, withArray.replace("name = 1", "name = 2")),
+      true,
+      "a key under [[x]] after the local-only [db.seed] still counts",
+    );
+  });
+
+  it("reads Redirect URLs only under [auth], not under an array section", () => {
+    const text = '[auth]\nsite_url = "x"\n[[auth]]\nadditional_redirect_urls = ["drafto://a"]\n';
+    assert.deepEqual(parseRedirectUrls(text), []);
+  });
 });
 
 describe("probeUrlFor", () => {

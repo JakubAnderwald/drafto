@@ -187,6 +187,9 @@ function emptyIssue() {
     crLastCoveredSha: null, // last SHA CodeRabbit (bot or CLI) reviewed: the incremental base
     crCliRuns: null, // decimal string: CLI runs spent on this card since its last In Test
     crCliFreePassSha: null, // crLastCoveredSha whose findings already got an attempt-free fix pass
+    // Hosted-config gate (ADR-0065): hash of the supabase/config.toml that the
+    // hosted-config-applied label vouched for, "" or null while there is none.
+    hostedConfigVouched: null,
     // Re-runs spent on required checks GitHub cancelled (no runner acquired),
     // as "<head sha>:<count>". Head-SHA keyed like the rest: a new push re-arms
     // the FACTORY_CI_RERUN_MAX budget. See rerun_infra_failures.
