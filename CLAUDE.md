@@ -216,7 +216,7 @@ gh issue create --project "Drafto Factory" --title "feat: ..." --body-file spec.
 
 (Requires the `gh` token to carry `project` scope — run `gh auth refresh -s project` once if `--project` errors with a missing-scope message.)
 
-**Two human gates** the factory will never bypass: Plan Review → In Progress (plan-approval) and In Test → Approved (merge + ship). Both are reachable via the kanban board for any reporter, and via email reply for allowlisted reporters (Jakub + his wife). The migration gate (`migration-approved` label required when a PR touches `supabase/migrations/**`) is a hard stop on the Approved transition for everyone.
+**Two human gates** the factory will never bypass: Plan Review → In Progress (plan-approval) and In Test → Approved (merge + ship). Both are reachable via the kanban board for any reporter, and via email reply for allowlisted reporters (Jakub + his wife). The migration gate (`migration-approved` label required when a PR touches `supabase/migrations/**`) is a hard stop on the Approved transition for everyone. The hosted-config gate holds a PR that changes `supabase/config.toml` in In Review, at every pre-merge beta dispatch and before the merge, until dev and prod have the Redirect URLs it adds (the factory probes them) and, for any other setting or a Redirect URL it can't probe, the `hosted-config-applied` label is on the PR ([ADR-0065](./docs/adr/0065-factory-hosted-config-gate.md)).
 
 **Kill switches**: per-card via `factory-pause` label or dragging to **Blocked**; global via `node scripts/lib/state-cli.mjs factory:pause`; emergency via `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist`.
 

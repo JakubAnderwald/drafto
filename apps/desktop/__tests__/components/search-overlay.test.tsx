@@ -68,6 +68,16 @@ describe("SearchOverlay", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("closes on Escape, which macOS reports as a keyPress", () => {
+    const onClose = jest.fn();
+    render(<SearchOverlay {...defaultProps} onClose={onClose} />);
+    const input = screen.getByPlaceholderText("Search notes...");
+    fireEvent(input, "keyPress", { nativeEvent: { key: "a" } });
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent(input, "keyPress", { nativeEvent: { key: "Escape" } });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('shows "No results found" for empty results with a query', () => {
     mockUseSearch.mockReturnValue({
       results: [],

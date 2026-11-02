@@ -1,4 +1,4 @@
-# 0065 — Support Forwards Need an Allowlisted Marker
+# 0066 — Support Forwards Need an Allowlisted Marker
 
 - **Status**: Accepted
 - **Date**: 2026-11-01

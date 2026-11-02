@@ -362,7 +362,7 @@ describe("factory-agent.sh verification stage: static wiring", () => {
 
   it("reuses the In Test sweep's feedback filter rather than a copy", () => {
     const sweep = slice("  # ── In Test feedback sweep", "# ── --browser mode");
-    // The trailing issue argument feeds the support-forward gate (ADR-0065).
+    // The trailing issue argument feeds the support-forward gate (ADR-0066).
     assert.match(
       sweep,
       /if has_actionable_feedback "\$COMMENTS_JSON" "\$INTEST_HWM" "\$ISSUE_NUM"; then/,

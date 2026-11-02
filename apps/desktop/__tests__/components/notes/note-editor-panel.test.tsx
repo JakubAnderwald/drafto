@@ -12,6 +12,7 @@ import {
 
 import { render, fireEvent, act } from "../../helpers/test-utils";
 import { jsonbReordered } from "../../helpers/jsonb";
+import { findSearchJS, findStepJS } from "@/components/editor/find-engine";
 import { NoteEditorPanel } from "@/components/notes/note-editor-panel";
 import { useNote } from "@/hooks/use-note";
 import type { Attachment, Note } from "@/db";
@@ -813,5 +814,57 @@ describe("NoteEditorPanel — no writes from merely opening a note (#654)", () =
     });
 
     expect(note.content).toBe(serializeEditorContent(original));
+  });
+});
+
+// Find in note: the search is debounced, so a step (Return, ›, Cmd+G) that
+// arrives while the debounce still holds the new query back must run that
+// search instead of stepping through the previous query's matches.
+describe("NoteEditorPanel — find in note", () => {
+  let web: ReturnType<typeof createFakeWebEditor>;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    mockRecords.clear();
+    mockWriteQueue.tail = Promise.resolve();
+    web = createFakeWebEditor();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  async function openFind() {
+    createRecord("a", "Welcome", webAuthoredContent("Hello"));
+    const utils = renderPanel("a");
+    await flushAsync(DEBOUNCE_MS * 2);
+    utils.rerender(<NoteEditorPanel noteId="a" findSignal={{ command: "open", nonce: 1 }} />);
+    await flushAsync();
+    const injected = web.bridge.webviewRef.current.injectJavaScript;
+    injected.mockClear();
+    return { input: utils.getByPlaceholderText("Find in note"), injected };
+  }
+
+  const scripts = (mock: jest.Mock) => mock.mock.calls.map(([js]) => js as string);
+
+  it("runs the search the debounce is holding instead of stepping the old query", async () => {
+    const { input, injected } = await openFind();
+
+    fireEvent.changeText(input, "Hello");
+    fireEvent(input, "submitEditing", { nativeEvent: { text: "Hello" } });
+    expect(scripts(injected)).toEqual([findSearchJS("Hello")]);
+
+    await flushAsync(1000);
+    expect(scripts(injected)).toEqual([findSearchJS("Hello")]); // not searched twice
+  });
+
+  it("steps once the debounced search has run", async () => {
+    const { input, injected } = await openFind();
+
+    fireEvent.changeText(input, "Hello");
+    await flushAsync(1000);
+    fireEvent(input, "submitEditing", { nativeEvent: { text: "Hello" } });
+
+    expect(scripts(injected)).toEqual([findSearchJS("Hello"), findStepJS("next")]);
   });
 });

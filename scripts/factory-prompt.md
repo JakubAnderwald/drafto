@@ -388,6 +388,16 @@ For a first implementation, `revisionComments` is empty; ignore this section.
    (docs/operations/migrations.md → "New tables need explicit grants"). The
    check fails without them.
 
+   If the change needs a new Supabase Redirect URL, add it to
+   `additional_redirect_urls` in `supabase/config.toml`, and declare any other
+   hosted auth setting there too. Never change hosted config yourself: no
+   Supabase Management API calls and no `supabase config push`. The factory
+   holds the card in In Review until dev and prod have it, and tells the
+   operator exactly what to add (ADR-0065). Use plain `*` / `**` globs in a
+   Redirect URL: one it can't probe (a character class, `{a,b}`, a `*` in a
+   port), like any other hosted setting, waits for the operator's
+   `hosted-config-applied` label.
+
    A new migration's version must be 14 digits and newer than the newest file
    in `supabase/migrations/` on `origin/main` — normally today's UTC date as
    `YYYYMMDD000001_<name>.sql`; if main already has a file dated today or

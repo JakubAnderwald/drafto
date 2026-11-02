@@ -128,14 +128,14 @@ When a customer replies on a thread that's already linked to an issue, prompt st
 
 `<sender>` is the bare, lower-cased address from the latest message's `fromAddress`. The marker is the only line besides the bold one that the agent writes itself. Everything the customer wrote is quoted, so a marker they type lands on a quoted line.
 
-The marker matters because the dark factory reads `OWNER` comments as operator feedback: a replan in Plan Review, or a revision from In Test. Its comment detectors run every comment through `gate_support_forwards` in `scripts/factory-agent.sh` ([ADR-0065](../adr/0065-support-forward-provenance-gate.md)). A comment that mentions `drafto-support-forward` or `Customer replied via support@` counts as a forward, and only these count as feedback:
+The marker matters because the dark factory reads `OWNER` comments as operator feedback: a replan in Plan Review, or a revision from In Test. Its comment detectors run every comment through `gate_support_forwards` in `scripts/factory-agent.sh` ([ADR-0066](../adr/0066-support-forward-provenance-gate.md)). A comment that mentions `drafto-support-forward` or `Customer replied via support@` counts as a forward, and only these count as feedback:
 
 - a forward whose **one unquoted** marker names an address in `$SUPPORT_ALLOWLIST`,
 - on an issue whose `reporterEmail` in `logs/support-state.json`, if it has one, is allowlisted too.
 
 Every other forward stays on the issue for anyone to read but triggers nothing. That covers no marker, a marker only inside the quote, a malformed marker, two markers, or a non-allowlisted sender or reporter. The factory logs the comment id and the reason, never the sender or the text. The factory reads the support state from the primary checkout (`$HOME/code/drafto/logs/support-state.json`, overridable with `DRAFTO_SUPPORT_STATE_FILE`), since its own checkout has none. The forwarding itself is unchanged: every customer reply still reaches the issue.
 
-The marker is written by the model and comes from an email `From` header, so it doesn't prove the sender's identity. It stops a stranger's reply from counting, but not a spoofed `From` header or a prompt injection that gets the agent to write an allowlisted marker. On an issue a customer filed, the recorded-reporter check still blocks those. ADR-0065 lists the follow-ups.
+The marker is written by the model and comes from an email `From` header, so it doesn't prove the sender's identity. It stops a stranger's reply from counting, but not a spoofed `From` header or a prompt injection that gets the agent to write an allowlisted marker. On an issue a customer filed, the recorded-reporter check still blocks those. ADR-0066 lists the follow-ups.
 
 ### Stage 2 releases (nightly beta dispatch)
 
@@ -293,7 +293,7 @@ Stage 2 already authenticates `gh` on the Mac mini for the same user. No additio
   - Customer-facing replies must be verbose, include the full GitHub URL, and explain "what happens next." The existing prompt templates encode this — keep them.
   - `nightly-support.sh` allowlist gate: read the inbound sender from `state.issues[<n>].reporterEmail` (recorded by the runner at filing time, not from the issue body). Never trust LLM-written content in the issue body for the gate decision — the body could carry a forged footer copied from a customer email. See ADR-0025.
   - Account-deletion and data-rights mail always escalates to `NeedsHuman` (prompt step 5.5, plus its exception at the top of step 4.5). Keep step 5.5 ahead of the phase gate, and never give the agent a tool that deletes, exports or edits user data. The confirmed-by-reply manual procedure is the only path for emailed requests.
-  - A step 4.5 forward carries exactly one unquoted `<!-- drafto-support-forward sender:<email> -->` line, and every customer line is `> `-quoted. The factory's support-forward gate depends on both (see [Forwarded customer replies](#forwarded-customer-replies-step-45), ADR-0065). A forward without the marker is never feedback.
+  - A step 4.5 forward carries exactly one unquoted `<!-- drafto-support-forward sender:<email> -->` line, and every customer line is `> `-quoted. The factory's support-forward gate depends on both (see [Forwarded customer replies](#forwarded-customer-replies-step-45), ADR-0066). A forward without the marker is never feedback.
 - **Tests that will catch regressions:**
   - `scripts/__tests__/policy.test.mjs` — loop headers, rate limits, sender allowlisting.
   - `scripts/__tests__/zoho-cli.test.mjs` — namespace gates, `add-label` / `move-to-folder` refusals, OAuth refresh-on-401 retries exactly once.
@@ -369,6 +369,6 @@ Estimated rollback time: ~2 hours, dominated by DNS propagation.
 ## Related ADRs
 
 - [0024 — Real-Time Support Agent](../adr/0024-realtime-support-agent.md) — this pipeline.
-- [0065 — Support Forwards Need an Allowlisted Marker](../adr/0065-support-forward-provenance-gate.md) — the step 4.5 provenance marker and the factory gate that reads it.
+- [0066 — Support Forwards Need an Allowlisted Marker](../adr/0066-support-forward-provenance-gate.md) — the step 4.5 provenance marker and the factory gate that reads it.
 - [0013 — Automated Support Pipeline](../adr/0013-automated-support-pipeline.md) — superseded for Stage 1 by 0024; Stages 2 and 3 still apply.
 - [0019 — Email Infrastructure and Approval Flow](../adr/0019-email-infrastructure-and-approval-flow.md) — outbound transactional email via Resend (`hello@drafto.eu`); independent of inbound support mail (`support@drafto.eu`).

@@ -55,15 +55,21 @@ export function FindBar({
         placeholderTextColor={semantic.fgSubtle}
         autoCapitalize="none"
         autoCorrect={false}
-        // @ts-expect-error -- RN macOS supports onKeyDown but types are incomplete
-        onKeyDown={(e: { nativeEvent: { key: string; shiftKey?: boolean } }) => {
-          const { key, shiftKey } = e.nativeEvent;
-          if (key === "Enter") {
-            if (shiftKey) onPrev();
-            else onNext();
-          } else if (key === "Escape") {
-            onClose();
-          }
+        // A single-line macOS field never sends Return or Escape to onKeyDown: its field
+        // editor turns them into insertNewline: / cancelOperation:, which arrive as
+        // onSubmitEditing and an "Escape" onKeyPress. Submitting also blurs the field, so
+        // take focus back, with the caret at the end rather than AppKit's select-all, so
+        // the next keystroke refines the query. Neither event carries modifiers, so
+        // Shift+Return steps forward too; Cmd+Shift+G and ‹ step back.
+        submitBehavior="submit"
+        onSubmitEditing={(e) => {
+          onNext();
+          const end = e.nativeEvent.text.length;
+          inputRef.current?.focus();
+          inputRef.current?.setSelection(end, end);
+        }}
+        onKeyPress={(e) => {
+          if (e.nativeEvent.key === "Escape") onClose();
         }}
       />
       {countLabel !== "" && <Text style={styles.count}>{countLabel}</Text>}

@@ -224,6 +224,22 @@ def resolve_promote_build_number(api_key:, asc_platform:, app_identifier:, app_v
   build_number
 end
 
+def asc_platform_enum(asc_platform)
+  asc_platform.to_s.casecmp("osx").zero? ? "MAC_OS" : "IOS"
+end
+
+# App Store Connect's builds with this build number on this platform, and under
+# this marketing version when one is given; nil if the app itself is not found.
+# macOS and iOS share one App Store Connect app, so the platform is never optional.
+def find_asc_builds(app_identifier:, asc_platform:, build_number:, app_version: nil)
+  app = Spaceship::ConnectAPI::App.find(app_identifier)
+  return nil if app.nil?
+
+  filter = { version: build_number.to_s, "preReleaseVersion.platform" => asc_platform_enum(asc_platform) }
+  filter["preReleaseVersion.version"] = app_version if app_version
+  app.get_builds(filter: filter, includes: "preReleaseVersion")
+end
+
 # Refuse to submit a build Apple has not finished processing.
 #
 # Deliberately asymmetric: a build App Store Connect reports as anything but
@@ -231,19 +247,15 @@ end
 # (API shape change, transient 5xx) only warns — a promote lane must not become
 # unusable because a diagnostic call broke.
 def assert_build_processed(app_identifier:, asc_platform:, build_number:)
-  asc_enum = asc_platform.to_s.casecmp("osx").zero? ? "MAC_OS" : "IOS"
+  asc_enum = asc_platform_enum(asc_platform)
   state =
     begin
-      app = Spaceship::ConnectAPI::App.find(app_identifier)
-      if app.nil?
+      builds = find_asc_builds(app_identifier: app_identifier, asc_platform: asc_platform, build_number: build_number)
+      if builds.nil?
         UI.important("#{app_identifier} not found in App Store Connect — skipping the processing-state check")
         return
       end
-      builds = app.get_builds(
-        filter: { version: build_number, "preReleaseVersion.platform" => asc_enum },
-        includes: "preReleaseVersion"
-      )
-      if builds.nil? || builds.empty?
+      if builds.empty?
         UI.user_error!(
           "Build #{build_number} (#{asc_enum}) does not exist in App Store Connect for " \
           "#{app_identifier} — there is nothing to submit."
@@ -264,6 +276,71 @@ def assert_build_processed(app_identifier:, asc_platform:, build_number:)
       "Wait for App Store Connect to finish (the 'ready to test' email) and re-run."
     )
   end
+end
+
+# altool sometimes uploads the .pkg, prints "UPLOAD SUCCEEDED with no errors", and
+# then logs "ERROR: … Failed to create URL for 'CDUploaderStateInfoResumeFilePath'"
+# (a resume-state file it never needed). fastlane fails the upload on that ERROR
+# line, so the lane stopped before the release notes, released-issue comments and
+# release tag although the build was in App Store Connect (desktop 0.4.4 builds 74
+# and 76). Tolerate exactly that error, and only once App Store Connect lists the
+# build under this version: any other upload error, this one without the build, or
+# a build Apple marked INVALID still fails the lane.
+ALTOOL_SPURIOUS_RESUME_ERROR = "CDUploaderStateInfoResumeFilePath"
+UPLOADED_BUILD_POLL_ATTEMPTS = 30
+UPLOADED_BUILD_POLL_SECONDS = 20
+
+def upload_to_testflight_checked(api_key:, pkg:, build_number:, app_version:)
+  upload_to_testflight(
+    api_key: api_key,
+    pkg: pkg,
+    # Don't block on Apple's processing (matches mobile). Waiting hung the
+    # #623 pre-merge lane for 3 days: build 56 went VALID in App Store
+    # Connect, but fastlane's poll never saw it, so the lane never exited
+    # and the factory never announced the build. post-release-notes.mjs
+    # polls for the exact build itself.
+    skip_waiting_for_build_processing: true
+  )
+rescue StandardError => e
+  raise unless e.message.include?(ALTOOL_SPURIOUS_RESUME_ERROR)
+
+  UI.important(
+    "altool failed the upload on '#{ALTOOL_SPURIOUS_RESUME_ERROR}' — checking whether build " \
+    "#{build_number} reached App Store Connect anyway"
+  )
+  unless uploaded_build_listed?(build_number: build_number, app_version: app_version)
+    UI.user_error!(
+      "Build #{build_number} (#{app_version}) never appeared in App Store Connect after altool's error: #{e.message}"
+    )
+  end
+  UI.success("Build #{build_number} is in App Store Connect, so altool's error was spurious — continuing")
+end
+
+# Polls App Store Connect for the macOS build the lane just uploaded: a fresh
+# upload can take a few minutes to be listed. True once it is listed, processing
+# or done; false if it never shows up. A failed lookup counts as "not listed yet",
+# but a build Apple already marked INVALID fails the lane.
+def uploaded_build_listed?(build_number:, app_version:)
+  UPLOADED_BUILD_POLL_ATTEMPTS.times do |attempt|
+    build =
+      begin
+        find_asc_builds(
+          app_identifier: BUNDLE_ID, asc_platform: "osx", build_number: build_number, app_version: app_version
+        )&.first
+      rescue StandardError => e
+        UI.message("Build lookup failed (#{e.message})")
+        nil
+      end
+    if build
+      if build.processing_state.to_s == "INVALID"
+        UI.user_error!("Build #{build_number} (#{app_version}) is INVALID in App Store Connect — Apple rejected it")
+      end
+      return true
+    end
+    UI.message("Build #{build_number} not listed yet (attempt #{attempt + 1}/#{UPLOADED_BUILD_POLL_ATTEMPTS})")
+    sleep(UPLOADED_BUILD_POLL_SECONDS) if attempt + 1 < UPLOADED_BUILD_POLL_ATTEMPTS
+  end
+  false
 end
 
 # Apply the App Store release settings `deliver` silently drops, and return the
@@ -707,15 +784,8 @@ platform :mac do
 
     # Upload
     if destination == "testflight"
-      upload_to_testflight(
-        api_key: api_key,
-        pkg: pkg_path,
-        # Don't block on Apple's processing (matches mobile). Waiting hung the
-        # #623 pre-merge lane for 3 days: build 56 went VALID in App Store
-        # Connect, but fastlane's poll never saw it, so the lane never exited
-        # and the factory never announced the build. post-release-notes.mjs
-        # polls for the exact build itself.
-        skip_waiting_for_build_processing: true
+      upload_to_testflight_checked(
+        api_key: api_key, pkg: pkg_path, build_number: new_build_number, app_version: version
       )
     else
       # app_version / platform are explicit because ASC app 6760675784 serves BOTH

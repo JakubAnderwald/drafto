@@ -164,7 +164,7 @@ it as new mail or file a duplicate issue. Instead:
   - Why: the factory reads the marker to decide whether this comment may
     start a replan or a revision. Only a forward with one unquoted marker
     naming an allowlisted sender can. A forward with no marker, a malformed
-    one, or two is ignored (ADR-0065). A customer can't make their own text
+    one, or two is ignored (ADR-0066). A customer can't make their own text
     count, because it is all quoted.
 
 - `gh issue comment <bundle.linkedIssue> --body <body>`.

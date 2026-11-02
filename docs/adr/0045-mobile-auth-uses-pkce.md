@@ -55,3 +55,39 @@ Set `flowType: "pkce"` on the mobile client, matching desktop and web.
 - **Keep the implicit flow and validate the tokens.** Rejected: a forged link carries perfectly valid tokens, just for the wrong account. The app cannot tell whose they are.
 - **Keep the implicit flow and drop the `setSession` branch only.** Rejected: under the implicit flow tokens are the only credential, so password reset would stop working altogether.
 - **Native Sign in with Apple on Android.** Rejected: Apple ships no Android SDK, which is why the browser flow exists ([ADR-0018](./0018-oauth-google-apple.md)).
+
+## Amendment (2026-11-01) — per-flow PKCE verifiers
+
+Append-only note. The status stays **Accepted**, and the decision above still applies. This changes which verifier a mobile exchange reads ([#685](https://github.com/JakubAnderwald/drafto/issues/685)).
+
+**Problem.** supabase-js read every exchange's verifier from one fixed key, `sb-<ref>-auth-token-code-verifier`, and each new PKCE flow overwrote it. A user who requested a reset and then, before opening the email, started another flow on the same phone found the link failing with a verifier error. That flow could be an Apple sign-in on Android, a sign-up, or a reset for another account.
+
+**What auth-js 2.116.0 does** (checked in the installed `dist/main/GoTrueClient.js`, `lib/helpers.js` and `lib/constants.js`):
+
+- Every PKCE flow start stores its verifier in its own slot, `…-flow-<id>-code-verifier`, and adds the id to an index, `…-flows-code-verifier`. This happens whether or not the flag below is on. At most `PKCE_MAX_CONCURRENT_FLOWS = 5` slots are kept, and a sixth flow evicts the oldest. The fixed key is still written with the newest verifier.
+- With `auth.experimental.appendPkceFlowIdToRedirects`, `_maybeAppendFlowIdToRedirect` adds `sb_flow_id=<32 hex>` to the redirect. Every PKCE flow mobile starts goes through it: `resetPasswordForEmail` (which returns no flow id), `signInWithOAuth` (through `_getUrlForProvider`, which returns `{ url, flowId }`; `signInWithOAuth`'s data is `{ provider, url, flowId }`), and `signUp`'s `emailRedirectTo`. Sign-up's code is confirmed in a browser and never exchanged on the phone. Its redirect becomes `https://drafto.eu/login?confirmed=1&sb_flow_id=<hex>`, which `https://drafto.eu/**` still allows, and its slot counts toward the five.
+- `exchangeCodeForSession(code, { flowId })` reads only that flow's slot. A missing slot or an id of the wrong shape fails with `pkce_code_verifier_not_found` and never borrows another flow's verifier, because a mismatched verifier would burn the single-use code. Without a flow id it reads the fixed key, as before. The automatic read from `window.location` applies only in a browser, which React Native is not.
+- supabase-js's `_initSupabaseAuthClient` passes `auth.experimental` on to `GoTrueClient`.
+
+**Decision.**
+
+- `apps/mobile/src/lib/supabase.ts` turns the flag on.
+- `apps/mobile/src/lib/app-deep-link.ts` exports `PKCE_FLOW_ID_PARAM` and `readPkceFlowId`. `completeRecoveryFromUrl` (`auth-recovery.ts`) and `completeAuthCallback` (`auth-callback.ts`, the Apple-on-Android exchange) read the redirect's flow id with it and pass `{ flowId }` when there is one. With none, the call stays `exchangeCodeForSession(code)`.
+- The flow id comes from the redirect, not from `signInWithOAuth`'s return value. `resetPasswordForEmail` returns none, and an id kept in app state would be lost when Android kills the app on Apple's page.
+- The app never retries an exchange without the flow id. That would send another flow's verifier.
+- Desktop is unchanged. Its fossil `node_modules` pins auth-js 2.101.1, which has no flow ids ([ADR-0027](./0027-desktop-react-version-locked-to-react-native-macos.md)).
+
+**Consequences.**
+
+- **Positive**:
+  - A pending reset or Apple sign-in survives up to four newer PKCE flows on the same device.
+  - This cannot rescue a reset that a newer one for the same address replaced on the server. Supabase ties a reset email's code to the account's newest reset request, so a second reset for the same address makes the first link fail on the server, whatever the app does. That most likely holds even when Supabase refuses the second request under its 60-second send limit (`max_frequency`), because the refused request is recorded first. This has not been checked against a live project. The issue's "second Send reset link press" is this case, so it is documented here rather than fixed.
+  - The forged-link denial of service above narrows. A forged `drafto://reset-password?code=<garbage>` without a flow id still makes auth-js delete the fixed key, but leaves the slots alone, so the genuine link, which names its slot, still completes. To reach a slot, a forged link would have to guess its 128-bit flow id. `apps/mobile/__tests__/lib/pkce-flow-ids.test.ts` covers this.
+  - A link without `sb_flow_id` behaves as before. That includes emails sent before the update, whose verifier is still in the fixed key.
+- **Negative**:
+  - **The Redirect URLs allowlist must allow the query string.** Supabase matches entries against the whole URL, query string included, so the exact `drafto://reset-password` and `drafto://auth/callback` entries stop matching, and Supabase silently swaps the redirect for the Site URL. Both projects need `drafto://reset-password?sb_flow_id=*` and `drafto://auth/callback?sb_flow_id=*`, next to the exact entries that installed builds still send, before a build with the flag reaches testers. Pre-merge betas run against prod ([ADR-0030](./0030-in-test-scenarios-and-pre-merge-betas.md)), so prod needs them first. `supabase/config.toml` lists them for the local stack.
+  - The flag is experimental, so a supabase-js release may rename or drop it. `pkce-flow-ids.test.ts` runs the real client and fails if the id stops being appended or honoured.
+  - **Only five flows are kept.** A sixth evicts the oldest slot, and that flow's link then fails as `pkce_code_verifier_not_found`. The reset screen's "Open this link on the device where you asked for the reset" is slightly off for it. No copy changed.
+- **Neutral**:
+  - No test can see Supabase keep `sb_flow_id` on the redirect when it adds the `code`. It is a manual device check ([testing](../architecture/testing.md#manual-only-coverage)).
+  - The flow id is a random one-time value that names a storage slot. The verifier never appears in a URL, and no new data is stored.

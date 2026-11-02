@@ -136,6 +136,8 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
   // Debounces find-as-you-type so a full ProseMirror tree-walk (the injected
   // engine re-scans every text node per search) doesn't run on every keystroke.
   const findDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The query that debounce is still holding back, or null once it has been searched.
+  const pendingFindQueryRef = useRef<string | null>(null);
 
   // Both save handlers resolve false when they wrote nothing, so the status
   // badge stays clear instead of reporting "Saved" for a skipped save.
@@ -275,6 +277,7 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
   // and on explicit close.
   const resetFind = useCallback(() => {
     if (findDebounceRef.current) clearTimeout(findDebounceRef.current);
+    pendingFindQueryRef.current = null;
     setFindVisible(false);
     setFindQuery("");
     setFindMatch({ current: 0, total: 0 });
@@ -505,18 +508,36 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
       setFindQuery(query);
       // Debounce the (full-document) search; the input stays responsive.
       if (findDebounceRef.current) clearTimeout(findDebounceRef.current);
-      findDebounceRef.current = setTimeout(() => injectFind(findSearchJS(query)), 150);
+      pendingFindQueryRef.current = query;
+      findDebounceRef.current = setTimeout(() => {
+        pendingFindQueryRef.current = null;
+        injectFind(findSearchJS(query));
+      }, 150);
     },
     [injectFind],
   );
 
-  const handleFindNext = useCallback(() => {
-    injectFind(findStepJS("next"));
+  // Runs a search still waiting on its debounce, and reports whether it did. That
+  // search lands on the first match, so a step that arrives before it (Return typed
+  // straight after the query) must not step too, or it walks the previous query's matches.
+  const flushPendingFind = useCallback(() => {
+    const query = pendingFindQueryRef.current;
+    if (query === null) return false;
+    if (findDebounceRef.current) clearTimeout(findDebounceRef.current);
+    pendingFindQueryRef.current = null;
+    injectFind(findSearchJS(query));
+    return true;
   }, [injectFind]);
 
+  const handleFindNext = useCallback(() => {
+    if (flushPendingFind()) return;
+    injectFind(findStepJS("next"));
+  }, [flushPendingFind, injectFind]);
+
   const handleFindPrev = useCallback(() => {
+    if (flushPendingFind()) return;
     injectFind(findStepJS("prev"));
-  }, [injectFind]);
+  }, [flushPendingFind, injectFind]);
 
   const handleFindClose = useCallback(() => {
     resetFind();

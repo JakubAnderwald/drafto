@@ -18,7 +18,7 @@ const script = readFileSync(agentPath, "utf8");
 // Run a bash snippet that extracts a function definition from the real script
 // (start of `name()` through its first column-0 `}`) and exercises it. The
 // support-forward gate's two helpers come along: owner_comments_since calls
-// them (ADR-0065; factory-support-forward-gate.test.mjs covers the gate).
+// them (ADR-0066; factory-support-forward-gate.test.mjs covers the gate).
 function withFn(fn, body) {
   const snippet = `
 set -euo pipefail

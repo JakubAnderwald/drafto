@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// The support-forward gate (ADR-0065, issue #469). support-agent step 4.5
+// The support-forward gate (ADR-0066, issue #469). support-agent step 4.5
 // forwards a customer's email reply onto the linked issue under the Mac mini's
 // gh identity, so it is an OWNER comment like the operator's own. The factory's
 // comment detectors must not let a stranger's forward replan a card or roll an
