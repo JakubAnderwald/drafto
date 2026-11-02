@@ -47,9 +47,13 @@ The Fastfile's `build_and_submit` checks two things before CocoaPods runs:
 - `@react-native-community/cli` and `@react-native-community/cli-platform-ios` move together, never
   one alone. `use_native_modules!` runs the core's `config`, which builds the macOS config through
   `cli-platform-ios`. A split version is an untested combination.
-- Each `react-native-macos` release arrives as its own Dependabot PR. Before it merges, the patch
-  must be re-made (minor) or still apply (patch), and a TestFlight build must open a note. CI does
-  not build macOS.
+- Each `react-native-macos` release arrives in Dependabot's `react-native` group PR, together with
+  `react-native` and the `@react-native/*` tooling, which must match rnm's `react-native` peer, so
+  they stay out of the weekly `minor-and-patch` group. Before it merges, the patch must be re-made
+  (minor) or still apply (patch), and a TestFlight build must open a note. CI does not build macOS.
+  Dependabot ignores `react-native` and `@react-native/*` minors, so an rnm minor's PR carries rnm
+  alone: raise `react-native` (both apps) and the tooling to its peer by hand in that PR. Mobile's
+  `react-native` minor is tied to the Expo SDK, so that PR waits for an Expo SDK that supports it.
 - macOS has no `tentap` pod: its podspec is iOS-only, so autolinking skips it and tentap uses its
   JS keyboard driver. If a `tentap` pod appears in `macos/Podfile.lock`, the platform filter changed.
 

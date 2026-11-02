@@ -217,6 +217,32 @@ def ensure_xcode_env_local_node_binary
   UI.success("Wrote macos/.xcode.env.local: NODE_BINARY=#{node} (was #{current.empty? ? 'unset' : current})")
 end
 
+# RCTThirdPartyComponentsProvider maps component names to NSClassFromString()
+# results. Some of those classes (e.g. RNSFullWindowOverlay) are iOS-only and nil on
+# macOS, and upstream's codegen template builds the map as an NSDictionary literal,
+# which crashes the app at launch on a nil value. The Podfile's post_install rewrites
+# the template (and the generator's entry lines) to an NSMutableDictionary that skips
+# nil classes. The compiled provider comes from react-native-macos's template: the
+# ReactCodegen pod's "Generate Specs" phase regenerates it right before compiling,
+# after post_install has run. The copy `pod install` writes earlier, before
+# post_install, is overwritten then, so rewriting that copy protects nothing. A text
+# patch that stops matching does nothing, without any error, so check after
+# CocoaPods that the template is nil-safe.
+def assert_nil_safe_component_provider!
+  template = File.join(desktop_repo_root, "node_modules", "react-native-macos", "scripts", "codegen", "templates", "RCTThirdPartyComponentsProviderMM.template")
+  unless File.exist?(template)
+    UI.user_error!("#{template} is missing: react-native-macos's codegen moved it. Point the Podfile's nil-safe patch and this check at its new place.")
+  end
+  if File.read(template).include?("thirdPartyComponents = @{")
+    UI.user_error!(
+      "#{template} still builds the component map from an NSDictionary literal, so a component " \
+      "class missing on macOS crashes the app at launch. The Podfile's post_install patch no " \
+      "longer matches it: update the patch for this react-native-macos version."
+    )
+  end
+  UI.success("RCTThirdPartyComponentsProvider template is nil-safe")
+end
+
 # Tracked files build_and_submit rewrites in place on every run (paths relative to
 # PROJECT_ROOT). increment_build_number writes the TestFlight build number into
 # both, increment_version_number and update_code_signing_settings write
@@ -737,27 +763,8 @@ platform :mac do
       try_repo_update_on_error: true
     )
 
-    # Fix NSClassFromString nil crash in RCTThirdPartyComponentsProvider on macOS.
-    # The auto-generated file uses an NSDictionary literal with NSClassFromString() values.
-    # Some classes (e.g. RNSFullWindowOverlay) are iOS-only and return nil on macOS,
-    # which crashes NSDictionary's initWithObjects:forKeys:count:.
-    # Replace the @{} literal with NSMutableDictionary that skips nil values.
-    provider_mm = File.join(PROJECT_ROOT, "macos", "build", "generated", "ios", "RCTThirdPartyComponentsProvider.mm")
-    if File.exist?(provider_mm)
-      content = File.read(provider_mm)
-      if content.include?("thirdPartyComponents = @{")
-        pairs = content.scan(/@"(\w+)":\s*NSClassFromString\(@"(\w+)"\)/)
-        if pairs.any?
-          safe_lines = pairs.map { |key, cls|
-            "    { Class c = NSClassFromString(@\"#{cls}\"); if (c) dict[@\"#{key}\"] = c; }"
-          }
-          safe_body = "NSMutableDictionary *dict = [NSMutableDictionary new];\n#{safe_lines.join("\n")}\n    thirdPartyComponents = [dict copy];"
-          patched = content.sub(/thirdPartyComponents = @\{[^}]+\};/m, safe_body)
-          File.write(provider_mm, patched) if patched != content
-          UI.success("Patched RCTThirdPartyComponentsProvider.mm for nil-safe macOS class lookup")
-        end
-      end
-    end
+    # Runs after CocoaPods, whose post_install patches the codegen template it checks.
+    assert_nil_safe_component_provider!
 
     # Configure App Store Connect API key
     api_key = app_store_connect_api_key(
