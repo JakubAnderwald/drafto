@@ -27,98 +27,8 @@ fail() {
 }
 
 # ── Accessibility helpers ──────────────────────
-
-get_element_count() {
-  osascript -e '
-  tell application "System Events"
-    tell process "Drafto"
-      return count of UI elements of window 1
-    end tell
-  end tell
-  '
-}
-
-get_all_descs() {
-  osascript -e '
-  tell application "System Events"
-    tell process "Drafto"
-      set results to {}
-      repeat with i from 1 to count of UI elements of window 1
-        try
-          set d to description of UI element i of window 1
-          if d is not "" then
-            set end of results to (i as text) & ":" & d
-          end if
-        end try
-      end repeat
-      return results
-    end tell
-  end tell
-  '
-}
-
-# Find element index by its accessibility description (substring match)
-find_element_by_desc() {
-  local desc=$1
-  osascript -e "
-  tell application \"System Events\"
-    tell process \"Drafto\"
-      repeat with i from 1 to count of UI elements of window 1
-        try
-          set d to description of UI element i of window 1
-          if d contains \"$desc\" then return i
-        end try
-      end repeat
-      return 0
-    end tell
-  end tell
-  " 2>/dev/null
-}
-
-# Click an element at the given index (center of its bounds)
-click_element() {
-  local idx=$1
-  local pos
-  pos=$(osascript -e "
-  tell application \"System Events\"
-    tell process \"Drafto\"
-      set p to position of UI element $idx of window 1
-      set s to size of UI element $idx of window 1
-      set cx to (item 1 of p) + (item 1 of s) / 2
-      set cy to (item 2 of p) + (item 2 of s) / 2
-      return (cx as integer as text) & \",\" & (cy as integer as text)
-    end tell
-  end tell
-  ")
-  local x y
-  x=$(echo "$pos" | cut -d',' -f1)
-  y=$(echo "$pos" | cut -d',' -f2)
-  cliclick "c:$x,$y"
-}
-
-# Find and click an element by its accessibility description
-click_element_by_desc() {
-  local desc=$1
-  local idx
-  idx=$(find_element_by_desc "$desc")
-  if [ "$idx" -gt 0 ] 2>/dev/null; then
-    click_element "$idx"
-    return 0
-  fi
-  return 1
-}
-
-# Check if an element with the given description exists
-has_element() {
-  local desc=$1
-  local idx
-  idx=$(find_element_by_desc "$desc")
-  [ "$idx" -gt 0 ] 2>/dev/null
-}
-
-wait_for_ui() {
-  sleep "${E2E_UI_WAIT:-1.5}"
-}
+# shellcheck source=lib/ax-helpers.sh
+source "$(dirname "$0")/lib/ax-helpers.sh"
 
 # ── Setup ──────────────────────────────────────
 
@@ -193,10 +103,17 @@ else
   fail "Trash button" "Not found in sidebar"
 fi
 
-if has_element "Sign out"; then
-  pass "Sign out link visible"
+# Sign out and Delete account live behind this menu, so they are not top-level elements.
+if has_element "App menu"; then
+  pass "App menu button visible"
 else
-  fail "Sign out link" "Not found"
+  fail "App menu button" "Not found"
+fi
+
+if has_element "Sign out" || has_element "Delete account"; then
+  fail "App menu closed by default" "Sign out / Delete account visible before the menu is opened"
+else
+  pass "Account actions hidden until the app menu is opened"
 fi
 
 if has_element "Sync status"; then
@@ -207,13 +124,108 @@ fi
 
 # ──────────────────────────────────────────────
 echo ""
+echo "TEST 2b: App menu opens, its items click, and it closes"
+# ──────────────────────────────────────────────
+# The menu floats over the sidebar, so only the real app shows whether it takes clicks.
+# Every check below leaves the menu and the delete panel closed, because TEST 3 picks the
+# first unknown element as a notebook. Never click "Sign out" (it ends the session the rest
+# of the suite needs) and never confirm the deletion (this is the shared E2E user).
+
+# Closes the menu by clicking where the trigger is: while the menu is open, the click lands on
+# its backdrop, which covers the trigger.
+close_app_menu_by_click() {
+  if has_element "Sign out"; then
+    click_element_by_desc "App menu" || true
+    wait_for_ui
+  fi
+}
+
+if click_element_by_desc "App menu"; then
+  wait_for_ui
+  if has_element "Sign out"; then
+    pass "App menu shows Sign out"
+  else
+    fail "App menu Sign out" "Not found after clicking App menu"
+  fi
+
+  if has_element "Delete account"; then
+    pass "App menu shows Delete account"
+  else
+    fail "App menu Delete account" "Not found after clicking App menu"
+  fi
+
+  # Choosing the item closes the menu and opens the type-DELETE panel. Close the panel with
+  # Escape from its input; never type DELETE or click its confirm button.
+  if click_element_by_desc "Delete account"; then
+    wait_for_ui
+    if has_element "Type DELETE to confirm"; then
+      pass "Delete account opens the confirmation panel"
+      click_element_by_desc "Type DELETE to confirm" || true
+      sleep 0.5
+      cliclick kp:esc
+      wait_for_ui
+      if has_element "Type DELETE to confirm"; then
+        fail "Delete account panel" "Still open after Escape"
+      else
+        pass "Delete account panel closes on Escape"
+      fi
+    else
+      fail "Delete account panel" "Not shown after choosing Delete account"
+    fi
+    # Whatever happened above, leave the panel closed. Cancel never sends the deletion.
+    if has_element "Type DELETE to confirm"; then
+      click_element_by_desc "Cancel" || true
+      wait_for_ui
+    fi
+    if has_element "Sign out"; then
+      fail "App menu" "Still open after choosing Delete account"
+      close_app_menu_by_click
+    fi
+  else
+    fail "App menu Delete account" "Could not click it"
+    close_app_menu_by_click
+  fi
+else
+  fail "App menu" "Could not click the App menu button"
+fi
+
+# Escape closes the open menu.
+if click_element_by_desc "App menu" && wait_for_ui && has_element "Sign out"; then
+  cliclick kp:esc
+  wait_for_ui
+  if has_element "Sign out"; then
+    fail "App menu Escape" "Menu still open after Escape"
+    close_app_menu_by_click
+  else
+    pass "App menu closes on Escape"
+  fi
+else
+  fail "App menu Escape" "Menu did not open"
+  cliclick kp:esc # best effort, in case it opened without its items being visible
+fi
+
+# Clicking the App menu button again closes it.
+if click_element_by_desc "App menu" && wait_for_ui && has_element "Sign out"; then
+  close_app_menu_by_click
+  if has_element "Sign out"; then
+    fail "App menu second click" "Menu still open after clicking App menu again"
+  else
+    pass "App menu closes when App menu is clicked again"
+  fi
+else
+  fail "App menu second click" "Menu did not open"
+  cliclick kp:esc # best effort, in case it opened without its items being visible
+fi
+
+# ──────────────────────────────────────────────
+echo ""
 echo "TEST 3: Select a notebook"
 # ──────────────────────────────────────────���───
 # Find the first notebook by looking for elements that are NOT known sidebar controls
 FIRST_NB_IDX=$(osascript -e '
 tell application "System Events"
   tell process "Drafto"
-    set knownDescs to {"Search", "New notebook", "Trash", "Sign out", "Sync status", "Drafto", "New note"}
+    set knownDescs to {"Search", "New notebook", "Trash", "App menu", "Sync status", "Drafto", "New note"}
     repeat with i from 1 to count of UI elements of window 1
       try
         set d to description of UI element i of window 1

@@ -31,11 +31,12 @@ The invariant is about the **installed React version**, not about one blessed di
   desktop build.
 - Build desktop releases from that checkout's existing `node_modules`:
   `cd apps/desktop && pnpm release:beta`.
-- **Nor in `/Users/jakub/code/drafto-beta-desktop`** — the factory's desktop build root. Its
-  `node_modules` is a byte-faithful APFS clonefile copy of the fossil (the repo is
+- **Nor in `/Volumes/DraftoFactory/drafto-beta-desktop`** — the factory's desktop build root on
+  its build volume ([ADR-0060](../adr/0060-dedicated-factory-build-volume.md)). Its
+  `node_modules` is a byte-faithful copy of the fossil (the repo is
   `node-linker=hoisted`, so packages are real directories rather than store symlinks — the only
-  symlinks are the relative ones under `.bin/`, which keep resolving inside the copy, so the clone is
-  faithful and costs ~0 bytes). The
+  symlinks are the relative ones under `.bin/`, which keep resolving inside the copy, so the copy is
+  faithful). The
   factory hard-resets that worktree's _source_ to the commit under test but never reinstalls its
   dependencies. Installing there recreates the 19.2 breakage.
 - **Enforced in code.** `assertDesktopFossil()` in `scripts/lib/dispatch-release.mjs` reads the
@@ -46,6 +47,10 @@ The invariant is about the **installed React version**, not about one blessed di
 - The factory previously built desktop from its own checkout, which is a normal install carrying
   React 19.2 — that produced a compiling, crashing app and is fixed (ADR-0030). It now builds
   from the fossil-derived root above.
+
+- **Native bugs in React Native or a native dependency** can't be fixed with `pnpm patch`
+  while the fossil stands. Patch them at runtime from the app target instead
+  ([ADR-0063](../adr/0063-desktop-native-runtime-patches.md)), and list each patch on #558.
 
 Reminder: **a green compile is not proof.** Only a TestFlight build that opens and renders a
 note validates a desktop build root — including after re-cloning the replica.
@@ -63,6 +68,24 @@ If the fossil is ever lost, this is the working set to reconstruct:
 | `react-native-svg`                            | `15.15.4`       |
 | `@react-native-async-storage/async-storage`   | `3.0.2`         |
 | `react-native-screens`                        | `4.24.0`        |
+| `react-native-keychain`                       | `9.2.3`         |
 
 Mobile and web use React `19.2.x` and newer native modules — that is correct and unaffected. Only the
 macOS desktop app is pinned to this older, `react-native-macos`-compatible set.
+
+### Every build machine's fossil must match
+
+The MacBook Air's fossil is a separate install (May 2026), not a copy of the Mac mini's. It had
+`react-native-keychain` 10.0.0, so desktop 0.4.4 builds 74 and 76, released from that laptop,
+shipped keychain 10 while every other build shipped 9.2.3, and each release rewrote the committed
+`Podfile.lock`. Its keychain was replaced in place with the 9.2.3 tarball that `pnpm-lock.yaml`
+pins, after checking the tarball's integrity hash against the lockfile. That is not a reinstall.
+Keychain items are stored the same way in both versions, so a session saved by 10.0.0 still opens.
+Build 77, the first one released after the fix, started signed in, opened a note, and left the lock
+untouched.
+
+Before releasing from a machine, check it against the table above. Then, from `apps/desktop/macos`,
+run `bundle exec pod install --deployment`: it must succeed, because CocoaPods refuses to change
+`Podfile.lock` in that mode. The committed lock comes from the Mac mini's fossil, so a failure there
+means that machine's native modules differ. Fix the package in
+`node_modules`, not the lock.

@@ -20,25 +20,42 @@
 //
 //   find-linked-thread <issue-number>
 //        Reads the issue body and returns the `zoho-thread-id` field from the
-//        agent's footer. Empty string if no footer or no field.
+//        agent's footer. Empty string if no footer or no field. Operator /
+//        debugging aid; the sync modes use `issue-route` instead.
 //
-//   state-change-info <issue-number> [--bot-user <login>]
+//   issue-route <issue-number> [--state-file <path>] [--body-file <path|->]
+//        Returns `{threadId, messageId, subject, to, routable}` — where a
+//        progress / lifecycle email for the issue should go. Used by both
+//        --comment-sync and --state-sync. See resolveIssueRoute below for the
+//        precedence rules. `--body-file -` reads the issue body from stdin
+//        (the sync modes already hold it from list-support-issues, so this
+//        avoids one `gh issue view` per issue per tick); without it the body
+//        is fetched via gh.
+//
+//   state-change-info <issue-number> [--bot-user <login>] [--body-file <path|->]
 //        Returns `{zoho_thread_id, platforms, lastComment}` for the issue.
 //        Used by Phase G --state-sync to enrich a transition into a
 //        github_state_change bundle. `platforms` is derived from the
 //        closing PR's changed paths; `lastComment` is the most recent
 //        non-bot comment body, used as the human-readable reason text on
-//        `closed/not_planned` / `duplicate` transitions.
+//        `closed/not_planned` / `duplicate` transitions. `zoho_thread_id`
+//        is footer-only and kept for compatibility; routing uses issue-route.
 //
 // All subcommands print JSON (or a plain string for find-linked-thread) to
 // stdout and exit 0. Errors print `{"error": "..."}` to stderr and exit
 // non-zero — same shape as zoho-cli.mjs / state-cli.mjs.
 
 import { execFile } from "node:child_process";
+import { promises as fs } from "node:fs";
 import { promisify } from "node:util";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 import { parseIssueFooter } from "./parse-issue-footer.mjs";
+import { normaliseRouteValue } from "./route-value.mjs";
+import { loadState, DEFAULT_STATE_PATH } from "./state.mjs";
+
+// Re-exported so route callers (and tests) have one import site.
+export { normaliseRouteValue };
 
 const execFileP = promisify(execFile);
 
@@ -181,6 +198,70 @@ export async function findLinkedThread(issueNumber) {
   const body = await getIssueBody(issueNumber);
   const fields = parseIssueFooter(body);
   return fields?.["zoho-thread-id"] ?? "";
+}
+
+// Pure: where a progress / lifecycle email for a support issue goes.
+//
+//   stateEntry — logs/support-state.json `issues[<n>]` (or null)
+//   footer     — parseIssueFooter(issue body) (or null)
+//
+// Precedence: the runner-written state wins over the LLM-written footer. The
+// footer's two Zoho ids are used only when state has NEITHER id (issues filed
+// before the runner persisted routes) — all or nothing, so a footer thread id
+// can never override a message route the runner recorded. Two routes exist:
+//   - threadId set  → the prompt fetches the thread and replies to its latest
+//                     message (`get-thread` + `reply <latestMessageId>`),
+//                     addressed to `to` when known.
+//   - messageId set → the prompt replies to the inbound message the issue was
+//                     filed from (`reply <messageId> --to <to>`). This is how
+//                     a customer's first email ("singleton" — Zoho assigns no
+//                     threadId) is reached; it is the same call the filing
+//                     acknowledgement used. Issue #658.
+// `to` comes ONLY from the runner-recorded reporterEmail: the footer's
+// `reporter-email` is LLM-written and could carry an address copied from the
+// customer's mail (ADR-0025), so it never chooses a recipient. `subject` is
+// the inbound subject from state, or null — the prompt then falls back to the
+// issue title (the reply CLI adds "Re:").
+//
+// `routable` is true when at least one route can actually send: a threadId,
+// or a messageId with a recipient.
+export function resolveIssueRoute({ stateEntry = null, footer = null } = {}) {
+  const entry = stateEntry && typeof stateEntry === "object" ? stateEntry : {};
+  const stateThreadId = normaliseRouteValue(entry.zohoThreadId);
+  const stateMessageId = normaliseRouteValue(entry.zohoMessageId);
+  const fields =
+    stateThreadId == null && stateMessageId == null && footer && typeof footer === "object"
+      ? footer
+      : {};
+  const threadId = stateThreadId ?? normaliseRouteValue(fields["zoho-thread-id"]);
+  const messageId = stateMessageId ?? normaliseRouteValue(fields["zoho-message-id"]);
+  const subject = normaliseRouteValue(entry.zohoSubject);
+  const to = normaliseRouteValue(entry.reporterEmail)?.toLowerCase() ?? null;
+  return {
+    threadId,
+    messageId,
+    subject,
+    to,
+    routable: threadId != null || (messageId != null && to != null),
+  };
+}
+
+// Loads state + the issue footer and resolves the route. Pass `body` when the
+// caller already holds the issue body (skips the gh round-trip).
+export async function getIssueRoute(issueNumber, { stateFile = DEFAULT_STATE_PATH, body } = {}) {
+  const state = await loadState(stateFile);
+  const issueBody = typeof body === "string" ? body : await getIssueBody(issueNumber);
+  return resolveIssueRoute({
+    stateEntry: state.issues?.[String(issueNumber)] ?? null,
+    footer: parseIssueFooter(issueBody),
+  });
+}
+
+async function readBodyFile(bodyFile) {
+  if (bodyFile !== "-") return fs.readFile(bodyFile, "utf8");
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 // Pure: bucket changed file paths into the platform-tag set the prompt
@@ -376,15 +457,20 @@ export async function getClosingComment(issueNumber, botUser = DEFAULT_BOT_USER)
   return best?.body ?? null;
 }
 
-export async function getStateChangeInfo(issueNumber, { botUser = DEFAULT_BOT_USER } = {}) {
+// Pass `body` when the caller already holds the issue body (skips one gh call;
+// it is only needed for the legacy footer-derived `zoho_thread_id`).
+export async function getStateChangeInfo(
+  issueNumber,
+  { botUser = DEFAULT_BOT_USER, body: knownBody } = {},
+) {
   const [body, files, lastComment] = await Promise.all([
-    getIssueBody(issueNumber),
+    typeof knownBody === "string" ? knownBody : getIssueBody(issueNumber),
     getClosingPrFiles(issueNumber),
     getClosingComment(issueNumber, botUser),
   ]);
   const fields = parseIssueFooter(body);
   return {
-    zoho_thread_id: fields?.["zoho-thread-id"] ?? "",
+    zoho_thread_id: normaliseRouteValue(fields?.["zoho-thread-id"]) ?? "",
     platforms: derivePlatforms(files),
     lastComment,
   };
@@ -411,11 +497,22 @@ async function main(argv) {
       if (!issueNumber) throw new Error("find-linked-thread requires <issue-number>");
       return findLinkedThread(issueNumber);
     }
+    case "issue-route": {
+      const issueNumber = positional[0];
+      if (!issueNumber) throw new Error("issue-route requires <issue-number>");
+      const body = flags["body-file"] == null ? undefined : await readBodyFile(flags["body-file"]);
+      return getIssueRoute(issueNumber, {
+        stateFile: flags["state-file"] ?? DEFAULT_STATE_PATH,
+        body,
+      });
+    }
     case "state-change-info": {
       const issueNumber = positional[0];
       if (!issueNumber) throw new Error("state-change-info requires <issue-number>");
+      const body = flags["body-file"] == null ? undefined : await readBodyFile(flags["body-file"]);
       return getStateChangeInfo(issueNumber, {
         botUser: flags["bot-user"] ?? DEFAULT_BOT_USER,
+        body,
       });
     }
     case "--help":
@@ -425,7 +522,8 @@ async function main(argv) {
         "Usage: github-sync.mjs <list-support-issues [--state <s>] [--limit <n>]|" +
           "list-new-comments <issue-number> --since <iso> [--bot-user <login>]|" +
           "find-linked-thread <issue-number>|" +
-          "state-change-info <issue-number> [--bot-user <login>]>\n",
+          "issue-route <issue-number> [--state-file <path>] [--body-file <path|->]|" +
+          "state-change-info <issue-number> [--bot-user <login>] [--body-file <path|->]>\n",
       );
       return null;
     default:

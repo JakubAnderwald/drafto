@@ -88,6 +88,18 @@ test.describe("Security: admin route protection", () => {
     expect([307, 401]).toContain(response.status);
   });
 
+  test("unauthenticated user cannot access admin delete-user endpoint", async () => {
+    const response = await fetch("http://localhost:3000/api/admin/delete-user", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: "00000000-0000-0000-0000-000000000000" }),
+      redirect: "manual",
+    });
+    // Blocked: middleware redirect (307) or route handler rejection (401)
+    expect(response.ok).toBe(false);
+    expect([307, 401]).toContain(response.status);
+  });
+
   test("unauthenticated user cannot access cleanup-trash endpoint", async () => {
     const response = await fetch("http://localhost:3000/api/cron/cleanup-trash", {
       method: "POST",
@@ -117,13 +129,15 @@ test.describe("Security: upload constraints", () => {
 });
 
 test.describe("Security: UI redirects for unauthenticated access", () => {
-  test("unauthenticated visit to / redirects to login", async () => {
-    // Use fetch with redirect: "manual" to verify server-side redirect
+  test("unauthenticated visit to / gets the public landing page, not the app", async () => {
+    // Use fetch with redirect: "manual" to see the server's own answer
     // (browser.newContext() can inherit dev-mode state in Next.js)
     const response = await fetch("http://localhost:3000/", { redirect: "manual" });
-    expect(response.status).toBe(307);
-    const location = response.headers.get("location");
-    expect(location).toContain("/login");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+    const body = await response.text();
+    expect(body).toContain("What Drafto does");
+    expect(body).not.toContain("New notebook");
   });
 
   test("unauthenticated visit to /admin redirects to login", async () => {
@@ -131,5 +145,18 @@ test.describe("Security: UI redirects for unauthenticated access", () => {
     expect(response.status).toBe(307);
     const location = response.headers.get("location");
     expect(location).toContain("/login");
+  });
+});
+
+test.describe("Security: preview-only test sign-in", () => {
+  test("test sign-in route answers 404 outside a Vercel preview (no VERCEL_ENV locally)", async () => {
+    // The factory browser runner's one-time-link sign-in works only on a dev-backed Vercel
+    // preview (ADR-0051). Local and CI servers set no VERCEL_ENV, so a signed-out request gets
+    // past the middleware (it is a public route) and the route itself answers 404.
+    const response = await fetch("http://localhost:3000/auth/test-sign-in?token_hash=x", {
+      redirect: "manual",
+    });
+    expect(response.status).toBe(404);
+    expect(response.headers.get("location")).toBeNull();
   });
 });

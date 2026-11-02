@@ -8,13 +8,19 @@
 //   reporter-email: jane@example.com
 //   reporter-allowlisted: false
 //   zoho-thread-id: 8537837000001234567
+//   zoho-message-id: 1791172614617005600
 //   -->
 //
-// `zoho-thread-id` is the only load-bearing field today — comment-sync uses
-// it to route GitHub-comment forwards back to the originating Zoho thread.
-// `reporter-email` and `reporter-allowlisted` are kept for now as
-// human-readable provenance but are NOT trusted for the allowlist gate;
-// see ADR-0025 — the gate consults logs/support-state.json instead.
+// The footer is LLM-written, so it is a fallback, never the source of truth.
+// `github-sync.mjs issue-route` reads `zoho-thread-id` / `zoho-message-id`
+// from it only when logs/support-state.json has no route for the issue (an
+// issue filed before the runner persisted routes). `reporter-email` and
+// `reporter-allowlisted` are human-readable provenance and are NOT trusted
+// for the allowlist gate or as an email recipient; see ADR-0025.
+//
+// An empty value, or `null` / `undefined` (any case), is an absent field:
+// first-contact filings write `zoho-thread-id: null`, and returning the
+// string "null" made callers treat it as a real thread id (issue #658).
 //
 // CLI (used by bash callers — single field at a time keeps the bash side
 // minimal):
@@ -24,6 +30,7 @@
 
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
+import { isAbsentValue } from "./route-value.mjs";
 
 const FOOTER_RE = /<!--\s*drafto-support-agent v1\s*\n([\s\S]*?)\n\s*-->/;
 
@@ -38,7 +45,8 @@ export function parseIssueFooter(body) {
     if (idx <= 0) continue;
     const key = line.slice(0, idx).trim();
     const value = line.slice(idx + 1).trim();
-    if (key) fields[key] = value;
+    if (!key || isAbsentValue(value)) continue;
+    fields[key] = value;
   }
   return fields;
 }

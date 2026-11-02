@@ -12,6 +12,22 @@ export const env = createEnv({
     APPROVAL_LINK_SECRET: z.string().min(32).optional(),
     APP_URL: z.string().url(),
     WEBHOOK_SECRET: z.string().min(16).optional(),
+    // Sign in with Apple key, used to revoke a user's Apple tokens when they delete their
+    // account. Revocation runs only when all three are set. The private key is the `.p8` PEM;
+    // literal "\n" escapes are accepted too (see src/lib/apple/config.ts).
+    APPLE_TEAM_ID: z.string().min(1).optional(),
+    APPLE_SIGN_IN_KEY_ID: z.string().min(1).optional(),
+    APPLE_SIGN_IN_PRIVATE_KEY: z.string().min(1).optional(),
+    // Vercel system variable naming the deployment's environment. Not set locally. Gates the
+    // preview-only `/auth/test-sign-in` route (src/lib/auth/test-sign-in.ts).
+    // Vercel system variable. Deliberately not an enum: an unexpected value must not fail env
+    // validation for the whole app; only `isTestSignInEnabled` reads it, and it accepts
+    // exactly "preview".
+    VERCEL_ENV: z.string().optional(),
+    // Vercel system variable: the commit SHA the deployment was built from. Not set locally.
+    // Read through `getBuildCommit` (src/lib/build-info.ts) for `/api/health` and the Settings
+    // build line. A plain optional string, so an odd value can't fail env validation for the app.
+    VERCEL_GIT_COMMIT_SHA: z.string().optional(),
   },
   client: {
     NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
@@ -32,6 +48,11 @@ export const env = createEnv({
     APPROVAL_LINK_SECRET: process.env.APPROVAL_LINK_SECRET,
     APP_URL: process.env.APP_URL,
     WEBHOOK_SECRET: process.env.WEBHOOK_SECRET,
+    APPLE_TEAM_ID: process.env.APPLE_TEAM_ID,
+    APPLE_SIGN_IN_KEY_ID: process.env.APPLE_SIGN_IN_KEY_ID,
+    APPLE_SIGN_IN_PRIVATE_KEY: process.env.APPLE_SIGN_IN_PRIVATE_KEY,
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    VERCEL_GIT_COMMIT_SHA: process.env.VERCEL_GIT_COMMIT_SHA,
     NEXT_PUBLIC_SENTRY_DSN: process.env.NEXT_PUBLIC_SENTRY_DSN,
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
     NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,

@@ -16,6 +16,31 @@ appId: eu.drafto.mobile
     timeout: 60000
 - assertVisible: "Sign in to your Drafto account"
 
+# --- Test: a sign-up that needs email confirmation says so (App Review recording, 0:36) ---
+# Uses the existing test account on purpose: Supabase answers an address that already has an
+# account exactly like a new one (no session) and sends no email, so this creates no user and
+# no mail. The app must show the check-your-email state, not bounce back to Log In.
+- tapOn:
+    id: "signup-link"
+- extendedWaitUntil:
+    visible: "Create your Drafto account"
+    timeout: 10000
+- tapOn: "you@example.com"
+- inputText: ${E2E_TEST_EMAIL}
+- tapOn: "Min. 6 characters"
+- inputText: "not-the-real-password"
+- hideKeyboard
+- tapOn:
+    id: "signup-submit"
+- extendedWaitUntil:
+    visible: "Check Your Email"
+    timeout: 20000
+- assertVisible: ${E2E_TEST_EMAIL}
+- tapOn: "Back to login"
+- extendedWaitUntil:
+    visible: "Sign in to your Drafto account"
+    timeout: 10000
+
 # --- Test: successful login ---
 - tapOn: "you@example.com"
 - inputText: ${E2E_TEST_EMAIL}

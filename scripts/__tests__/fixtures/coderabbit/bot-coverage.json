@@ -1,0 +1,208 @@
+{
+  "620-skipped": {
+    "headSha": "05f05fbbc3ff21dd70b3e5c8904ea4f52f8ae04a",
+    "comments": [
+      {
+        "id": 5606407746,
+        "user": {
+          "login": "coderabbitai[bot]",
+          "type": "Bot"
+        },
+        "created_at": "2026-09-09T17:58:49Z",
+        "updated_at": "2026-09-09T19:21:11Z",
+        "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- This is an auto-generated comment: skip review by coderabbit.ai -->\n> [!IMPORTANT]\n> This repository does not receive automatic reviews because it has fewer than 10 stars.\n<!-- end of auto-generated comment: skip review by coderabbit.ai -->"
+      }
+    ],
+    "reviews": []
+  },
+  "621-covered-by-review": {
+    "headSha": "e677f19b38a421791b6d3d624bba7f79ce8b40b2",
+    "comments": [
+      {
+        "id": 5637414745,
+        "user": {
+          "login": "coderabbitai[bot]",
+          "type": "Bot"
+        },
+        "created_at": "2026-09-11T16:21:22Z",
+        "updated_at": "2026-09-11T21:23:49Z",
+        "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"
+      }
+    ],
+    "reviews": [
+      {
+        "id": 5181136381,
+        "user": {
+          "login": "coderabbitai[bot]",
+          "type": "Bot"
+        },
+        "commit_id": "0b5bfe5120438fbc4ff21b0283fa0017e5733a58",
+        "state": "COMMENTED",
+        "body": "**Actionable comments posted: 8**\nReviewing files that changed from the base of the PR and between 45f98cd02cce3899a3836b95fe6fe7b59c235fed and 0b5bfe5120438fbc4ff21b0283fa0017e5733a58.\n<!-- This is an auto-generated comment by CodeRabbit for review status -->"
+      },
+      {
+        "id": 5183538311,
+        "user": {
+          "login": "coderabbitai[bot]",
+          "type": "Bot"
+        },
+        "commit_id": "e677f19b38a421791b6d3d624bba7f79ce8b40b2",
+        "state": "COMMENTED",
+        "body": "> [!CAUTION]\nReviewing files that changed from the base of the PR and between 0b5bfe5120438fbc4ff21b0283fa0017e5733a58 and e677f19b38a421791b6d3d624bba7f79ce8b40b2.\n<!-- This is an auto-generated comment by CodeRabbit for review status -->"
+      },
+      {
+        "id": 5187847138,
+        "user": {
+          "login": "coderabbitai[bot]",
+          "type": "Bot"
+        },
+        "commit_id": "e677f19b38a421791b6d3d624bba7f79ce8b40b2",
+        "state": "COMMENTED",
+        "body": ""
+      },
+      {
+        "id": 5187847209,
+        "user": {
+          "login": "coderabbitai[bot]",
+          "type": "Bot"
+        },
+        "commit_id": "e677f19b38a421791b6d3d624bba7f79ce8b40b2",
+        "state": "COMMENTED",
+        "body": ""
+      }
+    ]
+  },
+  "626-no-actionable-summary": {
+    "headSha": "71781fd67ce16a1b1de5a147b1bc446a7979997a",
+    "comments": [
+      {
+        "id": 5647924878,
+        "user": {
+          "login": "coderabbitai[bot]",
+          "type": "Bot"
+        },
+        "created_at": "2026-09-12T18:43:19Z",
+        "updated_at": "2026-09-12T18:45:16Z",
+        "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\nNo actionable comments were generated in the recent review. 🎉\nReviewing files that changed from the base of the PR and between c183b1572dc4f16a7f72e6b777757a60cdfd93a5 and 71781fd67ce16a1b1de5a147b1bc446a7979997a.\nThe CodeRabbit configuration now pauses automatic reviews after two reviewed commits and applies SOLID instructions to application and package source directories.\n|**Automatic review pause** <br> `.coderabbit.yaml`|Adds `auto_pause_after_reviewed_commits: 2` under `auto_review`.|"
+      }
+    ],
+    "reviews": []
+  },
+  "627-rate-limited": {
+    "headSha": "451cdde6c8aa6af87e4e50f5990a931cc6ba3182",
+    "comments": [
+      {
+        "id": 5647970321,
+        "user": {
+          "login": "coderabbitai[bot]",
+          "type": "Bot"
+        },
+        "created_at": "2026-09-12T18:51:29Z",
+        "updated_at": "2026-09-12T18:54:45Z",
+        "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\n> [!WARNING]\n> ## Review limit reached\n> Reviewing files that changed from the base of the PR and between bd002e3bd3c9d894bb591593159a7da84c8f4e49 and 451cdde6c8aa6af87e4e50f5990a931cc6ba3182.\n<!-- end of auto-generated comment: rate limited by coderabbit.ai -->"
+      }
+    ],
+    "reviews": []
+  },
+  "628-in-progress": {
+    "headSha": "8256aa95bd5e8e31a596c798c0fc229fb7e44db3",
+    "comments": [
+      {
+        "id": 5648326551,
+        "user": {
+          "login": "coderabbitai[bot]",
+          "type": "Bot"
+        },
+        "created_at": "2026-09-12T19:59:01Z",
+        "updated_at": "2026-09-12T20:10:29Z",
+        "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- This is an auto-generated comment: review in progress by coderabbit.ai -->\n> Currently processing new changes in this PR. This may take a few minutes, please wait...\n> Reviewing files that changed from the base of the PR and between 1372f764a04293d0ee2a0030e68a27b0f43e2684 and c21a4b3d01817491176075974c55f7ca9bc356d2.\n<!-- end of auto-generated comment: review in progress by coderabbit.ai -->"
+      }
+    ],
+    "reviews": [
+      {
+        "id": 5187839139,
+        "user": {
+          "login": "coderabbitai[bot]",
+          "type": "Bot"
+        },
+        "commit_id": "c21a4b3d01817491176075974c55f7ca9bc356d2",
+        "state": "COMMENTED",
+        "body": "**Actionable comments posted: 8**\nReviewing files that changed from the base of the PR and between 1372f764a04293d0ee2a0030e68a27b0f43e2684 and c21a4b3d01817491176075974c55f7ca9bc356d2.\n<!-- This is an auto-generated comment by CodeRabbit for review status -->"
+      }
+    ]
+  },
+  "628-complete-replies-only": {
+    "headSha": "8256aa95bd5e8e31a596c798c0fc229fb7e44db3",
+    "comments": [
+      {
+        "id": 5648326551,
+        "user": {
+          "login": "coderabbitai[bot]",
+          "type": "Bot"
+        },
+        "created_at": "2026-09-12T19:59:01Z",
+        "updated_at": "2026-09-12T20:10:29Z",
+        "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"
+      }
+    ],
+    "reviews": [
+      {
+        "id": 5187839139,
+        "user": {
+          "login": "coderabbitai[bot]",
+          "type": "Bot"
+        },
+        "commit_id": "c21a4b3d01817491176075974c55f7ca9bc356d2",
+        "state": "COMMENTED",
+        "body": "**Actionable comments posted: 8**\nReviewing files that changed from the base of the PR and between 1372f764a04293d0ee2a0030e68a27b0f43e2684 and c21a4b3d01817491176075974c55f7ca9bc356d2.\n<!-- This is an auto-generated comment by CodeRabbit for review status -->"
+      },
+      {
+        "id": 5187882770,
+        "user": {
+          "login": "coderabbitai[bot]",
+          "type": "Bot"
+        },
+        "commit_id": "8256aa95bd5e8e31a596c798c0fc229fb7e44db3",
+        "state": "COMMENTED",
+        "body": ""
+      },
+      {
+        "id": 5187882965,
+        "user": {
+          "login": "coderabbitai[bot]",
+          "type": "Bot"
+        },
+        "commit_id": "8256aa95bd5e8e31a596c798c0fc229fb7e44db3",
+        "state": "COMMENTED",
+        "body": ""
+      }
+    ]
+  },
+  "spoofed-user": {
+    "headSha": "451cdde6c8aa6af87e4e50f5990a931cc6ba3182",
+    "comments": [
+      {
+        "id": 1,
+        "user": {
+          "login": "coderabbitai",
+          "type": "User"
+        },
+        "created_at": "2026-09-12T19:00:00Z",
+        "updated_at": "2026-09-12T19:00:00Z",
+        "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\nReviewing files that changed from the base of the PR and between bd002e3bd3c9d894bb591593159a7da84c8f4e49 and 451cdde6c8aa6af87e4e50f5990a931cc6ba3182."
+      }
+    ],
+    "reviews": [
+      {
+        "id": 2,
+        "user": {
+          "login": "coderabbitai[bot]",
+          "type": "User"
+        },
+        "commit_id": "451cdde6c8aa6af87e4e50f5990a931cc6ba3182",
+        "state": "COMMENTED",
+        "body": "**Actionable comments posted: 1**\nReviewing files that changed from the base of the PR and between bd002e3bd3c9d894bb591593159a7da84c8f4e49 and 451cdde6c8aa6af87e4e50f5990a931cc6ba3182."
+      }
+    ]
+  }
+}

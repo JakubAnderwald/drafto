@@ -1,14 +1,60 @@
 import { Alert } from "react-native";
 import { Q } from "@nozbe/watermelondb";
+import { describeAccountDeletionFailure, type AccountDeletionResult } from "@drafto/shared";
 
-import { render, waitFor } from "../helpers/test-utils";
+import { render, waitFor, fireEvent, act } from "../helpers/test-utils";
 import { NotebooksSidebar } from "@/components/sidebar/notebooks-sidebar";
+import {
+  DELETE_ACCOUNT_OFFLINE_NOTE,
+  DELETE_ACCOUNT_WARNING,
+} from "@/components/sidebar/delete-account-panel";
+import { spacing } from "@/theme/tokens";
 
-// SyncStatus pulls in useDatabase/useNetworkStatus providers we don't render here.
-jest.mock("@/components/sync-status", () => ({ SyncStatus: () => null }));
+// SyncStatus pulls in useDatabase/useNetworkStatus providers we don't render here. The stub
+// renders a host view so the "nothing below the user section" check can see where it sits.
+jest.mock("@/components/sync-status", () => {
+  const React = jest.requireActual<typeof import("react")>("react");
+  const { View } = jest.requireActual<typeof import("react-native")>("react-native");
+  return { SyncStatus: () => React.createElement(View, { testID: "sync-status" }) };
+});
 
+const mockSignOut = jest.fn();
+const mockDeleteAccount = jest.fn();
 jest.mock("@/providers/auth-provider", () => ({
-  useAuth: () => ({ user: { id: "user-1", email: "user@example.com" }, signOut: jest.fn() }),
+  useAuth: () => ({
+    user: { id: "user-1", email: "user@example.com" },
+    signOut: mockSignOut,
+    deleteAccount: mockDeleteAccount,
+  }),
+}));
+
+// Apple-linked only where a test says so; the Apple step is settled by hand.
+const mockAppleState = { required: false, userId: "user-1" as string | null };
+jest.mock("@/hooks/use-apple-deletion-confirmation", () => ({
+  useAppleDeletionConfirmation: () => mockAppleState,
+}));
+const mockStartAppleConfirmation = jest.fn();
+jest.mock("@/lib/apple-revocation", () => ({
+  startAppleConfirmation: () => mockStartAppleConfirmation(),
+}));
+
+const mockSync = jest.fn();
+jest.mock("@/providers/database-provider", () => ({
+  useDatabase: () => ({ database: {}, sync: mockSync }),
+}));
+
+const mockCountUnsyncedChanges = jest.fn();
+jest.mock("@/lib/data/unsynced-changes", () => ({
+  countUnsyncedChanges: (...args: unknown[]) => mockCountUnsyncedChanges(...args),
+}));
+
+let mockIsConnected = true;
+let mockIsInternetReachable: boolean | null = true;
+jest.mock("@/hooks/use-network-status", () => ({
+  useNetworkStatus: () => ({
+    isConnected: mockIsConnected,
+    isInternetReachable: mockIsInternetReachable,
+  }),
 }));
 
 const mockNotebooks: Array<{ id: string; name: string; markAsDeleted: jest.Mock }> = [];
@@ -164,5 +210,405 @@ describe("NotebooksSidebar — delete guard", () => {
     );
     expect(mockWrite).not.toHaveBeenCalled();
     expect(markAsDeleted).not.toHaveBeenCalled();
+  });
+});
+
+describe("NotebooksSidebar — app menu and delete account", () => {
+  type TestInstance = ReturnType<ReturnType<typeof render>["getByTestId"]>;
+  const isDisabled = (node: TestInstance) => node.props.accessibilityState?.disabled === true;
+
+  // Sign out and Delete account live behind the ⋯ app menu; open it, then pick an item.
+  function openAppMenu(utils: ReturnType<typeof render>) {
+    fireEvent.press(utils.getByTestId("app-menu-trigger"));
+  }
+
+  function chooseDeleteAccount(utils: ReturnType<typeof render>) {
+    openAppMenu(utils);
+    fireEvent.press(utils.getByTestId("delete-account-menu-item"));
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockNotebooks.length = 0;
+    mockLoading = false;
+    mockIsConnected = true;
+    mockIsInternetReachable = true;
+    mockAppleState.required = false;
+    mockDeleteAccount.mockResolvedValue({ status: "ok" });
+    mockSignOut.mockResolvedValue(undefined);
+    mockSync.mockResolvedValue(undefined);
+    mockCountUnsyncedChanges.mockResolvedValue(0);
+    jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  });
+
+  it("shows the email and the App menu, but no account actions until the menu is opened", () => {
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+    const { getByText, getByLabelText, queryByLabelText, queryByTestId } = utils;
+
+    expect(getByText("user@example.com")).toBeTruthy();
+    expect(getByLabelText("App menu")).toBeTruthy();
+    expect(queryByLabelText("Sign out")).toBeNull();
+    expect(queryByLabelText("Delete account")).toBeNull();
+    expect(queryByTestId("delete-account-menu-item")).toBeNull();
+    expect(queryByTestId("delete-account-input")).toBeNull();
+
+    openAppMenu(utils);
+
+    expect(getByLabelText("Sign out")).toBeTruthy();
+    const item = utils.getByTestId("delete-account-menu-item");
+    expect(item.props.accessibilityLabel).toBe("Delete account");
+    expect(isDisabled(item)).toBe(false);
+    expect(queryByTestId("delete-account-input")).toBeNull();
+  });
+
+  it("signs out from the app menu", async () => {
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    openAppMenu(utils);
+    fireEvent.press(utils.getByTestId("logout-button"));
+
+    expect(utils.queryByTestId("app-menu")).toBeNull();
+    await waitFor(() => {
+      expect(mockSignOut).toHaveBeenCalledTimes(1);
+    });
+    expect(mockDeleteAccount).not.toHaveBeenCalled();
+    expect(mockSync).not.toHaveBeenCalled();
+  });
+
+  it("shows sign-out progress in the user row and hides the menu trigger meanwhile", async () => {
+    let finishSync: () => void = () => {};
+    mockSync.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishSync = resolve;
+      }),
+    );
+    mockCountUnsyncedChanges.mockResolvedValueOnce(2).mockResolvedValueOnce(0);
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    openAppMenu(utils);
+    fireEvent.press(utils.getByTestId("logout-button"));
+
+    await waitFor(() => {
+      expect(utils.getByTestId("sign-out-progress")).toBeTruthy();
+    });
+    expect(utils.getByText("Signing out…")).toBeTruthy();
+    expect(utils.queryByTestId("app-menu-trigger")).toBeNull();
+
+    await act(async () => {
+      finishSync();
+    });
+
+    await waitFor(() => {
+      expect(mockSignOut).toHaveBeenCalledTimes(1);
+    });
+    expect(Alert.alert).not.toHaveBeenCalled();
+  });
+
+  it("keeps an open delete panel mounted but unconfirmable while a sign-out runs", async () => {
+    let finishSync: () => void = () => {};
+    mockSync.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishSync = resolve;
+      }),
+    );
+    mockCountUnsyncedChanges.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    chooseDeleteAccount(utils);
+    fireEvent.changeText(utils.getByTestId("delete-account-input"), "DELETE");
+    expect(isDisabled(utils.getByTestId("delete-account-confirm"))).toBe(false);
+    openAppMenu(utils);
+    fireEvent.press(utils.getByTestId("logout-button"));
+
+    await waitFor(() => {
+      expect(utils.getByTestId("sign-out-progress")).toBeTruthy();
+    });
+    // The panel stays (a deletion in flight keeps its progress), but none can start while the
+    // device is being signed out and wiped.
+    expect(utils.getByTestId("delete-account-input")).toBeTruthy();
+    expect(isDisabled(utils.getByTestId("delete-account-confirm"))).toBe(true);
+    expect(utils.queryByText(DELETE_ACCOUNT_OFFLINE_NOTE)).toBeNull();
+
+    await act(async () => {
+      finishSync();
+    });
+    await waitFor(() => {
+      expect(mockSignOut).toHaveBeenCalledWith({ skipFinalSync: true });
+    });
+    expect(mockDeleteAccount).not.toHaveBeenCalled();
+  });
+
+  it("never deletes from the Apple wait while a sign-out runs", async () => {
+    mockAppleState.required = true;
+    let answerApple: (
+      grant: { authorizationCode: string; clientId: string } | null,
+    ) => void = () => {};
+    const skip = jest.fn(() => answerApple(null));
+    mockStartAppleConfirmation.mockReturnValue({
+      grant: new Promise((resolve) => {
+        answerApple = resolve;
+      }),
+      skip,
+    });
+    let finishSync: () => void = () => {};
+    mockSync.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishSync = resolve;
+      }),
+    );
+    mockCountUnsyncedChanges.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    chooseDeleteAccount(utils);
+    fireEvent.changeText(utils.getByTestId("delete-account-input"), "DELETE");
+    await act(async () => {
+      fireEvent.press(utils.getByTestId("delete-account-confirm"));
+    });
+    expect(utils.getByTestId("delete-account-apple-waiting")).toBeTruthy();
+
+    // Sign out still works during the wait, since no request is out yet.
+    openAppMenu(utils);
+    fireEvent.press(utils.getByTestId("logout-button"));
+    await waitFor(() => {
+      expect(utils.getByTestId("sign-out-progress")).toBeTruthy();
+    });
+
+    // Neither way out of the Apple step deletes while the sign-out's last sync runs.
+    const skipButton = utils.getByTestId("delete-account-apple-skip");
+    expect(isDisabled(skipButton)).toBe(true);
+    fireEvent.press(skipButton);
+    expect(skip).not.toHaveBeenCalled();
+    await act(async () => {
+      answerApple({ authorizationCode: "apple-code", clientId: "eu.drafto.web.auth" });
+    });
+    expect(mockDeleteAccount).not.toHaveBeenCalled();
+
+    await act(async () => {
+      finishSync();
+    });
+    await waitFor(() => {
+      expect(mockSignOut).toHaveBeenCalledWith({ skipFinalSync: true });
+    });
+    expect(mockDeleteAccount).not.toHaveBeenCalled();
+  });
+
+  it("ignores Sign out while an account deletion is in flight", async () => {
+    let resolveDeletion: (result: AccountDeletionResult) => void = () => {};
+    mockDeleteAccount.mockImplementationOnce(
+      () =>
+        new Promise<AccountDeletionResult>((resolve) => {
+          resolveDeletion = resolve;
+        }),
+    );
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    chooseDeleteAccount(utils);
+    fireEvent.changeText(utils.getByTestId("delete-account-input"), "DELETE");
+    fireEvent.press(utils.getByTestId("delete-account-confirm"));
+    openAppMenu(utils);
+    fireEvent.press(utils.getByTestId("logout-button"));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockCountUnsyncedChanges).not.toHaveBeenCalled();
+    expect(mockSignOut).not.toHaveBeenCalled();
+
+    // After a failed deletion, Sign out works again.
+    await act(async () => {
+      resolveDeletion({ status: "network" });
+    });
+    openAppMenu(utils);
+    fireEvent.press(utils.getByTestId("logout-button"));
+    await waitFor(() => {
+      expect(mockSignOut).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("asks before signing out with changes a last sync could not push", async () => {
+    mockCountUnsyncedChanges.mockResolvedValue(3);
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    openAppMenu(utils);
+    fireEvent.press(utils.getByTestId("logout-button"));
+
+    await waitFor(() => {
+      expect(Alert.alert).toHaveBeenCalledWith(
+        "Sign out?",
+        "3 changes haven't synced and will be lost.",
+        expect.any(Array),
+        expect.anything(),
+      );
+    });
+    expect(mockSync).toHaveBeenCalledTimes(1);
+    const buttons = (Alert.alert as jest.Mock).mock.calls[0][2] as Array<{
+      text: string;
+      style?: string;
+      onPress?: () => void;
+    }>;
+    expect(buttons.map((b) => b.text)).toEqual(["Cancel", "Sign out anyway"]);
+    expect(buttons[1].style).toBe("destructive");
+
+    await act(async () => {
+      buttons[0].onPress?.();
+    });
+    expect(mockSignOut).not.toHaveBeenCalled();
+    expect(utils.getByTestId("app-menu-trigger")).toBeTruthy();
+    expect(utils.getByText("user@example.com")).toBeTruthy();
+
+    openAppMenu(utils);
+    fireEvent.press(utils.getByTestId("logout-button"));
+    await waitFor(() => {
+      expect(Alert.alert).toHaveBeenCalledTimes(2);
+    });
+    await act(async () => {
+      ((Alert.alert as jest.Mock).mock.calls[1][2] as typeof buttons)[1].onPress?.();
+    });
+    expect(mockSignOut).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the app menu just above the measured user section", () => {
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    fireEvent(utils.getByTestId("sidebar-user-section"), "layout", {
+      nativeEvent: { layout: { x: 0, y: 500, width: 220, height: 60 } },
+    });
+    openAppMenu(utils);
+
+    const menuStyle = Object.assign(
+      {},
+      ...[utils.getByTestId("app-menu").props.style].flat(Infinity).filter(Boolean),
+    );
+    expect(menuStyle).toMatchObject({ position: "absolute", bottom: 60 + spacing.xs });
+  });
+
+  it("renders nothing below the user section, which the menu position relies on", () => {
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+    const isInside = (node: TestInstance | null, ancestor: TestInstance): boolean =>
+      node === null ? false : node === ancestor || isInside(node.parent, ancestor);
+
+    // findAll walks the tree in document order, so the last host view is the bottom-most one.
+    const hostViews = utils.UNSAFE_root.findAll((node) => typeof node.type === "string");
+    const lastHostView = hostViews[hostViews.length - 1];
+    expect(isInside(lastHostView, utils.getByTestId("sidebar-user-section"))).toBe(true);
+  });
+
+  it("opens the confirmation panel when Delete account… is chosen", () => {
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    chooseDeleteAccount(utils);
+
+    expect(utils.getByText(DELETE_ACCOUNT_WARNING)).toBeTruthy();
+    expect(utils.getByTestId("delete-account-input")).toBeTruthy();
+    expect(utils.queryByTestId("app-menu")).toBeNull();
+    expect(mockDeleteAccount).not.toHaveBeenCalled();
+  });
+
+  it("keeps the panel open when Delete account… is chosen again and closes it from Cancel", () => {
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    chooseDeleteAccount(utils);
+    chooseDeleteAccount(utils);
+    expect(utils.getByTestId("delete-account-input")).toBeTruthy();
+
+    fireEvent.press(utils.getByTestId("delete-account-cancel"));
+    expect(utils.queryByTestId("delete-account-input")).toBeNull();
+    expect(mockDeleteAccount).not.toHaveBeenCalled();
+  });
+
+  it("keeps the panel and its result on screen when Delete account… is chosen mid-request", async () => {
+    let resolveDeletion: (result: AccountDeletionResult) => void = () => {};
+    mockDeleteAccount.mockImplementationOnce(
+      () =>
+        new Promise<AccountDeletionResult>((resolve) => {
+          resolveDeletion = resolve;
+        }),
+    );
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    chooseDeleteAccount(utils);
+    fireEvent.changeText(utils.getByTestId("delete-account-input"), "DELETE");
+    fireEvent.press(utils.getByTestId("delete-account-confirm"));
+    chooseDeleteAccount(utils);
+
+    await act(async () => {
+      resolveDeletion({ status: "network" });
+    });
+
+    expect(utils.getByTestId("delete-account-input")).toBeTruthy();
+    expect(utils.getByText(describeAccountDeletionFailure({ status: "network" }))).toBeTruthy();
+    expect(mockDeleteAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables Delete account… and explains why while offline", () => {
+    mockIsConnected = false;
+    mockIsInternetReachable = false;
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    // The offline note lives inside the menu now, not in the sidebar.
+    expect(utils.queryByText(DELETE_ACCOUNT_OFFLINE_NOTE)).toBeNull();
+    openAppMenu(utils);
+
+    const item = utils.getByTestId("delete-account-menu-item");
+    expect(isDisabled(item)).toBe(true);
+    expect(utils.getByText(DELETE_ACCOUNT_OFFLINE_NOTE)).toBeTruthy();
+
+    fireEvent.press(item);
+    expect(utils.queryByTestId("delete-account-input")).toBeNull();
+  });
+
+  it("disables Delete account… when connected but the internet is known to be unreachable", () => {
+    mockIsInternetReachable = false;
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    openAppMenu(utils);
+
+    expect(isDisabled(utils.getByTestId("delete-account-menu-item"))).toBe(true);
+    expect(utils.getByText(DELETE_ACCOUNT_OFFLINE_NOTE)).toBeTruthy();
+  });
+
+  it("keeps Delete account… enabled while internet reachability is still unknown", () => {
+    mockIsInternetReachable = null;
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    openAppMenu(utils);
+
+    expect(isDisabled(utils.getByTestId("delete-account-menu-item"))).toBe(false);
+    expect(utils.queryByText(DELETE_ACCOUNT_OFFLINE_NOTE)).toBeNull();
+  });
+
+  it("does not show the offline note while online", () => {
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    openAppMenu(utils);
+
+    expect(utils.queryByText(DELETE_ACCOUNT_OFFLINE_NOTE)).toBeNull();
+  });
+
+  it("passes the offline state to an already open panel", () => {
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    chooseDeleteAccount(utils);
+    fireEvent.changeText(utils.getByTestId("delete-account-input"), "DELETE");
+    expect(isDisabled(utils.getByTestId("delete-account-confirm"))).toBe(false);
+
+    mockIsConnected = false;
+    utils.rerender(<NotebooksSidebar {...defaultProps} />);
+
+    expect(isDisabled(utils.getByTestId("delete-account-confirm"))).toBe(true);
+    expect(utils.getByText(DELETE_ACCOUNT_OFFLINE_NOTE)).toBeTruthy();
+  });
+
+  it("confirms through useAuth().deleteAccount once DELETE is typed", async () => {
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    chooseDeleteAccount(utils);
+    fireEvent.changeText(utils.getByTestId("delete-account-input"), "DELETE");
+    await act(async () => {
+      fireEvent.press(utils.getByTestId("delete-account-confirm"));
+    });
+
+    expect(mockDeleteAccount).toHaveBeenCalledTimes(1);
+    expect(mockSignOut).not.toHaveBeenCalled();
   });
 });

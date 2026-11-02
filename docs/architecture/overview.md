@@ -26,7 +26,7 @@ Within each app:
 
 - `apps/web/src/app/` — App Router pages and API routes (`api/notes/`, `api/notebooks/`, `api/attachments/`, `api/mcp/`, `api/webhooks/`, `api/admin/`, `api/cron/`, `api/import/`, `api/api-keys/`, `api/health/`).
 - `apps/web/src/lib/` — shared libraries (Supabase clients, PostHog, email, MCP auth). Components depend on these abstractions, not on vendor SDKs directly.
-- `apps/web/middleware.ts` — Supabase session refresh.
+- `apps/web/src/middleware.ts` — Supabase session refresh. It sits next to `src/app` because `next dev` only looks for the middleware there.
 - `apps/mobile/src/` — `components/`, `db/`, `hooks/`, `lib/`, `providers/`, `theme/`.
 - `apps/desktop/src/` — `components/`, `db/`, `hooks/`, `lib/`, `providers/`, `screens/`, `navigation/`, `theme/`, `types/`.
 - `apps/mobile/src/db/` and `apps/desktop/src/db/` — **mirrored**: `schema.ts`, `migrations.ts`, `models/`, `sync.ts`, `index.ts`. Changes in either must be kept in lockstep.
@@ -47,7 +47,9 @@ Mobile / Desktop
   User edit
     -> React Native screen
     -> WatermelonDB write (local SQLite, immediate)
-    -> sync.ts (apps/{mobile,desktop}/src/db/sync.ts, periodic)
+    -> DatabaseProvider schedules a sync (1.5 s after the last local edit, plus
+       login / foreground / reconnect / every 30 s while changes are pending)
+    -> sync.ts (apps/{mobile,desktop}/src/db/sync.ts)
     -> @supabase/supabase-js push/pull
     -> Postgres
   Offline writes queue locally and replay on reconnect.
@@ -84,7 +86,7 @@ From [`CLAUDE.md`](../../CLAUDE.md) — authoritative source:
 - **ISP** — small, focused prop types.
 - **DIP** — import abstractions from `src/lib/`, never instantiate Supabase (or other) clients directly in components.
 - Strict TypeScript: no `any`, no `@ts-ignore`.
-- Named exports only (except Next.js pages/layouts).
+- Named exports only (except Next.js pages/layouts and Expo Router route modules under `apps/mobile/app/`, which must default-export their screen).
 - Kebab-case file names.
 - `@/` import alias for `src/` imports.
 - Design system tokens only — see [ADR 0004](../adr/0004-design-system-css-variables.md) and [ADR 0014](../adr/0014-digital-atelier-design-system.md).

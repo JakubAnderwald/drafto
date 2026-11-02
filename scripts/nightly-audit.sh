@@ -3,6 +3,8 @@ set -euo pipefail
 
 # Ensure ~/.local/bin is in PATH (gh CLI location; launchd has minimal PATH)
 export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:$PATH"
+# Unattended session marker; interactive-only tools like `pnpm test:live:supabase` refuse under it.
+export DRAFTO_UNATTENDED=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -40,8 +42,10 @@ trap cleanup EXIT
 
 log "=== Nightly audit started ==="
 
-# 24-hours-ago timestamp for filtering (macOS date -v)
-YESTERDAY=$(date -v-24H +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -d '24 hours ago' +%Y-%m-%dT%H:%M:%S)
+# 24-hours-ago timestamp for filtering (macOS date -v, GNU date -d fallback).
+# UTC (-u) to match GitHub's Z-suffixed createdAt/mergedAt, which the jq filters
+# below compare as strings — a local-time cutoff would silently shrink the window.
+YESTERDAY=$(date -u -v-24H +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%S)
 
 # ── Section A: Stage 1 — Issue Creation Health ──
 log "--- Section A: Issue Creation Health ---"

@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, mkdtempSync, writeFileSync, rmSync, utimesSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync, rmSync, utimesSync, existsSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,10 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const agentPath = resolve(HERE, "..", "factory-agent.sh");
 const script = readFileSync(agentPath, "utf8");
+// Build-root helpers (ensure/claim/release_beta_build_root, copy_worktree_env,
+// …) and the root defaults moved to the lib both schedulers source.
+const libPath = resolve(HERE, "..", "lib", "beta-build-root.sh");
+const lib = readFileSync(libPath, "utf8");
 
 // Slice the In Review → In Test advance out of the script so structural
 // assertions can't be satisfied by an incidental match elsewhere.
@@ -39,11 +43,20 @@ const sweepBlock = (() => {
 })();
 
 // The intest_handoff / intest_fallback_comment function bodies.
-function fnBody(name) {
+function fnBody(name, src = script) {
   const re = new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?^\\}`, "m");
-  const m = script.match(re);
+  const m = src.match(re);
   assert.ok(m, `could not find ${name}()`);
   return m[0];
+}
+
+// The PATH launchd gives the factory: no /usr/sbin or /sbin. Filtered rather
+// than replaced, so node, jq, ps and awk still resolve.
+function pathWithoutSbin() {
+  return (process.env.PATH ?? "")
+    .split(":")
+    .filter((p) => !["/usr/sbin", "/sbin"].includes(p.replace(/\/+$/, "")))
+    .join(":");
 }
 
 describe("factory-agent.sh syntax", () => {
@@ -133,6 +146,20 @@ describe("intest_handoff — failure degrades, never escalates", () => {
     assert.match(body, /check_session_limit/);
   });
 
+  it("forwards its coverage-note argument to every fallback and to the bundle", () => {
+    assert.match(body, /local cr_note="\$\{10:-\}"/);
+    const calls = body.match(/intest_fallback_comment [^\n]*/g) || [];
+    assert.ok(calls.length >= 6);
+    for (const call of calls) {
+      assert.match(call, /"\$\{beta_json:-\}" "\$cr_note"$/, `fallback without the note: ${call}`);
+    }
+    assert.match(body, /"\$head_sha" "\$comments_json" "\$cr_note"\); then/);
+    const bundle = fnBody("build_intest_bundle");
+    assert.match(bundle, /local cr_coverage_note="\$\{12:-\}"/);
+    assert.match(bundle, /--arg crCoverageNote "\$cr_coverage_note"/);
+    assert.match(bundle, /crCoverageNote: \$crCoverageNote,/);
+  });
+
   it("trusts the posted marker over the model's directive line", () => {
     assert.match(body, /issue_has_marker "\$issue_num" "drafto-factory-test-scenario"/);
   });
@@ -205,8 +232,32 @@ describe("intest_fallback_comment — always usable", () => {
     assert.match(body, /never\*\*[^\n]*pnpm install/);
   });
 
+  it("never tells anyone to check the PR branch out in the primary checkout", () => {
+    // factory-intest-prompt.md forbids it: /Users/jakub/code/drafto is the
+    // operator's working tree and the desktop fossil. The macOS fallback points
+    // at the runbook's pre-merge beta section instead.
+    assert.doesNotMatch(body, /git (?:-C \S+ )?(?:checkout|switch)\b[^\n]*factory\/issue-/);
+    assert.match(body, /factory-runbook\.md#pre-merge-beta-dispatch-in-test/);
+    // The fossil path is configurable; the warning names the configured one.
+    assert.match(body, /\$\{DRAFTO_DESKTOP_FOSSIL_ROOT:-\/Users\/jakub\/code\/drafto\}/);
+  });
+
+  it("names the gate's reason when the macOS beta was skipped", () => {
+    // More than one switch gates the lane (FACTORY_INTEST_BETA, the phase, free
+    // disk, FACTORY_INTEST_BETA_DESKTOP), so the reason is what's actionable.
+    assert.match(body, /select\(\.id == "desktop"\) \| \.reason/);
+    assert.match(body, /\$\{desktop_skip:\+/);
+  });
+
   it("surfaces advisory reds", () => {
     assert.match(body, /Advisory \(non-required\) checks are not green: \$advisory/);
+  });
+
+  it("takes the CodeRabbit coverage note as its own argument, never out of $advisory", () => {
+    // ADR-0036: the note is not a check. Rendering is covered behaviourally in
+    // factory-agent-cr-cli.test.mjs; this pins the signature every caller uses.
+    assert.match(body, /local beta="\$\{7:-\}" cr_note="\$\{8:-\}"/);
+    assert.doesNotMatch(body, /CodeRabbit did not review|CodeRabbit coverage of/);
   });
 });
 
@@ -348,12 +399,11 @@ intest_beta_gate ${JSON.stringify(platforms)}
 });
 
 describe("ensure_beta_build_root — working-tree safety", () => {
-  const body = fnBody("ensure_beta_build_root");
+  const body = fnBody("ensure_beta_build_root", lib);
 
   it("refuses to use the factory checkout or the fossil as a build root", () => {
     // It hard-resets and cleans the root. The fossil IS the operator's working
-    // tree (permanently dirty — the desktop lane mutates Info.plist and
-    // project.pbxproj), so resetting it would destroy real work.
+    // tree, so resetting it would destroy any uncommitted edits there.
     assert.match(body, /canon_root" == "\$canon_repo" \|\| "\$canon_root" == "\$canon_fossil"/);
     assert.match(body, /refusing to use \$root as a \$platform beta build root/);
     assert.match(body, /return 1/);
@@ -458,6 +508,15 @@ describe("ensure_beta_build_root — working-tree safety", () => {
 
   it("bounds bundle install — it runs synchronously inside the watch tick", () => {
     assert.match(body, /run-with-timeout\.mjs" "\$INSTALL_TIMEOUT_SEC" bundle install/);
+  });
+
+  it("bounds bundle check too — a wedged ruby must not hold the root lock", () => {
+    // 2026-10-09: an uncapped `bundle check` blocked for 5 hours in getcwd().
+    assert.match(
+      body,
+      /run-with-timeout\.mjs" "\$BETA_BUNDLE_CHECK_TIMEOUT_SEC" \\\n\s+bundle check/,
+    );
+    assert.ok(!/\(\s*bundle check\b/.test(body), "an uncapped bundle check is back");
   });
 
   it("seeds desktop from the fossil and never installs into it", () => {
@@ -579,6 +638,10 @@ describe("intest_check_lane_outcomes (extracted, real bash)", () => {
     attempt = 1,
     decoys = null,
     markers = [],
+    holdLog = false,
+    laneStartedAgoMin = null,
+    path = process.env.PATH,
+    env = {},
   }) => {
     const dir = mkdtempSync(join(tmpdir(), "drafto-outcome-"));
     const stateFile = join(dir, "state.json");
@@ -590,6 +653,11 @@ describe("intest_check_lane_outcomes (extracted, real bash)", () => {
             intestBetaSha: stateSha,
             intestBetaLanes: lanes,
             intestBetaAttempts: attempts,
+            ...(laneStartedAgoMin === null
+              ? {}
+              : {
+                  intestBetaLaneAt: `mobile:${Math.floor(Date.now() / 1000) - laneStartedAgoMin * 60}`,
+                }),
             ...(dispatchedAgoMin === null
               ? {}
               : {
@@ -614,8 +682,23 @@ set -uo pipefail
 eval "$(awk '/^iso_age_min\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 eval "$(awk '/^lane_attempt_of\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 eval "$(awk '/^lane_attempt_set\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
+eval "$(awk '/^kill_lane_holding_log\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 eval "$(awk '/^intest_check_lane_outcomes\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 log() { echo "[log] $*"; }
+# A stand-in for a hung lane, in its OWN process group as dispatch-release.mjs's
+# detached spawn gives it (set -m). The leader holds this attempt's log; its
+# child does not, like xcodebuild whose output fastlane pipes back to ruby.
+HELD_PID= KID_PID=
+${
+  holdLog
+    ? `set -m
+bash -c 'sleep 30 >/dev/null 2>&1 & echo $! >"$0"; exec sleep 30' "${base}.kid" >>"${base}" &
+HELD_PID=$!
+set +m
+sleep 0.3
+KID_PID=$(cat "${base}.kid")`
+    : ""
+}
 # Models markers already on the issue ($2 is the marker). Default: none present.
 issue_has_marker() {
   case "$2" in
@@ -634,13 +717,24 @@ STATE_FILE=${JSON.stringify(stateFile)}
 LOG_DIR=${JSON.stringify(dir)}
 LOG_FILE=${JSON.stringify(join(dir, "agent.log"))}
 FACTORY_LANE_STALE_MIN=120
+FACTORY_LANE_MAX_MIN=240
+FACTORY_LANE_KILL_GRACE_SEC=1
 FACTORY_LANE_MAX_ATTEMPTS=3
 FACTORY_INTEST_BETA=1
 DRY_RUN=${dryRun}
 intest_check_lane_outcomes 463 ${JSON.stringify(sha)} 591
+if [[ -n "$HELD_PID" ]]; then
+  sleep 0.3
+  if kill -0 "$HELD_PID" 2>/dev/null; then echo "HELD_ALIVE"; kill "$HELD_PID"; else echo "HELD_DEAD"; fi
+  if kill -0 "$KID_PID" 2>/dev/null; then echo "KID_ALIVE"; kill "$KID_PID"; else echo "KID_DEAD"; fi
+fi
 cat "$STATE_FILE"
 `;
-    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+    // An operator's exported FACTORY_LSOF_BIN must not leak into every case; only
+    // a test that sets it on purpose gets one.
+    const childEnv = { ...process.env, PATH: path, ...env };
+    if (!("FACTORY_LSOF_BIN" in env)) delete childEnv.FACTORY_LSOF_BIN;
+    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8", env: childEnv });
     // gh output is redirected into $LOG_FILE, so comment assertions must read it
     // there — pointing LOG_FILE at /dev/null (as this harness used to) silently
     // discards every comment the function makes.
@@ -747,12 +841,178 @@ cat "$STATE_FILE"
     const r = run({ exitContent: undefined, logAgeMin: 500, dryRun: 0 });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /never recorded an exit code/);
+    // lsof runs and finds nothing holding the log, the usual case for a lane
+    // that already died. That is not worth a warning.
+    assert.ok(!/WARNING/.test(r.stdout + r.stderr), `unexpected warning: ${r.stdout}${r.stderr}`);
     const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
     // state-cli normalises an empty value to null.
     assert.ok(
       !state.issues["463"].intestBetaLanes,
       "a dead lane must be re-armed (lane set cleared)",
     );
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("kills and re-arms a lane that keeps logging past the wall-clock cap", () => {
+    // #623's desktop lane logged "Waiting for App Store Connect to finish
+    // processing" every 32 s for 3 days. Its log never went silent, so the
+    // silence check never fired and it held the desktop build root throughout.
+    const r = run({ exitContent: undefined, laneStartedAgoMin: 300, holdLog: true, dryRun: 0 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /still running 240\+ min after dispatch/);
+    assert.match(r.stdout, /HELD_DEAD/, "the process holding the lane's log must be terminated");
+    assert.match(
+      r.stdout,
+      /KID_DEAD/,
+      "its piped children must die too, or they outlive the retry",
+    );
+    const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
+    assert.ok(!state.issues["463"].intestBetaLanes, "a hung lane must be re-armed");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("kills a hung lane under the factory's launchd PATH, which has no /usr/sbin or /sbin", () => {
+    // #659: macOS keeps lsof only in /usr/sbin and the PATH the factory plist
+    // sets leaves sbin out, so a bare `lsof` was "command not found", silenced, and
+    // the hung lane survived its re-arm. On Linux CI lsof is in /usr/bin and
+    // this passes either way; the structural test below covers that.
+    const r = run({
+      exitContent: undefined,
+      laneStartedAgoMin: 300,
+      holdLog: true,
+      dryRun: 0,
+      path: pathWithoutSbin(),
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /still running 240\+ min after dispatch/);
+    assert.ok(!/WARNING/.test(r.stdout + r.stderr), `unexpected warning: ${r.stdout}${r.stderr}`);
+    assert.match(r.stdout, /HELD_DEAD/, "lsof must be found without sbin on PATH");
+    assert.match(r.stdout, /KID_DEAD/);
+    const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
+    assert.ok(!state.issues["463"].intestBetaLanes, "a hung lane must be re-armed");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("uses FACTORY_LSOF_BIN when it is set", () => {
+    const realLsof = ["/usr/sbin/lsof", "/usr/bin/lsof", "/sbin/lsof"].find((p) => existsSync(p));
+    assert.ok(realLsof, "this test needs lsof installed");
+    // A wrapper that records the call, so the test proves the knob was used
+    // rather than the PATH / /usr/sbin lookup.
+    const binDir = mkdtempSync(join(tmpdir(), "drafto-lsof-bin-"));
+    const wrapper = join(binDir, "lsof-wrapper");
+    const calls = join(binDir, "calls");
+    writeFileSync(wrapper, `#!/bin/sh\necho called >>"${calls}"\nexec "${realLsof}" "$@"\n`, {
+      mode: 0o755,
+    });
+    const r = run({
+      exitContent: undefined,
+      laneStartedAgoMin: 300,
+      holdLog: true,
+      dryRun: 0,
+      path: pathWithoutSbin(),
+      env: { FACTORY_LSOF_BIN: wrapper },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(existsSync(calls), "the FACTORY_LSOF_BIN binary must be the one run");
+    assert.match(r.stdout, /HELD_DEAD/);
+    assert.match(r.stdout, /KID_DEAD/);
+    rmSync(r.dir, { recursive: true, force: true });
+    rmSync(binDir, { recursive: true, force: true });
+  });
+
+  it("warns, kills nothing and still re-arms when no lsof can be found", () => {
+    // An explicit FACTORY_LSOF_BIN has no fallback, so pointing it at nothing
+    // is the one portable way to model a host without lsof. The 2>/dev/null
+    // used to hide this failure entirely.
+    const missing = "/nonexistent/drafto-test/lsof";
+    assert.ok(!existsSync(missing));
+    const r = run({
+      exitContent: undefined,
+      laneStartedAgoMin: 300,
+      holdLog: true,
+      dryRun: 0,
+      env: { FACTORY_LSOF_BIN: missing },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(
+      r.stdout,
+      /WARNING: no usable lsof \(FACTORY_LSOF_BIN=\/nonexistent\/drafto-test\/lsof\)/,
+    );
+    assert.match(
+      r.stdout,
+      /WARNING: .*beta-lane-mobile-463-abc123-a1\.log/,
+      "the warning must name the lane's log",
+    );
+    assert.match(r.stdout, /HELD_ALIVE/, "no fallback to PATH or /usr/sbin when the knob is set");
+    // The callers' flow is unchanged: the lane is still reported and re-armed.
+    assert.match(r.stdout, /still running 240\+ min after dispatch/);
+    const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
+    assert.ok(!state.issues["463"].intestBetaLanes, "the lane must still be re-armed");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("treats a FACTORY_LSOF_BIN that is a directory as no lsof", () => {
+    // A directory passes `-x`; running it would fail inside the silenced call.
+    const r = run({
+      exitContent: undefined,
+      laneStartedAgoMin: 300,
+      holdLog: true,
+      dryRun: 0,
+      env: { FACTORY_LSOF_BIN: tmpdir() },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /WARNING: no usable lsof/);
+    assert.match(r.stdout, /HELD_ALIVE/);
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("leaves a chatty lane alone while it is under the wall-clock cap", () => {
+    const r = run({ exitContent: undefined, laneStartedAgoMin: 30, holdLog: true, dryRun: 0 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!/re-arming/.test(r.stdout), "a 30-minute-old lane is still building");
+    assert.match(r.stdout, /HELD_ALIVE/, "a healthy lane must not be killed");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("clocks the cap per lane, so a sibling's re-dispatch cannot reset it", () => {
+    // intestBetaAt is shared and restamped by every dispatch. A mobile retry 5
+    // minutes ago must not buy a desktop lane hung for 300 minutes more time.
+    const r = run({
+      exitContent: undefined,
+      dispatchedAgoMin: 5,
+      laneStartedAgoMin: 300,
+      holdLog: true,
+      dryRun: 0,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /HELD_DEAD/);
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("does not kill a young lane just because the shared dispatch stamp is old", () => {
+    const r = run({
+      exitContent: undefined,
+      dispatchedAgoMin: 300,
+      laneStartedAgoMin: 10,
+      holdLog: true,
+      dryRun: 0,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /HELD_ALIVE/);
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("falls back to the shared dispatch stamp for state predating intestBetaLaneAt", () => {
+    const r = run({ exitContent: undefined, dispatchedAgoMin: 300, holdLog: true, dryRun: 0 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /HELD_DEAD/);
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("does not kill anything on a dry run", () => {
+    const r = run({ exitContent: undefined, laneStartedAgoMin: 300, holdLog: true, dryRun: 1 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /HELD_ALIVE/, "DRY_RUN must never terminate a process");
     rmSync(r.dir, { recursive: true, force: true });
   });
 
@@ -765,6 +1025,21 @@ cat "$STATE_FILE"
     assert.match(r.stdout, /left no log and no exit code/);
     const state = JSON.parse(readFileSync(r.stateFile, "utf8"));
     assert.ok(!state.issues["463"].intestBetaLanes, "a traceless lane must be re-armed");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("uses the per-lane clock for a traceless lane too", () => {
+    // A sibling's re-dispatch restamps the shared intestBetaAt; it must not
+    // keep a lane with no log and no exit code alive for ever.
+    const r = run({
+      exitContent: undefined,
+      writeLog: false,
+      dispatchedAgoMin: 5,
+      laneStartedAgoMin: 300,
+      dryRun: 0,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /left no log and no exit code/);
     rmSync(r.dir, { recursive: true, force: true });
   });
 
@@ -892,6 +1167,60 @@ describe("intest_check_lane_outcomes — wiring and reporting", () => {
   });
 });
 
+describe("kill_lane_holding_log — lsof resolution", () => {
+  // Every `lsof` word that is not the /usr/sbin/lsof fallback or the
+  // `command -v lsof` lookup. Comments and plain log messages are prose, not
+  // calls; a log line with a command substitution is still checked.
+  const bareLsofCalls = (fn) => {
+    const code = fn
+      .split("\n")
+      .filter((l) => !/^\s*#/.test(l) && !/^\s*log "(?:[^$`]|\$(?!\())*"\s*$/.test(l))
+      .map((l) => l.replace(/\s#\s.*$/, ""))
+      .join("\n");
+    return [...code.matchAll(/(?<![\w/.])lsof(?![\w-])/g)]
+      .filter((m) => !/command -v $/.test(code.slice(0, m.index)))
+      .map((m) =>
+        code
+          .slice(code.lastIndexOf("\n", m.index) + 1)
+          .split("\n")[0]
+          .trim(),
+      );
+  };
+
+  it("flags the pre-#659 bare call, so the check below can fail", () => {
+    const before = `kill_lane_holding_log() {
+  for pid in $(lsof -t -- "$log_path" 2>/dev/null || true); do
+}`;
+    assert.equal(bareLsofCalls(before).length, 1);
+    // Other bare forms: a bare-name default, and a call inside a log message.
+    assert.equal(bareLsofCalls('  lsof_bin="${FACTORY_LSOF_BIN:-lsof}"').length, 1);
+    assert.equal(bareLsofCalls('  log "holders: $(lsof -t -- "$log_path")"').length, 1);
+  });
+
+  it("never calls lsof by bare name", () => {
+    // The factory's launchd PATH has no /usr/sbin, the only place macOS keeps
+    // lsof. On Linux CI lsof is in /usr/bin, so the PATH-filtered run above
+    // cannot catch a regression there; this does.
+    const body = fnBody("kill_lane_holding_log");
+    assert.deepEqual(bareLsofCalls(body), []);
+    assert.match(body, /\$\{FACTORY_LSOF_BIN:-\}/, "the knob must be read safely under set -u");
+    assert.match(body, /command -v lsof/);
+    assert.match(body, /lsof_bin=\/usr\/sbin\/lsof/);
+    assert.match(body, /\$\("\$lsof_bin" -t -- "\$log_path"/);
+  });
+
+  it("warns, rather than hides, a missing lsof and still returns 0", () => {
+    const body = fnBody("kill_lane_holding_log");
+    assert.match(body, /log "WARNING: no usable lsof[^"]*\$log_path"\s*\n\s*return 0/);
+  });
+});
+
+describe("factory-agent.sh PATH", () => {
+  it("appends sbin, so it adds commands without shadowing any", () => {
+    assert.match(script, /^export PATH="\$HOME\/\.local\/bin:\$PATH:\/usr\/sbin:\/sbin"$/m);
+  });
+});
+
 describe("pre-merge beta knobs", () => {
   it("defaults both knobs off", () => {
     assert.match(script, /FACTORY_INTEST_BETA="\$\{FACTORY_INTEST_BETA:-0\}"/);
@@ -899,18 +1228,29 @@ describe("pre-merge beta knobs", () => {
   });
 
   it("points the build roots at dedicated paths, not the fossil or this checkout", () => {
+    // The plist's explicit knobs win. Both: the factory's build volume when it
+    // is mounted, else ~/code. The volume's name is ASCII (ADR-0060), because
+    // the mobile root's iOS pods cannot build from a non-ASCII path.
     assert.match(
-      script,
-      /BETA_MOBILE_ROOT="\$\{DRAFTO_BETA_MOBILE_ROOT:-\/Users\/jakub\/code\/drafto-beta-mobile\}"/,
+      lib,
+      /BETA_MOBILE_ROOT="\$\{DRAFTO_BETA_MOBILE_ROOT:-\$parent\/drafto-beta-mobile\}"/,
     );
     assert.match(
-      script,
-      /BETA_DESKTOP_ROOT="\$\{DRAFTO_DESKTOP_BUILD_ROOT:-\/Users\/jakub\/code\/drafto-beta-desktop\}"/,
+      lib,
+      /BETA_BUILDS_VOLUME_DIR="\$\{DRAFTO_BUILDS_VOLUME_DIR:-\/Volumes\/DraftoFactory\}"/,
     );
     assert.match(
-      script,
+      lib,
+      /BETA_DESKTOP_ROOT="\$\{DRAFTO_DESKTOP_BUILD_ROOT:-\$parent\/drafto-beta-desktop\}"/,
+    );
+    assert.match(
+      lib,
       /DESKTOP_FOSSIL_ROOT="\$\{DRAFTO_DESKTOP_FOSSIL_ROOT:-\/Users\/jakub\/code\/drafto\}"/,
     );
+    assert.match(lib, /parent="\/Users\/jakub\/code"/, "~/code fallback kept");
+    assert.match(lib, /-d "\$BETA_BUILDS_VOLUME_DIR"/, "volume used only when mounted");
+    // The factory must not shadow the lib's defaults with its own.
+    assert.doesNotMatch(script, /^\s*(BETA_MOBILE_ROOT|BETA_DESKTOP_ROOT|DESKTOP_FOSSIL_ROOT)=/m);
   });
 
   it("dispatches betas before writing the scenario (the build takes 20-40 min)", () => {
@@ -934,7 +1274,7 @@ describe("pre-merge beta knobs", () => {
   });
 
   it("copies the Play service-account key into build roots (Android lane needs it)", () => {
-    assert.match(script, /apps\/mobile\/google-play-service-account\.json/);
+    assert.match(lib, /apps\/mobile\/google-play-service-account\.json/);
   });
 });
 

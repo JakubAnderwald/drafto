@@ -18,10 +18,11 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
 
    ```bash
    gh auth refresh -s project,read:project   # if you haven't yet
+   scripts/setup-factory-board.sh --dry-run
    scripts/setup-factory-board.sh
    ```
 
-   Prints the board URL on success — paste it into `docs/features/dark-factory.md` ("The board" section).
+   `--dry-run` previews the change and touches nothing; it's optional on a first run. The real run prints the board URL on success — paste it into `docs/features/dark-factory.md` ("The board" section). To add a column to a board that is already in use, follow "Changing the board's Status options" below instead.
 
 3. **Link the repo to the project.**
 
@@ -51,13 +52,26 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
    crash to production — the dedicated tree exists to make that impossible.)
 
    Create it once as a **detached** worktree at `origin/main` (detached so it
-   doesn't collide with `main` being checked out in the primary repo):
+   doesn't collide with `main` being checked out in the primary repo). It lives on
+   the factory's build volume, `/Volumes/DraftoFactory` (an encrypted APFS volume on
+   the external drive, [ADR-0060](../adr/0060-dedicated-factory-build-volume.md)),
+   beside the pnpm store (`store-dir=/Volumes/DraftoFactory/pnpm-store` in pnpm's
+   global config, `~/Library/Preferences/pnpm/rc`; set it with
+   `pnpm config set store-dir … --location=global`). So `pnpm install` there, and
+   in every worktree under it, clones packages from the store instead of copying
+   them across volumes. The build toolchain lives on the same volume too:
+   `~/.gradle`, Xcode's `DerivedData` / `Archives` / `iOS DeviceSupport`,
+   `~/Library/Caches/CocoaPods`, `~/Library/Android/sdk` and `~/.android/avd` are
+   symlinks into `/Volumes/DraftoFactory/{Developer,Android,android-avd}`. Keep
+   `/Volumes/DraftoFactory/Developer/Xcode/Archives` in IDrive's backup set. The
+   macOS archives hold the only copy of the macOS dSYMs, and every distributed
+   build's archive must be retained:
 
    ```bash
    cd /Users/jakub/code/drafto
    git fetch origin main
-   git worktree add --detach /Users/jakub/code/drafto-factory origin/main
-   cd /Users/jakub/code/drafto-factory
+   git worktree add --detach /Volumes/DraftoFactory/drafto-factory origin/main
+   cd /Volumes/DraftoFactory/drafto-factory
    pnpm install                       # worktrees don't share node_modules
    bash scripts/worktree-bootstrap.sh # gitignored env/config files
    ```
@@ -73,10 +87,10 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
 
    On the Mac mini, drop a plist at `~/Library/LaunchAgents/eu.drafto.factory.plist` modelled on `eu.drafto.support-agent.plist` with:
    - `Label = eu.drafto.factory`
-   - `ProgramArguments = [/bin/bash, /Users/jakub/code/drafto-factory/scripts/factory-agent-loop.sh]` (the **dedicated** checkout from step 5, not the dev tree)
+   - `ProgramArguments = [/bin/bash, -c, <gate>; exec /bin/bash /Volumes/DraftoFactory/drafto-factory/scripts/factory-agent-loop.sh]` (the **dedicated** checkout from step 5, not the dev tree). The gate skips the tick with a log line unless `/Volumes/DraftoFactory/drafto-factory` exists. That one volume also holds the toolchain the builds use (Gradle home, Xcode DerivedData, the CocoaPods cache, the Android SDK and AVDs), so nothing else needs checking.
    - `StartInterval = 300` (5 min)
    - `EnvironmentVariables.FACTORY_PHASE = A`
-   - Stdout/stderr paths under `logs/launchd-factory-*.log`
+   - Stdout/stderr paths under the primary checkout's `logs/launchd-factory-*.log`, on the internal disk, so launchd can still write the gate's "not mounted" line while the volume is missing
 
    Then load and smoke-test:
 
@@ -89,6 +103,102 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
    The first tick should log `self-update: synced to origin/main @ <sha>` then
    `=== factory-agent --plan run started (phase=A …) ===` followed by
    `=== factory-agent --plan completed in <N>s ===`. Subsequent ticks fire every 5 min.
+
+7. **(Optional) Install the CodeRabbit CLI for the gap-fill lane.**
+
+   Only needed before turning on `FACTORY_CR_CLI=1` (see "CodeRabbit CLI gap-fill lane" below). On the Mac mini:
+
+   ```bash
+   brew install coderabbit
+   coderabbit auth login      # browser, one-time; the token lands in ~/.coderabbit/auth.json (0600)
+   coderabbit doctor          # expect "9 passed, 0 warnings, 0 failed"
+   coderabbit auth status     # expect "Plan : Free" (and "Seat : not assigned")
+   coderabbit usage           # expect "Usage billing : inactive"
+   ```
+
+   > **⚠️ Check `pnpm` afterwards.** On 2026-09-12 `brew install coderabbit` also upgraded Homebrew's `node` (23 → 26) as a side effect. Node 25+ no longer bundles corepack, so `/opt/homebrew/bin/pnpm` became a dangling symlink — and every factory `pnpm install` would have failed on the next `--implement`. If `pnpm --version` fails after any `brew install`/`upgrade`, remove the dangling corepack links and reinstall corepack:
+   >
+   > ```bash
+   > for l in /opt/homebrew/bin/{pnpm,pnpx,yarn,yarnpkg}; do [ -L "$l" ] && [ ! -e "$l" ] && rm "$l"; done
+   > npm install -g corepack && corepack enable pnpm
+   > pnpm --version   # run inside the repo: must print the packageManager pin (pnpm@10.30.1)
+   > ```
+
+## Changing the board's Status options
+
+`scripts/setup-factory-board.sh` is also how a column is added to the live board, for example **Testing**, the pre-In-Test verification column (ADR-0053; see "Pre-In-Test verification (Testing)"). `updateProjectV2Field` replaces the Status field's whole option list. GitHub treats an option sent without its `id` as a new option, and every card in the old one loses its Status. Before 2026-10-20 the script sent no ids, so a re-run could clear the Status of every card on the board. Now the script:
+
+- sends every existing option back with its `id`, colour and description. Only a name the board doesn't have yet is sent without an `id`.
+- exits 1 when the board has an option that `STATUS_OPTIONS` doesn't list, because the update would delete it. `--allow-drop` deletes it anyway, so move its cards first.
+- sends no update when the board already matches `STATUS_OPTIONS`.
+- exits 1 when GitHub returns an option with a different `id`. Restore from your backup (below).
+- with `--dry-run`, prints the `updateProjectV2Field` variables (each option with its `id`) and exits. It creates, updates and links nothing.
+
+Only use the script from current `main`. An older copy sends no ids.
+
+**Safe migration.** On the Mac mini. Run one step at a time and stop at the first one that fails. (The blocks carry no `#` comments: with zsh's `interactivecomments` off, a pasted comment becomes arguments.)
+
+1. Go to the factory checkout, which tracks `origin/main`, and set two variables. `FACTORY_PROJECT_ID` saves every later call from looking the board up again; check that it starts with `PVT_`.
+
+   ```bash
+   cd /Volumes/DraftoFactory/drafto-factory
+   export FACTORY_PROJECT_ID=$(node scripts/lib/factory-project.mjs find-project | jq -r .projectId)
+   echo "$FACTORY_PROJECT_ID"
+   BACKUP=~/factory-board-backup-$(date +%Y%m%d-%H%M).json
+   ```
+
+2. Create the labels first. The script is idempotent and adds `status:testing`.
+
+   ```bash
+   scripts/setup-factory-labels.sh
+   ```
+
+3. Pause the factory, then wait for runs already in flight. `factory:pause` only stops new ticks, and a run that's still going can move a card, which the diff in step 6 would show as a lost Status. Repeat the `pgrep` until it prints nothing.
+
+   ```bash
+   node scripts/lib/state-cli.mjs factory:pause "board migration"
+   pgrep -fl factory-agent.sh
+   ```
+
+4. Back up every card's Status. Don't go on unless it prints `backup ok`.
+
+   ```bash
+   node scripts/lib/factory-project.mjs export-statuses > "$BACKUP" && jq -e 'length > 0' "$BACKUP" >/dev/null && echo "backup ok"
+   ```
+
+5. Preview the update. Every existing option in the printed `options` must have an `"id"`; only the new column (Testing) has none. Then run it for real.
+
+   ```bash
+   scripts/setup-factory-board.sh --dry-run
+   scripts/setup-factory-board.sh
+   ```
+
+6. Check. The diff must print nothing, and `has-status-option` must print `"present": true` and exit 0.
+
+   ```bash
+   node scripts/lib/factory-project.mjs export-statuses | diff "$BACKUP" -
+   node scripts/lib/factory-project.mjs has-status-option --name Testing
+   ```
+
+7. Resume.
+
+   ```bash
+   node scripts/lib/state-cli.mjs factory:resume
+   ```
+
+`export-statuses` is read-only. It prints every item on the board (`itemId`, `issueNumber`, `status`, `type`), sorted, so two exports diff cleanly. If the diff shows lost Statuses, keep the factory paused and put back each card whose Status changed. In the same shell as the steps above:
+
+```bash
+node scripts/lib/factory-project.mjs export-statuses > ~/factory-board-after.json
+jq -r --slurpfile now ~/factory-board-after.json '($now[0] | map({(.itemId): .status}) | add // {}) as $cur | .[] | select(.status != null and $cur[.itemId] != .status) | [.itemId, .status] | @tsv' "$BACKUP" |
+  while IFS=$'\t' read -r item opt; do
+    node scripts/lib/factory-project.mjs set-status --item-id "$item" --status "$opt"
+  done
+```
+
+`set-status` only moves the board card. The `status:*` labels live on the issues, and a board migration doesn't touch them.
+
+`transition_status` removes only the `status:*` labels an issue actually carries, so a label the repo doesn't have yet doesn't break moving a card **out of** a column. Moving a card **into** Testing still needs the `status:testing` label. When the factory can't read an issue's labels, it falls back to removing every status label, and that fails if one is missing. So run the label script first, as in step 2.
 
 ## Phase progression criteria
 
@@ -118,15 +228,16 @@ A dated record of actual phase changes so the current operating phase is auditab
 | ---------- | ------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2026-06-23 | B → C  | Jakub    | Unblock native (mobile/desktop) parity work — notably #537 (forgot-password parity), which the Phase-B web-only scope had blocked at plan time. Phase C implementation code (#535) was already merged. Beta dispatch stays dormant until a later C → D promotion. |
 
-**`--release` runs at Phase B+.** The A→B→C→D phases control implementation _scope_ (web → web+mobile/desktop → beta dispatch); `--release` is the merge step layered on top. Each tick it scans the **Approved** column and, for a card a human dragged there, squash-merges the green PR via the GitHub API (`gh api --method PUT …/merge -f merge_method=squash`) and advances it to **Released** (Vercel auto-deploys main → prod for web). It is bounded by three hard rules:
+**`--release` runs at Phase B+.** The A→B→C→D phases control implementation _scope_ (web → web+mobile/desktop → beta dispatch); `--release` is the merge step layered on top. Each tick it scans the **Approved** column and, for a card a human dragged there, squash-merges the green PR via the GitHub API (`gh api --method PUT …/merge -f merge_method=squash`) and advances it to **Released** (Vercel auto-deploys main → prod for web). It is bounded by four hard rules:
 
 1. It only ever acts on a card a human (or an allowlisted reporter) moved to **Approved** — the Approved drag _is_ the merge-authorisation gate (ADR-0026); the factory never moves a card to Approved itself.
 2. It refuses to merge a PR touching `supabase/migrations/**` until `migration-approved` is on the PR — it leaves the card in Approved and comments once (`<!-- drafto-factory-migration-gate -->`).
-3. It won't merge unless CI is green and the branch is conflict-free; otherwise it leaves the card in Approved for you (a transient merge error is retried next tick, comment `<!-- drafto-factory-merge-failed -->`).
+3. It refuses to merge a PR that changes `supabase/config.toml` until the hosted projects match it. This is the last check before the merge. It leaves the card in Approved, comments once per head SHA, and pins the merge to that SHA. See "Hosted Supabase config gate" below.
+4. It won't merge unless CI is green and the branch is conflict-free (a transient merge error is retried next tick, comment `<!-- drafto-factory-merge-failed -->`). Red CI moves the card back to **In Review** for the fix loop, and required checks GitHub cancelled before any runner picked them up are re-run first. See "Red or cancelled CI on a factory PR" below. A conflict with `main` moves the card back to **In Review** too, checked before the CI gate because a conflicting head gets no CI. See "A PR that conflicts with main" below.
 
-**"CI is green" means the branch-protection _required_ contexts only** — both `--watch` (In Review → In Test) and `--release` (the merge gate) count only failing/pending checks whose context is in `required_status_checks`, fetched once per run (`fetch_required_contexts` → `pr_failing_required` / `pr_pending_required`). An advisory bot like **CodeRabbit** is never a required context, so its red — including its **"Review rate limited"** status when it can't review — never triggers the `--watch` fix loop, blocks the In Test advance, or blocks the merge. Advisory reds are instead surfaced in the In Test hand-off comment for the operator to glance at before Approving. (Before this, a rate-limited CodeRabbit check would loop `--watch`'s fix path to exhaustion and park the card in Blocked — the #463 failure of 2026-07-22.) When branch protection is unreadable/empty the helpers fall back to counting all checks, so an unknown required set can't silently pass a red PR.
+**"CI is green" means the branch-protection _required_ contexts only** — both `--watch` (In Review → In Test) and `--release` (the merge gate) count only failing/pending checks whose context is in `required_status_checks`, fetched once per run (`fetch_required_contexts` → `pr_failing_required` / `pr_pending_required`). An advisory bot like **CodeRabbit** is never a required context, so its red — including its **"Review rate limited"** status when it can't review — never triggers the `--watch` fix loop, blocks the In Test advance, or blocks the merge. Advisory reds are instead surfaced in the In Test hand-off comment for the operator to glance at before Approving. **A review _comment_ is a different thing from a review _check_:** the check status stays advisory and never gates anything, but an unresolved review **thread** is a hard block on the merge (see `--release` below). (Before this, a rate-limited CodeRabbit check would loop `--watch`'s fix path to exhaustion and park the card in Blocked — the #463 failure of 2026-07-22.) When branch protection is unreadable/empty the helpers fall back to counting all checks, so an unknown required set can't silently pass a red PR.
 
-Right before merging it **resolves any outstanding review threads** (CodeRabbit / reviewers) via GraphQL — the owner-token merge would otherwise bypass `required_conversation_resolution` silently, so this turns it into an explicit, audited action at the Approved gate (the `--watch` fix loop has already addressed CI-failing feedback; remaining threads are accepted when you drag to Approved). The count cleared is noted on the `<!-- drafto-factory-released -->` comment.
+Right before merging it **verifies every review thread is resolved** (`fetch_review_threads`) — it does **not** resolve them for you. Until 2026-09-12 it did: `resolve_review_threads()` force-resolved every thread without reading one, which satisfied `required_conversation_resolution` on paper while discarding the findings (PR #601's five CodeRabbit threads are all `isResolved: true` for exactly that reason). Now an open thread **refuses the merge**, comments `<!-- drafto-factory-threads-open -->` listing `path:line`, and moves the card back to **In Review** — `--watch` is the only mode that runs the fix loop, so leaving it in Approved would strand it. The card returns to In Test for a fresh approval, because the diff changed after you authorised it. A failed thread query fails **closed** (no merge this tick). See [ADR-0035](../adr/0035-factory-code-review-gate.md).
 
 It is idempotent (an already-merged PR just finishes the Released transition + slot/worktree teardown) and honours `factory-pause`. `factory:pause` stops `--release` along with every other mode.
 
@@ -138,18 +249,21 @@ It is idempotent (an already-merged PR just finishes the Released transition + s
 
 A card in **In Test** needs a build a human can actually install. `--watch` therefore dispatches beta builds **from the PR head, before the merge**, for the native platforms the diff touched (ADR-0030). This is separate from the Phase-D post-merge lane above and has its own knobs — enabling pre-merge betas must not silently switch on post-merge auto-dispatch.
 
-| Var                           | Default                                 | Purpose                                                                                         |
-| ----------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `FACTORY_INTEST_BETA`         | `0`                                     | Master switch. `1` + Phase C/D dispatches the **mobile** lane (iOS TestFlight + Play internal). |
-| `FACTORY_INTEST_BETA_DESKTOP` | `0`                                     | Additionally dispatch the **macOS** lane. Only turn on after the fossil validation below.       |
-| `FACTORY_INTEST_TIMEOUT_SEC`  | `600`                                   | Wall-clock cap for the In Test scenario writer (read-only stage).                               |
-| `FACTORY_LANE_STALE_MIN`      | `120`                                   | A lane silent this long with no exit code is declared dead and retried.                         |
-| `FACTORY_LANE_MAX_ATTEMPTS`   | `3`                                     | Retry budget per lane per commit; a new commit resets it.                                       |
-| `DRAFTO_BETA_MOBILE_ROOT`     | `/Users/jakub/code/drafto-beta-mobile`  | Dedicated mobile build root.                                                                    |
-| `DRAFTO_DESKTOP_BUILD_ROOT`   | `/Users/jakub/code/drafto-beta-desktop` | Dedicated macOS build root (clonefile replica of the fossil).                                   |
-| `DRAFTO_DESKTOP_FOSSIL_ROOT`  | `/Users/jakub/code/drafto`              | The fossil the desktop root is seeded **from**. Never built in.                                 |
+| Var                           | Default                        | Purpose                                                                                                                                                                                                                                                   |
+| ----------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FACTORY_INTEST_BETA`         | `0`                            | Master switch. `1` + Phase C/D dispatches the **mobile** lane (iOS TestFlight + Play internal).                                                                                                                                                           |
+| `FACTORY_INTEST_BETA_DESKTOP` | `0`                            | Additionally dispatch the **macOS** lane. Only turn on after the fossil validation below.                                                                                                                                                                 |
+| `FACTORY_INTEST_TIMEOUT_SEC`  | `600`                          | Wall-clock cap for the In Test scenario writer (read-only stage).                                                                                                                                                                                         |
+| `FACTORY_LANE_STALE_MIN`      | `120`                          | A lane silent this long with no exit code is declared dead and retried.                                                                                                                                                                                   |
+| `FACTORY_LANE_MAX_MIN`        | `240`                          | A lane still running this long after ITS dispatch is killed (whole process group) and retried.                                                                                                                                                            |
+| `FACTORY_LSOF_BIN`            | unset                          | Path to `lsof`, used to kill hung lanes; no fallback when set. Unset: PATH, then `/usr/sbin/lsof`. None found: WARNING in the agent log, no kill.                                                                                                         |
+| `FACTORY_LANE_MAX_ATTEMPTS`   | `3`                            | Retry budget per lane per commit; a new commit resets it.                                                                                                                                                                                                 |
+| `DRAFTO_BUILDS_VOLUME_DIR`    | `/Volumes/DraftoFactory`       | The factory's build volume. While it is mounted, both build roots and the nightly's session worktrees default to it; otherwise they default to `/Users/jakub/code`. Its name must stay ASCII ([ADR-0060](../adr/0060-dedicated-factory-build-volume.md)). |
+| `DRAFTO_BETA_MOBILE_ROOT`     | `<volume>/drafto-beta-mobile`  | Dedicated mobile build root. Must be an **ASCII-only path**: React Native 0.83's iOS pods reject non-ASCII paths, so `ensure_beta_build_root` refuses one. The plist sets it.                                                                             |
+| `DRAFTO_DESKTOP_BUILD_ROOT`   | `<volume>/drafto-beta-desktop` | Dedicated macOS build root (a copy of the fossil's `node_modules`). The plist sets it.                                                                                                                                                                    |
+| `DRAFTO_DESKTOP_FOSSIL_ROOT`  | `/Users/jakub/code/drafto`     | The fossil the desktop root is seeded **from**. Never built in.                                                                                                                                                                                           |
 
-**The build roots.** Each is a detached git worktree that the factory hard-resets to the PR head SHA, with `node_modules` clonefile-seeded (`cp -c -R` — O(1) space). They are **dedicated and disposable**: `ensure_beta_build_root` refuses, by canonical path, to use the factory checkout or the fossil as a build root, because it resets what it is given and the fossil is your working tree. The issue's own worktree is deliberately not used either — the next `--watch` tick may install and edit files in it, and the cleanup sweep deletes it when the card leaves In Test.
+**The build roots.** Each is a detached git worktree that the factory hard-resets to the PR head SHA, with `node_modules` seeded by `cp -c -R`. A root created by the factory is seeded from the factory checkout on the same volume, so its seed is an O(1) clone. One the nightly creates is seeded from the primary checkout on the internal disk, which makes it a full copy, and so is the desktop root, which is always seeded from the fossil. They are **dedicated and disposable**: `ensure_beta_build_root` refuses, by canonical path, to use the factory checkout or the fossil as a build root, because it resets what it is given and the fossil is your working tree. The helpers live in `scripts/lib/beta-build-root.sh`, which `nightly-support.sh` sources too: it ships merged support fixes into the **same** two roots ([ADR-0042](../adr/0042-nightly-support-runner-owns-beta-dispatch.md)). Each root has a pid lock at `<root>.lock`. `ensure_beta_build_root` takes it atomically, with its own pid, before touching the root. `claim_beta_build_root` hands it to the lane's pid, and `release_beta_build_root` drops a lock its holder no longer needs. A root locked by a live pid is skipped, by either scheduler, until a later tick or night. The issue's own worktree is deliberately not used either — the next `--watch` tick may install and edit files in it, and the cleanup sweep deletes it when the card leaves In Test.
 
 > ### ⚠️ NEVER `pnpm install` in `drafto-beta-desktop`
 >
@@ -158,8 +272,8 @@ A card in **In Test** needs a build a human can actually install. `--watch` ther
 **One-time fossil validation before `FACTORY_INTEST_BETA_DESKTOP=1`.** A green compile is not proof; only an installed build that opens a note is.
 
 ```bash
-git -C /Users/jakub/code/drafto worktree add --detach /Users/jakub/code/drafto-beta-desktop origin/main
-cd /Users/jakub/code/drafto-beta-desktop
+git -C /Users/jakub/code/drafto worktree add --detach /Volumes/DraftoFactory/drafto-beta-desktop origin/main
+cd /Volumes/DraftoFactory/drafto-beta-desktop
 for d in node_modules apps/desktop/node_modules packages/*/node_modules; do
   [ -d "/Users/jakub/code/drafto/$d" ] && cp -c -R "/Users/jakub/code/drafto/$d" "$d"
 done
@@ -183,7 +297,7 @@ Test 6 is the fossil check: it opens the app, requires it to survive 15 s, and f
 
 **It still cannot prove the app renders** — a blank window is a healthy process — so finish by opening the app and **opening a note** yourself. Confirm `git -C /Users/jakub/code/drafto status --porcelain` is unchanged before and after. Only then add the knob to the plist and reload.
 
-> Validated on **2026-08-06**: macOS build 48, built from `drafto-beta-desktop`, installs and opens a note. The replica is proven.
+> Validated on **2026-08-06**: macOS build 48, built from `drafto-beta-desktop`, installs and opens a note. The replica is proven. A replica re-created elsewhere (as when it moved to `/Volumes/DraftoFactory` under [ADR-0060](../adr/0060-dedicated-factory-build-volume.md)) is a new replica: keep the old root until a beta built from the new one has opened a note.
 
 **Identifying a pre-merge build.** Release notes begin `PRE-MERGE TEST BUILD — issue #N / PR #M (sha)` (prepended before the char trim, so it survives Play's 500-char cap), and the Fastlane post-hook `comment-intest-build.mjs` posts the build number on the card when the lane lands.
 
@@ -213,6 +327,7 @@ cat  logs/factory/beta-lane-mobile-463-b243d8196fa2.log.exit      # its exit cod
 | absent, log written recently                                     | still building                           | left alone                                                                                                                                               |
 | absent, log silent > `FACTORY_LANE_STALE_MIN`                    | wrapper killed before it could record    | treated as failed, retried                                                                                                                               |
 | absent, **no log at all**, dispatched > `FACTORY_LANE_STALE_MIN` | killed before it could even open its log | treated as failed, retried (judged against `intestBetaAt`)                                                                                               |
+| absent, log active, dispatched > `FACTORY_LANE_MAX_MIN`          | hung but chatty (e.g. a stuck poll loop) | the lane's process group is killed (TERM, then KILL); treated as failed, retried                                                                         |
 | present but empty / non-numeric                                  | caught mid-write                         | left alone; the staleness rows above are the backstop                                                                                                    |
 | `0`                                                              | succeeded                                | stays suppressed; if a failure was announced for this lane+commit, a retraction is posted once (`<!-- drafto-factory-beta-recovered:<lane>:<sha12> -->`) |
 | non-zero, attempt < `FACTORY_LANE_MAX_ATTEMPTS`                  | failed, budget remaining                 | dropped from `intestBetaLanes`, retried next tick, reported once (`<!-- drafto-factory-beta-failed:<lane>:<sha12> -->`)                                  |
@@ -233,17 +348,452 @@ node scripts/lib/state-cli.mjs factory:set-issue-field <n> intestBetaLanes ""   
 
 Lanes are still skipped up front — with the reason in the In Test comment — when a knob is off, the phase is B, free disk is below `FACTORY_MIN_FREE_DISK_GB`, a build root can't be prepared, or the fossil assertion fails.
 
+## Hosted Supabase config gate
+
+Pre-merge betas run against prod, so a PR that needs a new Redirect URL in the hosted projects must not reach testers before the entry exists. On #685 / PR #778 the betas went out while dev and prod both lacked `?sb_flow_id=*` entries, and their reset links would have opened drafto.eu instead of the app ([ADR-0065](../adr/0065-factory-hosted-config-gate.md)).
+
+For a PR that changes `supabase/config.toml`, `hosted_config_gate` compares the PR head with its merge base on `main`. It runs in three places:
+
+- in **In Review**, as the last check before Testing or In Test;
+- in `intest_dispatch_betas`, before every pre-merge beta;
+- in `--release`, as the last check before the merge, which is then pinned to the checked SHA.
+
+What it checks:
+
+- **Redirect URLs the PR adds.** The gate probes each one on dev and prod with an unauthenticated `/verify` request. Supabase redirects an allowlisted `redirect_to` to itself, and anything else to the project's Site URL.
+- **Anything else it changes**, and Redirect URLs the probe can't sample, need the **`hosted-config-applied`** label on the PR. Comments, spacing and local-only settings such as `[studio]`, `[db.seed]` and the local ports in `[db]` don't count. `[db.settings]` and `[db.network_restrictions]` do: `supabase config push` applies them to a hosted project.
+  - The label covers one version of `config.toml`. If a later commit changes the file, the factory removes the label, logging `removing the label`, and asks again.
+  - The label also overrules an inconclusive check, though never a confirmed missing entry.
+
+A held card stays where it is, with one comment per column (`in-review`, `beta`, `approved`) and head SHA:
+
+- `<!-- drafto-factory-hosted-config-hold:<column>:<sha12> -->` lists each missing entry per project, with a dashboard link.
+- `<!-- drafto-factory-hosted-config-unverified:<column>:<sha12> -->` means a probe failed, or a control probe misbehaved. The gate holds in this case too.
+- A failure to read the merge base or `config.toml` from GitHub holds the card for that tick, with a `WARNING: hosted-config gate:` log line and no comment.
+- A held beta lane shows up in the scenario as skipped with `hosted-config-hold`, and is dispatched on a later tick once the gate passes.
+
+**To clear a hold:**
+
+1. Add the listed entries under Authentication → URL Configuration → Redirect URLs in each project. Keep the existing entries. A prod change needs the operator.
+2. For the label case, apply the other changes in both dashboards, then add `hosted-config-applied` to the PR.
+
+The next cycle re-checks and the card carries on. **Don't use `supabase config push`**: it pushes the whole file, and `config.toml` doesn't configure prod's Resend SMTP.
+
+To run the check yourself, from a checkout of the PR branch: `pnpm hosted-config:check`. It compares `HEAD` with its merge base on `origin/main`, probes both projects, prints JSON, and exits `0` (ok), `3` (hold) or `4` (unknown). To simulate the label, add `--labels hosted-config-applied`. The `--watch` and `--release` logs say `hosted-config gate passed` or `hosted-config gate held PR #<n>`.
+
+## CodeRabbit CLI gap-fill lane
+
+CodeRabbit's PR bot runs on the free OSS tier and often doesn't review a factory commit: it is rate-limited (1–10 PR reviews/hr, scaled by the repo's stars), skipped, or auto-paused after two reviewed commits (`.coderabbit.yaml`). The **CodeRabbit CLI** has a separate free allowance of 3 reviews/hr. When the bot didn't cover a converged In Review card's head commit, `--watch` reviews that commit with the CLI on the Mac mini and posts the findings as review threads, which the ADR-0035 fix loop then answers. See [ADR-0036](../adr/0036-factory-coderabbit-cli-gap-fill.md).
+
+**How it runs.** The lane only acts once a card has converged: required CI green, the Claude review done for the head SHA, and no open threads. It then:
+
+1. **Waits for the bot.** It holds the card while the bot's review is in progress, or for `FACTORY_CR_BOT_GRACE_MIN` while the bot hasn't posted. Coverage is read from the bot's own review bodies and summary comment (REST, bot account only) — never from the `CodeRabbit` commit status, which reads SUCCESS even when rate-limited.
+2. **Starts one CLI run** if the bot didn't cover the commit. The run is a detached supervisor process in its own detached worktree, with a stripped environment (no `GH_TOKEN`, no support secrets). **At most one run is ever in flight** — two concurrent CLI reviews fail with a WebSocket `connection` error. The card keeps holding while it runs. If the PR's head moves on (a fix commit) or the PR closes while the run is still going, the next tick terminates it (SIGTERM to its process group), removes its worktree and frees the slot — its results could only be a stale summary. That run's hourly slot stays spent, but it doesn't count against the card's run cap, and no coverage is recorded.
+3. **Posts the findings** on a later tick, with no Claude call:
+   - Critical/major/minor findings become inline threads (critical/major only on an incremental re-review). If `gh pr diff` fails (e.g. a diff too large for the API — exactly the PR most likely to carry criticals), they open as **file-level** threads instead, which need no diff hunk.
+   - Everything else goes into one summary comment marked `<!-- drafto-factory-cr-cli sha=<sha> -->`: lower severities, findings outside the PR diff, anything past the per-run thread cap, and non-critical findings within 3 lines of an existing thread. That proximity check only counts comments by the owner or the CodeRabbit bot, in threads that are unresolved and not outdated (at the thread's current line), and never this run's own threads — a partial post must not demote the rest. A **critical** finding is never demoted for proximity. A thread-worthy finding that ends up only in the summary because of the thread cap, or because GitHub rejected its comment twice, makes the commit's coverage `cli-partial` (below): the fix loop reads threads, not the summary, so the tester is told.
+   - Each thread starts `**[CodeRabbit CLI · <severity>]**` and carries a disclaimer and a `drafto-factory-cr-finding` fingerprint marker, so re-posting is idempotent. Only the owner's and the bot's comments count for that de-duplication (resolved threads included), and only within 20 lines of the earlier comment — the same wording elsewhere in the file is a separate finding. The summary counts as already posted only if the owner's own comment carries the full marker — a public commenter can't suppress findings by pasting one.
+   - A failed post is retried on the next tick. If the post still hasn't succeeded more than 70 minutes past the run's deadline (the 10-minute overdue grace plus an hour), housekeeping gives up: it records `cli-failed` for the commit (unless the PR has closed or moved to a new head; a PR that can't be read at all is recorded anyway), removes the worktree and frees the slot, so the card promotes with a note instead of holding forever. Separately, the gate stops holding a card for its own run 80 minutes past that run's deadline and promotes it as `hold-expired`, even if housekeeping never manages to finish the run. If that run does finish later, housekeeping discards its results (`discarded: "already-decided"`) instead of posting threads onto a card that has moved on or overwriting the recorded coverage.
+4. **Promotes** the card once CodeRabbit covered the commit, or once the hold expires. In the latter case the In Test hand-off says "CodeRabbit did not review `<sha12>` (…)". The note is its own field in the In Test bundle (`crCoverageNote`, rendered on its own line — never listed among the advisory checks). When the In Test sweep re-writes a scenario for the same head with the lane on (e.g. the promoting tick died before its comment), it rebuilds the note from the recorded coverage. If the lane itself errors, the card promotes anyway (fail open) with "CodeRabbit coverage of `<sha12>` unknown (lane error)" — that note isn't recorded, so a re-written scenario can't repeat it — and a commit pushed while the card is already In Test gets no note at all.
+
+A thread-driven fix pass whose open threads are all CLI findings gets **one free pass per CLI run** (no retry attempt spent), and a card gets at most `FACTORY_CR_CLI_MAX_RUNS_PER_CARD` CLI runs per In Review stint, so CLI findings can't exhaust `FACTORY_MAX_ATTEMPTS` on their own. A missing binary, a failed `coderabbit doctor`, or an expired login never blocks a card — it promotes with a `cli-unavailable` note. A failed `doctor` pauses the lane for an hour and promotes the card in that same tick.
+
+**Knobs** (launchd plist `EnvironmentVariables`):
+
+| Var                                 | Default | Purpose                                                                                                                                                                                                                       |
+| ----------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FACTORY_CR_CLI`                    | `0`     | Master switch. Ships dark: dry-run first (see "Dry run" below), then set `1` in the plist. Setting it back to `0` is the kill switch.                                                                                         |
+| `FACTORY_CR_CLI_MAX_PER_HOUR`       | `3`     | Rolling hourly CLI budget (the vendor's free allowance). Consider `2` if you also use the CLI interactively.                                                                                                                  |
+| `FACTORY_CR_CLI_MAX_RUNS_PER_CARD`  | `2`     | CLI runs per card per In Review stint; reset when the card reaches In Test.                                                                                                                                                   |
+| `FACTORY_CR_CLI_TIMEOUT_MIN`        | `45`    | Supervisor kills a CLI run after this long (a large review takes 7–30+ min).                                                                                                                                                  |
+| `FACTORY_CR_BOT_GRACE_MIN`          | `15`    | How long to wait for the PR bot to post before treating the commit as a gap.                                                                                                                                                  |
+| `FACTORY_CR_HOLD_MAX_MIN`           | `60`    | Cap on holding a converged card waiting to start a run. Worst-case hold per head commit ≈ this + `FACTORY_CR_CLI_TIMEOUT_MIN` (up to 80 min more if collecting the run keeps failing); the clock restarts on each new commit. |
+| `FACTORY_CR_CLI_BIN`                | unset   | Explicit path to `coderabbit`. Otherwise PATH, then `/opt/homebrew/bin`, then `/usr/local/bin`.                                                                                                                               |
+| `FACTORY_CR_CLI_LIMIT_FALLBACK_MIN` | `60`    | Lane pause when the vendor rate-limits without a parseable `waitTime`.                                                                                                                                                        |
+
+The hold bound is per head commit, not per card. Normally one commit holds for at most `FACTORY_CR_HOLD_MAX_MIN` + `FACTORY_CR_CLI_TIMEOUT_MIN` (~105 min): a run started just before the hold cap, plus its timeout. If collecting that run keeps failing (the PR can't be read, posts keep failing, housekeeping throws), the card's hold on its own run ends 80 minutes past the run's deadline, so the absolute worst case is ~185 min. Each fix commit that converges starts a fresh `FACTORY_CR_HOLD_MAX_MIN` window, so a card that goes through two CLI rounds (`FACTORY_CR_CLI_MAX_RUNS_PER_CARD`) can sit in In Review for 3–4 h in total, plus the bot grace on any later commit.
+
+**Dry run.** Pass the phase explicitly. `factory-agent.sh` ignores `FACTORY_PHASE` in the environment (only `factory-agent-loop.sh` reads it) and defaults to Phase A, where `--watch` is a no-op that never reaches the lane:
+
+```bash
+FACTORY_CR_CLI=1 bash scripts/factory-agent.sh --watch --phase B --dry-run   # use the plist's current FACTORY_PHASE
+```
+
+Look for `CodeRabbit lane → promote (dry-run:<action>:<reason>)` lines. A dry run saves nothing, so the bot grace clock restarts on every tick: a commit with no CodeRabbit bot activity always reports `dry-run:hold:bot-grace`. `dry-run:start:gap:<state>` only shows for a commit where the bot left a rate-limit, skip or pause marker.
+
+**Inspecting and steering it:**
+
+```bash
+node scripts/lib/state-cli.mjs factory:cr-cli-status            # inFlight run, runs in the last hour, nextSlotAt, lane pause
+node scripts/lib/state-cli.mjs factory:cr-cli-pause-until <iso> "<reason>"  # pause the LANE only (not the factory)
+node scripts/lib/state-cli.mjs factory:cr-cli-resume            # lift a lane pause early (e.g. after re-auth)
+node scripts/lib/state-cli.mjs factory:get-issue <n>            # crCoverageSha / crCoverage / crLastCoveredSha / crCliRuns
+```
+
+A vendor rate-limit (`errorType:"rate_limit"`, with a `waitTime` such as "50 minutes") pauses **only this lane** until then. It never uses `factory:pause-until`, which would stop the whole factory.
+
+**What a lane pause does to cards.** A pause only stops new CLI runs. A converged card still holds for the bot (grace / in progress) and for a CLI run of its own that is already in flight; that run finishes and posts as usual. After that, the pause reason decides:
+
+- `rate_limited` / `action_required` (the pauses the lane sets itself on a vendor rate limit or billing-consent prompt): the card holds as `cli-paused` if the pause ends inside its `FACTORY_CR_HOLD_MAX_MIN` window, and otherwise promotes with coverage `budget`.
+- Anything else (`auth`, `doctor`, an operator's `factory:cr-cli-pause-until` reason, or a pause with no parseable end): the card promotes at once with coverage `cli-unavailable`.
+
+`factory:cr-cli-pause-until` is therefore not a way to stop cards holding. Use `FACTORY_CR_CLI=0` for that.
+
+**Where things live** (in the factory checkout, `/Volumes/DraftoFactory/drafto-factory`):
+
+- `logs/factory/cr-cli/<runId>/` — `meta.json` (binary, args, base commit, deadline), `events.ndjson` (the CLI's `--agent` event stream), `stderr.log`, and `exit.json` (`exitCode`, `signal`, `timedOut`, written when the run ends). Reaped after 30 days by the lane's housekeeping, which runs at the top of every `--watch` tick (the only retention rule for these dirs).
+- `worktrees/cr-cli-<issue>-<sha12>` — the detached checkout the CLI reviews. Removed when the run is processed; orphans are reaped by the next tick. A worktree is never reaped while a supervisor for it is still alive (a run dir's `meta.json` names the worktree, and a live process's command line carries that run id), even after its ledger entry was released; if the process table can't be read, every worktree a run dir claims is kept.
+
+**Killing a wedged run.** The supervisor runs the CLI in its own process group. `factory:cr-cli-finish` SIGTERMs that group itself — only when the run is still ours (the recorded pid is alive with the run id on its command line, or the supervisor has exited but members of its process group, i.e. the CLI, are still running, or the supervisor is mid-exit — `ps` then shows it as `(node)` on macOS, without its command line, and it counts as a live member itself until it is gone; a reused pid is left alone) — and waits up to `--wait-ms` (default 10 s) until no live member of the group is left. Only then does it release the ledger slot and report `killed:true|false`. Otherwise it changes nothing and prints `ok:false`, so the gate never starts a second, vendor-refused run on top of a still-connected CLI:
+
+- `supervisor-still-running` — the group ignored SIGTERM. `kill -KILL -<pid>` (negative pid = the whole group) and run the finish again.
+- `supervisor-unverifiable` — `ps` failed, so ownership couldn't be checked. Do **not** kill a process group blind: inspect it first (`ps -axo pid,pgid,stat,command | awk '$2 == <pid>'`), fix whatever blocks `ps`, and retry.
+
+This is also the manual escape hatch when you can't wait for the next tick's housekeeping:
+
+```bash
+node scripts/lib/state-cli.mjs factory:cr-cli-status           # note inFlight.pid, .runId, .worktree
+node scripts/lib/state-cli.mjs factory:cr-cli-finish <runId> --refund none   # SIGTERMs the group, waits, then frees the slot
+kill -KILL -<pid>                                              # ONLY on supervisor-still-running (negative pid = the whole group); then re-run finish
+```
+
+Leave the worktree to housekeeping: its reap skips a worktree until that run's supervisor has actually exited, then removes it.
+
+**Coverage values** (`crCoverage`, recorded per head SHA). The first three produce no In Test note; the rest add "CodeRabbit did not review `<sha12>` (…)":
+
+| `crCoverage`      | Meaning                                                                                                                                                                                                                                                         | What to do                                                                                                   |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `bot`             | The PR bot reviewed this commit.                                                                                                                                                                                                                                | Nothing.                                                                                                     |
+| `cli`             | The CLI reviewed it and posted findings, every thread-worthy one as a thread (plus the summary).                                                                                                                                                                | Nothing — the fix loop answers the threads.                                                                  |
+| `cli-empty`       | The CLI reviewed it and found nothing (or skipped it because there were no changes).                                                                                                                                                                            | Nothing.                                                                                                     |
+| `cli-partial`     | The CLI reviewed it, but some thread-worthy findings only reached the summary comment (thread cap, or GitHub rejected the comment), or fewer findings could be parsed than the CLI reported.                                                                    | Read the CLI summary comment on the PR; nothing acted on those findings.                                     |
+| `cli-failed`      | The CLI run errored, timed out, or died; it reported a failed review, or skipped the review for any reason other than no changes; reported findings none of which could be parsed; or its findings still couldn't be posted 70 minutes past the run's deadline. | Read `logs/factory/cr-cli/<runId>/stderr.log` and `events.ndjson`, and the `--watch` log for the post error. |
+| `budget`          | No CLI slot (hourly budget, or the lane's own rate-limit / billing-consent pause) would open inside the hold window.                                                                                                                                            | Nothing, unless it's frequent — then lower interactive CLI use or raise `FACTORY_CR_HOLD_MAX_MIN`.           |
+| `hold-expired`    | The card waited `FACTORY_CR_HOLD_MAX_MIN` without coverage (e.g. another card's run was in flight), or its own run still wasn't collected 80 minutes past the run's deadline.                                                                                   | Nothing; review the commit by hand if it matters.                                                            |
+| `cap-reached`     | This card already used `FACTORY_CR_CLI_MAX_RUNS_PER_CARD` CLI runs this stint.                                                                                                                                                                                  | Nothing.                                                                                                     |
+| `cli-unavailable` | No `coderabbit` binary, `coderabbit doctor` failing, or the lane is paused for any reason but a vendor rate limit or billing-consent prompt (`auth`, `doctor`, an operator pause).                                                                              | See "Re-auth" below, or lift an operator pause with `factory:cr-cli-resume`.                                 |
+
+**Never `--use-credits`.** That flag bills usage-based reviews once the included allowance is spent. The factory never passes it (a test scans `scripts/` for the string, and the supervisor re-checks the command it is about to spawn), and an `action_required` (on-demand billing consent) result is treated as an exhausted budget. Note that the spike's rate-limit error reported "Usage-based reviews are enabled" for the organisation even though `coderabbit usage` shows "Usage billing : inactive" (the account has no assigned seat, so it can't be charged today). Belt and braces: in the CodeRabbit dashboard (Subscription and Billing), disable usage-based reviews or set a $0 spending cap.
+
+**Re-auth.** If a run fails with an auth error, the lane pauses itself for 6 h and cards promote with `cli-unavailable`. Fix it on the Mac mini:
+
+```bash
+coderabbit auth status        # "Signed in"? which organisation?
+coderabbit auth login         # browser; re-writes ~/.coderabbit/auth.json
+coderabbit doctor             # all checks must pass
+node scripts/lib/state-cli.mjs factory:cr-cli-resume
+```
+
+Auth is a file, not the Keychain, so it keeps working from launchd after a headless reboot. If `doctor` fails on `Backend reachable` / `WebSocket reachable`, it's the network or the vendor — the lane's 60-minute `doctor` pause retries on its own.
+
+### Asking whether a PR was reviewed
+
+The lane records coverage in factory state, but a PR merged by hand has no card. This answers
+the same question from the PR alone, for any PR in this repo:
+
+```bash
+node scripts/lib/coderabbit-cli.mjs coverage --pr 628
+# {"covered":false,"source":null,"bot":"absent","cli":"absent",…,"reason":"nothing has reviewed this commit"}
+```
+
+Exit `0` when covered, `2` when it ran fine and the answer is no, `1` when it could not answer
+at all — a caller that cannot tell those apart fails open on an outage. `covered` is true for a
+bot review of the head commit or a completed CLI run (`COVERED_KINDS`); `cli-partial` is not
+coverage, because findings that only reached the collapsed summary never went in front of the
+fix loop.
+
+It is read-only — no ledger, no worktree, no CLI binary — and it is what the `/merge` skill
+calls before merging. Two states are worth knowing apart: `retryable: true` means a review is
+running right now and is worth waiting for, while `rate_limited` means waiting needs the hour
+to roll over.
+
+### Reviewing a hand-made PR with the CLI
+
+The lane only reviews factory cards. For a PR opened by hand whose head has not been covered by a review, run the same CLI review yourself ([ADR-0037](../adr/0037-manual-coderabbit-cli-review.md)):
+
+```bash
+node scripts/lib/coderabbit-cli.mjs review --pr 637 --repo-root "$PWD" \
+  --state-file /Volumes/DraftoFactory/drafto-factory/logs/factory-state.json --timeout-min 30
+# {"pr":637,"headSha":"…","ran":true,"reason":"reviewed","outcome":"ok","coverage":"cli","posted":{"inline":1,…}}
+```
+
+- **It waits.** A review takes minutes, so `/merge` starts it in the background.
+- **What it posts.** Findings go up as review threads plus a summary comment, exactly as the lane posts them, so `coverage` then reports `source: "cli"`.
+- **What it skips.** A head the bot reviewed or is reviewing, a head a CLI review already covered, and a PR that is no longer open.
+- **Always pass the factory's state file on the Mac mini.** The run then shares the lane's run log: it refuses to start (`cli-busy`, `cli-paused`, `cli-budget`) instead of colliding with a factory run, it uses up an hourly slot, and a vendor rate limit pauses the lane.
+- **While it runs**, `factory:cr-cli-status` shows an `inFlight` with `"manual": true` and the process's pid. Factory cards wait at `cli-busy`, and housekeeping leaves the run alone. If the process dies, the next `--watch` tick frees the slot. `factory:cr-cli-finish <runId>` frees it at once.
+- **Primary checkout's state file.** `logs/factory-state.json` there is not the factory's; the live one is in `drafto-factory`.
+
+## Browser runner (Claude in Chrome)
+
+The factory's only way into a browser ([ADR-0051](../adr/0051-factory-browser-runner.md)). `run_browser_task` in `scripts/factory-agent.sh` starts a `claude -p --chrome` session, the one claude call that doesn't pass `--no-chrome`, locked down like this:
+
+- **Tools:** `--permission-mode dontAsk --tools ""` and an allowlist of Chrome tools, so no Bash, files, `gh` or subagents.
+- **Isolation:** `--setting-sources "" --strict-mcp-config` drops your user settings, plugins, `~/.claude/CLAUDE.md` and the claude.ai connectors from its session.
+- **Guard:** a generated `--settings` file wires in `scripts/lib/browser-guard.mjs` (see [claude-code-hooks.md](./claude-code-hooks.md#the-browser-runners-guard-generated-not-committed)).
+- **Prompt:** `scripts/factory-browser-prompt.md`, fed on stdin.
+- **Working directory:** an empty temp dir outside the repo.
+
+The runner drives **this Mac mini's own Chrome profile** — your real sign-ins — so it never gets more than this.
+
+It has two uses, the **kinds** in `FACTORY_BROWSER_KINDS`. Both run the `### Web` section of the factory's own scenario for the head commit, the same way:
+
+- **`verify`, the Testing column's browser lane** ([ADR-0053](../adr/0053-pre-in-test-verification-stage.md)). For web cards in Testing, with `FACTORY_VERIFY=1`. It posts nothing: its result goes into the verification report the card gets at In Test. See "Pre-In-Test verification (Testing)" and [factory-verification.md](../features/factory-verification.md#the-browser-lane).
+- **`intest`, the In Test web run.** For cards in In Test whose diff touches `apps/web`. It posts one report comment. It skips a commit the verify lane already reported on, so it is the fallback for a commit that lane couldn't report on.
+
+How they run:
+
+- **Candidates:** the `--watch` sweeps list them in `logs/factory-browser-candidates`, one `<kind>:<issue>:<pr>:<sha>` line each, `verify` lines first (a bare `<issue>:<pr>:<sha>`, the old format, reads as `intest`). The `--browser` mode, which the loop runs last after `--release`, re-checks each against its own column (Testing or In Test) and runs at most one per tick, `verify` first. Its log is `logs/factory/factory-agent-browser-<date>.log`.
+- **Where:** on that commit's own preview, found through the GitHub Deployments API (`vercel[bot]`, state `success`), signed in as the factory's dev-database test account.
+- **What gets posted:** for `intest`, one report comment; for `verify`, nothing. A FAIL doesn't move the card.
+- **How often:** each head SHA gets two attempts, shared by both kinds, and a new commit re-arms it. A run that fails on the browser's side gives its attempt back: unavailable, auth-expired, guard-not-loaded, or a session limit. A timeout or an error keeps it.
+- **Sign-in lease:** the run mints its one-time sign-in link under the sign-in lease it shares with the verification shell lane (see "The sign-in lease" below), after every cheap check. If the shell lane holds it, the run is deferred to the next `--browser` tick: no attempt spent, no health result, nothing written or posted.
+
+| Var                               | Default                                   | Purpose                                                                                                                                                                                                                                                                                                                                                             |
+| --------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FACTORY_BROWSER`                 | `1`                                       | Master switch; `0` turns the runner off. Anything but `0`/`1` falls back to `0`.                                                                                                                                                                                                                                                                                    |
+| `FACTORY_BROWSER_KINDS`           | `intest,verify`                           | Comma list of live uses: `intest` (the In Test web run) and `verify` (the Testing column's browser lane, inert while `FACTORY_VERIFY=0`). Unknown words are dropped with a warning.                                                                                                                                                                                 |
+| `FACTORY_BROWSER_DEVICE_ID`       | `9796912b-8977-4d74-9c08-d9bb283b9496`    | The only browser the guard lets the runner select: this Mac mini's Chrome, never the MacBook's. A malformed value turns the runner off.                                                                                                                                                                                                                             |
+| `FACTORY_BROWSER_TIMEOUT_SEC`     | `900`                                     | Wall cap per runner session.                                                                                                                                                                                                                                                                                                                                        |
+| `FACTORY_SIGNIN_LEASE_SEC`        | `300`                                     | How long a browser run holds the sign-in lease from its mint (see "The sign-in lease"). The runner opens its link early in its session, so a few minutes is enough. It is released when the run ends anyway. Positive integer; a bad value falls back to `300`. Above 360 the shell lane, which waits at most 6 minutes, gives up first and runs without a session. |
+| `FACTORY_BROWSER_ACCOUNT_FILE`    | `~/drafto-secrets/browser-account.env`    | `FACTORY_BROWSER_EMAIL=` / `FACTORY_BROWSER_PASSWORD=` of the test account. Must be mode `600`; read by node, never sourced. Without it the runner doesn't start. The runner itself gets only the email; the password is used for the secret scan.                                                                                                                  |
+| `FACTORY_BROWSER_SIGNIN_KEY_FILE` | `~/drafto-secrets/dev-supabase-admin.env` | `DEV_SUPABASE_URL=` / `DEV_SUPABASE_SERVICE_ROLE_KEY=` of the **dev** project. Mode `600`. The factory uses it only to mint the runner's one-time preview sign-in link (`browser-signin.mjs`); minting refuses any other project. Never reaches the runner. Operators also read it via `pnpm test:live:supabase`, in interactive sessions only.                     |
+
+### One-time setup
+
+1. **Chrome and the extension.** Chrome runs on the Mac mini with the Claude in Chrome extension signed in. From an interactive session, `list_connected_browsers` lists `9796912b-…` with `isLocal: true`.
+2. **Vercel login.** Open any current Vercel preview in that Chrome. It should load the app directly, not Vercel's login page. The runner relies on this session to get past preview protection.
+3. **A test account in the dev project.** Create it in `huhzactreblzcogqkbsd`, **never prod**: sign up as `jakub+factory-browser@anderwald.info` on a preview or on `localhost:3000`. Then approve it in the dev project's SQL editor:
+   ```sql
+   update public.profiles set is_approved = true
+   where id = (select id from auth.users where email = 'jakub+factory-browser@anderwald.info');
+   ```
+   It's a separate account from the CI E2E user (`E2E_TEST_EMAIL`), so the runner's test data never collides with CI's.
+4. **The account file.** Write it with an editor rather than `echo`, which would leave the password in shell history:
+   ```bash
+   # ~/drafto-secrets also holds the factory's other secrets (support-env.sh, zoho-oauth.json)
+   $EDITOR ~/drafto-secrets/browser-account.env   # FACTORY_BROWSER_EMAIL=… / FACTORY_BROWSER_PASSWORD=…
+   chmod 600 ~/drafto-secrets/browser-account.env
+   node scripts/lib/browser-report.mjs account-check --account-file ~/drafto-secrets/browser-account.env   # prints ok
+   ```
+5. **The dev sign-in key.** The runner signs in on a preview by opening a one-time link, because Claude in Chrome won't type a password there (ADR-0051). Minting that link needs the **dev** service-role key. Fetch it with the Supabase CLI login rather than copying it by hand:
+   ```bash
+   # writes ~/drafto-secrets/dev-supabase-admin.env (mode 600); prints nothing secret
+   TOKEN=$(security find-generic-password -s "Supabase CLI" -a supabase -w | sed 's/^go-keyring-base64://' | base64 -D)
+   curl -s "https://api.supabase.com/v1/projects/huhzactreblzcogqkbsd/api-keys?reveal=true" -H "Authorization: Bearer $TOKEN" \
+     | jq -r '"DEV_SUPABASE_URL=https://huhzactreblzcogqkbsd.supabase.co\nDEV_SUPABASE_SERVICE_ROLE_KEY=" + ([.[] | select(.name=="service_role")][0].api_key)' \
+     > ~/drafto-secrets/dev-supabase-admin.env && chmod 600 ~/drafto-secrets/dev-supabase-admin.env; unset TOKEN
+   ```
+   The web app's `/auth/test-sign-in` route must be on the PR's branch: it is on every branch cut after ADR-0051 landed. The factory skips older branches and notes it on the issue.
+6. **Nothing to switch on.** The runner is on by default (`FACTORY_BROWSER=1`, `FACTORY_BROWSER_KINDS=intest,verify`), so the next tick after steps 1–5 runs it. To turn it off, set `FACTORY_BROWSER=0` in the plist's `EnvironmentVariables`, then `launchctl unload`/`load` it.
+
+### What a run leaves behind
+
+- **Run directory:** `logs/factory/browser/issue-<n>-<sha12>-<timestamp>/` (`…-<sha12>-verify-<timestamp>/` for a verify run) holds:
+  - `runner-output.txt`, the runner's whole reply (the verification report reads a verify run's from here);
+  - `comment.md`, exactly what was posted, for an In Test run; `section.md` for a verify run, the same scanned and defanged report with no markers, never posted;
+  - `render.json`, the parsed status, verdict and secret-scan result;
+  - `evidence/`, the screenshots the guard copied, mode 700;
+  - `guard-config.json` and `guard-settings.json`, the config and the generated settings;
+  - `guard-state/`, the per-session tab and selection state.
+- **Decision log:** `logs/factory/browser-guard/<session-id>.jsonl` has every guard decision (tool, tab, URL, allow/deny and why), never the values typed into forms.
+- **Retention:** both are reaped after 30 days.
+- **Orphaned tabs:** a runner killed mid-run leaves its tabs open in Chrome in an orphaned tab group. Close them by hand.
+- **The lease file:** `logs/factory/factory-signin.lease` exists only while a run holds the sign-in lease (see below).
+
+### The sign-in lease
+
+Supabase keeps one live magic-link token per user, so a newer mint invalidates an older link that hasn't been opened yet. The browser runner and the verification shell lane both sign in to previews as the same test account. The runner opens its link a minute or more after `browser_run` mints it. The shell lane runs detached and can overlap a `--browser` run. If the shell lane mints in that gap, the runner's link is dead and the run ends `signin-failed`, spending an attempt and adding a health strike. Two of those email you "browser checks failing", a false alarm.
+
+So both minters take one lease first: `logs/factory/factory-signin.lease`, a small JSON file (`{owner, pid, acquiredAt, until, nonce}`) that `scripts/lib/browser-signin.mjs` hard-links into place, so of two minters only one gets it. Once a lease's `until` has passed, the next minter takes it over: it moves exactly that lease aside (putting back anything that changed since it read it) and links its own in. Release removes the lease the same way, and only for its owner. If the lease file can't be used at all (the directory isn't writable), minting goes ahead without it, as before the lease existed, with `browser-signin: WARNING: the sign-in lease couldn't be used …` in the log (the browser log, or the shell run's `supervisor.log`). That isn't a health strike.
+
+- **The browser run** takes it as `browser:<kind>:<issue>:<sha12>` for `FACTORY_SIGNIN_LEASE_SEC` (300 s), and releases it when the runner is done, on every exit path. If the `--browser` process dies mid-run, its exit trap releases it too. If the lease is busy, the log says `the preview sign-in lease is held (<owner> until <time>); browser run (<kind>) deferred to the next --browser tick`, and nothing else happens. A verify lane stays pending and `--watch` queues it again.
+- **The shell lane** takes it as `shell:<issue>:<sha12>` for 120 s, from its mint to the end of its curl exchange, and releases it at once (the hold covers the mint's 30-second request cap and the exchange's 45-second one, so it can't run out mid-exchange). While a browser run holds it, the lane polls every 5 s for at most 6 minutes, or until 2 minutes before the run's deadline if that comes first. Its `supervisor.log` says `the preview sign-in lease is held …; waiting up to <n>s`. If the lease is still held after that, the run goes on without a preview session: tests only, signed-in API steps listed as manual, and `signin-busy` as a coverage gap in the report. A run stopped during the wait records `stopped` instead.
+
+**A stale lease file.** A lease nobody released, because a process was killed with `SIGKILL` or the Mac mini restarted mid-run, **expires on its own** at its `until`. After that the next minter takes it over; before then the factory removes it only for its owner. Until it expires, browser runs keep deferring and shell runs wait, then run without a session. To clear it early, check that no `--browser` run or shell-lane run is in flight (`pgrep -fl "factory-agent.sh --browser"`, `node scripts/lib/state-cli.mjs factory:verify-status`), then remove it:
+
+```bash
+cat logs/factory/factory-signin.lease        # who holds it, and until when
+node scripts/lib/browser-signin.mjs release --lease-file logs/factory/factory-signin.lease --owner '<owner>'
+# or, with nothing in flight: rm logs/factory/factory-signin.lease
+```
+
+### Health and triage
+
+The runner never pauses the factory. `scripts/lib/browser-health.mjs` tracks results in `factory-state.json` → `browser`, and emails the operator after two bad results in a row and again on recovery. Check it with `node scripts/lib/state-cli.mjs factory:browser-status`.
+
+| Result                               | Meaning                                                                                                            | Fix                                                                                                                                                                        |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `preflight:chrome-not-running`       | Chrome isn't running in the factory's macOS account. Another account's Chrome (fast user switching) doesn't count. | Open Chrome in the factory's account.                                                                                                                                      |
+| `preflight:account-*`                | The account file is missing, not a file, readable by others (`mode`), or lacks a key.                              | Fix the file (setup step 4).                                                                                                                                               |
+| `unavailable`                        | The pinned browser isn't connected, or Chrome tools failed before any step ran.                                    | Sign the Mac mini's Claude in Chrome extension back in.                                                                                                                    |
+| `auth-expired`                       | The preview showed a Vercel (or other) login page.                                                                 | Open a preview in Chrome on the Mac mini and sign in to Vercel.                                                                                                            |
+| `signin-failed`                      | The one-time sign-in link didn't sign the runner in on the preview.                                                | Check the preview uses dev Supabase and the test account still exists and is approved. (A branch without `/auth/test-sign-in` is skipped before the run; see below.)       |
+| `preflight:signin-key-*`             | The dev sign-in key file is missing, not a file, or readable by others.                                            | Recreate it (setup step 5).                                                                                                                                                |
+| `preflight:signin-mint`              | Dev Supabase refused to mint the link (bad key, unknown test account).                                             | The reason is in `logs/factory/factory-agent-browser-<date>.log`.                                                                                                          |
+| `blocked`                            | The runner stopped on purpose: suspected injection in the scenario or a page. The report says why.                 | Read the report on the issue.                                                                                                                                              |
+| `malformed` / `timeout` / `error`    | No parseable status line, the wall cap was hit, or claude exited non-zero.                                         | Read `runner-output.txt` and `logs/factory/factory-agent-browser-<date>.log`.                                                                                              |
+| `guard-not-loaded` (runner disabled) | The guard's SessionStart record is missing: `claude -p` silently dropped the settings file. The runner is now off. | Check `guard-settings.json` against the current Claude Code settings schema, then `node scripts/lib/state-cli.mjs factory:browser-reset`. The runner stays off until then. |
+
+**A Testing card's browser lane.** A verify run never comments on the issue; its result is the card's `verifyBrowser` (`node scripts/lib/state-cli.mjs factory:get-issue <n>`), and the verification report shows it as the Web row. The lane ends at once on anything waiting can't fix, so the card isn't held to the hold cap:
+
+| `verifyBrowser` (after the SHA)                                                                                                                                 | Meaning                                                                                                                                                                                    | Fix                                                                                                          |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `reported:<verdict>`                                                                                                                                            | It ran. The report has its table.                                                                                                                                                          | None.                                                                                                        |
+| `unavailable:chrome-not-running`, `runner-disabled`, `account`, `signin-key`, `signin-mint`, `chrome`, `auth-expired`, `guard`, `session-limit`, `runner-start` | The operator's side, the same causes as the matching results above. The attempt was refunded.                                                                                              | Fix it as above. The card goes on to In Test without a browser verdict, and its In Test run is the fallback. |
+| `unavailable:signin-failed`                                                                                                                                     | The sign-in link didn't sign the runner in.                                                                                                                                                | As `signin-failed` above.                                                                                    |
+| `unavailable:runner-error`, `malformed`, `attempts`                                                                                                             | claude failed or printed no status line on the commit's last attempt, or the attempts were already spent.                                                                                  | Read `runner-output.txt` and the browser log.                                                                |
+| `timeout`                                                                                                                                                       | The session hit `FACTORY_BROWSER_TIMEOUT_SEC`. The In Test run may use the attempt that's left.                                                                                            | Read the run's guard log for where it stalled.                                                               |
+| `stale-branch`                                                                                                                                                  | The PR head predates `/auth/test-sign-in`. No session, no strike; the report says to update the branch.                                                                                    | **Update branch** on the PR.                                                                                 |
+| `no-preview`                                                                                                                                                    | Still no successful preview deployment of the head `FACTORY_VERIFY_PREVIEW_WAIT_MIN` after the lane first found none (`waiting-preview:<iso>` until then).                                 | Check the Vercel integration; the In Test run runs once the preview exists.                                  |
+| `skipped:not-web`, `browser-off`, `no-scenario`, `no-web-steps`, `already-run`                                                                                  | No `apps/web/` or `packages/shared/` change; `FACTORY_BROWSER` or `FACTORY_BROWSER_KINDS` leaves `verify` out; there's nothing to run; or the In Test run already reported on this commit. | None, unless the runner was meant to be on.                                                                  |
+
+A PR that reaches the web app only through `packages/shared/` (which the web app imports) does get a verify run, but no In Test run: the In Test platforms read `apps/web/` only. So when its lane ends without a report, the verification report lists its Web steps for you to do by hand.
+
+**No report on the issue, for a reason other than the above.** The issue gets no comment for `unavailable`, `auth-expired`, `signin-failed` or `malformed`. The first three are the operator's to fix and the email says so; a `malformed` run simply tries again on the next attempt. A scenario without a `### Web` section is recorded as done for that commit and never run. A PR whose head doesn't have `apps/web/src/app/auth/test-sign-in/route.ts` (a branch cut before ADR-0051 landed) is caught by a GitHub contents API check just before the sign-in link is minted: it gets no browser session and no health strike, and the issue gets one note per commit (`drafto-factory-browser-stale-branch:<sha12>`) asking for `main` to be merged into the branch with **Update branch** (not "Update with rebase", which diverges from the factory's worktree). The commit is recorded only once that note is posted, and the next head re-arms the check. If GitHub can't answer, or answers "No commit found", the run goes ahead. The factory fast-forwards its own worktree to the updated branch the next time it resumes the card (`worktree-cli.mjs add --fetch`). A withheld report means the runner's output matched a secret pattern. The posted notice names the pattern, and the full output stays in the run directory.
+
+**Re-running a commit by hand.** After fixing the browser, re-arm the card for its current head, and the next `--watch` tick runs it:
+
+```bash
+node scripts/lib/state-cli.mjs factory:set-issue-field <n> browserRunAttempts ""
+node scripts/lib/state-cli.mjs factory:set-issue-field <n> browserRunSha ""
+node scripts/lib/state-cli.mjs factory:set-issue-field <n> verifyBrowser ""   # a card still in Testing
+```
+
+For a card still in Testing, `factory:verify-reset <n>` instead restarts its whole round, browser fields included.
+
+## Pre-In-Test verification (Testing)
+
+A factory-owned **Testing** column between In Review and In Test ([ADR-0053](../adr/0053-pre-in-test-verification-stage.md), [factory-verification.md](../features/factory-verification.md)). With `FACTORY_VERIFY=1`, a converged In Review card moves to Testing instead of In Test. The scenario is written and the betas dispatched there. The Testing sweep in `--watch` works the verification lanes, then moves the card to In Test with one report comment. Verification is evidence, never a gate. Both lanes are built: the **shell lane** (see "The shell lane" below) and the **browser lane**, the browser runner's `verify` kind (see "Browser runner (Claude in Chrome)" → "A Testing card's browser lane"). The card is promoted once both lanes have a result, or at the hold cap.
+
+### Settings
+
+All in the launchd plist. A bad value warns in the launchd log and falls back to its default.
+
+| Setting                            | Default                              | What it does                                                                                                                                                                                                                                                                                                                                                                                          |
+| ---------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FACTORY_VERIFY`                   | `0`                                  | The master switch and kill switch. Off: cards go straight to In Test, and the Testing sweep only drains the column.                                                                                                                                                                                                                                                                                   |
+| `FACTORY_VERIFY_LANES`             | `shell,browser`                      | Which lanes run. Unknown words are dropped. Set it empty for no lanes: scenario and betas still move to Testing, and the card is promoted on the next sweep.                                                                                                                                                                                                                                          |
+| `FACTORY_VERIFY_ONLY_LABEL`        | (none)                               | Canary: only issues with this label enter Testing. A label the factory can't match exactly (comma, newline, leading or trailing blank) turns verification off.                                                                                                                                                                                                                                        |
+| `FACTORY_VERIFY_HOLD_MAX_MIN`      | `60`                                 | Longest stay in Testing, from the start of the card's round. At the cap the card is promoted, lanes still running or not.                                                                                                                                                                                                                                                                             |
+| `FACTORY_VERIFY_SHELL_TIMEOUT_MIN` | `30`                                 | Per-run cap for the shell lane: install, sign-in, the claude session and key revocation.                                                                                                                                                                                                                                                                                                              |
+| `FACTORY_VERIFY_MAX_ATTEMPTS`      | `2`                                  | Shell-lane runs per commit. A run the factory stops itself gives its attempt back: a push, a closed PR, a session limit, verification switched off, or the factory moving the card out of Testing (`verify_shell_stop`). A run housekeeping kills because the card lost `status:testing` some other way, such as a drag by hand, keeps it spent, so a label that disagrees with the board can't loop. |
+| `FACTORY_VERIFY_BOUNCE_MAX`        | `2`                                  | Hand-backs to In Review per commit for open review threads (the other hand-back reasons don't count). `0` never hands back for threads. Past it the card carries on, and `--release` still refuses the merge.                                                                                                                                                                                         |
+| `FACTORY_VERIFY_PREVIEW_WAIT_MIN`  | `10`                                 | How long the lanes wait for the commit's Vercel preview. After that the shell lane runs without one (tests only, API steps listed as manual), and the browser lane, which counts from when it first found none (GitHub errors don't count), ends as `no-preview`.                                                                                                                                     |
+| `FACTORY_VERIFY_BYPASS_FILE`       | `~/drafto-secrets/vercel-bypass.env` | The Vercel protection-bypass secret for the shell lane's curl against previews. A missing or unusable file (not mode 600, no key) means the lane runs without it, and the report says so.                                                                                                                                                                                                             |
+
+### One-time setup
+
+1. **Board and label.** Follow "Changing the board's Status options": `scripts/setup-factory-labels.sh` adds `status:testing`, and `scripts/setup-factory-board.sh` adds the Testing option without losing any card's Status. Until both exist, the factory logs a WARNING once per tick and sends cards straight to In Test.
+2. **Bypass secret** (needed by the shell lane's API checks). In the Vercel dashboard, go to the project → **Settings** → **Deployment Protection** → **Protection Bypass for Automation**, and create a secret. **Never use `vercel curl`**: it creates a bypass secret of its own without telling you. Then, on the Mac mini:
+
+   ```bash
+   read -rs VERCEL_SECRET
+   (umask 077 && printf 'VERCEL_AUTOMATION_BYPASS_SECRET=%s\n' "$VERCEL_SECRET" > ~/drafto-secrets/vercel-bypass.env)
+   unset VERCEL_SECRET
+   chmod 600 ~/drafto-secrets/vercel-bypass.env
+   cd /Volumes/DraftoFactory/drafto-factory && node scripts/lib/verify-lane.mjs bypass-check
+   ```
+
+   `read -rs` keeps the secret out of the shell history and off the screen; paste it and press Enter. `bypass-check` prints `{"ok":true,…}` (exit 0) when the file is a regular file, mode 600 or stricter, with a well-formed `VERCEL_AUTOMATION_BYPASS_SECRET`; otherwise `ok:false` and the `problem` (`missing`, `mode`, `no-key`, `empty`, `malformed`), exit 2. It never prints the value. The report scans every lane's output for the secret and for the bypass header names, and withholds a lane that prints either.
+
+3. **Canary.** Create the label once (`gh label create factory-verify --repo JakubAnderwald/drafto`), set `FACTORY_VERIFY=1` and `FACTORY_VERIFY_ONLY_LABEL=factory-verify` in the plist, and reload. File a small web issue with that label (`gh issue create --project "Drafto Factory" … --label factory-verify`), then watch it go In Review → Testing → In Test. Drop the label gate after several clean runs.
+
+### What a round looks like
+
+- **Entry** (`verify_enter`): the card moves to Testing first. Then `verifySha`, `verifyStartedAt` and `verifyCrNote` are set, and `lastFeedbackAt` too if it was empty. Betas are dispatched (from the plain platforms) and the scenario is written with the Testing title and the verification platforms, where a `packages/shared/` change counts as web (`derive-platforms --verify`), so a shared-only PR gets the `### Web` section the browser lane walks. Attempts and the CodeRabbit run cap aren't reset here; that happens at the move to In Test. If the move to Testing fails, the card is promoted to In Test as before.
+- **The sweep** (`verify_sweep`, every tick, oldest issue first) logs `Issue #N: Testing → <action> (<reason>)`. `verify-decide.mjs` picks the action:
+
+| Action       | Reasons                                                                  | What happens                                                                                                                                                                                                                                |
+| ------------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `skip`       | `pr-merged`, `pr-closed`, `pr-unknown`                                   | Nothing. The card waits for you.                                                                                                                                                                                                            |
+| `promote`    | `verification-off`, `feedback`, `lanes-done`, `hold-cap`, `decide-error` | Report composed, card moved to In Test, report posted once, attempts and `crCliRuns` reset.                                                                                                                                                 |
+| `hand-back`  | `head-moved`, `ci-red`, `not-reviewed`, `threads`                        | Back to In Review (a `threads` one also bumps `verifyBounces`), one comment per commit and reason (`drafto-factory-verify-handback:<sha12>:<reason>`).                                                                                      |
+| `init`       | `no-round`, `new-round`                                                  | A round starts for the head (a card dragged in, or the revision no-op path). Betas are checked; the scenario is written if this commit has none.                                                                                            |
+| `wait`       | `ci-pending`, `threads-unknown`, `head-unknown`                          | Nothing this tick. The hold cap still applies.                                                                                                                                                                                              |
+| `work-lanes` | `lanes-pending`                                                          | Betas re-checked, and the lanes started or polled: the shell lane (`verify_shell_work`) starts its run; the browser lane (`verify_browser_work`) queues a `verify` candidate for `--browser`, or ends at once (no web changes, runner off). |
+
+- **The report** is composed into `logs/factory/verify/report-<issue>-<sha>.md`, with the scenario it was built from beside it, and kept for 30 days. If posting fails, the In Test sweep tries again 10, 20 and 30 minutes after it was composed (4 failed attempts per commit in all, counted in `verifyReportPosts`). If the composer fails, a minimal "INCOMPLETE: couldn't be composed" notice goes out instead, with the same markers.
+
+### The shell lane
+
+A detached claude session that runs the scenario from a terminal: targeted tests, the scenario's command steps, the macOS `--preflight` (ADR-0043) and API / MCP checks against the commit's preview. `scripts/lib/verify-lane.mjs`, guarded by `scripts/lib/verify-guard.mjs`, prompt `scripts/factory-verify-prompt.md`. It never blocks a tick: `--watch` starts it (`verify_shell_work`), collects it at the top of the next ticks (`verify_shell_housekeeping`), and stops it when the card leaves Testing (`verify_shell_stop`).
+
+- **One run at a time, factory-wide** (the `verify` ledger in the state file), under `nice -n 10`. A start is refused (and retried next tick) under memory pressure (`kern.memorystatus_vm_pressure_level` ≥ 2), with less than `FACTORY_MIN_FREE_DISK_GB` free, or while another card's run holds the lane; the card's shell row then reads `deferred:<why>`, which the report shows as `skipped: <why>` if the hold cap comes first. A run never outlives the hold cap: its deadline is cut to it, and none starts with less than 10 minutes of the round left (`hold-cap-near`).
+- **Where it runs:** a fresh detached worktree, `worktrees/verify-<issue>-<sha12>`, with `node_modules` cloned from the factory checkout and `pnpm install --frozen-lockfile --prefer-offline`. Never the card's slot worktree (its `.env.production` files), and no env file copied in. The PR's own code (its install scripts, the tests the lane runs) runs with the factory user's access, as it does in the implement and fix stages: the guard governs what the model asks for, not what the PR's code does.
+- **What it may do:** `claude -p --no-chrome --strict-mcp-config --setting-sources "" --settings <guard> --permission-mode dontAsk --tools Bash,Read,Grep,Glob`. Never `--chrome`, never `--dangerously-skip-permissions`. The environment is an allowlist (no GH, Vercel or Supabase tokens), `GH_CONFIG_DIR` points at an empty directory, and the guard denies `gh`, `claude`, `vercel`, `supabase`, git writes, installs, releases, `node scripts/…`, secrets paths and any curl but http(s) to localhost. See [claude-code-hooks.md](claude-code-hooks.md#the-verification-lanes-guard).
+- **The preview, only through `preview-curl`:** a wrapper on the session's PATH that pins the commit's preview origin and reads the bypass header and the test account's session cookie from `private/curl.cfg` (mode 600). The secret is never in the prompt, the environment or a command line, so it stays out of the transcript. That isn't a wall against a session that sets out to read it ([claude-code-hooks.md](claude-code-hooks.md#the-verification-lanes-guard)). The session comes from the same one-time link the browser runner uses (`browser-signin.mjs`), exchanged by the supervisor with curl. A branch that predates `/auth/test-sign-in` gets no session; the report says so.
+- **The sign-in lease:** the supervisor mints under the lease it shares with the browser runner (`verify_shell_work` passes `--signin-lease-file`, kept in `meta.json`). It holds the lease for 120 s and releases it right after the exchange. While a browser run holds it, the supervisor waits, polling every 5 s, for at most 6 minutes and never into the run's 2-minute cleanup reserve. A stop or SIGTERM ends the wait at once (`facts.session` = `stopped`). Still held after that: no session (`facts.session` = `signin-busy`), tests only, and the report lists the gap. See "Browser runner (Claude in Chrome)" → "The sign-in lease".
+- **API keys:** the lane may create one, named with its run's tag (`factory-shell-<issue>-<sha7>-<HHMMSS>…`). After the session the supervisor revokes the keys carrying that tag, plus any `factory-shell-` key created before the run started (left by a run that was killed before its own cleanup). It never touches a newer run's key, so a stopped run still cleaning up can't break the next card's MCP checks.
+- **Results** (`verifyShell` = `<sha>:<state>`): `reported:<verdict>`; `timeout`; `unavailable:install|guard|error|no-result|lost|claude-missing|…` (the last three only once attempts are spent; before that `retry:<why>`, which the report shows as `skipped: … and the hold cap came before another attempt` if the cap comes first); `skipped:attempts`; `deferred:session-limit` (the factory is paused until the reset and the attempt refunded). A run whose guard didn't load (no SessionStart canary, tool calls with no guard record, or a guard log that can't be read) is `unavailable:guard` and **pauses the lane for 24 hours**: find out why, then `node scripts/lib/state-cli.mjs factory:verify-resume`.
+- **Kills:** housekeeping SIGTERMs the run's process group when the PR's head moves, the PR closes or the card loses `status:testing`, and once it is 10 minutes past its deadline (SIGKILL at 20; recorded as `timeout`). A reservation whose tick died before the supervisor was attached is released after 5 minutes, and a supervisor found running for it (by its run id in the process table) is stopped first.
+
+Each run has a directory, `logs/factory/verify/<issue>-<sha12>-<timestamp>/` (mode 700, reaped after 30 days):
+
+| File                                       | What it is                                                                                                       |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `meta.json`                                | What `start` decided: worktree, deadline, session id, binaries, secret-file **paths** (never values), lane facts |
+| `prompt.md`, `bundle.json`                 | The prompt and the bundle (`factory_verify_shell`: the scenario sections, files, platforms, preview origin)      |
+| `guard-config.json`, `guard-settings.json` | The guard's config and the `--settings` file; `guard/<session>.jsonl` is its decision log                        |
+| `supervisor.log`, `install.log`            | The supervisor's own log and the pnpm output                                                                     |
+| `shell-output.txt`, `claude-stderr.log`    | The session's report (what the report composer reads) and claude's stderr                                        |
+| `bin/preview-curl`                         | The wrapper                                                                                                      |
+| `exit.json`                                | How it ended: exit code, timeout, termination, install / session / bypass facts, guard counts, keys revoked      |
+| `private/` (`curl.cfg`, `cookies.txt`)     | Only while the run is live. Removed at the end, and by housekeeping if the supervisor was killed                 |
+
+To stop a run by hand: `node scripts/lib/state-cli.mjs factory:verify-status` for its run id, then `factory:verify-finish <runId> --refund attempt`. Housekeeping removes its worktree on the next tick.
+
+### Triage
+
+| Symptom                                             | Look at                                                                                                                                                                                                                                                                                                                                              |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cards skip Testing with `FACTORY_VERIFY=1`          | The `--watch` log for `no Testing column` or `no status:testing label` (setup step 1), or the canary label missing on the issue. A commit that already has a posted report goes straight to In Test.                                                                                                                                                 |
+| A card sits in Testing                              | Its `Testing → wait/skip/work-lanes` lines. `skip (pr-merged)` is yours to move. Anything else ends at the hold cap. For the browser lane, `factory:get-issue <n>` → `verifyBrowser` and the `--browser` log (see "A Testing card's browser lane").                                                                                                  |
+| A card keeps bouncing between Testing and In Review | The hand-back comments. Each bounce is about the commit (CI, review, threads). The fix budget isn't reset on the way in, so a loop ends in Blocked.                                                                                                                                                                                                  |
+| No report on an In Test card that came from Testing | `factory:get-issue <n>` → `verifyReportSha`, `verifyReportPosts`, and the body in `logs/factory/verify/`. After 4 failed attempts (the promotion's, then retries 10, 20 and 30 minutes after composing), post it by hand: `gh issue comment <n> --body-file <that file>`.                                                                            |
+| Shell lane `deferred:*` or never starting           | The `--watch` log's `verification shell lane not started (<reason>)` lines. `busy`: another card's run (`factory:verify-status`). `memory` / `disk`: the Mac mini (beta builds running?). `lane-paused`: `factory:verify-status` → `pausedReason`.                                                                                                   |
+| Shell lane `unavailable:guard` (lane paused)        | The run dir's `guard/<session>.jsonl` (no `session-start` record means claude dropped the settings file) and `claude-stderr.log`. A claude update can change the settings schema. Fix, then `factory:verify-resume`.                                                                                                                                 |
+| Shell lane `unavailable:install`                    | The run dir's `install.log`. Usually a lockfile the offline store can't satisfy; the next commit gets a fresh run.                                                                                                                                                                                                                                   |
+| Report says no bypass secret / no session           | `node scripts/lib/verify-lane.mjs bypass-check`; the run dir's `exit.json` → `facts.session` (`signin-failed`: the branch predates `/auth/test-sign-in` or the test account is gone; `protected`: Vercel's SSO answered, so the bypass secret is wrong; `signin-busy`: a browser run held the sign-in lease past the wait, see "The sign-in lease"). |
+| Shell report withheld                               | The run's `shell-output.txt` printed something secret-shaped (the report names the pattern). The lane's text stays on the Mac mini.                                                                                                                                                                                                                  |
+| A lane's text says "withheld"                       | The lane printed something that matched a secret pattern, or a secret file was unreadable. Read the lane's local output; the report names the pattern, never the match.                                                                                                                                                                              |
+
+### The ledger and its commands
+
+The stage keeps a `verify` ledger in `factory-state.json`. Like the CodeRabbit lane, it allows one shell-lane run in flight at a time across the whole factory, and has a lane-only pause. Each card gets `verify*` fields for its current round, the one for `verifySha`:
+
+- **Keyed by commit** (a push re-arms them): the lane results `verifyShell` and `verifyBrowser` (`<sha>:<state>[:<verdict>]`), the counters `verifyShellAttempts`, `verifyBounces` and `verifyReportPosts` (`<sha>:<count>`), the CodeRabbit note the card carried in, `verifyCrNote` (`<sha>:<note>`), and `verifyReportSha`.
+- **Not keyed by commit:** `verifyStartedAt`, the hold-cap anchor, and the run directories `verifyShellRunDir` and `verifyBrowserRunDir`. They only mean something while `verifySha` is the card's head; a new round overwrites them.
+
+```bash
+node scripts/lib/state-cli.mjs factory:verify-status                       # in-flight run, lane pause, every card's verify* fields
+node scripts/lib/state-cli.mjs factory:verify-finish <runId>               # stop a stuck run, then free the lane
+node scripts/lib/state-cli.mjs factory:verify-pause-until <iso> "<reason>" # pause the LANE only (not the factory)
+node scripts/lib/state-cli.mjs factory:verify-resume                       # lift a lane pause early
+node scripts/lib/state-cli.mjs factory:verify-reset <n>                    # forget the card's round; the next tick starts it again
+```
+
+- **`factory:verify-finish`** works like `factory:cr-cli-finish` (see "Killing a wedged run"). It SIGTERMs the run's process group, but only while the run is still ours, and waits up to `--wait-ms` (default 10 s). Only then does it free the lane. The spent attempt stays spent unless you pass `--refund attempt`. The run's worktree is left to housekeeping. What it prints:
+  - `ok:false`, `supervisor-still-running` or `supervisor-unverifiable`: the group survived, or `ps` couldn't check it. Nothing changed.
+  - `ok:false`, `supervisor-attached-meanwhile`: the factory attached a process during the wait that this command never checked. Nothing changed; run it again.
+  - `ok:true`, `releasedBy:"factory"`: the factory freed the run itself during the wait.
+- **`factory:verify-reset`** clears the card's `verify*` fields, plus `browserRunSha` and `browserRunAttempts`: the browser runner skips any commit `browserRunSha` names, so keeping it would leave the new round without a browser verdict. On a card already in In Test, the In Test browser run then runs again. While the lane is running for that card, it prints `ok:false, reason:"run-in-flight"` and changes nothing, so run `factory:verify-finish` first.
+
 ## Kill switches
 
-| Severity                     | Action                                                                                                                                                                                                                                                                                                                                                                                    |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| One bad card                 | Drag to **Blocked**, or apply `factory-pause` to the issue. Factory skips it next tick.                                                                                                                                                                                                                                                                                                   |
-| Stop all factory work        | `node scripts/lib/state-cli.mjs factory:pause` (Wave 2+). Manual pause never auto-expires. Resume with `factory:resume`.                                                                                                                                                                                                                                                                  |
-| Stop the launchd job         | `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist`. Reload to resume.                                                                                                                                                                                                                                                                                                      |
-| Active Claude session hangs  | `node scripts/lib/state-cli.mjs factory:slot-status` shows the PID + issue for each implement/watch slot; `kill -TERM <pid>`. The wall-time wrapper (`run-claude.mjs`) caps each invocation (`FACTORY_PLAN_TIMEOUT_SEC` — default 360 s — for `--plan`/replan, `FACTORY_IMPLEMENT_TIMEOUT_SEC`/`FACTORY_WATCH_TIMEOUT_SEC` for the engines — default 2700/1800 s) so a true hang is rare. |
-| Worktree install hangs       | Each `pnpm install` is wrapped by `run-with-timeout.mjs` and capped at `FACTORY_INSTALL_TIMEOUT_SEC` (default 600 s); on cap, `--implement` releases the slot + worktree and bumps the card's attempt budget, while `--watch` logs a warning and proceeds. A cold install should take seconds (clonefile seed + offline reconcile), not minutes — see "Worktree installs & disk".         |
-| Stuck PR with a wrong commit | `gh pr close <n> --delete-branch`. Drag the card back to Ready. Factory will re-plan on the next tick.                                                                                                                                                                                                                                                                                    |
-| Plan needs a single tweak    | Comment on the issue with the correction; on the next tick the factory edits the existing plan comment in place (preserves the rest, stamps `<!-- drafto-factory-replan-ack:<id> -->` so the same comment doesn't loop). Drag back to Ready only if you want a full restart. See `docs/features/dark-factory.md` → "The plan comment looks wrong".                                        |
+| Severity                        | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One bad card                    | Drag to **Blocked**, or apply `factory-pause` to the issue. Factory skips it next tick.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Stop all factory work           | `node scripts/lib/state-cli.mjs factory:pause` (Wave 2+). Manual pause never auto-expires. Resume with `factory:resume`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Stop the launchd job            | `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist`. Reload to resume.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Active Claude session hangs     | `node scripts/lib/state-cli.mjs factory:slot-status` shows the PID + issue for each implement/watch slot; `kill -TERM <pid>`. The wall-time wrapper (`run-claude.mjs`) caps each invocation (`FACTORY_PLAN_TIMEOUT_SEC` — default 360 s — for `--plan`/replan, `FACTORY_IMPLEMENT_TIMEOUT_SEC`/`FACTORY_WATCH_TIMEOUT_SEC` for the engines — default 2700/1800 s) so a true hang is rare.                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Worktree install hangs          | Each `pnpm install` is wrapped by `run-with-timeout.mjs` and capped at `FACTORY_INSTALL_TIMEOUT_SEC` (default 600 s); on cap, `--implement` releases the slot + worktree and bumps the card's attempt budget, while `--watch` logs a warning and proceeds. A cold install should take seconds (clonefile seed + offline reconcile), not minutes — see "Worktree installs & disk".                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| A `gh` call hangs               | Every `gh` call in `factory-agent.sh` and its node helpers (`factory-project`, `verify-lane`, `coderabbit-cli`) is capped at `FACTORY_GH_TIMEOUT_SEC` (default 120 s): bash through a `gh()` wrapper over `run-with-timeout.mjs`, node through `scripts/lib/gh-timeout.mjs`. At the cap `gh` is killed and the caller treats it as any other `gh` failure. A capped bash call logs `WARNING: gh <subcommand> timed out after <n>s` unless its stderr goes to `/dev/null`; a capped node call shows as that helper's usual failure. Before the cap, one idle `gh issue comment` on #748 held the loop lock for 2+ days. If a tick still looks stuck, `ps -ax -o pid,etime,command \| grep -E 'factory-agent\|gh '` shows what it waits on.                                                                                                 |
+| CodeRabbit CLI lane misbehaving | Set `FACTORY_CR_CLI=0` in the plist and reload. Cards then promote without waiting for CodeRabbit. Housekeeping keeps running with the lane off: it terminates an in-flight CLI run (SIGTERM to its process group) and discards any finished run's results — nothing is posted and no coverage is recorded — then removes the run's worktree and frees the slot. To do that by hand right away, see "Killing a wedged run". A lane pause (`factory:cr-cli-pause-until`) only stops new runs; cards still hold for the bot and their own in-flight run (see "What a lane pause does to cards"). See "CodeRabbit CLI gap-fill lane". The kill switch covers factory runs only: a manual `coderabbit-cli.mjs review` (`"manual": true` in `factory:cr-cli-status`) keeps running and posting. Stop one with `factory:cr-cli-finish <runId>`. |
+| Browser runner misbehaving      | Set `FACTORY_BROWSER=0` in the plist and reload. No claude call gets Chrome after that, and a Testing card's browser lane ends as `skipped:browser-off`. To stop a run in flight, kill its `run-claude.mjs` process; its tabs stay open in an orphaned group in Chrome. See "Browser runner (Claude in Chrome)".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Verification stage misbehaving  | Set `FACTORY_VERIFY=0` in the plist and reload. Cards go straight to In Test again. Any card already in Testing is promoted on the next tick, with a report saying verification was switched off. **Rollback drill:** set `FACTORY_VERIFY=0`, wait for Testing to drain (the `--watch` log shows `promote (verification-off)` lines), then check the board column is **empty**. The sweep leaves some cards there: ones with a `factory-pause` or `support` label, a merged or closed PR, or no PR, and any whose move failed. Move those by hand. Only **then** revert the code. Reverting first strands cards: the old code never looks at Testing. See "Pre-In-Test verification (Testing)".                                                                                                                                           |
+| Stuck PR with a wrong commit    | `gh pr close <n> --delete-branch`. Drag the card back to Ready. Factory will re-plan on the next tick.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Plan needs a single tweak       | Comment on the issue with the correction; on the next tick the factory edits the existing plan comment in place (preserves the rest, stamps `<!-- drafto-factory-replan-ack:<id> -->` so the same comment doesn't loop) and posts one reply per comment you wrote (`<!-- drafto-factory-plan-reply-<id> -->`). Drag back to Ready only if you want a full restart. See `docs/features/dark-factory.md` → "The plan comment looks wrong".                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 ### Automatic pause on a Claude session limit (self-healing)
 
@@ -258,6 +808,64 @@ Now, on any non-timeout claude failure (`--plan`, replan, `--implement`, `--watc
 The next tick's pause gate reports the factory paused (`… (until: <iso>)`) and exits until the deadline; once `now ≥ pausedUntil`, `factory:paused?` auto-resumes and work continues — no operator action needed. A **manual** `factory:pause` has no deadline and never auto-expires. To lift a timed pause early, run `factory:resume`. To inspect it: `node scripts/lib/state-cli.mjs factory:status` shows `paused` + `pausedUntil` + `pausedReason`.
 
 Trade-off: because the loop runs plan→implement→watch→release sequentially under one mutex, a session-limit pause also defers `--release` merges until the reset — acceptable at the factory's cadence.
+
+### Automatic toolchain pause (self-healing)
+
+On 2026-10-04 an Xcode 27 update landed on the Mac mini with its license unaccepted. From then on every `/usr/bin/git` call failed with "You have not agreed to the Xcode license agreements". For about 3 hours every tick failed `worktree add` / `worktree resume`, self-update blamed "(offline?)", each mode still exited 0 (so no `factory-failure` issue was filed), and nobody was told.
+
+Now `factory-agent-loop.sh` runs `scripts/lib/toolchain-health.mjs check` every tick, right after self-update and before the modes. It probes `git --version`, `git rev-parse HEAD` in the factory checkout, `gh --version` and `claude --version`. All the probes are local, so a network blip can't trip them.
+
+- **Any probe fails:** the tick is skipped (`toolchain-health: unhealthy; skipping this tick` in `launchd-factory-stderr.log`, after a JSON line naming the failure and its class).
+- **Same fault on 2 consecutive ticks:**
+  - The factory pauses itself with reason `toolchain: <tool> broken (<class>)`. The `toolchain:` prefix marks the pause as the check's own. A pause with any other reason is never rewritten or resumed, including a manual `factory:pause` you add mid-incident (for example to keep the factory stopped after fixing the host).
+  - It emails the operator once from `support@drafto.eu` via `zoho-cli.mjs send`. GitHub doesn't notify Jakub about issues his own token files, so email is the real alert.
+  - It files one `factory-failure` issue as the record. The issue carries a `<!-- drafto-factory-toolchain:<signature> -->` marker and the exact fix.
+  - A different fault mid-incident gets a fresh email and a comment on the same issue. A fault still present after 24h sends one reminder email.
+- **The probes pass again:** the factory resumes its own pause (only a pause whose reason starts with `toolchain:`, even if the incident record was lost), closes the issue, sends a recovery email and clears `toolchainIncident` in `logs/factory-state.json`. A failed close is retried on later ticks.
+- **Retries:** the email and the issue are tracked separately and each is retried every tick until it succeeds. A failed email is never treated as sent just because the issue was filed.
+- **Fails open:** the check runs after self-update, so a broken check can always be fixed by merging to main. Only exit 3 (a broken tool) skips the tick. If the check itself crashes (corrupt state file, full disk), the loop logs `toolchain-health: check itself failed (rc=N); running the tick anyway` and the tick runs as before.
+
+Known fault classes and fixes:
+
+| Class                  | Fix                                                                                                                                |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `xcode-license`        | `sudo xcodebuild -license accept` in a **real Terminal** on the Mac mini. sudo can't prompt under launchd or a Claude `!` command. |
+| `xcode-developer-path` | `xcode-select --install` (or `sudo xcode-select -s /Applications/Xcode.app`)                                                       |
+| `not-found`            | Binary missing from launchd's `PATH`: reinstall it or fix the plist's `PATH`.                                                      |
+| `timeout`              | A probe hung; look for a stuck process or a pending system dialog.                                                                 |
+
+Inspect with `node scripts/lib/state-cli.mjs factory:status` (pause) and `jq .toolchainIncident logs/factory-state.json` (incident). Dry-run the check by hand with `node scripts/lib/toolchain-health.mjs check --repo . --dry-run`. Set `FACTORY_HEALTHCHECK=0` in the plist to disable it.
+
+### Red or cancelled CI on a factory PR (self-healing)
+
+On 2026-10-05 GitHub cancelled three required checks on #654's PR because it had no runner for them ("The job was not acquired by Runner of type hosted"). `--release` counted `CANCELLED` as a failure and logged `not merging (left in Approved)` every tick for about 2.5 days, without a comment, a re-run or a transition. Updating the branch would have started a fresh run, but that step came after the failing-checks gate and was never reached.
+
+Now `--watch` and `--release` sort failing **required** checks into two kinds (`classify_failing_required`). Advisory checks such as CodeRabbit still never count. If branch protection can't be read, the required set is unknown and the fallback would count advisory bots too, so the card simply waits, as before.
+
+- **CI couldn't run.** Every failing required check is `CANCELLED` (or `TIMED_OUT`), and the GitHub Actions job behind each one never judged the code. Either it never got a runner (the job API shows no `runner_name` and no steps, which is exactly how #654's three jobs look), or it ran out of time in a step that can't be the code's fault (`is_ci_infra_step`: checkout, toolchain setup, cache and artifact transfers, the Playwright browser install, the SonarCloud steps). The job's annotation must say it "exceeded the maximum execution time": a job someone cancelled by hand is never re-run. Every job in `ci.yml` has a `timeout-minutes` a few times its usual run, so a hung job ends in minutes instead of GitHub's 6 hours. A test ties `is_ci_infra_step` to the step names in `ci.yml`.
+  - Both modes re-run the cancelled jobs with `gh run rerun <run> --failed`. They make at most `FACTORY_CI_RERUN_MAX` re-runs per head SHA (default 2) and spend no fix attempt. They wait until the whole workflow run has finished first, because GitHub refuses to re-run a run that still has jobs going. A stale branch is not updated at this point: the existing BEHIND step does that once the checks are green.
+  - When the re-runs are spent, the factory posts one comment (`<!-- drafto-factory-ci-infra:<sha12> -->`) with the `gh run rerun` commands. The card **stays where it is**: Approved, or In Review. The Claude fix agent is never spawned for it. A card held in In Review keeps its worktree slot. During a runner outage nothing can get through CI anyway, but if you need the slot back, re-run the checks or drag the card to Blocked.
+  - If the job lookup fails, the tick is skipped and the next one classifies again.
+- **CI is red.** Anything else: `FAILURE`, `ERROR`, `ACTION_REQUIRED`, `STARTUP_FAILURE` (often a workflow file the PR itself broke), a job that timed out (`CANCELLED` or `TIMED_OUT`) in `pnpm install`, the build or the tests (likely a hang in the code; a PR's dependency or lockfile change can hang the install), a job someone cancelled by hand, or a cancelled check that isn't an Actions job.
+  - `--watch` runs its fix loop as before. A `noop` pass on red CI now spends an attempt, so a red the agent can't fix ends in **Blocked** instead of looping every tick.
+  - `--release` posts one comment (`<!-- drafto-factory-ci-red:<sha12> -->`) listing the failures and moves the card back to **In Review** for the fix loop, the same as an unresolved review thread. It comes back to In Test, and the Approved drag is required again. See [ADR-0041](../adr/0041-factory-ci-red-and-cancelled-checks.md).
+
+Both markers are keyed on the head SHA, so a new push re-arms them. The re-run budget is stored per issue as `ciRerun` (`"<sha>:<count>"`) in the **live** state file in `drafto-factory`. To grant a fresh budget on the same commit, run `node scripts/lib/state-cli.mjs factory:set-issue-field <n> ciRerun "" --state-file logs/factory-state.json` there.
+
+### A PR that conflicts with main (self-healing)
+
+On 2026-10-27 #688 was approved while its PR #755 conflicted with `main`: it and #757 had both added an ADR numbered 0059. `--release` commented once and left the card in Approved, where it kept its worktree slot. With the other slot held by an In Test card, #718 couldn't start for two days. Nothing in the factory merged `main` into a PR branch, and the comment's advice, to comment a change request, reached no mode.
+
+Now a conflict is handed back to the fix loop like red CI ([ADR-0061](../adr/0061-factory-resolves-merge-conflicts.md)):
+
+- **Approved and In Test.** `--release`, and the In Test sweep when no feedback is pending, post one comment per head SHA (`<!-- drafto-factory-conflict:<sha12> -->`) and move the card back to **In Review**. `--release` checks this before the CI gate, because GitHub runs no `pull_request` CI on a conflicting head.
+- **In Review.** `--watch` runs a conflict pass before any CI wait. Bash merges `origin/main` into the branch (`worktree-cli.mjs merge-main`). A failed fetch of main skips the tick at no cost.
+  - **Clean merge.** Bash pushes it, with no Claude run and no attempt spent.
+  - **Conflicts, or two ADRs sharing a number.** The watch agent resolves them, renumbering the PR's own ADR, and commits the merge without pushing. A conflicted `pnpm-lock.yaml` is regenerated with `pnpm install`, never hand-edited. Bash then checks the commit with `merge-check`: merge committed with nothing left uncommitted, main in `HEAD`, no conflict markers, and no ADR clash in `HEAD`. Only then does bash push it, so a failed resolution never reaches the PR. A verified resolution spends no attempt.
+  - **Any other ending.** Bash rolls the worktree back (`merge-abort --to <pre-merge head>`, which also removes untracked leftovers) and spends one attempt. A conflict where main rewrote the code the plan changes, or a lockfile `pnpm install` can't produce, ends in **Blocked** with a PR comment.
+- The card then goes through CI, review and In Test again, and needs a fresh **Approved** drag.
+
+The `--watch` log says what happened: `merged origin/main into PR #<n>'s branch: <status> (conflicted: …; ADR clashes: N)`, followed by `pushed the merge`, `conflict pass merged main`, or the reason it rolled back. To resolve a conflict by hand instead, merge `main` into `factory/issue-<n>` and push. The next tick sees a mergeable PR and carries on.
 
 ## Rollback drills
 
@@ -275,18 +883,50 @@ Practice drill (do once per month while the factory is active):
 
 ## On-call response — `factory-failure` issue appears
 
-The factory's `cleanup()` trap files a `factory-failure`-labelled GitHub issue when a run errors out. `nightly-audit.sh` will surface these in its 05:00 sweep. When you see one:
+The factory's `cleanup()` trap files a `factory-failure`-labelled GitHub issue when a run errors out, and the toolchain health check files one when a host tool breaks (see "Automatic toolchain pause"). `nightly-audit.sh` does **not** sweep these, and GitHub does not notify Jakub about issues filed with his own token, so check the label by hand. Toolchain faults also arrive by email. When you see one:
 
 1. **Read the issue body.** Sanitised log tail is included (timestamps only — no bundle PII, same regex pattern as `support-agent.sh`).
 2. **Check `logs/factory-*.log` on the Mac mini** for the full context.
 3. **Common causes** (in approximate order of frequency):
    - Network blip during `gh` call (transient — usually resolves on the next tick).
-   - Worktree slot leaked (a previous run died without releasing it). `node scripts/lib/state-cli.mjs factory:slot-status` shows each slot's PID + issue; if the PID is dead, `node scripts/lib/state-cli.mjs factory:slot-release <slot>` then `node scripts/lib/worktree-cli.mjs remove --issue <n> --force`. (`--watch`'s cleanup sweep also auto-releases slots whose issue has left the active In Progress/In Review/In Test states — e.g. merged, Blocked, or closed.)
+   - Broken host toolchain: git failing on an unaccepted Xcode license after an Xcode update, missing Command Line Tools, or a binary gone from `PATH`. The toolchain health check pauses the factory and emails the fix; see "Automatic toolchain pause".
+   - Worktree slot leaked (a previous run died without releasing it). `node scripts/lib/state-cli.mjs factory:slot-status` shows each slot's PID + issue; if the PID is dead, `node scripts/lib/state-cli.mjs factory:slot-release <slot>` then `node scripts/lib/worktree-cli.mjs remove --issue <n> --force`. (`--watch`'s cleanup sweep also auto-releases slots whose issue has left the active In Progress/In Review/Testing/In Test states — e.g. merged, Blocked, or closed. Since ADR-0033 that sweep removes the worktree but **keeps** the local branch whenever a PR still points at it, so a card dragged back to In Progress resumes on its own commits.)
    - Disk full under `worktrees/` — the factory now refuses to start an implement when free space is below `FACTORY_MIN_FREE_DISK_GB` (it parks the card in Blocked with a `disk-low` comment), so a mid-build ENOSPC should be rare. Reclaim space via `git worktree prune` (and `node scripts/lib/worktree-cli.mjs list` to see the factory's worktrees); see "Worktree installs & disk" for the full reclamation runbook.
    - Claude wall-time cap hit on every retry (the prompt or context bundle is too large). Inspect the bundle in the log; truncate prior PR threads if needed. (A Claude _session usage_ limit is handled separately — the factory auto-pauses until reset instead of failing; see "Automatic pause on a Claude session limit".)
 4. **Close the failure issue** once resolved. The trap doesn't auto-close; that's intentional so the issue is visible until acknowledged.
 
 If the same failure mode files >3 issues in 24h, pause the factory globally (`factory:pause`) and open a regular bug to fix the root cause.
+
+## Recovering a card whose feedback was falsely consumed
+
+Applies to cards worked before [ADR-0033](../adr/0033-factory-branch-safety-and-implement-verification.md). Symptom: an open PR, a reporter comment asking for a change, and a factory log line saying "revision pushed" — but the PR head never moved and `--watch` keeps re-presenting the same preview.
+
+The feedback high-water mark was advanced past the comment, so no future tick will read it. Rewind it, clear the retry counter, and make sure the branch is present:
+
+```bash
+# 1. The comment's own createdAt, minus a second, from:
+#    gh issue view <n> --json comments --jq '.comments[] | "\(.createdAt) \(.author.login)"'
+node scripts/lib/state-cli.mjs factory:set-issue-field <n> lastFeedbackAt "<iso-just-before-the-comment>"
+node scripts/lib/state-cli.mjs factory:reset-attempts <n>
+
+# 2. Restore the local branch if the old sweep deleted it. --fetch now does this
+#    automatically on the next tick, but doing it by hand is instant and safe.
+git fetch origin factory/issue-<n>
+git branch factory/issue-<n> origin/factory/issue-<n> 2>/dev/null || true
+```
+
+Then drag the card to **In Progress**. The next `--implement` tick re-reads the comment, resumes on the PR's own commits, and — if it still fails to push — now stops instead of claiming success.
+
+To find stray branches and stale remote-tracking refs left by the old behaviour:
+
+```bash
+git fetch --prune origin                       # --release deletes remote branches without pruning
+git branch --list 'factory/issue-*'
+gh pr list --state open --json headRefName --jq '.[].headRefName'
+node scripts/lib/worktree-cli.mjs list
+```
+
+Delete any local `factory/issue-*` that has no open PR and no worktree. A branch backing an open PR is now kept deliberately — don't prune those.
 
 ## Coexistence with `nightly-support.sh` Phase 3
 
@@ -299,7 +939,9 @@ Phase 3 (existing midnight implementation pass) and the factory's `--implement` 
 | C             | Phase 3 keeps running, **unchanged (no cutover)**. The factory may now implement mobile/desktop, but its `--implement` queue skips `support`-labelled issues, so the two tracks stay disjoint. |
 | D             | Phase 3 keeps running, **unchanged (not removed)**.                                                                                                                                            |
 
-Collision avoidance is **factory-side**: the `--implement` queue excludes `support`-labelled issues, so the factory never claims an issue Phase 3 owns and the nightly script needs no edits. To hand a support issue to the factory deliberately, a human removes the `support` label — the factory then sees it as an ordinary board card. (Belt-and-braces: if both ever target the same issue, the factory's worktree-slot lock blocks Phase 3's attempt and Phase 3 logs "issue #N already has a factory worktree".)
+Collision avoidance is **factory-side**: the `--implement` queue excludes `support`-labelled issues (and `--release` skips them too), so the factory never claims an issue Phase 3 owns. To hand a support issue to the factory deliberately, a human removes the `support` label — the factory then sees it as an ordinary board card. (Belt-and-braces: if both ever target the same issue, the factory's worktree-slot lock blocks Phase 3's attempt and Phase 3 logs "issue #N already has a factory worktree".)
+
+**Shared beta build roots.** The nightly's Phase 4 ships merged support fixes from the factory's beta build roots, under the root lock described in [Pre-merge beta dispatch](#pre-merge-beta-dispatch-in-test). In the factory log, "beta build root … is in use by pid N" at night usually means the nightly is building there. The In Test card retries on a later tick. The nightly does the same in reverse and retries on the next night. See [support-agent.md → Stage 2 releases](../features/support-agent.md#stage-2-releases-nightly-beta-dispatch).
 
 ## Claude effort & timeouts
 
@@ -312,22 +954,26 @@ The factory runs its **code-writing** stages (`--implement`, `--watch`) at **ult
 | `FACTORY_PLAN_TIMEOUT_SEC`      | `360`       | Wall-clock cap per `--plan`/replan Claude call (was 180; xhigh planning thinks longer).               |
 | `FACTORY_IMPLEMENT_TIMEOUT_SEC` | `2700`      | Wall-clock cap per `--implement` Claude call (was 1800; ultracode workflows run longer).              |
 | `FACTORY_WATCH_TIMEOUT_SEC`     | `1800`      | Wall-clock cap per `--watch` fix Claude call (was 900).                                               |
+| `FACTORY_REVIEW_TIMEOUT_SEC`    | `900`       | Wall-clock cap per code-review Claude call (read-only; runs once per PR head SHA).                    |
+| `FACTORY_BG_WAIT_CEILING_MS`    | `0`         | How long `claude -p` waits for background workflows/subagents after its last turn (0 = no ceiling).   |
+
+> **Background-task wait.** `claude -p` normally kills background tasks 600s after its final turn and exits 0. At ultracode that cut implement runs off mid-workflow with no summary line, burning an attempt each time (#623 was Blocked after four). The factory exports `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` from `FACTORY_BG_WAIT_CEILING_MS` (default `0`, wait indefinitely); the per-stage wall caps above still bound every call. A log line `Background tasks still running after …s; terminating` means the ceiling is set too low. A non-zero ceiling only applies on a `claude` CLI that has the ceiling feature (CodeRabbit on #637 put it at 2.1.182+; the Mac mini runs 2.1.270, whose termination log names the variable). An older CLI ignores the variable, waits without a ceiling and never prints that log line, so check `claude --version` before relying on a non-zero value.
 
 > **Rollout precondition.** The loop self-updates the repo each tick but **not** the `claude` CLI. The Mac mini's `claude` must accept `--effort` — verify with `claude --effort ultracode -p 'reply with OK'` (must exit 0 and print `OK`). An older CLI would fail every Claude call and Block cards within `FACTORY_MAX_ATTEMPTS` ticks. Rollback needs no code redeploy: set `FACTORY_EFFORT` / `FACTORY_PLAN_EFFORT` to a base level (or lower the timeouts) in the plist.
 
 ## Worktree installs & disk
 
-The factory implements each card in a throwaway git worktree that needs its own `node_modules`. The pnpm store lives on an external volume (`/Volumes/Zewnętrzny/pnpm-store`), so a cold `pnpm install` can't hardlink and cross-device-copies ~2000 packages — on #451 this ran **3.5+ hours** and silently held the implement lock, starving every other card. Two mitigations are built in:
+The factory implements each card in a throwaway git worktree that needs its own `node_modules`. The pnpm store and every factory checkout now share one volume, `/Volumes/DraftoFactory` ([ADR-0060](../adr/0060-dedicated-factory-build-volume.md)), so installs clone from the store. Before that, the store was on the external drive and the checkouts were on the internal disk. A cold `pnpm install` then couldn't clone or hardlink and cross-device-copied ~2000 packages. On #451 this ran **3.5+ hours** and silently held the implement lock, starving every other card. Two mitigations are built in:
 
 - **Clonefile seed.** Before installing, `seed_worktree_node_modules` clones the main checkout's `node_modules` (repo root + `apps/*` + `packages/*`) into the worktree with APFS `cp -c` (O(1), copy-on-write, ~0 bytes). The subsequent install is a fast **offline reconcile** (`pnpm install --frozen-lockfile --offline`), falling back to frozen-online then unfrozen-online for genuine lockfile drift. A cold install now takes seconds.
-- **Bounded install + disk guard.** Every install is wrapped by `run-with-timeout.mjs` and capped at `FACTORY_INSTALL_TIMEOUT_SEC`. Before starting, the factory checks free space and parks the card in **Blocked** with a `disk-low` comment if it's below `FACTORY_MIN_FREE_DISK_GB`.
+- **Bounded install + disk guard.** Every install is wrapped by `run-with-timeout.mjs` and capped at `FACTORY_INSTALL_TIMEOUT_SEC`. Before starting, the factory checks free space on both the build volume and the internal disk behind `$HOME` (TMPDIR, Claude transcripts, simulators). It parks the card in **Blocked** with a `disk-low` comment if the fuller of the two is below `FACTORY_MIN_FREE_DISK_GB`. In Test betas and the verify lane use the same check.
 
-> **Do not delete the beta build roots** (`drafto-beta-mobile`, `drafto-beta-desktop`) when reclaiming space. They live outside `<repoRoot>/worktrees/` and carry no `factory/issue-*` branch, so `worktree-cli.mjs list` never reports them — but a broad `rm -rf` would destroy the desktop fossil replica, which can only be rebuilt by re-cloning from `/Users/jakub/code/drafto` and re-validating with a TestFlight build. Their `node_modules` costs ~0 bytes (clonefile); the space is in **build artefacts**, so prune those instead:
+> **Do not delete the beta build roots** (`drafto-beta-mobile`, `drafto-beta-desktop`) when reclaiming space. They live outside `<repoRoot>/worktrees/` and carry no `factory/issue-*` branch, so `worktree-cli.mjs list` never reports them — but a broad `rm -rf` would destroy the desktop fossil replica, which can only be rebuilt by re-cloning from `/Users/jakub/code/drafto` and re-validating with a TestFlight build. They are not small. On the internal disk, the mobile root held 6.8 GB that no other checkout shared: every install drifts its `node_modules` away from the seed, and `android/app/build` alone was 1.9 GB. Prune the **build artefacts** instead:
 >
 > ```bash
-> rm -rf /Users/jakub/code/drafto-beta-desktop/apps/desktop/macos/build
-> rm -rf /Users/jakub/code/drafto-beta-mobile/apps/mobile/ios/build
-> rm -rf /Users/jakub/code/drafto-beta-mobile/apps/mobile/android/.gradle
+> rm -rf /Volumes/DraftoFactory/drafto-beta-desktop/apps/desktop/macos/build
+> rm -rf /Volumes/DraftoFactory/drafto-beta-mobile/apps/mobile/ios/build
+> rm -rf /Volumes/DraftoFactory/drafto-beta-mobile/apps/mobile/android/.gradle
 > ```
 
 **Env knobs** (set in the launchd plist's `EnvironmentVariables`, alongside `FACTORY_PHASE`):
@@ -335,9 +981,12 @@ The factory implements each card in a throwaway git worktree that needs its own 
 | Var                           | Default | Purpose                                                           |
 | ----------------------------- | ------- | ----------------------------------------------------------------- |
 | `FACTORY_INSTALL_TIMEOUT_SEC` | `600`   | Wall-clock cap per worktree `pnpm install`.                       |
+| `FACTORY_GH_TIMEOUT_SEC`      | `120`   | Wall-clock cap per factory `gh` call (1–99999).                   |
 | `FACTORY_MIN_FREE_DISK_GB`    | `3`     | Free-disk floor below which a card is Blocked instead of started. |
 
 **Reclaiming disk:**
+
+Run `git worktree prune` only while `/Volumes/DraftoFactory` is mounted. Without the volume it treats every worktree on it as deleted and drops the registrations of the factory checkout, both build roots and every card worktree.
 
 ```bash
 git worktree prune                       # drop metadata for removed worktrees
@@ -350,11 +999,12 @@ xcrun simctl delete unavailable
 #   rm -rf .claude/worktrees/<name>/node_modules .claude/worktrees/<name>/{apps,packages}/*/node_modules
 ```
 
-**Durable fix (optional):** move the pnpm store onto the internal volume so installs hardlink in seconds even without the clonefile seed — `pnpm config set store-dir ~/Library/pnpm/store && pnpm store prune && pnpm install` at the repo root (needs free internal space first). The clonefile seed then remains a cheap safety net regardless of store location.
+The pnpm store sits on the same volume as the factory's checkouts, so installs clone from it even without the seed. The seed remains a cheap safety net. Interactive worktrees in `~/code` still install across volumes.
 
 ## Related
 
 - [`docs/features/dark-factory.md`](../features/dark-factory.md) — operator manual.
 - [ADR-0026](../adr/0026-dark-factory-pipeline.md) — decision record.
+- [ADR-0035](../adr/0035-factory-code-review-gate.md) / [ADR-0036](../adr/0036-factory-coderabbit-cli-gap-fill.md) — review-thread merge gate and the CodeRabbit CLI gap-fill lane.
 - [`docs/operations/migrations.md`](./migrations.md) — migration safety + rollback workflow.
 - [`docs/operations/builds-and-releases.md`](./builds-and-releases.md) — release commands, beta lanes.

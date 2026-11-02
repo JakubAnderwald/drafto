@@ -1,8 +1,26 @@
 language: en
 reviews:
   profile: assertive
+  auto_review:
+    # Pause automatic reviews after this many reviewed commits (default 5).
+    # The --watch fix loop pushes several commits per PR, and each push triggers
+    # an incremental review that spends the free OSS hourly allowance on a single
+    # PR. Two keeps the initial review plus one re-review of the fix commit;
+    # `@coderabbitai resume` lifts the pause when a PR genuinely needs more.
+    auto_pause_after_reviewed_commits: 2
   path_instructions:
-    - path: "src/**"
+    # NOTE: these globs are matched from the repository root. There is no
+    # root-level `src/` in this monorepo — every source tree lives under
+    # apps/*/src or packages/*/src — so a bare "src/**" matches nothing.
+    - path: "apps/*/src/**"
+      instructions: |
+        Enforce SOLID principles:
+        - Single Responsibility: Each module/function should have one reason to change
+        - Open/Closed: Prefer composition over modification
+        - Liskov Substitution: Subtypes must be substitutable for base types
+        - Interface Segregation: Prefer small, focused interfaces
+        - Dependency Inversion: Depend on abstractions, not concretions
+    - path: "packages/*/src/**"
       instructions: |
         Enforce SOLID principles:
         - Single Responsibility: Each module/function should have one reason to change

@@ -53,7 +53,7 @@ export function WaitingForApprovalScreen() {
       </Text>
 
       {error && (
-        <View style={styles.errorContainer}>
+        <View style={styles.errorContainer} accessibilityRole="alert">
           <Text style={styles.errorText}>{error}</Text>
         </View>
       )}

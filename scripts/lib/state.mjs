@@ -13,15 +13,28 @@
 //                                                    // successful filed-issue. nightly-support.sh
 //                                                    // reads this to gate auto-implementation
 //                                                    // — see ADR-0025.
-//         zohoThreadId:            string,           // canonical link to the Zoho thread the
-//                                                    // customer reads. Written by
-//                                                    // record-filed-issue (3rd positional) or by
-//                                                    // set-issue-field (singleton post-filing
-//                                                    // backfill in support-agent.sh). Read by
-//                                                    // --comment-sync to route progress
-//                                                    // updates. Replaces the unreliable
-//                                                    // issue-body footer source — see issue
-//                                                    // #422.
+//         zohoThreadId:            string,           // Zoho thread the customer reads. Written
+//                                                    // by record-filed-issue (3rd positional)
+//                                                    // when the inbound mail was threaded, or
+//                                                    // by set-issue-field — support-agent.sh
+//                                                    // does that when a customer reply on a
+//                                                    // linked thread arrives for an issue
+//                                                    // that only had a message id. Absent for
+//                                                    // first-contact ("singleton") filings,
+//                                                    // which Zoho never gives a threadId.
+//         zohoMessageId:           string,           // inbound Zoho messageId the issue was
+//                                                    // filed from (record-filed-issue
+//                                                    // --message-id). The progress-email route
+//                                                    // when there is no zohoThreadId:
+//                                                    // `zoho-cli reply <messageId>` threads by
+//                                                    // In-Reply-To without one. Issue #658.
+//         zohoSubject:             string,           // inbound subject (record-filed-issue
+//                                                    // --subject), reused as the "Re:" subject
+//                                                    // on message-id-routed progress emails.
+//                                                    // --comment-sync and --state-sync read all
+//                                                    // three via `github-sync.mjs issue-route`
+//                                                    // (state wins over the issue-body footer;
+//                                                    // the recipient is always reporterEmail).
 //         lastGithubCommentSyncAt: ISO-8601,        // cursor for comment-sync
 //         lastIssueStateSync:      ISO-8601,        // cursor for state-sync
 //         lastKnownState: {

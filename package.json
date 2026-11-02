@@ -18,6 +18,8 @@
     "supabase:link:prod": "supabase link --project-ref tbmjbxxseonkciqovnpl",
     "supabase:push": "supabase db push",
     "migration:check": "bash scripts/check-migration-safety.sh",
+    "hosted-config:check": "node scripts/lib/hosted-config.mjs check --base-ref origin/main --head-ref HEAD",
+    "test:live:supabase": "node scripts/run-dev-live-tests.mjs",
     "backfill:attachments": "tsx --tsconfig scripts/tsconfig.json scripts/backfill-inline-attachments.ts",
     "prepare": "husky",
     "version:mobile": "cd apps/mobile && npm version --no-git-tag-version",
@@ -48,7 +50,8 @@
     "patchedDependencies": {
       "@nozbe/watermelondb@0.28.0": "patches/@nozbe__watermelondb@0.28.0.patch",
       "@nozbe/simdjson@3.9.4": "patches/@nozbe__simdjson@3.9.4.patch",
-      "@expo/dom-webview@55.0.3": "patches/@expo__dom-webview@55.0.3.patch"
+      "@expo/dom-webview@55.0.3": "patches/@expo__dom-webview@55.0.3.patch",
+      "expo-router@55.0.18": "patches/expo-router@55.0.18.patch"
     }
   },
   "devDependencies": {
@@ -56,9 +59,9 @@
     "@commitlint/config-conventional": "^21.2.2",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
-    "prettier": "^3.9.6",
+    "prettier": "^3.9.8",
     "prettier-plugin-tailwindcss": "^0.8.1",
-    "tsx": "^4.23.12",
-    "turbo": "^2.10.10"
+    "tsx": "^4.23.13",
+    "turbo": "^2.11.0"
   }
 }

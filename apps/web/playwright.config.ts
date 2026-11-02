@@ -1,4 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
+import { getAdminCredentials } from "./e2e/helpers/admin-credentials";
+
+// Admin specs run as a separate admin account. Their projects are only registered
+// when the admin E2E variables are set — otherwise the admin setup step is
+// skipped, no storage-state file is written, and the project would fail to load it.
+const hasAdminCredentials = getAdminCredentials() !== null;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -9,7 +15,10 @@ export default defineConfig({
   reporter: "html",
   use: {
     baseURL: "http://localhost:3000",
-    trace: "on-first-retry",
+    // CI uploads the HTML report as a public artifact, and a trace records
+    // request headers and bodies: the Supabase session cookie and, on a login,
+    // the password. Keep traces for local runs only.
+    trace: process.env.CI ? "off" : "on-first-retry",
   },
   projects: [
     // Auth setup — runs first, saves storage state for other projects
@@ -18,16 +27,52 @@ export default defineConfig({
       testMatch: /auth\.setup\.ts/,
     },
 
-    // Desktop — runs all tests except auth setup and responsive-only tests
+    // E2E data cleanup (see "E2E data hygiene" in docs/architecture/testing.md). Every
+    // project that signs in as the E2E user depends on purge-stale, which deletes
+    // E2E-named data earlier runs left untouched for a day. Its teardown, cleanup-run,
+    // deletes the notebooks this run created once all of those projects have finished.
+    {
+      name: "purge-stale",
+      testMatch: /purge\.setup\.ts/,
+      teardown: "cleanup-run",
+    },
+    {
+      name: "cleanup-run",
+      testMatch: /cleanup-run\.teardown\.ts/,
+    },
+
+    // Desktop — runs all tests except auth setup, responsive-only and admin-only tests
     {
       name: "chromium",
       use: {
         ...devices["Desktop Chrome"],
         storageState: "e2e/.auth/user.json",
       },
-      dependencies: ["setup"],
-      testIgnore: [/auth\.setup\.ts/, /responsive\.spec\.ts/],
+      dependencies: ["setup", "purge-stale"],
+      testIgnore: [/auth\.setup\.ts/, /responsive\.spec\.ts/, /admin\.spec\.ts/],
     },
+
+    // Admin — only runs admin specs, signed in as the admin account. The admin
+    // login is its own setup project: Playwright skips every dependent of a
+    // setup project that fails, so a broken admin login in the shared "setup"
+    // project would skip the whole suite instead of just the admin specs.
+    ...(hasAdminCredentials
+      ? [
+          {
+            name: "setup-admin",
+            testMatch: /admin\.setup\.ts/,
+          },
+          {
+            name: "chromium-admin",
+            use: {
+              ...devices["Desktop Chrome"],
+              storageState: "e2e/.auth/admin.json",
+            },
+            dependencies: ["setup", "setup-admin"],
+            testMatch: /admin\.spec\.ts/,
+          },
+        ]
+      : []),
 
     // Mobile — only runs responsive tests (desktop tests assume three-panel layout)
     {
@@ -36,7 +81,7 @@ export default defineConfig({
         ...devices["Pixel 5"],
         storageState: "e2e/.auth/user.json",
       },
-      dependencies: ["setup"],
+      dependencies: ["setup", "purge-stale"],
       testMatch: /responsive\.spec\.ts/,
     },
     {
@@ -45,7 +90,7 @@ export default defineConfig({
         ...devices["iPhone 13"],
         storageState: "e2e/.auth/user.json",
       },
-      dependencies: ["setup"],
+      dependencies: ["setup", "purge-stale"],
       testMatch: /responsive\.spec\.ts/,
     },
 
@@ -56,7 +101,7 @@ export default defineConfig({
         ...devices["iPad (gen 7)"],
         storageState: "e2e/.auth/user.json",
       },
-      dependencies: ["setup"],
+      dependencies: ["setup", "purge-stale"],
       testMatch: /responsive\.spec\.ts/,
     },
   ],

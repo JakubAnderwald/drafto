@@ -4,6 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { act, Suspense } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 
+import type { NoteListPatch } from "@/lib/note-patch";
+
 vi.mock("@/env", () => ({
   env: {
     NEXT_PUBLIC_SUPABASE_URL: "https://test.supabase.co",
@@ -21,9 +23,9 @@ globalThis.fetch = mockFetch;
 
 const { NoteList } = await import("@/components/notes/note-list");
 
-// The component uses a module-level Map cache (`notesCache`). We need to
-// bust it by varying the `refreshTrigger` prop between tests so each test
-// gets a fresh fetch.
+// The component caches fetched lists in a module-level Map (`notesCache`). We
+// need to bust it by varying the `refreshTrigger` prop between tests so each
+// test gets a fresh fetch. `initialNotes` never enters the cache.
 let triggerCounter = 100;
 
 function nextTrigger() {
@@ -374,6 +376,35 @@ describe("NoteList", () => {
     expect(screen.getByLabelText("Actions for Second Note")).toBeInTheDocument();
   });
 
+  it("shows an empty-titled note as Untitled, in the row and its actions label", async () => {
+    const trigger = nextTrigger();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve([{ id: "note-blank", title: "", updated_at: new Date().toISOString() }]),
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<Skeleton height="2.5rem" />}>
+          <NoteList
+            notebookId="nb-1"
+            selectedNoteId={null}
+            onSelectNote={vi.fn()}
+            onCreateNote={vi.fn()}
+            onDeleteNote={vi.fn()}
+            refreshTrigger={trigger}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Untitled")).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText("Actions for Untitled")).toBeInTheDocument();
+  });
+
   it("opens move menu and shows other notebooks", async () => {
     const trigger = nextTrigger();
     const user = userEvent.setup();
@@ -571,7 +602,7 @@ describe("NoteList", () => {
             onSelectNote={vi.fn()}
             onCreateNote={vi.fn()}
             refreshTrigger={trigger}
-            lastNoteUpdate={{ noteId: "note-ts", updatedAt: newDate }}
+            lastNoteUpdate={{ noteId: "note-ts", updatedAt: newDate, title: "Timestamp Note" }}
           />
         </Suspense>,
       );
@@ -579,6 +610,103 @@ describe("NoteList", () => {
 
     await waitFor(() => {
       expect(screen.getByText("just now")).toBeInTheDocument();
+    });
+  });
+
+  // The list is patched in place rather than refetched, because the open editor
+  // shares `refreshTrigger` with it and a refetch would re-suspend the editor.
+  describe("external-change patches", () => {
+    function renderList(trigger: number, lastNoteUpdate: NoteListPatch | null) {
+      return (
+        <Suspense fallback={<Skeleton height="2.5rem" />}>
+          <NoteList
+            notebookId="nb-1"
+            selectedNoteId={null}
+            onSelectNote={vi.fn()}
+            onCreateNote={vi.fn()}
+            refreshTrigger={trigger}
+            lastNoteUpdate={lastNoteUpdate}
+          />
+        </Suspense>
+      );
+    }
+
+    async function mountWith(notes: { id: string; title: string; updated_at: string }[]) {
+      const trigger = nextTrigger();
+      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(notes) });
+      const { rerender } = await act(async () => render(renderList(trigger, null)));
+      return {
+        trigger,
+        patch: async (update: NoteListPatch) => {
+          await act(async () => {
+            rerender(renderList(trigger, update));
+          });
+        },
+      };
+    }
+
+    it("renames a row when an external edit changed the title", async () => {
+      const { patch } = await mountWith([
+        {
+          id: "note-x",
+          title: "Old title",
+          updated_at: new Date(Date.now() - 3600_000).toISOString(),
+        },
+      ]);
+      await waitFor(() => expect(screen.getByText("Old title")).toBeInTheDocument());
+
+      await patch({
+        noteId: "note-x",
+        updatedAt: new Date().toISOString(),
+        title: "Renamed elsewhere",
+      });
+
+      await waitFor(() => expect(screen.getByText("Renamed elsewhere")).toBeInTheDocument());
+      expect(screen.queryByText("Old title")).not.toBeInTheDocument();
+    });
+
+    it("applies the title carried by a local-save patch", async () => {
+      // Nothing but the patch updates the list's copy of the title, so the row would
+      // otherwise keep the title it was fetched with.
+      const { patch } = await mountWith([
+        {
+          id: "note-y",
+          title: "Untitled",
+          updated_at: new Date(Date.now() - 3600_000).toISOString(),
+        },
+      ]);
+      await waitFor(() => expect(screen.getByText("1h ago")).toBeInTheDocument());
+
+      await patch({ noteId: "note-y", updatedAt: new Date().toISOString(), title: "Typed here" });
+
+      await waitFor(() => expect(screen.getByText("Typed here")).toBeInTheDocument());
+      expect(screen.queryByText("Untitled")).not.toBeInTheDocument();
+      expect(screen.getByText("just now")).toBeInTheDocument();
+    });
+
+    it("drops a row that was trashed or deleted elsewhere", async () => {
+      const now = new Date().toISOString();
+      const { patch } = await mountWith([
+        { id: "note-gone", title: "Removed elsewhere", updated_at: now },
+        { id: "note-stays", title: "Still here", updated_at: now },
+      ]);
+      await waitFor(() => expect(screen.getByText("Removed elsewhere")).toBeInTheDocument());
+
+      await patch({ noteId: "note-gone", removed: true });
+
+      await waitFor(() => expect(screen.queryByText("Removed elsewhere")).not.toBeInTheDocument());
+      expect(screen.getByText("Still here")).toBeInTheDocument();
+    });
+
+    it("ignores a patch for a note that is not in this notebook", async () => {
+      const { patch } = await mountWith([
+        { id: "note-here", title: "Only note", updated_at: new Date().toISOString() },
+      ]);
+      await waitFor(() => expect(screen.getByText("Only note")).toBeInTheDocument());
+
+      await patch({ noteId: "note-elsewhere", removed: true });
+
+      expect(screen.getByText("Only note")).toBeInTheDocument();
     });
   });
 
@@ -634,6 +762,52 @@ describe("NoteList", () => {
 
     // Should NOT have made a client-side fetch — data came from server
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("does not cache initialNotes", async () => {
+    mockFetch.mockReset();
+    mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(mockNotes) });
+    const serverNotes = [
+      { id: "server-2", title: "Uncached Server Note", updated_at: new Date().toISOString() },
+    ];
+
+    const { unmount } = await act(async () =>
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteList
+            notebookId="nb-uncached"
+            selectedNoteId={null}
+            onSelectNote={vi.fn()}
+            onCreateNote={vi.fn()}
+            refreshTrigger={0}
+            initialNotes={serverNotes}
+          />
+        </Suspense>,
+      ),
+    );
+    expect(screen.getByText("Uncached Server Note")).toBeInTheDocument();
+    unmount();
+
+    // The same key without the server notes finds nothing cached, so it fetches.
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading...</div>}>
+          <NoteList
+            notebookId="nb-uncached"
+            selectedNoteId={null}
+            onSelectNote={vi.fn()}
+            onCreateNote={vi.fn()}
+            refreshTrigger={0}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("First Note")).toBeInTheDocument();
+    });
+    expect(mockFetch).toHaveBeenCalledWith("/api/notebooks/nb-uncached/notes");
+    expect(screen.queryByText("Uncached Server Note")).not.toBeInTheDocument();
   });
 
   it("fetches fresh data on refreshTrigger > 0 even with initialNotes", async () => {

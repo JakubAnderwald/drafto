@@ -1,13 +1,14 @@
 import React from "react";
 
-import { render, fireEvent } from "../helpers/test-utils";
-import { SyncStatus } from "../../src/components/sync-status";
+import { render, fireEvent, act } from "../helpers/test-utils";
+import { LAST_SYNCED_TICK_MS, SyncStatus } from "../../src/components/sync-status";
 
 const mockSync = jest.fn().mockResolvedValue(undefined);
 let mockDatabaseContext = {
   sync: mockSync,
   isSyncing: false,
   lastSyncedAt: null as Date | null,
+  lastSyncError: null as string | null,
   pendingChangesCount: 0,
   hasPendingChanges: false,
 };
@@ -32,9 +33,51 @@ describe("SyncStatus", () => {
       sync: mockSync,
       isSyncing: false,
       lastSyncedAt: null,
+      lastSyncError: null,
       pendingChangesCount: 0,
       hasPendingChanges: false,
     };
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it("shows 'Sync failed' when the last sync failed, even with changes pending", () => {
+    mockDatabaseContext.lastSyncError = "Push attachments (create) failed";
+    mockDatabaseContext.hasPendingChanges = true;
+    mockDatabaseContext.pendingChangesCount = 3;
+
+    const { getByText, queryByText } = render(<SyncStatus />);
+
+    expect(getByText("Sync failed")).toBeTruthy();
+    expect(queryByText("3 pending")).toBeNull();
+  });
+
+  it("prefers 'Offline' and 'Syncing...' over a sync failure", () => {
+    mockDatabaseContext.lastSyncError = "Network request failed";
+    mockIsConnected = false;
+    const offline = render(<SyncStatus />);
+    expect(offline.getByText("Offline")).toBeTruthy();
+    offline.unmount();
+
+    mockIsConnected = true;
+    mockDatabaseContext.isSyncing = true;
+    const syncing = render(<SyncStatus />);
+    expect(syncing.getByText("Syncing...")).toBeTruthy();
+  });
+
+  it("keeps the last-synced time ticking while it stays on screen", () => {
+    jest.useFakeTimers();
+    mockDatabaseContext.lastSyncedAt = new Date(Date.now() - 3_000);
+
+    const { getByText } = render(<SyncStatus />);
+    expect(getByText("Just now")).toBeTruthy();
+
+    act(() => {
+      jest.advanceTimersByTime(LAST_SYNCED_TICK_MS);
+    });
+    expect(getByText("13s ago")).toBeTruthy();
   });
 
   it("shows 'Synced' when online with no pending changes", () => {

@@ -1,5 +1,17 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { promises as fsp } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const CLI = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "lib",
+  "github-sync.mjs",
+);
 
 let lib;
 let execCalls;
@@ -591,5 +603,312 @@ zoho-thread-id: 8537837000999
     assert.equal(info.lastComment, null);
     assert.equal(info.zoho_thread_id, "");
     assert.deepEqual(info.platforms, []);
+  });
+});
+
+describe("resolveIssueRoute (pure — issue #658)", () => {
+  const FOOTER = {
+    "reporter-email": "footer@evil.example",
+    "zoho-thread-id": "FOOTER-T",
+    "zoho-message-id": "FOOTER-M",
+  };
+
+  it("singleton filing: routes by the recorded message id, subject and reporter", () => {
+    const route = lib.resolveIssueRoute({
+      stateEntry: {
+        reporterEmail: "Jakub@Anderwald.info",
+        zohoMessageId: "1791172614617005600",
+        zohoSubject: "Editor loses focus",
+      },
+      footer: { "reporter-email": "jakub@anderwald.info", "zoho-thread-id": "null" },
+    });
+    assert.deepEqual(route, {
+      threadId: null,
+      messageId: "1791172614617005600",
+      subject: "Editor loses focus",
+      to: "jakub@anderwald.info",
+      routable: true,
+    });
+  });
+
+  it("state wins over the footer for both ids", () => {
+    const route = lib.resolveIssueRoute({
+      stateEntry: { reporterEmail: "a@b.co", zohoThreadId: "STATE-T", zohoMessageId: "STATE-M" },
+      footer: FOOTER,
+    });
+    assert.equal(route.threadId, "STATE-T");
+    assert.equal(route.messageId, "STATE-M");
+  });
+
+  it("falls back to the footer ids when state has none (pre-fix issues)", () => {
+    const route = lib.resolveIssueRoute({
+      stateEntry: { reporterEmail: "a@b.co" },
+      footer: FOOTER,
+    });
+    assert.equal(route.threadId, "FOOTER-T");
+    assert.equal(route.messageId, "FOOTER-M");
+    assert.equal(route.routable, true);
+  });
+
+  it("uses the footer all-or-nothing: a recorded message id blocks a footer thread id", () => {
+    // Old prompts patched a guessed "ackThreadId" into the footer. A footer
+    // thread id must never outrank the message route the runner recorded.
+    const route = lib.resolveIssueRoute({
+      stateEntry: { reporterEmail: "a@b.co", zohoMessageId: "STATE-M" },
+      footer: FOOTER,
+    });
+    assert.equal(route.threadId, null);
+    assert.equal(route.messageId, "STATE-M");
+    assert.equal(route.routable, true);
+    // Same the other way round: a recorded thread id ignores the footer message id.
+    const threaded = lib.resolveIssueRoute({
+      stateEntry: { reporterEmail: "a@b.co", zohoThreadId: "STATE-T" },
+      footer: FOOTER,
+    });
+    assert.equal(threaded.threadId, "STATE-T");
+    assert.equal(threaded.messageId, null);
+  });
+
+  it("re-exports the shared normaliseRouteValue", () => {
+    assert.equal(lib.normaliseRouteValue(" null "), null);
+    assert.equal(lib.normaliseRouteValue(" 42 "), "42");
+  });
+
+  it("treats a 'null' / 'undefined' state value as absent and still falls back", () => {
+    const route = lib.resolveIssueRoute({
+      stateEntry: { reporterEmail: "a@b.co", zohoThreadId: "null", zohoMessageId: "undefined" },
+      footer: { "zoho-message-id": "FOOTER-M" },
+    });
+    assert.equal(route.threadId, null);
+    assert.equal(route.messageId, "FOOTER-M");
+  });
+
+  it("never takes the recipient from the footer (ADR-0025)", () => {
+    const route = lib.resolveIssueRoute({ stateEntry: null, footer: FOOTER });
+    assert.equal(route.to, null);
+    // The footer thread id is still a usable route (the thread path takes its
+    // recipient from Zoho), so this stays routable…
+    assert.equal(route.routable, true);
+    // …but a footer message id alone, with no recorded reporter, is not.
+    const msgOnly = lib.resolveIssueRoute({
+      stateEntry: null,
+      footer: { "reporter-email": "footer@evil.example", "zoho-message-id": "FOOTER-M" },
+    });
+    assert.equal(msgOnly.to, null);
+    assert.equal(msgOnly.messageId, "FOOTER-M");
+    assert.equal(msgOnly.routable, false);
+  });
+
+  it("never takes the subject from the footer", () => {
+    const route = lib.resolveIssueRoute({
+      stateEntry: { reporterEmail: "a@b.co", zohoMessageId: "M" },
+      footer: { subject: "forged" },
+    });
+    assert.equal(route.subject, null);
+  });
+
+  it("is unroutable with no thread id and no message id (legacy issues)", () => {
+    assert.deepEqual(lib.resolveIssueRoute({ stateEntry: { reporterEmail: "a@b.co" } }), {
+      threadId: null,
+      messageId: null,
+      subject: null,
+      to: "a@b.co",
+      routable: false,
+    });
+    assert.equal(lib.resolveIssueRoute().routable, false);
+    assert.equal(lib.resolveIssueRoute({ stateEntry: "junk", footer: "junk" }).routable, false);
+  });
+});
+
+describe("getIssueRoute (state file + mocked gh)", () => {
+  async function withState(contents, fn) {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "github-sync-route-"));
+    const file = path.join(dir, "state.json");
+    try {
+      if (contents != null) await fsp.writeFile(file, JSON.stringify(contents));
+      await fn(file);
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  const SINGLETON_BODY = `Repro steps.
+
+<!-- drafto-support-agent v1
+reporter-email: jakub@anderwald.info
+reporter-allowlisted: true
+zoho-thread-id: null
+zoho-message-id: 1791172614617005600
+-->`;
+
+  it("uses the supplied body and makes no gh call", async () => {
+    lib._setExecFileForTests(makeExecFile([]));
+    await withState(
+      { issues: { 658: { reporterEmail: "jakub@anderwald.info", zohoSubject: "Focus bug" } } },
+      async (file) => {
+        const route = await lib.getIssueRoute(658, { stateFile: file, body: SINGLETON_BODY });
+        assert.equal(execCalls.length, 0);
+        assert.deepEqual(route, {
+          threadId: null,
+          messageId: "1791172614617005600",
+          subject: "Focus bug",
+          to: "jakub@anderwald.info",
+          routable: true,
+        });
+      },
+    );
+  });
+
+  it("fetches the body via `gh issue view` when none is supplied", async () => {
+    lib._setExecFileForTests(
+      makeExecFile([
+        {
+          match: (cmd, args) =>
+            cmd === "gh" && args[0] === "issue" && args[1] === "view" && args[2] === "360",
+          response: { stdout: JSON.stringify({ body: SINGLETON_BODY }) },
+        },
+      ]),
+    );
+    await withState({ issues: { 360: { reporterEmail: "x@y.co" } } }, async (file) => {
+      const route = await lib.getIssueRoute(360, { stateFile: file });
+      assert.equal(execCalls.length, 1);
+      assert.equal(route.messageId, "1791172614617005600");
+      assert.equal(route.to, "x@y.co");
+    });
+  });
+
+  it("handles a missing state file (ENOENT) as an empty state", async () => {
+    lib._setExecFileForTests(makeExecFile([]));
+    await withState(null, async (file) => {
+      const route = await lib.getIssueRoute(1, { stateFile: file, body: "no footer" });
+      assert.equal(route.routable, false);
+    });
+  });
+});
+
+describe("github-sync issue-route CLI", () => {
+  async function withDir(fn) {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "github-sync-cli-"));
+    try {
+      await fn(dir);
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("reads the body from stdin with --body-file - and prints the route JSON", async () => {
+    await withDir(async (dir) => {
+      const stateFile = path.join(dir, "state.json");
+      await fsp.writeFile(
+        stateFile,
+        JSON.stringify({
+          issues: {
+            658: {
+              reporterEmail: "jakub@anderwald.info",
+              zohoMessageId: "1791172614617005600",
+              zohoSubject: "Editor loses focus",
+            },
+          },
+        }),
+      );
+      const r = spawnSync(
+        "node",
+        [CLI, "issue-route", "658", "--body-file", "-", "--state-file", stateFile],
+        {
+          encoding: "utf8",
+          input: "<!-- drafto-support-agent v1\nzoho-thread-id: null\n-->",
+        },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(JSON.parse(r.stdout), {
+        threadId: null,
+        messageId: "1791172614617005600",
+        subject: "Editor loses focus",
+        to: "jakub@anderwald.info",
+        routable: true,
+      });
+    });
+  });
+
+  it("reads the body from a file path and reports unroutable issues", async () => {
+    await withDir(async (dir) => {
+      const bodyFile = path.join(dir, "body.md");
+      await fsp.writeFile(bodyFile, "Apps-Script-era issue, no footer");
+      const r = spawnSync(
+        "node",
+        [
+          CLI,
+          "issue-route",
+          "12",
+          "--body-file",
+          bodyFile,
+          "--state-file",
+          path.join(dir, "absent.json"),
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).routable, false);
+    });
+  });
+
+  it("requires an issue number", () => {
+    const r = spawnSync("node", [CLI, "issue-route"], { encoding: "utf8" });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /issue-route requires <issue-number>/);
+  });
+});
+
+describe("getStateChangeInfo — singleton footer (issue #658)", () => {
+  it("reports a footer `zoho-thread-id: null` as an empty string, not 'null'", async () => {
+    lib._setExecFileForTests(
+      makeExecFile([
+        {
+          match: (cmd, args) =>
+            cmd === "gh" && args[0] === "issue" && args[1] === "view" && args.includes("body"),
+          response: {
+            stdout: JSON.stringify({
+              body: "x\n\n<!-- drafto-support-agent v1\nzoho-thread-id: null\n-->",
+            }),
+          },
+        },
+        {
+          match: (cmd, args) =>
+            cmd === "gh" && args[0] === "issue" && args.includes("closedByPullRequestsReferences"),
+          response: { stdout: JSON.stringify({ closedByPullRequestsReferences: [] }) },
+        },
+        {
+          match: (cmd, args) => cmd === "gh" && args[0] === "api",
+          response: { stdout: "[]" },
+        },
+      ]),
+    );
+    const info = await lib.getStateChangeInfo(658);
+    assert.equal(info.zoho_thread_id, "");
+  });
+
+  it("skips the `gh issue view` body fetch when the caller supplies the body", async () => {
+    lib._setExecFileForTests(
+      makeExecFile([
+        {
+          match: (cmd, args) =>
+            cmd === "gh" && args[0] === "issue" && args.includes("closedByPullRequestsReferences"),
+          response: { stdout: JSON.stringify({ closedByPullRequestsReferences: [] }) },
+        },
+        {
+          match: (cmd, args) => cmd === "gh" && args[0] === "api",
+          response: { stdout: "[]" },
+        },
+      ]),
+    );
+    const info = await lib.getStateChangeInfo(349, {
+      body: "<!-- drafto-support-agent v1\nzoho-thread-id: 1777397751089013400\n-->",
+    });
+    assert.equal(info.zoho_thread_id, "1777397751089013400");
+    assert.equal(
+      execCalls.some((c) => c.args[0] === "issue" && c.args.includes("body")),
+      false,
+      "no body fetch",
+    );
   });
 });

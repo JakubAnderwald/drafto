@@ -167,6 +167,13 @@ describe("reporterFromBody", () => {
     assert.equal(r.zohoThreadId, "");
   });
 
+  it("returns an empty zohoThreadId for a first-contact `zoho-thread-id: null` footer", () => {
+    const body = `<!-- drafto-support-agent v1\nreporter-email: x@y\nzoho-thread-id: null\n-->`;
+    const r = reporterFromBody(body);
+    assert.equal(r.zohoThreadId, "");
+    assert.equal(r.email, "x@y");
+  });
+
   it("treats reporter-allowlisted: false as false (case-insensitive)", () => {
     const body = `<!-- drafto-support-agent v1\nreporter-allowlisted: False\nreporter-email: x@y\n-->`;
     const r = reporterFromBody(body);
@@ -463,6 +470,56 @@ describe("buildFactoryPlanBundle", () => {
     });
     assert.deepEqual(bundle.replan.triggerCommentIds, ["222", "333"]);
   });
+
+  it("passes the planner's reply directory through only in the shape bash builds", () => {
+    const build = (replyDir) =>
+      buildFactoryPlanBundle({
+        issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+        config: { phase: "A" },
+        repo: { nameWithOwner: "JakubAnderwald/drafto" },
+        replan: {
+          planCommentId: "111",
+          planCommentBody: "x",
+          triggerCommentIds: ["222"],
+          replyDir,
+        },
+      }).replan.replyDir;
+    assert.equal(
+      build("/Users/x/drafto-factory/logs/factory/replies/issue-718"),
+      "/Users/x/drafto-factory/logs/factory/replies/issue-718",
+    );
+    for (const bad of [
+      "/Users/x/drafto-factory/logs/factory/replies/../issue-718",
+      "/etc",
+      "",
+      undefined,
+      7,
+    ]) {
+      assert.equal(build(bad), null, JSON.stringify(bad));
+    }
+  });
+
+  it("passes the plan-reply markers bash built through, and drops anything else", () => {
+    const bundle = buildFactoryPlanBundle({
+      issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "A" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+      replan: {
+        planCommentId: "111",
+        planCommentBody: "x",
+        triggerCommentIds: ["222", "333"],
+        replyMarkers: [
+          { commentId: "222", marker: "drafto-factory-plan-reply-222" },
+          // Bash looks each marker up as a regex: only the exact shape passes.
+          { commentId: "333", marker: "drafto-factory-revise-reply-333" },
+          { commentId: "4.*", marker: "drafto-factory-plan-reply-4.*" },
+        ],
+      },
+    });
+    assert.deepEqual(bundle.replan.replyMarkers, [
+      { commentId: "222", marker: "drafto-factory-plan-reply-222" },
+    ]);
+  });
 });
 
 describe("buildFactoryImplementBundle", () => {
@@ -530,6 +587,68 @@ describe("buildFactoryImplementBundle", () => {
     assert.match(
       revision.revisionComments[0].body,
       /<comment>move the button top-right<\/comment>/,
+    );
+  });
+
+  it("passes the implementer's reply directory through only in the shape bash builds", () => {
+    const base = {
+      issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "B" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    };
+    assert.equal(buildFactoryImplementBundle(base).replyDir, null);
+    assert.equal(
+      buildFactoryImplementBundle({
+        ...base,
+        replyDir: "/Users/x/drafto-factory/logs/factory/replies/issue-9",
+      }).replyDir,
+      "/Users/x/drafto-factory/logs/factory/replies/issue-9",
+    );
+    assert.equal(buildFactoryImplementBundle({ ...base, replyDir: "/home/x" }).replyDir, null);
+  });
+
+  it("passes well-formed reply markers through and drops anything else", () => {
+    const base = {
+      issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "B" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    };
+    assert.deepEqual(buildFactoryImplementBundle(base).replyMarkers, [], "first run has none");
+    assert.deepEqual(
+      buildFactoryImplementBundle({
+        ...base,
+        replyMarkers: [
+          { commentId: "6067249983", marker: "drafto-factory-revise-reply-6067249983" },
+          { commentId: 77, marker: "drafto-factory-revise-reply-77" },
+        ],
+      }).replyMarkers,
+      [
+        { commentId: "6067249983", marker: "drafto-factory-revise-reply-6067249983" },
+        { commentId: "77", marker: "drafto-factory-revise-reply-77" },
+      ],
+    );
+    // Bash looks each marker up as a regex, so only the exact shape it builds
+    // for that comment may reach the implementer.
+    for (const bad of [
+      { commentId: "1", marker: "drafto-factory-revise-reply-1.*" },
+      { commentId: "1", marker: "drafto-factory-revise-reply-2" },
+      { commentId: "", marker: "drafto-factory-revise-reply-" },
+      { commentId: "1", marker: "drafto-factory-revise-noop" },
+      { commentId: "1.*", marker: "drafto-factory-revise-reply-1.*" },
+      "drafto-factory-revise-reply-1",
+      null,
+    ]) {
+      assert.deepEqual(
+        buildFactoryImplementBundle({ ...base, replyMarkers: [bad] }).replyMarkers,
+        [],
+        JSON.stringify(bad),
+      );
+    }
+    assert.deepEqual(
+      buildFactoryImplementBundle({ ...base, replyMarkers: "drafto-factory-revise-reply-1" })
+        .replyMarkers,
+      [],
+      "a bare string is not a list",
     );
   });
 
@@ -731,6 +850,24 @@ describe("buildFactoryInTestBundle", () => {
     assert.match(bundle.approvedPlan.bodyEnveloped, /the plan/);
   });
 
+  it("carries the CodeRabbit coverage note in its own field, apart from advisory", () => {
+    // ADR-0036: the note is not a check, so it never rides inside `advisory`.
+    const note = "CodeRabbit did not review a1b2c3d4e5f6 (the CodeRabbit CLI review failed)";
+    const bundle = buildFactoryInTestBundle({
+      ...base,
+      advisory: "SonarCloud",
+      crCoverageNote: note,
+    });
+    assert.equal(bundle.crCoverageNote, note);
+    assert.equal(bundle.advisory, "SonarCloud");
+  });
+
+  it("defaults the coverage note to empty and drops a non-string one", () => {
+    assert.equal(buildFactoryInTestBundle(base).crCoverageNote, "");
+    assert.equal(buildFactoryInTestBundle({ ...base, crCoverageNote: 42 }).crCoverageNote, "");
+    assert.equal(buildFactoryInTestBundle({ ...base, crCoverageNote: null }).crCoverageNote, "");
+  });
+
   it("normalises a missing betaDispatch to empty lists", () => {
     const bundle = buildFactoryInTestBundle(base);
     assert.deepEqual(bundle.betaDispatch, { dispatched: [], skipped: [], manualCommands: [] });
@@ -775,6 +912,15 @@ describe("buildFactoryInTestBundle", () => {
 
   it("requires issue.number", () => {
     assert.throws(() => buildFactoryInTestBundle({ issue: { title: "x" } }), /issue\.number/);
+  });
+
+  it("says which stage the scenario is written at (ADR-0053), intest by default", () => {
+    assert.equal(buildFactoryInTestBundle(base).stage, "intest");
+    assert.equal(buildFactoryInTestBundle({ ...base, stage: "testing" }).stage, "testing");
+    // Anything else reads as In Test, the long-standing wording.
+    for (const stage of ["Testing", "", null, 7, "verify"]) {
+      assert.equal(buildFactoryInTestBundle({ ...base, stage }).stage, "intest", String(stage));
+    }
   });
 
   it("surfaces host-validated screenshots from the body and comments", () => {
@@ -830,6 +976,37 @@ describe("buildFactoryWatchBundle", () => {
 
   it("requires issue.number", () => {
     assert.throws(() => buildFactoryWatchBundle({ issue: { title: "x" } }), /issue\.number/);
+  });
+
+  // ADR-0061: a conflict pass hands the agent the merge-main result.
+  it("carries the conflict pass's merge result, and null on any other pass", () => {
+    const base = {
+      issue: { number: 688, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "C" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    };
+    assert.equal(buildFactoryWatchBundle(base).mergeConflict, null);
+
+    const bundle = buildFactoryWatchBundle({
+      ...base,
+      mergeConflict: {
+        status: "conflicts",
+        before: "b".repeat(40),
+        mainSha: "a".repeat(40),
+        conflictedFiles: ["docs/adr/README.md", 42, ""],
+        adrCollisions: [
+          { number: "0059", files: ["0059-desktop-pkce.md", "0059-keep-login.md"] },
+          { number: "not-a-number", files: ["x.md"] },
+        ],
+        nextFreeAdr: "0061",
+      },
+    });
+    assert.deepEqual(bundle.mergeConflict, {
+      mainSha: "a".repeat(40),
+      conflictedFiles: ["docs/adr/README.md"],
+      adrCollisions: [{ number: "0059", files: ["0059-desktop-pkce.md", "0059-keep-login.md"] }],
+      nextFreeAdr: "0061",
+    });
   });
 
   it("surfaces host-validated screenshots from the body and every comment slice", () => {
@@ -939,12 +1116,16 @@ describe("factory-bundle CLI", () => {
         planCommentId: "999",
         planCommentBody: "prior plan",
         triggerCommentIds: ["888"],
+        replyMarkers: [{ commentId: "888", marker: "drafto-factory-plan-reply-888" }],
       },
     });
     assert.equal(r.status, 0, r.stderr);
     const bundle = JSON.parse(r.stdout);
     assert.equal(bundle.replan.planCommentId, "999");
     assert.deepEqual(bundle.replan.triggerCommentIds, ["888"]);
+    assert.deepEqual(bundle.replan.replyMarkers, [
+      { commentId: "888", marker: "drafto-factory-plan-reply-888" },
+    ]);
   });
 
   it("emits a factory_implement bundle and forwards screenshotSources", () => {
@@ -970,6 +1151,22 @@ describe("factory-bundle CLI", () => {
       ["https://user-images.githubusercontent.com/1/a.png"],
     );
     assert.deepEqual(bundle.comments, []);
+  });
+
+  it("forwards factory_implement replyMarkers through the CLI", () => {
+    const r = run({
+      kind: "factory_implement",
+      issue: { number: 42, title: "x", body: SAMPLE_BODY, labels: [] },
+      priorPr: { number: 7, url: "https://x/y/pull/7", headRef: "factory/issue-42", state: "OPEN" },
+      revisionComments: [{ id: 88, user: { login: "x" }, body: "run the scenario for me" }],
+      replyMarkers: [{ commentId: "88", marker: "drafto-factory-revise-reply-88" }],
+      config: { phase: "B" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout).replyMarkers, [
+      { commentId: "88", marker: "drafto-factory-revise-reply-88" },
+    ]);
   });
 
   it("emits a factory_watch bundle and forwards screenshotSources", () => {
@@ -1009,6 +1206,7 @@ describe("factory-bundle CLI", () => {
       platforms: { mobile: true, desktop: true, web: false },
       previewUrl: "",
       advisory: "CodeRabbit",
+      crCoverageNote: "CodeRabbit coverage of a1b2c3d4e5f6 unknown (lane error)",
       headSha: "a1b2c3d4e5f6a7b8",
       config: { phase: "C" },
       repo: { nameWithOwner: "JakubAnderwald/drafto" },
@@ -1021,6 +1219,7 @@ describe("factory-bundle CLI", () => {
     assert.deepEqual(bundle.platforms, { mobile: true, desktop: true, web: false });
     assert.deepEqual(bundle.prFiles, ["apps/mobile/x.ts", "apps/desktop/y.ts"]);
     assert.equal(bundle.advisory, "CodeRabbit");
+    assert.equal(bundle.crCoverageNote, "CodeRabbit coverage of a1b2c3d4e5f6 unknown (lane error)");
     assert.equal(bundle.headSha, "a1b2c3d4e5f6a7b8");
   });
 });

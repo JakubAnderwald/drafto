@@ -1,10 +1,12 @@
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { VERIFY_ISSUE_FIELDS } from "../lib/factory-state.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.resolve(HERE, "..", "lib", "state-cli.mjs");
@@ -370,6 +372,1138 @@ describe("factory:set-issue-field / get-issue", () => {
     const out = JSON.parse(r.stdout);
     assert.equal(out.attempts, 0);
     assert.equal(out.lastPlanAt, null);
+  });
+
+  it("accepts the CodeRabbit lane fields (a rejected one would fail silently under bash `|| true`)", () => {
+    for (const field of [
+      "crConvergedSha",
+      "crConvergedAt",
+      "crCoverageSha",
+      "crCoverage",
+      "crLastCoveredSha",
+      "crCliRuns",
+      "crCliFreePassSha",
+    ]) {
+      const r = run(["factory:set-issue-field", "42", field, "v1", "--state-file", stateFile]);
+      assert.equal(r.status, 0, `${field}: ${r.stderr}`);
+      assert.equal(readState().issues["42"][field], "v1");
+    }
+  });
+});
+
+describe("factory:cr-cli-* (CodeRabbit CLI lane, ADR-0036)", () => {
+  const T0 = "2026-09-12T20:00:00.000Z";
+  const SHA = "c".repeat(40);
+  const inFlight = {
+    runId: "run-9",
+    issue: "42",
+    pr: "600",
+    sha: SHA,
+    baseSha: null,
+    mode: "full",
+    pid: 321,
+    startedAt: T0,
+    deadlineAt: "2026-09-12T20:45:00.000Z",
+    runDir: "/tmp/run-9",
+    worktree: "/tmp/wt-9",
+  };
+
+  it("factory:cr-cli-status on a fresh file reports an idle, unpaused lane", () => {
+    const r = run(["factory:cr-cli-status", "--state-file", stateFile, "--now", T0]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      runs: [],
+      inFlight: null,
+      pausedUntil: null,
+      pausedReason: null,
+      usedLastHour: 0,
+      nextSlotAt: null,
+      paused: false,
+    });
+  });
+
+  it("factory:cr-cli-status derives usedLastHour / nextSlotAt from the ledger", () => {
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        crCli: {
+          runs: [
+            { runId: "r1", issue: "1", sha: SHA, startedAt: "2026-09-12T19:20:00.000Z" },
+            { runId: "r2", issue: "1", sha: SHA, startedAt: "2026-09-12T18:00:00.000Z" },
+          ],
+          inFlight,
+        },
+      }),
+    );
+    const r = run(["factory:cr-cli-status", "--state-file", stateFile, "--now", T0]);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.usedLastHour, 1);
+    assert.equal(out.nextSlotAt, "2026-09-12T20:20:00.000Z");
+    assert.equal(out.inFlight.runId, "run-9");
+    assert.equal(out.runs.length, 2);
+  });
+
+  it("factory:cr-cli-pause-until pauses only the lane, never the factory", () => {
+    const r = run([
+      "factory:cr-cli-pause-until",
+      "2026-09-12T22:50:00+02:00",
+      "rate_limited",
+      "--state-file",
+      stateFile,
+      "--now",
+      T0,
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      ok: true,
+      pausedUntil: "2026-09-12T20:50:00.000Z",
+      pausedReason: "rate_limited",
+    });
+    const state = readState();
+    assert.equal(state.crCli.pausedUntil, "2026-09-12T20:50:00.000Z");
+    assert.equal(state.paused, false);
+
+    const status = run(["factory:cr-cli-status", "--state-file", stateFile, "--now", T0]);
+    assert.equal(JSON.parse(status.stdout).paused, true);
+    // The factory-wide gate must stay open: exit 1 = not paused.
+    assert.equal(run(["factory:paused?", "--state-file", stateFile, "--now", T0]).status, 1);
+  });
+
+  it("factory:cr-cli-pause-until rejects a missing or invalid <until-iso>", () => {
+    const missing = run(["factory:cr-cli-pause-until", "--state-file", stateFile]);
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /requires <until-iso>/);
+    const bad = run(["factory:cr-cli-pause-until", "later", "--state-file", stateFile]);
+    assert.notEqual(bad.status, 0);
+    assert.match(bad.stderr, /invalid <until-iso>/);
+  });
+
+  it("factory:cr-cli-status clears and persists an expired lane pause", () => {
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        crCli: { pausedUntil: "2026-09-12T19:59:00.000Z", pausedReason: "rate_limited" },
+      }),
+    );
+    const r = run(["factory:cr-cli-status", "--state-file", stateFile, "--now", T0]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).paused, false);
+    assert.equal(readState().crCli.pausedUntil, null);
+    assert.equal(readState().crCli.pausedReason, null);
+  });
+
+  it("factory:cr-cli-resume clears the lane pause", () => {
+    writeFileSync(
+      stateFile,
+      JSON.stringify({ crCli: { pausedUntil: "2026-09-12T23:00:00.000Z", pausedReason: "auth" } }),
+    );
+    const r = run(["factory:cr-cli-resume", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), { ok: true, paused: false });
+    assert.equal(readState().crCli.pausedUntil, null);
+  });
+
+  it("factory:cr-cli-finish releases the matching in-flight run (default refund none)", () => {
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        issues: { 42: { crCliRuns: "1" } },
+        crCli: { runs: [{ runId: "run-9", issue: "42", sha: SHA, startedAt: T0 }], inFlight },
+      }),
+    );
+    const r = run(["factory:cr-cli-finish", "run-9", "--state-file", stateFile, "--now", T0]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      ok: true,
+      runId: "run-9",
+      refund: "none",
+      issue: "42",
+      // pid 321 is not this run's supervisor, whatever it is on this machine.
+      killed: false,
+    });
+    const state = readState();
+    assert.equal(state.crCli.inFlight, null);
+    assert.equal(state.crCli.runs.length, 1);
+    assert.equal(state.issues["42"].crCliRuns, "1");
+  });
+
+  it("factory:cr-cli-finish --refund spawn gives back the slot and the card run", () => {
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        issues: { 42: { crCliRuns: "1" } },
+        crCli: { runs: [{ runId: "run-9", issue: "42", sha: SHA, startedAt: T0 }], inFlight },
+      }),
+    );
+    const r = run([
+      "factory:cr-cli-finish",
+      "run-9",
+      "--refund",
+      "spawn",
+      "--state-file",
+      stateFile,
+      "--now",
+      T0,
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    const state = readState();
+    assert.deepEqual(state.crCli.runs, []);
+    assert.equal(state.issues["42"].crCliRuns, "0");
+  });
+
+  // A stand-in supervisor: its own process group (detached, like the real one),
+  // with the run id on its command line.
+  function startFakeSupervisor(runId) {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", runId], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    return child;
+  }
+
+  async function waitForExit(child, timeoutMs = 5000) {
+    if (child.exitCode !== null || child.signalCode !== null) return child.signalCode;
+    return Promise.race([
+      new Promise((resolve) => child.once("exit", (_code, signal) => resolve(signal))),
+      new Promise((resolve) => setTimeout(() => resolve("timeout"), timeoutMs)),
+    ]);
+  }
+
+  // A child writes its ready file once its SIGTERM handler is installed, so the
+  // test signals it only then — a fixed sleep loses that race on a loaded machine.
+  async function waitForFile(p, timeoutMs = 10_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (!existsSync(p)) {
+      if (Date.now() >= deadline) throw new Error(`${p} never appeared`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
+  // ADR-0037: a manual `coderabbit-cli.mjs review` holds the lane from its own,
+  // non-leader process whose argv carries the PR, not the run id.
+  const manualInFlight = (pid) => ({
+    runId: "pr637-dddddddddddd-20260914T180000Z",
+    issue: null,
+    pr: "637",
+    sha: SHA,
+    pid,
+    startedAt: T0,
+    deadlineAt: "2026-09-12T20:30:00.000Z",
+    manual: true,
+  });
+  // A stand-in that node really executes as coderabbit-cli.mjs, so its ps
+  // command line has the same shape as a real `review` process.
+  const startFakeManualReview = (pr) => {
+    const script = path.join(workdir, "coderabbit-cli.mjs");
+    writeFileSync(script, "setInterval(() => {}, 1000);\n");
+    return spawn(process.execPath, [script, "review", "--pr", pr], { stdio: "ignore" });
+  };
+  const writeManual = (pid) =>
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        crCli: {
+          runs: [{ runId: manualInFlight(pid).runId, issue: "pr-637", sha: SHA, startedAt: T0 }],
+          inFlight: manualInFlight(pid),
+        },
+      }),
+    );
+
+  it("factory:cr-cli-finish SIGTERMs a live manual review (its pid, not a group) before releasing", async () => {
+    const child = startFakeManualReview("637");
+    try {
+      await new Promise((resolve) => child.once("spawn", resolve));
+      writeManual(child.pid);
+      const exited = waitForExit(child);
+      const r = spawn(process.execPath, [
+        CLI,
+        "factory:cr-cli-finish",
+        manualInFlight(child.pid).runId,
+        "--state-file",
+        stateFile,
+        "--now",
+        T0,
+      ]);
+      let stdout = "";
+      r.stdout.on("data", (d) => (stdout += d));
+      const code = await new Promise((resolve) => r.once("close", resolve));
+      assert.equal(code, 0);
+      assert.equal(await exited, "SIGTERM");
+      const out = JSON.parse(stdout);
+      assert.equal(out.ok, true);
+      assert.equal(out.killed, true);
+      assert.equal(readState().crCli.inFlight, null);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+  });
+
+  it("factory:cr-cli-finish never signals a live pid that is not that PR's manual review", async () => {
+    const child = startFakeManualReview("6370");
+    try {
+      await new Promise((resolve) => child.once("spawn", resolve));
+      writeManual(child.pid);
+      const r = run([
+        "factory:cr-cli-finish",
+        manualInFlight(child.pid).runId,
+        "--state-file",
+        stateFile,
+        "--now",
+        T0,
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).killed, false);
+      assert.equal(child.exitCode, null);
+      assert.equal(child.signalCode, null);
+      assert.equal(readState().crCli.inFlight, null);
+    } finally {
+      child.kill("SIGKILL");
+    }
+  });
+
+  it("factory:cr-cli-finish SIGTERMs the live supervisor's process group before releasing the run", async () => {
+    const runId = "42-cccccccccccc-20260912T200000Z";
+    const child = startFakeSupervisor(runId);
+    try {
+      await new Promise((resolve) => child.once("spawn", resolve));
+      writeFileSync(
+        stateFile,
+        JSON.stringify({
+          issues: { 42: { crCliRuns: "1" } },
+          crCli: {
+            runs: [{ runId, issue: "42", sha: SHA, startedAt: T0 }],
+            inFlight: { ...inFlight, runId, pid: child.pid },
+          },
+        }),
+      );
+      const r = spawnSync(
+        "node",
+        [CLI, "factory:cr-cli-finish", runId, "--state-file", stateFile, "--now", T0],
+        { encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.ok, true);
+      assert.equal(out.killed, true);
+      assert.equal(await waitForExit(child), "SIGTERM");
+      assert.equal(readState().crCli.inFlight, null);
+    } finally {
+      try {
+        process.kill(child.pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+  });
+
+  it("factory:cr-cli-finish keeps the run in flight while a group member (the CLI) outlives the supervisor", async () => {
+    const runId = "42-eeeeeeeeeeee-20260912T210000Z";
+    // The leader stands in for the supervisor: it starts a SIGTERM-ignoring child
+    // in its own process group (the CLI), then exits on SIGTERM itself.
+    const ready = path.join(workdir, "group-member.ready");
+    const cliScript = [
+      "process.on('SIGTERM', () => {});",
+      `require('node:fs').writeFileSync(${JSON.stringify(ready)}, '');`,
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    // The leader's handler goes in synchronously before it spawns the child, so
+    // once the child's ready file exists both SIGTERM handlers are in place.
+    const leaderScript = [
+      "const { spawn } = require('node:child_process');",
+      "process.on('SIGTERM', () => process.exit(0));",
+      `spawn(process.execPath, ['-e', ${JSON.stringify(cliScript)}], { stdio: 'ignore' });`,
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const leader = spawn(process.execPath, ["-e", leaderScript, runId], {
+      detached: true,
+      stdio: "ignore",
+    });
+    leader.unref();
+    try {
+      await new Promise((resolve) => leader.once("spawn", resolve));
+      await waitForFile(ready);
+      writeFileSync(
+        stateFile,
+        JSON.stringify({ crCli: { runs: [], inFlight: { ...inFlight, runId, pid: leader.pid } } }),
+      );
+      const r = spawnSync(
+        "node",
+        [CLI, "factory:cr-cli-finish", runId, "--wait-ms", "600", "--state-file", stateFile],
+        { encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.ok, false, r.stdout);
+      assert.equal(out.reason, "supervisor-still-running");
+      assert.equal(readState().crCli.inFlight.runId, runId);
+    } finally {
+      try {
+        process.kill(-leader.pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+  });
+
+  it("factory:cr-cli-finish keeps the run in flight when the supervisor survives SIGTERM", async () => {
+    const runId = "42-dddddddddddd-20260912T210000Z";
+    const ready = path.join(workdir, "supervisor.ready");
+    const supervisorScript = [
+      "process.on('SIGTERM', () => {});",
+      `require('node:fs').writeFileSync(${JSON.stringify(ready)}, '');`,
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const child = spawn(process.execPath, ["-e", supervisorScript, runId], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    try {
+      await new Promise((resolve) => child.once("spawn", resolve));
+      await waitForFile(ready); // SIGTERM handler installed
+      const seeded = { crCli: { runs: [], inFlight: { ...inFlight, runId, pid: child.pid } } };
+      writeFileSync(stateFile, JSON.stringify(seeded));
+      const r = spawnSync(
+        "node",
+        [CLI, "factory:cr-cli-finish", runId, "--wait-ms", "400", "--state-file", stateFile],
+        { encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.ok, false);
+      assert.equal(out.reason, "supervisor-still-running");
+      // The signal went out, but the group survived it: not "killed".
+      assert.equal(out.signalled, true);
+      assert.equal(out.killed, false);
+      assert.equal(out.pid, child.pid);
+      // Nothing released: the gate must not start a second run meanwhile.
+      assert.equal(readState().crCli.inFlight.runId, runId);
+    } finally {
+      try {
+        process.kill(child.pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+  });
+
+  // A stand-in `ps` first on PATH for the spawned CLI (supervisorRunState runs a bare
+  // `ps`): it logs its args and prints a fixed process table, so a test pins how
+  // one snapshot is read instead of racing a real process's exit.
+  function withFakePs(name, rows) {
+    const bin = path.join(workdir, name);
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(path.join(bin, "ps.table"), rows.join("\n") + "\n");
+    writeFileSync(
+      path.join(bin, "ps"),
+      '#!/bin/sh\ndir=$(dirname "$0")\necho "$*" >> "$dir/ps.log"\ncat "$dir/ps.table"\n',
+      { mode: 0o755 },
+    );
+    const log = path.join(bin, "ps.log");
+    rmSync(log, { force: true });
+    return {
+      env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` },
+      calls: () => (existsSync(log) ? readFileSync(log, "utf8") : ""),
+    };
+  }
+  // Above macOS's 99999 and Linux's PID_MAX_LIMIT (2^22): no real process or
+  // group has it, so the SIGTERM to its group reaches nothing.
+  const FAKE_PID = 9_999_999;
+  const finishAgainstFakePs = (runId, ps) => {
+    writeFileSync(
+      stateFile,
+      JSON.stringify({ crCli: { runs: [], inFlight: { ...inFlight, runId, pid: FAKE_PID } } }),
+    );
+    const r = spawnSync(
+      "node",
+      [CLI, "factory:cr-cli-finish", runId, "--wait-ms", "0", "--state-file", stateFile],
+      { encoding: "utf8", env: ps.env },
+    );
+    assert.equal(r.status, 0, r.stderr);
+    // The CLI really read the fake table, not the machine's process list.
+    assert.match(ps.calls(), /-axo pid=,pgid=,stat=,command=/);
+    return JSON.parse(r.stdout);
+  };
+
+  // Mid-exit, ps prints the leader by its bare name, without the runId: "(node)"
+  // on macOS (a row seen there while the leader exited), "[node]" with procps.
+  for (const [platform, leaderRow] of [
+    ["macOS", `${FAKE_PID} ${FAKE_PID} ?Ns  (node)`],
+    ["Linux", `${FAKE_PID} ${FAKE_PID} R    [node]`],
+  ]) {
+    it(`factory:cr-cli-finish keeps the run in flight while its exiting leader's args are unreadable (${platform})`, () => {
+      const runId = "42-ffffffffffff-20260912T220000Z";
+      // ...while the CLI it started still runs in its group.
+      const ps = withFakePs(`ps-leader-exiting-${platform}`, [
+        leaderRow,
+        `${FAKE_PID + 1} ${FAKE_PID} SN   node coderabbit review`,
+      ]);
+      const out = finishAgainstFakePs(runId, ps);
+      assert.equal(out.ok, false, JSON.stringify(out));
+      assert.equal(out.reason, "supervisor-still-running");
+      assert.equal(out.signalled, true);
+      assert.equal(out.killed, false);
+      assert.equal(readState().crCli.inFlight.runId, runId);
+    });
+  }
+
+  it("factory:cr-cli-finish counts an exiting leader as live until it is gone, even alone", () => {
+    const runId = "42-ffffffffffff-20260912T220000Z";
+    const ps = withFakePs("ps-leader-exiting-alone", [`${FAKE_PID} ${FAKE_PID} ?Ns  (node)`]);
+    const out = finishAgainstFakePs(runId, ps);
+    assert.equal(out.ok, false, JSON.stringify(out));
+    assert.equal(out.reason, "supervisor-still-running");
+    assert.equal(readState().crCli.inFlight.runId, runId);
+  });
+
+  it("factory:cr-cli-finish still reads a live leader with a readable foreign command as a reused pid", () => {
+    const runId = "42-ffffffffffff-20260912T220000Z";
+    // Readable args without the runId: the pid was reused, so what shares its
+    // pgid is the new process's group, not this run's.
+    const ps = withFakePs("ps-pid-reused", [
+      `${FAKE_PID} ${FAKE_PID} Ss   node some-other-script.mjs`,
+      `${FAKE_PID + 1} ${FAKE_PID} S    node some-other-child.mjs`,
+    ]);
+    const out = finishAgainstFakePs(runId, ps);
+    assert.equal(out.ok, true, JSON.stringify(out));
+    assert.equal(out.killed, false);
+    assert.equal(readState().crCli.inFlight, null);
+  });
+
+  it("factory:cr-cli-finish rejects a malformed --wait-ms before signalling", () => {
+    writeFileSync(stateFile, JSON.stringify({ crCli: { runs: [], inFlight } }));
+    const r = run([
+      "factory:cr-cli-finish",
+      "run-9",
+      "--wait-ms",
+      "soon",
+      "--state-file",
+      stateFile,
+    ]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /invalid --wait-ms/);
+    assert.equal(readState().crCli.inFlight.runId, "run-9");
+  });
+
+  it("factory:cr-cli-finish leaves a live pid alone when its command is not this run's", async () => {
+    const child = startFakeSupervisor("some-other-run");
+    try {
+      await new Promise((resolve) => child.once("spawn", resolve));
+      writeFileSync(
+        stateFile,
+        JSON.stringify({ crCli: { runs: [], inFlight: { ...inFlight, pid: child.pid } } }),
+      );
+      const r = spawnSync(
+        "node",
+        [CLI, "factory:cr-cli-finish", "run-9", "--state-file", stateFile, "--now", T0],
+        { encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).killed, false);
+      assert.equal(await waitForExit(child, 300), "timeout");
+      assert.equal(readState().crCli.inFlight, null);
+    } finally {
+      try {
+        process.kill(child.pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+  });
+
+  it("factory:cr-cli-finish signals nothing on a mismatched runId or an invalid refund", async () => {
+    const runId = "42-cccccccccccc-20260912T210000Z";
+    const child = startFakeSupervisor(runId);
+    try {
+      await new Promise((resolve) => child.once("spawn", resolve));
+      writeFileSync(
+        stateFile,
+        JSON.stringify({ crCli: { runs: [], inFlight: { ...inFlight, runId, pid: child.pid } } }),
+      );
+      const mismatch = run(["factory:cr-cli-finish", "run-OTHER", "--state-file", stateFile]);
+      assert.equal(mismatch.status, 0, mismatch.stderr);
+      assert.equal(JSON.parse(mismatch.stdout).ok, false);
+      const bad = run([
+        "factory:cr-cli-finish",
+        runId,
+        "--refund",
+        "all",
+        "--state-file",
+        stateFile,
+      ]);
+      assert.notEqual(bad.status, 0);
+      assert.equal(await waitForExit(child, 300), "timeout");
+      assert.equal(readState().crCli.inFlight.runId, runId);
+    } finally {
+      try {
+        process.kill(child.pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+  });
+
+  it("factory:cr-cli-finish on a mismatched runId exits 0 with ok:false and writes nothing", () => {
+    const original = JSON.stringify({ crCli: { runs: [], inFlight } });
+    writeFileSync(stateFile, original);
+    const r = run(["factory:cr-cli-finish", "run-OTHER", "--state-file", stateFile, "--now", T0]);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, false);
+    assert.equal(out.reason, "run-id-mismatch");
+    assert.equal(readFileSync(stateFile, "utf8"), original);
+  });
+
+  it("factory:cr-cli-finish rejects a missing runId or an unknown refund kind", () => {
+    const missing = run(["factory:cr-cli-finish", "--state-file", stateFile]);
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /requires <runId>/);
+    writeFileSync(stateFile, JSON.stringify({ crCli: { runs: [], inFlight } }));
+    const bad = run([
+      "factory:cr-cli-finish",
+      "run-9",
+      "--refund",
+      "all",
+      "--state-file",
+      stateFile,
+    ]);
+    assert.notEqual(bad.status, 0);
+    assert.match(bad.stderr, /invalid refund/);
+  });
+
+  it("--help lists the lane subcommands", () => {
+    const r = run(["--help"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /factory:cr-cli-status/);
+    assert.match(r.stdout, /factory:cr-cli-pause-until/);
+    assert.match(r.stdout, /factory:cr-cli-resume/);
+    assert.match(r.stdout, /factory:cr-cli-finish/);
+  });
+});
+
+describe("factory:browser-status / factory:browser-reset (browser runner health)", () => {
+  const disabledRecord = {
+    consecutiveBad: 0,
+    lastResult: "guard-not-loaded",
+    lastResultAt: "2026-10-17T10:00:00.000Z",
+    unavailableSince: null,
+    reason: null,
+    alertedAt: "2026-10-17T10:00:00.000Z",
+    disabled: true,
+    disabledReason: "guard-not-loaded",
+  };
+  const empty = {
+    consecutiveBad: 0,
+    lastResult: null,
+    lastResultAt: null,
+    unavailableSince: null,
+    reason: null,
+    alertedAt: null,
+    disabled: false,
+    disabledReason: null,
+  };
+
+  it("factory:browser-status on a fresh file prints the empty record", () => {
+    const r = run(["factory:browser-status", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), empty);
+  });
+
+  it("factory:browser-status prints the stored record", () => {
+    writeFileSync(stateFile, JSON.stringify({ browser: disabledRecord }));
+    const r = run(["factory:browser-status", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), disabledRecord);
+  });
+
+  it("factory:browser-reset clears the disabled latch and leaves the rest of the state alone", () => {
+    writeFileSync(
+      stateFile,
+      JSON.stringify({ browser: disabledRecord, issues: { 42: { attempts: 2 } }, paused: true }),
+    );
+    const r = run(["factory:browser-reset", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), { ok: true, browser: empty });
+    const state = readState();
+    assert.deepEqual(state.browser, empty);
+    assert.equal(state.issues["42"].attempts, 2);
+    assert.equal(state.paused, true, "never touches the factory pause");
+  });
+
+  it("an unrelated write (factory:bump-attempts) keeps the browser record intact", () => {
+    writeFileSync(stateFile, JSON.stringify({ browser: disabledRecord, issues: {} }));
+    const r = run(["factory:bump-attempts", "42", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(readState().browser, disabledRecord);
+  });
+
+  it("factory:set-issue-field accepts the browser run fields", () => {
+    for (const [field, value] of [
+      ["browserRunSha", "a".repeat(40)],
+      ["browserRunAttempts", `${"a".repeat(40)}:1`],
+    ]) {
+      const r = run(["factory:set-issue-field", "42", field, value, "--state-file", stateFile]);
+      assert.equal(r.status, 0, `${field}: ${r.stderr}`);
+      assert.equal(readState().issues["42"][field], value);
+    }
+  });
+
+  it("--help lists the browser subcommands", () => {
+    const r = run(["--help"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /factory:browser-status/);
+    assert.match(r.stdout, /factory:browser-reset/);
+  });
+});
+
+describe("factory:verify-* (pre-In-Test verification stage, ADR-0053)", () => {
+  const T0 = "2026-10-20T20:00:00.000Z";
+  const SHA = "d".repeat(40);
+  // The list itself is pinned in factory-state.test.mjs.
+  const FIELDS = [...VERIFY_ISSUE_FIELDS];
+  // A reaped child's pid: no process and no process group to signal, so the
+  // CLI can never SIGTERM something unrelated on the test machine.
+  const DEAD_PID = spawnSync(process.execPath, ["-e", ""]).pid;
+  const inFlight = {
+    runId: "verify-42-dddddddddddd-20261020T200000Z",
+    issue: "42",
+    pr: "701",
+    sha: SHA,
+    pid: DEAD_PID,
+    startedAt: T0,
+    deadlineAt: "2026-10-20T20:30:00.000Z",
+    runDir: "/tmp/verify-run",
+    worktree: "/tmp/verify-wt",
+  };
+  const seed = (extra = {}) =>
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        issues: { 42: { verifySha: SHA, verifyShellAttempts: `${SHA}:1` } },
+        verify: { inFlight, pausedUntil: null, pausedReason: null },
+        ...extra,
+      }),
+    );
+
+  // A stand-in supervisor: its own process group (detached, like the real
+  // one), with the run id on its command line.
+  function startFakeSupervisor(runId, script = "setInterval(() => {}, 1000)") {
+    const child = spawn(process.execPath, ["-e", script, runId], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    return child;
+  }
+
+  async function waitForExit(child, timeoutMs = 5000) {
+    if (child.exitCode !== null || child.signalCode !== null) return child.signalCode;
+    return Promise.race([
+      new Promise((resolve) => child.once("exit", (_code, signal) => resolve(signal))),
+      new Promise((resolve) => setTimeout(() => resolve("timeout"), timeoutMs)),
+    ]);
+  }
+
+  function killQuietly(child) {
+    try {
+      process.kill(child.pid, "SIGKILL");
+    } catch {
+      /* already gone */
+    }
+  }
+
+  // bash writes these with `|| true`: a field missing from the allowlist would
+  // fail silently and the stage would re-initialise, re-post or loop.
+  it("factory:set-issue-field accepts every verify field", () => {
+    for (const field of FIELDS) {
+      const value = `${SHA}:1`;
+      const r = run(["factory:set-issue-field", "42", field, value, "--state-file", stateFile]);
+      assert.equal(r.status, 0, `${field}: ${r.stderr}`);
+      assert.equal(readState().issues["42"][field], value, field);
+    }
+  });
+
+  it("factory:verify-status on a fresh file reports an idle, unpaused lane and no issues", () => {
+    const r = run(["factory:verify-status", "--state-file", stateFile, "--now", T0]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      inFlight: null,
+      pausedUntil: null,
+      pausedReason: null,
+      paused: false,
+      issues: {},
+    });
+  });
+
+  it("factory:verify-status prints the in-flight run and only the issues with verify keys", () => {
+    seed({ issues: { 42: { verifySha: SHA }, 43: { lastPlanAt: T0, attempts: 1 } } });
+    const r = run(["factory:verify-status", "--state-file", stateFile, "--now", T0]);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.deepEqual(out.inFlight, inFlight);
+    assert.equal(out.paused, false);
+    assert.deepEqual(Object.keys(out.issues), ["42"]);
+    assert.deepEqual(Object.keys(out.issues["42"]), FIELDS);
+    assert.equal(out.issues["42"].verifySha, SHA);
+    assert.equal(out.issues["42"].verifyReportSha, null);
+  });
+
+  it("factory:verify-status reports an active lane pause, and clears and persists an expired one", () => {
+    seed({ verify: { pausedUntil: "2026-10-20T20:10:00.000Z", pausedReason: "memory" } });
+    const active = run(["factory:verify-status", "--state-file", stateFile, "--now", T0]);
+    assert.equal(JSON.parse(active.stdout).paused, true);
+    assert.equal(readState().verify.pausedReason, "memory");
+
+    const later = "2026-10-20T20:10:00.000Z";
+    const expired = run(["factory:verify-status", "--state-file", stateFile, "--now", later]);
+    assert.equal(expired.status, 0, expired.stderr);
+    assert.equal(JSON.parse(expired.stdout).paused, false);
+    assert.equal(readState().verify.pausedUntil, null);
+    assert.equal(readState().verify.pausedReason, null);
+  });
+
+  it("an unrelated write (factory:bump-attempts) keeps the verify ledger intact", () => {
+    const verify = { inFlight, pausedUntil: null, pausedReason: null, newerField: [1] };
+    writeFileSync(stateFile, JSON.stringify({ issues: {}, verify }));
+    const r = run(["factory:bump-attempts", "42", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(readState().verify, verify);
+  });
+
+  it("factory:verify-finish releases the matching run (default refund none)", () => {
+    seed();
+    const r = run(["factory:verify-finish", inFlight.runId, "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      ok: true,
+      runId: inFlight.runId,
+      refund: "none",
+      issue: "42",
+      sha: SHA,
+      // The supervisor is long gone: nothing to signal.
+      killed: false,
+    });
+    const state = readState();
+    assert.equal(state.verify.inFlight, null);
+    assert.equal(state.issues["42"].verifyShellAttempts, `${SHA}:1`);
+  });
+
+  it("factory:verify-finish --refund attempt gives the card's attempt back", () => {
+    seed();
+    const r = run([
+      "factory:verify-finish",
+      inFlight.runId,
+      "--refund",
+      "attempt",
+      "--state-file",
+      stateFile,
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(readState().verify.inFlight, null);
+    assert.equal(readState().issues["42"].verifyShellAttempts, `${SHA}:0`);
+  });
+
+  it("factory:verify-finish releases a never-attached run (pid null) at once", () => {
+    seed({ verify: { inFlight: { ...inFlight, pid: null } } });
+    const r = run(["factory:verify-finish", inFlight.runId, "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).ok, true);
+    assert.equal(readState().verify.inFlight, null);
+  });
+
+  it("factory:verify-finish on a mismatched runId exits 0 with ok:false and writes nothing", () => {
+    seed();
+    const original = readFileSync(stateFile, "utf8");
+    const r = run(["factory:verify-finish", "verify-OTHER", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, false);
+    assert.equal(out.reason, "run-id-mismatch");
+    assert.equal(readFileSync(stateFile, "utf8"), original);
+  });
+
+  it("factory:verify-finish rejects a missing runId, an unknown refund or a bad --wait-ms", () => {
+    const missing = run(["factory:verify-finish", "--state-file", stateFile]);
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /requires <runId>/);
+    seed();
+    const badRefund = run([
+      "factory:verify-finish",
+      inFlight.runId,
+      "--refund",
+      "spawn",
+      "--state-file",
+      stateFile,
+    ]);
+    assert.notEqual(badRefund.status, 0);
+    assert.match(badRefund.stderr, /invalid refund/);
+    const badWait = run([
+      "factory:verify-finish",
+      inFlight.runId,
+      "--wait-ms",
+      "-1",
+      "--state-file",
+      stateFile,
+    ]);
+    assert.notEqual(badWait.status, 0);
+    assert.match(badWait.stderr, /invalid --wait-ms/);
+    assert.equal(readState().verify.inFlight.runId, inFlight.runId);
+  });
+
+  it("factory:verify-finish SIGTERMs the live supervisor's process group before releasing", async () => {
+    const child = startFakeSupervisor(inFlight.runId);
+    try {
+      await new Promise((resolve) => child.once("spawn", resolve));
+      seed({ verify: { inFlight: { ...inFlight, pid: child.pid } } });
+      const r = spawnSync(
+        "node",
+        [CLI, "factory:verify-finish", inFlight.runId, "--state-file", stateFile],
+        { encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.ok, true);
+      assert.equal(out.killed, true);
+      assert.equal(await waitForExit(child), "SIGTERM");
+      assert.equal(readState().verify.inFlight, null);
+    } finally {
+      killQuietly(child);
+    }
+  });
+
+  it("factory:verify-finish leaves a live pid alone when its command is not this run's", async () => {
+    const child = startFakeSupervisor("some-other-run");
+    try {
+      await new Promise((resolve) => child.once("spawn", resolve));
+      seed({ verify: { inFlight: { ...inFlight, pid: child.pid } } });
+      const r = run(["factory:verify-finish", inFlight.runId, "--state-file", stateFile]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).killed, false);
+      assert.equal(await waitForExit(child, 300), "timeout");
+      assert.equal(readState().verify.inFlight, null);
+    } finally {
+      killQuietly(child);
+    }
+  });
+
+  it("factory:verify-finish keeps the run in flight when the supervisor survives SIGTERM", async () => {
+    const ready = path.join(workdir, "verify-supervisor.ready");
+    const child = startFakeSupervisor(
+      inFlight.runId,
+      [
+        "process.on('SIGTERM', () => {});",
+        `require('node:fs').writeFileSync(${JSON.stringify(ready)}, '');`,
+        "setInterval(() => {}, 1000);",
+      ].join("\n"),
+    );
+    try {
+      await new Promise((resolve) => child.once("spawn", resolve));
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(ready)) {
+        if (Date.now() >= deadline) throw new Error("supervisor never became ready");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      seed({ verify: { inFlight: { ...inFlight, pid: child.pid } } });
+      const r = spawnSync(
+        "node",
+        [
+          CLI,
+          "factory:verify-finish",
+          inFlight.runId,
+          "--wait-ms",
+          "400",
+          "--state-file",
+          stateFile,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.ok, false);
+      assert.equal(out.reason, "supervisor-still-running");
+      assert.equal(out.signalled, true);
+      assert.equal(out.killed, false);
+      assert.equal(out.pid, child.pid);
+      // Nothing released: the lane must not start a second run beside it.
+      assert.equal(readState().verify.inFlight.runId, inFlight.runId);
+      assert.equal(readState().issues["42"].verifyShellAttempts, `${SHA}:1`);
+    } finally {
+      killQuietly(child);
+    }
+  });
+
+  it("factory:verify-reset clears the verify keys and the shared browser-run keys, nothing else", () => {
+    const issue = Object.fromEntries(FIELDS.map((f) => [f, `${SHA}:1`]));
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        issues: {
+          42: { ...issue, browserRunSha: SHA, intestCommentSha: SHA, attempts: 2 },
+          43: { verifySha: SHA },
+        },
+      }),
+    );
+    const r = run(["factory:verify-reset", "42", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      ok: true,
+      cleared: [...FIELDS, "browserRunSha"],
+      issueNumber: "42",
+    });
+    const state = readState();
+    for (const f of FIELDS) assert.equal(state.issues["42"][f], null, f);
+    // The browser runner skips a head browserRunSha names: kept, the new round
+    // would never get a browser verdict.
+    assert.equal(state.issues["42"].browserRunSha, null);
+    assert.equal(state.issues["42"].intestCommentSha, SHA);
+    assert.equal(state.issues["42"].attempts, 2);
+    assert.equal(state.issues["43"].verifySha, SHA, "other cards untouched");
+  });
+
+  it("factory:verify-reset refuses (exit 0, nothing written) while the lane runs for that issue", () => {
+    seed();
+    const original = readFileSync(stateFile, "utf8");
+    const r = run(["factory:verify-reset", "42", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, false);
+    assert.equal(out.reason, "run-in-flight");
+    assert.equal(out.inFlight.runId, inFlight.runId);
+    assert.equal(readFileSync(stateFile, "utf8"), original);
+  });
+
+  it("factory:verify-reset on an issue with nothing to clear writes nothing", () => {
+    const r = run(["factory:verify-reset", "999", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), { ok: true, cleared: [], issueNumber: "999" });
+    assert.equal(existsSync(stateFile), false);
+  });
+
+  it("factory:verify-reset rejects a missing or malformed issue number", () => {
+    const missing = run(["factory:verify-reset", "--state-file", stateFile]);
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /requires <issue>/);
+    const typo = run(["factory:verify-reset", "#465", "--state-file", stateFile]);
+    assert.notEqual(typo.status, 0);
+    assert.match(typo.stderr, /invalid issue number/);
+  });
+
+  it("factory:verify-pause-until pauses only the lane, never the factory", () => {
+    const r = run([
+      "factory:verify-pause-until",
+      "2026-10-20T22:30:00+02:00",
+      "memory",
+      "--state-file",
+      stateFile,
+      "--now",
+      T0,
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      ok: true,
+      pausedUntil: "2026-10-20T20:30:00.000Z",
+      pausedReason: "memory",
+    });
+    assert.equal(readState().verify.pausedUntil, "2026-10-20T20:30:00.000Z");
+    assert.equal(readState().paused, false);
+    const status = run(["factory:verify-status", "--state-file", stateFile, "--now", T0]);
+    assert.equal(JSON.parse(status.stdout).paused, true);
+    // The factory-wide gate stays open: exit 1 = not paused.
+    assert.equal(run(["factory:paused?", "--state-file", stateFile, "--now", T0]).status, 1);
+  });
+
+  it("factory:verify-pause-until rejects a missing or invalid <until-iso>", () => {
+    const missing = run(["factory:verify-pause-until", "--state-file", stateFile]);
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /requires <until-iso>/);
+    const bad = run(["factory:verify-pause-until", "later", "--state-file", stateFile]);
+    assert.notEqual(bad.status, 0);
+    assert.match(bad.stderr, /invalid <until-iso>/);
+  });
+
+  it("factory:verify-resume clears the lane pause and keeps the in-flight run", () => {
+    seed({
+      verify: { inFlight, pausedUntil: "2026-10-20T23:00:00.000Z", pausedReason: "memory" },
+    });
+    const r = run(["factory:verify-resume", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), { ok: true, paused: false });
+    const { verify } = readState();
+    assert.equal(verify.pausedUntil, null);
+    assert.equal(verify.pausedReason, null);
+    assert.equal(verify.inFlight.runId, inFlight.runId);
+  });
+
+  // A supervisor that, on SIGTERM, rewrites the state file before exiting:
+  // the factory's tick writing during verify-finish's wait.
+  async function finishWhileFactoryWrites(stateOnSigterm) {
+    const ready = path.join(workdir, "verify-writer.ready");
+    if (existsSync(ready)) rmSync(ready);
+    const child = startFakeSupervisor(
+      inFlight.runId,
+      [
+        "const fs = require('node:fs');",
+        "process.on('SIGTERM', () => {",
+        `  fs.writeFileSync(${JSON.stringify(stateFile)}, ${JSON.stringify(JSON.stringify(stateOnSigterm))});`,
+        "  process.exit(0);",
+        "});",
+        `fs.writeFileSync(${JSON.stringify(ready)}, '');`,
+        "setInterval(() => {}, 1000);",
+      ].join("\n"),
+    );
+    try {
+      await new Promise((resolve) => child.once("spawn", resolve));
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(ready)) {
+        if (Date.now() >= deadline) throw new Error("supervisor never became ready");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      seed({ verify: { inFlight: { ...inFlight, pid: child.pid } } });
+      const r = spawnSync(
+        "node",
+        [CLI, "factory:verify-finish", inFlight.runId, "--state-file", stateFile],
+        { encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      return { out: JSON.parse(r.stdout) };
+    } finally {
+      killQuietly(child);
+    }
+  }
+
+  it("factory:verify-finish succeeds when the factory released the run during the wait", async () => {
+    const released = { issues: {}, verify: { inFlight: null } };
+    const { out } = await finishWhileFactoryWrites(released);
+    assert.deepEqual(out, {
+      ok: true,
+      runId: inFlight.runId,
+      releasedBy: "factory",
+      killed: true,
+    });
+    assert.deepEqual(readState(), released, "the factory's write stands");
+  });
+
+  it("factory:verify-finish never releases a run whose pid changed during the wait", async () => {
+    // A tick attached a newer supervisor for the same runId: this command
+    // checked and signalled the old pid only.
+    const reattached = { verify: { inFlight: { ...inFlight, pid: DEAD_PID } } };
+    const { out } = await finishWhileFactoryWrites(reattached);
+    assert.equal(out.ok, false);
+    assert.equal(out.reason, "supervisor-attached-meanwhile");
+    assert.equal(out.pid, DEAD_PID);
+    assert.equal(readState().verify.inFlight.runId, inFlight.runId, "nothing released");
+  });
+
+  it("--help lists the verify subcommands", () => {
+    const r = run(["--help"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /factory:verify-status/);
+    assert.match(r.stdout, /factory:verify-finish <runId>/);
+    assert.match(r.stdout, /factory:verify-pause-until <until-iso>/);
+    assert.match(r.stdout, /factory:verify-resume/);
+    assert.match(r.stdout, /factory:verify-reset <issue>/);
   });
 });
 

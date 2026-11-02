@@ -3,6 +3,7 @@ import { synchronize } from "@nozbe/watermelondb/sync";
 import type { Database as WMDatabase } from "@nozbe/watermelondb";
 import type { SyncPullResult } from "@nozbe/watermelondb/sync";
 
+import { isVisibleRemoteChange } from "@drafto/shared";
 import type { Database } from "@drafto/shared";
 
 import { supabase } from "@/lib/supabase";
@@ -72,11 +73,14 @@ function mapAttachmentRow(row: AttachmentRow): SyncRecord {
 async function fetchTable<T>(
   table: "notebooks" | "notes" | "attachments",
   timestampCol: string,
-  lastPulledAt: number | undefined,
+  lastPulledAt: number | null | undefined,
   mapFn: (row: T) => SyncRecord,
 ): Promise<SyncRecord[]> {
   let query = supabase.from(table).select("*");
-  if (lastPulledAt !== undefined) {
+  // A first sync applies no cursor; the unpaged query is still capped at the
+  // API's max_rows. WatermelonDB passes `lastPulledAt: null`, not `undefined`
+  // as its type suggests, when this database has never pulled.
+  if (lastPulledAt != null) {
     query = query.gt(timestampCol, toISO(lastPulledAt));
   }
   const { data, error } = await query;
@@ -84,13 +88,17 @@ async function fetchTable<T>(
   return (data as T[]).map(mapFn);
 }
 
-function splitChanges(records: SyncRecord[], isFirstSync: boolean): SyncTableChanges {
-  if (isFirstSync) {
-    return { created: records, updated: [], deleted: [] };
-  }
-  // On incremental sync, all returned records are treated as updated.
-  // WatermelonDB handles the case where an "updated" record doesn't
-  // exist locally — it creates it automatically.
+/**
+ * Every pulled record goes to WatermelonDB as `updated`, on a first sync too,
+ * and runSync passes `sendCreatedAsUpdated: true` to synchronize(). An
+ * incremental pull can't tell a row created on another device from one this
+ * device already has, so WatermelonDB creates any `updated` record missing
+ * locally; the flag stops it logging "[Sync] Server wants client to update
+ * record …, but it doesn't exist locally" for each one. While the flag is on,
+ * WatermelonDB logs an error whenever a pull sends `created` records, so
+ * `created` stays empty.
+ */
+function splitChanges(records: SyncRecord[]): SyncTableChanges {
   return { created: [], updated: records, deleted: [] };
 }
 
@@ -106,9 +114,11 @@ async function getServerTimestamp(): Promise<number> {
   return Date.now() - 5000;
 }
 
-async function pullChanges({ lastPulledAt }: { lastPulledAt?: number }): Promise<SyncPullResult> {
-  const isFirstSync = lastPulledAt === undefined;
-
+async function pullChanges({
+  lastPulledAt,
+}: {
+  lastPulledAt?: number | null;
+}): Promise<SyncPullResult> {
   const [notebooks, notes, attachments, serverTimestamp] = await Promise.all([
     fetchTable<NotebookRow>("notebooks", "updated_at", lastPulledAt, mapNotebookRow),
     fetchTable<NoteRow>("notes", "updated_at", lastPulledAt, mapNoteRow),
@@ -118,9 +128,9 @@ async function pullChanges({ lastPulledAt }: { lastPulledAt?: number }): Promise
 
   return {
     changes: {
-      notebooks: splitChanges(notebooks, isFirstSync),
-      notes: splitChanges(notes, isFirstSync),
-      attachments: splitChanges(attachments, isFirstSync),
+      notebooks: splitChanges(notebooks),
+      notes: splitChanges(notes),
+      attachments: splitChanges(attachments),
     },
     timestamp: serverTimestamp,
   };
@@ -209,7 +219,14 @@ async function pushAttachmentChanges(changes: SyncTableChanges) {
         mime_type: r.mime_type as string,
       }));
     if (uploadedRows.length > 0) {
-      const { error } = await supabase.from("attachments").upsert(uploadedRows);
+      // ON CONFLICT DO NOTHING: uploadSingleAttachment() usually inserted this
+      // row already, and public.attachments has no UPDATE policy (attachments
+      // are immutable), so a plain upsert's ON CONFLICT DO UPDATE is rejected
+      // by RLS. That failure aborted every later sync after the notes had been
+      // pushed, so nothing was ever marked synced.
+      const { error } = await supabase
+        .from("attachments")
+        .upsert(uploadedRows, { onConflict: "id", ignoreDuplicates: true });
       if (error) throw new Error(`Push attachments (create) failed: ${error.message}`);
     }
   }
@@ -260,11 +277,17 @@ function isNetworkError(error: unknown): boolean {
 }
 
 export interface SyncResult {
-  conflictCount: number;
+  /**
+   * Pulled records that changed something the user can see on this device
+   * (see `isVisibleRemoteChange`). Not a conflict count: WatermelonDB calls the
+   * resolver for every pulled record that differs locally, including the echo
+   * of this device's own push.
+   */
+  remoteChangeCount: number;
 }
 
-export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
-  let conflictCount = 0;
+async function runSync(db: WMDatabase): Promise<SyncResult> {
+  let remoteChangeCount = 0;
 
   try {
     await synchronize({
@@ -272,10 +295,13 @@ export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
       pullChanges,
       pushChanges,
       migrationsEnabledAtVersion: 1,
-      conflictResolver: (_table, _local, remote, resolved) => {
-        // Server-wins: use the resolved record (which already prefers remote)
-        // but count the conflict so we can notify the user
-        conflictCount += 1;
+      // Pulls send every record as `updated`; see splitChanges.
+      sendCreatedAsUpdated: true,
+      conflictResolver: (table, local, _remote, resolved) => {
+        // Keep WatermelonDB's resolution (remote values, except for columns
+        // this device changed since its last push), and count it only when it
+        // changes what the user sees, so the echo of our own push stays quiet.
+        if (isVisibleRemoteChange(table, local, resolved)) remoteChangeCount += 1;
         return resolved;
       },
     });
@@ -286,5 +312,51 @@ export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
     throw error;
   }
 
-  return { conflictCount };
+  return { remoteChangeCount };
+}
+
+// Module-level in-flight coalesce. WatermelonDB forbids concurrent
+// synchronize() calls, and sign-out's best-effort final sync can run alongside
+// the DatabaseProvider's own sync. When a sync is already running, additional
+// callers await the same promise instead of starting a second synchronize().
+// This changes no pull/push/conflict behaviour — it only serialises re-entrant
+// callers.
+let inFlightSync: Promise<SyncResult> | null = null;
+// Bumped whenever the in-flight sync is invalidated (sign-out). A sync captures
+// the generation it started under; only a settling sync of the current
+// generation is allowed to clear the latch — so a stale sync can't null out a
+// newer session's sync. See resetSyncState.
+let syncGeneration = 0;
+
+/**
+ * Invalidate any in-flight sync so the NEXT `syncDatabase()` starts its own
+ * `synchronize()` instead of awaiting a prior session's. Sign-out calls this
+ * after destroying the Supabase session: a final sync that timed out but is
+ * still running must not be handed to the next signed-in user, whose initial
+ * sync would otherwise await the previous user's `runSync()` and write that
+ * user's pulled records into the freshly-reset local database. The stale sync
+ * is left to settle in the background; the generation guard below stops its
+ * cleanup from clobbering the next session's latch.
+ */
+export function resetSyncState(): void {
+  syncGeneration += 1;
+  inFlightSync = null;
+}
+
+export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
+  if (inFlightSync) {
+    return inFlightSync;
+  }
+  const generation = syncGeneration;
+  const pending = runSync(db);
+  inFlightSync = pending;
+  try {
+    return await pending;
+  } finally {
+    // Only clear the latch if it still points at THIS run and no reset (or
+    // newer sync) superseded us — otherwise we'd null out a live sync.
+    if (syncGeneration === generation && inFlightSync === pending) {
+      inFlightSync = null;
+    }
+  }
 }

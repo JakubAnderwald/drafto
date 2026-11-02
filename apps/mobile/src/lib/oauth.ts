@@ -8,9 +8,29 @@ import {
 } from "@react-native-google-signin/google-signin";
 import Constants from "expo-constants";
 
-import { supabase } from "./supabase";
+import {
+  APPLE_SIGN_IN_FAILED_MESSAGE,
+  AUTH_CALLBACK_URL,
+  takeAuthCallback,
+  withBrowserSignIn,
+} from "@/lib/auth-callback";
+import { supabase } from "@/lib/supabase";
 
 const googleWebClientId = Constants.expoConfig?.extra?.googleWebClientId as string;
+
+/**
+ * `String.valueOf(CommonStatusCodes.DEVELOPER_ERROR)` — the code the Android module rejects with
+ * when the calling app is not registered as an Android-type OAuth client in the Cloud project
+ * (client missing, or its signing-certificate SHA-1 does not match the installed build).
+ * `statusCodes` does not expose it, so it has to be matched as a literal.
+ */
+const DEVELOPER_ERROR_CODE = "10";
+
+/**
+ * When `configure()` has not run, the Android module rejects with the native module NAME as the
+ * code and this exact message — so this failure can only be recognised by its message.
+ */
+const UNCONFIGURED_CLIENT_MESSAGE = "apiClient is null - call configure() first";
 
 export function configureGoogleSignIn() {
   if (!googleWebClientId) {
@@ -23,10 +43,56 @@ export function configureGoogleSignIn() {
   });
 }
 
+function nativeErrorDetails(err: unknown): { code: string | null; message: string } {
+  const code = isErrorWithCode(err) ? err.code : null;
+  const message =
+    typeof err === "object" && err !== null && "message" in err && typeof err.message === "string"
+      ? err.message
+      : "";
+  return { code, message };
+}
+
+/**
+ * Turns a native Google Sign-In rejection into a message a user can act on — and that an operator
+ * can diagnose from a screenshot. Every message carries the native status code verbatim, because
+ * the code is what distinguishes a device problem from a Cloud-Console misconfiguration.
+ */
+export function describeGoogleSignInError(err: unknown): string {
+  const { code, message } = nativeErrorDetails(err);
+
+  if (code === DEVELOPER_ERROR_CODE || message.includes("DEVELOPER_ERROR")) {
+    return (
+      `Google Sign-In failed (code ${code ?? DEVELOPER_ERROR_CODE}): this build is not registered ` +
+      `with Google. The Android OAuth client is missing, or its signing-certificate SHA-1 does not match.`
+    );
+  }
+
+  if (code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
+    return `Google Sign-In failed (code ${code}): Google Play services is unavailable or out of date on this device.`;
+  }
+
+  if (message === UNCONFIGURED_CLIENT_MESSAGE) {
+    const codeSuffix = code ? ` (code ${code})` : "";
+    return `Google Sign-In failed${codeSuffix}: the Google client was not configured. Restart the app and try again.`;
+  }
+
+  if (code) {
+    return `Google Sign-In failed (code ${code}). Please try again.`;
+  }
+
+  return "Google Sign-In failed. Please try again.";
+}
+
 export async function signInWithGoogle(): Promise<{ error: string | null }> {
   try {
     await GoogleSignin.hasPlayServices();
     const response = await GoogleSignin.signIn();
+
+    // v16 resolves `{ type: "cancelled", data: null }` rather than throwing when the user dismisses
+    // the sheet, so cancellation has to be caught here — never as an error banner.
+    if (response.type === "cancelled") {
+      return { error: null };
+    }
 
     if (!response.data?.idToken) {
       return { error: "Google Sign-In did not return an ID token." };
@@ -48,7 +114,13 @@ export async function signInWithGoogle(): Promise<{ error: string | null }> {
         return { error: null };
       }
     }
-    return { error: "Google Sign-In failed. Please try again." };
+
+    // Stable, greppable prefix so `adb logcat -s ReactNativeJS:V` surfaces the native code on a
+    // release build without needing a debugger attached.
+    const { code, message } = nativeErrorDetails(err);
+    console.warn("[oauth][google] sign-in failed", { code, message });
+
+    return { error: describeGoogleSignInError(err) };
   }
 }
 
@@ -86,7 +158,7 @@ async function signInWithAppleNative(): Promise<{ error: string | null }> {
     if ((err as { code?: string }).code === "ERR_REQUEST_CANCELED") {
       return { error: null };
     }
-    return { error: "Apple Sign-In failed. Please try again." };
+    return { error: APPLE_SIGN_IN_FAILED_MESSAGE };
   }
 }
 
@@ -95,7 +167,7 @@ async function signInWithAppleBrowser(): Promise<{ error: string | null }> {
     const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
       provider: "apple",
       options: {
-        redirectTo: "drafto://auth/callback",
+        redirectTo: AUTH_CALLBACK_URL,
         skipBrowserRedirect: true,
       },
     });
@@ -104,24 +176,23 @@ async function signInWithAppleBrowser(): Promise<{ error: string | null }> {
       return { error: oauthError?.message ?? "Failed to start Apple Sign-In." };
     }
 
-    const result = await WebBrowser.openAuthSessionAsync(data.url, "drafto://auth/callback");
+    const authUrl = data.url;
+    // The outcome is awaited inside the session, so a router copy of the same
+    // redirect waits to see whether this session took it.
+    return await withBrowserSignIn(async () => {
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, AUTH_CALLBACK_URL);
 
-    if (result.type === "success" && result.url) {
-      const url = new URL(result.url);
-      const code = url.searchParams.get("code");
-
-      if (code) {
-        const { error } = await supabase.auth.exchangeCodeForSession(code);
-        if (error) {
-          return { error: error.message };
-        }
+      // Anything but a completed redirect means the user closed the browser. A
+      // redirect that lands after all is signed in from the router's copy.
+      if (result.type !== "success" || !result.url) {
         return { error: null };
       }
-    }
 
-    // User cancelled or dismissed
-    return { error: null };
+      // The client runs PKCE (ADR-0045), so the callback carries a one-time `code`.
+      // The router saw the same redirect; the code is exchanged once for both.
+      return (await takeAuthCallback(result.url)) ?? { error: APPLE_SIGN_IN_FAILED_MESSAGE };
+    });
   } catch {
-    return { error: "Apple Sign-In failed. Please try again." };
+    return { error: APPLE_SIGN_IN_FAILED_MESSAGE };
   }
 }

@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { View, Text, TextInput, StyleSheet, ActivityIndicator } from "react-native";
-import { useEditorBridge, TenTapStartKit } from "@10play/tentap-editor";
+import { useEditorBridge } from "@10play/tentap-editor";
 import type { WebViewMessageEvent } from "react-native-webview";
 
 import { useNote } from "@/hooks/use-note";
@@ -10,11 +10,15 @@ import { database, Note, type Attachment } from "@/db";
 import {
   contentToTiptap,
   formatRelativeTime,
-  tiptapToBlocknote,
   toAttachmentUrl,
-  migrateSignedUrlsToAttachmentUrls,
+  isNoOpContentSave,
+  queueNoteWrite,
+  rememberContentBaseline,
+  serializeEditorContent,
+  serializeLoadedDoc,
+  withTimeout,
 } from "@drafto/shared";
-import type { TipTapDoc, TipTapNode } from "@drafto/shared";
+import type { ContentBaseline, TipTapDoc, TipTapNode } from "@drafto/shared";
 import { getSignedUrl } from "@/lib/data";
 import { colors, fontFamily, fontSizes, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
@@ -23,6 +27,7 @@ import { Badge, type BadgeVariant } from "@/components/ui/badge";
 import { CalendarIcon } from "@/components/ui/icons/calendar-icon";
 import { ClockIcon } from "@/components/ui/icons/clock-icon";
 import { NoteEditor } from "@/components/editor/note-editor";
+import { EDITOR_BRIDGE_EXTENSIONS } from "@/components/editor/editor-bridge-extensions";
 import { FindBar } from "@/components/editor/find-bar";
 import {
   findSearchJS,
@@ -84,21 +89,10 @@ async function buildInsertNode(attachment: Attachment): Promise<TipTapNode> {
 // canonical stored form, so persisting it back is non-destructive.
 const RESOLVE_TIMEOUT_MS = 8000;
 
-function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-  return new Promise<T>((resolve) => {
-    const timer = setTimeout(() => resolve(fallback), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      () => {
-        clearTimeout(timer);
-        resolve(fallback);
-      },
-    );
-  });
-}
+// Bound on reading the editor back after a load to add its serialisation to
+// the no-op-save baseline. On timeout the autosave gate still opens without it,
+// so a stuck WebView reply can never strand the loading overlay.
+const BASELINE_READ_TIMEOUT_MS = 3000;
 
 /** Imperative signal from the native Find menu items (Cmd+F / Cmd+G / Cmd+Shift+G). */
 export interface FindSignal {
@@ -122,46 +116,80 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
   // noteIdRef tracks which note the panel is currently *displaying* (updated as
   // soon as a note switch is intended). loadedNoteIdRef tracks which note's
   // content is actually inside the WebView editor right now (set only after
-  // setContent has completed). Autosave is gated on loadedNoteIdRef so that
-  // onChange events emitted before a load finishes are ignored and cannot leak
-  // the previous note's content into the newly-switched-to row.
+  // setContent has completed and the editor has been read back). Autosave is
+  // gated on loadedNoteIdRef so that onChange events emitted before a load
+  // finishes are ignored and cannot leak the previous note's content into the
+  // newly-switched-to row.
   const noteIdRef = useRef<string | undefined>(undefined);
   const loadedNoteIdRef = useRef<string | null>(null);
+  // Per-note serialisations of the content each note was loaded with, so a
+  // save that would only write it back (the load's own content-update echo,
+  // or an edit reverted before the debounce fired) is skipped instead of
+  // bumping updated_at (issue #654). Keyed by noteId, not "the current note": a
+  // flush-on-switch save for the outgoing note runs after the refs have moved on.
+  const contentBaselinesRef = useRef(new Map<string, ContentBaseline>());
+  // In-flight content writes per note, so each no-op check runs only after the
+  // note's earlier writes have committed and it sees the row they produced.
+  const contentWriteQueuesRef = useRef(new Map<string, Promise<unknown>>());
   // Tracks the last-handled findSignal so the effect fires once per menu press.
   const lastFindNonceRef = useRef(0);
   // Debounces find-as-you-type so a full ProseMirror tree-walk (the injected
   // engine re-scans every text node per search) doesn't run on every keystroke.
   const findDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The query that debounce is still holding back, or null once it has been searched.
+  const pendingFindQueryRef = useRef<string | null>(null);
 
-  const handleSaveTitle = useCallback(async (payload: TitleSavePayload) => {
+  // Both save handlers resolve false when they wrote nothing, so the status
+  // badge stays clear instead of reporting "Saved" for a skipped save.
+  const handleSaveTitle = useCallback(async (payload: TitleSavePayload): Promise<boolean> => {
     // Don't persist an empty/whitespace title over a real one (a transient clear,
     // or a flush firing mid-edit).
-    if (!payload.title.trim()) return;
+    if (!payload.title.trim()) return false;
     const record = await database.get<Note>("notes").find(payload.noteId);
-    await database.write(async () => {
+    return database.write(async () => {
+      // WatermelonDB bumps updated_at on every update, so an unchanged title
+      // (e.g. an edit reverted before the debounce fired) must not be written
+      // (issue #654). Compared inside the writer, so earlier writes have landed.
+      if (record.title === payload.title) return false;
       await record.update((n) => {
         n.title = payload.title;
       });
+      return true;
     });
   }, []);
 
-  const handleSaveContent = useCallback(async (payload: ContentSavePayload) => {
-    const record = await database.get<Note>("notes").find(payload.noteId);
-    if (isCatastrophicEraseSave(record.content, payload.content)) {
-      console.warn(
-        "[note-editor] tripwire blocked catastrophic-erase save",
-        `noteId=${payload.noteId}`,
-        `existing=${record.content?.length ?? 0}B`,
-        `incoming=${payload.content.length}B`,
-      );
-      return;
-    }
-    await database.write(async () => {
-      await record.update((n) => {
-        n.content = payload.content;
-      });
-    });
-  }, []);
+  const handleSaveContent = useCallback(
+    (payload: ContentSavePayload) =>
+      queueNoteWrite(contentWriteQueuesRef.current, payload.noteId, async (): Promise<boolean> => {
+        const record = await database.get<Note>("notes").find(payload.noteId);
+        // WatermelonDB bumps updated_at on every update, so writing back
+        // unchanged content would still re-sort the note list and sync a
+        // "modification" to every device. Merely opening a note must never
+        // write it.
+        if (isNoOpContentSave(contentBaselinesRef.current, payload, record.content)) return false;
+        if (isCatastrophicEraseSave(record.content, payload.content)) {
+          console.warn(
+            "[note-editor] tripwire blocked catastrophic-erase save",
+            `noteId=${payload.noteId}`,
+            `existing=${record.content?.length ?? 0}B`,
+            `incoming=${payload.content.length}B`,
+          );
+          return false;
+        }
+        // After this write the row holds the editor's own serialisation, so a
+        // repeat of this payload matches it (even once a sync pull has handed
+        // it back with jsonb's key order), while the load baseline (tied to the
+        // row's previous content) stops matching — reverting to the pre-save
+        // text is a real change and persists.
+        await database.write(async () => {
+          await record.update((n) => {
+            n.content = payload.content;
+          });
+        });
+        return true;
+      }),
+    [],
+  );
 
   const titleAutoSave = useAutoSave<TitleSavePayload>({ onSave: handleSaveTitle });
   const contentAutoSave = useAutoSave<ContentSavePayload>({ onSave: handleSaveContent });
@@ -203,14 +231,9 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
         // Re-check after the async boundary; the user may have switched notes
         // while getJSON() was in flight.
         if (loadedNoteIdRef.current !== loaded || noteIdRef.current !== loaded) return;
-        const blocknote = tiptapToBlocknote(json as TipTapDoc);
-        // Rewrite any signed URLs back to attachment:// before persisting so
-        // expiring tokens never reach the DB. Display-side resolution happens
-        // on note load via resolveTipTapImageUrls.
-        const migrated = migrateSignedUrlsToAttachmentUrls(blocknote);
         contentAutoSaveRef.current?.trigger({
           noteId: loaded,
-          content: JSON.stringify(migrated),
+          content: serializeEditorContent(json as TipTapDoc),
         });
       })
       .catch((err: unknown) => {
@@ -222,7 +245,7 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
   const editor = useEditorBridge({
     autofocus: false,
     avoidIosKeyboard: false,
-    bridgeExtensions: TenTapStartKit,
+    bridgeExtensions: EDITOR_BRIDGE_EXTENSIONS,
     initialContent: "",
     onChange: handleEditorChange,
   });
@@ -254,6 +277,7 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
   // and on explicit close.
   const resetFind = useCallback(() => {
     if (findDebounceRef.current) clearTimeout(findDebounceRef.current);
+    pendingFindQueryRef.current = null;
     setFindVisible(false);
     setFindQuery("");
     setFindMatch({ current: 0, total: 0 });
@@ -279,7 +303,8 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
       setLoadFailed(false);
       setTitle(note.title || "");
 
-      const rawContent = note.content || "";
+      const storedContent = note.content;
+      const rawContent = storedContent || "";
       let cancelled = false;
       const targetNoteId = note.id;
 
@@ -294,20 +319,60 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
         }
       };
 
+      // This note's baseline: serialisations of the stored content it was
+      // loaded from that a save may write back without changing anything.
+      const serializations: string[] = [];
+      const addBaselineSerialization = (serialize: () => string) => {
+        try {
+          serializations.push(serialize());
+          rememberContentBaseline(contentBaselinesRef.current, targetNoteId, {
+            stored: storedContent,
+            serializations: [...serializations],
+          });
+        } catch (err) {
+          console.warn("[note-editor] baseline serialisation failed", err);
+        }
+      };
+
+      // setContent() only posts a message to the WebView, and the web editor
+      // answers it with a content-update — so opening the gate right after
+      // setContent let that echo through as an "edit" (issue #654). Read the
+      // editor back first: setContent and getJSON share tentap's single
+      // postMessage channel, so the reply reflects the loaded document, and its
+      // serialised form joins this note's baseline. The echo then either
+      // arrives while the gate is still closed or serialises to the baseline;
+      // neither writes. A failed or timed-out read still opens the gate — never
+      // a stuck note. Saves to a structured or empty note are then checked
+      // against the converter's own serialisation, recorded before setContent;
+      // legacy plain text has none (ProseMirror's HTML parse decides its
+      // shape), so for it only the stored-content comparison remains.
+      const seedBaselineAndMarkLoaded = async () => {
+        const json = await withTimeout<object | null>(
+          editorRef.current?.getJSON() ?? Promise.resolve(null),
+          BASELINE_READ_TIMEOUT_MS,
+          null,
+        );
+        if (cancelled || noteIdRef.current !== targetNoteId) return;
+        if (json) addBaselineSerialization(() => serializeEditorContent(json as TipTapDoc));
+        markLoaded();
+      };
+
       (async () => {
         try {
           const load = classifyNoteContent(rawContent);
           if (load.kind === "empty") {
+            addBaselineSerialization(() => serializeLoadedDoc({ type: "doc", content: [] }));
             editorRef.current?.setContent("");
-            markLoaded();
+            await seedBaselineAndMarkLoaded();
             return;
           }
           if (load.kind === "html") {
             editorRef.current?.setContent(load.html);
-            markLoaded();
+            await seedBaselineAndMarkLoaded();
             return;
           }
           const tiptapDoc = contentToTiptap(load.value);
+          addBaselineSerialization(() => serializeLoadedDoc(tiptapDoc));
           // Resolve image URLs defensively, bounded by a timeout so a
           // never-settling signed-URL fetch can't strand the loading overlay: a
           // resolution failure/timeout degrades images to placeholders rather
@@ -319,7 +384,7 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
           );
           if (cancelled || noteIdRef.current !== targetNoteId) return;
           editorRef.current?.setContent(resolved);
-          markLoaded();
+          await seedBaselineAndMarkLoaded();
         } catch (err) {
           // Intentionally do NOT call editor.setContent("") or markLoaded()
           // here. Wiping the editor would only cosmetically clear the WebView;
@@ -389,13 +454,16 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
         // so a mid-flight note switch can't reroute the write. Supersede any
         // pending pre-attachment autosave first — otherwise its 800 ms debounce
         // would fire later with stale content and strand the inline reference.
-        const blocks = tiptapToBlocknote(appended);
-        const migrated = migrateSignedUrlsToAttachmentUrls(blocks);
-        const serialized = JSON.stringify(migrated);
-        const record = await database.get<Note>("notes").find(active);
-        await database.write(async () => {
-          await record.update((n) => {
-            n.content = serialized;
+        const serialized = serializeEditorContent(appended);
+        // Queued behind the note's earlier content writes, like handleSaveContent,
+        // so a save that removes the attachment again is compared against the
+        // row this write produced, not the one before it.
+        await queueNoteWrite(contentWriteQueuesRef.current, active, async () => {
+          const record = await database.get<Note>("notes").find(active);
+          await database.write(async () => {
+            await record.update((n) => {
+              n.content = serialized;
+            });
           });
         });
         // Cancel after the authoritative write completes — `setContent(appended)`
@@ -440,18 +508,36 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
       setFindQuery(query);
       // Debounce the (full-document) search; the input stays responsive.
       if (findDebounceRef.current) clearTimeout(findDebounceRef.current);
-      findDebounceRef.current = setTimeout(() => injectFind(findSearchJS(query)), 150);
+      pendingFindQueryRef.current = query;
+      findDebounceRef.current = setTimeout(() => {
+        pendingFindQueryRef.current = null;
+        injectFind(findSearchJS(query));
+      }, 150);
     },
     [injectFind],
   );
 
-  const handleFindNext = useCallback(() => {
-    injectFind(findStepJS("next"));
+  // Runs a search still waiting on its debounce, and reports whether it did. That
+  // search lands on the first match, so a step that arrives before it (Return typed
+  // straight after the query) must not step too, or it walks the previous query's matches.
+  const flushPendingFind = useCallback(() => {
+    const query = pendingFindQueryRef.current;
+    if (query === null) return false;
+    if (findDebounceRef.current) clearTimeout(findDebounceRef.current);
+    pendingFindQueryRef.current = null;
+    injectFind(findSearchJS(query));
+    return true;
   }, [injectFind]);
 
+  const handleFindNext = useCallback(() => {
+    if (flushPendingFind()) return;
+    injectFind(findStepJS("next"));
+  }, [flushPendingFind, injectFind]);
+
   const handleFindPrev = useCallback(() => {
+    if (flushPendingFind()) return;
     injectFind(findStepJS("prev"));
-  }, [injectFind]);
+  }, [flushPendingFind, injectFind]);
 
   const handleFindClose = useCallback(() => {
     resetFind();

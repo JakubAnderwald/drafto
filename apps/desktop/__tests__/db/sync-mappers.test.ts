@@ -1,6 +1,10 @@
 const mockSynchronize = jest.fn().mockResolvedValue(undefined);
 const mockSupabaseFrom = jest.fn();
 const mockSupabaseRpc = jest.fn();
+// pullChanges refuses to run without a session, so every pull here has one.
+const mockGetSession = jest
+  .fn()
+  .mockResolvedValue({ data: { session: { access_token: "token" } }, error: null });
 
 jest.mock("@nozbe/watermelondb/sync", () => ({
   synchronize: (...args: unknown[]) => mockSynchronize(...args),
@@ -10,13 +14,14 @@ jest.mock("@/lib/supabase", () => ({
   supabase: {
     from: (...args: unknown[]) => mockSupabaseFrom(...args),
     rpc: (...args: unknown[]) => mockSupabaseRpc(...args),
+    auth: { getSession: (...args: unknown[]) => mockGetSession(...args) },
   },
 }));
 
 import { syncDatabase } from "@/db/sync";
 
 type SynchronizeOpts = {
-  pullChanges: (params: { lastPulledAt?: number }) => Promise<{
+  pullChanges: (params: { lastPulledAt?: number | null }) => Promise<{
     changes: Record<string, { created: unknown[]; updated: unknown[]; deleted: string[] }>;
     timestamp: number;
   }>;
@@ -109,27 +114,43 @@ describe("sync pull/push behavior", () => {
         return mockQueryChain([]);
       });
 
-      // Let synchronize invoke pullChanges (and a no-op pushChanges)
+      // Let synchronize invoke pullChanges (and a no-op pushChanges). A first
+      // sync gets `lastPulledAt: null` from WatermelonDB, not `undefined`.
       mockSynchronize.mockImplementation(async (opts: SynchronizeOpts) => {
-        await opts.pullChanges({ lastPulledAt: undefined });
+        await opts.pullChanges({ lastPulledAt: null });
       });
     }
 
-    it("returns all records as created on first sync (lastPulledAt=undefined)", async () => {
-      setupPullMocks([sampleNotebookRow], [sampleNoteRow], [sampleAttachmentRow]);
+    // WatermelonDB passes null; undefined (what its type suggests) works the same.
+    it.each([null, undefined])(
+      "returns all records as updated on a first sync (lastPulledAt: %p)",
+      async (lastPulledAt) => {
+        expect.assertions(6);
+        setupPullMocks([sampleNotebookRow], [sampleNoteRow], [sampleAttachmentRow]);
 
-      mockSynchronize.mockImplementation(async (opts: SynchronizeOpts) => {
-        const result = await opts.pullChanges({ lastPulledAt: undefined });
+        mockSynchronize.mockImplementation(async (opts: SynchronizeOpts) => {
+          const result = await opts.pullChanges({ lastPulledAt });
 
-        expect(result.changes.notebooks.created).toHaveLength(1);
-        expect(result.changes.notebooks.updated).toHaveLength(0);
-        expect(result.changes.notes.created).toHaveLength(1);
-        expect(result.changes.notes.updated).toHaveLength(0);
-        expect(result.changes.attachments.created).toHaveLength(1);
-        expect(result.changes.attachments.updated).toHaveLength(0);
-      });
+          expect(result.changes.notebooks.created).toHaveLength(0);
+          expect(result.changes.notebooks.updated).toHaveLength(1);
+          expect(result.changes.notes.created).toHaveLength(0);
+          expect(result.changes.notes.updated).toHaveLength(1);
+          expect(result.changes.attachments.created).toHaveLength(0);
+          expect(result.changes.attachments.updated).toHaveLength(1);
+        });
+
+        await syncDatabase(mockDb);
+      },
+    );
+
+    it("tells synchronize that pulled records arrive as updated (sendCreatedAsUpdated)", async () => {
+      setupPullMocks();
 
       await syncDatabase(mockDb);
+
+      expect(mockSynchronize).toHaveBeenCalledWith(
+        expect.objectContaining({ sendCreatedAsUpdated: true }),
+      );
     });
 
     it("returns all records as updated on incremental sync", async () => {
@@ -151,8 +172,8 @@ describe("sync pull/push behavior", () => {
       setupPullMocks([sampleNotebookRow]);
 
       mockSynchronize.mockImplementation(async (opts: SynchronizeOpts) => {
-        const result = await opts.pullChanges({ lastPulledAt: undefined });
-        const nb = result.changes.notebooks.created[0] as Record<string, unknown>;
+        const result = await opts.pullChanges({ lastPulledAt: null });
+        const nb = result.changes.notebooks.updated[0] as Record<string, unknown>;
 
         expect(nb.id).toBe("nb-1");
         expect(nb.remote_id).toBe("nb-1");
@@ -169,8 +190,8 @@ describe("sync pull/push behavior", () => {
       setupPullMocks([], [sampleNoteRow]);
 
       mockSynchronize.mockImplementation(async (opts: SynchronizeOpts) => {
-        const result = await opts.pullChanges({ lastPulledAt: undefined });
-        const note = result.changes.notes.created[0] as Record<string, unknown>;
+        const result = await opts.pullChanges({ lastPulledAt: null });
+        const note = result.changes.notes.updated[0] as Record<string, unknown>;
 
         expect(note.id).toBe("note-1");
         expect(note.remote_id).toBe("note-1");
@@ -191,8 +212,8 @@ describe("sync pull/push behavior", () => {
       setupPullMocks([], [trashedNote]);
 
       mockSynchronize.mockImplementation(async (opts: SynchronizeOpts) => {
-        const result = await opts.pullChanges({ lastPulledAt: undefined });
-        const note = result.changes.notes.created[0] as Record<string, unknown>;
+        const result = await opts.pullChanges({ lastPulledAt: null });
+        const note = result.changes.notes.updated[0] as Record<string, unknown>;
 
         expect(note.is_trashed).toBe(true);
         expect(note.trashed_at).toBe(new Date("2025-06-05T10:00:00.000Z").getTime());
@@ -206,8 +227,8 @@ describe("sync pull/push behavior", () => {
       setupPullMocks([], [noteNullContent]);
 
       mockSynchronize.mockImplementation(async (opts: SynchronizeOpts) => {
-        const result = await opts.pullChanges({ lastPulledAt: undefined });
-        const note = result.changes.notes.created[0] as Record<string, unknown>;
+        const result = await opts.pullChanges({ lastPulledAt: null });
+        const note = result.changes.notes.updated[0] as Record<string, unknown>;
 
         expect(note.content).toBeNull();
       });
@@ -219,8 +240,8 @@ describe("sync pull/push behavior", () => {
       setupPullMocks([], [], [sampleAttachmentRow]);
 
       mockSynchronize.mockImplementation(async (opts: SynchronizeOpts) => {
-        const result = await opts.pullChanges({ lastPulledAt: undefined });
-        const att = result.changes.attachments.created[0] as Record<string, unknown>;
+        const result = await opts.pullChanges({ lastPulledAt: null });
+        const att = result.changes.attachments.updated[0] as Record<string, unknown>;
 
         expect(att.id).toBe("att-1");
         expect(att.remote_id).toBe("att-1");
@@ -241,7 +262,7 @@ describe("sync pull/push behavior", () => {
       });
 
       mockSynchronize.mockImplementation(async (opts: SynchronizeOpts) => {
-        const result = await opts.pullChanges({ lastPulledAt: undefined });
+        const result = await opts.pullChanges({ lastPulledAt: null });
         expect(result.timestamp).toBe(new Date("2025-06-10T12:00:00.000Z").getTime());
       });
 
@@ -258,7 +279,7 @@ describe("sync pull/push behavior", () => {
       const before = Date.now() - 5000;
 
       mockSynchronize.mockImplementation(async (opts: SynchronizeOpts) => {
-        const result = await opts.pullChanges({ lastPulledAt: undefined });
+        const result = await opts.pullChanges({ lastPulledAt: null });
         const after = Date.now() - 5000;
         // Fallback uses Date.now() - 5000
         expect(result.timestamp).toBeGreaterThanOrEqual(before);
@@ -284,12 +305,29 @@ describe("sync pull/push behavior", () => {
       expect(gtCall[1]).toBe(new Date(1717200000000).toISOString());
     });
 
+    it.each([null, undefined])(
+      "applies no gt filter on a first sync (lastPulledAt: %p)",
+      async (lastPulledAt) => {
+        const chain = mockQueryChain([]);
+        mockSupabaseFrom.mockReturnValue(chain);
+
+        mockSynchronize.mockImplementation(async (opts: SynchronizeOpts) => {
+          await opts.pullChanges({ lastPulledAt });
+        });
+
+        await syncDatabase(mockDb);
+
+        expect(chain.select).toHaveBeenCalledWith("*");
+        expect(chain.gt).not.toHaveBeenCalled();
+      },
+    );
+
     it("throws when supabase fetch fails", async () => {
       const errorChain = mockQueryChain([], { message: "connection refused" });
       mockSupabaseFrom.mockReturnValue(errorChain);
 
       mockSynchronize.mockImplementation(async (opts: SynchronizeOpts) => {
-        await expect(opts.pullChanges({ lastPulledAt: undefined })).rejects.toThrow(
+        await expect(opts.pullChanges({ lastPulledAt: null })).rejects.toThrow(
           /Pull .* failed: connection refused/,
         );
       });
@@ -501,10 +539,13 @@ describe("sync pull/push behavior", () => {
 
       await syncDatabase(mockDb);
 
-      // Only the uploaded one should be upserted
-      expect(chains["attachments"].upsert).toHaveBeenCalledWith([
-        expect.objectContaining({ id: "att-1", file_name: "uploaded.png" }),
-      ]);
+      // Only the uploaded one should be inserted, with ON CONFLICT DO NOTHING:
+      // uploadSingleAttachment() may have inserted the row already, and the
+      // attachments table has no UPDATE policy, so a plain upsert is rejected.
+      expect(chains["attachments"].upsert).toHaveBeenCalledWith(
+        [expect.objectContaining({ id: "att-1", file_name: "uploaded.png" })],
+        { onConflict: "id", ignoreDuplicates: true },
+      );
     });
 
     it("skips notebook update without remote_id and logs warning", async () => {

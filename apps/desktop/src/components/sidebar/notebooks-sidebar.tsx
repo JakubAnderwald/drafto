@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -9,8 +9,11 @@ import {
   Alert,
 } from "react-native";
 import { Q } from "@nozbe/watermelondb";
+import type { AppleRevocationGrant } from "@drafto/shared";
 
+import { useNetworkStatus } from "@/hooks/use-network-status";
 import { useNotebooks } from "@/hooks/use-notebooks";
+import { useSafeSignOut } from "@/hooks/use-safe-sign-out";
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { database, Notebook, Note, Attachment } from "@/db";
@@ -18,6 +21,8 @@ import { generateId } from "@/lib/generate-id";
 import { colors, fontFamily, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { SyncStatus } from "@/components/sync-status";
+import { AppMenu } from "@/components/sidebar/app-menu";
+import { DeleteAccountPanel } from "@/components/sidebar/delete-account-panel";
 import { IconButton } from "@/components/ui/icon-button";
 import { PlusIcon } from "@/components/ui/icons/plus-icon";
 import { SearchIcon } from "@/components/ui/icons/search-icon";
@@ -42,14 +47,19 @@ export function NotebooksSidebar({
   onTriggerCreateHandled,
 }: NotebooksSidebarProps) {
   const { notebooks, loading } = useNotebooks();
-  const { user, signOut } = useAuth();
+  const { user, deleteAccount } = useAuth();
+  const { signOut, isSigningOut } = useSafeSignOut();
+  const { isConnected, isInternetReachable } = useNetworkStatus();
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+  // Unknown reachability (`null`) stays enabled; only an explicit `false` counts as offline.
+  const isOffline = !isConnected || isInternetReachable === false;
 
   const [isCreating, setIsCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
   // Allow programmatic trigger of create mode (from menu shortcut)
   useEffect(() => {
@@ -175,95 +185,161 @@ export function NotebooksSidebar({
     }
   }, []);
 
+  // Open-only: closing goes through the panel's Cancel / Escape, which stay disabled while a
+  // request is pending. A toggle could unmount the panel mid-request, hiding its result and
+  // letting a second DELETE go out.
+  const openDeleteAccountPanel = useCallback(() => setIsDeletingAccount(true), []);
+
+  // Sign-out and account deletion both wipe the device, so they never overlap. During a
+  // sign-out the panel cannot start a deletion: its confirm and Continue without Apple are
+  // disabled, and an Apple answer that lands meanwhile is dropped. Sign out does nothing while
+  // a deletion request is in flight (a successful deletion signs out by itself; after a failure
+  // it works again). It still works while the panel waits for Apple, before any request.
+  const deletionPendingRef = useRef(false);
+  const confirmDeleteAccount = useCallback(
+    async (appleRevocation?: AppleRevocationGrant, confirmedUserId?: string) => {
+      deletionPendingRef.current = true;
+      try {
+        return await deleteAccount(appleRevocation, confirmedUserId);
+      } finally {
+        deletionPendingRef.current = false;
+      }
+    },
+    [deleteAccount],
+  );
+  const signOutUnlessDeleting = useCallback(() => {
+    if (deletionPendingRef.current) return;
+    void signOut();
+  }, [signOut]);
+
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.appTitle}>Drafto</Text>
-        <IconButton onPress={onOpenSearch} accessibilityLabel="Search">
-          <SearchIcon size={18} color={semantic.fgMuted} />
-        </IconButton>
-      </View>
+      <AppMenu
+        onSignOut={signOutUnlessDeleting}
+        onDeleteAccount={openDeleteAccountPanel}
+        isOffline={isOffline}
+      >
+        {({ trigger, onAnchorLayout }) => (
+          <>
+            <View style={styles.header}>
+              <Text style={styles.appTitle}>Drafto</Text>
+              <IconButton onPress={onOpenSearch} accessibilityLabel="Search">
+                <SearchIcon size={18} color={semantic.fgMuted} />
+              </IconButton>
+            </View>
 
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionLabel}>NOTEBOOKS</Text>
-        <IconButton onPress={() => setIsCreating(true)} accessibilityLabel="New notebook">
-          <PlusIcon size={16} color={semantic.fgMuted} />
-        </IconButton>
-      </View>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionLabel}>NOTEBOOKS</Text>
+              <IconButton onPress={() => setIsCreating(true)} accessibilityLabel="New notebook">
+                <PlusIcon size={16} color={semantic.fgMuted} />
+              </IconButton>
+            </View>
 
-      {isCreating && (
-        <View style={styles.createRow}>
-          <TextInput
-            style={styles.input}
-            value={newName}
-            onChangeText={setNewName}
-            placeholder="Notebook name"
-            placeholderTextColor={semantic.fgSubtle}
-            autoFocus
-            onSubmitEditing={handleCreate}
-            // @ts-expect-error -- RN macOS supports onKeyDown but types are incomplete
-            onKeyDown={(e: { nativeEvent: { key: string } }) => {
-              if (e.nativeEvent.key === "Escape") {
-                setIsCreating(false);
-                setNewName("");
-              }
-            }}
-          />
-        </View>
-      )}
+            {isCreating && (
+              <View style={styles.createRow}>
+                <TextInput
+                  style={styles.input}
+                  value={newName}
+                  onChangeText={setNewName}
+                  placeholder="Notebook name"
+                  placeholderTextColor={semantic.fgSubtle}
+                  autoFocus
+                  onSubmitEditing={handleCreate}
+                  // @ts-expect-error -- RN macOS supports onKeyDown but types are incomplete
+                  onKeyDown={(e: { nativeEvent: { key: string } }) => {
+                    if (e.nativeEvent.key === "Escape") {
+                      setIsCreating(false);
+                      setNewName("");
+                    }
+                  }}
+                />
+              </View>
+            )}
 
-      {loading ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="small" color={colors.primary[600]} />
-        </View>
-      ) : (
-        <View style={styles.list}>
-          {notebooks.map((nb) => (
-            <NotebookRow
-              key={nb.id}
-              notebook={nb}
-              isSelected={!showTrash && nb.id === selectedNotebookId}
-              isEditing={editingId === nb.id}
-              editName={editName}
-              onSelect={() => onSelectNotebook(nb.id)}
-              onStartEdit={() => {
-                setEditingId(nb.id);
-                setEditName(nb.name);
-              }}
-              onEditNameChange={setEditName}
-              onSubmitRename={() => handleRename(nb)}
-              onCancelEdit={() => {
-                setEditingId(null);
-                setEditName("");
-              }}
-              onDelete={() => handleDelete(nb)}
-              styles={styles}
-            />
-          ))}
-        </View>
-      )}
+            {loading ? (
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="small" color={colors.primary[600]} />
+              </View>
+            ) : (
+              <View style={styles.list}>
+                {notebooks.map((nb) => (
+                  <NotebookRow
+                    key={nb.id}
+                    notebook={nb}
+                    isSelected={!showTrash && nb.id === selectedNotebookId}
+                    isEditing={editingId === nb.id}
+                    editName={editName}
+                    onSelect={() => onSelectNotebook(nb.id)}
+                    onStartEdit={() => {
+                      setEditingId(nb.id);
+                      setEditName(nb.name);
+                    }}
+                    onEditNameChange={setEditName}
+                    onSubmitRename={() => handleRename(nb)}
+                    onCancelEdit={() => {
+                      setEditingId(null);
+                      setEditName("");
+                    }}
+                    onDelete={() => handleDelete(nb)}
+                    styles={styles}
+                  />
+                ))}
+              </View>
+            )}
 
-      <View style={styles.footer}>
-        <Pressable
-          style={[styles.trashButton, showTrash && styles.trashButtonActive]}
-          onPress={onToggleTrash}
-          accessibilityLabel="Trash"
-          accessibilityRole="button"
-        >
-          <Text style={[styles.trashText, showTrash && styles.trashTextActive]}>Trash</Text>
-        </Pressable>
+            <View style={styles.footer}>
+              <Pressable
+                style={[styles.trashButton, showTrash && styles.trashButtonActive]}
+                onPress={onToggleTrash}
+                accessibilityLabel="Trash"
+                accessibilityRole="button"
+              >
+                <Text style={[styles.trashText, showTrash && styles.trashTextActive]}>Trash</Text>
+              </Pressable>
 
-        <SyncStatus />
+              <SyncStatus />
 
-        <View style={styles.userSection}>
-          <Text style={styles.userEmail} numberOfLines={1}>
-            {user?.email}
-          </Text>
-          <Pressable onPress={signOut} accessibilityLabel="Sign out" accessibilityRole="button">
-            <Text style={styles.signOutText}>Sign out</Text>
-          </Pressable>
-        </View>
-      </View>
+              {/* Last child of the footer, which is the last child of the AppMenu host: the menu
+                  opens above it, positioned from the host's bottom edge by this section's height.
+                  notebooks-sidebar.test.tsx checks that nothing renders below it. */}
+              <View
+                testID="sidebar-user-section"
+                style={styles.userSection}
+                onLayout={onAnchorLayout}
+              >
+                {/* While signing out (a last sync, maybe a confirmation, then the local wipe)
+                    the row says so, and the menu trigger is swapped out so a second sign-out
+                    cannot start. */}
+                <View style={styles.userRow}>
+                  <Text style={styles.userEmail} numberOfLines={1}>
+                    {isSigningOut ? "Signing out…" : user?.email}
+                  </Text>
+                  {isSigningOut ? (
+                    <ActivityIndicator
+                      size="small"
+                      color={colors.primary[600]}
+                      testID="sign-out-progress"
+                      accessibilityLabel="Signing out"
+                    />
+                  ) : (
+                    trigger
+                  )}
+                </View>
+                {/* Stays mounted during a sign-out, so a deletion already in flight keeps
+                    its progress and result; it just cannot be confirmed meanwhile. */}
+                {isDeletingAccount ? (
+                  <DeleteAccountPanel
+                    onCancel={() => setIsDeletingAccount(false)}
+                    onConfirm={confirmDeleteAccount}
+                    isOffline={isOffline}
+                    disabled={isSigningOut}
+                  />
+                ) : null}
+              </View>
+            </View>
+          </>
+        )}
+      </AppMenu>
     </View>
   );
 }
@@ -484,15 +560,15 @@ const createStyles = (semantic: SemanticColors) =>
       borderTopWidth: 1,
       borderTopColor: semantic.border,
     },
+    userRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.sm,
+    },
     userEmail: {
+      flex: 1,
       fontSize: fontSizes.sm,
       color: semantic.fgSubtle,
-      marginBottom: spacing.xs,
-      fontFamily: fontFamily.sans,
-    },
-    signOutText: {
-      fontSize: fontSizes.sm,
-      color: colors.primary[600],
       fontFamily: fontFamily.sans,
     },
   });

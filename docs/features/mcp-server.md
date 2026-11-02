@@ -19,21 +19,21 @@ The route is stateless: every POST is independent, and the transport is Streamab
 
 ## Code paths
 
-| Concern                               | Path                                               |
-| ------------------------------------- | -------------------------------------------------- |
-| MCP route (tool registry + transport) | `apps/web/src/app/api/mcp/route.ts`                |
-| Tool handler implementations          | `apps/web/src/lib/api/mcp-tools.ts`                |
-| Bearer-token authentication           | `apps/web/src/lib/api/mcp-auth.ts`                 |
-| API-key CRUD (list, generate)         | `apps/web/src/app/api/api-keys/route.ts`           |
-| API-key revoke                        | `apps/web/src/app/api/api-keys/[id]/route.ts`      |
-| API-key management UI (`/settings`)   | `apps/web/src/app/settings/page.tsx`               |
-| `api_keys` table + RLS                | `supabase/migrations/20260411000001_api_keys.sql`  |
-| BlockNote <-> Markdown conversion     | `packages/shared/src/editor/markdown-converter.ts` |
-| MCP Registry metadata                 | `server.json` (repo root)                          |
-| Auth tests                            | `apps/web/__tests__/unit/mcp-auth.test.ts`         |
-| Route tests                           | `apps/web/__tests__/unit/mcp-route.test.ts`        |
-| Tool handler tests                    | `apps/web/__tests__/unit/mcp-tools.test.ts`        |
-| API-key endpoint tests                | `apps/web/__tests__/unit/api-keys.test.ts`         |
+| Concern                               | Path                                                    |
+| ------------------------------------- | ------------------------------------------------------- |
+| MCP route (tool registry + transport) | `apps/web/src/app/api/mcp/route.ts`                     |
+| Tool handler implementations          | `apps/web/src/lib/api/mcp-tools.ts`                     |
+| Bearer-token authentication           | `apps/web/src/lib/api/mcp-auth.ts`                      |
+| API-key CRUD (list, generate)         | `apps/web/src/app/api/api-keys/route.ts`                |
+| API-key revoke                        | `apps/web/src/app/api/api-keys/[id]/route.ts`           |
+| API-key management UI (`/settings`)   | `apps/web/src/components/settings/settings-content.tsx` |
+| `api_keys` table + RLS                | `supabase/migrations/20260411000001_api_keys.sql`       |
+| BlockNote <-> Markdown conversion     | `packages/shared/src/editor/markdown-converter.ts`      |
+| MCP Registry metadata                 | `server.json` (repo root)                               |
+| Auth tests                            | `apps/web/__tests__/unit/mcp-auth.test.ts`              |
+| Route tests                           | `apps/web/__tests__/unit/mcp-route.test.ts`             |
+| Tool handler tests                    | `apps/web/__tests__/unit/mcp-tools.test.ts`             |
+| API-key endpoint tests                | `apps/web/__tests__/unit/api-keys.test.ts`              |
 
 ## Related ADRs
 

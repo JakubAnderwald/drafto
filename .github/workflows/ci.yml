@@ -15,12 +15,21 @@ env:
   SKIP_ENV_VALIDATION: "true"
   TURBO_TELEMETRY_DISABLED: 1
 
+# Every job has a timeout well above its usual run on main (about 5 minutes for
+# E2E, 1 to 2 for the rest). Without one GitHub waits 6 hours, so a hung job holds
+# the PR's checks that long. The factory re-runs a job that timed out in a step
+# that can't be the code's fault (classify_failing_required in
+# scripts/factory-agent.sh, ADR-0041).
 jobs:
   lint-and-typecheck:
     name: Lint & Typecheck
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Keeps the parents of a PR's test merge commit for the migration order check.
+          fetch-depth: 2
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -30,14 +39,55 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm typecheck
+      # The migration order rule (ADR 0057) judges only the migrations a change adds
+      # relative to a base commit.
+      # - pull_request: the checkout is GitHub's test merge of the head into the base
+      #   ("Merge <head> into <base>"), so its first parent is the exact base commit the
+      #   checked tree was built on. The event's pull_request.base.sha is only logged: it
+      #   is a payload snapshot and need not match that merge.
+      # - push to main: the commit main pointed at before the push. main has
+      #   enforce_admins off and the owner token can merge past a red check, so this
+      #   turns main red if a stale migration lands anyway.
+      # With no output (workflow_dispatch, a push with no previous commit)
+      # MIGRATION_BASE_REF is empty and the check falls back to origin/main.
+      - name: Resolve the base for the migration order check
+        id: migration-base
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            if ! git rev-parse --verify --quiet 'HEAD^2' >/dev/null; then
+              echo "::error::HEAD is not GitHub's two-parent test merge commit, so the PR base for the migration order check is unknown."
+              exit 1
+            fi
+            base=$(git rev-parse --verify 'HEAD^1')
+            echo "Migration order base: $base (first parent of the test merge; event base.sha $PR_BASE_SHA)"
+          else
+            if [ -z "$PUSH_BEFORE" ] || [[ "$PUSH_BEFORE" =~ ^0+$ ]]; then
+              echo "Migration order check skipped (no base ref: this push has no previous commit)."
+              exit 0
+            fi
+            if ! git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+              git fetch --no-tags --depth=1 origin "$PUSH_BEFORE"
+            fi
+            base=$(git rev-parse --verify "$PUSH_BEFORE^{commit}")
+            echo "Migration order base: $base (main before this push)"
+          fi
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
       - name: Check migration safety
         run: pnpm migration:check
+        env:
+          MIGRATION_BASE_REF: ${{ steps.migration-base.outputs.sha }}
       - run: pnpm audit --audit-level=high
         continue-on-error: true
 
   unit-and-integration-tests:
     name: Unit & Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -58,6 +108,16 @@ jobs:
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Playwright's own image already has the browsers and the system libraries
+    # they need. Installing them per run (`playwright install --with-deps`)
+    # fetched those libraries from Ubuntu's mirror, which on a slow day took 15+
+    # minutes. Keep the tag equal to the locked @playwright/test version (a
+    # scripts test checks it). --user 1001 is the runner's own user, as
+    # Playwright's CI docs recommend, so the checkout stays writable.
+    container:
+      image: mcr.microsoft.com/playwright:v1.63.0-noble
+      options: --user 1001
     steps:
       - name: Check for required secrets
         id: check-secrets
@@ -79,8 +139,6 @@ jobs:
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
         if: steps.check-secrets.outputs.has_secrets == 'true'
-      - run: cd apps/web && pnpm exec playwright install --with-deps chromium webkit
-        if: steps.check-secrets.outputs.has_secrets == 'true'
       - run: cd apps/web && pnpm build
         if: steps.check-secrets.outputs.has_secrets == 'true'
         env:
@@ -95,8 +153,25 @@ jobs:
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
           E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
           E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
-      - uses: actions/upload-artifact@v4
+          # Optional admin E2E: the chromium-admin project is only registered when all
+          # three are set. /admin builds a service-role client on every render, so the
+          # web server needs the dev project's service-role key. They're only passed on
+          # main (a push, or a manual run from main) — never to pull_request runs, which
+          # execute unmerged code, because the service-role key bypasses RLS.
+          E2E_ADMIN_EMAIL: ${{ github.ref == 'refs/heads/main' && secrets.E2E_ADMIN_EMAIL || '' }}
+          E2E_ADMIN_PASSWORD: ${{ github.ref == 'refs/heads/main' && secrets.E2E_ADMIN_PASSWORD || '' }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SUPABASE_SERVICE_ROLE_KEY || '' }}
+      # The report is a public artifact. Withhold it if a credential got in.
+      - name: Scan Playwright report for credentials
+        id: report-scan
         if: failure() && steps.check-secrets.outputs.has_secrets == 'true'
+        run: node scripts/scan-playwright-report.mjs apps/web/playwright-report
+        env:
+          E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
+          E2E_ADMIN_PASSWORD: ${{ github.ref == 'refs/heads/main' && secrets.E2E_ADMIN_PASSWORD || '' }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SUPABASE_SERVICE_ROLE_KEY || '' }}
+      - uses: actions/upload-artifact@v4
+        if: failure() && steps.report-scan.outcome == 'success'
         with:
           name: playwright-report
           path: apps/web/playwright-report/
@@ -105,6 +180,7 @@ jobs:
   mobile-checks:
     name: Mobile Checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -123,6 +199,7 @@ jobs:
   desktop-checks:
     name: Desktop Checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -141,6 +218,7 @@ jobs:
   scripts-tests:
     name: Scripts Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -155,6 +233,7 @@ jobs:
   sonarcloud:
     name: SonarCloud
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: unit-and-integration-tests
     steps:
       - uses: actions/checkout@v4

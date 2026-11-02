@@ -11,4 +11,9 @@ test("health API returns ok", async ({ request }) => {
   const body = await response.json();
   expect(body.status).toBe("ok");
   expect(body.timestamp).toBeDefined();
+  // `null` when `VERCEL_GIT_COMMIT_SHA` isn't set (local, CI); the full SHA on Vercel.
+  expect(body).toHaveProperty("commit");
+  if (body.commit !== null) {
+    expect(body.commit).toMatch(/^[0-9a-f]{40}$/);
+  }
 });

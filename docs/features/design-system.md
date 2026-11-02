@@ -1,6 +1,6 @@
 # Design System
 
-**Status:** shipped **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-10-04
 
 ## What it is
 
@@ -48,6 +48,19 @@ Semantic surface tokens (`--bg`, `--fg`, …) react to the `.dark` class on web;
 - **Check `apps/web/src/components/ui/` before building** a new button, input, card, badge, dialog, dropdown, or skeleton — a primitive likely already exists.
 - **Showcase-page rule:** when you add a new token to `globals.css` or a new primitive to `components/ui/`, you must add a corresponding example (all variants) to `apps/web/src/app/design-system/page.tsx`. This keeps the live reference in sync with the codebase.
 - **Cross-platform rule:** if you change a palette value or add a semantic token that mobile/desktop consume, update `apps/mobile/src/theme/tokens.ts` and `apps/desktop/src/theme/tokens.ts` in the same PR.
+
+## Long-form documents
+
+Text-heavy pages written as plain HTML (`/privacy`, `/support`, `/account/delete`) use the `.doc-prose` class from `globals.css` rather than Tailwind's `prose`. The typography plugin is not installed, so `prose` does nothing, and preflight leaves such a page as one unbroken block of text. `.doc-prose` styles headings (`h2`–`h4`), paragraphs, lists, links, `strong` and tables with semantic tokens, so it follows the light and dark themes.
+
+- **Sections:** every `<section>` inside it except the first gets a ruled divider above it.
+- **Tables:** below the `sm` breakpoint, table rows stack into cards, and each cell is labelled from its `data-label` attribute. `display: block` can strip table semantics in WebKit, so a table that stacks also carries explicit ARIA roles (`role="table"`, `"rowgroup"`, `"row"`, `"columnheader"`, `"cell"`).
+- **Callouts and boxes:** use the `Card` primitive, not a hand-rolled `bg-bg-subtle` box.
+- **Links outside `.doc-prose`:** give them the same look with `.doc-link`. It carries a `.dark` override, because Tailwind's `dark:` variant follows the OS setting, not the `.dark` class the theme toggle sets, and `text-primary-600` is unreadable on the dark surfaces.
+
+Utility classes on an element override these styles, because `.doc-prose` sits in the `components` cascade layer.
+
+`apps/web/src/components/legal/` holds the building blocks for a numbered, policy-style page: `NumberedSection` and `TableOfContents`. Both read the same outline array through `outlineEntry()`, so the headings and the contents list cannot drift apart. The showcase page's "Document Prose" section renders all of these.
 
 ## Lint guardrails (automated)
 

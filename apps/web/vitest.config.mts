@@ -18,6 +18,27 @@ const reactDomPath = path.dirname(reactDomPkg);
 const reactDomRequire = createRequire(reactDomPkg);
 const reactPath = path.dirname(reactDomRequire.resolve("react/package.json"));
 
+// `@sentry/nextjs`'s Node entry re-exports the build-time `withSentryConfig`
+// webpack plugin. Since 10.72 that plugin lives in `@sentry/server-utils`,
+// whose vendored CJS shim picks its `import.meta.url` polyfill by branching on
+// `typeof document`. These tests run in jsdom, where `document` exists, so the
+// shim feeds `fileURLToPath()` an http: URL derived from `document.baseURI`
+// and throws "The URL must be of scheme file" at import time — breaking every
+// test file that transitively imports Sentry.
+//
+// jsdom is a browser-like environment, so resolve the build Sentry publishes
+// for its `browser` export condition instead: it exposes the same capture APIs
+// (re-exported from `@sentry/react`) and never loads the build-time plugin.
+// We take the `require` (CJS) variant because the ESM one imports `next/constants`
+// extensionless, which Vite's stricter ESM resolver rejects. The path is read
+// from Sentry's own exports map so an upstream restructure fails loudly here
+// rather than silently regressing.
+const sentryPkgPath = require_.resolve("@sentry/nextjs/package.json");
+const sentryBrowserEntry = path.resolve(
+  path.dirname(sentryPkgPath),
+  require_(sentryPkgPath).exports["."].browser.require,
+);
+
 export default defineConfig({
   plugins: [react(), tsconfigPaths()],
   resolve: {
@@ -25,6 +46,7 @@ export default defineConfig({
     alias: {
       react: reactPath,
       "react-dom": reactDomPath,
+      "@sentry/nextjs": sentryBrowserEntry,
     },
   },
   test: {

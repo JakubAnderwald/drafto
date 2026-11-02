@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Screenshot capture helper for App Store / Google Play listings.
-# Run on macOS with iOS Simulator or Android Emulator running.
+# Manual screenshot capture helper for the Google Play listing.
+# Run with an Android Emulator running. App Store (iOS/iPadOS) screenshots are
+# fully automated by generate-ios.sh — this script defers to it for "ios".
 #
 # Prerequisites:
 #   - Maestro CLI installed: brew install maestro
-#   - Dev client running on simulator/emulator
+#   - Dev client running on the emulator
 #   - Logged into test account in the app
 #
 # Usage:
-#   ./capture.sh ios    # Capture iOS screenshots
+#   ./capture.sh ios    # Runs generate-ios.sh (automated App Store screenshots)
 #   ./capture.sh android # Capture Android screenshots
 
 set -euo pipefail
@@ -25,7 +26,7 @@ SCREENSHOTS=(
 )
 
 if [ "$PLATFORM" = "ios" ]; then
-  OUT_DIR="$SCRIPT_DIR/ios-6.7"
+  exec bash "$SCRIPT_DIR/generate-ios.sh"
 elif [ "$PLATFORM" = "android" ]; then
   OUT_DIR="$SCRIPT_DIR/android-phone"
 else

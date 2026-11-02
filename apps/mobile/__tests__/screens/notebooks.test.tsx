@@ -1,8 +1,8 @@
 import React from "react";
-import { Alert } from "react-native";
+import { Alert, FlatList } from "react-native";
 import { Q } from "@nozbe/watermelondb";
 
-import { render, fireEvent, waitFor } from "../helpers/test-utils";
+import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import NotebooksScreen from "../../app/(tabs)/index";
 
 const mockPush = jest.fn();
@@ -15,6 +15,7 @@ jest.mock("expo-router", () => ({
 }));
 
 const mockSync = jest.fn().mockResolvedValue(undefined);
+let mockIsSyncing = false;
 const mockDatabaseWrite = jest.fn();
 const mockDatabaseGet = jest.fn();
 
@@ -34,7 +35,7 @@ jest.mock("@/providers/database-provider", () => ({
       get: mockDatabaseGet,
     },
     sync: mockSync,
-    isSyncing: false,
+    isSyncing: mockIsSyncing,
     hasPendingChanges: false,
     pendingChangesCount: 0,
     lastSyncedAt: null,
@@ -76,6 +77,42 @@ describe("NotebooksScreen", () => {
     jest.clearAllMocks();
     mockNotebooks.length = 0;
     mockLoading = false;
+    mockIsSyncing = false;
+    mockSync.mockResolvedValue(undefined);
+  });
+
+  it("does not show the refresh spinner for a background sync", () => {
+    mockIsSyncing = true;
+    mockNotebooks.push({ id: "nb-1", name: "Work Notes", updatedAt: new Date() });
+
+    const { UNSAFE_getByType } = render(<NotebooksScreen />);
+
+    expect(UNSAFE_getByType(FlatList).props.refreshControl.props.refreshing).toBe(false);
+  });
+
+  it("shows the refresh spinner after a pull until the sync finishes", async () => {
+    let finishSync!: () => void;
+    mockSync.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishSync = resolve;
+      }),
+    );
+    mockNotebooks.push({ id: "nb-1", name: "Work Notes", updatedAt: new Date() });
+    const { UNSAFE_getByType } = render(<NotebooksScreen />);
+    const refreshControl = () => UNSAFE_getByType(FlatList).props.refreshControl;
+
+    act(() => {
+      refreshControl().props.onRefresh();
+    });
+
+    expect(mockSync).toHaveBeenCalledTimes(1);
+    expect(refreshControl().props.refreshing).toBe(true);
+
+    await act(async () => {
+      finishSync();
+    });
+
+    expect(refreshControl().props.refreshing).toBe(false);
   });
 
   it("renders empty state when no notebooks", () => {

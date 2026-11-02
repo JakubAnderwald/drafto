@@ -155,10 +155,11 @@ describe("Sync Performance", () => {
         pullChanges,
         pushChanges,
       }: {
-        pullChanges: (args: { lastPulledAt?: number }) => Promise<unknown>;
+        pullChanges: (args: { lastPulledAt?: number | null }) => Promise<unknown>;
         pushChanges: (args: { changes: Record<string, unknown> }) => Promise<void>;
       }) => {
-        const pullResult = await pullChanges({ lastPulledAt: undefined });
+        // WatermelonDB passes null on a first sync.
+        const pullResult = await pullChanges({ lastPulledAt: null });
         expect(pullResult).toBeDefined();
 
         await pushChanges({
@@ -205,7 +206,7 @@ describe("Sync Performance", () => {
       async ({
         pullChanges,
       }: {
-        pullChanges: (args: { lastPulledAt?: number }) => Promise<{
+        pullChanges: (args: { lastPulledAt?: number | null }) => Promise<{
           changes: { notes: { updated: unknown[]; created: unknown[] } };
         }>;
       }) => {

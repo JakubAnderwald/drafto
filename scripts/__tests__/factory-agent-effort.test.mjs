@@ -15,17 +15,18 @@ const scriptPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "facto
 const script = readFileSync(scriptPath, "utf8");
 
 describe("factory-agent Claude effort", () => {
-  it("passes --effort at all five Claude call sites", () => {
-    // Three read-only sites (plan + replan + In Test scenario) use the plan
-    // effort; two coding sites (implement + watch) use the coding effort.
+  it("passes --effort at all six Claude call sites", () => {
+    // Four read-only sites (plan + replan + In Test scenario + code review) use
+    // the plan effort; two coding sites (implement + watch) use the coding
+    // effort.
     const planFlags =
       script.match(/--dangerously-skip-permissions --effort "\$FACTORY_PLAN_EFFORT"/g) || [];
     const codeFlags =
       script.match(/--dangerously-skip-permissions --effort "\$FACTORY_EFFORT"/g) || [];
     assert.equal(
       planFlags.length,
-      3,
-      'expected --effort "$FACTORY_PLAN_EFFORT" at the plan + replan + In Test sites',
+      4,
+      'expected --effort "$FACTORY_PLAN_EFFORT" at the plan + replan + In Test + review sites',
     );
     assert.equal(
       codeFlags.length,
@@ -34,8 +35,20 @@ describe("factory-agent Claude effort", () => {
     );
     assert.equal(
       planFlags.length + codeFlags.length,
-      5,
+      6,
       "every factory Claude call must carry an effort flag",
+    );
+  });
+
+  it("runs the browser runner (the seventh call) at the read-only (plan) effort", () => {
+    // ADR-0051: the locked-down Chrome runner has no --dangerously-skip-
+    // permissions, so the counts above don't see it. It reads pages and prints
+    // a report — plan-tier effort, like the scenario writer.
+    const calls = script.match(/run-claude\.mjs" -p\b/g) || [];
+    assert.equal(calls.length, 7, "six stage calls plus the browser runner");
+    assert.match(
+      script,
+      /run-claude\.mjs" -p --chrome(?:[^\n]*\\\n){1,3}[^\n]*--effort "\$FACTORY_PLAN_EFFORT" \)/,
     );
   });
 
@@ -62,5 +75,23 @@ describe("factory-agent Claude effort", () => {
 
   it("raises the plan/replan timeout to a knob (FACTORY_PLAN_TIMEOUT_SEC)", () => {
     assert.match(script, /FACTORY_PLAN_TIMEOUT_SEC:-\$\{CLAUDE_CALL_TIMEOUT_SEC:-360\}/);
+  });
+
+  it("lets background workflows finish instead of the 600s print-mode ceiling", () => {
+    // At ultracode the implementer delegates to background workflows; claude -p
+    // kills them after 600s by default and exits without a summary line (#623).
+    // The export must be unconditional (not per call site) and default to 0,
+    // with the run-with-timeout wall caps still bounding every call.
+    assert.match(
+      script,
+      /^export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="\$\{FACTORY_BG_WAIT_CEILING_MS:-0\}"$/m,
+    );
+    assert.match(script, /defaulting to 0/);
+    const exportAt = script.search(/^export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=/m);
+    const firstCall = script.indexOf('node "$SCRIPT_DIR/lib/run-claude.mjs"');
+    assert.ok(
+      exportAt > 0 && exportAt < firstCall,
+      "ceiling must be exported before any claude call",
+    );
   });
 });

@@ -1,5 +1,8 @@
 import { useState, useMemo } from "react";
 import { Text, View, Pressable, StyleSheet } from "react-native";
+import { ACCOUNT_DELETED_MESSAGE } from "@drafto/shared";
+
+import { clearAccountDeletedNotice, useAccountDeletedNotice } from "@/lib/account-deleted-notice";
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
@@ -10,17 +13,20 @@ import { Input } from "@/components/ui/input";
 
 interface LoginScreenProps {
   onNavigateToSignup?: () => void;
+  onNavigateToForgotPassword?: () => void;
 }
 
-export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
+export function LoginScreen({ onNavigateToSignup, onNavigateToForgotPassword }: LoginScreenProps) {
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const accountDeleted = useAccountDeletedNotice();
 
   const handleLogin = async () => {
+    clearAccountDeletedNotice();
     if (!email.trim() || !password) {
       setError("Please enter your email and password.");
       return;
@@ -48,6 +54,16 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
     <View style={styles.container}>
       <Text style={styles.title}>Log In</Text>
       <Text style={styles.subtitle}>Sign in to your Drafto account</Text>
+
+      {accountDeleted && (
+        <View
+          style={styles.successContainer}
+          accessibilityRole="alert"
+          testID="account-deleted-notice"
+        >
+          <Text style={styles.successText}>{ACCOUNT_DELETED_MESSAGE}</Text>
+        </View>
+      )}
 
       {error && (
         <View style={styles.errorContainer}>
@@ -99,6 +115,14 @@ export function LoginScreen({ onNavigateToSignup }: LoginScreenProps) {
             Don&apos;t have an account? <Text style={styles.link}>Sign up</Text>
           </Text>
         </Pressable>
+        <Pressable
+          onPress={onNavigateToForgotPassword}
+          disabled={!onNavigateToForgotPassword}
+          style={styles.forgotPassword}
+          testID="forgot-password-link"
+        >
+          <Text style={styles.link}>Forgot your password?</Text>
+        </Pressable>
       </View>
     </View>
   );
@@ -140,6 +164,18 @@ const createStyles = (semantic: SemanticColors) =>
       fontSize: fontSizes.base,
       textAlign: "center",
     },
+    successContainer: {
+      backgroundColor: semantic.successBg,
+      borderRadius: radii.md,
+      padding: spacing.md,
+      width: "100%",
+      marginBottom: spacing.lg,
+    },
+    successText: {
+      color: semantic.successText,
+      fontSize: fontSizes.base,
+      textAlign: "center",
+    },
     form: {
       width: "100%",
     },
@@ -156,5 +192,9 @@ const createStyles = (semantic: SemanticColors) =>
     link: {
       color: colors.primary[600],
       fontWeight: "600",
+    },
+    forgotPassword: {
+      marginTop: spacing.md,
+      alignItems: "center",
     },
   });

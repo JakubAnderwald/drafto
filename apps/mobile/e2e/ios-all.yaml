@@ -15,6 +15,31 @@ appId: eu.drafto.mobile
     timeout: 60000
 - assertVisible: "Sign in to your Drafto account"
 
+# --- Test: a sign-up that needs email confirmation says so (App Review recording, 0:36) ---
+# Uses the existing test account on purpose: Supabase answers an address that already has an
+# account exactly like a new one (no session) and sends no email, so this creates no user and
+# no mail. The app must show the check-your-email state, not bounce back to Log In.
+- tapOn:
+    id: "signup-link"
+- extendedWaitUntil:
+    visible: "Create your Drafto account"
+    timeout: 10000
+- tapOn: "you@example.com"
+- inputText: ${E2E_TEST_EMAIL}
+- tapOn: "Min. 6 characters"
+- inputText: "not-the-real-password"
+- hideKeyboard
+- tapOn:
+    id: "signup-submit"
+- extendedWaitUntil:
+    visible: "Check Your Email"
+    timeout: 20000
+- assertVisible: ${E2E_TEST_EMAIL}
+- tapOn: "Back to login"
+- extendedWaitUntil:
+    visible: "Sign in to your Drafto account"
+    timeout: 10000
+
 - tapOn: "you@example.com"
 - inputText: ${E2E_TEST_EMAIL}
 - tapOn: "Sign in to your Drafto account"
@@ -128,7 +153,15 @@ appId: eu.drafto.mobile
     visible: ".*Note ${RUN_ID}.*"
     timeout: 10000
 
-# --- Go back (iOS: tap header back button) and rename via long press ---
+# --- Editor with the keyboard up (check the screenshot: body gutter, toolbar
+# directly on the keyboard, no blank band) ---
+- tapOn:
+    point: "50%,45%"
+- inputText: "Body ${RUN_ID}"
+- waitForAnimationToEnd
+- takeScreenshot: editor-keyboard-up
+
+# --- Go back (iOS: tap header back button, still labelled "Notes") and rename via long press ---
 - tapOn: "Notes"
 - extendedWaitUntil:
     visible: ".*Note ${RUN_ID}.*"
@@ -149,6 +182,55 @@ appId: eu.drafto.mobile
 - extendedWaitUntil:
     visible: "Notebooks"
     timeout: 10000
+- extendedWaitUntil:
+    visible: ".*NB ${RUN_ID}.*"
+    timeout: 10000
+
+# ===== FLOW 07: Delete account (cancel only) =====
+# NEVER taps an enabled confirm — the shared E2E user must not be deleted.
+# "DELET" rather than "delete": the input auto-capitalises.
+# Dialog waits use the input's id: the text regex "Delete account?" would also
+# match the row's "Delete account" label behind the dialog.
+
+- tapOn: "Settings, tab.*"
+- scrollUntilVisible:
+    element:
+      id: "delete-account-row"
+    direction: DOWN
+    timeout: 10000
+- tapOn:
+    id: "delete-account-row"
+- extendedWaitUntil:
+    visible:
+      id: "delete-account-input"
+    timeout: 10000
+- assertVisible: "Type DELETE to confirm"
+# The shared E2E user signs in with email, so there is no Sign in with Apple notice.
+- assertNotVisible:
+    id: "delete-account-apple-notice"
+- assertVisible:
+    id: "delete-account-confirm"
+    enabled: false
+
+# --- Wrong text keeps the destructive button disabled ---
+- tapOn:
+    id: "delete-account-input"
+- inputText: "DELET"
+- hideKeyboard
+- assertVisible:
+    id: "delete-account-confirm"
+    enabled: false
+
+# --- Cancel closes the dialog; the user and their data are still there ---
+- tapOn:
+    id: "delete-account-cancel"
+- extendedWaitUntil:
+    notVisible:
+      id: "delete-account-input"
+    timeout: 10000
+- assertVisible:
+    id: "delete-account-row"
+- tapOn: "Notebooks, tab.*"
 - extendedWaitUntil:
     visible: ".*NB ${RUN_ID}.*"
     timeout: 10000

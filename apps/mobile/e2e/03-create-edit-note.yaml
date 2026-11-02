@@ -60,7 +60,20 @@ appId: eu.drafto.mobile
     visible: ".*Note ${RUN_ID}.*"
     timeout: 10000
 
+# --- Test: editor with the keyboard up ---
+# The body is a WebView, so tap it by position, then type a line so the gutter
+# shows. The screenshot records the layout to check by eye: a gutter around the
+# body text, and the formatting toolbar directly on the keyboard with no blank
+# band above it.
+- tapOn:
+    point: "50%,45%"
+- inputText: "Body ${RUN_ID}"
+- waitForAnimationToEnd
+- takeScreenshot: editor-keyboard-up
+
 # --- Test: rename via long press on notes list ---
+# The editor's back button keeps the label "Notes" (the header shows the
+# notebook's name on the list itself).
 - tapOn: "Notes"
 
 # Verify the title shows in the list

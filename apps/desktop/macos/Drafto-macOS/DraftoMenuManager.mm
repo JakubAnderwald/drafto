@@ -1,11 +1,20 @@
 #import "DraftoMenuManager.h"
 #import <Cocoa/Cocoa.h>
 
+// The app delegate's action that brings the main window back after it was closed. Sent
+// nil-targeted through the responder chain, so this module doesn't depend on AppDelegate.
+static SEL DraftoShowMainWindowSelector(void) {
+  return NSSelectorFromString(@"showMainWindow:");
+}
+
 @implementation DraftoMenuManager {
   BOOL _hasListeners;
   NSMenuItem *_themeLightItem;
   NSMenuItem *_themeDarkItem;
   NSMenuItem *_themeSystemItem;
+  // Actions JS currently handles (MenuProvider reports them via setEnabledActions). nil until
+  // the first report, meaning every item stays enabled.
+  NSSet<NSString *> *_enabledActions;
 }
 
 RCT_EXPORT_MODULE();
@@ -31,8 +40,24 @@ RCT_EXPORT_MODULE();
 - (void)handleMenuAction:(NSMenuItem *)sender {
   NSString *action = sender.representedObject;
   if (action && _hasListeners) {
+    // A Drafto command chosen while the window is closed (e.g. ⌘N after ⌘W) would otherwise
+    // run in the hidden window. Bring it back first; a no-op when it is already in front.
+    [NSApp sendAction:DraftoShowMainWindowSelector() to:nil from:sender];
     [self sendEventWithName:@"onMenuAction" body:@{@"action": action}];
   }
+}
+
+// Every JS-bridged item has this module as its target, so AppKit asks here whether it is
+// enabled — on menu open and before firing a key equivalent. An item no JS code handles (New
+// Note, Search, Find… on the login screen) is disabled instead of doing nothing, which Mac App
+// Review rejects. Find… stays enabled whenever the note editor's WebView exists, because the
+// main screen that hosts the editor registers findInNote (ADR-0028: ⌘F must never reach it).
+- (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+  NSString *action = menuItem.representedObject;
+  if (![action isKindOfClass:[NSString class]] || _enabledActions == nil) {
+    return YES;
+  }
+  return [_enabledActions containsObject:action];
 }
 
 #pragma mark - Menu Construction Helpers
@@ -73,13 +98,9 @@ RCT_EXPORT_MODULE();
   [menu addItem:about];
   [menu addItem:[NSMenuItem separatorItem]];
 
-  // Preferences placeholder
-  NSMenuItem *prefs = [self menuItemWithTitle:@"Settings..."
-                                       action:@"openSettings"
-                                keyEquivalent:@","
-                                modifierMask:NSEventModifierFlagCommand];
-  [menu addItem:prefs];
-  [menu addItem:[NSMenuItem separatorItem]];
+  // No Settings… item: the app has no settings window. Appearance lives in View → Appearance
+  // and the account actions in the sidebar's account menu. A Settings… item that does nothing
+  // is a Mac App Review rejection.
 
   NSMenuItem *services = [[NSMenuItem alloc] initWithTitle:@"Services"
                                                     action:nil
@@ -247,6 +268,10 @@ RCT_EXPORT_MODULE();
   [menu addItem:[self standardItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"]];
   [menu addItem:[self standardItemWithTitle:@"Zoom" action:@selector(performZoom:) keyEquivalent:@""]];
   [menu addItem:[NSMenuItem separatorItem]];
+  // Reopens the main window after it was closed (AppKit drops a closed window from this menu's
+  // window list). Nil-targeted, so the app delegate's showMainWindow: handles it.
+  [menu addItem:[self standardItemWithTitle:@"Drafto" action:DraftoShowMainWindowSelector() keyEquivalent:@"0"]];
+  [menu addItem:[NSMenuItem separatorItem]];
   [menu addItem:[self standardItemWithTitle:@"Bring All to Front" action:@selector(arrangeInFront:) keyEquivalent:@""]];
 
   [NSApp setWindowsMenu:menu];
@@ -303,6 +328,12 @@ RCT_EXPORT_METHOD(setupMenus) {
     [mainMenu addItem:helpMenuItem];
 
     [NSApp setMainMenu:mainMenu];
+  });
+}
+
+RCT_EXPORT_METHOD(setEnabledActions:(NSArray<NSString *> *)actions) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    self->_enabledActions = [NSSet setWithArray:actions];
   });
 }
 

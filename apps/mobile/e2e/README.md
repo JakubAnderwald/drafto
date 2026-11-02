@@ -17,10 +17,17 @@ End-to-end tests for the Drafto mobile app using [Maestro](https://maestro.mobil
    ```
 
 3. Set environment variables for test credentials:
+
    ```bash
    export E2E_TEST_EMAIL="your-test-email@example.com"
    export E2E_TEST_PASSWORD="your-test-password"
    ```
+
+4. For `ios-only/07-attach-image.yaml`, grant the app photo access on the simulator first. The system's permission prompt isn't always visible to Maestro and would block the picker:
+   ```bash
+   xcrun simctl privacy booted grant photos eu.drafto.mobile
+   ```
+   The flow adds its own photo (`fixtures/attachment-photo.jpg`) with `addMedia`, so the library needs no setup.
 
 ## Running Tests
 
@@ -53,47 +60,79 @@ maestro test apps/mobile/e2e/android-only/ --platform android -e RUN_ID=$(date +
 maestro test apps/mobile/e2e/ios-only/ --platform ios -e RUN_ID=$(date +%s)
 ```
 
+### Web-seeded flows
+
+Flows 05 and 08 open a note that a Playwright test seeds through the web API. Run them through their runner scripts, which seed the note, run the flow, then check the saved note through the API:
+
+```bash
+# Flow 05 on iOS, then Android: a formatted web note, edited on mobile
+bash apps/mobile/e2e/run-cross-platform-e2e.sh
+
+# Flow 08 on iOS (or pass android): nested to-dos survive a mobile edit
+bash apps/mobile/e2e/run-nested-lists-e2e.sh
+```
+
 ## Test Flows
 
 ### Cross-platform (both iOS and Android)
 
-| Flow                          | Description                                        |
-| ----------------------------- | -------------------------------------------------- |
-| `01-login.yaml`               | Login with email/password, verify Notebooks screen |
-| `02-create-notebook.yaml`     | Create, rename, cancel notebooks                   |
-| `03-create-edit-note.yaml`    | Create notes, open editor, rename via long press   |
-| `04-trash-restore.yaml`       | Tab navigation between Notebooks and Trash         |
-| `05-cross-platform-sync.yaml` | Open a note created by web E2E, edit on mobile     |
-| `search.yaml`                 | Open search, type query, dismiss                   |
+| Flow                          | Description                                              |
+| ----------------------------- | -------------------------------------------------------- |
+| `01-login.yaml`               | Login with email/password, verify Notebooks screen       |
+| `02-create-notebook.yaml`     | Create, rename, cancel notebooks                         |
+| `03-create-edit-note.yaml`    | Create notes, open editor, rename via long press         |
+| `04-trash-restore.yaml`       | Tab navigation between Notebooks and Trash               |
+| `05-cross-platform-sync.yaml` | Open a note created by web E2E, edit on mobile           |
+| `06-forgot-password.yaml`     | Request a reset link, open the recovery deep link        |
+| `07-delete-account.yaml`      | Open Delete account, check DELETE gating, cancel         |
+| `08-nested-lists.yaml`        | Open a web note with nested to-dos, edit the deepest one |
+| `search.yaml`                 | Open search, type query, dismiss                         |
 
 ### Android-only
 
-| Flow                                         | Description                                             |
-| -------------------------------------------- | ------------------------------------------------------- |
-| `android-all.yaml`                           | Combined flow: login + notebooks + notes + nav          |
-| `android-only/05-offline-mode.yaml`          | Airplane mode, offline note creation, sync on reconnect |
-| `android-only/06-offline-notebook-sync.yaml` | Offline notebook + note creation, sync verification     |
+| Flow                                         | Description                                               |
+| -------------------------------------------- | --------------------------------------------------------- |
+| `android-all.yaml`                           | Combined flow: login + notebooks + notes + nav            |
+| `android-only/05-offline-mode.yaml`          | Airplane mode, offline note creation, sync on reconnect   |
+| `android-only/06-offline-notebook-sync.yaml` | Offline notebook + note creation, sync verification       |
+| `android-only/07-auth-callback-link.yaml`    | Apple callback link is claimed, warm and cold, not routed |
 
 ### iOS-only
 
-| Flow                                     | Description                                             |
-| ---------------------------------------- | ------------------------------------------------------- |
-| `ios-all.yaml`                           | Combined flow: login + notebooks + notes + nav          |
-| `ios-only/05-offline-mode.yaml`          | Airplane mode, offline note creation, sync on reconnect |
-| `ios-only/06-offline-notebook-sync.yaml` | Offline notebook + note creation, sync verification     |
-| `ios-only/search.yaml`                   | Search with modal dismiss (swipe down)                  |
+| Flow                                     | Description                                              |
+| ---------------------------------------- | -------------------------------------------------------- |
+| `ios-all.yaml`                           | Combined flow: login + notebooks + notes + nav           |
+| `ios-only/05-offline-mode.yaml`          | Airplane mode, offline note creation, sync on reconnect  |
+| `ios-only/06-offline-notebook-sync.yaml` | Offline notebook + note creation, sync verification      |
+| `ios-only/search.yaml`                   | Search, a result's sheet, and both close buttons         |
+| `ios-only/07-attach-image.yaml`          | iPhone: attach a photo, toast below header, "All synced" |
 
 ## Platform differences
 
 The main navigation difference between platforms:
 
 - **Android**: Uses `pressKey: back` (hardware back button) to navigate between screens
-- **iOS**: Uses `tapOn: "Notes"` / `tapOn: "Notebooks"` to tap the header back button (label comes from the previous screen's title). The search screen is a modal dismissed with `swipe: { direction: DOWN }`
+- **iOS**: Uses `tapOn: "Notes"` / `tapOn: "Notebooks"` to tap the header back button. "Notebooks" is the tabs screen's title; "Notes" is the editor's fixed `headerBackTitle` (`app/_layout.tsx`), because the notebook screen itself is titled with the notebook's name. Search is a sheet with a close button (`tapOn: { id: "search-close" }`); a note opened from it is a sheet of its own, closed with `tapOn: { id: "note-sheet-close" }`. Assert `notVisible` on the button afterwards: the screen beneath the sheet is still in the view hierarchy, so a `visible` check on it passes even if the sheet didn't close
+- **Editor keyboard check**: `03-create-edit-note.yaml`, `ios-all.yaml` and `android-all.yaml` tap into the note body, type a line, and save an `editor-keyboard-up` screenshot. Look at it after a run: the body text has a side gutter and the formatting toolbar sits directly on the keyboard, with no blank band above it
 
 ## Notes
 
 - Tests are designed to run **sequentially** (each builds on state from the previous flow)
 - Flow 01 clears app state and logs in fresh; flows 02+ assume prior login
+- Flow 06 is the exception: it clears state and runs **signed out**, so run it on its own
+  (`maestro test apps/mobile/e2e/06-forgot-password.yaml --platform ios`, no `-e` vars)
+  rather than in the middle of the sequence. It requests the reset for an address with no account,
+  because dev's mailer won't send to the E2E account (see
+  [environments.md](../../../docs/architecture/environments.md#supabase-projects))
+- `android-only/07-auth-callback-link.yaml` also clears state and runs signed out, so run it on its own
+  too (`maestro test apps/mobile/e2e/android-only/07-auth-callback-link.yaml --platform android`)
+- Flow 07 only ever **cancels** the account-deletion dialog — it must never tap an enabled
+  confirm, because the flows share one real E2E account. It is also inlined at the end of
+  `ios-all.yaml` and `android-all.yaml`
 - Maestro E2E tests are **local-only** — they do not run in CI
 - Run the full suite on both iOS Simulator and Android Emulator before any release
 - Minimum timeout tier is 10s to avoid flakiness on slow emulators
+
+## App Store screenshots
+
+`../store/screenshots/app-store.yaml` is not part of this suite. It is the Maestro flow behind `pnpm store:screenshots:ios`, which signs in as the App Review demo account. See `docs/operations/builds-and-releases.md` → "App Store screenshots".

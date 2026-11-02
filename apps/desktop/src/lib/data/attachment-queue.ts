@@ -117,16 +117,23 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
     }
   }
 
-  // Create attachment record in Supabase
-  const { error: dbError } = await supabase.from("attachments").upsert({
-    id: attachment.remoteId,
-    note_id: attachment.noteId,
-    user_id: attachment.userId,
-    file_name: attachment.fileName,
-    file_path: attachment.filePath,
-    file_size: attachment.fileSize,
-    mime_type: attachment.mimeType,
-  });
+  // Create attachment record in Supabase. ON CONFLICT DO NOTHING: a retry
+  // after a partial success (row inserted, local status not yet updated) finds
+  // the row already there, and public.attachments has no UPDATE policy, so a
+  // plain upsert's ON CONFLICT DO UPDATE would be rejected by RLS and strand
+  // the attachment as "failed" forever.
+  const { error: dbError } = await supabase.from("attachments").upsert(
+    {
+      id: attachment.remoteId,
+      note_id: attachment.noteId,
+      user_id: attachment.userId,
+      file_name: attachment.fileName,
+      file_path: attachment.filePath,
+      file_size: attachment.fileSize,
+      mime_type: attachment.mimeType,
+    },
+    { onConflict: "id", ignoreDuplicates: true },
+  );
 
   if (dbError) {
     throw new Error(`Failed to save attachment record: ${dbError.message}`);
@@ -199,6 +206,25 @@ export async function processPendingUploads(): Promise<number> {
     return uploaded;
   } finally {
     isProcessing = false;
+  }
+}
+
+/**
+ * Delete the entire local attachments directory (and every cached file in it).
+ * Used on sign-out and on the cross-account identity guard so one account's
+ * downloaded/queued attachment files can't leak to the next account on the
+ * device. Best-effort: a deletion failure is logged and swallowed so it never
+ * blocks sign-out.
+ */
+export async function deleteAllLocalAttachments(): Promise<void> {
+  try {
+    const dir = getAttachmentsDir();
+    const exists = await RNFS.exists(dir);
+    if (exists) {
+      await RNFS.unlink(dir);
+    }
+  } catch (error) {
+    console.warn("Failed to delete local attachments directory:", error);
   }
 }
 

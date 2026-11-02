@@ -35,6 +35,22 @@ jest.mock("expo-router", () => ({
   },
 }));
 
+// Mock @react-navigation/elements (its real module needs the native bridge, and
+// useHeaderHeight throws outside a navigator)
+jest.mock("@react-navigation/elements", () => ({
+  useHeaderHeight: jest.fn(() => 0),
+  // The real helper: it is plain arithmetic on Platform, so it needs no bridge.
+  // Loaded by path because the package only exports its index.
+  getDefaultHeaderHeight: jest.fn(
+    jest.requireActual(
+      require("path").join(
+        require("path").dirname(require.resolve("@react-navigation/elements/package.json")),
+        "lib/module/Header/getDefaultHeaderHeight.js",
+      ),
+    ).getDefaultHeaderHeight,
+  ),
+}));
+
 // Mock @react-native-community/netinfo
 jest.mock("@react-native-community/netinfo", () => ({
   addEventListener: jest.fn(() => jest.fn()),
@@ -52,6 +68,7 @@ jest.mock("react-native-safe-area-context", () => ({
     left: 0,
     right: 0,
   })),
+  useSafeAreaFrame: jest.fn(() => ({ x: 0, y: 0, width: 390, height: 844 })),
   SafeAreaProvider: ({ children }) => children,
 }));
 
@@ -62,6 +79,8 @@ jest.mock("@10play/tentap-editor", () => ({
     setContent: jest.fn(),
   })),
   TenTapStartKit: [],
+  CoreBridge: { configureCSS: (css) => ({ name: "core", extendCSS: css }) },
+  darkEditorTheme: { toolbar: {}, webview: {}, webviewContainer: {} },
   RichText: () => null,
   Toolbar: () => null,
 }));
@@ -75,19 +94,25 @@ jest.mock("@expo/vector-icons", () => {
 });
 
 // Mock @react-native-google-signin/google-signin
+// Mirrors the real v16 contract: `signIn()` resolves a tagged response (`success` / `cancelled`)
+// instead of throwing on cancel, and `statusCodes` carries the values the Android native module
+// exports from `getTypedExportedConstants()` — not the constant names.
 jest.mock("@react-native-google-signin/google-signin", () => ({
   GoogleSignin: {
     configure: jest.fn(),
     hasPlayServices: jest.fn().mockResolvedValue(true),
-    signIn: jest.fn().mockResolvedValue({ data: { idToken: "mock-id-token" } }),
+    signIn: jest.fn().mockResolvedValue({ type: "success", data: { idToken: "mock-id-token" } }),
     signOut: jest.fn().mockResolvedValue(null),
   },
   statusCodes: {
-    SIGN_IN_CANCELLED: "SIGN_IN_CANCELLED",
-    IN_PROGRESS: "IN_PROGRESS",
+    SIGN_IN_CANCELLED: "12501",
+    IN_PROGRESS: "ASYNC_OP_IN_PROGRESS",
     PLAY_SERVICES_NOT_AVAILABLE: "PLAY_SERVICES_NOT_AVAILABLE",
+    SIGN_IN_REQUIRED: "4",
+    NULL_PRESENTER: "NULL_PRESENTER",
   },
-  isErrorWithCode: jest.fn(() => false),
+  isErrorWithCode: (error) =>
+    (error instanceof Error || (typeof error === "object" && error !== null)) && "code" in error,
 }));
 
 // Mock expo-apple-authentication

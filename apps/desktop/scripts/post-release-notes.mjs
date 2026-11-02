@@ -3,7 +3,13 @@
  * Post release notes to App Store Connect (TestFlight) for the macOS desktop app.
  *
  * Usage:
- *   node post-release-notes.mjs --platform macos --notes "Release notes text"
+ *   node post-release-notes.mjs --platform macos --notes "Release notes text" --build N
+ *
+ * --build is the macOS build number just uploaded. It is REQUIRED: macOS and iOS
+ * ship under the same App Store Connect app (eu.drafto.mobile), and iOS builds
+ * ALSO carry computedMinMacOsVersion (iPhone apps run on Apple Silicon Macs), so
+ * "the newest build with macOS fields" resolved to iOS build 42 and overwrote
+ * its notes. Match the exact number on the MAC_OS preReleaseVersion instead.
  *
  * Environment variables:
  *   ASC_API_KEY_ID      - App Store Connect API Key ID
@@ -14,14 +20,17 @@
 
 import { createSign } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
-const args = process.argv.slice(2);
-const notesIdx = args.indexOf("--notes");
-const notes = notesIdx !== -1 ? args[notesIdx + 1] : "";
-
-if (!notes) {
-  console.error("Error: --notes is required");
-  process.exit(1);
+export function parseArgs(argv) {
+  // Return the token after `flag`, but treat a missing value or the next flag as
+  // absent — otherwise `--notes --build 29` would swallow `--build` as the notes.
+  const valueAfter = (flag) => {
+    const index = argv.indexOf(flag);
+    const value = index === -1 ? undefined : argv[index + 1];
+    return value && !value.startsWith("--") ? value : "";
+  };
+  return { notes: valueAfter("--notes"), build: valueAfter("--build") };
 }
 
 // --- App Store Connect ---
@@ -98,7 +107,52 @@ export const ascFetch = async (url, options = {}) => {
   throw lastError;
 };
 
-async function postTestFlightNotes(releaseNotes) {
+// CFBundleVersion: one to three period-separated integers. Checked up front so a
+// typo fails fast instead of polling App Store Connect for 5 minutes.
+export const isValidBuildNumber = (build) => /^\d+(\.\d+){0,2}$/.test(String(build));
+
+/**
+ * Flatten an App Store Connect `/builds` response (data + included) into
+ * `{ id, version, uploadedDate, platform }` records. `platform` comes ONLY from
+ * the build's preReleaseVersion ("IOS" | "MAC_OS"). The macOS-only build fields
+ * are not a usable fallback here: iOS builds report computedMinMacOsVersion too.
+ */
+export function normalizeBuilds(buildsResponse) {
+  const preReleaseById = new Map(
+    (buildsResponse.included || [])
+      .filter((item) => item.type === "preReleaseVersions")
+      .map((item) => [item.id, item.attributes]),
+  );
+  return (buildsResponse.data || []).map((build) => {
+    const preReleaseId = build.relationships?.preReleaseVersion?.data?.id;
+    return {
+      id: build.id,
+      version: build.attributes?.version,
+      uploadedDate: build.attributes?.uploadedDate,
+      platform: preReleaseId ? preReleaseById.get(preReleaseId)?.platform : undefined,
+    };
+  });
+}
+
+/**
+ * Pick the macOS build with exactly `buildNumber`. Build numbers are not unique
+ * across platforms (iOS and macOS count independently), so filter to MAC_OS
+ * first; among survivors the most recently uploaded wins.
+ */
+export function selectMacBuild(builds, { buildNumber }) {
+  const candidates = builds.filter(
+    (build) => build.platform === "MAC_OS" && String(build.version) === String(buildNumber),
+  );
+  if (candidates.length === 0) {
+    return null;
+  }
+  const uploadedAt = (build) => (build.uploadedDate ? Date.parse(build.uploadedDate) : 0);
+  return candidates.reduce((newest, build) =>
+    uploadedAt(build) > uploadedAt(newest) ? build : newest,
+  );
+}
+
+async function postTestFlightNotes(releaseNotes, buildNumber) {
   const keyId = process.env.ASC_API_KEY_ID;
   const issuerId = process.env.ASC_API_ISSUER_ID;
   const privateKeyP8 =
@@ -132,34 +186,41 @@ async function postTestFlightNotes(releaseNotes) {
     "Content-Type": "application/json",
   };
 
-  // 1. Find the latest macOS build (filter by platform-identifying fields for multi-platform app).
-  // Uses the top-level /v1/builds endpoint because the relationship endpoint /v1/apps/{id}/builds
-  // no longer accepts the `sort` query parameter.
-  const buildsRes = await ascFetch(
-    `${baseUrl}/builds?filter[app]=${appId}&sort=-uploadedDate&limit=10&fields[builds]=version,processingState,computedMinMacOsVersion,lsMinimumSystemVersion`,
-    { headers },
-  );
-  if (!buildsRes.ok) {
-    throw new Error(`List builds failed: ${buildsRes.status} ${await buildsRes.text()}`);
+  // 1. Find the exact macOS build. The lane uploads with
+  // skip_waiting_for_build_processing, so a fresh build may not be indexed yet —
+  // poll until it appears. filter[version] rather than sort-by-uploadedDate: a
+  // still-processing build has a null uploadedDate and sorts last.
+  // `preReleaseVersion` MUST be in fields[builds] or ASC omits the relationship
+  // linkage and the platform can't be resolved from the include.
+  const buildsUrl =
+    `${baseUrl}/builds?filter[app]=${appId}&filter[version]=${encodeURIComponent(buildNumber)}` +
+    `&fields[builds]=version,uploadedDate,processingState,preReleaseVersion` +
+    `&include=preReleaseVersion&fields[preReleaseVersions]=platform`;
+  const maxAttempts = 15;
+  let target = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const buildsRes = await ascFetch(buildsUrl, { headers });
+    if (!buildsRes.ok) {
+      throw new Error(`List builds failed: ${buildsRes.status} ${await buildsRes.text()}`);
+    }
+    target = selectMacBuild(normalizeBuilds(await buildsRes.json()), { buildNumber });
+    if (target || attempt === maxAttempts) {
+      break;
+    }
+    console.log(
+      `TestFlight: macOS build ${buildNumber} not indexed yet (attempt ${attempt}/${maxAttempts}); retrying in 20s…`,
+    );
+    await sleep(20_000);
   }
-  const buildsData = await buildsRes.json();
 
-  if (!buildsData.data || buildsData.data.length === 0) {
-    console.error("Skipping TestFlight: no builds found");
+  if (!target) {
+    console.error(
+      `Skipping TestFlight: macOS build ${buildNumber} not found for app ${appId} after ${maxAttempts} attempts`,
+    );
     return;
   }
 
-  // Filter to macOS builds only (have computedMinMacOsVersion or lsMinimumSystemVersion)
-  const macosBuild = buildsData.data.find(
-    (b) => b.attributes.computedMinMacOsVersion || b.attributes.lsMinimumSystemVersion,
-  );
-
-  if (!macosBuild) {
-    console.error("Skipping TestFlight: no macOS builds found (only iOS builds present)");
-    return;
-  }
-
-  const buildId = macosBuild.id;
+  const buildId = target.id;
 
   // 2. Check if a betaBuildLocalization already exists for en-US
   const locRes = await ascFetch(
@@ -208,20 +269,34 @@ async function postTestFlightNotes(releaseNotes) {
     }
   }
 
-  console.log(
-    `TestFlight: "What to Test" updated for macOS build ${macosBuild.attributes.version}`,
-  );
+  console.log(`TestFlight: "What to Test" updated for macOS build ${target.version}`);
 }
 
 // --- Main ---
 
 async function main() {
+  const { notes, build } = parseArgs(process.argv.slice(2));
+  if (!notes) {
+    console.error("Error: --notes is required");
+    process.exit(1);
+  }
+  if (!build) {
+    console.error("Error: --build is required so notes target THAT macOS build");
+    process.exit(1);
+  }
+  if (!isValidBuildNumber(build)) {
+    console.error(`Error: --build "${build}" is not a CFBundleVersion (e.g. 56 or 1.2.3)`);
+    process.exit(1);
+  }
   try {
-    await postTestFlightNotes(notes);
+    await postTestFlightNotes(notes, build);
   } catch (err) {
     console.error(`TestFlight error: ${err.message}`);
     process.exit(1);
   }
 }
 
-main();
+// Only run when invoked directly (not when imported by tests).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}

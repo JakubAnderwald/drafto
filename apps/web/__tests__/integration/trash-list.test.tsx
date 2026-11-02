@@ -238,6 +238,35 @@ describe("TrashList", () => {
     });
   });
 
+  it("shows an empty-titled note as Untitled", async () => {
+    mockFetch.mockImplementation((url: string) => {
+      if (url === "/api/notes/trash") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([{ ...mockTrashedNotes[0], id: "note-blank", title: "" }]),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<Skeleton height="2.5rem" />}>
+          <TrashList
+            notebooks={mockNotebooks}
+            onRestore={vi.fn()}
+            onPermanentDelete={vi.fn()}
+            refreshTrigger={refreshCounter}
+          />
+        </Suspense>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Untitled")).toBeInTheDocument();
+    });
+  });
+
   it("displays the Trash heading", async () => {
     await act(async () => {
       render(

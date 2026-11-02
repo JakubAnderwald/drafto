@@ -13,6 +13,8 @@ Both projects run on the Supabase **Pro plan**, which provides daily automatic b
 
 Supabase `config.toml` lives at [`supabase/config.toml`](../../supabase/config.toml). Its auth settings (email confirmations enabled, MFA TOTP enabled, `otp_length=8`, `max_frequency=1m0s`) must match production.
 
+**Auth email works only on production.** Prod sends confirmation and password-reset emails through Resend's SMTP (`smtp.resend.com`, from `hello@drafto.eu`). Dev has no custom SMTP, so it falls back to Supabase's built-in mailer. That mailer delivers only to addresses of the Supabase org's team members and allows 2 emails an hour for the whole project. A reset for the E2E account comes back `400 email_address_invalid`, and past the hourly cap requests fail with `email rate limit exceeded`. So auth email from dev, a Vercel preview or a debug build reaches almost no one; test an emailed link on a beta build, which runs against prod. A request for an address with no account still returns `200` and sends nothing, the same answer as prod, which is what `apps/mobile/e2e/06-forgot-password.yaml` relies on.
+
 ## Where each environment is used
 
 ### Web — `apps/web/`
@@ -37,6 +39,20 @@ Both env files are gitignored. In a worktree, copy them from the main checkout b
 
 Same pattern as mobile: `apps/desktop/.env` for dev backend (used by `npx react-native run-macos`), `apps/desktop/.env.production` for release builds (used by `pnpm release:beta` / `pnpm release:production`). Both files are gitignored and must be copied into new worktrees.
 
+### Web API origin for native apps
+
+Mobile and desktop talk to Supabase directly, except for account deletion. That calls `DELETE /api/account` on the web app with the user's Supabase access token (see [auth → Account deletion](../features/auth.md#account-deletion)). One optional variable per app tells the app which web origin to call:
+
+| App     | Variable              | `.env` (debug)                                      | `.env.production` (release) | Read in                                                                     | If unset            |
+| ------- | --------------------- | --------------------------------------------------- | --------------------------- | --------------------------------------------------------------------------- | ------------------- |
+| Mobile  | `EXPO_PUBLIC_API_URL` | A web origin backed by the **dev** Supabase project | `https://drafto.eu`         | `apps/mobile/app.config.ts` → `extra.apiUrl`                                | `https://drafto.eu` |
+| Desktop | `API_URL`             | A web origin backed by the **dev** Supabase project | `https://drafto.eu`         | `apps/desktop/src/lib/config.ts` → `apiUrl` (typed in `src/types/env.d.ts`) | `https://drafto.eu` |
+
+- **Use the apex host** `https://drafto.eu` for production, not `www`. A cross-host redirect makes `fetch` drop the `Authorization` header, and the request fails with 401.
+- **The origin must match the build's Supabase project.** Access tokens are project-specific, so a mismatch fails closed with 401, and the app shows the "session expired" message. Nothing is deleted. A debug build that omits the variable calls prod with a dev token and gets exactly that 401, so in-app deletion can only be tested end to end on a debug build once the variable points at a dev-backed web origin, such as a local `pnpm dev` server reachable from the device.
+- **If you set it in `.env`, set it in `.env.production` too.** Both release lanes inject `.env.production` into the environment before bundling, and only the keys present in that file override `.env`. A dev URL that lives only in `.env` can therefore end up in a release build, where deletion would fail with 401.
+- **Neither variable is committed or copied by CI.** Add them by hand to the gitignored files in the primary checkout (`/Users/jakub/code/drafto/apps/{mobile,desktop}/.env*`), from which `scripts/worktree-bootstrap.sh` copies them. For desktop, also add them to the factory's fossil build root `/Volumes/DraftoFactory/drafto-beta-desktop/apps/desktop/.env*`. Edit only the env files there, and **never run `pnpm install`** in either checkout (see [desktop build fossil](../operations/desktop-build-fossil.md)). Leaving the variable out is safe for production builds, because the fallback is the production origin.
+
 ### CI
 
 GitHub Actions workflows run against the **dev** Supabase project. CI secrets (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, service-role keys, etc.) point at `huhzactreblzcogqkbsd`.
@@ -45,7 +61,8 @@ GitHub Actions workflows run against the **dev** Supabase project. CI secrets (`
 
 Sentry and PostHog each use a **single project** with environment tagging, rather than per-environment projects:
 
-- Sentry environment is set via `NEXT_PUBLIC_SENTRY_ENVIRONMENT`, configured per Vercel environment (Production / Preview / Development).
+- Sentry environment is set via `NEXT_PUBLIC_SENTRY_ENVIRONMENT`, configured per Vercel environment (Production / Preview / Development), and trimmed in [`apps/web/src/lib/sentry-environment.ts`](../../apps/web/src/lib/sentry-environment.ts).
+- The Sentry SDK is **disabled when the environment is `development`**. That covers local `pnpm dev` and local Playwright runs always, and a local `pnpm start` only when `.env.local` sets `NEXT_PUBLIC_SENTRY_ENVIRONMENT=development` (as `.env.local.example` does). Without that line, a local production build resolves to `production` and reports. The org is on Sentry's Free plan, and local E2E runs had been using up its 50-replays-a-month quota. Only Vercel production and preview deployments should report.
 - PostHog events carry the same environment tag so production and preview/dev traffic can be filtered in the same dashboard.
 - Client instrumentation: [`apps/web/instrumentation-client.ts`](../../apps/web/instrumentation-client.ts) (not `sentry.client.config.ts` — Turbopack ignores the old webpack convention).
 - Server + edge instrumentation: [`apps/web/sentry.server.config.ts`](../../apps/web/sentry.server.config.ts), [`apps/web/sentry.edge.config.ts`](../../apps/web/sentry.edge.config.ts), loaded via [`apps/web/instrumentation.ts`](../../apps/web/instrumentation.ts).
@@ -70,7 +87,11 @@ The scripts are defined in the root [`package.json`](../../package.json) so the 
 Always apply migrations to dev first, verify, then to prod:
 
 ```bash
-# 1. Scan the migration for destructive SQL
+# 1. Bring the branch up to date with main, then scan the migration
+#    (destructive SQL, missing grants, a version that sorts before main's newest).
+#    Merge rather than rebase a pushed PR branch (or use GitHub's "Update branch"):
+#    a rebase needs a force-push, which the agents refuse.
+git fetch origin main && git merge origin/main
 pnpm migration:check
 
 # 2. Apply to dev
@@ -84,7 +105,7 @@ pnpm supabase:link:prod
 pnpm supabase:push
 ```
 
-The `pnpm migration:check` script runs [`scripts/check-migration-safety.sh`](../../scripts/check-migration-safety.sh) and scans for `DROP TABLE`, `TRUNCATE`, and unqualified `DELETE` patterns.
+The `pnpm migration:check` script runs [`scripts/check-migration-safety.sh`](../../scripts/check-migration-safety.sh) and scans for `DROP TABLE`, `TRUNCATE`, and unqualified `DELETE` patterns, and for `public` tables / views created without an explicit `GRANT` ([ADR 0052](../adr/0052-explicit-data-api-grants.md)). Run with no paths, it also fails a migration the branch adds whose version isn't newer than the newest one on main (`MIGRATION_BASE_REF` in CI, `origin/main` locally), because `supabase db push` would refuse it ([ADR 0057](../adr/0057-new-migrations-sort-after-base.md), [Migration versions must sort last](../operations/migrations.md#migration-versions-must-sort-last)).
 
 Full safety rules (never `db reset` against production, confirmation requirements, etc.) live in [`../operations/migrations.md`](../operations/migrations.md) and [ADR 0008](../adr/0008-production-data-safety-guardrails.md).
 

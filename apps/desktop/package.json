@@ -1,6 +1,6 @@
 {
   "name": "@drafto/desktop",
-  "version": "0.3.2",
+  "version": "0.4.4",
   "private": true,
   "main": "index.js",
   "scripts": {
@@ -12,7 +12,10 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
     "release:beta": "bundle exec fastlane mac beta",
-    "release:production": "bundle exec fastlane mac production"
+    "release:production": "bundle exec fastlane mac production",
+    "release:promote": "bundle exec fastlane mac promote",
+    "store:screenshots": "bash store/screenshots/generate-macos.sh",
+    "store:screenshots:upload": "bundle exec fastlane mac upload_screenshots"
   },
   "dependencies": {
     "@10play/tentap-editor": "^1.0.1",
@@ -22,14 +25,14 @@
     "@nozbe/with-observables": "^1.6.0",
     "@react-native-async-storage/async-storage": "^3.1.1",
     "@react-native-community/netinfo": "^11.4.1",
-    "@react-navigation/native": "^7.3.16",
-    "@react-navigation/native-stack": "^7.18.8",
-    "@supabase/supabase-js": "^2.112.3",
-    "react": "19.2.8",
+    "@react-navigation/native": "^7.4.1",
+    "@react-navigation/native-stack": "^7.19.2",
+    "@supabase/supabase-js": "^2.116.0",
+    "react": "19.3.0",
     "react-native": "0.86.2",
     "react-native-document-picker-macos": "^1.0.0",
     "react-native-fs": "^2.20.0",
-    "react-native-keychain": "^10.0.0",
+    "react-native-keychain": "9.2.3",
     "react-native-macos": "^0.81.9",
     "react-native-safe-area-context": "^5.8.0",
     "react-native-screens": "^4.26.0",
@@ -40,14 +43,14 @@
   "devDependencies": {
     "@babel/core": "^7.29.7",
     "@babel/plugin-proposal-decorators": "^7.29.7",
-    "@babel/runtime": "^8.0.0",
+    "@babel/runtime": "^8.0.5",
     "@react-native-community/cli": "18.0.0",
     "@react-native-community/cli-platform-ios": "18.0.0",
-    "@react-native/babel-preset": "0.86.2",
-    "@react-native/metro-config": "0.86.2",
-    "@react-native/typescript-config": "0.86.2",
+    "@react-native/babel-preset": "0.86.3",
+    "@react-native/metro-config": "0.86.3",
+    "@react-native/typescript-config": "0.86.3",
     "@types/jest": "^29.5.14",
-    "@types/react": "^19.2.18",
+    "@types/react": "^19.3.0",
     "babel-jest": "^29.7.0",
     "babel-plugin-module-resolver": "^5.0.2",
     "eslint": "^9.39.5",
@@ -55,6 +58,6 @@
     "jest": "^29.7.0",
     "react-native-dotenv": "^3.4.12",
     "typescript": "~6.0.3",
-    "typescript-eslint": "^8.67.0"
+    "typescript-eslint": "^8.70.0"
   }
 }

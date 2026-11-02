@@ -61,6 +61,7 @@ import {
   queueAttachment,
   processPendingUploads,
   cleanupOrphanedFiles,
+  deleteAllLocalAttachments,
 } from "@/lib/data/attachment-queue";
 import RNFS from "react-native-fs";
 
@@ -188,6 +189,12 @@ describe("processPendingUploads", () => {
     expect(body).toBeInstanceOf(Uint8Array);
     expect((body as Uint8Array).length).toBe(5);
     expect(opts).toEqual({ contentType: "image/jpeg", upsert: false });
+    // The attachments table has no UPDATE policy, so the row is inserted with
+    // ON CONFLICT DO NOTHING: a retry that finds it already there succeeds.
+    expect(mockUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({ id: attachment.remoteId, file_path: attachment.filePath }),
+      { onConflict: "id", ignoreDuplicates: true },
+    );
   });
 
   it("persists error message and transitions status to 'failed' when upload throws", async () => {
@@ -286,6 +293,31 @@ describe("processPendingUploads", () => {
 
     const uploaded = await processPendingUploads();
     expect(uploaded).toBe(1);
+  });
+});
+
+describe("deleteAllLocalAttachments", () => {
+  it("removes the entire attachments directory when it exists", async () => {
+    (RNFS.exists as jest.Mock).mockResolvedValue(true);
+
+    await deleteAllLocalAttachments();
+
+    expect(RNFS.unlink).toHaveBeenCalledWith("/mock/documents/attachments");
+  });
+
+  it("does nothing when the attachments directory does not exist", async () => {
+    (RNFS.exists as jest.Mock).mockResolvedValue(false);
+
+    await deleteAllLocalAttachments();
+
+    expect(RNFS.unlink).not.toHaveBeenCalled();
+  });
+
+  it("swallows unlink errors so sign-out is not blocked", async () => {
+    (RNFS.exists as jest.Mock).mockResolvedValue(true);
+    (RNFS.unlink as jest.Mock).mockRejectedValueOnce(new Error("permission denied"));
+
+    await expect(deleteAllLocalAttachments()).resolves.toBeUndefined();
   });
 });
 

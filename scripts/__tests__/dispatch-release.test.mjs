@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   derivePlatforms,
+  deriveVerifyPlatforms,
   platformsToLanes,
   assertBetaOnly,
   resolveLaneRoot,
@@ -15,6 +16,7 @@ import {
   laneLogPath,
   dispatchLanes,
   DESKTOP_FOSSIL_ROOT_DEFAULT,
+  parseReleaseIssues,
   _setSpawnForTests,
 } from "../lib/dispatch-release.mjs";
 
@@ -74,6 +76,103 @@ describe("derivePlatforms", () => {
   });
 });
 
+// The verification stage's variant (ADR-0053, 5C): packages/shared/ reaches the
+// web app too. derivePlatforms above must stay exactly as it is.
+describe("deriveVerifyPlatforms", () => {
+  it("counts a packages/shared/-only diff as web, flagged webViaShared", () => {
+    assert.deepEqual(deriveVerifyPlatforms("packages/shared/src/x.ts\n"), {
+      mobile: true,
+      desktop: true,
+      web: true,
+      webViaShared: true,
+    });
+    // The plain derivation of the same diff is unchanged.
+    assert.deepEqual(derivePlatforms("packages/shared/src/x.ts\n"), {
+      mobile: true,
+      desktop: true,
+      web: false,
+    });
+  });
+
+  it("is web without webViaShared when apps/web/ changed too (either order)", () => {
+    for (const diff of [
+      "apps/web/a.ts\npackages/shared/b.ts",
+      "packages/shared/b.ts\napps/web/a.ts",
+      "apps/web/a.ts",
+    ]) {
+      assert.equal(deriveVerifyPlatforms(diff).web, true, diff);
+      assert.equal(deriveVerifyPlatforms(diff).webViaShared, false, diff);
+    }
+  });
+
+  it("agrees with derivePlatforms on mobile and desktop, and on web without shared", () => {
+    for (const diff of [
+      "",
+      "scripts/x.mjs\ndocs/y.md",
+      "apps/mobile/a.ts",
+      "apps/desktop/a.ts",
+      "apps/web/a.ts\napps/mobile/b.ts\ndocs/x.md\n",
+      "packages/shared/a.ts\napps/mobile/b.ts",
+      "  packages/shared/padded.ts  ",
+    ]) {
+      const plain = derivePlatforms(diff);
+      const v = deriveVerifyPlatforms(diff);
+      assert.equal(v.mobile, plain.mobile, diff);
+      assert.equal(v.desktop, plain.desktop, diff);
+      if (!v.webViaShared) assert.equal(v.web, plain.web, diff);
+      assert.deepEqual(Object.keys(v), ["mobile", "desktop", "web", "webViaShared"]);
+    }
+    assert.equal(deriveVerifyPlatforms("  packages/shared/padded.ts  ").webViaShared, true);
+  });
+
+  it("is all-false for an empty, missing or unrelated diff", () => {
+    const none = { mobile: false, desktop: false, web: false, webViaShared: false };
+    assert.deepEqual(deriveVerifyPlatforms(""), none);
+    assert.deepEqual(deriveVerifyPlatforms(undefined), none);
+    // A path that merely contains the words, not under packages/shared/.
+    assert.deepEqual(deriveVerifyPlatforms("docs/packages/shared/x.md\nscripts/x.mjs"), none);
+  });
+});
+
+describe("derive-platforms CLI", () => {
+  const CLI = fileURLToPath(new URL("../lib/dispatch-release.mjs", import.meta.url));
+  const run = (args, input) => spawnSync("node", [CLI, ...args], { encoding: "utf8", input });
+
+  it("prints derivePlatforms, byte for byte as before, without --verify", () => {
+    for (const diff of ["packages/shared/a.ts\n", "apps/web/a.ts\napps/mobile/b.ts\n", ""]) {
+      const r = run(["derive-platforms", "--diff-file", "-"], diff);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout, JSON.stringify(derivePlatforms(diff), null, 2) + "\n");
+      assert.doesNotMatch(r.stdout, /webViaShared/);
+    }
+    const r = run(["derive-platforms", "--diff", "packages/shared/a.ts"]);
+    assert.equal(r.stdout, '{\n  "mobile": true,\n  "desktop": true,\n  "web": false\n}\n');
+  });
+
+  it("prints the verification variant with --verify, wherever the flag sits", () => {
+    for (const args of [
+      ["derive-platforms", "--verify", "--diff-file", "-"],
+      ["derive-platforms", "--diff-file", "-", "--verify"],
+    ]) {
+      const r = run(args, "packages/shared/a.ts\n");
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(JSON.parse(r.stdout), {
+        mobile: true,
+        desktop: true,
+        web: true,
+        webViaShared: true,
+      });
+    }
+  });
+
+  it("refuses --verify on any other subcommand (a dispatch never builds from it)", () => {
+    const r = run(["dispatch", "--verify", "--platforms", "mobile", "--dry-run"]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /--verify is only valid with derive-platforms/);
+    assert.equal(r.stdout, "");
+  });
+});
+
 describe("platformsToLanes", () => {
   it("mobile → apps/mobile pnpm release:beta:all", () => {
     assert.deepEqual(platformsToLanes({ mobile: true }), [
@@ -113,6 +212,63 @@ describe("assertBetaOnly (prod-never invariant)", () => {
       () => assertBetaOnly({ command: "bundle", args: ["exec", "fastlane", "mac", "production"] }),
       /non-beta/,
     );
+    // No platform token — both Fastfiles declare a default_platform, so this runs
+    // the real lane (apps/desktop defaults to :mac).
+    assert.throws(
+      () => assertBetaOnly({ command: "bundle", args: ["exec", "fastlane", "production"] }),
+      /non-beta/,
+    );
+  });
+
+  // `promote` submits an ALREADY-UPLOADED TestFlight build for App Review. It
+  // does not build, so it is fast and cheap to invoke — and it is the single most
+  // consequential lane in the repo, because it puts the app in front of Apple's
+  // reviewers and (on approval) the public. `/release:prod\b/` does NOT match
+  // "release:promote" (there is no `d` in promote), so these spellings needed
+  // their own patterns; all four must be refused.
+  it("throws on every promote spelling (App Review submission is human-only)", () => {
+    for (const lane of [
+      { command: "pnpm", args: ["release:promote:ios"] },
+      { command: "pnpm", args: ["release:promote"] },
+      { command: "bundle", args: ["exec", "fastlane", "ios", "promote"] },
+      { command: "bundle", args: ["exec", "fastlane", "mac", "promote"] },
+      // With explicit lane options, as an operator would type it by hand.
+      { command: "bundle", args: ["exec", "fastlane", "ios", "promote", "build_number:42"] },
+      // No platform token: both Fastfiles declare a default_platform, so this is
+      // a real submission (apps/desktop defaults to :mac).
+      { command: "bundle", args: ["exec", "fastlane", "promote"] },
+    ]) {
+      assert.throws(
+        () => assertBetaOnly(lane),
+        /non-beta/,
+        `must refuse: ${lane.command} ${lane.args.join(" ")}`,
+      );
+    }
+  });
+
+  it("still allows the beta lanes the promote patterns sit next to", () => {
+    for (const lane of [
+      { command: "pnpm", args: ["release:beta"] },
+      { command: "pnpm", args: ["release:beta:all"] },
+      { command: "bundle", args: ["exec", "fastlane", "mac", "beta"] },
+    ]) {
+      assert.doesNotThrow(() => assertBetaOnly(lane));
+    }
+  });
+  it("throws on the store-screenshot upload lanes", () => {
+    for (const args of [["store:screenshots:upload:ios"], ["store:screenshots:upload"]]) {
+      assert.throws(() => assertBetaOnly({ command: "pnpm", args }), /non-beta/);
+    }
+    for (const platform of ["ios", "mac"]) {
+      assert.throws(
+        () =>
+          assertBetaOnly({
+            command: "bundle",
+            args: ["exec", "fastlane", platform, "upload_screenshots"],
+          }),
+        /non-beta/,
+      );
+    }
   });
 });
 
@@ -177,6 +333,77 @@ describe("dispatch-premerge CLI", () => {
       JSON.parse(r.stdout).dispatched.map((d) => d.id),
       ["mobile"],
     );
+  });
+});
+
+describe("dispatch --release-issues (nightly support runner, ADR-0042)", () => {
+  const CLI = fileURLToPath(new URL("../lib/dispatch-release.mjs", import.meta.url));
+  const run = (args) => spawnSync("node", [CLI, ...args], { encoding: "utf8" });
+
+  it("normalises the CSV: numbers only, de-duplicated, sorted", () => {
+    assert.equal(parseReleaseIssues("661, 658,661"), "658,661");
+    assert.equal(parseReleaseIssues("7"), "7");
+  });
+
+  it("rejects anything that is not a list of issue numbers", () => {
+    for (const bad of ["", " , ", "658;rm -rf", "#658", "0", "65a", "658,-1", undefined]) {
+      assert.throws(
+        () => parseReleaseIssues(bad),
+        /comma-separated list of issue numbers/,
+        String(bad),
+      );
+    }
+  });
+
+  it("hands the issues to the lane as DRAFTO_RELEASE_ISSUES", () => {
+    const r = run([
+      "dispatch",
+      "--platforms",
+      "mobile",
+      "--release-issues",
+      "661,658",
+      "--dry-run",
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.deepEqual(
+      out.dispatched.map((d) => [d.id, d.releaseIssues]),
+      [["mobile", "658,661"]],
+    );
+  });
+
+  it("passes the env to the real spawn path (not just the dry-run echo)", async () => {
+    const seen = [];
+    _setSpawnForTests(async (lane, opts) => {
+      seen.push([lane.id, opts.laneEnv]);
+      return { ok: true, pid: 4242, logPath: "/tmp/x.log", exitPath: "/tmp/x.log.exit" };
+    });
+    const out = await dispatchLanes({
+      platforms: { mobile: true },
+      laneEnv: { DRAFTO_RELEASE_ISSUES: "658" },
+    });
+    assert.deepEqual(seen, [["mobile", { DRAFTO_RELEASE_ISSUES: "658" }]]);
+    assert.equal(out.dispatched[0].releaseIssues, "658");
+  });
+
+  it("fails the whole dispatch on a malformed list — nothing is spawned", () => {
+    const r = run([
+      "dispatch",
+      "--platforms",
+      "mobile",
+      "--release-issues",
+      "658,abc",
+      "--dry-run",
+    ]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /comma-separated list of issue numbers/);
+    assert.equal(r.stdout, "");
+  });
+
+  it("omits the env entirely when the flag is absent (factory --release is unchanged)", () => {
+    const r = run(["dispatch", "--platforms", "mobile", "--dry-run"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).dispatched[0].releaseIssues, undefined);
   });
 });
 

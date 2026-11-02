@@ -46,6 +46,10 @@ test-results/
 playwright-report/
 blob-report/
 playwright/.cache/
+.playwright-mcp/
+
+# stray E2E capture artifacts written to the repo root
+/e2e-*.png
 **/e2e/.auth/
 
 # turbo

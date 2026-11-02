@@ -62,6 +62,7 @@ jest.mock("@10play/tentap-editor", () => ({
     setContent: jest.fn(),
   })),
   TenTapStartKit: [],
+  CoreBridge: { configureCSS: (css) => ({ name: "core", extendCSS: css }) },
   RichText: () => null,
   Toolbar: () => null,
 }));
@@ -147,6 +148,11 @@ jest.mock("react-native-svg", () => {
     Text: Text,
   };
 });
+
+// The react-native preset's TextInput mock leaves out setSelection, which the
+// real component has (the find bar puts the caret back after Return)
+const { TextInput } = require("react-native");
+TextInput.prototype.setSelection = jest.fn();
 
 // Silence console.error for act warnings in tests
 const originalError = console.error;

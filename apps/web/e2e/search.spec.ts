@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/test";
 
 test.describe("Search functionality", () => {
   test("open search with Cmd+K, search for a note, and select it", async ({ page }) => {
@@ -58,7 +58,10 @@ test.describe("Search functionality", () => {
 
     await searchInput.fill("SearchTest");
 
-    // Wait for results
-    await expect(page.getByText(noteTitle)).toBeVisible({ timeout: 10000 });
+    // Wait for results. Scoped to the overlay: the note's list row shows the same
+    // title, so a page-wide match would pass without search returning anything.
+    await expect(page.getByTestId("search-results").getByText(noteTitle)).toBeVisible({
+      timeout: 10000,
+    });
   });
 });

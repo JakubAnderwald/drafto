@@ -16,7 +16,7 @@ Entry point for engineers (and coding agents) working in this repo. For the user
 
 One brief per functional area. Each brief lists the current state, code paths on every platform, related ADRs, and how to verify a change.
 
-- [`features/auth.md`](./features/auth.md) — email/password + OAuth, approval flow, RLS boundary
+- [`features/auth.md`](./features/auth.md) — email/password + OAuth, approval flow, account deletion, RLS boundary
 - [`features/notes-and-notebooks.md`](./features/notes-and-notebooks.md) — data model, CRUD API, soft delete, trash
 - [`features/editor.md`](./features/editor.md) — BlockNote editor, auto-save, Markdown conversion
 - [`features/offline-sync.md`](./features/offline-sync.md) — WatermelonDB on mobile + desktop, sync loop, conflict rules
@@ -25,7 +25,10 @@ One brief per functional area. Each brief lists the current state, code paths on
 - [`features/mcp-server.md`](./features/mcp-server.md) — remote MCP at `/api/mcp`, API keys, tool reference, registry
 - [`features/design-system.md`](./features/design-system.md) — tokens, primitives, cross-platform parity
 - [`features/email-and-approval.md`](./features/email-and-approval.md) — transactional email via Resend + approval pipeline
+- [`features/privacy-policy.md`](./features/privacy-policy.md) — the public `/privacy` page, processor inventory, maintenance checklist, guard test
+- [`features/seo-and-indexing.md`](./features/seo-and-indexing.md) — canonical host, the signed-out landing page at `/`, robots.txt + sitemap, www/http redirects, `.well-known` app-link files, expected Search Console state
 - [`features/mobile-desktop-apps.md`](./features/mobile-desktop-apps.md) — how iOS / Android / macOS fit together
+- [`features/factory-verification.md`](./features/factory-verification.md) — the dark factory's pre-In-Test verification stage (the Testing column): flow, lanes, the report, settings, planned device lanes
 
 ## Architecture
 
@@ -39,6 +42,8 @@ One brief per functional area. Each brief lists the current state, code paths on
 - [`operations/cloud-sessions.md`](./operations/cloud-sessions.md) — claude.ai/code and mobile sessions: what carries over, personal skills
 - [`operations/builds-and-releases.md`](./operations/builds-and-releases.md) — Fastlane for iOS / Android / macOS, versioning, release notes
 - [`operations/migrations.md`](./operations/migrations.md) — Supabase migration workflow, production safety rails
+- [`operations/claude-code-hooks.md`](./operations/claude-code-hooks.md) — the five committed `.claude/hooks`, how they locate themselves, what the `main` guards match
+- [`operations/macos-in-test-automation.md`](./operations/macos-in-test-automation.md) — run a factory In-Test scenario against the macOS TestFlight build and production, hands-off; driving RN macOS from the accessibility API
 
 ## ADRs
 

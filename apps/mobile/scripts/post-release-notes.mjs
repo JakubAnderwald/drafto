@@ -333,12 +333,19 @@ async function postTestFlightNotes(releaseNotes, buildNumber) {
   // `preReleaseVersion` MUST be in fields[builds] or ASC omits the relationship
   // linkage and platform can't be resolved from the include; uploadedDate breaks
   // ties when a build number is reused; the macOS-only fields are a fallback.
+  //
+  // Neither URL passes `sort`: App Store Connect rejects it on List Builds with
+  // `400 PARAMETER_ERROR.ILLEGAL "The parameter 'sort' can not be used with this
+  // request"`, which used to fail this script (non-fatally) and leave a release
+  // with no notes. The no-build-number fallback therefore asks for a full page
+  // (200 is ASC's maximum) and lets selectTestFlightBuild pick the newest iOS
+  // build by uploadedDate client-side, which it already did anyway.
   const commonFields =
     `&fields[builds]=version,uploadedDate,processingState,preReleaseVersion,computedMinMacOsVersion,lsMinimumSystemVersion` +
     `&include=preReleaseVersion&fields[preReleaseVersions]=platform`;
   const buildsUrl = buildNumber
     ? `${baseUrl}/builds?filter[app]=${appId}&filter[version]=${encodeURIComponent(buildNumber)}${commonFields}`
-    : `${baseUrl}/builds?filter[app]=${appId}&sort=-uploadedDate&limit=20${commonFields}`;
+    : `${baseUrl}/builds?filter[app]=${appId}&limit=200${commonFields}`;
   const maxAttempts = buildNumber ? 15 : 1;
   let target = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {

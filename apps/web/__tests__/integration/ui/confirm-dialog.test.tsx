@@ -84,6 +84,27 @@ describe("ConfirmDialog", () => {
     expect(cancelBtn).not.toBeDisabled();
   });
 
+  it("enables the confirm button by default", () => {
+    render(<ConfirmDialog {...defaultProps} />);
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled();
+  });
+
+  it("disables the confirm button when confirmDisabled is set", async () => {
+    const onConfirm = vi.fn();
+    render(<ConfirmDialog {...defaultProps} onConfirm={onConfirm} confirmDisabled />);
+    const confirmBtn = screen.getByRole("button", { name: "Confirm" });
+    expect(confirmBtn).toBeDisabled();
+    await userEvent.click(confirmBtn);
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it("keeps cancel enabled when confirmDisabled is set", async () => {
+    const onCancel = vi.fn();
+    render(<ConfirmDialog {...defaultProps} onCancel={onCancel} confirmDisabled />);
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onCancel).toHaveBeenCalledOnce();
+  });
+
   it("merges custom className", () => {
     render(<ConfirmDialog {...defaultProps} className="custom-class" />);
     const dialog = screen.getByRole("alertdialog");

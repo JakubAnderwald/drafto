@@ -1,0 +1,93 @@
+# 0045 — Mobile Auth Uses the PKCE Flow
+
+- **Status**: Accepted
+- **Date**: 2026-10-10
+- **Authors**: Jakub Anderwald, Claude
+
+> **Update 2026-10-31**: The mobile client now sends an **S256** challenge, not `plain` ([#686](https://github.com/JakubAnderwald/drafto/issues/686)). `apps/mobile/src/lib/crypto-digest.ts` installs a `crypto.subtle` with a SHA-256-only `digest` backed by expo-crypto, and `supabase.ts` calls it right after `installCryptoRandom()` and before `createClient`. It leaves a runtime that already has `crypto.subtle` untouched. It also installs nothing without `TextEncoder` and `btoa`: supabase-js calls `btoa` on the S256 path without checking for it, so a `subtle` without `btoa` would break sign-in instead of falling back to `plain`. Verifier generation and storage are unchanged, and the server checks each code against the method stored with its own flow, so a reset requested as `plain` before the update still completes. The `subtle` has `digest` only. `supabase.auth.getClaims()` sees `crypto.subtle` and then calls `subtle.importKey` on an asymmetric JWT, which throws a `TypeError`. `getClaims()` returns only auth errors as `{ error }`, so the call rejects instead of falling back to `getUser()`. Nothing on mobile calls it today; add those two methods before anything does. The Neutral bullet below about `plain` describes the state before this update.
+
+## Context
+
+The mobile client in `apps/mobile/src/lib/supabase.ts` never set `flowType`, so supabase-js used its default, the **implicit** flow. Two flows on mobile hand Supabase a `drafto://` redirect:
+
+- **Password reset** ([ADR-0034](./0034-password-recovery-deep-links-on-mobile-and-desktop.md)). `resetPasswordForEmail` targets `drafto://reset-password`. Under the implicit flow the link arrives with real session tokens in the fragment, and `completeRecoveryFromUrl` passed them to `supabase.auth.setSession`.
+- **Apple sign-in on Android** ([ADR-0018](./0018-oauth-google-apple.md)). `signInWithOAuth` plus `WebBrowser.openAuthSessionAsync`, returning to `drafto://auth/callback`.
+
+Both were wrong:
+
+1. **Session injection.** Any website or app can open `drafto://reset-password#access_token=…&refresh_token=…`. The app trusted those tokens, so it could be signed into an account the link's author chose. The user then sees a reset screen for that account, and any notes they create can sync into it. The app has no way to tell whose tokens a link carries, so the only fix is to stop treating tokens in a URL as credentials. [ADR-0044](./0044-desktop-auth-web-handoff.md) closed the same hole on desktop, which already ran PKCE.
+2. **Apple sign-in on Android was likely broken.** The callback handler only looks for a `?code=`. The implicit flow never sends one, so a completed sign-in fell into the "user cancelled" branch and signed nobody in, with no error. This could not be confirmed without a device, but the code path admits no other outcome.
+
+Google sign-in on both platforms and Apple sign-in on iOS use `signInWithIdToken`, which no `flowType` affects.
+
+## Decision
+
+Set `flowType: "pkce"` on the mobile client, matching desktop and web.
+
+- Every redirect into the app now carries a one-time `code`. Only the `code_verifier` that supabase-js wrote to this device's SecureStore when the flow started can redeem it.
+- `apps/mobile/src/lib/auth-recovery.ts` accepts only that `code`. It no longer reads `access_token`/`refresh_token`, and never calls `setSession`. A token-only link gets the "missing its credentials" error.
+- `createRecoveryLinkHandler` drops any link it has already handled for the life of the handler, because re-exchanging a spent code would replace a working reset form with an error. A throwing callback no longer leaves its queue rejected.
+- A recovery link is recognised by its path alone (`reset-password`, `auth/recovery`). Supabase sends no `type` param under PKCE, so a `type=recovery` on any other path could only be forged.
+- Exchange failures that PKCE makes common get plain-language messages, chosen by error code: `pkce_code_verifier_not_found` (the link was opened on another device), `flow_state_expired` and `flow_state_not_found`.
+- Apple-on-Android parses its callback with the shared hand-rolled parser in `apps/mobile/src/lib/app-deep-link.ts`, because React Native's `URL` is unreliable with a custom scheme. A cancel on Apple's page (`user_cancelled_authorize`, `access_denied`) stays silent. Any other error on the callback is shown instead of being treated as a cancel.
+- `apps/mobile/src/lib/crypto-random.ts` installs `crypto.getRandomValues`, backed by expo-crypto (the OS CSPRNG), before the client is created. Hermes has no global `crypto`, and without one supabase-js builds the verifier from `Math.random()`.
+
+## Consequences
+
+- **Positive**:
+  - No platform accepts session tokens from a deep link any more.
+  - Apple sign-in on Android should now complete. It still needs a check on a real device.
+  - `apps/mobile/e2e/06-forgot-password.yaml` opens a forged token link and asserts it signs no one in, so the fix is exercised on-device.
+- **Negative**:
+  - A reset link only completes on the phone that asked for it, because the `code_verifier` lives there. The request screen already said "Open it on this device", so users are told the same thing as before.
+  - **A reset link now expires sooner.** Supabase Auth times a PKCE recovery from when the reset was requested (`FlowState.IsExpired` uses `CreatedAt`; only magic links are timed from code issue). The server's flow-state window defaults to 5 minutes, against the email link's 1-hour `otp_expiry` under the implicit flow. Web and desktop have run PKCE recovery with the same window all along. An expired link gets "This password reset link has expired. Request a new one." No client-side change can widen the window without reopening the hole: a `token_hash` link, for instance, can be minted by an attacker for their own account. The hosted projects' actual window has not been measured; check it on a device.
+  - **A forged link can spoil a pending reset.** supabase-js exchanges a code without a flow id, reading the shared verifier key. On any failed exchange it deletes that key. A website that opens `drafto://reset-password?code=<garbage>` while the user's real reset is pending therefore makes the real link fail, and the user requests a new one. That is denial of service, not account access, and is accepted. The implicit flow's equivalent was a full session injection.
+  - A reset requested before this release, and opened after updating, carries tokens and now fails with the missing-credentials error. The user requests a new link.
+- **Neutral**:
+  - Mobile signup sets no `emailRedirectTo`, so the confirmation link ends on the Site URL (`https://drafto.eu`) under either flow. The email is confirmed either way, and the user signs in on the phone. Nothing changes here.
+  - The runtime has no `crypto.subtle`, so supabase-js sends a `plain` challenge (the verifier itself) rather than S256. A `plain` challenge still ties the code to the verifier in this device's storage, which is the property that closes the hole, and the verifier now comes from the OS CSPRNG.
+  - Under PKCE, the code exchange for a recovery link also emits `PASSWORD_RECOVERY`. `AuthProvider` already handled that event; the deep-link handler still sets the recovery flag first.
+  - On Android, `openAuthSessionAsync` may also hand the `drafto://auth/callback?code=…` redirect to Expo Router, which has no route for it. If that shows an "Unmatched Route" screen before the session lands, it needs a route or a `+native-intent` redirect. Check this on a device along with the Apple leg itself.
+  - The verifier keys (`sb-<ref>-auth-token-code-verifier` and the per-flow slot and index keys) use only letters, digits, `.`, `-` and `_`, and their values are well under SecureStore's size limit, so `secure-store-adapter.ts` needs no change.
+
+## Alternatives Considered
+
+- **Keep the implicit flow and validate the tokens.** Rejected: a forged link carries perfectly valid tokens, just for the wrong account. The app cannot tell whose they are.
+- **Keep the implicit flow and drop the `setSession` branch only.** Rejected: under the implicit flow tokens are the only credential, so password reset would stop working altogether.
+- **Native Sign in with Apple on Android.** Rejected: Apple ships no Android SDK, which is why the browser flow exists ([ADR-0018](./0018-oauth-google-apple.md)).
+
+## Amendment (2026-11-01) — per-flow PKCE verifiers
+
+Append-only note. The status stays **Accepted**, and the decision above still applies. This changes which verifier a mobile exchange reads ([#685](https://github.com/JakubAnderwald/drafto/issues/685)).
+
+**Problem.** supabase-js read every exchange's verifier from one fixed key, `sb-<ref>-auth-token-code-verifier`, and each new PKCE flow overwrote it. A user who requested a reset and then, before opening the email, started another flow on the same phone found the link failing with a verifier error. That flow could be an Apple sign-in on Android, a sign-up, or a reset for another account.
+
+**What auth-js 2.116.0 does** (checked in the installed `dist/main/GoTrueClient.js`, `lib/helpers.js` and `lib/constants.js`):
+
+- Every PKCE flow start stores its verifier in its own slot, `…-flow-<id>-code-verifier`, and adds the id to an index, `…-flows-code-verifier`. This happens whether or not the flag below is on. At most `PKCE_MAX_CONCURRENT_FLOWS = 5` slots are kept, and a sixth flow evicts the oldest. The fixed key is still written with the newest verifier.
+- With `auth.experimental.appendPkceFlowIdToRedirects`, `_maybeAppendFlowIdToRedirect` adds `sb_flow_id=<32 hex>` to the redirect. Every PKCE flow mobile starts goes through it: `resetPasswordForEmail` (which returns no flow id), `signInWithOAuth` (through `_getUrlForProvider`, which returns `{ url, flowId }`; `signInWithOAuth`'s data is `{ provider, url, flowId }`), and `signUp`'s `emailRedirectTo`. Sign-up's code is confirmed in a browser and never exchanged on the phone. Its redirect becomes `https://drafto.eu/login?confirmed=1&sb_flow_id=<hex>`, which `https://drafto.eu/**` still allows, and its slot counts toward the five.
+- `exchangeCodeForSession(code, { flowId })` reads only that flow's slot. A missing slot or an id of the wrong shape fails with `pkce_code_verifier_not_found` and never borrows another flow's verifier, because a mismatched verifier would burn the single-use code. Without a flow id it reads the fixed key, as before. The automatic read from `window.location` applies only in a browser, which React Native is not.
+- supabase-js's `_initSupabaseAuthClient` passes `auth.experimental` on to `GoTrueClient`.
+
+**Decision.**
+
+- `apps/mobile/src/lib/supabase.ts` turns the flag on.
+- `apps/mobile/src/lib/app-deep-link.ts` exports `PKCE_FLOW_ID_PARAM` and `readPkceFlowId`. `completeRecoveryFromUrl` (`auth-recovery.ts`) and `completeAuthCallback` (`auth-callback.ts`, the Apple-on-Android exchange) read the redirect's flow id with it and pass `{ flowId }` when there is one. With none, the call stays `exchangeCodeForSession(code)`.
+- The flow id comes from the redirect, not from `signInWithOAuth`'s return value. `resetPasswordForEmail` returns none, and an id kept in app state would be lost when Android kills the app on Apple's page.
+- The app never retries an exchange without the flow id. That would send another flow's verifier.
+- Desktop is unchanged. Its fossil `node_modules` pins auth-js 2.101.1, which has no flow ids ([ADR-0027](./0027-desktop-react-version-locked-to-react-native-macos.md)).
+
+**Consequences.**
+
+- **Positive**:
+  - A pending reset or Apple sign-in survives up to four newer PKCE flows on the same device.
+  - This cannot rescue a reset that a newer one for the same address replaced on the server. Supabase ties a reset email's code to the account's newest reset request, so a second reset for the same address makes the first link fail on the server, whatever the app does. That most likely holds even when Supabase refuses the second request under its 60-second send limit (`max_frequency`), because the refused request is recorded first. This has not been checked against a live project. The issue's "second Send reset link press" is this case, so it is documented here rather than fixed.
+  - The forged-link denial of service above narrows. A forged `drafto://reset-password?code=<garbage>` without a flow id still makes auth-js delete the fixed key, but leaves the slots alone, so the genuine link, which names its slot, still completes. To reach a slot, a forged link would have to guess its 128-bit flow id. `apps/mobile/__tests__/lib/pkce-flow-ids.test.ts` covers this.
+  - A link without `sb_flow_id` behaves as before. That includes emails sent before the update, whose verifier is still in the fixed key.
+- **Negative**:
+  - **The Redirect URLs allowlist must allow the query string.** Supabase matches entries against the whole URL, query string included, so the exact `drafto://reset-password` and `drafto://auth/callback` entries stop matching, and Supabase silently swaps the redirect for the Site URL. Both projects need `drafto://reset-password?sb_flow_id=*` and `drafto://auth/callback?sb_flow_id=*`, next to the exact entries that installed builds still send, before a build with the flag reaches testers. Pre-merge betas run against prod ([ADR-0030](./0030-in-test-scenarios-and-pre-merge-betas.md)), so prod needs them first. `supabase/config.toml` lists them for the local stack.
+  - The flag is experimental, so a supabase-js release may rename or drop it. `pkce-flow-ids.test.ts` runs the real client and fails if the id stops being appended or honoured.
+  - **Only five flows are kept.** A sixth evicts the oldest slot, and that flow's link then fails as `pkce_code_verifier_not_found`. The reset screen's "Open this link on the device where you asked for the reset" is slightly off for it. No copy changed.
+- **Neutral**:
+  - No test can see Supabase keep `sb_flow_id` on the redirect when it adds the `code`. It is a manual device check ([testing](../architecture/testing.md#manual-only-coverage)).
+  - The flow id is a random one-time value that names a storage slot. The verifier never appears in a URL, and no new data is stored.

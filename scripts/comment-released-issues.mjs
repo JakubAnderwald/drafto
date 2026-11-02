@@ -31,8 +31,20 @@
 //
 // Idempotency: each comment carries the same `<!-- drafto-progress -->`
 // marker as the other support-pipeline progress comments, AND a fingerprint
-// `<!-- now-live:<platform>:<build> -->` so a second run for the same build
-// doesn't re-post.
+// `<!-- now-live:<platform>:<build> -->`. An issue is announced ONCE per
+// platform: any existing fingerprint for the platform — whatever its build —
+// posted since the issue's latest close suppresses a new one (see
+// lib/now-live.mjs). Keying on the build alone let every later build whose tag
+// range still covered the fix announce it again.
+//
+// Candidates are the tag-range `Closes #N` refs UNIONED with
+// $DRAFTO_RELEASE_ISSUES (comma-separated issue numbers), which
+// scripts/nightly-support.sh passes through dispatch-release.mjs
+// --release-issues for the support fixes a lane was dispatched to ship
+// (ADR-0042). The tag walk alone can miss them: `mobile@` is shared by the
+// `+ios.` and `+android.` tags and `-v:refname` sorts the iOS tag first, so an
+// Android build can start its range past a fix it never shipped. Either source
+// is still intersected with the support-labelled issues.
 //
 // Best-effort: any individual comment failure is logged but does not abort
 // the run — the rest of the release pipeline shouldn't fail because GitHub
@@ -43,6 +55,7 @@ import { promisify } from "node:util";
 import { isMainModule } from "./lib/is-main.mjs";
 import { parseFlags } from "./lib/parse-flags.mjs";
 import { extractIssueRefs } from "./lib/github-sync.mjs";
+import { nowLiveFingerprint, hasNowLive } from "./lib/now-live.mjs";
 
 const execFileP = promisify(execFile);
 const REPO = "JakubAnderwald/drafto";
@@ -110,7 +123,25 @@ export async function findClosedIssueNumbers({ tag, paths }) {
   return [...refs].sort((a, b) => a - b);
 }
 
-async function getSupportIssueNumbers() {
+// Issue numbers from $DRAFTO_RELEASE_ISSUES. Lenient: dispatch-release.mjs
+// already validated the list, and a stray token must not cost the release its
+// announcements, so anything that isn't an issue number is skipped.
+export function parseReleaseIssuesEnv(raw) {
+  return String(raw ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => /^[1-9][0-9]*$/.test(s))
+    .map(Number);
+}
+
+// Tag-range refs ∪ explicitly-released issues, sorted and de-duplicated.
+export function unionCandidates(rangeRefs, envRefs) {
+  return [...new Set([...(rangeRefs ?? []), ...(envRefs ?? [])])].sort((a, b) => a - b);
+}
+
+// Support-labelled issues → their latest close time (null while open). The
+// close time scopes the "already announced" check to the current fix.
+async function getSupportIssues() {
   let stdout;
   try {
     // Paginate via the underlying API rather than `gh issue list --limit N`:
@@ -124,53 +155,57 @@ async function getSupportIssueNumbers() {
       `repos/${REPO}/issues?labels=support&state=all&per_page=100`,
     ]);
   } catch {
-    return new Set();
+    return new Map();
   }
   let data;
   try {
     data = JSON.parse(stdout);
   } catch {
-    return new Set();
+    return new Map();
   }
   // The `/issues` endpoint includes PRs (each PR is also an issue). We only
   // label issues with `support`, but filter defensively by the absence of
   // `.pull_request` so a future labelled PR doesn't slip into the candidate
   // set and confuse the per-issue comment posting below.
-  return new Set(
-    (Array.isArray(data) ? data : [])
-      .filter((entry) => entry?.pull_request == null)
-      .map((entry) => Number(entry.number))
-      .filter((n) => Number.isInteger(n) && n > 0),
-  );
+  const out = new Map();
+  for (const entry of Array.isArray(data) ? data : []) {
+    if (entry?.pull_request != null) continue;
+    const n = Number(entry?.number);
+    if (!Number.isInteger(n) || n <= 0) continue;
+    out.set(n, typeof entry.closed_at === "string" ? entry.closed_at : null);
+  }
+  return out;
 }
 
-function fingerprintMarker(platform, build) {
-  return `<!-- now-live:${platform}:${build} -->`;
-}
-
-async function alreadyCommented(issueNumber, fingerprint) {
+// Has <platform> already been announced for this issue's current fix? A
+// failed lookup reads as "no" (best-effort, as before): a duplicate notice is
+// better than a fix nobody is told about.
+async function alreadyAnnounced(issueNumber, platform, closedAt) {
   let stdout;
   try {
-    stdout = await run("gh", [
-      "api",
-      "--paginate",
-      `repos/${REPO}/issues/${issueNumber}/comments`,
-      "--jq",
-      ".[].body // empty",
-    ]);
+    // No --jq: `gh api --paginate` merges the pages of an array response into
+    // one array, which a per-page --jq would not.
+    stdout = await run("gh", ["api", "--paginate", `repos/${REPO}/issues/${issueNumber}/comments`]);
   } catch {
     return false;
   }
-  return stdout.includes(fingerprint);
+  let comments;
+  try {
+    comments = JSON.parse(stdout);
+  } catch {
+    return false;
+  }
+  return hasNowLive(comments, platform, { since: closedAt ?? undefined });
 }
 
 async function postNowLiveComment({ issueNumber, platform, build, track }) {
-  const fp = fingerprintMarker(platform, build);
+  const fp = nowLiveFingerprint(platform, build);
   const body = `Now live in ${track}. ${PROGRESS_MARKER} ${fp}`;
   await run("gh", ["issue", "comment", String(issueNumber), "--repo", REPO, "--body", body]);
 }
 
-async function main(argv) {
+// Exported (with its `env`) for the tests; the CLI below calls it with argv.
+export async function main(argv, env = process.env) {
   const { flags } = parseFlags(argv);
   const platform = flags.platform;
   const build = flags.build;
@@ -194,24 +229,29 @@ async function main(argv) {
   const tag = await findLastReleaseTag(tagPrefix);
   process.stderr.write(`comment-released-issues: range ${tag || "(no tag)"}..HEAD\n`);
 
-  const candidates = await findClosedIssueNumbers({ tag, paths });
+  const envRefs = parseReleaseIssuesEnv(env.DRAFTO_RELEASE_ISSUES);
+  if (envRefs.length > 0) {
+    process.stderr.write(
+      `comment-released-issues: DRAFTO_RELEASE_ISSUES adds #${envRefs.join(", #")}\n`,
+    );
+  }
+  const candidates = unionCandidates(await findClosedIssueNumbers({ tag, paths }), envRefs);
   if (candidates.length === 0) {
     process.stderr.write("comment-released-issues: no Closes #N refs in this range\n");
     return { commented: [], skipped: [], skippedNonSupport: [] };
   }
 
-  const supportNumbers = await getSupportIssueNumbers();
-  const fingerprint = fingerprintMarker(platform, build);
+  const supportIssues = await getSupportIssues();
   const commented = [];
   const skipped = [];
   const skippedNonSupport = [];
 
   for (const issueNumber of candidates) {
-    if (!supportNumbers.has(issueNumber)) {
+    if (!supportIssues.has(issueNumber)) {
       skippedNonSupport.push(issueNumber);
       continue;
     }
-    if (await alreadyCommented(issueNumber, fingerprint)) {
+    if (await alreadyAnnounced(issueNumber, platform, supportIssues.get(issueNumber))) {
       skipped.push(issueNumber);
       continue;
     }

@@ -25,24 +25,24 @@ describe("factory-agent.sh syntax", () => {
 });
 
 describe("support-label skip guard (nightly-support.sh coexistence)", () => {
-  it("skips support-labelled cards in every factory loop (all 7)", () => {
+  it("skips support-labelled cards in every factory loop (all 8)", () => {
     // One guard per loop: Planning rescue, Ready, Plan Review replan,
-    // In Progress, In Review, In Test, Approved. The factory must never act on
-    // an issue nightly-support.sh owns.
+    // In Progress, In Review, Testing (ADR-0053), In Test, Approved. The
+    // factory must never act on an issue nightly-support.sh owns.
     const matches = script.match(/",support,"\*/g) || [];
     assert.equal(
       matches.length,
-      7,
-      `expected a support-label skip in all 7 loops, found ${matches.length}`,
+      8,
+      `expected a support-label skip in all 8 loops, found ${matches.length}`,
     );
   });
 
-  it("logs nightly-support.sh ownership at every support skip (all 7, none silent)", () => {
+  it("logs nightly-support.sh ownership at every support skip (all 8, none silent)", () => {
     const owned = script.match(/support label — nightly-support\.sh owns these/g) || [];
     assert.equal(
       owned.length,
-      7,
-      `every support guard should log nightly ownership; found ${owned.length}/7`,
+      8,
+      `every support guard should log nightly ownership; found ${owned.length}/8`,
     );
   });
 

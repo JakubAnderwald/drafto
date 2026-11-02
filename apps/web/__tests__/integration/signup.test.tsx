@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
+import { SIGNUP_CONFIRMATION_SENT } from "@drafto/shared";
 
 // Mock next/navigation
 const mockPush = vi.fn();
@@ -75,8 +76,13 @@ describe("Signup page", () => {
     expect(passwordInput).toHaveAttribute("minlength", "6");
   });
 
-  it("calls signUp and navigates to waiting page on success", async () => {
-    mockSignUp.mockResolvedValueOnce({ error: null });
+  it("asks the user to check their email when sign-up returns no session", async () => {
+    // Email confirmation is on, so there is no session yet. Pushing to /waiting-for-approval
+    // only bounced the user back to /login through the middleware.
+    mockSignUp.mockResolvedValueOnce({
+      data: { user: { id: "user-1", identities: [{ id: "identity-1" }] }, session: null },
+      error: null,
+    });
     const user = userEvent.setup();
 
     await act(async () => {
@@ -94,11 +100,58 @@ describe("Signup page", () => {
         emailRedirectTo: `${window.location.origin}/auth/callback`,
       },
     });
+    expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Check Your Email");
+    expect(screen.getByText("new@example.com")).toBeInTheDocument();
+    expect(screen.getByText(SIGNUP_CONFIRMATION_SENT)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to login" })).toHaveAttribute("href", "/login");
+    // The form is gone, so it cannot send a second email.
+    expect(screen.queryByRole("button", { name: "Sign up" })).not.toBeInTheDocument();
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it("shows the same state for an address that already has an account", async () => {
+    // Supabase answers an existing address with an obfuscated user and no session, and sends
+    // no email — the copy must not depend on which case it was.
+    mockSignUp.mockResolvedValueOnce({
+      data: { user: { id: "obfuscated", identities: [] }, session: null },
+      error: null,
+    });
+    const user = userEvent.setup();
+
+    await act(async () => {
+      render(<SignupPage />);
+    });
+
+    await user.type(screen.getByLabelText("Email"), "existing@example.com");
+    await user.type(screen.getByLabelText("Password"), "securepass");
+    await user.click(screen.getByRole("button", { name: "Sign up" }));
+
+    expect(await screen.findByText(SIGNUP_CONFIRMATION_SENT)).toBeInTheDocument();
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it("goes to the waiting page when sign-up returns a session", async () => {
+    mockSignUp.mockResolvedValueOnce({
+      data: { user: { id: "user-1" }, session: { access_token: "token" } },
+      error: null,
+    });
+    const user = userEvent.setup();
+
+    await act(async () => {
+      render(<SignupPage />);
+    });
+
+    await user.type(screen.getByLabelText("Email"), "new@example.com");
+    await user.type(screen.getByLabelText("Password"), "securepass");
+    await user.click(screen.getByRole("button", { name: "Sign up" }));
+
     expect(mockPush).toHaveBeenCalledWith("/waiting-for-approval");
+    expect(screen.queryByText("Check Your Email")).not.toBeInTheDocument();
   });
 
   it("displays error message when sign up fails", async () => {
     mockSignUp.mockResolvedValueOnce({
+      data: { user: null, session: null },
       error: { message: "User already registered" },
     });
     const user = userEvent.setup();
@@ -116,7 +169,7 @@ describe("Signup page", () => {
   });
 
   it("shows loading state while submitting", async () => {
-    let resolveSignUp: (value: { error: null }) => void;
+    let resolveSignUp: (value: { data: { user: null; session: null }; error: null }) => void;
     mockSignUp.mockReturnValueOnce(
       new Promise((resolve) => {
         resolveSignUp = resolve;
@@ -135,12 +188,13 @@ describe("Signup page", () => {
     expect(screen.getByRole("button", { name: "Creating account..." })).toBeDisabled();
 
     await act(async () => {
-      resolveSignUp!({ error: null });
+      resolveSignUp!({ data: { user: null, session: null }, error: null });
     });
   });
 
   it("resets loading state after error", async () => {
     mockSignUp.mockResolvedValueOnce({
+      data: { user: null, session: null },
       error: { message: "Signup failed" },
     });
     const user = userEvent.setup();

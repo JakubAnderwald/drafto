@@ -152,7 +152,14 @@ additional_redirect_urls = [
   "https://drafto.eu/**",
   "https://*-jakubanderwalds-projects.vercel.app/**",
   "drafto://auth/callback",
+  # Mobile appends its PKCE flow id (`?sb_flow_id=<32 hex>`) to both redirects, and
+  # entries match the query string too (ADR-0045). Keep the exact entries for builds
+  # that send the bare URL. The `*` can't cross `.` or `/`, which the id never contains.
+  "drafto://auth/callback?sb_flow_id=*",
   "eu.drafto.desktop://auth/callback",
+  "drafto://reset-password",
+  "drafto://reset-password?sb_flow_id=*",
+  "eu.drafto.desktop://auth/recovery",
 ]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600

@@ -1,0 +1,9 @@
+# Fastlane
+# Mirrors apps/mobile/.gitignore: the desktop release lane regenerates these on
+# every run, and without ignoring them the primary checkout is left dirty after
+# each release — where a `git add -A` sweeps them into an unrelated commit.
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+fastlane/README.md

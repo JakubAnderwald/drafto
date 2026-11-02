@@ -1,8 +1,19 @@
 import { Linking } from "react-native";
 
-import { supabase } from "./supabase";
+import { isAppleRevocationDeepLink } from "@drafto/shared";
 
-const REDIRECT_URL = "eu.drafto.desktop://auth/callback";
+import { isRecoveryUrl } from "@/lib/auth-recovery";
+import { apiUrl } from "@/lib/config";
+import { cryptoReady, supabase } from "@/lib/supabase";
+
+/**
+ * Supabase ends the OAuth redirect on this drafto.eu hand-off page, not on the
+ * app's scheme: a redirect straight to `eu.drafto.desktop://` leaves the browser
+ * tab frozen mid-navigation. The page forwards the code to
+ * `eu.drafto.desktop://auth/callback`, which `handleOAuthCallback` consumes.
+ * Must be allowlisted in Supabase Auth (ADR-0044).
+ */
+export const OAUTH_REDIRECT_URL = `${apiUrl}/auth/desktop/callback`;
 
 type OAuthProvider = "google" | "apple";
 
@@ -10,10 +21,12 @@ export async function signInWithOAuthBrowser(
   provider: OAuthProvider,
 ): Promise<{ error: string | null }> {
   try {
+    // A click right after launch would otherwise get a plain PKCE challenge.
+    await cryptoReady;
     const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
       provider,
       options: {
-        redirectTo: REDIRECT_URL,
+        redirectTo: OAUTH_REDIRECT_URL,
         skipBrowserRedirect: true,
       },
     });
@@ -29,48 +42,84 @@ export async function signInWithOAuthBrowser(
   }
 }
 
+/**
+ * Codes this app run has already handed to `exchangeCodeForSession`. A code is
+ * single-use, and the drafto.eu hand-off page sends the same link twice in the
+ * normal case: once automatically and again from its "Open Drafto" button. A
+ * second exchange would only fail ("PKCE code verifier not found").
+ *
+ * A code stays remembered even when its exchange fails: supabase-js deletes the
+ * stored verifier after every exchange attempt, success or failure (auth-js
+ * 2.101.1 in the shipped fossil build, and 2.116), so no retry of the same link
+ * can succeed. The user signs in again from the app.
+ */
+const exchangedCodes = new Set<string>();
+
+/** The app's own scheme. Must agree with `splitAppUrl` in `auth-recovery.ts`. */
+const APP_SCHEME_PREFIX = "eu.drafto.desktop://";
+
+/**
+ * Finishes OAuth sign-in from an `eu.drafto.desktop://auth/callback` deep link.
+ *
+ * Only a PKCE `code` is accepted. The client runs `flowType: "pkce"`, so only
+ * this install holds the `code_verifier` that redeems it. Implicit-flow
+ * `access_token`/`refresh_token` params are deliberately ignored. Any website can
+ * open `eu.drafto.desktop://auth/callback#access_token=…&refresh_token=…`, and
+ * honouring those tokens with `setSession` would sign the app into an attacker's
+ * account.
+ */
 export function handleOAuthCallback(url: string): void {
   try {
     // URL schemes are case-insensitive per RFC 3986 — normalize before match.
-    if (!url.toLowerCase().startsWith("eu.drafto.desktop:")) {
+    // Same prefix as the recovery parser: a slash-less `eu.drafto.desktop:auth/recovery`
+    // must not slip past `isRecoveryUrl` and have its code exchanged here.
+    if (!url.toLowerCase().startsWith(APP_SCHEME_PREFIX)) {
+      return;
+    }
+
+    // Password-recovery callbacks arrive over the same scheme but belong to
+    // `auth-recovery.ts`. Exchanging the code here as well would burn it and
+    // drop the user into a plain signed-in session instead of the reset screen.
+    if (isRecoveryUrl(url)) {
+      return;
+    }
+
+    // Sign in with Apple revocation links carry Apple's code for the account-deletion
+    // step (`apple-revocation.ts`). It is not a Supabase code: exchanging it would only
+    // fail and log, so it must never reach `exchangeCodeForSession`.
+    if (isAppleRevocationDeepLink(url)) {
       return;
     }
 
     const parsed = new URL(url);
 
-    // Callbacks can arrive with params in the query string (PKCE) or the
-    // hash fragment (implicit). WHATWG URL parses `auth` as the host for
-    // non-special schemes, so do not gate on pathname — gate on scheme
-    // above and on the presence of known auth params below.
+    // WHATWG URL parses `auth` as the host for non-special schemes, so do not
+    // gate on pathname — gate on scheme above and on the code below.
     const searchParams = new URLSearchParams(parsed.search);
     const hashParams = new URLSearchParams(
       parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash,
     );
 
-    // Log only non-sensitive metadata — never the raw URL, which carries
-    // the OAuth code or access/refresh tokens.
+    // Log only non-sensitive metadata — never the raw URL, which carries the code.
     console.info("[oauth] handling callback", {
       hasQuery: !!parsed.search,
       hasHash: !!parsed.hash,
     });
 
     const code = searchParams.get("code") ?? hashParams.get("code");
-    if (code) {
-      supabase.auth.exchangeCodeForSession(code).catch((err) => {
-        console.error("[oauth] Failed to exchange code for session:", err);
-      });
+    if (!code || exchangedCodes.has(code)) {
       return;
     }
 
-    const accessToken = searchParams.get("access_token") ?? hashParams.get("access_token");
-    const refreshToken = searchParams.get("refresh_token") ?? hashParams.get("refresh_token");
-    if (accessToken && refreshToken) {
-      supabase.auth
-        .setSession({ access_token: accessToken, refresh_token: refreshToken })
-        .catch((err) => {
-          console.error("[oauth] Failed to set session:", err);
-        });
-    }
+    exchangedCodes.add(code);
+    supabase.auth
+      .exchangeCodeForSession(code)
+      .then(({ error }) => {
+        if (error) console.error("[oauth] Failed to exchange code for session:", error.message);
+      })
+      .catch((err) => {
+        console.error("[oauth] Failed to exchange code for session:", err);
+      });
   } catch (err) {
     console.error("[oauth] Failed to parse callback URL:", err);
   }

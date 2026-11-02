@@ -30,7 +30,8 @@
 //     "kind":          "github_comment_batch",
 //     "issue":         { "number", "title", "state" },
 //     "comments":      [ { "id", "user": { "login" }, "body", "created_at"|"createdAt" }, ... ],
-//     "zohoThreadId":  "8537837000001234567"
+//     "zohoRoute":     { "threadId", "messageId", "subject", "to" },   // github-sync issue-route output
+//     "zohoThreadId":  "8537837000001234567"                           // legacy; route.threadId wins
 //   }
 //
 // Stdin shape (github_state_change — Phase G `--state-sync`):
@@ -41,10 +42,16 @@
 //     "newState":     { "state": ..., "state_reason": ... },
 //     "lastComment":  string | null,
 //     "platforms":    ["web"|"mobile"|"desktop", ...],
+//     "zohoRoute":    { "threadId", "messageId", "subject", "to" },
 //     "zohoThreadId": "8537837000001234567"
 //   }
 //
-// Stdout: the bundle the prompt documents.
+// `zohoRoute` / `zoho_route` keys may be camelCase (issue-route output) or
+// snake_case (the on-bundle shape); any field may be null.
+//
+// Stdout: the bundle the prompt documents. Both GitHub-side bundles carry
+// `zoho_route: {thread_id, message_id, subject, to}` (nulls allowed) plus the
+// legacy `zoho_thread_id` string ("" when there is no thread).
 
 import {
   humanIntervened,
@@ -57,6 +64,7 @@ import {
 import { emptyState } from "./state.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { PROGRESS_MARKER } from "./github-sync.mjs";
+import { normaliseRouteValue } from "./route-value.mjs";
 
 export function buildInboundThreadBundle({
   pending,
@@ -199,7 +207,7 @@ function normaliseAttachments(input) {
 // then hands the raw shape to this builder. Mirrors the prompt's
 // `github_comment_batch` documentation exactly — `kind`, `issue` (subset),
 // `comments` (normalised to `{id, user.login, body, createdAt}`), and the
-// linked `zoho_thread_id`. The runner pre-filters out bot-author comments
+// `zoho_route` (+ legacy `zoho_thread_id`). The runner pre-filters out bot-author comments
 // before calling, but the prompt re-checks defensively.
 //
 // Each comment body is wrapped in `<github-comment>...</github-comment>` —
@@ -210,19 +218,50 @@ function normaliseAttachments(input) {
 // documented envelope tags). Any literal `</github-comment>` inside the body
 // is neutralised by inserting a zero-width space so an attacker can't
 // escape the envelope by closing it early.
+// Remove HTML comments outside fenced code blocks. In prose they are machine
+// markers (e.g. the `<!-- now-live:android:50 -->` idempotency fingerprint,
+// which the first "Now live" email on 2026-10-09 showed the customer as
+// literal text). Inside a ```fence``` they are a quoted example and stay.
+// split() with a capturing group puts the fenced blocks at the odd indices.
+function stripHtmlCommentMarkers(text) {
+  return text
+    .split(/(```[\s\S]*?```)/u)
+    .map((part, i) => (i % 2 === 1 ? part : part.replace(/<!--[\s\S]*?-->/gu, "")))
+    .join("");
+}
+
 function envelopeCommentBody(raw) {
   const text = typeof raw === "string" ? raw : "";
   // Strip the progress-marker first — it's a routing artifact (filterNewComments
   // uses it to allow bot-authored comments through), not customer content.
   // Leaving it in would surface in the forwarded email as an HTML comment that
-  // some clients render as an empty line. Trim trailing whitespace too so the
-  // forwarded body doesn't carry the marker's surrounding spaces.
-  const stripped = text.split(PROGRESS_MARKER).join("").replace(/\s+$/u, "");
+  // some clients render as an empty line. The other machine markers go too
+  // (stripHtmlCommentMarkers). Trim trailing whitespace so the forwarded body
+  // doesn't carry the markers' surrounding spaces.
+  const stripped = stripHtmlCommentMarkers(text.split(PROGRESS_MARKER).join("")).replace(
+    /\s+$/u,
+    "",
+  );
   const safe = stripped.replace(/<\/github-comment>/gi, "<​/github-comment>");
   return `<github-comment>${safe}</github-comment>`;
 }
 
-export function buildGithubCommentBatchBundle({ issue, comments, zohoThreadId } = {}) {
+// Where the prompt sends the customer email (see github-sync.mjs
+// resolveIssueRoute). Accepts the camelCase issue-route output or the
+// snake_case bundle shape; a legacy bare `zohoThreadId` fills thread_id when
+// the route has none.
+function normaliseZohoRoute(route, zohoThreadId) {
+  const r = route && typeof route === "object" ? route : {};
+  return {
+    thread_id: normaliseRouteValue(r.threadId ?? r.thread_id) ?? normaliseRouteValue(zohoThreadId),
+    message_id: normaliseRouteValue(r.messageId ?? r.message_id),
+    subject: normaliseRouteValue(r.subject),
+    to: normaliseRouteValue(r.to),
+  };
+}
+
+export function buildGithubCommentBatchBundle({ issue, comments, zohoThreadId, zohoRoute } = {}) {
+  const route = normaliseZohoRoute(zohoRoute, zohoThreadId);
   return {
     kind: "github_comment_batch",
     issue: {
@@ -236,7 +275,8 @@ export function buildGithubCommentBatchBundle({ issue, comments, zohoThreadId } 
       body: envelopeCommentBody(c?.body),
       createdAt: c?.createdAt ?? c?.created_at ?? null,
     })),
-    zoho_thread_id: zohoThreadId ?? "",
+    zoho_route: route,
+    zoho_thread_id: route.thread_id ?? "",
   };
 }
 
@@ -253,7 +293,9 @@ export function buildGithubStateChangeBundle({
   lastComment,
   platforms,
   zohoThreadId,
+  zohoRoute,
 } = {}) {
+  const route = normaliseZohoRoute(zohoRoute, zohoThreadId);
   return {
     kind: "github_state_change",
     issue: {
@@ -267,7 +309,8 @@ export function buildGithubStateChangeBundle({
         ? envelopeCommentBody(lastComment)
         : null,
     platforms: Array.isArray(platforms) ? platforms : [],
-    zoho_thread_id: zohoThreadId ?? "",
+    zoho_route: route,
+    zoho_thread_id: route.thread_id ?? "",
   };
 }
 
@@ -314,7 +357,9 @@ async function main() {
       // Accept both shapes — bash uses `zohoThreadId` (camelCase, matches the
       // CLI flag), while the prompt documents the on-bundle field as
       // `zoho_thread_id` (snake_case). Builder normalises to snake on output.
+      // Same for the route object.
       zohoThreadId: input.zohoThreadId ?? input.zoho_thread_id,
+      zohoRoute: input.zohoRoute ?? input.zoho_route,
     });
   } else if (input.kind === "github_state_change") {
     bundle = buildGithubStateChangeBundle({
@@ -324,6 +369,7 @@ async function main() {
       lastComment: input.lastComment,
       platforms: input.platforms,
       zohoThreadId: input.zohoThreadId ?? input.zoho_thread_id,
+      zohoRoute: input.zohoRoute ?? input.zoho_route,
     });
   } else if (input.kind == null || input.kind === "inbound_thread") {
     const cfg = input.config ?? {};

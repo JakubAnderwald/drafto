@@ -1,7 +1,13 @@
 import React from "react";
+import { ACCOUNT_DELETED_MESSAGE } from "@drafto/shared";
 
-import { render, fireEvent, waitFor } from "../helpers/test-utils";
+import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import { LoginScreen } from "../../src/screens/login";
+import {
+  clearAccountDeletedNotice,
+  isAccountDeletedNoticeShown,
+  reportAccountDeleted,
+} from "@/lib/account-deleted-notice";
 
 const mockSignInWithPassword = jest.fn();
 
@@ -78,5 +84,54 @@ describe("LoginScreen", () => {
     fireEvent.press(getByText("Sign up"));
 
     expect(onNavigateToSignup).toHaveBeenCalled();
+  });
+
+  it("calls onNavigateToForgotPassword when the forgot-password link is pressed", () => {
+    const onNavigateToForgotPassword = jest.fn();
+    const { getByText, getByTestId } = render(
+      <LoginScreen onNavigateToForgotPassword={onNavigateToForgotPassword} />,
+    );
+
+    expect(getByText("Forgot your password?")).toBeTruthy();
+    fireEvent.press(getByTestId("forgot-password-link"));
+
+    expect(onNavigateToForgotPassword).toHaveBeenCalled();
+  });
+
+  describe("account-deleted confirmation", () => {
+    afterEach(() => clearAccountDeletedNotice());
+
+    it("is not shown by default", () => {
+      const { queryByTestId } = render(<LoginScreen />);
+
+      expect(queryByTestId("account-deleted-notice")).toBeNull();
+    });
+
+    it("confirms a deletion that finished before the screen mounted", () => {
+      reportAccountDeleted();
+
+      const { getByTestId, getByText } = render(<LoginScreen />);
+
+      expect(getByTestId("account-deleted-notice")).toBeTruthy();
+      expect(getByText(ACCOUNT_DELETED_MESSAGE)).toBeTruthy();
+    });
+
+    it("appears when the deletion is reported while the screen is open", () => {
+      const { getByText } = render(<LoginScreen />);
+
+      act(() => reportAccountDeleted());
+
+      expect(getByText(ACCOUNT_DELETED_MESSAGE)).toBeTruthy();
+    });
+
+    it("goes away when the user starts a new sign-in", () => {
+      reportAccountDeleted();
+      const { getByText, queryByText } = render(<LoginScreen />);
+
+      fireEvent.press(getByText("Log in"));
+
+      expect(queryByText(ACCOUNT_DELETED_MESSAGE)).toBeNull();
+      expect(isAccountDeletedNoticeShown()).toBe(false);
+    });
   });
 });

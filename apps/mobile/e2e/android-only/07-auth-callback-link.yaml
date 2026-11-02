@@ -1,0 +1,65 @@
+appId: eu.drafto.mobile
+---
+# Flow 07: Apple sign-in callback link (Android)
+# Tests: `drafto://auth/callback` is claimed by `app/+native-intent.tsx`, never
+# routed. Before that, Expo Router showed "Unmatched Route" on top of a
+# successful Apple sign-in.
+#
+# A real code cannot be minted from a test flow: Apple's page needs a real
+# Apple ID, and the code is single-use and tied to this install's PKCE verifier.
+# What is verifiable is the routing, warm and cold, and that the link's error
+# and tokens are handled the same way as the in-app browser's result. The real
+# sign-in is checked by hand on a device.
+#
+# Runs signed out; no RUN_ID needed.
+
+# --- Clean start, signed out ---
+- clearKeychain
+- stopApp
+- clearState
+- launchApp
+
+- extendedWaitUntil:
+    visible: "Log In"
+    timeout: 60000
+
+# --- Test: a running app claims the link and shows the generic error ---
+# Never the link's own text: with no sign-in in progress, the link may have come
+# from any website or app.
+- openLink: "drafto://auth/callback?error=server_error&error_description=Callback%20E2E%20text"
+- extendedWaitUntil:
+    visible: "Apple Sign-In failed. Please try again."
+    timeout: 15000
+- assertNotVisible: "Callback E2E text"
+- assertNotVisible: "Unmatched Route"
+- assertVisible: "Sign in to your Drafto account"
+
+# --- Test: tokens on the link sign no one in ---
+# Any website or app can open the scheme; only a PKCE code counts.
+- openLink: "drafto://auth/callback#access_token=forged&refresh_token=forged"
+- extendedWaitUntil:
+    visible: "Apple Sign-In failed. Please try again."
+    timeout: 15000
+- assertNotVisible: "Unmatched Route"
+- assertNotVisible: "Notebooks"
+
+# --- Test: a cold start from the link lands on login, with the error ---
+# This is the case where Android killed the app while the user was on Apple's
+# page, so the router's copy of the redirect is the only one. The error is held
+# as state because login can mount twice while the router settles.
+- stopApp
+- openLink: "drafto://auth/callback?error=server_error"
+- extendedWaitUntil:
+    visible: "Apple Sign-In failed. Please try again."
+    timeout: 60000
+- assertNotVisible: "Unmatched Route"
+- assertVisible: "Sign in to your Drafto account"
+
+# --- Test: a cancel on Apple's page stays silent ---
+- stopApp
+- openLink: "drafto://auth/callback?error=user_cancelled_authorize"
+- extendedWaitUntil:
+    visible: "Sign in to your Drafto account"
+    timeout: 60000
+- assertNotVisible: "Unmatched Route"
+- assertNotVisible: "Apple Sign-In failed. Please try again."

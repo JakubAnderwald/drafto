@@ -1,4 +1,6 @@
-import { test, expect, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { recordRunNotebook } from "./helpers/run-notebooks";
+import { test, expect } from "./helpers/test";
 
 /**
  * The /api/notebooks endpoint and the SSR layout prefetch both order by
@@ -17,6 +19,84 @@ async function getActiveNotebookName(page: Page): Promise<string> {
 async function selectNotebookByName(page: Page, name: string): Promise<void> {
   await page.locator("nav li").filter({ hasText: name }).locator('[role="button"]').first().click();
 }
+
+// What React logs when hydration fails or a boundary falls back to a client render:
+// #418 / "Hydration failed" for a mismatch, #419 / "Switched to client rendering"
+// for a server render error (production builds print the minified codes).
+const HYDRATION_ERROR =
+  /#41[89]\b|Hydration failed|Switched to client rendering|server rendering errored|Failed to parse URL/i;
+
+test.describe("Server-rendered note list", () => {
+  test("first page load serves the notes in the HTML and hydrates without errors", async ({
+    page,
+  }, testInfo) => {
+    // A notebook holding one known note, so the server's HTML can be checked for its
+    // row. Neither is deleted when the test ends: the test keeps its notebook on top, so
+    // other workers' tests open it by default. Deleting it could pull it out from under a
+    // test that hasn't added its note yet, or take that test's trashed notes with it (the
+    // API only refuses while a notebook holds live notes). The run-end teardown deletes
+    // it once every test has finished.
+    const stamp = Date.now();
+    const notebookName = `SSR NB ${stamp}`;
+    const noteTitle = `SSR Note ${stamp}`;
+    const notebookRes = await page.request.post("/api/notebooks", { data: { name: notebookName } });
+    expect(notebookRes.ok()).toBe(true);
+    const notebookId = ((await notebookRes.json()) as { id: string }).id;
+    recordRunNotebook(testInfo, notebookId);
+
+    const noteRes = await page.request.post(`/api/notebooks/${notebookId}/notes`);
+    expect(noteRes.ok()).toBe(true);
+    const noteId = ((await noteRes.json()) as { id: string }).id;
+    const patchRes = await page.request.patch(`/api/notes/${noteId}`, {
+      data: { title: noteTitle },
+    });
+    expect(patchRes.ok()).toBe(true);
+
+    // The server's HTML holds the seeded note's row, and no Suspense boundary was
+    // handed to the client after a server error (`<!--$!-->`). The title is matched
+    // as an element's text: the RSC payload in the same response carries the
+    // layout's notes as JSON props, so a bare substring would match even if the
+    // list never rendered. The skeleton's markup can still be there: once a page's
+    // HTML passes React's chunk size, React streams a finished boundary after its
+    // fallback, in the same response, and an inline script swaps it in.
+    //
+    // The layout renders the most recently updated notebook, and other workers
+    // create notebooks in parallel. Renaming the notebook to its own name bumps its
+    // `updated_at`, which puts it back on top before each attempt.
+    let html = "";
+    await expect(async () => {
+      const bumpRes = await page.request.patch(`/api/notebooks/${notebookId}`, {
+        data: { name: notebookName },
+      });
+      expect(bumpRes.ok()).toBe(true);
+      const response = await page.request.get("/");
+      expect(response.ok()).toBe(true);
+      html = await response.text();
+      expect(html).toContain(`>${noteTitle}</p>`);
+    }).toPass({ timeout: 20000 });
+    expect(html).toMatch(/<h2[^>]*>Notes<\/h2>/);
+    expect(html).not.toContain("<!--$!-->");
+
+    const errors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+    page.on("pageerror", (error) => errors.push(error.message));
+
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
+
+    // React reports a failed hydration when it commits. Let the page finish loading
+    // and the main thread go idle so that has happened before checking.
+    await page.waitForLoadState("load");
+    await page.evaluate(
+      () => new Promise<void>((resolve) => requestIdleCallback(() => resolve(), { timeout: 5000 })),
+    );
+
+    expect(errors.filter((text) => HYDRATION_ERROR.test(text))).toEqual([]);
+    await expect(page.getByTestId("list-skeleton")).toHaveCount(0);
+  });
+});
 
 test.describe("Note editing flow", () => {
   test("create note, edit title, type content, verify auto-save, and reload to confirm persistence", async ({
@@ -39,10 +119,18 @@ test.describe("Note editing flow", () => {
     const titleInput = page.getByRole("textbox", { name: "Note title" });
     await expect(titleInput).toBeVisible({ timeout: 5000 });
 
+    // A new note's title field starts empty, with "Untitled" only as its placeholder,
+    // so typing replaces it rather than appending to it.
+    await expect(titleInput).toHaveValue("");
+    await expect(titleInput).toHaveAttribute("placeholder", "Untitled");
+
     // --- Edit the title ---
+    // Type key by key with no clear() first. fill() empties the field itself, so it
+    // would pass even if the title were still "Untitled" text that typing appends to.
     const noteTitle = `E2E Test Note ${Date.now()}`;
-    await titleInput.clear();
-    await titleInput.fill(noteTitle);
+    await titleInput.click();
+    await titleInput.pressSequentially(noteTitle);
+    await expect(titleInput).toHaveValue(noteTitle);
 
     // --- Type content in the BlockNote editor ---
     // BlockNote renders a contenteditable div
@@ -54,6 +142,11 @@ test.describe("Note editing flow", () => {
     // --- Wait for auto-save to complete ---
     // The save indicator shows "Saving..." then "Saved"
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
+
+    // --- The note's list row picks up the saved title without a reload ---
+    await expect(page.locator('[data-testid="note-item-active"]')).toContainText(noteTitle, {
+      timeout: 5000,
+    });
 
     // --- Reload the page and verify persistence ---
     await page.reload();
@@ -78,7 +171,26 @@ test.describe("Note editing flow", () => {
     await expect(page.getByText("Hello from E2E test")).toBeVisible({ timeout: 5000 });
   });
 
-  test("move a note between notebooks", async ({ page }) => {
+  test("move a note between notebooks", async ({ page }, testInfo) => {
+    // The note starts in a notebook made for this test. One picked from the sidebar
+    // can be gone after the reload below: the e2e account can hold more notebooks than
+    // a query returns (Supabase caps it at 1000 rows, most recently updated first), and
+    // creating a notebook re-sorts the sidebar by name, so its first entry can be the
+    // oldest one listed, which the new notebook has already pushed out of the query.
+    // Another worker can also delete a notebook it created.
+    //
+    // The source isn't deleted when the test ends: until Target exists it can be the
+    // newest notebook, which other workers' tests open by default. Deleting it could pull
+    // it out from under a test that hasn't added its note yet, or take that test's trashed
+    // notes with it (the API only refuses while a notebook holds live notes). The run-end
+    // teardown deletes it once every test has finished.
+    const sourceNotebookName = `Move Source ${Date.now()}`;
+    const sourceRes = await page.request.post("/api/notebooks", {
+      data: { name: sourceNotebookName },
+    });
+    expect(sourceRes.ok()).toBe(true);
+    recordRunNotebook(testInfo, ((await sourceRes.json()) as { id: string }).id);
+
     await page.goto("/");
 
     await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible();
@@ -93,19 +205,8 @@ test.describe("Note editing flow", () => {
     await createInput.press("Enter");
     await expect(page.getByText(targetNotebook)).toBeVisible();
 
-    // Switch to any notebook other than the just-created Target. The first list
-    // entry is no longer guaranteed to be the auto-created "Notes" — under
-    // updated_at-desc ordering, "Target {ts}" we just created is now first.
-    // Capture the source notebook's name so we can re-select it after reload
-    // (the SSR layout also orders by updated_at, so the just-created Target
-    // would otherwise be auto-selected on the next page load).
-    const sidebar = page.locator("aside");
-    const nonTargetNotebook = sidebar
-      .locator("nav li")
-      .filter({ hasNotText: targetNotebook })
-      .first();
-    const sourceNotebookName = (await nonTargetNotebook.innerText()).trim();
-    await nonTargetNotebook.click();
+    // Creating Target selected it, so switch to the source notebook.
+    await selectNotebookByName(page, sourceNotebookName);
     await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 5000 });
 
     // Create a note in the source notebook
@@ -114,7 +215,6 @@ test.describe("Note editing flow", () => {
     await expect(titleInput).toBeVisible({ timeout: 5000 });
 
     const noteTitle = `Move Me ${Date.now()}`;
-    await titleInput.clear();
     await titleInput.fill(noteTitle);
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 
@@ -159,16 +259,17 @@ test.describe("Note editing flow", () => {
     await expect(titleInput).toBeVisible({ timeout: 5000 });
 
     const noteTitle = `Trash Test ${Date.now()}`;
-    await titleInput.clear();
     await titleInput.fill(noteTitle);
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 
     // Create a second note to test permanent delete
     await page.getByRole("button", { name: "New note", exact: true }).click();
-    await expect(titleInput).toHaveValue("Untitled", { timeout: 5000 });
+    // The editor has switched once the first note's title is gone and the new note's
+    // empty title shows its placeholder.
+    await expect(titleInput).toHaveValue("", { timeout: 5000 });
+    await expect(titleInput).toHaveAttribute("placeholder", "Untitled");
 
     const noteTitle2 = `Trash Perm ${Date.now()}`;
-    await titleInput.clear();
     await titleInput.fill(noteTitle2);
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 
@@ -248,17 +349,17 @@ test.describe("Note editing flow", () => {
     await expect(titleInput).toBeVisible({ timeout: 5000 });
 
     const title1 = `First Note ${Date.now()}`;
-    await titleInput.clear();
     await titleInput.fill(title1);
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 
     // Create second note
     await page.getByRole("button", { name: "New note", exact: true }).click();
-    // Wait for the new note editor to load (title should reset)
-    await expect(titleInput).toHaveValue("Untitled", { timeout: 5000 });
+    // Wait for the new note editor to load: the first note's title gives way to the
+    // new note's empty title and its placeholder.
+    await expect(titleInput).toHaveValue("", { timeout: 5000 });
+    await expect(titleInput).toHaveAttribute("placeholder", "Untitled");
 
     const title2 = `Second Note ${Date.now()}`;
-    await titleInput.clear();
     await titleInput.fill(title2);
     await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
 

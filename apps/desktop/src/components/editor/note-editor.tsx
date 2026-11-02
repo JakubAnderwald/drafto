@@ -50,13 +50,9 @@ export function NoteEditor({ editor, onMessage }: NoteEditorProps) {
         exclusivelyUseCustomOnMessage={false}
         style={[styles.editor, { backgroundColor: semantic.bg }]}
         scrollEnabled={true}
-        injectedJavaScript={`
-          (function() {
-            var style = document.createElement('style');
-            style.textContent = 'body, .ProseMirror { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 15px; line-height: 1.6; color: #1a1a1a; }';
-            document.head.appendChild(style);
-          })();
-        `}
+        // No `injectedJavaScript` here: it would replace TenTap's own script,
+        // which installs every bridge's CSS. The editor's stylesheet ships
+        // through the core bridge instead (see editor-bridge-extensions.ts).
       />
       <Toolbar editor={editor} items={DEFAULT_TOOLBAR_ITEMS} />
     </>

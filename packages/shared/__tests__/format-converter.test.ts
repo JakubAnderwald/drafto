@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { blocknoteToTiptap, tiptapToBlocknote, contentToTiptap, contentToBlocknote } from "../src";
-import type { BlockNoteBlock, TipTapDoc } from "../src";
+import {
+  blocknoteToTiptap,
+  tiptapToBlocknote,
+  contentToTiptap,
+  contentToBlocknote,
+  markdownToBlockNote,
+} from "../src";
+import type { BlockNoteBlock, TipTapDoc, TipTapNode } from "../src";
 
 describe("blocknoteToTiptap", () => {
   it("converts a simple paragraph", () => {
@@ -1288,5 +1294,338 @@ describe("contentToTiptap / contentToBlocknote round-trip", () => {
     const roundTripped = contentToTiptap(blocks);
 
     expect(roundTripped).toEqual(original);
+  });
+});
+
+describe("nested blocks", () => {
+  const text = (value: string, styles: Record<string, boolean> = {}) => ({
+    type: "text" as const,
+    text: value,
+    styles,
+  });
+  const block = (
+    type: string,
+    value: string,
+    children: BlockNoteBlock[] = [],
+    props?: Record<string, unknown>,
+  ): BlockNoteBlock => ({
+    type,
+    ...(props ? { props } : {}),
+    content: value ? [text(value)] : [],
+    children,
+  });
+  const check = (value: string, checked: boolean, children: BlockNoteBlock[] = []) =>
+    block("checkListItem", value, children, { checked });
+  const file = (name: string): BlockNoteBlock => ({
+    type: "file",
+    props: { url: `attachment://user-1/note-1/${name}`, name },
+    children: [],
+  });
+  const code = (value: string, language = ""): BlockNoteBlock => ({
+    type: "codeBlock",
+    props: { language },
+    content: [text(value)],
+    children: [],
+  });
+  const table: BlockNoteBlock = {
+    type: "table",
+    content: { type: "tableContent", rows: [{ cells: [[text("h")], [text("i")]] }] },
+    children: [],
+  };
+  const para = (value: string): TipTapNode => ({
+    type: "paragraph",
+    content: [{ type: "text", text: value }],
+  });
+
+  function roundTrip(blocks: BlockNoteBlock[]): BlockNoteBlock[] {
+    return tiptapToBlocknote(blocknoteToTiptap(blocks));
+  }
+
+  // Every node type in the doc below its top level.
+  function nestedNodeTypes(doc: TipTapDoc): Set<string> {
+    const types = new Set<string>();
+    const walk = (nodes: TipTapNode[] | undefined) => {
+      for (const node of nodes ?? []) {
+        types.add(node.type);
+        walk(node.content);
+      }
+    };
+    for (const node of doc.content) walk(node.content);
+    return types;
+  }
+
+  describe("BlockNote -> TipTap -> BlockNote", () => {
+    it("keeps check lists nested three deep with mixed checked states", () => {
+      const original = [
+        check("a", false, [check("b", true, [check("c", false)]), check("b2", false)]),
+        check("d", true),
+      ];
+      expect(roundTrip(original)).toEqual(original);
+    });
+
+    it("nests a check item's children as a task list inside its task item", () => {
+      const doc = blocknoteToTiptap([check("a", false, [check("b", true)])]);
+      expect(doc.content).toEqual([
+        {
+          type: "taskList",
+          content: [
+            {
+              type: "taskItem",
+              attrs: { checked: false },
+              content: [
+                para("a"),
+                {
+                  type: "taskList",
+                  content: [{ type: "taskItem", attrs: { checked: true }, content: [para("b")] }],
+                },
+              ],
+            },
+          ],
+        },
+      ]);
+    });
+
+    it("keeps check children of a bullet item and bullet children of a check item", () => {
+      const original = [
+        block("bulletListItem", "list", [check("x", true), check("y", false)]),
+        check("todo", false, [block("bulletListItem", "note"), block("numberedListItem", "step")]),
+      ];
+      expect(roundTrip(original)).toEqual(original);
+    });
+
+    it("keeps a numbered item's children of mixed types, in order", () => {
+      const original = [
+        block("numberedListItem", "step", [
+          check("c1", false),
+          block("bulletListItem", "b1"),
+          block("paragraph", "p1"),
+          block("heading", "h1", [], { level: 3 }),
+          file("report.pdf"),
+          check("c2", true),
+          block("numberedListItem", "n1"),
+        ]),
+      ];
+      expect(roundTrip(original)).toEqual(original);
+    });
+
+    it("groups adjacent children of the same list type into one nested list", () => {
+      const doc = blocknoteToTiptap([
+        block("bulletListItem", "a", [
+          check("x", false),
+          check("y", true),
+          block("paragraph", "p"),
+        ]),
+      ]);
+      const item = doc.content[0].content![0];
+      expect(item.content!.map((node) => node.type)).toEqual([
+        "paragraph",
+        "taskList",
+        "paragraph",
+      ]);
+      expect(item.content![1].content).toHaveLength(2);
+    });
+
+    it("emits the children of a paragraph or heading as the siblings that follow it", () => {
+      const original = [
+        block("paragraph", "p", [block("paragraph", "p1"), check("p2", false)]),
+        block("heading", "h", [block("bulletListItem", "h1")], { level: 2 }),
+        block("bulletListItem", "after"),
+      ];
+      const doc = blocknoteToTiptap(original);
+      expect(doc.content.map((node) => node.type)).toEqual([
+        "paragraph",
+        "paragraph",
+        "taskList",
+        "heading",
+        "bulletList",
+      ]);
+      // The heading's bullet child merges with the bullet list after it.
+      expect(doc.content[4].content).toHaveLength(2);
+      expect(tiptapToBlocknote(doc)).toEqual([
+        block("paragraph", "p"),
+        block("paragraph", "p1"),
+        check("p2", false),
+        block("heading", "h", [], { level: 2 }),
+        block("bulletListItem", "h1"),
+        block("bulletListItem", "after"),
+      ]);
+    });
+
+    it("keeps the children of a nested paragraph inside the list item, as its later children", () => {
+      expect(
+        roundTrip([block("bulletListItem", "a", [block("paragraph", "p", [check("q", true)])])]),
+      ).toEqual([block("bulletListItem", "a", [block("paragraph", "p"), check("q", true)])]);
+    });
+
+    it("projects code block and table children to paragraphs, never to nodes the native editor lacks", () => {
+      const original = [
+        block("bulletListItem", "a", [code("npm install\nnpm test", "bash"), table]),
+        block("paragraph", "p", [code("echo hi")]),
+      ];
+      const doc = blocknoteToTiptap(original);
+      const nested = nestedNodeTypes(doc);
+      expect(nested.has("codeBlock")).toBe(false);
+      expect(nested.has("table")).toBe(false);
+      expect(doc.content.map((node) => node.type)).toEqual([
+        "bulletList",
+        "paragraph",
+        "paragraph",
+      ]);
+      expect(tiptapToBlocknote(doc)).toEqual([
+        block("bulletListItem", "a", [
+          block("paragraph", "npm install\nnpm test"),
+          block("paragraph", ""),
+        ]),
+        block("paragraph", "p"),
+        block("paragraph", "echo hi"),
+      ]);
+    });
+
+    it("still emits top-level code blocks and tables as their own nodes", () => {
+      const doc = blocknoteToTiptap([code("x", "ts"), table]);
+      expect(doc.content.map((node) => node.type)).toEqual(["codeBlock", "table"]);
+    });
+
+    it("keeps nested to-dos parsed from Markdown nested end to end", () => {
+      const blocks = markdownToBlockNote("- [ ] a\n  - [x] b\n    - [ ] c");
+      expect(blocks).toEqual([check("a", false, [check("b", true, [check("c", false)])])]);
+      expect(roundTrip(blocks)).toEqual(blocks);
+    });
+
+    it("converts a list with more items than a call takes arguments", () => {
+      const items = Array.from({ length: 200_000 }, (_, i) => block("bulletListItem", `i${i}`));
+      const doc = blocknoteToTiptap(items);
+      expect(doc.content).toHaveLength(1);
+      expect(doc.content[0].content).toHaveLength(200_000);
+      expect(tiptapToBlocknote(doc)).toHaveLength(200_000);
+      const nested = blocknoteToTiptap([block("paragraph", "p", items)]);
+      expect(nested.content[1].content).toHaveLength(200_000);
+    });
+  });
+
+  describe("empty text", () => {
+    it("drops empty text nodes, which ProseMirror rejects", () => {
+      const doc = blocknoteToTiptap([
+        {
+          type: "paragraph",
+          content: [text(""), { type: "link", href: "https://x.test", content: [] }, text("x")],
+          children: [],
+        },
+      ]);
+      expect(doc.content).toEqual([para("x")]);
+    });
+
+    it("projects a file block with no name and no url to an empty paragraph", () => {
+      const doc = blocknoteToTiptap([{ type: "file", props: { url: "", name: "" }, children: [] }]);
+      expect(doc.content).toEqual([{ type: "paragraph" }]);
+    });
+  });
+
+  describe("TipTap -> BlockNote", () => {
+    const listItem = (...content: TipTapNode[]): TipTapNode => ({ type: "listItem", content });
+
+    it("keeps both nested lists when one item holds two", () => {
+      const doc: TipTapDoc = {
+        type: "doc",
+        content: [
+          {
+            type: "bulletList",
+            content: [
+              listItem(
+                para("a"),
+                { type: "bulletList", content: [listItem(para("b"))] },
+                {
+                  type: "taskList",
+                  content: [{ type: "taskItem", attrs: { checked: true }, content: [para("c")] }],
+                },
+              ),
+            ],
+          },
+        ],
+      };
+      expect(tiptapToBlocknote(doc)).toEqual([
+        block("bulletListItem", "a", [block("bulletListItem", "b"), check("c", true)]),
+      ]);
+    });
+
+    it("turns an item's later paragraphs, headings and attachment links into children", () => {
+      const doc: TipTapDoc = {
+        type: "doc",
+        content: [
+          {
+            type: "orderedList",
+            content: [
+              listItem(
+                para("a"),
+                para("second"),
+                { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "h" }] },
+                {
+                  type: "paragraph",
+                  content: [
+                    {
+                      type: "text",
+                      text: "report.pdf",
+                      marks: [
+                        {
+                          type: "link",
+                          attrs: { href: "attachment://user-1/note-1/report.pdf" },
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ),
+            ],
+          },
+        ],
+      };
+      expect(tiptapToBlocknote(doc)).toEqual([
+        block("numberedListItem", "a", [
+          block("paragraph", "second"),
+          block("heading", "h", [], { level: 2 }),
+          file("report.pdf"),
+        ]),
+      ]);
+    });
+
+    it("keeps a nested task list's item type and checked state under a bullet item", () => {
+      const doc: TipTapDoc = {
+        type: "doc",
+        content: [
+          {
+            type: "bulletList",
+            content: [
+              listItem(para("a"), {
+                type: "taskList",
+                content: [
+                  { type: "taskItem", attrs: { checked: false }, content: [para("x")] },
+                  { type: "taskItem", attrs: { checked: true }, content: [para("y")] },
+                ],
+              }),
+            ],
+          },
+        ],
+      };
+      expect(tiptapToBlocknote(doc)).toEqual([
+        block("bulletListItem", "a", [check("x", false), check("y", true)]),
+      ]);
+    });
+
+    it("uses an item's first paragraph as its text even when another node comes first", () => {
+      const doc: TipTapDoc = {
+        type: "doc",
+        content: [
+          {
+            type: "bulletList",
+            content: [
+              listItem({ type: "bulletList", content: [listItem(para("child"))] }, para("text")),
+            ],
+          },
+        ],
+      };
+      expect(tiptapToBlocknote(doc)).toEqual([
+        block("bulletListItem", "text", [block("bulletListItem", "child")]),
+      ]);
+    });
   });
 });

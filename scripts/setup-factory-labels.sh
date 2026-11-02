@@ -48,6 +48,7 @@ LABELS=(
   "status:plan-review|5319E7|Plan posted as a comment; awaiting human approval."
   "status:in-progress|FBCA04|Plan approved; factory is implementing."
   "status:in-review|0052CC|PR open; factory monitoring CI and review comments."
+  "status:testing|F9A825|Factory is running automated verification before In Test."
   "status:in-test|006B75|Vercel preview ready; awaiting human approval to ship."
   "status:approved|0E8A16|Approved for release; factory will merge + dispatch."
   "status:released|2E7D32|Merged + beta channels dispatched (Phase D)."
@@ -57,6 +58,7 @@ LABELS=(
   # Operator gates.
   "factory-pause|D93F0B|Global kill switch — factory exits early when set."
   "migration-approved|0052CC|Authorises factory to merge a PR with supabase/migrations changes."
+  "hosted-config-applied|0052CC|Operator applied this PR's supabase/config.toml changes to dev and prod."
   "factory-failure|B60205|Filed by the factory failure trap when a run errors out."
 
   # Parity overrides — set by the operator to disable the cross-platform

@@ -87,6 +87,37 @@ describe("useAutoSave", () => {
     expect(result.current.status).toBe("saved");
   });
 
+  it("stays idle when the save reports that it wrote nothing", async () => {
+    const onSave = jest.fn().mockResolvedValue(false);
+    const { result } = renderHook(() => useAutoSave({ onSave, delayMs: 100 }));
+
+    act(() => {
+      result.current.trigger("unchanged");
+    });
+
+    await act(async () => {
+      jest.advanceTimersByTime(100);
+    });
+
+    expect(onSave).toHaveBeenCalledWith("unchanged");
+    expect(result.current.status).toBe("idle");
+  });
+
+  it("reports saved when the save says it wrote", async () => {
+    const onSave = jest.fn().mockResolvedValue(true);
+    const { result } = renderHook(() => useAutoSave({ onSave, delayMs: 100 }));
+
+    act(() => {
+      result.current.trigger("edited");
+    });
+
+    await act(async () => {
+      jest.advanceTimersByTime(100);
+    });
+
+    expect(result.current.status).toBe("saved");
+  });
+
   it("sets status to error on save failure", async () => {
     const onSave = jest.fn().mockRejectedValue(new Error("Save failed"));
     const { result } = renderHook(() => useAutoSave({ onSave, delayMs: 100 }));

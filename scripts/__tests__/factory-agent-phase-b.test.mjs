@@ -24,10 +24,10 @@ describe("factory-agent.sh syntax", () => {
 });
 
 describe("Phase / mode gates", () => {
-  it("Phase A still no-ops --release and --watch", () => {
+  it("Phase A still no-ops --release, --watch and --browser", () => {
     assert.match(
       script,
-      /if \[\[ "\$PHASE" == "A" && \( "\$MODE_RELEASE" -eq 1 \|\| "\$MODE_WATCH" -eq 1 \) \]\]/,
+      /if \[\[ "\$PHASE" == "A" && \( "\$MODE_RELEASE" -eq 1 \|\| "\$MODE_WATCH" -eq 1 \|\| "\$MODE_BROWSER" -eq 1 \) \]\]/,
     );
   });
 
@@ -73,9 +73,12 @@ describe("--implement engine", () => {
 });
 
 describe("--watch engine", () => {
-  it("runs a cleanup sweep that releases slots leaving In Review/In Test", () => {
+  it("runs a cleanup sweep that releases slots leaving the active states", () => {
     assert.match(script, /Cleanup sweep/);
-    assert.match(script, /left In Review\/In Test; releasing slot \+ worktree/);
+    assert.match(
+      script,
+      /left In Progress\/In Review\/Testing\/In Test; releasing slot \+ worktree/,
+    );
   });
 
   it("advances to In Test only when CI is green AND a preview exists", () => {

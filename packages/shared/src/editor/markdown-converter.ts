@@ -3,19 +3,198 @@ import {
   type BlockNoteBlock,
   type BlockNoteInlineContent,
   type BlockNoteTableContent,
+  type BlockNoteTableRowCell,
 } from "./types";
+
+// --- Escaping (shared by both directions so they can't drift apart) ---
+
+// CommonMark: a backslash before ASCII punctuation is an escape; before
+// anything else it is a literal backslash.
+const ASCII_PUNCTUATION = new Set("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~");
+
+function isPunctuation(ch: string | undefined): boolean {
+  return ch !== undefined && ASCII_PUNCTUATION.has(ch);
+}
+
+/**
+ * Backslash-escape every character `shouldEscape` selects. A backslash is
+ * escaped only where the parser would otherwise read it as an escape: before
+ * punctuation, or at the end, where the next node's syntax follows it.
+ */
+function escapeMarkdown(text: string, shouldEscape: (ch: string, i: number) => boolean): string {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const escape =
+      ch === "\\" ? i === text.length - 1 || isPunctuation(text[i + 1]) : shouldEscape(ch, i);
+    out += escape ? `\\${ch}` : ch;
+  }
+  return out;
+}
+
+function unescapeMarkdown(text: string): string {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "\\" && isPunctuation(text[i + 1])) {
+      out += text[i + 1];
+      i++;
+    } else {
+      out += text[i];
+    }
+  }
+  return out;
+}
+
+// Plain text: escape exactly the characters parseInlineMarkdown treats as syntax.
+function escapeInlineText(text: string): string {
+  return escapeMarkdown(text, (ch, i) => {
+    if (ch === "~") {
+      // Only `~~` is strikethrough. A `~` at either edge could pair with a
+      // neighbouring node's delimiter, so those are escaped too.
+      return i === 0 || i === text.length - 1 || text[i - 1] === "~" || text[i + 1] === "~";
+    }
+    return ch === "*" || ch === "`" || ch === "[" || ch === "]";
+  });
+}
+
+// Image captions and file names: the brackets around them are syntax, and a
+// backtick would open a code span that hides the closing `]`.
+function escapeLinkLabel(text: string): string {
+  return escapeMarkdown(text, (ch) => ch === "[" || ch === "]" || ch === "`");
+}
+
+/**
+ * Link / image / attachment destination. Anything that would end a bare
+ * destination early (parentheses, whitespace) is wrapped in `<...>`, and so
+ * is an empty one (an image block before its upload finishes), since a bare
+ * `()` is not read as a destination.
+ */
+function formatDestination(href: string): string {
+  if (!href || /[\s()<>]/.test(href)) {
+    return `<${escapeMarkdown(href, (ch) => ch === "<" || ch === ">")}>`;
+  }
+  return escapeMarkdown(href, () => false);
+}
+
+/**
+ * Plain text at the start of a paragraph line that the block parser would
+ * otherwise read as a heading, list item, table row or image (a `!` that
+ * ends the text right before a link). The line's leading whitespace is
+ * already gone (see normalizeInline): parseLine strips it as indent either
+ * way, and kept, two spaces or a tab would nest the paragraph under the block
+ * before it.
+ */
+function escapeLineStart(markdown: string): string {
+  return markdown.replace(/^(?=(?:#{1,6}|[-+])\s|\||!\[)/, "\\").replace(/^(\d+)\.(?=\s)/, "$1\\.");
+}
+
+// A fence one backtick longer than any run inside the code, so no code line can close it.
+function codeFence(code: string): string {
+  // reduce, not Math.max(...runs): a large block can have more runs than a call takes arguments.
+  const longestRun = (code.match(/`+/g) ?? []).reduce(
+    (longest, run) => Math.max(longest, run.length),
+    0,
+  );
+  return "`".repeat(Math.max(3, longestRun + 1));
+}
 
 // --- BlockNote -> Markdown ---
 
-function inlineContentToMarkdown(inlineContent: BlockNoteInlineContent[]): string {
-  return inlineContent.map(inlineItemToMarkdown).join("");
+// Markdown has no syntax for underline, so a node styled only with it is plain text.
+function isPlainText(item: BlockNoteInlineContent): boolean {
+  return (
+    item.type !== "link" &&
+    !item.styles?.bold &&
+    !item.styles?.italic &&
+    !item.styles?.strike &&
+    !item.styles?.code
+  );
+}
+
+/**
+ * Where the block parser drops whitespace around a line's text: after a
+ * paragraph's indent or a heading / list marker (`start`), and at both ends
+ * of a table cell (`both`).
+ */
+type InlineTrim = "none" | "start" | "both";
+
+/**
+ * The inline nodes as the parser will read them back, so escaping sees the
+ * text a re-parse produces and the Markdown is stable after one round trip.
+ * A bold, italic or strike node's edge whitespace moves outside its
+ * delimiters: `* x*` is not emphasis, and at the start of a line it reads as
+ * a bullet. Code spans keep their spaces. Adjacent plain nodes merge, as the
+ * parser merges them, and `trim` drops the whitespace the block parser drops.
+ */
+function normalizeInline(
+  inlineContent: BlockNoteInlineContent[],
+  trim: InlineTrim,
+): BlockNoteInlineContent[] {
+  const nodes: BlockNoteInlineContent[] = [];
+  const pushPlain = (text: string) => {
+    if (!text) return;
+    const prev = nodes[nodes.length - 1];
+    if (prev && isPlainText(prev)) {
+      nodes[nodes.length - 1] = { ...prev, text: (prev.text ?? "") + text };
+    } else {
+      nodes.push({ type: "text", text, styles: {} });
+    }
+  };
+
+  for (const item of inlineContent) {
+    if (isPlainText(item)) {
+      pushPlain(item.text ?? "");
+    } else if (item.type === "link" || item.styles?.code) {
+      nodes.push(item);
+    } else {
+      const raw = item.text ?? "";
+      const text = raw.trim();
+      const leading = raw.slice(0, raw.length - raw.trimStart().length);
+      pushPlain(leading);
+      if (text) nodes.push({ ...item, text });
+      pushPlain(raw.slice(leading.length + text.length));
+    }
+  }
+
+  // Adjacent plain nodes are merged, so at most one plain node sits at each end.
+  const first = nodes[0];
+  if (trim !== "none" && first && isPlainText(first)) {
+    const text = (first.text ?? "").trimStart();
+    if (text) nodes[0] = { ...first, text };
+    else nodes.shift();
+  }
+  const last = nodes[nodes.length - 1];
+  if (trim === "both" && last && isPlainText(last)) {
+    const text = (last.text ?? "").trimEnd();
+    if (text) nodes[nodes.length - 1] = { ...last, text };
+    else nodes.pop();
+  }
+  return nodes;
+}
+
+function inlineContentToMarkdown(
+  inlineContent: BlockNoteInlineContent[],
+  trim: InlineTrim = "none",
+): string {
+  return normalizeInline(inlineContent, trim).map(inlineItemToMarkdown).join("");
+}
+
+// The trimmed inline Markdown of a block's own line.
+function lineText(block: BlockNoteBlock): string {
+  return Array.isArray(block.content) ? inlineContentToMarkdown(block.content, "start") : "";
 }
 
 function inlineItemToMarkdown(item: BlockNoteInlineContent): string {
-  let text =
-    item.type === "link" && item.content?.length
-      ? item.content.map(inlineItemToMarkdown).join("")
-      : (item.text ?? "");
+  let text: string;
+  if (item.type === "link" && item.content?.length) {
+    text = inlineContentToMarkdown(item.content);
+  } else {
+    const raw = item.text ?? "";
+    // An empty styled node would emit bare delimiters (`****`) that re-parse as text.
+    if (!raw && item.type !== "link") return "";
+    // Code spans are literal: escapes inside them are not processed.
+    text = item.styles?.code ? raw : escapeInlineText(raw);
+  }
 
   if (item.styles) {
     if (item.styles.code) text = `\`${text}\``;
@@ -26,47 +205,60 @@ function inlineItemToMarkdown(item: BlockNoteInlineContent): string {
   }
 
   if (item.type === "link" && item.href) {
-    text = `[${text}](${item.href})`;
+    text = `[${text}](${formatDestination(item.href)})`;
   }
 
   return text;
 }
 
-function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
-  const prefix = "  ".repeat(indent);
+// GFM: a `|` inside a cell is escaped, code spans included; the parser
+// strips that escape before reading the cell's inline Markdown.
+function tableCellToMarkdown(cell: BlockNoteTableRowCell): string {
+  return inlineContentToMarkdown(getTableCellInline(cell), "both").replace(/\|/g, "\\|");
+}
+
+/**
+ * How far a block's children are indented past the block itself. CommonMark
+ * nests a block inside a list item when its first line is indented to the
+ * item's content: 3 columns under `1. `, 2 under `- ` and `- [ ] ` (in GFM
+ * the `[ ]` is part of the content). Other blocks' children take 2, which
+ * markdownToBlockNote reads as one level deeper. Children are not separated
+ * by blank lines, so a strict parser can still merge a paragraph-like child
+ * (paragraph, image, file link) into the text just before it.
+ */
+function childIndent(block: BlockNoteBlock): string {
+  return block.type === "numberedListItem" ? "   " : "  ";
+}
+
+function blockToMarkdown(block: BlockNoteBlock, prefix: string): string {
   const lines: string[] = [];
 
   switch (block.type) {
     case "heading": {
       const level = (block.props?.level as number) ?? 1;
       const hashes = "#".repeat(Math.min(level, 6));
-      const text = Array.isArray(block.content) ? inlineContentToMarkdown(block.content) : "";
-      lines.push(`${prefix}${hashes} ${text}`);
+      lines.push(`${prefix}${hashes} ${lineText(block)}`);
       break;
     }
 
     case "paragraph": {
-      const text = Array.isArray(block.content) ? inlineContentToMarkdown(block.content) : "";
-      lines.push(`${prefix}${text}`);
+      lines.push(`${prefix}${escapeLineStart(lineText(block))}`);
       break;
     }
 
     case "bulletListItem": {
-      const text = Array.isArray(block.content) ? inlineContentToMarkdown(block.content) : "";
-      lines.push(`${prefix}- ${text}`);
+      lines.push(`${prefix}- ${lineText(block)}`);
       break;
     }
 
     case "numberedListItem": {
-      const text = Array.isArray(block.content) ? inlineContentToMarkdown(block.content) : "";
-      lines.push(`${prefix}1. ${text}`);
+      lines.push(`${prefix}1. ${lineText(block)}`);
       break;
     }
 
     case "checkListItem": {
       const checked = (block.props?.checked as boolean) ?? false;
-      const text = Array.isArray(block.content) ? inlineContentToMarkdown(block.content) : "";
-      lines.push(`${prefix}- [${checked ? "x" : " "}] ${text}`);
+      lines.push(`${prefix}- [${checked ? "x" : " "}] ${lineText(block)}`);
       break;
     }
 
@@ -76,16 +268,27 @@ function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
         Array.isArray(block.content) && block.content.length > 0
           ? block.content.map((c) => c.text).join("")
           : "";
-      lines.push(`${prefix}\`\`\`${language}`);
-      lines.push(text);
-      lines.push(`${prefix}\`\`\``);
+      const fence = codeFence(text);
+      lines.push(`${prefix}${fence}${language}`);
+      // Content lines carry the fence's indent, as CommonMark expects inside a
+      // list item, and the parser strips it again. Empty lines stay empty.
+      // Lines are split on "\n" only, as the parser splits them.
+      lines.push(
+        prefix
+          ? text
+              .split("\n")
+              .map((line) => (line ? prefix + line : line))
+              .join("\n")
+          : text,
+      );
+      lines.push(`${prefix}${fence}`);
       break;
     }
 
     case "image": {
       const url = (block.props?.url as string) ?? "";
       const caption = (block.props?.caption as string) ?? "";
-      lines.push(`${prefix}![${caption}](${url})`);
+      lines.push(`${prefix}![${escapeLinkLabel(caption)}](${formatDestination(url)})`);
       break;
     }
 
@@ -94,7 +297,7 @@ function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
       // `||` so an explicit empty-string name falls through to caption/url;
       // `??` would emit `[](url)` and produce invisible link text.
       const name = (block.props?.name as string) || (block.props?.caption as string) || url;
-      lines.push(`${prefix}[${name}](${url})`);
+      lines.push(`${prefix}[${escapeLinkLabel(name)}](${formatDestination(url)})`);
       break;
     }
 
@@ -105,7 +308,7 @@ function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
           const row = tableContent.rows[i];
           // BlockNote cells may be raw InlineContent[] (legacy) or wrapped
           // { type: "tableCell", content } (v0.47+); normalise via the helper.
-          const cells = row.cells.map((cell) => inlineContentToMarkdown(getTableCellInline(cell)));
+          const cells = row.cells.map(tableCellToMarkdown);
           lines.push(`${prefix}| ${cells.join(" | ")} |`);
           if (i === 0) {
             lines.push(`${prefix}| ${cells.map(() => "---").join(" | ")} |`);
@@ -117,17 +320,26 @@ function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
 
     default: {
       // Unknown block type: render as paragraph to avoid data loss
-      const text = Array.isArray(block.content) ? inlineContentToMarkdown(block.content) : "";
-      if (text) lines.push(`${prefix}${text}`);
+      const text = lineText(block);
+      if (text) lines.push(`${prefix}${escapeLineStart(text)}`);
       break;
     }
   }
 
-  // Render nested children with increased indent
+  // Render nested children indented to this block's content (see
+  // childIndent). A block that emits no visible line (an empty paragraph, a
+  // table with no rows) vanishes on parse, so its children keep its own
+  // prefix: indented further, they would nest under the block before it.
+  const childPrefix = lines.some((line) => line.trim() !== "")
+    ? prefix + childIndent(block)
+    : prefix;
   if (block.children && block.children.length > 0) {
-    for (const child of block.children) {
-      lines.push(blockToMarkdown(child, indent + 1));
-    }
+    block.children.forEach((child, i) => {
+      // Siblings are joined without a blank line, so two tables in a row
+      // would read back as one table.
+      if (child.type === "table" && block.children?.[i - 1]?.type === "table") lines.push("");
+      lines.push(blockToMarkdown(child, childPrefix));
+    });
   }
 
   return lines.join("\n");
@@ -137,7 +349,7 @@ function blockToMarkdown(block: BlockNoteBlock, indent: number): string {
  * Convert BlockNote blocks to Markdown text.
  */
 export function blockNoteToMarkdown(blocks: BlockNoteBlock[]): string {
-  return blocks.map((block) => blockToMarkdown(block, 0)).join("\n\n");
+  return blocks.map((block) => blockToMarkdown(block, "")).join("\n\n");
 }
 
 // --- Markdown -> BlockNote ---
@@ -150,64 +362,313 @@ interface ParsedLine {
 function parseLine(line: string): ParsedLine {
   const match = line.match(/^(\s*)(.*)/);
   const raw = match?.[1] ?? "";
-  // Normalize indent: 2 spaces or 1 tab = 1 level
+  // Indent in steps of 2 columns, a tab counting as 2. Depths are only
+  // compared with each other (see attachBlock), so a child indented 2 columns
+  // past its parent (under `- ` or `- [ ] `) or 3 (under `1. `) nests either way.
   const indent = Math.floor(raw.replace(/\t/g, "  ").length / 2);
   return { indent, content: match?.[2] ?? "" };
 }
 
-function parseInlineMarkdown(text: string): BlockNoteInlineContent[] {
-  const result: BlockNoteInlineContent[] = [];
-  // Regex to match markdown inline patterns: links, bold, italic, code, strikethrough
-  const regex =
-    /(\[([^\]]+)\]\(([^)]+)\))|(`([^`]+)`)|(\*\*(.+?)\*\*)|(\*(.+?)\*)|(\~\~(.+?)\~\~)|([^[`*~]+|[[\`*~])/g;
-  let match: RegExpExecArray | null;
+// Columns of a line's leading whitespace, a tab counting as 2 like parseLine.
+function indentWidth(line: string): number {
+  return (line.match(/^\s*/)?.[0] ?? "").replace(/\t/g, "  ").length;
+}
 
-  while ((match = regex.exec(text)) !== null) {
-    if (match[1]) {
-      // Link: [text](url)
-      const linkText = match[2];
-      const href = match[3];
-      result.push({
-        type: "link",
-        text: linkText,
-        href,
-        content: [{ type: "text", text: linkText, styles: {} }],
-      });
-    } else if (match[4]) {
-      // Inline code: `code`
-      result.push({ type: "text", text: match[5], styles: { code: true } });
-    } else if (match[6]) {
-      // Bold: **text**
-      result.push({ type: "text", text: match[7], styles: { bold: true } });
-    } else if (match[8]) {
-      // Italic: *text*
-      result.push({ type: "text", text: match[9], styles: { italic: true } });
-    } else if (match[10]) {
-      // Strikethrough: ~~text~~
-      result.push({ type: "text", text: match[11], styles: { strike: true } });
-    } else if (match[12]) {
-      // Plain text
-      const plain = match[12];
-      if (plain) {
-        result.push({ type: "text", text: plain, styles: {} });
+// CommonMark: a fence's content lines lose up to the fence's own indentation.
+function stripFenceIndent(line: string, width: number): string {
+  let i = 0;
+  let column = 0;
+  while (column < width && (line[i] === " " || line[i] === "\t")) {
+    column += line[i] === "\t" ? 2 : 1;
+    i++;
+  }
+  return line.slice(i);
+}
+
+type Styles = Record<string, boolean>;
+
+// Longest first, so `***both***` is one bold+italic span rather than `**`
+// plus stray `*` text.
+const DELIMITERS = ["***", "**", "*", "~~"] as const;
+type Delimiter = (typeof DELIMITERS)[number];
+
+const DELIMITER_STYLES: Record<Delimiter, Styles> = {
+  "***": { bold: true, italic: true },
+  "**": { bold: true },
+  "*": { italic: true },
+  "~~": { strike: true },
+};
+
+// Index of the backtick closing a code span opened at `start`, or -1.
+function findCodeSpanEnd(text: string, start: number): number {
+  const end = text.indexOf("`", start + 1);
+  return end > start + 1 ? end : -1;
+}
+
+/**
+ * First unescaped `delimiter` after at least one character of content,
+ * skipping code spans so a delimiter inside `code` never closes the span.
+ */
+function findClosingDelimiter(text: string, delimiter: string, contentStart: number): number {
+  for (let i = contentStart; i < text.length; i++) {
+    if (text[i] === "\\") {
+      i++;
+      continue;
+    }
+    if (text[i] === "`") {
+      const end = findCodeSpanEnd(text, i);
+      if (end !== -1) {
+        i = end;
+        continue;
+      }
+    }
+    if (i > contentStart && text.startsWith(delimiter, i)) return i;
+  }
+  return -1;
+}
+
+interface DelimitedSpan {
+  delimiter: Delimiter;
+  inner: string;
+  end: number;
+}
+
+function parseDelimitedAt(text: string, start: number): DelimitedSpan | null {
+  for (const delimiter of DELIMITERS) {
+    if (!text.startsWith(delimiter, start)) continue;
+    const contentStart = start + delimiter.length;
+    const close = findClosingDelimiter(text, delimiter, contentStart);
+    if (close !== -1) {
+      return { delimiter, inner: text.slice(contentStart, close), end: close + delimiter.length };
+    }
+  }
+  return null;
+}
+
+// Index of the `]` closing a link label that starts at `from`, or -1.
+function findLabelEnd(text: string, from: number): number {
+  let depth = 0;
+  for (let i = from; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\\") {
+      i++;
+    } else if (ch === "`") {
+      const end = findCodeSpanEnd(text, i);
+      if (end !== -1) i = end;
+    } else if (ch === "[") {
+      depth++;
+    } else if (ch === "]") {
+      if (depth === 0) return i;
+      depth--;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Destination starting just after `(`: either `<...>` or a bare run with
+ * balanced parentheses. Returns the unescaped href and the index after `)`.
+ */
+function parseDestination(text: string, from: number): { href: string; end: number } | null {
+  if (text[from] === "<") {
+    for (let i = from + 1; i < text.length; i++) {
+      const ch = text[i];
+      if (ch === "\\") {
+        i++;
+      } else if (ch === "<" || ch === "\n") {
+        return null;
+      } else if (ch === ">") {
+        if (text[i + 1] !== ")") return null;
+        return { href: unescapeMarkdown(text.slice(from + 1, i)), end: i + 2 };
+      }
+    }
+    return null;
+  }
+
+  let depth = 0;
+  for (let i = from; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\\") {
+      i++;
+    } else if (ch === "(") {
+      depth++;
+    } else if (ch === ")") {
+      if (depth > 0) {
+        depth--;
+      } else {
+        if (i === from) return null;
+        return { href: unescapeMarkdown(text.slice(from, i)), end: i + 1 };
       }
     }
   }
+  return null;
+}
 
-  if (result.length === 0 && text) {
-    result.push({ type: "text", text, styles: {} });
+interface LinkMatch {
+  label: string;
+  href: string;
+  end: number;
+}
+
+// `[label](destination)` starting at `start`; `label` is still escaped.
+function parseLinkAt(text: string, start: number): LinkMatch | null {
+  if (text[start] !== "[") return null;
+  const labelEnd = findLabelEnd(text, start + 1);
+  if (labelEnd === -1 || text[labelEnd + 1] !== "(") return null;
+  const destination = parseDestination(text, labelEnd + 2);
+  if (!destination) return null;
+  return { label: text.slice(start + 1, labelEnd), ...destination };
+}
+
+/**
+ * Parse inline Markdown. Delimiter spans and link labels are parsed
+ * recursively, so their content can carry further styles; `styles` holds the
+ * styles of the spans enclosing `text`.
+ */
+function parseInlineMarkdown(
+  text: string,
+  styles: Styles = {},
+  inLink = false,
+): BlockNoteInlineContent[] {
+  const result: BlockNoteInlineContent[] = [];
+  let plain = "";
+  const flushPlain = () => {
+    if (plain) result.push({ type: "text", text: plain, styles: { ...styles } });
+    plain = "";
+  };
+
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+
+    if (ch === "\\" && isPunctuation(text[i + 1])) {
+      plain += text[i + 1];
+      i += 2;
+      continue;
+    }
+
+    if (ch === "`") {
+      const end = findCodeSpanEnd(text, i);
+      if (end !== -1) {
+        flushPlain();
+        result.push({
+          type: "text",
+          text: text.slice(i + 1, end),
+          styles: { ...styles, code: true },
+        });
+        i = end + 1;
+        continue;
+      }
+    }
+
+    // Links can't nest, so a `[` inside link text is literal.
+    if (ch === "[" && !inLink) {
+      const link = parseLinkAt(text, i);
+      if (link) {
+        flushPlain();
+        const content = parseInlineMarkdown(link.label, styles, true);
+        result.push({
+          type: "link",
+          text: content.map((c) => c.text ?? "").join(""),
+          href: link.href,
+          content,
+        });
+        i = link.end;
+        continue;
+      }
+    }
+
+    if (ch === "*" || ch === "~") {
+      const span = parseDelimitedAt(text, i);
+      if (span) {
+        flushPlain();
+        const spanStyles = { ...styles, ...DELIMITER_STYLES[span.delimiter] };
+        // A loop, not push(...nodes): a long span can hold more nodes than a call takes arguments.
+        for (const node of parseInlineMarkdown(span.inner, spanStyles, inLink)) result.push(node);
+        i = span.end;
+        continue;
+      }
+    }
+
+    plain += ch;
+    i++;
   }
 
+  flushPlain();
   return result;
+}
+
+// A line of backticks at least as long as the opening fence closes a code block.
+function isClosingFence(line: string, fenceLength: number): boolean {
+  const match = line.match(/^\s*(`+)\s*$/);
+  return match !== null && match[1].length >= fenceLength;
+}
+
+/**
+ * Split a `| a | b |` row on unescaped pipes. GFM strips `\|` back to `|`
+ * before a cell's inline Markdown is read; every other backslash is left for
+ * parseInlineMarkdown. Only `\|` is consumed, so `\\|` is a backslash plus an
+ * escaped pipe, exactly reversing tableCellToMarkdown, whose code spans keep
+ * their backslashes unescaped. The trailing pipe is optional.
+ */
+function splitTableRow(row: string): string[] {
+  const cells: string[] = [];
+  let cell = "";
+  for (let i = 0; i < row.length; i++) {
+    const ch = row[i];
+    if (ch === "\\" && row[i + 1] === "|") {
+      cell += "|";
+      i++;
+    } else if (ch === "|") {
+      cells.push(cell);
+      cell = "";
+    } else {
+      cell += ch;
+    }
+  }
+  cells.push(cell);
+  cells.shift(); // before the leading pipe
+  if (cells.length > 0 && cells[cells.length - 1] === "") cells.pop(); // after a trailing pipe
+  return cells;
+}
+
+function isDelimiterRow(cells: string[]): boolean {
+  return cells.length > 0 && cells.every((cell) => /^:?-+:?$/.test(cell.trim()));
+}
+
+function parseTableLine(line: string): ParsedLine | null {
+  const parsed = parseLine(line);
+  return parsed.content.startsWith("|") ? parsed : null;
 }
 
 /**
  * Convert Markdown text to BlockNote blocks.
  * Supports headings, paragraphs, bullet/numbered/check lists, code blocks, images, and inline styles.
+ * Indented lines nest under the nearest less-indented block, so the
+ * `children` blockNoteToMarkdown emits, 3 spaces deeper under `1. ` and 2
+ * under any other block, read back as children.
  */
 export function markdownToBlockNote(markdown: string): BlockNoteBlock[] {
   const lines = markdown.split("\n");
   const blocks: BlockNoteBlock[] = [];
+  // Blocks that can still receive children, outermost first.
+  const ancestors: { block: BlockNoteBlock; indent: number }[] = [];
+
+  const attachBlock = (block: BlockNoteBlock, indent: number) => {
+    while (ancestors.length > 0 && ancestors[ancestors.length - 1].indent >= indent) {
+      ancestors.pop();
+    }
+    const parent = ancestors[ancestors.length - 1];
+    if (parent) {
+      // Append in place: copying the array per child is quadratic in a long list.
+      parent.block.children ??= [];
+      parent.block.children.push(block);
+    } else {
+      blocks.push(block);
+    }
+    ancestors.push({ block, indent });
+  };
+
   let i = 0;
 
   while (i < lines.length) {
@@ -219,48 +680,58 @@ export function markdownToBlockNote(markdown: string): BlockNoteBlock[] {
       continue;
     }
 
-    // Fenced code block
-    const codeMatch = line.match(/^```(\w*)/);
+    const { indent, content } = parseLine(line);
+
+    // Fenced code block. Content lines are read verbatim, apart from the
+    // fence's own indentation.
+    const codeMatch = content.match(/^(`{3,})(\w*)/);
     if (codeMatch) {
-      const language = codeMatch[1] || "";
+      const fenceLength = codeMatch[1].length;
+      const language = codeMatch[2] || "";
+      const fenceIndent = indentWidth(line);
       const codeLines: string[] = [];
       i++;
-      while (i < lines.length && !lines[i].match(/^```\s*$/)) {
-        codeLines.push(lines[i]);
+      while (i < lines.length && !isClosingFence(lines[i], fenceLength)) {
+        codeLines.push(stripFenceIndent(lines[i], fenceIndent));
         i++;
       }
-      i++; // skip closing ```
+      i++; // skip closing fence
       const text = codeLines.join("\n");
-      blocks.push({
-        type: "codeBlock",
-        props: { language },
-        content: text ? [{ type: "text", text, styles: {} }] : [],
-        children: [],
-      });
+      attachBlock(
+        {
+          type: "codeBlock",
+          props: { language },
+          content: text ? [{ type: "text", text, styles: {} }] : [],
+          children: [],
+        },
+        indent,
+      );
       continue;
     }
-
-    const { content } = parseLine(line);
 
     // Heading
     const headingMatch = content.match(/^(#{1,6})\s+(.*)/);
     if (headingMatch) {
-      blocks.push({
-        type: "heading",
-        props: { level: headingMatch[1].length },
-        content: parseInlineMarkdown(headingMatch[2]),
-        children: [],
-      });
+      attachBlock(
+        {
+          type: "heading",
+          props: { level: headingMatch[1].length },
+          content: parseInlineMarkdown(headingMatch[2]),
+          children: [],
+        },
+        indent,
+      );
       i++;
       continue;
     }
 
-    // Image
-    const imageMatch = content.match(/^!\[([^\]]*)\]\(([^)]+)\)/);
-    if (imageMatch) {
-      const props: Record<string, unknown> = { url: imageMatch[2] };
-      if (imageMatch[1]) props.caption = imageMatch[1];
-      blocks.push({ type: "image", props, children: [] });
+    // Image. Text after it on the same line makes the line a paragraph, so it isn't dropped.
+    const imageMatch = content.startsWith("!") ? parseLinkAt(content, 1) : null;
+    if (imageMatch && content.slice(imageMatch.end).trim() === "") {
+      const props: Record<string, unknown> = { url: imageMatch.href };
+      const caption = unescapeMarkdown(imageMatch.label);
+      if (caption) props.caption = caption;
+      attachBlock({ type: "image", props, children: [] }, indent);
       i++;
       continue;
     }
@@ -269,13 +740,20 @@ export function markdownToBlockNote(markdown: string): BlockNoteBlock[] {
     // The forward direction (blockToMarkdown) emits file blocks in this exact
     // shape, so reading it back without restoring the file block would silently
     // downgrade it to a paragraph and break web's native attachment rendering.
-    const fileMatch = content.match(/^\[([^\]]*)\]\((attachment:\/\/[^)]+)\)\s*$/);
-    if (fileMatch) {
-      blocks.push({
-        type: "file",
-        props: { url: fileMatch[2], name: fileMatch[1] },
-        children: [],
-      });
+    const fileMatch = parseLinkAt(content, 0);
+    if (
+      fileMatch &&
+      fileMatch.href.startsWith("attachment://") &&
+      content.slice(fileMatch.end).trim() === ""
+    ) {
+      attachBlock(
+        {
+          type: "file",
+          props: { url: fileMatch.href, name: unescapeMarkdown(fileMatch.label) },
+          children: [],
+        },
+        indent,
+      );
       i++;
       continue;
     }
@@ -283,12 +761,15 @@ export function markdownToBlockNote(markdown: string): BlockNoteBlock[] {
     // Check list item
     const checkMatch = content.match(/^-\s+\[([ xX])\]\s+(.*)/);
     if (checkMatch) {
-      blocks.push({
-        type: "checkListItem",
-        props: { checked: checkMatch[1] !== " " },
-        content: parseInlineMarkdown(checkMatch[2]),
-        children: [],
-      });
+      attachBlock(
+        {
+          type: "checkListItem",
+          props: { checked: checkMatch[1] !== " " },
+          content: parseInlineMarkdown(checkMatch[2]),
+          children: [],
+        },
+        indent,
+      );
       i++;
       continue;
     }
@@ -296,11 +777,14 @@ export function markdownToBlockNote(markdown: string): BlockNoteBlock[] {
     // Bullet list item
     const bulletMatch = content.match(/^[-*+]\s+(.*)/);
     if (bulletMatch) {
-      blocks.push({
-        type: "bulletListItem",
-        content: parseInlineMarkdown(bulletMatch[1]),
-        children: [],
-      });
+      attachBlock(
+        {
+          type: "bulletListItem",
+          content: parseInlineMarkdown(bulletMatch[1]),
+          children: [],
+        },
+        indent,
+      );
       i++;
       continue;
     }
@@ -308,48 +792,51 @@ export function markdownToBlockNote(markdown: string): BlockNoteBlock[] {
     // Numbered list item
     const numberedMatch = content.match(/^\d+\.\s+(.*)/);
     if (numberedMatch) {
-      blocks.push({
-        type: "numberedListItem",
-        content: parseInlineMarkdown(numberedMatch[1]),
-        children: [],
-      });
+      attachBlock(
+        {
+          type: "numberedListItem",
+          content: parseInlineMarkdown(numberedMatch[1]),
+          children: [],
+        },
+        indent,
+      );
       i++;
       continue;
     }
 
-    // Table (starts with |)
+    // Table: consecutive `|` lines at this block's indent
     if (content.startsWith("|")) {
-      const tableRows: BlockNoteInlineContent[][][] = [];
-      while (i < lines.length && lines[i].trim().startsWith("|")) {
-        const rowText = lines[i].trim();
-        // Skip separator rows (| --- | --- |)
-        if (rowText.match(/^\|[\s\-:|]+\|$/)) {
-          i++;
-          continue;
-        }
-        const cells = rowText
-          .split("|")
-          .slice(1, -1) // Remove empty first/last from leading/trailing |
-          .map((cell) => parseInlineMarkdown(cell.trim()));
-        tableRows.push(cells);
+      const tableRows: string[][] = [];
+      let row = parseTableLine(lines[i]);
+      while (row && row.indent === indent) {
+        tableRows.push(splitTableRow(row.content.trim()));
         i++;
+        row = i < lines.length ? parseTableLine(lines[i]) : null;
       }
-      if (tableRows.length > 0) {
-        const tableContent: BlockNoteTableContent = {
-          type: "tableContent",
-          rows: tableRows.map((cells) => ({ cells })),
-        };
-        blocks.push({ type: "table", content: tableContent, children: [] });
+      // GFM: the delimiter row (| --- | --- |) is the table's second line, with
+      // or without a trailing pipe. A `---` row anywhere else is data.
+      if (tableRows.length > 1 && isDelimiterRow(tableRows[1])) {
+        tableRows.splice(1, 1);
       }
+      const tableContent: BlockNoteTableContent = {
+        type: "tableContent",
+        rows: tableRows.map((cells) => ({
+          cells: cells.map((cell) => parseInlineMarkdown(cell.trim())),
+        })),
+      };
+      attachBlock({ type: "table", content: tableContent, children: [] }, indent);
       continue;
     }
 
     // Default: paragraph
-    blocks.push({
-      type: "paragraph",
-      content: parseInlineMarkdown(content),
-      children: [],
-    });
+    attachBlock(
+      {
+        type: "paragraph",
+        content: parseInlineMarkdown(content),
+        children: [],
+      },
+      indent,
+    );
     i++;
   }
 

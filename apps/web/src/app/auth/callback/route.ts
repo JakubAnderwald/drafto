@@ -1,13 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { sanitizeRedirectPath } from "@/lib/auth/redirect-path";
 import { createClient } from "@/lib/supabase/server";
-
-function sanitizeRedirectPath(path: string | null): string {
-  if (!path || !path.startsWith("/") || path.startsWith("//")) {
-    return "/";
-  }
-  return path;
-}
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);

@@ -152,6 +152,29 @@ describe("DesignSystemPage", () => {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
+  it("keeps the type-to-confirm dialog locked until DELETE is typed", async () => {
+    const user = userEvent.setup();
+    render(<DesignSystemPage />);
+
+    await user.click(screen.getByRole("button", { name: "Show type-to-confirm dialog" }));
+    const confirmButton = screen.getByRole("button", { name: "Delete workspace" });
+    expect(confirmButton).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Type DELETE to confirm"), "DELETE");
+    expect(confirmButton).toBeEnabled();
+
+    await user.click(confirmButton);
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+
+    // Reopening starts from an empty, locked state.
+    await user.click(screen.getByRole("button", { name: "Show type-to-confirm dialog" }));
+    expect(screen.getByLabelText("Type DELETE to confirm")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Delete workspace" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
   it("closes dropdown menu items on click", async () => {
     const user = userEvent.setup();
     render(<DesignSystemPage />);
@@ -168,6 +191,21 @@ describe("DesignSystemPage", () => {
 
     expect(screen.getByText("Heading 1 — The quick brown fox")).toBeInTheDocument();
     expect(screen.getByText(/const greeting/)).toBeInTheDocument();
+  });
+
+  it("renders a long-form document sample styled by .doc-prose", () => {
+    render(<DesignSystemPage />);
+
+    expect(screen.getByText("Document Prose")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "On this page" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "2. Tables" })).toBeInTheDocument();
+    const sample = screen.getByRole("heading", { level: 3, name: "Section subheading" });
+    expect(sample.closest(".doc-prose")).not.toBeNull();
+    expect(screen.getByRole("cell", { name: /stack into cards/ })).toHaveAttribute(
+      "data-label",
+      "Purpose",
+    );
+    expect(screen.getByRole("link", { name: ".doc-link" })).toHaveClass("doc-link");
   });
 
   it("renders shadow demos", () => {

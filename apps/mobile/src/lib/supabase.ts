@@ -4,7 +4,15 @@ import { Platform } from "react-native";
 
 import type { Database } from "@drafto/shared";
 
+import { installCryptoDigest } from "@/lib/crypto-digest";
+import { installCryptoRandom } from "@/lib/crypto-random";
 import { secureStoreAdapter } from "./secure-store-adapter";
+
+// Before any auth call: supabase-js draws the PKCE `code_verifier` from
+// `crypto.getRandomValues`, and hashes it into an S256 challenge with
+// `crypto.subtle.digest` (ADR-0045). Without the digest it sends `plain`.
+installCryptoRandom();
+installCryptoDigest();
 
 const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl as string;
 const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey as string;
@@ -31,6 +39,20 @@ export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: Platform.OS === "web",
+    // PKCE, not supabase-js's implicit default (ADR-0045). Redirects into the app
+    // (password reset, Apple sign-in on Android) then carry a one-time `code` that
+    // only the `code_verifier` in this device's SecureStore can redeem. They never
+    // carry session tokens, which any website could forge into a `drafto://` link.
+    flowType: "pkce",
+    // auth-js keeps one verifier per pending PKCE flow (up to 5), and this flag
+    // appends that flow's id to the redirect as `sb_flow_id`. The deep-link
+    // handlers pass it back to `exchangeCodeForSession`, so a pending reset or
+    // Apple sign-in still completes after a newer flow has started on this
+    // device. Supabase matches redirect URLs including the query string, so
+    // both hosted projects' Redirect URLs must allow `drafto://reset-password?sb_flow_id=*`
+    // and `drafto://auth/callback?sb_flow_id=*`. Without them Supabase drops
+    // the redirect for the Site URL (docs/features/auth.md, ADR-0045).
+    experimental: { appendPkceFlowIdToRedirects: true },
   },
   global: {
     headers: { "x-drafto-client": clientTag },

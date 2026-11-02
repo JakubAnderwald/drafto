@@ -10,8 +10,10 @@
 // (comment-released-issues.mjs) posts the "now live" notice when a build lands.
 //
 // BETA CHANNELS ONLY. Production store lanes (release:prod:* / *:production /
-// production-release.yml) are NEVER constructed, and assertBetaOnly() throws if
-// one is ever passed — a code invariant, not just a convention.
+// production-release.yml) and App Review submissions (release:promote* /
+// *:promote, which submit an existing TestFlight build without rebuilding) are
+// NEVER constructed, and assertBetaOnly() throws if one is ever passed — a code
+// invariant, not just a convention.
 //
 // Functions:
 //   derivePlatforms(diffFiles) → {mobile, desktop, web}   (pure)
@@ -19,6 +21,13 @@
 //        platforms. apps/mobile/→mobile, apps/desktop/→desktop, apps/web/→web,
 //        packages/shared/→both native (shared ships to both apps). web is
 //        informational only — Vercel auto-deploys main, nothing to dispatch.
+//   deriveVerifyPlatforms(diffFiles) → {mobile, desktop, web, webViaShared} (pure)
+//        The pre-In-Test verification stage's variant (ADR-0053, 5C): the same
+//        mobile and desktop, but web is also true when packages/shared/ changed,
+//        because the web app imports it too. webViaShared says web came ONLY
+//        through packages/shared/. Verification alone uses it; beta dispatch,
+//        the In Test platforms, the parity check and the preview gate keep
+//        derivePlatforms.
 //   platformsToLanes(platforms) → [{id, cwd, command, args}]   (pure)
 //        mobile → apps/mobile `pnpm release:beta:all` (iOS TestFlight + Android
 //        internal); desktop → apps/desktop `pnpm release:beta` (macOS TestFlight).
@@ -48,10 +57,16 @@
 // instead, and assertDesktopFossil() enforces the invariant at dispatch time.
 // See docs/operations/desktop-build-fossil.md and ADR-0027.
 //
-// CLI (called from scripts/factory-agent.sh --release):
-//   derive-platforms (--diff-file <path|-> | --diff <str>)
+// CLI (called from scripts/factory-agent.sh --release / --watch, and from
+// scripts/nightly-support.sh Phase 4):
+//   derive-platforms (--diff-file <path|-> | --diff <str>) [--verify]
+//        --verify prints deriveVerifyPlatforms instead (factory-agent.sh's
+//        verification stage); without it the output is derivePlatforms'.
 //   dispatch (--diff-file <path|-> | --platforms mobile,desktop) [--repo-root <dir>]
-//           [--desktop-root <dir>]
+//           [--desktop-root <dir>] [--release-issues <n,n,…>]
+//        --release-issues becomes DRAFTO_RELEASE_ISSUES in the lane env, so the
+//        Fastlane "now live" hook (comment-released-issues.mjs) announces those
+//        support issues even when its tag-range walk misses them (ADR-0042).
 //
 // Prints JSON to stdout and exits 0; errors print {"error": "..."} to stderr and
 // exit non-zero — same shape as factory-project.mjs / state-cli.mjs.
@@ -78,11 +93,29 @@ export const DESKTOP_REACT_RANGE = /^19\.1\./;
 // Production lanes the factory must NEVER auto-invoke (beta channels only —
 // production store submission stays a manual, explicitly-approved step per
 // CLAUDE.md "Release Authorization").
+//
+// The `promote` entries are not redundant with the `prod` ones: `release:promote`
+// does not contain "prod" (no `d`), so without them a lane that submits the app
+// to App Review — `pnpm release:promote:ios`, `pnpm release:promote`,
+// `bundle exec fastlane ios promote`, `bundle exec fastlane mac promote` — would
+// sail past the guard. Promote never builds, which makes it cheap to invoke and
+// all the more important that only a human does.
+//
+// The platform token is optional in the fastlane patterns because both Fastfiles
+// set a `default_platform` — `bundle exec fastlane promote` in apps/desktop is a
+// real Mac App Store submission (`default_platform(:mac)`), and the same holds for
+// `production`. Defence in depth: every lane spec `platformsToLanes` builds is a
+// hardcoded `pnpm release:beta*` literal, so nothing reaches this today.
 const PROD_DENYLIST = [
   /release:prod\b/i,
   /release:production\b/i,
+  /release:promote\b/i,
   /production-release\.yml/i,
-  /fastlane\s+\w+\s+production/i,
+  /fastlane\s+(\w+\s+)?production/i,
+  /fastlane\s+(\w+\s+)?promote\b/i,
+  // Store-listing screenshots replace what App Store Connect shows publicly.
+  /store:screenshots:upload\b/i,
+  /fastlane\s+\w+\s+upload_screenshots\b/i,
 ];
 
 let _spawnForTests = null;
@@ -109,6 +142,27 @@ export function derivePlatforms(diffFiles) {
     }
   }
   return { mobile, desktop, web };
+}
+
+// Pure: the verification stage's platforms (ADR-0053, 5C). derivePlatforms
+// maps packages/shared/ to the two native apps only, because nothing is
+// dispatched for web; but the web app imports packages/shared/ too, so a
+// shared-only PR does change what the Vercel preview runs, and the browser
+// lane should walk it. web is true when apps/web/ OR packages/shared/ changed;
+// webViaShared is true when only packages/shared/ brought it in, so the
+// scenario writer and the report can say why a browser run happened on a PR
+// with no apps/web/ files.
+export function deriveVerifyPlatforms(diffFiles) {
+  const plain = derivePlatforms(diffFiles);
+  const shared = String(diffFiles ?? "")
+    .split("\n")
+    .some((l) => /^packages\/shared\//.test(l.trim()));
+  return {
+    mobile: plain.mobile,
+    desktop: plain.desktop,
+    web: plain.web || shared,
+    webViaShared: shared && !plain.web,
+  };
 }
 
 // Pure: beta lanes for the changed native platforms. web is intentionally absent
@@ -390,6 +444,9 @@ export async function dispatchLanes({
       ...(spawned?.pid ? { pid: spawned.pid } : {}),
       ...(spawned?.logPath ? { logPath: spawned.logPath } : {}),
       ...(spawned?.exitPath ? { exitPath: spawned.exitPath } : {}),
+      // Which support issues this build will announce (dispatch --release-issues),
+      // echoed so the caller's log shows it and a dry run can be checked.
+      ...(laneEnv?.DRAFTO_RELEASE_ISSUES ? { releaseIssues: laneEnv.DRAFTO_RELEASE_ISSUES } : {}),
     });
   }
   return { dispatched, failed, skipped, platforms: plats };
@@ -413,6 +470,23 @@ async function readDiff(flags) {
   return readFileSync(src, "utf8");
 }
 
+// Validate + normalise the --release-issues CSV: issue numbers only, so the
+// value is safe to hand to a lane's environment and the hook can trust it.
+// Throws on anything else (including an empty list) — a typo must fail the
+// dispatch loudly rather than ship a build that announces nothing.
+export function parseReleaseIssues(csv) {
+  const parts = String(csv ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (parts.length === 0 || !parts.every((p) => /^[1-9][0-9]*$/.test(p))) {
+    throw new Error(
+      `--release-issues must be a comma-separated list of issue numbers (got ${JSON.stringify(String(csv ?? ""))})`,
+    );
+  }
+  return [...new Set(parts.map(Number))].sort((a, b) => a - b).join(",");
+}
+
 function parsePlatforms(csv) {
   const set = new Set(
     String(csv)
@@ -425,17 +499,29 @@ function parsePlatforms(csv) {
 
 async function main(argv) {
   const [sub, ...rawRest] = argv;
-  // parseFlags requires a value for every flag by design, so pull the one bare
-  // boolean out before handing it the rest.
+  // parseFlags requires a value for every flag by design, so pull the bare
+  // booleans out before handing it the rest.
   const dryRun = rawRest.includes("--dry-run");
-  const rest = rawRest.filter((a) => a !== "--dry-run");
+  const verify = rawRest.includes("--verify");
+  const rest = rawRest.filter((a) => a !== "--dry-run" && a !== "--verify");
   const { flags } = parseFlags(rest);
+  // Only derive-platforms has a verification variant: a dispatch must never
+  // build from it (web is never dispatched, but a typo should fail loudly).
+  if (verify && sub !== "derive-platforms") {
+    throw new Error("--verify is only valid with derive-platforms");
+  }
   switch (sub) {
-    case "derive-platforms":
-      return derivePlatforms(await readDiff(flags));
+    case "derive-platforms": {
+      const diff = await readDiff(flags);
+      return verify ? deriveVerifyPlatforms(diff) : derivePlatforms(diff);
+    }
     case "dispatch": {
       const platforms = flags.platforms ? parsePlatforms(flags.platforms) : undefined;
       const diffFiles = platforms ? undefined : await readDiff(flags);
+      const releaseIssues =
+        flags["release-issues"] === undefined
+          ? undefined
+          : parseReleaseIssues(flags["release-issues"]);
       return dispatchLanes({
         repoRoot: flags["repo-root"] ?? DEFAULT_REPO_ROOT,
         desktopRoot: flags["desktop-root"],
@@ -444,6 +530,7 @@ async function main(argv) {
         dryRun,
         logDir: flags["log-dir"],
         logKey: flags["log-key"],
+        ...(releaseIssues ? { laneEnv: { DRAFTO_RELEASE_ISSUES: releaseIssues } } : {}),
       });
     }
     // Pre-merge dispatch from an In Test card's PR head. Same lanes and the same
@@ -480,9 +567,9 @@ async function main(argv) {
     case "-h":
     case undefined:
       process.stdout.write(
-        "Usage: dispatch-release.mjs <derive-platforms (--diff-file <path|-> | --diff <str>)|" +
+        "Usage: dispatch-release.mjs <derive-platforms (--diff-file <path|-> | --diff <str>) [--verify]|" +
           "dispatch (--diff-file <path|-> | --platforms mobile,desktop) [--repo-root <dir>] " +
-          "[--desktop-root <dir>] [--log-dir <dir>] [--log-key <key>] [--dry-run]|" +
+          "[--desktop-root <dir>] [--log-dir <dir>] [--log-key <key>] [--release-issues <n,n>] [--dry-run]|" +
           "dispatch-premerge (same flags) --issue <n> [--pr <n>] [--sha <sha>] [--only <ids>]>\n",
       );
       return null;

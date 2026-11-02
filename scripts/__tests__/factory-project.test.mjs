@@ -1,5 +1,10 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 let lib;
 let execCalls;
@@ -483,5 +488,252 @@ describe("runGh retry behaviour", () => {
     });
     await assert.rejects(() => lib.findProject({ owner: "x" }), /404/);
     assert.equal(execCalls.length, 1);
+  });
+});
+
+function statusMeta(options) {
+  return ghResp({
+    data: {
+      node: {
+        fields: {
+          nodes: [{ __typename: "ProjectV2SingleSelectField", id: "F2", name: "Status", options }],
+        },
+      },
+    },
+  });
+}
+
+describe("hasStatusOption (mocked gh)", () => {
+  const options = [
+    { id: "O_REVIEW", name: "In Review" },
+    { id: "O_TEST", name: "In Test" },
+  ];
+
+  it("is true when the Status field has the option", async () => {
+    lib._setExecFileForTests(
+      makeExecFile([{ match: (cmd) => cmd === "gh", response: statusMeta(options) }]),
+    );
+    assert.equal(await lib.hasStatusOption("PVT_xyz", "In Test"), true);
+  });
+
+  it("is false when it doesn't (exact name, no case folding)", async () => {
+    lib._setExecFileForTests(
+      makeExecFile([{ match: (cmd) => cmd === "gh", response: statusMeta(options) }]),
+    );
+    assert.equal(await lib.hasStatusOption("PVT_xyz", "Testing"), false);
+    assert.equal(await lib.hasStatusOption("PVT_xyz", "in test"), false);
+    assert.equal(await lib.hasStatusOption("PVT_xyz", "constructor"), false);
+  });
+
+  it("reads fresh meta rather than the set-status cache", async () => {
+    // A column added by setup-factory-board.sh mid-process must be seen.
+    let calls = 0;
+    lib._setExecFileForTests(async () => {
+      calls += 1;
+      return statusMeta(calls === 1 ? options : [...options, { id: "O_T", name: "Testing" }]);
+    });
+    assert.equal(await lib.hasStatusOption("PVT_xyz", "Testing"), false);
+    assert.equal(await lib.hasStatusOption("PVT_xyz", "Testing"), true);
+  });
+
+  it("rejects a missing name", async () => {
+    await assert.rejects(() => lib.hasStatusOption("PVT_xyz", ""), /requires an option name/);
+  });
+});
+
+// EXPORT_QUERY reads the Status by field name (aliased `status`), so a node
+// carries it directly instead of in a fieldValues page.
+function itemNode(id, content, status) {
+  return {
+    id,
+    content,
+    status: status
+      ? { __typename: "ProjectV2ItemFieldSingleSelectValue", name: status, optionId: `O_${status}` }
+      : null,
+  };
+}
+
+describe("shapeStatusExport (pure)", () => {
+  it("keeps every item: issues, PRs, drafts, and items with no Status", () => {
+    const rows = lib.shapeStatusExport([
+      itemNode("PVTI_1", { __typename: "Issue", number: 12 }, "In Test"),
+      itemNode("PVTI_2", { __typename: "PullRequest", number: 34 }, "In Review"),
+      itemNode("PVTI_3", { __typename: "DraftIssue" }, "Backlog"),
+      itemNode("PVTI_4", { __typename: "Issue", number: 56 }, null),
+      null,
+      { content: { __typename: "Issue", number: 1 } },
+      // A non-single-select value under the alias is not a Status.
+      { id: "PVTI_5", content: null, status: { __typename: "ProjectV2ItemFieldTextValue" } },
+    ]);
+    assert.deepEqual(rows, [
+      { itemId: "PVTI_1", issueNumber: 12, status: "In Test", type: "Issue" },
+      { itemId: "PVTI_2", issueNumber: 34, status: "In Review", type: "PullRequest" },
+      { itemId: "PVTI_3", issueNumber: null, status: "Backlog", type: "DraftIssue" },
+      { itemId: "PVTI_4", issueNumber: 56, status: null, type: "Issue" },
+      { itemId: "PVTI_5", issueNumber: null, status: null, type: null },
+    ]);
+  });
+
+  it("asks for the Status by field name, not a capped fieldValues page", async () => {
+    let query = "";
+    lib._setExecFileForTests(async (cmd, args) => {
+      query = args.find((a) => a.startsWith("query=")) ?? "";
+      return ghResp({
+        data: { node: { items: { pageInfo: { hasNextPage: false }, nodes: [] } } },
+      });
+    });
+    await lib.exportStatuses("PVT_xyz");
+    assert.match(query, /status: fieldValueByName\(name: "Status"\)/);
+    assert.doesNotMatch(query, /fieldValues\(first/);
+  });
+
+  it("tolerates a missing node list", () => {
+    assert.deepEqual(lib.shapeStatusExport(undefined), []);
+  });
+});
+
+describe("exportStatuses (mocked gh)", () => {
+  function page(nodes, endCursor) {
+    return ghResp({
+      data: {
+        node: {
+          items: {
+            pageInfo: { hasNextPage: endCursor != null, endCursor },
+            nodes,
+          },
+        },
+      },
+    });
+  }
+
+  it("paginates the whole board and sorts by number, then itemId", async () => {
+    const pages = [
+      page(
+        [
+          itemNode("PVTI_c", { __typename: "Issue", number: 30 }, "Done"),
+          itemNode("PVTI_d", { __typename: "DraftIssue" }, "Backlog"),
+        ],
+        "CUR_1",
+      ),
+      page(
+        [
+          itemNode("PVTI_a", { __typename: "Issue", number: 7 }, "In Review"),
+          itemNode("PVTI_b", { __typename: "DraftIssue" }, null),
+        ],
+        null,
+      ),
+    ];
+    lib._setExecFileForTests(async (cmd, args) => {
+      execCalls.push({ cmd, args });
+      return pages[execCalls.length - 1];
+    });
+    const rows = await lib.exportStatuses("PVT_xyz");
+    assert.deepEqual(
+      rows.map((r) => r.itemId),
+      ["PVTI_a", "PVTI_c", "PVTI_b", "PVTI_d"],
+    );
+    assert.equal(execCalls.length, 2);
+    assert.ok(execCalls[1].args.includes("cursor=CUR_1"));
+    // Read-only: only a query is ever sent.
+    for (const { args } of execCalls) {
+      assert.ok(!args.some((a) => /\bmutation\b/.test(a)), "export must not mutate");
+    }
+  });
+
+  it("throws on GraphQL errors instead of returning a partial backup", async () => {
+    lib._setExecFileForTests(async () => ghResp({ errors: [{ message: "boom" }] }));
+    await assert.rejects(() => lib.exportStatuses("PVT_xyz"), /exportStatuses failed/);
+  });
+
+  it("throws when the project has no items connection", async () => {
+    lib._setExecFileForTests(async () => ghResp({ data: { node: null } }));
+    await assert.rejects(() => lib.exportStatuses("PVT_xyz"), /no items connection/);
+  });
+
+  it("refuses to return a truncated list past the page cap", async () => {
+    let n = 0;
+    lib._setExecFileForTests(async () => {
+      n += 1;
+      return page([itemNode(`PVTI_${n}`, { __typename: "Issue", number: n }, "Done")], `C${n}`);
+    });
+    await assert.rejects(() => lib.exportStatuses("PVT_xyz"), /refusing to return an incomplete/);
+  });
+
+  it("requires a project id", async () => {
+    await assert.rejects(() => lib.exportStatuses(""), /requires projectId/);
+  });
+});
+
+describe("factory-project.mjs CLI (stubbed gh on PATH)", () => {
+  const cliPath = fileURLToPath(new URL("../lib/factory-project.mjs", import.meta.url));
+
+  // Answers the Status-field query and a one-page items query; logs each call.
+  const GH_STUB = `#!${process.execPath}
+const fs = require("fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.GH_STUB_LOG, JSON.stringify(args) + "\\n");
+const q = args.find((a) => a.startsWith("query=")) || "";
+let out;
+if (q.includes("fields(first")) {
+  out = { data: { node: { fields: { nodes: [{ __typename: "ProjectV2SingleSelectField", id: "F2", name: "Status",
+    options: [{ id: "O_REVIEW", name: "In Review" }, { id: "O_TEST", name: "In Test" }] }] } } } };
+} else if (q.includes("items(first")) {
+  out = { data: { node: { items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
+    { id: "PVTI_2", content: { __typename: "Issue", number: 9 },
+      status: { __typename: "ProjectV2ItemFieldSingleSelectValue", name: "In Test" } },
+    { id: "PVTI_1", content: { __typename: "Issue", number: 3 }, status: null }] } } } };
+} else {
+  fs.writeSync(2, "unmatched gh call");
+  process.exit(1);
+}
+fs.writeSync(1, JSON.stringify(out));
+`;
+
+  function runCli(cliArgs) {
+    const dir = mkdtempSync(join(tmpdir(), "factory-project-cli-"));
+    try {
+      const gh = join(dir, "gh");
+      writeFileSync(gh, GH_STUB);
+      chmodSync(gh, 0o755);
+      const logFile = join(dir, "gh.log");
+      writeFileSync(logFile, "");
+      const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, GH_STUB_LOG: logFile };
+      delete env.FACTORY_PROJECT_ID;
+      const res = spawnSync(process.execPath, [cliPath, ...cliArgs], { encoding: "utf8", env });
+      const calls = readFileSync(logFile, "utf8").split("\n").filter(Boolean).map(JSON.parse);
+      return { status: res.status, stdout: res.stdout, stderr: res.stderr, calls };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("has-status-option exits 0 and reports present when the option exists", () => {
+    const r = runCli(["has-status-option", "--name", "In Test", "--project-id", "PVT_1"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), { name: "In Test", present: true });
+  });
+
+  it("has-status-option exits 1 and reports absent when it doesn't", () => {
+    const r = runCli(["has-status-option", "--name", "Testing", "--project-id", "PVT_1"]);
+    assert.equal(r.status, 1);
+    assert.deepEqual(JSON.parse(r.stdout), { name: "Testing", present: false });
+  });
+
+  it("has-status-option without --name fails before calling gh", () => {
+    const r = runCli(["has-status-option", "--project-id", "PVT_1"]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /requires --name/);
+    assert.equal(r.calls.length, 0);
+  });
+
+  it("export-statuses prints every item as sorted JSON and sends no mutation", () => {
+    const r = runCli(["export-statuses", "--project-id", "PVT_1"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), [
+      { itemId: "PVTI_1", issueNumber: 3, status: null, type: "Issue" },
+      { itemId: "PVTI_2", issueNumber: 9, status: "In Test", type: "Issue" },
+    ]);
+    assert.equal(r.calls.length, 1);
+    assert.ok(!r.calls[0].some((a) => /\bmutation\b/.test(a)));
   });
 });

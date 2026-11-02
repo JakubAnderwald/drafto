@@ -2,11 +2,17 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
+import { ACCOUNT_DELETED_MESSAGE, EMAIL_CONFIRMED } from "@drafto/shared";
 
 // Mock next/navigation
-const mockPush = vi.fn();
+let mockSearchParams = new URLSearchParams();
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: mockPush }),
+  useSearchParams: () => mockSearchParams,
+}));
+
+const mockEnterApp = vi.fn();
+vi.mock("@/lib/auth/enter-app", () => ({
+  enterApp: () => mockEnterApp(),
 }));
 
 // Mock Supabase client
@@ -33,6 +39,7 @@ const { default: LoginPage } = await import("@/app/(auth)/login/page");
 describe("Login page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSearchParams = new URLSearchParams();
   });
 
   it("renders the login form with OAuth buttons", async () => {
@@ -47,6 +54,111 @@ describe("Login page", () => {
     expect(screen.getByRole("button", { name: "Google" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Apple" })).toBeInTheDocument();
     expect(screen.getByText("or continue with")).toBeInTheDocument();
+  });
+
+  it("does not show the account-deleted notice by default", async () => {
+    await act(async () => {
+      render(<LoginPage />);
+    });
+
+    expect(screen.queryByText("Your account has been deleted.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("shows the account-deleted notice after an account deletion redirect", async () => {
+    mockSearchParams = new URLSearchParams("deleted=1");
+
+    await act(async () => {
+      render(<LoginPage />);
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Your account has been deleted.");
+    // The form stays usable underneath the notice.
+    expect(screen.getByRole("button", { name: "Log in" })).toBeInTheDocument();
+  });
+
+  it("ignores other values of the deleted query parameter", async () => {
+    mockSearchParams = new URLSearchParams("deleted=true");
+
+    await act(async () => {
+      render(<LoginPage />);
+    });
+
+    expect(screen.queryByText("Your account has been deleted.")).not.toBeInTheDocument();
+  });
+
+  it("shows the account-deleted copy shared with the native apps", async () => {
+    mockSearchParams = new URLSearchParams("deleted=1");
+
+    await act(async () => {
+      render(<LoginPage />);
+    });
+
+    expect(screen.getByTestId("account-deleted-notice")).toHaveTextContent(ACCOUNT_DELETED_MESSAGE);
+  });
+
+  describe("email-confirmed notice", () => {
+    it("confirms the address where the app's sign-up confirmation link lands", async () => {
+      // Supabase appends the app's PKCE code; it is meaningless here and must not matter.
+      mockSearchParams = new URLSearchParams("confirmed=1&code=app-pkce-code");
+
+      await act(async () => {
+        render(<LoginPage />);
+      });
+
+      expect(screen.getByRole("status")).toHaveTextContent(EMAIL_CONFIRMED);
+      expect(screen.getByRole("button", { name: "Log in" })).toBeInTheDocument();
+    });
+
+    it("ignores other values of the confirmed parameter", async () => {
+      mockSearchParams = new URLSearchParams("confirmed=yes");
+
+      await act(async () => {
+        render(<LoginPage />);
+      });
+
+      expect(screen.queryByText(EMAIL_CONFIRMED)).not.toBeInTheDocument();
+    });
+  });
+
+  describe("auth-callback error notice", () => {
+    it("explains a link the callback could not use", async () => {
+      // /auth/callback redirects here when the code exchange fails; the page used to ignore it.
+      mockSearchParams = new URLSearchParams("error=auth-callback-error");
+
+      await act(async () => {
+        render(<LoginPage />);
+      });
+
+      expect(screen.getByRole("alert")).toHaveTextContent("That link couldn't sign you in.");
+    });
+
+    it("ignores other error values instead of echoing them", async () => {
+      mockSearchParams = new URLSearchParams("error=%3Cscript%3E");
+
+      await act(async () => {
+        render(<LoginPage />);
+      });
+
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("gives way to the form's own error once the user tries to log in", async () => {
+      mockSearchParams = new URLSearchParams("error=auth-callback-error");
+      mockSignIn.mockResolvedValueOnce({ error: { message: "Invalid login credentials" } });
+      const user = userEvent.setup();
+
+      await act(async () => {
+        render(<LoginPage />);
+      });
+
+      await user.type(screen.getByLabelText("Email"), "test@example.com");
+      await user.type(screen.getByLabelText("Password"), "wrong");
+      await user.click(screen.getByRole("button", { name: "Log in" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent("Invalid login credentials");
+      expect(screen.queryByText(/That link couldn't sign you in/)).not.toBeInTheDocument();
+    });
   });
 
   it("has links to signup and forgot password", async () => {
@@ -77,7 +189,8 @@ describe("Login page", () => {
       email: "test@example.com",
       password: "password123",
     });
-    expect(mockPush).toHaveBeenCalledWith("/");
+    // A full page load, so the router can't reuse the landing page it cached for `/`.
+    expect(mockEnterApp).toHaveBeenCalledOnce();
   });
 
   it("displays error message when sign in fails", async () => {
@@ -95,7 +208,7 @@ describe("Login page", () => {
     await user.click(screen.getByRole("button", { name: "Log in" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Invalid login credentials");
-    expect(mockPush).not.toHaveBeenCalled();
+    expect(mockEnterApp).not.toHaveBeenCalled();
   });
 
   it("shows loading state while submitting", async () => {

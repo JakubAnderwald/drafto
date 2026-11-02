@@ -1,10 +1,10 @@
 # Support agent
 
-**Status:** shipped **Updated:** 2026-05-03
+**Status:** shipped **Updated:** 2026-10-08
 
 ## What it is
 
-The real-time support pipeline: customer mail to `support@drafto.eu` is polled every 5 minutes from a Mac-mini-resident agent, classified by Claude Code, and either replied to (high-confidence questions, grounded in `docs/`), filed as a GitHub issue (bug / feature), escalated to human review (`Drafto/Support/NeedsHuman` + admin email), or dropped as spam. Linked GitHub issues sync bidirectionally with the customer's email thread — comments authored by the bot with a `<!-- drafto-progress -->` marker are forwarded as Zoho replies, and lifecycle transitions (closed / not-planned / reopened) trigger customer-facing emails. Release announcements ("Now live in TestFlight build 145") are forwarded the same way after each Fastlane release.
+The real-time support pipeline: customer mail to `support@drafto.eu` is polled every 5 minutes from a Mac-mini-resident agent, classified by Claude Code, and either replied to (high-confidence questions, grounded in `docs/`), filed as a GitHub issue (bug / feature), escalated to human review (`Drafto/Support/NeedsHuman` + admin email), or dropped as spam. Linked GitHub issues sync bidirectionally with the customer's email thread — comments authored by the bot with a `<!-- drafto-progress -->` marker are forwarded as Zoho replies, and lifecycle transitions (closed / not-planned / reopened) trigger customer-facing emails. Release announcements ("Now live in TestFlight build 145") are forwarded the same way after each Fastlane release. Account-deletion and data-rights requests are never handled by the agent; they always go to a person (see [Account-deletion and data-rights requests](#account-deletion-and-data-rights-requests)).
 
 This ADR ([0024 — Real-Time Support Agent](../adr/0024-realtime-support-agent.md)) supersedes [ADR-0013](../adr/0013-automated-support-pipeline.md) for **Stage 1** of the support pipeline. Stage 2 (`scripts/nightly-support.sh`, midnight implementation pass) and Stage 3 (`scripts/nightly-audit.sh`) keep their schedules and core behaviour.
 
@@ -24,12 +24,12 @@ Shipped. The pipeline has been live since 2026-04-26; lifecycle sync (Phase G) m
 | Bundle builders (inbound, comment-batch, state)    | `scripts/lib/build-bundle.mjs`         |
 | Pure policy helpers (rate limits, allowlist, etc.) | `scripts/lib/policy.mjs`               |
 | State load / save (atomic, mode 0600)              | `scripts/lib/state.mjs`                |
-| GitHub sync helpers (`gh` subprocess wrappers)     | `scripts/lib/github-sync.mjs`          |
-| Issue-body footer parser (zoho-thread-id routing)  | `scripts/lib/parse-issue-footer.mjs`   |
-| State-mutation CLI (cooldowns, cursors, sender)    | `scripts/lib/state-cli.mjs`            |
+| GitHub sync helpers + Zoho route (`issue-route`)   | `scripts/lib/github-sync.mjs`          |
+| Issue-body footer parser (provenance, fallback)    | `scripts/lib/parse-issue-footer.mjs`   |
+| State-mutation CLI (cooldowns, cursors, route)     | `scripts/lib/state-cli.mjs`            |
 | Stage 2 (preserved, sender-gated via state)        | `scripts/nightly-support.sh`           |
 | Release-announcement walker (Fastlane post-hook)   | `scripts/comment-released-issues.mjs`  |
-| Unit tests (167)                                   | `scripts/__tests__/`                   |
+| Unit tests (`cd scripts && npm test`)              | `scripts/__tests__/`                   |
 | Captured Zoho fixtures for golden runs             | `scripts/__fixtures__/support-emails/` |
 
 ## Architecture
@@ -59,8 +59,8 @@ Tools available to Claude (allow-listed only):
         │
         ▼
 [Zoho labels under Drafto/Support/*] + [Drafto/Support/Resolved | Spam folder]
-+ [GitHub issue body footer carrying zoho-thread-id (load-bearing for comment-sync) + reporter-email/reporter-allowlisted (provenance only — see ADR-0025)]
-+ [logs/support-state.json — cursors, rate-limit counters, admin-notification cooldown, reporterEmail per filed issue]
++ [GitHub issue body footer — provenance, plus a routing fallback for older issues (see "Routing progress emails")]
++ [logs/support-state.json — cursors, rate-limit counters, admin-notification cooldown, and per filed issue the reporterEmail + Zoho route]
 ```
 
 ### State machine (Zoho-side)
@@ -85,12 +85,24 @@ Every GitHub issue the agent files carries this fenced footer at the very end of
 reporter-email: jane@example.com
 reporter-allowlisted: false
 zoho-thread-id: 1777397751089013400
+zoho-message-id: 1791172614617005600
 -->
 ```
 
-The `zoho-thread-id` field is load-bearing — comment-sync uses it to route GitHub-comment forwards back to the originating Zoho thread. `reporter-email` and `reporter-allowlisted` are kept for human-readable provenance only and are NOT trusted for any privilege decision (see [ADR-0025](../adr/0025-support-allowlist-from-zoho-sender.md)).
+The footer is LLM-written, so it never decides who passes the allowlist gate or who receives an email. `reporter-email` and `reporter-allowlisted` are human-readable provenance only (see [ADR-0025](../adr/0025-support-allowlist-from-zoho-sender.md)). `zoho-thread-id` and `zoho-message-id` are only a routing fallback for issues filed before the runner recorded routes in state; see the next section.
 
-> **Singleton-threadId quirk.** Zoho assigns a `threadId` only after a customer-side reply. First-contact filings record `zoho-thread-id: null` in the footer; the operator (or the next agent pass after the customer replies) patches it once Zoho assigns one.
+### Routing progress emails
+
+`--comment-sync` and `--state-sync` both ask `node scripts/lib/github-sync.mjs issue-route <n>` where the customer email for issue `n` goes. It returns `{threadId, messageId, subject, to, routable}`:
+
+- **Source.** `state.issues[<n>]` in `logs/support-state.json` wins: `zohoThreadId`, `zohoMessageId`, `zohoSubject` and `reporterEmail`. `support-agent.sh` writes them through `state-cli.mjs record-filed-issue <n> <email> [<threadId>] --message-id <id> --subject <s>`, using the Zoho entry it read before Claude ran. The footer's `zoho-thread-id` / `zoho-message-id` fill in only when state has neither id. `null`, `undefined` and empty values count as absent everywhere.
+- **Recipient.** `to` is always the runner-recorded `reporterEmail`, never the footer.
+- **Thread route** (`threadId` set). The prompt runs `get-thread` and replies to the thread's latest message. It addresses the email to `to`, and falls back to that message's sender only when `to` is unknown, because the latest message can be one of our own replies.
+- **Message route** (no `threadId`, but a `messageId` and `to`). The prompt runs `zoho-cli reply <messageId> --to <to> --subject "<subject, or the issue title>"`. The issue-filing acknowledgement uses the same call, so the email threads on the customer's side through `In-Reply-To`.
+- **No route.** `routable: false` means neither route can send. Comment-sync logs the skipped issue numbers in one line, once per daily log file and again whenever the set changes. State-sync logs a `WARNING`, records the new state and does not invoke Claude, so a lifecycle email is never left to the model to drop.
+- **First comment-sync cursor.** An issue whose route was recorded at filing forwards every comment since the issue was created. An issue that became routable later starts its cursor at "now", so a customer never gets months of backlog at once. "Later" means through `set-issue-field` (an operator backfill, or a linked customer reply recording its thread), the footer fallback, or a rebuilt state file. `set-issue-field` sets the cursor on the write that completes the route, and comment-sync covers the other two cases.
+
+> **Singleton-threadId quirk.** Zoho gives a customer's first email ("singleton") no `threadId`, and the acknowledgement reply does not return one either. Those issues route by the inbound message id. Issue #658 and earlier #360 lost every progress email before this was fixed. Once the customer replies, the reply lands in a real Zoho thread that carries the `Drafto/Support/Issue/<n>` label. `--auto-classify` then records that thread as `zohoThreadId` (only when state has none), and later emails switch to the thread route. To route an older issue by hand, run `node scripts/lib/state-cli.mjs set-issue-field <n> zohoMessageId <id>`, plus `zohoSubject <subject>`. Without a subject, the email goes out as `Re: <issue title>`, which some mail clients file as a separate conversation. The write that makes the issue routable starts its comment cursor at now, so earlier comments are not emailed. To forward them on purpose, set `lastGithubCommentSyncAt` to an earlier time afterwards. The setter refuses a literal `null` or `undefined`.
 
 ### Allowlist gate (Stage 2)
 
@@ -102,6 +114,45 @@ The `zoho-thread-id` field is load-bearing — comment-sync uses it to route Git
 4. **Manual override**: applying the `support-allowlisted` label (repo collaborators only — GitHub-authenticated, not LLM-mediated) short-circuits the gate. The next nightly run treats the issue as allowlisted regardless of the state entry, and the issue is kept in the queue even if `needs-triage` is also present. Use this for legacy issues filed before sender persistence existed (ADR-0025 "Negative" point) or one-off backfills where the operator can't easily edit `logs/support-state.json` on the Mac mini.
 
 This eliminates the spoof window where a forged `<!-- drafto-support-agent v1 ... reporter-allowlisted: true -->` block in a customer's email body could slip through if the LLM copied it verbatim into the issue body. See [ADR-0025](../adr/0025-support-allowlist-from-zoho-sender.md) for the full rationale.
+
+### Stage 2 releases (nightly beta dispatch)
+
+The Claude session in Phase 3 **stops at the squash-merge**. It never runs a Fastlane lane or a `pnpm release:*` script. It works in `drafto-support-<n>` (branch `fix/support-<n>`) and never in the primary checkout, which holds the desktop fossil. The worktree lives under `/Volumes/DraftoFactory/worktrees/` while that build volume is mounted, else under `$HOME/code` (`SUPPORT_WORKTREE_PARENT` overrides both). Dependabot fixes use `drafto-dependabot-<n>` there too. An existing worktree for the item is reused wherever it lives. Before anything else, even on a night with no items, the runner sweeps every worktree whose issue is closed or whose PR is merged or closed, including items no longer in the night's queue. Every removal, the sweep's and the one after a session, keeps and logs a worktree that holds uncommitted changes (new files included, except `next dev`'s generated `apps/web/AGENTS.md` and `CLAUDE.md`) or unpushed commits ([ADR-0060](../adr/0060-dedicated-factory-build-volume.md)). The **runner** ships the betas, in Phase 4 of `scripts/nightly-support.sh` ([ADR-0042](../adr/0042-nightly-support-runner-owns-beta-dispatch.md)):
+
+1. `scripts/lib/support-release.mjs pending` finds `support` issues closed as _completed_ in the last 14 days (`SUPPORT_RELEASE_WINDOW_DAYS`) whose merged closing PR touched `apps/mobile` (Android and iOS), `apps/desktop` (macOS) or `packages/shared` (all three). A platform drops out once its "Now live" notice has been posted since the issue's latest close, or after 3 failed attempts.
+2. `support-release.mjs main-ci` waits up to 45 min for main's required checks on `origin/main`'s head. Red or pending means retry next night.
+3. Each lane is prepared in the dark factory's shared beta build roots (`scripts/lib/beta-build-root.sh`, under its pid lock) and dispatched with `dispatch-release.mjs dispatch --release-issues <n,…>`: mobile runs `release:beta:all`, macOS runs `release:beta` from the fossil replica. The runner **waits** for each lane's exit code. A lane is killed when its log is silent for 120 min or it has run for 180 min.
+4. The Fastlane hook `comment-released-issues.mjs` posts `Now live in <track>. <!-- drafto-progress --> <!-- now-live:<platform>:<build> -->` on every issue in `$DRAFTO_RELEASE_ISSUES` (and the tag range), once per platform per fix. `--comment-sync` forwards it to the reporter.
+5. `support-release.mjs settle` counts a platform as shipped only if that notice appeared. Otherwise the attempt is recorded as failed in `logs/support-release-state.json` and retried on later nights. After 3 failures the issue gets `needs-manual-intervention` and an operator comment, without the progress marker, naming the lane log.
+
+None of these spends an attempt: main CI red or pending, a build root in use or failing to prepare, a lane refused by the fossil check, or the external build volume not mounted. They are simply retried the next night. The failure budget belongs to the current fix, so an issue that is reopened and fixed again starts from zero. A fix that leaves the 14-day window without shipping, because it only ever hit these outcomes, is labelled `needs-manual-intervention` with one operator comment. It never just drops out. Because the script also exits early only when nothing is pending, a fix whose build failed is retried even on nights with no open support issue.
+
+**After a give-up:** fix the cause, then run `node scripts/lib/state-cli.mjs reset-release-attempts <n>` on the Mac mini and remove the label. Alternatively, ship by hand (`cd apps/mobile && pnpm release:beta:android|ios`, or `pnpm release:beta` for desktop from the fossil checkout). The nightly log lists every platform's outcome under `Phase 4:`. Lane logs are in `logs/support-release/`.
+
+### Account-deletion and data-rights requests
+
+`support@drafto.eu` is the published email fallback for deleting a Drafto account. The public page [drafto.eu/account/delete](https://drafto.eu/account/delete), `/support`, `/privacy` and the store privacy policy (`apps/mobile/store/metadata/privacy-policy.md`) all send people who no longer have the app here. Publish no other address for this: `support@drafto.eu` is the mailbox the agent polls, so only mail sent here reaches the escalation rule below. Users who can still sign in delete their account instantly in the app; see [`auth.md` → Account deletion](./auth.md#account-deletion).
+
+The agent has no tool that can delete an account, and an automatic answer could point someone who can no longer sign in at in-app steps, or read as if the deletion had happened. So step 5.5 of `scripts/support-agent-prompt.md` **always escalates** any message, in any language, that asks to delete or close an account or to exercise a data-protection right (erasure, access / DSAR, portability, rectification, restriction, objection, or anything citing GDPR, RODO or CCPA):
+
+- It runs in **every phase** (D–G), before the phase gate, and ignores the classified intent and confidence. When unsure, the agent treats the message as in scope. A plain how-to question about a product feature, such as exporting a notebook, is still an ordinary `question`.
+- The thread gets `Drafto/Support/NeedsHuman` (a message label for un-threaded singletons) and stays in the Inbox. The admin notification fires under the usual suppression rules, with `Reason:` starting `Account deletion / data-rights request`. The runner logs `action=escalated`.
+- The agent sends no reply and files no GitHub issue, and never applies `Replied` or moves the thread to `Resolved`. On a thread already linked to an issue, step 4.5 steps aside, so the request is not quoted on the public issue either.
+- The agent never states or implies that anything was deleted.
+- The earlier guards still run first. The loop guard and the human-intervention check escalate to `NeedsHuman` anyway, and obvious spam (step 5) still goes to `Drafto/Support/Spam`.
+
+**Operator procedure for an escalated request:**
+
+1. **Verify.** `From` headers can be spoofed. Reply from Zoho to the email address registered on the Drafto account, and act only once that address confirms. The confirming reply is escalated again the same way, but the 24 h per-thread cooldown can delay the repeat admin email, so watch the thread in Zoho.
+2. **Act only on what was asked.** Delete an account only for a confirmed erasure or account-closure request.
+   - **Erasure, or "close my account":** delete by hand, following [`auth.md` → Account deletion](./auth.md#account-deletion). Never delete an admin account from an emailed request.
+   - **Access (DSAR), portability or export:** delete nothing. Send the requester a copy of their data. If they can still sign in, point them at the web app's notebook export (`apps/web/src/components/export/export-evernote-dialog.tsx`). Otherwise export their profile, notebooks, notes and attachments by hand from the production project, following [production data safety](../operations/migrations.md).
+   - **Rectification:** delete nothing. If they can still sign in, point them at editing in the app. Otherwise correct the data by hand in the production project.
+   - **Restriction or objection:** delete nothing. Reply in person and decide case by case.
+   - **Unclear which right is meant:** ask the requester before acting. Never delete on an ambiguous request.
+3. **Tell the requester** by replying in the thread. Emailed requests are handled within 30 days. Replying yourself also trips the human-intervention check, so the agent stays out of the thread.
+
+The golden fixture `scripts/__fixtures__/support-emails/06-account-deletion-request.json` (with its `.expected.json`) records the expected outcome.
 
 ## Cross-platform notes
 
@@ -215,30 +266,36 @@ Stage 2 already authenticates `gh` on the Mac mini for the same user. No additio
   - Every label and folder the agent touches must live under `Drafto/Support/...`. `zoho-cli.mjs` rejects anything else at the CLI boundary, with a closed-suffix allowlist (`{Seen, NeedsHuman, Spam, Resolved, Replied, Issue/<n>}` for labels; `{Spam, Resolved}` for folders). Adding a new label = update the allowlist, the prompt, and `assertSupportNamespace`'s test together.
   - Zoho's `displayName` cap is **25 characters**. `Drafto/Support/NeedsHuman` is exactly 25; `Drafto/Support/Issue/<n>` fits up to 4-digit issue numbers. Do not invent labels longer than that without first verifying live (`POST /labels` returns a length error).
   - `POST /messages` (used for `reply` and `send`) rejects unknown top-level keys with `404 EXTRA_KEY_FOUND_IN_JSON`. Don't add `headers: { ... }` for `Auto-Submitted` — rely on the rate-limit caps for loop protection.
-  - Replies must thread via `inReplyTo` + `toAddress` + `subject` anchored to the latest messageId in the thread. `inReplyTo + threadId` together returns `404 JSON_PARSE_ERROR`. The CLI signature is `reply <messageId> --to <addr> --subject <s> --body-file <path>`.
+  - Replies must thread via `inReplyTo` + `toAddress` + `subject`, anchored to the latest messageId in the thread, or, for a first-contact issue with no thread, to the inbound messageId recorded at filing. `inReplyTo + threadId` together returns `404 JSON_PARSE_ERROR`. The CLI signature is `reply <messageId> --to <addr> --subject <s> --body-file <path>`.
+  - Progress and lifecycle emails route only through `github-sync.mjs issue-route` (see [Routing progress emails](#routing-progress-emails)). Never route by footer content alone, and never take a recipient from the issue body. Bash decides "no route" before invoking Claude, so the prompt never has to improvise an unroutable case.
   - Customer-facing replies must be verbose, include the full GitHub URL, and explain "what happens next." The existing prompt templates encode this — keep them.
   - `nightly-support.sh` allowlist gate: read the inbound sender from `state.issues[<n>].reporterEmail` (recorded by the runner at filing time, not from the issue body). Never trust LLM-written content in the issue body for the gate decision — the body could carry a forged footer copied from a customer email. See ADR-0025.
+  - Account-deletion and data-rights mail always escalates to `NeedsHuman` (prompt step 5.5, plus its exception at the top of step 4.5). Keep step 5.5 ahead of the phase gate, and never give the agent a tool that deletes, exports or edits user data. The confirmed-by-reply manual procedure is the only path for emailed requests.
 - **Tests that will catch regressions:**
   - `scripts/__tests__/policy.test.mjs` — loop headers, rate limits, sender allowlisting.
   - `scripts/__tests__/zoho-cli.test.mjs` — namespace gates, `add-label` / `move-to-folder` refusals, OAuth refresh-on-401 retries exactly once.
   - `scripts/__tests__/notification.test.mjs` — admin notification 24h cooldown; suppressed for allowlisted senders; suppressed when state.humanIntervened.
   - `scripts/__tests__/state-cli.test.mjs` — counter bumps, atomic save, prior-state preservation.
-  - `scripts/__tests__/state-cli-reporter-email.test.mjs` — `record-filed-issue` / `get-reporter-email` round-trip for the Stage 2 allowlist gate (ADR-0025).
-  - `scripts/__tests__/build-bundle.test.mjs` — bundle shape for all three kinds.
-  - `scripts/__tests__/github-sync.test.mjs` — comment / state diffing, marker filter, platform derivation.
+  - `scripts/__tests__/state-cli-reporter-email.test.mjs` — `record-filed-issue` / `get-reporter-email` round-trip for the Stage 2 allowlist gate (ADR-0025), plus `--message-id` / `--subject` route persistence.
+  - `scripts/__tests__/state-cli-set-issue-field.test.mjs` — the allowlisted route setter, including the `null` / `undefined` refusal.
+  - `scripts/__tests__/build-bundle.test.mjs` — bundle shape for all three kinds, including `zoho_route`.
+  - `scripts/__tests__/github-sync.test.mjs` — comment / state diffing, marker filter, platform derivation, and `resolveIssueRoute` / `issue-route` precedence (state over footer, recipient never from the footer).
+  - `scripts/__tests__/parse-issue-footer.test.mjs` — footer parsing, with `null` values read as absent.
+  - `scripts/__tests__/support-agent-routing.test.mjs` — `support-agent.sh` structure: both sync modes route through `issue-route`, no silent skip, deterministic no-route handling in state-sync, and route persistence at filing.
 - **Files that must change together:**
   - Adding a new bundle kind → `build-bundle.mjs`, the prompt's "kinds" enum, `support-agent.sh`'s mode dispatch, and a new test fixture under `scripts/__fixtures__/support-emails/`.
   - Adding a new Zoho subcommand → `zoho-cli.mjs`, the prompt's "Tools" allowlist, and `zoho-cli.test.mjs`.
   - Renaming a label → `zoho-cli.mjs`'s namespace allowlist, the prompt's state-machine table, and the runbook's state-machine table above.
+  - Changing the account-deletion email fallback → the agent must poll the new mailbox (see [One-time setup](#one-time-setup)), plus the [Account-deletion and data-rights requests](#account-deletion-and-data-rights-requests) section above, `apps/web/src/app/account/delete/page.tsx`, `apps/web/src/app/support/page.tsx`, `apps/web/src/app/privacy/page.tsx` and `apps/mobile/store/metadata/privacy-policy.md`.
 
 ## Verify
 
 ```bash
-# Unit tests (all 167)
-pnpm --filter=. exec node --test scripts/__tests__/
+# Unit tests (same command CI runs)
+cd scripts && npm test
 
 # Dry-run against fixtures (no live API)
-bash scripts/support-agent.sh --dry-run --fixture scripts/__fixtures__/support-emails/01-bug-attachment-upload.json
+bash scripts/support-agent.sh --dry-run --fixture scripts/__fixtures__/support-emails/01-bug-pdf-export.json
 
 # Live dry-run against the real Inbox (requires OAuth bootstrap)
 bash scripts/support-agent.sh --dry-run

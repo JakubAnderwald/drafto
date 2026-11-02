@@ -141,3 +141,137 @@ describe("state-cli set-issue-field (issue #422)", () => {
     });
   });
 });
+
+describe("state-cli set-issue-field — message-id routing fields (issue #658)", () => {
+  it("accepts zohoMessageId and zohoSubject without touching threads", async () => {
+    await withTempState(async (file) => {
+      const a = run(["set-issue-field", "610", "zohoMessageId", " 1791172614617005600 "], {
+        stateFile: file,
+      });
+      assert.equal(a.status, 0, a.stderr);
+      const b = run(["set-issue-field", "610", "zohoSubject", "Sync broken on iPad"], {
+        stateFile: file,
+      });
+      assert.equal(b.status, 0, b.stderr);
+      const raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["610"].zohoMessageId, "1791172614617005600");
+      assert.equal(raw.issues["610"].zohoSubject, "Sync broken on iPad");
+      assert.equal(Object.keys(raw.threads ?? {}).length, 0);
+    });
+  });
+
+  for (const literal of ["null", "NULL", " Null ", "undefined", "Undefined"]) {
+    it(`rejects the literal ${JSON.stringify(literal)} for every allowlisted field`, async () => {
+      await withTempState(async (file) => {
+        for (const field of [
+          "zohoThreadId",
+          "zohoMessageId",
+          "zohoSubject",
+          "reporterEmail",
+          "lastGithubCommentSyncAt",
+        ]) {
+          const r = run(["set-issue-field", "611", field, literal], { stateFile: file });
+          assert.notEqual(r.status, 0, `${field}=${literal} should be refused`);
+          assert.match(r.stderr, /refusing literal/i);
+        }
+        // Nothing was written — no issue entry, no "null" thread key.
+        const exists = await fs
+          .access(file)
+          .then(() => true)
+          .catch(() => false);
+        if (exists) {
+          const raw = JSON.parse(await fs.readFile(file, "utf8"));
+          assert.equal(raw.issues?.["611"], undefined);
+          assert.equal(raw.threads?.null, undefined);
+        }
+      });
+    });
+  }
+});
+
+describe("state-cli set-issue-field — cursor bootstrap when a route appears after filing", () => {
+  const NOW = "2026-10-08T12:00:00.000Z";
+
+  it("starts the comment cursor at now when a backfill makes an issue routable", async () => {
+    await withTempState(async (file) => {
+      // A pre-fix singleton: reporter recorded, no route.
+      const seed = run(["record-filed-issue", "658", "jakub@anderwald.info"], { stateFile: file });
+      assert.equal(seed.status, 0, seed.stderr);
+      const w = run(
+        ["set-issue-field", "658", "zohoMessageId", "1791172614617005600", "--now", NOW],
+        {
+          stateFile: file,
+        },
+      );
+      assert.equal(w.status, 0, w.stderr);
+      assert.equal(JSON.parse(w.stdout).cursorBootstrappedAt, NOW);
+      const raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["658"].lastGithubCommentSyncAt, NOW);
+    });
+  });
+
+  it("bootstraps only on the write that completes the route (message id first, reporter later)", async () => {
+    await withTempState(async (file) => {
+      const a = run(["set-issue-field", "612", "zohoMessageId", "M-612", "--now", NOW], {
+        stateFile: file,
+      });
+      assert.equal(a.status, 0, a.stderr);
+      assert.equal(JSON.parse(a.stdout).cursorBootstrappedAt, null, "no recipient yet");
+      let raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["612"].lastGithubCommentSyncAt, undefined);
+      const b = run(["set-issue-field", "612", "reporterEmail", "a@b.co", "--now", NOW], {
+        stateFile: file,
+      });
+      assert.equal(b.status, 0, b.stderr);
+      assert.equal(JSON.parse(b.stdout).cursorBootstrappedAt, NOW);
+      raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["612"].lastGithubCommentSyncAt, NOW);
+    });
+  });
+
+  it("bootstraps when a linked reply's thread is the issue's first route", async () => {
+    await withTempState(async (file) => {
+      const w = run(["set-issue-field", "613", "zohoThreadId", "T-613", "--now", NOW], {
+        stateFile: file,
+      });
+      assert.equal(w.status, 0, w.stderr);
+      const raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["613"].lastGithubCommentSyncAt, NOW);
+    });
+  });
+
+  it("leaves an existing cursor alone", async () => {
+    await withTempState(async (file) => {
+      const c = run(["set-issue-cursor", "614", "2026-10-01T00:00:00.000Z"], { stateFile: file });
+      assert.equal(c.status, 0, c.stderr);
+      const w = run(["set-issue-field", "614", "zohoThreadId", "T-614", "--now", NOW], {
+        stateFile: file,
+      });
+      assert.equal(w.status, 0, w.stderr);
+      assert.equal(JSON.parse(w.stdout).cursorBootstrappedAt, null);
+      const raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["614"].lastGithubCommentSyncAt, "2026-10-01T00:00:00.000Z");
+    });
+  });
+
+  it("does not bootstrap an issue that was already routable from filing", async () => {
+    await withTempState(async (file) => {
+      // Filed with a message route; comment-sync must still start from createdAt.
+      const seed = run(
+        ["record-filed-issue", "615", "a@b.co", "", "--message-id", "M-615", "--subject", "Hi"],
+        { stateFile: file },
+      );
+      assert.equal(seed.status, 0, seed.stderr);
+      let raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["615"].lastGithubCommentSyncAt, undefined, "filing sets no cursor");
+      // A later linked reply upgrades it to the thread route: no bootstrap.
+      const w = run(["set-issue-field", "615", "zohoThreadId", "T-615", "--now", NOW], {
+        stateFile: file,
+      });
+      assert.equal(w.status, 0, w.stderr);
+      assert.equal(JSON.parse(w.stdout).cursorBootstrappedAt, null);
+      raw = JSON.parse(await fs.readFile(file, "utf8"));
+      assert.equal(raw.issues["615"].lastGithubCommentSyncAt, undefined);
+    });
+  });
+});

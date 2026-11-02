@@ -4,6 +4,8 @@
 - **Date**: 2026-07-30
 - **Authors**: Jakub (with Claude)
 
+> **Update 2026-10-21**: With `FACTORY_VERIFY=1`, the scenario is written and the pre-merge betas are dispatched when the card enters the **Testing** column, before In Test ([ADR-0053](./0053-pre-in-test-verification-stage.md)). The verification lanes run that scenario, and the builds start sooner. The comment is titled "Test scenario — verifying now (Testing)" (`bundle.stage: "testing"`); its markers, the per-SHA idempotency and "advance first" are unchanged. The card reaches In Test later with a separate verification report. With verification off, everything here holds as written.
+
 ## Context
 
 **In Test** is one of the factory's two human gates: a card sits there until a

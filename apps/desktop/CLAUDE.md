@@ -30,11 +30,13 @@ that opens a note is.**
 - Doing desktop **code / unit-test / typecheck** work in a worktree is fine (JS tooling runs there);
   just never treat a worktree's native build as shippable, and route the actual release through the
   fossil.
-- The dark factory builds desktop from `/Users/jakub/code/drafto-beta-desktop`, a **clonefile replica**
-  of the fossil `node_modules` (exact and ~0 bytes — the repo is `node-linker=hoisted`, so packages are
-  real directories; the only symlinks are the relative ones in `.bin/`, which keep resolving inside the
-  copy). The factory resets that worktree's _source_ to the commit under test but never reinstalls its
+- The dark factory builds desktop from `/Volumes/DraftoFactory/drafto-beta-desktop`, a **replica**
+  of the fossil `node_modules` on the factory's build volume (exact — the repo is `node-linker=hoisted`,
+  so packages are real directories; the only symlinks are the relative ones in `.bin/`, which keep
+  resolving inside the copy). The factory resets that worktree's _source_ to the commit under test but never reinstalls its
   dependencies. **The never-`pnpm install` rule applies there too.** See [ADR-0030].
+- A native bug in React Native or a native dependency can't take a `pnpm patch` here. Patch it at
+  runtime from `macos/Drafto-macOS/` ([ADR-0063]) and list it on [#558].
 
 The precise invariant, and how it is enforced: build macOS only from a checkout whose hoisted
 `node_modules/react` is **19.1.x**. `assertDesktopFossil()` in `scripts/lib/dispatch-release.mjs`
@@ -52,4 +54,5 @@ Full detail: [`../../docs/operations/desktop-build-fossil.md`](../../docs/operat
 
 [ADR-0027]: ../../docs/adr/0027-desktop-react-version-locked-to-react-native-macos.md
 [ADR-0030]: ../../docs/adr/0030-in-test-scenarios-and-pre-merge-betas.md
+[ADR-0063]: ../../docs/adr/0063-desktop-native-runtime-patches.md
 [#558]: https://github.com/JakubAnderwald/drafto/issues/558

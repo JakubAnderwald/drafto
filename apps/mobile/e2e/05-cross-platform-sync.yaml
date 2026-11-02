@@ -34,9 +34,11 @@ appId: eu.drafto.mobile
 # Tap into the notebook
 - tapOn: ".*${NOTEBOOK_NAME}.*"
 
-# Wait for notes list
+# Wait for notes list (its header now shows the notebook's name, not "Notes",
+# and that name is on the previous screen too, so wait for the screen itself)
 - extendedWaitUntil:
-    visible: "Notes"
+    visible:
+      id: "notes-list-screen"
     timeout: 10000
 
 # Pull-to-refresh to sync notes from the server

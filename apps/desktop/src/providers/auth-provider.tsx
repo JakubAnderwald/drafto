@@ -1,9 +1,46 @@
-import { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
+import { Linking } from "react-native";
 import type { Session, User } from "@supabase/supabase-js";
+import {
+  requestAccountDeletion,
+  withTimeout,
+  type AccountDeletionResult,
+  type AppleRevocationGrant,
+} from "@drafto/shared";
 
 import { database } from "@/db";
+import { syncDatabase, resetSyncState } from "@/db/sync";
+import { clearAccountDeletedNotice, reportAccountDeleted } from "@/lib/account-deleted-notice";
 import { getCachedApproval, setCachedApproval, clearCachedApproval } from "@/lib/approval-cache";
+import { createRecoveryLinkHandler } from "@/lib/auth-recovery";
+import { apiUrl } from "@/lib/config";
+import { deleteAllLocalAttachments, processPendingUploads } from "@/lib/data";
 import { supabase } from "@/lib/supabase";
+
+/** Max time to wait for the pre-sign-out flush before proceeding to reset. */
+const FINAL_SYNC_TIMEOUT_MS = 10_000;
+
+/**
+ * Best-effort flush of unsynced local changes while the session is still valid.
+ * Attachment uploads and metadata sync are independent — an upload failure must
+ * not stop the metadata push.
+ */
+async function flushPendingChanges(): Promise<void> {
+  try {
+    await processPendingUploads();
+  } catch (error) {
+    console.warn("Attachment upload before sign-out failed:", error);
+  }
+  await syncDatabase(database);
+}
+
+export interface SignOutOptions {
+  /**
+   * Skip the best-effort flush before the local wipe. For a caller that has just synced and
+   * counted what is left itself, where a second attempt would only repeat a known result.
+   */
+  skipFinalSync?: boolean;
+}
 
 interface AuthContextValue {
   user: User | null;
@@ -11,7 +48,33 @@ interface AuthContextValue {
   isApproved: boolean;
   isLoading: boolean;
   isCheckingApproval: boolean;
-  signOut: () => Promise<void>;
+  /**
+   * True from the moment a password-recovery deep link is recognised until the
+   * new password is saved (or the user backs out). A recovery link produces a
+   * real session, so without this flag the route guard would drop the user into
+   * the app — or the approval screen — and the reset screen would be
+   * unreachable.
+   */
+  isRecovering: boolean;
+  /** Why a recovery link could not be used (expired, already consumed, malformed). */
+  recoveryError: string | null;
+  /** Leaves recovery mode; called once the password has actually been changed. */
+  endRecovery: () => void;
+  signOut: (options?: SignOutOptions) => Promise<void>;
+  /**
+   * Permanently deletes the signed-in user's account on the server. Only an `ok`
+   * result signs out and wipes local data; any other result leaves the session
+   * and the local database untouched so the user can retry.
+   *
+   * `appleRevocation` is the code an Apple-linked user got from Apple's browser step;
+   * the server revokes it once the account is gone. `confirmedUserId` is the user who
+   * started that step: if the session switched meanwhile (a password-recovery link, a
+   * sign-in), nothing is deleted and the result is `unauthorized`.
+   */
+  deleteAccount: (
+    appleRevocation?: AppleRevocationGrant,
+    confirmedUserId?: string,
+  ) => Promise<AccountDeletionResult>;
   refreshApprovalStatus: () => Promise<boolean>;
 }
 
@@ -22,8 +85,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isApproved, setIsApproved] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isCheckingApproval, setIsCheckingApproval] = useState(false);
+  const [isRecovering, setIsRecovering] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  // The user the last approval check found approved. Their hourly token refresh need not
+  // re-check: approval is what lets them work, and RLS still enforces it on the server. An
+  // unapproved user is re-checked on refresh, which picks up an approval (or retries a check
+  // that failed offline) without them pressing "Check approval status".
+  const approvedUserIdRef = useRef<string | null>(null);
+  // Bumped by every approval check and by every session end. Only the latest check may decide
+  // approval: a slow check for an account that was signed out or replaced meanwhile (e.g. a
+  // second sign-in from the still-visible login screen) must not route the new session.
+  const approvalCheckRef = useRef(0);
+
+  /** Drops any approval check in flight; for a session that just ended. */
+  const abandonApprovalCheck = useCallback(() => {
+    approvalCheckRef.current += 1;
+    approvedUserIdRef.current = null;
+    setIsCheckingApproval(false);
+  }, []);
+
+  const startRecovery = useCallback(() => {
+    setIsRecovering(true);
+    setRecoveryError(null);
+  }, []);
+
+  const failRecovery = useCallback((message: string) => {
+    setIsRecovering(true);
+    setRecoveryError(message);
+  }, []);
+
+  const endRecovery = useCallback(() => {
+    setIsRecovering(false);
+    setRecoveryError(null);
+  }, []);
 
   const checkApproval = useCallback(async (userId: string): Promise<boolean> => {
+    const check = ++approvalCheckRef.current;
+    const isLatest = () => check === approvalCheckRef.current;
+    const settle = (approved: boolean) => {
+      if (!isLatest()) return;
+      approvedUserIdRef.current = approved ? userId : null;
+      setIsApproved(approved);
+    };
+
     setIsCheckingApproval(true);
     try {
       const { data: profile, error } = await supabase
@@ -41,12 +145,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } catch {
           // Storage unavailable — default to not approved
         }
-        setIsApproved(approved);
+        settle(approved);
         return approved;
       }
 
       const approved = profile?.is_approved === true;
-      setIsApproved(approved);
+      settle(approved);
       try {
         await setCachedApproval(userId, approved);
       } catch {
@@ -54,7 +158,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       return approved;
     } finally {
-      setIsCheckingApproval(false);
+      if (isLatest()) setIsCheckingApproval(false);
     }
   }, []);
 
@@ -65,22 +169,156 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return false;
   }, [session?.user, checkApproval]);
 
-  const signOut = useCallback(async () => {
-    const userId = session?.user?.id;
-    await supabase.auth.signOut();
-    setSession(null);
-    setIsApproved(false);
-    if (userId) {
-      await clearCachedApproval(userId);
-    }
-    // Wipe the offline cache so a different account/environment starts clean and stale
-    // notes can't carry across logins. Best-effort: a reset failure must not block sign-out.
-    try {
-      await database.write(() => database.unsafeResetDatabase());
-    } catch (error) {
-      console.error("Failed to reset local database on sign-out:", error);
-    }
-  }, [session?.user?.id]);
+  /**
+   * Clears the in-memory session and wipes everything this account left on the
+   * device. Runs after the Supabase session has been ended, on both sign-out and
+   * account deletion, so both give the same cross-account guarantees. Each step
+   * is best-effort so one failure can't skip the others.
+   */
+  const resetLocalSession = useCallback(
+    async (userId: string | undefined) => {
+      abandonApprovalCheck();
+      setSession(null);
+      setIsApproved(false);
+      setIsRecovering(false);
+      setRecoveryError(null);
+      if (userId) {
+        // Best-effort: a cache-clear failure must not skip the sync invalidation,
+        // database reset, and attachment wipe below — those are the actual
+        // cross-account guarantees — nor reject out of the caller.
+        try {
+          await clearCachedApproval(userId);
+        } catch (error) {
+          console.error("Failed to clear cached approval on sign-out:", error);
+        }
+      }
+
+      // Invalidate any in-flight sync (e.g. a pre-sign-out flush that timed out but
+      // is still running) so the next signed-in user starts a fresh sync instead
+      // of coalescing onto this session's — which could otherwise write this
+      // user's pulled records into the freshly-reset database below.
+      resetSyncState();
+
+      // Wipe the offline cache so a different account/environment starts clean and
+      // stale notes can't carry across logins. Best-effort: a reset failure must
+      // not block sign-out.
+      try {
+        await database.write(() => database.unsafeResetDatabase());
+      } catch (error) {
+        console.error("Failed to reset local database on sign-out:", error);
+      }
+
+      // Delete locally cached attachment files so they can't leak to the next
+      // account. Best-effort: file-deletion failures must not block sign-out.
+      try {
+        await deleteAllLocalAttachments();
+      } catch (error) {
+        console.error("Failed to delete local attachments on sign-out:", error);
+      }
+    },
+    [abandonApprovalCheck],
+  );
+
+  const signOut = useCallback(
+    async (options?: SignOutOptions) => {
+      const userId = session?.user?.id;
+
+      // Best-effort: flush unsynced local changes while the session is still valid.
+      // A failed, offline, or slow sync must never block sign-out, so it is bounded
+      // by a timeout and its errors are swallowed.
+      if (!options?.skipFinalSync) {
+        const settled = await withTimeout(
+          flushPendingChanges().then(
+            () => true,
+            (error: unknown) => {
+              console.warn("Final sync before sign-out failed:", error);
+              return true;
+            },
+          ),
+          FINAL_SYNC_TIMEOUT_MS,
+          false,
+        );
+        if (!settled) console.warn("Final sync before sign-out timed out");
+      }
+
+      await supabase.auth.signOut();
+      await resetLocalSession(userId);
+    },
+    [session?.user?.id, resetLocalSession],
+  );
+
+  const deleteAccount = useCallback(
+    async (
+      appleRevocation?: AppleRevocationGrant,
+      confirmedUserId?: string,
+    ): Promise<AccountDeletionResult> => {
+      // Ask the client rather than React state: getSession() refreshes an expiring
+      // access token, so the server receives one it will still accept. Apple's browser
+      // step can stay open a while, so this read comes after it.
+      const {
+        data: { session: currentSession },
+      } = await supabase.auth.getSession();
+      const accessToken = currentSession?.access_token;
+      if (!accessToken) return { status: "unauthorized" };
+      // Only the account that confirmed with Apple may be deleted.
+      if (confirmedUserId !== undefined && currentSession.user.id !== confirmedUserId) {
+        return { status: "unauthorized" };
+      }
+
+      const result = await requestAccountDeletion({
+        baseUrl: apiUrl,
+        accessToken,
+        ...(appleRevocation ? { appleRevocation } : {}),
+      });
+      if (result.status !== "ok") return result;
+
+      // Set before the session clears, so the login screen the navigator shows next already
+      // carries the confirmation.
+      reportAccountDeleted();
+
+      // No pre-sign-out flush: the account and every server row are already gone,
+      // so a sync would only fail and stall for up to FINAL_SYNC_TIMEOUT_MS.
+      // Unsynced local edits are discarded on purpose. Local scope: deleteUser has
+      // already ended the server sessions, so only this device's stored session
+      // needs clearing; a global sign-out would ask the server to revoke every
+      // session of a user that no longer exists. Best-effort — the account is gone
+      // either way, so a failure here must not skip the local wipe below.
+      try {
+        await supabase.auth.signOut({ scope: "local" });
+      } catch (error) {
+        console.error("Local sign-out after account deletion failed:", error);
+      }
+      await resetLocalSession(currentSession.user.id);
+      return result;
+    },
+    [resetLocalSession],
+  );
+
+  // Password-recovery deep links. The flag has to flip the moment the link is
+  // recognised — before the session lands — or the guard would route the user
+  // into the app during the round-trip and the reset screen would never render.
+  // The initial URL and later `url` events share one handler so their Supabase
+  // session changes are serialized rather than racing each other.
+  useEffect(() => {
+    const recoveryLinks = createRecoveryLinkHandler({
+      onRecoveryDetected: startRecovery,
+      onRecoveryError: failRecovery,
+    });
+
+    const subscription = Linking.addEventListener("url", ({ url }) => recoveryLinks.handle(url));
+    Linking.getInitialURL()
+      .then((url) => {
+        if (url) recoveryLinks.handle(url);
+      })
+      .catch((error) => {
+        console.error("Failed to read the initial deep link:", error);
+      });
+
+    return () => {
+      recoveryLinks.cancel();
+      subscription.remove();
+    };
+  }, [startRecovery, failRecovery]);
 
   useEffect(() => {
     let mounted = true;
@@ -105,21 +343,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, newSession) => {
+    } = supabase.auth.onAuthStateChange((event, newSession) => {
       if (!mounted) return;
-      setSession(newSession);
-      if (newSession?.user) {
-        checkApproval(newSession.user.id);
-      } else {
-        setIsApproved(false);
+
+      // The deep-link handler above is what holds the reset screen: it flips the
+      // flag the moment a recovery link arrives, before the exchange. The
+      // supabase-js in the shipped fossil build (auth-js 2.101.1) emits SIGNED_IN
+      // even for a recovery code, so this branch never fires there. Newer
+      // supabase-js (2.116, as on mobile) emits PASSWORD_RECOVERY for a recovery
+      // code; handled so an upgrade keeps the reset screen in place.
+      if (event === "PASSWORD_RECOVERY") {
+        startRecovery();
       }
+
+      // A new sign-in makes an earlier "account deleted" confirmation stale.
+      if (event === "SIGNED_IN") {
+        clearAccountDeletedNotice();
+      }
+
+      setSession(newSession);
+      if (!newSession?.user) {
+        abandonApprovalCheck();
+        setIsApproved(false);
+        return;
+      }
+      // The hourly token refresh only swaps tokens, so an approved user is not re-checked
+      // under whatever screen is open. An unapproved one still is (see approvedUserIdRef).
+      if (event === "TOKEN_REFRESHED" && newSession.user.id === approvedUserIdRef.current) {
+        return;
+      }
+      checkApproval(newSession.user.id);
     });
 
     return () => {
       mounted = false;
       subscription.unsubscribe();
     };
-  }, [checkApproval]);
+  }, [checkApproval, startRecovery, abandonApprovalCheck]);
 
   return (
     <AuthContext.Provider
@@ -129,7 +389,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isApproved,
         isLoading,
         isCheckingApproval,
+        isRecovering,
+        recoveryError,
+        endRecovery,
         signOut,
+        deleteAccount,
         refreshApprovalStatus,
       }}
     >

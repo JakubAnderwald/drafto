@@ -102,3 +102,70 @@ describe("factory-plan-prompt replan section (#451)", () => {
     );
   });
 });
+
+// #718: the planner wrote a real answer to the operator's question, but the
+// replan contract allowed no comment, so the answer stayed in the log and the
+// only trace on the issue was a silently edited plan. The plan body stays
+// standalone; the conversation goes in one reply per trigger comment, which
+// the planner writes to a file and bash posts with its marker.
+describe("factory-plan-prompt replan replies (#718)", () => {
+  const section = replanSection(prompt);
+  const flatSection = section.replace(/\s+/g, " ");
+  const flatPrompt = prompt.replace(/\s+/g, " ");
+
+  it("documents one reply marker per trigger, and the reply directory, in the bundle", () => {
+    assert.match(
+      prompt,
+      /"replyMarkers": \[ \{ "commentId": "111", "marker": "drafto-factory-plan-reply-111" \}, \.\.\. \]/,
+    );
+    assert.match(prompt, /"replyDir": "<factory>\/logs\/factory\/replies\/issue-<n>"/);
+  });
+
+  it("requires one reply file per trigger, posted by bash with the marker", () => {
+    assert.match(flatSection, /\*\*Reply to each trigger comment\.\*\*/);
+    assert.match(
+      flatSection,
+      /Write \*\*one reply per entry in `bundle\.replan\.replyMarkers`\*\*/,
+    );
+    assert.match(flatSection, /to `<bundle\.replan\.replyDir>\/<commentId>\.md`\. Don't post it/);
+    assert.match(flatSection, /bash posts each file as its own comment and adds the marker/);
+    assert.match(flatSection, /Add no marker or HTML comment/);
+    assert.match(flatSection, /Every entry gets a reply, whatever the action/);
+    assert.match(
+      flatSection,
+      /A trigger comment with no entry \(a bare thank-you\) needs no reply/,
+    );
+    // Bash holds a reply back until the plan acks its comment.
+    assert.match(
+      flatSection,
+      /Bash posts a reply only once the plan acks its comment, or when the card goes to Blocked/,
+    );
+  });
+
+  it("answers the questions and says what changed, or why not", () => {
+    assert.match(flatSection, /Answer every question in the comment directly/);
+    assert.match(flatSection, /Say what changed in the plan and why/);
+    assert.match(flatSection, /If you didn't follow a suggestion, say why/);
+  });
+
+  it("writes no reply for a comment an earlier attempt already answered", () => {
+    assert.match(
+      flatSection,
+      /If a comment from the factory \(`OWNER`\) already carries an entry's marker/,
+    );
+    assert.match(flatSection, /write no file for it/);
+  });
+
+  it("still never posts anything itself on a replan: the PATCH is the only mutation", () => {
+    assert.match(
+      flatSection,
+      /This PATCH is the only GitHub write a replan run makes: your replies \(step 5\) are files that bash posts/,
+    );
+    assert.match(flatSection, /Never post the plan as a new comment/);
+    assert.match(flatPrompt, /\*\*Do NOT use this on replan runs\*\*/);
+    assert.match(flatPrompt, /`<bundle\.replan\.replyDir>\/<commentId>\.md` per reply/);
+    // Still reply on a noop, so a thank-you or a question with no plan change
+    // isn't met with silence.
+    assert.match(flatSection, /and still reply \(step 5\)/);
+  });
+});
