@@ -307,6 +307,42 @@ describe("support-forward gate, through the comment detectors", () => {
     assert.match(r.log, new RegExp(`comment ${bad.id} .*\\(sender-not-allowlisted\\)`));
   });
 
+  it("writes the unreadable-state warning once per daily log, not on every detector call", () => {
+    const good = forward("jakub@anderwald.info");
+    const warn = (issue) =>
+      `WARNING: support-forward gate: support state /nonexistent/drafto/support-state.json is unreadable; checking #${issue}'s forwards on their marker alone`;
+    // Two In Test ticks for #7, then a Plan Review tick for #17.
+    const body = [actionable(), since(), actionable(), since(), unacked("17")].join("\n");
+    const r = run(body, {
+      comments: [good],
+      stateFile: "/nonexistent/drafto/support-state.json",
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const count = (needle) => r.log.split("\n").filter((l) => l.includes(needle)).length;
+    assert.equal(count(warn(7)), 1, r.log);
+    assert.equal(count(warn(17)), 1, r.log);
+  });
+
+  it("writes the get-reporter-email failure warning once per daily log too", () => {
+    const good = forward("jakub@anderwald.info");
+    const bad = forward("stranger@example.com");
+    const warn = "WARNING: support-forward gate: get-reporter-email failed for #7";
+    const dir = mkdtempSync(join(tmpdir(), "factory-forward-gate-corrupt-"));
+    try {
+      const corrupt = join(dir, "support-state.json");
+      writeFileSync(corrupt, "{not json");
+      const body = [actionable(), since(), since()].join("\n");
+      const r = run(body, { comments: [good, bad], stateFile: corrupt });
+      assert.equal(r.status, 0, r.stderr);
+      // Falls back to the marker alone: the allowlisted forward is still kept.
+      assert.deepEqual(r.stdout.split("\n").slice(-1), [JSON.stringify([good.id])]);
+      const count = r.log.split("\n").filter((l) => l.includes(warn)).length;
+      assert.equal(count, 1, r.log);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("expands a leading ~/ in DRAFTO_SUPPORT_STATE_FILE, as launchd won't", () => {
     const f = forward("jakub@anderwald.info");
     const r = run(since(), {

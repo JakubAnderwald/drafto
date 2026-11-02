@@ -1130,10 +1130,10 @@ support_forward_filter() {
 # The gate both comment detectors apply. Prints <comments-json> minus the
 # forwards support_forward_filter drops, and logs one line per dropped comment:
 # its id and the reason, never its body or the sender. The failure notice posts
-# the log's tail to a public issue. Each line is written once per daily log
-# file, not once per call (see the loop below). Given an <issue>, and only when
-# a comment looks like a forward, it first reads the reporter email the support
-# state recorded for that issue. A forward on an issue a non-allowlisted customer
+# the log's tail to a public issue. Each line, and each warning below, is
+# written once per daily log file, not once per call. Given an <issue>, and
+# only when a comment looks like a forward, it first reads the reporter email
+# the support state recorded for that issue. A forward on an issue a non-allowlisted customer
 # filed is then never actionable, whatever its marker says. With no <issue>, or
 # a state file it can't read (logged), only the marker is checked, and that
 # still denies a forward by default. Operator comments cost nothing extra: the
@@ -1141,15 +1141,20 @@ support_forward_filter() {
 # captured value, so this logs with logerr, never log. Prints nothing and
 # returns 1 if the filter itself fails, like the detectors' own jq.
 gate_support_forwards() {
-  local comments_json="$1" issue="${2:-}" reporter="" state_file="${SUPPORT_STATE_FILE:-}" result
+  local comments_json="$1" issue="${2:-}" reporter="" state_file="${SUPPORT_STATE_FILE:-}" result warn=""
   if [[ -n "$issue" ]] && grep -qiE 'drafto-support-forward|customer replied via support@' <<<"$comments_json"; then
     if [[ -z "$state_file" || ! -r "$state_file" ]]; then
-      logerr "WARNING: support-forward gate: support state ${state_file:-<unset>} is unreadable; checking #$issue's forwards on their marker alone"
+      warn="WARNING: support-forward gate: support state ${state_file:-<unset>} is unreadable; checking #$issue's forwards on their marker alone"
     elif ! reporter=$(node "$SCRIPT_DIR/lib/state-cli.mjs" get-reporter-email "$issue" \
         --state-file "$state_file" 2>>"$LOG_FILE"); then
-      logerr "WARNING: support-forward gate: get-reporter-email failed for #$issue; checking its forwards on their marker alone"
+      warn="WARNING: support-forward gate: get-reporter-email failed for #$issue; checking its forwards on their marker alone"
       reporter=""
     fi
+  fi
+  # Once per daily log file, like the dropped-comment lines below: a forward
+  # that stays in the comments trips the same warning on every tick.
+  if [[ -n "$warn" ]]; then
+    grep -qF -- "$warn" "${LOG_FILE:-}" 2>/dev/null || logerr "$warn"
   fi
   if ! result=$(support_forward_filter "$comments_json" "${SUPPORT_ALLOWLIST:-}" "$reporter") \
       || [[ -z "$result" ]]; then
