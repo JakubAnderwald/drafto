@@ -69,6 +69,11 @@ If the fossil is ever lost, this is the working set to reconstruct:
 | `@react-native-async-storage/async-storage`   | `3.0.2`         |
 | `react-native-screens`                        | `4.24.0`        |
 | `react-native-keychain`                       | `9.2.3`         |
+| `@10play/tentap-editor`                       | `1.0.1`         |
+
+`apps/desktop/package.json` declares `@10play/tentap-editor` `^1.1.0` since #785. The fossil keeps 1.0.1,
+whose `RichText` and prebuilt editor bundle desktop has shipped with. 1.1.0 rebuilt `RichText`, so
+check it with a TestFlight build when the fossil is retired (#558).
 
 Mobile and web use React `19.2.x` and newer native modules — that is correct and unaffected. Only the
 macOS desktop app is pinned to this older, `react-native-macos`-compatible set.
