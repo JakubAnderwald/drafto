@@ -41,6 +41,12 @@ The Fastfile's `build_and_submit` checks two things before CocoaPods runs:
 - A native module's codegen spec must parse with rnm's `@react-native/codegen` (0.83). That is why
   `react-native-screens` is pinned to `~4.24.0`: 4.26's Android-only spec fails `pod install` with
   `setToolbarMenuElementOptions must be of type React.ElementRef<>`.
+- A native module's macOS sources must compile against rnm 0.83's headers. That is why
+  `react-native-svg` is pinned to `15.16.1`: 15.15.x's `RNSVGUIKit.macos.mm` uses `RCTAssert`
+  without importing it, and the archive fails (15.16.0 added the import). Mobile keeps its own
+  15.15.5, on the 15.15 line Expo SDK 55 bundles, nested under `apps/mobile/node_modules`.
+- Commit the `macos/Podfile.lock` a clean `pod install` writes, in the same commit as the change
+  that caused it. Its `PODFILE CHECKSUM` is the Podfile's SHA-1, so a Podfile edit needs it too.
 - A native bug in React Native goes in a `pnpm patch` under `patches/`, registered in the root
   `package.json`'s `pnpm.patchedDependencies` under a range key that covers the exact pinned version
   (`react-native-macos@~0.83.0`). Never patch it at runtime from `macos/Drafto-macOS/`.

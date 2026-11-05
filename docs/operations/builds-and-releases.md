@@ -126,6 +126,14 @@ The lane also keeps `apps/desktop/macos/.xcode.env.local` valid. Xcode's script 
 
 `pod install` runs `react-native-macos`'s codegen (`@react-native/codegen` 0.83) over every native module's specs, for every platform, and one spec it can't parse aborts the whole install. `react-native-screens` 4.26's Android-only `StackHeaderConfigAndroidNativeComponent` is such a spec, so desktop pins screens to `~4.24.0`, the version the old fossil shipped. Before raising a desktop native module, check that `pod install` still gets through codegen. Dependabot already ignores screens minors.
 
+### macOS archive fails in `RNSVGUIKit.macos.mm`: `use of undeclared identifier 'RCTAssert'`
+
+`react-native-svg` 15.15.x's macOS-only `apple/RNSVGUIKit.macos.mm` calls `RCTAssert` without importing `<React/RCTAssert.h>`. `react-native-macos` 0.83's headers don't pull it in indirectly, so `build_mac_app` fails to archive. 15.16.0 added the import, and desktop pins `react-native-svg` to `15.16.1`. Don't align it with mobile's `15.15.5`: mobile stays on the 15.15 line Expo SDK 55 bundles (Dependabot ignores svg minors), pnpm nests its copy under `apps/mobile/node_modules`, and iOS doesn't compile the macOS file. CI's Desktop Checks never archive the app, so only a local `pnpm release:beta` catches this class of break.
+
+### `Podfile.lock` must match a clean `pod install`
+
+Commit the `apps/desktop/macos/Podfile.lock` that `pod install` writes after a `pnpm install`, in the same commit as the change that caused it. Its `PODFILE CHECKSUM` is the SHA-1 of `apps/desktop/macos/Podfile`, so any Podfile edit needs a fresh lock too. `scripts/__tests__/desktop-native-build-config.test.mjs` fails when the checksum doesn't match the Podfile. It doesn't compare pod versions, because a Dependabot bump of a desktop native module changes `package.json` but not the lock (see the `Podfile.lock` note under the macOS TestFlight release below).
+
 ### Android build hangs with `OutOfMemoryError: Metaspace`
 
 `expo prebuild --clean` regenerates `android/gradle.properties` with Expo's template `org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m`, and 512 MiB of Metaspace is too little for `bundleRelease`. The symptom is Gradle's _"The Daemon will expire after the build after running out of JVM Metaspace"_, then a failed task (e.g. `:app:compileReleaseArtProfile FAILED`) followed by repeated `Exception in thread "RMI TCP Connection(idle)" java.lang.OutOfMemoryError: Metaspace`. The build does not exit; it goes silent until something kills it. `release:beta:all` runs Android first, so iOS never starts either.

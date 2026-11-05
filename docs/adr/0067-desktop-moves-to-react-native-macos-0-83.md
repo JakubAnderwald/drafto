@@ -32,6 +32,7 @@ rnm 0.83.0 has shipped. It peers `react` `^19.2.0` and `react-native` `0.83.10` 
 - React stays the single hoisted 19.2.8 set by the root `pnpm.overrides`.
 - `react-native-url-polyfill` is removed. Nothing imported it. `src/lib/url-polyfill.ts` stays.
 - `react-native-screens` is pinned to `~4.24.0`, the version the fossil shipped. 4.26.0's Android-only `StackHeaderConfigAndroidNativeComponent` spec fails RN 0.83.10's codegen during `pod install` (`setToolbarMenuElementOptions must be of type React.ElementRef<>`). Dependabot already ignores screens minors.
+- `react-native-svg` is pinned to `15.16.1` on desktop. 15.15.5's macOS-only `apple/RNSVGUIKit.macos.mm` calls `RCTAssert` without importing `<React/RCTAssert.h>`, which rnm 0.83's headers no longer pull in, so the archive fails (`use of undeclared identifier 'RCTAssert'`). 15.16.0 added the import, and desktop pins the current 15.16.1. Mobile keeps its own exact `15.15.5`, on the 15.15 line Expo SDK 55 bundles (`15.15.3`, raised by a Dependabot patch). pnpm nests it under `apps/mobile/node_modules`, while 15.16.1 is hoisted. iOS doesn't compile that file.
 
 **2. Point the build at rnm, not a per-app `react-native`.** The Podfile calls `react_native_post_install(installer, '../../../node_modules/react-native-macos')`. `REACT_NATIVE_PATH` in the Pods project and `Drafto.xcodeproj` becomes `${PODS_ROOT}/../../../../node_modules/react-native-macos`. rnm ships `with-environment.sh` and the Hermes scripts itself.
 

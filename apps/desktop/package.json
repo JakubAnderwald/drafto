@@ -36,7 +36,7 @@
     "react-native-macos": "0.83.0",
     "react-native-safe-area-context": "^5.8.0",
     "react-native-screens": "~4.24.0",
-    "react-native-svg": "^15.15.5",
+    "react-native-svg": "15.16.1",
     "react-native-webview": "^13.16.2"
   },
   "devDependencies": {

@@ -84,7 +84,10 @@ echo "1. Checking installed app..."
 APP_PATH="/Applications/Drafto.app"
 if [[ ! -d "$APP_PATH" ]]; then
   # TestFlight apps may be in a different location
-  APP_PATH=$(mdfind "kMDItemCFBundleIdentifier == 'eu.drafto.mobile'" 2>/dev/null | head -1)
+  # `|| true`: head -1 can SIGPIPE mdfind, which pipefail turns into a failed
+  # assignment, and set -e would then exit with no message. An empty APP_PATH
+  # is reported just below.
+  APP_PATH=$(mdfind "kMDItemCFBundleIdentifier == 'eu.drafto.mobile'" 2>/dev/null | head -1 || true)
 fi
 if [[ -d "$APP_PATH" ]]; then
   check "App found at $APP_PATH" "pass"
@@ -97,13 +100,18 @@ fi
 echo "2. Checking JS bundle for Supabase URL..."
 BUNDLE="$APP_PATH/Contents/Resources/main.jsbundle"
 if [[ -f "$BUNDLE" ]]; then
-  if strings "$BUNDLE" | grep -q "tbmjbxxseonkciqovnpl"; then
+  # grep the file directly (-a: the Hermes bundle is binary). Never pipe
+  # `strings "$BUNDLE"` into `grep -q`: grep -q exits on the first match,
+  # strings then dies of SIGPIPE (141), and under `set -o pipefail` the whole
+  # pipeline counts as failed. On a real 5 MB bundle that turned a found prod
+  # ref into "not found" and a found dev ref into "absent" (#558).
+  if grep -aq "tbmjbxxseonkciqovnpl" "$BUNDLE"; then
     check "Production Supabase URL found in bundle" "pass"
   else
     check "Production Supabase URL found in bundle (found dev URL instead)" "fail"
   fi
 
-  if strings "$BUNDLE" | grep -q "huhzactreblzcogqkbsd"; then
+  if grep -aq "huhzactreblzcogqkbsd" "$BUNDLE"; then
     check "Dev Supabase URL absent from bundle" "fail"
   else
     check "Dev Supabase URL absent from bundle" "pass"

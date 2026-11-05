@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +26,7 @@ const read = (path) => readFileSync(resolve(root, path), "utf8");
 const readJson = (path) => JSON.parse(read(path));
 
 const PODFILE = "apps/desktop/macos/Podfile";
+const PODFILE_LOCK = "apps/desktop/macos/Podfile.lock";
 const PBXPROJ = "apps/desktop/macos/Drafto.xcodeproj/project.pbxproj";
 const KEYBOARD_GUARD_MM = "apps/desktop/macos/Drafto-macOS/DraftoKeyboardEventGuard.mm";
 const FASTFILE = "apps/desktop/fastlane/Fastfile";
@@ -133,12 +135,48 @@ describe("desktop's React Native dependency set", () => {
     assert.match(depOf(desktop, "react-native-macos") ?? "", EXACT);
   });
 
+  it("react-native-svg is an exact pin on 15.16 or later", () => {
+    // 15.15.x's macOS-only apple/RNSVGUIKit.macos.mm calls RCTAssert without importing
+    // <React/RCTAssert.h>; rnm 0.83's headers no longer pull it in, so the archive fails.
+    // 15.16.0 added the import. CI never archives the app, so this pin is the only guard.
+    // Mobile keeps its own 15.15.5, nested under apps/mobile/node_modules.
+    const svg = depOf(desktop, "react-native-svg");
+    assert.match(svg ?? "", EXACT, "desktop's react-native-svg must be an exact pin");
+    const [major, minor] = svg.split(".").map(Number);
+    assert.ok(
+      major > 15 || (major === 15 && minor >= 16),
+      `react-native-svg ${svg} predates 15.16.0, the first whose RNSVGUIKit.macos.mm imports RCTAssert.h`,
+    );
+  });
+
   it("@react-native-community/cli and cli-platform-ios are exact pins of one version", () => {
     const cli = depOf(desktop, "@react-native-community/cli");
     const ios = depOf(desktop, "@react-native-community/cli-platform-ios");
     assert.match(cli ?? "", EXACT, "@react-native-community/cli must be an exact pin");
     assert.match(ios ?? "", EXACT, "@react-native-community/cli-platform-ios must be an exact pin");
     assert.equal(cli, ios, "the CLI core and cli-platform-ios move together, never one alone");
+  });
+});
+
+describe("the committed Podfile.lock matches the Podfile", () => {
+  const lock = read(PODFILE_LOCK);
+
+  // Only the Podfile checksum: Dependabot edits package.json, never the Podfile, so a
+  // pod-version check here would turn every desktop native-module bump red in the weekly
+  // group until someone re-ran pod install (see builds-and-releases.md on Podfile.lock).
+  it("PODFILE CHECKSUM is the SHA-1 of the Podfile", () => {
+    // CocoaPods writes the SHA-1 of the Podfile's bytes. A Podfile edit committed without
+    // the lock it produces leaves every clean `pod install` rewriting the lock.
+    const recorded = lock.match(/^PODFILE CHECKSUM: ([0-9a-f]{40})$/m)?.[1];
+    assert.ok(recorded, `${PODFILE_LOCK} has no PODFILE CHECKSUM`);
+    const actual = createHash("sha1")
+      .update(readFileSync(resolve(root, PODFILE)))
+      .digest("hex");
+    assert.equal(
+      recorded,
+      actual,
+      `${PODFILE_LOCK} was not regenerated after the last Podfile edit`,
+    );
   });
 });
 
