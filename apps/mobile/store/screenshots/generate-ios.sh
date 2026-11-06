@@ -5,9 +5,8 @@
 # account so they show exactly what reviewers will see.
 #
 # 1. Builds a Release simulator .app pointed at PROD (.env.production), unless
-#    --skip-build. Needs a node_modules with the mobile React version, i.e. a
-#    worktree or the mobile build root — not the primary checkout's desktop
-#    fossil install.
+#    --skip-build. Needs an installed checkout (`pnpm install` at the repo
+#    root): a worktree, the primary checkout or the mobile build root.
 # 2. For each simulator: light appearance, 9:41 status bar, install, run
 #    app-store.yaml with Maestro, check every PNG's size.
 #

@@ -1,0 +1,17 @@
+diff --git a/React/Views/RCTView.m b/React/Views/RCTView.m
+index 7b009661bb820a49b25d94c0521650b1efdce10d..43caf543cd880066be71186f0841c321e0b52521 100644
+--- a/React/Views/RCTView.m
++++ b/React/Views/RCTView.m
+@@ -1757,6 +1757,12 @@ - (BOOL)handleKeyboardEvent:(NSEvent *)event {
+     event.type == NSEventTypeKeyUp,
+     @"Keyboard event must be keyDown, keyUp. Got type: %ld", (long)event.type);
+ 
++  // Drafto patch (#558, ADR-0067): a Fabric-hosted, tagless Paper view (react-native-webview's
++  // RNCWebViewImpl) crashed here when a nil reactTag reached RCTComponentEvent's @[] literal.
++  if (self.reactTag == nil) {
++    return NO;
++  }
++
+   RCTViewKeyboardEvent *keyboardEvent = [RCTViewKeyboardEvent keyEventFromEvent:event reactTag:self.reactTag];
+ 
+   // Emit the event to JS only once. By default, events, will bubble up the respnder chain

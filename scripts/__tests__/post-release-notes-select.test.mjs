@@ -472,10 +472,9 @@ describe("desktop post-release-notes build selection", () => {
 // of rebuilding. Two properties make it worth asserting from a test rather than
 // trusting a reviewer to notice:
 //
-//   1. It must NOT build. That is what makes the macOS lane safe to run outside
-//      the React 19.1 fossil checkout (docs/operations/desktop-build-fossil.md) —
-//      the moment someone adds a `build_mac_app` / CocoaPods / Metro step, the
-//      lane silently becomes fossil-only again and ships a crashing binary.
+//   1. It must NOT build. It submits the exact binary TestFlight testers
+//      validated — the moment someone adds a `build_mac_app` / CocoaPods / Metro
+//      step, the lane silently ships a freshly compiled binary nobody tested.
 //   2. Uploading a binary to the App Store is not a release. The build still has
 //      to pass App Review and be released by hand, so the "Now live in <track>"
 //      customer notice must never fire on an App Store destination.
@@ -549,7 +548,7 @@ describe("App Store promote lanes", () => {
       ]) {
         assert.ok(
           !lane.includes(builder),
-          `promote must not build: found ${builder}. A build step re-imposes the desktop fossil rule.`,
+          `promote must not build: found ${builder}. A build step ships a freshly compiled binary nobody tested.`,
         );
       }
     });

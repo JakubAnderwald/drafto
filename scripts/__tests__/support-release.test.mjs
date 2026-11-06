@@ -20,6 +20,7 @@ import {
   waitForMainCi,
   settle,
   gaveUpComment,
+  expiredComment,
   loadReleaseState,
   _setExecFileForTests,
   _setSleepForTests,
@@ -643,6 +644,35 @@ describe("settle (injected gh)", () => {
     const out = await settle({ pending, lanes: { desktop: "0" }, statePath: stateFile });
     assert.equal(out.settled[0].result, "unknown");
     assert.throws(() => readFileSync(stateFile), /ENOENT/, "no state written");
+  });
+});
+
+describe("manual ship-by-hand commands", () => {
+  const DESKTOP_MANUAL =
+    "cd /Users/jakub/code/drafto && git pull && pnpm install && cd apps/desktop && pnpm release:beta";
+
+  it("tells the operator to install before a by-hand macOS build", () => {
+    const body = gaveUpComment({
+      issueNumber: 661,
+      platform: "macos",
+      failures: 3,
+      laneResult: "1",
+      logPath: "/x",
+      closedAt: "2026-10-05T10:00:00Z",
+    });
+    assert.ok(body.includes(`\`${DESKTOP_MANUAL}\``), body);
+    assert.doesNotMatch(body, /fossil|NEVER pnpm install/i);
+  });
+
+  it("uses the same macOS command when the release window closes", () => {
+    const body = expiredComment({
+      platforms: ["ios", "macos"],
+      closedAt: "2026-10-05T10:00:00Z",
+      windowDays: 14,
+    });
+    assert.ok(body.includes(`\`${DESKTOP_MANUAL}\``), body);
+    assert.ok(body.includes("`cd apps/mobile && pnpm release:beta:ios`"), body);
+    assert.doesNotMatch(body, /fossil|NEVER pnpm install/i);
   });
 });
 

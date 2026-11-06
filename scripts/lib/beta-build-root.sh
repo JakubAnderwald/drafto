@@ -10,7 +10,7 @@
 # Caller contract. Sourcing defines functions and the three root paths only;
 # nothing runs. Before CALLING any function the caller must define:
 #   REPO_ROOT            the checkout new build roots are created from
-#                        (`git worktree add`), the mobile root's node_modules is
+#                        (`git worktree add`), both roots' node_modules are
 #                        seeded from, and the gitignored env files are copied from
 #   SCRIPT_DIR           "$REPO_ROOT/scripts" (for lib/run-with-timeout.mjs)
 #   LOG_FILE             the caller's log file
@@ -22,7 +22,8 @@
 #
 # Defined here, each overridable from the environment (the factory's launchd
 # plist sets the two build-root knobs explicitly):
-#   DESKTOP_FOSSIL_ROOT  DRAFTO_DESKTOP_FOSSIL_ROOT  (default /Users/jakub/code/drafto)
+#   PRIMARY_CHECKOUT_ROOT  DRAFTO_PRIMARY_CHECKOUT_ROOT, else the older
+#                        DRAFTO_DESKTOP_FOSSIL_ROOT  (default /Users/jakub/code/drafto)
 #   BETA_MOBILE_ROOT     DRAFTO_BETA_MOBILE_ROOT
 #   BETA_DESKTOP_ROOT    DRAFTO_DESKTOP_BUILD_ROOT
 #   BETA_BUILDS_VOLUME_DIR  DRAFTO_BUILDS_VOLUME_DIR
@@ -41,19 +42,20 @@
 #
 # macOS /bin/bash 3.2 compatible: no ${VAR,,}, no declare -A, no mapfile.
 
-# Where the fossil lives (React 19.1.x, never reinstalled) and the dedicated,
-# persistent build roots the beta lanes run in. The mobile root is seeded from
-# $REPO_ROOT; the desktop root is a clonefile replica of the fossil and must
-# NEVER be `pnpm install`ed — dispatch-release.mjs asserts React 19.1.x before it
-# will spawn the lane. See docs/operations/desktop-build-fossil.md and ADR-0027.
+# Where the operator's primary checkout lives, and the dedicated, persistent
+# build roots the beta lanes run in. Both roots are seeded from $REPO_ROOT and
+# then `pnpm install`ed, like any checkout: the desktop app no longer needs the
+# React 19.1 fossil (ADR-0067). dispatch-release.mjs still checks the desktop
+# root's installed react-native-macos and React before it spawns the lane.
 #
 # The build roots are DEDICATED and disposable: ensure_beta_build_root hard-resets
-# them to the commit being built. They must never be the fossil itself or the
-# caller's checkout — ensure_beta_build_root refuses to touch either, because a
-# `reset --hard` there would destroy the operator's working tree and any
-# uncommitted edits in it.
+# them to the commit being built. They must never be the operator's primary
+# checkout or the caller's checkout — ensure_beta_build_root refuses to touch
+# either, because a `reset --hard` there would destroy a working tree and any
+# uncommitted edits in it. DRAFTO_DESKTOP_FOSSIL_ROOT is the knob's old name,
+# still read so an older launchd plist keeps the rail pointed at the right path.
 BETA_BUILDS_VOLUME_DIR="${DRAFTO_BUILDS_VOLUME_DIR:-/Volumes/DraftoFactory}"
-DESKTOP_FOSSIL_ROOT="${DRAFTO_DESKTOP_FOSSIL_ROOT:-/Users/jakub/code/drafto}"
+PRIMARY_CHECKOUT_ROOT="${DRAFTO_PRIMARY_CHECKOUT_ROOT:-${DRAFTO_DESKTOP_FOSSIL_ROOT:-/Users/jakub/code/drafto}}"
 # Wall-clock cap for the one network call made while a build-root lock is held.
 BETA_FETCH_TIMEOUT_SEC="${DRAFTO_BETA_FETCH_TIMEOUT_SEC:-300}"
 # Wall-clock cap for `bundle check`. It normally takes a second; a cap of its own
@@ -114,17 +116,15 @@ copy_worktree_env() {
 # checkout on a different volume from the pnpm store cross-device-copies ~2000
 # packages: it ran for 3.5+ hours on #451, when the store was on the external
 # drive and the factory's checkouts were not (ADR-0060 moved them all onto the
-# store's volume). The desktop root still seeds across volumes, from the fossil
-# on the internal disk. Cloning the main checkout's
+# store's volume). Cloning the main checkout's
 # already-materialized trees turns the subsequent install into a fast offline
 # reconcile that adds ~0 bytes. Best-effort: on any failure the partial dir is
 # removed and `pnpm install` repopulates it normally. Only the pnpm workspace
 # roots (repo root + apps/* + packages/*) are seeded — never the factory's own
 # worktrees/ checkouts.
 seed_worktree_node_modules() {
-  # $2 (optional) overrides the source checkout. The desktop beta root seeds
-  # from the FOSSIL checkout, not $REPO_ROOT — see the fossil note on
-  # BETA_DESKTOP_ROOT. Defaults to $REPO_ROOT so existing callers are unchanged.
+  # $2 (optional) overrides the source checkout. Defaults to $REPO_ROOT, which
+  # every caller uses today, mobile and desktop alike.
   local wt="$1" src rel
   local src_root="${2:-$REPO_ROOT}"
   for src in "$src_root"/node_modules "$src_root"/apps/*/node_modules "$src_root"/packages/*/node_modules; do
@@ -149,16 +149,21 @@ seed_worktree_node_modules() {
 # (fetch only drifted tarballs, keep the lockfile) → unfrozen online as a last
 # resort for genuine lockfile drift. Returns 0 on the first attempt that
 # succeeds, non-zero if all fail / time out.
+# --config.confirm-modules-purge=false: a node_modules installed against another
+# store (the old desktop fossil replica records /Volumes/Zewnętrzny/pnpm-store)
+# makes pnpm ask to remove it, and with no TTY it aborts with
+# ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY. These are disposable checkouts, so
+# purge and reinstall instead (#558).
 run_pnpm_install() {
   local wt="$1"
   ( cd "$wt" && node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$INSTALL_TIMEOUT_SEC" \
-      pnpm install --frozen-lockfile --offline --prefer-offline >>"$LOG_FILE" 2>&1 ) && return 0
+      pnpm install --frozen-lockfile --offline --prefer-offline --config.confirm-modules-purge=false >>"$LOG_FILE" 2>&1 ) && return 0
   log "WARNING: offline reconcile failed/timed out; retrying frozen online"
   ( cd "$wt" && node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$INSTALL_TIMEOUT_SEC" \
-      pnpm install --frozen-lockfile >>"$LOG_FILE" 2>&1 ) && return 0
+      pnpm install --frozen-lockfile --config.confirm-modules-purge=false >>"$LOG_FILE" 2>&1 ) && return 0
   log "WARNING: frozen install failed/timed out; retrying unfrozen online"
   ( cd "$wt" && node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$INSTALL_TIMEOUT_SEC" \
-      pnpm install >>"$LOG_FILE" 2>&1 )
+      pnpm install --config.confirm-modules-purge=false >>"$LOG_FILE" 2>&1 )
 }
 
 # Make <sha> available to `git -C <dir>` without letting a stalled remote hold
@@ -187,27 +192,29 @@ _beta_root_fetch() {
 # and git refuses a second checkout of the same branch. Pinning the SHA is also
 # more precise — it is exactly what CI went green on.
 #
-# The desktop root's node_modules is a clonefile replica of the FOSSIL checkout
-# and must NEVER be installed into; dispatch-release.mjs asserts React 19.1.x
-# before it will spawn the lane. $1 platform (mobile|desktop), $2 sha.
+# Both roots are seeded from $REPO_ROOT and installed the same way. The desktop
+# root used to be a never-installed clonefile replica of the React 19.1 fossil;
+# ADR-0067 retired that, so its first build here reinstalls it.
+# $1 platform (mobile|desktop), $2 sha.
 ensure_beta_build_root() {
-  local platform="$1" sha="$2" root src_root
+  local platform="$1" sha="$2" root
   case "$platform" in
-    mobile)  root="$BETA_MOBILE_ROOT";  src_root="$REPO_ROOT" ;;
-    desktop) root="$BETA_DESKTOP_ROOT"; src_root="$DESKTOP_FOSSIL_ROOT" ;;
+    mobile)  root="$BETA_MOBILE_ROOT" ;;
+    desktop) root="$BETA_DESKTOP_ROOT" ;;
     *) logerr "ERROR: ensure_beta_build_root: unknown platform '$platform'"; return 1 ;;
   esac
   [[ -n "$sha" ]] || { logerr "ERROR: ensure_beta_build_root: empty sha"; return 1; }
 
   # Hard safety rail. This function hard-resets and cleans $root, so a
-  # misconfigured knob pointing it at the operator's checkout (or the fossil we
-  # clone FROM) would destroy real work. Refuse, loudly, rather than proceed.
-  local canon_root canon_repo canon_fossil
+  # misconfigured knob pointing it at the caller's checkout (the one we seed
+  # FROM) or the operator's primary checkout would destroy real work. Refuse,
+  # loudly, rather than proceed.
+  local canon_root canon_repo canon_primary
   canon_root=$(cd "$root" 2>/dev/null && pwd -P || echo "$root")
   canon_repo=$(cd "$REPO_ROOT" 2>/dev/null && pwd -P || echo "$REPO_ROOT")
-  canon_fossil=$(cd "$DESKTOP_FOSSIL_ROOT" 2>/dev/null && pwd -P || echo "$DESKTOP_FOSSIL_ROOT")
-  if [[ "$canon_root" == "$canon_repo" || "$canon_root" == "$canon_fossil" ]]; then
-    logerr "ERROR: refusing to use $root as a $platform beta build root — it is the caller's own checkout ($REPO_ROOT) or the fossil, and this function resets it. Set DRAFTO_BETA_MOBILE_ROOT / DRAFTO_DESKTOP_BUILD_ROOT to a dedicated path."
+  canon_primary=$(cd "$PRIMARY_CHECKOUT_ROOT" 2>/dev/null && pwd -P || echo "$PRIMARY_CHECKOUT_ROOT")
+  if [[ "$canon_root" == "$canon_repo" || "$canon_root" == "$canon_primary" ]]; then
+    logerr "ERROR: refusing to use $root as a $platform beta build root — it is the caller's own checkout ($REPO_ROOT) or the operator's primary checkout ($PRIMARY_CHECKOUT_ROOT), and this function resets it. Set DRAFTO_BETA_MOBILE_ROOT / DRAFTO_DESKTOP_BUILD_ROOT to a dedicated path."
     return 1
   fi
 
@@ -239,7 +246,7 @@ ensure_beta_build_root() {
     logerr "Creating $platform beta build root at $root (detached at ${sha:0:12})"
     # The sha can come from the GitHub API (nightly: origin/main's head) and so
     # need not exist locally yet. A fetch only moves remote-tracking refs, never
-    # the checkout's working tree — safe in the fossil checkout too.
+    # the checkout's working tree — safe in the operator's checkout too.
     _beta_root_fetch "$REPO_ROOT" "$sha"
     if ! git -C "$REPO_ROOT" worktree add --detach "$root" "$sha" >>"$LOG_FILE" 2>&1; then
       logerr "ERROR: could not create beta build root $root"; rm -f "$lock"; return 1
@@ -272,26 +279,26 @@ ensure_beta_build_root() {
   # failed clonefile seed, a missing .env) would otherwise be captured as part of
   # the path and passed to --repo-root as a mangled multi-word argument. Pin
   # their output to stderr; it still reaches $LOG_FILE via log()'s tee.
-  seed_worktree_node_modules "$root" "$src_root" >&2
+  seed_worktree_node_modules "$root" >&2
   copy_worktree_env "$root" >&2
-  if [[ "$platform" == "mobile" ]]; then
-    run_pnpm_install "$root" >&2 || logerr "WARNING: install failed/timed out in $root; the lane may fail"
-    # Ruby gems are global (no per-checkout bundle path), so this is a cheap
-    # reconcile. Restore Gemfile.lock if it drifted — the root must stay clean
-    # for the `git clean` guard above to mean anything.
-    # Bounded like the pnpm install above: intest_dispatch_betas runs
-    # SYNCHRONOUSLY inside the --watch tick, so an unbounded `bundle install`
-    # hanging on RubyGems would block the whole tick and stall every other card.
-    # `bundle check` is capped too: on 2026-10-09 one launched by the nightly
-    # job blocked for 5 hours in ruby's startup getcwd() on the build volume,
-    # holding the mobile root's lock the whole time. A capped check just falls
-    # through to the capped install.
-    ( cd "$root/apps/mobile" && ( node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$BETA_BUNDLE_CHECK_TIMEOUT_SEC" \
-          bundle check >/dev/null 2>&1 \
-        || node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$INSTALL_TIMEOUT_SEC" bundle install ) ) >>"$LOG_FILE" 2>&1 \
-      || logerr "WARNING: bundle install failed/timed out in $root/apps/mobile; the lane may fail"
-    git -C "$root" checkout -- apps/mobile/Gemfile.lock 2>/dev/null || true
-  fi
+  # Both platforms install the same way: the lane's Fastfile builds from this
+  # root's node_modules, and the desktop Fastfile refuses a stale graph.
+  run_pnpm_install "$root" >&2 || logerr "WARNING: install failed/timed out in $root; the lane may fail"
+  # Ruby gems are global (no per-checkout bundle path), so this is a cheap
+  # reconcile. Restore Gemfile.lock if it drifted — the root must stay clean
+  # for the `git clean` guard above to mean anything.
+  # Bounded like the pnpm install above: intest_dispatch_betas runs
+  # SYNCHRONOUSLY inside the --watch tick, so an unbounded `bundle install`
+  # hanging on RubyGems would block the whole tick and stall every other card.
+  # `bundle check` is capped too: on 2026-10-09 one launched by the nightly
+  # job blocked for 5 hours in ruby's startup getcwd() on the build volume,
+  # holding the mobile root's lock the whole time. A capped check just falls
+  # through to the capped install.
+  ( cd "$root/apps/$platform" && ( node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$BETA_BUNDLE_CHECK_TIMEOUT_SEC" \
+        bundle check >/dev/null 2>&1 \
+      || node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "$INSTALL_TIMEOUT_SEC" bundle install ) ) >>"$LOG_FILE" 2>&1 \
+    || logerr "WARNING: bundle install failed/timed out in $root/apps/$platform; the lane may fail"
+  git -C "$root" checkout -- "apps/$platform/Gemfile.lock" 2>/dev/null || true
 
   # Every file that ends up inside a .app must be readable by non-root users, or
   # App Store Connect rejects the whole upload (ITMS-90255, see laneShellScript).

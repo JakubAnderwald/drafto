@@ -20,8 +20,8 @@ const starterKit = StarterKit.configure({
  * A headless stand-in for the editor mobile and desktop run. Both load tentap's
  * prebuilt WebView bundle
  * (`@10play/tentap-editor/lib/commonjs/simpleWebEditor/build/editorHtml.js`);
- * neither passes `customSource`. Mobile ships tentap 1.1.0 and the desktop
- * fossil 1.0.1. 1.1.0 rebuilt `RichText` around the same default bundle, whose
+ * neither passes `customSource`. Both ship tentap 1.1.0; desktop builds before
+ * #558 shipped 1.0.1. 1.1.0 rebuilt `RichText` around the same default bundle, whose
  * extensions match 1.0.1's plus `tentapDynamicHeight`, which isn't a node, so
  * the facts below hold for both (checked 2026-11-02). Re-read them from the
  * bundle on the next tentap bump. Facts read from that bundle, which this

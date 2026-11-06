@@ -132,6 +132,117 @@ def package_json_version
   JSON.parse(File.read(File.join(PROJECT_ROOT, "package.json")))["version"]
 end
 
+# The monorepo root: apps/desktop/../.. The repo is `node-linker=hoisted`, so
+# react-native-macos and React live in its node_modules, which is where the
+# Podfile builds React from ('../../../node_modules/react-native-macos').
+def desktop_repo_root
+  root = File.expand_path("../..", PROJECT_ROOT)
+  return root if File.exist?(File.join(root, "pnpm-workspace.yaml"))
+
+  UI.user_error!("Cannot find the monorepo root: no pnpm-workspace.yaml at #{root}")
+end
+
+# The installed version of a hoisted package, or nil when it is missing or unreadable.
+def installed_package_version(root, name)
+  require "json"
+  manifest = File.join(root, "node_modules", name, "package.json")
+  return nil unless File.exist?(manifest)
+
+  JSON.parse(File.read(manifest))["version"]
+rescue JSON::ParserError
+  nil
+end
+
+# react-native-macos 0.83 peers React ^19.2.0, the single copy the root
+# pnpm.overrides pins for every app (ADR-0067).
+DESKTOP_REACT_LINE = /\A19\.2\.\d+/
+
+# Dependency preflight. A stale checkout (the retired React 19.1 fossil, or a
+# `git pull` with no `pnpm install` after it) compiles green and then crashes in
+# Hermes/JSI at launch (#558). Refuse to build unless the installed
+# react-native-macos is exactly the version apps/desktop/package.json declares
+# and React is 19.2.x. scripts/lib/dispatch-release.mjs checks the same thing
+# before the factory spawns a desktop lane.
+def assert_desktop_dependencies!
+  require "json"
+  root = desktop_repo_root
+  declared = JSON.parse(File.read(File.join(PROJECT_ROOT, "package.json"))).then { |pkg| pkg.dig("dependencies", "react-native-macos") || pkg.dig("devDependencies", "react-native-macos") }
+  rnm = installed_package_version(root, "react-native-macos")
+  react = installed_package_version(root, "react")
+
+  problems = []
+  if declared.nil?
+    problems << "apps/desktop/package.json declares no react-native-macos"
+  elsif rnm != declared
+    problems << "node_modules/react-native-macos is #{rnm || 'missing'}, but apps/desktop/package.json declares #{declared}"
+  end
+  problems << "node_modules/react is #{react || 'missing'}, but react-native-macos needs 19.2.x" unless react.to_s.match?(DESKTOP_REACT_LINE)
+
+  unless problems.empty?
+    UI.user_error!(
+      "Desktop dependencies don't match the checkout — run `pnpm install` at the repo root (#{root}), then retry.\n  - " \
+      "#{problems.join("\n  - ")}"
+    )
+  end
+  UI.success("Dependency preflight: react-native-macos #{rnm}, react #{react}")
+end
+
+# Xcode's script phases source macos/.xcode.env, which sources the gitignored
+# .xcode.env.local for NODE_BINARY. `pod install` writes that file only when it
+# is missing, so a path left behind by a removed or upgraded node survives and
+# breaks the Pods' Hermes and codegen script phases (the app's own bundle phase
+# exports NODE_BINARY=node and relies on PATH). Rewrite it from the node on PATH
+# when it is missing or its NODE_BINARY is not an executable file. The value is
+# read the way the phases read it, by sourcing the file in bash, and written
+# shell-quoted so a path with a space survives.
+def ensure_xcode_env_local_node_binary
+  require "open3"
+  require "shellwords"
+  env_local = File.join(PROJECT_ROOT, "macos", ".xcode.env.local")
+  current = ""
+  if File.exist?(env_local)
+    out, status = Open3.capture2("bash", "-c", '. "$1" >/dev/null 2>&1; printf %s "$NODE_BINARY"', "_", env_local)
+    current = status.success? ? out.strip : ""
+  end
+  if !current.empty? && File.file?(current) && File.executable?(current)
+    UI.message("macos/.xcode.env.local NODE_BINARY=#{current}")
+    return
+  end
+
+  node = `node -p process.execPath 2>/dev/null`.strip
+  unless $?.success? && !node.empty? && File.executable?(node)
+    UI.user_error!("Cannot derive NODE_BINARY: `node -p process.execPath` failed. Put node on PATH, then retry.")
+  end
+  File.write(env_local, "export NODE_BINARY=#{Shellwords.escape(node)}\n")
+  UI.success("Wrote macos/.xcode.env.local: NODE_BINARY=#{node} (was #{current.empty? ? 'unset' : current})")
+end
+
+# RCTThirdPartyComponentsProvider maps component names to NSClassFromString()
+# results. Some of those classes (e.g. RNSFullWindowOverlay) are iOS-only and nil on
+# macOS, and upstream's codegen template builds the map as an NSDictionary literal,
+# which crashes the app at launch on a nil value. The Podfile's post_install rewrites
+# the template (and the generator's entry lines) to an NSMutableDictionary that skips
+# nil classes. The compiled provider comes from react-native-macos's template: the
+# ReactCodegen pod's "Generate Specs" phase regenerates it right before compiling,
+# after post_install has run. The copy `pod install` writes earlier, before
+# post_install, is overwritten then, so rewriting that copy protects nothing. A text
+# patch that stops matching does nothing, without any error, so check after
+# CocoaPods that the template is nil-safe.
+def assert_nil_safe_component_provider!
+  template = File.join(desktop_repo_root, "node_modules", "react-native-macos", "scripts", "codegen", "templates", "RCTThirdPartyComponentsProviderMM.template")
+  unless File.exist?(template)
+    UI.user_error!("#{template} is missing: react-native-macos's codegen moved it. Point the Podfile's nil-safe patch and this check at its new place.")
+  end
+  if File.read(template).include?("thirdPartyComponents = @{")
+    UI.user_error!(
+      "#{template} still builds the component map from an NSDictionary literal, so a component " \
+      "class missing on macOS crashes the app at launch. The Podfile's post_install patch no " \
+      "longer matches it: update the patch for this react-native-macos version."
+    )
+  end
+  UI.success("RCTThirdPartyComponentsProvider template is nil-safe")
+end
+
 # Tracked files build_and_submit rewrites in place on every run (paths relative to
 # PROJECT_ROOT). increment_build_number writes the TestFlight build number into
 # both, increment_version_number and update_code_signing_settings write
@@ -501,12 +612,12 @@ platform :mac do
     restoring_lane_rewritten_files { build_and_submit(destination: "testflight") }
   end
 
-  desc "Rebuild from source and upload to the Mac App Store (hotfix path). Pass submit:true to also submit for review. MUST run from the fossil checkout (see docs/operations/desktop-build-fossil.md); prefer `promote`, which submits the build testers already validated and does not build."
+  desc "Rebuild from source and upload to the Mac App Store (hotfix path). Pass submit:true to also submit for review. Run `pnpm install` at the repo root first (the dependency preflight refuses a stale checkout); prefer `promote`, which submits the build testers already validated and does not build."
   lane :production do |options|
     restoring_lane_rewritten_files { build_and_submit(destination: "appstore", submit: options[:submit]) }
   end
 
-  desc "Submit an ALREADY-UPLOADED macOS TestFlight build for Mac App Store review. Does NOT build — no CocoaPods, no Metro, no build_mac_app — so the desktop React fossil rule does not apply and this lane is safe from any checkout with the Ruby gems installed. Options: build_number: (default: newest macOS build of the package.json version), submit: (true), phased_release: (true), automatic_release: (false)."
+  desc "Submit an ALREADY-UPLOADED macOS TestFlight build for Mac App Store review. Does NOT build — no CocoaPods, no Metro, no build_mac_app — so it needs no dependency preflight and is safe from any checkout with the Ruby gems installed. Options: build_number: (default: newest macOS build of the package.json version), submit: (true), phased_release: (true), automatic_release: (false)."
   lane :promote do |options|
     app_version = package_json_version
     submit = option_bool(options, :submit, true)
@@ -641,33 +752,19 @@ platform :mac do
       ENV[key] = value if key && value
     end
 
+    # Both run before CocoaPods: the preflight refuses a stale dependency graph,
+    # and the Pods' Hermes / codegen phases need a NODE_BINARY that exists.
+    assert_desktop_dependencies!
+    ensure_xcode_env_local_node_binary
+
     # Install CocoaPods dependencies
     cocoapods(
       podfile: File.join(PROJECT_ROOT, "macos", "Podfile"),
       try_repo_update_on_error: true
     )
 
-    # Fix NSClassFromString nil crash in RCTThirdPartyComponentsProvider on macOS.
-    # The auto-generated file uses an NSDictionary literal with NSClassFromString() values.
-    # Some classes (e.g. RNSFullWindowOverlay) are iOS-only and return nil on macOS,
-    # which crashes NSDictionary's initWithObjects:forKeys:count:.
-    # Replace the @{} literal with NSMutableDictionary that skips nil values.
-    provider_mm = File.join(PROJECT_ROOT, "macos", "build", "generated", "ios", "RCTThirdPartyComponentsProvider.mm")
-    if File.exist?(provider_mm)
-      content = File.read(provider_mm)
-      if content.include?("thirdPartyComponents = @{")
-        pairs = content.scan(/@"(\w+)":\s*NSClassFromString\(@"(\w+)"\)/)
-        if pairs.any?
-          safe_lines = pairs.map { |key, cls|
-            "    { Class c = NSClassFromString(@\"#{cls}\"); if (c) dict[@\"#{key}\"] = c; }"
-          }
-          safe_body = "NSMutableDictionary *dict = [NSMutableDictionary new];\n#{safe_lines.join("\n")}\n    thirdPartyComponents = [dict copy];"
-          patched = content.sub(/thirdPartyComponents = @\{[^}]+\};/m, safe_body)
-          File.write(provider_mm, patched) if patched != content
-          UI.success("Patched RCTThirdPartyComponentsProvider.mm for nil-safe macOS class lookup")
-        end
-      end
-    end
+    # Runs after CocoaPods, whose post_install patches the codegen template it checks.
+    assert_nil_safe_component_provider!
 
     # Configure App Store Connect API key
     api_key = app_store_connect_api_key(
@@ -831,9 +928,9 @@ platform :mac do
     # Tag this release (e.g. desktop@0.3.2+45) so generate-release-notes.sh scopes
     # the NEXT build's "What to Test" to the delta since this build, instead of
     # dumping the whole history. There were no desktop@ tags at all because
-    # desktop ships manually from the primary-checkout fossil (see
-    # docs/operations/desktop-build-fossil.md), so the desktop-*-release.yml CI
-    # tag job never runs — tag here instead. `-v:refname` orders the +build suffix
+    # desktop ships from a local checkout, not from the desktop-*-release.yml CI
+    # (see docs/operations/builds-and-releases.md), so its tag job never runs —
+    # tag here instead. `-v:refname` orders the +build suffix
     # numerically (verified). Non-fatal: a tag/push failure must not fail an
     # already-shipped release.
     #

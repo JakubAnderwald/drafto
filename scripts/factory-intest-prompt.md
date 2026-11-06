@@ -84,7 +84,7 @@ You will receive a single JSON bundle (last fenced ` ```json ` block). Shape:
     "dispatched": [ { "id": "mobile", "command": "pnpm release:beta:all" } ],
     "skipped":    [ { "id": "desktop", "reason": "..." } ],
     // Keyed by platform — match on `id`, never on list order.
-    "manualCommands": [ { "id": "desktop", "command": "cd /Volumes/DraftoFactory/drafto-beta-desktop && ..." } ]
+    "manualCommands": [ { "id": "desktop", "command": "cd \"$(git rev-parse --show-toplevel)\" && ... && DRAFTO_INTEST_ISSUE=<n> pnpm release:beta" } ]
   },
   "config": { "phase": "C", ... },
   "repo": { "nameWithOwner": "JakubAnderwald/drafto", "headRef": "main" },
@@ -256,7 +256,9 @@ Compose it in Markdown from the bundle's facts. Structure:
     auto-built, give the reason, and include the command from the
     `betaDispatch.manualCommands` entry whose `id` matches that platform.
     Match on `id` — never assume list order, and never show a mobile command
-    under a macOS heading.
+    under a macOS heading. When both `mobile` and `desktop` are skipped, say
+    to run the two commands **one after the other, never at the same time**:
+    they build in the same worktree.
   - if a native platform is in `platforms` but appears in neither list, say it
     must be run locally from the branch. For **mobile**, give: a worktree +
     `pnpm install` + `bash scripts/worktree-bootstrap.sh`, then a debug build
@@ -267,15 +269,21 @@ Compose it in Markdown from the bundle's facts. Structure:
     app".
 
     For **macOS**, do **NOT** tell anyone to `git checkout` in
-    `/Users/jakub/code/drafto`. That is the operator's working tree and the
-    fossil every desktop build root is cloned from; moving it to a PR branch can
-    disrupt in-flight work and leave the fossil stranded. (The desktop
-    `manualCommands` entry for a _skipped_ lane is fine: it builds from the
-    fossil replica, not from this checkout.) Here, with no command to give, say
-    instead that macOS needs a pre-merge beta (ask the operator to turn on the
-    switches; `FACTORY_INTEST_BETA_DESKTOP` alone is not enough), and point at
+    `/Users/jakub/code/drafto`. That is the operator's working tree; moving it
+    to a PR branch can disrupt in-flight work. Never point anyone at a factory
+    build root either: the factory hard-resets those. (The desktop
+    `manualCommands` entry for a _skipped_ lane is fine: it builds in a fresh
+    worktree, not in this checkout.) Here, with no command to give, say that
+    macOS needs a TestFlight build: either a pre-merge beta (ask the operator
+    to turn on the switches; `FACTORY_INTEST_BETA_DESKTOP` alone is not
+    enough), pointing at
     [`docs/operations/factory-runbook.md`](docs/operations/factory-runbook.md)
-    → "Pre-merge beta dispatch (In Test)" rather than inventing a command.
+    → "Pre-merge beta dispatch (In Test)", or a build from a worktree of the
+    branch, the same way as mobile: a worktree + `pnpm install` +
+    `bash scripts/worktree-bootstrap.sh`, then
+    `cd apps/desktop && bundle install && DRAFTO_INTEST_ISSUE=<n> pnpm release:beta`,
+    with `<n>` the issue number (the variable keeps the lane from tagging the
+    unmerged commit as a release). Don't invent any other command.
 - `## Test scenario` — the numbered, per-platform steps, one `###` heading per
   platform. When `platforms.web` is true, the web steps go under a heading that
   is exactly `### Web`, and nothing else does. The factory's browser runner

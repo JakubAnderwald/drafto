@@ -104,6 +104,36 @@ altool sometimes uploads the `.pkg`, prints `UPLOAD SUCCEEDED with no errors`, a
 
 `mac beta` now treats that one error as spurious if App Store Connect lists the build it just uploaded, under the same build number and version. It polls for up to 10 minutes, logs `altool's error was spurious — continuing`, and finishes the lane. Any other upload error still fails the lane. So does this one if the build never shows up, or if Apple has already marked it `INVALID`.
 
+### macOS `with-environment.sh: No such file` (`REACT_NATIVE_PATH`)
+
+The Hermes and bundling script phases source `$REACT_NATIVE_PATH/scripts/xcode/with-environment.sh`. The Podfile used to call `react_native_post_install(installer)` with no path, so `REACT_NATIVE_PATH` defaulted to `${PODS_ROOT}/../../node_modules/react-native`, that is `apps/desktop/node_modules/react-native`. A clean install never creates that directory, so a build from a fresh checkout failed there (#558). The Podfile now passes the hoisted fork: `react_native_post_install(installer, '../../../node_modules/react-native-macos')`. `pod install` writes the result into the Pods project and `Drafto.xcodeproj` as `${PODS_ROOT}/../../../../node_modules/react-native-macos`. Don't hand-edit those values, and don't create the missing directory by hand.
+
+### macOS dependency preflight / `NODE_BINARY`
+
+Before CocoaPods, `build_and_submit` checks the checkout's dependencies. It refuses to build unless the installed `node_modules/react-native-macos` is exactly the version `apps/desktop/package.json` declares, and `node_modules/react` is 19.2.x. A stale checkout (the retired fossil, or a `git pull` with no install after it) compiles green and then crashes in Hermes at launch. The fix is `pnpm install` at the repo root. `scripts/lib/dispatch-release.mjs` (`assertDesktopDeps`) runs the same check before the factory spawns a desktop lane.
+
+The lane also keeps `apps/desktop/macos/.xcode.env.local` valid. Xcode's script phases read `NODE_BINARY` from it. `pod install` writes it only when it is missing, so a path to a removed or upgraded node would survive. The lane rewrites it from `node -p process.execPath` when it is missing or its `NODE_BINARY` is not executable. Don't copy it from another checkout.
+
+### `react-native-macos` patch key `~0.83.0`
+
+`patches/react-native-macos@0.83.0.patch` makes `-[RCTView handleKeyboardEvent:]` in `React/Views/RCTView.m` return `NO` when `self.reactTag` is nil. Without it, a key the editor doesn't handle (Escape, an unbound shortcut) crashes the app (desktop 0.4.4 build 70, [ADR-0063](../adr/0063-desktop-native-runtime-patches.md), [ADR-0067](../adr/0067-desktop-moves-to-react-native-macos-0-83.md)). The root `package.json` registers it under the range key `react-native-macos@~0.83.0`, and `apps/desktop/package.json` pins `react-native-macos` exactly. A patch bump (0.83.x) reapplies the patch, or `pnpm install` fails loudly if the hunk no longer applies. A minor bump (0.84) must re-create the patch with `pnpm patch` and widen the key by hand, or drop it if upstream now guards a nil `reactTag`. Otherwise `pnpm install` rejects the unused patch when it re-resolves, and `scripts/__tests__/desktop-native-build-config.test.mjs` fails in CI because the key no longer covers the pin. Dependabot opens rnm bumps in its `react-native` group, together with `react-native` and desktop's `@react-native/*` tooling, never in the weekly `minor-and-patch` group (`.github/dependabot.yml`). It ignores `react-native` and `@react-native/*` minors, so an rnm minor's PR carries rnm alone: raise `react-native` in both apps and desktop's tooling to its `react-native` peer by hand in that PR. Mobile's `react-native` minor is tied to the Expo SDK, so that PR waits for an Expo SDK that supports the new `react-native`. Every `react-native-macos` bump, including a Dependabot one, needs a TestFlight build that opens a note before merge: CI doesn't build macOS.
+
+### macOS has no `tentap` pod
+
+`@10play/tentap-editor` 1.1.0 ships a `tentap` pod for its `TenTapKeyboard` module, but the podspec is iOS-only. Autolinking skips a pod whose podspec doesn't support the target's platform, so the macOS app gets no `tentap` pod. `TurboModuleRegistry.get('TenTapKeyboard')` returns `null` there, and tentap falls back to its JS keyboard driver. That is expected. If a `tentap` pod shows up in `apps/desktop/macos/Podfile.lock`, or `pod install` rejects it, the platform filter in `react-native-macos`'s autolinking has changed.
+
+### macOS `pod install` fails in codegen: `setToolbarMenuElementOptions must be of type React.ElementRef<>`
+
+`pod install` runs `react-native-macos`'s codegen (`@react-native/codegen` 0.83) over every native module's specs, for every platform, and one spec it can't parse aborts the whole install. `react-native-screens` 4.26's Android-only `StackHeaderConfigAndroidNativeComponent` is such a spec, so desktop pins screens to `~4.24.0`, the version the old fossil shipped. Before raising a desktop native module, check that `pod install` still gets through codegen. Dependabot already ignores screens minors.
+
+### macOS archive fails in `RNSVGUIKit.macos.mm`: `use of undeclared identifier 'RCTAssert'`
+
+`react-native-svg` 15.15.x's macOS-only `apple/RNSVGUIKit.macos.mm` calls `RCTAssert` without importing `<React/RCTAssert.h>`. `react-native-macos` 0.83's headers don't pull it in indirectly, so `build_mac_app` fails to archive. 15.16.0 added the import, and desktop pins `react-native-svg` to `15.16.1`. Don't align it with mobile's `15.15.5`: mobile stays on the 15.15 line Expo SDK 55 bundles (Dependabot ignores svg minors), pnpm nests its copy under `apps/mobile/node_modules`, and iOS doesn't compile the macOS file. CI's Desktop Checks never archive the app, so only a local `pnpm release:beta` catches this class of break.
+
+### `Podfile.lock` must match a clean `pod install`
+
+Commit the `apps/desktop/macos/Podfile.lock` that `pod install` writes after a `pnpm install`, in the same commit as the change that caused it. Its `PODFILE CHECKSUM` is the SHA-1 of `apps/desktop/macos/Podfile`, so any Podfile edit needs a fresh lock too. `scripts/__tests__/desktop-native-build-config.test.mjs` fails when the checksum doesn't match the Podfile. It doesn't compare pod versions, because a Dependabot bump of a desktop native module changes `package.json` but not the lock (see the `Podfile.lock` note under the macOS TestFlight release below).
+
 ### Android build hangs with `OutOfMemoryError: Metaspace`
 
 `expo prebuild --clean` regenerates `android/gradle.properties` with Expo's template `org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m`, and 512 MiB of Metaspace is too little for `bundleRelease`. The symptom is Gradle's _"The Daemon will expire after the build after running out of JVM Metaspace"_, then a failed task (e.g. `:app:compileReleaseArtProfile FAILED`) followed by repeated `Exception in thread "RMI TCP Connection(idle)" java.lang.OutOfMemoryError: Metaspace`. The build does not exit; it goes silent until something kills it. `release:beta:all` runs Android first, so iOS never starts either.
@@ -433,11 +463,15 @@ This configures the certificate repository and creates distribution certificates
 cd apps/desktop && pnpm release:beta
 ```
 
-What it does: validate `apps/desktop/.env.production` points at the prod Supabase project (URL + anon key) → **inject `.env.production` into the build environment** (`process.env` overrides the `.env` file in react-native-dotenv, the same approach mobile uses) → CocoaPods install → `match` (fetch macOS signing creds) → sync version from `package.json` → `build_mac_app` (signed `.app`; `skip_package_pkg: true`) → **verify the compiled JS bundle references the prod Supabase project and not dev** → sign the `.pkg` via `productbuild` → `upload_to_testflight` → post release notes.
+Run it from any checkout, a worktree included, after a plain install, the same as mobile: `pnpm install` → `bash scripts/worktree-bootstrap.sh` → `cd apps/desktop && bundle install` → `pnpm release:beta`. The desktop fossil is retired ([ADR-0067](../adr/0067-desktop-moves-to-react-native-macos-0-83.md)). A checkout whose installed `react-native-macos` doesn't match the declared pin, or whose React isn't 19.2.x, is refused before CocoaPods runs.
+
+A normal beta builds merged `main`: the lane tags the commit `desktop@<version>+<build>`, pushes the tag, and the next release's notes start from it. A pre-merge test build of an unmerged branch runs as `DRAFTO_INTEST_ISSUE=<issue> pnpm release:beta`. The lane then skips the tag and posts the build number on the card. The factory's pre-merge dispatch and the In Test manual commands set the variable.
+
+What it does: validate `apps/desktop/.env.production` points at the prod Supabase project (URL + anon key) → **inject `.env.production` into the build environment** (`process.env` overrides the `.env` file in react-native-dotenv, the same approach mobile uses) → **dependency preflight** (installed `react-native-macos` equals the declared pin, React is 19.2.x) and `NODE_BINARY` check (see [the gotcha](#macos-dependency-preflight--node_binary)) → CocoaPods install → `match` (fetch macOS signing creds) → sync version from `package.json` → `build_mac_app` (signed `.app`; `skip_package_pkg: true`) → **verify the compiled JS bundle references the prod Supabase project and not dev** → sign the `.pkg` via `productbuild` → `upload_to_testflight` → post release notes.
 
 > The lane aborts before upload if `.env.production` is missing or doesn't point at prod, or if the compiled bundle still references the dev project. This is what prevents shipping a dev-pointed "production" build (the cause of 0.3.2 build 28 connecting to the dev Supabase project — the old `.env`-copy approach was silently overridden by the environment). `mac production` shares the same checks.
 
-> The lane writes the build number, version and signing settings into `macos/Drafto-macOS/Info.plist` and `macos/Drafto.xcodeproj/project.pbxproj` before building. `beta` and `production` restore both files afterwards, whether the build succeeded or failed, so the primary checkout stays clean and the next `git pull` is not blocked. A file that already had uncommitted edits when the lane started is left alone. `Podfile.lock` is never restored: if CocoaPods rewrites it, the pods really changed, so commit it. The committed lock must match the **fossil** `node_modules`, because that is what ships. Never regenerate it from a fresh install or a worktree: those resolve newer native modules than the fossil has. #618 did that with `react-native-keychain` 10.0.0, so every release then rewrote it back to 9.2.3. That package is now pinned to the fossil's exact version in `apps/desktop/package.json` for the same reason.
+> The lane writes the build number, version and signing settings into `macos/Drafto-macOS/Info.plist` and `macos/Drafto.xcodeproj/project.pbxproj` before building. `beta` and `production` restore both files afterwards, whether the build succeeded or failed, so the checkout stays clean and the next `git pull` is not blocked. A file that already had uncommitted edits when the lane started is left alone. `Podfile.lock` is never restored: if CocoaPods rewrites it, the pods really changed, so commit it. The committed lock must match what `pod install` produces after a clean `pnpm install` of the committed `pnpm-lock.yaml`, because that is what ships. If a release rewrites it without a dependency change, the build machine's `node_modules` is usually stale: run `pnpm install` and build again rather than committing the drift. #618 is the cautionary case: a lock regenerated from a different install moved `react-native-keychain` to 10.0.0, and every release then rewrote it back to 9.2.3. `react-native-keychain` stays pinned exactly in `apps/desktop/package.json`.
 
 ### Submit a tested TestFlight build for Mac App Store review (`promote`)
 
@@ -449,12 +483,12 @@ Same contract as [the iOS lane](#submit-a-tested-testflight-build-for-app-store-
 with App Store Connect's `osx` platform and the version read from
 `apps/desktop/package.json`.
 
-> **The desktop React fossil rule does not apply to this lane.** It runs no
-> CocoaPods, no Metro and no `build_mac_app` — nothing is compiled, so the React
-> version in `node_modules` is irrelevant. `pnpm release:promote` is safe from any
-> checkout that has the Ruby gems installed (`cd apps/desktop && bundle install`).
-> Every lane that _builds_ macOS (`release:beta`, `release:production`) still runs
-> from the fossil checkout only — see [desktop build fossil](./desktop-build-fossil.md).
+> **This lane compiles nothing.** It runs no CocoaPods, no Metro and no
+> `build_mac_app`, so it needs no `pnpm install` and skips the dependency
+> preflight. `pnpm release:promote` is safe from any checkout that has the Ruby
+> gems installed (`cd apps/desktop && bundle install`). The lanes that _build_
+> macOS (`release:beta`, `release:production`) need an up-to-date `pnpm install`
+> first.
 
 ```bash
 cd apps/desktop && bundle exec fastlane mac promote build_number:57
@@ -474,8 +508,8 @@ applies.
 cd apps/desktop && pnpm release:production
 ```
 
-⚠️ **Builds macOS — fossil checkout only** (`/Users/jakub/code/drafto`), never a
-worktree. Rebuilds from source and **uploads** a new binary; it does not submit for
+⚠️ **Builds macOS** — run `pnpm install` first, as for `release:beta`; the
+dependency preflight refuses a stale checkout. Rebuilds from source and **uploads** a new binary; it does not submit for
 review unless you pass `bundle exec fastlane mac production submit:true` — and, as
 on iOS, the export-compliance / content-rights answers only travel with a
 submission, so an upload-only run leaves them to be answered in App Store Connect,
@@ -487,6 +521,8 @@ _Automatically release this version_). Prefer `promote`.
 ```bash
 cd apps/desktop && npx react-native run-macos
 ```
+
+Works from any checkout after `pnpm install` and `bash scripts/worktree-bootstrap.sh`. If Xcode can't find `node`, see [the `NODE_BINARY` gotcha](#macos-dependency-preflight--node_binary): this command doesn't run the Fastfile, so delete `macos/.xcode.env.local` and run `pod install` in `apps/desktop/macos`, which writes it again.
 
 ### macOS build prerequisites
 
@@ -542,8 +578,8 @@ App Store Connect requires screenshots for each platform: iPhone 6.9" (1320×286
 **Prerequisites:**
 
 - `~/drafto-secrets/app-review-account.txt` with `email: …` and `password: …` lines: the same account that is entered under _App Review Information_ in App Store Connect. It must be approved on prod. The scripts never echo it (override the path with `APPREVIEW_ACCOUNT_FILE`).
-- **iOS:** Xcode with the `iPhone 17 Pro Max` and `iPad Pro 13-inch (M5)` simulators, and Maestro (`~/.maestro/bin`). The script builds a Release _simulator_ app against **prod** (`.env.production`, about 20 min). It refuses to capture if the embedded Expo config doesn't point at the prod Supabase project. Run it from a worktree or another checkout with the mobile `node_modules`, **not** the primary checkout's desktop fossil install.
-- **macOS:** a prod-pointed `Drafto.app` installed (default `/Applications/Drafto.app`, the TestFlight install; override with `DRAFTO_APP`), `cliclick`, and Accessibility + Screen Recording permission for the terminal. Nothing is built, so the fossil rule does not apply. ⚠️ It **signs the app out** of its current account, but only once its sync status reads "Synced", because desktop sign-out wipes local data. Override with `SCREENSHOT_CONFIRM_SIGN_OUT=1`. It leaves the app signed in as the review account with View → Appearance set to Light. The screen must be unlocked, and the display must fit a 1440×900-point window.
+- **iOS:** Xcode with the `iPhone 17 Pro Max` and `iPad Pro 13-inch (M5)` simulators, and Maestro (`~/.maestro/bin`). The script builds a Release _simulator_ app against **prod** (`.env.production`, about 20 min). It refuses to capture if the embedded Expo config doesn't point at the prod Supabase project. Run it from any checkout with an up-to-date `pnpm install`.
+- **macOS:** a prod-pointed `Drafto.app` installed (default `/Applications/Drafto.app`, the TestFlight install; override with `DRAFTO_APP`), `cliclick`, and Accessibility + Screen Recording permission for the terminal. Nothing is built, so no `pnpm install` is needed. ⚠️ It **signs the app out** of its current account, but only once its sync status reads "Synced", because desktop sign-out wipes local data. Override with `SCREENSHOT_CONFIRM_SIGN_OUT=1`. It leaves the app signed in as the review account with View → Appearance set to Light. The screen must be unlocked, and the display must fit a 1440×900-point window.
 
 **What gets captured** (all read-only on the review account): notebooks, a notebook's notes, the editor, search and settings on iPhone and iPad; on Mac, two notes open in the three-pane view plus search. Light mode, 9:41 status bar. Every PNG's pixel size is checked against the App Store Connect display types. Override the notebook, note or search query with `SCREENSHOT_NOTEBOOK`, `SCREENSHOT_NOTE`, `SCREENSHOT_NOTE_2` (macOS) and `SCREENSHOT_SEARCH`.
 
@@ -625,7 +661,9 @@ reaches the public stores needs explicit user approval. When a feature merges to
 - **Web**: Vercel auto-deploys on merge to `main` (no manual step)
 - **Android**: `cd apps/mobile && pnpm release:beta:android` → Play internal track
 - **iOS**: `cd apps/mobile && pnpm release:beta:ios` → TestFlight
-- **macOS**: `cd apps/desktop && pnpm release:beta` → TestFlight (fossil checkout only)
+- **macOS**: `cd apps/desktop && pnpm release:beta` → TestFlight (run `pnpm install` after the `git pull` first)
+
+> **One time, after the #558 merge:** the primary checkout's first `pnpm install` destroys the old desktop fossil. Take a clonefile snapshot (`cp -c -R`) of its `node_modules` trees first, and keep it until a post-merge TestFlight build opens a note. Its `node_modules` record an old pnpm store, so without a TTY run `pnpm install --config.confirm-modules-purge=false` ([`desktop-build-fossil.md`](./desktop-build-fossil.md#one-time-step-the-primary-checkout)). Rollback is: revert the PR, then restore the snapshot ([ADR-0067](../adr/0067-desktop-moves-to-react-native-macos-0-83.md)).
 
 The three store lanes can run concurrently in separate terminals; web deploys on its
 own. On the Mac mini, `scripts/lib/dispatch-release.mjs` dispatches exactly these
@@ -690,3 +728,4 @@ Do not use CI builds until these issues are resolved. All builds run locally via
 - [ADR 0015: Desktop App Technology Choice](../adr/0015-desktop-app-technology-choice.md)
 - [ADR 0016: Local Fastlane Builds](../adr/0016-local-fastlane-builds.md)
 - [ADR 0040: App Store Promote Lanes](../adr/0040-app-store-promote-lanes.md)
+- [ADR 0067: Desktop Moves to react-native-macos 0.83](../adr/0067-desktop-moves-to-react-native-macos-0-83.md)
