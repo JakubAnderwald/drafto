@@ -103,7 +103,7 @@ describe("the Claude session no longer ships anything", () => {
     assert.ok(resolveAt < nightly.indexOf("Working on it now (from the nightly agent)."));
   });
 
-  it("puts the session in a fixed worktree and keeps it out of the fossil checkout", () => {
+  it("puts the session in a fixed worktree and keeps it out of the primary checkout", () => {
     assert.match(
       nightly,
       /SUPPORT_WT=\$\(session_worktree_path "drafto-support-\$\{ISSUE_NUMBER\}"\)/,
@@ -258,7 +258,7 @@ function runLib(body, { env = {} } = {}) {
       HOME: process.env.HOME,
       DRAFTO_BETA_MOBILE_ROOT: join(dir, "beta-mobile"),
       DRAFTO_DESKTOP_BUILD_ROOT: join(dir, "beta-desktop"),
-      DRAFTO_DESKTOP_FOSSIL_ROOT: join(dir, "fossil"),
+      DRAFTO_PRIMARY_CHECKOUT_ROOT: join(dir, "primary"),
       ...env,
     },
   });
@@ -462,7 +462,7 @@ if out=$(ensure_beta_build_root mobile deadbeef); then echo "OK:$out"; else echo
       const remoteSha = git(origin, "rev-parse", "HEAD").stdout.trim();
       const root = join(dir, "beta-desktop");
       const logFile = join(dir, "log");
-      const ensure = (sha, { env = {}, timeout } = {}) => {
+      const ensure = (sha, { env = {}, timeout, pre = "" } = {}) => {
         const r = spawnSync(
           BASH,
           [
@@ -476,6 +476,7 @@ if out=$(ensure_beta_build_root mobile deadbeef); then echo "OK:$out"; else echo
               "INSTALL_TIMEOUT_SEC=5",
               `log() { :; }; logerr() { echo "$*" >> "$LOG_FILE"; }`,
               `source ${JSON.stringify(LIB)}`,
+              pre,
               `ensure_beta_build_root desktop ${sha}`,
             ].join("\n"),
           ],
@@ -487,7 +488,7 @@ if out=$(ensure_beta_build_root mobile deadbeef); then echo "OK:$out"; else echo
               HOME: process.env.HOME,
               DRAFTO_DESKTOP_BUILD_ROOT: root,
               DRAFTO_BETA_MOBILE_ROOT: join(dir, "beta-mobile"),
-              DRAFTO_DESKTOP_FOSSIL_ROOT: join(dir, "fossil"),
+              DRAFTO_PRIMARY_CHECKOUT_ROOT: join(dir, "primary"),
               ...env,
             },
           },
@@ -495,7 +496,7 @@ if out=$(ensure_beta_build_root mobile deadbeef); then echo "OK:$out"; else echo
         const log = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
         return { ...r, log };
       };
-      return fn({ git, repo, root, localSha, remoteSha, ensure });
+      return fn({ git, repo, root, localSha, remoteSha, ensure, dir });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -544,6 +545,90 @@ if out=$(ensure_beta_build_root mobile deadbeef); then echo "OK:$out"; else echo
       assert.match(r.log, /fetch failed or timed out/);
       assert.equal(existsSync(`${root}.lock`), false, "lock left behind");
     });
+  });
+
+  it("ensure_beta_build_root seeds the desktop root from $REPO_ROOT and installs it", () => {
+    // ADR-0067 retired the never-installed fossil replica: the desktop root is
+    // seeded from the caller's checkout and installed like the mobile one.
+    withRealGit(({ git, repo, root, ensure, dir }) => {
+      const id = ["-c", "user.email=t@t", "-c", "user.name=t"];
+      mkdirSync(join(repo, "apps", "desktop"), { recursive: true });
+      writeFileSync(join(repo, "apps", "desktop", "Gemfile.lock"), "LOCK\n");
+      git(repo, "add", "-A");
+      git(repo, ...id, "commit", "-q", "-m", "desktop");
+      const sha = git(repo, "rev-parse", "HEAD").stdout.trim();
+      mkdirSync(join(repo, "node_modules", "react"), { recursive: true });
+      writeFileSync(join(repo, "node_modules", "react", "marker"), "repo-root\n");
+      // Fake pnpm / bundle on PATH record where they ran. `bundle check` fails,
+      // so the capped install runs and dirties Gemfile.lock.
+      const bin = join(dir, "bin");
+      const calls = join(dir, "calls");
+      mkdirSync(bin);
+      writeFileSync(join(bin, "pnpm"), `#!/bin/sh\necho "pnpm $* @ $PWD" >> "${calls}"\n`, {
+        mode: 0o755,
+      });
+      writeFileSync(
+        join(bin, "bundle"),
+        `#!/bin/sh\necho "bundle $1 @ $PWD" >> "${calls}"\n` +
+          `[ "$1" = install ] && echo DRIFTED > Gemfile.lock && exit 0\nexit 1\n`,
+        { mode: 0o755 },
+      );
+      const r = ensure(sha, { env: { PATH: `${bin}:${process.env.PATH}` } });
+      assert.equal(r.status, 0, r.stderr + r.log);
+      assert.equal(r.stdout.trim(), root);
+      // The seed is an APFS clonefile (`cp -c`), which only macOS has: GNU cp
+      // on the Linux CI runner rejects -c, the seed falls back to the install,
+      // and the factory only ever runs on the Mac mini.
+      if (process.platform === "darwin") {
+        assert.equal(
+          readFileSync(join(root, "node_modules", "react", "marker"), "utf8"),
+          "repo-root\n",
+        );
+      }
+      const ran = readFileSync(calls, "utf8").split("\n");
+      assert.ok(
+        ran.some(
+          (l) =>
+            l.startsWith("pnpm install --frozen-lockfile --offline") && l.endsWith(`@ ${root}`),
+        ),
+        ran.join("\n"),
+      );
+      assert.ok(ran.includes(`bundle install @ ${root}/apps/desktop`), ran.join("\n"));
+      assert.equal(
+        readFileSync(join(root, "apps", "desktop", "Gemfile.lock"), "utf8"),
+        "LOCK\n",
+        "Gemfile.lock must be restored so the root stays clean",
+      );
+    });
+  });
+
+  it("ensure_beta_build_root refuses the factory checkout and the primary checkout", () => {
+    // It hard-resets the root, so either one would lose real work. The primary
+    // checkout's knob was DRAFTO_DESKTOP_FOSSIL_ROOT; an older plist still sets it.
+    const primary = mkdtempSync(join(tmpdir(), "primary-checkout-"));
+    try {
+      const probe = `
+if ensure_beta_build_root desktop deadbeef >/dev/null; then echo OK; else echo REFUSED; fi
+[[ -e "$BETA_DESKTOP_ROOT.lock" ]] && echo LOCKED || echo NO-LOCK`;
+      for (const knob of ["DRAFTO_PRIMARY_CHECKOUT_ROOT", "DRAFTO_DESKTOP_FOSSIL_ROOT"]) {
+        const r = runLib(probe, {
+          env: {
+            DRAFTO_PRIMARY_CHECKOUT_ROOT: "",
+            [knob]: primary,
+            DRAFTO_DESKTOP_BUILD_ROOT: primary,
+          },
+        });
+        assert.equal(r.status, 0, r.stderr);
+        assert.match(r.stdout, /REFUSED\nNO-LOCK/, knob);
+        assert.match(r.log, /or the operator's primary checkout/, knob);
+      }
+      const r = runLib(`BETA_DESKTOP_ROOT="$REPO_ROOT"${probe}`);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /REFUSED\nNO-LOCK/);
+      assert.match(r.log, /it is the caller's own checkout/);
+    } finally {
+      rmSync(primary, { recursive: true, force: true });
+    }
   });
 
   it("ensure_beta_build_root refuses a root another live process holds", () => {
@@ -1035,7 +1120,7 @@ describe("ship_support_betas (stubbed, real bash)", () => {
     assert.doesNotMatch(r.calls, /dispatch|settle/);
   });
 
-  it("ships each lane with its own issues; a fossil-refused lane is released, not settled", () => {
+  it("ships each lane with its own issues; a guard-refused lane is released, not settled", () => {
     const r = runPhase4({
       pending: pendingJson({ mobile: true, desktop: true }),
       lanes: { mobile: "exit:0", desktop: "skip" },

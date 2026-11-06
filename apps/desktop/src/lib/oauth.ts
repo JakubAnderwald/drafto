@@ -50,7 +50,7 @@ export async function signInWithOAuthBrowser(
  *
  * A code stays remembered even when its exchange fails: supabase-js deletes the
  * stored verifier after every exchange attempt, success or failure (auth-js
- * 2.101.1 in the shipped fossil build, and 2.116), so no retry of the same link
+ * 2.101.1, shipped by desktop builds before #558, and 2.116), so no retry of the same link
  * can succeed. The user signs in again from the app.
  */
 const exchangedCodes = new Set<string>();

@@ -553,7 +553,7 @@ function gaveUpMarker(platform, closedAt) {
 function manualCommand(platform) {
   if (platform === "android") return "cd apps/mobile && pnpm release:beta:android";
   if (platform === "ios") return "cd apps/mobile && pnpm release:beta:ios";
-  return "cd /Users/jakub/code/drafto && git pull && cd apps/desktop && pnpm release:beta   # fossil checkout, NEVER pnpm install";
+  return "cd /Users/jakub/code/drafto && git pull && pnpm install && cd apps/desktop && pnpm release:beta";
 }
 
 export function gaveUpComment({ issueNumber, platform, failures, laneResult, logPath, closedAt }) {

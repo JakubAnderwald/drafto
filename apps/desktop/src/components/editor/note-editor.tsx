@@ -11,13 +11,16 @@ interface NoteEditorProps {
   editor: EditorBridge;
   /**
    * Optional passthrough for raw WebView messages. We pair this with
-   * `exclusivelyUseCustomOnMessage={false}` on <RichText> because that prop
-   * DEFAULTS TO `true` in tentap 1.0.1 — leaving it default while supplying a
-   * custom onMessage suppresses tentap's own bridge handling (editor readiness,
-   * onChange, getJSON), which breaks the whole editor. With it false, tentap
-   * still handles its messages AND this callback receives every message (callers
-   * must filter for their own payloads) — used by the find bar to read match
-   * counts posted from the injected engine.
+   * `exclusivelyUseCustomOnMessage={false}` on <RichText>. In tentap 1.1.0 an
+   * unset prop still means `true` whenever an onMessage is given
+   * (`exclusivelyUseCustomOnMessage ?? true` in RichText), and exclusive mode
+   * stops tentap's bridges receiving editor messages (onChange / content
+   * updates and custom bridges), which breaks saving. The value stays explicit
+   * so the find bar never depends on tentap's default, which has already been
+   * kept only for backwards compatibility. With it false, tentap still handles
+   * its messages AND this callback receives every message (callers must filter
+   * for their own payloads) — used by the find bar to read match counts posted
+   * from the injected engine.
    */
   onMessage?: (event: WebViewMessageEvent) => void;
 }

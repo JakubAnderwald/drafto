@@ -47,7 +47,7 @@ interface AppMenuProps {
  * On react-native-macos a view laid out outside its parent's bounds is not reliably
  * hit-testable, so the click-outside backdrop and the menu render as the last children of a
  * host that spans the whole sidebar, and every clickable pixel stays inside its parent.
- * `Modal` is avoided because it is unproven on the fossil build.
+ * `Modal` is avoided because it is unproven on react-native-macos.
  *
  * The menu closes on the trigger, on choosing an item, on Escape, or on a click anywhere else in
  * the sidebar. Clicks in the note list or editor do not reach the backdrop, so they leave it open.

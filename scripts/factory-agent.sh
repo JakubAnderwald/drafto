@@ -273,10 +273,10 @@ export FACTORY_CR_CLI FACTORY_CR_CLI_MAX_PER_HOUR FACTORY_CR_CLI_MAX_RUNS_PER_CA
 # Off by default. Deliberately separate from the Phase-D post-merge lane: a card
 # in In Test needs a testable native build BEFORE the merge gate, but enabling
 # that must not also switch on post-merge auto-dispatch (a much bigger blast
-# radius). Desktop carries its own knob because it builds from a clonefile
-# replica of the fossil, which needs one manual TestFlight build that opens a
-# note before it can be trusted — a green compile proves nothing there.
-# See ADR-0030 and docs/operations/factory-runbook.md.
+# radius). Desktop carries its own knob because CI never builds macOS: only a
+# TestFlight build that opens a note proves a desktop build root works, so the
+# operator turns it on once one has. A green compile proves nothing there.
+# See ADR-0030, ADR-0067 and docs/operations/factory-runbook.md.
 FACTORY_INTEST_BETA="${FACTORY_INTEST_BETA:-0}"
 FACTORY_INTEST_BETA_DESKTOP="${FACTORY_INTEST_BETA_DESKTOP:-0}"
 
@@ -451,14 +451,14 @@ export FACTORY_VERIFY FACTORY_VERIFY_LANES FACTORY_VERIFY_ONLY_LABEL FACTORY_VER
 VERIFY_REPORT_POST_MAX=4
 VERIFY_REPORT_RETRY_STEP_MIN=10
 
-# Where the fossil lives (React 19.1.x, never reinstalled) and the dedicated,
-# persistent build roots the beta lanes run in — DESKTOP_FOSSIL_ROOT,
+# Where the operator's primary checkout lives and the dedicated, persistent
+# build roots the beta lanes run in — PRIMARY_CHECKOUT_ROOT,
 # BETA_MOBILE_ROOT and BETA_DESKTOP_ROOT — are defined in
 # scripts/lib/beta-build-root.sh, sourced just after the EXIT trap below. That
 # lib is shared with nightly-support.sh, which ships merged support fixes into
 # the SAME roots (ADR-0042), so the defaults and the root lock live in one place.
 # The build roots are DEDICATED and disposable: they are hard-reset to the commit
-# being built and must never be the fossil itself or this checkout.
+# being built and must never be the primary checkout or this checkout.
 
 # ── Args ────────────────────────────────────────────────────────────────────
 MODE_PLAN=0
@@ -2649,9 +2649,9 @@ recover_cancelled_ci() {
 #
 # Gating rationale: the post-merge lane stays Phase-D-only, but pre-merge betas
 # are a separate opt-in (FACTORY_INTEST_BETA) so turning them on doesn't also
-# switch on post-merge auto-dispatch. Desktop has its own knob because it builds
-# from a clonefile replica of the fossil, which must be validated by one manual
-# TestFlight build that opens a note before it can be trusted.
+# switch on post-merge auto-dispatch. Desktop has its own knob because CI never
+# builds macOS, so a desktop build root is only trusted once a TestFlight build
+# from it opens a note.
 # $1 platforms JSON.
 intest_beta_gate() {
   local platforms="$1"
@@ -3020,21 +3020,38 @@ intest_dispatch_betas() {
   # Keyed by platform: with both natives skipped an unkeyed list leaves the
   # scenario writer guessing which command belongs to which platform.
   #
-  # The desktop command targets the dedicated fossil replica, NOT the primary
-  # checkout: telling a human to `git checkout` there would move the operator's
-  # working tree (and the fossil we clone from) onto a PR branch.
-  manual=$(jq -nc --arg skipped "$skipped" --arg issue "$issue_num" \
-    --arg desktopRoot "$BETA_DESKTOP_ROOT" '
-    [ ($skipped | split(",") | .[] | select(length > 0) | split(":")[0]) ]
+  # Both commands build in a fresh worktree of the PR branch, never in the
+  # primary checkout (a `git checkout` there would move the operator's working
+  # tree onto a PR branch) and never in a factory build root (the factory
+  # hard-resets those). Desktop installs like mobile since ADR-0067.
+  #
+  # With both natives skipped the tester runs both commands, one after the
+  # other and often in one shell, so they share ONE worktree. Each starts from
+  # its checkout's top level (the first leaves the shell in apps/mobile) and
+  # reuses ../drafto-<n> when it exists. Inside it, the command fetches the PR
+  # branch and checks out exactly what it fetched (FETCH_HEAD, detached), so it
+  # builds the current PR head:
+  #   - after an earlier In Test round, or a rebase;
+  #   - when the shell started in another repo.
+  # Detached also means no local branch to go stale, and no clash with the
+  # factory's own worktree, which has factory/issue-<n> checked out.
+  # DRAFTO_INTEST_ISSUE marks it a pre-merge build, as dispatch-premerge does:
+  # the lane posts the build number on the card and never tags the unmerged
+  # commit as a release.
+  manual=$(jq -nc --arg skipped "$skipped" --arg issue "$issue_num" '
+    ("cd \"$(git rev-parse --show-toplevel)\"" +
+     " && { [ -d ../drafto-" + $issue + " ] || git worktree add --detach ../drafto-" + $issue + "; }" +
+     " && cd ../drafto-" + $issue + " && git fetch origin factory/issue-" + $issue +
+     " && git checkout --detach FETCH_HEAD" +
+     " && pnpm install && bash scripts/worktree-bootstrap.sh") as $setup
+    | [ ($skipped | split(",") | .[] | select(length > 0) | split(":")[0]) ]
     | map(if . == "desktop" then
             { id: ., command:
-              ("cd " + $desktopRoot + " && git fetch origin && git checkout --detach origin/factory/issue-" + $issue +
-               " && cd apps/desktop && pnpm release:beta   # NEVER pnpm install here (desktop fossil)") }
+              ($setup + " && cd apps/desktop && bundle install && DRAFTO_INTEST_ISSUE=" + $issue +
+               " pnpm release:beta") }
           else
             { id: ., command:
-              ("git worktree add ../drafto-" + $issue + " factory/issue-" + $issue +
-               " && cd ../drafto-" + $issue + " && pnpm install && bash scripts/worktree-bootstrap.sh" +
-               " && cd apps/mobile && pnpm release:beta:all") }
+              ($setup + " && cd apps/mobile && DRAFTO_INTEST_ISSUE=" + $issue + " pnpm release:beta:all") }
           end)' 2>/dev/null || echo "[]")
 
   skipped_json=$(jq -nc --arg skipped "$skipped" '
@@ -3126,7 +3143,7 @@ intest_dispatch_betas() {
     return 0
   fi
   # dispatch-premerge resolves each lane's root: mobile from --repo-root, desktop
-  # from --desktop-root (fossil-asserted). Only pass lanes whose root is ready.
+  # from --desktop-root (dependency-asserted). Only pass lanes whose root is ready.
   [[ -z "${mobile_root:-}" ]] && lanes=$(echo "$lanes" | sed -E 's/(^|,)mobile(,|$)/\1\2/; s/^,|,$//')
   [[ -z "${desktop_root:-}" ]] && lanes=$(echo "$lanes" | sed -E 's/(^|,)desktop(,|$)/\1\2/; s/^,|,$//')
   root_flags="--repo-root ${mobile_root:-$REPO_ROOT}"
@@ -3203,7 +3220,7 @@ intest_dispatch_betas() {
   # runner isn't locked out of the root for the rest of this tick.
   [[ -n "${mobile_root:-}" ]] && release_beta_build_root mobile
   [[ -n "${desktop_root:-}" ]] && release_beta_build_root desktop
-  # Merge bash-side skips (gate) with node-side refusals (e.g. fossil assertion).
+  # Merge bash-side skips (gate) with node-side refusals (e.g. the desktop deps check).
   jq -nc --argjson d "$(echo "${dispatch_json:-{\}}" | jq -c '.dispatched // []' 2>/dev/null || echo '[]')" \
     --argjson gateSkipped "$skipped_json" \
     --argjson laneSkipped "$(echo "${dispatch_json:-{\}}" | jq -c '(.skipped // []) + [ (.failed // [])[] | { id: .id, reason: ("failed to start: " + .reason) } ]' 2>/dev/null || echo '[]')" \
@@ -3255,7 +3272,7 @@ intest_fallback_comment() {
       # the operator which switch to flip; there's more than one.
       desktop_skip=$(echo "${beta:-{\}}" | jq -r '[.skipped[]? | select(.id == "desktop") | .reason] | first // empty' 2>/dev/null || echo "")
       build_note="$build_note
-- **macOS** — no TestFlight build was dispatched for this PR${desktop_skip:+ (\`$desktop_skip\`)}. Testing it on macOS needs a pre-merge beta, so ask the operator; [Pre-merge beta dispatch (In Test)](https://github.com/JakubAnderwald/drafto/blob/main/docs/operations/factory-runbook.md#pre-merge-beta-dispatch-in-test) lists the switches. Don't \`git checkout\` the branch in \`${DRAFTO_DESKTOP_FOSSIL_ROOT:-/Users/jakub/code/drafto}\` (the operator's working tree, and the desktop fossil every build root is cloned from), and **never** \`pnpm install\` there or in a desktop build root."
+- **macOS** — no TestFlight build was dispatched for this PR${desktop_skip:+ (\`$desktop_skip\`)}. To test it on macOS, ask the operator for a pre-merge beta ([Pre-merge beta dispatch (In Test)](https://github.com/JakubAnderwald/drafto/blob/main/docs/operations/factory-runbook.md#pre-merge-beta-dispatch-in-test) lists the switches), or build one yourself from a worktree of \`factory/issue-$issue_num\`: \`pnpm install\`, \`bash scripts/worktree-bootstrap.sh\`, then \`cd apps/desktop && bundle install && DRAFTO_INTEST_ISSUE=$issue_num pnpm release:beta\` (the variable keeps the lane from tagging the unmerged commit as a release). Don't \`git checkout\` the branch in \`${PRIMARY_CHECKOUT_ROOT:-/Users/jakub/code/drafto}\` (the operator's working tree), and **never** build in a factory build root: the factory hard-resets those."
     fi
   fi
   [[ -n "$advisory" ]] && advisory_note="
@@ -7684,12 +7701,10 @@ retry next cycle; if it keeps failing, merge it by hand. The card stays in \
       # state; if it can't fast-forward, log and let the operator's C→D
       # validation catch a stale build rather than forcing.
       #
-      # The DESKTOP lane does NOT build from $REPO_ROOT: this checkout is a
-      # normal install carrying React 19.2, which compiles a macOS app that
-      # crashes at runtime. It builds from the fossil root instead, which the
-      # factory never fetches into or mutates — so verify by hand that it is
-      # already at the merged commit, and skip the lane rather than ship a build
-      # of the wrong code. See docs/operations/desktop-build-fossil.md.
+      # The DESKTOP lane builds in its own dedicated root instead, prepared
+      # below at the merged commit and installed like the mobile root
+      # (ADR-0067). A root that can't be prepared skips the lane rather than
+      # ship a build of the wrong code.
       git -C "$REPO_ROOT" fetch origin main >>"$LOG_FILE" 2>&1 \
         && git -C "$REPO_ROOT" merge --ff-only origin/main >>"$LOG_FILE" 2>&1 \
         || log "WARNING: could not fast-forward $REPO_ROOT to merged main; beta lanes may build stale code"
@@ -7697,14 +7712,13 @@ retry next cycle; if it keeps failing, merge it by hand. The card stays in \
       DESKTOP_ROOT_FLAG=""
       DISPATCH_PLATFORMS=$(printf '%s\n' "$DIFF_FILES" | node "$SCRIPT_DIR/lib/dispatch-release.mjs" derive-platforms --diff-file - 2>>"$LOG_FILE" || echo "")
       if [[ "$(echo "$DISPATCH_PLATFORMS" | jq -r '.desktop // false' 2>/dev/null)" == "true" ]]; then
-        # Prepare the dedicated desktop build root at the merged commit. The
-        # factory can't update the fossil checkout itself (it's the operator's
-        # working tree), so it builds from a disposable clonefile replica of it.
+        # Prepare the dedicated desktop build root at the merged commit: a
+        # disposable worktree, seeded from $REPO_ROOT and `pnpm install`ed.
         if DESKTOP_ROOT_READY=$(ensure_beta_build_root desktop "${MERGE_SHA:-origin/main}" 2>>"$LOG_FILE") && [[ -n "$DESKTOP_ROOT_READY" ]]; then
           DESKTOP_ROOT_FLAG="--desktop-root $DESKTOP_ROOT_READY"
         else
           log "Issue #$ISSUE_NUM: desktop beta build root unavailable; skipping the desktop lane"
-          DESKTOP_SKIP_NOTE=" ⚠️ macOS beta skipped: the desktop build root (\`$BETA_DESKTOP_ROOT\`) could not be prepared — run \`pnpm release:beta\` from a fossil checkout by hand."
+          DESKTOP_SKIP_NOTE=" ⚠️ macOS beta skipped: the desktop build root (\`$BETA_DESKTOP_ROOT\`) could not be prepared — run \`pnpm release:beta\` by hand from a fresh worktree of main after \`pnpm install\`."
           DISPATCH_PLATFORMS=$(echo "$DISPATCH_PLATFORMS" | jq -c '.desktop = false' 2>/dev/null || echo "$DISPATCH_PLATFORMS")
         fi
       fi
@@ -7720,7 +7734,7 @@ retry next cycle; if it keeps failing, merge it by hand. The card stays in \
         release_beta_build_root desktop
       fi
       DISPATCHED=$(echo "$DISPATCH_JSON" | jq -r '[.dispatched[]?.id] | join(", ")' 2>/dev/null || echo "")
-      # A lane refused by its guard (e.g. the desktop root lost its fossil) OR
+      # A lane refused by its guard (e.g. the desktop root's deps are stale) OR
       # one that could not start at all is reported, never silently dropped — a
       # missing beta must be visible. `.failed` is folded in here for the same
       # reason it exists at all: an unreported non-delivery is the bug family

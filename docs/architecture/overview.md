@@ -103,7 +103,7 @@ From [`CLAUDE.md`](../../CLAUDE.md) — authoritative source:
 | Mobile editor          | @10play/tentap-editor (TipTap-based)                                                                       |
 | Backend                | Supabase (Postgres + Auth + Storage + RLS) — see [ADR 0001](../adr/0001-data-model-and-rls-strategy.md)    |
 | Mobile app             | Expo SDK 55, React Native 0.83, Expo Router — see [ADR 0009](../adr/0009-mobile-app-technology-choices.md) |
-| Desktop app            | React Native macOS 0.81 (no Expo) — see [ADR 0015](../adr/0015-desktop-app-technology-choice.md)           |
+| Desktop app            | React Native macOS 0.83 (no Expo) — see [ADR 0015](../adr/0015-desktop-app-technology-choice.md)           |
 | Offline DB             | WatermelonDB (SQLite) — see [ADR 0010](../adr/0010-offline-sync-strategy.md)                               |
 | Observability          | Sentry + PostHog (single project each, env-tagged)                                                         |
 | Email                  | Resend — see [ADR 0019](../adr/0019-email-infrastructure-and-approval-flow.md)                             |

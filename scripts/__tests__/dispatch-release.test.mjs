@@ -11,25 +11,37 @@ import {
   platformsToLanes,
   assertBetaOnly,
   resolveLaneRoot,
-  assertDesktopFossil,
+  assertDesktopDeps,
   laneShellScript,
   laneLogPath,
   dispatchLanes,
-  DESKTOP_FOSSIL_ROOT_DEFAULT,
+  DESKTOP_ROOT_DEFAULT,
   parseReleaseIssues,
   _setSpawnForTests,
 } from "../lib/dispatch-release.mjs";
 
 afterEach(() => _setSpawnForTests(null));
 
-// A throwaway checkout whose node_modules/react declares `version`; omit the
-// version to leave react absent entirely.
-function fakeCheckout(version) {
-  const root = mkdtempSync(join(tmpdir(), "drafto-fossil-"));
-  if (version !== undefined) {
-    const dir = join(root, "node_modules", "react");
+// A throwaway checkout for the desktop dependency check. `react` and `rnm` are
+// the installed node_modules versions, `declared` is the react-native-macos pin
+// in apps/desktop/package.json. Pass null for any of them to leave that
+// package.json out entirely. The defaults are a healthy, freshly installed root.
+function fakeCheckout({ react = "19.2.8", rnm = "0.83.0", declared = "0.83.0" } = {}) {
+  const root = mkdtempSync(join(tmpdir(), "drafto-desktop-root-"));
+  const write = (rel, json) => {
+    const dir = join(root, ...rel);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "react", version }));
+    writeFileSync(join(dir, "package.json"), JSON.stringify(json));
+  };
+  if (react !== null) write(["node_modules", "react"], { name: "react", version: react });
+  if (rnm !== null) {
+    write(["node_modules", "react-native-macos"], { name: "react-native-macos", version: rnm });
+  }
+  if (declared !== null) {
+    write(["apps", "desktop"], {
+      name: "@drafto/desktop",
+      dependencies: { react: "19.2.8", "react-native-macos": declared },
+    });
   }
   return root;
 }
@@ -304,8 +316,8 @@ describe("dispatch-premerge CLI", () => {
     assert.deepEqual(out.skipped, []);
   });
 
-  it("refuses a desktop lane whose root is not a fossil, even in the CLI", () => {
-    const stale = fakeCheckout("19.2.6");
+  it("refuses a desktop lane whose root has a stale install, even in the CLI", () => {
+    const stale = fakeCheckout({ react: "19.1.4", rnm: "0.81.9" });
     try {
       const r = run([
         "dispatch-premerge",
@@ -407,7 +419,7 @@ describe("dispatch --release-issues (nightly support runner, ADR-0042)", () => {
   });
 });
 
-describe("resolveLaneRoot (desktop never builds from repoRoot)", () => {
+describe("resolveLaneRoot (desktop builds from its own root)", () => {
   const mobile = { id: "mobile" };
   const desktop = { id: "desktop" };
 
@@ -415,9 +427,9 @@ describe("resolveLaneRoot (desktop never builds from repoRoot)", () => {
     assert.equal(resolveLaneRoot(mobile, { repoRoot: "/repo", env: {} }), "/repo");
   });
 
-  it("sends desktop to the fossil root, not repoRoot", () => {
+  it("sends desktop to the default desktop root, not repoRoot", () => {
     const root = resolveLaneRoot(desktop, { repoRoot: "/factory-checkout", env: {} });
-    assert.equal(root, DESKTOP_FOSSIL_ROOT_DEFAULT);
+    assert.equal(root, DESKTOP_ROOT_DEFAULT);
     assert.notEqual(root, "/factory-checkout");
   });
 
@@ -439,32 +451,83 @@ describe("resolveLaneRoot (desktop never builds from repoRoot)", () => {
   });
 });
 
-describe("assertDesktopFossil", () => {
-  it("accepts a 19.1.x checkout and returns the version", () => {
-    const root = fakeCheckout("19.1.4");
+describe("assertDesktopDeps", () => {
+  const withRoot = (opts, fn) => {
+    const root = fakeCheckout(opts);
     try {
-      assert.equal(assertDesktopFossil(root), "19.1.4");
+      fn(root);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  };
+
+  it("accepts the declared react-native-macos with React 19.2.x and returns the versions", () => {
+    withRoot({}, (root) =>
+      assert.deepEqual(assertDesktopDeps(root), { reactNativeMacos: "0.83.0", react: "19.2.8" }),
+    );
   });
 
-  it("refuses a 19.2.x checkout (compiles, then crashes at runtime)", () => {
-    const root = fakeCheckout("19.2.6");
-    try {
-      assert.throws(() => assertDesktopFossil(root), /not 19\.1\.x/);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+  it("refuses the old fossil (react-native-macos 0.81 on React 19.1.4)", () => {
+    withRoot({ react: "19.1.4", rnm: "0.81.9" }, (root) =>
+      assert.throws(() => assertDesktopDeps(root), /pnpm install/),
+    );
   });
 
-  it("refuses a checkout with no installed react at all", () => {
-    const root = fakeCheckout(undefined);
-    try {
-      assert.throws(() => assertDesktopFossil(root), /no readable/);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+  it("refuses React 19.1.4 even when react-native-macos matches", () => {
+    withRoot({ react: "19.1.4" }, (root) =>
+      assert.throws(() => assertDesktopDeps(root), /React 19\.1\.4 is not 19\.2\.x.*pnpm install/),
+    );
+  });
+
+  it("refuses an installed react-native-macos that differs from the declared pin", () => {
+    withRoot({ rnm: "0.83.1" }, (root) =>
+      assert.throws(
+        () => assertDesktopDeps(root),
+        /react-native-macos 0\.83\.1 does not match the 0\.83\.0.*pnpm install/,
+      ),
+    );
+  });
+
+  it("refuses a range declaration that the installed version only satisfies", () => {
+    withRoot({ declared: "^0.83.0" }, (root) =>
+      assert.throws(() => assertDesktopDeps(root), /does not match the \^0\.83\.0/),
+    );
+  });
+
+  it("refuses a root with no installed react", () => {
+    withRoot({ react: null }, (root) =>
+      assert.throws(
+        () => assertDesktopDeps(root),
+        /no readable .*node_modules\/react\/package\.json.*pnpm install/,
+      ),
+    );
+  });
+
+  it("refuses a root with no installed react-native-macos", () => {
+    withRoot({ rnm: null }, (root) =>
+      assert.throws(
+        () => assertDesktopDeps(root),
+        /no readable .*node_modules\/react-native-macos\/package\.json.*pnpm install/,
+      ),
+    );
+  });
+
+  it("refuses a root with no apps/desktop/package.json", () => {
+    withRoot({ declared: null }, (root) =>
+      assert.throws(
+        () => assertDesktopDeps(root),
+        /no readable .*apps\/desktop\/package\.json.*drafto checkout/,
+      ),
+    );
+  });
+
+  it("never mentions the retired fossil in a refusal", () => {
+    withRoot({ react: "19.1.4", rnm: "0.81.9" }, (root) =>
+      assert.throws(
+        () => assertDesktopDeps(root),
+        (err) => !/fossil/i.test(err.message),
+      ),
+    );
   });
 });
 
@@ -484,42 +547,42 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
   });
 
   it("dispatches both native lanes for packages/shared changes", async () => {
-    const fossil = fakeCheckout("19.1.4");
+    const desktopRoot = fakeCheckout();
     try {
       const calls = [];
       _setSpawnForTests((lane) => calls.push(lane.id));
       const out = await dispatchLanes({
         repoRoot: ".",
-        desktopRoot: fossil,
+        desktopRoot,
         diffFiles: "packages/shared/x.ts",
       });
       assert.deepEqual(calls.sort(), ["desktop", "mobile"]);
       assert.equal(out.dispatched.length, 2);
       assert.deepEqual(out.skipped, []);
     } finally {
-      rmSync(fossil, { recursive: true, force: true });
+      rmSync(desktopRoot, { recursive: true, force: true });
     }
   });
 
-  it("builds desktop from the fossil root, mobile from repoRoot", async () => {
-    const fossil = fakeCheckout("19.1.4");
+  it("builds desktop from the desktop root, mobile from repoRoot", async () => {
+    const desktopRoot = fakeCheckout();
     try {
       const roots = {};
       _setSpawnForTests((lane, opts) => (roots[lane.id] = opts.repoRoot));
       await dispatchLanes({
         repoRoot: "/factory-checkout",
-        desktopRoot: fossil,
+        desktopRoot,
         diffFiles: "packages/shared/x.ts",
       });
       assert.equal(roots.mobile, "/factory-checkout");
-      assert.equal(roots.desktop, fossil);
+      assert.equal(roots.desktop, desktopRoot);
     } finally {
-      rmSync(fossil, { recursive: true, force: true });
+      rmSync(desktopRoot, { recursive: true, force: true });
     }
   });
 
-  it("skips only the desktop lane when its root lost the fossil", async () => {
-    const stale = fakeCheckout("19.2.6");
+  it("skips only the desktop lane when its root has a stale install", async () => {
+    const stale = fakeCheckout({ react: "19.1.4", rnm: "0.81.9" });
     try {
       const calls = [];
       _setSpawnForTests((lane) => calls.push(lane.id));
@@ -536,7 +599,11 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
       );
       assert.equal(out.skipped.length, 1);
       assert.equal(out.skipped[0].id, "desktop");
-      assert.match(out.skipped[0].reason, /not 19\.1\.x/);
+      assert.equal(out.skipped[0].root, stale);
+      assert.match(
+        out.skipped[0].reason,
+        /react-native-macos 0\.81\.9 does not match.*pnpm install/,
+      );
     } finally {
       rmSync(stale, { recursive: true, force: true });
     }
@@ -735,18 +802,18 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
   });
 
   it("never constructs a production command", async () => {
-    const fossil = fakeCheckout("19.1.4");
+    const desktopRoot = fakeCheckout();
     try {
       const cmds = [];
       _setSpawnForTests((lane) => cmds.push(`${lane.command} ${lane.args.join(" ")}`));
       await dispatchLanes({
-        desktopRoot: fossil,
+        desktopRoot,
         diffFiles: "apps/mobile/x.ts\napps/desktop/y.ts",
       });
       assert.equal(cmds.length, 2);
       for (const c of cmds) assert.doesNotMatch(c, /prod|production/i);
     } finally {
-      rmSync(fossil, { recursive: true, force: true });
+      rmSync(desktopRoot, { recursive: true, force: true });
     }
   });
 });

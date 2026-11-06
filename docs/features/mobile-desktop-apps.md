@@ -12,7 +12,7 @@ share the same offline-first data model and the same editor.
 
 Shipped on iOS (App Store), Android (Google Play), and macOS (Mac App Store).
 All three builds run locally through Fastlane — no CI builds. Mobile is on
-Expo SDK 55 / React Native 0.83.2; desktop is on React Native macOS 0.81.6.
+Expo SDK 55 / React Native 0.83.10; desktop is on React Native macOS 0.83.0 on the same `react-native` 0.83.10 ([ADR-0067](../adr/0067-desktop-moves-to-react-native-macos-0-83.md)).
 Both link the same `@nozbe/watermelondb@0.28.x` native module and reuse the
 `@10play/tentap-editor` WebView-based editor.
 
@@ -109,14 +109,14 @@ prebuild`. If you add native config, write a config plugin rather than
   in directly (no prebuild). Update `Info.plist` and `Drafto.entitlements`
   together when adding new permissions or capabilities.
 - **New desktop native capability** goes into an in-project module next to
-  `DraftoMenuManager` and `DraftoCrypto`, not an npm package with native code,
-  which would need a `pnpm install` in the fossil
-  ([ADR-0062](../adr/0062-desktop-pkce-native-csprng.md),
-  [ADR-0027](../adr/0027-desktop-react-version-locked-to-react-native-macos.md)).
+  `DraftoMenuManager` and `DraftoCrypto`, not an npm package with native code
+  ([ADR-0062](../adr/0062-desktop-pkce-native-csprng.md)). A native _bug_ in
+  React Native goes in a `pnpm patch` under `patches/` instead
+  ([ADR-0067](../adr/0067-desktop-moves-to-react-native-macos-0-83.md)).
   Add each new file to `apps/desktop/macos/Drafto.xcodeproj/project.pbxproj`:
   a file reference and group entry, plus a build file and Drafto-macOS Sources
   entry for a `.mm`. CI never builds the macOS target, so a missed entry shows
-  up only in the fossil's beta build, as a `null` module.
+  up only in a beta build, as a `null` module.
 - **Mac App Review checks the menu bar and the window.** Every enabled menu
   item must do something. `MenuProvider` reports which actions are handled
   (its own theme and Help actions, plus whatever the mounted screen registered

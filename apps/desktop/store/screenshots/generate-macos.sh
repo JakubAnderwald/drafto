@@ -4,8 +4,7 @@
 # (the layout `fastlane mac upload_screenshots` uploads).
 #
 # Builds nothing: it drives an already-installed, prod-pointed Drafto.app (by
-# default the TestFlight install in /Applications), so the desktop fossil rule
-# does not apply and it runs from any checkout.
+# default the TestFlight install in /Applications), so it runs from any checkout.
 #
 # ⚠️ Signs the app OUT of whatever account it is using (only once its sync
 # status reads "Synced", since desktop sign-out wipes local data) and leaves it

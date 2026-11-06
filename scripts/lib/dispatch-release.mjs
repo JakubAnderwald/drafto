@@ -34,10 +34,11 @@
 //   assertBetaOnly(lane)
 //        Throws if the lane resolves to a production command.
 //   resolveLaneRoot(lane, {repoRoot, desktopRoot, env})   (pure)
-//        The checkout a lane builds from. Desktop does NOT build from repoRoot —
-//        see the fossil rule below.
-//   assertDesktopFossil(root)
-//        Throws unless <root>/node_modules/react is 19.1.x.
+//        The checkout a lane builds from. Desktop builds from its own root —
+//        see the desktop note below.
+//   assertDesktopDeps(root)
+//        Throws unless <root>'s installed react-native-macos is the version
+//        apps/desktop/package.json declares and <root>/node_modules/react is 19.2.x.
 //   dispatchLanes({repoRoot, desktopRoot, diffFiles|platforms, dryRun, only})
 //        → {dispatched[], failed[], skipped[], platforms}   (ASYNC)
 //        Derive → assert → spawn each lane detached, resolving only once the OS
@@ -47,15 +48,15 @@
 //        skipped[] = a guard refused it. `only` restricts to a subset of lane
 //        ids so a caller can re-dispatch just the missing ones.
 //
-// ⚠️  THE DESKTOP FOSSIL. react-native-macos@0.81 needs React 19.1.x, but the
-// monorepo declares 19.2.x (mobile needs it; React must be one instance). A
-// desktop build from a checkout carrying 19.2 COMPILES FINE AND CRASHES AT
-// RUNTIME (Hermes EXC_BAD_ACCESS / blank screen), so a green build is no proof.
-// The factory's own checkout is a normal install and therefore carries 19.2 —
-// dispatching the desktop lane under repoRoot ships a broken build. Desktop
-// lanes resolve to DESKTOP_FOSSIL_ROOT_DEFAULT (or DRAFTO_DESKTOP_BUILD_ROOT)
-// instead, and assertDesktopFossil() enforces the invariant at dispatch time.
-// See docs/operations/desktop-build-fossil.md and ADR-0027.
+// DESKTOP. react-native-macos 0.83 runs on the monorepo's React 19.2, so desktop
+// builds from any checkout after a plain `pnpm install`, like mobile (ADR-0067).
+// Desktop lanes still build from their own root: --desktop-root (the factory's
+// dedicated build root), else DRAFTO_DESKTOP_BUILD_ROOT, else DESKTOP_ROOT_DEFAULT.
+// A root that skipped its install after a pull (or an old fossil checkout still
+// on React 19.1) can compile a mixed dependency graph that crashes at runtime, so
+// assertDesktopDeps() refuses it at dispatch time. The Fastfile's build_and_submit
+// preflight checks the same invariant; this runs it early so the refusal is
+// reported on the issue.
 //
 // CLI (called from scripts/factory-agent.sh --release / --watch, and from
 // scripts/nightly-support.sh Phase 4):
@@ -79,16 +80,15 @@ import { parseFlags } from "./parse-flags.mjs";
 
 export const DEFAULT_REPO_ROOT = ".";
 
-// The only checkout whose node_modules can build a working macOS app: the
-// primary checkout, installed before the React 19.2 bump and never reinstalled.
-// Override with DRAFTO_DESKTOP_BUILD_ROOT (e.g. a clonefile replica of it).
-export const DESKTOP_FOSSIL_ROOT_DEFAULT = "/Users/jakub/code/drafto";
+// The desktop root when neither --desktop-root nor DRAFTO_DESKTOP_BUILD_ROOT is
+// set: the operator's primary checkout. The factory and the nightly runner always
+// pass their own dedicated root.
+export const DESKTOP_ROOT_DEFAULT = "/Users/jakub/code/drafto";
 
-// react-native-macos@0.81 pairs with React 19.1.x. Hardcoded because the repo
-// has no declared source of truth for it — package.json's override pins the
-// 19.2.x line for mobile, and the working desktop version exists only in the fossil
-// node_modules on disk. Bump this (and ADR-0027) when react-native-macos moves.
-export const DESKTOP_REACT_RANGE = /^19\.1\./;
+// The React line react-native-macos 0.83 needs (its peer is react ^19.2.0). It
+// matches the root package.json's pnpm.overrides pin and the Fastfile preflight.
+// Bump all three together when React moves to a new minor.
+const DESKTOP_REACT_LINE = /^19\.2\./;
 
 // Production lanes the factory must NEVER auto-invoke (beta channels only —
 // production store submission stays a manual, explicitly-approved step per
@@ -186,38 +186,55 @@ export function assertBetaOnly(lane) {
 }
 
 // Pure: which checkout a lane builds from. Everything builds from repoRoot
-// except desktop, which must come from a fossil checkout (see the header note).
+// except desktop, which has its own root (see the header note).
 export function resolveLaneRoot(lane, { repoRoot = DEFAULT_REPO_ROOT, desktopRoot, env } = {}) {
   if (lane?.id !== "desktop") return repoRoot;
   const e = env ?? process.env;
-  return desktopRoot || e.DRAFTO_DESKTOP_BUILD_ROOT || DESKTOP_FOSSIL_ROOT_DEFAULT;
+  return desktopRoot || e.DRAFTO_DESKTOP_BUILD_ROOT || DESKTOP_ROOT_DEFAULT;
 }
 
-// Throw unless `root` is a fossil checkout. This is the enforcement point for
-// the rule in docs/operations/desktop-build-fossil.md: a `pnpm install` in the
-// build root (or building from a fresh checkout / worktree / CI) silently
-// replaces React 19.1 with 19.2 and produces a crashing app. Refuse loudly
-// instead of shipping it.
-export function assertDesktopFossil(root, { readFile = readFileSync } = {}) {
-  const pkgPath = join(root, "node_modules", "react", "package.json");
-  let version;
-  try {
-    version = JSON.parse(readFile(pkgPath, "utf8")).version;
-  } catch (err) {
+// Throw unless `root`'s installed dependencies match what it declares: the
+// installed react-native-macos is exactly the version apps/desktop/package.json
+// pins, and the hoisted React is 19.2.x. A root that was pulled but not
+// reinstalled (or an old fossil checkout on React 19.1) fails this, and a build
+// from it can compile green and crash at runtime. Refuse loudly instead of
+// shipping it. Returns the installed versions.
+export function assertDesktopDeps(root, { readFile = readFileSync } = {}) {
+  const readJson = (rel, hint) => {
+    const path = join(root, ...rel);
+    try {
+      return JSON.parse(readFile(path, "utf8"));
+    } catch (err) {
+      throw new Error(
+        `desktop build root ${root} has no readable ${path} (${err.message}); ${hint}`,
+      );
+    }
+  };
+  const install = `run 'pnpm install' in ${root}`;
+  const desktopPkg = readJson(["apps", "desktop", "package.json"], "is it a drafto checkout?");
+  const declared =
+    desktopPkg.dependencies?.["react-native-macos"] ??
+    desktopPkg.devDependencies?.["react-native-macos"];
+  if (!declared) {
     throw new Error(
-      `desktop build root ${root} has no readable ${pkgPath} (${err.message}); ` +
-        `expected a fossil checkout with React ${DESKTOP_REACT_RANGE.source}`,
+      `refusing to build desktop from ${root}: apps/desktop/package.json declares no react-native-macos.`,
     );
   }
-  if (!DESKTOP_REACT_RANGE.test(String(version))) {
+  const rnm = readJson(["node_modules", "react-native-macos", "package.json"], install).version;
+  if (String(rnm) !== String(declared)) {
     throw new Error(
-      `refusing to build desktop from ${root}: React ${version} is not 19.1.x. ` +
-        `react-native-macos@0.81 compiles against 19.2 but crashes at runtime — ` +
-        `build from the fossil checkout and never 'pnpm install' it ` +
-        `(docs/operations/desktop-build-fossil.md).`,
+      `refusing to build desktop from ${root}: installed react-native-macos ${rnm} does not ` +
+        `match the ${declared} apps/desktop/package.json declares — ${install}.`,
     );
   }
-  return version;
+  const react = readJson(["node_modules", "react", "package.json"], install).version;
+  if (!DESKTOP_REACT_LINE.test(String(react))) {
+    throw new Error(
+      `refusing to build desktop from ${root}: React ${react} is not 19.2.x, which ` +
+        `react-native-macos ${rnm} needs — ${install}.`,
+    );
+  }
+  return { reactNativeMacos: String(rnm), react: String(react) };
 }
 
 // Where a lane's combined stdout/stderr goes. Overridable so tests don't write
@@ -384,7 +401,7 @@ async function realSpawnDetached(lane, { repoRoot, laneEnv, logDir, logKey }) {
 //   dispatched — 'spawn' fired; the process exists and its exit code will land
 //                in <logPath>.exit
 //   failed     — the lane could not start at all; it must NOT suppress a retry
-//   skipped    — a guard refused it before any spawn (fossil assertion)
+//   skipped    — a guard refused it before any spawn (desktop dependency check)
 //
 // `only` restricts the run to a subset of lane ids, so a caller can re-dispatch
 // just the lanes that are missing rather than re-running a successful one.
@@ -410,11 +427,11 @@ export async function dispatchLanes({
   for (const lane of lanes) {
     assertBetaOnly(lane);
     const laneRoot = resolveLaneRoot(lane, { repoRoot, desktopRoot, env });
-    // A failed guard skips only its own lane: a desktop checkout that lost its
-    // fossil must not stop the mobile beta from shipping.
+    // A failed guard skips only its own lane: a desktop root with a stale
+    // install must not stop the mobile beta from shipping.
     if (lane.id === "desktop") {
       try {
-        assertDesktopFossil(laneRoot);
+        assertDesktopDeps(laneRoot);
       } catch (err) {
         skipped.push({ id: lane.id, root: laneRoot, reason: err.message });
         continue;

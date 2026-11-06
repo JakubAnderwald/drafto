@@ -1,6 +1,6 @@
 # 0063 — Desktop Patches RN Native Bugs From the App Target
 
-- **Status**: Accepted
+- **Status**: Superseded by [0067](./0067-desktop-moves-to-react-native-macos-0-83.md)
 - **Date**: 2026-10-31
 - **Authors**: Jakub Anderwald, Claude
 

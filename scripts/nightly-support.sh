@@ -162,9 +162,10 @@ trap cleanup EXIT
 # release_beta_build_root and BETA_MOBILE_ROOT / BETA_DESKTOP_ROOT. Contract:
 # REPO_ROOT, SCRIPT_DIR, LOG_FILE, INSTALL_TIMEOUT_SEC, log, logerr — all set
 # above. Sourced after the trap so a missing lib still files a nightly-failure.
-# This checkout IS the desktop fossil, so the desktop root is cloned from it
-# (DESKTOP_FOSSIL_ROOT defaults to /Users/jakub/code/drafto); the lib refuses
-# to use this checkout itself as a build root.
+# This checkout is the operator's primary checkout (PRIMARY_CHECKOUT_ROOT
+# defaults to /Users/jakub/code/drafto). Both build roots are seeded from it and
+# then installed (ADR-0067); the lib refuses to use this checkout itself as a
+# build root.
 # shellcheck source=lib/beta-build-root.sh
 source "$SCRIPT_DIR/lib/beta-build-root.sh"
 
@@ -404,8 +405,8 @@ You are an automated nightly job. Process ONLY Dependabot PR #$PR_NUMBER for Jak
      6. Leave PR open for manual review.
 
 Constraints:
-- ${REPO_ROOT} is the primary checkout and holds the fossil node_modules of
-  the macOS desktop build (see apps/desktop/CLAUDE.md). NEVER run pnpm install,
+- ${REPO_ROOT} is the primary checkout: the operator's working tree, and the
+  checkout the beta build roots are seeded from. NEVER run pnpm install,
   git checkout / switch / pull / reset / merge / clean, or edit files there.
 - To fix a failing PR, work in a dedicated worktree instead:
     git -C ${REPO_ROOT} fetch origin <headRefName>
@@ -568,8 +569,8 @@ Constraints:
   the job of the runner, after this session.
 - Never start a background task that must outlive this session: it is
   killed when the session ends.
-- ${REPO_ROOT} is the primary checkout and holds the fossil node_modules of
-  the macOS desktop build (see apps/desktop/CLAUDE.md). NEVER run pnpm install,
+- ${REPO_ROOT} is the primary checkout: the operator's working tree, and the
+  checkout the beta build roots are seeded from. NEVER run pnpm install,
   git checkout / switch / pull / reset / merge / clean, or edit files there;
   against it only \`git -C ${REPO_ROOT} fetch\` and \`worktree add\` are allowed.
 - Never push directly to main. Always branches + PRs.
@@ -612,7 +613,7 @@ done
 # posted the "Now live" notice — which the support agent forwards to the
 # reporter. A platform that failed is retried on later nights; after 3 failures
 # the issue gets needs-manual-intervention and an operator comment. Nothing that
-# is merely "not now" (main CI red/pending, a root in use, the fossil check)
+# is merely "not now" (main CI red/pending, a root in use, the desktop deps check)
 # consumes an attempt.
 #
 # Beta channels only: dispatch-release.mjs builds nothing but
@@ -750,7 +751,7 @@ ship_support_betas() {
       running="$running $lane"
       log "Phase 4: dispatched the $lane beta lane (pid $pid) for #${csv//,/, #} at ${sha:0:12}; log $logp"
     else
-      # Refused by a guard (the fossil check), unable to start, or the
+      # Refused by a guard (the desktop deps check), unable to start, or the
       # dispatcher itself failed: not a build failure, so no attempt is spent.
       reason=$(echo "$out" | jq -r '[(.skipped[]?, .failed[]?) | .reason] | join("; ")' 2>/dev/null || echo "")
       log "Phase 4: the $lane beta lane did not start (${reason:-dispatcher error — see log}); retry next night"

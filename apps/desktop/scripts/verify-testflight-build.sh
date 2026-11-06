@@ -84,7 +84,10 @@ echo "1. Checking installed app..."
 APP_PATH="/Applications/Drafto.app"
 if [[ ! -d "$APP_PATH" ]]; then
   # TestFlight apps may be in a different location
-  APP_PATH=$(mdfind "kMDItemCFBundleIdentifier == 'eu.drafto.mobile'" 2>/dev/null | head -1)
+  # `|| true`: head -1 can SIGPIPE mdfind, which pipefail turns into a failed
+  # assignment, and set -e would then exit with no message. An empty APP_PATH
+  # is reported just below.
+  APP_PATH=$(mdfind "kMDItemCFBundleIdentifier == 'eu.drafto.mobile'" 2>/dev/null | head -1 || true)
 fi
 if [[ -d "$APP_PATH" ]]; then
   check "App found at $APP_PATH" "pass"
@@ -97,13 +100,18 @@ fi
 echo "2. Checking JS bundle for Supabase URL..."
 BUNDLE="$APP_PATH/Contents/Resources/main.jsbundle"
 if [[ -f "$BUNDLE" ]]; then
-  if strings "$BUNDLE" | grep -q "tbmjbxxseonkciqovnpl"; then
+  # grep the file directly (-a: the Hermes bundle is binary). Never pipe
+  # `strings "$BUNDLE"` into `grep -q`: grep -q exits on the first match,
+  # strings then dies of SIGPIPE (141), and under `set -o pipefail` the whole
+  # pipeline counts as failed. On a real 5 MB bundle that turned a found prod
+  # ref into "not found" and a found dev ref into "absent" (#558).
+  if grep -aq "tbmjbxxseonkciqovnpl" "$BUNDLE"; then
     check "Production Supabase URL found in bundle" "pass"
   else
     check "Production Supabase URL found in bundle (found dev URL instead)" "fail"
   fi
 
-  if strings "$BUNDLE" | grep -q "huhzactreblzcogqkbsd"; then
+  if grep -aq "huhzactreblzcogqkbsd" "$BUNDLE"; then
     check "Dev Supabase URL absent from bundle" "fail"
   else
     check "Dev Supabase URL absent from bundle" "pass"
@@ -163,12 +171,13 @@ echo "       Version: $VERSION (build $BUILD)"
 
 # --- Test 6: The app actually launches and stays up ---
 #
-# This is the fossil check. Everything above passes on a build that dies the
-# instant it opens: react-native-macos@0.81 against React 19.2 compiles cleanly
-# and then crashes at startup (Hermes EXC_BAD_ACCESS). Test 4's "login" is a
+# This is the React/JSI mismatch check. Everything above passes on a build that
+# dies the instant it opens: a react-native-macos whose React peer differs from
+# the installed React (#558: rnm 0.81 against React 19.2) compiles cleanly and
+# then crashes at startup (Hermes EXC_BAD_ACCESS). Test 4's "login" is a
 # curl against Supabase, not the app signing in, so none of it touches the
 # failure mode this script exists to catch.
-echo "6. Launching the app (fossil smoke test)..."
+echo "6. Launching the app (React/JSI smoke test)..."
 CRASH_DIR="$HOME/Library/Logs/DiagnosticReports"
 CRASHES_BEFORE=$(ls -1 "$CRASH_DIR" 2>/dev/null | grep -c -i "drafto" || true)
 
@@ -211,13 +220,13 @@ if [[ "$APPEARED" -eq 0 ]]; then
 else
   check "App appeared in the process table" "pass"
   WE_STARTED_IT=1
-  # Now the real test: does it STAY up? A fossil break dies within seconds of
-  # launch, so require it to survive a continuous window.
+  # Now the real test: does it STAY up? A React/JSI mismatch dies within
+  # seconds of launch, so require it to survive a continuous window.
   LAUNCH_OK="pass"
   for _ in $(seq 1 15); do
     sleep 1
     if ! pgrep -f "$APP_PATH/Contents/MacOS/" >/dev/null 2>&1; then
-      LAUNCH_OK="fail"   # died after starting — that IS the fossil failure
+      LAUNCH_OK="fail"   # died after starting — that IS the React/JSI mismatch failure
       break
     fi
   done
@@ -228,7 +237,7 @@ fi
 CRASHES_AFTER=$(ls -1 "$CRASH_DIR" 2>/dev/null | grep -c -i "drafto" || true)
 if [[ "$CRASHES_AFTER" -gt "$CRASHES_BEFORE" ]]; then
   check "No new crash report" "fail"
-  echo "       New crash report(s) in $CRASH_DIR — likely the React 19.2 fossil break."
+  echo "       New crash report(s) in $CRASH_DIR — likely a React/JSI mismatch (react-native-macos vs React)."
 else
   check "No new crash report" "pass"
 fi
@@ -250,7 +259,7 @@ echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 echo ""
 echo "⚠️  This script cannot prove the app RENDERS. A blank window is a healthy"
-echo "    process, so a fossil break that shows an empty screen still passes."
+echo "    process, so a React/JSI mismatch that shows an empty screen still passes."
 echo "    Before trusting a desktop build root, open the app and open a note."
 if [[ $FAIL -gt 0 ]]; then
   echo "⚠️  Some checks failed. See above for details."

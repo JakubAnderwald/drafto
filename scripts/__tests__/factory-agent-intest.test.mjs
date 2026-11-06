@@ -1,7 +1,16 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, mkdtempSync, writeFileSync, rmSync, utimesSync, existsSync } from "node:fs";
+import {
+  readFileSync,
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  utimesSync,
+  existsSync,
+  realpathSync,
+} from "node:fs";
 import { dirname, resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -226,20 +235,27 @@ describe("intest_fallback_comment — always usable", () => {
     assert.match(body, /if \[\[ "\$web" == "true" && -n "\$preview_url" \]\]; then/);
   });
 
-  it("gives per-platform local build instructions, fossil rule included", () => {
+  it("gives per-platform local build instructions, macOS from a worktree", () => {
     assert.match(body, /if \[\[ "\$mobile" == "true" \]\]; then/);
     assert.match(body, /if \[\[ "\$desktop" == "true" \]\]; then/);
-    assert.match(body, /never\*\*[^\n]*pnpm install/);
+    // ADR-0067: macOS installs and builds from a worktree like mobile, but
+    // never in a factory build root, which the factory hard-resets.
+    assert.match(
+      body,
+      /cd apps\/desktop && bundle install && DRAFTO_INTEST_ISSUE=\$issue_num pnpm release:beta/,
+    );
+    assert.match(body, /\*\*never\*\* build in a factory build root/);
   });
 
   it("never tells anyone to check the PR branch out in the primary checkout", () => {
     // factory-intest-prompt.md forbids it: /Users/jakub/code/drafto is the
-    // operator's working tree and the desktop fossil. The macOS fallback points
-    // at the runbook's pre-merge beta section instead.
+    // operator's working tree. The macOS fallback points at the runbook's
+    // pre-merge beta section, or a fresh worktree of the branch.
     assert.doesNotMatch(body, /git (?:-C \S+ )?(?:checkout|switch)\b[^\n]*factory\/issue-/);
     assert.match(body, /factory-runbook\.md#pre-merge-beta-dispatch-in-test/);
-    // The fossil path is configurable; the warning names the configured one.
-    assert.match(body, /\$\{DRAFTO_DESKTOP_FOSSIL_ROOT:-\/Users\/jakub\/code\/drafto\}/);
+    // The primary checkout's path is configurable; the warning names the configured one.
+    assert.match(body, /\$\{PRIMARY_CHECKOUT_ROOT:-\/Users\/jakub\/code\/drafto\}/);
+    assert.doesNotMatch(body, /fossil/i);
   });
 
   it("names the gate's reason when the macOS beta was skipped", () => {
@@ -362,7 +378,7 @@ intest_beta_gate ${JSON.stringify(platforms)}
     assert.match(out, /desktop:FACTORY_INTEST_BETA=0/);
   });
 
-  it("dispatches mobile only while the desktop knob is off (fossil not yet validated)", () => {
+  it("dispatches mobile only while the desktop knob is off (desktop root not yet validated)", () => {
     const out = gate({ platforms: native, beta: "1", desktop: "0" });
     assert.match(out, /lanes=mobile /);
     assert.match(out, /desktop:FACTORY_INTEST_BETA_DESKTOP=0/);
@@ -401,10 +417,11 @@ intest_beta_gate ${JSON.stringify(platforms)}
 describe("ensure_beta_build_root — working-tree safety", () => {
   const body = fnBody("ensure_beta_build_root", lib);
 
-  it("refuses to use the factory checkout or the fossil as a build root", () => {
-    // It hard-resets and cleans the root. The fossil IS the operator's working
-    // tree, so resetting it would destroy any uncommitted edits there.
-    assert.match(body, /canon_root" == "\$canon_repo" \|\| "\$canon_root" == "\$canon_fossil"/);
+  it("refuses to use the factory checkout or the primary checkout as a build root", () => {
+    // It hard-resets and cleans the root. The primary checkout IS the
+    // operator's working tree, so resetting it would destroy any uncommitted
+    // edits there.
+    assert.match(body, /canon_root" == "\$canon_repo" \|\| "\$canon_root" == "\$canon_primary"/);
     assert.match(body, /refusing to use \$root as a \$platform beta build root/);
     assert.match(body, /return 1/);
   });
@@ -476,7 +493,7 @@ describe("ensure_beta_build_root — working-tree safety", () => {
     // report via log() → stdout. Without >&2 a single warning (a failed
     // clonefile seed, a missing .env) is captured as part of the returned path
     // and reaches --repo-root as a mangled multi-word argument.
-    assert.match(body, /seed_worktree_node_modules "\$root" "\$src_root" >&2/);
+    assert.match(body, /seed_worktree_node_modules "\$root" >&2/);
     assert.match(body, /copy_worktree_env "\$root" >&2/);
     assert.match(body, /run_pnpm_install "\$root" >&2/);
     // The ONLY unredirected stdout write must be the return value itself.
@@ -519,15 +536,13 @@ describe("ensure_beta_build_root — working-tree safety", () => {
     assert.ok(!/\(\s*bundle check\b/.test(body), "an uncapped bundle check is back");
   });
 
-  it("seeds desktop from the fossil and never installs into it", () => {
-    assert.match(body, /desktop\) root="\$BETA_DESKTOP_ROOT"; src_root="\$DESKTOP_FOSSIL_ROOT"/);
-    // The install/bundle step is mobile-only.
-    const installIdx = body.indexOf("run_pnpm_install");
-    const mobileGuardIdx = body.indexOf('platform" == "mobile"');
-    assert.ok(
-      mobileGuardIdx !== -1 && mobileGuardIdx < installIdx,
-      "pnpm install must be gated to the mobile platform",
-    );
+  it("seeds desktop from $REPO_ROOT and installs it like mobile (ADR-0067)", () => {
+    assert.match(body, /desktop\) root="\$BETA_DESKTOP_ROOT" ;;/);
+    assert.ok(!/FOSSIL/.test(body), "the fossil source root is gone");
+    // The install and bundle steps run for every platform, not only mobile.
+    assert.match(body, /\n  run_pnpm_install "\$root" >&2/);
+    assert.match(body, /cd "\$root\/apps\/\$platform"/);
+    assert.match(body, /checkout -- "apps\/\$platform\/Gemfile\.lock"/);
   });
 });
 
@@ -587,20 +602,119 @@ describe("intest_dispatch_betas — idempotency and reporting", () => {
     // belongs to which platform when both natives are skipped.
     assert.match(body, /manualCommands/);
     assert.match(body, /\{ id: \., command:/);
-    assert.match(body, /NEVER pnpm install here \(desktop fossil\)/);
+    // ADR-0067: desktop installs in a fresh worktree, like mobile.
+    assert.match(body, /cd apps\/desktop && bundle install && DRAFTO_INTEST_ISSUE=/);
+    assert.ok(!/NEVER pnpm install/.test(body), "the fossil caveat is retired");
   });
 
-  it("never sends a human to git-checkout the fossil / operator working tree", () => {
-    // The desktop manual command targets the dedicated build root, detached.
-    assert.match(body, /\$desktopRoot/);
+  it("never sends a human to the operator's working tree or a factory build root", () => {
+    // Both manual commands build in one worktree of the PR branch ($setup).
+    assert.equal(
+      (body.match(/git worktree add --detach \.\.\/drafto-" \+ \$issue/g) || []).length,
+      1,
+    );
+    assert.equal((body.match(/\(\$setup \+ " && cd apps\//g) || []).length, 2);
+    assert.ok(
+      !/\$desktopRoot|BETA_DESKTOP_ROOT/.test(body),
+      "a build root is hard-reset by the factory",
+    );
     assert.ok(
       !/cd \/Users\/jakub\/code\/drafto && git checkout/.test(body),
       "must not move the operator's working tree onto a PR branch",
     );
   });
 
+  it("runs both manual commands in one shell, sharing a worktree at the PR head (real git)", () => {
+    // With both natives skipped the tester runs both commands, the second from
+    // wherever the first left the shell. A later In Test round must build the
+    // new head, not whatever an earlier round's worktree held: also after a
+    // rebase, and also when the shell sits in some other repo.
+    const jq = body.match(/manual=\$\(jq -nc [\s\S]*?\|\| echo "\[\]"\)/);
+    assert.ok(jq, "could not extract the manual-command jq");
+    const gen = spawnSync(
+      "bash",
+      ["-c", `skipped='mobile:phase-B,desktop:knob-off'; issue_num=7\n${jq[0]}\necho "$manual"`],
+      { encoding: "utf8" },
+    );
+    assert.equal(gen.status, 0, gen.stderr);
+    const cmd = Object.fromEntries(JSON.parse(gen.stdout).map((c) => [c.id, c.command]));
+    assert.match(cmd.mobile, /&& DRAFTO_INTEST_ISSUE=7 pnpm release:beta:all$/);
+    assert.match(cmd.desktop, /&& DRAFTO_INTEST_ISSUE=7 pnpm release:beta$/);
+
+    const dir = mkdtempSync(join(tmpdir(), "intest-manual-"));
+    try {
+      const git = (cwd, ...a) =>
+        spawnSync("git", ["-C", cwd, "-c", "user.email=t@t", "-c", "user.name=t", ...a], {
+          encoding: "utf8",
+        });
+      const origin = join(dir, "origin");
+      for (const d of ["scripts", "apps/mobile", "apps/desktop"]) {
+        mkdirSync(join(origin, d), { recursive: true });
+      }
+      writeFileSync(join(origin, "scripts", "worktree-bootstrap.sh"), "exit 0\n");
+      writeFileSync(join(origin, "apps", "mobile", "keep"), "");
+      writeFileSync(join(origin, "apps", "desktop", "keep"), "");
+      git(origin, "init", "-q", "-b", "main");
+      git(origin, "add", "-A");
+      git(origin, "commit", "-q", "-m", "one");
+      git(origin, "checkout", "-q", "-b", "factory/issue-7");
+      git(origin, "commit", "-q", "--allow-empty", "-m", "pr head");
+      git(origin, "checkout", "-q", "main");
+      const code = join(dir, "code");
+      mkdirSync(code);
+      const primary = join(code, "primary");
+      assert.equal(spawnSync("git", ["clone", "-q", origin, primary]).status, 0);
+      // Fake pnpm / bundle record where they ran and the issue they were given.
+      const bin = join(dir, "bin");
+      const calls = join(dir, "calls");
+      mkdirSync(bin);
+      for (const tool of ["pnpm", "bundle"]) {
+        writeFileSync(
+          join(bin, tool),
+          `#!/bin/sh\necho "${tool} $* @ $PWD issue=$DRAFTO_INTEST_ISSUE" >> "${calls}"\n`,
+          { mode: 0o755 },
+        );
+      }
+      const run = (script, from = primary) =>
+        spawnSync("bash", ["-c", `cd ${JSON.stringify(from)} || exit 10\n${script}`], {
+          encoding: "utf8",
+          env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+        });
+
+      const both = run(`${cmd.mobile} || exit 11\n${cmd.desktop} || exit 12`);
+      assert.equal(both.status, 0, both.stderr);
+      const wt = join(realpathSync(code), "drafto-7");
+      const ran = readFileSync(calls, "utf8").split("\n");
+      assert.ok(ran.includes(`pnpm release:beta:all @ ${wt}/apps/mobile issue=7`), ran.join("\n"));
+      assert.ok(ran.includes(`bundle install @ ${wt}/apps/desktop issue=`), ran.join("\n"));
+      assert.ok(ran.includes(`pnpm release:beta @ ${wt}/apps/desktop issue=7`), ran.join("\n"));
+
+      // The next round: the PR moved on, and the old worktree is still there.
+      git(origin, "checkout", "-q", "factory/issue-7");
+      git(origin, "commit", "-q", "--allow-empty", "-m", "feedback fix");
+      const head = git(origin, "rev-parse", "HEAD").stdout.trim();
+      const again = run(`${cmd.desktop} || exit 12`);
+      assert.equal(again.status, 0, again.stderr);
+      assert.equal(git(wt, "rev-parse", "HEAD").stdout.trim(), head);
+
+      // Then the branch is rebased (no fast-forward), and the tester pastes the
+      // command in another project's checkout next to the worktree.
+      git(origin, "reset", "-q", "--hard", "main");
+      git(origin, "commit", "-q", "--allow-empty", "-m", "rebased");
+      const rebased = git(origin, "rev-parse", "HEAD").stdout.trim();
+      const other = join(code, "other");
+      mkdirSync(other);
+      git(other, "init", "-q");
+      const third = run(`${cmd.desktop} || exit 12`, other);
+      assert.equal(third.status, 0, third.stderr);
+      assert.equal(git(wt, "rev-parse", "HEAD").stdout.trim(), rebased);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("merges node-side lane refusals with bash-side gate skips", () => {
-    // A fossil-assertion refusal must reach the comment, not vanish.
+    // A desktop deps refusal must reach the comment, not vanish.
     assert.match(body, /\$gateSkipped \+ \$laneSkipped/);
   });
 
@@ -1227,7 +1341,7 @@ describe("pre-merge beta knobs", () => {
     assert.match(script, /FACTORY_INTEST_BETA_DESKTOP="\$\{FACTORY_INTEST_BETA_DESKTOP:-0\}"/);
   });
 
-  it("points the build roots at dedicated paths, not the fossil or this checkout", () => {
+  it("points the build roots at dedicated paths, not the primary or this checkout", () => {
     // The plist's explicit knobs win. Both: the factory's build volume when it
     // is mounted, else ~/code. The volume's name is ASCII (ADR-0060), because
     // the mobile root's iOS pods cannot build from a non-ASCII path.
@@ -1243,14 +1357,18 @@ describe("pre-merge beta knobs", () => {
       lib,
       /BETA_DESKTOP_ROOT="\$\{DRAFTO_DESKTOP_BUILD_ROOT:-\$parent\/drafto-beta-desktop\}"/,
     );
+    // The old knob name still works, so an older launchd plist keeps the rail.
     assert.match(
       lib,
-      /DESKTOP_FOSSIL_ROOT="\$\{DRAFTO_DESKTOP_FOSSIL_ROOT:-\/Users\/jakub\/code\/drafto\}"/,
+      /PRIMARY_CHECKOUT_ROOT="\$\{DRAFTO_PRIMARY_CHECKOUT_ROOT:-\$\{DRAFTO_DESKTOP_FOSSIL_ROOT:-\/Users\/jakub\/code\/drafto\}\}"/,
     );
     assert.match(lib, /parent="\/Users\/jakub\/code"/, "~/code fallback kept");
     assert.match(lib, /-d "\$BETA_BUILDS_VOLUME_DIR"/, "volume used only when mounted");
     // The factory must not shadow the lib's defaults with its own.
-    assert.doesNotMatch(script, /^\s*(BETA_MOBILE_ROOT|BETA_DESKTOP_ROOT|DESKTOP_FOSSIL_ROOT)=/m);
+    assert.doesNotMatch(
+      script,
+      /^\s*(BETA_MOBILE_ROOT|BETA_DESKTOP_ROOT|PRIMARY_CHECKOUT_ROOT|DESKTOP_FOSSIL_ROOT)=/m,
+    );
   });
 
   it("dispatches betas before writing the scenario (the build takes 20-40 min)", () => {

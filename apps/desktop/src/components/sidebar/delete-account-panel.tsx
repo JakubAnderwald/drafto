@@ -45,7 +45,7 @@ interface DeleteAccountPanelProps {
 
 /**
  * Inline type-`DELETE`-to-confirm step for account deletion. Inline rather than a
- * `Modal`: `Modal` is unproven on the react-native-macos fossil build, and the
+ * `Modal`: `Modal` is unproven on react-native-macos, and the
  * sidebar already hosts inline `TextInput`s.
  *
  * An Apple-linked user first confirms with Apple in the browser. The browser tells the
