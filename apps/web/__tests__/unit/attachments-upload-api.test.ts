@@ -327,6 +327,23 @@ describe("POST /api/notes/[id]/attachments/confirm", () => {
     expect(body.error).toBe("Invalid file path");
   });
 
+  it.each([
+    "user-1/note-1/",
+    "user-1/note-1/a/b.png",
+    "user-1/note-1/Show #40.mp3",
+    "user-1/note-1/100%.pdf",
+  ])("returns 400 for a file name upload-url would not produce (%s)", async (filePath) => {
+    authenticateAs("user-1");
+    mockNoteExists();
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
+    const request = createConfirmRequest({ filePath, fileSize: 1024, mimeType: "audio/mpeg" });
+    const response = await POST(request, { params });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("Invalid file path");
+  });
+
   it("returns 400 when file not found in storage", async () => {
     authenticateAs("user-1");
     mockNoteExists();

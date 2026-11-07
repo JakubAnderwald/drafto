@@ -117,6 +117,14 @@ export type {
   TipTapMark,
 } from "./editor/types";
 export {
+  toStorageSafeFileName,
+  isStorageSafeFileName,
+  truncateFileName,
+  safeAttachmentFileName,
+  buildAttachmentStoragePath,
+  localAttachmentFileName,
+} from "./storage/storage-key";
+export {
   colors,
   semanticLight,
   semanticDark,

@@ -1,12 +1,18 @@
 import RNFS from "react-native-fs";
 import { Q } from "@nozbe/watermelondb";
 
-import { MAX_FILE_SIZE, BUCKET_NAME, FILE_TOO_LARGE_MESSAGE } from "@drafto/shared";
+import {
+  MAX_FILE_SIZE,
+  BUCKET_NAME,
+  FILE_TOO_LARGE_MESSAGE,
+  buildAttachmentStoragePath,
+  localAttachmentFileName,
+  safeAttachmentFileName,
+} from "@drafto/shared";
 
 import { database, Attachment } from "@/db";
 import { supabase } from "@/lib/supabase";
 import { generateId } from "@/lib/generate-id";
-import { sanitizeFileName } from "./attachment-utils";
 import type { PickedFile } from "./attachments";
 
 const ATTACHMENTS_DIR_NAME = "attachments";
@@ -22,7 +28,7 @@ async function saveFileLocally(file: PickedFile): Promise<string> {
     await RNFS.mkdir(dir);
   }
 
-  const localFileName = `${generateId()}_${sanitizeFileName(file.fileName)}`;
+  const localFileName = localAttachmentFileName(generateId(), file.fileName);
   const destination = `${dir}/${localFileName}`;
 
   // Use the decoded POSIX path from the native picker — `file.uri` is a
@@ -42,8 +48,10 @@ export async function queueAttachment(
     throw new Error(FILE_TOO_LARGE_MESSAGE);
   }
 
-  const fileName = sanitizeFileName(file.fileName);
-  const filePath = `${userId}/${noteId}/${fileName}`;
+  // The key gets a unique suffix so two files with the same (sanitized) name on
+  // one note never share an object; the display name stays without it.
+  const fileName = safeAttachmentFileName(file.fileName);
+  const { filePath } = buildAttachmentStoragePath(file.fileName, userId, noteId);
   const localUri = await saveFileLocally(file);
   const remoteId = generateId();
 
