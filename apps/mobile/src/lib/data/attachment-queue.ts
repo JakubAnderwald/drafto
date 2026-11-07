@@ -1,7 +1,14 @@
 import { File, Directory, Paths } from "expo-file-system";
 import { Q } from "@nozbe/watermelondb";
 
-import { MAX_FILE_SIZE, BUCKET_NAME, FILE_TOO_LARGE_MESSAGE } from "@drafto/shared";
+import {
+  MAX_FILE_SIZE,
+  BUCKET_NAME,
+  FILE_TOO_LARGE_MESSAGE,
+  buildAttachmentStoragePath,
+  localAttachmentFileName,
+  safeAttachmentFileName,
+} from "@drafto/shared";
 
 import { database, Attachment } from "@/db";
 import { supabase } from "@/lib/supabase";
@@ -16,24 +23,6 @@ interface PickedFile {
 
 const ATTACHMENTS_DIR_NAME = "attachments";
 
-function sanitizeFileName(name: string): string {
-  return (
-    name
-      // Decompose combining marks so accented chars become base + mark (e.g. "ö" → "o" + U+0308),
-      // then strip the marks. Supabase Storage rejects non-ASCII keys; this lossy normalisation
-      // preserves the readable base letter instead of falling back to an underscore.
-      .normalize("NFD")
-      .replace(/[̀-ͯ]/g, "")
-      // Any remaining non-printable-ASCII (emoji, CJK, control chars) becomes "_"
-      .replace(/[^\x20-\x7e]/g, "_")
-      // Filesystem-unsafe ASCII chars
-      .replace(/[/\\<>:"|?*]/g, "_")
-      // Path traversal
-      .replace(/\.\./g, "_")
-      .slice(0, 255)
-  );
-}
-
 function getAttachmentsDir(): Directory {
   return new Directory(Paths.document, ATTACHMENTS_DIR_NAME);
 }
@@ -43,7 +32,7 @@ function saveFileLocally(file: PickedFile): string {
   if (!dir.exists) {
     dir.create();
   }
-  const localFileName = `${generateId()}_${sanitizeFileName(file.fileName)}`;
+  const localFileName = localAttachmentFileName(generateId(), file.fileName);
   const source = new File(file.uri);
   const destination = new File(dir, localFileName);
   source.copy(destination);
@@ -64,8 +53,10 @@ export async function queueAttachment(
     throw new Error(FILE_TOO_LARGE_MESSAGE);
   }
 
-  const fileName = sanitizeFileName(file.fileName);
-  const filePath = `${userId}/${noteId}/${fileName}`;
+  // The key gets a unique suffix so two files with the same (sanitized) name on
+  // one note never share an object; the display name stays without it.
+  const fileName = safeAttachmentFileName(file.fileName);
+  const { filePath } = buildAttachmentStoragePath(file.fileName, userId, noteId);
   const localUri = saveFileLocally(file);
   const remoteId = generateId();
 

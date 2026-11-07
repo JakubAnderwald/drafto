@@ -5,6 +5,7 @@ import {
   MAX_FILE_SIZE,
   SIGNED_URL_EXPIRY_SECONDS,
   FILE_TOO_LARGE_MESSAGE,
+  isStorageSafeFileName,
 } from "@drafto/shared";
 
 interface RouteParams {
@@ -52,7 +53,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
   // Derive fileName from the server-generated filePath to prevent tampering
   const derivedFileName = filePath.slice(expectedPrefix.length);
-  if (derivedFileName.length === 0 || derivedFileName.includes("/")) {
+  // A name upload-url would not have produced (e.g. containing "#") is stored
+  // under a different key than filePath, so the row would never match the file.
+  if (!isStorageSafeFileName(derivedFileName)) {
     return errorResponse("Invalid file path", 400);
   }
 
