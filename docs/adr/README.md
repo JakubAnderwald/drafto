@@ -97,4 +97,5 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0063](./0063-desktop-native-runtime-patches.md)                     | Desktop Patches RN Native Bugs From the App Target     | Superseded by 0067 | 2026-10-31 |
 | [0064](./0064-apple-revocation-on-web-android-macos.md)              | Revoke Sign in with Apple on Web, Android and macOS    | Accepted           | 2026-11-01 |
 | [0065](./0065-factory-hosted-config-gate.md)                         | Gate Factory Cards on the Hosted Supabase Config       | Accepted           | 2026-11-01 |
+| [0066](./0066-support-forward-provenance-gate.md)                    | Support Forwards Need an Allowlisted Marker            | Accepted           | 2026-11-01 |
 | [0067](./0067-desktop-moves-to-react-native-macos-0-83.md)           | Desktop Moves to react-native-macos 0.83               | Accepted           | 2026-11-02 |

@@ -62,6 +62,8 @@ const verifyFns = [...script.matchAll(/^(verify_[a-z_]+)\(\) \{/gm)].map((m) => 
 // Every verify_* function plus the real helpers they lean on. Everything that
 // talks to GitHub, the board or claude is stubbed in the harness instead.
 const REAL_HELPERS = [
+  "support_forward_filter",
+  "gate_support_forwards",
   "owner_comments_since",
   "is_noise_comment",
   "has_actionable_feedback",
@@ -360,8 +362,15 @@ describe("factory-agent.sh verification stage: static wiring", () => {
 
   it("reuses the In Test sweep's feedback filter rather than a copy", () => {
     const sweep = slice("  # ── In Test feedback sweep", "# ── --browser mode");
-    assert.match(sweep, /if has_actionable_feedback "\$COMMENTS_JSON" "\$INTEST_HWM"; then/);
-    assert.match(extract("verify_sweep_card"), /has_actionable_feedback "\$comments_json" "\$hwm"/);
+    // The trailing issue argument feeds the support-forward gate (ADR-0066).
+    assert.match(
+      sweep,
+      /if has_actionable_feedback "\$COMMENTS_JSON" "\$INTEST_HWM" "\$ISSUE_NUM"; then/,
+    );
+    assert.match(
+      extract("verify_sweep_card"),
+      /has_actionable_feedback "\$comments_json" "\$hwm" "\$issue_num"/,
+    );
   });
 
   it("stops the lanes on every exit from Testing, promotion included", () => {

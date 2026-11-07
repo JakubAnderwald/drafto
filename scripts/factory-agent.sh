@@ -543,6 +543,16 @@ if [[ -f "$HOME/drafto-secrets/support-env.sh" ]]; then
   source "$HOME/drafto-secrets/support-env.sh"
 fi
 SUPPORT_ALLOWLIST="${SUPPORT_ALLOWLIST:-jakub@anderwald.info,joanna@anderwald.info}"
+# The support agent's state file. The support-forward gate reads the reporter
+# email recorded there (gate_support_forwards, ADR-0066). It lives in the
+# PRIMARY checkout, which support-agent.sh runs from, not under $REPO_ROOT: the
+# factory runs from its own volume (ADR-0060), and that checkout's logs/ has no
+# support-state.json, so the default path would read an empty state. Read only.
+# A launchd plist doesn't expand `~`, so a leading `~/` is expanded here, as for
+# the other path overrides. Otherwise the gate's -r test fails and the
+# recorded-reporter check is silently skipped.
+SUPPORT_STATE_FILE="${DRAFTO_SUPPORT_STATE_FILE:-$HOME/code/drafto/logs/support-state.json}"
+case "$SUPPORT_STATE_FILE" in "~/"*) SUPPORT_STATE_FILE="$HOME/${SUPPORT_STATE_FILE#\~/}" ;; esac
 ADMIN_EMAIL="${SUPPORT_ADMIN_EMAIL:-jakub@anderwald.info}"
 OAUTH_FILE="$HOME/drafto-secrets/zoho-oauth.json"
 OAUTH_USER_EMAIL=""
@@ -984,10 +994,14 @@ fetch_issue_record() {
 }
 
 # Fetch issue comments via the API (gh issue view truncates to 100).
-# `authorAssociation` is required by the replan detector — only OWNER comments
-# newer than the plan marker count as a revision trigger. Without it, a
-# customer reply forwarded by the support agent would still be OWNER (the
-# Mac mini's gh identity), so we cannot use the login alone.
+# `authorAssociation` is required by the comment detectors: only OWNER comments
+# newer than the plan or the feedback mark count as a replan or revision
+# trigger. OWNER alone doesn't prove the operator wrote it: support-agent step
+# 4.5 forwards a customer's email reply under the Mac mini's gh identity, so a
+# forward is OWNER too. The detectors therefore also run every comment through
+# the support-forward gate (gate_support_forwards). This returns every comment,
+# forwards included: the planner and implementer bundles, and the marker and
+# idempotency checks, read the same list.
 fetch_issue_comments() {
   local issue_num="$1"
   gh api --paginate "repos/JakubAnderwald/drafto/issues/$issue_num/comments" 2>>"$LOG_FILE" \
@@ -1049,20 +1063,139 @@ extract_acked_comment_ids() {
   '
 }
 
+# ── Support-forward gate (ADR-0066) ─────────────────────────────────────────
+# support-agent step 4.5 forwards a customer's email reply onto the linked
+# issue, posted under the Mac mini's gh identity, so it arrives as an OWNER
+# comment just like the operator's own. Anyone can reply to a support thread,
+# so OWNER can't tell "the operator asked for a change" from "a stranger
+# emailed". Without this gate, that stranger could replan a card, or roll an In
+# Test card back and have their text fed to the implementer. Both comment
+# detectors (unacked_owner_comments, owner_comments_since) run their result
+# through gate_support_forwards, so every replan and revision trigger keeps a
+# forward out unless it provably comes from an allowlisted reporter.
+
+# support_forward_filter <comments-json> <allowlist-csv> <reporter-email>
+# Pure, one jq pass, no I/O. Prints {"kept":[<comment>…],"dropped":[{"id",
+# "reason"}…]}. A comment is a FORWARD when its body mentions
+# `drafto-support-forward` or `Customer replied via support@` anywhere (any
+# case). A forward is kept only when all of these hold:
+#   - exactly one UNQUOTED line (one not starting with `>`) mentions
+#     drafto-support-forward, and that line is the whole marker,
+#     `<!-- drafto-support-forward sender:<addr> -->`, where <addr> has an `@`
+#     and no whitespace or `<>`;
+#   - <addr>, lower-cased, is in the allowlist;
+#   - <reporter-email>, the reporter the support state recorded for the issue,
+#     is empty or allowlisted too.
+# Any other forward is dropped, with the reason. Step 4.5 `> `-quotes every
+# line of the customer's text, so a marker the customer typed sits on a quoted
+# line and counts for nothing, or it makes a second marker. Either way the
+# forward is dropped. A forward with no marker is dropped too: one posted
+# before the marker existed, or one the agent got wrong. Deny by default. A
+# comment that isn't a forward passes through untouched. A lone `\r` doesn't
+# split a line, so text after one stays on its quoted line.
+support_forward_filter() {
+  local comments_json="$1" allowlist="$2" reporter="$3"
+  echo "$comments_json" | jq -c --arg allow "$allowlist" --arg reporter "$reporter" '
+    def norm: ascii_downcase | gsub("^\\s+|\\s+$"; "");
+    def in_list($list): . as $e | any($list[]; . == $e);
+    ($allow | split(",") | map(norm) | map(select(length > 0))) as $allowed
+    | ($reporter | norm) as $rep
+    | map(
+        (.body // "") as $b
+        | if ($b | test("drafto-support-forward|customer replied via support@"; "i")) | not then
+            {c: ., reason: null}
+          else
+            [ $b | split("\n")[] | rtrimstr("\r")
+              | select(test("^\\s*>") | not)
+              | select(test("drafto-support-forward"; "i")) ] as $marks
+            | ([ ($marks[0] // "") | gsub("^\\s+|\\s+$"; "")
+                 | capture("^<!--\\s*drafto-support-forward\\s+sender:\\s*(?<addr>[^\\s<>]+@[^\\s<>]+)\\s*-->$")
+                 | .addr | norm ] | .[0]) as $sender
+            | {c: ., reason: (
+                if ($marks | length) == 0 then
+                  (if ($b | test("drafto-support-forward"; "i")) then "marker-only-in-quoted-text" else "no-marker" end)
+                elif ($marks | length) > 1 then "multiple-markers"
+                elif $sender == null then "malformed-marker"
+                elif ($sender | in_list($allowed)) | not then "sender-not-allowlisted"
+                elif $rep != "" and (($rep | in_list($allowed)) | not) then "reporter-not-allowlisted"
+                else null end)}
+          end
+      )
+    | {kept: map(select(.reason == null) | .c),
+       dropped: map(select(.reason != null) | {id: (.c.id | tostring), reason})}
+  '
+}
+
+# gate_support_forwards <comments-json> [<issue>]
+# The gate both comment detectors apply. Prints <comments-json> minus the
+# forwards support_forward_filter drops, and logs one line per dropped comment:
+# its id and the reason, never its body or the sender. The failure notice posts
+# the log's tail to a public issue. Each line, and each warning below, is
+# written once per daily log file, not once per call. Given an <issue>, and
+# only when a comment looks like a forward, it first reads the reporter email
+# the support state recorded for that issue. A forward on an issue a non-allowlisted customer
+# filed is then never actionable, whatever its marker says. With no <issue>, or
+# a state file it can't read (logged), only the marker is checked, and that
+# still denies a forward by default. Operator comments cost nothing extra: the
+# state is read only when a forward's needle appears. Stdout is the caller's
+# captured value, so this logs with logerr, never log. Prints nothing and
+# returns 1 if the filter itself fails, like the detectors' own jq.
+gate_support_forwards() {
+  local comments_json="$1" issue="${2:-}" reporter="" state_file="${SUPPORT_STATE_FILE:-}" result warn=""
+  if [[ -n "$issue" ]] && grep -qiE 'drafto-support-forward|customer replied via support@' <<<"$comments_json"; then
+    if [[ -z "$state_file" || ! -r "$state_file" ]]; then
+      warn="WARNING: support-forward gate: support state ${state_file:-<unset>} is unreadable; checking #$issue's forwards on their marker alone"
+    elif ! reporter=$(node "$SCRIPT_DIR/lib/state-cli.mjs" get-reporter-email "$issue" \
+        --state-file "$state_file" 2>>"$LOG_FILE"); then
+      warn="WARNING: support-forward gate: get-reporter-email failed for #$issue; checking its forwards on their marker alone"
+      reporter=""
+    fi
+  fi
+  # Once per daily log file, like the dropped-comment lines below: a forward
+  # that stays in the comments trips the same warning on every tick.
+  if [[ -n "$warn" ]]; then
+    grep -qF -- "$warn" "${LOG_FILE:-}" 2>/dev/null || logerr "$warn"
+  fi
+  if ! result=$(support_forward_filter "$comments_json" "${SUPPORT_ALLOWLIST:-}" "$reporter") \
+      || [[ -z "$result" ]]; then
+    logerr "ERROR: support-forward gate: filter failed for #${issue:-?}"
+    return 1
+  fi
+  # Once per daily log file, as support-agent.sh does for its unrouted issues.
+  # The detectors run every 5-minute tick, and twice per tick for an In Test
+  # card (has_actionable_feedback, then the sweep). A forward that stays
+  # dropped would otherwise repeat until it filled the 20-line tail the
+  # failure notice posts. A newly dropped comment, or a new reason for an old
+  # one, still logs. `#<issue>:`, `comment <id> ` and `(<reason>)` delimit
+  # every field, so one line can't match another.
+  local id reason msg
+  while read -r id reason; do
+    [[ -n "$id" ]] || continue
+    msg="Issue #${issue:-?}: support-forwarded comment $id is not replan or revision feedback ($reason)"
+    grep -qF -- "$msg" "${LOG_FILE:-}" 2>/dev/null || logerr "$msg"
+  done < <(echo "$result" | jq -r '.dropped[] | "\(.id) \(.reason)"')
+  echo "$result" | jq -c '.kept'
+}
+
 # Compute the list of OWNER-association comment IDs that are NEWER than the
 # plan comment AND not present in the acked-ids set. The result is a JSON
 # array of stringified comment IDs (kept as strings to dodge int64 rounding).
-# Bots and non-owner commenters are ignored — a customer reply forwarded by
-# support-agent step 4.5 IS posted under the Mac mini's gh identity (OWNER),
-# so the email-replan path still works without a separate check. The factory
-# posts under that same identity, so its own marker comments are skipped too
+# Bots and non-owner commenters are ignored. OWNER isn't enough on its own: a
+# customer reply forwarded by support-agent step 4.5 is posted under the Mac
+# mini's gh identity, so it's OWNER too. Every survivor therefore goes through
+# the support-forward gate. An allowlisted reporter's email reply still
+# replans, through its provenance marker. A stranger's never does (ADR-0066).
+# Pass <issue> so the gate can also check the issue's recorded reporter. With
+# no <issue>, only the marker is checked. The factory posts under that same
+# identity, so its own marker comments are skipped too
 # (as owner_comments_since does): the reply the planner posts to each trigger
 # comment must not read as fresh feedback and start another replan.
 unacked_owner_comments() {
   local comments_json="$1"
   local plan_created_at="$2"
   local acked_json="$3"
-  echo "$comments_json" | jq -c \
+  local issue="${4:-}" owner kept
+  owner=$(echo "$comments_json" | jq -c \
     --arg planAt "$plan_created_at" \
     --argjson acked "$acked_json" \
     '
@@ -1072,8 +1205,9 @@ unacked_owner_comments() {
         and (((.body // "") | test("<!-- drafto-factory")) | not)
         and (((.id | tostring)) as $id | ($acked | index($id)) | not)
       ))
-      | map(.id | tostring)
-    '
+    ') || return 1
+  kept=$(gate_support_forwards "$owner" "$issue") || return 1
+  echo "$kept" | jq -c 'map(.id | tostring)'
 }
 
 # ── Replies to operator comments (Plan Review + In Test) ───────────────────
@@ -1331,22 +1465,29 @@ build_implement_bundle() {
     | node "$SCRIPT_DIR/lib/factory-bundle.mjs"
 }
 
+# owner_comments_since <comments-json> <since-iso> [<issue>]
 # OWNER comments strictly newer than <since-iso>, excluding the factory's own
 # marker comments (so a "revising"/"in-test" comment we posted can't be read
-# back as fresh feedback). Customer replies forwarded by support-agent land
-# under the Mac mini's gh identity (OWNER) with no factory marker, so they're
-# included. Prints a JSON array of {id,user,body,createdAt}; "[]" if since is
-# empty (no baseline yet → nothing counts as feedback).
+# back as fresh feedback). Customer replies forwarded by support-agent step
+# 4.5 land under the Mac mini's gh identity (OWNER) with no factory marker.
+# Each one therefore goes through the support-forward gate, which keeps only a
+# forward whose provenance marker names an allowlisted sender (ADR-0066). Pass
+# <issue> so the gate can also check the issue's recorded reporter. With no
+# <issue>, only the marker is checked. Prints a JSON array of
+# {id,user,body,createdAt}; "[]" if since is empty (no baseline yet → nothing
+# counts as feedback).
 owner_comments_since() {
   local comments_json="$1"
   local since="$2"
+  local issue="${3:-}" owner
   if [[ -z "$since" || "$since" == "null" ]]; then echo "[]"; return 0; fi
-  echo "$comments_json" | jq -c --arg since "$since" \
+  owner=$(echo "$comments_json" | jq -c --arg since "$since" \
     '[ .[] | select(
          (.authorAssociation == "OWNER")
          and ((.createdAt) > $since)
          and (((.body // "") | test("<!-- drafto-factory")) | not)
-       ) ]'
+       ) ]') || return 1
+  gate_support_forwards "$owner" "$issue"
 }
 
 # Is a comment body pure approval / acknowledgement noise (so it must NOT
@@ -1365,16 +1506,18 @@ ship|shipit|approved|approve|done|ok|okay|okthanks|yes|yep|yeah|awesome|love|lov
   [[ ${#norm} -le 2 ]]
 }
 
-# has_actionable_feedback <comments-json> <since-iso> — exit 0 when an OWNER
-# comment newer than <since-iso> (the consumed-feedback high-water mark,
-# lastFeedbackAt) is something other than approval noise: the feedback that
-# rolls an In Test card back to In Progress. One definition for the In Test
-# sweep (don't dispatch a beta for a commit about to be superseded) and the
-# Testing sweep (cut verification short). No mark yet → nothing counts.
+# has_actionable_feedback <comments-json> <since-iso> [<issue>] — exit 0 when
+# an OWNER comment newer than <since-iso> (the consumed-feedback high-water
+# mark, lastFeedbackAt) is something other than approval noise: the feedback
+# that rolls an In Test card back to In Progress. One definition for the In
+# Test sweep (don't dispatch a beta for a commit about to be superseded) and
+# the Testing sweep (cut verification short). No mark yet → nothing counts.
+# <issue> goes on to owner_comments_since's support-forward gate. So a
+# stranger's forwarded email can't skip a beta or cut verification short.
 has_actionable_feedback() {
-  local comments_json="$1" since="$2" new n i
+  local comments_json="$1" since="$2" issue="${3:-}" new n i
   [[ -n "$since" && "$since" != "null" ]] || return 1
-  new=$(owner_comments_since "$comments_json" "$since")
+  new=$(owner_comments_since "$comments_json" "$since" "$issue")
   n=$(echo "$new" | jq 'length' 2>/dev/null || echo "0")
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
   for ((i=0; i<n; i++)); do
@@ -5184,7 +5327,7 @@ verify_sweep_card() {
       [[ "$threads" =~ ^[0-9]+$ ]] || threads="null"
     fi
     hwm=$(echo "$state_json" | jq -r '.lastFeedbackAt // ""' 2>/dev/null || echo "")
-    has_actionable_feedback "$comments_json" "$hwm" && feedback=true
+    has_actionable_feedback "$comments_json" "$hwm" "$issue_num" && feedback=true
   fi
   bounces=$(verify_sha_count "$(echo "$state_json" | jq -r '.verifyBounces // ""' 2>/dev/null || echo "")" "$head_sha")
   lanes=$(verify_lane_states "$state_json" "$head_sha" "$enabled")
@@ -5617,11 +5760,14 @@ and drag the card back to **Ready** to retry.
 
   # ── Plan Review sweep: in-place replan on new OWNER comments ──────────────
   # The Ready sweep handled first-time planning. Now scan Plan Review cards
-  # for operator feedback. Any new comment from an OWNER (which includes
-  # email replies forwarded by support-agent step 4.5 — those land via the
-  # Mac mini's gh identity, also OWNER) triggers a re-invocation that edits
-  # the existing plan comment in place. Acked comment IDs are stamped into
-  # the plan body so a successful replan doesn't loop.
+  # for operator feedback. A new OWNER comment triggers a re-invocation that
+  # edits the existing plan comment in place. OWNER alone isn't enough:
+  # support-agent step 4.5 forwards email replies under the Mac mini's gh
+  # identity, so unacked_owner_comments runs every comment through the
+  # support-forward gate, given $ISSUE_NUM for the reporter check. A forward
+  # replans only when its provenance marker names an allowlisted sender
+  # (ADR-0066). Acked comment IDs are stamped into the plan body so a
+  # successful replan doesn't loop.
   if ! REVIEW_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
       --status "Plan Review" 2>>"$LOG_FILE"); then
     log "WARNING: query-status-items 'Plan Review' failed (transient?); skipping replan sweep this tick"
@@ -5672,7 +5818,7 @@ and drag the card back to **Ready** to retry.
 
     ACKED_JSON=$(extract_acked_comment_ids "$PLAN_BODY")
     if [[ -z "$ACKED_JSON" ]]; then ACKED_JSON='[]'; fi
-    UNACKED_JSON=$(unacked_owner_comments "$COMMENTS_JSON" "$PLAN_CREATED_AT" "$ACKED_JSON")
+    UNACKED_JSON=$(unacked_owner_comments "$COMMENTS_JSON" "$PLAN_CREATED_AT" "$ACKED_JSON" "$ISSUE_NUM")
     UNACKED_COUNT=$(echo "$UNACKED_JSON" | jq 'length' 2>/dev/null || echo "0")
     if [[ "$UNACKED_COUNT" -eq 0 ]]; then
       continue
@@ -6005,7 +6151,7 @@ Drag it back to **Ready** so the factory can plan it first.
     if [[ "$PRIOR_PR" != "null" ]]; then
       FEEDBACK_HWM=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
         --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.lastFeedbackAt // ""' 2>/dev/null || echo "")
-      REVISION_COMMENTS=$(owner_comments_since "$COMMENTS_JSON" "$FEEDBACK_HWM")
+      REVISION_COMMENTS=$(owner_comments_since "$COMMENTS_JSON" "$FEEDBACK_HWM" "$ISSUE_NUM")
       [[ -n "$REVISION_COMMENTS" ]] || REVISION_COMMENTS="[]"
       REV_COUNT=$(echo "$REVISION_COMMENTS" | jq 'length' 2>/dev/null || echo "0")
       [[ "$REV_COUNT" =~ ^[0-9]+$ ]] || REV_COUNT=0
@@ -6978,7 +7124,7 @@ A human should take a look. Reset with \
         # from the same comment set.)
         INTEST_HWM=$(echo "$ISSUE_STATE_JSON" | jq -r '.lastFeedbackAt // ""' 2>/dev/null || echo "")
         INTEST_PENDING_FEEDBACK=0
-        if has_actionable_feedback "$COMMENTS_JSON" "$INTEST_HWM"; then
+        if has_actionable_feedback "$COMMENTS_JSON" "$INTEST_HWM" "$ISSUE_NUM"; then
           INTEST_PENDING_FEEDBACK=1
         fi
 
@@ -7060,7 +7206,7 @@ A human should take a look. Reset with \
       continue
     fi
 
-    NEW_COMMENTS=$(owner_comments_since "$COMMENTS_JSON" "$HWM")
+    NEW_COMMENTS=$(owner_comments_since "$COMMENTS_JSON" "$HWM" "$ISSUE_NUM")
     NEW_COUNT=$(echo "$NEW_COMMENTS" | jq 'length' 2>/dev/null || echo "0")
     [[ "$NEW_COUNT" =~ ^[0-9]+$ ]] || NEW_COUNT=0
     [[ "$NEW_COUNT" -eq 0 ]] && continue
