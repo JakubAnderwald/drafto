@@ -1,4 +1,4 @@
-import { Alert } from "react-native";
+import { ActivityIndicator, Alert, ScrollView, StyleSheet } from "react-native";
 import { Q } from "@nozbe/watermelondb";
 import { describeAccountDeletionFailure, type AccountDeletionResult } from "@drafto/shared";
 
@@ -57,7 +57,12 @@ jest.mock("@/hooks/use-network-status", () => ({
   }),
 }));
 
-const mockNotebooks: Array<{ id: string; name: string; markAsDeleted: jest.Mock }> = [];
+const mockNotebooks: Array<{
+  id: string;
+  name: string;
+  markAsDeleted: jest.Mock;
+  update?: jest.Mock;
+}> = [];
 let mockLoading = false;
 jest.mock("@/hooks/use-notebooks", () => ({
   useNotebooks: () => ({ notebooks: mockNotebooks, loading: mockLoading }),
@@ -610,5 +615,193 @@ describe("NotebooksSidebar — app menu and delete account", () => {
 
     expect(mockDeleteAccount).toHaveBeenCalledTimes(1);
     expect(mockSignOut).not.toHaveBeenCalled();
+  });
+});
+
+describe("NotebooksSidebar — notebook list scrolls", () => {
+  type TestInstance = ReturnType<ReturnType<typeof render>["getByTestId"]>;
+  const isInside = (node: TestInstance | null, ancestor: TestInstance): boolean =>
+    node === null ? false : node === ancestor || isInside(node.parent, ancestor);
+  // The nearest native view above a node, skipping composite components.
+  const hostParent = (node: TestInstance): TestInstance | null => {
+    let parent = node.parent;
+    while (parent !== null && typeof parent.type !== "string") parent = parent.parent;
+    return parent;
+  };
+
+  const NOTEBOOK_COUNT = 50;
+  const LAST_NAME = `Notebook ${NOTEBOOK_COUNT}`;
+
+  // The row is the Pressable labelled with the notebook's name; its delete "×" is the
+  // hover-revealed Pressable inside it (see findDeleteButton above).
+  function findRowDeleteButton(utils: ReturnType<typeof render>, name: string): PressableNode {
+    const row = utils.getByLabelText(name);
+    const matches = utils.UNSAFE_root.findAll(
+      (node) =>
+        node.props?.accessibilityLabel === "Delete notebook" &&
+        typeof node.props?.onPress === "function" &&
+        isInside(node, row),
+    );
+    return matches[0] as unknown as PressableNode;
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockNotebooks.length = 0;
+    for (let i = 1; i <= NOTEBOOK_COUNT; i++) {
+      mockNotebooks.push({ id: `nb-${i}`, name: `Notebook ${i}`, markAsDeleted: jest.fn() });
+    }
+    mockLoading = false;
+    mockIsConnected = true;
+    mockIsInternetReachable = true;
+    mockNoteFetch.mockResolvedValue([]);
+    mockGet.mockImplementation((table: string) => {
+      if (table === "notes") return { query: mockNotesQuery };
+      return {};
+    });
+    jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  });
+
+  it("puts every notebook row inside one vertical scroll container that fills the space", () => {
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    const list = utils.getByTestId("notebook-list");
+    const scrollView = utils.UNSAFE_getByType(ScrollView);
+    expect(scrollView.props.testID).toBe("notebook-list");
+    expect(isInside(list, scrollView)).toBe(true);
+    expect(scrollView.props.horizontal).toBeFalsy();
+    expect(StyleSheet.flatten(scrollView.props.style)).toMatchObject({ flex: 1 });
+
+    for (const nb of mockNotebooks) {
+      expect(isInside(utils.getByLabelText(nb.name), list)).toBe(true);
+    }
+  });
+
+  it("keeps the headers and the footer (Trash, sync status, user section) outside the list", () => {
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+    const list = utils.getByTestId("notebook-list");
+
+    for (const label of ["Search", "New notebook", "Trash", "App menu"]) {
+      expect(isInside(utils.getByLabelText(label), list)).toBe(false);
+    }
+    expect(isInside(utils.getByText("NOTEBOOKS"), list)).toBe(false);
+    expect(isInside(utils.getByTestId("sync-status"), list)).toBe(false);
+    expect(isInside(utils.getByTestId("sidebar-user-section"), list)).toBe(false);
+
+    // The list and the footer are siblings in the same column, so the list's flex: 1 takes
+    // exactly the space the footer leaves.
+    const footer = hostParent(utils.getByLabelText("Trash"));
+    expect(footer).not.toBeNull();
+    expect(isInside(utils.getByTestId("sidebar-user-section"), footer as TestInstance)).toBe(true);
+    // A boolean, so a failure doesn't make jest print two whole render trees.
+    expect(hostParent(list) === hostParent(footer as TestInstance)).toBe(true);
+  });
+
+  it("shows the loading spinner in place of the list while notebooks load", () => {
+    mockLoading = true;
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    const spinners = utils.UNSAFE_getAllByType(ActivityIndicator);
+    expect(spinners).toHaveLength(1);
+    expect(utils.queryByTestId("notebook-list")).toBeNull();
+    expect(utils.queryByLabelText(LAST_NAME)).toBeNull();
+
+    // Same slot as the list: after the section header, before the footer, and nothing below
+    // the user section.
+    const hostNodes = utils.UNSAFE_root.findAll((node) => typeof node.type === "string");
+    const spinnerAt = hostNodes.findIndex((node) => isInside(node, spinners[0]));
+    expect(spinnerAt).toBeGreaterThan(hostNodes.indexOf(utils.getByText("NOTEBOOKS")));
+    expect(spinnerAt).toBeLessThan(hostNodes.indexOf(utils.getByLabelText("Trash")));
+    expect(
+      isInside(hostNodes[hostNodes.length - 1], utils.getByTestId("sidebar-user-section")),
+    ).toBe(true);
+  });
+
+  it("keeps the create-notebook input above the list, outside it, and still creates", async () => {
+    const create = jest.fn();
+    mockGet.mockImplementation((table: string) => {
+      if (table === "notebooks") return { create };
+      if (table === "notes") return { query: mockNotesQuery };
+      return {};
+    });
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    fireEvent.press(utils.getByLabelText("New notebook"));
+    const input = utils.getByPlaceholderText("Notebook name");
+    const list = utils.getByTestId("notebook-list");
+    expect(isInside(input, list)).toBe(false);
+
+    // Document order: the create row sits between the section header and the list.
+    const hostNodes = utils.UNSAFE_root.findAll((node) => typeof node.type === "string");
+    expect(hostNodes.indexOf(input)).toBeLessThan(hostNodes.indexOf(list));
+    expect(hostNodes.indexOf(utils.getByText("NOTEBOOKS"))).toBeLessThan(hostNodes.indexOf(input));
+
+    fireEvent.changeText(input, "Recipes");
+    await act(async () => {
+      fireEvent(input, "submitEditing");
+    });
+
+    expect(mockWrite).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(utils.queryByPlaceholderText("Notebook name")).toBeNull();
+  });
+
+  it("selects a notebook you have to scroll to", () => {
+    const onSelectNotebook = jest.fn();
+    const utils = render(
+      <NotebooksSidebar {...defaultProps} onSelectNotebook={onSelectNotebook} />,
+    );
+
+    fireEvent.press(utils.getByLabelText(LAST_NAME));
+
+    expect(onSelectNotebook).toHaveBeenCalledWith(`nb-${NOTEBOOK_COUNT}`);
+  });
+
+  it("renames a notebook you have to scroll to, inline inside the list", async () => {
+    const last = mockNotebooks[NOTEBOOK_COUNT - 1];
+    const draft = { name: last.name };
+    last.update = jest.fn(async (fn: (nb: { name: string }) => void) => fn(draft));
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    fireEvent(utils.getByLabelText(LAST_NAME), "longPress");
+    const input = utils.getByDisplayValue(LAST_NAME);
+    expect(isInside(input, utils.getByTestId("notebook-list"))).toBe(true);
+
+    fireEvent.changeText(input, "Recipes");
+    await act(async () => {
+      fireEvent(input, "submitEditing");
+    });
+
+    expect(last.update).toHaveBeenCalledTimes(1);
+    expect(draft.name).toBe("Recipes");
+    expect(utils.queryByDisplayValue("Recipes")).toBeNull();
+  });
+
+  it("runs the delete guard for a notebook you have to scroll to", async () => {
+    mockNoteFetchCount.mockResolvedValue(2);
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    await findRowDeleteButton(utils, LAST_NAME).props.onPress();
+
+    await waitFor(() =>
+      expect(Alert.alert).toHaveBeenCalledWith(
+        "Cannot Delete Notebook",
+        "Cannot delete notebook with notes. Move or delete notes first.",
+      ),
+    );
+    expect(mockNotesQuery).toHaveBeenCalledWith(
+      Q.where("notebook_id", `nb-${NOTEBOOK_COUNT}`),
+      Q.where("is_trashed", false),
+    );
+    expect(mockWrite).not.toHaveBeenCalled();
+    expect(mockNotebooks[NOTEBOOK_COUNT - 1].markAsDeleted).not.toHaveBeenCalled();
+  });
+
+  it("still renders nothing below the user section with a long list", () => {
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    const hostViews = utils.UNSAFE_root.findAll((node) => typeof node.type === "string");
+    const lastHostView = hostViews[hostViews.length - 1];
+    expect(isInside(lastHostView, utils.getByTestId("sidebar-user-section"))).toBe(true);
   });
 });
