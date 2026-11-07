@@ -57,6 +57,11 @@ describe("toStorageSafeFileName", () => {
     expect(toStorageSafeFileName("café résumé naïve.pdf")).toBe("cafe resume naive.pdf");
   });
 
+  it("emits printable ASCII only, so code units equal bytes", () => {
+    const everyChar = Array.from({ length: 0x3000 }, (_, i) => String.fromCharCode(i)).join("");
+    expect(toStorageSafeFileName(`${everyChar}文件 🎉.txt`)).toMatch(/^[ -~]*$/);
+  });
+
   it("replaces emoji and non-Latin scripts", () => {
     expect(toStorageSafeFileName("文件 🎉.txt")).toBe("__ __.txt");
   });

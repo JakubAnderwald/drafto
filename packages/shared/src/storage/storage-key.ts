@@ -41,6 +41,7 @@ export function isStorageSafeFileName(name: string): boolean {
   return name.length > 0 && toStorageSafeFileName(name) === name;
 }
 
+/** Split off the extension (last `.` not at the start), capped at 20 characters. */
 function splitExtension(name: string): { base: string; extension: string } {
   const dotIndex = name.lastIndexOf(".");
   if (dotIndex <= 0) return { base: name, extension: "" };
@@ -65,6 +66,7 @@ export function safeAttachmentFileName(rawName: string): string {
   return truncateFileName(toStorageSafeFileName(rawName), MAX_FILE_NAME_LENGTH);
 }
 
+/** `-<timestamp>-<8 hex chars>`, inserted before the extension of a storage key. */
 function uniqueSuffix(): string {
   // Timestamp + random hex, so two uploads of the same name (even in the same
   // millisecond) never share a key. Math.random keeps this usable on Hermes,
@@ -95,6 +97,8 @@ export function buildAttachmentStoragePath(
 /**
  * Name for the device-local copy of an attachment: `<id>_<safe name>`, kept
  * within the 255-byte filename limit of APFS / ext4 with the extension intact.
+ * Lengths here count UTF-16 code units; they equal bytes only because
+ * `toStorageSafeFileName` emits ASCII. Re-check this if the allow-list widens.
  */
 export function localAttachmentFileName(id: string, rawName: string): string {
   const prefix = `${id}_`;
