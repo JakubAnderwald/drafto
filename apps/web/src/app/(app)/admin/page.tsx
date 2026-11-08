@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { isSignedOutAuthError } from "@/lib/supabase/auth-errors";
 import { redirect } from "next/navigation";
 import { AdminUserList, type PendingUser } from "@/app/(app)/admin/admin-user-list";
 import { AdminFlashMessage } from "@/app/(app)/admin/admin-flash-message";
@@ -17,9 +18,9 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
     error: userError,
   } = await supabase.auth.getUser();
 
-  // An auth error (e.g. AuthSessionMissingError from a stale cookie) means there is no
-  // signed-in user: send them to sign in, as the (app) layout does. Rethrow anything else.
-  if (userError && !("__isAuthError" in userError)) throw userError;
+  // A missing or rejected session sends the visitor to sign in. Anything else, including
+  // Auth API server errors, is rethrown so it reaches Sentry.
+  if (userError && !isSignedOutAuthError(userError)) throw userError;
   if (!user) redirect("/login");
 
   const { data: profile, error: profileError } = await supabase
