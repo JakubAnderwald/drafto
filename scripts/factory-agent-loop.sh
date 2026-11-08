@@ -1,7 +1,9 @@
 #!/bin/bash
 # launchd entrypoint that runs factory-agent.sh's tick-driven modes
 # back-to-back under a single mutex, so one 5-min launchd cycle walks
-# the full plan → implement → watch → release pipeline.
+# the full pipeline. It walks the board right to left (ADR-0068): finish work
+# already in flight before starting more, so release → watch → browser →
+# implement → plan.
 #
 # Modes (per scripts/factory-agent.sh):
 #   --plan       Ready → Plan Review (or Blocked). Real work in every phase.
@@ -123,14 +125,23 @@ if [[ "${FACTORY_HEALTHCHECK:-1}" == "1" ]]; then
   fi
 fi
 
+# Right to left (ADR-0068): the modes nearest Released run first, so work
+# in flight moves on before the factory takes on more. --release merges
+# before any Claude call can hit a session limit and pause the tick;
+# --watch frees what it can before --implement looks for a free slot;
+# --plan, which only adds work, goes last.
+#
 # Each mode is independent; if one fails, still try the others so a
-# transient GitHub hiccup in --plan doesn't starve --watch/--release. Use the
+# transient GitHub hiccup in one mode doesn't starve the rest. Use the
 # absolute /bin/bash rather than relying on PATH — launchd's PATH is
 # minimal and a missing `bash` lookup here would silently no-op the tick.
-/bin/bash "$AGENT" --plan      --phase "$PHASE" || true
-/bin/bash "$AGENT" --implement --phase "$PHASE" || true
-/bin/bash "$AGENT" --watch     --phase "$PHASE" || true
 /bin/bash "$AGENT" --release   --phase "$PHASE" || true
-# Last, so a Chrome session (up to FACTORY_BROWSER_TIMEOUT_SEC) never delays a
-# merge. A no-op unless FACTORY_BROWSER=1 (ADR-0051).
+/bin/bash "$AGENT" --watch     --phase "$PHASE" || true
+# After --watch, which writes this tick's candidates, and after --release, so
+# a Chrome session (up to FACTORY_BROWSER_TIMEOUT_SEC) never delays a merge.
+# Before --implement and --plan: verifying a card moves it towards In Test,
+# which is finishing work, not starting it. A no-op unless FACTORY_BROWSER=1
+# (ADR-0051).
 /bin/bash "$AGENT" --browser   --phase "$PHASE" || true
+/bin/bash "$AGENT" --implement --phase "$PHASE" || true
+/bin/bash "$AGENT" --plan      --phase "$PHASE" || true
