@@ -1,8 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Regression test for issue #414. The `--implement` block in
@@ -76,5 +77,72 @@ describe("factory-agent --implement loop construct", () => {
       );
     }
     // On linux GNU seq, lines === []; no assertion needed.
+  });
+});
+
+// A card with no free slot must not stop the sweep. The cards that hold the two
+// slots can sit lower on the board — a revision sent back from In Test keeps
+// its slot — and only their own runs can ever free one. With a `break` here,
+// newly approved cards at the top of In Progress (#794) kept the slot holders
+// (#790, #328) from running for a day. This runs the script's real
+// slot_for_issue and slot block against a state where both slots are taken.
+describe("factory-agent --implement slot deferral", () => {
+  const script = readFileSync(scriptPath, "utf8");
+  const scriptsDir = dirname(scriptPath);
+  const slotFn = script.match(/^slot_for_issue\(\) \{\n[\s\S]*?\n\}\n/m)?.[0];
+  const slotBlock = script.match(
+    /^ {4}SLOT=\$\(slot_for_issue "\$ISSUE_NUM"\)\n {4}if \[\[ -z "\$SLOT" \]\]; then\n[\s\S]*?\n {4}fi\n/m,
+  )?.[0];
+
+  function sweep(slots, order) {
+    const dir = mkdtempSync(join(tmpdir(), "factory-slot-sweep-"));
+    try {
+      const stateFile = join(dir, "factory-state.json");
+      const slotRecord = (issueNumber) => ({
+        pid: null,
+        issueNumber,
+        acquiredAt: issueNumber ? "2026-11-07T15:00:00.000Z" : null,
+      });
+      writeFileSync(
+        stateFile,
+        JSON.stringify({ slots: { 0: slotRecord(slots[0]), 1: slotRecord(slots[1]) } }),
+      );
+      const harness = [
+        "set -u",
+        `SCRIPT_DIR=${JSON.stringify(scriptsDir)}`,
+        `STATE_FILE=${JSON.stringify(stateFile)}`,
+        "LOG_FILE=/dev/null",
+        'log() { echo "log: $*"; }',
+        slotFn,
+        `for ISSUE_NUM in ${order.join(" ")}; do`,
+        slotBlock,
+        '  echo "implement #$ISSUE_NUM in slot $SLOT"',
+        "done",
+      ].join("\n");
+      return runBash(harness);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("finds slot_for_issue and the slot block in factory-agent.sh", () => {
+    assert.ok(slotFn, "could not extract slot_for_issue()");
+    assert.ok(slotBlock, "could not extract the --implement slot block");
+  });
+
+  it("runs the slot holders below a slotless card instead of stopping the sweep", () => {
+    assert.deepEqual(sweep(["790", "328"], ["794", "790", "328", "759"]), [
+      "log: Issue #794: both worktree slots busy; deferring to a later tick",
+      "implement #790 in slot 0",
+      "implement #328 in slot 1",
+      "log: Issue #759: both worktree slots busy; deferring to a later tick",
+    ]);
+  });
+
+  it("hands a free slot to the first card that needs one", () => {
+    assert.deepEqual(sweep(["790", null], ["794", "790"]), [
+      "implement #794 in slot 1",
+      "implement #790 in slot 0",
+    ]);
   });
 });

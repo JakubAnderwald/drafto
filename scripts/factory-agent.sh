@@ -6167,10 +6167,15 @@ Drag it back to **Ready** so the factory can plan it first.
     fi
 
     # Acquire a slot (reuse the issue's own slot on a retry / revision).
+    # Skip to the next card, never stop the sweep: a card further down may
+    # already hold a slot. A revision sent back from In Test keeps its slot, so
+    # a `break` here let a slotless card higher on the board stop the cards
+    # that held both slots from ever running. Neither slot was freed, and the
+    # whole column stalled for a day (issues #790 and #328 behind #794).
     SLOT=$(slot_for_issue "$ISSUE_NUM")
     if [[ -z "$SLOT" ]]; then
       log "Issue #$ISSUE_NUM: both worktree slots busy; deferring to a later tick"
-      break
+      continue
     fi
 
     if ! BUNDLE=$(build_implement_bundle "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$PRIOR_PR" "$ATTEMPTS" "$REVISION_COMMENTS" "$COMMENTS_JSON" "$REPLY_MARKERS" "$(reply_dir_for "$ISSUE_NUM")"); then
