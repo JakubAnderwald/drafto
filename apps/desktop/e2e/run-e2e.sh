@@ -127,9 +127,10 @@ echo ""
 echo "TEST 2b: App menu opens, its items click, and it closes"
 # ──────────────────────────────────────────────
 # The menu floats over the sidebar, so only the real app shows whether it takes clicks.
-# Every check below leaves the menu and the delete panel closed, because TEST 3 picks the
-# first unknown element as a notebook. Never click "Sign out" (it ends the session the rest
-# of the suite needs) and never confirm the deletion (this is the shared E2E user).
+# Every check below leaves the menu and the delete panel closed, because an open menu's
+# backdrop covers the sidebar and would take TEST 3's click on the first notebook. Never click
+# "Sign out" (it ends the session the rest of the suite needs) and never confirm the deletion
+# (this is the shared E2E user).
 
 # Closes the menu by clicking where the trigger is: while the menu is open, the click lands on
 # its backdrop, which covers the trigger.
@@ -221,26 +222,12 @@ fi
 echo ""
 echo "TEST 3: Select a notebook"
 # ──────────────────────────────────────────���───
-# Find the first notebook by looking for elements that are NOT known sidebar controls
-FIRST_NB_IDX=$(osascript -e '
-tell application "System Events"
-  tell process "Drafto"
-    set knownDescs to {"Search", "New notebook", "Trash", "App menu", "Sync status", "Drafto", "New note"}
-    repeat with i from 1 to count of UI elements of window 1
-      try
-        set d to description of UI element i of window 1
-        if d is not "" and d is not in knownDescs then
-          return i
-        end if
-      end try
-    end repeat
-    return 0
-  end tell
-end tell
-' 2>/dev/null)
+# Notebooks are rows of the sidebar's scrolling list (the scroll area under
+# "New notebook"), not window-level elements. Pick the first one in view.
+FIRST_NB_POS=$(scroll_row_center "$(scroll_area_under "New notebook")")
 
-if [ "$FIRST_NB_IDX" -gt 0 ] 2>/dev/null; then
-  click_element "$FIRST_NB_IDX"
+if [ -n "$FIRST_NB_POS" ]; then
+  cliclick "c:$FIRST_NB_POS"
   wait_for_ui
 
   screencapture -x /tmp/drafto_e2e_notebook_click.png
@@ -420,18 +407,10 @@ echo "TEARDOWN: Delete E2E test notebook"
 # accessibility tree. notebook.markAsDeleted() cascades to child notes via
 # WatermelonDB, so deleting the notebook also collects the orphan note from
 # Test 5 — no second pass needed.
-NB_IDX=$(find_element_by_desc "$E2E_NB_NAME")
-if [ "$NB_IDX" -gt 0 ] 2>/dev/null; then
-  NB_POS=$(osascript -e "
-  tell application \"System Events\"
-    tell process \"Drafto\"
-      set p to position of UI element $NB_IDX of window 1
-      set s to size of UI element $NB_IDX of window 1
-      set cx to (item 1 of p) + (item 1 of s) / 2
-      set cy to (item 2 of p) + (item 2 of s) / 2
-      return (cx as integer as text) & \",\" & (cy as integer as text)
-    end tell
-  end tell")
+# The row is inside the sidebar's scroll area; its Delete button appears there
+# too once hovered.
+NB_POS=$(find_element_center_by_desc "$E2E_NB_NAME")
+if [ -n "$NB_POS" ]; then
   # RN macOS onHoverIn fires on real mouse motion, not on teleport. Move to a
   # different position first, then to the notebook row, so the cursor crosses
   # the row boundary and triggers the hover state that surfaces Delete.
