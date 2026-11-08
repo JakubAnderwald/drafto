@@ -8,8 +8,13 @@
 //     quota (message `storage_quota_exceeded`) and allows landing exactly on it;
 //   - the mobile/desktop retry (an upsert with ON CONFLICT DO NOTHING of a row
 //     that already exists) is let through and doesn't count twice;
+//   - the trigger stores and counts a row at its object's real size when the
+//     client claims a smaller file_size;
 //   - the bucket's INSERT and UPDATE policies refuse an upload once usage
 //     reaches the quota, and allow one for an unlimited (NULL) user;
+//   - storage_object_bytes(), the policy's object term, sums the objects a user
+//     stored without rows. Both of these read storage.objects from a SECURITY
+//     DEFINER function, so they prove the function owner can see those rows;
 //   - the API roles can't call the internal per-user helpers, can read only
 //     their own usage, can't call the admin RPC, and can't lift their own quota.
 //
@@ -231,12 +236,16 @@ async function rowSizes(user) {
 }
 
 /** POST adds an object (the INSERT policy); PUT overwrites one (the UPDATE policy). */
-async function uploadObject(user, name, { method = "POST" } = {}) {
+async function uploadObject(
+  user,
+  name,
+  { method = "POST", data = "storage quota live test\n" } = {},
+) {
   const objectPath = `${user.id}/${user.noteId}/${name}`;
   const res = await call(`/storage/v1/object/${BUCKET}/${objectPath}`, {
     method,
     ...user.auth,
-    raw: { data: "storage quota live test\n", type: "text/plain" },
+    raw: { data, type: "text/plain" },
   });
   if (res.ok) uploadedPaths.add(objectPath);
   return res;
@@ -278,6 +287,8 @@ describe(
   () => {
     let limited; // quota TINY_QUOTA: the attachments trigger and the upsert retry
     let uploader; // quota TINY_QUOTA: the storage policies
+    let understating; // quota TINY_QUOTA: rows claiming less than their object
+    let rowless; // quota TINY_QUOTA: objects stored without rows
     let unlimited; // quota NULL, as admins have
     let plain; // the default quota, never changed
 
@@ -285,10 +296,12 @@ describe(
       async () => {
         limited = await createUser("limited", TINY_QUOTA);
         uploader = await createUser("uploader", TINY_QUOTA);
+        understating = await createUser("understating", TINY_QUOTA);
+        rowless = await createUser("rowless", TINY_QUOTA);
         unlimited = await createUser("unlimited", null);
         plain = await createUser("plain");
       },
-      { timeout: 90_000 },
+      { timeout: 120_000 },
     );
 
     after(
@@ -382,6 +395,77 @@ describe(
           await uploadObject(uploader, "before.txt", { method: "PUT" }),
           "overwrite at the quota",
         );
+      },
+    );
+
+    it(
+      "stores and counts a row at its object's size when the client claims less",
+      { timeout: 30_000 },
+      async () => {
+        // Two objects of 600 bytes fit the policy (no rows yet), but only one
+        // row fits the 1000-byte quota once each is counted at its real size.
+        const sizes = [600, 600];
+        const ids = sizes.map(() => randomUUID());
+        for (const [i, id] of ids.entries()) {
+          const upload = await uploadObject(understating, `quota-${id}.txt`, {
+            data: "x".repeat(sizes[i]),
+          });
+          assert.equal(upload.status, 200, `upload ${i}: ${formatResponse(upload)}`);
+        }
+
+        // attachmentRow's file_path is the object just uploaded under that id.
+        const first = await insertAttachment(
+          attachmentRow(understating, 1, ids[0]),
+          understating.auth,
+        );
+        assert.equal(first.status, 201, `understated row: ${formatResponse(first)}`);
+        assert.equal(first.body?.[0]?.file_size, sizes[0], "file_size raised to the object's size");
+        assert.deepEqual(await rowSizes(understating), [sizes[0]]);
+        assert.equal((await myUsage(understating)).used_bytes, sizes[0]);
+
+        // Claimed sizes of 1 + 1 would fit; the real 600 + 600 doesn't.
+        const second = await insertAttachment(
+          attachmentRow(understating, 1, ids[1]),
+          understating.auth,
+        );
+        assertQuotaRefusal(second, "second understated row");
+        assert.match(String(second.body?.details), new RegExp(`file_size=${sizes[1]}\\b`));
+        assert.deepEqual(await rowSizes(understating), [sizes[0]]);
+      },
+    );
+
+    it(
+      "counts the objects a user stored without rows in the policy's object term",
+      { timeout: 30_000 },
+      async () => {
+        const sizes = [100, 250];
+        for (const [i, size] of sizes.entries()) {
+          const upload = await uploadObject(rowless, `rowless-${i}.txt`, {
+            data: "x".repeat(size),
+          });
+          assert.equal(upload.status, 200, `upload ${i}: ${formatResponse(upload)}`);
+        }
+
+        // The service role holds EXECUTE on the helpers. They are SECURITY
+        // DEFINER, so this reads storage.objects as the owner, exactly as
+        // can_store_attachment() does for the user's upload.
+        const objectBytes = await rpc("storage_object_bytes", SERVICE, { uid: rowless.id });
+        assert.equal(
+          objectBytes.status,
+          200,
+          `storage_object_bytes: ${formatResponse(objectBytes)}`,
+        );
+        assert.equal(objectBytes.body, sizes[0] + sizes[1]);
+
+        // The row term never sees them, which is why the object term exists.
+        const rowBytes = await rpc("storage_usage_bytes", SERVICE, { uid: rowless.id });
+        assert.equal(rowBytes.status, 200, `storage_usage_bytes: ${formatResponse(rowBytes)}`);
+        assert.equal(rowBytes.body, 0);
+        assert.equal((await myUsage(rowless)).used_bytes, 0);
+
+        // 350 bytes is far below the term's limit (quota + one 50 MB file), so
+        // uploads stay open. Reaching it would take over 50 MB of uploads.
+        assert.equal((await rpc("can_store_attachment", rowless.auth)).body, true);
       },
     );
 

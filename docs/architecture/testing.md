@@ -116,7 +116,7 @@ Three opt-in tests run against the real **dev** Supabase project (`huhzactreblzc
 
 - `scripts/__tests__/profile-privilege-guard.live.test.mjs` (`--only profile-guard`) checks the `profiles` privilege guard ([auth](../features/auth.md)).
 - `apps/web/__tests__/integration/account-deletion.live.test.ts` (`--only account-deletion`) checks `deleteUserAccount`.
-- `scripts/__tests__/storage-quota.live.test.mjs` (`--only storage-quota`) checks the per-user attachment storage quota: the `attachments` trigger, the upsert retry, the bucket's upload policies and who may call the usage RPCs ([editor](../features/editor.md), [ADR-0069](../adr/0069-per-user-attachment-storage-quota.md)).
+- `scripts/__tests__/storage-quota.live.test.mjs` (`--only storage-quota`) checks the per-user attachment storage quota: the `attachments` trigger (including a row counted at its object's real size), the upsert retry, the bucket's upload policies and their object byte count, and who may call the usage RPCs ([editor](../features/editor.md), [ADR-0069](../adr/0069-per-user-attachment-storage-quota.md)).
 
 ```bash
 pnpm test:live:supabase                          # all three
