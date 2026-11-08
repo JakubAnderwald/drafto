@@ -117,6 +117,7 @@ describe("decidePre: Bash deny/allow matrix", () => {
     "cd scripts && node --test __tests__/*.test.mjs",
     // The dev live-test runner's own unit tests use fixtures only.
     "cd scripts && node --test __tests__/run-dev-live-tests.test.mjs",
+    "cd scripts && node --test __tests__/delete-users.test.mjs",
     'rm -rf "$D"/*',
     "awk '{print $1}' f.txt",
     "grep -E '^[a-z]+$' x.ts",
@@ -204,6 +205,9 @@ describe("decidePre: Bash deny/allow matrix", () => {
     ["node --test --test-isolation=none scripts/run-dev-live-tests.mjs", /dev live tests/],
     ["pnpm exec node --test scripts/run-dev-live-tests.mjs", /dev live tests/],
     ["cd scripts && node run-dev-live-tests.mjs", /dev live tests/],
+    // Account deletion uses the service-role keys: operator-only.
+    ["pnpm users:delete -- --project dev x@y.z", /deleting user accounts/],
+    ["node scripts/delete-users.mjs --help", /deleting user accounts/],
     ["cd scripts && node --test ./run-dev-live-test''s.mjs", /dev live tests/],
     ["bash -c 'node scripts/run-dev-live-tests.mjs'", /dev live tests/],
     ["node <<'EOF'\nimport('./scripts/run-dev-live-tests.mjs')\nEOF", /dev live tests/],
@@ -211,6 +215,8 @@ describe("decidePre: Bash deny/allow matrix", () => {
     ["cd scripts && node run-*.mjs", /could name the dev live-test runner/],
     ["node --test 'scripts/run-*.mjs'", /could name the dev live-test runner/],
     ["node --test scripts/*live*", /could name the dev live-test runner/],
+    ["cd scripts && node delete-*.mjs", /account-deletion script/],
+    ["node --test 'scripts/*-users.mjs'", /account-deletion script/],
     ["pnpm turbo run release", /release task/],
     ["npm install", /npm install/],
     ["node scripts/lib/state-cli.mjs factory:status", /node scripts/],

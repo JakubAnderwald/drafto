@@ -1,6 +1,6 @@
 # Email and approval
 
-**Status:** shipped **Updated:** 2026-09-22
+**Status:** shipped **Updated:** 2026-11-08
 
 ## What it is
 
@@ -8,7 +8,7 @@ Transactional email delivered through Resend from `hello@drafto.eu`, plus an adm
 
 ## Current state
 
-Shipped in production. A Postgres `after insert on auth.users` trigger calls `/api/webhooks/new-signup`, which emails all `profiles.is_admin = true` users a "New signup" message containing a signed one-click approve link. Clicking the link hits `/api/admin/approve-user/one-click`, flips `profiles.is_approved`, and sends the new user a "You're approved" email. The approval UI at `/admin` covers the same flow interactively. It also lets an admin permanently delete a pending signup through `/api/admin/delete-user`, which refuses approved users and sends no email. Platform coverage: the email pipeline is web-only (runs on Vercel); mobile and desktop rely on the same `is_approved` gate and simply see the approval take effect on their next auth check.
+Shipped in production. A Postgres `after insert on auth.users` trigger calls `/api/webhooks/new-signup`, which emails all `profiles.is_admin = true` users a "New signup" message containing a signed one-click approve link. Clicking the link hits `/api/admin/approve-user/one-click`, flips `profiles.is_approved`, and sends the new user a "You're approved" email. The approval UI at `/admin` covers the same flow interactively. It also lets an admin permanently delete a pending signup through `/api/admin/delete-user`, which refuses approved users and sends no email. For any account that holds no notes, approved or not, an operator can run `pnpm users:delete` (`scripts/delete-users.mjs`) from an interactive session, and add `--notify` to email each deleted user — see [Deleting accounts from the terminal](#deleting-accounts-from-the-terminal). Platform coverage: the email pipeline is web-only (runs on Vercel); mobile and desktop rely on the same `is_approved` gate and simply see the approval take effect on their next auth check.
 
 ## Code paths
 
@@ -20,6 +20,7 @@ Shipped in production. A Postgres `after insert on auth.users` trigger calls `/a
 | Interactive approve API                 | `apps/web/src/app/api/admin/approve-user/route.ts`                       |
 | One-click approve (signed link) API     | `apps/web/src/app/api/admin/approve-user/one-click/route.ts`             |
 | Interactive delete-pending-user API     | `apps/web/src/app/api/admin/delete-user/route.ts`                        |
+| Operator account deletion + email       | `scripts/delete-users.mjs`                                               |
 | Signed approval token (HMAC)            | `apps/web/src/lib/approval-tokens.ts`                                    |
 | Admin UI                                | `apps/web/src/app/(app)/admin/page.tsx`                                  |
 | Admin user list component               | `apps/web/src/app/(app)/admin/admin-user-list.tsx`                       |
@@ -57,6 +58,7 @@ Shipped in production. A Postgres `after insert on auth.users` trigger calls `/a
   - `scripts/__tests__/profile-privilege-guard.test.mjs` — static check of the guard migration (runs in CI): the exact guard condition, the 42501 raise, `SECURITY INVOKER`, and migration ordering.
   - `scripts/__tests__/profile-privilege-guard.live.test.mjs` — opt-in check against the **dev** project: a user's own `PATCH` of either flag gets 403, a `display_name` edit still works, and an admin session and the service role can still approve. Skips unless the dev URL, anon key and service-role key are all set. Run it with `pnpm test:live:supabase -- --only profile-guard`, which sets them from the local key files and fails, rather than skips, when one is missing.
   - `apps/web/__tests__/unit/email-client.test.ts` + `email-templates.test.ts` — Resend transport and template rendering.
+  - `scripts/__tests__/delete-users.test.mjs` — the operator deletion script: argument parsing, refusals (admins, accounts with notes, unattended sessions), the storage → auth → verify → email order, and the deletion email.
 - **Files that must change together:**
   - Changing the webhook payload shape: update `apps/web/src/app/api/webhooks/new-signup/route.ts` **and** `supabase/migrations/20260421000001_new_signup_webhook.sql` (the trigger builds the body). Add a new migration rather than editing the old one.
   - Adding a new transactional email: update `apps/web/src/lib/email/templates.ts`, add a sender call, and extend `email-templates.test.ts`.
@@ -96,6 +98,25 @@ See [ADR 0019](../adr/0019-email-infrastructure-and-approval-flow.md) for the ra
 This document is the operational runbook — follow it top-to-bottom when setting up a new environment, or jump to individual sections when rotating a credential.
 
 ---
+
+## Deleting accounts from the terminal
+
+`scripts/delete-users.mjs` permanently deletes accounts by email. It runs the same steps as the app's own account deletion (`apps/web/src/lib/account/delete-user.ts`): a strict sweep of the user's attachment files, then the auth user (which cascades to the profile, notebooks, notes, note history and API keys), a second sweep, and a check that nothing is left.
+
+```bash
+# Plan only: prints each user's id and what they own; deletes nothing
+pnpm users:delete -- --project prod someone@example.com other@example.com
+
+# Delete, then email each user once their deletion is confirmed
+pnpm users:delete -- --project prod --execute --notify [--reason "<one sentence>"] someone@example.com
+```
+
+- **Refusals.** It skips admins and any account that owns a note, trashed notes included, and checks again right before the delete in case a note synced in the meantime. The privacy policy ("Account approval") says only that we may delete an unapproved sign-up or an account that holds no notes, so widen the script and the policy together. It refuses to run at all in an unattended session (`DRAFTO_UNATTENDED=1`) or under `node --test`, and the verification lane's guard denies any command naming it.
+- **Production.** Running it with `--execute --project prod` is a production database operation: state the project, the accounts and what they own (the plan output) and get an explicit "yes" first.
+- **Keys.** The service-role key comes from the `PROD:` / `DEV:` line of `~/drafto-secrets/supabase service keys.txt` (`--keys-txt` to override). With `--notify`, the Resend key comes from `RESEND_API_KEY` in the environment or `~/drafto-secrets/account-approval-secrets.env` (`--resend-env`). Neither is printed.
+- **Errors.** An error with one account is logged and the run moves on to the next; check that account by hand before rerunning.
+- **Email.** Sent from `hello@drafto.eu` with `support@drafto.eu` as reply-to, only after the deletion check passes. A failed email is reported and makes the run exit 1, but the account stays deleted; send it by hand if needed.
+- Apple-linked accounts: unlike in-app deletion, this cannot ask Apple to end Drafto's access to the user's Apple ID, because that needs a fresh authorization code from the user.
 
 ## One-time setup
 

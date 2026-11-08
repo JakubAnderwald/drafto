@@ -379,7 +379,8 @@ export function assertSafeClaudeArgs(args) {
 // can't go into a curl config header line safely.
 const BYPASS_VALUE_RE = /^[A-Za-z0-9._~+/=-]{16,256}$/;
 
-function parseEnvFile(text) {
+/** KEY=value lines (export prefix and quotes allowed) as an object. */
+export function parseEnvFile(text) {
   const out = {};
   for (const line of String(text ?? "").split(/\r?\n/)) {
     const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/.exec(line);

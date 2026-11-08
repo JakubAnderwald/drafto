@@ -785,6 +785,11 @@ export function protectedTextReason(text, config) {
   if (/run-dev-live-tests(?!\.test\.mjs)/.test(lower) || lower.includes("test:live")) {
     return "the dev live tests (pnpm test:live:supabase) run only from interactive sessions";
   }
+  // Deletes real accounts with a service-role key: operators only. Its unit
+  // tests (fakes only) stay runnable.
+  if (/delete-users(?!\.test\.mjs)/.test(lower) || lower.includes("users:delete")) {
+    return "deleting user accounts (pnpm users:delete) is for interactive sessions only";
+  }
   if (/drafto\.eu\b/i.test(s))
     return "production (drafto.eu) is off limits; the preview is the only target";
   if (lower.includes(".config/gh")) return "the gh config is off limits";
@@ -1285,16 +1290,18 @@ const NODE_VALUE_OPTS = new Set([
   "--test-reporter-destination",
 ]);
 
-// The dev live-test runner. The text rule catches its name; this catches a
-// glob that could expand to it (`cd scripts && node run-*`, or node --test's
-// own globbing of `'scripts/run-*.mjs'`).
-const LIVE_RUNNER_FILE = "run-dev-live-tests.mjs";
+// Operator-only scripts: the dev live-test runner and account deletion. The
+// text rules catch their names; this catches a glob that could expand to one
+// (`cd scripts && node run-*`, or node --test's own globbing of
+// `'scripts/run-*.mjs'`).
+const OPERATOR_ONLY_FILES = Object.freeze(["run-dev-live-tests.mjs", "delete-users.mjs"]);
 
-function globCouldNameLiveRunner(word) {
+function globCouldNameOperatorScript(word) {
   const seg = String(word).slice(String(word).lastIndexOf("/") + 1);
   if (!DYNAMIC_CHAR.test(seg)) return false;
   try {
-    return globSegmentRegex(seg).regex.test(LIVE_RUNNER_FILE);
+    const { regex } = globSegmentRegex(seg);
+    return OPERATOR_ONLY_FILES.some((f) => regex.test(f));
   } catch {
     return true;
   }
@@ -1304,8 +1311,10 @@ function checkNode(args, ctx) {
   if (args.some((a) => a.startsWith("--env-file"))) return deny("--env-file reads an env file");
   const url = remoteUrlIn(args.join(" "));
   if (url) return deny(`network access goes through preview-curl only (${url})`);
-  if (args.some((a) => !a.startsWith("-") && globCouldNameLiveRunner(a))) {
-    return deny("this pattern could name the dev live-test runner, which is for operators only");
+  if (args.some((a) => !a.startsWith("-") && globCouldNameOperatorScript(a))) {
+    return deny(
+      "this pattern could name the dev live-test runner or the account-deletion script, which are for operators only",
+    );
   }
   if (args.includes("--test")) return allow("node --test");
   if (args.some((a) => ["-e", "--eval", "-p", "--print"].includes(a)))
