@@ -16,6 +16,7 @@ import {
   isStorageQuotaError,
   megabytesToBytes,
   storageFullMessage,
+  storageQuotaErrorFromResponse,
   storageUsageFromRow,
   storageUsageRatio,
   storageUsageTone,
@@ -174,6 +175,39 @@ describe("isStorageQuotaError", () => {
     );
     expect(isStorageQuotaError({ error: "File size exceeds 50MB limit", status: 413 })).toBe(false);
     expect(isStorageQuotaError({ message: 42 })).toBe(false);
+  });
+});
+
+describe("storageQuotaErrorFromResponse", () => {
+  const quotaBody = {
+    error: STORAGE_QUOTA_EXCEEDED_MESSAGE,
+    code: STORAGE_QUOTA_EXCEEDED_CODE,
+    usedBytes: 48 * MB,
+    quotaBytes: 50 * MB,
+  };
+
+  it("turns the quota 413 into a StorageQuotaError carrying the usage", () => {
+    const err = storageQuotaErrorFromResponse(413, quotaBody);
+    expect(err).toBeInstanceOf(StorageQuotaError);
+    expect(err?.usage).toEqual({ usedBytes: 48 * MB, quotaBytes: 50 * MB });
+    expect(err?.message).toBe(storageFullMessage(48 * MB, 50 * MB));
+  });
+
+  it("drops usage numbers it can't trust", () => {
+    const err = storageQuotaErrorFromResponse(413, { ...quotaBody, usedBytes: "48" });
+    expect(err).toBeInstanceOf(StorageQuotaError);
+    expect(err?.usage).toBeNull();
+    expect(storageQuotaErrorFromResponse(413, { code: STORAGE_QUOTA_EXCEEDED_CODE })?.usage).toBe(
+      null,
+    );
+  });
+
+  it("ignores the per-file size 413, other statuses and missing bodies", () => {
+    expect(
+      storageQuotaErrorFromResponse(413, { error: "File size exceeds 50MB limit", status: 413 }),
+    ).toBeNull();
+    expect(storageQuotaErrorFromResponse(500, quotaBody)).toBeNull();
+    expect(storageQuotaErrorFromResponse(413, null)).toBeNull();
   });
 });
 

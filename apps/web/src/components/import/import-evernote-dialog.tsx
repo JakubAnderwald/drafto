@@ -13,7 +13,7 @@ import {
   MAX_FILE_SIZE,
   MAX_FILE_SIZE_MB,
   StorageQuotaError,
-  isStorageQuotaError,
+  storageQuotaErrorFromResponse,
   toAttachmentUrl,
 } from "@drafto/shared";
 import type {
@@ -78,21 +78,6 @@ function errorMessageOf(err: unknown): string {
   return err instanceof Error ? err.message : "Unknown error";
 }
 
-/**
- * The quota refusal a 413 from upload-url / confirm carries (its body has the quota
- * code and, when known, the usage), or null for any other failure — the per-file
- * size 413 included.
- */
-function storageQuotaErrorFrom(status: number, body: unknown): StorageQuotaError | null {
-  if (status !== 413 || !isStorageQuotaError(body)) return null;
-  const { usedBytes, quotaBytes } = body as { usedBytes?: unknown; quotaBytes?: unknown };
-  return new StorageQuotaError(
-    typeof usedBytes === "number" && typeof quotaBytes === "number"
-      ? { usedBytes, quotaBytes }
-      : null,
-  );
-}
-
 function base64ToBytes(data: string): Uint8Array<ArrayBuffer> {
   const binary = atob(data);
   const bytes = new Uint8Array(binary.length);
@@ -135,7 +120,7 @@ async function uploadAttachment(
   if (!urlRes.ok) {
     const body = await urlRes.json().catch(() => null);
     throw (
-      storageQuotaErrorFrom(urlRes.status, body) ??
+      storageQuotaErrorFromResponse(urlRes.status, body) ??
       new Error(body?.error || `upload-url failed (${urlRes.status})`)
     );
   }
@@ -158,7 +143,7 @@ async function uploadAttachment(
   if (!confirmRes.ok) {
     const body = await confirmRes.json().catch(() => null);
     throw (
-      storageQuotaErrorFrom(confirmRes.status, body) ??
+      storageQuotaErrorFromResponse(confirmRes.status, body) ??
       new Error(body?.error || `confirm failed (${confirmRes.status})`)
     );
   }
@@ -413,7 +398,11 @@ export function ImportEvernoteDialog({ onClose, onComplete }: ImportEvernoteDial
       return;
     }
 
-    finishRun(result);
+    // A quota stop leaves the retry items after it untried. Unlike the notes a first
+    // run never reached, they failed once already and may have a row to resume, so
+    // they stay on the retry list.
+    const untried = result.storageFull ? toRetry.slice(result.processed) : [];
+    finishRun(untried.length > 0 ? { ...result, failed: [...result.failed, ...untried] } : result);
   }, [failedNotes, runImport, finishRun]);
 
   const handleClose = useCallback(() => {

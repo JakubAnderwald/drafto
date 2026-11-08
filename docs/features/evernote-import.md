@@ -23,7 +23,7 @@ Uploading bytes from the browser straight to Storage keeps every API request sma
 
 - Notes already imported stay, with their attachments.
 - The current note keeps its text: its remaining attachments are not tried, and it is finalized with the ones already uploaded.
-- The remaining notes are not imported. They are not added to the "Retry failed" list, and the import doesn't retry anything, since every further upload would be refused too.
+- The remaining notes are not imported. They are not added to the "Retry failed" list, and the import doesn't retry anything, since every further upload would be refused too. When the stop comes during "Retry failed", the retry items after it stay on the list: they failed once already and may have a note row to resume.
 - The dialog shows the "Storage full" message (`storageFullMessage`) followed by "The remaining notes weren't imported." It waits for the user to close it before selecting the notebook.
 
 The per-file 50 MB limit is different: an oversized resource is skipped and recorded, and the import goes on.
@@ -67,7 +67,7 @@ Importer code is web-only. Shared pieces:
 
 **Invariants:**
 
-- A storage quota refusal stops the whole import at once and keeps what was imported, including the current note's text. Never retry it, and never put the notes after it on the "Retry failed" list. Tell it apart from the per-file 413 by its `code` (`isStorageQuotaError`), not by the status.
+- A storage quota refusal stops the whole import at once and keeps what was imported, including the current note's text. Never retry it, and never put the notes a first run didn't reach on the "Retry failed" list. A retry the quota stops keeps its untried items on that list. Tell it apart from the per-file 413 by its `code` (`isStorageQuotaError`), not by the status.
 - Parser uses the browser `DOMParser` (client-only). The converter uses `linkedom` (server-side). Do not swap either without re-testing bundle size — `jsdom` was rejected in ADR 0007 for being too heavy.
 - Any other failed note must not abort the import; it goes on the "Retry failed" list with its note id, so a retry resumes the same row.
 - The first note creates the notebook (when `notebookId` is absent). Every later note must pass the returned `notebookId`, or a fresh notebook is created per note.

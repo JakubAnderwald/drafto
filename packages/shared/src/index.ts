@@ -137,6 +137,7 @@ export {
   formatStorageUsage,
   storageFullMessage,
   isStorageQuotaError,
+  storageQuotaErrorFromResponse,
   wouldExceedQuota,
   storageUsageRatio,
   storageUsageTone,

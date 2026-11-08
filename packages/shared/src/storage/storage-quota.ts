@@ -95,6 +95,25 @@ export function isStorageQuotaError(err: unknown): boolean {
   });
 }
 
+/**
+ * The quota refusal a web API 413 carries (from `upload-url` or `confirm`: its body
+ * has the quota code and, when known, the usage), or null for any other failure,
+ * the per-file size 413 included. Shared by every web upload path so they all read
+ * the body `storageQuotaExceededResponse` writes the same way.
+ */
+export function storageQuotaErrorFromResponse(
+  status: number,
+  body: unknown,
+): StorageQuotaError | null {
+  if (status !== 413 || !isStorageQuotaError(body)) return null;
+  const { usedBytes, quotaBytes } = body as { usedBytes?: unknown; quotaBytes?: unknown };
+  return new StorageQuotaError(
+    typeof usedBytes === "number" && typeof quotaBytes === "number"
+      ? { usedBytes, quotaBytes }
+      : null,
+  );
+}
+
 /** Whether adding `fileSize` bytes would go over the quota. Landing exactly on it is allowed. */
 export function wouldExceedQuota(usage: StorageUsage, fileSize: number): boolean {
   if (usage.quotaBytes === null) return false;

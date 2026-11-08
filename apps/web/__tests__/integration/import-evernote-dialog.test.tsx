@@ -383,6 +383,69 @@ describe("ImportEvernoteDialog", () => {
       expect(await screen.findByTestId("retry-failed-button")).toBeInTheDocument();
     });
 
+    it("keeps the untried notes on the retry list when a retry stops at the quota", async () => {
+      const user = userEvent.setup();
+      mockParseEnexStream.mockImplementation(() =>
+        streamOf(
+          note({ title: "Alpha", resources: [pic("a.png")] }),
+          note({ title: "Bravo", resources: [pic("b.png")] }),
+          note({ title: "Charlie", resources: [pic("c.png")] }),
+        ),
+      );
+      // First run: every finalize fails, so all three notes go on the retry list.
+      // Retry: the first retried note's upload hits the quota.
+      let retrying = false;
+      let noteCalls = 0;
+      const finalized: string[] = [];
+      global.fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/api/import/evernote/note")) {
+          noteCalls += 1;
+          return jsonOk({ notebookId: "nb-1", noteId: `note-${noteCalls}` });
+        }
+        if (url.includes("/api/import/evernote/finalize")) {
+          if (!retrying) {
+            return Promise.resolve({
+              ok: false,
+              status: 500,
+              json: () => Promise.resolve({ error: "boom" }),
+            });
+          }
+          finalized.push(JSON.parse(String(init?.body)).noteId);
+          return jsonOk({ noteId: "note-x" });
+        }
+        if (url.includes("/upload-url")) {
+          return retrying ? quotaRefusal() : jsonOk({ token: "t", filePath: "user-1/f.png" });
+        }
+        if (url.includes("/confirm")) return jsonOk({ file_path: "user-1/f.png" });
+        return jsonOk({});
+      }) as unknown as typeof fetch;
+
+      render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+      await user.upload(screen.getByTestId("file-input"), new File(["x"], "n.enex"));
+      await user.click(screen.getByTestId("start-import-button"));
+      expect((await screen.findByTestId("import-status")).textContent).toContain(
+        "0 imported, 3 failed",
+      );
+
+      retrying = true;
+      await user.click(screen.getByTestId("retry-failed-button"));
+
+      expect((await screen.findByTestId("import-error")).textContent).toBe(expectedMessage);
+      // The retry resumed the first note's row and stopped there: no note was created again.
+      expect(noteCalls).toBe(3);
+      expect(finalized).toEqual(["note-1"]);
+      expect((await screen.findByTestId("import-status")).textContent).toContain(
+        "Stopped: 1 imported, 2 failed",
+      );
+      // The two notes the retry never reached can still be resumed.
+      const failedList = screen.getByTestId("import-failed-list");
+      expect(failedList.textContent).not.toContain("Alpha");
+      expect(failedList.textContent).toContain("Bravo");
+      expect(failedList.textContent).toContain("Charlie");
+      expect(screen.getByTestId("retry-failed-button")).toBeInTheDocument();
+    });
+
     it("treats a 413 without the quota code as a skipped attachment", async () => {
       const user = userEvent.setup();
       mockParseEnexStream.mockImplementation(() =>

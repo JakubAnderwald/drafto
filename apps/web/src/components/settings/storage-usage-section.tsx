@@ -9,38 +9,13 @@ import {
 } from "@drafto/shared";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { ProgressBar } from "@/components/ui/progress-bar";
+import { fetchStorageUsage } from "@/lib/storage/fetch-storage-usage";
 
-const STORAGE_USAGE_URL = "/api/storage-usage";
 const LOADING_TEXT = "Storage: loading…";
 const UNAVAILABLE_TEXT = "Storage usage unavailable";
 
 type UsageState =
   { status: "loading" } | { status: "error" } | { status: "ready"; usage: StorageUsage };
-
-function isByteCount(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
-/** The `GET /api/storage-usage` body (`{ usedBytes, quotaBytes }`), or null when it isn't one. */
-function parseStorageUsage(body: unknown): StorageUsage | null {
-  if (body === null || typeof body !== "object") return null;
-  const { usedBytes, quotaBytes } = body as Record<string, unknown>;
-  if (!isByteCount(usedBytes)) return null;
-  if (quotaBytes === null) return { usedBytes, quotaBytes: null };
-  if (!isByteCount(quotaBytes)) return null;
-  return { usedBytes, quotaBytes };
-}
-
-async function loadStorageUsage(): Promise<StorageUsage | null> {
-  try {
-    const res = await fetch(STORAGE_USAGE_URL);
-    if (!res.ok) return null;
-    return parseStorageUsage(await res.json());
-  } catch {
-    // Offline or a body that isn't JSON: the section says usage is unavailable.
-    return null;
-  }
-}
 
 export interface StorageUsageSectionProps {
   className?: string;
@@ -52,7 +27,7 @@ export function StorageUsageSection({ className }: Readonly<StorageUsageSectionP
 
   useEffect(() => {
     let active = true;
-    void loadStorageUsage().then((usage) => {
+    void fetchStorageUsage().then((usage) => {
       if (!active) return;
       setState(usage ? { status: "ready", usage } : { status: "error" });
     });
