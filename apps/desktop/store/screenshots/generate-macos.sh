@@ -82,31 +82,6 @@ capture_window() {
   assert_png_size "$out" 2880x1800 1440x900
 }
 
-# Returns the index of the first window element after the one described $1
-# whose description is not in the remaining arguments.
-first_element_after() {
-  local anchor=$1
-  shift
-  local skip
-  skip=$(printf '"%s",' "$@")
-  osascript -e "
-  tell application \"System Events\"
-    tell process \"Drafto\"
-      set skipDescs to {${skip%,}}
-      set seen to false
-      repeat with i from 1 to count of UI elements of window 1
-        try
-          set d to description of UI element i of window 1
-          if seen and d is not \"\" and d is not in skipDescs then return i
-          if d is \"$anchor\" then set seen to true
-        end try
-      end repeat
-      return 0
-    end tell
-  end tell
-  " 2> /dev/null
-}
-
 mkdir -p "$OUT_DIR"
 rm -f "$OUT_DIR"/mac-*.png
 
@@ -199,35 +174,30 @@ actual_size=$(osascript -e 'tell application "System Events" to tell process "Dr
   exit 1
 }
 
-SIDEBAR_CONTROLS=("Search" "New notebook" "Trash" "App menu" "Sync status")
-
+# Notebooks are rows of the sidebar's scrolling list: the scroll area under
+# "New notebook".
 open_notebook() {
   if [ -n "${SCREENSHOT_NOTEBOOK:-}" ]; then
     click_element_by_desc "$SCREENSHOT_NOTEBOOK"
   else
-    click_element "$(first_element_after "New notebook" "${SIDEBAR_CONTROLS[@]}")"
+    local pos
+    pos=$(scroll_row_center "$(scroll_area_under "New notebook")")
+    [ -n "$pos" ] || {
+      echo "Error: no notebook found in the sidebar." >&2
+      exit 1
+    }
+    cliclick "c:$pos"
   fi
   wait_for_element "New note" 10
   wait_for_ui
 }
 
 # Opens the note titled $1. Note rows are not window-level elements: they
-# live inside the note list (the window's first scroll area), labelled by title.
+# live inside the note list, labelled by title. That is the scroll area under
+# "New note", not the window's first one, which is the sidebar's notebook list.
 open_note() {
   local title=$1 pos
-  pos=$(osascript -e "
-  tell application \"System Events\" to tell process \"Drafto\"
-    repeat with noteRow in (UI elements of scroll area 1 of window 1)
-      if description of noteRow is \"$title\" then
-        set p to position of noteRow
-        set s to size of noteRow
-        set cx to (item 1 of p) + (item 1 of s) / 2
-        set cy to (item 2 of p) + (item 2 of s) / 2
-        return (cx as integer as text) & \",\" & (cy as integer as text)
-      end if
-    end repeat
-    return \"\"
-  end tell" 2> /dev/null)
+  pos=$(scroll_row_center "$(scroll_area_under "New note")" "$title")
   [ -n "$pos" ] || {
     echo "Error: note '$title' not found in the note list." >&2
     exit 1

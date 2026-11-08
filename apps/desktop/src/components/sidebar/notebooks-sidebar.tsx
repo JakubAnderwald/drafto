@@ -4,6 +4,7 @@ import {
   Text,
   Pressable,
   TextInput,
+  ScrollView,
   StyleSheet,
   ActivityIndicator,
   Alert,
@@ -261,7 +262,14 @@ export function NotebooksSidebar({
                 <ActivityIndicator size="small" color={colors.primary[600]} />
               </View>
             ) : (
-              <View style={styles.list}>
+              // Fills the space between the headers and the footer and scrolls when the rows
+              // don't fit, so every notebook stays reachable and none draws under the footer.
+              // Kept before the footer: the footer must stay the AppMenu host's last child.
+              <ScrollView
+                testID="notebook-list"
+                style={styles.list}
+                contentContainerStyle={styles.listContent}
+              >
                 {notebooks.map((nb) => (
                   <NotebookRow
                     key={nb.id}
@@ -284,7 +292,7 @@ export function NotebooksSidebar({
                     styles={styles}
                   />
                 ))}
-              </View>
+              </ScrollView>
             )}
 
             <View style={styles.footer}>
@@ -479,6 +487,8 @@ const createStyles = (semantic: SemanticColors) =>
     },
     list: {
       flex: 1,
+    },
+    listContent: {
       paddingHorizontal: spacing.sm,
     },
     item: {
@@ -535,6 +545,8 @@ const createStyles = (semantic: SemanticColors) =>
     footer: {
       borderTopWidth: 1,
       borderTopColor: semantic.border,
+      // Opaque, so nothing drawn behind the footer can show through it.
+      backgroundColor: semantic.sidebarBg,
     },
     trashButton: {
       paddingVertical: spacing.sm,
