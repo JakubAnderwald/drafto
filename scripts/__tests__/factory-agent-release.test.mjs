@@ -495,6 +495,16 @@ describe("launchd loop wrapper", () => {
     const firstMode = loop.indexOf('/bin/bash "$AGENT" --');
     assert.ok(releaseIdx !== -1 && releaseIdx === firstMode, "--release should run first");
   });
+  it("collects finished CodeRabbit CLI reviews before it merges anything", () => {
+    // --release now runs before --watch, whose housekeeping used to post a
+    // finished run's findings first. Without its own call, a PR could merge and
+    // the findings would be discarded for a closed PR.
+    const callIdx = releaseBlock.indexOf(
+      'if [[ "$APPROVED_COUNT" -gt 0 ]]; then cr_cli_housekeeping; fi',
+    );
+    const loopIdx = releaseBlock.indexOf("for ((IDX=0; IDX<APPROVED_COUNT; IDX++))");
+    assert.ok(callIdx !== -1 && loopIdx !== -1 && callIdx < loopIdx);
+  });
 
   it("self-updates to origin/main before running any mode", () => {
     // The factory must only ever execute reviewed, CI-gated code. The sync

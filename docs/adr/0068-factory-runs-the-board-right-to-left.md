@@ -28,7 +28,9 @@ The loop runs the modes right to left across the board:
 
 `--browser` stays after `--release`, so a Chrome session never delays a merge, and after `--watch`, which writes its candidate list. It now runs before `--implement` and `--plan`, because verifying a card moves it towards In Test, which finishes work.
 
-Nothing changes inside a mode. Each mode still handles its own column(s) the way it did before.
+Inside the modes, one thing changes. `--release` now collects a finished CodeRabbit CLI review itself before it merges anything ([ADR-0036](./0036-factory-coderabbit-cli-gap-fill.md)). A card can reach Approved while its CLI run is still going, because the hold cap promoted it. Under the old order, `--watch` posted that run's findings first, and `--release` then refused to merge past the open threads. With `--release` first, the PR would merge and housekeeping would discard the findings for a closed PR. `--watch` still collects runs as before. Collection never starts a run.
+
+Otherwise, each mode still handles its own column(s) the way it did before.
 
 A test (`scripts/__tests__/factory-agent-browser.test.mjs`) pins this order.
 
