@@ -17,7 +17,9 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
     error: userError,
   } = await supabase.auth.getUser();
 
-  if (userError) throw userError;
+  // An auth error (e.g. AuthSessionMissingError from a stale cookie) means there is no
+  // signed-in user: send them to sign in, as the (app) layout does. Rethrow anything else.
+  if (userError && !("__isAuthError" in userError)) throw userError;
   if (!user) redirect("/login");
 
   const { data: profile, error: profileError } = await supabase
