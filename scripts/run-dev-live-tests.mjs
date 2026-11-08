@@ -7,8 +7,11 @@
 //     (needs the dev URL, anon key and service-role key)
 //   - account-deletion: apps/web/__tests__/integration/account-deletion.live.test.ts
 //     (needs the dev URL and service-role key)
+//   - storage-quota: scripts/__tests__/storage-quota.live.test.mjs
+//     (needs the dev URL, anon key and service-role key)
 //
-// Both create real users on dev and delete them again.
+// Each creates real users on dev and deletes them again; storage-quota also
+// uploads a few tiny objects and deletes them before the users.
 //
 // Where the keys come from:
 //   - Service-role key: --key-file, by default ~/drafto-secrets/dev-supabase-admin.env
@@ -34,9 +37,9 @@
 // also denies any command naming it or a `test:live` script.
 //
 // Usage:
-//   pnpm test:live:supabase [-- --only profile-guard|account-deletion] [--dry-run]
-//   node scripts/run-dev-live-tests.mjs [--key-file <f>] [--keys-txt <f>]
-//        [--env-local <f>] [--only profile-guard|account-deletion] [--dry-run] [--help]
+//   pnpm test:live:supabase [-- --only profile-guard|account-deletion|storage-quota] [--dry-run]
+//   node scripts/run-dev-live-tests.mjs [--key-file <f>] [--keys-txt <f>] [--env-local <f>]
+//        [--only profile-guard|account-deletion|storage-quota] [--dry-run] [--help]
 //
 // --dry-run prints the commands and the names of the env vars it would set,
 // then exits 0. Output names files and variables, never a key's value. Exit 0
@@ -89,6 +92,11 @@ export const LIVE_TESTS = {
       "__tests__/integration/account-deletion.live.test.ts",
     ],
     needs: [URL_VAR, SERVICE_VAR],
+  },
+  "storage-quota": {
+    command: "node",
+    args: ["--test", "scripts/__tests__/storage-quota.live.test.mjs"],
+    needs: [URL_VAR, ANON_VAR, SERVICE_VAR],
   },
 };
 

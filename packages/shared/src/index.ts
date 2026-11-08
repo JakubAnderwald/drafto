@@ -19,6 +19,10 @@ export {
   FILE_TOO_LARGE_MESSAGE,
   FILE_EMPTY_MESSAGE,
   MAX_FILE_NAME_LENGTH,
+  DEFAULT_STORAGE_QUOTA_BYTES,
+  STORAGE_QUOTA_EXCEEDED_CODE,
+  STORAGE_QUOTA_EXCEEDED_MESSAGE,
+  STORAGE_WARNING_RATIO,
   DEBOUNCE_MS,
   BUCKET_NAME,
   SIGNED_URL_EXPIRY_SECONDS,
@@ -124,6 +128,21 @@ export {
   buildAttachmentStoragePath,
   localAttachmentFileName,
 } from "./storage/storage-key";
+export {
+  BYTES_PER_MEGABYTE,
+  StorageQuotaError,
+  bytesToMegabytes,
+  megabytesToBytes,
+  formatMegabytes,
+  formatStorageUsage,
+  storageFullMessage,
+  isStorageQuotaError,
+  wouldExceedQuota,
+  storageUsageRatio,
+  storageUsageTone,
+  storageUsageFromRow,
+} from "./storage/storage-quota";
+export type { StorageUsage, StorageUsageRow, StorageUsageTone } from "./storage/storage-quota";
 export {
   colors,
   semanticLight,

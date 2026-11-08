@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { DEFAULT_STORAGE_QUOTA_BYTES, formatMegabytes } from "@drafto/shared";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { outlineEntry, type OutlineEntry } from "@/components/legal/document-outline";
@@ -180,6 +181,12 @@ export default function PrivacyPolicyPage() {
             (hosted by Supabase) so they can sync across your devices. Content is associated with
             your user account. When you edit a note, we keep the earlier versions of its content for
             30 days so they can be recovered after an accidental overwrite.
+          </p>
+          <p>
+            Each account has an attachment storage quota (
+            {formatMegabytes(DEFAULT_STORAGE_QUOTA_BYTES)} by default), which we store with your
+            account. We work out how much of it you use from the sizes of your attachments. Our
+            administrator can see each account&apos;s storage usage and quota.
           </p>
           <p>
             Imports from Evernote (.enex) and TickTick (CSV) are processed from files you upload. We

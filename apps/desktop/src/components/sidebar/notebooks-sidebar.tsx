@@ -24,6 +24,7 @@ import type { SemanticColors } from "@/theme/tokens";
 import { SyncStatus } from "@/components/sync-status";
 import { AppMenu } from "@/components/sidebar/app-menu";
 import { DeleteAccountPanel } from "@/components/sidebar/delete-account-panel";
+import { StorageUsageMeter } from "@/components/sidebar/storage-usage";
 import { IconButton } from "@/components/ui/icon-button";
 import { PlusIcon } from "@/components/ui/icons/plus-icon";
 import { SearchIcon } from "@/components/ui/icons/search-icon";
@@ -306,6 +307,9 @@ export function NotebooksSidebar({
               </Pressable>
 
               <SyncStatus />
+
+              {/* Desktop has no settings screen, so the account area shows the storage use. */}
+              <StorageUsageMeter />
 
               {/* Last child of the footer, which is the last child of the AppMenu host: the menu
                   opens above it, positioned from the host's bottom edge by this section's height.

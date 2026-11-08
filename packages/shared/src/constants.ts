@@ -7,6 +7,18 @@ export const MAX_FILE_SIZE_MB = MAX_FILE_SIZE / (1024 * 1024);
 export const FILE_TOO_LARGE_MESSAGE = `File size exceeds ${MAX_FILE_SIZE_MB}MB limit`;
 export const FILE_EMPTY_MESSAGE = "File is empty";
 export const MAX_FILE_NAME_LENGTH = 255;
+// Per-user attachment storage quota (issue #794, ADR 0069). The database default of
+// profiles.storage_quota_bytes; NULL there means unlimited (admins). Keep in step with
+// supabase/migrations/20261108000001_per_user_storage_quota.sql.
+export const DEFAULT_STORAGE_QUOTA_BYTES = 52428800; // 50MB in bytes
+// The message the attachments quota trigger raises, and the `code` of the web API's
+// quota 413. Every platform recognises a refused upload by it (isStorageQuotaError).
+export const STORAGE_QUOTA_EXCEEDED_CODE = "storage_quota_exceeded";
+// The `error` text of the web API's quota 413 (its `code` tells it apart from the
+// per-file FILE_TOO_LARGE_MESSAGE 413).
+export const STORAGE_QUOTA_EXCEEDED_MESSAGE = "Storage quota exceeded";
+// Usage above this share of the quota shows the warning tone; at or over 1, danger.
+export const STORAGE_WARNING_RATIO = 0.9;
 export const DEBOUNCE_MS = 500;
 export const BUCKET_NAME = "attachments";
 export const SIGNED_URL_EXPIRY_SECONDS = 604800; // 7 days

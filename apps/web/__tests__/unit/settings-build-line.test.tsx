@@ -25,8 +25,13 @@ vi.mock("@sentry/nextjs", () => ({
   captureException: vi.fn(),
 }));
 
+// The Storage section loads GET /api/storage-usage on its own; answer it here so the queued
+// responses below only feed the API key requests.
 const mockFetch = vi.fn();
-global.fetch = mockFetch;
+global.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+  input === "/api/storage-usage"
+    ? Promise.resolve({ ok: true, json: () => Promise.resolve({ usedBytes: 0, quotaBytes: null }) })
+    : mockFetch(input, init)) as typeof fetch;
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 

@@ -1,6 +1,10 @@
 import React from "react";
 import { Alert, type AlertButton } from "react-native";
-import { describeAccountDeletionFailure } from "@drafto/shared";
+import {
+  DEFAULT_STORAGE_QUOTA_BYTES,
+  describeAccountDeletionFailure,
+  formatStorageUsage,
+} from "@drafto/shared";
 
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import SettingsScreen from "../../app/(tabs)/settings";
@@ -33,6 +37,11 @@ jest.mock("@/lib/data/unsynced-changes", () => ({
   countUnsyncedChanges: (...args: unknown[]) => mockCountUnsyncedChanges(...args),
 }));
 
+const mockFetchStorageUsage = jest.fn();
+jest.mock("@/lib/data/storage-usage", () => ({
+  fetchStorageUsage: () => mockFetchStorageUsage(),
+}));
+
 const mockUseNetworkStatus = jest.fn();
 jest.mock("@/hooks/use-network-status", () => ({
   useNetworkStatus: () => mockUseNetworkStatus(),
@@ -59,8 +68,9 @@ describe("SettingsScreen", () => {
     mockSignOut.mockResolvedValue(undefined);
     mockDeleteAccount.mockResolvedValue({ status: "network" });
     mockUseNetworkStatus.mockReturnValue({ isConnected: true, isInternetReachable: true });
-    mockSync.mockResolvedValue({ uploaded: 0, failed: 0 });
+    mockSync.mockResolvedValue({ uploaded: 0, failed: 0, storageFull: 0 });
     mockCountUnsyncedChanges.mockResolvedValue(0);
+    mockFetchStorageUsage.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -74,6 +84,54 @@ describe("SettingsScreen", () => {
     expect(getByTestId("delete-account-row")).toBeEnabled();
     expect(getByText("Delete account")).toBeTruthy();
     expect(queryByText(OFFLINE_NOTE)).toBeNull();
+  });
+
+  describe("storage usage (issue #794)", () => {
+    it("shows how much of the quota is used, with a bar", async () => {
+      const usedBytes = Math.round(DEFAULT_STORAGE_QUOTA_BYTES / 4);
+      mockFetchStorageUsage.mockResolvedValue({
+        usedBytes,
+        quotaBytes: DEFAULT_STORAGE_QUOTA_BYTES,
+      });
+
+      const { findByText, getByTestId } = render(<SettingsScreen />);
+
+      expect(
+        await findByText(formatStorageUsage(usedBytes, DEFAULT_STORAGE_QUOTA_BYTES)),
+      ).toBeTruthy();
+      expect(getByTestId("storage-usage-bar").props.accessibilityValue).toEqual({
+        min: 0,
+        max: 100,
+        now: 25,
+      });
+    });
+
+    it("caps the bar at full when usage is over the quota", async () => {
+      mockFetchStorageUsage.mockResolvedValue({
+        usedBytes: DEFAULT_STORAGE_QUOTA_BYTES * 2,
+        quotaBytes: DEFAULT_STORAGE_QUOTA_BYTES,
+      });
+
+      const { findByTestId } = render(<SettingsScreen />);
+
+      expect((await findByTestId("storage-usage-bar")).props.accessibilityValue.now).toBe(100);
+    });
+
+    it("shows usage without a bar for an unlimited account", async () => {
+      mockFetchStorageUsage.mockResolvedValue({ usedBytes: 5 * 1024 * 1024, quotaBytes: null });
+
+      const { findByText, queryByTestId } = render(<SettingsScreen />);
+
+      expect(await findByText(formatStorageUsage(5 * 1024 * 1024, null))).toBeTruthy();
+      expect(queryByTestId("storage-usage-bar")).toBeNull();
+    });
+
+    it("says quietly when usage can't be read", async () => {
+      const { findByText, queryByTestId } = render(<SettingsScreen />);
+
+      expect(await findByText("Storage usage is unavailable right now.")).toBeTruthy();
+      expect(queryByTestId("storage-usage-bar")).toBeNull();
+    });
   });
 
   it("signs out straight away when nothing is waiting to sync", async () => {

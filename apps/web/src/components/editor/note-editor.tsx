@@ -12,9 +12,26 @@ import {
   BUCKET_NAME,
   FILE_TOO_LARGE_MESSAGE,
   FILE_EMPTY_MESSAGE,
+  StorageQuotaError,
+  isStorageQuotaError,
 } from "@drafto/shared";
 import { useAttachmentUrlResolver } from "@/components/editor/use-attachment-url-resolver";
 import { createClient } from "@/lib/supabase/client";
+
+/**
+ * The quota refusal a 413 from upload-url / confirm carries (its body has the quota
+ * code and, when known, the usage), or null for any other failure — the per-file
+ * size 413 included.
+ */
+function storageQuotaErrorFrom(status: number, body: unknown): StorageQuotaError | null {
+  if (status !== 413 || !isStorageQuotaError(body)) return null;
+  const { usedBytes, quotaBytes } = body as { usedBytes?: unknown; quotaBytes?: unknown };
+  return new StorageQuotaError(
+    typeof usedBytes === "number" && typeof quotaBytes === "number"
+      ? { usedBytes, quotaBytes }
+      : null,
+  );
+}
 
 interface NoteEditorProps {
   noteId: string;
@@ -49,7 +66,10 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
 
         if (!urlResponse.ok) {
           const error = await urlResponse.json().catch(() => null);
-          throw new Error(error?.error || `Failed to prepare upload (${urlResponse.status})`);
+          throw (
+            storageQuotaErrorFrom(urlResponse.status, error) ??
+            new Error(error?.error || `Failed to prepare upload (${urlResponse.status})`)
+          );
         }
 
         const { token, filePath } = await urlResponse.json();
@@ -79,7 +99,10 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
 
         if (!confirmResponse.ok) {
           const error = await confirmResponse.json().catch(() => null);
-          throw new Error(error?.error || `Failed to confirm upload (${confirmResponse.status})`);
+          throw (
+            storageQuotaErrorFrom(confirmResponse.status, error) ??
+            new Error(error?.error || `Failed to confirm upload (${confirmResponse.status})`)
+          );
         }
 
         const data = await confirmResponse.json();

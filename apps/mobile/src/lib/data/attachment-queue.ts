@@ -5,14 +5,20 @@ import {
   MAX_FILE_SIZE,
   BUCKET_NAME,
   FILE_TOO_LARGE_MESSAGE,
+  StorageQuotaError,
   buildAttachmentStoragePath,
+  isStorageQuotaError,
   localAttachmentFileName,
   safeAttachmentFileName,
+  storageFullMessage,
+  wouldExceedQuota,
 } from "@drafto/shared";
+import type { StorageUsage } from "@drafto/shared";
 
 import { database, Attachment } from "@/db";
 import { supabase } from "@/lib/supabase";
 import { generateId } from "@/lib/generate-id";
+import { fetchStorageUsage } from "@/lib/data/storage-usage";
 
 interface PickedFile {
   uri: string;
@@ -79,6 +85,48 @@ export async function queueAttachment(
   return attachment;
 }
 
+/**
+ * Whether a storage upload error is the attachments bucket policy refusing it
+ * (a 403 / "row-level security"). Since issue #794 that policy also refuses an
+ * upload once the user's storage is full, so the caller re-reads the usage to
+ * tell a quota refusal from any other policy failure.
+ */
+function isStoragePolicyRefusal(error: unknown): boolean {
+  if (error === null || typeof error !== "object") return false;
+  const { statusCode, status, message } = error as {
+    statusCode?: unknown;
+    status?: unknown;
+    message?: unknown;
+  };
+  return (
+    statusCode === "403" ||
+    statusCode === 403 ||
+    status === 403 ||
+    (typeof message === "string" && message.includes("row-level security"))
+  );
+}
+
+/**
+ * Refuse an upload for the storage quota (issue #794), unless this is a retry
+ * whose row already reached the server. That row already counts in `usage`, and
+ * rows are only inserted after their object uploaded, so the attachment is
+ * complete: this returns normally and the caller marks it uploaded without
+ * uploading again. Otherwise it throws a `StorageQuotaError`. A failed row check
+ * throws a transient error instead, so the upload is retried, not given up on.
+ */
+async function refuseForQuota(attachment: Attachment, usage: StorageUsage): Promise<void> {
+  const { data, error } = await supabase
+    .from("attachments")
+    .select("id")
+    .eq("id", attachment.remoteId)
+    .maybeSingle();
+  if (error) {
+    throw new Error(`Failed to check attachment record: ${error.message}`);
+  }
+  if (data) return;
+  throw new StorageQuotaError(usage);
+}
+
 async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
   const localUri = attachment.localUri;
   if (!localUri) {
@@ -98,6 +146,39 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
     throw new Error("Local file is empty — skipping upload");
   }
 
+  await uploadFileAndRecord(attachment, bytes);
+
+  // Mark as uploaded and clear local URI
+  await database.write(async () => {
+    await attachment.update((record) => {
+      record.uploadStatus = "uploaded";
+      record.uploadError = null;
+      record.localUri = null;
+    });
+  });
+
+  // Clean up local file after successful upload
+  try {
+    localFile.delete();
+  } catch {
+    // Non-critical: local file cleanup can fail silently
+  }
+}
+
+/**
+ * Upload the file, then insert its row. Returns early, uploading nothing, when a
+ * quota check finds the row already on the server (see `refuseForQuota`).
+ */
+async function uploadFileAndRecord(attachment: Attachment, bytes: Uint8Array): Promise<void> {
+  // Pre-check the storage quota (issue #794), so a full account doesn't upload
+  // bytes only for the server to refuse them. Unknown usage (offline, an older
+  // server) skips the check; the database enforces the quota either way.
+  const usage = await fetchStorageUsage();
+  if (usage && wouldExceedQuota(usage, attachment.fileSize)) {
+    await refuseForQuota(attachment, usage);
+    return;
+  }
+
   // Pass Uint8Array directly — Blob does not work reliably in React Native
   // on Android (documented supabase-js limitation).
   const { error: uploadError } = await supabase.storage
@@ -110,6 +191,16 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
   if (uploadError) {
     // If file already exists (e.g. retry after partial success), treat as success
     if (!uploadError.message.includes("already exists")) {
+      // The bucket policy refuses uploads once storage is full. Only a fresh
+      // usage reading that confirms it makes this a quota refusal; any other
+      // refusal stays a transient failure, retried as before.
+      if (isStoragePolicyRefusal(uploadError)) {
+        const current = await fetchStorageUsage();
+        if (current && wouldExceedQuota(current, attachment.fileSize)) {
+          await refuseForQuota(attachment, current);
+          return;
+        }
+      }
       throw new Error(`Upload failed: ${uploadError.message}`);
     }
   }
@@ -133,54 +224,71 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
   );
 
   if (dbError) {
+    // The quota trigger only raises when no row with this id exists yet, so
+    // this attachment's row is known not to be on the server.
+    if (isStorageQuotaError(dbError)) {
+      throw new StorageQuotaError(await fetchStorageUsage());
+    }
     throw new Error(`Failed to save attachment record: ${dbError.message}`);
-  }
-
-  // Mark as uploaded and clear local URI
-  await database.write(async () => {
-    await attachment.update((record) => {
-      record.uploadStatus = "uploaded";
-      record.uploadError = null;
-      record.localUri = null;
-    });
-  });
-
-  // Clean up local file after successful upload
-  try {
-    localFile.delete();
-  } catch {
-    // Non-critical: local file cleanup can fail silently
   }
 }
 
 export interface UploadResult {
   uploaded: number;
   failed: number;
+  /** Refused for the storage quota (issue #794): now "quota_exceeded", not retried. */
+  storageFull: number;
 }
 
 export async function processPendingUploads(): Promise<UploadResult> {
   // Retry both pending and previously failed uploads so a transient error
-  // doesn't strand an attachment forever.
+  // doesn't strand an attachment forever. "quota_exceeded" is left out: the
+  // server refused it for the storage quota, and retrying won't change that.
   const queued = await database
     .get<Attachment>("attachments")
     .query(Q.where("upload_status", Q.oneOf(["pending", "failed"])))
     .fetch();
 
-  if (queued.length === 0) return { uploaded: 0, failed: 0 };
+  if (queued.length === 0) return { uploaded: 0, failed: 0, storageFull: 0 };
 
   let uploaded = 0;
   let failed = 0;
+  let storageFull = 0;
 
   for (const attachment of queued) {
     // uploadAttachment flips a failed row back to "pending" itself.
     if (await uploadAttachment(attachment)) {
       uploaded += 1;
+    } else if (attachment.uploadStatus === "quota_exceeded") {
+      storageFull += 1;
     } else {
       failed += 1;
     }
   }
 
-  return { uploaded, failed };
+  return { uploaded, failed, storageFull };
+}
+
+/**
+ * Record a quota refusal (issue #794) as the terminal "quota_exceeded" status,
+ * with the storage-full message. The row is known not to be on the server, so
+ * an object an earlier attempt uploaded is an orphan nothing else sweeps:
+ * remove it, best effort.
+ */
+async function recordStorageFull(attachment: Attachment, err: unknown): Promise<void> {
+  const message = err instanceof StorageQuotaError ? err.message : storageFullMessage(null, null);
+  console.warn(`Attachment ${attachment.fileName} refused: storage quota exceeded`);
+  try {
+    await supabase.storage.from(BUCKET_NAME).remove([attachment.filePath]);
+  } catch {
+    // Best effort: a leftover object only takes space, and no row references it.
+  }
+  await database.write(async () => {
+    await attachment.update((record) => {
+      record.uploadStatus = "quota_exceeded";
+      record.uploadError = message;
+    });
+  });
 }
 
 // One upload per attachment at a time. The editor uploads a freshly picked file
@@ -193,8 +301,10 @@ const uploadsInFlight = new Map<string, Promise<boolean>>();
  * Upload one queued attachment now and report whether it reached the server.
  * An upload error is recorded on the row (status "failed" plus the message) and
  * reported as `false` rather than thrown, so the next `processPendingUploads`
- * retries it. A call made while the same attachment is already uploading shares
- * that attempt.
+ * retries it. A refusal for the storage quota (issue #794) is reported as
+ * `false` too, but recorded as "quota_exceeded" with the storage-full message
+ * and not retried: callers tell the two apart by `attachment.isStorageFull`. A
+ * call made while the same attachment is already uploading shares that attempt.
  */
 export function uploadAttachment(attachment: Attachment): Promise<boolean> {
   // A sync can fetch the queue while a direct upload is still running and reach
@@ -203,6 +313,9 @@ export function uploadAttachment(attachment: Attachment): Promise<boolean> {
   // (WatermelonDB hands out one cached instance per record, so the status read
   // here is current.)
   if (attachment.uploadStatus === "uploaded") return Promise.resolve(true);
+  // Refused for the storage quota (issue #794) by an attempt that has already
+  // finished: terminal, so a sync that fetched the queue earlier mustn't retry it.
+  if (attachment.uploadStatus === "quota_exceeded") return Promise.resolve(false);
 
   const running = uploadsInFlight.get(attachment.id);
   if (running) return running;
@@ -229,6 +342,10 @@ export function uploadAttachment(attachment: Attachment): Promise<boolean> {
       await uploadSingleAttachment(attachment);
       return true;
     } catch (err) {
+      if (isStorageQuotaError(err)) {
+        await recordStorageFull(attachment, err);
+        return false;
+      }
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`Failed to upload attachment ${attachment.fileName}:`, err);
       await database.write(async () => {

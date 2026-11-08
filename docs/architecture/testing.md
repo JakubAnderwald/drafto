@@ -112,13 +112,14 @@ A debug build of a branch runs against the **dev** Supabase project, through the
 
 ### Dev live tests (`pnpm test:live:supabase`)
 
-Two opt-in tests run against the real **dev** Supabase project (`huhzactreblzcogqkbsd`). They aren't in the matrix above, and CI skips them. An operator runs them from an interactive session when a change touches what they cover, as the feature docs' Verify blocks note:
+Three opt-in tests run against the real **dev** Supabase project (`huhzactreblzcogqkbsd`). They aren't in the matrix above, and CI skips them. An operator runs them from an interactive session when a change touches what they cover, as the feature docs' Verify blocks note:
 
 - `scripts/__tests__/profile-privilege-guard.live.test.mjs` (`--only profile-guard`) checks the `profiles` privilege guard ([auth](../features/auth.md)).
 - `apps/web/__tests__/integration/account-deletion.live.test.ts` (`--only account-deletion`) checks `deleteUserAccount`.
+- `scripts/__tests__/storage-quota.live.test.mjs` (`--only storage-quota`) checks the per-user attachment storage quota: the `attachments` trigger, the upsert retry, the bucket's upload policies and who may call the usage RPCs ([editor](../features/editor.md), [ADR-0069](../adr/0069-per-user-attachment-storage-quota.md)).
 
 ```bash
-pnpm test:live:supabase                          # both
+pnpm test:live:supabase                          # all three
 pnpm test:live:supabase -- --only profile-guard  # one
 pnpm test:live:supabase -- --dry-run             # print the commands and env var names, run nothing
 ```
@@ -129,13 +130,13 @@ pnpm test:live:supabase -- --dry-run             # print the commands and env va
 
   The verification lane's guard also denies any command that names the runner or a `test:live` script ([ADR-0053](../adr/0053-pre-in-test-verification-stage.md)). The factory never runs these tests; a factory PR that needs them leaves them to the operator.
 
-- **They write to dev.** Each run creates users on dev and deletes them again. Creating a user fires dev's new-signup webhook, if one is configured.
+- **They write to dev.** Each run creates users on dev and deletes them again; storage-quota also uploads a few tiny objects and deletes them first. Creating a user fires dev's new-signup webhook, if one is configured.
 - **Where the keys come from.** `scripts/run-dev-live-tests.mjs` finds them itself:
   - The service-role key comes from `~/drafto-secrets/dev-supabase-admin.env`, which is on the Mac mini, or from `--key-file`. Only when no `--key-file` is given and that default file is missing does the runner read the `DEV:` line of `~/drafto-secrets/supabase service keys.txt` instead. Either file must be mode 600.
   - A key in the legacy JWT format must carry the dev project's `ref` and the `service_role` role. A key in any other format, such as `sb_secret_…`, is used, and `--dry-run` notes that its project couldn't be verified.
   - The anon key comes from `apps/web/.env.local`. In a worktree, `scripts/worktree-bootstrap.sh` copies it there.
   - The runner refuses any project but dev and prints names, never values.
-- **A missing key fails the run; it doesn't skip.** The runner sets `DRAFTO_LIVE_REQUIRED=1`. With that set, a live test that can't reach dev fails and names the missing variables, so a skipped run can't pass for a green one. Without it, as in CI and a plain `pnpm test`, both tests skip.
+- **A missing key fails the run; it doesn't skip.** The runner sets `DRAFTO_LIVE_REQUIRED=1`. With that set, a live test that can't reach dev fails and names the missing variables, so a skipped run can't pass for a green one. Without it, as in CI and a plain `pnpm test`, they skip.
 - **Each test is capped at 15 minutes.** The summary reports a timeout as such.
 
 ## Coverage

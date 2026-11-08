@@ -6,7 +6,17 @@ import NetInfo from "@react-native-community/netinfo";
 import { renderHook, act, waitFor } from "@testing-library/react-native";
 
 import { syncDatabase, SyncNetworkError } from "@/db/sync";
-import { processPendingUploads, cleanupOrphanedFiles, ensureLocalIdentity } from "@/lib/data";
+import { Alert } from "react-native";
+import { storageFullMessage } from "@drafto/shared";
+
+import {
+  processPendingUploads,
+  cleanupOrphanedFiles,
+  ensureLocalIdentity,
+  fetchStorageUsage,
+} from "@/lib/data";
+import type { UploadResult } from "@/lib/data";
+import { resetStorageFullAlert, STORAGE_FULL_ALERT_TITLE } from "@/lib/storage-full-alert";
 import { useAuth } from "@/providers/auth-provider";
 import {
   AUTO_SYNC_DEBOUNCE_MS,
@@ -63,6 +73,7 @@ jest.mock("@/lib/data", () => ({
   processPendingUploads: jest.fn(),
   cleanupOrphanedFiles: jest.fn(),
   ensureLocalIdentity: jest.fn(),
+  fetchStorageUsage: jest.fn().mockResolvedValue(null),
 }));
 
 jest.mock("@/lib/performance", () => ({
@@ -75,6 +86,8 @@ jest.mock("@/providers/auth-provider", () => ({
 
 const mockSyncDatabase = syncDatabase as jest.Mock;
 const mockProcessPendingUploads = processPendingUploads as jest.Mock;
+const mockFetchStorageUsage = fetchStorageUsage as jest.Mock;
+const NO_UPLOADS: UploadResult = { uploaded: 0, storageFull: 0 };
 const mockCleanupOrphanedFiles = cleanupOrphanedFiles as jest.Mock;
 const mockEnsureLocalIdentity = ensureLocalIdentity as jest.Mock;
 const mockUseAuth = useAuth as jest.Mock;
@@ -97,7 +110,7 @@ describe("DatabaseProvider cross-account sync guard", () => {
     jest.clearAllMocks();
     mockUseAuth.mockReturnValue({ user: TEST_USER, isApproved: true });
     mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
-    mockProcessPendingUploads.mockResolvedValue(0);
+    mockProcessPendingUploads.mockResolvedValue(NO_UPLOADS);
     mockCleanupOrphanedFiles.mockResolvedValue(undefined);
     mockEnsureLocalIdentity.mockResolvedValue("ready");
   });
@@ -233,7 +246,7 @@ describe("DatabaseProvider approval gating", () => {
     jest.clearAllMocks();
     signInAs(false);
     mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
-    mockProcessPendingUploads.mockResolvedValue(0);
+    mockProcessPendingUploads.mockResolvedValue(NO_UPLOADS);
     mockCleanupOrphanedFiles.mockResolvedValue(undefined);
     mockEnsureLocalIdentity.mockResolvedValue("ready");
     // Pending changes exist, so the periodic tick would sync if it were allowed to.
@@ -442,7 +455,7 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
     jest.clearAllMocks();
     mockUseAuth.mockReturnValue({ user: TEST_USER, isApproved: true });
     mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
-    mockProcessPendingUploads.mockResolvedValue(0);
+    mockProcessPendingUploads.mockResolvedValue(NO_UPLOADS);
     mockCleanupOrphanedFiles.mockResolvedValue(undefined);
     mockEnsureLocalIdentity.mockResolvedValue("ready");
     mockHasUnsyncedChanges.mockResolvedValue(false);
@@ -501,7 +514,9 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
   it("runs one more pass after an upload, so the attachment's status is pushed", async () => {
     // Uploads run after synchronize() on desktop, so the uploaded attachment
     // is dirty again until the next pass pushes it.
-    mockProcessPendingUploads.mockResolvedValueOnce(1).mockResolvedValue(0);
+    mockProcessPendingUploads
+      .mockResolvedValueOnce({ uploaded: 1, storageFull: 0 })
+      .mockResolvedValue(NO_UPLOADS);
     mockHasUnsyncedChanges.mockResolvedValueOnce(true);
     const { result } = renderHook(() => useDatabase(), { wrapper });
 
@@ -599,7 +614,7 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
 
   it("starts no pending check for a previous user's pass whose upload outlasts the session", async () => {
     // Desktop uploads after synchronize(), so the session can end mid-upload.
-    const upload = deferred<number>();
+    const upload = deferred<UploadResult>();
     mockProcessPendingUploads.mockReturnValueOnce(upload.promise);
     const { rerender } = renderHook(() => useDatabase(), { wrapper });
     await waitFor(() => expect(mockProcessPendingUploads).toHaveBeenCalledTimes(1));
@@ -608,7 +623,7 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
     rerender(undefined);
     await flushEffects();
     await act(async () => {
-      upload.resolve(1);
+      upload.resolve({ uploaded: 1, storageFull: 0 });
     });
     await flushEffects();
 
@@ -688,7 +703,7 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
     mockHasUnsyncedChanges.mockResolvedValue(true);
     mockProcessPendingUploads.mockImplementation(async () => {
       emitChanges(UPLOAD_STATUS);
-      return 0;
+      return NO_UPLOADS;
     });
     const { result } = renderHook(() => useDatabase(), { wrapper });
     await settleInitialSync(result);
@@ -969,5 +984,62 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
     await advance(AUTO_SYNC_DEBOUNCE_MS * 2);
 
     expect(mockHasUnsyncedChanges).not.toHaveBeenCalled();
+  });
+});
+
+describe("DatabaseProvider storage-full alert (issue #794)", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetStorageFullAlert();
+    jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    mockUseAuth.mockReturnValue({ user: TEST_USER, isApproved: true });
+    mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
+    mockCleanupOrphanedFiles.mockResolvedValue(undefined);
+    mockEnsureLocalIdentity.mockResolvedValue("ready");
+    mockFetchStorageUsage.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("alerts with the storage-full message when a sync's uploads hit the quota", async () => {
+    const usage = { usedBytes: 52_000_000, quotaBytes: 52_428_800 };
+    mockFetchStorageUsage.mockResolvedValue(usage);
+    mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, storageFull: 1 });
+
+    renderHook(() => useDatabase(), { wrapper });
+
+    await waitFor(() =>
+      expect(Alert.alert).toHaveBeenCalledWith(
+        STORAGE_FULL_ALERT_TITLE,
+        storageFullMessage(usage.usedBytes, usage.quotaBytes),
+      ),
+    );
+    expect(Alert.alert).toHaveBeenCalledTimes(1);
+  });
+
+  it("still alerts when the usage can't be read", async () => {
+    mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, storageFull: 2 });
+
+    renderHook(() => useDatabase(), { wrapper });
+
+    await waitFor(() =>
+      expect(Alert.alert).toHaveBeenCalledWith(
+        STORAGE_FULL_ALERT_TITLE,
+        storageFullMessage(undefined, undefined),
+      ),
+    );
+  });
+
+  it("does not alert when no upload was refused", async () => {
+    mockProcessPendingUploads.mockResolvedValue({ uploaded: 1, storageFull: 0 });
+
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+
+    await waitFor(() => expect(mockProcessPendingUploads).toHaveBeenCalled());
+    await waitFor(() => expect(result.current.isSyncing).toBe(false));
+    expect(mockFetchStorageUsage).not.toHaveBeenCalled();
+    expect(Alert.alert).not.toHaveBeenCalled();
   });
 });

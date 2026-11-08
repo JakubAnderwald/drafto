@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { act } from "react";
+import {
+  DEFAULT_STORAGE_QUOTA_BYTES,
+  STORAGE_QUOTA_EXCEEDED_CODE,
+  STORAGE_QUOTA_EXCEEDED_MESSAGE,
+  storageFullMessage,
+} from "@drafto/shared";
 
 // Mock BlockNote dependencies — they require a real DOM canvas, which jsdom lacks
 let capturedUploadFile: ((file: File) => Promise<string>) | undefined;
@@ -300,6 +306,91 @@ describe("NoteEditor", () => {
 
     const file = new File(["test"], "file.bin", { type: "application/octet-stream" });
     await expect(capturedUploadFile!(file)).rejects.toThrow("Failed to save attachment record");
+  });
+
+  it("shows the storage-full message when upload-url refuses for the quota", async () => {
+    const usedBytes = DEFAULT_STORAGE_QUOTA_BYTES - 100;
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 413,
+      json: () =>
+        Promise.resolve({
+          error: STORAGE_QUOTA_EXCEEDED_MESSAGE,
+          code: STORAGE_QUOTA_EXCEEDED_CODE,
+          usedBytes,
+          quotaBytes: DEFAULT_STORAGE_QUOTA_BYTES,
+          status: 413,
+        }),
+    });
+
+    await act(async () => {
+      render(<NoteEditor noteId="note-42" />);
+    });
+
+    const expected = storageFullMessage(usedBytes, DEFAULT_STORAGE_QUOTA_BYTES);
+    const file = new File(["test"], "photo.png", { type: "image/png" });
+    await act(async () => {
+      await expect(capturedUploadFile!(file)).rejects.toThrow(expected);
+    });
+
+    expect(mockUploadToSignedUrl).not.toHaveBeenCalled();
+    expect(screen.getByTestId("note-editor-upload-error")).toHaveTextContent(expected);
+  });
+
+  it("shows the storage-full message when confirm refuses for the quota", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            signedUrl: "https://storage.supabase.co/upload",
+            token: "tok",
+            filePath: "user-1/note-42/photo.png",
+            fileName: "photo.png",
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 413,
+        json: () =>
+          Promise.resolve({
+            error: STORAGE_QUOTA_EXCEEDED_MESSAGE,
+            code: STORAGE_QUOTA_EXCEEDED_CODE,
+            usedBytes: null,
+            quotaBytes: null,
+            status: 413,
+          }),
+      });
+    mockUploadToSignedUrl.mockResolvedValue({ error: null });
+
+    await act(async () => {
+      render(<NoteEditor noteId="note-42" />);
+    });
+
+    const expected = storageFullMessage(null, null);
+    const file = new File(["test"], "photo.png", { type: "image/png" });
+    await act(async () => {
+      await expect(capturedUploadFile!(file)).rejects.toThrow(expected);
+    });
+
+    expect(screen.getByTestId("note-editor-upload-error")).toHaveTextContent(expected);
+  });
+
+  it("keeps the per-file size message for a 413 without the quota code", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 413,
+      json: () => Promise.resolve({ error: "File size exceeds 50MB limit", status: 413 }),
+    });
+
+    await act(async () => {
+      render(<NoteEditor noteId="note-42" />);
+    });
+
+    const file = new File(["test"], "large.bin", { type: "application/octet-stream" });
+    await act(async () => {
+      await expect(capturedUploadFile!(file)).rejects.toThrow("File size exceeds 50MB limit");
+    });
   });
 
   it("throws when confirm succeeds but file_path is missing from response", async () => {

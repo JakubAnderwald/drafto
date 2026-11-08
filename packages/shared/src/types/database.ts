@@ -9,6 +9,8 @@ export interface Database {
           is_approved: boolean;
           is_admin: boolean;
           display_name: string | null;
+          // Attachment storage quota in bytes; null = unlimited (issue #794).
+          storage_quota_bytes: number | null;
           created_at: string;
           updated_at: string;
         };
@@ -17,6 +19,7 @@ export interface Database {
           is_approved?: boolean;
           is_admin?: boolean;
           display_name?: string | null;
+          storage_quota_bytes?: number | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -25,6 +28,7 @@ export interface Database {
           is_approved?: boolean;
           is_admin?: boolean;
           display_name?: string | null;
+          storage_quota_bytes?: number | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -212,7 +216,38 @@ export interface Database {
       };
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+      get_server_time: {
+        Args: Record<PropertyKey, never>;
+        Returns: string;
+      };
+      cleanup_trashed_notes: {
+        Args: Record<PropertyKey, never>;
+        Returns: number;
+      };
+      // The caller's attachment storage usage and quota (issue #794). One row.
+      get_my_storage_usage: {
+        Args: Record<PropertyKey, never>;
+        Returns: {
+          used_bytes: number;
+          quota_bytes: number | null;
+        }[];
+      };
+      // Every user's usage and quota; raises 42501 unless the caller is an admin.
+      admin_storage_usage: {
+        Args: Record<PropertyKey, never>;
+        Returns: {
+          user_id: string;
+          used_bytes: number;
+          quota_bytes: number | null;
+        }[];
+      };
+      // Used by the attachments bucket's storage policies.
+      can_store_attachment: {
+        Args: Record<PropertyKey, never>;
+        Returns: boolean;
+      };
+    };
     Enums: Record<string, never>;
   };
 }
