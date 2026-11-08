@@ -825,7 +825,7 @@ Now, on any non-timeout claude failure (`--plan`, replan, `--implement`, `--watc
 
 The next tick's pause gate reports the factory paused (`… (until: <iso>)`) and exits until the deadline; once `now ≥ pausedUntil`, `factory:paused?` auto-resumes and work continues — no operator action needed. A **manual** `factory:pause` has no deadline and never auto-expires. To lift a timed pause early, run `factory:resume`. To inspect it: `node scripts/lib/state-cli.mjs factory:status` shows `paused` + `pausedUntil` + `pausedReason`.
 
-Trade-off: because the loop runs plan→implement→watch→release sequentially under one mutex, a session-limit pause also defers `--release` merges until the reset — acceptable at the factory's cadence.
+Trade-off: the pause gate stops every mode, `--release` included, so merges also wait for the reset. Since the loop runs right to left ([ADR-0068](../adr/0068-factory-runs-the-board-right-to-left.md)), `--release` runs before any Claude call in a tick, so a limit hit later in that tick no longer holds that tick's merges. Later ticks still wait — acceptable at the factory's cadence.
 
 ### Automatic toolchain pause (self-healing)
 

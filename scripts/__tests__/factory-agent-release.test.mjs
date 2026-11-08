@@ -487,14 +487,23 @@ describe("launchd loop wrapper", () => {
     const r = spawnSync("bash", ["-n", loopPath], { encoding: "utf8" });
     assert.equal(r.status, 0, r.stderr);
   });
-  it("invokes --release after --watch each tick", () => {
-    assert.match(loop, /--watch\s+--phase "\$PHASE"/);
+  it("invokes --release first each tick, before any other mode (ADR-0068)", () => {
     assert.match(loop, /--release\s+--phase "\$PHASE"/);
     // Anchor on the actual invocations, not the header comments that also
-    // mention --watch / --release.
-    const watchIdx = loop.indexOf('/bin/bash "$AGENT" --watch');
+    // mention the modes.
     const releaseIdx = loop.indexOf('/bin/bash "$AGENT" --release');
-    assert.ok(releaseIdx > watchIdx, "--release should run after --watch");
+    const firstMode = loop.indexOf('/bin/bash "$AGENT" --');
+    assert.ok(releaseIdx !== -1 && releaseIdx === firstMode, "--release should run first");
+  });
+  it("collects finished CodeRabbit CLI reviews before it merges anything", () => {
+    // --release now runs before --watch, whose housekeeping used to post a
+    // finished run's findings first. Without its own call, a PR could merge and
+    // the findings would be discarded for a closed PR.
+    const callIdx = releaseBlock.indexOf(
+      'if [[ "$APPROVED_COUNT" -gt 0 ]]; then cr_cli_housekeeping; fi',
+    );
+    const loopIdx = releaseBlock.indexOf("for ((IDX=0; IDX<APPROVED_COUNT; IDX++))");
+    assert.ok(callIdx !== -1 && loopIdx !== -1 && callIdx < loopIdx);
   });
 
   it("self-updates to origin/main before running any mode", () => {
@@ -506,7 +515,7 @@ describe("launchd loop wrapper", () => {
     const lockIdx = loop.indexOf('echo "$$" > "$LOCK_PID_FILE"');
     const fetchIdx = loop.indexOf("fetch --quiet origin main");
     const syncIdx = loop.indexOf("reset --hard --quiet origin/main");
-    const firstMode = loop.indexOf('/bin/bash "$AGENT" --plan');
+    const firstMode = loop.indexOf('/bin/bash "$AGENT" --');
     assert.ok(lockIdx !== -1 && fetchIdx > lockIdx, "fetch must run after lock acquisition");
     assert.ok(lockIdx !== -1 && syncIdx > lockIdx, "sync must run after lock acquisition");
     assert.ok(

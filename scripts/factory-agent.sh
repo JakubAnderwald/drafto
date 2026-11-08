@@ -7366,6 +7366,15 @@ if [[ "$MODE_RELEASE" -eq 1 ]]; then
   fi
   log "--release (phase=$PHASE): $APPROVED_COUNT Approved item(s)"
 
+  # Collect a CodeRabbit CLI review that finished since the last tick BEFORE
+  # any merge (ADR-0036, ADR-0068). A card can reach Approved with its run
+  # still going (it was promoted at the hold cap). --release runs before
+  # --watch in the loop, so without this the PR could merge first and
+  # housekeeping would then discard the findings for a closed PR. Posted here,
+  # they are open threads that the unresolved-thread check below refuses to
+  # merge past. Housekeeping only collects; it never starts a run.
+  if [[ "$APPROVED_COUNT" -gt 0 ]]; then cr_cli_housekeeping; fi
+
   # Branch-protection required status contexts (fetched once). The CI gate below
   # requires every one of these to be SUCCESS before merging, so an empty/partial
   # check rollup can't masquerade as green. Falls back to "[]" (any-success) if
