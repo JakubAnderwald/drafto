@@ -227,7 +227,7 @@ annually) and raises PR reviews to 5/hr. Rejected under the cost-discipline rule
 in `CLAUDE.md`: the gap can be filled with an allowance we already have.
 
 **Run the CLI synchronously inside the tick.** `factory-agent-loop.sh` runs
-`--plan`, `--implement`, `--watch`, `--release` sequentially under one mutex, so a
+every mode sequentially under one mutex, so a
 7–30 minute review would stall every other card and every merge. Rejected for the
 detached supervisor.
 

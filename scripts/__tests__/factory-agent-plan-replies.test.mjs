@@ -63,7 +63,9 @@ describe("unacked_owner_comments (extracted, real bash)", () => {
       "bash",
       [
         "-c",
-        `${extract("unacked_owner_comments")}
+        `${extract("support_forward_filter")}
+${extract("gate_support_forwards")}
+${extract("unacked_owner_comments")}
 unacked_owner_comments ${JSON.stringify(JSON.stringify(comments))} "2026-10-19T10:00:00Z" '["12"]'`,
       ],
       { encoding: "utf8" },

@@ -1,7 +1,11 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedNoteOwner, errorResponse, successResponse } from "@/lib/api/utils";
-import { sanitizeAndBuildPath } from "@/lib/api/sanitize-filename";
-import { MAX_FILE_SIZE, BUCKET_NAME, FILE_TOO_LARGE_MESSAGE } from "@drafto/shared";
+import {
+  MAX_FILE_SIZE,
+  BUCKET_NAME,
+  FILE_TOO_LARGE_MESSAGE,
+  buildAttachmentStoragePath,
+} from "@drafto/shared";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -36,7 +40,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     return errorResponse("mimeType is required", 400);
   }
 
-  const { fileName, filePath } = sanitizeAndBuildPath(rawFileName, user.id, noteId);
+  const { fileName, filePath } = buildAttachmentStoragePath(rawFileName, user.id, noteId);
 
   const { data, error: urlError } = await supabase.storage
     .from(BUCKET_NAME)
