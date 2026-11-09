@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { NotebooksSidebar } from "@/components/notebooks/notebooks-sidebar";
 import { NoteList } from "@/components/notes/note-list";
 import { handleAuthError } from "@/lib/handle-auth-error";
@@ -210,6 +210,16 @@ export function AppShell({
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(initialNotebookId);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  // Most changes refresh every pane at once through `refreshTrigger`. A delete or move
+  // that settles refreshes the lists alone, and refreshes the editor only when it
+  // opens a different note (#461). Refetching the open note re-suspends the editor,
+  // which drops the caret and puts the server copy over edits not yet saved
+  // (ADR-0032). Each pane's trigger adds its own count to the shared one. Both counts
+  // only grow, so the sum changes whenever either does and stays 0 until a refresh.
+  const [listOnlyRefreshes, setListOnlyRefreshes] = useState(0);
+  const [editorOnlyRefreshes, setEditorOnlyRefreshes] = useState(0);
+  const listRefreshTrigger = refreshTrigger + listOnlyRefreshes;
+  const editorRefreshTrigger = refreshTrigger + editorOnlyRefreshes;
   const [notebooks, setNotebooks] = useState<NotebookInfo[]>(
     initialNotebooks.map((n) => ({ id: n.id, name: n.name })),
   );
@@ -221,6 +231,13 @@ export function AppShell({
   const [searchOpen, setSearchOpen] = useState(false);
   const { notebooksCollapsed, notesCollapsed, togglePane } = usePaneCollapse();
   const [lastNoteUpdate, setLastNoteUpdate] = useState<NoteListPatch | null>(null);
+
+  // The selection as last committed, for code that runs when a request settles. A
+  // layout effect updates it during the commit, before any later response can read it.
+  const committedNoteId = useRef(selectedNoteId);
+  useLayoutEffect(() => {
+    committedNoteId.current = selectedNoteId;
+  }, [selectedNoteId]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -340,15 +357,19 @@ export function AppShell({
   // The note list has already removed the row. The follow-up selection and the list
   // refresh both wait for the server (#461): a refetch started before the request
   // settled could return the note again, and nothing would correct the list after
-  // it. When a single request lands, React batches the selection and the refresh
-  // into one commit, so the editor loads the next note once. The functional updater
-  // keeps a note the user picked meanwhile.
+  // it. The functional updater keeps a note the user picked meanwhile. The next note
+  // gets a fresh load, as a row click gives it, in the same commit that opens it, so
+  // the editor loads it once. A note that stays open is not refetched.
   const handleNoteRemoved = useCallback((noteId: string, nextSelectedId: string | null) => {
     setSelectedNoteId((current) => (current === noteId ? nextSelectedId : current));
+    if (committedNoteId.current === noteId && nextSelectedId !== null) {
+      setEditorOnlyRefreshes((prev) => prev + 1);
+    }
   }, []);
 
+  // Only the lists: the editor shows a note the delete or move left in place.
   const refreshLists = useCallback(() => {
-    setRefreshTrigger((prev) => prev + 1);
+    setListOnlyRefreshes((prev) => prev + 1);
   }, []);
 
   const { beginRemoval, settleRemoval } = useNoteRemovals({
@@ -501,7 +522,7 @@ export function AppShell({
           onNotebooksChange={setNotebooks}
           isTrashSelected={viewingTrash}
           onSelectTrash={handleSelectTrash}
-          refreshTrigger={refreshTrigger}
+          refreshTrigger={listRefreshTrigger}
           initialNotebooks={initialNotebooks}
         />
         <div className="flex items-center justify-end p-2">
@@ -581,7 +602,7 @@ export function AppShell({
               notebooks={notebooks}
               onRestore={handleRestoreNote}
               onPermanentDelete={handlePermanentDelete}
-              refreshTrigger={refreshTrigger}
+              refreshTrigger={listRefreshTrigger}
             />
           </Suspense>
         ) : selectedNotebookId ? (
@@ -594,7 +615,7 @@ export function AppShell({
               onMoveNote={handleMoveNote}
               onDeleteNote={handleDeleteNote}
               notebooks={notebooks}
-              refreshTrigger={refreshTrigger}
+              refreshTrigger={listRefreshTrigger}
               lastNoteUpdate={lastNoteUpdate}
               initialNotes={selectedNotebookId === initialNotebookId ? initialNotes : undefined}
             />
@@ -641,7 +662,7 @@ export function AppShell({
             <NoteEditorPanel
               key={selectedNoteId}
               noteId={selectedNoteId}
-              refreshTrigger={refreshTrigger}
+              refreshTrigger={editorRefreshTrigger}
               onNoteUpdated={handleNoteUpdated}
               onNoteClosed={handleNoteClosed}
             />

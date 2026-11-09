@@ -882,6 +882,9 @@ describe("AppShell", () => {
     let server: Record<string, ListRow[]>;
     // List fetches and held requests, in the order they reached the server.
     let log: string[];
+    // The editor's note fetches, kept apart from `log`: each one means the editor
+    // loaded a note, or re-suspended and lost its caret and unsaved edits (ADR-0032).
+    let noteFetches: string[];
     let held: HeldRequest[];
 
     function findNote(noteId: string): { notebookId: string; row: ListRow } | null {
@@ -894,6 +897,7 @@ describe("AppShell", () => {
 
     beforeEach(() => {
       log = [];
+      noteFetches = [];
       held = [];
       server = {
         "nb-1": [
@@ -958,6 +962,7 @@ describe("AppShell", () => {
               server[target] = [row, ...server[target]];
             });
           }
+          noteFetches.push(row.id);
           return respond({ ...row, content: null, created_at: CREATED_AT, is_trashed: false });
         }
 
@@ -1043,6 +1048,8 @@ describe("AppShell", () => {
         "DELETE note-1 done",
         "GET nb-1 list",
       ]);
+      // The editor loads the next note once, and never refetches the deleted one.
+      expect(noteFetches).toEqual(["note-1", "note-2"]);
     });
 
     it("drops a deleted note that a row click's refetch brought back", async () => {
@@ -1068,8 +1075,11 @@ describe("AppShell", () => {
       await waitFor(() => {
         expect(notesPane().queryByText("My First Note")).not.toBeInTheDocument();
       });
-      // The note the user picked while the DELETE was held stays selected.
+      // The note the user picked while the DELETE was held stays selected, and the
+      // refresh after the DELETE leaves its editor alone.
       await expectOpen("My Third Note");
+      expect(logFrom("DELETE note-1 done")).toEqual(["DELETE note-1 done", "GET nb-1 list"]);
+      expect(noteFetches).toEqual(["note-1", "note-3"]);
     });
 
     it("keeps the open note when a different note is deleted", async () => {
@@ -1090,6 +1100,9 @@ describe("AppShell", () => {
       });
       await expectOpen("My Third Note");
       expect(notesPane().queryByText("My First Note")).not.toBeInTheDocument();
+      // The list refresh doesn't reach the editor: refetching the open note would
+      // re-suspend it and drop the caret and any edit not yet saved (ADR-0032).
+      expect(noteFetches).toEqual(["note-3"]);
     });
 
     // Removing notes faster than the server answers: the open note, then the note
@@ -1132,6 +1145,9 @@ describe("AppShell", () => {
         // One list fetch, after both DELETEs landed.
         expect(listFetches()).toEqual(["GET nb-1 list"]);
         expect(log.at(-1)).toBe("GET nb-1 list");
+        // The editor loads note 3 once: the list refresh after the second DELETE
+        // doesn't refetch it.
+        expect(noteFetches).toEqual(["note-1", "note-3"]);
       },
     );
 
@@ -1164,6 +1180,7 @@ describe("AppShell", () => {
         "DELETE note-only done",
         "GET nb-1 list",
       ]);
+      expect(noteFetches).toEqual(["note-only"]);
     });
 
     it("brings the note back still selected when the server rejects the delete", async () => {
@@ -1188,6 +1205,8 @@ describe("AppShell", () => {
         "DELETE note-1 failed",
         "GET nb-1 list",
       ]);
+      // The note never left the editor, so the refresh doesn't refetch it.
+      expect(noteFetches).toEqual(["note-1"]);
       consoleSpy.mockRestore();
     });
 
@@ -1237,6 +1256,28 @@ describe("AppShell", () => {
         "GET nb-1 list",
       ]);
       expect(server["nb-2"].map((row) => row.id)).toEqual(["note-1"]);
+      expect(noteFetches).toEqual(["note-1", "note-2"]);
+    });
+
+    it("keeps the open note loaded when a different note is moved", async () => {
+      const user = userEvent.setup();
+      await renderAndOpen(user, "My Third Note");
+
+      await chooseAction(user, "My First Note", "Work");
+      await act(async () => {
+        held[0].release();
+      });
+
+      await waitFor(() => {
+        expect(logFrom("PATCH note-1 sent")).toEqual([
+          "PATCH note-1 sent",
+          "PATCH note-1 done",
+          "GET nb-1 list",
+        ]);
+      });
+      await expectOpen("My Third Note");
+      expect(notesPane().queryByText("My First Note")).not.toBeInTheDocument();
+      expect(noteFetches).toEqual(["note-3"]);
     });
   });
 
