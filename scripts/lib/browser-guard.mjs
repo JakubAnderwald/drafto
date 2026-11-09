@@ -266,9 +266,11 @@ const USE_CLICKS = "use clicks on page elements instead";
 const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const DEVICE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Plain http is for the repro kind's local dev server only. `localhost` is
-// deliberately absent: 127.0.0.1 is a different cookie host, which keeps the
-// owner's own localhost:3000 session out of reach.
+// Plain http is for a loopback dev server only. No kind uses one today: the
+// plan-time use ADR-0051 anticipated became the `plan` kind, which probes a
+// Vercel preview (ADR-0071). `localhost` is deliberately absent: 127.0.0.1 is
+// a different cookie host, which keeps the owner's own localhost:3000 session
+// out of reach.
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "[::1]"]);
 
 // Never an allowed origin, whatever bash passes: the owner is signed in to

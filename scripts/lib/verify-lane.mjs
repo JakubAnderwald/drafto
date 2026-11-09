@@ -377,7 +377,7 @@ export function assertSafeClaudeArgs(args) {
 
 // Vercel's automation bypass secrets are short URL-safe tokens. Anything else
 // can't go into a curl config header line safely.
-const BYPASS_VALUE_RE = /^[A-Za-z0-9._~+/=-]{16,256}$/;
+export const BYPASS_VALUE_RE = /^[A-Za-z0-9._~+/=-]{16,256}$/;
 
 /** KEY=value lines (export prefix and quotes allowed) as an object. */
 export function parseEnvFile(text) {

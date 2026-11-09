@@ -504,6 +504,63 @@ function shapeReplan(replan) {
   };
 }
 
+// The plan-stage browser probe (plan-probe.mjs). `dir` is the staging dir the
+// planner writes into: <factory checkout>/logs/factory/plan-probe/<probeId>,
+// absolute, with no "..". `results` is a finished round to fold into the plan:
+// its report is DATA (model and page output), so it is enveloped, and its ack
+// marker must be exactly the one bash builds for its probe id.
+const PROBE_ID = /^[1-9][0-9]{0,6}-[0-9]{9,12}$/;
+const PROBE_REASONS = new Set([
+  "phase",
+  "off",
+  "kind",
+  "browser-disabled",
+  "not-web",
+  "pending",
+  "cap",
+]);
+
+function shapeProbeDir(dir) {
+  if (typeof dir !== "string" || dir.split("/").includes("..")) return null;
+  const m = /^\/(?:[^/]+\/)*logs\/factory\/plan-probe\/([^/]+)$/.exec(dir);
+  return m && PROBE_ID.test(m[1]) ? dir : null;
+}
+
+function shapeProbeResults(results) {
+  if (!results || typeof results !== "object") return null;
+  const probeId = String(results.probeId ?? "");
+  if (!PROBE_ID.test(probeId)) return null;
+  const status = String(results.status ?? "");
+  if (!/^(reported|failed:[a-z-]+|rejected:[a-z-]+)$/.test(status)) return null;
+  const ackMarker = `<!-- drafto-factory-plan-probe-ack:${probeId} -->`;
+  if (results.ackMarker !== ackMarker) return null;
+  return {
+    probeId,
+    round: Number.isInteger(results.round) && results.round > 0 ? results.round : null,
+    status,
+    ackMarker,
+    reportEnveloped: envelopeBody(results.report ?? "", "probe-report"),
+  };
+}
+
+export function shapeProbe(probe) {
+  if (!probe || typeof probe !== "object") return null;
+  const dir = shapeProbeDir(probe.dir);
+  // Available only with a well-formed staging dir to write into; any other
+  // reason (or none) reads as "off".
+  const available = probe.available === true && dir !== null;
+  const reason = available ? null : PROBE_REASONS.has(probe.reason) ? probe.reason : "off";
+  return {
+    available,
+    reason,
+    dir: available ? dir : null,
+    round: Number.isInteger(probe.round) && probe.round > 0 ? probe.round : null,
+    maxRounds: Number.isInteger(probe.maxRounds) && probe.maxRounds > 0 ? probe.maxRounds : null,
+    spikeAllowed: available && probe.spikeAllowed === true,
+    results: shapeProbeResults(probe.results),
+  };
+}
+
 export function buildFactoryPlanBundle({
   issue,
   comments = [],
@@ -511,6 +568,7 @@ export function buildFactoryPlanBundle({
   repo,
   nowIso,
   replan,
+  probe,
 } = {}) {
   if (!issue || !Number.isInteger(issue.number)) {
     throw new Error("buildFactoryPlanBundle: issue.number is required");
@@ -532,6 +590,8 @@ export function buildFactoryPlanBundle({
   };
   const replanShape = shapeReplan(replan);
   if (replanShape) bundle.replan = replanShape;
+  const probeShape = shapeProbe(probe);
+  if (probeShape) bundle.probe = probeShape;
   return bundle;
 }
 
@@ -1043,12 +1103,16 @@ export function extractScenarioSections(body) {
   return sections;
 }
 
-// The runner's uses (FACTORY_BROWSER_KINDS in factory-agent.sh). Both run the
-// same Web steps the same way; only where bash sends the report differs:
+// The runner's uses (FACTORY_BROWSER_KINDS in factory-agent.sh). intest and
+// verify run the same Web steps the same way; only where bash sends the
+// report differs:
 //   intest — the card is In Test; bash posts the report as its own comment.
 //   verify — the card is in the Testing column (ADR-0053); bash posts nothing,
 //            and the report becomes the Web lane of the verification report.
-export const BROWSER_RUN_KINDS = Object.freeze(["intest", "verify"]);
+//   plan   — the card is in Plan Review: the planner's checks (`checks`, not a
+//            scenario) on the plan-stage probe preview (plan-probe.mjs). Bash
+//            folds the report into the probe's report comment.
+export const BROWSER_RUN_KINDS = Object.freeze(["intest", "verify", "plan"]);
 
 export function buildFactoryBrowserRunBundle({
   runKind = "intest",
@@ -1060,6 +1124,8 @@ export function buildFactoryBrowserRunBundle({
   accountFile,
   deviceId,
   nowIso,
+  checks = null,
+  probeId = null,
 } = {}) {
   if (!BROWSER_RUN_KINDS.includes(runKind))
     throw new Error(`buildFactoryBrowserRunBundle: unknown runKind ${runKind}`);
@@ -1077,6 +1143,26 @@ export function buildFactoryBrowserRunBundle({
   }
   if (typeof deviceId !== "string" || !deviceId) {
     throw new Error("buildFactoryBrowserRunBundle: deviceId is required");
+  }
+  if (runKind === "plan") {
+    const text = typeof checks === "string" ? checks.trim() : "";
+    return {
+      kind: "factory_browser_run",
+      runKind,
+      issue: { number: issue.number, title: typeof issue.title === "string" ? issue.title : "" },
+      headSha,
+      prNumber: null,
+      target: { url: `${origin}/`, origin },
+      scenario: null,
+      // The planner's checks are DATA: written by a model from an issue a
+      // person filed, so they are enveloped like a scenario's Web steps.
+      checks: text ? { checksEnveloped: envelopeBody(text, "plan-checks") } : null,
+      skipReason: text ? null : "no-checks",
+      account: { email: readAccountFile(accountFile).email, signInUrl: null },
+      browser: { deviceId },
+      qaTag: `factory-${issue.number}-probe${/^[0-9]+-([0-9]+)$/.exec(String(probeId ?? ""))?.[1] ?? String(headSha).slice(0, 7)}`,
+      nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
+    };
   }
   const scenario = selectScenarioComment(comments, headSha);
   const webSteps = scenario ? extractWebSection(scenario.body) : null;
@@ -1218,6 +1304,7 @@ async function main() {
       repo: input.repo,
       nowIso: input.nowIso,
       replan: input.replan,
+      probe: input.probe,
     });
   } else if (input.kind === "factory_implement") {
     bundle = buildFactoryImplementBundle({
@@ -1293,6 +1380,8 @@ async function main() {
       accountFile: input.accountFile,
       deviceId: input.deviceId,
       nowIso: input.nowIso,
+      checks: input.checks,
+      probeId: input.probeId,
     });
   } else if (input.kind === "factory_verify_shell") {
     bundle = buildFactoryVerifyShellBundle({

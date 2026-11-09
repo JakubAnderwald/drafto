@@ -299,11 +299,14 @@ FACTORY_INTEST_BETA_DESKTOP="${FACTORY_INTEST_BETA_DESKTOP:-0}"
 # host). Every other call passes --no-chrome, because the code-writing stages
 # have Bash and file access and the browser is the operator's own signed-in
 # profile. FACTORY_BROWSER_KINDS picks which uses are live: `intest` (the In
-# Test web run, which posts its own report) and `verify` (the Testing column's
-# browser lane, ADR-0053: its report goes into the verification report). Both
-# are on by default; `verify` is inert while FACTORY_VERIFY=0, since only the
-# Testing sweep queues it. Only an unset switch gets the default (`-`, not
-# `:-`): an empty one is invalid and turns the runner off, like any other value.
+# Test web run, which posts its own report), `verify` (the Testing column's
+# browser lane, ADR-0053: its report goes into the verification report) and
+# `plan` (the plan-stage browser probe, ADR-0071: its report goes into the
+# probe's report comment). All three are on by default; `verify` is inert while
+# FACTORY_VERIFY=0, since only the Testing sweep queues it, and `plan` while
+# FACTORY_PLAN_PROBE=0, since only the planner queues it. Only an unset switch
+# gets the default (`-`, not `:-`): an empty one is invalid and turns the
+# runner off, like any other value.
 FACTORY_BROWSER="${FACTORY_BROWSER-1}"
 if [[ "$FACTORY_BROWSER" != "0" && "$FACTORY_BROWSER" != "1" ]]; then
   echo "WARNING: invalid FACTORY_BROWSER='$FACTORY_BROWSER'; turning the browser runner off" >&2
@@ -312,7 +315,7 @@ fi
 # Comma list. Unknown words are dropped (with a warning) rather than failing the
 # tick, and the result is re-joined with commas so the membership test in
 # browser_kind_enabled can match ",word," exactly.
-FACTORY_BROWSER_KINDS="${FACTORY_BROWSER_KINDS:-intest,verify}"
+FACTORY_BROWSER_KINDS="${FACTORY_BROWSER_KINDS:-intest,verify,plan}"
 _bk_out=""
 _bk_rest="$FACTORY_BROWSER_KINDS,"
 while [[ -n "$_bk_rest" ]]; do
@@ -321,7 +324,7 @@ while [[ -n "$_bk_rest" ]]; do
   _bk_word="${_bk_word// /}"
   [[ -n "$_bk_word" ]] || continue
   case "$_bk_word" in
-    intest|verify) [[ ",$_bk_out," == *",$_bk_word,"* ]] || _bk_out="${_bk_out:+$_bk_out,}$_bk_word" ;;
+    intest|verify|plan) [[ ",$_bk_out," == *",$_bk_word,"* ]] || _bk_out="${_bk_out:+$_bk_out,}$_bk_word" ;;
     *) echo "WARNING: unknown FACTORY_BROWSER_KINDS entry '$_bk_word'; ignoring it" >&2 ;;
   esac
 done
@@ -370,6 +373,56 @@ FACTORY_BROWSER_MAX_ATTEMPTS=2
 # branch cut before it landed doesn't have it: its preview sends the link to
 # /login, so a browser run there can only end as signin-failed.
 FACTORY_SIGNIN_ROUTE_PATH="apps/web/src/app/auth/test-sign-in/route.ts"
+
+# ── Plan-stage browser probe (scripts/lib/plan-probe.mjs, ADR-0071) ───────
+# Off by default. With FACTORY_PLAN_PROBE=1 (and the browser runner's `plan`
+# kind on), the planner may request a probe on a web card: bash pushes a
+# throwaway branch, factory/plan-probe-<issue> (never a PR), carrying main plus,
+# when the planner wrote one, a minimal spike of its proposed change. Vercel
+# builds a dev-Supabase preview of it; the browser runner runs the planner's
+# checks there, bash records an allowlist of response headers, posts one probe
+# report and deletes the branch, and the planner folds the result into the
+# plan. It runs model-written code on a preview before the plan is approved:
+# ADR-0071 records that tradeoff. FACTORY_PLAN_PROBE_SPIKE=0 keeps probes on
+# but always on main's own code. A bad value warns and falls back.
+FACTORY_PLAN_PROBE="${FACTORY_PLAN_PROBE:-0}"
+if [[ "$FACTORY_PLAN_PROBE" != "0" && "$FACTORY_PLAN_PROBE" != "1" ]]; then
+  echo "WARNING: invalid FACTORY_PLAN_PROBE='$FACTORY_PLAN_PROBE'; turning the plan probe off" >&2
+  FACTORY_PLAN_PROBE=0
+fi
+FACTORY_PLAN_PROBE_SPIKE="${FACTORY_PLAN_PROBE_SPIKE:-1}"
+if [[ "$FACTORY_PLAN_PROBE_SPIKE" != "0" && "$FACTORY_PLAN_PROBE_SPIKE" != "1" ]]; then
+  echo "WARNING: invalid FACTORY_PLAN_PROBE_SPIKE='$FACTORY_PLAN_PROBE_SPIKE'; probing main only" >&2
+  FACTORY_PLAN_PROBE_SPIKE=0
+fi
+# Probe rounds per issue (factory:plan-probe-reset gives them back).
+FACTORY_PLAN_PROBE_MAX_ROUNDS="${FACTORY_PLAN_PROBE_MAX_ROUNDS:-2}"
+if ! [[ "$FACTORY_PLAN_PROBE_MAX_ROUNDS" =~ ^[1-9]$ ]]; then
+  echo "WARNING: invalid FACTORY_PLAN_PROBE_MAX_ROUNDS='$FACTORY_PLAN_PROBE_MAX_ROUNDS'; defaulting to 2" >&2
+  FACTORY_PLAN_PROBE_MAX_ROUNDS=2
+fi
+# Minutes a probe waits for its preview to appear; a build Vercel has started
+# gets three times that before the round ends as failed:no-preview.
+FACTORY_PLAN_PROBE_PREVIEW_WAIT_MIN="${FACTORY_PLAN_PROBE_PREVIEW_WAIT_MIN:-15}"
+if ! [[ "$FACTORY_PLAN_PROBE_PREVIEW_WAIT_MIN" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_PLAN_PROBE_PREVIEW_WAIT_MIN='$FACTORY_PLAN_PROBE_PREVIEW_WAIT_MIN'; defaulting to 15" >&2
+  FACTORY_PLAN_PROBE_PREVIEW_WAIT_MIN=15
+fi
+# The planner's wall cap when a probe is available (writing checks and a spike
+# takes longer than a plan alone). The larger of this and the plan cap wins.
+FACTORY_PLAN_PROBE_TIMEOUT_SEC="${FACTORY_PLAN_PROBE_TIMEOUT_SEC:-900}"
+if ! [[ "$FACTORY_PLAN_PROBE_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_PLAN_PROBE_TIMEOUT_SEC='$FACTORY_PLAN_PROBE_TIMEOUT_SEC'; defaulting to 900" >&2
+  FACTORY_PLAN_PROBE_TIMEOUT_SEC=900
+fi
+# Browser sessions per probe commit, and replans that may try to fold one
+# result in before bash stops asking (so a planner that never writes the ack
+# can't replan every tick).
+FACTORY_PLAN_PROBE_MAX_ATTEMPTS=2
+FACTORY_PLAN_PROBE_MAX_FOLDS=2
+# Every file here is scanned for, so no value in it can leave in a probe.
+FACTORY_SECRETS_DIR="${FACTORY_SECRETS_DIR:-$HOME/drafto-secrets}"
+case "$FACTORY_SECRETS_DIR" in "~/"*) FACTORY_SECRETS_DIR="$HOME/${FACTORY_SECRETS_DIR#\~/}" ;; esac
 
 # ── Pre-In-Test verification, the "Testing" column (ADR-0053) ─────────────
 # Off by default. With FACTORY_VERIFY=1 a converged In Review card moves to
@@ -494,7 +547,8 @@ Exactly one of --plan, --implement, --release, --watch, --browser is required.
   --release    Approved → Released. Phase B+: migration gate + squash-merge.
   --browser    Web runs in Chrome (ADR-0051). Phase B+, FACTORY_BROWSER=1.
                Runs one of the candidates --watch found, after --release:
-               Testing's verify lane first (ADR-0053), then In Test's run.
+               Testing's verify lane first (ADR-0053), then In Test's run,
+               then plan-stage probes (ADR-0071, FACTORY_PLAN_PROBE=1).
   --phase X    Override the phase advertised to Claude (default: A).
   --dry-run    Build context bundles and print them; no board / issue
                mutations and no Claude invocation. Useful for golden-run
@@ -606,6 +660,9 @@ mkdir -p "$LOG_DIR"
 # The preview sign-in lease, shared by browser_run's mint and the verification
 # shell lane's (passed to verify-lane.mjs start). See FACTORY_SIGNIN_LEASE_SEC.
 SIGNIN_LEASE_FILE="$LOG_DIR/factory-signin.lease"
+# The plan-stage probes' staging and evidence dirs, one per probe id (inside
+# the repo, so the planner writes there with no extra directory access).
+PLAN_PROBE_ROOT="$LOG_DIR/plan-probe"
 # The owner browser_run took the lease as, while it holds it (cleanup() gives
 # it back if this process exits mid-run).
 BROWSER_SIGNIN_LEASE_OWNER=""
@@ -963,12 +1020,14 @@ build_plan_bundle() {
   local issue_entry="$1"
   local comments_json="$2"
   local replan_json="${3:-null}"
+  local probe_json="${4:-null}"
   local repo_head_ref
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   jq -n \
     --argjson issue "$issue_entry" \
     --argjson comments "$comments_json" \
     --argjson replan "$replan_json" \
+    --argjson probe "$probe_json" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
     --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
     --arg phase "$PHASE" \
@@ -985,7 +1044,8 @@ build_plan_bundle() {
        },
        repo: { nameWithOwner: $repoNwo, headRef: $headRef }
      }
-     + (if $replan == null then {} else { replan: $replan } end)' \
+     + (if $replan == null then {} else { replan: $replan } end)
+     + (if $probe == null then {} else { probe: $probe } end)' \
     | node "$SCRIPT_DIR/lib/factory-bundle.mjs"
 }
 
@@ -4243,6 +4303,426 @@ Merge \`main\` into the branch (the **Update branch** button on PR #$pr_num, not
   return 0
 }
 
+# ── Plan-stage browser probe (scripts/lib/plan-probe.mjs, ADR-0071) ─────────
+# The planner can't open a browser (it runs --no-chrome, with Bash), and before
+# a PR there is no preview. A probe gives it one. In --plan, bash stages a dir
+# the planner may write checks, header paths and a spike into; after the run,
+# plan-probe.mjs validates and scans them and pushes factory/plan-probe-<issue>
+# (never a PR). --browser waits for its preview, records an allowlist of
+# response headers, runs the planner's checks through the one locked-down
+# runner (the `plan` kind), posts one probe report and deletes the branch. The
+# next replan folds the result into the plan. Housekeeping at the top of every
+# --plan tick ends what can't go on and reaps orphan branches.
+
+plan_probe_enabled() {
+  [[ "$FACTORY_PLAN_PROBE" == "1" ]] && browser_kind_enabled plan
+}
+
+# plan_probe <command> [flags…] — plan-probe.mjs on the factory's state.
+plan_probe() {
+  node "$SCRIPT_DIR/lib/plan-probe.mjs" "$@" --state-file "$STATE_FILE" 2>>"$LOG_FILE"
+}
+
+# plan_probe_prepare <issue> <bundle> [<fold results json>]
+# Before a planner run. Sets PLAN_PROBE_JSON (the bundle's `probe`: available,
+# or why not, plus a result to fold in), PLAN_PROBE_STAGED (1 when this run
+# has a staging dir, which plan_probe_finalize must settle) and
+# PLAN_CALL_TIMEOUT (the planner's wall cap: longer when a probe is available).
+plan_probe_prepare() {
+  local issue_num="$1" bundle="$2" results="${3:-null}" platforms avail staged dir kind_on=0
+  PLAN_PROBE_JSON="null"
+  PLAN_PROBE_STAGED=0
+  PLAN_CALL_TIMEOUT="$CLAUDE_CALL_TIMEOUT_SEC"
+  browser_kind_enabled plan && kind_on=1
+  platforms=$(echo "$bundle" | jq -r '.spec.affectedPlatforms // [] | join(",")' 2>/dev/null || echo "")
+  if ! avail=$(plan_probe availability --issue "$issue_num" --phase "$PHASE" \
+      --enabled "$FACTORY_PLAN_PROBE" --kind-on "$kind_on" --platforms "$platforms" \
+      --max-rounds "$FACTORY_PLAN_PROBE_MAX_ROUNDS"); then
+    log "WARNING: plan-probe availability failed for #$issue_num; no probe this run"
+    avail='{"available":false,"reason":"off"}'
+  fi
+  if [[ "$(echo "$avail" | jq -r '.available' 2>/dev/null)" == "true" && "$DRY_RUN" -eq 0 ]]; then
+    if staged=$(plan_probe stage --issue "$issue_num" --root "$PLAN_PROBE_ROOT") \
+        && dir=$(echo "$staged" | jq -er '.dir'); then
+      PLAN_PROBE_STAGED=1
+      avail=$(echo "$avail" | jq -c --arg d "$dir" '. + {dir: $d}')
+      if [[ "$FACTORY_PLAN_PROBE_TIMEOUT_SEC" -gt "$PLAN_CALL_TIMEOUT" ]]; then
+        PLAN_CALL_TIMEOUT="$FACTORY_PLAN_PROBE_TIMEOUT_SEC"
+      fi
+    else
+      log "WARNING: staging a plan probe failed for #$issue_num; no probe this run"
+      avail='{"available":false,"reason":"off"}'
+    fi
+  fi
+  PLAN_PROBE_JSON=$(echo "$avail" | jq -c --argjson r "$results" --arg spike "$FACTORY_PLAN_PROBE_SPIKE" \
+    '{available, reason, dir: (.dir // null), round, maxRounds,
+      spikeAllowed: ($spike == "1"), results: $r}' 2>/dev/null || echo "null")
+}
+
+# plan_probe_post <issue> — compose the probe's report comment (scanned and
+# defanged in node) and post it. The planner's copy for the fold is written
+# alongside, so a failed post never blocks the fold.
+plan_probe_post() {
+  local issue_num="$1" out body
+  [[ "$DRY_RUN" -eq 0 ]] || return 0
+  body=$(mktemp "${TMPDIR:-/tmp}/plan-probe-comment.XXXXXX") || return 0
+  if out=$(plan_probe compose --issue "$issue_num" --root "$PLAN_PROBE_ROOT" --out "$body" \
+      --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" --signin-key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" \
+      --bypass-file "$FACTORY_VERIFY_BYPASS_FILE" --secrets-dir "$FACTORY_SECRETS_DIR"); then
+    [[ "$(echo "$out" | jq -r '.withheld')" != "true" ]] \
+      || log "WARNING: #$issue_num's plan probe report matched a secret pattern; posting the withheld notice"
+    gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body-file "$body" >>"$LOG_FILE" 2>&1 \
+      || log "WARNING: posting #$issue_num's plan probe report failed; the planner still reads it"
+  else
+    log "ERROR: composing #$issue_num's plan probe report failed"
+  fi
+  rm -f "$body"
+  return 0
+}
+
+# plan_probe_end <issue> <status> [<end flags>…] — end the round: record the
+# status, delete the branch under its lease, and post the report unless it was
+# cancelled.
+plan_probe_end() {
+  local issue_num="$1" status="$2" out
+  shift 2
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "DRY-RUN: would end #$issue_num's plan probe as $status"
+    return 0
+  fi
+  if ! out=$(plan_probe end --issue "$issue_num" --root "$PLAN_PROBE_ROOT" --repo-root "$REPO_ROOT" \
+      --status "$status" "$@"); then
+    log "ERROR: ending #$issue_num's plan probe ($status) failed"
+    return 1
+  fi
+  log "Issue #$issue_num: plan probe ended as $status (branch deleted: $(echo "$out" | jq -r '.deleted'))"
+  [[ "$(echo "$out" | jq -r '.post')" != "true" ]] || plan_probe_post "$issue_num"
+  return 0
+}
+
+# plan_probe_finalize <issue> <action> — settle this run's staging once the
+# planner is done: push the probe when the run produced a plan (planned,
+# replanned, noop) and the planner wrote checks; drop the staging on anything
+# else (`discard`, blocked, a failed run). A rejected or failed probe gets its
+# report at once, so the next replan folds it in.
+plan_probe_finalize() {
+  local issue_num="$1" action="$2" main_sha out result
+  [[ "${PLAN_PROBE_STAGED:-0}" -eq 1 ]] || return 0
+  PLAN_PROBE_STAGED=0
+  # Built on the commit the planner read: the factory checkout's HEAD, which
+  # the loop resets to origin/main at the top of the tick. Not origin/main now:
+  # an earlier mode may have fetched since, and the spike's files are complete
+  # contents written against what the planner read, so building them onto a
+  # newer main could silently undo a change that landed in between. The report
+  # names the commit. A HEAD that isn't on main gets no probe.
+  main_sha=$(git -C "$REPO_ROOT" rev-parse --verify --quiet HEAD 2>>"$LOG_FILE" || echo "")
+  if [[ -n "$main_sha" ]] \
+      && ! git -C "$REPO_ROOT" merge-base --is-ancestor "$main_sha" origin/main 2>>"$LOG_FILE"; then
+    log "WARNING: the factory checkout's HEAD (${main_sha:0:12}) isn't on origin/main; no plan probe from it"
+    main_sha=""
+  fi
+  [[ -n "$main_sha" ]] || action=discard
+  if ! out=$(plan_probe finalize --issue "$issue_num" --root "$PLAN_PROBE_ROOT" --repo-root "$REPO_ROOT" \
+      --action "$action" --main-sha "${main_sha:-unknown}" --max-rounds "$FACTORY_PLAN_PROBE_MAX_ROUNDS" \
+      --spike "$FACTORY_PLAN_PROBE_SPIKE" --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
+      --signin-key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" --bypass-file "$FACTORY_VERIFY_BYPASS_FILE" \
+      --secrets-dir "$FACTORY_SECRETS_DIR"); then
+    # The staging stays recorded: the next tick's housekeeping ends it.
+    log "ERROR: settling #$issue_num's plan probe failed (see above)"
+    return 0
+  fi
+  result=$(echo "$out" | jq -r '.result // ""')
+  case "$result" in queued | rejected | failed) PLAN_PROBE_RECORDS=1 ;; esac
+  case "$result" in
+    queued)
+      log "Issue #$issue_num: plan probe queued ($(echo "$out" | jq -r '.probeId'), $(echo "$out" | jq -r '.sha[0:12]'), spike: $(echo "$out" | jq -r '.spike'))" ;;
+    rejected|failed)
+      log "Issue #$issue_num: plan probe $result ($(echo "$out" | jq -r '.reason'))"
+      [[ "$(echo "$out" | jq -r '.post')" != "true" ]] || plan_probe_post "$issue_num" ;;
+    *) ;;
+  esac
+  return 0
+}
+
+# plan_probe_fold_due <issue> <comments json> — the finished round the next
+# replan must fold into the plan, as the bundle's probe.results; prints nothing
+# when none is due (no result, already acked in the OWNER plan, or the fold cap
+# reached).
+plan_probe_fold_due() {
+  local issue_num="$1" comments="$2" f out
+  # Nothing on record (plan_probe_housekeeping, this tick): no fold to ask about.
+  [[ "${PLAN_PROBE_RECORDS:-1}" -eq 1 ]] || return 0
+  f=$(mktemp "${TMPDIR:-/tmp}/plan-probe-comments.XXXXXX") || return 0
+  printf '%s' "$comments" >"$f"
+  out=$(plan_probe fold-due --issue "$issue_num" --root "$PLAN_PROBE_ROOT" --comments-file "$f" \
+    --max-folds "$FACTORY_PLAN_PROBE_MAX_FOLDS" || echo '{"due":false}')
+  rm -f "$f"
+  [[ "$(echo "$out" | jq -r '.due' 2>/dev/null)" == "true" ]] && echo "$out" | jq -c '.results'
+  return 0
+}
+
+# plan_probe_fold_end <issue> <probe id> — after a fold replan: folded once the
+# OWNER plan carries the ack, or once the fold cap is spent.
+plan_probe_fold_end() {
+  local issue_num="$1" probe_id="$2" comments f out
+  comments=$(fetch_issue_comments "$issue_num" 2>>"$LOG_FILE") || return 0
+  f=$(mktemp "${TMPDIR:-/tmp}/plan-probe-comments.XXXXXX") || return 0
+  printf '%s' "$comments" >"$f"
+  out=$(plan_probe fold-end --issue "$issue_num" --probe-id "$probe_id" --comments-file "$f" \
+    --max-folds "$FACTORY_PLAN_PROBE_MAX_FOLDS" || echo '{}')
+  rm -f "$f"
+  case "$(echo "$out" | jq -r '.why // ""')" in
+    acked) log "Issue #$issue_num: plan probe $probe_id folded into the plan" ;;
+    gave-up) log "WARNING: #$issue_num's plan never acked probe $probe_id after $FACTORY_PLAN_PROBE_MAX_FOLDS replans; not asking again" ;;
+    no-ack) log "WARNING: #$issue_num's replan didn't ack probe $probe_id; the next tick asks again" ;;
+  esac
+  return 0
+}
+
+# plan_probe_housekeeping — the top of every --plan tick (every phase): ends
+# probes that can't go on (card left Plan Review, switched off, past the
+# deadline, a staging a killed tick left) and deletes probe branches nothing
+# owns. A board that can't be read leaves the column checks for the next tick.
+plan_probe_housekeeping() {
+  local review_json planning_json review="" planning="" boards_ok=1 enabled=0 out n i issue action
+  plan_probe_enabled && enabled=1
+  # PLAN_PROBE_RECORDS: does any issue have a probe on record? Without one,
+  # and with the probe off (the default), there is nothing to end or reap, so
+  # the tick spends no board query or ls-remote on it, and the replan sweep
+  # asks no card about a fold.
+  PLAN_PROBE_RECORDS=0
+  if jq -e '[(.issues // {})[] | select(.planProbeId != null or .planProbeStaging != null)] | length > 0' \
+      "$STATE_FILE" >/dev/null 2>&1; then
+    PLAN_PROBE_RECORDS=1
+  fi
+  [[ "$enabled" -eq 1 || "$PLAN_PROBE_RECORDS" -eq 1 ]] || return 0
+  # Only a real answer counts: an empty list read from a failed query would
+  # look like "no card in Plan Review" and cancel every queued probe.
+  review_json=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items --status "Plan Review" \
+    2>>"$LOG_FILE") || boards_ok=0
+  planning_json=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items --status "Planning" \
+    2>>"$LOG_FILE") || boards_ok=0
+  if [[ "$boards_ok" -eq 1 ]] \
+      && review=$(echo "$review_json" | jq -er 'if type == "array" then [.[].issueNumber | tostring] | join(",") else error end' 2>/dev/null) \
+      && planning=$(echo "$planning_json" | jq -er 'if type == "array" then [.[].issueNumber | tostring] | join(",") else error end' 2>/dev/null); then
+    :
+  else
+    boards_ok=0
+    review=""
+    planning=""
+  fi
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    return 0
+  fi
+  if ! out=$(plan_probe housekeeping --root "$PLAN_PROBE_ROOT" --repo-root "$REPO_ROOT" \
+      --plan-review "${review:-}" --planning "${planning:-}" --enabled "$enabled" --boards-ok "$boards_ok"); then
+    log "WARNING: plan-probe housekeeping failed (see above); trying again next tick"
+    return 0
+  fi
+  n=$(echo "$out" | jq '.actions | length' 2>/dev/null || echo 0)
+  for ((i=0; i<n; i++)); do
+    issue=$(echo "$out" | jq -r ".actions[$i].issue")
+    action=$(echo "$out" | jq -r ".actions[$i].action")
+    log "Issue #$issue: plan probe housekeeping: $action"
+    [[ "$(echo "$out" | jq -r ".actions[$i].post")" != "true" ]] || plan_probe_post "$issue"
+  done
+  return 0
+}
+
+# plan_probe_browser_run <issue> <probe sha> — one --browser step for a queued
+# plan-stage probe. Returns like browser_run: 0 when it ran (or ended the
+# round), 1 when it isn't ready this tick (try the next candidate), 2 when the
+# browser is unavailable or the sign-in lease is held (stop trying this tick).
+# It shares the runner, the health tracker and the sign-in lease with
+# browser_run, but none of its per-PR keys (browserRunSha, browserRunAttempts).
+plan_probe_browser_run() {
+  local issue_num="$1" probe_sha="$2" state_json probe_id dir remote pstate pstate_word url waited cap
+  local attempts_raw attempts=0 preflight issue_record checks raw bundle sign_in_url mint_rc=0 holder
+  local lease_owner run_dir task_rc=0 render_json status verdict
+  state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
+  [[ "$(echo "$state_json" | jq -r '.planProbeStatus // ""')" == "queued" ]] || return 1
+  [[ "$(echo "$state_json" | jq -r '.planProbeSha // ""')" == "$probe_sha" ]] || return 1
+  probe_id=$(echo "$state_json" | jq -r '.planProbeId // ""')
+  dir="$PLAN_PROBE_ROOT/$probe_id"
+  # The branch must still be the commit bash pushed: anything else is code no
+  # one validated or scanned.
+  if ! remote=$(git -C "$REPO_ROOT" ls-remote origin "refs/heads/factory/plan-probe-$issue_num" 2>>"$LOG_FILE"); then
+    log "Issue #$issue_num: couldn't read the plan probe branch; its browser run waits"
+    return 1
+  fi
+  if [[ "${remote%%[[:space:]]*}" != "$probe_sha" ]]; then
+    plan_probe_end "$issue_num" "failed:branch-moved"
+    return 1
+  fi
+  pstate=$(plan_probe preview-state --issue "$issue_num") || pstate='{"state":"unknown"}'
+  pstate_word=$(echo "$pstate" | jq -r '.state // "unknown"')
+  waited=$(echo "$pstate" | jq -r '.waitedMin // 0')
+  [[ "$waited" =~ ^[0-9]+$ ]] || waited=0
+  case "$pstate_word" in
+    ready) url=$(echo "$pstate" | jq -r '.url') ;;
+    failed)
+      plan_probe_end "$issue_num" "failed:build"
+      return 1
+      ;;
+    pending|building)
+      cap="$FACTORY_PLAN_PROBE_PREVIEW_WAIT_MIN"
+      [[ "$pstate_word" == pending ]] || cap=$((cap * 3))
+      if [[ "$waited" -ge "$cap" ]]; then
+        plan_probe_end "$issue_num" "failed:no-preview"
+      else
+        log "Issue #$issue_num: plan probe preview is $pstate_word (${waited} min); its browser run waits"
+      fi
+      return 1
+      ;;
+    *)
+      log "Issue #$issue_num: couldn't read the plan probe's preview state; its browser run waits"
+      return 1
+      ;;
+  esac
+  # Headers first, once per probe, before anything that needs Chrome: a round
+  # the browser never reaches still reports them.
+  if [[ "$DRY_RUN" -eq 0 && ! -f "$dir/headers.json" ]]; then
+    plan_probe capture-headers --issue "$issue_num" --root "$PLAN_PROBE_ROOT" --origin "$url" \
+      --bypass-file "$FACTORY_VERIFY_BYPASS_FILE" >>"$LOG_FILE" \
+      || log "WARNING: capturing #$issue_num's plan probe headers failed; the report goes without them"
+  fi
+  attempts_raw=$(echo "$state_json" | jq -r '.planProbeAttempts // ""')
+  if [[ "${attempts_raw%:*}" == "$probe_sha" ]]; then
+    attempts="${attempts_raw##*:}"
+    [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=0
+  fi
+  if [[ "$attempts" -ge "$FACTORY_PLAN_PROBE_MAX_ATTEMPTS" ]]; then
+    plan_probe_end "$issue_num" "failed:runner"
+    return 1
+  fi
+  if [[ -n "${BROWSER_PREFLIGHT_FAILED:-}" ]]; then
+    log "Issue #$issue_num: plan probe browser run skipped ($BROWSER_PREFLIGHT_FAILED)"
+    return 2
+  fi
+  if ! preflight=$(node "$SCRIPT_DIR/lib/browser-health.mjs" preflight --state-file "$STATE_FILE" \
+      --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
+      --signin-key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" 2>>"$LOG_FILE"); then
+    log "Issue #$issue_num: plan probe browser run skipped (${preflight:-preflight failed})"
+    [[ "$DRY_RUN" -eq 1 ]] || browser_record_result "preflight:${preflight:-unknown}"
+    BROWSER_PREFLIGHT_FAILED="${preflight:-unknown}"
+    return 2
+  fi
+  checks=$(cat "$dir/checks.md" 2>/dev/null || echo "")
+  issue_record=$(fetch_issue_record "$issue_num") || return 1
+  raw=$(jq -n --argjson issue "$issue_record" --arg headSha "$probe_sha" --arg targetUrl "$url" \
+    --arg accountFile "$FACTORY_BROWSER_ACCOUNT_FILE" --arg deviceId "$FACTORY_BROWSER_DEVICE_ID" \
+    --arg checks "$checks" --arg probeId "$probe_id" \
+    '{kind: "factory_browser_run", runKind: "plan",
+      issue: {number: $issue.number, title: $issue.title},
+      headSha: $headSha, targetUrl: $targetUrl, accountFile: $accountFile,
+      deviceId: $deviceId, checks: $checks, probeId: $probeId}') || return 1
+  if ! bundle=$(printf '%s' "$raw" | node "$SCRIPT_DIR/lib/factory-bundle.mjs" 2>>"$LOG_FILE"); then
+    log "ERROR: building the plan probe's browser bundle failed for #$issue_num"
+    return 1
+  fi
+  if [[ "$(echo "$bundle" | jq -r '.checks == null' 2>/dev/null)" == "true" ]]; then
+    plan_probe_end "$issue_num" "failed:runner"
+    return 1
+  fi
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "DRY-RUN: would run #$issue_num's plan probe checks on $url"
+    return 0
+  fi
+  # The same one-time sign-in link and lease as browser_run: minted last, so
+  # it is fresh when the runner opens it, and never in the log.
+  lease_owner="browser:plan:$issue_num:${probe_sha:0:12}"
+  sign_in_url=$(node "$SCRIPT_DIR/lib/browser-signin.mjs" mint \
+      --key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
+      --origin "$url" --lease-file "$SIGNIN_LEASE_FILE" --owner "$lease_owner" \
+      --hold-sec "$FACTORY_SIGNIN_LEASE_SEC" 2>>"$LOG_FILE") || mint_rc=$?
+  if [[ "$mint_rc" -eq 3 ]]; then
+    holder=$(printf '%s\n' "$sign_in_url" | tail -1 \
+      | jq -r '"\(.owner // "unknown") until \(.until // "unknown")"' 2>/dev/null || echo "unknown")
+    log "Issue #$issue_num: the preview sign-in lease is held (${holder:-unknown}); plan probe run deferred"
+    return 2
+  fi
+  [[ "$mint_rc" -ne 0 ]] || BROWSER_SIGNIN_LEASE_OWNER="$lease_owner"
+  if [[ "$mint_rc" -ne 0 || -z "$sign_in_url" ]]; then
+    browser_signin_release
+    log "Issue #$issue_num: minting the plan probe's sign-in link failed (reason above)"
+    browser_record_result "preflight:signin-mint"
+    return 2
+  fi
+  if ! bundle=$(echo "$bundle" | jq --arg u "$sign_in_url" '.account.signInUrl = $u'); then
+    browser_signin_release
+    return 1
+  fi
+  plan_probe attempt --issue "$issue_num" --op bump >>"$LOG_FILE" || true
+  attempts=$((attempts + 1))
+  run_dir="$LOG_DIR/browser/issue-$issue_num-probe-$probe_id-$(date +%Y%m%dT%H%M%S)"
+  log "Issue #$issue_num: plan probe browser run $attempts/$FACTORY_PLAN_PROBE_MAX_ATTEMPTS for ${probe_sha:0:12} on $url"
+  run_browser_task plan "$run_dir" "$url" "$bundle" || task_rc=$?
+  browser_signin_release
+  if [[ "$task_rc" -ne 0 ]]; then
+    browser_record_result error
+    plan_probe attempt --issue "$issue_num" --op refund >>"$LOG_FILE" || true
+    return 2
+  fi
+  case "$BROWSER_RESULT" in
+    ran) ;;
+    session-limit)
+      plan_probe attempt --issue "$issue_num" --op refund >>"$LOG_FILE" || true
+      pause_for_session_limit
+      return 2
+      ;;
+    guard-not-loaded)
+      plan_probe attempt --issue "$issue_num" --op refund >>"$LOG_FILE" || true
+      browser_record_result "$BROWSER_RESULT"
+      return 2
+      ;;
+    *)
+      # A timeout or an error keeps its attempt, so a hanging runner can't run
+      # every tick; the round ends once they are spent.
+      browser_record_result "$BROWSER_RESULT"
+      [[ "$attempts" -lt "$FACTORY_PLAN_PROBE_MAX_ATTEMPTS" ]] \
+        || plan_probe_end "$issue_num" "failed:runner" --run-dir "$run_dir"
+      return 2
+      ;;
+  esac
+  if ! render_json=$(node "$SCRIPT_DIR/lib/browser-report.mjs" render --kind plan \
+      --in "$BROWSER_OUT" --issue "$issue_num" --sha "$probe_sha" --evidence-dir "$run_dir/evidence" \
+      --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" --out "$run_dir/section.md" \
+      --json-out "$run_dir/render.json" 2>>"$LOG_FILE"); then
+    log "ERROR: rendering #$issue_num's plan probe report failed (output kept in $run_dir)"
+    browser_record_result malformed
+    [[ "$attempts" -lt "$FACTORY_PLAN_PROBE_MAX_ATTEMPTS" ]] \
+      || plan_probe_end "$issue_num" "failed:runner" --run-dir "$run_dir"
+    return 2
+  fi
+  status=$(echo "$render_json" | jq -r '.status // "malformed"' 2>/dev/null || echo "malformed")
+  verdict=$(echo "$render_json" | jq -r '.verdict // "none"' 2>/dev/null || echo "none")
+  log "Issue #$issue_num: plan probe browser run finished (browser=$status verdict=$verdict; evidence in $run_dir)"
+  case "$status" in
+    unavailable|auth-expired)
+      # The operator's to fix: refunded, retried until the probe's deadline,
+      # when housekeeping ends it with the headers it has.
+      browser_record_result "$status"
+      plan_probe attempt --issue "$issue_num" --op refund >>"$LOG_FILE" || true
+      return 2
+      ;;
+    malformed)
+      browser_record_result malformed
+      [[ "$attempts" -lt "$FACTORY_PLAN_PROBE_MAX_ATTEMPTS" ]] \
+        || plan_probe_end "$issue_num" "failed:runner" --run-dir "$run_dir"
+      return 2
+      ;;
+    signin-failed)
+      # The probe's own result, not the browser's health: a spike that changes
+      # the middleware or auth can stop the sign-in link working.
+      ;;
+    *) browser_record_result "$status" ;;
+  esac
+  plan_probe_end "$issue_num" reported --browser "$status" --verdict "$verdict" \
+    --run-dir "$run_dir" --section "$run_dir/section.md"
+  return 0
+}
+
 # Code-review stage: review a green In Review PR and post each finding as an
 # inline review thread, plus one marked summary comment.
 #
@@ -5674,6 +6154,11 @@ if [[ "$MODE_PLAN" -eq 1 ]]; then
     exit 1
   fi
 
+  # ── Plan-stage browser probe housekeeping (ADR-0071) ──────────────────────
+  # Before anything else in the tick, in every phase: ends the probes that
+  # can't go on and reaps probe branches nothing owns. Never fails the tick.
+  plan_probe_housekeeping
+
   # ── Orphaned-Planning rescue sweep ──────────────────────────────────────────
   # "Planning" is a transient, factory-owned status: both the Ready sweep and
   # the replan sweep below park a card there only for the span of a single
@@ -5882,17 +6367,33 @@ See \`docs/features/dark-factory.md\` for the spec contract.
       continue
     fi
 
+    # The plan-stage browser probe: available or not (and why), and a staging
+    # dir when it is. plan_probe_finalize settles the staging on every path
+    # below.
+    plan_probe_prepare "$ISSUE_NUM" "$BUNDLE"
+    if [[ "$PLAN_PROBE_JSON" != "null" ]]; then
+      if ! BUNDLE=$(build_plan_bundle "$ISSUE_RECORD" "$COMMENTS_JSON" "null" "$PLAN_PROBE_JSON"); then
+        log "ERROR: build_plan_bundle (with the probe) failed for #$ISSUE_NUM"
+        plan_probe_finalize "$ISSUE_NUM" discard
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Ready" || true
+        continue
+      fi
+    fi
+
     CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
       "$PROMPT_TEXT" "$BUNDLE")
-    log "Invoking claude for #$ISSUE_NUM (--plan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT)"
+    log "Invoking claude for #$ISSUE_NUM (--plan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT, cap ${PLAN_CALL_TIMEOUT}s)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
-    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \
+    CLAUDE_CALL_TIMEOUT_SEC="$PLAN_CALL_TIMEOUT" \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
+    # A run that failed produced no plan to probe for.
+    [[ $EXIT_CODE -eq 0 ]] || plan_probe_finalize "$ISSUE_NUM" discard
 
     if [[ $EXIT_CODE -eq 124 ]]; then
-      log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC}s) for #$ISSUE_NUM --plan — skipping; next tick retries"
+      log "WARNING: claude timed out (>${PLAN_CALL_TIMEOUT}s) for #$ISSUE_NUM --plan — skipping; next tick retries"
       rm -f "$CLAUDE_OUTPUT_FILE"
       # Leave card at Planning; the next tick's rescue sweep (top of --plan)
       # returns it to Ready — it has no plan comment yet — so planning restarts.
@@ -5938,6 +6439,7 @@ and drag the card back to **Ready** to retry.
     rm -f "$CLAUDE_OUTPUT_FILE"
     if [[ -z "$SUMMARY_LINE" ]]; then
       log "WARNING: no well-formed summary line returned by claude for #$ISSUE_NUM --plan"
+      plan_probe_finalize "$ISSUE_NUM" discard
       # Don't transition; next tick will retry. Bump attempts so we eventually
       # surface this to the operator.
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
@@ -5946,6 +6448,8 @@ and drag the card back to **Ready** to retry.
     fi
     log "Claude summary: $SUMMARY_LINE"
     ACTION=$(echo "$SUMMARY_LINE" | sed -E 's/.*action=([^ ]+).*/\1/')
+    # Pushes the probe the planner asked for, once there is a plan to probe.
+    plan_probe_finalize "$ISSUE_NUM" "$ACTION"
 
     case "$ACTION" in
       planned)
@@ -6035,11 +6539,19 @@ and drag the card back to **Ready** to retry.
     if [[ -z "$ACKED_JSON" ]]; then ACKED_JSON='[]'; fi
     UNACKED_JSON=$(unacked_owner_comments "$COMMENTS_JSON" "$PLAN_CREATED_AT" "$ACKED_JSON" "$ISSUE_NUM")
     UNACKED_COUNT=$(echo "$UNACKED_JSON" | jq 'length' 2>/dev/null || echo "0")
-    if [[ "$UNACKED_COUNT" -eq 0 ]]; then
+    # A finished plan-stage probe the plan hasn't folded in yet is a trigger of
+    # its own, with no comment to answer (ADR-0071). Its report and notices
+    # carry a drafto-factory marker, so they never count as feedback above.
+    PROBE_FOLD_JSON=$(plan_probe_fold_due "$ISSUE_NUM" "$COMMENTS_JSON")
+    [[ -n "$PROBE_FOLD_JSON" ]] || PROBE_FOLD_JSON="null"
+    if [[ "$UNACKED_COUNT" -eq 0 && "$PROBE_FOLD_JSON" == "null" ]]; then
       continue
     fi
 
-    log "Issue #$ISSUE_NUM: $UNACKED_COUNT unacked OWNER comment(s) → replanning in place"
+    if [[ "$PROBE_FOLD_JSON" != "null" ]]; then
+      log "Issue #$ISSUE_NUM: plan probe $(echo "$PROBE_FOLD_JSON" | jq -r '.probeId') ended ($(echo "$PROBE_FOLD_JSON" | jq -r '.status')) → replanning in place to fold it in"
+    fi
+    [[ "$UNACKED_COUNT" -eq 0 ]] || log "Issue #$ISSUE_NUM: $UNACKED_COUNT unacked OWNER comment(s) → replanning in place"
 
     # One reply per trigger comment that needs an answer, built here once for
     # the planner's bundle and the reply check after its run.
@@ -6066,6 +6578,15 @@ and drag the card back to **Ready** to retry.
       log "ERROR: build_plan_bundle (replan) failed for #$ISSUE_NUM"
       continue
     fi
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+      plan_probe_prepare "$ISSUE_NUM" "$BUNDLE" "$PROBE_FOLD_JSON"
+      if [[ "$PLAN_PROBE_JSON" != "null" ]] \
+          && ! BUNDLE=$(build_plan_bundle "$ISSUE_RECORD" "$COMMENTS_JSON" "$REPLAN_JSON" "$PLAN_PROBE_JSON"); then
+        log "ERROR: build_plan_bundle (replan, with the probe) failed for #$ISSUE_NUM"
+        plan_probe_finalize "$ISSUE_NUM" discard
+        continue
+      fi
+    fi
 
     if [[ "$DRY_RUN" -eq 1 ]]; then
       log "DRY-RUN: replan bundle for #$ISSUE_NUM (printed to stdout only; not logged)"
@@ -6084,19 +6605,30 @@ and drag the card back to **Ready** to retry.
       "$PROMPT_TEXT" "$BUNDLE")
     reset_reply_dir "$ISSUE_NUM"
     POSTED_REPLY_IDS=" "
-    log "Invoking claude for #$ISSUE_NUM (--plan replan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT)"
+    # Counted before the run, so a run that is killed still counts towards the
+    # fold cap and a planner that never acks can't replan every tick.
+    if [[ "$PROBE_FOLD_JSON" != "null" ]]; then
+      plan_probe fold-begin --issue "$ISSUE_NUM" >>"$LOG_FILE" || true
+    fi
+    log "Invoking claude for #$ISSUE_NUM (--plan replan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT, cap ${PLAN_CALL_TIMEOUT}s)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
-    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \
+    CLAUDE_CALL_TIMEOUT_SEC="$PLAN_CALL_TIMEOUT" \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
     # Whatever the run returned, a trigger it acked has been handled, so it
     # gets its reply now, before any early exit.
     plan_reply_check "$ISSUE_NUM" "$PLAN_REPLY_MARKERS"
+    # A fold the plan now acks is done; a failed run produced no plan to probe.
+    if [[ "$PROBE_FOLD_JSON" != "null" ]]; then
+      plan_probe_fold_end "$ISSUE_NUM" "$(echo "$PROBE_FOLD_JSON" | jq -r '.probeId')"
+    fi
+    [[ $EXIT_CODE -eq 0 ]] || plan_probe_finalize "$ISSUE_NUM" discard
 
     if [[ $EXIT_CODE -eq 124 ]]; then
-      log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC}s) for #$ISSUE_NUM --plan replan — skipping; next tick retries"
+      log "WARNING: claude timed out (>${PLAN_CALL_TIMEOUT}s) for #$ISSUE_NUM --plan replan — skipping; next tick retries"
       rm -f "$CLAUDE_OUTPUT_FILE"
       # Restore Plan Review status so the operator's card doesn't appear stuck
       # in Planning forever.
@@ -6140,6 +6672,7 @@ and drag the card back to **Plan Review** (or **Ready** for a full restart).
     rm -f "$CLAUDE_OUTPUT_FILE"
     if [[ -z "$SUMMARY_LINE" ]]; then
       log "WARNING: no well-formed summary line returned by claude for #$ISSUE_NUM --plan replan"
+      plan_probe_finalize "$ISSUE_NUM" discard
       transition_status "$ITEM_ID" "$ISSUE_NUM" "Plan Review" || true
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
         --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
@@ -6147,6 +6680,7 @@ and drag the card back to **Plan Review** (or **Ready** for a full restart).
     fi
     log "Claude summary (replan): $SUMMARY_LINE"
     ACTION=$(echo "$SUMMARY_LINE" | sed -E 's/.*action=([^ ]+).*/\1/')
+    plan_probe_finalize "$ISSUE_NUM" "$ACTION"
 
     case "$ACTION" in
       replanned)
@@ -7607,7 +8141,7 @@ fi
 # verify, In Test for intest: a card dragged out since --watch ran is skipped),
 # and browser_run re-checks every per-SHA condition itself.
 if [[ "$MODE_BROWSER" -eq 1 ]]; then
-  if ! browser_kind_enabled verify && ! browser_kind_enabled intest; then
+  if ! browser_kind_enabled verify && ! browser_kind_enabled intest && ! plan_probe_enabled; then
     log "Browser runner off (FACTORY_BROWSER=$FACTORY_BROWSER, kinds='$FACTORY_BROWSER_KINDS'); nothing to do"
     log "=== factory-agent --browser completed in $(( $(date +%s) - START_TIME ))s ==="
     exit 0
@@ -7622,6 +8156,18 @@ if [[ "$MODE_BROWSER" -eq 1 ]]; then
     BROWSER_LIST=$( { grep -E '^verify:[0-9]+:[0-9]+:[0-9a-f]{40}$' "$BROWSER_CANDIDATES_FILE"
       grep -E '^(intest:)?[0-9]+:[0-9]+:[0-9a-f]{40}$' "$BROWSER_CANDIDATES_FILE"; } 2>/dev/null || true)
   fi
+  # Plan-stage probes come from the state, not the candidates file (--watch
+  # never looks at Plan Review), and go last: finishing work comes first.
+  # "plan:<issue>:0:<probe sha>", the same shape as the others.
+  if plan_probe_enabled; then
+    BROWSER_PLAN_LIST=$(plan_probe candidates \
+      | jq -r '.[] | "plan:\(.issue):0:\(.sha)"' 2>/dev/null \
+      | grep -E '^plan:[0-9]+:0:[0-9a-f]{40}$' || true)
+    if [[ -n "$BROWSER_PLAN_LIST" ]]; then
+      BROWSER_LIST="${BROWSER_LIST:+$BROWSER_LIST
+}$BROWSER_PLAN_LIST"
+    fi
+  fi
   if [[ -z "$BROWSER_LIST" ]]; then
     log "--browser: no browser-run candidates this tick"
     log "=== factory-agent --browser completed in $(( $(date +%s) - START_TIME ))s ==="
@@ -7631,11 +8177,13 @@ if [[ "$MODE_BROWSER" -eq 1 ]]; then
   # query failed: that column's candidates wait for the next tick).
   BROWSER_TESTING_JSON=""
   BROWSER_INTEST_JSON=""
+  BROWSER_PLANREVIEW_JSON=""
   # Set by browser_run when the preflight fails: later candidates reuse it.
   BROWSER_PREFLIGHT_FAILED=""
   for BROWSER_CAND in $BROWSER_LIST; do
     case "$BROWSER_CAND" in
       verify:*) BROWSER_KIND=verify; BROWSER_COLUMN="Testing"; BROWSER_CAND="${BROWSER_CAND#verify:}" ;;
+      plan:*) BROWSER_KIND=plan; BROWSER_COLUMN="Plan Review"; BROWSER_CAND="${BROWSER_CAND#plan:}" ;;
       *) BROWSER_KIND=intest; BROWSER_COLUMN="In Test"; BROWSER_CAND="${BROWSER_CAND#intest:}" ;;
     esac
     BROWSER_ISSUE="${BROWSER_CAND%%:*}"
@@ -7650,6 +8198,13 @@ if [[ "$MODE_BROWSER" -eq 1 ]]; then
         [[ -n "$BROWSER_TESTING_JSON" ]] || BROWSER_TESTING_JSON="!"
       fi
       BROWSER_COLUMN_JSON="$BROWSER_TESTING_JSON"
+    elif [[ "$BROWSER_KIND" == plan ]]; then
+      if [[ -z "$BROWSER_PLANREVIEW_JSON" ]]; then
+        BROWSER_PLANREVIEW_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
+          --status "Plan Review" 2>>"$LOG_FILE") || BROWSER_PLANREVIEW_JSON="!"
+        [[ -n "$BROWSER_PLANREVIEW_JSON" ]] || BROWSER_PLANREVIEW_JSON="!"
+      fi
+      BROWSER_COLUMN_JSON="$BROWSER_PLANREVIEW_JSON"
     else
       if [[ -z "$BROWSER_INTEST_JSON" ]]; then
         BROWSER_INTEST_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
@@ -7671,8 +8226,12 @@ if [[ "$MODE_BROWSER" -eq 1 ]]; then
       continue
     fi
     BROWSER_RC=0
-    browser_run "$BROWSER_KIND" "$BROWSER_ISSUE" "$(echo "$BROWSER_CAND" | cut -d: -f2)" \
-      "${BROWSER_CAND##*:}" || BROWSER_RC=$?
+    if [[ "$BROWSER_KIND" == plan ]]; then
+      plan_probe_browser_run "$BROWSER_ISSUE" "${BROWSER_CAND##*:}" || BROWSER_RC=$?
+    else
+      browser_run "$BROWSER_KIND" "$BROWSER_ISSUE" "$(echo "$BROWSER_CAND" | cut -d: -f2)" \
+        "${BROWSER_CAND##*:}" || BROWSER_RC=$?
+    fi
     [[ "$BROWSER_RC" -eq 1 ]] || break
   done
   log "=== factory-agent --browser completed in $(( $(date +%s) - START_TIME ))s ==="

@@ -271,10 +271,16 @@ describe("the browser run kinds stay in step everywhere they are listed", () => 
     const knob = script.match(/^ {4}([a-z|]+)\) \[\[ ",\$_bk_out," == /m);
     assert.ok(knob, "the FACTORY_BROWSER_KINDS parser's case");
     assert.deepEqual(words(knob[1]), [...BROWSER_RUN_KINDS].sort());
+    // browser_run runs the PR kinds; plan_probe_browser_run runs `plan` (the
+    // --browser loop sends each candidate to one of them). Together, every kind.
     const runCase = extract("browser_run").match(/case "\$kind" in\n\s+([a-z|]+)\) ;;/);
     assert.ok(runCase, "browser_run's kind check");
-    assert.deepEqual(words(runCase[1]), [...BROWSER_RUN_KINDS].sort());
-    assert.match(script, /^FACTORY_BROWSER_KINDS="\$\{FACTORY_BROWSER_KINDS:-intest,verify\}"$/m);
+    assert.match(extract("plan_probe_browser_run"), /run_browser_task plan /);
+    assert.deepEqual([...words(runCase[1]), "plan"].sort(), [...BROWSER_RUN_KINDS].sort());
+    assert.match(
+      script,
+      /^FACTORY_BROWSER_KINDS="\$\{FACTORY_BROWSER_KINDS:-intest,verify,plan\}"$/m,
+    );
     const prompt = readFileSync(resolve(scriptsDir, "factory-browser-prompt.md"), "utf8");
     for (const kind of BROWSER_RUN_KINDS) assert.ok(prompt.includes(`\`${kind}\``), kind);
   });
@@ -300,12 +306,13 @@ describe("factory-agent.sh browser runner: knobs under bash 3.2", () => {
     return r;
   }
 
-  it("is on by default, with intest and verify as the default kinds", () => {
-    // verify is inert while FACTORY_VERIFY=0: only the Testing sweep queues it.
+  it("is on by default, with intest, verify and plan as the default kinds", () => {
+    // verify is inert while FACTORY_VERIFY=0 (only the Testing sweep queues
+    // it), and plan while FACTORY_PLAN_PROBE=0 (only the planner queues it).
     const r = runKnobs({});
     assert.match(
       r.stdout,
-      /^B=1 K=intest,verify T=900 A=\/home\/test\/drafto-secrets\/browser-account\.env$/m,
+      /^B=1 K=intest,verify,plan T=900 A=\/home\/test\/drafto-secrets\/browser-account\.env$/m,
     );
   });
 

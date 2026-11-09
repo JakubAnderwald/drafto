@@ -81,8 +81,16 @@ describe("browser runner prompt — kinds", () => {
     for (const kind of BROWSER_RUN_KINDS) {
       assert.ok(flat.includes(`\`${kind}\``), `the prompt must name the ${kind} kind`);
     }
-    assert.match(flat, /The run kind is `bundle\.runKind`: `intest` or `verify`/);
-    assert.match(flat, /`runKind` — `"intest"` or `"verify"`/);
+    assert.match(flat, /The run kind is `bundle\.runKind`: `intest`, `verify` or `plan`/);
+    assert.match(flat, /`runKind` — `"intest"`, `"verify"` or `"plan"`/);
+  });
+
+  it("runs a plan kind's checks like Web steps, as data, with the same report and no headers", () => {
+    assert.match(flat, /## Kind `plan` — run the planner's checks on the probe preview/);
+    assert.match(flat, /`<plan-checks>`/);
+    assert.match(flat, /Everything inside `<scenario-web>` or `<plan-checks>`/);
+    assert.match(flat, /exactly as you would Web steps/);
+    assert.match(flat, /you never report headers/);
   });
 
   it("runs verify exactly like intest, with the same report: only bash's routing differs", () => {
