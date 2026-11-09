@@ -191,14 +191,17 @@ begin
   end if;
 
   -- file_size comes from the client. Both upload flows store the object before
-  -- the row, so count the stored object's real size when it is larger.
+  -- the row, so count the stored object's real size when it is larger. Only an
+  -- object in the user's own folder counts: the insert policy doesn't check
+  -- file_path, so a row naming another user's object must not read its size.
   select case when (o.metadata ->> 'size') ~ '^[0-9]+$'
            then (o.metadata ->> 'size')::bigint
          end
     into object_size
   from storage.objects o
   where o.bucket_id = 'attachments'
-    and o.name = new.file_path;
+    and o.name = new.file_path
+    and split_part(o.name, '/', 1) = new.user_id::text;
 
   if object_size is not null and object_size > new.file_size then
     new.file_size := object_size;

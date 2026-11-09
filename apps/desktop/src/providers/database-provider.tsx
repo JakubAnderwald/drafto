@@ -73,9 +73,11 @@ function describeSyncError(err: unknown): string {
 /**
  * Tells the user that uploads were refused for their storage quota (issue #794). The
  * attachments stay "quota_exceeded" and are never retried, so this fires once per refusal.
+ * The session can end while the usage is read, and a stale pass reports nothing.
  */
-async function reportStorageFull(): Promise<void> {
+async function reportStorageFull(isCurrentSession: () => boolean): Promise<void> {
   const usage = await fetchStorageUsage();
+  if (!isCurrentSession()) return;
   showStorageFullAlert(storageFullMessage(usage?.usedBytes, usage?.quotaBytes));
 }
 
@@ -209,7 +211,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
         const { uploaded } = uploads;
         // Desktop has no toast, so a quota refusal is an alert. Not awaited: reading
         // the usage for its message must not hold up the pass.
-        if (uploads.storageFull > 0) void reportStorageFull();
+        if (uploads.storageFull > 0) void reportStorageFull(isCurrentSession);
 
         const pending = await checkPendingChanges();
         // The session can end during any await; a stale pass reports nothing.

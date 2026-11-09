@@ -1042,4 +1042,27 @@ describe("DatabaseProvider storage-full alert (issue #794)", () => {
     expect(mockFetchStorageUsage).not.toHaveBeenCalled();
     expect(Alert.alert).not.toHaveBeenCalled();
   });
+
+  it("does not alert when the session ends while the usage is read", async () => {
+    let resolveUsage!: (usage: { usedBytes: number; quotaBytes: number }) => void;
+    mockFetchStorageUsage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveUsage = resolve;
+      }),
+    );
+    mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, storageFull: 1 });
+
+    const { rerender } = renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(mockFetchStorageUsage).toHaveBeenCalledTimes(1));
+
+    mockUseAuth.mockReturnValue({ user: null, isApproved: false });
+    rerender(undefined);
+    await flushEffects();
+    await act(async () => {
+      resolveUsage({ usedBytes: 52_000_000, quotaBytes: 52_428_800 });
+    });
+    await flushEffects();
+
+    expect(Alert.alert).not.toHaveBeenCalled();
+  });
 });
