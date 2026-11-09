@@ -414,9 +414,11 @@ export function secretDirLiterals(dir, { fs = nodeFs } = {}) {
     const file = path.join(dir, name);
     let text;
     try {
-      const st = fs.lstatSync(file);
-      if (!st.isFile()) continue;
-      if (st.size > 1_000_000) {
+      // Follow symlinks: a linked secret file is still a secret (a dangling
+      // link throws, below). Anything that still isn't a regular file (a
+      // subdirectory, a socket) is a gap in the scan, so it fails closed.
+      const st = fs.statSync(file);
+      if (!st.isFile() || st.size > 1_000_000) {
         problems.push(`secrets-dir:${name}`);
         continue;
       }

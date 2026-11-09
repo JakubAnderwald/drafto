@@ -327,6 +327,26 @@ describe("secret scanning", () => {
   it("reports what it couldn't read, so callers fail closed", () => {
     assert.deepEqual(secretDirLiterals(join(dir, "nope")).problems, ["secrets-dir"]);
     assert.deepEqual(secretDirLiterals(dir).problems, []);
+    // A subdirectory or a dangling link is a gap in the scan.
+    mkdirSync(join(dir, "sub"));
+    symlinkSync(join(dir, "gone.env"), join(dir, "dangling.env"));
+    assert.deepEqual(secretDirLiterals(dir).problems.sort(), [
+      "secrets-dir:dangling.env",
+      "secrets-dir:sub",
+    ]);
+  });
+
+  it("follows a symlinked secret file and scans what it points at", () => {
+    const real = mkdtempSync(join(tmpdir(), "plan-probe-real-"));
+    try {
+      writeFileSync(join(real, "linked.env"), "API_TOKEN=linkedsecretvalue0123456789\n");
+      symlinkSync(join(real, "linked.env"), join(dir, "linked.env"));
+      const r = secretDirLiterals(dir);
+      assert.deepEqual(r.problems, []);
+      assert.ok(r.literals.some((l) => l.value === "linkedsecretvalue0123456789"));
+    } finally {
+      rmSync(real, { recursive: true, force: true });
+    }
   });
 
   it("collects env values and long tokens, but not URLs or paths", () => {
