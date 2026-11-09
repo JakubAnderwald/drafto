@@ -73,7 +73,7 @@ const PROCESSORS: readonly Processor[] = [
   },
   {
     service: "Resend",
-    purpose: "Account emails: sign-up confirmation, password reset, approval",
+    purpose: "Account emails: sign-up confirmation, password reset, approval, account deletion",
     dataShared: "Your email address and the email's content",
   },
   {
@@ -112,7 +112,7 @@ export default function PrivacyPolicyPage() {
       <header>
         <h1 className="text-fg text-4xl font-bold tracking-tight">Privacy Policy</h1>
         <p className="text-fg-muted mt-3 text-sm">
-          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;1,&nbsp;2026
+          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;8,&nbsp;2026
         </p>
         <p className="text-fg-muted mt-8 text-lg leading-8">
           Drafto (&ldquo;we&rdquo;, &ldquo;our&rdquo;, &ldquo;us&rdquo;) operates the Drafto apps
@@ -170,7 +170,8 @@ export default function PrivacyPolicyPage() {
             Drafto is invite-only: new sign-ups are reviewed manually before the account is
             activated. When you sign up, our administrator receives an email with your email address
             and the time you signed up, and we email you once your account is approved. A sign-up
-            that is not approved may be deleted.
+            that is not approved may be deleted. We may also delete an account that holds no notes,
+            for example one that was never used, and we may email you to let you know when we do.
           </p>
 
           <h3>Notes and content</h3>

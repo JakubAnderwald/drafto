@@ -237,11 +237,25 @@ describe("factory-agent.sh browser runner: static wiring", () => {
     assert.match(script, /"\$MODE_BROWSER" -eq 1 \) \]\]; then\n  log "Phase A:/, "Phase A no-op");
   });
 
-  it("runs --browser last in the loop, after --release", () => {
+  it("runs --browser after --release and --watch, before --implement and --plan", () => {
     const loop = readFileSync(resolve(scriptsDir, "factory-agent-loop.sh"), "utf8");
-    const release = loop.indexOf('"$AGENT" --release');
-    const browser = loop.indexOf('"$AGENT" --browser');
-    assert.ok(release !== -1 && browser > release, "a Chrome session must never delay a merge");
+    const at = (mode) => loop.indexOf(`"$AGENT" --${mode} `);
+    const browser = at("browser");
+    assert.ok(
+      at("release") !== -1 && browser > at("release"),
+      "a Chrome session must never delay a merge",
+    );
+    assert.ok(at("watch") !== -1 && browser > at("watch"), "--watch writes this tick's candidates");
+    assert.ok(
+      browser < at("implement") && browser < at("plan"),
+      "finishing work comes before starting more",
+    );
+  });
+
+  it("runs the loop's modes right to left across the board (ADR-0068)", () => {
+    const loop = readFileSync(resolve(scriptsDir, "factory-agent-loop.sh"), "utf8");
+    const order = [...loop.matchAll(/^\/bin\/bash "\$AGENT" --([a-z]+) /gm)].map((m) => m[1]);
+    assert.deepEqual(order, ["release", "watch", "browser", "implement", "plan"]);
   });
 
   it("rotates browser run dirs and guard logs on the 30-day window", () => {
