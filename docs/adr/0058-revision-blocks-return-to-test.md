@@ -4,6 +4,8 @@
 - **Date**: 2026-10-25
 - **Authors**: Jakub Anderwald, with Claude Code
 
+> **Update 2026-11-09**: A declined or no-op revision no longer keeps its slot and worktree once it is back in In Test. The next cleanup sweep frees them, as for any In Test card ([ADR-0070](./0070-factory-in-test-frees-slot-and-updates-behind-prs.md)).
+
 ## Context
 
 A comment on a card in **In Test** rolls it back to In Progress, and the next `--implement` tick runs the implementer on the same PR branch with that comment (the "revision run"). The implementer ended with one of three directives:

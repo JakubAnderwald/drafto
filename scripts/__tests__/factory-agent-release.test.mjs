@@ -169,7 +169,11 @@ describe("--release engine wiring", () => {
 
   it("handles a stale (BEHIND) branch by updating it instead of merging", () => {
     assert.match(releaseBlock, /MERGE_STATE=\$\(echo "\$PR_VIEW" \| jq -r '\.mergeStateStatus/);
-    assert.match(releaseBlock, /pulls\/\$PR_NUM\/update-branch/);
+    // Through the helper --watch uses too (ADR-0070), pinned to the head read.
+    assert.match(
+      releaseBlock,
+      /update_pr_branch "\$PR_NUM" "\$\(echo "\$PR_VIEW" \| jq -r '\.headRefOid \/\/ ""'\)"/,
+    );
     assert.match(releaseBlock, /drafto-factory-branch-updated/);
   });
 

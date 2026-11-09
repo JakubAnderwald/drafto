@@ -389,6 +389,17 @@ describe("factory:set-issue-field / get-issue", () => {
       assert.equal(readState().issues["42"][field], "v1");
     }
   });
+
+  it("accepts and resets the behind-main update budget (ADR-0070)", () => {
+    // --watch writes it under `|| true`: a rejected write would read back as 0
+    // on every tick and lift FACTORY_MAX_BRANCH_UPDATES entirely.
+    let r = run(["factory:set-issue-field", "42", "branchUpdates", "2", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(readState().issues["42"].branchUpdates, "2");
+    r = run(["factory:set-issue-field", "42", "branchUpdates", "", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(readState().issues["42"].branchUpdates, null);
+  });
 });
 
 describe("factory:cr-cli-* (CodeRabbit CLI lane, ADR-0036)", () => {

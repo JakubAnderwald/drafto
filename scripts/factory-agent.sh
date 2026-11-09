@@ -17,15 +17,17 @@
 #   --watch      In Review → (Testing →) In Test. For each open factory PR:
 #                poll CI and unresolved review comments; when something is
 #                failing, resume the worktree and invoke Claude
-#                (factory-watch-prompt) to push a fix; when CI is green AND a
-#                Vercel preview is reachable, advance the card to In Test and
+#                (factory-watch-prompt) to push a fix; when CI is green, the
+#                branch is up to date with main (ADR-0070) AND a Vercel
+#                preview is reachable, advance the card to In Test and
 #                post the test scenario. With FACTORY_VERIFY=1 the card stops
 #                in Testing first (pre-In-Test verification, ADR-0053): the
 #                Testing sweep works its verification lanes, then promotes it
 #                to In Test with a deterministic report; with the switch off
 #                that sweep only drains the column. Also runs a cleanup sweep
 #                that releases slots + removes worktrees for cards that have
-#                left the active states (In Progress/In Review/Testing/In Test).
+#                left the active states (In Progress/In Review/Testing). A card
+#                waiting on the operator in In Test holds no slot (ADR-0070).
 #
 #   --release    Approved → Released. For each card a human dragged to
 #                Approved: enforce the migration gate, squash-merge the
@@ -138,6 +140,16 @@ FACTORY_CI_RERUN_MAX="${FACTORY_CI_RERUN_MAX:-2}"
 if ! [[ "$FACTORY_CI_RERUN_MAX" =~ ^(0|[1-9][0-9]*)$ ]]; then
   echo "WARNING: invalid FACTORY_CI_RERUN_MAX='$FACTORY_CI_RERUN_MAX'; defaulting to 2" >&2
   FACTORY_CI_RERUN_MAX=2
+fi
+
+# Times --watch may update an In Review PR that is behind main before promoting
+# it to In Test (ADR-0070), per In Review stint. Each update re-runs CI and the
+# code review, so a busy main can't hold a card in In Review forever: once spent,
+# the card is promoted behind main and --release updates it at merge time.
+FACTORY_MAX_BRANCH_UPDATES="${FACTORY_MAX_BRANCH_UPDATES:-3}"
+if ! [[ "$FACTORY_MAX_BRANCH_UPDATES" =~ ^(0|[1-9][0-9]*)$ ]]; then
+  echo "WARNING: invalid FACTORY_MAX_BRANCH_UPDATES='$FACTORY_MAX_BRANCH_UPDATES'; defaulting to 3" >&2
+  FACTORY_MAX_BRANCH_UPDATES=3
 fi
 
 # Fallback backoff (minutes) when a claude call dies on a session/usage limit
@@ -1637,6 +1649,24 @@ worktree_untouched() {
   [[ -z "$status" ]]
 }
 
+# worktree_within_head <issue> <pr-head> — 0 when issue <n> has no worktree, or
+# its committed HEAD is <pr-head> or behind it: nothing in it is missing from the
+# PR, so the behind-main gate may update the branch and drop the worktree
+# (ADR-0070). Uncommitted leftovers don't count; the gate discards them. A HEAD
+# it can't place, even after fetching the PR branch, counts as ahead.
+worktree_within_head() {
+  local issue_num="$1" pr_head="$2" wt local_head
+  wt="$REPO_ROOT/worktrees/factory-issue-$issue_num"
+  [[ -e "$wt/.git" ]] || return 0
+  [[ -n "$pr_head" ]] || return 1
+  local_head=$(git -C "$wt" rev-parse HEAD 2>>"$LOG_FILE") || return 1
+  [[ "$local_head" == "$pr_head" ]] && return 0
+  if ! git -C "$wt" cat-file -e "$pr_head^{commit}" 2>/dev/null; then
+    git -C "$wt" fetch -q origin "factory/issue-$issue_num" >>"$LOG_FILE" 2>&1 || true
+  fi
+  git -C "$wt" merge-base --is-ancestor "$local_head" "$pr_head" 2>>"$LOG_FILE"
+}
+
 # revision_return_to_test <issue> <item-id> <pr-head> <item-labels> <pr-num>
 #   <reply-markers-json> <feedback-mark> <kind>
 # A revision run ended with the PR unchanged: <kind> "noop" (the feedback
@@ -1645,10 +1675,13 @@ worktree_untouched() {
 # re-running CI: in Testing when this commit still owes a verification report
 # (ADR-0053), otherwise in In Test. A failed move to Testing falls back to In
 # Test. Then mark the feedback consumed, reset attempts and check for the
-# implementer's replies. The slot and worktree stay, as for any In Test card.
+# implementer's replies. Back in In Test the card holds no slot (ADR-0070), so
+# it frees its slot and worktree here, before the --implement sweep reaches the
+# next card, rather than at the next tick's cleanup sweep. Only once the move
+# landed: a card still in In Progress keeps them for the next tick.
 revision_return_to_test() {
   local issue_num="$1" item_id="$2" pr_head="$3" labels="$4" pr_num="$5"
-  local markers="$6" mark="$7" kind="$8" target="In Test" state
+  local markers="$6" mark="$7" kind="$8" target="In Test" state in_test=0
   if verify_target_status "$issue_num" "$pr_head" "$labels" \
       && transition_status "$item_id" "$issue_num" "Testing"; then
     target="Testing"
@@ -1659,12 +1692,15 @@ revision_return_to_test() {
       --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
     verify_begin_round "$issue_num" "$pr_head" \
       "$(verify_cr_note "$issue_num" "$pr_head" "$state")" "$state"
-  else
-    transition_status "$item_id" "$issue_num" "In Test" || true
+  elif transition_status "$item_id" "$issue_num" "In Test"; then
+    in_test=1
   fi
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" lastFeedbackAt "$mark" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$issue_num" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   revise_replies_check "$issue_num" "$pr_num" "$markers" "$kind"
+  if [[ "$in_test" -eq 1 ]]; then
+    release_slot_and_worktree "$issue_num"
+  fi
   log "Issue #$issue_num: revision $kind; returned to $target"
 }
 
@@ -1880,6 +1916,107 @@ find_prior_pr() {
 # "unknown" and fail closed.
 pr_head_oid() {
   gh pr view "$1" --repo JakubAnderwald/drafto --json headRefOid --jq '.headRefOid' 2>>"$LOG_FILE" || echo ""
+}
+
+# implement_queue_order <items-json> — the In Progress items in the order
+# --implement should take them: cards already holding a slot first (they never
+# need a free one, and only they can free one mid-sweep), then cards with an
+# OPEN factory PR, then fresh ones, board order kept within each group. Since
+# ADR-0070 an In Test card holds no slot, so a revision returning from In Test
+# (or a retry) competes for one with new work; going ahead of fresh cards keeps
+# ADR-0068's "finish work before starting more". The PR lookup (one gh call for
+# the column) is skipped when no slot is free and no card here holds one, since
+# nothing could run. On any failure it prints the items unchanged.
+implement_queue_order() {
+  local items="$1" slots holders free open_prs="[]" ordered
+  slots=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-status \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE") || { printf '%s\n' "$items"; return 0; }
+  holders=$(echo "$slots" | jq -c '[.slots[]? | .issueNumber | select(. != null) | tostring]' 2>/dev/null) \
+    || { printf '%s\n' "$items"; return 0; }
+  free=$(echo "$slots" | jq '[.slots[]? | select(.issueNumber == null)] | length' 2>/dev/null || echo 0)
+  if [[ "$free" != "0" ]] \
+      || jq -e --argjson h "$holders" 'any(.[]; (.issueNumber | tostring) as $n | $h | index($n))' <<<"$items" >/dev/null 2>&1; then
+    if ! open_prs=$(gh pr list --repo JakubAnderwald/drafto --state open \
+        --json headRefName --limit 200 2>>"$LOG_FILE") || [[ -z "$open_prs" ]]; then
+      open_prs="[]"
+    fi
+  fi
+  if ! ordered=$(jq -c --argjson prs "$open_prs" --argjson holders "$holders" '
+      ($prs | map(.headRefName)) as $heads
+      | def num: (.issueNumber | tostring);
+        def holds: num as $n | ($holders | any(. == $n));
+        def has_pr: ("factory/issue-" + num) as $b | ($heads | any(. == $b));
+        map(select(holds)) + map(select((holds | not) and has_pr)) + map(select((holds | not) and (has_pr | not)))
+    ' <<<"$items" 2>>"$LOG_FILE") || [[ -z "$ordered" ]]; then
+    printf '%s\n' "$items"; return 0
+  fi
+  printf '%s\n' "$ordered"
+}
+
+# pr_behind_main <head-sha> — how many commits main has that <head-sha> doesn't,
+# from GitHub's compare API (the endpoint hosted_config_gate uses too). Prints
+# the count, or "" when it can't tell. Not mergeStateStatus: GitHub computes
+# that in the background and reads UNKNOWN right after main moves, which is when
+# --release has just merged something, seconds before --watch reads the PR.
+pr_behind_main() {
+  local sha="$1" n
+  [[ -n "$sha" ]] || return 0
+  n=$(gh api "repos/JakubAnderwald/drafto/compare/main...$sha" --jq '.behind_by' 2>>"$LOG_FILE") || n=""
+  [[ "$n" =~ ^[0-9]+$ ]] && echo "$n"
+  return 0
+}
+
+# update_pr_branch <pr> <head-sha> — merge main into PR <pr>'s branch with
+# GitHub's update-branch (a merge commit: the factory never force-pushes, so no
+# rebase — ADR-0061). expected_head_sha makes GitHub refuse if the branch moved
+# since <head-sha> was read, so it can't race a fix push. Returns update-branch's
+# status. --method PUT is required: gh switches to POST once -f is given.
+update_pr_branch() {
+  local pr_num="$1" head_sha="$2"
+  local args=(--method PUT "repos/JakubAnderwald/drafto/pulls/$pr_num/update-branch")
+  [[ -n "$head_sha" ]] && args+=(-f "expected_head_sha=$head_sha")
+  gh api "${args[@]}" >>"$LOG_FILE" 2>&1
+}
+
+# carry_across_branch_update <issue> <head-sha> — when <head-sha> is the merge
+# commit of an update-branch the behind-main gate asked for (ADR-0070), move the
+# head-keyed code review and CodeRabbit coverage from the commit it updated
+# (branchUpdatedFrom) onto it. update-branch only ever makes a clean merge of
+# main, so the PR's own change is the one already reviewed. Reviewing it again
+# would only let main's activity spend fix attempts on fresh nits.
+# Matched strictly: the updated commit must be the last one reviewed and the
+# first parent of <head-sha>, and <head-sha> must be a two-parent merge that
+# GitHub itself committed (web-flow) as "Merge branch 'main' into …", which is
+# what update-branch writes. The conflict pass and a local merge commit as the
+# factory's own user, so a conflict resolution is reviewed as usual, as is any
+# other new head. Returns 0 when it carried something over.
+carry_across_branch_update() {
+  local issue_num="$1" head_sha="$2" state from last_review cr_sha commit parents committer subject
+  local what="code review"
+  [[ -n "$head_sha" ]] || return 1
+  state=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE") || return 1
+  from=$(echo "$state" | jq -r '.branchUpdatedFrom // ""' 2>/dev/null || echo "")
+  last_review=$(echo "$state" | jq -r '.lastReviewSha // ""' 2>/dev/null || echo "")
+  [[ -n "$from" && "$from" != "$head_sha" && "$last_review" == "$from" ]] || return 1
+  commit=$(gh api "repos/JakubAnderwald/drafto/commits/$head_sha" \
+    --jq '{parents: ([.parents[].sha] | join(" ")), committer: (.committer.login // ""), subject: (.commit.message | split("\n")[0])}' \
+    2>>"$LOG_FILE") || return 1
+  parents=$(echo "$commit" | jq -r '.parents // ""' 2>/dev/null || echo "")
+  committer=$(echo "$commit" | jq -r '.committer // ""' 2>/dev/null || echo "")
+  subject=$(echo "$commit" | jq -r '.subject // ""' 2>/dev/null || echo "")
+  [[ "$parents" =~ ^[0-9a-f]+\ [0-9a-f]+$ && "$parents" == "$from "* ]] || return 1
+  [[ "$committer" == "web-flow" && "$subject" == "Merge branch 'main' into "* ]] || return 1
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" lastReviewSha \
+    "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || return 1
+  cr_sha=$(echo "$state" | jq -r '.crCoverageSha // ""' 2>/dev/null || echo "")
+  if [[ "$cr_sha" == "$from" ]] \
+      && node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" crCoverageSha \
+        "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+    what="code review and CodeRabbit coverage"
+  fi
+  log "Issue #$issue_num: ${head_sha:0:12} only merges main into the reviewed ${from:0:12}; carried its $what over"
+  return 0
 }
 
 # copy_worktree_env / seed_worktree_node_modules / run_pnpm_install live in
@@ -5230,11 +5367,12 @@ verify_promote() {
   [[ "$minimal" -eq 0 ]] || verify_browser_unclaim "$issue_num" "$head_sha" "$state_json"
   verify_post_report "$issue_num" "$head_sha" "$body_file" || true
   # Today's promotion resets (see the In Review → In Test block): a fresh fix
-  # budget and CodeRabbit run cap for the next revision round.
+  # budget, CodeRabbit run cap and branch-update budget for the next revision round.
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" lastWatchAt \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$issue_num" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" crCliRuns "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" branchUpdates "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   return 0
 }
 
@@ -6016,6 +6154,13 @@ if [[ "$MODE_IMPLEMENT" -eq 1 ]]; then
     fi
   fi
 
+  # Cards coming back with an open PR (revisions from In Test, retries) before
+  # fresh ones, so a freed slot finishes work before it starts more (ADR-0070).
+  # One card, or Phase A (no slots), has nothing to order.
+  if [[ "$INPROG_COUNT" -gt 1 && "$PHASE" != "A" ]]; then
+    INPROG_JSON=$(implement_queue_order "$INPROG_JSON")
+  fi
+
   for ((IDX=0; IDX<INPROG_COUNT; IDX++)); do
     ITEM=$(echo "$INPROG_JSON" | jq ".[${IDX}]")
     ITEM_ID=$(echo "$ITEM" | jq -r '.itemId')
@@ -6166,12 +6311,13 @@ Drag it back to **Ready** so the factory can plan it first.
       fi
     fi
 
-    # Acquire a slot (reuse the issue's own slot on a retry / revision).
+    # Acquire a slot (reuse the issue's own slot on a retry).
     # Skip to the next card, never stop the sweep: a card further down may
-    # already hold a slot. A revision sent back from In Test keeps its slot, so
-    # a `break` here let a slotless card higher on the board stop the cards
-    # that held both slots from ever running. Neither slot was freed, and the
-    # whole column stalled for a day (issues #790 and #328 behind #794).
+    # already hold a slot. A `break` here once let a slotless card higher on the
+    # board stop the cards that held both slots from ever running, and the
+    # whole column stalled for a day (issues #790 and #328 behind #794). Cards
+    # with an open PR (revisions back from In Test, which since ADR-0070 hold no
+    # slot) come first in INPROG_JSON, so they get a freed slot before new work.
     SLOT=$(slot_for_issue "$ISSUE_NUM")
     if [[ -z "$SLOT" ]]; then
       log "Issue #$ISSUE_NUM: both worktree slots busy; deferring to a later tick"
@@ -6370,6 +6516,8 @@ drag the card back to **In Progress**.
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastImplementAt "$NOW_ISO" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$FEEDBACK_MARK" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        # A new In Review stint starts here, with a fresh behind-main budget (ADR-0070).
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdates "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         if [[ "$IS_REVISION" -eq 1 ]]; then
           log "Issue #$ISSUE_NUM: revision pushed → In Review (PR $PR_URL; slot $SLOT retained)"
           # Each feedback comment gets its own reply saying what changed, even
@@ -6421,6 +6569,7 @@ drag the card back to **In Progress**.
           transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review" || true
           node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$NOW_ISO" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
           node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdates "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
           log "Issue #$ISSUE_NUM: noop (PR $PR_URL already open); advanced to In Review"
         fi
         ;;
@@ -6467,11 +6616,15 @@ fi
 
 # ── --watch mode (Phase B+) ─────────────────────────────────────────────────
 # Two responsibilities each tick:
-#   1. Cleanup sweep — release slots + remove worktrees for any issue that has
-#      left the active states — In Progress / In Review / Testing / In Test —
-#      (merged by the operator, Blocked, Done, or closed). Without this the two
-#      slots would leak. Testing must stay in the active set: a card verifying
-#      there still owns its slot + worktree (ADR-0053).
+#   1. Cleanup sweep — release slots + remove worktrees for any issue whose
+#      board card has left the active columns — In Progress / In Review /
+#      Testing — (reached In Test, merged by the operator, Blocked, Done, or
+#      closed). Without this the two slots would leak. Testing stays active: a
+#      card verifying there is still the factory's work (ADR-0053). In Test
+#      does not (ADR-0070): a card there waits on the operator and nothing in
+#      the In Test sweep uses its worktree, so holding the slot only stalled new
+#      work. A revision or hand-back re-acquires a slot and recreates the
+#      worktree from the PR branch.
 #   2. In Review → In Test — for each open factory PR: if it conflicts with
 #      main, merge main in first (ADR-0061); if CI is failing or review
 #      comments are unresolved, resume the worktree and invoke Claude
@@ -6499,26 +6652,50 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
   fi
 
   # ── 1. Cleanup sweep ──
+  # A slot stays with an OPEN issue whose card is in In Progress, In Review or
+  # Testing on the factory board. The board column, not the status:* label,
+  # because the operator moves cards by dragging, and only the factory's own
+  # moves rewrite the label: a plan approved out of Plan Review still says
+  # status:plan-review in In Progress, and a card dragged into In Test keeps its
+  # old active label. The column comes with the issue view (projectItems). If
+  # it can't be read, only a closed issue's slot is freed this tick.
   SLOTS_JSON=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-status \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo '{"slots":{}}')
   for SLOT in 0 1; do
     SLOT_ISSUE=$(echo "$SLOTS_JSON" | jq -r --arg s "$SLOT" '.slots[$s].issueNumber // ""')
     [[ -z "$SLOT_ISSUE" || "$SLOT_ISSUE" == "null" ]] && continue
+    COLUMN_KNOWN=1
     ISSUE_META=$(gh issue view "$SLOT_ISSUE" --repo JakubAnderwald/drafto \
-      --json state,labels 2>>"$LOG_FILE" || echo "")
+      --json state,projectItems 2>>"$LOG_FILE" || echo "")
+    if [[ -z "$ISSUE_META" ]]; then
+      # projectItems needs the token's project scope; the state alone still
+      # tells a closed issue, which frees its slot whatever its column.
+      COLUMN_KNOWN=0
+      ISSUE_META=$(gh issue view "$SLOT_ISSUE" --repo JakubAnderwald/drafto \
+        --json state 2>>"$LOG_FILE" || echo "")
+    fi
     if [[ -z "$ISSUE_META" ]]; then
       log "WARNING: slot $SLOT issue #$SLOT_ISSUE: gh issue view failed; leaving slot for next tick"
       continue
     fi
-    STILL_ACTIVE=$(echo "$ISSUE_META" | jq -r \
-      '((.state == "OPEN") and ((.labels | map(.name)) | any(. == "status:in-progress" or . == "status:in-review" or . == "status:testing" or . == "status:in-test")))')
+    ISSUE_STATE=$(echo "$ISSUE_META" | jq -r '.state // ""' 2>/dev/null || echo "")
+    SLOT_COLUMN=""
+    if [[ "$COLUMN_KNOWN" -eq 1 ]]; then
+      SLOT_COLUMN=$(echo "$ISSUE_META" | jq -r \
+        '[(.projectItems // [])[] | select(.title == "Drafto Factory")] | .[0].status.name // ""' 2>/dev/null || echo "")
+    elif [[ "$ISSUE_STATE" == "OPEN" ]]; then
+      log "WARNING: slot $SLOT issue #$SLOT_ISSUE: couldn't read its board column; leaving slot for next tick"
+      continue
+    fi
+    STILL_ACTIVE=$(jq -n --arg state "$ISSUE_STATE" --arg col "$SLOT_COLUMN" \
+      '($state == "OPEN") and ($col == "In Progress" or $col == "In Review" or $col == "Testing")')
     if [[ "$STILL_ACTIVE" != "true" ]]; then
-      log "Slot $SLOT: issue #$SLOT_ISSUE left In Progress/In Review/Testing/In Test; releasing slot + worktree"
+      log "Slot $SLOT: issue #$SLOT_ISSUE left In Progress/In Review/Testing (now: ${SLOT_COLUMN:-off the board}, $ISSUE_STATE); releasing slot + worktree"
       if [[ "$DRY_RUN" -eq 0 ]]; then
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-        # Not necessarily done with the issue: a card relabelled status:blocked
-        # by a retry-exhausted path still has an OPEN PR, so the branch is only
-        # deleted once no live PR points at it.
+        # Not necessarily done with the issue: a card in In Test, or moved to
+        # Blocked by a retry-exhausted path, still has an OPEN PR, so the branch
+        # is only deleted once no live PR points at it.
         remove_worktree_for "$SLOT_ISSUE"
       fi
     fi
@@ -6960,6 +7137,11 @@ A human should take a look. Reset with \
     fi
     HEAD_SHA=$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')
 
+    # A head that only merges main into the commit just reviewed (the
+    # behind-main gate below updated the branch) inherits that commit's code
+    # review and CodeRabbit coverage instead of being reviewed again (ADR-0070).
+    [[ "$DRY_RUN" -eq 1 ]] || carry_across_branch_update "$ISSUE_NUM" "$HEAD_SHA" || true
+
     # Code review, once per head SHA, on a fully-green PR. Reviewing earlier
     # would burn a pass on code that is still moving; reviewing here means the
     # diff is stable and this is the last stop before a human is asked to test.
@@ -6999,6 +7181,64 @@ A human should take a look. Reset with \
     IR_PR_LABELS=$(echo "$PR_VIEW" | jq -r '(.labels // []) | map(.name) | join(",")' 2>/dev/null || echo "")
     if ! hosted_config_gate "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$IR_PR_LABELS" "In Review"; then
       continue
+    fi
+
+    # Behind main? (ADR-0070.) The last check before either promotion, so it
+    # runs once the card is otherwise ready, not while it waits on CI, the
+    # preview, the CodeRabbit lane or the hosted config. The operator should
+    # test, and approve, the code that will merge: PR #802 reached In Test five
+    # minutes behind a desktop version bump on main, and its desktop beta could
+    # never upload because the store had closed the old version's train.
+    # update-branch merges main in (no rebase: the factory never force-pushes).
+    # CI re-runs on the merged head, which inherits this commit's code review
+    # and CodeRabbit coverage (carry_across_branch_update above). Every attempt
+    # counts toward FACTORY_MAX_BRANCH_UPDATES, so a busy main can't hold the
+    # card in In Review: once spent, it goes on as it stands and --release
+    # updates it at merge time. "" (the compare failed) also goes on.
+    BEHIND_BY=$(pr_behind_main "$HEAD_SHA")
+    if [[ -n "$BEHIND_BY" && "$BEHIND_BY" -gt 0 ]]; then
+      BRANCH_UPDATES=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
+        --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.branchUpdates // "0"' 2>/dev/null || echo "0")
+      [[ "$BRANCH_UPDATES" =~ ^[0-9]+$ ]] || BRANCH_UPDATES=0
+      if [[ "$BRANCH_UPDATES" -ge "$FACTORY_MAX_BRANCH_UPDATES" ]]; then
+        log "Issue #$ISSUE_NUM: PR #$PR_NUM is $BEHIND_BY commit(s) behind main, but its $BRANCH_UPDATES branch update(s) are spent; going on as it stands (--release updates it at merge)"
+      elif [[ "$DRY_RUN" -eq 1 ]]; then
+        log "DRY-RUN: PR #$PR_NUM is $BEHIND_BY commit(s) behind main; would update the branch before In Test"
+        continue
+      elif ! worktree_within_head "$ISSUE_NUM" "$HEAD_SHA"; then
+        # The slot's worktree holds commits the PR lacks (a fix whose push never
+        # landed?). Updating would diverge origin from that local branch, and
+        # every later worktree resume would refuse it. Leave it to the operator.
+        log "WARNING: PR #$PR_NUM is $BEHIND_BY commit(s) behind main, but issue #$ISSUE_NUM's worktree has commits the PR lacks; not updating the branch (going on as it stands)"
+      else
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdates \
+          "$((BRANCH_UPDATES + 1))" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        if update_pr_branch "$PR_NUM" "$HEAD_SHA"; then
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdatedFrom \
+            "$HEAD_SHA" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          log "Issue #$ISSUE_NUM: PR #$PR_NUM was $BEHIND_BY commit(s) behind main; updated the branch (CI re-runs on the merged head)"
+          # The slot's worktree is now behind the PR branch, and a fix-loop
+          # resume refuses to fast-forward a worktree with uncommitted leftovers
+          # (syncRegisteredWorktree), which would wedge the card. Nothing in it
+          # is needed (the card had converged), so drop it: a later fix pass
+          # rebuilds it from the branch, and the slot is free meanwhile.
+          release_slot_and_worktree "$ISSUE_NUM"
+          continue
+        fi
+        # update-branch refuses when the head moved since PR_VIEW (a push
+        # landed: expected_head_sha), and 422s on a conflict GitHub hasn't
+        # flagged yet. Both resolve on a later tick: a fresh read, or the
+        # conflict going to the fix loop. Anything else is let through, so a
+        # failing API can't hold the card in In Review.
+        RECHECK_HEAD=$(pr_head_oid "$PR_NUM")
+        RECHECK_MERGEABLE=$(gh pr view "$PR_NUM" --repo JakubAnderwald/drafto \
+          --json mergeable --jq '.mergeable' 2>>"$LOG_FILE" || echo "")
+        if [[ "$RECHECK_HEAD" != "$HEAD_SHA" || "$RECHECK_MERGEABLE" != "MERGEABLE" ]]; then
+          log "Issue #$ISSUE_NUM: update-branch for PR #$PR_NUM didn't apply (head moved, or mergeable=${RECHECK_MERGEABLE:-unknown}); rechecking next tick"
+          continue
+        fi
+        log "WARNING: update-branch failed for PR #$PR_NUM ($BEHIND_BY commit(s) behind main); going on as it stands (--release updates it at merge)"
+      fi
     fi
 
     # Pre-In-Test verification (ADR-0053). With FACTORY_VERIFY=1 (and the canary
@@ -7042,6 +7282,8 @@ A human should take a look. Reset with \
     # round (In Test → feedback → In Review again) is new code and earns
     # CodeRabbit coverage again, instead of inheriting a cap spent on the last one.
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" crCliRuns "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    # Same for the behind-main update budget (ADR-0070).
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdates "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     # Surface any advisory (non-required) red checks — e.g. CodeRabbit — so the
     # operator can glance before Approving, even though they didn't block advance.
     # The CodeRabbit lane's coverage note (CR_NOTE, "" when covered or the lane is
@@ -7585,7 +7827,7 @@ comes back to In Test for your approval once CI is green again.
     if [[ "$MERGE_STATE" == "BEHIND" ]]; then
       log "Issue #$ISSUE_NUM: PR #$PR_NUM is behind main; updating branch (merges once CI re-runs green)"
       if [[ "$DRY_RUN" -eq 0 ]]; then
-        if gh api --method PUT "repos/JakubAnderwald/drafto/pulls/$PR_NUM/update-branch" >>"$LOG_FILE" 2>&1; then
+        if update_pr_branch "$PR_NUM" "$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')"; then
           if ! issue_has_marker "$ISSUE_NUM" "drafto-factory-branch-updated"; then
             gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
               --body "🏭 **Updating the branch with latest \`main\`.**
@@ -7596,7 +7838,7 @@ base. I'll squash-merge automatically once it's green again.
 <!-- drafto-factory-branch-updated -->" >>"$LOG_FILE" 2>&1 || true
           fi
         else
-          log "WARNING: update-branch failed for PR #$PR_NUM (conflict?); leaving for the operator"
+          log "WARNING: update-branch failed for PR #$PR_NUM (head moved, or a conflict GitHub hasn't flagged yet?); retrying next tick"
         fi
       fi
       continue
