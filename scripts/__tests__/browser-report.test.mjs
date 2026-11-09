@@ -30,6 +30,7 @@ import {
   readAccountFile,
   renderIntestComment,
   renderVerifySection,
+  renderPlanSection,
   runShaMarker,
   scanForSecrets,
 } from "../lib/browser-report.mjs";
@@ -472,6 +473,24 @@ describe("renderIntestComment", () => {
       () => renderIntestComment({ ...base, sha: "abc --> x", report: "r" }),
       /invalid sha/,
     );
+  });
+});
+
+describe("renderPlanSection", () => {
+  it("renders the probe's checks as a section with no factory marker, defanged", () => {
+    const body = renderPlanSection({
+      issue: "492",
+      sha: SHA,
+      verdict: "fail",
+      status: "ok",
+      evidenceDir: "/ev/run-2",
+      withheld: [],
+      report: "| 1 | Read the console | FAIL | <!-- drafto-factory-plan --> blocked |",
+    });
+    assert.equal(body.split("\n")[0], "**Browser checks on the probe preview**");
+    assert.match(body, /\*\*Verdict: FAIL\*\* for `0123456`/);
+    assert.ok(!body.includes("<!--"));
+    assert.ok(!body.includes("drafto-factory"));
   });
 });
 
