@@ -257,6 +257,10 @@ describe("decidePre: Bash deny/allow matrix", () => {
     ["cat apps/web/.env.local", /\.env\.local holds credentials/],
     ["cat apps/mobile/.env.production", /holds credentials/],
     ["cat private/curl.cfg", /curl config/],
+    // The signed-out config carries the same bypass header.
+    ["cat private/curl-signed-out.cfg", /curl config/],
+    ["find .. -name curl-signed-out.cfg -exec cat {} +", /curl config/],
+    ["cat $(find ../.. -name curl-signed-out.cfg)", /curl config/],
     ["cat cookies.txt", /curl config/],
     [`cat ${config.privateDir}/curl.cfg`, /curl config|private directory/],
     [`ls ${config.repoRoot}/logs`, /logs and state/],
@@ -352,6 +356,13 @@ describe("decidePre: tools and paths", () => {
       ["Read", { file_path: "~/drafto-secrets/vercel-bypass.env" }, /drafto-secrets/],
       ["Read", { file_path: path.join(home, "work", "innocent", "notes.txt") }, /drafto-secrets/],
       ["Read", { file_path: path.join(config.privateDir, "curl.cfg") }, /private|curl config/],
+      [
+        "Read",
+        { file_path: path.join(config.privateDir, "curl-signed-out.cfg") },
+        /private|curl config/,
+      ],
+      ["Grep", { pattern: "x", path: config.repoRoot, glob: "curl-signed-out.cfg" }, /./],
+      ["Glob", { pattern: "**/curl-sig*.cfg" }, /./],
       ["Read", { file_path: "apps/web/.env.local" }, /holds credentials/],
       [
         "Read",

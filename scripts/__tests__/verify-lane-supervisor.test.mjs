@@ -30,6 +30,7 @@ import { EventEmitter } from "node:events";
 import {
   PREVIEW_CURL_BIN,
   PREVIEW_CURL_ENV,
+  SIGNED_OUT_CURL_CFG,
   curlConfigText,
   leaseOwnerFor,
   leaseWaitBudgetMs,
@@ -38,6 +39,7 @@ import {
   runGaps,
   runPreviewCurl,
   signInPreview,
+  writeCurlConfigs,
 } from "../lib/verify-lane.mjs";
 import { writeGuardFiles } from "../lib/verify-guard.mjs";
 import {
@@ -745,14 +747,8 @@ describe("preview-curl", () => {
       path.join(runDir, "meta.json"),
       JSON.stringify({ previewOrigin: ORIGIN, bins: { curl: path.join(fakeBin, "curl") } }),
     );
-    writeFileSync(
-      path.join(runDir, "private", "curl.cfg"),
-      curlConfigText({
-        bypassSecret: BYPASS_SECRET,
-        cookieJar: path.join(runDir, "private", "cookies.txt"),
-      }),
-      { mode: 0o600 },
-    );
+    // The supervisor's own writer: curl.cfg and the signed-out config.
+    writeCurlConfigs({ privateDir: path.join(runDir, "private"), bypassSecret: BYPASS_SECRET });
     const wrapper = path.join(runDir, "bin", "preview-curl");
     writeFileSync(
       wrapper,
@@ -794,6 +790,40 @@ describe("preview-curl", () => {
     // A fixed environment, never the session's: no proxy, CA bundle or key log.
     assert.deepEqual(spawned[0].opts.env, { PATH: "/usr/bin:/bin", LANG: "C" });
     assert.deepEqual(spawned[0].opts.env, { ...PREVIEW_CURL_ENV });
+  });
+
+  it("sends a --signed-out request through the config without the session", async () => {
+    const { runDir } = runDirWithSession();
+    const spawned = [];
+    const spawnFn = (command, args) => {
+      spawned.push({ command, args });
+      const child = new EventEmitter();
+      setImmediate(() => child.emit("exit", 0, null));
+      return child;
+    };
+    const argv = ["--signed-out", "-s", "-H", "Sec-Fetch-Mode: cors", "/api/notebooks"];
+    assert.equal(await runPreviewCurl({ runDir, argv }, { spawnFn }), 0);
+    assert.deepEqual(spawned[0].args, [
+      "-q",
+      "-K",
+      path.join(runDir, "private", SIGNED_OUT_CURL_CFG),
+      "-s",
+      "-H",
+      "Sec-Fetch-Mode: cors",
+      "--url",
+      `${ORIGIN}/api/notebooks`,
+    ]);
+    const cfgText = readFileSync(path.join(runDir, "private", SIGNED_OUT_CURL_CFG), "utf8");
+    assert.ok(!/cookie/.test(cfgText), "no session, and no jar to keep a cookie in");
+
+    // A run whose private/ predates the signed-out config refuses, never
+    // falling back to the session's config.
+    rmSync(path.join(runDir, "private", SIGNED_OUT_CURL_CFG));
+    const errs = [];
+    const stderr = { write: (s) => errs.push(s) };
+    assert.equal(await runPreviewCurl({ runDir, argv }, { spawnFn, stderr }), 2);
+    assert.match(errs.join(""), /no signed-out config/);
+    assert.equal(spawned.length, 1);
   });
 
   it("runs curl without the session's proxy, CA bundle or TLS key log", async () => {
