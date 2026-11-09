@@ -1192,6 +1192,29 @@ describe("scenario sections and platforms", () => {
     assert.ok(lines.some((l) => l.startsWith("Run the **macOS** steps")));
   });
 
+  it("leaves ### API to the shell lane once it reported, and asks for it by hand otherwise", () => {
+    const body = [
+      "## Test scenario",
+      "### Web",
+      "1. Open /notebooks — expected: the list.",
+      "### API",
+      "1. Signed out: `vercel curl /api/notebooks --deployment <url> -- -s` — expected: 401.",
+    ].join("\n");
+    const platforms = { web: true, mobile: false, desktop: false };
+    const ran = manualLines(compose({ platforms, scenario: body }).body);
+    assert.ok(!ran.some((l) => /\*\*API\*\*/.test(l)), ran.join("\n"));
+    const byHand =
+      "Run the **API** steps in the test scenario by hand with `vercel curl`: " +
+      "the shell lane didn't run them.";
+    for (const shell of [
+      { state: "timeout", dir: "", text: null },
+      { state: "reported:none", text: shellOutput({ status: "blocked", verdict: "none" }) },
+    ]) {
+      const lines = manualLines(compose({ platforms, scenario: body, shell }).body);
+      assert.ok(lines.includes(byHand), `${shell.state}: ${lines.join("\n")}`);
+    }
+  });
+
   it("asks for an affected platform by hand when the scenario has no section for it", () => {
     const r = compose({
       scenario: scenario({ mobile: false, mac: false }),

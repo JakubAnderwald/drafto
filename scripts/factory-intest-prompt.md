@@ -37,7 +37,8 @@ it.
   default and the long-standing case.
 - `"testing"` — the card has just entered the **Testing** column (ADR-0053).
   The factory verifies it itself before a human does: automated lanes run the
-  scenario's checks (the browser lane runs your `### Web` section), then the
+  scenario's checks (the browser lane runs your `### Web` section, the shell
+  lane your `### API` section and other command steps), then the
   card moves to In Test with a separate verification report.
 
 Write **exactly the same scenario** either way: the lanes and the human both
@@ -285,13 +286,28 @@ Compose it in Markdown from the bundle's facts. Structure:
     with `<n>` the issue number (the variable keeps the lane from tagging the
     unmerged commit as a release). Don't invent any other command.
 - `## Test scenario` — the numbered, per-platform steps, one `###` heading per
-  platform. When `platforms.web` is true, the web steps go under a heading that
-  is exactly `### Web`, and nothing else does. The factory's browser runner
-  (ADR-0051) runs only that section, on the preview, so every web step must be
-  doable in a browser on the preview alone. Name pages by path (`/login`,
+  platform, plus the optional `### API` section below. When `platforms.web` is
+  true, the web steps go under a heading that is exactly `### Web`, and nothing
+  else does. The factory's browser runner (ADR-0051) runs only that section, on
+  the preview, so every web step must be doable in a browser on the preview
+  alone: what a person does on the page (open a path, click, type, read what it
+  shows). Never the DevTools Console, running JavaScript in the page, reading
+  response headers or the Network tab: the runner has no tool for any of them,
+  so such a step always comes back SKIP. Name pages by path (`/login`,
   `/notebooks`) rather than full URLs: the runner opens them on the commit's
   own deployment, which isn't the `previewUrl` link. A cross-check on drafto.eu
   or on another device belongs in the step's text, not in its own Web step.
+- `### API`, inside `## Test scenario`, only when `platforms.web` is true and
+  the change has a response worth checking that a page can't show (a status
+  code, a JSON body). Numbered steps, each written as
+  `vercel curl <path> --deployment <previewUrl> -- <curl flags>` with the
+  status and body it expects, and each saying whether it runs **signed out** or
+  with an API key: `vercel curl` carries no Drafto session. A check that needs
+  the signed-in user belongs in `### Web`, as something the page shows. The
+  factory's shell lane runs this section on the preview (ADR-0053), and a
+  person can run it as written. Keep these checks inside `## Test scenario`: a
+  `##` section of its own, such as an "Optional cross-check from a terminal",
+  is never run by any lane.
 - What isn't manually testable (only if there is something).
 - When `advisory` is non-empty: a one-line ⚠️ note that advisory (non-required)
   checks are not green — naming them — and that they don't block the merge but

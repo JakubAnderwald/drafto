@@ -144,6 +144,8 @@ const GAPS_MAX = 20;
 const MANUAL_ITEM_MAX = 1000;
 const MOBILE_HEADING = /\b(ios|android|mobile|iphone|ipad)\b/i;
 const DESKTOP_HEADING = /\b(macos|mac|desktop)\b/i;
+// The scenario's API-response checks, which the shell lane runs (ADR-0053).
+const API_HEADING = /^api$/i;
 // Scenario sections that are notes, not steps.
 const NOT_STEPS_HEADING = /(\bnot|n't)\s+(manually\s+)?testable\b|\buntestable\b/i;
 
@@ -827,9 +829,22 @@ function manualSteps({ shell, browser, sections, platforms, betaLanes }) {
 
   let hasMobile = false;
   let hasDesktop = false;
+  // `### API` is the shell lane's section: once that lane has reported, it
+  // listed every API step it couldn't run in its own manual block above.
+  const shellRan = Boolean(shell.reported) && shell.runStatus !== "blocked";
   for (const s of sections) {
     if (s.heading === "Web" || NOT_STEPS_HEADING.test(s.heading)) continue;
     const h = plainLabel(s.heading);
+    if (API_HEADING.test(s.heading)) {
+      if (!shellRan) {
+        add(
+          `Run the **${h}** steps in the test scenario by hand with \`vercel curl\`: ` +
+            "the shell lane didn't run them.",
+          { reserved: true },
+        );
+      }
+      continue;
+    }
     if (MOBILE_HEADING.test(s.heading)) {
       hasMobile = true;
       add(`Run the **${h}** steps in the test scenario ${platformHow("mobile", betaLanes)}.`, {

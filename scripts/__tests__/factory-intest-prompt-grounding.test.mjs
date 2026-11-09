@@ -263,6 +263,29 @@ describe("In Test prompt — machine contract", () => {
     assert.match(flat, /doable in a browser on the preview alone/);
   });
 
+  it("keeps DevTools, in-page JavaScript and network checks out of ### Web", () => {
+    // #460's step 6 asked for a fetch() in the DevTools Console; the browser
+    // runner has no javascript_tool (ADR-0051), so it could only SKIP it.
+    assert.match(
+      flat,
+      /Never the DevTools Console, running JavaScript in the page, reading response headers or the Network tab/,
+    );
+    assert.match(flat, /so such a step always comes back SKIP/);
+  });
+
+  it("puts API-response checks in a ### API section the shell lane runs", () => {
+    assert.match(flat, /`### API`, inside `## Test scenario`, only when `platforms\.web` is true/);
+    assert.match(
+      flat,
+      /`vercel curl <path> --deployment <previewUrl> -- <curl flags>` with the status and body it expects/,
+    );
+    assert.match(flat, /each saying whether it runs \*\*signed out\*\* or with an API key/);
+    assert.match(flat, /The factory's shell lane runs this section on the preview \(ADR-0053\)/);
+    // #460's terminal cross-check sat in a `##` section of its own, which
+    // extractScenarioSections never hands to a lane.
+    assert.match(flat, /is never run by any lane/);
+  });
+
   it("allows noop ONLY on an exact full-SHA match, never on judgement", () => {
     assert.match(flat, /byte-for-byte equal to `bundle\.headSha`/);
     assert.match(flat, /Do not judge staleness by reading the steps/);

@@ -34,6 +34,8 @@ import {
   UNATTENDED_ENV,
   assertSafeClaudeArgs,
   buildClaudeArgs,
+  CURL_CFG,
+  SIGNED_OUT_CURL_CFG,
   buildPreviewCurlArgs,
   bypassFileProblem,
   classifyRun,
@@ -52,6 +54,7 @@ import {
   runStop,
   supervisedEnv,
   worktreePathFor,
+  writeCurlConfigs,
 } from "../lib/verify-lane.mjs";
 import {
   attachVerifyRun,
@@ -886,6 +889,18 @@ describe("preview-curl argument check", () => {
     no(["-H"], /needs a value/);
   });
 
+  it("takes --signed-out as its own option, never curl's, and still refuses cookies", () => {
+    const r = ok(["--signed-out", "-s", "-H", "Sec-Fetch-Mode: cors", "/api/notebooks"]);
+    assert.equal(r.signedOut, true);
+    assert.deepEqual(r.args, ["-s", "-H", "Sec-Fetch-Mode: cors"]);
+    assert.equal(r.url, `${ORIGIN}/api/notebooks`);
+    assert.equal(ok(["/api/notebooks"]).signedOut, false);
+    no(["--signed-out=1", "/x"], /--signed-out/);
+    no(["--signed-out", "-b", "a=b", "/x"], /-b/);
+    no(["--signed-out", "--cookie", "a=b", "/x"], /--cookie/);
+    no(["--signed-out", "-H", "Cookie: a=b", "/x"], /isn't allowed/);
+  });
+
   it("refuses everything when the run has no preview", () => {
     assert.equal(buildPreviewCurlArgs(["/x"], { origin: "" }).ok, false);
   });
@@ -920,6 +935,21 @@ describe("preview-curl argument check", () => {
     assert.throws(() =>
       curlConfigText({ bypassSecret: 'x"\nproxy = "http://evil', cookieJar: "/j" }),
     );
+  });
+
+  it("writes a signed-out config with the same bypass and no cookie jar, both mode 600", () => {
+    const signedOut = curlConfigText({ bypassSecret: BYPASS_SECRET });
+    assert.ok(!/cookie/.test(signedOut), signedOut);
+    assert.match(signedOut, new RegExp(`header = "${BYPASS_HEADER}: ${BYPASS_SECRET}"`));
+    assert.match(signedOut, /proto = "=https"/);
+
+    const privateDir = mkdtempSync(path.join(tmp, "private-"));
+    const { cfg, signedOutCfg } = writeCurlConfigs({ privateDir, bypassSecret: BYPASS_SECRET });
+    assert.equal(cfg, path.join(privateDir, CURL_CFG));
+    assert.equal(signedOutCfg, path.join(privateDir, SIGNED_OUT_CURL_CFG));
+    assert.match(readFileSync(cfg, "utf8"), /cookie-jar = /);
+    assert.ok(!/cookie/.test(readFileSync(signedOutCfg, "utf8")));
+    for (const f of [cfg, signedOutCfg]) assert.equal(statSync(f).mode & 0o777, 0o600, f);
   });
 });
 
