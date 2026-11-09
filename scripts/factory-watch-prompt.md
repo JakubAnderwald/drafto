@@ -44,7 +44,7 @@ You will receive a single JSON bundle (last fenced ` ```json ` block). Shape:
   "approvedPlan": { "commentId", "url", "createdAt", "bodyEnveloped": "<factory-plan>...</factory-plan>" },
   "priorPr": { "number", "url", "headRef", "state" },
   "ciSummaryEnveloped": "<ci-summary>...failing checks, newest first...</ci-summary>",
-  "unresolvedComments": [ { "id", "user": {"login"}, "body": "<comment>...</comment>" } ],
+  "unresolvedComments": [ { "id", "user": {"login"}, "authorAssociation", "body": "<comment>...</comment>" } ],
   // Unresolved INLINE review threads — CodeRabbit's findings, the factory's own
   // review stage, and any human's. Each one blocks the merge until you answer
   // and resolve it. `id` is the GraphQL thread node id you pass to the resolve

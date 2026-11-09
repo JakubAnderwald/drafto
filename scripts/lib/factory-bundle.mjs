@@ -388,6 +388,9 @@ function envelopeComments(comments) {
   return list.map((c) => ({
     id: c?.id ?? null,
     user: { login: c?.user?.login ?? c?.author?.login ?? "" },
+    // OWNER marks the factory's own comments (plans, replies, reports): on a
+    // public repo anyone can post one that merely looks like them.
+    authorAssociation: c?.authorAssociation ?? c?.author_association ?? "NONE",
     body: envelopeBody(c?.body ?? "", "comment"),
     createdAt: c?.createdAt ?? c?.created_at ?? null,
   }));
