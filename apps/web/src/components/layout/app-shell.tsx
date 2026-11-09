@@ -377,32 +377,45 @@ export function AppShell({
     onRefresh: refreshLists,
   });
 
-  const handleDeleteNote = useCallback(
-    async (noteId: string, remainingIds: string[]) => {
+  // A delete and a move share one lifecycle: the request's outcome decides the next
+  // selection and the refresh. Each caller supplies only its request and its logs.
+  const runRemoval = useCallback(
+    async (
+      noteId: string,
+      remainingIds: string[],
+      request: () => Promise<Response>,
+      log: { failedStatus: (status: number) => void; error: (err: unknown) => void },
+    ) => {
       beginRemoval(noteId);
       let outcome: NoteRemovalOutcome = "failed";
       try {
-        const res = await fetch(`/api/notes/${noteId}`, {
-          method: "DELETE",
-        });
+        const res = await request();
 
         if (handleAuthError(res)) {
           outcome = "signed-out";
           return;
         }
         if (!res.ok) {
-          const err = new Error(`Failed to delete note: ${res.status}`);
-          console.error(err);
+          log.failedStatus(res.status);
           return;
         }
         outcome = "removed";
       } catch (err) {
-        console.error("Failed to delete note:", err);
+        log.error(err);
       } finally {
         settleRemoval(noteId, remainingIds, outcome);
       }
     },
     [beginRemoval, settleRemoval],
+  );
+
+  const handleDeleteNote = useCallback(
+    (noteId: string, remainingIds: string[]) =>
+      runRemoval(noteId, remainingIds, () => fetch(`/api/notes/${noteId}`, { method: "DELETE" }), {
+        failedStatus: (status) => console.error(new Error(`Failed to delete note: ${status}`)),
+        error: (err) => console.error("Failed to delete note:", err),
+      }),
+    [runRemoval],
   );
 
   const handleRestoreNote = useCallback(async (noteId: string) => {
@@ -448,32 +461,22 @@ export function AppShell({
   }, []);
 
   const handleMoveNote = useCallback(
-    async (noteId: string, targetNotebookId: string, remainingIds: string[]) => {
-      beginRemoval(noteId);
-      let outcome: NoteRemovalOutcome = "failed";
-      try {
-        const res = await fetch(`/api/notes/${noteId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ notebook_id: targetNotebookId }),
-        });
-
-        if (handleAuthError(res)) {
-          outcome = "signed-out";
-          return;
-        }
-        if (!res.ok) {
-          console.error("Failed to move note:", res.status);
-          return;
-        }
-        outcome = "removed";
-      } catch (err) {
-        console.error("Failed to move note:", err);
-      } finally {
-        settleRemoval(noteId, remainingIds, outcome);
-      }
-    },
-    [beginRemoval, settleRemoval],
+    (noteId: string, targetNotebookId: string, remainingIds: string[]) =>
+      runRemoval(
+        noteId,
+        remainingIds,
+        () =>
+          fetch(`/api/notes/${noteId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ notebook_id: targetNotebookId }),
+          }),
+        {
+          failedStatus: (status) => console.error("Failed to move note:", status),
+          error: (err) => console.error("Failed to move note:", err),
+        },
+      ),
+    [runRemoval],
   );
 
   return (
