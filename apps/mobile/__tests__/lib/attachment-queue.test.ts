@@ -482,6 +482,49 @@ describe("storage quota (issue #794)", () => {
 
     expect(fields.uploadStatus).toBe("quota_exceeded");
   });
+
+  // The picker reports its own upload's refusal, so a sync that only shares or
+  // follows that attempt mustn't count it: the user would get two toasts.
+  it("doesn't count a refusal by a direct upload the sync joined mid-flight", async () => {
+    let finishUpsert!: (value: { error: typeof QUOTA_TRIGGER_ERROR }) => void;
+    mockUpsert.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishUpsert = resolve;
+      }),
+    );
+    const { attachment, fields } = makeAttachment();
+    serveQueue(attachment);
+
+    const direct = uploadAttachment(attachment);
+    const sync = processPendingUploads();
+    // Let the sync fetch the queue and reach the in-flight upload.
+    await new Promise<void>((resolve) => setImmediate(() => resolve()));
+    finishUpsert({ error: QUOTA_TRIGGER_ERROR });
+
+    await expect(direct).resolves.toBe(false);
+    await expect(sync).resolves.toEqual({ uploaded: 0, failed: 0, storageFull: 0 });
+    expect(fields.uploadStatus).toBe("quota_exceeded");
+    expect(mockUpload).toHaveBeenCalledTimes(1);
+  });
+
+  it("doesn't count an attachment a direct upload refused after the sync fetched its queue", async () => {
+    mockUpsert.mockResolvedValue({ error: QUOTA_TRIGGER_ERROR });
+    const { attachment, fields } = makeAttachment();
+    // The sync fetched the queue while the attachment was still pending...
+    mockDatabaseGet.mockReturnValue({
+      query: () => ({ fetch: jest.fn().mockResolvedValue([attachment]) }),
+    });
+    // ...and the direct upload was refused before the sync's loop reached it.
+    await expect(uploadAttachment(attachment)).resolves.toBe(false);
+
+    await expect(processPendingUploads()).resolves.toEqual({
+      uploaded: 0,
+      failed: 0,
+      storageFull: 0,
+    });
+    expect(fields.uploadStatus).toBe("quota_exceeded");
+    expect(mockUpload).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("deleteAllLocalAttachments", () => {

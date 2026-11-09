@@ -236,7 +236,11 @@ async function uploadFileAndRecord(attachment: Attachment, bytes: Uint8Array): P
 export interface UploadResult {
   uploaded: number;
   failed: number;
-  /** Refused for the storage quota (issue #794): now "quota_exceeded", not retried. */
+  /**
+   * Refused for the storage quota (issue #794) by this call's own attempts: now
+   * "quota_exceeded", not retried. A refusal by an attempt it only shared is the
+   * starting caller's to report.
+   */
   storageFull: number;
 }
 
@@ -256,11 +260,18 @@ export async function processPendingUploads(): Promise<UploadResult> {
   let storageFull = 0;
 
   for (const attachment of queued) {
+    // A quota refusal counts only when this pass's own attempt makes it. An
+    // attachment another attempt already refused after the queue was fetched,
+    // or one whose upload is still in flight and shared below (the picker's
+    // direct upload), is reported by that attempt's caller; counting it here
+    // too would show the storage-full message twice.
+    const ownAttempt =
+      attachment.uploadStatus !== "quota_exceeded" && !uploadsInFlight.has(attachment.id);
     // uploadAttachment flips a failed row back to "pending" itself.
     if (await uploadAttachment(attachment)) {
       uploaded += 1;
     } else if (attachment.uploadStatus === "quota_exceeded") {
-      storageFull += 1;
+      if (ownAttempt) storageFull += 1;
     } else {
       failed += 1;
     }
