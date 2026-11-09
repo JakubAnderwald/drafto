@@ -4409,7 +4409,19 @@ plan_probe_finalize() {
   local issue_num="$1" action="$2" main_sha out result
   [[ "${PLAN_PROBE_STAGED:-0}" -eq 1 ]] || return 0
   PLAN_PROBE_STAGED=0
-  main_sha=$(git -C "$REPO_ROOT" rev-parse --verify --quiet origin/main 2>>"$LOG_FILE" || echo "")
+  # Built on the commit the planner read: the factory checkout's HEAD, which
+  # the loop resets to origin/main at the top of the tick. Not origin/main now:
+  # an earlier mode may have fetched since, and the spike's files are complete
+  # contents written against what the planner read, so building them onto a
+  # newer main could silently undo a change that landed in between. The report
+  # names the commit. A HEAD that isn't on main gets no probe.
+  main_sha=$(git -C "$REPO_ROOT" rev-parse --verify --quiet HEAD 2>>"$LOG_FILE" || echo "")
+  if [[ -n "$main_sha" ]] \
+      && ! git -C "$REPO_ROOT" merge-base --is-ancestor "$main_sha" origin/main 2>>"$LOG_FILE"; then
+    log "WARNING: the factory checkout's HEAD (${main_sha:0:12}) isn't on origin/main; no plan probe from it"
+    main_sha=""
+  fi
+  [[ -n "$main_sha" ]] || action=discard
   if ! out=$(plan_probe finalize --issue "$issue_num" --root "$PLAN_PROBE_ROOT" --repo-root "$REPO_ROOT" \
       --action "$action" --main-sha "${main_sha:-unknown}" --max-rounds "$FACTORY_PLAN_PROBE_MAX_ROUNDS" \
       --spike "$FACTORY_PLAN_PROBE_SPIKE" --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \

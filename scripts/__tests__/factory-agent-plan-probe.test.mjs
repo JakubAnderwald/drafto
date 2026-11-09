@@ -133,6 +133,77 @@ describe("factory-agent.sh plan probe: --plan wiring", () => {
   });
 });
 
+describe("plan_probe_finalize (extracted, real git)", () => {
+  // The probe is built on the commit the planner read (the checkout's HEAD),
+  // not on an origin/main an earlier mode fetched since: the spike's files are
+  // whole contents written against what the planner read.
+  function run({ headOnMain = true } = {}) {
+    const dir = mkdtempSync(join(tmpdir(), "plan-probe-fin-"));
+    try {
+      const g = (args) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+      g(["init", "-q", "-b", "main"]);
+      g(["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "--allow-empty", "-m", "a"]);
+      const a = g(["rev-parse", "HEAD"]).stdout.trim();
+      g(["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "--allow-empty", "-m", "b"]);
+      const b = g(["rev-parse", "HEAD"]).stdout.trim();
+      // origin/main is ahead of the checkout (b), as after a mid-tick fetch,
+      // or HEAD is on a commit origin/main doesn't have.
+      g(["update-ref", "refs/remotes/origin/main", b]);
+      if (headOnMain) g(["checkout", "-q", a]);
+      else {
+        g(["checkout", "-q", "-b", "side", a]);
+        g([
+          "-c",
+          "user.name=t",
+          "-c",
+          "user.email=t@e",
+          "commit",
+          "-q",
+          "--allow-empty",
+          "-m",
+          "c",
+        ]);
+      }
+      const head = g(["rev-parse", "HEAD"]).stdout.trim();
+      const calls = join(dir, "calls.txt");
+      const snippet = `set -euo pipefail
+LOG_FILE=${JSON.stringify(join(dir, "agent.log"))}
+REPO_ROOT=${JSON.stringify(dir)}
+STATE_FILE=/dev/null
+SCRIPT_DIR=${JSON.stringify(scriptsDir)}
+PLAN_PROBE_ROOT=/nonexistent
+PLAN_PROBE_STAGED=1
+FACTORY_PLAN_PROBE_MAX_ROUNDS=2
+FACTORY_PLAN_PROBE_SPIKE=1
+FACTORY_BROWSER_ACCOUNT_FILE=/nonexistent/a
+FACTORY_BROWSER_SIGNIN_KEY_FILE=/nonexistent/k
+FACTORY_VERIFY_BYPASS_FILE=/nonexistent/b
+FACTORY_SECRETS_DIR=/nonexistent/s
+log() { echo "[log] $*"; }
+plan_probe() { echo "$*" >>${JSON.stringify(calls)}; echo '{"result":"none"}'; }
+${extract("plan_probe_finalize")}
+plan_probe_finalize 492 planned
+`;
+      const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+      return { call: readFileSync(calls, "utf8"), head, r };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("builds on the checkout's HEAD, not a newer origin/main", () => {
+    const { call, head } = run();
+    assert.match(call, new RegExp(`--action planned --main-sha ${head} `));
+  });
+
+  it("probes nothing from a HEAD that isn't on main (the staging is dropped)", () => {
+    const { call, r } = run({ headOnMain: false });
+    assert.match(call, /--action discard --main-sha unknown /);
+    assert.match(r.stdout, /isn't on origin\/main; no plan probe from it/);
+  });
+});
+
 describe("factory-agent.sh plan probe: --browser wiring", () => {
   it("counts plan in the early exit and lists probes from the state, last", () => {
     assert.match(
