@@ -13,6 +13,7 @@ import { ImportEvernoteDialog } from "@/components/import/import-evernote-dialog
 import { ImportTickTickDialog } from "@/components/import/import-ticktick-dialog";
 import { ExportEvernoteDialog } from "@/components/export/export-evernote-dialog";
 import { SearchOverlay } from "@/components/search/search-overlay";
+import { useNoteRemovals, type NoteRemovalOutcome } from "@/hooks/use-note-removals";
 import { usePaneCollapse } from "@/hooks/use-pane-collapse";
 import type { NoteListPatch } from "@/lib/note-patch";
 
@@ -240,9 +241,12 @@ export function AppShell({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const handleSelectNote = useCallback((noteId: string) => {
+  const handleSelectNote = useCallback((noteId: string | null) => {
     setSelectedNoteId(noteId);
-    setRefreshTrigger((prev) => prev + 1);
+    // Clearing the selection loads nothing, so there is nothing to refresh.
+    if (noteId !== null) {
+      setRefreshTrigger((prev) => prev + 1);
+    }
   }, []);
 
   const handleNoteUpdated = useCallback((patch: NoteListPatch) => {
@@ -333,30 +337,51 @@ export function AppShell({
     setSelectedNoteId(null);
   }, []);
 
+  // The note list has already removed the row. The follow-up selection and the list
+  // refresh both wait for the server (#461): a refetch started before the request
+  // settled could return the note again, and nothing would correct the list after
+  // it. When a single request lands, React batches the selection and the refresh
+  // into one commit, so the editor loads the next note once. The functional updater
+  // keeps a note the user picked meanwhile.
+  const handleNoteRemoved = useCallback((noteId: string, nextSelectedId: string | null) => {
+    setSelectedNoteId((current) => (current === noteId ? nextSelectedId : current));
+  }, []);
+
+  const refreshLists = useCallback(() => {
+    setRefreshTrigger((prev) => prev + 1);
+  }, []);
+
+  const { beginRemoval, settleRemoval } = useNoteRemovals({
+    onRemoved: handleNoteRemoved,
+    onRefresh: refreshLists,
+  });
+
   const handleDeleteNote = useCallback(
-    async (noteId: string) => {
+    async (noteId: string, remainingIds: string[]) => {
+      beginRemoval(noteId);
+      let outcome: NoteRemovalOutcome = "failed";
       try {
         const res = await fetch(`/api/notes/${noteId}`, {
           method: "DELETE",
         });
 
-        if (handleAuthError(res)) return;
+        if (handleAuthError(res)) {
+          outcome = "signed-out";
+          return;
+        }
         if (!res.ok) {
           const err = new Error(`Failed to delete note: ${res.status}`);
           console.error(err);
-          setRefreshTrigger((prev) => prev + 1);
           return;
         }
-
-        if (selectedNoteId === noteId) {
-          setSelectedNoteId(null);
-        }
+        outcome = "removed";
       } catch (err) {
         console.error("Failed to delete note:", err);
-        setRefreshTrigger((prev) => prev + 1);
+      } finally {
+        settleRemoval(noteId, remainingIds, outcome);
       }
     },
-    [selectedNoteId],
+    [beginRemoval, settleRemoval],
   );
 
   const handleRestoreNote = useCallback(async (noteId: string) => {
@@ -402,7 +427,9 @@ export function AppShell({
   }, []);
 
   const handleMoveNote = useCallback(
-    async (noteId: string, targetNotebookId: string) => {
+    async (noteId: string, targetNotebookId: string, remainingIds: string[]) => {
+      beginRemoval(noteId);
+      let outcome: NoteRemovalOutcome = "failed";
       try {
         const res = await fetch(`/api/notes/${noteId}`, {
           method: "PATCH",
@@ -410,24 +437,22 @@ export function AppShell({
           body: JSON.stringify({ notebook_id: targetNotebookId }),
         });
 
-        if (handleAuthError(res)) return;
-        if (!res.ok) {
-          console.error("Failed to move note:", res.status);
-          setRefreshTrigger((prev) => prev + 1);
+        if (handleAuthError(res)) {
+          outcome = "signed-out";
           return;
         }
-
-        // Deselect if the moved note was selected
-        if (selectedNoteId === noteId) {
-          setSelectedNoteId(null);
+        if (!res.ok) {
+          console.error("Failed to move note:", res.status);
+          return;
         }
-        setRefreshTrigger((prev) => prev + 1);
+        outcome = "removed";
       } catch (err) {
         console.error("Failed to move note:", err);
-        setRefreshTrigger((prev) => prev + 1);
+      } finally {
+        settleRemoval(noteId, remainingIds, outcome);
       }
     },
-    [selectedNoteId],
+    [beginRemoval, settleRemoval],
   );
 
   return (
