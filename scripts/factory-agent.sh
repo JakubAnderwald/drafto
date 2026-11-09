@@ -869,9 +869,10 @@ transition_status() {
   # every --remove-label name to a REPO label id first and fails the whole
   # removal on a name the repo doesn't have ("'status:testing' not found"),
   # so stripping all of ALL_STATUS_LABELS blindly would break every swap
-  # whenever this list gets ahead of scripts/setup-factory-labels.sh — and a
-  # stale status:in-* label keeps the --watch cleanup sweep holding a slot.
-  # If the issue's labels can't be read, fall back to the full list.
+  # whenever this list gets ahead of scripts/setup-factory-labels.sh, and a
+  # stale status:* label misleads every reader of the labels (the cleanup sweep
+  # reads the board column, ADR-0070). If the issue's labels can't be read,
+  # fall back to the full list.
   local remove_args=() current_labels="" have_current=0 lbl
   if current_labels=$(gh issue view "$issue_num" --repo JakubAnderwald/drafto \
       --json labels --jq '.labels[].name' 2>>"$LOG_FILE"); then
@@ -1649,22 +1650,35 @@ worktree_untouched() {
   [[ -z "$status" ]]
 }
 
-# worktree_within_head <issue> <pr-head> — 0 when issue <n> has no worktree, or
-# its committed HEAD is <pr-head> or behind it: nothing in it is missing from the
-# PR, so the behind-main gate may update the branch and drop the worktree
-# (ADR-0070). Uncommitted leftovers don't count; the gate discards them. A HEAD
-# it can't place, even after fetching the PR branch, counts as ahead.
+# worktree_within_head <issue> <pr-head> — 0 when nothing local for issue <n> is
+# missing from the PR: its worktree's HEAD or, with no worktree, the kept local
+# branch factory/issue-<n> (which worktree-cli re-attaches) is <pr-head> or
+# behind it. Then the behind-main gate may update the branch, and a waiting card
+# may give up its worktree, without diverging or stranding a commit (ADR-0070).
+# Uncommitted leftovers don't count: worktree-cli snapshots them. When
+# <pr-head> isn't in the local object store (a push from elsewhere), GitHub's
+# compare API answers instead; nothing is fetched. A local commit GitHub
+# doesn't know was never pushed, so it counts as ahead.
 worktree_within_head() {
-  local issue_num="$1" pr_head="$2" wt local_head
+  local issue_num="$1" pr_head="$2" wt repo local_head status
   wt="$REPO_ROOT/worktrees/factory-issue-$issue_num"
-  [[ -e "$wt/.git" ]] || return 0
-  [[ -n "$pr_head" ]] || return 1
-  local_head=$(git -C "$wt" rev-parse HEAD 2>>"$LOG_FILE") || return 1
-  [[ "$local_head" == "$pr_head" ]] && return 0
-  if ! git -C "$wt" cat-file -e "$pr_head^{commit}" 2>/dev/null; then
-    git -C "$wt" fetch -q origin "factory/issue-$issue_num" >>"$LOG_FILE" 2>&1 || true
+  if [[ -e "$wt/.git" ]]; then
+    repo="$wt"
+    local_head=$(git -C "$wt" rev-parse HEAD 2>>"$LOG_FILE") || return 1
+  else
+    repo="$REPO_ROOT"
+    local_head=$(git -C "$REPO_ROOT" rev-parse --verify --quiet \
+      "refs/heads/factory/issue-$issue_num" 2>/dev/null) || return 0
   fi
-  git -C "$wt" merge-base --is-ancestor "$local_head" "$pr_head" 2>>"$LOG_FILE"
+  [[ -n "$pr_head" ]] || return 1
+  [[ "$local_head" == "$pr_head" ]] && return 0
+  if git -C "$repo" cat-file -e "$pr_head^{commit}" 2>/dev/null; then
+    git -C "$repo" merge-base --is-ancestor "$local_head" "$pr_head" 2>>"$LOG_FILE"
+    return
+  fi
+  status=$(gh api "repos/JakubAnderwald/drafto/compare/$local_head...$pr_head" \
+    --jq '.status' 2>>"$LOG_FILE") || return 1
+  [[ "$status" == "ahead" || "$status" == "identical" ]]
 }
 
 # revision_return_to_test <issue> <item-id> <pr-head> <item-labels> <pr-num>
@@ -1937,7 +1951,7 @@ implement_queue_order() {
   if [[ "$free" != "0" ]] \
       || jq -e --argjson h "$holders" 'any(.[]; (.issueNumber | tostring) as $n | $h | index($n))' <<<"$items" >/dev/null 2>&1; then
     if ! open_prs=$(gh pr list --repo JakubAnderwald/drafto --state open \
-        --json headRefName --limit 200 2>>"$LOG_FILE") || [[ -z "$open_prs" ]]; then
+        --json headRefName --limit 1000 2>>"$LOG_FILE") || [[ -z "$open_prs" ]]; then
       open_prs="[]"
     fi
   fi
@@ -2141,6 +2155,10 @@ migration_violation() {
 hosted_config_gate() {
   local issue_num="$1" pr_num="$2" sha="$3" diff_files="$4" pr_labels="$5" where="$6"
   local tmp out rc=0 marker body base_sha head_hash vouched slug
+  # Why it held, for a caller that cares: "hold" when the check ran and the
+  # hosted projects need the operator (exit 3), "unverified" when the check
+  # failed to run; "" when it passed or held for a transient error.
+  HOSTED_CONFIG_HELD=""
   # A here-string, not a pipe: under pipefail, `grep -q` closing a long pipe
   # early fails the printf with SIGPIPE, which would skip the gate.
   grep -qxF 'supabase/config.toml' <<<"$diff_files" || return 0
@@ -2207,6 +2225,7 @@ hosted_config_gate() {
     3) marker="hold" ;;
     *) marker="unverified" ;;
   esac
+  HOSTED_CONFIG_HELD="$marker"
   # One comment per column and head SHA: a card held again in Approved, after
   # passing In Review on the same commit, still says why.
   slug=$(tr '[:upper:] ' '[:lower:]-' <<<"$where")
@@ -2311,7 +2330,8 @@ remove_worktree_for() {
   keep=$(branch_keep_reason "$issue_num" "$known_state")
   if [[ -n "$keep" ]]; then
     log "Issue #$issue_num: keeping branch factory/issue-$issue_num ($keep); removing worktree only"
-    node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$issue_num" --root "$REPO_ROOT" --force >>"$LOG_FILE" 2>&1 || true
+    out=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$issue_num" --root "$REPO_ROOT" --force 2>>"$LOG_FILE" || echo "")
+    log_removed_worktree_leftovers "$issue_num" "$out"
     return 0
   fi
   out=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$issue_num" --root "$REPO_ROOT" --force --delete-branch 2>>"$LOG_FILE" || echo "")
@@ -2319,6 +2339,22 @@ remove_worktree_for() {
   # branchHead is the pre-deletion tip: enough to undo a mistaken teardown with
   # `git branch factory/issue-<n> <oid>`.
   log "Issue #$issue_num: worktree teardown $(echo "$out" | jq -c '{removed,branchDeleted,branchHead}' 2>/dev/null || echo '{}')"
+  log_removed_worktree_leftovers "$issue_num" "$out"
+}
+
+# log_removed_worktree_leftovers <issue> <worktree-cli remove JSON> — a forced
+# removal snapshots uncommitted changes first (ADR-0070): say where they went,
+# or that the worktree was left in place because the snapshot failed.
+log_removed_worktree_leftovers() {
+  local issue_num="$1" ref err
+  ref=$(echo "$2" | jq -r '.leftoversRef // ""' 2>/dev/null || echo "")
+  err=$(echo "$2" | jq -r '.error // ""' 2>/dev/null || echo "")
+  if [[ -n "$ref" ]]; then
+    log "Issue #$issue_num: kept the removed worktree's uncommitted changes at $ref (restore: git stash apply $ref)"
+  fi
+  if [[ -n "$err" ]]; then
+    log "WARNING: issue #$issue_num: worktree $err"
+  fi
 }
 
 # Release the worktree slot + remove the worktree for <issue>, deleting the
@@ -2334,6 +2370,36 @@ release_slot_and_worktree() {
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$slot" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   fi
   remove_worktree_for "$issue_num" "$known_state"
+}
+
+# free_waiting_slot <issue> <head-sha> <what-it-waits-on> — an In Review card
+# that has converged (green, reviewed, no threads) and is now held waiting on
+# the operator needs no worktree: only a fix pass uses one, and that acquires a
+# slot and rebuilds the worktree from the branch. So free the slot meanwhile,
+# rather than stall every other card for as long as the wait lasts (ADR-0070).
+# The worktree goes, the branch stays. Not when the worktree holds commits the
+# PR lacks (worktree_within_head): removing it would strand them. No-op when the
+# card holds no slot, which is every tick of the wait after the first.
+free_waiting_slot() {
+  local issue_num="$1" head_sha="$2" what="$3"
+  [[ -n "$(slot_held_by_issue "$issue_num")" ]] || return 0
+  if ! worktree_within_head "$issue_num" "$head_sha"; then
+    logerr "Issue #$issue_num: waiting on $what, but its worktree has commits the PR lacks; keeping its slot"
+    return 0
+  fi
+  log "Issue #$issue_num: waiting on $what; freeing its worktree slot meanwhile"
+  release_slot_and_worktree "$issue_num"
+}
+
+# log_worktree_leftovers <issue> <worktree-cli add JSON> — say where a resumed
+# worktree's uncommitted leftovers went, when worktree-cli set some aside to
+# fast-forward it to the PR branch (ADR-0070). They are never deleted.
+log_worktree_leftovers() {
+  local issue_num="$1" ref
+  ref=$(echo "$2" | jq -r '.leftoversRef // ""' 2>/dev/null || echo "")
+  if [[ -n "$ref" ]]; then
+    log "Issue #$issue_num: the worktree was behind the PR with uncommitted leftovers; set them aside at $ref (restore: git stash apply $ref) and fast-forwarded"
+  fi
 }
 
 # ── Session-limit detection ─────────────────────────────────────────────────
@@ -6351,6 +6417,7 @@ Drag it back to **Ready** so the factory can plan it first.
     cat "$WT_ERR_FILE" >>"$LOG_FILE" 2>/dev/null || true; rm -f "$WT_ERR_FILE"
     WT_PATH=$(echo "$WT_JSON" | jq -r '.path')
     log "Issue #$ISSUE_NUM: worktree $WT_PATH (branchReused=$(echo "$WT_JSON" | jq -r '.branchReused // false'), fromRemote=$(echo "$WT_JSON" | jq -r '.fromRemote // false'), base=$(echo "$WT_JSON" | jq -r '.base // ""'))"
+    log_worktree_leftovers "$ISSUE_NUM" "$WT_JSON"
     copy_worktree_env "$WT_PATH"
     seed_worktree_node_modules "$WT_PATH"
 
@@ -6683,14 +6750,19 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
     if [[ "$COLUMN_KNOWN" -eq 1 ]]; then
       SLOT_COLUMN=$(echo "$ISSUE_META" | jq -r \
         '[(.projectItems // [])[] | select(.title == "Drafto Factory")] | .[0].status.name // ""' 2>/dev/null || echo "")
-    elif [[ "$ISSUE_STATE" == "OPEN" ]]; then
-      log "WARNING: slot $SLOT issue #$SLOT_ISSUE: couldn't read its board column; leaving slot for next tick"
+      # No card on the Drafto Factory board (the board renamed, or swapped via
+      # FACTORY_PROJECT_ID) reads as unknown, not as "left": guessing wrong
+      # would free the slots of cards being worked on.
+      [[ -n "$SLOT_COLUMN" ]] || COLUMN_KNOWN=0
+    fi
+    if [[ "$COLUMN_KNOWN" -eq 0 && "$ISSUE_STATE" == "OPEN" ]]; then
+      log "WARNING: slot $SLOT issue #$SLOT_ISSUE: couldn't read its column on the Drafto Factory board; leaving slot for next tick"
       continue
     fi
     STILL_ACTIVE=$(jq -n --arg state "$ISSUE_STATE" --arg col "$SLOT_COLUMN" \
       '($state == "OPEN") and ($col == "In Progress" or $col == "In Review" or $col == "Testing")')
     if [[ "$STILL_ACTIVE" != "true" ]]; then
-      log "Slot $SLOT: issue #$SLOT_ISSUE left In Progress/In Review/Testing (now: ${SLOT_COLUMN:-off the board}, $ISSUE_STATE); releasing slot + worktree"
+      log "Slot $SLOT: issue #$SLOT_ISSUE left In Progress/In Review/Testing (now: ${SLOT_COLUMN:-unknown}, $ISSUE_STATE); releasing slot + worktree"
       if [[ "$DRY_RUN" -eq 0 ]]; then
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         # Not necessarily done with the issue: a card in In Test, or moved to
@@ -6946,6 +7018,7 @@ A human should take a look. Reset with \
       cat "$WT_ERR_FILE" >>"$LOG_FILE" 2>/dev/null || true; rm -f "$WT_ERR_FILE"
       WT_PATH=$(echo "$WT_JSON" | jq -r '.path')
       log "Issue #$ISSUE_NUM: worktree $WT_PATH (branchReused=$(echo "$WT_JSON" | jq -r '.branchReused // false'), fromRemote=$(echo "$WT_JSON" | jq -r '.fromRemote // false'), base=$(echo "$WT_JSON" | jq -r '.base // ""'))"
+      log_worktree_leftovers "$ISSUE_NUM" "$WT_JSON"
 
       # Conflict pass (ADR-0061): bash merges main in, before the install so
       # the agent's checks run against the merged lockfile. What git merges on
@@ -7180,6 +7253,12 @@ A human should take a look. Reset with \
     # here, so the In Test sweep's re-dispatch never needs its own check.
     IR_PR_LABELS=$(echo "$PR_VIEW" | jq -r '(.labels // []) | map(.name) | join(",")' 2>/dev/null || echo "")
     if ! hosted_config_gate "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$IR_PR_LABELS" "In Review"; then
+      # A real hold waits on the operator to apply the config, possibly for
+      # days: the card needn't keep a worktree slot through it (ADR-0070). A
+      # tick held for a transient error keeps it.
+      if [[ "$DRY_RUN" -eq 0 && "${HOSTED_CONFIG_HELD:-}" == "hold" ]]; then
+        free_waiting_slot "$ISSUE_NUM" "$HEAD_SHA" "the hosted config"
+      fi
       continue
     fi
 
@@ -7197,32 +7276,36 @@ A human should take a look. Reset with \
     # updates it at merge time. "" (the compare failed) also goes on.
     BEHIND_BY=$(pr_behind_main "$HEAD_SHA")
     if [[ -n "$BEHIND_BY" && "$BEHIND_BY" -gt 0 ]]; then
+      # The budget fails closed: if it can't be read, it counts as spent, so a
+      # broken state file can't turn into an update (and a CI run) every tick.
       BRANCH_UPDATES=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
-        --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.branchUpdates // "0"' 2>/dev/null || echo "0")
-      [[ "$BRANCH_UPDATES" =~ ^[0-9]+$ ]] || BRANCH_UPDATES=0
+        --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.branchUpdates // "0"' 2>/dev/null || echo "")
+      if ! [[ "$BRANCH_UPDATES" =~ ^[0-9]+$ ]]; then
+        log "WARNING: couldn't read #$ISSUE_NUM's branch-update budget; counting it as spent"
+        BRANCH_UPDATES="$FACTORY_MAX_BRANCH_UPDATES"
+      fi
       if [[ "$BRANCH_UPDATES" -ge "$FACTORY_MAX_BRANCH_UPDATES" ]]; then
         log "Issue #$ISSUE_NUM: PR #$PR_NUM is $BEHIND_BY commit(s) behind main, but its $BRANCH_UPDATES branch update(s) are spent; going on as it stands (--release updates it at merge)"
       elif [[ "$DRY_RUN" -eq 1 ]]; then
         log "DRY-RUN: PR #$PR_NUM is $BEHIND_BY commit(s) behind main; would update the branch before In Test"
         continue
       elif ! worktree_within_head "$ISSUE_NUM" "$HEAD_SHA"; then
-        # The slot's worktree holds commits the PR lacks (a fix whose push never
-        # landed?). Updating would diverge origin from that local branch, and
-        # every later worktree resume would refuse it. Leave it to the operator.
+        # The worktree or the local branch holds commits the PR lacks (a fix
+        # whose push never landed?). Updating would diverge origin from them,
+        # and every later worktree resume would refuse it. Leave it to the
+        # operator.
         log "WARNING: PR #$PR_NUM is $BEHIND_BY commit(s) behind main, but issue #$ISSUE_NUM's worktree has commits the PR lacks; not updating the branch (going on as it stands)"
+      elif ! node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdates \
+          "$((BRANCH_UPDATES + 1))" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+        log "WARNING: couldn't record a branch update for #$ISSUE_NUM; not updating PR #$PR_NUM (going on as it stands)"
       else
-        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdates \
-          "$((BRANCH_UPDATES + 1))" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         if update_pr_branch "$PR_NUM" "$HEAD_SHA"; then
           node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdatedFrom \
             "$HEAD_SHA" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          # The card keeps its slot and worktree: CI may still send it to the
+          # fix loop, and a resume fast-forwards the worktree to the merge,
+          # setting any uncommitted leftovers aside (worktree-cli).
           log "Issue #$ISSUE_NUM: PR #$PR_NUM was $BEHIND_BY commit(s) behind main; updated the branch (CI re-runs on the merged head)"
-          # The slot's worktree is now behind the PR branch, and a fix-loop
-          # resume refuses to fast-forward a worktree with uncommitted leftovers
-          # (syncRegisteredWorktree), which would wedge the card. Nothing in it
-          # is needed (the card had converged), so drop it: a later fix pass
-          # rebuilds it from the branch, and the slot is free meanwhile.
-          release_slot_and_worktree "$ISSUE_NUM"
           continue
         fi
         # update-branch refuses when the head moved since PR_VIEW (a push
@@ -7827,7 +7910,15 @@ comes back to In Test for your approval once CI is green again.
     if [[ "$MERGE_STATE" == "BEHIND" ]]; then
       log "Issue #$ISSUE_NUM: PR #$PR_NUM is behind main; updating branch (merges once CI re-runs green)"
       if [[ "$DRY_RUN" -eq 0 ]]; then
-        if update_pr_branch "$PR_NUM" "$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')"; then
+        RELEASE_HEAD=$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')
+        if update_pr_branch "$PR_NUM" "$RELEASE_HEAD"; then
+          # A hand-back to In Review (an open thread, red CI) can bring this
+          # merge commit to --watch: it inherits the review like --watch's own
+          # updates (carry_across_branch_update, ADR-0070).
+          if [[ -n "$RELEASE_HEAD" ]]; then
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdatedFrom \
+              "$RELEASE_HEAD" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          fi
           if ! issue_has_marker "$ISSUE_NUM" "drafto-factory-branch-updated"; then
             gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
               --body "🏭 **Updating the branch with latest \`main\`.**

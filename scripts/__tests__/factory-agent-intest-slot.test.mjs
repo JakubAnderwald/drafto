@@ -53,6 +53,7 @@ REPO_ROOT="${dir}/repo"
 DRY_RUN=0
 FACTORY_MAX_BRANCH_UPDATES=3
 log() { echo "LOG $*" >>"$CALLS"; }
+logerr() { echo "LOGERR $*" >>"$CALLS"; }
 transition_status() { echo "MOVE $2 $3" >>"$CALLS"; }
 remove_worktree_for() { echo "RMWT $1" >>"$CALLS"; }
 release_slot_and_worktree() { echo "FREE $1" >>"$CALLS"; }
@@ -134,7 +135,7 @@ gh() {
     );
   });
 
-  it("frees Approved, closed and off-board cards, and only counts the factory board", () => {
+  it("frees Approved and closed cards", () => {
     const calls = sweep([
       ["5", card("Approved")],
       ["6", card("In Progress", "CLOSED")],
@@ -143,18 +144,27 @@ gh() {
       calls.filter((c) => c.startsWith("RELEASE")),
       ["RELEASE 0", "RELEASE 1"],
     );
-    assert.ok(sweep([["7", card(null)]]).includes("RELEASE 0"));
-    assert.ok(
-      sweep([["8", card("In Progress", "OPEN", "Some Other Board")]]).includes("RELEASE 0"),
-    );
   });
 
-  it("without the column, frees only a closed issue's slot", () => {
-    const open = sweep([["794", null]]);
-    assert.ok(!open.some((c) => c.startsWith("RELEASE")), open.join("\n"));
-    assert.ok(open.some((c) => c.includes("couldn't read its board column")));
+  it("without a column on the factory board, frees only a closed issue's slot", () => {
+    // The column can't be read, the issue has no card, or only a card on some
+    // other board (the board renamed, or FACTORY_PROJECT_ID pointing elsewhere):
+    // guessing "left" would free the slots of cards being worked on.
+    for (const [why, view] of [
+      ["unreadable", null],
+      ["no card", card(null)],
+      ["another board", card("Approved", "OPEN", "Some Other Board")],
+    ]) {
+      const open = sweep([["794", view]]);
+      assert.ok(!open.some((c) => c.startsWith("RELEASE")), `${why}: ${open.join("\n")}`);
+      assert.ok(
+        open.some((c) => c.includes("couldn't read its column on the Drafto Factory board")),
+        why,
+      );
+    }
     const closed = sweep([["794", null]], { fallbackState: "CLOSED" });
     assert.ok(closed.includes("RELEASE 0"), closed.join("\n"));
+    assert.ok(sweep([["794", card(null, "CLOSED")]]).includes("RELEASE 0"));
   });
 
   it("changes nothing in a dry run", () => {
@@ -285,48 +295,38 @@ describe("pr_behind_main / update_pr_branch", () => {
 
 describe("worktree_within_head: never update past unpushed commits (ADR-0070)", () => {
   function git(cwd, ...args) {
-    const r = spawnSync("git", args, { cwd, encoding: "utf8" });
+    const r = spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], {
+      cwd,
+      encoding: "utf8",
+    });
     assert.equal(r.status, 0, r.stderr);
     return r.stdout.trim();
   }
-  function within(setup) {
+  // REPO_ROOT holds factory/issue-794 at commits a ← b. With `worktree`, the
+  // branch is checked out at worktrees/factory-issue-794 (setup may move it);
+  // without, only the kept local branch is left. <setup> returns the PR head.
+  function within(setup, { worktree = true, gh = "gh() { return 1; }" } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "factory-within-"));
     try {
-      const wt = join(dir, "repo", "worktrees", "factory-issue-794");
-      spawnSync("mkdir", ["-p", wt]);
-      git(wt, "init", "-q", "-b", "factory/issue-794");
-      git(
-        wt,
-        "-c",
-        "user.email=t@t",
-        "-c",
-        "user.name=t",
-        "commit",
-        "-q",
-        "--allow-empty",
-        "-m",
-        "a",
-      );
-      const a = git(wt, "rev-parse", "HEAD");
-      git(
-        wt,
-        "-c",
-        "user.email=t@t",
-        "-c",
-        "user.name=t",
-        "commit",
-        "-q",
-        "--allow-empty",
-        "-m",
-        "b",
-      );
-      const b = git(wt, "rev-parse", "HEAD");
-      const prHead = setup({ wt, a, b });
+      const root = join(dir, "repo");
+      spawnSync("mkdir", ["-p", root]);
+      git(root, "init", "-q", "-b", "main");
+      git(root, "commit", "-q", "--allow-empty", "-m", "base");
+      git(root, "checkout", "-q", "-b", "factory/issue-794");
+      git(root, "commit", "-q", "--allow-empty", "-m", "a");
+      const a = git(root, "rev-parse", "HEAD");
+      git(root, "commit", "-q", "--allow-empty", "-m", "b");
+      const b = git(root, "rev-parse", "HEAD");
+      git(root, "checkout", "-q", "main");
+      const wt = join(root, "worktrees", "factory-issue-794");
+      if (worktree) git(root, "worktree", "add", "-q", wt, "factory/issue-794");
+      const prHead = setup({ root, wt, a, b });
       const r = spawnSync(
         "bash",
         [
           "-c",
-          `set -euo pipefail; LOG_FILE=/dev/null; REPO_ROOT="${join(dir, "repo")}"
+          `set -euo pipefail; LOG_FILE=/dev/null; REPO_ROOT="${root}"
+${gh}
 eval "$(awk '/^worktree_within_head\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 if worktree_within_head 794 "${prHead}"; then echo OK; else echo AHEAD; fi`,
         ],
@@ -360,12 +360,51 @@ if worktree_within_head 794 "${prHead}"; then echo OK; else echo AHEAD; fi`,
     );
   });
 
-  it("allows an issue with no worktree", () => {
+  it("checks the kept local branch when there is no worktree", () => {
+    // A card freed its slot (worktree gone, branch kept) after a fix commit
+    // whose push never landed: updating origin would diverge from it, and
+    // worktree-cli's re-attach would refuse the branch from then on.
+    assert.equal(
+      within(({ a }) => a, { worktree: false }),
+      "AHEAD",
+    );
+    assert.equal(
+      within(({ b }) => b, { worktree: false }),
+      "OK",
+    );
+  });
+
+  it("allows an issue with neither a worktree nor a local branch", () => {
     const r = run(
       ["worktree_within_head"],
       "if worktree_within_head 794 abc; then echo OK; else echo AHEAD; fi",
+      'git() { if [[ "$*" == *rev-parse* ]]; then return 1; fi; }',
     );
     assert.equal(r.out, "OK");
+  });
+
+  it("asks GitHub, without fetching, when the PR head isn't local", () => {
+    const missing = "f".repeat(40);
+    const answer = (status) => `gh() { echo "${status}"; }`;
+    assert.equal(
+      within(() => missing, { gh: answer("ahead") }),
+      "OK",
+    );
+    assert.equal(
+      within(() => missing, { gh: answer("identical") }),
+      "OK",
+    );
+    assert.equal(
+      within(() => missing, { gh: answer("diverged") }),
+      "AHEAD",
+    );
+    // A local commit GitHub has never seen: compare fails, so it is ahead.
+    assert.equal(
+      within(() => missing, { gh: "gh() { return 1; }" }),
+      "AHEAD",
+    );
+    const fn = script.match(/^worktree_within_head\(\) \{\n[\s\S]*?\n\}\n/m)?.[0] ?? "";
+    assert.ok(!/\bfetch\b/.test(fn.replace(/^\s*#.*$/gm, "")), "no network git in this helper");
   });
 });
 
@@ -460,12 +499,14 @@ describe("--watch: a behind PR is updated before In Test (ADR-0070)", () => {
     mergeable = "MERGEABLE",
     dry = 0,
     within = 0,
+    readFails = 0,
+    writeFails = 0,
   }) {
     const stubs = `
 node() {
   case "$2" in
-    factory:get-issue) echo '{"branchUpdates":"${updates}"}' ;;
-    factory:set-issue-field) echo "SET $3 $4 $5" >>"$CALLS" ;;
+    factory:get-issue) [[ ${readFails} -eq 0 ]] || return 1; echo '{"branchUpdates":"${updates}"}' ;;
+    factory:set-issue-field) echo "SET $3 $4 $5" >>"$CALLS"; [[ "$4" != branchUpdates || ${writeFails} -eq 0 ]] ;;
   esac
 }
 worktree_within_head() { return ${within}; }
@@ -491,7 +532,7 @@ done`;
     assert.equal(gate({ behind: "" }).out, "PROMOTE");
   });
 
-  it("updates a behind branch, records it, drops the stale worktree and holds the card for CI", () => {
+  it("updates a behind branch, records it and holds the card for CI, keeping its slot", () => {
     const r = gate({ behind: "3" });
     assert.equal(r.out, "");
     assert.deepEqual(r.calls, [
@@ -499,9 +540,22 @@ done`;
       "GH update-branch api --method PUT repos/JakubAnderwald/drafto/pulls/802/update-branch -f expected_head_sha=abc123",
       "SET 794 branchUpdatedFrom abc123",
       "LOG Issue #794: PR #802 was 3 commit(s) behind main; updated the branch (CI re-runs on the merged head)",
-      "FREE 794",
     ]);
+    // The merged head may still need a fix pass: freeing the slot here would
+    // hand it to fresh work in the same tick.
+    assert.ok(!r.calls.some((c) => c.startsWith("FREE")));
     assert.ok(!r.calls.includes("GH comment"), "no issue comment from In Review");
+  });
+
+  it("fails closed when the budget can't be read or recorded", () => {
+    const unread = gate({ behind: "2", readFails: 1 });
+    assert.equal(unread.out, "PROMOTE");
+    assert.ok(!unread.calls.some((c) => c.startsWith("GH update-branch")));
+    assert.ok(unread.calls.some((c) => c.includes("counting it as spent")));
+    const unrecorded = gate({ behind: "2", writeFails: 1 });
+    assert.equal(unrecorded.out, "PROMOTE");
+    assert.ok(!unrecorded.calls.some((c) => c.startsWith("GH update-branch")));
+    assert.ok(unrecorded.calls.some((c) => c.includes("couldn't record a branch update")));
   });
 
   it("doesn't update past commits the worktree has and the PR lacks", () => {
@@ -564,5 +618,73 @@ done`;
   it("gives each In Test round a fresh budget, from both promotions", () => {
     assert.match(watchBlock, /factory:set-issue-field "\$ISSUE_NUM" branchUpdates "" --state-file/);
     assert.match(script, /factory:set-issue-field "\$issue_num" branchUpdates "" --state-file/);
+  });
+});
+
+describe("free_waiting_slot: a card held on the operator frees its slot (ADR-0070)", () => {
+  // A converged In Review card held by the hosted-config gate can wait for days;
+  // it used to keep a worktree slot all that time.
+  function free({ slot = "1", within = 0 } = {}) {
+    return run(
+      ["free_waiting_slot"],
+      'free_waiting_slot 685 abc123 "the hosted config"',
+      `slot_held_by_issue() { echo "${slot}"; }\nworktree_within_head() { return ${within}; }`,
+    ).calls;
+  }
+
+  it("frees the slot and worktree of a card that holds one", () => {
+    assert.deepEqual(free(), [
+      "LOG Issue #685: waiting on the hosted config; freeing its worktree slot meanwhile",
+      "FREE 685",
+    ]);
+  });
+
+  it("does nothing once the slot is gone, so the rest of the wait costs nothing", () => {
+    assert.deepEqual(free({ slot: "" }), []);
+  });
+
+  it("keeps the slot when the worktree holds commits the PR lacks", () => {
+    const calls = free({ within: 1 });
+    assert.ok(!calls.some((c) => c.startsWith("FREE")), calls.join("\n"));
+    assert.ok(calls.some((c) => c.startsWith("LOGERR") && c.includes("commits the PR lacks")));
+  });
+
+  it("is what the In Review loop does on a real hosted-config hold, outside dry runs", () => {
+    assert.match(
+      watchBlock,
+      /if ! hosted_config_gate "\$ISSUE_NUM"[^\n]*"In Review"; then\n(?:\s*#[^\n]*\n)*\s*if \[\[ "\$DRY_RUN" -eq 0 && "\$\{HOSTED_CONFIG_HELD:-\}" == "hold" \]\]; then\n\s*free_waiting_slot "\$ISSUE_NUM" "\$HEAD_SHA" "the hosted config"\n\s*fi\n\s*continue\n/,
+    );
+  });
+
+  it("tells a real hold (the check said the operator must act) from a transient one", () => {
+    const fn = script.match(/^hosted_config_gate\(\) \{\n[\s\S]*?\n\}\n/m)?.[0] ?? "";
+    // Reset on entry, so a transient early return reads as "".
+    assert.match(fn, /local tmp out rc=0[^\n]*\n(?:\s*#[^\n]*\n)*\s*HOSTED_CONFIG_HELD=""\n/);
+    assert.match(
+      fn,
+      /3\) marker="hold" ;;\n\s*\*\) marker="unverified" ;;\n\s*esac\n\s*HOSTED_CONFIG_HELD="\$marker"\n/,
+    );
+  });
+});
+
+describe("log_worktree_leftovers (ADR-0070)", () => {
+  it("names the ref leftovers were set aside at, and is silent otherwise", () => {
+    const ref = "refs/factory-leftovers/factory/issue-794/abc-1";
+    const said = run(
+      ["log_worktree_leftovers"],
+      `log_worktree_leftovers 794 '{"path":"/w","leftoversRef":"${ref}"}'`,
+    ).calls;
+    assert.deepEqual(said, [
+      `LOG Issue #794: the worktree was behind the PR with uncommitted leftovers; set them aside at ${ref} (restore: git stash apply ${ref}) and fast-forwarded`,
+    ]);
+    assert.deepEqual(
+      run(["log_worktree_leftovers"], `log_worktree_leftovers 794 '{"path":"/w"}'`).calls,
+      [],
+    );
+  });
+
+  it("runs after every worktree resume", () => {
+    const sites = script.match(/^\s*log_worktree_leftovers "\$ISSUE_NUM" "\$WT_JSON"$/gm) ?? [];
+    assert.equal(sites.length, 2, "--implement and the --watch fix loop");
   });
 });

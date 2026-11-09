@@ -169,10 +169,15 @@ describe("--release engine wiring", () => {
 
   it("handles a stale (BEHIND) branch by updating it instead of merging", () => {
     assert.match(releaseBlock, /MERGE_STATE=\$\(echo "\$PR_VIEW" \| jq -r '\.mergeStateStatus/);
-    // Through the helper --watch uses too (ADR-0070), pinned to the head read.
+    // Through the helper --watch uses too (ADR-0070), pinned to the head read,
+    // and recorded so a hand-back to In Review carries the review over.
     assert.match(
       releaseBlock,
-      /update_pr_branch "\$PR_NUM" "\$\(echo "\$PR_VIEW" \| jq -r '\.headRefOid \/\/ ""'\)"/,
+      /RELEASE_HEAD=\$\(echo "\$PR_VIEW" \| jq -r '\.headRefOid \/\/ ""'\)/,
+    );
+    assert.match(
+      releaseBlock,
+      /if update_pr_branch "\$PR_NUM" "\$RELEASE_HEAD"; then\n(?:\s*#[^\n]*\n)*\s*if \[\[ -n "\$RELEASE_HEAD" \]\]; then\n\s*node "\$SCRIPT_DIR\/lib\/state-cli\.mjs" factory:set-issue-field "\$ISSUE_NUM" branchUpdatedFrom \\\n\s*"\$RELEASE_HEAD"/,
     );
     assert.match(releaseBlock, /drafto-factory-branch-updated/);
   });

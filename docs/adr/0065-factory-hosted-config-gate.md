@@ -4,6 +4,8 @@
 - **Date**: 2026-11-01
 - **Authors**: Jakub Anderwald, with Claude Code
 
+> **Update 2026-11-09**: A card the gate holds in In Review now frees its worktree slot for the length of the hold, which waits on the operator and can last days ([ADR-0070](./0070-factory-in-test-frees-slot-and-updates-behind-prs.md)). A fix pass takes a slot again when it needs one.
+
 ## Context
 
 Some of Drafto's auth configuration lives only in the hosted Supabase projects' dashboards, not in git: chiefly the Redirect URL allowlist (Authentication → URL Configuration). `supabase/config.toml` declares the same settings, but nothing applies it to dev (`huhzactreblzcogqkbsd`) or prod (`tbmjbxxseonkciqovnpl`). An operator adds each entry by hand.
