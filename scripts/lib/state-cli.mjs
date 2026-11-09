@@ -223,9 +223,13 @@
 //   factory:plan-probe-reset <issue>
 //                                    Clear every planProbe* key on <issue>
 //                                    (plan-probe.mjs), which gives back its
-//                                    probe rounds. A probe branch still on
-//                                    GitHub is reaped by the next --plan
-//                                    housekeeping as an orphan.
+//                                    probe rounds. Prints {ok:false,
+//                                    reason:"probe-queued"} (exit 0) and
+//                                    changes nothing while a probe is queued:
+//                                    its branch is still on GitHub. Switch the
+//                                    probe off (the next --plan housekeeping
+//                                    cancels it and deletes the branch) or let
+//                                    the round end, then reset.
 //
 // Nightly beta-release retry counters (ADR-0042). These live in
 // logs/support-release-state.json — written only by nightly-support.sh, so they
@@ -962,7 +966,7 @@ async function main(argv) {
       }
       const state = await loadFactoryState(file);
       const result = resetIssuePlanProbe(state, issueNumber);
-      if (result.cleared.length > 0) await saveFactoryState(state, file);
+      if (result.ok && result.cleared.length > 0) await saveFactoryState(state, file);
       return { ...result, issueNumber };
     }
     case "record-release-attempt": {

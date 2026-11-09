@@ -36,6 +36,13 @@ describe("planner prompt — browser probe", () => {
     assert.match(flat, /only inside `bundle\.probe\.dir`: `checks\.md`, `headers\.txt`/);
     // The refuse-list names the same carve-out, so the two sections agree.
     assert.match(flat, /and the browser probe files inside `bundle\.probe\.dir`/);
+    // …and so does the screenshot entry, which once called its own write the
+    // ONLY mutation on a first plan (the main case for a probe).
+    assert.match(
+      flat,
+      /this `\/tmp` write and the browser probe files below are the ONLY filesystem mutations/,
+    );
+    assert.doesNotMatch(flat, /ONLY filesystem mutation \/ network fetch/);
   });
 
   it("forbids git, pnpm, the network, links and the secrets dir for the probe files", () => {

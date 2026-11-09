@@ -73,7 +73,7 @@ Add a **plan-stage browser probe**: the `plan` kind of the ADR-0051 runner. It's
 
    A cancelled round posts nothing. A failed one posts its report.
 
-10. **State.** Each issue gets flat `planProbe*` fields (`PLAN_PROBE_ISSUE_FIELDS` in `scripts/lib/factory-state.mjs`). Their statuses are `queued`, `reported`, `failed:(build|no-preview|push|branch-moved|expired|runner)`, `rejected:(checks|secret|secret-scan|cap)`, `cancelled:(off|left-plan-review)` and `folded[:gave-up|:left-plan-review]`. `factory:plan-probe-reset <n>` clears them and gives back the issue's rounds.
+10. **State.** Each issue gets flat `planProbe*` fields (`PLAN_PROBE_ISSUE_FIELDS` in `scripts/lib/factory-state.mjs`). Their statuses are `queued`, `reported`, `failed:(build|no-preview|push|branch-moved|expired|runner)`, `rejected:(checks|secret|secret-scan|cap)`, `cancelled:(off|left-plan-review)` and `folded[:gave-up|:left-plan-review]`. `factory:plan-probe-reset <n>` clears them and gives back the issue's rounds; it refuses while a probe is queued, so a branch on GitHub always has a record that makes housekeeping delete it.
 
 ## Consequences
 

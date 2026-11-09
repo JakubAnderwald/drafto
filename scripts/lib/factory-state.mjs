@@ -1199,12 +1199,17 @@ export function resetIssueVerify(state, issueNumber) {
 }
 
 // Forget the card's plan-stage browser probe record (factory:plan-probe-reset),
-// which also gives back its rounds. The probe branch, if one is still on
-// GitHub, is reaped by the next --plan housekeeping as an orphan. An issue with
-// no record is not created.
+// which also gives back its rounds. Refused while a probe is queued: its
+// branch is still on GitHub, and with the probe switched off nothing would be
+// left on record to make housekeeping delete it. Switching the probe off (or
+// waiting for the round to end) lets housekeeping cancel it and delete the
+// branch first. An issue with no record is not created.
 export function resetIssuePlanProbe(state, issueNumber) {
   const issue = state?.issues?.[String(issueNumber)];
   if (!issue || typeof issue !== "object") return { ok: true, cleared: [] };
+  if (issue.planProbeStatus === "queued") {
+    return { ok: false, reason: "probe-queued", probeId: issue.planProbeId ?? null };
+  }
   const cleared = PLAN_PROBE_ISSUE_FIELDS.filter((f) => issue[f] != null && issue[f] !== "");
   for (const f of cleared) issue[f] = null;
   return { ok: true, cleared };

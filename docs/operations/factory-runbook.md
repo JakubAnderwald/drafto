@@ -740,7 +740,7 @@ node scripts/lib/state-cli.mjs factory:get-issue <n>          # the planProbe* f
 node scripts/lib/state-cli.mjs factory:plan-probe-reset <n>   # forget the probe record and give back its rounds
 ```
 
-`factory:plan-probe-reset` clears every `planProbe*` field. A probe branch still on GitHub is then an orphan, and the next `--plan` housekeeping deletes it. To get a new round, comment on the issue asking for browser checks.
+`factory:plan-probe-reset` clears every `planProbe*` field. It refuses (`{"ok":false,"reason":"probe-queued"}`) while a probe is queued, because that probe's branch is still on GitHub. To stop a queued probe, set `FACTORY_PLAN_PROBE=0` and reload: the next `--plan` housekeeping cancels it and deletes its branch, and the reset then works. To get a new round, comment on the issue asking for browser checks.
 
 **What a probe leaves behind.** The probe dir (mode 700) holds:
 
