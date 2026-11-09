@@ -1,6 +1,6 @@
 # Evernote Import
 
-**Status:** shipped **Updated:** 2026-11-08
+**Status:** shipped **Updated:** 2026-11-09
 
 ## What it is
 
@@ -15,7 +15,7 @@ Shipped on the web app. The flow:
 3. For each note, `POST /api/import/evernote/note` creates an empty note with the original title and timestamps. The first call also creates the target notebook, named by the user (default: filename without `.enex`), and later calls reuse its id.
 4. Each of the note's resources is uploaded straight to the `attachments` bucket, as a regular attachment: `upload-url`, a signed upload, then `confirm`, which inserts the `attachments` row. The browser computes each resource's MD5 for the next step.
 5. `POST /api/import/evernote/finalize` converts the note's ENML to BlockNote blocks (via `linkedom`), maps each `<en-media hash>` to its `attachment://` URL and writes the content.
-6. The dialog shows progress and per-note failures. A failed attachment is recorded and skipped without losing the note's text; a failed note goes on a "Retry failed" list that resumes the same note row. On completion the imported notebook is selected in the sidebar.
+6. The dialog shows progress and per-note failures. A failed attachment is recorded and skipped without losing the note's text; a failed note goes on a "Retry failed" list that resumes the same note row. The retry reuses the attachments that attempt already confirmed and uploads only the rest. On completion the imported notebook is selected in the sidebar.
 
 Uploading bytes from the browser straight to Storage keeps every API request small: Vercel caps request bodies at 4.5 MB.
 
@@ -69,7 +69,7 @@ Importer code is web-only. Shared pieces:
 
 - A storage quota refusal stops the whole import at once and keeps what was imported, including the current note's text. Never retry it, and never put the notes a first run didn't reach on the "Retry failed" list. A retry the quota stops keeps its untried items on that list. Tell it apart from the per-file 413 by its `code` (`isStorageQuotaError`), not by the status.
 - Parser uses the browser `DOMParser` (client-only). The converter uses `linkedom` (server-side). Do not swap either without re-testing bundle size — `jsdom` was rejected in ADR 0007 for being too heavy.
-- Any other failed note must not abort the import; it goes on the "Retry failed" list with its note id, so a retry resumes the same row.
+- Any other failed note must not abort the import; it goes on the "Retry failed" list with its note id, so a retry resumes the same row. The entry also carries the attachments already confirmed on that row (keyed by resource index), and the retry reuses them instead of uploading them again. Their `attachments` rows stay on the note, so a second upload would add duplicate rows that count against the storage quota twice. A finalize request that fails outright (a network error) keeps the note id and the uploads too.
 - The first note creates the notebook (when `notebookId` is absent). Every later note must pass the returned `notebookId`, or a fresh notebook is created per note.
 - Attachment upload goes through the same `upload-url` / `confirm` routes, bucket and path conventions as regular note attachments, so it meets the same per-file limit and storage quota. Changing the bucket or path shape requires updating the importer in lockstep.
 - ENML conversion is best-effort. New BlockNote block types require a matching branch in `convertEnmlToBlocks` or content will be dropped silently.

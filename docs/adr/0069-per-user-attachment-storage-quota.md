@@ -10,7 +10,7 @@ Drafto stores attachments in one Supabase Storage bucket, `attachments`, on the 
 
 Uploads reach storage by two routes:
 
-- **Web**: the browser asks `POST /api/notes/[id]/attachments/upload-url` for a signed upload URL, uploads to it, then calls `.../confirm`, which inserts the `attachments` row. The Evernote importer uploads server-side and inserts rows the same way.
+- **Web**: the browser asks `POST /api/notes/[id]/attachments/upload-url` for a signed upload URL, uploads to it, then calls `.../confirm`, which inserts the `attachments` row. The Evernote importer uses the same three steps, also from the browser.
 - **Mobile and desktop**: the apps are offline-first. A picked file is queued locally, then uploaded with supabase-js straight to Storage under the user's own JWT. The app then upserts the `attachments` row itself (`upsert(rows, { onConflict: "id", ignoreDuplicates: true })`), and retries both steps from its queue. No Drafto server sits in this path.
 
 A rule enforced only in the web API would not cover the second route. The place both routes meet is the database: the `attachments` table and the `storage.objects` policies of the bucket.

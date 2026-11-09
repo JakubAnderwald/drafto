@@ -33,10 +33,19 @@ interface ImportEvernoteDialogProps {
 
 type ImportStatus = "idle" | "importing" | "done" | "error";
 
+/** Attachments already confirmed on a note row, keyed by their index in `note.resources`. */
+type UploadedRefs = ReadonlyMap<number, ImportAttachmentRef>;
+
 /** A note to import, optionally resuming an already-created (but unfinished) row. */
 interface ImportItem {
   note: EnexNote;
   noteId?: string;
+  /**
+   * What a failed attempt already uploaded to `noteId`. Their `attachments` rows are
+   * still on the note, so a retry reuses them: uploading them again would add
+   * duplicate rows and charge the storage quota twice.
+   */
+  uploaded?: UploadedRefs;
 }
 
 interface FailedNote extends ImportItem {
@@ -61,7 +70,10 @@ const REMAINING_NOT_IMPORTED = "The remaining notes weren't imported.";
 /** Thrown when the session is unauthenticated; aborts the whole import. */
 class AuthAbortError extends Error {}
 
-/** Thrown when a single note fails; carries the created noteId so a retry can resume it. */
+/**
+ * Thrown when a single note fails; carries the created noteId and the attachments
+ * already uploaded to it, so a retry can resume the row without uploading them again.
+ */
 class NoteImportError extends Error {
   constructor(
     message: string,
@@ -69,6 +81,7 @@ class NoteImportError extends Error {
     // Set when the note hit the storage quota and its finalize then failed too: the
     // note goes on the retry list (its text was never written) and the import stops.
     readonly storageFull: StorageQuotaError | null = null,
+    readonly uploaded?: UploadedRefs,
   ) {
     super(message);
   }
@@ -168,7 +181,9 @@ interface ImportContext {
  * `ctx.notebookId` as soon as the notebook exists so the notebook is created
  * only once even if a later note fails. Attachment failures are recorded but do
  * not fail the note; any other failure throws a NoteImportError carrying the
- * noteId so a retry can resume the same row instead of creating a duplicate.
+ * noteId so a retry can resume the same row instead of creating a duplicate. It
+ * also carries the attachments already uploaded, which a retry reuses (see
+ * `ImportItem.uploaded`); only the ones not uploaded yet are tried again.
  *
  * When the storage quota refuses an attachment, the note's remaining attachments
  * are not tried and the note is finalized with the ones already uploaded, so its
@@ -176,11 +191,13 @@ interface ImportContext {
  * if the finalize failed too.
  */
 async function importSingleNote(
-  note: EnexNote,
+  item: ImportItem,
   ctx: ImportContext,
-  existingNoteId?: string,
 ): Promise<StorageQuotaError | null> {
-  let noteId = existingNoteId;
+  const { note } = item;
+  let noteId = item.noteId;
+  // Uploads belong to the row they were confirmed on, so only a resumed row has any.
+  const uploaded = new Map<number, ImportAttachmentRef>(noteId ? item.uploaded : undefined);
 
   if (!noteId) {
     const noteRes = await fetch("/api/import/evernote/note", {
@@ -208,9 +225,16 @@ async function importSingleNote(
 
   const attachments: ImportAttachmentRef[] = [];
   let storageFull: StorageQuotaError | null = null;
-  for (const resource of note.resources) {
+  for (const [index, resource] of note.resources.entries()) {
+    const reused = uploaded.get(index);
+    if (reused) {
+      attachments.push(reused);
+      continue;
+    }
     try {
-      attachments.push(await uploadAttachment(noteId, resource, ctx.supabase));
+      const ref = await uploadAttachment(noteId, resource, ctx.supabase);
+      uploaded.set(index, ref);
+      attachments.push(ref);
     } catch (err) {
       if (err instanceof StorageQuotaError) {
         storageFull = err; // every further upload would be refused too
@@ -225,17 +249,24 @@ async function importSingleNote(
     }
   }
 
-  const finalizeRes = await fetch("/api/import/evernote/finalize", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ noteId, content: note.content, attachments, tasks: note.tasks }),
-  });
+  let finalizeRes: Response;
+  try {
+    finalizeRes = await fetch("/api/import/evernote/finalize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ noteId, content: note.content, attachments, tasks: note.tasks }),
+    });
+  } catch (err) {
+    // A network failure leaves the row and its uploads just as resumable.
+    throw new NoteImportError(errorMessageOf(err), noteId, storageFull, uploaded);
+  }
   if (!finalizeRes.ok) {
     const body = await finalizeRes.json().catch(() => null);
     throw new NoteImportError(
       body?.error || `Failed to finalize note (${finalizeRes.status})`,
       noteId,
       storageFull,
+      uploaded,
     );
   }
   return storageFull;
@@ -302,7 +333,7 @@ export function ImportEvernoteDialog({ onClose, onComplete }: ImportEvernoteDial
         processed += 1;
         setCurrentTitle(item.note.title || "Untitled");
         try {
-          storageFull = await importSingleNote(item.note, ctx, item.noteId);
+          storageFull = await importSingleNote(item, ctx);
           importedCountRef.current += 1;
           setImportedCount(importedCountRef.current);
         } catch (err) {
@@ -310,8 +341,13 @@ export function ImportEvernoteDialog({ onClose, onComplete }: ImportEvernoteDial
           if (err instanceof StorageQuotaError) {
             storageFull = err; // ends the loop below
           } else {
-            const noteId = (err instanceof NoteImportError ? err.noteId : undefined) ?? item.noteId;
-            failed.push({ note: item.note, noteId, reason: errorMessageOf(err) });
+            const resume = err instanceof NoteImportError ? err : undefined;
+            failed.push({
+              note: item.note,
+              noteId: resume?.noteId ?? item.noteId,
+              uploaded: resume?.uploaded ?? item.uploaded,
+              reason: errorMessageOf(err),
+            });
             // Quota stop plus a failed finalize: keep the note retryable, still stop.
             if (err instanceof NoteImportError && err.storageFull) storageFull = err.storageFull;
           }
