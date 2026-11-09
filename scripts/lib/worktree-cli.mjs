@@ -34,8 +34,10 @@
 // always lands on the PR's own commits:
 //   1. the worktree is already registered  → reuse it (with --fetch, first
 //                                            fast-forwarded when strictly
-//                                            behind origin; diverged or dirty
-//                                            throws)
+//                                            behind origin, uncommitted
+//                                            leftovers set aside under
+//                                            refs/factory-leftovers/; diverged
+//                                            or mid-merge throws)
 //   2. the local branch exists             → re-attach it (with --fetch, first
 //                                            reconciled against origin: behind
 //                                            defers to tier 3, ahead is kept,
@@ -209,14 +211,82 @@ function isAncestor(root, maybeAncestor, descendant) {
   );
 }
 
-// A registered worktree stays put while its card is In Review or In Test, so
-// anything that pushes to the PR meanwhile ("Update branch" on GitHub, --release
-// updating a BEHIND PR, a human) leaves it on a stale tip. The next run would
-// commit there and its push would be rejected, with no sanctioned way for the
-// agent to recover. Fast-forward it when it is strictly behind and clean; keep
-// it when ahead (unpushed commits); throw when diverged or dirty, like the
-// re-attach path. Returns whether it moved.
+// Where snapshotLeftovers keeps a snapshot: a ref outside refs/heads, so no
+// push or branch listing ever picks it up, shared by every worktree of the repo.
+export const LEFTOVERS_REF_PREFIX = "refs/factory-leftovers";
+
+// Uncommitted leftovers in a factory worktree: a run that ended without
+// committing (an unfrozen install rewriting the lockfile, a fix pass cut off
+// mid-edit), or a hand edit. Nothing in the factory reads them, but they are
+// never just deleted (ADR-0070): `git add --all` + `git stash create` snapshots
+// them (new files included, ignored ones such as node_modules left alone) as a
+// stash-style commit, which is stored under LEFTOVERS_REF_PREFIX.
+// `git stash apply <ref>` brings them back. Not via `git stash push`: the stash
+// stack is shared with the operator's checkouts. Returns the ref.
+function snapshotLeftovers(wtPath, branch, localSha) {
+  git(["add", "--all"], { cwd: wtPath });
+  const snapshot = git(
+    [
+      "-c",
+      "user.name=Drafto factory",
+      "-c",
+      "user.email=factory@drafto.eu",
+      "stash",
+      "create",
+      `factory leftovers on ${branch} at ${localSha.slice(0, 12)}`,
+    ],
+    { cwd: wtPath },
+  ).stdout.trim();
+  if (!snapshot) {
+    throw new Error(
+      `worktree ${wtPath} reports uncommitted changes but git stash create saved nothing; ` +
+        `reconcile it by hand`,
+    );
+  }
+  const ref = `${LEFTOVERS_REF_PREFIX}/${branch}/${localSha.slice(0, 12)}-${Date.now()}`;
+  git(["update-ref", ref, snapshot], { cwd: wtPath });
+  return ref;
+}
+
+// Snapshot the leftovers, then reset the worktree to HEAD so it can move on.
+function setAsideLeftovers(wtPath, branch, localSha) {
+  const ref = snapshotLeftovers(wtPath, branch, localSha);
+  try {
+    git(["reset", "--hard", "--quiet", "HEAD"], { cwd: wtPath });
+  } catch (err) {
+    throw new Error(`${err.message} (the leftovers are safe at ${ref})`);
+  }
+  return ref;
+}
+
+// Snapshot a worktree's leftovers before a forced removal deletes them, when
+// there are any. Returns { ref } (ref null when it was clean or isn't a
+// worktree), or { error } when the snapshot failed and the removal must not go
+// ahead.
+function snapshotBeforeRemoval(wtPath, branch) {
+  if (!existsSync(path.join(wtPath, ".git"))) return { ref: null };
+  const status = git(["status", "--porcelain"], { cwd: wtPath, allowFail: true });
+  if (status.status !== 0 || !status.stdout.trim()) return { ref: null };
+  try {
+    const head = revParse(wtPath, "HEAD") ?? "0".repeat(12);
+    return { ref: snapshotLeftovers(wtPath, branch, head) };
+  } catch (err) {
+    return { error: String(err.message ?? err) };
+  }
+}
+
+// A registered worktree stays put while its card is In Review, so anything that
+// pushes to the PR meanwhile ("Update branch" on GitHub, the --watch behind-main
+// gate or --release updating a BEHIND PR, a human) leaves it on a stale tip.
+// The next run would commit there and its push would be rejected, with no
+// sanctioned way for the agent to recover. Fast-forward it when it is strictly
+// behind, first setting aside any uncommitted leftovers (ADR-0070), which used
+// to wedge the card: every resume threw and released the slot, spending no
+// attempt, so it never reached Blocked. Keep it when ahead (unpushed commits).
+// Throw when diverged, or mid-merge, like the re-attach path.
+// Returns { moved, leftoversRef }.
 function syncRegisteredWorktree(root, wtPath, branch) {
+  const unchanged = { moved: false, leftoversRef: null };
   const probe = remoteBranchState(root, branch);
   if (probe.state === "unreachable") {
     throw new Error(
@@ -224,15 +294,15 @@ function syncRegisteredWorktree(root, wtPath, branch) {
         (probe.detail ? ` (git: ${probe.detail})` : ""),
     );
   }
-  if (probe.state !== "present") return false;
+  if (probe.state !== "present") return unchanged;
   git(["fetch", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`], {
     cwd: root,
     timeoutMs: NETWORK_TIMEOUT_MS,
   });
   const localSha = revParse(wtPath, "HEAD");
   const remoteSha = revParse(root, `refs/remotes/origin/${branch}`);
-  if (!localSha || !remoteSha || localSha === remoteSha) return false;
-  if (isAncestor(root, remoteSha, localSha)) return false;
+  if (!localSha || !remoteSha || localSha === remoteSha) return unchanged;
+  if (isAncestor(root, remoteSha, localSha)) return unchanged;
   if (!isAncestor(root, localSha, remoteSha)) {
     throw new Error(
       `worktree ${wtPath} (${localSha.slice(0, 12)}) has diverged from ` +
@@ -240,14 +310,23 @@ function syncRegisteredWorktree(root, wtPath, branch) {
         `reconcile the branch by hand`,
     );
   }
+  let leftoversRef = null;
   if (git(["status", "--porcelain"], { cwd: wtPath }).stdout.trim()) {
-    throw new Error(
-      `worktree ${wtPath} is behind origin/${branch} and has uncommitted changes; ` +
-        `reconcile it by hand`,
-    );
+    if (mergeInProgress(wtPath)) {
+      throw new Error(
+        `worktree ${wtPath} is behind origin/${branch} with a merge in progress; ` +
+          `reconcile it by hand`,
+      );
+    }
+    leftoversRef = setAsideLeftovers(wtPath, branch, localSha);
   }
-  git(["merge", "--ff-only", "--quiet", `origin/${branch}`], { cwd: wtPath });
-  return true;
+  try {
+    git(["merge", "--ff-only", "--quiet", `origin/${branch}`], { cwd: wtPath });
+  } catch (err) {
+    if (!leftoversRef) throw err;
+    throw new Error(`${err.message} (the leftovers are safe at ${leftoversRef})`);
+  }
+  return { moved: true, leftoversRef };
 }
 
 export function addWorktree({
@@ -271,8 +350,17 @@ export function addWorktree({
   // --fetch it is first brought level with origin, like the re-attach path.
   const existing = listWorktrees(root).find((w) => canonical(w.path) === canonical(wtPath));
   if (existing) {
-    const fastForwarded = fetchRemote ? syncRegisteredWorktree(root, wtPath, branch) : false;
-    return { path: wtPath, branch, reused: true, created: false, fastForwarded };
+    const sync = fetchRemote
+      ? syncRegisteredWorktree(root, wtPath, branch)
+      : { moved: false, leftoversRef: null };
+    return {
+      path: wtPath,
+      branch,
+      reused: true,
+      created: false,
+      fastForwarded: sync.moved,
+      ...(sync.leftoversRef ? { leftoversRef: sync.leftoversRef } : {}),
+    };
   }
 
   // A leftover directory that git doesn't know about would make `worktree add`
@@ -402,6 +490,26 @@ export function removeWorktree({
   const branch = branchForIssue(issueNumber);
   const wtPath = worktreePathForIssue(root, issueNumber);
 
+  // --force deletes uncommitted edits along with the worktree. The factory
+  // removes worktrees whenever a card stops needing its slot (In Test, a
+  // hosted-config hold, Blocked), so snapshot them first (ADR-0070), and leave
+  // the worktree alone if that fails.
+  let leftoversRef = null;
+  if (force) {
+    const snap = snapshotBeforeRemoval(wtPath, branch);
+    if (snap.error) {
+      return {
+        removed: false,
+        path: wtPath,
+        branch,
+        branchDeleted: false,
+        branchHead: null,
+        error: `not removed: snapshotting its uncommitted changes failed (${snap.error})`,
+      };
+    }
+    leftoversRef = snap.ref;
+  }
+
   const removeArgs = ["worktree", "remove"];
   if (force) removeArgs.push("--force");
   removeArgs.push(wtPath);
@@ -435,6 +543,7 @@ export function removeWorktree({
     branch,
     branchDeleted,
     branchHead,
+    ...(leftoversRef ? { leftoversRef } : {}),
   };
 }
 

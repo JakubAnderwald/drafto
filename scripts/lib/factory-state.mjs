@@ -187,6 +187,12 @@ function emptyIssue() {
     crLastCoveredSha: null, // last SHA CodeRabbit (bot or CLI) reviewed: the incremental base
     crCliRuns: null, // decimal string: CLI runs spent on this card since its last In Test
     crCliFreePassSha: null, // crLastCoveredSha whose findings already got an attempt-free fix pass
+    // Behind-main updates --watch spent on this card's PR in its current In
+    // Review stint (decimal string), capped by FACTORY_MAX_BRANCH_UPDATES, and
+    // the head the last successful one updated: its review and CodeRabbit
+    // coverage carry over to the merge commit. See ADR-0070.
+    branchUpdates: null,
+    branchUpdatedFrom: null,
     // Hosted-config gate (ADR-0065): hash of the supabase/config.toml that the
     // hosted-config-applied label vouched for, "" or null while there is none.
     hostedConfigVouched: null,
@@ -222,6 +228,19 @@ function emptyIssue() {
     // fail-open "coverage unknown (lane error)" note is recorded nowhere else.
     verifyCrNote: null,
     verifyReportPosts: null, // "<sha>:<count>": failed attempts to post that SHA's report
+    // Plan-stage browser probe (plan-probe.mjs). One record per issue, for its
+    // latest probe round; keyed by planProbeId ("<issue>-<epoch>"), which also
+    // names the probe's staging dir, its report marker and the plan's ack, so a
+    // reset round can never be matched by an older round's ack.
+    planProbeStaging: null, // probe id staged for the planner run now in progress
+    planProbeId: null, // the latest round's probe id
+    planProbeRound: null, // rounds queued so far (decimal string; the cap counts these)
+    planProbeStatus: null, // queued | reported | failed:<why> | rejected:<why> | cancelled:<why> | folded[:<why>]
+    planProbeSha: null, // the probe commit pushed to factory/plan-probe-<issue>
+    planProbeMainSha: null, // the main commit it was built on
+    planProbeQueuedAt: null, // when it was pushed (ISO): the anchor for the preview wait and the deadline
+    planProbeAttempts: null, // "<probe sha>:<count>": browser runner sessions spent on it
+    planProbeFoldAttempts: null, // "<probe id>:<count>": replans run to fold its result into the plan
   };
 }
 
@@ -564,6 +583,20 @@ export const VERIFY_ISSUE_FIELDS = Object.freeze([
   "verifyReportPosts",
 ]);
 
+// The plan-stage browser probe's per-issue keys (documented in emptyIssue).
+// One list feeds the setter allowlist and factory:plan-probe-reset.
+export const PLAN_PROBE_ISSUE_FIELDS = Object.freeze([
+  "planProbeStaging",
+  "planProbeId",
+  "planProbeRound",
+  "planProbeStatus",
+  "planProbeSha",
+  "planProbeMainSha",
+  "planProbeQueuedAt",
+  "planProbeAttempts",
+  "planProbeFoldAttempts",
+]);
+
 // Allowed issue fields a CLI caller may mutate. Restricting the set keeps
 // bash callers from accidentally polluting the schema with typo'd field
 // names (e.g. `lastPanAt`).
@@ -601,6 +634,11 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   "crLastCoveredSha",
   "crCliRuns",
   "crCliFreePassSha",
+  // Behind-main update budget (ADR-0070). A rejected write would let a busy
+  // main update the branch, and re-run CI, on every tick. A rejected
+  // branchUpdatedFrom only costs a fresh code review of the merged head.
+  "branchUpdates",
+  "branchUpdatedFrom",
   // Hosted-config gate (ADR-0065): hash of the supabase/config.toml that the
   // hosted-config-applied label vouched for. A rejected write would make the
   // label vouch for every later version, the hole this field closes.
@@ -618,6 +656,9 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   // verifyReportSha re-posts the report; rejected attempt or bounce counters
   // let a failing lane or a hand-back loop repeat forever.
   ...VERIFY_ISSUE_FIELDS,
+  // Plan-stage browser probe keys. A rejected planProbeStatus would leave a
+  // probe queued (and its branch live) or replan every tick to fold it in.
+  ...PLAN_PROBE_ISSUE_FIELDS,
 ]);
 
 export function setIssueField(state, issueNumber, field, value) {
@@ -1153,6 +1194,23 @@ export function resetIssueVerify(state, issueNumber) {
   const issue = state?.issues?.[String(issueNumber)];
   if (!issue || typeof issue !== "object") return { ok: true, cleared: [] };
   const cleared = VERIFY_RESET_FIELDS.filter((f) => issue[f] != null && issue[f] !== "");
+  for (const f of cleared) issue[f] = null;
+  return { ok: true, cleared };
+}
+
+// Forget the card's plan-stage browser probe record (factory:plan-probe-reset),
+// which also gives back its rounds. Refused while a probe is queued: its
+// branch is still on GitHub, and with the probe switched off nothing would be
+// left on record to make housekeeping delete it. Switching the probe off (or
+// waiting for the round to end) lets housekeeping cancel it and delete the
+// branch first. An issue with no record is not created.
+export function resetIssuePlanProbe(state, issueNumber) {
+  const issue = state?.issues?.[String(issueNumber)];
+  if (!issue || typeof issue !== "object") return { ok: true, cleared: [] };
+  if (issue.planProbeStatus === "queued") {
+    return { ok: false, reason: "probe-queued", probeId: issue.planProbeId ?? null };
+  }
+  const cleared = PLAN_PROBE_ISSUE_FIELDS.filter((f) => issue[f] != null && issue[f] !== "");
   for (const f of cleared) issue[f] = null;
   return { ok: true, cleared };
 }

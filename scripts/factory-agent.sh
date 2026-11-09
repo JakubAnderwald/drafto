@@ -17,15 +17,17 @@
 #   --watch      In Review → (Testing →) In Test. For each open factory PR:
 #                poll CI and unresolved review comments; when something is
 #                failing, resume the worktree and invoke Claude
-#                (factory-watch-prompt) to push a fix; when CI is green AND a
-#                Vercel preview is reachable, advance the card to In Test and
+#                (factory-watch-prompt) to push a fix; when CI is green, the
+#                branch is up to date with main (ADR-0070) AND a Vercel
+#                preview is reachable, advance the card to In Test and
 #                post the test scenario. With FACTORY_VERIFY=1 the card stops
 #                in Testing first (pre-In-Test verification, ADR-0053): the
 #                Testing sweep works its verification lanes, then promotes it
 #                to In Test with a deterministic report; with the switch off
 #                that sweep only drains the column. Also runs a cleanup sweep
 #                that releases slots + removes worktrees for cards that have
-#                left the active states (In Progress/In Review/Testing/In Test).
+#                left the active states (In Progress/In Review/Testing). A card
+#                waiting on the operator in In Test holds no slot (ADR-0070).
 #
 #   --release    Approved → Released. For each card a human dragged to
 #                Approved: enforce the migration gate, squash-merge the
@@ -138,6 +140,16 @@ FACTORY_CI_RERUN_MAX="${FACTORY_CI_RERUN_MAX:-2}"
 if ! [[ "$FACTORY_CI_RERUN_MAX" =~ ^(0|[1-9][0-9]*)$ ]]; then
   echo "WARNING: invalid FACTORY_CI_RERUN_MAX='$FACTORY_CI_RERUN_MAX'; defaulting to 2" >&2
   FACTORY_CI_RERUN_MAX=2
+fi
+
+# Times --watch may update an In Review PR that is behind main before promoting
+# it to In Test (ADR-0070), per In Review stint. Each update re-runs CI and the
+# code review, so a busy main can't hold a card in In Review forever: once spent,
+# the card is promoted behind main and --release updates it at merge time.
+FACTORY_MAX_BRANCH_UPDATES="${FACTORY_MAX_BRANCH_UPDATES:-3}"
+if ! [[ "$FACTORY_MAX_BRANCH_UPDATES" =~ ^(0|[1-9][0-9]*)$ ]]; then
+  echo "WARNING: invalid FACTORY_MAX_BRANCH_UPDATES='$FACTORY_MAX_BRANCH_UPDATES'; defaulting to 3" >&2
+  FACTORY_MAX_BRANCH_UPDATES=3
 fi
 
 # Fallback backoff (minutes) when a claude call dies on a session/usage limit
@@ -287,11 +299,14 @@ FACTORY_INTEST_BETA_DESKTOP="${FACTORY_INTEST_BETA_DESKTOP:-0}"
 # host). Every other call passes --no-chrome, because the code-writing stages
 # have Bash and file access and the browser is the operator's own signed-in
 # profile. FACTORY_BROWSER_KINDS picks which uses are live: `intest` (the In
-# Test web run, which posts its own report) and `verify` (the Testing column's
-# browser lane, ADR-0053: its report goes into the verification report). Both
-# are on by default; `verify` is inert while FACTORY_VERIFY=0, since only the
-# Testing sweep queues it. Only an unset switch gets the default (`-`, not
-# `:-`): an empty one is invalid and turns the runner off, like any other value.
+# Test web run, which posts its own report), `verify` (the Testing column's
+# browser lane, ADR-0053: its report goes into the verification report) and
+# `plan` (the plan-stage browser probe, ADR-0071: its report goes into the
+# probe's report comment). All three are on by default; `verify` is inert while
+# FACTORY_VERIFY=0, since only the Testing sweep queues it, and `plan` while
+# FACTORY_PLAN_PROBE=0, since only the planner queues it. Only an unset switch
+# gets the default (`-`, not `:-`): an empty one is invalid and turns the
+# runner off, like any other value.
 FACTORY_BROWSER="${FACTORY_BROWSER-1}"
 if [[ "$FACTORY_BROWSER" != "0" && "$FACTORY_BROWSER" != "1" ]]; then
   echo "WARNING: invalid FACTORY_BROWSER='$FACTORY_BROWSER'; turning the browser runner off" >&2
@@ -300,7 +315,7 @@ fi
 # Comma list. Unknown words are dropped (with a warning) rather than failing the
 # tick, and the result is re-joined with commas so the membership test in
 # browser_kind_enabled can match ",word," exactly.
-FACTORY_BROWSER_KINDS="${FACTORY_BROWSER_KINDS:-intest,verify}"
+FACTORY_BROWSER_KINDS="${FACTORY_BROWSER_KINDS:-intest,verify,plan}"
 _bk_out=""
 _bk_rest="$FACTORY_BROWSER_KINDS,"
 while [[ -n "$_bk_rest" ]]; do
@@ -309,7 +324,7 @@ while [[ -n "$_bk_rest" ]]; do
   _bk_word="${_bk_word// /}"
   [[ -n "$_bk_word" ]] || continue
   case "$_bk_word" in
-    intest|verify) [[ ",$_bk_out," == *",$_bk_word,"* ]] || _bk_out="${_bk_out:+$_bk_out,}$_bk_word" ;;
+    intest|verify|plan) [[ ",$_bk_out," == *",$_bk_word,"* ]] || _bk_out="${_bk_out:+$_bk_out,}$_bk_word" ;;
     *) echo "WARNING: unknown FACTORY_BROWSER_KINDS entry '$_bk_word'; ignoring it" >&2 ;;
   esac
 done
@@ -358,6 +373,56 @@ FACTORY_BROWSER_MAX_ATTEMPTS=2
 # branch cut before it landed doesn't have it: its preview sends the link to
 # /login, so a browser run there can only end as signin-failed.
 FACTORY_SIGNIN_ROUTE_PATH="apps/web/src/app/auth/test-sign-in/route.ts"
+
+# ── Plan-stage browser probe (scripts/lib/plan-probe.mjs, ADR-0071) ───────
+# Off by default. With FACTORY_PLAN_PROBE=1 (and the browser runner's `plan`
+# kind on), the planner may request a probe on a web card: bash pushes a
+# throwaway branch, factory/plan-probe-<issue> (never a PR), carrying main plus,
+# when the planner wrote one, a minimal spike of its proposed change. Vercel
+# builds a dev-Supabase preview of it; the browser runner runs the planner's
+# checks there, bash records an allowlist of response headers, posts one probe
+# report and deletes the branch, and the planner folds the result into the
+# plan. It runs model-written code on a preview before the plan is approved:
+# ADR-0071 records that tradeoff. FACTORY_PLAN_PROBE_SPIKE=0 keeps probes on
+# but always on main's own code. A bad value warns and falls back.
+FACTORY_PLAN_PROBE="${FACTORY_PLAN_PROBE:-0}"
+if [[ "$FACTORY_PLAN_PROBE" != "0" && "$FACTORY_PLAN_PROBE" != "1" ]]; then
+  echo "WARNING: invalid FACTORY_PLAN_PROBE='$FACTORY_PLAN_PROBE'; turning the plan probe off" >&2
+  FACTORY_PLAN_PROBE=0
+fi
+FACTORY_PLAN_PROBE_SPIKE="${FACTORY_PLAN_PROBE_SPIKE:-1}"
+if [[ "$FACTORY_PLAN_PROBE_SPIKE" != "0" && "$FACTORY_PLAN_PROBE_SPIKE" != "1" ]]; then
+  echo "WARNING: invalid FACTORY_PLAN_PROBE_SPIKE='$FACTORY_PLAN_PROBE_SPIKE'; probing main only" >&2
+  FACTORY_PLAN_PROBE_SPIKE=0
+fi
+# Probe rounds per issue (factory:plan-probe-reset gives them back).
+FACTORY_PLAN_PROBE_MAX_ROUNDS="${FACTORY_PLAN_PROBE_MAX_ROUNDS:-2}"
+if ! [[ "$FACTORY_PLAN_PROBE_MAX_ROUNDS" =~ ^[1-9]$ ]]; then
+  echo "WARNING: invalid FACTORY_PLAN_PROBE_MAX_ROUNDS='$FACTORY_PLAN_PROBE_MAX_ROUNDS'; defaulting to 2" >&2
+  FACTORY_PLAN_PROBE_MAX_ROUNDS=2
+fi
+# Minutes a probe waits for its preview to appear; a build Vercel has started
+# gets three times that before the round ends as failed:no-preview.
+FACTORY_PLAN_PROBE_PREVIEW_WAIT_MIN="${FACTORY_PLAN_PROBE_PREVIEW_WAIT_MIN:-15}"
+if ! [[ "$FACTORY_PLAN_PROBE_PREVIEW_WAIT_MIN" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_PLAN_PROBE_PREVIEW_WAIT_MIN='$FACTORY_PLAN_PROBE_PREVIEW_WAIT_MIN'; defaulting to 15" >&2
+  FACTORY_PLAN_PROBE_PREVIEW_WAIT_MIN=15
+fi
+# The planner's wall cap when a probe is available (writing checks and a spike
+# takes longer than a plan alone). The larger of this and the plan cap wins.
+FACTORY_PLAN_PROBE_TIMEOUT_SEC="${FACTORY_PLAN_PROBE_TIMEOUT_SEC:-900}"
+if ! [[ "$FACTORY_PLAN_PROBE_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_PLAN_PROBE_TIMEOUT_SEC='$FACTORY_PLAN_PROBE_TIMEOUT_SEC'; defaulting to 900" >&2
+  FACTORY_PLAN_PROBE_TIMEOUT_SEC=900
+fi
+# Browser sessions per probe commit, and replans that may try to fold one
+# result in before bash stops asking (so a planner that never writes the ack
+# can't replan every tick).
+FACTORY_PLAN_PROBE_MAX_ATTEMPTS=2
+FACTORY_PLAN_PROBE_MAX_FOLDS=2
+# Every file here is scanned for, so no value in it can leave in a probe.
+FACTORY_SECRETS_DIR="${FACTORY_SECRETS_DIR:-$HOME/drafto-secrets}"
+case "$FACTORY_SECRETS_DIR" in "~/"*) FACTORY_SECRETS_DIR="$HOME/${FACTORY_SECRETS_DIR#\~/}" ;; esac
 
 # ── Pre-In-Test verification, the "Testing" column (ADR-0053) ─────────────
 # Off by default. With FACTORY_VERIFY=1 a converged In Review card moves to
@@ -482,7 +547,8 @@ Exactly one of --plan, --implement, --release, --watch, --browser is required.
   --release    Approved → Released. Phase B+: migration gate + squash-merge.
   --browser    Web runs in Chrome (ADR-0051). Phase B+, FACTORY_BROWSER=1.
                Runs one of the candidates --watch found, after --release:
-               Testing's verify lane first (ADR-0053), then In Test's run.
+               Testing's verify lane first (ADR-0053), then In Test's run,
+               then plan-stage probes (ADR-0071, FACTORY_PLAN_PROBE=1).
   --phase X    Override the phase advertised to Claude (default: A).
   --dry-run    Build context bundles and print them; no board / issue
                mutations and no Claude invocation. Useful for golden-run
@@ -594,6 +660,9 @@ mkdir -p "$LOG_DIR"
 # The preview sign-in lease, shared by browser_run's mint and the verification
 # shell lane's (passed to verify-lane.mjs start). See FACTORY_SIGNIN_LEASE_SEC.
 SIGNIN_LEASE_FILE="$LOG_DIR/factory-signin.lease"
+# The plan-stage probes' staging and evidence dirs, one per probe id (inside
+# the repo, so the planner writes there with no extra directory access).
+PLAN_PROBE_ROOT="$LOG_DIR/plan-probe"
 # The owner browser_run took the lease as, while it holds it (cleanup() gives
 # it back if this process exits mid-run).
 BROWSER_SIGNIN_LEASE_OWNER=""
@@ -857,9 +926,10 @@ transition_status() {
   # every --remove-label name to a REPO label id first and fails the whole
   # removal on a name the repo doesn't have ("'status:testing' not found"),
   # so stripping all of ALL_STATUS_LABELS blindly would break every swap
-  # whenever this list gets ahead of scripts/setup-factory-labels.sh — and a
-  # stale status:in-* label keeps the --watch cleanup sweep holding a slot.
-  # If the issue's labels can't be read, fall back to the full list.
+  # whenever this list gets ahead of scripts/setup-factory-labels.sh, and a
+  # stale status:* label misleads every reader of the labels (the cleanup sweep
+  # reads the board column, ADR-0070). If the issue's labels can't be read,
+  # fall back to the full list.
   local remove_args=() current_labels="" have_current=0 lbl
   if current_labels=$(gh issue view "$issue_num" --repo JakubAnderwald/drafto \
       --json labels --jq '.labels[].name' 2>>"$LOG_FILE"); then
@@ -950,12 +1020,14 @@ build_plan_bundle() {
   local issue_entry="$1"
   local comments_json="$2"
   local replan_json="${3:-null}"
+  local probe_json="${4:-null}"
   local repo_head_ref
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   jq -n \
     --argjson issue "$issue_entry" \
     --argjson comments "$comments_json" \
     --argjson replan "$replan_json" \
+    --argjson probe "$probe_json" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
     --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
     --arg phase "$PHASE" \
@@ -972,7 +1044,8 @@ build_plan_bundle() {
        },
        repo: { nameWithOwner: $repoNwo, headRef: $headRef }
      }
-     + (if $replan == null then {} else { replan: $replan } end)' \
+     + (if $replan == null then {} else { replan: $replan } end)
+     + (if $probe == null then {} else { probe: $probe } end)' \
     | node "$SCRIPT_DIR/lib/factory-bundle.mjs"
 }
 
@@ -1014,28 +1087,38 @@ fetch_issue_comments() {
       } ]'
 }
 
-# Has the issue already been planned (marker comment present)? Used for
+# plan_comment_jq — a jq `def is_plan:` for the one test of "this comment is
+# the factory's plan", used by every plan finder below and by plan_reply_check.
+# A plan is posted under the Mac mini's gh identity (OWNER) with the marker
+# (FACTORY_PLAN_MARKER in factory-bundle.mjs) as its first line; leading
+# whitespace is tolerated. On a public repo anyone can post a comment that
+# carries the marker, and the replan sweep and --implement act on the plan
+# these helpers find, so a comment from anyone else, or one with the marker
+# further down, is never a plan. A function, not a variable, so the tests that
+# extract a finder can extract this with it.
+plan_comment_jq() {
+  printf '%s' 'def is_plan: .authorAssociation == "OWNER" and ((.body // "") | test("\\A\\s*<!-- drafto-factory-plan -->"));'
+}
+
+# Has the issue already been planned (a factory plan comment present)? Used for
 # idempotency — if a prior tick already posted the plan but the status
 # transition failed, we don't re-invoke Claude.
 issue_already_planned() {
   local comments_json="$1"
-  # The marker is FACTORY_PLAN_MARKER from factory-bundle.mjs:
-  #   <!-- drafto-factory-plan -->
-  if echo "$comments_json" | jq -e \
-      'any(.[]; .body | test("<!-- drafto-factory-plan -->"))' >/dev/null 2>&1; then
+  if echo "$comments_json" | jq -e "$(plan_comment_jq) any(.[]; is_plan)" >/dev/null 2>&1; then
     return 0
   fi
   return 1
 }
 
-# Extract the (most recent) factory-plan comment as a JSON object with id,
+# Extract the (most recent) factory plan comment as a JSON object with id,
 # url-suffix, body, and createdAt. Prints "null" if no plan comment exists.
 # Newest-first match — if the operator manually re-posted a plan, we edit the
 # most recent one.
 extract_plan_comment() {
   local comments_json="$1"
-  echo "$comments_json" | jq -c '
-    map(select(.body | test("<!-- drafto-factory-plan -->")))
+  echo "$comments_json" | jq -c "$(plan_comment_jq)"'
+    map(select(is_plan))
     | sort_by(.createdAt)
     | .[-1] // null
   '
@@ -1340,7 +1423,7 @@ plan_reply_check() {
   # Plan comments are the factory's own (OWNER): on a public repo anyone can
   # post one that looks like a plan and acks a comment.
   acked=$(extract_acked_comment_ids "$(echo "$comments" | jq -r \
-    '[.[] | select(.authorAssociation == "OWNER" and ((.body // "") | startswith("<!-- drafto-factory-plan -->"))) | .body] | join("\n")')")
+    "$(plan_comment_jq)"' [.[] | select(is_plan) | .body] | join("\n")')")
   [[ -n "$acked" ]] || acked='[]'
   # Which reply each comment is due: its own marker once acked, the Blocked one
   # when final; none yet otherwise.
@@ -1356,8 +1439,9 @@ plan_reply_check() {
     fi
   done
   post_issue_replies "$issue_num" "$comments" "$to_post"
+  # The same comment extract_plan_comment picks: the newest by createdAt.
   plan_id=$(echo "$comments" | jq -r \
-    '[.[] | select(.authorAssociation == "OWNER" and ((.body // "") | startswith("<!-- drafto-factory-plan -->")))] | last | .id // "" | tostring')
+    "$(plan_comment_jq)"' [.[] | select(is_plan)] | sort_by(.createdAt) | last | .id // "" | tostring')
   url="https://github.com/JakubAnderwald/drafto/issues/$issue_num"
   plan_link="the plan"
   [[ "$plan_id" =~ ^[0-9]+$ ]] && plan_link="[the plan]($url#issuecomment-$plan_id)"
@@ -1648,6 +1732,37 @@ worktree_untouched() {
   [[ -z "$status" ]]
 }
 
+# worktree_within_head <issue> <pr-head> — 0 when nothing local for issue <n> is
+# missing from the PR: its worktree's HEAD or, with no worktree, the kept local
+# branch factory/issue-<n> (which worktree-cli re-attaches) is <pr-head> or
+# behind it. Then the behind-main gate may update the branch, and a waiting card
+# may give up its worktree, without diverging or stranding a commit (ADR-0070).
+# Uncommitted leftovers don't count: worktree-cli snapshots them. When
+# <pr-head> isn't in the local object store (a push from elsewhere), GitHub's
+# compare API answers instead; nothing is fetched. A local commit GitHub
+# doesn't know was never pushed, so it counts as ahead.
+worktree_within_head() {
+  local issue_num="$1" pr_head="$2" wt repo local_head status
+  wt="$REPO_ROOT/worktrees/factory-issue-$issue_num"
+  if [[ -e "$wt/.git" ]]; then
+    repo="$wt"
+    local_head=$(git -C "$wt" rev-parse HEAD 2>>"$LOG_FILE") || return 1
+  else
+    repo="$REPO_ROOT"
+    local_head=$(git -C "$REPO_ROOT" rev-parse --verify --quiet \
+      "refs/heads/factory/issue-$issue_num" 2>/dev/null) || return 0
+  fi
+  [[ -n "$pr_head" ]] || return 1
+  [[ "$local_head" == "$pr_head" ]] && return 0
+  if git -C "$repo" cat-file -e "$pr_head^{commit}" 2>/dev/null; then
+    git -C "$repo" merge-base --is-ancestor "$local_head" "$pr_head" 2>>"$LOG_FILE"
+    return
+  fi
+  status=$(gh api "repos/JakubAnderwald/drafto/compare/$local_head...$pr_head" \
+    --jq '.status' 2>>"$LOG_FILE") || return 1
+  [[ "$status" == "ahead" || "$status" == "identical" ]]
+}
+
 # revision_return_to_test <issue> <item-id> <pr-head> <item-labels> <pr-num>
 #   <reply-markers-json> <feedback-mark> <kind>
 # A revision run ended with the PR unchanged: <kind> "noop" (the feedback
@@ -1656,10 +1771,13 @@ worktree_untouched() {
 # re-running CI: in Testing when this commit still owes a verification report
 # (ADR-0053), otherwise in In Test. A failed move to Testing falls back to In
 # Test. Then mark the feedback consumed, reset attempts and check for the
-# implementer's replies. The slot and worktree stay, as for any In Test card.
+# implementer's replies. Back in In Test the card holds no slot (ADR-0070), so
+# it frees its slot and worktree here, before the --implement sweep reaches the
+# next card, rather than at the next tick's cleanup sweep. Only once the move
+# landed: a card still in In Progress keeps them for the next tick.
 revision_return_to_test() {
   local issue_num="$1" item_id="$2" pr_head="$3" labels="$4" pr_num="$5"
-  local markers="$6" mark="$7" kind="$8" target="In Test" state
+  local markers="$6" mark="$7" kind="$8" target="In Test" state in_test=0
   if verify_target_status "$issue_num" "$pr_head" "$labels" \
       && transition_status "$item_id" "$issue_num" "Testing"; then
     target="Testing"
@@ -1670,12 +1788,15 @@ revision_return_to_test() {
       --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
     verify_begin_round "$issue_num" "$pr_head" \
       "$(verify_cr_note "$issue_num" "$pr_head" "$state")" "$state"
-  else
-    transition_status "$item_id" "$issue_num" "In Test" || true
+  elif transition_status "$item_id" "$issue_num" "In Test"; then
+    in_test=1
   fi
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" lastFeedbackAt "$mark" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$issue_num" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   revise_replies_check "$issue_num" "$pr_num" "$markers" "$kind"
+  if [[ "$in_test" -eq 1 ]]; then
+    release_slot_and_worktree "$issue_num"
+  fi
   log "Issue #$issue_num: revision $kind; returned to $target"
 }
 
@@ -1976,6 +2097,107 @@ pr_head_oid() {
   gh pr view "$1" --repo JakubAnderwald/drafto --json headRefOid --jq '.headRefOid' 2>>"$LOG_FILE" || echo ""
 }
 
+# implement_queue_order <items-json> — the In Progress items in the order
+# --implement should take them: cards already holding a slot first (they never
+# need a free one, and only they can free one mid-sweep), then cards with an
+# OPEN factory PR, then fresh ones, board order kept within each group. Since
+# ADR-0070 an In Test card holds no slot, so a revision returning from In Test
+# (or a retry) competes for one with new work; going ahead of fresh cards keeps
+# ADR-0068's "finish work before starting more". The PR lookup (one gh call for
+# the column) is skipped when no slot is free and no card here holds one, since
+# nothing could run. On any failure it prints the items unchanged.
+implement_queue_order() {
+  local items="$1" slots holders free open_prs="[]" ordered
+  slots=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-status \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE") || { printf '%s\n' "$items"; return 0; }
+  holders=$(echo "$slots" | jq -c '[.slots[]? | .issueNumber | select(. != null) | tostring]' 2>/dev/null) \
+    || { printf '%s\n' "$items"; return 0; }
+  free=$(echo "$slots" | jq '[.slots[]? | select(.issueNumber == null)] | length' 2>/dev/null || echo 0)
+  if [[ "$free" != "0" ]] \
+      || jq -e --argjson h "$holders" 'any(.[]; (.issueNumber | tostring) as $n | $h | index($n))' <<<"$items" >/dev/null 2>&1; then
+    if ! open_prs=$(gh pr list --repo JakubAnderwald/drafto --state open \
+        --json headRefName --limit 1000 2>>"$LOG_FILE") || [[ -z "$open_prs" ]]; then
+      open_prs="[]"
+    fi
+  fi
+  if ! ordered=$(jq -c --argjson prs "$open_prs" --argjson holders "$holders" '
+      ($prs | map(.headRefName)) as $heads
+      | def num: (.issueNumber | tostring);
+        def holds: num as $n | ($holders | any(. == $n));
+        def has_pr: ("factory/issue-" + num) as $b | ($heads | any(. == $b));
+        map(select(holds)) + map(select((holds | not) and has_pr)) + map(select((holds | not) and (has_pr | not)))
+    ' <<<"$items" 2>>"$LOG_FILE") || [[ -z "$ordered" ]]; then
+    printf '%s\n' "$items"; return 0
+  fi
+  printf '%s\n' "$ordered"
+}
+
+# pr_behind_main <head-sha> — how many commits main has that <head-sha> doesn't,
+# from GitHub's compare API (the endpoint hosted_config_gate uses too). Prints
+# the count, or "" when it can't tell. Not mergeStateStatus: GitHub computes
+# that in the background and reads UNKNOWN right after main moves, which is when
+# --release has just merged something, seconds before --watch reads the PR.
+pr_behind_main() {
+  local sha="$1" n
+  [[ -n "$sha" ]] || return 0
+  n=$(gh api "repos/JakubAnderwald/drafto/compare/main...$sha" --jq '.behind_by' 2>>"$LOG_FILE") || n=""
+  [[ "$n" =~ ^[0-9]+$ ]] && echo "$n"
+  return 0
+}
+
+# update_pr_branch <pr> <head-sha> — merge main into PR <pr>'s branch with
+# GitHub's update-branch (a merge commit: the factory never force-pushes, so no
+# rebase — ADR-0061). expected_head_sha makes GitHub refuse if the branch moved
+# since <head-sha> was read, so it can't race a fix push. Returns update-branch's
+# status. --method PUT is required: gh switches to POST once -f is given.
+update_pr_branch() {
+  local pr_num="$1" head_sha="$2"
+  local args=(--method PUT "repos/JakubAnderwald/drafto/pulls/$pr_num/update-branch")
+  [[ -n "$head_sha" ]] && args+=(-f "expected_head_sha=$head_sha")
+  gh api "${args[@]}" >>"$LOG_FILE" 2>&1
+}
+
+# carry_across_branch_update <issue> <head-sha> — when <head-sha> is the merge
+# commit of an update-branch the behind-main gate asked for (ADR-0070), move the
+# head-keyed code review and CodeRabbit coverage from the commit it updated
+# (branchUpdatedFrom) onto it. update-branch only ever makes a clean merge of
+# main, so the PR's own change is the one already reviewed. Reviewing it again
+# would only let main's activity spend fix attempts on fresh nits.
+# Matched strictly: the updated commit must be the last one reviewed and the
+# first parent of <head-sha>, and <head-sha> must be a two-parent merge that
+# GitHub itself committed (web-flow) as "Merge branch 'main' into …", which is
+# what update-branch writes. The conflict pass and a local merge commit as the
+# factory's own user, so a conflict resolution is reviewed as usual, as is any
+# other new head. Returns 0 when it carried something over.
+carry_across_branch_update() {
+  local issue_num="$1" head_sha="$2" state from last_review cr_sha commit parents committer subject
+  local what="code review"
+  [[ -n "$head_sha" ]] || return 1
+  state=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE") || return 1
+  from=$(echo "$state" | jq -r '.branchUpdatedFrom // ""' 2>/dev/null || echo "")
+  last_review=$(echo "$state" | jq -r '.lastReviewSha // ""' 2>/dev/null || echo "")
+  [[ -n "$from" && "$from" != "$head_sha" && "$last_review" == "$from" ]] || return 1
+  commit=$(gh api "repos/JakubAnderwald/drafto/commits/$head_sha" \
+    --jq '{parents: ([.parents[].sha] | join(" ")), committer: (.committer.login // ""), subject: (.commit.message | split("\n")[0])}' \
+    2>>"$LOG_FILE") || return 1
+  parents=$(echo "$commit" | jq -r '.parents // ""' 2>/dev/null || echo "")
+  committer=$(echo "$commit" | jq -r '.committer // ""' 2>/dev/null || echo "")
+  subject=$(echo "$commit" | jq -r '.subject // ""' 2>/dev/null || echo "")
+  [[ "$parents" =~ ^[0-9a-f]+\ [0-9a-f]+$ && "$parents" == "$from "* ]] || return 1
+  [[ "$committer" == "web-flow" && "$subject" == "Merge branch 'main' into "* ]] || return 1
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" lastReviewSha \
+    "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || return 1
+  cr_sha=$(echo "$state" | jq -r '.crCoverageSha // ""' 2>/dev/null || echo "")
+  if [[ "$cr_sha" == "$from" ]] \
+      && node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" crCoverageSha \
+        "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+    what="code review and CodeRabbit coverage"
+  fi
+  log "Issue #$issue_num: ${head_sha:0:12} only merges main into the reviewed ${from:0:12}; carried its $what over"
+  return 0
+}
+
 # copy_worktree_env / seed_worktree_node_modules / run_pnpm_install live in
 # scripts/lib/beta-build-root.sh (sourced above), shared with nightly-support.sh.
 
@@ -2098,6 +2320,10 @@ migration_violation() {
 hosted_config_gate() {
   local issue_num="$1" pr_num="$2" sha="$3" diff_files="$4" pr_labels="$5" where="$6"
   local tmp out rc=0 marker body base_sha head_hash vouched slug
+  # Why it held, for a caller that cares: "hold" when the check ran and the
+  # hosted projects need the operator (exit 3), "unverified" when the check
+  # failed to run; "" when it passed or held for a transient error.
+  HOSTED_CONFIG_HELD=""
   # A here-string, not a pipe: under pipefail, `grep -q` closing a long pipe
   # early fails the printf with SIGPIPE, which would skip the gate.
   grep -qxF 'supabase/config.toml' <<<"$diff_files" || return 0
@@ -2164,6 +2390,7 @@ hosted_config_gate() {
     3) marker="hold" ;;
     *) marker="unverified" ;;
   esac
+  HOSTED_CONFIG_HELD="$marker"
   # One comment per column and head SHA: a card held again in Approved, after
   # passing In Review on the same commit, still says why.
   slug=$(tr '[:upper:] ' '[:lower:]-' <<<"$where")
@@ -2268,7 +2495,8 @@ remove_worktree_for() {
   keep=$(branch_keep_reason "$issue_num" "$known_state")
   if [[ -n "$keep" ]]; then
     log "Issue #$issue_num: keeping branch factory/issue-$issue_num ($keep); removing worktree only"
-    node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$issue_num" --root "$REPO_ROOT" --force >>"$LOG_FILE" 2>&1 || true
+    out=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$issue_num" --root "$REPO_ROOT" --force 2>>"$LOG_FILE" || echo "")
+    log_removed_worktree_leftovers "$issue_num" "$out"
     return 0
   fi
   out=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$issue_num" --root "$REPO_ROOT" --force --delete-branch 2>>"$LOG_FILE" || echo "")
@@ -2276,6 +2504,22 @@ remove_worktree_for() {
   # branchHead is the pre-deletion tip: enough to undo a mistaken teardown with
   # `git branch factory/issue-<n> <oid>`.
   log "Issue #$issue_num: worktree teardown $(echo "$out" | jq -c '{removed,branchDeleted,branchHead}' 2>/dev/null || echo '{}')"
+  log_removed_worktree_leftovers "$issue_num" "$out"
+}
+
+# log_removed_worktree_leftovers <issue> <worktree-cli remove JSON> — a forced
+# removal snapshots uncommitted changes first (ADR-0070): say where they went,
+# or that the worktree was left in place because the snapshot failed.
+log_removed_worktree_leftovers() {
+  local issue_num="$1" ref err
+  ref=$(echo "$2" | jq -r '.leftoversRef // ""' 2>/dev/null || echo "")
+  err=$(echo "$2" | jq -r '.error // ""' 2>/dev/null || echo "")
+  if [[ -n "$ref" ]]; then
+    log "Issue #$issue_num: kept the removed worktree's uncommitted changes at $ref (restore: git stash apply $ref)"
+  fi
+  if [[ -n "$err" ]]; then
+    log "WARNING: issue #$issue_num: worktree $err"
+  fi
 }
 
 # Release the worktree slot + remove the worktree for <issue>, deleting the
@@ -2291,6 +2535,36 @@ release_slot_and_worktree() {
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$slot" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   fi
   remove_worktree_for "$issue_num" "$known_state"
+}
+
+# free_waiting_slot <issue> <head-sha> <what-it-waits-on> — an In Review card
+# that has converged (green, reviewed, no threads) and is now held waiting on
+# the operator needs no worktree: only a fix pass uses one, and that acquires a
+# slot and rebuilds the worktree from the branch. So free the slot meanwhile,
+# rather than stall every other card for as long as the wait lasts (ADR-0070).
+# The worktree goes, the branch stays. Not when the worktree holds commits the
+# PR lacks (worktree_within_head): removing it would strand them. No-op when the
+# card holds no slot, which is every tick of the wait after the first.
+free_waiting_slot() {
+  local issue_num="$1" head_sha="$2" what="$3"
+  [[ -n "$(slot_held_by_issue "$issue_num")" ]] || return 0
+  if ! worktree_within_head "$issue_num" "$head_sha"; then
+    logerr "Issue #$issue_num: waiting on $what, but its worktree has commits the PR lacks; keeping its slot"
+    return 0
+  fi
+  log "Issue #$issue_num: waiting on $what; freeing its worktree slot meanwhile"
+  release_slot_and_worktree "$issue_num"
+}
+
+# log_worktree_leftovers <issue> <worktree-cli add JSON> — say where a resumed
+# worktree's uncommitted leftovers went, when worktree-cli set some aside to
+# fast-forward it to the PR branch (ADR-0070). They are never deleted.
+log_worktree_leftovers() {
+  local issue_num="$1" ref
+  ref=$(echo "$2" | jq -r '.leftoversRef // ""' 2>/dev/null || echo "")
+  if [[ -n "$ref" ]]; then
+    log "Issue #$issue_num: the worktree was behind the PR with uncommitted leftovers; set them aside at $ref (restore: git stash apply $ref) and fast-forwarded"
+  fi
 }
 
 # ── Session-limit detection ─────────────────────────────────────────────────
@@ -4123,6 +4397,426 @@ Merge \`main\` into the branch (the **Update branch** button on PR #$pr_num, not
   return 0
 }
 
+# ── Plan-stage browser probe (scripts/lib/plan-probe.mjs, ADR-0071) ─────────
+# The planner can't open a browser (it runs --no-chrome, with Bash), and before
+# a PR there is no preview. A probe gives it one. In --plan, bash stages a dir
+# the planner may write checks, header paths and a spike into; after the run,
+# plan-probe.mjs validates and scans them and pushes factory/plan-probe-<issue>
+# (never a PR). --browser waits for its preview, records an allowlist of
+# response headers, runs the planner's checks through the one locked-down
+# runner (the `plan` kind), posts one probe report and deletes the branch. The
+# next replan folds the result into the plan. Housekeeping at the top of every
+# --plan tick ends what can't go on and reaps orphan branches.
+
+plan_probe_enabled() {
+  [[ "$FACTORY_PLAN_PROBE" == "1" ]] && browser_kind_enabled plan
+}
+
+# plan_probe <command> [flags…] — plan-probe.mjs on the factory's state.
+plan_probe() {
+  node "$SCRIPT_DIR/lib/plan-probe.mjs" "$@" --state-file "$STATE_FILE" 2>>"$LOG_FILE"
+}
+
+# plan_probe_prepare <issue> <bundle> [<fold results json>]
+# Before a planner run. Sets PLAN_PROBE_JSON (the bundle's `probe`: available,
+# or why not, plus a result to fold in), PLAN_PROBE_STAGED (1 when this run
+# has a staging dir, which plan_probe_finalize must settle) and
+# PLAN_CALL_TIMEOUT (the planner's wall cap: longer when a probe is available).
+plan_probe_prepare() {
+  local issue_num="$1" bundle="$2" results="${3:-null}" platforms avail staged dir kind_on=0
+  PLAN_PROBE_JSON="null"
+  PLAN_PROBE_STAGED=0
+  PLAN_CALL_TIMEOUT="$CLAUDE_CALL_TIMEOUT_SEC"
+  browser_kind_enabled plan && kind_on=1
+  platforms=$(echo "$bundle" | jq -r '.spec.affectedPlatforms // [] | join(",")' 2>/dev/null || echo "")
+  if ! avail=$(plan_probe availability --issue "$issue_num" --phase "$PHASE" \
+      --enabled "$FACTORY_PLAN_PROBE" --kind-on "$kind_on" --platforms "$platforms" \
+      --max-rounds "$FACTORY_PLAN_PROBE_MAX_ROUNDS"); then
+    log "WARNING: plan-probe availability failed for #$issue_num; no probe this run"
+    avail='{"available":false,"reason":"off"}'
+  fi
+  if [[ "$(echo "$avail" | jq -r '.available' 2>/dev/null)" == "true" && "$DRY_RUN" -eq 0 ]]; then
+    if staged=$(plan_probe stage --issue "$issue_num" --root "$PLAN_PROBE_ROOT") \
+        && dir=$(echo "$staged" | jq -er '.dir'); then
+      PLAN_PROBE_STAGED=1
+      avail=$(echo "$avail" | jq -c --arg d "$dir" '. + {dir: $d}')
+      if [[ "$FACTORY_PLAN_PROBE_TIMEOUT_SEC" -gt "$PLAN_CALL_TIMEOUT" ]]; then
+        PLAN_CALL_TIMEOUT="$FACTORY_PLAN_PROBE_TIMEOUT_SEC"
+      fi
+    else
+      log "WARNING: staging a plan probe failed for #$issue_num; no probe this run"
+      avail='{"available":false,"reason":"off"}'
+    fi
+  fi
+  PLAN_PROBE_JSON=$(echo "$avail" | jq -c --argjson r "$results" --arg spike "$FACTORY_PLAN_PROBE_SPIKE" \
+    '{available, reason, dir: (.dir // null), round, maxRounds,
+      spikeAllowed: ($spike == "1"), results: $r}' 2>/dev/null || echo "null")
+}
+
+# plan_probe_post <issue> — compose the probe's report comment (scanned and
+# defanged in node) and post it. The planner's copy for the fold is written
+# alongside, so a failed post never blocks the fold.
+plan_probe_post() {
+  local issue_num="$1" out body
+  [[ "$DRY_RUN" -eq 0 ]] || return 0
+  body=$(mktemp "${TMPDIR:-/tmp}/plan-probe-comment.XXXXXX") || return 0
+  if out=$(plan_probe compose --issue "$issue_num" --root "$PLAN_PROBE_ROOT" --out "$body" \
+      --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" --signin-key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" \
+      --bypass-file "$FACTORY_VERIFY_BYPASS_FILE" --secrets-dir "$FACTORY_SECRETS_DIR"); then
+    [[ "$(echo "$out" | jq -r '.withheld')" != "true" ]] \
+      || log "WARNING: #$issue_num's plan probe report matched a secret pattern; posting the withheld notice"
+    gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body-file "$body" >>"$LOG_FILE" 2>&1 \
+      || log "WARNING: posting #$issue_num's plan probe report failed; the planner still reads it"
+  else
+    log "ERROR: composing #$issue_num's plan probe report failed"
+  fi
+  rm -f "$body"
+  return 0
+}
+
+# plan_probe_end <issue> <status> [<end flags>…] — end the round: record the
+# status, delete the branch under its lease, and post the report unless it was
+# cancelled.
+plan_probe_end() {
+  local issue_num="$1" status="$2" out
+  shift 2
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "DRY-RUN: would end #$issue_num's plan probe as $status"
+    return 0
+  fi
+  if ! out=$(plan_probe end --issue "$issue_num" --root "$PLAN_PROBE_ROOT" --repo-root "$REPO_ROOT" \
+      --status "$status" "$@"); then
+    log "ERROR: ending #$issue_num's plan probe ($status) failed"
+    return 1
+  fi
+  log "Issue #$issue_num: plan probe ended as $status (branch deleted: $(echo "$out" | jq -r '.deleted'))"
+  [[ "$(echo "$out" | jq -r '.post')" != "true" ]] || plan_probe_post "$issue_num"
+  return 0
+}
+
+# plan_probe_finalize <issue> <action> — settle this run's staging once the
+# planner is done: push the probe when the run produced a plan (planned,
+# replanned, noop) and the planner wrote checks; drop the staging on anything
+# else (`discard`, blocked, a failed run). A rejected or failed probe gets its
+# report at once, so the next replan folds it in.
+plan_probe_finalize() {
+  local issue_num="$1" action="$2" main_sha out result
+  [[ "${PLAN_PROBE_STAGED:-0}" -eq 1 ]] || return 0
+  PLAN_PROBE_STAGED=0
+  # Built on the commit the planner read: the factory checkout's HEAD, which
+  # the loop resets to origin/main at the top of the tick. Not origin/main now:
+  # an earlier mode may have fetched since, and the spike's files are complete
+  # contents written against what the planner read, so building them onto a
+  # newer main could silently undo a change that landed in between. The report
+  # names the commit. A HEAD that isn't on main gets no probe.
+  main_sha=$(git -C "$REPO_ROOT" rev-parse --verify --quiet HEAD 2>>"$LOG_FILE" || echo "")
+  if [[ -n "$main_sha" ]] \
+      && ! git -C "$REPO_ROOT" merge-base --is-ancestor "$main_sha" origin/main 2>>"$LOG_FILE"; then
+    log "WARNING: the factory checkout's HEAD (${main_sha:0:12}) isn't on origin/main; no plan probe from it"
+    main_sha=""
+  fi
+  [[ -n "$main_sha" ]] || action=discard
+  if ! out=$(plan_probe finalize --issue "$issue_num" --root "$PLAN_PROBE_ROOT" --repo-root "$REPO_ROOT" \
+      --action "$action" --main-sha "${main_sha:-unknown}" --max-rounds "$FACTORY_PLAN_PROBE_MAX_ROUNDS" \
+      --spike "$FACTORY_PLAN_PROBE_SPIKE" --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
+      --signin-key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" --bypass-file "$FACTORY_VERIFY_BYPASS_FILE" \
+      --secrets-dir "$FACTORY_SECRETS_DIR"); then
+    # The staging stays recorded: the next tick's housekeeping ends it.
+    log "ERROR: settling #$issue_num's plan probe failed (see above)"
+    return 0
+  fi
+  result=$(echo "$out" | jq -r '.result // ""')
+  case "$result" in queued | rejected | failed) PLAN_PROBE_RECORDS=1 ;; esac
+  case "$result" in
+    queued)
+      log "Issue #$issue_num: plan probe queued ($(echo "$out" | jq -r '.probeId'), $(echo "$out" | jq -r '.sha[0:12]'), spike: $(echo "$out" | jq -r '.spike'))" ;;
+    rejected|failed)
+      log "Issue #$issue_num: plan probe $result ($(echo "$out" | jq -r '.reason'))"
+      [[ "$(echo "$out" | jq -r '.post')" != "true" ]] || plan_probe_post "$issue_num" ;;
+    *) ;;
+  esac
+  return 0
+}
+
+# plan_probe_fold_due <issue> <comments json> — the finished round the next
+# replan must fold into the plan, as the bundle's probe.results; prints nothing
+# when none is due (no result, already acked in the OWNER plan, or the fold cap
+# reached).
+plan_probe_fold_due() {
+  local issue_num="$1" comments="$2" f out
+  # Nothing on record (plan_probe_housekeeping, this tick): no fold to ask about.
+  [[ "${PLAN_PROBE_RECORDS:-1}" -eq 1 ]] || return 0
+  f=$(mktemp "${TMPDIR:-/tmp}/plan-probe-comments.XXXXXX") || return 0
+  printf '%s' "$comments" >"$f"
+  out=$(plan_probe fold-due --issue "$issue_num" --root "$PLAN_PROBE_ROOT" --comments-file "$f" \
+    --max-folds "$FACTORY_PLAN_PROBE_MAX_FOLDS" || echo '{"due":false}')
+  rm -f "$f"
+  [[ "$(echo "$out" | jq -r '.due' 2>/dev/null)" == "true" ]] && echo "$out" | jq -c '.results'
+  return 0
+}
+
+# plan_probe_fold_end <issue> <probe id> — after a fold replan: folded once the
+# OWNER plan carries the ack, or once the fold cap is spent.
+plan_probe_fold_end() {
+  local issue_num="$1" probe_id="$2" comments f out
+  comments=$(fetch_issue_comments "$issue_num" 2>>"$LOG_FILE") || return 0
+  f=$(mktemp "${TMPDIR:-/tmp}/plan-probe-comments.XXXXXX") || return 0
+  printf '%s' "$comments" >"$f"
+  out=$(plan_probe fold-end --issue "$issue_num" --probe-id "$probe_id" --comments-file "$f" \
+    --max-folds "$FACTORY_PLAN_PROBE_MAX_FOLDS" || echo '{}')
+  rm -f "$f"
+  case "$(echo "$out" | jq -r '.why // ""')" in
+    acked) log "Issue #$issue_num: plan probe $probe_id folded into the plan" ;;
+    gave-up) log "WARNING: #$issue_num's plan never acked probe $probe_id after $FACTORY_PLAN_PROBE_MAX_FOLDS replans; not asking again" ;;
+    no-ack) log "WARNING: #$issue_num's replan didn't ack probe $probe_id; the next tick asks again" ;;
+  esac
+  return 0
+}
+
+# plan_probe_housekeeping — the top of every --plan tick (every phase): ends
+# probes that can't go on (card left Plan Review, switched off, past the
+# deadline, a staging a killed tick left) and deletes probe branches nothing
+# owns. A board that can't be read leaves the column checks for the next tick.
+plan_probe_housekeeping() {
+  local review_json planning_json review="" planning="" boards_ok=1 enabled=0 out n i issue action
+  plan_probe_enabled && enabled=1
+  # PLAN_PROBE_RECORDS: does any issue have a probe on record? Without one,
+  # and with the probe off (the default), there is nothing to end or reap, so
+  # the tick spends no board query or ls-remote on it, and the replan sweep
+  # asks no card about a fold.
+  PLAN_PROBE_RECORDS=0
+  if jq -e '[(.issues // {})[] | select(.planProbeId != null or .planProbeStaging != null)] | length > 0' \
+      "$STATE_FILE" >/dev/null 2>&1; then
+    PLAN_PROBE_RECORDS=1
+  fi
+  [[ "$enabled" -eq 1 || "$PLAN_PROBE_RECORDS" -eq 1 ]] || return 0
+  # Only a real answer counts: an empty list read from a failed query would
+  # look like "no card in Plan Review" and cancel every queued probe.
+  review_json=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items --status "Plan Review" \
+    2>>"$LOG_FILE") || boards_ok=0
+  planning_json=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items --status "Planning" \
+    2>>"$LOG_FILE") || boards_ok=0
+  if [[ "$boards_ok" -eq 1 ]] \
+      && review=$(echo "$review_json" | jq -er 'if type == "array" then [.[].issueNumber | tostring] | join(",") else error end' 2>/dev/null) \
+      && planning=$(echo "$planning_json" | jq -er 'if type == "array" then [.[].issueNumber | tostring] | join(",") else error end' 2>/dev/null); then
+    :
+  else
+    boards_ok=0
+    review=""
+    planning=""
+  fi
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    return 0
+  fi
+  if ! out=$(plan_probe housekeeping --root "$PLAN_PROBE_ROOT" --repo-root "$REPO_ROOT" \
+      --plan-review "${review:-}" --planning "${planning:-}" --enabled "$enabled" --boards-ok "$boards_ok"); then
+    log "WARNING: plan-probe housekeeping failed (see above); trying again next tick"
+    return 0
+  fi
+  n=$(echo "$out" | jq '.actions | length' 2>/dev/null || echo 0)
+  for ((i=0; i<n; i++)); do
+    issue=$(echo "$out" | jq -r ".actions[$i].issue")
+    action=$(echo "$out" | jq -r ".actions[$i].action")
+    log "Issue #$issue: plan probe housekeeping: $action"
+    [[ "$(echo "$out" | jq -r ".actions[$i].post")" != "true" ]] || plan_probe_post "$issue"
+  done
+  return 0
+}
+
+# plan_probe_browser_run <issue> <probe sha> — one --browser step for a queued
+# plan-stage probe. Returns like browser_run: 0 when it ran (or ended the
+# round), 1 when it isn't ready this tick (try the next candidate), 2 when the
+# browser is unavailable or the sign-in lease is held (stop trying this tick).
+# It shares the runner, the health tracker and the sign-in lease with
+# browser_run, but none of its per-PR keys (browserRunSha, browserRunAttempts).
+plan_probe_browser_run() {
+  local issue_num="$1" probe_sha="$2" state_json probe_id dir remote pstate pstate_word url waited cap
+  local attempts_raw attempts=0 preflight issue_record checks raw bundle sign_in_url mint_rc=0 holder
+  local lease_owner run_dir task_rc=0 render_json status verdict
+  state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
+  [[ "$(echo "$state_json" | jq -r '.planProbeStatus // ""')" == "queued" ]] || return 1
+  [[ "$(echo "$state_json" | jq -r '.planProbeSha // ""')" == "$probe_sha" ]] || return 1
+  probe_id=$(echo "$state_json" | jq -r '.planProbeId // ""')
+  dir="$PLAN_PROBE_ROOT/$probe_id"
+  # The branch must still be the commit bash pushed: anything else is code no
+  # one validated or scanned.
+  if ! remote=$(git -C "$REPO_ROOT" ls-remote origin "refs/heads/factory/plan-probe-$issue_num" 2>>"$LOG_FILE"); then
+    log "Issue #$issue_num: couldn't read the plan probe branch; its browser run waits"
+    return 1
+  fi
+  if [[ "${remote%%[[:space:]]*}" != "$probe_sha" ]]; then
+    plan_probe_end "$issue_num" "failed:branch-moved"
+    return 1
+  fi
+  pstate=$(plan_probe preview-state --issue "$issue_num") || pstate='{"state":"unknown"}'
+  pstate_word=$(echo "$pstate" | jq -r '.state // "unknown"')
+  waited=$(echo "$pstate" | jq -r '.waitedMin // 0')
+  [[ "$waited" =~ ^[0-9]+$ ]] || waited=0
+  case "$pstate_word" in
+    ready) url=$(echo "$pstate" | jq -r '.url') ;;
+    failed)
+      plan_probe_end "$issue_num" "failed:build"
+      return 1
+      ;;
+    pending|building)
+      cap="$FACTORY_PLAN_PROBE_PREVIEW_WAIT_MIN"
+      [[ "$pstate_word" == pending ]] || cap=$((cap * 3))
+      if [[ "$waited" -ge "$cap" ]]; then
+        plan_probe_end "$issue_num" "failed:no-preview"
+      else
+        log "Issue #$issue_num: plan probe preview is $pstate_word (${waited} min); its browser run waits"
+      fi
+      return 1
+      ;;
+    *)
+      log "Issue #$issue_num: couldn't read the plan probe's preview state; its browser run waits"
+      return 1
+      ;;
+  esac
+  # Headers first, once per probe, before anything that needs Chrome: a round
+  # the browser never reaches still reports them.
+  if [[ "$DRY_RUN" -eq 0 && ! -f "$dir/headers.json" ]]; then
+    plan_probe capture-headers --issue "$issue_num" --root "$PLAN_PROBE_ROOT" --origin "$url" \
+      --bypass-file "$FACTORY_VERIFY_BYPASS_FILE" >>"$LOG_FILE" \
+      || log "WARNING: capturing #$issue_num's plan probe headers failed; the report goes without them"
+  fi
+  attempts_raw=$(echo "$state_json" | jq -r '.planProbeAttempts // ""')
+  if [[ "${attempts_raw%:*}" == "$probe_sha" ]]; then
+    attempts="${attempts_raw##*:}"
+    [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=0
+  fi
+  if [[ "$attempts" -ge "$FACTORY_PLAN_PROBE_MAX_ATTEMPTS" ]]; then
+    plan_probe_end "$issue_num" "failed:runner"
+    return 1
+  fi
+  if [[ -n "${BROWSER_PREFLIGHT_FAILED:-}" ]]; then
+    log "Issue #$issue_num: plan probe browser run skipped ($BROWSER_PREFLIGHT_FAILED)"
+    return 2
+  fi
+  if ! preflight=$(node "$SCRIPT_DIR/lib/browser-health.mjs" preflight --state-file "$STATE_FILE" \
+      --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
+      --signin-key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" 2>>"$LOG_FILE"); then
+    log "Issue #$issue_num: plan probe browser run skipped (${preflight:-preflight failed})"
+    [[ "$DRY_RUN" -eq 1 ]] || browser_record_result "preflight:${preflight:-unknown}"
+    BROWSER_PREFLIGHT_FAILED="${preflight:-unknown}"
+    return 2
+  fi
+  checks=$(cat "$dir/checks.md" 2>/dev/null || echo "")
+  issue_record=$(fetch_issue_record "$issue_num") || return 1
+  raw=$(jq -n --argjson issue "$issue_record" --arg headSha "$probe_sha" --arg targetUrl "$url" \
+    --arg accountFile "$FACTORY_BROWSER_ACCOUNT_FILE" --arg deviceId "$FACTORY_BROWSER_DEVICE_ID" \
+    --arg checks "$checks" --arg probeId "$probe_id" \
+    '{kind: "factory_browser_run", runKind: "plan",
+      issue: {number: $issue.number, title: $issue.title},
+      headSha: $headSha, targetUrl: $targetUrl, accountFile: $accountFile,
+      deviceId: $deviceId, checks: $checks, probeId: $probeId}') || return 1
+  if ! bundle=$(printf '%s' "$raw" | node "$SCRIPT_DIR/lib/factory-bundle.mjs" 2>>"$LOG_FILE"); then
+    log "ERROR: building the plan probe's browser bundle failed for #$issue_num"
+    return 1
+  fi
+  if [[ "$(echo "$bundle" | jq -r '.checks == null' 2>/dev/null)" == "true" ]]; then
+    plan_probe_end "$issue_num" "failed:runner"
+    return 1
+  fi
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "DRY-RUN: would run #$issue_num's plan probe checks on $url"
+    return 0
+  fi
+  # The same one-time sign-in link and lease as browser_run: minted last, so
+  # it is fresh when the runner opens it, and never in the log.
+  lease_owner="browser:plan:$issue_num:${probe_sha:0:12}"
+  sign_in_url=$(node "$SCRIPT_DIR/lib/browser-signin.mjs" mint \
+      --key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
+      --origin "$url" --lease-file "$SIGNIN_LEASE_FILE" --owner "$lease_owner" \
+      --hold-sec "$FACTORY_SIGNIN_LEASE_SEC" 2>>"$LOG_FILE") || mint_rc=$?
+  if [[ "$mint_rc" -eq 3 ]]; then
+    holder=$(printf '%s\n' "$sign_in_url" | tail -1 \
+      | jq -r '"\(.owner // "unknown") until \(.until // "unknown")"' 2>/dev/null || echo "unknown")
+    log "Issue #$issue_num: the preview sign-in lease is held (${holder:-unknown}); plan probe run deferred"
+    return 2
+  fi
+  [[ "$mint_rc" -ne 0 ]] || BROWSER_SIGNIN_LEASE_OWNER="$lease_owner"
+  if [[ "$mint_rc" -ne 0 || -z "$sign_in_url" ]]; then
+    browser_signin_release
+    log "Issue #$issue_num: minting the plan probe's sign-in link failed (reason above)"
+    browser_record_result "preflight:signin-mint"
+    return 2
+  fi
+  if ! bundle=$(echo "$bundle" | jq --arg u "$sign_in_url" '.account.signInUrl = $u'); then
+    browser_signin_release
+    return 1
+  fi
+  plan_probe attempt --issue "$issue_num" --op bump >>"$LOG_FILE" || true
+  attempts=$((attempts + 1))
+  run_dir="$LOG_DIR/browser/issue-$issue_num-probe-$probe_id-$(date +%Y%m%dT%H%M%S)"
+  log "Issue #$issue_num: plan probe browser run $attempts/$FACTORY_PLAN_PROBE_MAX_ATTEMPTS for ${probe_sha:0:12} on $url"
+  run_browser_task plan "$run_dir" "$url" "$bundle" || task_rc=$?
+  browser_signin_release
+  if [[ "$task_rc" -ne 0 ]]; then
+    browser_record_result error
+    plan_probe attempt --issue "$issue_num" --op refund >>"$LOG_FILE" || true
+    return 2
+  fi
+  case "$BROWSER_RESULT" in
+    ran) ;;
+    session-limit)
+      plan_probe attempt --issue "$issue_num" --op refund >>"$LOG_FILE" || true
+      pause_for_session_limit
+      return 2
+      ;;
+    guard-not-loaded)
+      plan_probe attempt --issue "$issue_num" --op refund >>"$LOG_FILE" || true
+      browser_record_result "$BROWSER_RESULT"
+      return 2
+      ;;
+    *)
+      # A timeout or an error keeps its attempt, so a hanging runner can't run
+      # every tick; the round ends once they are spent.
+      browser_record_result "$BROWSER_RESULT"
+      [[ "$attempts" -lt "$FACTORY_PLAN_PROBE_MAX_ATTEMPTS" ]] \
+        || plan_probe_end "$issue_num" "failed:runner" --run-dir "$run_dir"
+      return 2
+      ;;
+  esac
+  if ! render_json=$(node "$SCRIPT_DIR/lib/browser-report.mjs" render --kind plan \
+      --in "$BROWSER_OUT" --issue "$issue_num" --sha "$probe_sha" --evidence-dir "$run_dir/evidence" \
+      --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" --out "$run_dir/section.md" \
+      --json-out "$run_dir/render.json" 2>>"$LOG_FILE"); then
+    log "ERROR: rendering #$issue_num's plan probe report failed (output kept in $run_dir)"
+    browser_record_result malformed
+    [[ "$attempts" -lt "$FACTORY_PLAN_PROBE_MAX_ATTEMPTS" ]] \
+      || plan_probe_end "$issue_num" "failed:runner" --run-dir "$run_dir"
+    return 2
+  fi
+  status=$(echo "$render_json" | jq -r '.status // "malformed"' 2>/dev/null || echo "malformed")
+  verdict=$(echo "$render_json" | jq -r '.verdict // "none"' 2>/dev/null || echo "none")
+  log "Issue #$issue_num: plan probe browser run finished (browser=$status verdict=$verdict; evidence in $run_dir)"
+  case "$status" in
+    unavailable|auth-expired)
+      # The operator's to fix: refunded, retried until the probe's deadline,
+      # when housekeeping ends it with the headers it has.
+      browser_record_result "$status"
+      plan_probe attempt --issue "$issue_num" --op refund >>"$LOG_FILE" || true
+      return 2
+      ;;
+    malformed)
+      browser_record_result malformed
+      [[ "$attempts" -lt "$FACTORY_PLAN_PROBE_MAX_ATTEMPTS" ]] \
+        || plan_probe_end "$issue_num" "failed:runner" --run-dir "$run_dir"
+      return 2
+      ;;
+    signin-failed)
+      # The probe's own result, not the browser's health: a spike that changes
+      # the middleware or auth can stop the sign-in link working.
+      ;;
+    *) browser_record_result "$status" ;;
+  esac
+  plan_probe_end "$issue_num" reported --browser "$status" --verdict "$verdict" \
+    --run-dir "$run_dir" --section "$run_dir/section.md"
+  return 0
+}
+
 # Code-review stage: review a green In Review PR and post each finding as an
 # inline review thread, plus one marked summary comment.
 #
@@ -5324,11 +6018,12 @@ verify_promote() {
   [[ "$minimal" -eq 0 ]] || verify_browser_unclaim "$issue_num" "$head_sha" "$state_json"
   verify_post_report "$issue_num" "$head_sha" "$body_file" || true
   # Today's promotion resets (see the In Review → In Test block): a fresh fix
-  # budget and CodeRabbit run cap for the next revision round.
+  # budget, CodeRabbit run cap and branch-update budget for the next revision round.
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" lastWatchAt \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$issue_num" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" crCliRuns "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" branchUpdates "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   return 0
 }
 
@@ -5553,6 +6248,11 @@ if [[ "$MODE_PLAN" -eq 1 ]]; then
     exit 1
   fi
 
+  # ── Plan-stage browser probe housekeeping (ADR-0071) ──────────────────────
+  # Before anything else in the tick, in every phase: ends the probes that
+  # can't go on and reaps probe branches nothing owns. Never fails the tick.
+  plan_probe_housekeeping
+
   # ── Orphaned-Planning rescue sweep ──────────────────────────────────────────
   # "Planning" is a transient, factory-owned status: both the Ready sweep and
   # the replan sweep below park a card there only for the span of a single
@@ -5761,17 +6461,33 @@ See \`docs/features/dark-factory.md\` for the spec contract.
       continue
     fi
 
+    # The plan-stage browser probe: available or not (and why), and a staging
+    # dir when it is. plan_probe_finalize settles the staging on every path
+    # below.
+    plan_probe_prepare "$ISSUE_NUM" "$BUNDLE"
+    if [[ "$PLAN_PROBE_JSON" != "null" ]]; then
+      if ! BUNDLE=$(build_plan_bundle "$ISSUE_RECORD" "$COMMENTS_JSON" "null" "$PLAN_PROBE_JSON"); then
+        log "ERROR: build_plan_bundle (with the probe) failed for #$ISSUE_NUM"
+        plan_probe_finalize "$ISSUE_NUM" discard
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "Ready" || true
+        continue
+      fi
+    fi
+
     CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
       "$PROMPT_TEXT" "$BUNDLE")
-    log "Invoking claude for #$ISSUE_NUM (--plan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT)"
+    log "Invoking claude for #$ISSUE_NUM (--plan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT, cap ${PLAN_CALL_TIMEOUT}s)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
-    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \
+    CLAUDE_CALL_TIMEOUT_SEC="$PLAN_CALL_TIMEOUT" \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
+    # A run that failed produced no plan to probe for.
+    [[ $EXIT_CODE -eq 0 ]] || plan_probe_finalize "$ISSUE_NUM" discard
 
     if [[ $EXIT_CODE -eq 124 ]]; then
-      log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC}s) for #$ISSUE_NUM --plan — skipping; next tick retries"
+      log "WARNING: claude timed out (>${PLAN_CALL_TIMEOUT}s) for #$ISSUE_NUM --plan — skipping; next tick retries"
       rm -f "$CLAUDE_OUTPUT_FILE"
       # Leave card at Planning; the next tick's rescue sweep (top of --plan)
       # returns it to Ready — it has no plan comment yet — so planning restarts.
@@ -5817,6 +6533,7 @@ and drag the card back to **Ready** to retry.
     rm -f "$CLAUDE_OUTPUT_FILE"
     if [[ -z "$SUMMARY_LINE" ]]; then
       log "WARNING: no well-formed summary line returned by claude for #$ISSUE_NUM --plan"
+      plan_probe_finalize "$ISSUE_NUM" discard
       # Don't transition; next tick will retry. Bump attempts so we eventually
       # surface this to the operator.
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
@@ -5825,6 +6542,8 @@ and drag the card back to **Ready** to retry.
     fi
     log "Claude summary: $SUMMARY_LINE"
     ACTION=$(echo "$SUMMARY_LINE" | sed -E 's/.*action=([^ ]+).*/\1/')
+    # Pushes the probe the planner asked for, once there is a plan to probe.
+    plan_probe_finalize "$ISSUE_NUM" "$ACTION"
 
     case "$ACTION" in
       planned)
@@ -5914,11 +6633,19 @@ and drag the card back to **Ready** to retry.
     if [[ -z "$ACKED_JSON" ]]; then ACKED_JSON='[]'; fi
     UNACKED_JSON=$(unacked_owner_comments "$COMMENTS_JSON" "$PLAN_CREATED_AT" "$ACKED_JSON" "$ISSUE_NUM")
     UNACKED_COUNT=$(echo "$UNACKED_JSON" | jq 'length' 2>/dev/null || echo "0")
-    if [[ "$UNACKED_COUNT" -eq 0 ]]; then
+    # A finished plan-stage probe the plan hasn't folded in yet is a trigger of
+    # its own, with no comment to answer (ADR-0071). Its report and notices
+    # carry a drafto-factory marker, so they never count as feedback above.
+    PROBE_FOLD_JSON=$(plan_probe_fold_due "$ISSUE_NUM" "$COMMENTS_JSON")
+    [[ -n "$PROBE_FOLD_JSON" ]] || PROBE_FOLD_JSON="null"
+    if [[ "$UNACKED_COUNT" -eq 0 && "$PROBE_FOLD_JSON" == "null" ]]; then
       continue
     fi
 
-    log "Issue #$ISSUE_NUM: $UNACKED_COUNT unacked OWNER comment(s) → replanning in place"
+    if [[ "$PROBE_FOLD_JSON" != "null" ]]; then
+      log "Issue #$ISSUE_NUM: plan probe $(echo "$PROBE_FOLD_JSON" | jq -r '.probeId') ended ($(echo "$PROBE_FOLD_JSON" | jq -r '.status')) → replanning in place to fold it in"
+    fi
+    [[ "$UNACKED_COUNT" -eq 0 ]] || log "Issue #$ISSUE_NUM: $UNACKED_COUNT unacked OWNER comment(s) → replanning in place"
 
     # One reply per trigger comment that needs an answer, built here once for
     # the planner's bundle and the reply check after its run.
@@ -5945,6 +6672,15 @@ and drag the card back to **Ready** to retry.
       log "ERROR: build_plan_bundle (replan) failed for #$ISSUE_NUM"
       continue
     fi
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+      plan_probe_prepare "$ISSUE_NUM" "$BUNDLE" "$PROBE_FOLD_JSON"
+      if [[ "$PLAN_PROBE_JSON" != "null" ]] \
+          && ! BUNDLE=$(build_plan_bundle "$ISSUE_RECORD" "$COMMENTS_JSON" "$REPLAN_JSON" "$PLAN_PROBE_JSON"); then
+        log "ERROR: build_plan_bundle (replan, with the probe) failed for #$ISSUE_NUM"
+        plan_probe_finalize "$ISSUE_NUM" discard
+        continue
+      fi
+    fi
 
     if [[ "$DRY_RUN" -eq 1 ]]; then
       log "DRY-RUN: replan bundle for #$ISSUE_NUM (printed to stdout only; not logged)"
@@ -5963,19 +6699,30 @@ and drag the card back to **Ready** to retry.
       "$PROMPT_TEXT" "$BUNDLE")
     reset_reply_dir "$ISSUE_NUM"
     POSTED_REPLY_IDS=" "
-    log "Invoking claude for #$ISSUE_NUM (--plan replan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT)"
+    # Counted before the run, so a run that is killed still counts towards the
+    # fold cap and a planner that never acks can't replan every tick.
+    if [[ "$PROBE_FOLD_JSON" != "null" ]]; then
+      plan_probe fold-begin --issue "$ISSUE_NUM" >>"$LOG_FILE" || true
+    fi
+    log "Invoking claude for #$ISSUE_NUM (--plan replan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT, cap ${PLAN_CALL_TIMEOUT}s)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
-    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \
+    CLAUDE_CALL_TIMEOUT_SEC="$PLAN_CALL_TIMEOUT" \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
     # Whatever the run returned, a trigger it acked has been handled, so it
     # gets its reply now, before any early exit.
     plan_reply_check "$ISSUE_NUM" "$PLAN_REPLY_MARKERS"
+    # A fold the plan now acks is done; a failed run produced no plan to probe.
+    if [[ "$PROBE_FOLD_JSON" != "null" ]]; then
+      plan_probe_fold_end "$ISSUE_NUM" "$(echo "$PROBE_FOLD_JSON" | jq -r '.probeId')"
+    fi
+    [[ $EXIT_CODE -eq 0 ]] || plan_probe_finalize "$ISSUE_NUM" discard
 
     if [[ $EXIT_CODE -eq 124 ]]; then
-      log "WARNING: claude timed out (>${CLAUDE_CALL_TIMEOUT_SEC}s) for #$ISSUE_NUM --plan replan — skipping; next tick retries"
+      log "WARNING: claude timed out (>${PLAN_CALL_TIMEOUT}s) for #$ISSUE_NUM --plan replan — skipping; next tick retries"
       rm -f "$CLAUDE_OUTPUT_FILE"
       # Restore Plan Review status so the operator's card doesn't appear stuck
       # in Planning forever.
@@ -6019,6 +6766,7 @@ and drag the card back to **Plan Review** (or **Ready** for a full restart).
     rm -f "$CLAUDE_OUTPUT_FILE"
     if [[ -z "$SUMMARY_LINE" ]]; then
       log "WARNING: no well-formed summary line returned by claude for #$ISSUE_NUM --plan replan"
+      plan_probe_finalize "$ISSUE_NUM" discard
       transition_status "$ITEM_ID" "$ISSUE_NUM" "Plan Review" || true
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
         --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
@@ -6026,6 +6774,7 @@ and drag the card back to **Plan Review** (or **Ready** for a full restart).
     fi
     log "Claude summary (replan): $SUMMARY_LINE"
     ACTION=$(echo "$SUMMARY_LINE" | sed -E 's/.*action=([^ ]+).*/\1/')
+    plan_probe_finalize "$ISSUE_NUM" "$ACTION"
 
     case "$ACTION" in
       replanned)
@@ -6108,6 +6857,13 @@ if [[ "$MODE_IMPLEMENT" -eq 1 ]]; then
       done
       PROMPT_TEXT=$(cat "$PROMPT_FILE")
     fi
+  fi
+
+  # Cards coming back with an open PR (revisions from In Test, retries) before
+  # fresh ones, so a freed slot finishes work before it starts more (ADR-0070).
+  # One card, or Phase A (no slots), has nothing to order.
+  if [[ "$INPROG_COUNT" -gt 1 && "$PHASE" != "A" ]]; then
+    INPROG_JSON=$(implement_queue_order "$INPROG_JSON")
   fi
 
   for ((IDX=0; IDX<INPROG_COUNT; IDX++)); do
@@ -6260,12 +7016,13 @@ Drag it back to **Ready** so the factory can plan it first.
       fi
     fi
 
-    # Acquire a slot (reuse the issue's own slot on a retry / revision).
+    # Acquire a slot (reuse the issue's own slot on a retry).
     # Skip to the next card, never stop the sweep: a card further down may
-    # already hold a slot. A revision sent back from In Test keeps its slot, so
-    # a `break` here let a slotless card higher on the board stop the cards
-    # that held both slots from ever running. Neither slot was freed, and the
-    # whole column stalled for a day (issues #790 and #328 behind #794).
+    # already hold a slot. A `break` here once let a slotless card higher on the
+    # board stop the cards that held both slots from ever running, and the
+    # whole column stalled for a day (issues #790 and #328 behind #794). Cards
+    # with an open PR (revisions back from In Test, which since ADR-0070 hold no
+    # slot) come first in INPROG_JSON, so they get a freed slot before new work.
     SLOT=$(slot_for_issue "$ISSUE_NUM")
     if [[ -z "$SLOT" ]]; then
       log "Issue #$ISSUE_NUM: both worktree slots busy; deferring to a later tick"
@@ -6299,6 +7056,7 @@ Drag it back to **Ready** so the factory can plan it first.
     cat "$WT_ERR_FILE" >>"$LOG_FILE" 2>/dev/null || true; rm -f "$WT_ERR_FILE"
     WT_PATH=$(echo "$WT_JSON" | jq -r '.path')
     log "Issue #$ISSUE_NUM: worktree $WT_PATH (branchReused=$(echo "$WT_JSON" | jq -r '.branchReused // false'), fromRemote=$(echo "$WT_JSON" | jq -r '.fromRemote // false'), base=$(echo "$WT_JSON" | jq -r '.base // ""'))"
+    log_worktree_leftovers "$ISSUE_NUM" "$WT_JSON"
     copy_worktree_env "$WT_PATH"
     seed_worktree_node_modules "$WT_PATH"
 
@@ -6446,6 +7204,8 @@ still sees it. If this repeats until the retry budget is exhausted, the card mov
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastImplementAt "$NOW_ISO" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$FEEDBACK_MARK" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        # A new In Review stint starts here, with a fresh behind-main budget (ADR-0070).
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdates "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         if [[ "$IS_REVISION" -eq 1 ]]; then
           log "Issue #$ISSUE_NUM: revision pushed → In Review (PR $PR_URL; slot $SLOT retained)"
           # Each feedback comment gets its own reply saying what changed, even
@@ -6499,6 +7259,7 @@ still sees it. If this repeats until the retry budget is exhausted, the card mov
           transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review" || true
           node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$NOW_ISO" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
           node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdates "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
           log "Issue #$ISSUE_NUM: noop (PR $PR_URL already open); advanced to In Review"
         fi
         ;;
@@ -6545,11 +7306,15 @@ fi
 
 # ── --watch mode (Phase B+) ─────────────────────────────────────────────────
 # Two responsibilities each tick:
-#   1. Cleanup sweep — release slots + remove worktrees for any issue that has
-#      left the active states — In Progress / In Review / Testing / In Test —
-#      (merged by the operator, Blocked, Done, or closed). Without this the two
-#      slots would leak. Testing must stay in the active set: a card verifying
-#      there still owns its slot + worktree (ADR-0053).
+#   1. Cleanup sweep — release slots + remove worktrees for any issue whose
+#      board card has left the active columns — In Progress / In Review /
+#      Testing — (reached In Test, merged by the operator, Blocked, Done, or
+#      closed). Without this the two slots would leak. Testing stays active: a
+#      card verifying there is still the factory's work (ADR-0053). In Test
+#      does not (ADR-0070): a card there waits on the operator and nothing in
+#      the In Test sweep uses its worktree, so holding the slot only stalled new
+#      work. A revision or hand-back re-acquires a slot and recreates the
+#      worktree from the PR branch.
 #   2. In Review → In Test — for each open factory PR: if it conflicts with
 #      main, merge main in first (ADR-0061); if CI is failing or review
 #      comments are unresolved, resume the worktree and invoke Claude
@@ -6577,26 +7342,55 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
   fi
 
   # ── 1. Cleanup sweep ──
+  # A slot stays with an OPEN issue whose card is in In Progress, In Review or
+  # Testing on the factory board. The board column, not the status:* label,
+  # because the operator moves cards by dragging, and only the factory's own
+  # moves rewrite the label: a plan approved out of Plan Review still says
+  # status:plan-review in In Progress, and a card dragged into In Test keeps its
+  # old active label. The column comes with the issue view (projectItems). If
+  # it can't be read, only a closed issue's slot is freed this tick.
   SLOTS_JSON=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-status \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo '{"slots":{}}')
   for SLOT in 0 1; do
     SLOT_ISSUE=$(echo "$SLOTS_JSON" | jq -r --arg s "$SLOT" '.slots[$s].issueNumber // ""')
     [[ -z "$SLOT_ISSUE" || "$SLOT_ISSUE" == "null" ]] && continue
+    COLUMN_KNOWN=1
     ISSUE_META=$(gh issue view "$SLOT_ISSUE" --repo JakubAnderwald/drafto \
-      --json state,labels 2>>"$LOG_FILE" || echo "")
+      --json state,projectItems 2>>"$LOG_FILE" || echo "")
+    if [[ -z "$ISSUE_META" ]]; then
+      # projectItems needs the token's project scope; the state alone still
+      # tells a closed issue, which frees its slot whatever its column.
+      COLUMN_KNOWN=0
+      ISSUE_META=$(gh issue view "$SLOT_ISSUE" --repo JakubAnderwald/drafto \
+        --json state 2>>"$LOG_FILE" || echo "")
+    fi
     if [[ -z "$ISSUE_META" ]]; then
       log "WARNING: slot $SLOT issue #$SLOT_ISSUE: gh issue view failed; leaving slot for next tick"
       continue
     fi
-    STILL_ACTIVE=$(echo "$ISSUE_META" | jq -r \
-      '((.state == "OPEN") and ((.labels | map(.name)) | any(. == "status:in-progress" or . == "status:in-review" or . == "status:testing" or . == "status:in-test")))')
+    ISSUE_STATE=$(echo "$ISSUE_META" | jq -r '.state // ""' 2>/dev/null || echo "")
+    SLOT_COLUMN=""
+    if [[ "$COLUMN_KNOWN" -eq 1 ]]; then
+      SLOT_COLUMN=$(echo "$ISSUE_META" | jq -r \
+        '[(.projectItems // [])[] | select(.title == "Drafto Factory")] | .[0].status.name // ""' 2>/dev/null || echo "")
+      # No card on the Drafto Factory board (the board renamed, or swapped via
+      # FACTORY_PROJECT_ID) reads as unknown, not as "left": guessing wrong
+      # would free the slots of cards being worked on.
+      [[ -n "$SLOT_COLUMN" ]] || COLUMN_KNOWN=0
+    fi
+    if [[ "$COLUMN_KNOWN" -eq 0 && "$ISSUE_STATE" == "OPEN" ]]; then
+      log "WARNING: slot $SLOT issue #$SLOT_ISSUE: couldn't read its column on the Drafto Factory board; leaving slot for next tick"
+      continue
+    fi
+    STILL_ACTIVE=$(jq -n --arg state "$ISSUE_STATE" --arg col "$SLOT_COLUMN" \
+      '($state == "OPEN") and ($col == "In Progress" or $col == "In Review" or $col == "Testing")')
     if [[ "$STILL_ACTIVE" != "true" ]]; then
-      log "Slot $SLOT: issue #$SLOT_ISSUE left In Progress/In Review/Testing/In Test; releasing slot + worktree"
+      log "Slot $SLOT: issue #$SLOT_ISSUE left In Progress/In Review/Testing (now: ${SLOT_COLUMN:-unknown}, $ISSUE_STATE); releasing slot + worktree"
       if [[ "$DRY_RUN" -eq 0 ]]; then
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-        # Not necessarily done with the issue: a card relabelled status:blocked
-        # by a retry-exhausted path still has an OPEN PR, so the branch is only
-        # deleted once no live PR points at it.
+        # Not necessarily done with the issue: a card in In Test, or moved to
+        # Blocked by a retry-exhausted path, still has an OPEN PR, so the branch
+        # is only deleted once no live PR points at it.
         remove_worktree_for "$SLOT_ISSUE"
       fi
     fi
@@ -6805,7 +7599,8 @@ A human should take a look. Reset with \
         [ .comments[]? | select((.author.login // "") | test("vercel|github-actions"; "i") | not)
           | select(((.author.login // "") == "JakubAnderwald"
                     and ((.body // "") | contains("<!-- drafto-factory-cr-cli sha="))) | not)
-          | { id: .id, user: { login: (.author.login // "") }, body: (.body // "") } ]')
+          | { id: .id, user: { login: (.author.login // "") },
+              authorAssociation: (.authorAssociation // "NONE"), body: (.body // "") } ]')
       [[ -n "$UNRESOLVED" ]] || UNRESOLVED="[]"
       # A conflict pass commits nothing but the merge, so it gets no feedback
       # to act on; a later pass picks the comments up again.
@@ -6847,6 +7642,7 @@ A human should take a look. Reset with \
       cat "$WT_ERR_FILE" >>"$LOG_FILE" 2>/dev/null || true; rm -f "$WT_ERR_FILE"
       WT_PATH=$(echo "$WT_JSON" | jq -r '.path')
       log "Issue #$ISSUE_NUM: worktree $WT_PATH (branchReused=$(echo "$WT_JSON" | jq -r '.branchReused // false'), fromRemote=$(echo "$WT_JSON" | jq -r '.fromRemote // false'), base=$(echo "$WT_JSON" | jq -r '.base // ""'))"
+      log_worktree_leftovers "$ISSUE_NUM" "$WT_JSON"
 
       # Conflict pass (ADR-0061): bash merges main in, before the install so
       # the agent's checks run against the merged lockfile. What git merges on
@@ -7038,6 +7834,11 @@ A human should take a look. Reset with \
     fi
     HEAD_SHA=$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')
 
+    # A head that only merges main into the commit just reviewed (the
+    # behind-main gate below updated the branch) inherits that commit's code
+    # review and CodeRabbit coverage instead of being reviewed again (ADR-0070).
+    [[ "$DRY_RUN" -eq 1 ]] || carry_across_branch_update "$ISSUE_NUM" "$HEAD_SHA" || true
+
     # Code review, once per head SHA, on a fully-green PR. Reviewing earlier
     # would burn a pass on code that is still moving; reviewing here means the
     # diff is stable and this is the last stop before a human is asked to test.
@@ -7076,7 +7877,75 @@ A human should take a look. Reset with \
     # here, so the In Test sweep's re-dispatch never needs its own check.
     IR_PR_LABELS=$(echo "$PR_VIEW" | jq -r '(.labels // []) | map(.name) | join(",")' 2>/dev/null || echo "")
     if ! hosted_config_gate "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$IR_PR_LABELS" "In Review"; then
+      # A real hold waits on the operator to apply the config, possibly for
+      # days: the card needn't keep a worktree slot through it (ADR-0070). A
+      # tick held for a transient error keeps it.
+      if [[ "$DRY_RUN" -eq 0 && "${HOSTED_CONFIG_HELD:-}" == "hold" ]]; then
+        free_waiting_slot "$ISSUE_NUM" "$HEAD_SHA" "the hosted config"
+      fi
       continue
+    fi
+
+    # Behind main? (ADR-0070.) The last check before either promotion, so it
+    # runs once the card is otherwise ready, not while it waits on CI, the
+    # preview, the CodeRabbit lane or the hosted config. The operator should
+    # test, and approve, the code that will merge: PR #802 reached In Test five
+    # minutes behind a desktop version bump on main, and its desktop beta could
+    # never upload because the store had closed the old version's train.
+    # update-branch merges main in (no rebase: the factory never force-pushes).
+    # CI re-runs on the merged head, which inherits this commit's code review
+    # and CodeRabbit coverage (carry_across_branch_update above). Every attempt
+    # counts toward FACTORY_MAX_BRANCH_UPDATES, so a busy main can't hold the
+    # card in In Review: once spent, it goes on as it stands and --release
+    # updates it at merge time. "" (the compare failed) also goes on.
+    BEHIND_BY=$(pr_behind_main "$HEAD_SHA")
+    if [[ -n "$BEHIND_BY" && "$BEHIND_BY" -gt 0 ]]; then
+      # The budget fails closed: if it can't be read, it counts as spent, so a
+      # broken state file can't turn into an update (and a CI run) every tick.
+      BRANCH_UPDATES=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
+        --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.branchUpdates // "0"' 2>/dev/null || echo "")
+      if ! [[ "$BRANCH_UPDATES" =~ ^[0-9]+$ ]]; then
+        log "WARNING: couldn't read #$ISSUE_NUM's branch-update budget; counting it as spent"
+        BRANCH_UPDATES="$FACTORY_MAX_BRANCH_UPDATES"
+      fi
+      if [[ "$BRANCH_UPDATES" -ge "$FACTORY_MAX_BRANCH_UPDATES" ]]; then
+        log "Issue #$ISSUE_NUM: PR #$PR_NUM is $BEHIND_BY commit(s) behind main, but its $BRANCH_UPDATES branch update(s) are spent; going on as it stands (--release updates it at merge)"
+      elif [[ "$DRY_RUN" -eq 1 ]]; then
+        log "DRY-RUN: PR #$PR_NUM is $BEHIND_BY commit(s) behind main; would update the branch before In Test"
+        continue
+      elif ! worktree_within_head "$ISSUE_NUM" "$HEAD_SHA"; then
+        # The worktree or the local branch holds commits the PR lacks (a fix
+        # whose push never landed?). Updating would diverge origin from them,
+        # and every later worktree resume would refuse it. Leave it to the
+        # operator.
+        log "WARNING: PR #$PR_NUM is $BEHIND_BY commit(s) behind main, but issue #$ISSUE_NUM's worktree has commits the PR lacks; not updating the branch (going on as it stands)"
+      elif ! node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdates \
+          "$((BRANCH_UPDATES + 1))" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+        log "WARNING: couldn't record a branch update for #$ISSUE_NUM; not updating PR #$PR_NUM (going on as it stands)"
+      else
+        if update_pr_branch "$PR_NUM" "$HEAD_SHA"; then
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdatedFrom \
+            "$HEAD_SHA" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          # The card keeps its slot and worktree: CI may still send it to the
+          # fix loop, and a resume fast-forwards the worktree to the merge,
+          # setting any uncommitted leftovers aside (worktree-cli).
+          log "Issue #$ISSUE_NUM: PR #$PR_NUM was $BEHIND_BY commit(s) behind main; updated the branch (CI re-runs on the merged head)"
+          continue
+        fi
+        # update-branch refuses when the head moved since PR_VIEW (a push
+        # landed: expected_head_sha), and 422s on a conflict GitHub hasn't
+        # flagged yet. Both resolve on a later tick: a fresh read, or the
+        # conflict going to the fix loop. Anything else is let through, so a
+        # failing API can't hold the card in In Review.
+        RECHECK_HEAD=$(pr_head_oid "$PR_NUM")
+        RECHECK_MERGEABLE=$(gh pr view "$PR_NUM" --repo JakubAnderwald/drafto \
+          --json mergeable --jq '.mergeable' 2>>"$LOG_FILE" || echo "")
+        if [[ "$RECHECK_HEAD" != "$HEAD_SHA" || "$RECHECK_MERGEABLE" != "MERGEABLE" ]]; then
+          log "Issue #$ISSUE_NUM: update-branch for PR #$PR_NUM didn't apply (head moved, or mergeable=${RECHECK_MERGEABLE:-unknown}); rechecking next tick"
+          continue
+        fi
+        log "WARNING: update-branch failed for PR #$PR_NUM ($BEHIND_BY commit(s) behind main); going on as it stands (--release updates it at merge)"
+      fi
     fi
 
     # Pre-In-Test verification (ADR-0053). With FACTORY_VERIFY=1 (and the canary
@@ -7120,6 +7989,8 @@ A human should take a look. Reset with \
     # round (In Test → feedback → In Review again) is new code and earns
     # CodeRabbit coverage again, instead of inheriting a cap spent on the last one.
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" crCliRuns "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    # Same for the behind-main update budget (ADR-0070).
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdates "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     # Surface any advisory (non-required) red checks — e.g. CodeRabbit — so the
     # operator can glance before Approving, even though they didn't block advance.
     # The CodeRabbit lane's coverage note (CR_NOTE, "" when covered or the lane is
@@ -7348,7 +8219,7 @@ fi
 # verify, In Test for intest: a card dragged out since --watch ran is skipped),
 # and browser_run re-checks every per-SHA condition itself.
 if [[ "$MODE_BROWSER" -eq 1 ]]; then
-  if ! browser_kind_enabled verify && ! browser_kind_enabled intest; then
+  if ! browser_kind_enabled verify && ! browser_kind_enabled intest && ! plan_probe_enabled; then
     log "Browser runner off (FACTORY_BROWSER=$FACTORY_BROWSER, kinds='$FACTORY_BROWSER_KINDS'); nothing to do"
     log "=== factory-agent --browser completed in $(( $(date +%s) - START_TIME ))s ==="
     exit 0
@@ -7363,6 +8234,18 @@ if [[ "$MODE_BROWSER" -eq 1 ]]; then
     BROWSER_LIST=$( { grep -E '^verify:[0-9]+:[0-9]+:[0-9a-f]{40}$' "$BROWSER_CANDIDATES_FILE"
       grep -E '^(intest:)?[0-9]+:[0-9]+:[0-9a-f]{40}$' "$BROWSER_CANDIDATES_FILE"; } 2>/dev/null || true)
   fi
+  # Plan-stage probes come from the state, not the candidates file (--watch
+  # never looks at Plan Review), and go last: finishing work comes first.
+  # "plan:<issue>:0:<probe sha>", the same shape as the others.
+  if plan_probe_enabled; then
+    BROWSER_PLAN_LIST=$(plan_probe candidates \
+      | jq -r '.[] | "plan:\(.issue):0:\(.sha)"' 2>/dev/null \
+      | grep -E '^plan:[0-9]+:0:[0-9a-f]{40}$' || true)
+    if [[ -n "$BROWSER_PLAN_LIST" ]]; then
+      BROWSER_LIST="${BROWSER_LIST:+$BROWSER_LIST
+}$BROWSER_PLAN_LIST"
+    fi
+  fi
   if [[ -z "$BROWSER_LIST" ]]; then
     log "--browser: no browser-run candidates this tick"
     log "=== factory-agent --browser completed in $(( $(date +%s) - START_TIME ))s ==="
@@ -7372,11 +8255,13 @@ if [[ "$MODE_BROWSER" -eq 1 ]]; then
   # query failed: that column's candidates wait for the next tick).
   BROWSER_TESTING_JSON=""
   BROWSER_INTEST_JSON=""
+  BROWSER_PLANREVIEW_JSON=""
   # Set by browser_run when the preflight fails: later candidates reuse it.
   BROWSER_PREFLIGHT_FAILED=""
   for BROWSER_CAND in $BROWSER_LIST; do
     case "$BROWSER_CAND" in
       verify:*) BROWSER_KIND=verify; BROWSER_COLUMN="Testing"; BROWSER_CAND="${BROWSER_CAND#verify:}" ;;
+      plan:*) BROWSER_KIND=plan; BROWSER_COLUMN="Plan Review"; BROWSER_CAND="${BROWSER_CAND#plan:}" ;;
       *) BROWSER_KIND=intest; BROWSER_COLUMN="In Test"; BROWSER_CAND="${BROWSER_CAND#intest:}" ;;
     esac
     BROWSER_ISSUE="${BROWSER_CAND%%:*}"
@@ -7391,6 +8276,13 @@ if [[ "$MODE_BROWSER" -eq 1 ]]; then
         [[ -n "$BROWSER_TESTING_JSON" ]] || BROWSER_TESTING_JSON="!"
       fi
       BROWSER_COLUMN_JSON="$BROWSER_TESTING_JSON"
+    elif [[ "$BROWSER_KIND" == plan ]]; then
+      if [[ -z "$BROWSER_PLANREVIEW_JSON" ]]; then
+        BROWSER_PLANREVIEW_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
+          --status "Plan Review" 2>>"$LOG_FILE") || BROWSER_PLANREVIEW_JSON="!"
+        [[ -n "$BROWSER_PLANREVIEW_JSON" ]] || BROWSER_PLANREVIEW_JSON="!"
+      fi
+      BROWSER_COLUMN_JSON="$BROWSER_PLANREVIEW_JSON"
     else
       if [[ -z "$BROWSER_INTEST_JSON" ]]; then
         BROWSER_INTEST_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
@@ -7412,8 +8304,12 @@ if [[ "$MODE_BROWSER" -eq 1 ]]; then
       continue
     fi
     BROWSER_RC=0
-    browser_run "$BROWSER_KIND" "$BROWSER_ISSUE" "$(echo "$BROWSER_CAND" | cut -d: -f2)" \
-      "${BROWSER_CAND##*:}" || BROWSER_RC=$?
+    if [[ "$BROWSER_KIND" == plan ]]; then
+      plan_probe_browser_run "$BROWSER_ISSUE" "${BROWSER_CAND##*:}" || BROWSER_RC=$?
+    else
+      browser_run "$BROWSER_KIND" "$BROWSER_ISSUE" "$(echo "$BROWSER_CAND" | cut -d: -f2)" \
+        "${BROWSER_CAND##*:}" || BROWSER_RC=$?
+    fi
     [[ "$BROWSER_RC" -eq 1 ]] || break
   done
   log "=== factory-agent --browser completed in $(( $(date +%s) - START_TIME ))s ==="
@@ -7663,7 +8559,15 @@ comes back to In Test for your approval once CI is green again.
     if [[ "$MERGE_STATE" == "BEHIND" ]]; then
       log "Issue #$ISSUE_NUM: PR #$PR_NUM is behind main; updating branch (merges once CI re-runs green)"
       if [[ "$DRY_RUN" -eq 0 ]]; then
-        if gh api --method PUT "repos/JakubAnderwald/drafto/pulls/$PR_NUM/update-branch" >>"$LOG_FILE" 2>&1; then
+        RELEASE_HEAD=$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')
+        if update_pr_branch "$PR_NUM" "$RELEASE_HEAD"; then
+          # A hand-back to In Review (an open thread, red CI) can bring this
+          # merge commit to --watch: it inherits the review like --watch's own
+          # updates (carry_across_branch_update, ADR-0070).
+          if [[ -n "$RELEASE_HEAD" ]]; then
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdatedFrom \
+              "$RELEASE_HEAD" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          fi
           if ! issue_has_marker "$ISSUE_NUM" "drafto-factory-branch-updated"; then
             gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
               --body "🏭 **Updating the branch with latest \`main\`.**
@@ -7674,7 +8578,7 @@ base. I'll squash-merge automatically once it's green again.
 <!-- drafto-factory-branch-updated -->" >>"$LOG_FILE" 2>&1 || true
           fi
         else
-          log "WARNING: update-branch failed for PR #$PR_NUM (conflict?); leaving for the operator"
+          log "WARNING: update-branch failed for PR #$PR_NUM (head moved, or a conflict GitHub hasn't flagged yet?); retrying next tick"
         fi
       fi
       continue

@@ -46,6 +46,10 @@
 //     (mode 600) when given. Exit 0; 1 on an I/O error (including an
 //     unreadable account file: without the password the scan can't be
 //     trusted, so nothing is written); 2 on a usage error.
+//   node browser-report.mjs render --kind plan … (the same flags)
+//     The plan-stage probe's browser checks (plan-probe.mjs): a section with
+//     no factory marker, like verify. plan-probe.mjs compose builds the one
+//     comment bash posts around it, scanned and defanged again.
 //   node browser-report.mjs render --kind verify … (the same flags)
 //     The Testing column's browser lane (ADR-0053). Same scan, copy and JSON,
 //     but --out gets a section, not a comment: the same scanned, defanged
@@ -76,7 +80,8 @@ export const MIN_PASSWORD_SCAN_LENGTH = 6;
 
 const HEADER = "🏭 **Browser run — web steps on the preview.**";
 const VERIFY_HEADER = "**Web (browser) — verify run on the preview**";
-export const RENDER_KINDS = Object.freeze(["intest", "verify"]);
+const PLAN_HEADER = "**Browser checks on the probe preview**";
+export const RENDER_KINDS = Object.freeze(["intest", "verify", "plan"]);
 const STATUS_LINE =
   /^browser=(ok|unavailable|auth-expired|signin-failed|blocked) verdict=(pass|warn|fail|none)$/;
 const SHA = /^[0-9a-f]{7,40}$/i;
@@ -333,6 +338,18 @@ export function renderVerifySection(run) {
   });
 }
 
+// The plan kind's section (plan-probe.mjs): never posted on its own either.
+// plan-probe.mjs composes the probe's one report comment around it, with its
+// own marker, after defanging and scanning every part again.
+export function renderPlanSection(run) {
+  return renderRunReport(run, {
+    header: PLAN_HEADER,
+    okNote: "Evidence for the plan; it never moves the card.",
+    notOkNote: "The card is unaffected.",
+    markers: () => [],
+  });
+}
+
 function renderRunReport(
   { sha, report, verdict, status, evidenceDir, withheld },
   { header, okNote, notOkNote, markers },
@@ -430,7 +447,12 @@ export function render(argv) {
     evidenceDir,
     withheld: secretHits,
   };
-  writeFileSync(out, kind === "verify" ? renderVerifySection(run) : renderIntestComment(run));
+  const renderers = {
+    intest: renderIntestComment,
+    verify: renderVerifySection,
+    plan: renderPlanSection,
+  };
+  writeFileSync(out, renderers[kind](run));
   const result = {
     status: parsed.status,
     verdict: parsed.verdict,
@@ -445,7 +467,7 @@ export function render(argv) {
 }
 
 const USAGE =
-  "Usage: browser-report.mjs render --kind intest|verify --in <runner-stdout-file> --issue <n> " +
+  "Usage: browser-report.mjs render --kind intest|verify|plan --in <runner-stdout-file> --issue <n> " +
   "--sha <sha> --evidence-dir <dir> --account-file <f> --out <body-file> " +
   "[--json-out <file>]\n" +
   "       browser-report.mjs status --in <runner-stdout-file>\n" +

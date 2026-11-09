@@ -233,7 +233,7 @@ A dated record of actual phase changes so the current operating phase is auditab
 1. It only ever acts on a card a human (or an allowlisted reporter) moved to **Approved** — the Approved drag _is_ the merge-authorisation gate (ADR-0026); the factory never moves a card to Approved itself.
 2. It refuses to merge a PR touching `supabase/migrations/**` until `migration-approved` is on the PR — it leaves the card in Approved and comments once (`<!-- drafto-factory-migration-gate -->`).
 3. It refuses to merge a PR that changes `supabase/config.toml` until the hosted projects match it. This is the last check before the merge. It leaves the card in Approved, comments once per head SHA, and pins the merge to that SHA. See "Hosted Supabase config gate" below.
-4. It won't merge unless CI is green and the branch is conflict-free (a transient merge error is retried next tick, comment `<!-- drafto-factory-merge-failed -->`). Red CI moves the card back to **In Review** for the fix loop, and required checks GitHub cancelled before any runner picked them up are re-run first. See "Red or cancelled CI on a factory PR" below. A conflict with `main` moves the card back to **In Review** too, checked before the CI gate because a conflicting head gets no CI. See "A PR that conflicts with main" below.
+4. It won't merge unless CI is green and the branch is conflict-free (a transient merge error is retried next tick, comment `<!-- drafto-factory-merge-failed -->`). Red CI moves the card back to **In Review** for the fix loop, and required checks GitHub cancelled before any runner picked them up are re-run first. See "Red or cancelled CI on a factory PR" below. A conflict with `main` moves the card back to **In Review** too, checked before the CI gate because a conflicting head gets no CI. See "A PR that conflicts with main" below. A branch that is only **behind** `main` (branch protection requires up-to-date branches) is updated with GitHub's update-branch, comments once (`<!-- drafto-factory-branch-updated -->`), and merges on a later tick once CI is green on the new head. `--watch` already did this before In Test, so this only catches a `main` that moved while the card waited for you. See "A PR that is behind main" below.
 
 **"CI is green" means the branch-protection _required_ contexts only** — both `--watch` (In Review → In Test) and `--release` (the merge gate) count only failing/pending checks whose context is in `required_status_checks`, fetched once per run (`fetch_required_contexts` → `pr_failing_required` / `pr_pending_required`). An advisory bot like **CodeRabbit** is never a required context, so its red — including its **"Review rate limited"** status when it can't review — never triggers the `--watch` fix loop, blocks the In Test advance, or blocks the merge. Advisory reds are instead surfaced in the In Test hand-off comment for the operator to glance at before Approving. **A review _comment_ is a different thing from a review _check_:** the check status stays advisory and never gates anything, but an unresolved review **thread** is a hard block on the merge (see `--release` below). (Before this, a rate-limited CodeRabbit check would loop `--watch`'s fix path to exhaustion and park the card in Blocked — the #463 failure of 2026-07-22.) When branch protection is unreadable/empty the helpers fall back to counting all checks, so an unknown required set can't silently pass a red PR.
 
@@ -554,14 +554,15 @@ The factory's only way into a browser ([ADR-0051](../adr/0051-factory-browser-ru
 
 The runner drives **this Mac mini's own Chrome profile** — your real sign-ins — so it never gets more than this.
 
-It has two uses, the **kinds** in `FACTORY_BROWSER_KINDS`. Both run the `### Web` section of the factory's own scenario for the head commit, the same way:
+It has three uses, the **kinds** in `FACTORY_BROWSER_KINDS`. The first two run the `### Web` section of the factory's own scenario for the head commit, the same way:
 
 - **`verify`, the Testing column's browser lane** ([ADR-0053](../adr/0053-pre-in-test-verification-stage.md)). For web cards in Testing, with `FACTORY_VERIFY=1`. It posts nothing: its result goes into the verification report the card gets at In Test. See "Pre-In-Test verification (Testing)" and [factory-verification.md](../features/factory-verification.md#the-browser-lane).
 - **`intest`, the In Test web run.** For cards in In Test whose diff touches `apps/web`. It posts one report comment. It skips a commit the verify lane already reported on, so it is the fallback for a commit that lane couldn't report on.
+- **`plan`, the plan-stage browser probe** ([ADR-0071](../adr/0071-plan-stage-browser-probe.md)). For web cards in Plan Review, with `FACTORY_PLAN_PROBE=1`. It runs the planner's own checks on a throwaway probe preview, not a PR's, and its result goes into the probe's report comment. It works differently from the other two; see "Plan-stage browser probe" below.
 
-How they run:
+How `verify` and `intest` run:
 
-- **Candidates:** the `--watch` sweeps list them in `logs/factory-browser-candidates`, one `<kind>:<issue>:<pr>:<sha>` line each, `verify` lines first (a bare `<issue>:<pr>:<sha>`, the old format, reads as `intest`). The `--browser` mode, which the loop runs last after `--release`, re-checks each against its own column (Testing or In Test) and runs at most one per tick, `verify` first. Its log is `logs/factory/factory-agent-browser-<date>.log`.
+- **Candidates:** the `--watch` sweeps list them in `logs/factory-browser-candidates`, one `<kind>:<issue>:<pr>:<sha>` line each, `verify` lines first (a bare `<issue>:<pr>:<sha>`, the old format, reads as `intest`). The `--browser` mode, which the loop runs after `--release` and `--watch` and before `--implement` and `--plan` ([ADR-0068](../adr/0068-factory-runs-the-board-right-to-left.md)), re-checks each against its own column (Testing, In Test, or Plan Review for a plan-stage probe) and runs at most one per tick: `verify` first, plan-stage probes last. Its log is `logs/factory/factory-agent-browser-<date>.log`.
 - **Where:** on that commit's own preview, found through the GitHub Deployments API (`vercel[bot]`, state `success`), signed in as the factory's dev-database test account.
 - **What gets posted:** for `intest`, one report comment; for `verify`, nothing. A FAIL doesn't move the card.
 - **How often:** each head SHA gets two attempts, shared by both kinds, and a new commit re-arms it. A run that fails on the browser's side gives its attempt back: unavailable, auth-expired, guard-not-loaded, or a session limit. A timeout or an error keeps it.
@@ -570,7 +571,7 @@ How they run:
 | Var                               | Default                                   | Purpose                                                                                                                                                                                                                                                                                                                                                             |
 | --------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `FACTORY_BROWSER`                 | `1`                                       | Master switch; `0` turns the runner off. Anything but `0`/`1` falls back to `0`.                                                                                                                                                                                                                                                                                    |
-| `FACTORY_BROWSER_KINDS`           | `intest,verify`                           | Comma list of live uses: `intest` (the In Test web run) and `verify` (the Testing column's browser lane, inert while `FACTORY_VERIFY=0`). Unknown words are dropped with a warning.                                                                                                                                                                                 |
+| `FACTORY_BROWSER_KINDS`           | `intest,verify,plan`                      | Comma list of live uses: `intest` (the In Test web run), `verify` (the Testing column's browser lane, inert while `FACTORY_VERIFY=0`) and `plan` (the plan-stage browser probe, inert while `FACTORY_PLAN_PROBE=0`). Unknown words are dropped with a warning.                                                                                                      |
 | `FACTORY_BROWSER_DEVICE_ID`       | `9796912b-8977-4d74-9c08-d9bb283b9496`    | The only browser the guard lets the runner select: this Mac mini's Chrome, never the MacBook's. A malformed value turns the runner off.                                                                                                                                                                                                                             |
 | `FACTORY_BROWSER_TIMEOUT_SEC`     | `900`                                     | Wall cap per runner session.                                                                                                                                                                                                                                                                                                                                        |
 | `FACTORY_SIGNIN_LEASE_SEC`        | `300`                                     | How long a browser run holds the sign-in lease from its mint (see "The sign-in lease"). The runner opens its link early in its session, so a few minutes is enough. It is released when the run ends anyway. Positive integer; a bad value falls back to `300`. Above 360 the shell lane, which waits at most 6 minutes, gives up first and runs without a session. |
@@ -603,13 +604,13 @@ How they run:
      > ~/drafto-secrets/dev-supabase-admin.env && chmod 600 ~/drafto-secrets/dev-supabase-admin.env; unset TOKEN
    ```
    The web app's `/auth/test-sign-in` route must be on the PR's branch: it is on every branch cut after ADR-0051 landed. The factory skips older branches and notes it on the issue.
-6. **Nothing to switch on.** The runner is on by default (`FACTORY_BROWSER=1`, `FACTORY_BROWSER_KINDS=intest,verify`), so the next tick after steps 1–5 runs it. To turn it off, set `FACTORY_BROWSER=0` in the plist's `EnvironmentVariables`, then `launchctl unload`/`load` it.
+6. **Nothing to switch on.** The runner is on by default (`FACTORY_BROWSER=1`, `FACTORY_BROWSER_KINDS=intest,verify,plan`), so the next tick after steps 1–5 runs it. To turn it off, set `FACTORY_BROWSER=0` in the plist's `EnvironmentVariables`, then `launchctl unload`/`load` it.
 
 ### What a run leaves behind
 
-- **Run directory:** `logs/factory/browser/issue-<n>-<sha12>-<timestamp>/` (`…-<sha12>-verify-<timestamp>/` for a verify run) holds:
+- **Run directory:** `logs/factory/browser/issue-<n>-<sha12>-<timestamp>/` (`…-<sha12>-verify-<timestamp>/` for a verify run, `issue-<n>-probe-<probeId>-<timestamp>/` for a plan probe run) holds:
   - `runner-output.txt`, the runner's whole reply (the verification report reads a verify run's from here);
-  - `comment.md`, exactly what was posted, for an In Test run; `section.md` for a verify run, the same scanned and defanged report with no markers, never posted;
+  - `comment.md`, exactly what was posted, for an In Test run; `section.md` for a verify or plan run, the same scanned and defanged report with no markers, never posted on its own;
   - `render.json`, the parsed status, verdict and secret-scan result;
   - `evidence/`, the screenshots the guard copied, mode 700;
   - `guard-config.json` and `guard-settings.json`, the config and the generated settings;
@@ -680,6 +681,120 @@ node scripts/lib/state-cli.mjs factory:set-issue-field <n> verifyBrowser ""   # 
 
 For a card still in Testing, `factory:verify-reset <n>` instead restarts its whole round, browser fields included.
 
+### Plan-stage browser probe
+
+The runner's `plan` kind ([ADR-0071](../adr/0071-plan-stage-browser-probe.md); what you see on the issue is in [dark-factory.md](../features/dark-factory.md#plan-stage-browser-probe)). It's off by default. With `FACTORY_PLAN_PROBE=1`, the planner may request a probe on a web card in Plan Review:
+
+1. **`--plan` stages a dir.** Before each plan or replan run, bash stages `logs/factory/plan-probe/<probeId>/`. The planner writes `checks.md`, an optional `headers.txt` and an optional `spike/` there.
+2. **`--plan` checks and pushes.** After the run, `plan-probe.mjs finalize` validates and scans those files, builds one commit with git plumbing (`main` + spike + `apps/web/.factory-plan-probe`), pushes `factory/plan-probe-<n>` (never a PR) and records the round as `queued`.
+3. **`--browser` runs it,** after any Testing or In Test candidate. It confirms the branch still points at the pushed SHA and waits for the preview. Then it records the allowlisted headers (bash, with the bypass secret), runs the runner with the planner's checks, posts one report comment and deletes the branch.
+4. **The replan folds it in.** The replan sweep sees the unacked round and replans in place with the report. The planner appends an ack marker to the plan.
+
+At the top of every `--plan` tick, in every phase, housekeeping ends what can't go on and deletes probe branches that no queued probe owns. Code: `scripts/lib/plan-probe.mjs` and the `plan_probe_*` functions in `scripts/factory-agent.sh`.
+
+Logs:
+
+- the `--plan` log has staging, finalize, housekeeping and folds (`Issue #<n>: plan probe …`, `plan probe housekeeping: <action>`);
+- the `--browser` log has the preview wait, the header capture and the runner.
+
+All the settings are in the launchd plist. A bad value warns in the launchd log and falls back.
+
+| Setting                               | Default                              | What it does                                                                                                                                                                                                                                                                                                                                                    |
+| ------------------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FACTORY_PLAN_PROBE`                  | `0`                                  | The master switch and kill switch. It also needs `FACTORY_BROWSER=1` and `plan` in `FACTORY_BROWSER_KINDS`, which are the defaults. With either off, the next `--plan` tick cancels any queued probe (`cancelled:off`, nothing posted) and deletes its branch.                                                                                                  |
+| `FACTORY_PLAN_PROBE_SPIKE`            | `1`                                  | `0` drops every spike, so probes build `main` plus the marker file only. A spike the planner still writes is reported as dropped (`spike-off`).                                                                                                                                                                                                                 |
+| `FACTORY_PLAN_PROBE_MAX_ROUNDS`       | `2`                                  | Probe rounds per issue, 1–9. `factory:plan-probe-reset <n>` gives them back.                                                                                                                                                                                                                                                                                    |
+| `FACTORY_PLAN_PROBE_PREVIEW_WAIT_MIN` | `15`                                 | Minutes from the push that a probe waits for a Preview deployment to appear. Once Vercel is building, it waits three times as long. Then the round ends as `failed:no-preview`.                                                                                                                                                                                 |
+| `FACTORY_PLAN_PROBE_TIMEOUT_SEC`      | `900`                                | The planner's wall cap while a probe is available. The larger of this and `FACTORY_PLAN_TIMEOUT_SEC` wins.                                                                                                                                                                                                                                                      |
+| `FACTORY_SECRETS_DIR`                 | `~/drafto-secrets`                   | The planner's files and the report are scanned for every secret in every file here (secret-named or token-shaped values, `name: value` passwords, long tokens; not emails, the allowlist or plain URLs), as well as the test password, the bypass secret and the dev service-role key. A file here that can't be read stops the probe (`rejected:secret-scan`). |
+| `FACTORY_VERIFY_BYPASS_FILE`          | `~/drafto-secrets/vercel-bypass.env` | Shared with the verification shell lane (see "Pre-In-Test verification (Testing)" → "One-time setup", step 2). Header capture reads it even with `FACTORY_VERIFY=0`, and passes it to curl on stdin. Missing or unusable: the report notes `no-bypass-secret`.                                                                                                  |
+
+Some limits are fixed in the script:
+
+- 2 runner sessions per probe commit; a session that fails on the browser's side is refunded;
+- 2 fold replans per round;
+- 120 minutes from the push to the end of a round (`failed:expired`);
+- 30 days' retention for probe dirs that no record names.
+
+**State.** `node scripts/lib/state-cli.mjs factory:get-issue <n>` shows the card's `planProbe*` fields:
+
+- `planProbeId`: `<issue>-<epoch>`. It names the dir `logs/factory/plan-probe/<planProbeId>/` and is part of the report and ack markers.
+- `planProbeStatus`: one of these.
+  - `queued`
+  - `reported`
+  - `failed:build`, `failed:no-preview`, `failed:push`, `failed:branch-moved`, `failed:expired` or `failed:runner`
+  - `rejected:checks`, `rejected:secret`, `rejected:secret-scan` or `rejected:cap`
+  - `cancelled:off` or `cancelled:left-plan-review`
+  - `folded`, `folded:gave-up` or `folded:left-plan-review`
+- `planProbeRound`: the rounds used so far.
+- `planProbeSha` and `planProbeMainSha`: the probe commit, and the `main` commit it was built on.
+- `planProbeQueuedAt`: the push time, which anchors the preview wait and the deadline.
+- `planProbeAttempts`: `<sha>:<n>`, the runner sessions spent.
+- `planProbeFoldAttempts`: `<probeId>:<n>`, the fold replans run.
+- `planProbeStaging`: set only while a planner run is in progress.
+
+The probe never touches `browserRunSha` or `browserRunAttempts`.
+
+```bash
+node scripts/lib/state-cli.mjs factory:get-issue <n>          # the planProbe* fields
+node scripts/lib/state-cli.mjs factory:plan-probe-reset <n>   # forget the probe record and give back its rounds
+```
+
+`factory:plan-probe-reset` clears every `planProbe*` field. It refuses (`{"ok":false,"reason":"probe-queued"}`) while a probe is queued, because that probe's branch is still on GitHub. To stop a queued probe, set `FACTORY_PLAN_PROBE=0` and reload: the next `--plan` housekeeping cancels it and deletes its branch, and the reset then works. To get a new round, comment on the issue asking for browser checks.
+
+**What a probe leaves behind.** The probe dir (mode 700) holds:
+
+- the planner's `checks.md`, `headers.txt` and `spike/`;
+- `probe.json`: what finalize decided, including the header paths, whether the spike was kept and why it was dropped;
+- `headers.json`: the captured headers;
+- `result.json`: how the round ended;
+- `section.md`: the runner's rendered table;
+- `report.md`: the report, as the planner reads it for the fold.
+
+The runner's own run dir is `logs/factory/browser/issue-<n>-probe-<probeId>-<timestamp>/`. The probe commit stays reachable by SHA on GitHub after the branch is deleted, and so do its Vercel and GitHub deployment records.
+
+**Triage:**
+
+- **A probe stays `queued`.** The `--browser` log says what it waits for:
+  - `plan probe preview is pending|building (<n> min); its browser run waits`: Vercel hasn't built it yet. If no deployment ever appears, check the Vercel project's Git integration and its Ignored Build Step setting. That setting decides whether Vercel builds a branch that has no PR. On 2026-11-09 it did. The round ends as `failed:no-preview` after the wait above.
+  - `plan probe browser run skipped (<reason>)`, or an `unavailable` or `auth-expired` run: the browser is the problem. The causes and fixes are those in "Health and triage" above. The session is refunded, and the run tries again on later ticks.
+  - `the preview sign-in lease is held …; plan probe run deferred`: another run holds the lease (see "The sign-in lease").
+  - `no longer a Plan Review candidate`: the card left Plan Review or has a `factory-pause` or `support` label. A card in Planning waits for the rescue sweep.
+  - Nothing for the issue at all: it's waiting its turn. Probes run after any Testing or In Test candidate, one browser run per tick.
+
+  Whatever the cause, housekeeping ends the round as `failed:expired` 120 minutes after the push. Its report carries any headers already captured.
+
+- **`failed:build`.** Vercel reported the probe's deployment as failed, usually because a spike doesn't compile. The factory can't read Vercel's build log, so the report and the planner only learn that the build failed. To see the log from an interactive session, take `planProbeSha` from `factory:get-issue <n>` and look up the deployment, which stays after the branch is deleted:
+
+  ```bash
+  gh api "repos/JakubAnderwald/drafto/deployments?sha=<planProbeSha>&environment=Preview" --jq '.[0].id'
+  gh api "repos/JakubAnderwald/drafto/deployments/<id>/statuses" --jq '.[0].environment_url'
+  npx vercel inspect <that url> --logs
+  ```
+
+- **`rejected:secret`.** A file the planner wrote matched a secret pattern. The patterns are the test password, the bypass secret, the dev service-role key, a value from `~/drafto-secrets`, and GitHub token, Anthropic key and private-key patterns. Nothing was pushed. The posted report only says the probe was rejected, and it is withheld entirely if the checks themselves held the match. The files stay in the probe dir: read them there to see what matched, and treat it as possible prompt injection through the issue. The round counts against the cap; `factory:plan-probe-reset <n>` gives it back.
+- **An orphan `factory/plan-probe-*` branch** (after a reset, a crash or a killed tick). The next `--plan` housekeeping deletes it, under a lease on the SHA it saw, and logs `plan probe housekeeping: orphan-deleted`. To delete it by hand:
+
+  ```bash
+  git ls-remote origin 'refs/heads/factory/plan-probe-*'
+  git push --force-with-lease=refs/heads/factory/plan-probe-<n>:<sha> origin :refs/heads/factory/plan-probe-<n>
+  ```
+
+- **Headers missing from the report.** There are four likely causes:
+  - The planner asked for none: there's no `headers.txt`.
+  - Its paths were rejected: the report's note says `The headers file was ignored (…)`.
+  - The capture failed: the `--browser` log says `capturing #<n>'s plan probe headers failed`.
+  - Every path shows a redirect to `off-origin`: curl got Vercel's login wall. With the note `no-bypass-secret (<problem>)`, the bypass file is missing or unusable; run `node scripts/lib/verify-lane.mjs bypass-check`. Without that note, the secret itself is wrong, so regenerate it in the Vercel dashboard.
+
+  Headers are captured once per probe, before the browser run.
+
+- **`signin-failed` in a probe report.** This is the probe's own result, not a health strike. Most often the spike changed the middleware or auth. If the probe had no spike, check the test account, as for `signin-failed` in "Health and triage".
+- **`failed:runner`.** Two runner sessions on the probe commit timed out, errored or printed no status line. Read the run dir's `runner-output.txt` and the `--browser` log.
+- **`rejected:secret-scan`.** The factory couldn't read every file the scan needs: the account file, the sign-in key file, the bypass file (when it exists) or a file in `~/drafto-secrets`. Nothing was pushed. Fix the file's mode or path (`ls -l ~/drafto-secrets`), then `factory:plan-probe-reset <n>` if the round should come back.
+- **A probe that never started after a killed tick.** A planner run that dies before bash settles its staging leaves only the staging dir, which the next `--plan` housekeeping drops (`staging-dropped` in the log). No round is spent; the planner requests the probe again on its next run.
+- **`folded:gave-up`.** The planner didn't append the ack in 2 fold replans; the `--plan` log has a WARNING. The report is still on the issue, so read it yourself, or comment to start a replan.
+- **Turning spikes off.** Set `FACTORY_PLAN_PROBE_SPIKE=0` in the plist and reload. Probes then run on `main`'s own code only.
+
 ## Pre-In-Test verification (Testing)
 
 A factory-owned **Testing** column between In Review and In Test ([ADR-0053](../adr/0053-pre-in-test-verification-stage.md), [factory-verification.md](../features/factory-verification.md)). With `FACTORY_VERIFY=1`, a converged In Review card moves to Testing instead of In Test. The scenario is written and the betas dispatched there. The Testing sweep in `--watch` works the verification lanes, then moves the card to In Test with one report comment. Verification is evidence, never a gate. Both lanes are built: the **shell lane** (see "The shell lane" below) and the **browser lane**, the browser runner's `verify` kind (see "Browser runner (Claude in Chrome)" → "A Testing card's browser lane"). The card is promoted once both lanes have a result, or at the hold cap.
@@ -740,7 +855,7 @@ A detached claude session that runs the scenario from a terminal: targeted tests
 - **One run at a time, factory-wide** (the `verify` ledger in the state file), under `nice -n 10`. A start is refused (and retried next tick) under memory pressure (`kern.memorystatus_vm_pressure_level` ≥ 2), with less than `FACTORY_MIN_FREE_DISK_GB` free, or while another card's run holds the lane; the card's shell row then reads `deferred:<why>`, which the report shows as `skipped: <why>` if the hold cap comes first. A run never outlives the hold cap: its deadline is cut to it, and none starts with less than 10 minutes of the round left (`hold-cap-near`).
 - **Where it runs:** a fresh detached worktree, `worktrees/verify-<issue>-<sha12>`, with `node_modules` cloned from the factory checkout and `pnpm install --frozen-lockfile --prefer-offline`. Never the card's slot worktree (its `.env.production` files), and no env file copied in. The PR's own code (its install scripts, the tests the lane runs) runs with the factory user's access, as it does in the implement and fix stages: the guard governs what the model asks for, not what the PR's code does.
 - **What it may do:** `claude -p --no-chrome --strict-mcp-config --setting-sources "" --settings <guard> --permission-mode dontAsk --tools Bash,Read,Grep,Glob`. Never `--chrome`, never `--dangerously-skip-permissions`. The environment is an allowlist (no GH, Vercel or Supabase tokens), `GH_CONFIG_DIR` points at an empty directory, and the guard denies `gh`, `claude`, `vercel`, `supabase`, git writes, installs, releases, `node scripts/…`, secrets paths and any curl but http(s) to localhost. See [claude-code-hooks.md](claude-code-hooks.md#the-verification-lanes-guard).
-- **The preview, only through `preview-curl`:** a wrapper on the session's PATH that pins the commit's preview origin and reads the bypass header and the test account's session cookie from `private/curl.cfg` (mode 600). The secret is never in the prompt, the environment or a command line, so it stays out of the transcript. That isn't a wall against a session that sets out to read it ([claude-code-hooks.md](claude-code-hooks.md#the-verification-lanes-guard)). The session comes from the same one-time link the browser runner uses (`browser-signin.mjs`), exchanged by the supervisor with curl. A branch that predates `/auth/test-sign-in` gets no session; the report says so.
+- **The preview, only through `preview-curl`:** a wrapper on the session's PATH that pins the commit's preview origin and reads the bypass header and the test account's session cookie from `private/curl.cfg` (mode 600), or with `--signed-out` the bypass header alone from `private/curl-signed-out.cfg` (mode 600, no cookie jar). The secret is never in the prompt, the environment or a command line, so it stays out of the transcript. That isn't a wall against a session that sets out to read it ([claude-code-hooks.md](claude-code-hooks.md#the-verification-lanes-guard)). The session comes from the same one-time link the browser runner uses (`browser-signin.mjs`), exchanged by the supervisor with curl. A branch that predates `/auth/test-sign-in` gets no session; the report says so.
 - **The sign-in lease:** the supervisor mints under the lease it shares with the browser runner (`verify_shell_work` passes `--signin-lease-file`, kept in `meta.json`). It holds the lease for 120 s and releases it right after the exchange. While a browser run holds it, the supervisor waits, polling every 5 s, for at most 6 minutes and never into the run's 2-minute cleanup reserve. A stop or SIGTERM ends the wait at once (`facts.session` = `stopped`). Still held after that: no session (`facts.session` = `signin-busy`), tests only, and the report lists the gap. See "Browser runner (Claude in Chrome)" → "The sign-in lease".
 - **API keys:** the lane may create one, named with its run's tag (`factory-shell-<issue>-<sha7>-<HHMMSS>…`). After the session the supervisor revokes the keys carrying that tag, plus any `factory-shell-` key created before the run started (left by a run that was killed before its own cleanup). It never touches a newer run's key, so a stopped run still cleaning up can't break the next card's MCP checks.
 - **Results** (`verifyShell` = `<sha>:<state>`): `reported:<verdict>`; `timeout`; `unavailable:install|guard|error|no-result|lost|claude-missing|…` (the last three only once attempts are spent; before that `retry:<why>`, which the report shows as `skipped: … and the hold cap came before another attempt` if the cap comes first); `skipped:attempts`; `deferred:session-limit` (the factory is paused until the reset and the attempt refunded). A run whose guard didn't load (no SessionStart canary, tool calls with no guard record, or a guard log that can't be read) is `unavailable:guard` and **pauses the lane for 24 hours**: find out why, then `node scripts/lib/state-cli.mjs factory:verify-resume`.
@@ -748,16 +863,16 @@ A detached claude session that runs the scenario from a terminal: targeted tests
 
 Each run has a directory, `logs/factory/verify/<issue>-<sha12>-<timestamp>/` (mode 700, reaped after 30 days):
 
-| File                                       | What it is                                                                                                       |
-| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `meta.json`                                | What `start` decided: worktree, deadline, session id, binaries, secret-file **paths** (never values), lane facts |
-| `prompt.md`, `bundle.json`                 | The prompt and the bundle (`factory_verify_shell`: the scenario sections, files, platforms, preview origin)      |
-| `guard-config.json`, `guard-settings.json` | The guard's config and the `--settings` file; `guard/<session>.jsonl` is its decision log                        |
-| `supervisor.log`, `install.log`            | The supervisor's own log and the pnpm output                                                                     |
-| `shell-output.txt`, `claude-stderr.log`    | The session's report (what the report composer reads) and claude's stderr                                        |
-| `bin/preview-curl`                         | The wrapper                                                                                                      |
-| `exit.json`                                | How it ended: exit code, timeout, termination, install / session / bypass facts, guard counts, keys revoked      |
-| `private/` (`curl.cfg`, `cookies.txt`)     | Only while the run is live. Removed at the end, and by housekeeping if the supervisor was killed                 |
+| File                                                          | What it is                                                                                                       |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `meta.json`                                                   | What `start` decided: worktree, deadline, session id, binaries, secret-file **paths** (never values), lane facts |
+| `prompt.md`, `bundle.json`                                    | The prompt and the bundle (`factory_verify_shell`: the scenario sections, files, platforms, preview origin)      |
+| `guard-config.json`, `guard-settings.json`                    | The guard's config and the `--settings` file; `guard/<session>.jsonl` is its decision log                        |
+| `supervisor.log`, `install.log`                               | The supervisor's own log and the pnpm output                                                                     |
+| `shell-output.txt`, `claude-stderr.log`                       | The session's report (what the report composer reads) and claude's stderr                                        |
+| `bin/preview-curl`                                            | The wrapper                                                                                                      |
+| `exit.json`                                                   | How it ended: exit code, timeout, termination, install / session / bypass facts, guard counts, keys revoked      |
+| `private/` (`curl.cfg`, `curl-signed-out.cfg`, `cookies.txt`) | Only while the run is live. Removed at the end, and by housekeeping if the supervisor was killed                 |
 
 To stop a run by hand: `node scripts/lib/state-cli.mjs factory:verify-status` for its run id, then `factory:verify-finish <runId> --refund attempt`. Housekeeping removes its worktree on the next tick.
 
@@ -809,6 +924,7 @@ node scripts/lib/state-cli.mjs factory:verify-reset <n>                    # for
 | A `gh` call hangs               | Every `gh` call in `factory-agent.sh` and its node helpers (`factory-project`, `verify-lane`, `coderabbit-cli`) is capped at `FACTORY_GH_TIMEOUT_SEC` (default 120 s): bash through a `gh()` wrapper over `run-with-timeout.mjs`, node through `scripts/lib/gh-timeout.mjs`. At the cap `gh` is killed and the caller treats it as any other `gh` failure. A capped bash call logs `WARNING: gh <subcommand> timed out after <n>s` unless its stderr goes to `/dev/null`; a capped node call shows as that helper's usual failure. Before the cap, one idle `gh issue comment` on #748 held the loop lock for 2+ days. If a tick still looks stuck, `ps -ax -o pid,etime,command \| grep -E 'factory-agent\|gh '` shows what it waits on.                                                                                                 |
 | CodeRabbit CLI lane misbehaving | Set `FACTORY_CR_CLI=0` in the plist and reload. Cards then promote without waiting for CodeRabbit. Housekeeping keeps running with the lane off: it terminates an in-flight CLI run (SIGTERM to its process group) and discards any finished run's results — nothing is posted and no coverage is recorded — then removes the run's worktree and frees the slot. To do that by hand right away, see "Killing a wedged run". A lane pause (`factory:cr-cli-pause-until`) only stops new runs; cards still hold for the bot and their own in-flight run (see "What a lane pause does to cards"). See "CodeRabbit CLI gap-fill lane". The kill switch covers factory runs only: a manual `coderabbit-cli.mjs review` (`"manual": true` in `factory:cr-cli-status`) keeps running and posting. Stop one with `factory:cr-cli-finish <runId>`. |
 | Browser runner misbehaving      | Set `FACTORY_BROWSER=0` in the plist and reload. No claude call gets Chrome after that, and a Testing card's browser lane ends as `skipped:browser-off`. To stop a run in flight, kill its `run-claude.mjs` process; its tabs stay open in an orphaned group in Chrome. See "Browser runner (Claude in Chrome)".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Plan-stage probe misbehaving    | Set `FACTORY_PLAN_PROBE=0` in the plist and reload. The next `--plan` tick cancels any queued probe (`cancelled:off`, nothing posted) and deletes its branch. A round that already reported is still folded into its plan. To keep probes but stop building the planner's code, set `FACTORY_PLAN_PROBE_SPIKE=0` instead. See "Browser runner (Claude in Chrome)" → "Plan-stage browser probe".                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | Verification stage misbehaving  | Set `FACTORY_VERIFY=0` in the plist and reload. Cards go straight to In Test again. Any card already in Testing is promoted on the next tick, with a report saying verification was switched off. **Rollback drill:** set `FACTORY_VERIFY=0`, wait for Testing to drain (the `--watch` log shows `promote (verification-off)` lines), then check the board column is **empty**. The sweep leaves some cards there: ones with a `factory-pause` or `support` label, a merged or closed PR, or no PR, and any whose move failed. Move those by hand. Only **then** revert the code. Reverting first strands cards: the old code never looks at Testing. See "Pre-In-Test verification (Testing)".                                                                                                                                           |
 | Stuck PR with a wrong commit    | `gh pr close <n> --delete-branch`. Drag the card back to Ready. Factory will re-plan on the next tick.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Plan needs a single tweak       | Comment on the issue with the correction; on the next tick the factory edits the existing plan comment in place (preserves the rest, stamps `<!-- drafto-factory-replan-ack:<id> -->` so the same comment doesn't loop) and posts one reply per comment you wrote (`<!-- drafto-factory-plan-reply-<id> -->`). Drag back to Ready only if you want a full restart. See `docs/features/dark-factory.md` → "The plan comment looks wrong".                                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -872,7 +988,7 @@ Both markers are keyed on the head SHA, so a new push re-arms them. The re-run b
 
 ### A PR that conflicts with main (self-healing)
 
-On 2026-10-27 #688 was approved while its PR #755 conflicted with `main`: it and #757 had both added an ADR numbered 0059. `--release` commented once and left the card in Approved, where it kept its worktree slot. With the other slot held by an In Test card, #718 couldn't start for two days. Nothing in the factory merged `main` into a PR branch, and the comment's advice, to comment a change request, reached no mode.
+On 2026-10-27 #688 was approved while its PR #755 conflicted with `main`: it and #757 had both added an ADR numbered 0059. `--release` commented once and left the card in Approved, where it kept its worktree slot. With the other slot held by an In Test card, #718 couldn't start for two days. (Since [ADR-0070](../adr/0070-factory-in-test-frees-slot-and-updates-behind-prs.md), neither In Test nor Approved holds a slot.) Nothing in the factory merged `main` into a PR branch, and the comment's advice, to comment a change request, reached no mode.
 
 Now a conflict is handed back to the fix loop like red CI ([ADR-0061](../adr/0061-factory-resolves-merge-conflicts.md)):
 
@@ -884,6 +1000,47 @@ Now a conflict is handed back to the fix loop like red CI ([ADR-0061](../adr/006
 - The card then goes through CI, review and In Test again, and needs a fresh **Approved** drag.
 
 The `--watch` log says what happened: `merged origin/main into PR #<n>'s branch: <status> (conflicted: …; ADR clashes: N)`, followed by `pushed the merge`, `conflict pass merged main`, or the reason it rolled back. To resolve a conflict by hand instead, merge `main` into `factory/issue-<n>` and push. The next tick sees a mergeable PR and carries on.
+
+### A PR that is behind main (self-healing)
+
+On 2026-11-09 #794 reached In Test with PR #802 behind `main`. It had branched five minutes before #801 bumped desktop to 0.4.5, and App Store Connect had already closed the 0.4.4 train, so the desktop pre-merge beta failed all three attempts (`The train version '0.4.4' is closed for new build submissions`). Only `--release` ever updated a behind branch, and that runs after you approve.
+
+Now `--watch` brings an In Review PR up to date before it hands the card to you ([ADR-0070](../adr/0070-factory-in-test-frees-slot-and-updates-behind-prs.md)):
+
+- **When.** As the last check before Testing or In Test. By then required CI is green, the code review has run, the CodeRabbit lane has decided and the hosted-config gate has passed, so no update is spent while the card waits on any of them. It asks GitHub's compare API how far `main` is ahead of the head (`behind_by`), rather than `mergeStateStatus`, which reads `UNKNOWN` right after `main` moves.
+- **How.** It calls update-branch with `expected_head_sha` pinned to the head it read. That is a merge commit: the factory never force-pushes, so it never rebases. No issue comment is posted. It records the commit it updated (`branchUpdatedFrom`), and so does `--release` when it updates. The card keeps its slot: a later resume fast-forwards the worktree to the merge. It won't update a branch whose worktree, or kept local branch, holds commits the PR lacks, for example a fix whose push never landed. It logs `worktree has commits the PR lacks; not updating the branch`, and the card goes on as it stands. Push or drop those commits by hand. If the budget can't be read or recorded, it doesn't update either (`counting it as spent` / `couldn't record a branch update`).
+- **What re-runs.** CI, on the merged head. The code review doesn't, and neither does CodeRabbit if it had decided the old commit. The merge commit inherits both, because the PR's own change hasn't moved: `<sha12> only merges main into the reviewed <sha12>; carried its code review and CodeRabbit coverage over`. Only a merge GitHub committed itself (`web-flow`, `Merge branch 'main' into …`) on top of the recorded commit inherits them. A push on top of it, a conflict resolution committed locally, or any other new head is reviewed as usual. The card goes on to In Test on a later tick.
+- **Bound.** Each attempt counts toward `FACTORY_MAX_BRANCH_UPDATES` (default `3`), stored per issue as `branchUpdates`. It resets when `--implement` moves the card to In Review and when the card reaches In Test. Once that is spent, the card goes on as it stands, and `--release` updates it at merge time.
+- **When the update fails.** If the head moved or mergeability is unknown (update-branch rejects a conflict GitHub hasn't flagged yet), the card holds for a tick. For anything else, it logs a WARNING and goes on.
+- **Not covered.** A card already in In Test, or in Testing, isn't updated when `main` moves, because that would change the commit you're testing. A revision that changes code passes back through In Review and gets updated there. A no-op or declined revision returns to In Test on the head you already saw. `--release` updates the branch before the merge.
+
+Log lines: `PR #<n> was <k> commit(s) behind main; updated the branch`, `… carried its code review … over`, `… branch update(s) are spent; going on as it stands`, `update-branch for PR #<n> didn't apply (…); rechecking next tick`. To grant a fresh budget, run `node scripts/lib/state-cli.mjs factory:set-issue-field <n> branchUpdates "" --state-file logs/factory-state.json` in `drafto-factory`.
+
+### Who holds a worktree slot
+
+There are two slots (`SLOT_COUNT` in `scripts/lib/factory-state.mjs`). A card holds one only while the factory is working on it: In Progress, In Review and Testing. The `--watch` cleanup sweep reads each slot holder's column on the factory board from its issue (`gh issue view --json state,projectItems`). Once the card is anywhere else, or its issue is closed, the sweep frees the slot and removes the worktree but keeps the branch. That includes In Test, where nothing uses the worktree ([ADR-0070](../adr/0070-factory-in-test-frees-slot-and-updates-behind-prs.md)). The sweep reads the column, never the `status:*` label, because a card you drag by hand keeps the label of the column it left. A plan you approve by dragging it out of Plan Review still says `status:plan-review` in In Progress. If the column can't be read, the sweep frees only a closed issue's slot that tick (`couldn't read its column on the Drafto Factory board; leaving slot for next tick`). That happens when the token lacks `project` scope, when the issue has no card on that board, or when the board was renamed. A slot holder dragged off the board therefore keeps its slot until its issue closes, or you run `factory:slot-release`.
+
+- **Coming back.** A revision from In Test, or a hand-back to In Review, takes a free slot and rebuilds its worktree from the PR branch. That costs one seed plus `pnpm install`. `--implement` takes cards in this order: those already holding a slot, then those with an open PR, then fresh ones. `--watch` runs before `--implement`, so returning work gets a freed slot first. It can still wait for one of the two cards already working to finish.
+- **No-op and declined revisions** free their slot as soon as they're back in In Test, so the next card in the same sweep can use it.
+- **Held by the hosted-config gate.** An In Review card the hosted-config gate holds for you (see "Hosted Supabase config gate") frees its slot on the first tick of the hold: `waiting on the hosted config; freeing its worktree slot meanwhile`. A tick held only for a transient error keeps the slot. The hold waits on you, so it can last days, and only a fix pass needs the worktree. A card whose worktree holds commits the PR lacks keeps its slot. The CodeRabbit lane's hold is bounded, and a card there keeps its slot.
+
+### A worktree behind its PR branch, with uncommitted leftovers
+
+When a worktree is resumed, `worktree-cli.mjs add --fetch` fast-forwards it to the PR branch if someone else pushed meanwhile: "Update branch" on GitHub, the behind-main update, `--release`, or you. Uncommitted leftovers used to block that. The resume threw, `--watch` released the slot without spending an attempt, and the card retried silently every tick. Typical leftovers are an unfrozen install's `pnpm-lock.yaml`, a fix pass cut off mid-edit, or a hand edit. Now they are set aside first, never deleted ([ADR-0070](../adr/0070-factory-in-test-frees-slot-and-updates-behind-prs.md)). They are snapshotted, new files included, under `refs/factory-leftovers/factory/issue-<n>/<sha12>-<ms>`, and the worktree is reset and fast-forwarded. The log names the ref: `the worktree was behind the PR with uncommitted leftovers; set them aside at <ref>`.
+
+A worktree the factory removes takes the same snapshot first: `kept the removed worktree's uncommitted changes at <ref>`. That happens when the card reaches In Test, when the hosted-config gate holds it, or when it is blocked. So an edit you make in `worktrees/factory-issue-<n>` while a card waits on you isn't lost. If the snapshot fails, the worktree is left in place (`WARNING: … worktree not removed`).
+
+Run these in the factory checkout:
+
+```bash
+git for-each-ref refs/factory-leftovers
+git -C worktrees/factory-issue-<n> stash apply <ref>
+git update-ref -d <ref>
+```
+
+The first lists the snapshots, the second restores one into the worktree, and the third drops one. Nothing prunes them.
+
+A worktree that has **diverged** from the PR branch (commits on both sides), or has a merge in progress, still fails the resume with `reconcile … by hand`. Push or drop the local commits, or finish or abort the merge, in `worktrees/factory-issue-<n>`.
 
 ## Rollback drills
 
@@ -908,7 +1065,7 @@ The factory's `cleanup()` trap files a `factory-failure`-labelled GitHub issue w
 3. **Common causes** (in approximate order of frequency):
    - Network blip during `gh` call (transient — usually resolves on the next tick).
    - Broken host toolchain: git failing on an unaccepted Xcode license after an Xcode update, missing Command Line Tools, or a binary gone from `PATH`. The toolchain health check pauses the factory and emails the fix; see "Automatic toolchain pause".
-   - Worktree slot leaked (a previous run died without releasing it). `node scripts/lib/state-cli.mjs factory:slot-status` shows each slot's PID + issue; if the PID is dead, `node scripts/lib/state-cli.mjs factory:slot-release <slot>` then `node scripts/lib/worktree-cli.mjs remove --issue <n> --force`. (`--watch`'s cleanup sweep also auto-releases slots whose issue has left the active In Progress/In Review/Testing/In Test states — e.g. merged, Blocked, or closed. Since ADR-0033 that sweep removes the worktree but **keeps** the local branch whenever a PR still points at it, so a card dragged back to In Progress resumes on its own commits.)
+   - Worktree slot leaked (a previous run died without releasing it). `node scripts/lib/state-cli.mjs factory:slot-status` shows each slot's PID + issue; if the PID is dead, `node scripts/lib/state-cli.mjs factory:slot-release <slot>` then `node scripts/lib/worktree-cli.mjs remove --issue <n> --force`. (`--watch`'s cleanup sweep also auto-releases slots whose board card has left the active In Progress/In Review/Testing columns — e.g. reached In Test, merged, Blocked, or closed; see "Who holds a worktree slot". Since ADR-0033 that sweep removes the worktree but **keeps** the local branch whenever a PR still points at it, so a card dragged back to In Progress resumes on its own commits.)
    - Disk full under `worktrees/` — the factory now refuses to start an implement when free space is below `FACTORY_MIN_FREE_DISK_GB` (it parks the card in Blocked with a `disk-low` comment), so a mid-build ENOSPC should be rare. Reclaim space via `git worktree prune` (and `node scripts/lib/worktree-cli.mjs list` to see the factory's worktrees); see "Worktree installs & disk" for the full reclamation runbook.
    - Claude wall-time cap hit on every retry (the prompt or context bundle is too large). Inspect the bundle in the log; truncate prior PR threads if needed. (A Claude _session usage_ limit is handled separately — the factory auto-pauses until reset instead of failing; see "Automatic pause on a Claude session limit".)
 4. **Close the failure issue** once resolved. The trap doesn't auto-close; that's intentional so the issue is visible until acknowledged.

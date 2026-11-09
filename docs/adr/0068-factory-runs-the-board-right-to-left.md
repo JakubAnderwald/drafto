@@ -4,6 +4,8 @@
 - **Date**: 2026-11-08
 - **Authors**: Jakub Anderwald, Claude
 
+> **Update 2026-11-09**: Within `--implement`, cards with an open PR (revisions from In Test, retries) now go before fresh cards, because In Test no longer holds a slot ([ADR-0070](./0070-factory-in-test-frees-slot-and-updates-behind-prs.md)).
+
 ## Context
 
 Every 5 minutes, `scripts/factory-agent-loop.sh` runs the factory's modes one after another under one mutex ([ADR-0026](./0026-dark-factory-pipeline.md)). Until now it ran them left to right across the board: `--plan` (Ready), `--implement` (In Progress), `--watch` (In Review, Testing, In Test), `--release` (Approved), then `--browser`.

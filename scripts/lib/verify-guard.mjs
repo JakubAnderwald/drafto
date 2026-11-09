@@ -105,11 +105,22 @@ export const DEFAULT_PERL_PATH = "/usr/bin/perl";
 // See browser-guard.mjs: SIGALRM survives exec, and a failed exec exits 2.
 export const PERL_ALARM_SCRIPT = "alarm shift; exec @ARGV or exit 2";
 
-// The run dir's subdirectory holding the curl config (bypass header, cookie
-// jar). Shared with verify-lane.mjs, which creates it.
+// The run dir's subdirectory holding the curl configs (bypass header, cookie
+// jar), and the names of the files in it. verify-lane.mjs creates them from
+// these names, so a new secret-bearing file is protected by name as soon as
+// it's added here.
 export const PRIVATE_DIRNAME = "private";
 export const BIN_DIRNAME = "bin";
-const PRIVATE_FILE_NAMES = ["curl.cfg", "cookies.txt", "signin.cfg"];
+export const CURL_CFG = "curl.cfg";
+export const SIGNED_OUT_CURL_CFG = "curl-signed-out.cfg";
+export const COOKIE_JAR = "cookies.txt";
+export const SIGNIN_CFG = "signin.cfg";
+export const PRIVATE_FILE_NAMES = Object.freeze([
+  CURL_CFG,
+  SIGNED_OUT_CURL_CFG,
+  COOKIE_JAR,
+  SIGNIN_CFG,
+]);
 
 // Command words a lane session never runs, whatever their arguments.
 export const DENY_COMMANDS = Object.freeze([
