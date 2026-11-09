@@ -1192,6 +1192,36 @@ describe("scenario sections and platforms", () => {
     assert.ok(lines.some((l) => l.startsWith("Run the **macOS** steps")));
   });
 
+  it("leaves ### API to the shell lane once it reported, and asks for it by hand otherwise", () => {
+    const body = [
+      "## Test scenario",
+      "### Web",
+      "1. Open /notebooks — expected: the list.",
+      "### API",
+      "1. Signed out: `vercel curl /api/notebooks --deployment <url> -- -s` — expected: 401.",
+    ].join("\n");
+    const platforms = { web: true, mobile: false, desktop: false };
+    const ran = manualLines(compose({ platforms, scenario: body }).body);
+    assert.ok(!ran.some((l) => /\*\*API\*\*/.test(l)), ran.join("\n"));
+    const byHand = "Run the **API** steps in the test scenario by hand with `vercel curl`: ";
+    for (const [shell, why] of [
+      [{ state: "timeout", dir: "", text: null }, "the shell lane didn't report."],
+      [
+        { state: "reported:none", text: shellOutput({ status: "blocked", verdict: "none" }) },
+        "the shell lane stopped early (blocked).",
+      ],
+    ]) {
+      const lines = manualLines(compose({ platforms, scenario: body, shell }).body);
+      assert.ok(lines.includes(byHand + why), `${shell.state}: ${lines.join("\n")}`);
+    }
+    // A heading the writer decorated still counts as the shell lane's.
+    for (const heading of ["### **API**", "### API checks"]) {
+      const decorated = body.replace("### API", heading);
+      const lines = manualLines(compose({ platforms, scenario: decorated }).body);
+      assert.ok(!lines.some((l) => /\bAPI\b/.test(l)), `${heading}: ${lines.join("\n")}`);
+    }
+  });
+
   it("asks for an affected platform by hand when the scenario has no section for it", () => {
     const r = compose({
       scenario: scenario({ mobile: false, mac: false }),

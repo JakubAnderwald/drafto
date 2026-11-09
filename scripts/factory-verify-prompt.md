@@ -36,8 +36,9 @@ The JSON bundle and the run-time facts at the end of this prompt carry:
   cut).
 - `scenario` — the factory's own test scenario for `headSha`:
   `{ commentId, url, sections }`. Each entry of `sections` is one `###` section
-  of the scenario (one per platform, usually), inside `<scenario-section>`.
-  `null` when this commit has no scenario.
+  of the scenario (one per platform, usually, plus `### API` for the scenario's
+  API-response checks), inside `<scenario-section>`. `null` when this commit
+  has no scenario.
 - `preview` — `{ origin }` of the commit's own Vercel preview, or `null`.
 - `qaTag` — the tag for the name of anything you create.
 - `preflightScripts` — the macOS in-test scenario scripts you may run with
@@ -85,11 +86,16 @@ options]` sends one request to `preview.origin` with the preview's protection
    `--json`, `-G`, `-s`, `-S`, `-f`, `-o /dev/null` and `-w '%{http_code}'`; it refuses
    anything that could print headers, follow a redirect elsewhere or read a
    file (use `--data-raw "$(cat "$TMPDIR/body.json")"` for a body from a file).
-   Plain `curl` may reach `localhost` only. When the scenario writes a step as
-   `vercel curl <path> --deployment <url> -- <flags>`, run it as
-   `preview-curl <path> <flags>`. When `preview` is `null`, the bypass isn't
-   `ok`, or the step needs a signed-in user and `session` isn't `signed-in`,
-   mark the step SKIP and put it in the manual steps.
+   Its own option `--signed-out` sends the request with the bypass but without
+   the session, and keeps no cookie the response sets: use it for every step
+   done signed out. Plain `curl` may reach `localhost` only. When the scenario
+   writes a step as `vercel curl <path> --deployment <url> -- <flags>`, run it
+   as `preview-curl <path> <flags>`, adding `--signed-out` when the step runs
+   signed out. Every step of the scenario's `### API` section is yours to run
+   this way. When `preview` is `null`, the bypass isn't `ok`, or the step needs
+   a signed-in user and `session` isn't `signed-in`, mark the step SKIP and put
+   it in the manual steps. A signed-out step doesn't need `session` to be
+   `signed-in`, only the bypass to be `ok`.
 3. **At most one API key, never shown.** If a step needs a Drafto API key (MCP
    checks), create one with `POST /api/api-keys` and a name that starts with
    `bundle.qaTag`. The response holds the key, so never let it reach your
@@ -110,7 +116,13 @@ options]` sends one request to `preview.origin` with the preview's protection
 5. **Leave `### Web` to the browser lane.** Another lane runs the Web section in
    a browser. Run only a Web step that is a terminal or API step; skip the rest
    without listing them as manual steps (the report adds them when the browser
-   lane didn't run).
+   lane didn't run). A Web step that checks what an API route returns by running
+   `fetch("/api/…")` in the DevTools Console is an API step, because the browser
+   lane can't run JavaScript: run it as
+   `preview-curl -H 'Sec-Fetch-Mode: cors' <path>` (a page's own `fetch` sends
+   it, and middleware can tell a fetch from a page load by it), adding
+   `--signed-out` when the step is done signed out, and
+   judge it by the status and body the step expects.
 6. **Mobile and device steps are manual.** Nothing here can run an iOS or
    Android build or a simulator. List those steps as manual.
 7. **Never touch production.** drafto.eu, the production database and the
