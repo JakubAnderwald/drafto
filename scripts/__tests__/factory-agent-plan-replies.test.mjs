@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { FACTORY_PLAN_MARKER } from "../lib/factory-bundle.mjs";
+
 // #718: the operator asked a question on a plan in Plan Review. The factory
 // replanned, folded its answer into the silently edited plan, and the reply
 // the planner wrote went only to the log, so the question looked ignored. Now
@@ -467,6 +469,12 @@ describe("plan comment finders (extracted, real bash)", () => {
     ];
     const r = run("extract_plan_comment", comments);
     assert.equal(JSON.parse(r.stdout.split("\n")[0]).id, 1);
+  });
+
+  it("matches the marker the bundles strip (FACTORY_PLAN_MARKER)", () => {
+    const fn = script.slice(script.indexOf("plan_comment_jq() {"));
+    const body = fn.slice(0, fn.indexOf("\n}\n"));
+    assert.ok(body.includes(`\\\\A\\\\s*${FACTORY_PLAN_MARKER}`), body);
   });
 
   it("issue_already_planned counts only the factory's own plan", () => {
