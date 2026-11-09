@@ -12,6 +12,8 @@
 
 > **Update 2026-11-09**: A card waiting in In Test no longer holds a worktree slot, and `--watch` brings a PR that is behind `main` up to date before it moves to In Test ([ADR-0070](./0070-factory-in-test-frees-slot-and-updates-behind-prs.md)). The two slots now bound only the cards the factory is working on: In Progress, In Review and Testing.
 
+> **Update 2026-11-09**: The planner can now ask for a browser probe while the card is in Plan Review ([ADR-0071](./0071-plan-stage-browser-probe.md)). Bash pushes a throwaway branch with `main` plus an optional spike of the planned change, and the browser runner checks its Vercel preview. The planner then folds the report into the plan. A probe is evidence for the plan, not implementation, so the plan-approval gate is unchanged. The probe branch is never a PR, is never merged, and is never the implementer's starting point; `--implement` still starts from `main` after a person approves the plan.
+
 ## Context
 
 After [ADR-0024](./0024-realtime-support-agent.md) (real-time support agent) and [ADR-0025](./0025-support-allowlist-from-zoho-sender.md) (sender-gated auto-implementation), Drafto already routes allowlisted bug reports through `support-agent.sh` (Phase 1 — file + acknowledge) and `nightly-support.sh` Phase 3 (Phase 2 — implement at midnight). What's missing is a way to:

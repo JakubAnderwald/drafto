@@ -1385,6 +1385,63 @@ describe("factory:verify-* (pre-In-Test verification stage, ADR-0053)", () => {
     assert.equal(readFileSync(stateFile, "utf8"), original);
   });
 
+  it("factory:plan-probe-reset clears every planProbe key, and nothing else", () => {
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        issues: {
+          42: {
+            planProbeId: "42-1762682400",
+            planProbeRound: "2",
+            planProbeStatus: "folded",
+            planProbeSha: SHA,
+            planProbeFoldAttempts: "42-1762682400:1",
+            browserRunSha: SHA,
+            attempts: 1,
+          },
+        },
+      }),
+    );
+    const r = run(["factory:plan-probe-reset", "42", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      ok: true,
+      cleared: [
+        "planProbeId",
+        "planProbeRound",
+        "planProbeStatus",
+        "planProbeSha",
+        "planProbeFoldAttempts",
+      ],
+      issueNumber: "42",
+    });
+    const issue = readState().issues["42"];
+    assert.equal(issue.planProbeRound, null);
+    assert.equal(issue.browserRunSha, SHA);
+    assert.equal(issue.attempts, 1);
+  });
+
+  it("factory:plan-probe-reset refuses (exit 0, nothing written) while a probe is queued", () => {
+    // Its branch is still on GitHub: the record is what makes housekeeping
+    // delete it once the probe ends or is switched off.
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        issues: { 42: { planProbeId: "42-1762682400", planProbeStatus: "queued" } },
+      }),
+    );
+    const original = readFileSync(stateFile, "utf8");
+    const r = run(["factory:plan-probe-reset", "42", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      ok: false,
+      reason: "probe-queued",
+      probeId: "42-1762682400",
+      issueNumber: "42",
+    });
+    assert.equal(readFileSync(stateFile, "utf8"), original);
+  });
+
   it("factory:verify-reset on an issue with nothing to clear writes nothing", () => {
     const r = run(["factory:verify-reset", "999", "--state-file", stateFile]);
     assert.equal(r.status, 0, r.stderr);
