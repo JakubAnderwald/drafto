@@ -315,7 +315,7 @@ Test 6 is the launch check: it opens the app, requires it to survive 15 s, and f
 
 **It still cannot prove the app renders** — a blank window is a healthy process — so finish by opening the app and **opening a note** yourself. Only then add the knob to the plist and reload.
 
-> History: the fossil replica was validated on **2026-08-06** (macOS build 48). The installing root replaces it under [ADR-0067](../adr/0067-desktop-moves-to-react-native-macos-0-83.md), so validate again before turning the knob on, or back on. The plist may already set `FACTORY_INTEST_BETA_DESKTOP=1`: set it to `0` before merging #558, and back to `1` once the installed root's TestFlight build opens a note.
+> History: the fossil replica was validated on **2026-08-06** (macOS build 48). The installing root replaces it under [ADR-0067](../adr/0067-desktop-moves-to-react-native-macos-0-83.md), so validate again before turning the knob on, or back on. The plist may already set `FACTORY_INTEST_BETA_DESKTOP=1`: set it to `0` before merging #558, and back to `1` once the installed root's TestFlight build opens a note. The installing root was validated on **2026-11-09** (macOS 0.4.5 build 80, tag `desktop@0.4.5+80`, built from `main` with the block above): `verify-testflight-build.sh` passed 9/9 and the build opened a note, so the knob stays at `1`.
 
 **Identifying a pre-merge build.** Release notes begin `PRE-MERGE TEST BUILD — issue #N / PR #M (sha)` (prepended before the char trim, so it survives Play's 500-char cap), and the Fastlane post-hook `comment-intest-build.mjs` posts the build number on the card when the lane lands.
 
