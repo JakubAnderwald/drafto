@@ -38,7 +38,7 @@ Enforce a per-user quota in the database (`supabase/migrations/20261108000001_pe
   - Older app builds don't know the `quota_exceeded` state. They keep retrying a refused upload until the user updates, but once at the quota they can't add objects either.
   - Someone made an admin later keeps the 50 MB default until an admin picks Unlimited for them on the admin page.
   - The storage `UPDATE` policy checks the quota too, so an overwrite of an existing object is refused once the user is at the quota. No Drafto client overwrites objects (every upload passes `upsert: false`), so this refuses nothing they do; without it, a client could insert tiny objects and then overwrite each with a 50 MB one.
-- **Neutral**: Attachments on trashed notes count until the note is deleted permanently or the trash cron purges it. Either one cascades the note's rows, so emptying the trash frees the space at once. Deleting an attachment frees its bytes immediately.
+- **Neutral**: Attachments on trashed notes count until the note is deleted permanently or the trash cron purges it. Either one cascades the note's rows, so emptying the trash frees the space at once. Removing an attachment from a note does not free its bytes, because its row stays until the note is deleted, and no client deletes a single attachment. So the storage-full message tells users to delete notes with attachments and empty the trash.
 
 ## Alternatives Considered
 

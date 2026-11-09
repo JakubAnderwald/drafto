@@ -97,13 +97,13 @@ describe("formatStorageUsage", () => {
 describe("storageFullMessage", () => {
   it("names the usage and the quota", () => {
     expect(storageFullMessage(49.5 * MB, 50 * MB)).toBe(
-      "Storage full: you've used 49.5 MB of your 50 MB. Delete attachments or empty the trash to free space.",
+      "Storage full: you've used 49.5 MB of your 50 MB. Delete notes with attachments and empty the trash to free space.",
     );
   });
 
   it("still explains the refusal when the numbers are unknown", () => {
     const expected =
-      "Storage full: you've used all of your storage. Delete attachments or empty the trash to free space.";
+      "Storage full: you've used all of your storage. Delete notes with attachments and empty the trash to free space.";
     expect(storageFullMessage(undefined, undefined)).toBe(expected);
     expect(storageFullMessage(10 * MB, null)).toBe(expected);
     expect(storageFullMessage(null, 50 * MB)).toBe(expected);
@@ -138,7 +138,7 @@ describe("isStorageQuotaError", () => {
         message: "storage_quota_exceeded",
         code: "P0001",
         details: "used_bytes=1 quota_bytes=2 file_size=5",
-        hint: "Delete attachments or empty the trash to free space.",
+        hint: "Delete notes with attachments and empty the trash to free space.",
       }),
     ).toBe(true);
   });

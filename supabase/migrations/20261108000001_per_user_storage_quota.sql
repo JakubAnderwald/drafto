@@ -211,7 +211,7 @@ begin
       errcode = 'P0001',
       message = 'storage_quota_exceeded',
       detail = format('used_bytes=%s quota_bytes=%s file_size=%s', used, quota, new.file_size),
-      hint = 'Delete attachments or empty the trash to free space.';
+      hint = 'Delete notes with attachments and empty the trash to free space.';
   end if;
 
   return new;

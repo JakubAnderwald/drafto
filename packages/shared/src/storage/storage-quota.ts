@@ -47,7 +47,7 @@ export function formatStorageUsage(usedBytes: number, quotaBytes: number | null)
   return `Storage: ${formatMegabytes(usedBytes)} of ${formatMegabytes(quotaBytes)} used`;
 }
 
-const FREE_SPACE_ADVICE = "Delete attachments or empty the trash to free space.";
+const FREE_SPACE_ADVICE = "Delete notes with attachments and empty the trash to free space.";
 
 /**
  * The message every platform shows when an upload is refused for the quota. Without
