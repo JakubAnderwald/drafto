@@ -344,6 +344,25 @@ describe("buildFactoryPlanBundle", () => {
     assert.match(bundle.comments[0].body, /<\/comment>$/);
   });
 
+  it("passes each comment's authorAssociation through, NONE when it is missing", () => {
+    // The planner's idempotency rule counts only an OWNER comment that starts
+    // with the plan marker: anyone can post one that merely looks like a plan.
+    const bundle = buildFactoryPlanBundle({
+      issue: { number: 1, title: "t", body: "b", labels: [] },
+      comments: [
+        { id: 1, user: { login: "o" }, body: "a", authorAssociation: "OWNER" },
+        { id: 2, user: { login: "x" }, body: "b", author_association: "CONTRIBUTOR" },
+        { id: 3, user: { login: "y" }, body: "c" },
+      ],
+      config: { phase: "A" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    assert.deepEqual(
+      bundle.comments.map((c) => c.authorAssociation),
+      ["OWNER", "CONTRIBUTOR", "NONE"],
+    );
+  });
+
   it("returns a complete plan bundle with spec + parity override + reporter + repo", () => {
     const bundle = buildFactoryPlanBundle({
       issue: {

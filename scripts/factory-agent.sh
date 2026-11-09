@@ -1014,28 +1014,38 @@ fetch_issue_comments() {
       } ]'
 }
 
-# Has the issue already been planned (marker comment present)? Used for
+# plan_comment_jq — a jq `def is_plan:` for the one test of "this comment is
+# the factory's plan", used by every plan finder below and by plan_reply_check.
+# A plan is posted under the Mac mini's gh identity (OWNER) with the marker
+# (FACTORY_PLAN_MARKER in factory-bundle.mjs) as its first line; leading
+# whitespace is tolerated. On a public repo anyone can post a comment that
+# carries the marker, and the replan sweep and --implement act on the plan
+# these helpers find, so a comment from anyone else, or one with the marker
+# further down, is never a plan. A function, not a variable, so the tests that
+# extract a finder can extract this with it.
+plan_comment_jq() {
+  printf '%s' 'def is_plan: .authorAssociation == "OWNER" and ((.body // "") | test("\\A\\s*<!-- drafto-factory-plan -->"));'
+}
+
+# Has the issue already been planned (a factory plan comment present)? Used for
 # idempotency — if a prior tick already posted the plan but the status
 # transition failed, we don't re-invoke Claude.
 issue_already_planned() {
   local comments_json="$1"
-  # The marker is FACTORY_PLAN_MARKER from factory-bundle.mjs:
-  #   <!-- drafto-factory-plan -->
-  if echo "$comments_json" | jq -e \
-      'any(.[]; .body | test("<!-- drafto-factory-plan -->"))' >/dev/null 2>&1; then
+  if echo "$comments_json" | jq -e "$(plan_comment_jq) any(.[]; is_plan)" >/dev/null 2>&1; then
     return 0
   fi
   return 1
 }
 
-# Extract the (most recent) factory-plan comment as a JSON object with id,
+# Extract the (most recent) factory plan comment as a JSON object with id,
 # url-suffix, body, and createdAt. Prints "null" if no plan comment exists.
 # Newest-first match — if the operator manually re-posted a plan, we edit the
 # most recent one.
 extract_plan_comment() {
   local comments_json="$1"
-  echo "$comments_json" | jq -c '
-    map(select(.body | test("<!-- drafto-factory-plan -->")))
+  echo "$comments_json" | jq -c "$(plan_comment_jq)"'
+    map(select(is_plan))
     | sort_by(.createdAt)
     | .[-1] // null
   '
@@ -1340,7 +1350,7 @@ plan_reply_check() {
   # Plan comments are the factory's own (OWNER): on a public repo anyone can
   # post one that looks like a plan and acks a comment.
   acked=$(extract_acked_comment_ids "$(echo "$comments" | jq -r \
-    '[.[] | select(.authorAssociation == "OWNER" and ((.body // "") | startswith("<!-- drafto-factory-plan -->"))) | .body] | join("\n")')")
+    "$(plan_comment_jq)"' [.[] | select(is_plan) | .body] | join("\n")')")
   [[ -n "$acked" ]] || acked='[]'
   # Which reply each comment is due: its own marker once acked, the Blocked one
   # when final; none yet otherwise.
@@ -1356,8 +1366,9 @@ plan_reply_check() {
     fi
   done
   post_issue_replies "$issue_num" "$comments" "$to_post"
+  # The same comment extract_plan_comment picks: the newest by createdAt.
   plan_id=$(echo "$comments" | jq -r \
-    '[.[] | select(.authorAssociation == "OWNER" and ((.body // "") | startswith("<!-- drafto-factory-plan -->")))] | last | .id // "" | tostring')
+    "$(plan_comment_jq)"' [.[] | select(is_plan)] | sort_by(.createdAt) | last | .id // "" | tostring')
   url="https://github.com/JakubAnderwald/drafto/issues/$issue_num"
   plan_link="the plan"
   [[ "$plan_id" =~ ^[0-9]+$ ]] && plan_link="[the plan]($url#issuecomment-$plan_id)"
@@ -6727,7 +6738,8 @@ A human should take a look. Reset with \
         [ .comments[]? | select((.author.login // "") | test("vercel|github-actions"; "i") | not)
           | select(((.author.login // "") == "JakubAnderwald"
                     and ((.body // "") | contains("<!-- drafto-factory-cr-cli sha="))) | not)
-          | { id: .id, user: { login: (.author.login // "") }, body: (.body // "") } ]')
+          | { id: .id, user: { login: (.author.login // "") },
+              authorAssociation: (.authorAssociation // "NONE"), body: (.body // "") } ]')
       [[ -n "$UNRESOLVED" ]] || UNRESOLVED="[]"
       # A conflict pass commits nothing but the merge, so it gets no feedback
       # to act on; a later pass picks the comments up again.

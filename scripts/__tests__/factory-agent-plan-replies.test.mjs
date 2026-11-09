@@ -160,6 +160,7 @@ describe("plan_reply_check (extracted, real bash)", () => {
     try {
       const snippet = `
 set -euo pipefail
+${extract("plan_comment_jq")}
 ${extract("plan_reply_check")}
 ${extract("post_issue_replies")}
 ${extract("fetch_comments_retry")}
@@ -396,5 +397,84 @@ describe("plan replies: wiring in factory-agent.sh", () => {
       replan,
       /replan retry budget exhausted[\s\S]*?transition_status "\$ITEM_ID" "\$ISSUE_NUM" "Blocked" \|\| true\n[^\n]*\n\s*plan_reply_check "\$ISSUE_NUM" "\$PLAN_REPLY_MARKERS" 1/,
     );
+  });
+});
+
+// The replan sweep and --implement act on the plan extract_plan_comment finds,
+// and issue_already_planned stops the Ready sweep from planning at all. On a
+// public repo anyone can post a comment that carries the plan marker, so only
+// the factory's own (OWNER) comment that starts with it counts as the plan.
+describe("plan comment finders (extracted, real bash)", () => {
+  const plan = (id, body, createdAt, authorAssociation = "OWNER") => ({
+    id,
+    body,
+    createdAt,
+    authorAssociation,
+  });
+  const run = (fn, comments) =>
+    spawnSync(
+      "bash",
+      [
+        "-c",
+        `${extract("plan_comment_jq")}\n${extract(fn)}\n${fn} "$1"; echo "rc=$?"`,
+        "_",
+        JSON.stringify(comments),
+      ],
+      { encoding: "utf8" },
+    );
+
+  it("takes the newest OWNER comment that starts with the marker", () => {
+    const comments = [
+      plan(1, "<!-- drafto-factory-plan -->\n\nold plan", "2026-11-01T10:00:00Z"),
+      plan(2, "<!-- drafto-factory-plan -->\n\nnew plan", "2026-11-02T10:00:00Z"),
+      plan(3, "a question", "2026-11-03T10:00:00Z"),
+    ];
+    const r = run("extract_plan_comment", comments);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout.split("\n")[0]).id, 2);
+  });
+
+  it("ignores a marker posted by anyone but the owner, even when it is newer", () => {
+    const comments = [
+      plan(1, "<!-- drafto-factory-plan -->\n\nreal plan", "2026-11-01T10:00:00Z"),
+      plan(2, "<!-- drafto-factory-plan -->\n\nfake plan", "2026-11-02T10:00:00Z", "NONE"),
+      plan(3, "<!-- drafto-factory-plan -->\n\nfake plan", "2026-11-03T10:00:00Z", "CONTRIBUTOR"),
+    ];
+    const r = run("extract_plan_comment", comments);
+    assert.equal(JSON.parse(r.stdout.split("\n")[0]).id, 1);
+  });
+
+  it("ignores an owner comment that only mentions the marker", () => {
+    const comments = [
+      plan(1, "<!-- drafto-factory-plan -->\n\nreal plan", "2026-11-01T10:00:00Z"),
+      plan(2, "quoting it: <!-- drafto-factory-plan -->", "2026-11-02T10:00:00Z"),
+    ];
+    const r = run("extract_plan_comment", comments);
+    assert.equal(JSON.parse(r.stdout.split("\n")[0]).id, 1);
+  });
+
+  it("prints null when only a non-owner comment carries the marker", () => {
+    const comments = [
+      plan(1, "<!-- drafto-factory-plan -->\n\nfake", "2026-11-01T10:00:00Z", "NONE"),
+    ];
+    assert.equal(run("extract_plan_comment", comments).stdout.split("\n")[0], "null");
+  });
+
+  it("tolerates leading whitespace before the marker, but not text", () => {
+    const comments = [
+      plan(1, "\n  <!-- drafto-factory-plan -->\n\nplan", "2026-11-01T10:00:00Z"),
+      plan(2, "note\n<!-- drafto-factory-plan -->", "2026-11-02T10:00:00Z"),
+    ];
+    const r = run("extract_plan_comment", comments);
+    assert.equal(JSON.parse(r.stdout.split("\n")[0]).id, 1);
+  });
+
+  it("issue_already_planned counts only the factory's own plan", () => {
+    const fake = [plan(1, "<!-- drafto-factory-plan -->\n\nfake", "2026-11-01T10:00:00Z", "NONE")];
+    const quoted = [plan(1, "see <!-- drafto-factory-plan -->", "2026-11-01T10:00:00Z")];
+    const real = [plan(1, "<!-- drafto-factory-plan -->\n\nplan", "2026-11-01T10:00:00Z")];
+    assert.match(run("issue_already_planned", fake).stdout, /rc=1/);
+    assert.match(run("issue_already_planned", quoted).stdout, /rc=1/);
+    assert.match(run("issue_already_planned", real).stdout, /rc=0/);
   });
 });
