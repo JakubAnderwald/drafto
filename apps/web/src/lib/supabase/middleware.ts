@@ -55,6 +55,35 @@ function hasSupabaseCookie(request: NextRequest): boolean {
   return request.cookies.getAll().some(({ name }) => name.startsWith("sb-"));
 }
 
+// An API call made with `fetch()`. Browsers send `Sec-Fetch-Mode: navigate` only when they load a
+// page, which an `/api/*` URL is only for the emailed one-click approval link
+// (`/api/admin/approve-user/one-click`). That link keeps the redirect, so a signed-out admin
+// lands on the login page instead of a raw JSON error. `fetch()` never sends `navigate`.
+function isApiRequest(request: NextRequest): boolean {
+  return (
+    request.nextUrl.pathname.startsWith("/api/") &&
+    request.headers.get("sec-fetch-mode") !== "navigate"
+  );
+}
+
+type ApiDenial = { status: 401 | 403; error: string };
+
+const UNAUTHORIZED: ApiDenial = { status: 401, error: "Unauthorized" };
+const FORBIDDEN: ApiDenial = { status: 403, error: "Forbidden" };
+
+// Turns away a request the gate below doesn't let through. A page gets a 307 to `pagePath`. An API
+// call gets a JSON error instead: `fetch()` follows redirects, so a 307 would hand the caller the
+// login page's HTML (a 200, or a 405 for a non-GET) and the client would never see the 401 that
+// `handleAuthError` (`src/lib/handle-auth-error.ts`) acts on.
+function denyRequest(request: NextRequest, apiDenial: ApiDenial, pagePath: string): NextResponse {
+  if (isApiRequest(request)) {
+    return NextResponse.json({ error: apiDenial.error }, { status: apiDenial.status });
+  }
+  const url = request.nextUrl.clone();
+  url.pathname = pagePath;
+  return NextResponse.redirect(url);
+}
+
 export async function updateSession(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -136,11 +165,10 @@ export async function updateSession(request: NextRequest) {
     return landingResponse;
   }
 
-  // No user: redirect to login. (A user implies a client; the check just narrows the type.)
+  // No user: an API call gets 401, a page goes to login. (A user implies a client; the check just
+  // narrows the type.)
   if (!user || !supabase) {
-    const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = "/login";
-    return NextResponse.redirect(loginUrl);
+    return denyRequest(request, UNAUTHORIZED, "/login");
   }
 
   // Check if user is approved
@@ -152,9 +180,7 @@ export async function updateSession(request: NextRequest) {
 
   if (profileError) {
     console.error("[middleware] Profile query failed:", profileError);
-    const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = "/login";
-    return NextResponse.redirect(loginUrl);
+    return denyRequest(request, UNAUTHORIZED, "/login");
   }
 
   // Waiting-for-approval page: allow unapproved users to see it
@@ -168,11 +194,9 @@ export async function updateSession(request: NextRequest) {
     return supabaseResponse;
   }
 
-  // Unapproved user trying to access app: redirect to waiting page
+  // Unapproved user: an API call gets 403, a page goes to the waiting page
   if (!profile?.is_approved) {
-    const waitingUrl = request.nextUrl.clone();
-    waitingUrl.pathname = "/waiting-for-approval";
-    return NextResponse.redirect(waitingUrl);
+    return denyRequest(request, FORBIDDEN, "/waiting-for-approval");
   }
 
   // Forward verified auth state to route handlers so they can skip
