@@ -22,7 +22,7 @@ Turborepo aggregates the workspaces' suites at the root: `pnpm test` fans out to
 
 Before any push, run every row of the matrix above (all nine suites) plus `pnpm lint && pnpm typecheck` from the repo root. Do not push if any step fails.
 
-- **A person runs the two manual E2E rows, Mobile E2E and Desktop E2E, in an interactive session.** The factory and every other unattended session never run them, and run every other row. Each manual row needs a device or app set up first: see [Maestro](#maestro-mobile-e2e) and [Desktop E2E](#desktop-e2e).
+- **A person runs the two manual E2E rows, Mobile E2E and Desktop E2E, in an interactive session.** Unattended sessions, the factory included, never run them. Each manual row needs a device or app set up first: see [Maestro](#maestro-mobile-e2e) and [Desktop E2E](#desktop-e2e).
 - **Desktop E2E can write to production.** It drives the Drafto app that is running, and launches one if none is. On the Mac mini, `/Applications/Drafto.app` is the TestFlight build, which runs against production. Start the debug build first, as [Desktop E2E](#desktop-e2e) describes.
 
 Never skip a suite because "it's unrelated". CI runs every suite not marked manual above, and a failure blocks the merge.
@@ -113,7 +113,7 @@ A debug build of a branch runs against the **dev** Supabase project, through the
 - The Drafto macOS app must be running before you start. Use a debug build of the branch, served by Metro: run `cd apps/desktop && pnpm start` in one terminal, then build and launch with `cd apps/desktop && pnpm macos` (`npx react-native run-macos`, see [Local macOS dev build](../operations/builds-and-releases.md#local-macos-dev-build)). A debug build reads `apps/desktop/.env`, so it runs against the **dev** Supabase project ([environments](./environments.md)).
   - The runner's first step is `tell application "Drafto" to activate`. If no Drafto is running, that launches whichever Drafto macOS finds, which may be the installed production build: on the Mac mini, the TestFlight build. Start the debug build first.
   - Quit the TestFlight build before you launch the debug build. Both are named Drafto and share the bundle id `eu.drafto.mobile`, and the runner finds the app by name (`process "Drafto"`), so with both running it may drive either one. `pgrep -fl Drafto.app/Contents/MacOS/Drafto` should then list one process, and not under `/Applications`.
-- **A production `.app` runs the suite against production.** Release builds read `apps/desktop/.env.production`, which points at the prod project (`tbmjbxxseonkciqovnpl`). The run signs in there and creates an `E2E Notebook <timestamp>` notebook with a note. Its teardown deletes that notebook, but whatever a failed run leaves behind stays on prod, because the web suite's `purge-stale` cleanup only touches dev. Against a production build, TEST 9 (Metro) skips rather than fails.
+- **A production `.app` runs the suite against production.** Release builds read `apps/desktop/.env.production`, which points at the prod project (`tbmjbxxseonkciqovnpl`). The run signs in there and creates an `E2E Notebook <timestamp>` notebook with a note. Its teardown tries to delete that notebook, but a failed delete doesn't count as a failed check, so read its `Cleanup:` line even after a run that exits 0. Whatever a run leaves behind stays on prod, because the web suite's `purge-stale` cleanup only touches dev. Against a production build, TEST 9 (Metro) skips rather than fails.
 - If the app shows the login screen, the runner signs in with `E2E_TEST_EMAIL` and `E2E_TEST_PASSWORD`, the same env contract as the web suite. If the app is already signed in, it runs as that account. It reads the two variables from the environment, not from a file, so export them first, from the repo root:
 
   ```bash
@@ -123,6 +123,7 @@ A debug build of a branch runs against the **dev** Supabase project, through the
 
 - The terminal you run it from needs two permissions in System Settings → Privacy & Security: **Accessibility**, to read the app's UI and to click, and **Automation → System Events**, for the AppleScript keystrokes. macOS asks on the first run. Grant them, then run it again.
 - It drives the real cursor and keyboard, and it overwrites the clipboard (TEST 4 pastes the notebook name). Leave the Mac alone while it runs. It exits with the number of failed checks.
+- It saves full-screen screenshots to `/tmp/drafto_e2e_*.png` and leaves them there. They show whatever was on screen, notes included, so delete them after the run: `rm -f /tmp/drafto_e2e_*.png`.
 
 ### Mobile / desktop unit tests
 
@@ -139,7 +140,7 @@ A debug build of a branch runs against the **dev** Supabase project, through the
 
 - Node's built-in test runner (`node --test`) against `scripts/__tests__/*.test.mjs`, which covers the Mac mini automation: the factory, the support agent and the nightly jobs.
 - Node >= 22 (`engines` in `scripts/package.json`).
-- No external services required.
+- No external services required, as long as `SUPABASE_SERVICE_ROLE_KEY` is unset. If it is exported along with the dev URL and anon key, for example after you source an `apps/web/.env.local` that holds the admin specs' key, the glob's `profile-privilege-guard.live.test.mjs` runs against dev and creates users there. That test doesn't check `DRAFTO_UNATTENDED`, so an unattended session runs it too. Run `unset SUPABASE_SERVICE_ROLE_KEY` before an ordinary run, and run that test with [`pnpm test:live:supabase`](#dev-live-tests-pnpm-testlivesupabase).
 
 ### Dev live tests (`pnpm test:live:supabase`)
 
