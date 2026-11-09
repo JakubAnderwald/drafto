@@ -1,7 +1,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -407,19 +407,79 @@ describe("worktree-cli remote branch resolution (--fetch)", () => {
     assert.match(JSON.parse(res.stderr).error, /diverged/);
   });
 
-  it("refuses to fast-forward a registered worktree over uncommitted changes", () => {
+  // Uncommitted leftovers used to make every resume throw, and --watch released
+  // the slot without spending an attempt, so the card sat in In Review forever
+  // (ADR-0070). They are now set aside, never deleted, and the worktree moves on.
+  it("sets aside uncommitted leftovers, then fast-forwards a worktree that is behind", () => {
     const wt = registeredAndPushed(123);
+    const before = gitIn(wt, ["rev-parse", "HEAD"]).trim();
     pushFromElsewhere(123, "remote-only.txt");
     writeFileSync(join(wt, "ours.txt"), "edited, not committed\n");
+    writeFileSync(join(wt, "scratch.txt"), "a new file, never added\n");
 
     const res = runCli(["add", "--issue", "123", "--root", repo, "--base", "main", "--fetch"]);
-    assert.equal(res.status, 1);
-    assert.match(JSON.parse(res.stderr).error, /uncommitted changes/);
-    assert.equal(
-      gitIn(wt, ["status", "--porcelain"]).trim(),
-      "M ours.txt",
-      "the edit must survive",
+    assert.equal(res.status, 0, res.stderr);
+    const out = JSON.parse(res.stdout);
+    assert.equal(out.fastForwarded, true);
+    assert.match(
+      out.leftoversRef,
+      new RegExp(`^refs/factory-leftovers/factory/issue-123/${before.slice(0, 12)}-\\d+$`),
     );
+
+    assert.equal(gitIn(wt, ["status", "--porcelain"]).trim(), "", "the worktree is clean");
+    assert.equal(
+      gitIn(wt, ["rev-parse", "HEAD"]).trim(),
+      gitIn(repo, ["rev-parse", "refs/remotes/origin/factory/issue-123"]).trim(),
+    );
+    assert.ok(existsSync(join(wt, "remote-only.txt")), "origin's commit must be in the worktree");
+
+    // Nothing lost: both the edit and the new file are in the snapshot, and
+    // the stash stack the operator's checkouts share is untouched.
+    assert.equal(gitIn(repo, ["show", `${out.leftoversRef}:ours.txt`]), "edited, not committed\n");
+    assert.equal(
+      gitIn(repo, ["show", `${out.leftoversRef}:scratch.txt`]),
+      "a new file, never added\n",
+    );
+    assert.equal(gitIn(repo, ["stash", "list"]).trim(), "");
+    gitIn(wt, ["stash", "apply", "-q", out.leftoversRef]);
+    assert.equal(readFileSync(join(wt, "ours.txt"), "utf8"), "edited, not committed\n");
+  });
+
+  it("snapshots uncommitted changes before a forced removal deletes them", () => {
+    // The factory now removes a card's worktree whenever it stops needing its
+    // slot (In Test, a hosted-config hold): a hand edit there must survive.
+    const wt = registeredAndPushed(125);
+    const head = gitIn(wt, ["rev-parse", "HEAD"]).trim();
+    writeFileSync(join(wt, "ours.txt"), "tweaked by hand\n");
+    writeFileSync(join(wt, "note.txt"), "new\n");
+
+    const out = JSON.parse(runCli(["remove", "--issue", "125", "--root", repo, "--force"]).stdout);
+    assert.equal(out.removed, true);
+    assert.ok(!existsSync(wt));
+    assert.match(
+      out.leftoversRef,
+      new RegExp(`^refs/factory-leftovers/factory/issue-125/${head.slice(0, 12)}-\\d+$`),
+    );
+    assert.equal(gitIn(repo, ["show", `${out.leftoversRef}:ours.txt`]), "tweaked by hand\n");
+    assert.equal(gitIn(repo, ["show", `${out.leftoversRef}:note.txt`]), "new\n");
+
+    // A clean worktree leaves no ref behind.
+    registeredAndPushed(126);
+    const clean = JSON.parse(
+      runCli(["remove", "--issue", "126", "--root", repo, "--force"]).stdout,
+    );
+    assert.equal(clean.removed, true);
+    assert.equal(clean.leftoversRef, undefined);
+  });
+
+  it("reports no leftovers ref when a behind worktree is clean", () => {
+    registeredAndPushed(124);
+    pushFromElsewhere(124, "remote-only.txt");
+    const out = JSON.parse(
+      runCli(["add", "--issue", "124", "--root", repo, "--base", "main", "--fetch"]).stdout,
+    );
+    assert.equal(out.fastForwarded, true);
+    assert.equal(out.leftoversRef, undefined);
   });
 
   it("reports the deleted branch tip so a mistaken teardown is recoverable", () => {

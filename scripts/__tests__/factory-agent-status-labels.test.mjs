@@ -156,7 +156,8 @@ describe("Testing column wiring", () => {
     const end = script.indexOf("  # ── 2.", start);
     assert.ok(start !== -1 && end !== -1, "could not find the cleanup sweep block");
     const sweep = script.slice(start, end);
-    assert.match(sweep, /STILL_ACTIVE=[\s\S]*?\. == "status:testing"/);
+    // The sweep reads the board column, not the label (ADR-0070).
+    assert.match(sweep, /STILL_ACTIVE=[\s\S]*?\$col == "Testing"/);
   });
 
   it("moves a card into Testing only on the verification stage's two paths (ADR-0053)", () => {

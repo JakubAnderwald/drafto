@@ -2,6 +2,12 @@ packages:
   - "apps/*"
   - "packages/*"
 
+# Hoisted (flat) node_modules: CocoaPods header resolution for the iOS and
+# macOS builds breaks under pnpm's default symlinked layout (#196). This lives
+# here, not in .npmrc, because npm reads .npmrc too and warns on the
+# pnpm-only `node-linker` key (#328).
+nodeLinker: hoisted
+
 ignoredBuiltDependencies:
   - sharp
   - unrs-resolver

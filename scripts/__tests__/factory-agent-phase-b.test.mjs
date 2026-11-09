@@ -77,7 +77,7 @@ describe("--watch engine", () => {
     assert.match(script, /Cleanup sweep/);
     assert.match(
       script,
-      /left In Progress\/In Review\/Testing\/In Test; releasing slot \+ worktree/,
+      /left In Progress\/In Review\/Testing \(now: [^)]*\); releasing slot \+ worktree/,
     );
   });
 

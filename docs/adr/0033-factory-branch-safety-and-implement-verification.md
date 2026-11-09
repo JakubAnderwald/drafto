@@ -4,6 +4,8 @@
 - **Date**: 2026-09-08
 - **Authors**: Jakub Anderwald
 
+> **Update 2026-11-09**: The cleanup sweep now reads the card's board column instead of its `status:*` label, and In Test is no longer an active column ([ADR-0070](./0070-factory-in-test-frees-slot-and-updates-behind-prs.md)). An In Test card's slot is freed and its worktree removed, with the branch kept as described below.
+
 ## Context
 
 Issue #463 sat in the factory for eight weeks without shipping. Diagnosing it uncovered a

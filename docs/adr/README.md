@@ -101,3 +101,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0067](./0067-desktop-moves-to-react-native-macos-0-83.md)           | Desktop Moves to react-native-macos 0.83               | Accepted           | 2026-11-02 |
 | [0068](./0068-factory-runs-the-board-right-to-left.md)               | Factory Runs the Board Right to Left                   | Accepted           | 2026-11-08 |
 | [0069](./0069-per-user-attachment-storage-quota.md)                  | Per-User Attachment Storage Quota in the Database      | Accepted           | 2026-11-08 |
+| [0070](./0070-factory-in-test-frees-slot-and-updates-behind-prs.md)  | In Test Frees Its Slot; Behind PRs Get Updated         | Accepted           | 2026-11-09 |

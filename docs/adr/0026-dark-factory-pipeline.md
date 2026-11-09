@@ -10,6 +10,8 @@
 
 > **Update 2026-10-27**: The factory now answers every operator comment in its own reply. In Plan Review, a replan still edits the plan in place, and the planner also writes one reply per trigger comment. On In Test revisions, the implementer writes one reply per feedback comment instead of one per round, and now also when it pushed a change. The model only writes each reply to a file: bash posts it with the comment's marker appended (`drafto-factory-plan-reply-<id>` or `drafto-factory-revise-reply-<id>`), so a reply can never read back as new feedback for lack of a marker. Bash posts a fallback for any comment left without a reply, including when a replan ends in Blocked. Only markers on the factory's own (`OWNER`) comments count. The plan-review detector now skips the factory's own marker comments, as the In Test one already did. Prompted by #718, where the planner's answer to a question went only to the log and the issue showed nothing but a silently edited plan.
 
+> **Update 2026-11-09**: A card waiting in In Test no longer holds a worktree slot, and `--watch` brings a PR that is behind `main` up to date before it moves to In Test ([ADR-0070](./0070-factory-in-test-frees-slot-and-updates-behind-prs.md)). The two slots now bound only the cards the factory is working on: In Progress, In Review and Testing.
+
 ## Context
 
 After [ADR-0024](./0024-realtime-support-agent.md) (real-time support agent) and [ADR-0025](./0025-support-allowlist-from-zoho-sender.md) (sender-gated auto-implementation), Drafto already routes allowlisted bug reports through `support-agent.sh` (Phase 1 — file + acknowledge) and `nightly-support.sh` Phase 3 (Phase 2 — implement at midnight). What's missing is a way to:
