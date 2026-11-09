@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   COMMENT_MAX_CHARS,
+  EARLIER_RUN_STEP,
   MANUAL_MAX,
   VERIFY_REPORT_MARKER,
   composeVerifyReport,
@@ -744,8 +745,6 @@ describe("coverage gaps", () => {
         "skipped: the PR's diff touches neither the web app (apps/web/) nor packages/shared/",
       "skipped:browser-off":
         "skipped: the browser runner's verify kind is switched off (FACTORY_BROWSER, FACTORY_BROWSER_KINDS)",
-      "skipped:already-run":
-        "skipped: the browser runner already handled this commit (see its comment on the issue)",
       "skipped:no-scenario": "skipped: there was no test scenario for this commit",
       "skipped:no-web-steps": "skipped: the scenario has no Web steps",
       "unavailable:chrome-not-running": "unavailable: Chrome wasn't running on the Mac mini",
@@ -776,6 +775,43 @@ describe("coverage gaps", () => {
         state,
       );
     }
+  });
+
+  it("points a commit the In Test run already covered at that run's comment, still as a gap", () => {
+    // #460: back in Testing after a no-op revision, the report asked for every
+    // Web step by hand although the In Test run had run them. Its result never
+    // reaches the composer (a FAIL, a blocked or a withheld run all look the
+    // same here), so the commit stays a coverage gap and the headline stays
+    // partial; only the pointer changes.
+    for (const state of ["skipped:already-run", "skipped:Already-Run"]) {
+      const r = compose({ browser: { state, text: null } });
+      assert.match(r.body, /Partial: some checks didn't run/, state);
+      assert.equal(r.verdict, "pass");
+      const lines = manualLines(r.body);
+      assert.ok(!lines.some((l) => /^Run the \*\*Web\*\* steps/.test(l)), lines.join("\n"));
+      assert.ok(lines.includes(EARLIER_RUN_STEP), `${state}: ${lines.join("\n")}`);
+    }
+    const r = compose({ browser: { state: "skipped:already-run", text: null } });
+    assert.ok(
+      gapsSection(r.body).includes(
+        "- **Web (browser):** skipped: the In Test browser run already reported on this commit, so this round didn't run the Web steps again (see its Browser run comment on the issue).",
+      ),
+      gapsSection(r.body),
+    );
+    // What the step must cover: a FAIL/SKIP row, a blocked or withheld run, and
+    // a scenario or environment that changed since that run.
+    assert.match(EARLIER_RUN_STEP, /FAIL or SKIP, or doesn't list/);
+    assert.match(EARLIER_RUN_STEP, /stopped early, or its report was withheld/);
+    assert.match(EARLIER_RUN_STEP, /the scenario or the environment changed since it ran/);
+
+    // No web work at all: no pointer to Web steps that don't exist.
+    const none = compose({
+      platforms: { web: false, mobile: false, desktop: true },
+      scenario: scenario({ web: false, mobile: false }),
+      browser: { state: "skipped:already-run", text: null },
+    });
+    assert.match(tableRow(none.body, "Web (browser)"), /\| not needed \|/);
+    assert.ok(!manualLines(none.body).includes(EARLIER_RUN_STEP), none.body);
   });
 
   it("names the browser lane's preview wait, should a fail-open promotion show it", () => {

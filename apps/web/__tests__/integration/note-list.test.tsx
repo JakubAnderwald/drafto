@@ -1,7 +1,7 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { act, Suspense } from "react";
+import { act, Component, Suspense, type ReactNode } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import type { NoteListPatch } from "@/lib/note-patch";
@@ -22,6 +22,26 @@ const mockFetch = vi.fn();
 globalThis.fetch = mockFetch;
 
 const { NoteList } = await import("@/components/notes/note-list");
+
+// Stands in for `global-error.tsx`: records what `use()` rethrows instead of rendering it.
+class ErrorBoundary extends Component<
+  { onError: (error: unknown) => void; children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: unknown) {
+    this.props.onError(error);
+  }
+
+  render() {
+    return this.state.failed ? <p>Something went wrong!</p> : this.props.children;
+  }
+}
 
 // The component caches fetched lists in a module-level Map (`notesCache`). We
 // need to bust it by varying the `refreshTrigger` prop between tests so each
@@ -225,6 +245,76 @@ describe("NoteList", () => {
 
     await waitFor(() => {
       expect(screen.getByText("No notes yet. Create one to get started.")).toBeInTheDocument();
+    });
+  });
+
+  // An expired session (#460): middleware answers the notes fetch with 401 JSON. Before, it
+  // redirected to /login, `fetch()` followed it, and `res.json()` on the login page's HTML
+  // rejected into the global error boundary instead of sending the user to log in.
+  describe("when the session has expired", () => {
+    const originalLocation = window.location;
+    let locationMock: { href: string; origin: string };
+
+    beforeEach(() => {
+      locationMock = { href: "http://localhost:3000/", origin: "http://localhost:3000" };
+      Object.defineProperty(window, "location", { writable: true, value: locationMock });
+    });
+
+    afterEach(() => {
+      Object.defineProperty(window, "location", { writable: true, value: originalLocation });
+    });
+
+    async function renderExpired(response: Partial<Response>) {
+      mockFetch.mockResolvedValue(response);
+      const onError = vi.fn();
+
+      await act(async () => {
+        render(
+          <ErrorBoundary onError={onError}>
+            <Suspense fallback={<Skeleton height="2.5rem" />}>
+              <NoteList
+                notebookId="nb-expired"
+                selectedNoteId={null}
+                onSelectNote={vi.fn()}
+                onCreateNote={vi.fn()}
+                refreshTrigger={nextTrigger()}
+              />
+            </Suspense>
+          </ErrorBoundary>,
+        );
+      });
+
+      return { onError };
+    }
+
+    it("sends the browser to /login on a 401 instead of throwing into the error boundary", async () => {
+      const json = vi.fn(() => Promise.resolve({ error: "Unauthorized" }));
+      const { onError } = await renderExpired({ ok: false, status: 401, json });
+
+      await waitFor(() => {
+        expect(screen.getByText("No notes yet. Create one to get started.")).toBeInTheDocument();
+      });
+      expect(locationMock.href).toBe("/login");
+      expect(onError).not.toHaveBeenCalled();
+      expect(json).not.toHaveBeenCalled();
+    });
+
+    it("sends the browser to /login when the fetch was redirected to the login page", async () => {
+      const json = vi.fn(() => Promise.reject(new SyntaxError("Unexpected token '<'")));
+      const { onError } = await renderExpired({
+        ok: true,
+        status: 200,
+        redirected: true,
+        url: "http://localhost:3000/login",
+        json,
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("No notes yet. Create one to get started.")).toBeInTheDocument();
+      });
+      expect(locationMock.href).toBe("/login");
+      expect(onError).not.toHaveBeenCalled();
+      expect(json).not.toHaveBeenCalled();
     });
   });
 
