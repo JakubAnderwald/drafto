@@ -10,7 +10,22 @@ import { test, expect } from "@playwright/test";
  * - Health endpoint is public
  */
 
+// A signed-out API call must get a 401 with a JSON body. A 307 to /login would be followed by
+// the browser's `fetch()`, handing the client the login page's HTML instead of a 401 (#460).
+async function expectUnauthorizedJson(response: Response) {
+  expect(response.status).toBe(401);
+  expect(response.headers.get("location")).toBeNull();
+  expect(response.headers.get("content-type")).toContain("application/json");
+  const body = await response.json();
+  expect(typeof body.error).toBe("string");
+}
+
 test.describe("Security: API authentication enforcement", () => {
+  test("unauthenticated fetch of a protected API route gets 401 JSON, not a redirect", async () => {
+    const response = await fetch("http://localhost:3000/api/notebooks", { redirect: "manual" });
+    await expectUnauthorizedJson(response);
+  });
+
   test("health API is publicly accessible without auth", async ({ request }) => {
     const response = await request.get("/api/health");
     expect(response.ok()).toBeTruthy();
@@ -83,9 +98,8 @@ test.describe("Security: admin route protection", () => {
       body: JSON.stringify({ userId: "00000000-0000-0000-0000-000000000000" }),
       redirect: "manual",
     });
-    // Blocked: middleware redirect (307) or route handler rejection (401)
-    expect(response.ok).toBe(false);
-    expect([307, 401]).toContain(response.status);
+    // Middleware refuses a signed-out API call with 401 JSON, not a redirect to /login.
+    await expectUnauthorizedJson(response);
   });
 
   test("unauthenticated user cannot access admin delete-user endpoint", async () => {
@@ -95,9 +109,8 @@ test.describe("Security: admin route protection", () => {
       body: JSON.stringify({ userId: "00000000-0000-0000-0000-000000000000" }),
       redirect: "manual",
     });
-    // Blocked: middleware redirect (307) or route handler rejection (401)
-    expect(response.ok).toBe(false);
-    expect([307, 401]).toContain(response.status);
+    // Middleware refuses a signed-out API call with 401 JSON, not a redirect to /login.
+    await expectUnauthorizedJson(response);
   });
 
   test("unauthenticated user cannot access cleanup-trash endpoint", async () => {
@@ -105,8 +118,7 @@ test.describe("Security: admin route protection", () => {
       method: "POST",
       redirect: "manual",
     });
-    expect(response.ok).toBe(false);
-    expect([307, 401]).toContain(response.status);
+    await expectUnauthorizedJson(response);
   });
 });
 

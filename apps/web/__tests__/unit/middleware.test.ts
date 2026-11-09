@@ -208,15 +208,19 @@ describe("Auth middleware", () => {
     expect(mockGetUser).not.toHaveBeenCalled();
   });
 
-  it("redirects a cookie-less request to a protected API route even with a verified-user header", async () => {
+  it("refuses a cookie-less request to a protected API route even with a verified-user header", async () => {
     const response = await updateSession(
       new NextRequest(new URL("/api/notes", "http://localhost:3000"), {
         headers: { "x-verified-user-id": "00000000-0000-0000-0000-000000000001" },
       }),
     );
 
-    expect(response.status).toBe(307);
-    expect(new URL(response.headers.get("location")!).pathname).toBe("/login");
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "Unauthorized" });
+    expect(response.headers.get("location")).toBeNull();
+    // The forged header never reaches the route: nothing is forwarded on a refusal.
+    expect(response.headers.get("x-middleware-request-x-verified-user-id")).toBeNull();
+    expect(mockGetUser).not.toHaveBeenCalled();
   });
 
   it("still looks up the session when a Supabase cookie is present", async () => {
@@ -372,5 +376,141 @@ describe("Auth middleware", () => {
 
     expect(response.status).toBe(307);
     expect(new URL(response.headers.get("location")!).pathname).toBe("/");
+  });
+
+  // `fetch()` follows a 307, so a redirect would hand an API caller the login page's HTML (a 200,
+  // or a 405 for a non-GET) and `handleAuthError` would never see a 401 (#460).
+  describe("API requests", () => {
+    function signInWithProfile(result: {
+      data: { is_approved: boolean } | null;
+      error: { message: string } | null;
+    }) {
+      mockGetUser.mockResolvedValue({
+        data: { user: { id: "user-1", email: "test@test.com" } },
+        error: null,
+      });
+      mockFrom.mockReturnValue({
+        select: () => ({
+          eq: () => ({
+            single: () => Promise.resolve(result),
+          }),
+        }),
+      });
+    }
+
+    function apiRequest(
+      path: string,
+      { session = false, method = "GET", headers = {} as Record<string, string> } = {},
+    ): NextRequest {
+      return new NextRequest(new URL(path, "http://localhost:3000"), {
+        method,
+        headers: session ? { ...headers, cookie: SESSION_COOKIE } : headers,
+      });
+    }
+
+    it.each([
+      ["without a session cookie", false],
+      ["with a stale session cookie", true],
+    ])("answers a signed-out API fetch %s with 401 JSON", async (_label, session) => {
+      mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+
+      const response = await updateSession(apiRequest("/api/notebooks/abc/notes", { session }));
+
+      expect(response.status).toBe(401);
+      expect(response.headers.get("content-type")).toContain("application/json");
+      expect(await response.json()).toEqual({ error: "Unauthorized" });
+      expect(response.headers.get("location")).toBeNull();
+      expect(mockFrom).not.toHaveBeenCalled();
+    });
+
+    it.each(["POST", "PATCH", "DELETE"])(
+      "answers a signed-out %s API fetch with 401 JSON instead of a redirect",
+      async (method) => {
+        // A followed redirect turned these into a 405 from the login page.
+        const response = await updateSession(
+          apiRequest("/api/notes/note-1", { method, headers: { "sec-fetch-mode": "cors" } }),
+        );
+
+        expect(response.status).toBe(401);
+        expect(await response.json()).toEqual({ error: "Unauthorized" });
+        expect(response.headers.get("location")).toBeNull();
+      },
+    );
+
+    it("answers an API fetch with 401 JSON when the profile query fails", async () => {
+      signInWithProfile({ data: null, error: { message: "DB error" } });
+
+      const response = await updateSession(apiRequest("/api/notes", { session: true }));
+
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: "Unauthorized" });
+      expect(response.headers.get("location")).toBeNull();
+    });
+
+    it("answers an unapproved user's API fetch with 403 JSON", async () => {
+      signInWithProfile({ data: { is_approved: false }, error: null });
+
+      const response = await updateSession(apiRequest("/api/notes", { session: true }));
+
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: "Forbidden" });
+      expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.get("x-middleware-request-x-verified-user-id")).toBeNull();
+    });
+
+    it("still redirects an unapproved user's page request to /waiting-for-approval", async () => {
+      signInWithProfile({ data: { is_approved: false }, error: null });
+
+      const response = await updateSession(createRequest("/settings", { session: true }));
+
+      expect(response.status).toBe(307);
+      expect(new URL(response.headers.get("location")!).pathname).toBe("/waiting-for-approval");
+    });
+
+    it("redirects a signed-out navigation to the emailed one-click approval link to /login", async () => {
+      // The admin opens this `/api/*` URL from an email as a page, not with `fetch()`. A signed-out
+      // admin must reach the login page, not a raw JSON error.
+      const response = await updateSession(
+        apiRequest("/api/admin/approve-user/one-click?token=t", {
+          headers: { "sec-fetch-mode": "navigate" },
+        }),
+      );
+
+      expect(response.status).toBe(307);
+      const location = new URL(response.headers.get("location")!);
+      expect(location.pathname).toBe("/login");
+    });
+
+    it("redirects an unapproved user's navigation to an API URL to /waiting-for-approval", async () => {
+      signInWithProfile({ data: { is_approved: false }, error: null });
+
+      const response = await updateSession(
+        apiRequest("/api/admin/approve-user/one-click?token=t", {
+          session: true,
+          headers: { "sec-fetch-mode": "navigate" },
+        }),
+      );
+
+      expect(response.status).toBe(307);
+      expect(new URL(response.headers.get("location")!).pathname).toBe("/waiting-for-approval");
+    });
+
+    it("treats only paths under /api/ as API calls", async () => {
+      // A lookalike page path keeps the page behaviour.
+      const response = await updateSession(createRequest("/apiary"));
+
+      expect(response.status).toBe(307);
+      expect(new URL(response.headers.get("location")!).pathname).toBe("/login");
+    });
+
+    it("lets an approved user's API fetch through to the route", async () => {
+      signInWithProfile({ data: { is_approved: true }, error: null });
+
+      const response = await updateSession(apiRequest("/api/notes", { session: true }));
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.get("x-middleware-request-x-verified-user-id")).toBe("user-1");
+    });
   });
 });

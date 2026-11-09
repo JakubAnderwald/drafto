@@ -18,13 +18,13 @@ Semi-automated regression runbook for the full signup → admin-notification →
 
 ## Prerequisites
 
-| Requirement                                          | How                                                                                                                                              |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Linked prod Supabase project                         | `pnpm supabase:link:prod`                                                                                                                        |
-| Vault secrets populated on prod                      | `select count(*) from vault.decrypted_secrets where name in ('webhook_url','webhook_secret');` → must return 2                                   |
-| `main` deployed to Vercel with middleware fix (#292) | `curl -sw '%{http_code}' -X POST -H 'x-webhook-secret: wrong' https://drafto.eu/api/webhooks/new-signup -d '{}'` → must return **401** (not 307) |
-| Admin email is `jakub@anderwald.info`                | `select email from auth.users where id in (select id from profiles where is_admin=true);`                                                        |
-| Node + Playwright installed                          | `pnpm install` + `pnpm exec playwright install chromium`                                                                                         |
+| Requirement                                          | How                                                                                                                                                                                                                                          |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Linked prod Supabase project                         | `pnpm supabase:link:prod`                                                                                                                                                                                                                    |
+| Vault secrets populated on prod                      | `select count(*) from vault.decrypted_secrets where name in ('webhook_url','webhook_secret');` → must return 2                                                                                                                               |
+| `main` deployed to Vercel with middleware fix (#292) | `curl -sw '%{http_code}' -X POST -H 'Sec-Fetch-Mode: navigate' -H 'x-webhook-secret: wrong' https://drafto.eu/api/webhooks/new-signup -d '{}'` → must return **401** (not 307). Keep the `Sec-Fetch-Mode` header: see the first gotcha below |
+| Admin email is `jakub@anderwald.info`                | `select email from auth.users where id in (select id from profiles where is_admin=true);`                                                                                                                                                    |
+| Node + Playwright installed                          | `pnpm install` + `pnpm exec playwright install chromium`                                                                                                                                                                                     |
 
 ## Running the test
 
@@ -68,7 +68,7 @@ Test emails use the form `jakub+draftoe2e-<timestamp>@anderwald.info`. Gmail-sty
 
 ## Known gotchas (lessons from the first run)
 
-- **Middleware must exempt `/api/webhooks`** or the trigger gets 307 → /login (redirected) → pg_net follows as GET → 405. Verified in prerequisites.
+- **Middleware must exempt `/api/webhooks`** or it answers the trigger with 401 `{"error":"Unauthorized"}` itself, before the route runs (before #460 it was a 307 → /login, which pg_net followed as a GET → 405). The route answers a wrong secret with the same 401, so a plain curl can't tell the two apart. The prerequisite check sends `Sec-Fetch-Mode: navigate`, which middleware treats as a page load: without the exemption it answers 307 → /login, and with it the route still answers 401.
 - **Supabase vault secrets can be wiped across sessions** in edge cases (exact cause unknown — possibly a Supabase-internal rekey after migrations). Always run the vault `count(*)` prerequisite check first. Re-insert with `select vault.create_secret(...)` if missing; values are in `~/drafto-secrets/account-approval-secrets.env`.
 - **Supabase rate-limits signups to 30 per 5 min per IP**. Don't run this test in a tight loop.
 - **The `+` in plus-addressing is valid** — Supabase accepts it, Resend delivers it. Don't be tempted to strip it "just in case".
