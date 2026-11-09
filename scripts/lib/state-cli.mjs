@@ -220,6 +220,12 @@
 //                                    (exit 0) and changes nothing while the lane
 //                                    is running for that issue: verify-finish
 //                                    it first.
+//   factory:plan-probe-reset <issue>
+//                                    Clear every planProbe* key on <issue>
+//                                    (plan-probe.mjs), which gives back its
+//                                    probe rounds. A probe branch still on
+//                                    GitHub is reaped by the next --plan
+//                                    housekeeping as an orphan.
 //
 // Nightly beta-release retry counters (ADR-0042). These live in
 // logs/support-release-state.json — written only by nightly-support.sh, so they
@@ -290,6 +296,7 @@ import {
   finishVerifyRun,
   verifyIssueRecords,
   resetIssueVerify,
+  resetIssuePlanProbe,
 } from "./factory-state.mjs";
 import { bumpNotification, bumpCounters } from "./policy.mjs";
 import { isManualReviewCommand } from "./coderabbit-review.mjs";
@@ -945,6 +952,19 @@ async function main(argv) {
       if (result.ok && result.cleared.length > 0) await saveFactoryState(state, file);
       return { ...result, issueNumber };
     }
+    case "factory:plan-probe-reset": {
+      const issueNumber = positional[0];
+      if (!issueNumber) throw new Error("factory:plan-probe-reset requires <issue>");
+      if (!/^[1-9][0-9]*$/.test(issueNumber)) {
+        throw new Error(
+          `factory:plan-probe-reset: invalid issue number ${JSON.stringify(issueNumber)}`,
+        );
+      }
+      const state = await loadFactoryState(file);
+      const result = resetIssuePlanProbe(state, issueNumber);
+      if (result.cleared.length > 0) await saveFactoryState(state, file);
+      return { ...result, issueNumber };
+    }
     case "record-release-attempt": {
       const issueNumber = positional[0];
       const platform = positional[1];
@@ -1031,7 +1051,8 @@ async function main(argv) {
           "factory:verify-finish <runId> [--refund none|attempt] [--wait-ms <ms>]|" +
           "factory:verify-pause-until <until-iso> [<reason>]|" +
           "factory:verify-resume|" +
-          "factory:verify-reset <issue>> " +
+          "factory:verify-reset <issue>|" +
+          "factory:plan-probe-reset <issue>> " +
           "[--state-file <path>] [--now <iso>]\n",
       );
       return null;
