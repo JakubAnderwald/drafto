@@ -24,7 +24,7 @@ The property is verified in Google Search Console as the domain property `drafto
   - `http://` returns a 308 to `https://`. Vercel enforces this.
   - `www.drafto.eu` returns a 308 to `drafto.eu`. This is a redirect domain in the Vercel project's domain settings, not code. GoDaddy has `www` as a CNAME into Vercel.
 - **Landing page at `/`** ([ADR-0050](../adr/0050-public-landing-page-via-middleware-rewrite.md)):
-  - Signed-out `/` is rewritten (200, the URL stays `/`) to `src/app/welcome/page.tsx`, a static page: what Drafto is, its features, Sign up / Log in, and links to the privacy policy and support page.
+  - Signed-out `/` is rewritten (200, the URL stays `/`) to `src/app/welcome/page.tsx`: what Drafto is, its features, Sign up / Log in, and links to the privacy policy and support page. Like every page, it renders per request, because the root layout reads the CSP nonce ([ADR-0069](../adr/0069-web-nonce-csp-and-security-headers.md)). The rewrite forwards the request headers, so the nonce reaches the page.
   - Signed-in `/` is the app, as before. The branch is in `updateSession` (`src/lib/supabase/middleware.ts`).
   - A direct request for `/welcome` gets a 308 to `/`, so the page has one public URL. It declares `/` as its canonical.
   - Until 2026-10-17, signed-out `/` was a 307 to `/login`. Google then indexed the login form under `/` and overrode `/login`'s self-canonical ("Duplicate, Google chose different canonical than user").
@@ -40,7 +40,7 @@ The property is verified in Google Search Console as the domain property `drafto
   - `/robots.txt`, `/sitemap.xml`, `/.well-known/apple-app-site-association` and `/.well-known/assetlinks.json` bypass the session middleware, along with `/api/health`, `/api/mcp`, the MCP OAuth probe paths and static assets.
   - Crawlers and the Apple and Google app-link verifiers come signed out and do not follow a 307 to `/login`.
   - `/robots.txt`, `/sitemap.xml` and the two app-link association files are also in `PUBLIC_ROUTES` as a backstop.
-  - The OAuth discovery paths MCP clients probe (`/.well-known/oauth-*`, `/.well-known/openid-configuration`) have no file behind them, so they get a static 404. They are not in `PUBLIC_ROUTES`.
+  - The OAuth discovery paths MCP clients probe (`/.well-known/oauth-*`, `/.well-known/openid-configuration`) have no file behind them, so they get a 404, rendered per request since [ADR-0069](../adr/0069-web-nonce-csp-and-security-headers.md). They are not in `PUBLIC_ROUTES`.
   - Any other `/.well-known/*` path still runs the middleware. A route added under one of the OAuth paths would get no session and must authenticate itself.
   - Signed-out visitors and crawlers on any other path still run the middleware, but without a Supabase cookie it skips the session lookup.
 
