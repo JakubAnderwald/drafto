@@ -185,8 +185,9 @@ _beta_root_fetch() {
 #
 # Why a dedicated root rather than the issue's worktree: that worktree is live
 # (the next --watch tick may pnpm install and let Claude edit files in it) and
-# the cleanup sweep deletes it the moment the card leaves In Test — either would
-# happen mid-build. A fixed root also keeps ios/Pods and the Gradle cache warm.
+# the cleanup sweep deletes it once the card reaches In Test (ADR-0070), which is
+# when the betas are dispatched — either would happen mid-build. A fixed root
+# also keeps ios/Pods and the Gradle cache warm.
 #
 # Why detached: factory/issue-<n> is already checked out in the issue worktree
 # and git refuses a second checkout of the same branch. Pinning the SHA is also

@@ -187,6 +187,12 @@ function emptyIssue() {
     crLastCoveredSha: null, // last SHA CodeRabbit (bot or CLI) reviewed: the incremental base
     crCliRuns: null, // decimal string: CLI runs spent on this card since its last In Test
     crCliFreePassSha: null, // crLastCoveredSha whose findings already got an attempt-free fix pass
+    // Behind-main updates --watch spent on this card's PR in its current In
+    // Review stint (decimal string), capped by FACTORY_MAX_BRANCH_UPDATES, and
+    // the head the last successful one updated: its review and CodeRabbit
+    // coverage carry over to the merge commit. See ADR-0070.
+    branchUpdates: null,
+    branchUpdatedFrom: null,
     // Hosted-config gate (ADR-0065): hash of the supabase/config.toml that the
     // hosted-config-applied label vouched for, "" or null while there is none.
     hostedConfigVouched: null,
@@ -601,6 +607,11 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   "crLastCoveredSha",
   "crCliRuns",
   "crCliFreePassSha",
+  // Behind-main update budget (ADR-0070). A rejected write would let a busy
+  // main update the branch, and re-run CI, on every tick. A rejected
+  // branchUpdatedFrom only costs a fresh code review of the merged head.
+  "branchUpdates",
+  "branchUpdatedFrom",
   // Hosted-config gate (ADR-0065): hash of the supabase/config.toml that the
   // hosted-config-applied label vouched for. A rejected write would make the
   // label vouch for every later version, the hole this field closes.

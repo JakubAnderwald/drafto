@@ -407,13 +407,20 @@ describe("factory-agent.sh structural wiring (In Test iteration)", () => {
     assert.equal(r.status, 0, r.stderr);
   });
 
-  it("cleanup keep-set retains slots for in-progress (so the worktree survives a revision bounce)", () => {
-    // status:testing too: a card verifying in the Testing column (ADR-0053)
-    // still owns its slot + worktree.
-    assert.match(
-      script,
-      /any\(\. == "status:in-progress" or \. == "status:in-review" or \. == "status:testing" or \. == "status:in-test"\)/,
+  it("cleanup sweep keeps slots for the factory's own columns, not In Test", () => {
+    // Testing too: a card verifying in the Testing column (ADR-0053) is still
+    // the factory's work. In Test is gone (ADR-0070): a card waiting on the
+    // operator held a slot it never used, and with two cards in In Test every
+    // In Progress card deferred on every tick. Read from the board column,
+    // since a hand-dragged card keeps the label of the column it left.
+    const sweep = script.slice(
+      script.indexOf("# ── 1. Cleanup sweep ──"),
+      script.indexOf("# ── 1b. CodeRabbit CLI run housekeeping"),
     );
+    assert.ok(sweep.length > 0, "could not locate the cleanup sweep");
+    assert.match(sweep, /--json state,projectItems/);
+    assert.match(sweep, /\$col == "In Progress" or \$col == "In Review" or \$col == "Testing"/);
+    assert.ok(!sweep.includes('In Test"'), "In Test must not keep its slot");
   });
 
   it("has an In Test feedback sweep that returns cards to In Progress", () => {

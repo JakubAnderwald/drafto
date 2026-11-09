@@ -4,6 +4,8 @@
 - **Date**: 2026-10-29
 - **Authors**: Jakub Anderwald, with Claude Code
 
+> **Update 2026-11-09**: Neither In Test nor Approved holds a worktree slot any more, so the slot stall described below can't recur ([ADR-0070](./0070-factory-in-test-frees-slot-and-updates-behind-prs.md)). `--watch` now also updates a PR that is only behind `main`, with update-branch, before In Test.
+
 ## Context
 
 On 2026-10-27 the owner dragged #688 to **Approved**, and its PR #755 couldn't merge: it conflicted with `main`. `--release` handled a conflict by posting one comment (`drafto-factory-merge-conflict`) and leaving the card in Approved. Nothing in the factory ever merged `main` into a PR branch, so the card stayed there until a human resolved it by hand:

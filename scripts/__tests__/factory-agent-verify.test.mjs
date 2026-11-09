@@ -349,14 +349,16 @@ describe("factory-agent.sh verification stage: static wiring", () => {
     const back = extract("revision_return_to_test");
     assert.match(
       back,
-      /target="In Test" state\n\s*if verify_target_status "\$issue_num" "\$pr_head" "\$labels" \\\n\s*&& transition_status "\$item_id" "\$issue_num" "Testing"; then\n\s*target="Testing"\n[\s\S]*?\n\s*else\n\s*transition_status "\$item_id" "\$issue_num" "In Test" \|\| true\n\s*fi/,
+      // A failed move to Testing falls back to In Test; in_test records that
+      // the card got there, so only then are its slot and worktree freed.
+      /target="In Test" state in_test=0\n\s*if verify_target_status "\$issue_num" "\$pr_head" "\$labels" \\\n\s*&& transition_status "\$item_id" "\$issue_num" "Testing"; then\n\s*target="Testing"\n[\s\S]*?\n\s*elif transition_status "\$item_id" "\$issue_num" "In Test"; then\n\s*in_test=1\n\s*fi/,
     );
     assert.match(back, /returned to \$target/);
     // The no-op path starts the commit's round itself, as verify_enter does, so
     // a round left in state can't read as "head moved" or an expired clock.
     assert.match(
       back,
-      /target="Testing"\n[\s\S]*?verify_begin_round "\$issue_num" "\$pr_head"[\s\S]*?\n\s*else\n/,
+      /target="Testing"\n[\s\S]*?verify_begin_round "\$issue_num" "\$pr_head"[\s\S]*?\n\s*elif /,
     );
   });
 
