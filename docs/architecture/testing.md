@@ -1,26 +1,31 @@
 # Testing
 
-Drafto has seven test suites across four platforms. This doc consolidates the test matrix that is scattered across the "Testing Requirements" and "Pre-push verification" sections of [`CLAUDE.md`](../../CLAUDE.md). Per-package scripts live in each app's `package.json` (`apps/web/package.json`, `apps/mobile/package.json`, `apps/desktop/package.json`, `packages/shared/package.json`).
+Drafto has nine test suites, across the four app platforms, the shared package and the Mac mini automation in `scripts/`. This doc consolidates the test matrix that is scattered across the "Testing Requirements" and "Pre-push verification" sections of [`CLAUDE.md`](../../CLAUDE.md). Per-package scripts live in each package's `package.json` (`apps/web/package.json`, `apps/mobile/package.json`, `apps/desktop/package.json`, `packages/shared/package.json`, `scripts/package.json`).
 
 ## Test matrix
 
-| Platform | Test type          | Command                                                                          | Location                                                      | What breaks CI                        |
-| -------- | ------------------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------- |
-| Web      | Unit + integration | `cd apps/web && pnpm test`                                                       | `apps/web/__tests__/unit/`, `apps/web/__tests__/integration/` | vitest fail                           |
-| Web      | E2E (Playwright)   | `set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e` | `apps/web/e2e/`                                               | playwright fail                       |
-| Web      | Coverage           | `cd apps/web && pnpm test:coverage`                                              | same as web unit + integration                                | SonarCloud quality gate (~80% on new) |
-| Shared   | Unit               | `cd packages/shared && pnpm test`                                                | `packages/shared/__tests__/`                                  | vitest fail                           |
-| Mobile   | Unit               | `cd apps/mobile && pnpm test`                                                    | `apps/mobile/__tests__/`                                      | jest fail                             |
-| Mobile   | E2E (Maestro)      | `maestro test apps/mobile/e2e/ --platform android`                               | `apps/mobile/e2e/`                                            | manual (not wired into CI yet)        |
-| Desktop  | Unit               | `cd apps/desktop && pnpm test`                                                   | `apps/desktop/__tests__/`                                     | jest fail                             |
+| Platform                      | Test type                    | Command                                                                          | Location                                                      | What breaks CI                         |
+| ----------------------------- | ---------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------- |
+| Web                           | Unit + integration           | `cd apps/web && pnpm test`                                                       | `apps/web/__tests__/unit/`, `apps/web/__tests__/integration/` | vitest fail                            |
+| Web                           | E2E (Playwright)             | `set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e` | `apps/web/e2e/`                                               | playwright fail                        |
+| Web                           | Coverage                     | `cd apps/web && pnpm test:coverage`                                              | same as web unit + integration                                | SonarCloud quality gate (~80% on new)  |
+| Shared                        | Unit                         | `cd packages/shared && pnpm test`                                                | `packages/shared/__tests__/`                                  | vitest fail                            |
+| Mobile                        | Unit                         | `cd apps/mobile && pnpm test`                                                    | `apps/mobile/__tests__/`                                      | jest fail                              |
+| Mobile                        | E2E (Maestro)                | `maestro test apps/mobile/e2e/ --platform android`                               | `apps/mobile/e2e/`                                            | manual (not in CI), a person runs it   |
+| Desktop                       | Unit                         | `cd apps/desktop && pnpm test`                                                   | `apps/desktop/__tests__/`                                     | jest fail                              |
+| Desktop                       | E2E (AppleScript + cliclick) | `cd apps/desktop && pnpm test:e2e`                                               | `apps/desktop/e2e/`                                           | manual (not in CI), a person runs it   |
+| Scripts (Mac mini automation) | Unit (`node --test`)         | `cd scripts && pnpm test`                                                        | `scripts/__tests__/`                                          | node --test fail (`scripts-tests` job) |
 
-Turborepo aggregates these at the root: `pnpm test` fans out to every workspace that defines a `test` script, and `pnpm typecheck` / `pnpm lint` do the same for their respective tasks.
+Turborepo aggregates the workspaces' suites at the root: `pnpm test` fans out to every workspace that defines a `test` script, and `pnpm typecheck` / `pnpm lint` do the same for their respective tasks. `scripts/` is not a workspace: `pnpm-workspace.yaml` lists only `apps/*` and `packages/*`. So the root `pnpm test` never runs the scripts suite, and you must run `cd scripts && pnpm test` on its own. CI runs it in a separate `scripts-tests` job.
 
 ## Pre-push checklist
 
-Before any push, run every row of the matrix above (all seven suites) plus `pnpm lint && pnpm typecheck` from the repo root. Do not push if any step fails.
+Before any push, run every row of the matrix above (all nine suites) plus `pnpm lint && pnpm typecheck` from the repo root. Do not push if any step fails.
 
-Never skip a suite because "it's unrelated" — CI will run all of them and a failure blocks the merge.
+- **A person runs the two manual E2E rows, Mobile E2E and Desktop E2E, in an interactive session.** Unattended sessions, the factory included, never run them. Each manual row needs a device or app set up first: see [Maestro](#maestro-mobile-e2e) and [Desktop E2E](#desktop-e2e).
+- **Desktop E2E can write to production.** It drives the Drafto app that is running, and launches one if none is. On the Mac mini, `/Applications/Drafto.app` is the TestFlight build, which runs against production. Start the debug build first, as [Desktop E2E](#desktop-e2e) describes.
+
+Never skip a suite because "it's unrelated". CI runs every suite not marked manual above, and a failure blocks the merge.
 
 ## Prerequisites
 
@@ -99,6 +104,27 @@ A debug build of a branch runs against the **dev** Supabase project, through the
 - In a worktree on Android, Metro on port 8081 may clash with the main checkout's Metro. Start Metro on another port with `pnpm start --port 8082`, then, in a second terminal, redirect the app with `adb reverse tcp:8081 tcp:8082`. Metro stays in the foreground, so chaining the two with `&&` never runs `adb reverse`.
 - **Before shipping an iOS release, launch a Release build on the iOS 27 simulator** (runtime `com.apple.CoreSimulator.SimRuntime.iOS-27-0`). Build it with `xcodebuild … -configuration Release -sdk iphonesimulator` after `expo prebuild` with `.env.production` sourced, then check that the app reaches the Log In screen. Then quit it with `xcrun simctl terminate <sim> eu.drafto.mobile` and check that `xcrun simctl openurl <sim> "drafto://reset-password"` lands on the reset screen. Quitting first makes this a true cold start, through `scene(_:willConnectTo:options:)`. With the app still running, the link goes through `scene(_:openURLContexts:)` instead. iOS 27 stops apps built with its SDK that skip the UIScene lifecycle, and older simulators don't show it ([ADR-0046](../adr/0046-ios-uiscene-lifecycle.md)).
 
+### Desktop E2E
+
+`apps/desktop/e2e/run-e2e.sh` drives the running macOS app through System Events (AppleScript) and clicks with `cliclick`. It finds elements by their accessibility label.
+
+- **A person runs it, in an interactive session.** The factory and other unattended sessions never do (see [Pre-push checklist](#pre-push-checklist)). On the Mac mini, `/Applications/Drafto.app` is the TestFlight build, which runs against production, so the debug build must be running before you start.
+- Install `cliclick` with `brew install cliclick`. Without it the runner exits at once.
+- The Drafto macOS app must be running before you start. Use a debug build of the branch, served by Metro: run `cd apps/desktop && pnpm start` in one terminal, then build and launch with `cd apps/desktop && pnpm macos` (`npx react-native run-macos`, see [Local macOS dev build](../operations/builds-and-releases.md#local-macos-dev-build)). A debug build reads `apps/desktop/.env`, so it runs against the **dev** Supabase project ([environments](./environments.md)).
+  - The runner's first step is `tell application "Drafto" to activate`. If no Drafto is running, that launches whichever Drafto macOS finds, which may be the installed production build: on the Mac mini, the TestFlight build. Start the debug build first.
+  - Quit the TestFlight build before you launch the debug build. Both are named Drafto and share the bundle id `eu.drafto.mobile`, and the runner finds the app by name (`process "Drafto"`), so with both running it may drive either one. `pgrep -fl Drafto.app/Contents/MacOS/Drafto` should then list one process, and not under `/Applications`.
+- **A production `.app` runs the suite against production.** Release builds read `apps/desktop/.env.production`, which points at the prod project (`tbmjbxxseonkciqovnpl`). The run signs in there and creates an `E2E Notebook <timestamp>` notebook with a note. Its teardown tries to delete that notebook, but a failed delete doesn't count as a failed check, so read its `Cleanup:` line even after a run that exits 0. Whatever a run leaves behind stays on prod, because the web suite's `purge-stale` cleanup only touches dev. Against a production build, TEST 9 (Metro) skips rather than fails.
+- If the app shows the login screen, the runner signs in with `E2E_TEST_EMAIL` and `E2E_TEST_PASSWORD`, the same env contract as the web suite. If the app is already signed in, it runs as that account. It reads the two variables from the environment, not from a file, so export them first, from the repo root:
+
+  ```bash
+  set -a && source apps/web/.env.local && set +a
+  cd apps/desktop && pnpm test:e2e
+  ```
+
+- The terminal you run it from needs two permissions in System Settings → Privacy & Security: **Accessibility**, to read the app's UI and to click, and **Automation → System Events**, for the AppleScript keystrokes. macOS asks on the first run. Grant them, then run it again.
+- It drives the real cursor and keyboard, and it overwrites the clipboard (TEST 4 pastes the notebook name). Leave the Mac alone while it runs. It exits with the number of failed checks.
+- It saves full-screen screenshots to `/tmp/drafto_e2e_*.png` and leaves them there. They show whatever was on screen, notes included, so delete them after the run: `rm -f /tmp/drafto_e2e_*.png`.
+
 ### Mobile / desktop unit tests
 
 - Jest in both apps. In a worktree, run `pnpm install` first — worktrees do not share `node_modules`.
@@ -110,9 +136,15 @@ A debug build of a branch runs against the **dev** Supabase project, through the
 - Vitest against `packages/shared/__tests__/` and `packages/shared/src/editor/__tests__/` (attachment-url, format-converter, resolve-urls, and the editor-local tests).
 - No external services required.
 
+### Scripts
+
+- Node's built-in test runner (`node --test`) against `scripts/__tests__/*.test.mjs`, which covers the Mac mini automation: the factory, the support agent and the nightly jobs.
+- Node >= 22 (`engines` in `scripts/package.json`).
+- No external services required, as long as `SUPABASE_SERVICE_ROLE_KEY` is unset. If it is exported along with the dev URL and anon key, for example after you source an `apps/web/.env.local` that holds the admin specs' key, the glob's `profile-privilege-guard.live.test.mjs` and `storage-quota.live.test.mjs` run against dev and create users there. Neither test checks `DRAFTO_UNATTENDED`, so an unattended session runs them too. Run `unset SUPABASE_SERVICE_ROLE_KEY` before an ordinary run, and run those tests with [`pnpm test:live:supabase`](#dev-live-tests-pnpm-testlivesupabase).
+
 ### Dev live tests (`pnpm test:live:supabase`)
 
-Three opt-in tests run against the real **dev** Supabase project (`huhzactreblzcogqkbsd`). They aren't in the matrix above, and CI skips them. An operator runs them from an interactive session when a change touches what they cover, as the feature docs' Verify blocks note:
+Three opt-in tests run against the real **dev** Supabase project (`huhzactreblzcogqkbsd`). They aren't rows in the matrix above, and CI skips them. The Scripts row's glob does pick up `profile-privilege-guard.live.test.mjs` and `storage-quota.live.test.mjs`, but each skips unless the dev project's URL, anon key and service-role key are in the environment, and CI's `scripts-tests` job sets none of them. An operator runs them from an interactive session when a change touches what they cover, as the feature docs' Verify blocks note:
 
 - `scripts/__tests__/profile-privilege-guard.live.test.mjs` (`--only profile-guard`) checks the `profiles` privilege guard ([auth](../features/auth.md)).
 - `apps/web/__tests__/integration/account-deletion.live.test.ts` (`--only account-deletion`) checks `deleteUserAccount`.

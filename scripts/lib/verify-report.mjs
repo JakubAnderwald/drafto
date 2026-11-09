@@ -59,9 +59,11 @@
 //      shell lane's MANUAL steps, the browser's FAIL and SKIP rows when it
 //      reported (one that didn't tried none of its steps), one line
 //      per scenario section (iOS / Android and macOS ones on the beta when one
-//      was dispatched), one line per affected platform the scenario has no
+//      was dispatched; `### API` only when the shell lane didn't report or
+//      stopped early, since it is that lane's), one line per affected platform the scenario has no
 //      section for, and "run the Web steps by hand" when the browser lane
-//      didn't report. The platform and Web lines, and the pointer to a
+//      didn't report (for `skipped:already-run`, a pointer to the In Test
+//      run's Browser run comment instead). The platform and Web lines, and the pointer to a
 //      withheld lane's local report, are never cut by the cap.
 //   5. Coverage gaps: --gaps (a {lane, token} entry reads as the token's
 //      REASONS sentence; a {lane, reason} one as it is), every lane that
@@ -144,6 +146,9 @@ const GAPS_MAX = 20;
 const MANUAL_ITEM_MAX = 1000;
 const MOBILE_HEADING = /\b(ios|android|mobile|iphone|ipad)\b/i;
 const DESKTOP_HEADING = /\b(macos|mac|desktop)\b/i;
+// The scenario's API-response checks, which the shell lane runs (ADR-0053).
+// Matched on the plain label, so `### **API**` or `### API checks` count too.
+const API_HEADING = /^api\b/i;
 // Scenario sections that are notes, not steps.
 const NOT_STEPS_HEADING = /(\bnot|n't)\s+(manually\s+)?testable\b|\buntestable\b/i;
 
@@ -251,7 +256,8 @@ const REASONS = {
   "not-web": "the PR's diff touches neither the web app (apps/web/) nor packages/shared/",
   "browser-off":
     "the browser runner's verify kind is switched off (FACTORY_BROWSER, FACTORY_BROWSER_KINDS)",
-  "already-run": "the browser runner already handled this commit (see its comment on the issue)",
+  "already-run":
+    "the In Test browser run already reported on this commit, so this round didn't run the Web steps again (see its Browser run comment on the issue)",
   "chrome-not-running": "Chrome wasn't running on the Mac mini",
   "runner-disabled":
     "the browser runner is turned off until an operator resets it (factory:browser-reset)",
@@ -589,6 +595,7 @@ function buildLane(key, input, secrets, { notNeeded = false } = {}) {
     hits,
     reported: false,
     notNeeded: false,
+    earlierRun: false,
     status: own(STATE_STATUS, state.kind) ?? "unknown",
     runStatus: null,
     verdict: "none",
@@ -604,6 +611,13 @@ function buildLane(key, input, secrets, { notNeeded = false } = {}) {
       lane.status = "not needed";
     } else {
       lane.gap = describeState(state);
+      // The In Test run's report for this commit is on the issue
+      // (factory-agent.sh checks for it): still a gap, since its result never
+      // reaches here, but the manual step points at it (EARLIER_RUN_STEP).
+      lane.earlierRun =
+        key === "browser" &&
+        state.kind === "skipped" &&
+        state.detail.toLowerCase() === "already-run";
     }
   } else if (runnerReason) {
     lane.status = "no result";
@@ -657,6 +671,16 @@ function platformHow(platform, betaLanes) {
     ? `on the ${name} beta for this commit (a follow-up comment gives the build number)`
     : "on a build of this branch (no beta was dispatched; the scenario says how to get one)";
 }
+
+// The manual step for a browser lane that ended `skipped:already-run`: the In
+// Test run's report for this commit is on the issue, but its result never
+// reaches this composer, so the step says what to do for each way that report
+// can read, and for a scenario or environment that changed since it ran.
+export const EARLIER_RUN_STEP =
+  "Read the earlier **Browser run** comment for this commit on this issue: this round didn't " +
+  "run the Web steps again. Re-check by hand the steps it marked FAIL or SKIP, or doesn't list. " +
+  "Run all the **Web** steps by hand on the preview if it shows no results (it stopped early, " +
+  "or its report was withheld) or if the scenario or the environment changed since it ran.";
 
 // The Web row's note when the web changes come only through packages/shared/:
 // why the browser ran on a PR with no apps/web/ files.
@@ -827,9 +851,23 @@ function manualSteps({ shell, browser, sections, platforms, betaLanes }) {
 
   let hasMobile = false;
   let hasDesktop = false;
+  // `### API` is the shell lane's section: once that lane has reported, it
+  // listed every API step it couldn't run in its own manual block above.
+  const shellRan = Boolean(shell.reported) && shell.runStatus !== "blocked";
   for (const s of sections) {
     if (s.heading === "Web" || NOT_STEPS_HEADING.test(s.heading)) continue;
     const h = plainLabel(s.heading);
+    if (API_HEADING.test(h)) {
+      if (!shellRan) {
+        const why = shell.reported ? "stopped early (blocked)" : "didn't report";
+        add(
+          `Run the **${h}** steps in the test scenario by hand with \`vercel curl\`: ` +
+            `the shell lane ${why}.`,
+          { reserved: true },
+        );
+      }
+      continue;
+    }
     if (MOBILE_HEADING.test(s.heading)) {
       hasMobile = true;
       add(`Run the **${h}** steps in the test scenario ${platformHow("mobile", betaLanes)}.`, {
@@ -861,7 +899,10 @@ function manualSteps({ shell, browser, sections, platforms, betaLanes }) {
 
   const hasWebSection = sections.some((s) => s.heading === "Web");
   const browserRan = browser.reported && browser.runStatus !== "blocked";
-  if (!browserRan && (hasWebSection || platforms.web)) {
+  const webToCheck = hasWebSection || platforms.web;
+  if (browser.earlierRun && webToCheck) {
+    add(EARLIER_RUN_STEP, { reserved: true });
+  } else if (!browserRan && webToCheck) {
     const why = browser.reported
       ? "stopped early (blocked)"
       : `didn't report (${browser.gap ?? "no result"})`;
