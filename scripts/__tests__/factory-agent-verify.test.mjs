@@ -600,13 +600,20 @@ describe("revision_noop_route (real helpers): back to In Test only for the head 
   // Review's gates (an earlier attempt pushed it and died, or someone else
   // pushed), so it gets the parity post-check a pushed revision gets and goes
   // to In Review (#759). The reply check is stubbed: its own tests are in
-  // factory-intest-iteration.test.mjs, and here only its kind matters.
+  // factory-intest-iteration.test.mjs, and here only its kind matters. Back in
+  // In Test the card frees its slot and worktree (ADR-0070), through the real
+  // release helpers (worktree-cli itself is stubbed).
   const ROUTE_FNS = [
     "revision_noop_route",
     "revision_noop_to_review",
     "revision_return_to_test",
     "implement_parity_gate",
     "parity_violation",
+    "release_slot_and_worktree",
+    "slot_held_by_issue",
+    "remove_worktree_for",
+    "branch_keep_reason",
+    "log_removed_worktree_leftovers",
   ];
   const MARKERS = JSON.stringify([{ commentId: "123", marker: "drafto-factory-revise-reply-123" }]);
   const MARK = "2026-11-01T00:00:00Z";
@@ -684,11 +691,11 @@ describe("revision_noop_route (real helpers): back to In Test only for the head 
     );
   });
 
-  it("returns the shown head to In Test with verification off", () => {
+  it("returns the shown head to In Test with verification off, freeing its slot", () => {
     withBash(
       route(),
       {
-        env: { HEAD, FACTORY_VERIFY: "0", DIFF_STUB: "apps/web/a.ts" },
+        env: { HEAD, FACTORY_VERIFY: "0", DIFF_STUB: "apps/web/a.ts", PR_OBJ_STUB: PR_OBJ },
         state: { ...base, intestCommentSha: HEAD },
       },
       (r) => {
@@ -696,6 +703,10 @@ describe("revision_noop_route (real helpers): back to In Test only for the head 
         assert.doesNotMatch(r.calls, /gh pr diff/);
         assert.match(r.calls, /^replies issue=7 pr=70 kind=noop$/m);
         assert.equal(r.issue.lastFeedbackAt, MARK);
+        assert.equal(r.issue.attempts, 0);
+        assert.match(r.stdout, /^slot=free$/m, "In Test holds no slot (ADR-0070)");
+        // The PR is open, so its branch stays; only the worktree goes.
+        assert.match(r.calls, /^worktree remove --issue 7 --root \S+ --force$/m);
         assert.match(r.log, /revision noop; returned to In Test/);
       },
     );

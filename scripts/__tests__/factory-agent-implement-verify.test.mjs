@@ -69,7 +69,8 @@ describe("factory-agent.sh --implement verification", () => {
     // The check lives in implement_parity_gate, shared with the revision noop
     // on an unshown head (#759); the gate itself still runs parity_violation.
     const guardAt = implementedArm.indexOf("POST_HEAD_OID");
-    const parityAt = implementedArm.indexOf("implement_parity_gate ");
+    // Anchored on the call, not the comment above it that names the gate.
+    const parityAt = implementedArm.indexOf("if ! implement_parity_gate ");
     const moveAt = implementedArm.indexOf('"In Review"');
     assert.ok(guardAt !== -1, "the implemented arm should compare head OIDs");
     assert.ok(parityAt !== -1, "the implemented arm should still run the parity check");
