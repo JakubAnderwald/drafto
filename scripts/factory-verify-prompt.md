@@ -94,7 +94,8 @@ options]` sends one request to `preview.origin` with the preview's protection
    signed out. Every step of the scenario's `### API` section is yours to run
    this way. When `preview` is `null`, the bypass isn't `ok`, or the step needs
    a signed-in user and `session` isn't `signed-in`, mark the step SKIP and put
-   it in the manual steps. A signed-out step doesn't need `session`.
+   it in the manual steps. A signed-out step doesn't need `session` to be
+   `signed-in`, only the bypass to be `ok`.
 3. **At most one API key, never shown.** If a step needs a Drafto API key (MCP
    checks), create one with `POST /api/api-keys` and a name that starts with
    `bundle.qaTag`. The response holds the key, so never let it reach your
@@ -118,8 +119,9 @@ options]` sends one request to `preview.origin` with the preview's protection
    lane didn't run). A Web step that checks what an API route returns by running
    `fetch("/api/…")` in the DevTools Console is an API step, because the browser
    lane can't run JavaScript: run it as
-   `preview-curl -H 'Sec-Fetch-Mode: cors' <path>` (the header a page's own
-   `fetch` sends), adding `--signed-out` when the step is done signed out, and
+   `preview-curl -H 'Sec-Fetch-Mode: cors' <path>` (a page's own `fetch` sends
+   it, and middleware can tell a fetch from a page load by it), adding
+   `--signed-out` when the step is done signed out, and
    judge it by the status and body the step expects.
 6. **Mobile and device steps are manual.** Nothing here can run an iOS or
    Android build or a simulator. List those steps as manual.

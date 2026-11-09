@@ -1203,15 +1203,22 @@ describe("scenario sections and platforms", () => {
     const platforms = { web: true, mobile: false, desktop: false };
     const ran = manualLines(compose({ platforms, scenario: body }).body);
     assert.ok(!ran.some((l) => /\*\*API\*\*/.test(l)), ran.join("\n"));
-    const byHand =
-      "Run the **API** steps in the test scenario by hand with `vercel curl`: " +
-      "the shell lane didn't run them.";
-    for (const shell of [
-      { state: "timeout", dir: "", text: null },
-      { state: "reported:none", text: shellOutput({ status: "blocked", verdict: "none" }) },
+    const byHand = "Run the **API** steps in the test scenario by hand with `vercel curl`: ";
+    for (const [shell, why] of [
+      [{ state: "timeout", dir: "", text: null }, "the shell lane didn't report."],
+      [
+        { state: "reported:none", text: shellOutput({ status: "blocked", verdict: "none" }) },
+        "the shell lane stopped early (blocked).",
+      ],
     ]) {
       const lines = manualLines(compose({ platforms, scenario: body, shell }).body);
-      assert.ok(lines.includes(byHand), `${shell.state}: ${lines.join("\n")}`);
+      assert.ok(lines.includes(byHand + why), `${shell.state}: ${lines.join("\n")}`);
+    }
+    // A heading the writer decorated still counts as the shell lane's.
+    for (const heading of ["### **API**", "### API checks"]) {
+      const decorated = body.replace("### API", heading);
+      const lines = manualLines(compose({ platforms, scenario: decorated }).body);
+      assert.ok(!lines.some((l) => /\bAPI\b/.test(l)), `${heading}: ${lines.join("\n")}`);
     }
   });
 

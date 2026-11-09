@@ -126,7 +126,13 @@ describe("verify shell prompt — safety rules", () => {
       /run it as `preview-curl <path> <flags>`, adding `--signed-out` when the step runs signed out/,
     );
     assert.match(flat, /Every step of the scenario's `### API` section is yours to run this way/);
-    assert.match(flat, /A signed-out step doesn't need `session`/);
+    // ...but it does need the bypass: a sign-in Vercel turned away makes it
+    // `rejected` (bypassFact), so the 401 of the protection wall isn't read as
+    // the app's.
+    assert.match(
+      flat,
+      /A signed-out step doesn't need `session` to be `signed-in`, only the bypass to be `ok`/,
+    );
   });
 
   it("runs a DevTools-console API check from ### Web as a preview-curl request", () => {

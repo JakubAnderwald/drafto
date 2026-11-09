@@ -59,7 +59,8 @@
 //      shell lane's MANUAL steps, the browser's FAIL and SKIP rows when it
 //      reported (one that didn't tried none of its steps), one line
 //      per scenario section (iOS / Android and macOS ones on the beta when one
-//      was dispatched), one line per affected platform the scenario has no
+//      was dispatched; `### API` only when the shell lane didn't report or
+//      stopped early, since it is that lane's), one line per affected platform the scenario has no
 //      section for, and "run the Web steps by hand" when the browser lane
 //      didn't report. The platform and Web lines, and the pointer to a
 //      withheld lane's local report, are never cut by the cap.
@@ -145,7 +146,8 @@ const MANUAL_ITEM_MAX = 1000;
 const MOBILE_HEADING = /\b(ios|android|mobile|iphone|ipad)\b/i;
 const DESKTOP_HEADING = /\b(macos|mac|desktop)\b/i;
 // The scenario's API-response checks, which the shell lane runs (ADR-0053).
-const API_HEADING = /^api$/i;
+// Matched on the plain label, so `### **API**` or `### API checks` count too.
+const API_HEADING = /^api\b/i;
 // Scenario sections that are notes, not steps.
 const NOT_STEPS_HEADING = /(\bnot|n't)\s+(manually\s+)?testable\b|\buntestable\b/i;
 
@@ -835,11 +837,12 @@ function manualSteps({ shell, browser, sections, platforms, betaLanes }) {
   for (const s of sections) {
     if (s.heading === "Web" || NOT_STEPS_HEADING.test(s.heading)) continue;
     const h = plainLabel(s.heading);
-    if (API_HEADING.test(s.heading)) {
+    if (API_HEADING.test(h)) {
       if (!shellRan) {
+        const why = shell.reported ? "stopped early (blocked)" : "didn't report";
         add(
           `Run the **${h}** steps in the test scenario by hand with \`vercel curl\`: ` +
-            "the shell lane didn't run them.",
+            `the shell lane ${why}.`,
           { reserved: true },
         );
       }

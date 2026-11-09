@@ -37,6 +37,7 @@ import {
   CURL_CFG,
   SIGNED_OUT_CURL_CFG,
   buildPreviewCurlArgs,
+  bypassFact,
   bypassFileProblem,
   classifyRun,
   countToolUses,
@@ -69,7 +70,7 @@ import {
   setIssueField,
 } from "../lib/factory-state.mjs";
 import { buildFactoryVerifyShellBundle } from "../lib/factory-bundle.mjs";
-import { writeGuardFiles } from "../lib/verify-guard.mjs";
+import { PRIVATE_FILE_NAMES, writeGuardFiles } from "../lib/verify-guard.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LANE = path.resolve(HERE, "..", "lib", "verify-lane.mjs");
@@ -950,6 +951,20 @@ describe("preview-curl argument check", () => {
     assert.match(readFileSync(cfg, "utf8"), /cookie-jar = /);
     assert.ok(!/cookie/.test(readFileSync(signedOutCfg, "utf8")));
     for (const f of [cfg, signedOutCfg]) assert.equal(statSync(f).mode & 0o777, 0o600, f);
+    // A sign-in Vercel turned away means the bypass doesn't work, so the model
+    // is told it isn't ok and SKIPs signed-out steps instead of reading the
+    // protection wall's 401 as the app's.
+    assert.equal(bypassFact("ok", "protected"), "rejected");
+    assert.equal(bypassFact("ok", "signed-in"), "ok");
+    assert.equal(bypassFact("ok", "signin-busy"), "ok");
+    assert.equal(bypassFact("no-file", null), "no-file");
+    // Every file the lane writes into private/ is one the guard protects by name.
+    for (const name of readdirSync(privateDir)) {
+      assert.ok(
+        PRIVATE_FILE_NAMES.includes(name),
+        `${name} isn't in the guard's PRIVATE_FILE_NAMES`,
+      );
+    }
   });
 });
 
@@ -1595,6 +1610,14 @@ describe("gaps", () => {
       { facts: { bypass: "ok", session: "signed-in" } },
     );
     assert.deepEqual(runGaps({ runDir: runDir() }).gaps, []);
+    // bypassFact's `rejected`: the secret parsed, but Vercel turned it away.
+    write(
+      { previewOrigin: ORIGIN, paths: { bypassFile: secrets.bypass }, laneFacts: { bypass: "ok" } },
+      { facts: { bypass: "rejected", session: "protected" } },
+    );
+    g = runGaps({ runDir: runDir() });
+    assert.equal(g.gaps.length, 1);
+    assert.match(g.gaps[0].reason, /protection-bypass secret was turned away by Vercel/);
   });
 
   it("names a sign-in lease the browser runner held past the wait as the signin-busy token", () => {

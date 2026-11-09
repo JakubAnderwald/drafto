@@ -248,8 +248,9 @@ Compose it in Markdown from the bundle's facts. Structure:
       `vercel.com/sso-api`. Write any API or Terminal step against the preview
       as `vercel curl <path> --deployment <previewUrl> -- <curl flags>` (it
       needs `vercel login` as a member of the project's team), never as
-      `curl "$PREVIEW/…"`. For example:
-      `vercel curl /api/mcp --deployment <previewUrl> -- -s -X POST -H "Authorization: Bearer $KEY" --data @body.json`.
+      `curl "$PREVIEW/…"`. Give a request body inline, never as `@file`: the
+      factory's shell lane can't read one. For example:
+      `vercel curl /api/mcp --deployment <previewUrl> -- -s -X POST -H "Authorization: Bearer $KEY" --json '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`.
   - each entry in `betaDispatch.dispatched` → say a beta build is building now
     from PR #`<n>` at `<first 12 chars of headSha>`, and that a follow-up comment
     reports the build number when it lands (~20-40 min).
@@ -291,23 +292,26 @@ Compose it in Markdown from the bundle's facts. Structure:
   else does. The factory's browser runner (ADR-0051) runs only that section, on
   the preview, so every web step must be doable in a browser on the preview
   alone: what a person does on the page (open a path, click, type, read what it
-  shows). Never the DevTools Console, running JavaScript in the page, reading
-  response headers or the Network tab: the runner has no tool for any of them,
-  so such a step always comes back SKIP. Name pages by path (`/login`,
+  shows). Never a step that types code into the DevTools Console or otherwise
+  runs JavaScript in the page: the runner has no tool for it, so such a step
+  always comes back SKIP. It can read the console's messages and each
+  request's method, path and status, so "no console errors" or "saving sends
+  `PATCH /api/notes/<id>` → 200" are fine. Name pages by path (`/login`,
   `/notebooks`) rather than full URLs: the runner opens them on the commit's
   own deployment, which isn't the `previewUrl` link. A cross-check on drafto.eu
   or on another device belongs in the step's text, not in its own Web step.
-- `### API`, inside `## Test scenario`, only when `platforms.web` is true and
-  the change has a response worth checking that a page can't show (a status
-  code, a JSON body). Numbered steps, each written as
-  `vercel curl <path> --deployment <previewUrl> -- <curl flags>` with the
-  status and body it expects, and each saying whether it runs **signed out** or
-  with an API key: `vercel curl` carries no Drafto session. A check that needs
-  the signed-in user belongs in `### Web`, as something the page shows. The
-  factory's shell lane runs this section on the preview (ADR-0053), and a
-  person can run it as written. Keep these checks inside `## Test scenario`: a
-  `##` section of its own, such as an "Optional cross-check from a terminal",
-  is never run by any lane.
+- `### API`, a heading that is exactly `### API`, inside `## Test scenario`,
+  only when `platforms.web` is true and the change has a response worth
+  checking that a page can't show (a status code, a JSON body). Numbered
+  steps, each written as `vercel curl <path> --deployment <previewUrl> -- <curl flags>`
+  with the status and body it expects, and each saying whether it runs
+  **signed out**, **signed in** as the test account, or with an API key. The
+  factory's shell lane runs this section on the preview (ADR-0053), with the
+  test account's session for a signed-in step. A person runs a signed-out or
+  API-key step as written; `vercel curl` carries no Drafto session, so for a
+  signed-in GET say they can open the path in a signed-in browser tab instead.
+  Keep these checks inside `## Test scenario`: a `##` section of its own, such
+  as an "Optional cross-check from a terminal", is never run by any lane.
 - What isn't manually testable (only if there is something).
 - When `advisory` is non-empty: a one-line ⚠️ note that advisory (non-required)
   checks are not green — naming them — and that they don't block the merge but

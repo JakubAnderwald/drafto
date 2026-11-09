@@ -91,6 +91,7 @@ import { fileURLToPath } from "node:url";
 import { ghTimeoutMs } from "./gh-timeout.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
+import { COOKIE_JAR, CURL_CFG, SIGNED_OUT_CURL_CFG, SIGNIN_CFG } from "./verify-guard.mjs";
 
 export const REPO = "JakubAnderwald/drafto";
 
@@ -624,12 +625,22 @@ export function curlConfigText({ bypassSecret = null, cookieJar = null }) {
   return lines.join("\n") + "\n";
 }
 
-// The run's two curl configs, both under private/. The signed-out one has the
-// same bypass header and no cookie jar, so `preview-curl --signed-out` sends
-// no session and keeps no cookie a response sets: that's how the lane checks
-// what a signed-out caller gets (an API route's 401 JSON, say).
-export const CURL_CFG = "curl.cfg";
-export const SIGNED_OUT_CURL_CFG = "curl-signed-out.cfg";
+// The run's two curl configs, both under private/, named by the guard
+// (verify-guard.mjs protects every name in PRIVATE_FILE_NAMES). The signed-out
+// one has the same bypass header and no cookie jar, so `preview-curl
+// --signed-out` sends no session and keeps no cookie a response sets: that's
+// how the lane checks what a signed-out caller gets (an API route's 401 JSON).
+export { CURL_CFG, SIGNED_OUT_CURL_CFG };
+
+/**
+ * The bypass fact the model sees. A readable secret says `ok`, but when
+ * Vercel turned the sign-in request away (`protected`) the secret doesn't
+ * work: a `--signed-out` request would meet the same protection wall, and a
+ * 401 or a redirect from it must not read as the app's own answer.
+ */
+export function bypassFact(bypass, session) {
+  return session === "protected" ? "rejected" : bypass;
+}
 
 /** Write both curl configs (mode 600) into the run's private dir; returns their paths. */
 export function writeCurlConfigs({ privateDir, bypassSecret = null }, { fs = nodeFs } = {}) {
@@ -637,7 +648,7 @@ export function writeCurlConfigs({ privateDir, bypassSecret = null }, { fs = nod
   const signedOutCfg = path.join(privateDir, SIGNED_OUT_CURL_CFG);
   fs.writeFileSync(
     cfg,
-    curlConfigText({ bypassSecret, cookieJar: path.join(privateDir, "cookies.txt") }),
+    curlConfigText({ bypassSecret, cookieJar: path.join(privateDir, COOKIE_JAR) }),
     { mode: 0o600 },
   );
   fs.writeFileSync(signedOutCfg, curlConfigText({ bypassSecret }), { mode: 0o600 });
@@ -657,11 +668,11 @@ export async function runPreviewCurl(
   { runDir, argv },
   { fs = nodeFs, stderr = process.stderr, spawnFn = spawn } = {},
 ) {
+  const noRun =
+    "preview-curl: this run has no preview session (the run is over or never had a preview)\n";
   const meta = parseJson(readText(fs, path.join(runDir, "meta.json")), null);
-  if (!meta || !fs.existsSync(path.join(runDir, "private", CURL_CFG))) {
-    stderr.write(
-      "preview-curl: this run has no preview session (the run is over or never had a preview)\n",
-    );
+  if (!meta) {
+    stderr.write(noRun);
     return 2;
   }
   const built = buildPreviewCurlArgs(argv, { origin: meta.previewOrigin });
@@ -669,9 +680,15 @@ export async function runPreviewCurl(
     stderr.write(`preview-curl: ${built.reason}\n`);
     return 2;
   }
-  const cfg = path.join(runDir, "private", built.signedOut ? SIGNED_OUT_CURL_CFG : CURL_CFG);
+  const privateDir = path.join(runDir, "private");
+  const cfg = path.join(privateDir, built.signedOut ? SIGNED_OUT_CURL_CFG : CURL_CFG);
   if (!fs.existsSync(cfg)) {
-    stderr.write("preview-curl: this run has no signed-out config, so --signed-out can't run\n");
+    // Only a live run without the signed-out config (one started before it
+    // existed) gets the narrower message; never a fallback to the session.
+    const live = built.signedOut && fs.existsSync(path.join(privateDir, CURL_CFG));
+    stderr.write(
+      live ? "preview-curl: this run has no signed-out config, so --signed-out can't run\n" : noRun,
+    );
     return 2;
   }
   // -q first: no ~/.curlrc. Then the run's config, the checked options, the URL.
@@ -1487,7 +1504,7 @@ export async function signInPreview(
   }
   try {
     // The link is a login token: it goes in a mode-600 config, never on argv.
-    const linkCfg = path.join(privateDir, "signin.cfg");
+    const linkCfg = path.join(privateDir, SIGNIN_CFG);
     nodeFs.writeFileSync(linkCfg, `url = "${link}"\n`, { mode: 0o600 });
     const r = await runStep(
       meta.bins.curl,
@@ -1780,6 +1797,7 @@ export async function runSupervise({ runDir }, { env = process.env } = {}) {
         logFile,
         stopped,
       });
+      facts.bypass = bypassFact(facts.bypass, facts.session);
     }
     nodeFs.mkdirSync(binDir, { recursive: true, mode: 0o700 });
     nodeFs.writeFileSync(
@@ -2299,6 +2317,8 @@ const BYPASS_PROBLEM_TEXT = {
   empty: "is empty",
   malformed: "doesn't hold a well-formed secret",
   unreadable: "couldn't be read",
+  // bypassFact: Vercel turned the sign-in request away.
+  rejected: "was turned away by Vercel (a rotated secret?)",
 };
 
 /** Coverage gaps the run's own facts show, and whether it had the bypass secret. */
