@@ -66,11 +66,21 @@ describe("factory-agent.sh --implement verification", () => {
   });
 
   it("compares the head before running the parity post-check", () => {
+    // The check lives in implement_parity_gate, shared with the revision noop
+    // on an unshown head (#759); the gate itself still runs parity_violation.
     const guardAt = implementedArm.indexOf("POST_HEAD_OID");
-    const parityAt = implementedArm.indexOf("parity_violation");
+    const parityAt = implementedArm.indexOf("implement_parity_gate ");
+    const moveAt = implementedArm.indexOf('"In Review"');
     assert.ok(guardAt !== -1, "the implemented arm should compare head OIDs");
     assert.ok(parityAt !== -1, "the implemented arm should still run the parity check");
     assert.ok(guardAt < parityAt, "no point diffing a PR that never moved");
+    assert.ok(parityAt < moveAt, "a violation must never reach In Review");
+    assert.match(
+      implementedArm,
+      /if ! implement_parity_gate "\$ITEM_ID" "\$ISSUE_NUM" "\$SLOT" "\$PR_NUM" \\\n\s*"\$AFFECTED" "\$PARITY_OVERRIDE"; then\n\s*continue\n\s*fi\n/,
+    );
+    const gate = sliceBetween("implement_parity_gate() {", "\n}\n", "implement_parity_gate");
+    assert.match(gate, /parity_violation "\$affected" "\$override" "\$diff_files"/);
   });
 
   it("treats an unchanged head as a failed attempt, not a success", () => {
@@ -165,9 +175,15 @@ describe("factory-agent.sh --implement verification", () => {
   }
 
   it("leaves the legitimate noop paths advancing as before", () => {
-    // Revision noop: revision_return_to_test re-presents the PR and consumes
-    // only the feedback the run was given (its <feedback-mark> argument).
-    assert.match(noopArm, /revision_return_to_test [\s\S]*?"\$FEEDBACK_MARK" noop\n/);
+    // Revision noop: revision_noop_route hands the shown head to
+    // revision_return_to_test, which re-presents the PR and consumes only the
+    // feedback the run was given (its <feedback-mark> argument).
+    assert.match(
+      noopArm,
+      /revision_noop_route [\s\S]*?"\$FEEDBACK_MARK" "\$AFFECTED" "\$PARITY_OVERRIDE"\n/,
+    );
+    const route = sliceBetween("revision_noop_route() {", "\n}\n", "revision_noop_route");
+    assert.match(route, /revision_return_to_test [\s\S]*?"\$mark" noop\n/);
     const back = script.slice(
       script.indexOf("revision_return_to_test() {"),
       script.indexOf("\n}\n", script.indexOf("revision_return_to_test() {")),

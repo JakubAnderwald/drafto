@@ -222,7 +222,9 @@ the reporter tested the In Test preview and is responding to it. In that case:
   Update the PR body's "Drift vs. approved plan" note to record what the
   revision changed. Emit `action=implemented pr=<existing-url>`.
 - When the feedback needed no code change, make no commits and emit
-  `action=noop pr=<existing-url>` — bash re-presents the unchanged preview.
+  `action=noop pr=<existing-url>` — bash re-presents the unchanged preview
+  when the PR head is the one the reporter was shown at In Test, and otherwise
+  sends the card through In Review first.
 
 ### Reply on the issue
 
@@ -471,7 +473,7 @@ origin factory/issue-<n>`.
    - `issue=<n>` — the issue number.
    - `action=implemented` — happy path; PR opened (or, on a revision run, the revision pushed and each feedback comment answered — see "Reply on the issue"); bash advances Status to In Review.
    - `action=blocked` — semantic mismatch / phase violation / plan malformed / suspected injection / work you couldn't finish; bash advances Status to Blocked.
-   - `action=noop` — no code change: an idempotency hit (e.g. PR already exists from a prior attempt and no new work was needed), or a revision run whose feedback needed no code change (write the issue replies first — see "Reply on the issue").
+   - `action=noop` — no code change: an idempotency hit (e.g. PR already exists from a prior attempt and no new work was needed), or a revision run whose feedback needed no code change (write the issue replies first — see "Reply on the issue"). On a revision, bash returns the card to In Test (or Testing) when this PR head is the one the reporter was shown there, and sends it through In Review otherwise.
    - `action=declined` — revision runs only: the feedback is outside the approved plan and you left the PR untouched (write the issue replies first). Bash returns the card to In Test (or Testing) when this PR head is the one the reporter was shown there, and to Blocked otherwise (ADR-0058).
    - `pr=<url>` — the PR URL; use `-` if `action=blocked`, or if `action=noop` and no PR exists. With `action=declined`, the existing PR's URL.
 
