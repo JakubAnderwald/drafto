@@ -534,6 +534,8 @@ describe("factory-agent.sh structural wiring (In Test iteration)", () => {
     assert.match(review, /implement_parity_gate [^\n]*\\\n\s*\|\| return 0\n/);
     assert.match(review, /lastFeedbackAt "\$mark"/);
     assert.match(review, /factory:reset-attempts "\$issue_num"/);
+    // A new In Review stint, so a fresh behind-main budget (ADR-0070).
+    assert.match(review, /factory:set-issue-field "\$issue_num" branchUpdates "" --state-file/);
     assert.match(review, /revise_replies_check "\$issue_num" "\$pr_num" "\$markers" noop-review\n/);
     // --watch drives the card from In Review, on this slot and worktree.
     assert.doesNotMatch(review, /factory:slot-release/);

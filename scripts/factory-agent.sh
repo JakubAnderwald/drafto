@@ -1834,7 +1834,8 @@ revision_noop_route() {
 # violation parks the card in Blocked and leaves the feedback unconsumed), then
 # In Review, where --watch runs CI, the code review and a new In Test scenario.
 # The feedback is consumed (the noop said no code change was needed), attempts
-# reset and the replies checked. The slot and worktree stay for --watch.
+# and the behind-main budget reset and the replies checked. The slot and
+# worktree stay for --watch.
 revision_noop_to_review() {
   local issue_num="$1" item_id="$2" slot="$3" pr_num="$4" markers="$5" mark="$6"
   local affected="$7" override="$8"
@@ -1843,6 +1844,10 @@ revision_noop_to_review() {
   transition_status "$item_id" "$issue_num" "In Review" || true
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" lastFeedbackAt "$mark" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$issue_num" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  # A new In Review stint starts here, with a fresh behind-main budget
+  # (ADR-0070), as on the implemented arm. A move to Blocked doesn't reset it, so
+  # a card dragged back out of Blocked could otherwise arrive with it spent.
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" branchUpdates "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   revise_replies_check "$issue_num" "$pr_num" "$markers" noop-review
   log "Issue #$issue_num: revision noop on an unshown head → In Review (slot $slot retained for --watch)"
 }

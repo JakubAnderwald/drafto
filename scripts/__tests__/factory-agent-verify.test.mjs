@@ -618,7 +618,9 @@ describe("revision_noop_route (real helpers): back to In Test only for the head 
   const MARKERS = JSON.stringify([{ commentId: "123", marker: "drafto-factory-revise-reply-123" }]);
   const MARK = "2026-11-01T00:00:00Z";
   const EARLIER = "2026-10-01T00:00:00Z";
-  const base = { attempts: 2, lastFeedbackAt: EARLIER };
+  // branchUpdates: a behind-main budget spent in an earlier In Review stint
+  // (ADR-0070), as on a card dragged back out of Blocked.
+  const base = { attempts: 2, lastFeedbackAt: EARLIER, branchUpdates: "3" };
   const route = ({ affected = "", override = "infra-only" } = {}) =>
     [
       ...ROUTE_FNS.map(extract),
@@ -647,6 +649,7 @@ describe("revision_noop_route (real helpers): back to In Test only for the head 
           assert.match(r.calls, /^replies issue=7 pr=70 kind=noop-review$/m);
           assert.equal(r.issue.lastFeedbackAt, MARK, "the feedback is consumed");
           assert.equal(r.issue.attempts, 0, "attempts reset");
+          assert.equal(r.issue.branchUpdates, null, "a fresh behind-main budget");
           assert.match(r.stdout, /^slot=7$/m, "the slot stays for --watch");
           assert.doesNotMatch(r.calls, /^worktree /m, "and so does the worktree");
           assert.equal(r.comments.length, 0);
@@ -728,6 +731,7 @@ describe("revision_noop_route (real helpers): back to In Test only for the head 
         // Nothing consumed or reset, and no replies: a human looks at it first.
         assert.equal(r.issue.lastFeedbackAt, EARLIER);
         assert.equal(r.issue.attempts, 2);
+        assert.equal(r.issue.branchUpdates, "3");
         assert.doesNotMatch(r.calls, /^replies /m);
       },
     );
