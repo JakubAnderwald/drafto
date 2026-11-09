@@ -165,8 +165,9 @@ it. This file is hand-maintained, not generated: when a column changes, update
 
 - `apps/desktop/__tests__/db/sync.test.ts` and `apps/mobile/__tests__/db/sync.test.ts`
   — the remote-change counter (own-push echoes are not counted), coalescing,
-  and on desktop first-sync vs. incremental, the pull's session gate and the
-  empty-server-ID-set guard on deletion detection. Mobile's file also covers
+  and on desktop first-sync vs. incremental, the pull's session gate, and
+  deletion detection's empty-server-ID-set guard and its skip of attachments
+  that haven't uploaded. Mobile's file also covers
   the pull shape and cursor.
 - `apps/desktop/__tests__/db/sync-mappers.test.ts` — column mapping drift, the
   pull shape and cursor, and the attachment push's `ignoreDuplicates`.
@@ -230,7 +231,7 @@ Desktop is the only platform that has reproduced this — `apps/desktop/src/db/s
 
 Findings from [#458](https://github.com/JakubAnderwald/drafto/issues/458) narrow that suspicion:
 
-- **The deletion detection has never run in the app.** Its loops (added in #274) read `_status` off each fetched record, but WatermelonDB models expose sync state as `syncStatus` (`_raw._status`). No real record ever matched `"synced"`, so nothing was flagged as deleted. It cannot explain the erasures above, which are content overwrites anyway. A side effect: rows hard-deleted on the server are never removed from desktop's local database. That covers a note deleted forever from trash or purged by the 30-day trash cleanup (with its cascaded attachments), a deleted notebook and a deleted attachment. Trashing a note still syncs, because it is an `is_trashed` update. #458 kept that read as it was. Switching detection on needs `fetchAllIds()` to page past the Supabase API's `max_rows` limit (1000 locally and by default on hosted projects) first, or rows past the limit would be flagged as deleted. `fetchTable()` is unpaged too, so the pull itself is capped the same way.
+- **The deletion detection has never run in the app.** Its loops (added in #274) read `_status` off each fetched record, but WatermelonDB models expose sync state as `syncStatus` (`_raw._status`). No real record ever matched `"synced"`, so nothing was flagged as deleted. It cannot explain the erasures above, which are content overwrites anyway. A side effect: rows hard-deleted on the server are never removed from desktop's local database. That covers a note deleted forever from trash or purged by the 30-day trash cleanup (with its cascaded attachments), a deleted notebook and a deleted attachment. Trashing a note still syncs, because it is an `is_trashed` update. #458 kept that read as it was. Switching detection on needs `fetchAllIds()` to page past the Supabase API's `max_rows` limit (1000 locally and by default on hosted projects) first, or rows past the limit would be flagged as deleted. `fetchTable()` is unpaged too, so the pull itself is capped the same way. Detection already skips attachments that haven't uploaded (`pending`, `failed`, `quota_exceeded`). `synchronize()` marks them synced after a push even though `pushAttachmentChanges` left them out, so they would otherwise read as deleted on the server (#794).
 - **Desktop could pull with no usable session or approval.** RLS answered those pulls with nothing, and `lastPulledAt` still advanced. Two paths reached such a pull:
   - **A signed-in but unapproved user.** `DatabaseProvider` gated only on `user`, so the "empty" pull moved `lastPulledAt` past rows this device never received.
   - **The sign-out flush.** `flushPendingChanges()` calls `syncDatabase()` directly and keeps running after its 10 s timeout. If `processPendingUploads()` outlasts that timeout, the flush's pull starts after `auth.signOut()` and the local reset. It then runs with the anon key and stores a `lastPulledAt` in the fresh database. `ensureLocalIdentity()` doesn't reset an empty database, so the next sign-in's pull is incremental from that timestamp, and older rows are never pulled.
