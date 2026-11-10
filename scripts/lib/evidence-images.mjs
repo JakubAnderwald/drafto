@@ -23,8 +23,9 @@
 //     the caller) reads the image's text; a secret-pattern or password hit
 //     drops that image. Without the helper nothing is published at all.
 //   - The cap: MAX_IMAGES images and MAX_TOTAL_BYTES per comment, in slot
-//     order. What doesn't fit, or fails a check, is listed as kept on the Mac
-//     mini with its local path and why — never with what a scan matched.
+//     order. What doesn't fit, fails a check, or the manifest held back (a
+//     rejected, failed or off-origin copy) is listed as kept on the Mac mini
+//     with its local path and why — never with what a scan matched.
 //
 // Pure apart from the file reads and the OCR call, both injectable for tests.
 
@@ -77,8 +78,11 @@ export const OFF_ORIGIN_WHY = "taken while the tab wasn't on the preview";
  * A browser run's screenshots, from its session's decision log: one entry per
  * screenshot event, in the order the guard logged them. Slot k (from 1) is
  * the runner's "screenshot k". [{slot, name, missing}]: name is the copied
- * file's basename in the evidence dir, or null when the copy was rejected or
- * failed (missing then says which).
+ * file's basename in the evidence dir, or null when there is no such file
+ * (the copy was rejected or failed) or the log's name isn't a guard copy's.
+ * missing, when set, says why the screenshot is held back: such an entry is
+ * never published, only listed (an off-origin copy keeps its name, so the
+ * listing can point at the file).
  */
 export function browserManifest(logText) {
   const out = [];
@@ -100,10 +104,13 @@ export function browserManifest(logText) {
       if (e === null || typeof e !== "object") continue;
       if (Object.hasOwn(e, "copied")) {
         const name = typeof e.copied === "string" ? e.copied : "";
-        let missing = null;
-        if (!GUARD_COPY_NAME.test(name)) missing = "unexpected file name";
-        else if (e.onOrigin !== true || drifted) missing = OFF_ORIGIN_WHY;
-        out.push({ slot: out.length + 1, name: missing ? null : name, missing });
+        if (!GUARD_COPY_NAME.test(name)) {
+          // Never used as a file name: it isn't one the guard gives a copy.
+          out.push({ slot: out.length + 1, name: null, missing: "unexpected file name" });
+        } else {
+          const missing = e.onOrigin !== true || drifted ? OFF_ORIGIN_WHY : null;
+          out.push({ slot: out.length + 1, name, missing });
+        }
       } else if (Object.hasOwn(e, "copyFailed")) {
         out.push({ slot: out.length + 1, name: null, missing: "the guard couldn't copy it" });
       } else if (Object.hasOwn(e, "screenshotRejected")) {
@@ -285,7 +292,8 @@ export function helperOcr(
  * @param {object} o
  * @param {string} o.root the evidence dir every entry's file must be in
  * @param {{slot:number,name:string|null,missing:string|null,label?:string}[]} o.entries
- *   a manifest (browserManifest / macosManifest)
+ *   a manifest (browserManifest / macosManifest); an entry with `missing` is
+ *   never published, only listed in the overflow with that reason
  * @param {((data:Buffer, ext:string) => {ok:boolean,text?:string})|null} o.ocr
  *   null when the helper is missing: then nothing is published
  * @param {{password?:string,bypass?:string,signinKey?:string}} o.secrets
@@ -307,15 +315,24 @@ export function selectImages({
   now = Date.now,
   fs = nodeFs,
 }) {
-  const listed = (Array.isArray(entries) ? entries : []).filter((e) => e && e.name);
-  if (listed.length === 0) return { ok: true, upload: [], overflow: [] };
+  const all = (Array.isArray(entries) ? entries : []).filter((e) => e && typeof e === "object");
+  // A screenshot the manifest held back (the guard rejected it, couldn't copy
+  // it, or it wasn't taken on the preview) is never published, but it is
+  // listed with why: a row's "screenshot k" with no image is then explained.
+  const held = all.filter((e) => e.missing).map((e) => heldBack(e, root));
+  const listed = all.filter((e) => e.name && !e.missing);
+  const bySlot = (overflow) => overflow.sort((a, b) => a.slot - b.slot);
+  if (listed.length === 0) return { ok: true, upload: [], overflow: bySlot(held) };
   if (typeof ocr !== "function") return { ok: false, reason: "ocr-missing" };
   const rootWhy = rootProblem(root, { fs });
   if (rootWhy) {
     return {
       ok: true,
       upload: [],
-      overflow: listed.map((e) => ({ slot: e.slot, path: path.join(root, e.name), why: rootWhy })),
+      overflow: bySlot([
+        ...held,
+        ...listed.map((e) => ({ slot: e.slot, path: path.join(root, e.name), why: rootWhy })),
+      ]),
     };
   }
   let realRoot;
@@ -386,5 +403,13 @@ export function selectImages({
       ...(e.label ? { label: e.label } : {}),
     });
   }
-  return { ok: true, upload, overflow };
+  return { ok: true, upload, overflow: bySlot([...held, ...overflow]) };
+}
+
+// A held-back manifest entry as an overflow line: its file when it names one
+// (an off-origin copy), else the evidence dir, since there is no file.
+function heldBack(e, root) {
+  const name = typeof e.name === "string" ? e.name : "";
+  const named = name && name === path.basename(name) && name !== "." && name !== "..";
+  return { slot: e.slot, path: named ? path.join(root, name) : root, why: String(e.missing) };
 }

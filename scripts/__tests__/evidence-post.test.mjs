@@ -633,6 +633,9 @@ describe("postMacosRun refusals", () => {
     for (const [opts, env, re] of cases) {
       const t = setup(opts);
       for (const yes of [false, true]) assertRefuses(() => t.post({ yes, env }), re);
+      // The issue's comments are read first (a landed comment needs no gate),
+      // but nothing is posted.
+      assert.deepEqual(t.gh.calls, [COMMENTS_CALL, COMMENTS_CALL]);
       assert.deepEqual(commentCalls(t.gh), []);
       assert.deepEqual(t.printed, []);
       assert.deepEqual(originRefs(t), []);
@@ -1148,6 +1151,27 @@ describe("a retry after an earlier --yes", () => {
     assert.deepEqual(commentCalls(t.gh), []);
     assert.deepEqual(t.gh.calls, [COMMENTS_CALL]);
     assert.equal(readJson(join(t.runDir, POSTED_FILE)).upload, false);
+  });
+
+  it("records a landed comment even once publishing is switched off or the self-test no longer passes", () => {
+    const landed = { author_association: "OWNER", html_url: COMMENT_URL, body: postedBody() };
+    const cases = [
+      [{ selftest: null }, {}],
+      [{ selftest: { ok: false, reason: "push" } }, {}],
+      [{}, { FACTORY_EVIDENCE_UPLOAD: "0" }],
+    ];
+    for (const [opts, env] of cases) {
+      const t = setup({ ...opts, gh: { comments: [ownerComment(SHA), landed] } });
+      // A listing says it's already there, not that screenshots can't be published.
+      assert.deepEqual(t.post({ env }), { listed: true, posted: true, url: COMMENT_URL });
+      assert.equal(existsSync(join(t.runDir, POSTED_FILE)), false);
+      // --yes records it, posting and pushing nothing.
+      assert.equal(t.post({ yes: true, env }).already, true, JSON.stringify(env));
+      assert.deepEqual(commentCalls(t.gh), []);
+      assert.deepEqual(originRefs(t), []);
+      assert.deepEqual(t.ocrCalls, []);
+      assert.equal(readJson(join(t.runDir, POSTED_FILE)).url, COMMENT_URL);
+    }
   });
 
   it("only counts the factory's own comment for this very run", () => {

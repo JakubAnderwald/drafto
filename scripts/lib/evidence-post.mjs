@@ -294,11 +294,11 @@ export function postMacosRun({
     throw new Refusal(`no scenario-sha marker on #${issue}'s comments: pass --sha <40-hex>`);
   }
 
-  const gate = uploadGate({ env, withheld: false, logDir });
-  if (gate) throw new Refusal(`screenshots can't be published: ${gate}`);
   const out = path.join(runDir, UPLOAD_FILE);
 
   // Already on the issue: --yes only records it, never posts a second one.
+  // Before the upload gate: recording publishes nothing, so a gate closed
+  // since the post (the switch off, a failed selftest) must not block it.
   const landed = postedCommentFor(comments, runId);
   const landedUrl = typeof landed?.html_url === "string" ? landed.html_url : "";
   if (landed && !yes) {
@@ -316,6 +316,9 @@ export function postMacosRun({
     );
     return { posted: true, url: landedUrl, upload: uploaded, reason: null, already: true };
   }
+
+  const gate = uploadGate({ env, withheld: false, logDir });
+  if (gate) throw new Refusal(`screenshots can't be published: ${gate}`);
 
   // What an earlier --yes published is what this one posts, whatever shots/
   // holds now: the listing shows it, and --yes posts that very record.

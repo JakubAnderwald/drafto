@@ -560,7 +560,14 @@ describe("evidence-images: browserManifest reads the real guard's decision log",
       ocr,
     });
     assert.equal(r.ok, true);
-    assert.deepEqual(r.overflow, []);
+    // The slots with no guard copy are listed, never read: the dir itself is
+    // their path, since there is no file.
+    assert.deepEqual(r.overflow, [
+      { slot: 2, path: dirs.evidence, why: "the guard rejected it" },
+      { slot: 3, path: dirs.evidence, why: "the guard couldn't copy it" },
+      { slot: 8, path: dirs.evidence, why: "unexpected file name" },
+      { slot: 9, path: dirs.evidence, why: "unexpected file name" },
+    ]);
     assert.deepEqual(
       r.upload.map((u) => [u.slot, u.name, u.ext, tagOf(u.data)]),
       [
@@ -600,7 +607,7 @@ describe("evidence-images: browserManifest publishes only shots taken on the pre
   const rec = (...events) => JSON.stringify({ event: "post", tool: "computer", events });
   const NAME = (n) => `screenshot-1792223827264-${n}.jpg`;
 
-  it("keeps the slot but publishes nothing for a copy not seen on the preview's origin", () => {
+  it("keeps the slot and the file's name but publishes nothing for a copy not seen on the preview's origin", () => {
     const log = [
       rec({ copied: NAME(1), onOrigin: true }),
       // A log from before the guard recorded it.
@@ -611,9 +618,9 @@ describe("evidence-images: browserManifest publishes only shots taken on the pre
     ].join("\n");
     assert.deepEqual(browserManifest(log), [
       { slot: 1, name: NAME(1), missing: null },
-      { slot: 2, name: null, missing: OFF_ORIGIN_WHY },
-      { slot: 3, name: null, missing: OFF_ORIGIN_WHY },
-      { slot: 4, name: null, missing: OFF_ORIGIN_WHY },
+      { slot: 2, name: NAME(2), missing: OFF_ORIGIN_WHY },
+      { slot: 3, name: NAME(3), missing: OFF_ORIGIN_WHY },
+      { slot: 4, name: NAME(4), missing: OFF_ORIGIN_WHY },
       { slot: 5, name: NAME(5), missing: null },
     ]);
   });
@@ -628,8 +635,8 @@ describe("evidence-images: browserManifest publishes only shots taken on the pre
       assert.deepEqual(
         browserManifest(log),
         [
-          { slot: 1, name: null, missing: OFF_ORIGIN_WHY },
-          { slot: 2, name: null, missing: OFF_ORIGIN_WHY },
+          { slot: 1, name: NAME(1), missing: OFF_ORIGIN_WHY },
+          { slot: 2, name: NAME(2), missing: OFF_ORIGIN_WHY },
           { slot: 3, name: NAME(3), missing: null },
         ],
         JSON.stringify(drift),
@@ -972,16 +979,7 @@ describe("evidence-images: selectImages", () => {
   });
 
   it("no listed entries is ok with nothing, OCR or not", () => {
-    for (const entries of [
-      [],
-      undefined,
-      "screenshot-1-0.png",
-      [
-        { slot: 1, name: null, missing: "the guard rejected it" },
-        { slot: 2, name: null, missing: "the guard couldn't copy it" },
-        null,
-      ],
-    ]) {
+    for (const entries of [[], undefined, "screenshot-1-0.png", [null]]) {
       assert.deepEqual(selectImages({ root, entries, ocr: null }), {
         ok: true,
         upload: [],
@@ -990,8 +988,27 @@ describe("evidence-images: selectImages", () => {
     }
   });
 
-  it("a rejected or failed slot is skipped, and later slots keep their numbers", () => {
+  it("with only held-back entries, publishes nothing but lists each with why, OCR or not", () => {
+    const entries = [
+      { slot: 1, name: null, missing: "the guard rejected it" },
+      { slot: 2, name: null, missing: "the guard couldn't copy it" },
+      null,
+    ];
+    for (const ocr of [null, fakeOcr()]) {
+      assert.deepEqual(selectImages({ root, entries, ocr }), {
+        ok: true,
+        upload: [],
+        overflow: [
+          { slot: 1, path: root, why: "the guard rejected it" },
+          { slot: 2, path: root, why: "the guard couldn't copy it" },
+        ],
+      });
+    }
+  });
+
+  it("a rejected or failed slot is listed, never read, and later slots keep their numbers", () => {
     writeFileSync(join(root, "s3.png"), png("3"));
+    const ocr = fakeOcr();
     const r = selectImages({
       root,
       entries: [
@@ -999,12 +1016,72 @@ describe("evidence-images: selectImages", () => {
         { slot: 2, name: null, missing: "the guard couldn't copy it" },
         { slot: 3, name: "s3.png", missing: null },
       ],
-      ocr: fakeOcr(),
+      ocr,
     });
     assert.deepEqual(
       r.upload.map((u) => u.slot),
       [3],
     );
+    assert.deepEqual(r.overflow, [
+      { slot: 1, path: root, why: "the guard rejected it" },
+      { slot: 2, path: root, why: "the guard couldn't copy it" },
+    ]);
+    assert.deepEqual(
+      ocr.calls.map((c) => c.tag),
+      ["3"],
+    );
+  });
+
+  it("never publishes or reads an off-origin copy, but lists it at its path, in slot order", () => {
+    const NAME = (n) => `screenshot-1792223827264-${n}.png`;
+    for (const n of [1, 2, 3]) writeFileSync(join(root, NAME(n)), png(`off-${n}`));
+    writeFileSync(join(root, NAME(4)), png("on-4"));
+    const ocr = fakeOcr();
+    // The guard's own log: slot 2 is on the preview, 1 and 3 aren't, and slot
+    // 4 was copied in a call that also lost track of a tab.
+    const log = [
+      { copied: NAME(1), onOrigin: false },
+      { copied: NAME(2), onOrigin: true },
+      { copied: NAME(3) },
+    ]
+      .map((e) => JSON.stringify({ event: "post", tool: "computer", events: [e] }))
+      .concat(
+        JSON.stringify({
+          event: "post",
+          tool: "computer",
+          events: [{ copied: NAME(4), onOrigin: true }, { gone: 7 }],
+        }),
+      )
+      .join("\n");
+    // NAME(2)'s file is missing on purpose: its check fails after the others.
+    rmSync(join(root, NAME(2)));
+    const r = selectImages({ root, entries: browserManifest(log), ocr });
+    assert.deepEqual(r, {
+      ok: true,
+      upload: [],
+      overflow: [
+        { slot: 1, path: join(root, NAME(1)), why: OFF_ORIGIN_WHY },
+        { slot: 2, path: join(root, NAME(2)), why: "missing" },
+        { slot: 3, path: join(root, NAME(3)), why: OFF_ORIGIN_WHY },
+        { slot: 4, path: join(root, NAME(4)), why: OFF_ORIGIN_WHY },
+      ],
+    });
+    assert.deepEqual(ocr.calls, [], "a held-back copy is never even read");
+  });
+
+  it("a held-back entry with a name that isn't a basename is listed at the evidence dir", () => {
+    const r = selectImages({
+      root,
+      entries: [
+        { slot: 1, name: "../up.png", missing: OFF_ORIGIN_WHY },
+        { slot: 2, name: "..", missing: OFF_ORIGIN_WHY },
+      ],
+      ocr: null,
+    });
+    assert.deepEqual(r.overflow, [
+      { slot: 1, path: root, why: OFF_ORIGIN_WHY },
+      { slot: 2, path: root, why: OFF_ORIGIN_WHY },
+    ]);
   });
 
   it("refuses a manifest name with a path separator, or . / .., without reading it", () => {

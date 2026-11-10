@@ -33,7 +33,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CAP_WHY, MAX_IMAGES } from "../lib/evidence-images.mjs";
+import { evidenceSection, localFooter } from "../lib/evidence-embed.mjs";
+import { CAP_WHY, MAX_IMAGES, OFF_ORIGIN_WHY } from "../lib/evidence-images.mjs";
 import {
   EVIDENCE_REF_PREFIX,
   RAW_BASE,
@@ -177,7 +178,8 @@ const shot = (n, ext = "png") => ({
 
 /**
  * A browser run: the evidence dir the guard copied into, and its session's
- * decision log. <shots>: a shot() for a copy, {copyFailed: true} or
+ * decision log. <shots>: a shot() for a copy (with offOrigin: true, one the
+ * guard didn't see taken on the preview), {copyFailed: true} or
  * {rejected: true} for a slot the guard has no file for. The dir also holds
  * the runner's output and an image the log never mentions: neither may ever
  * be published.
@@ -193,7 +195,7 @@ function browserRun(root, shots) {
     let e;
     if (s.name) {
       writeFileSync(join(evidenceDir, s.name), s.data);
-      e = { copied: s.name, onOrigin: true };
+      e = { copied: s.name, onOrigin: !s.offOrigin };
     } else if (s.copyFailed) {
       e = { copyFailed: "ENOENT: no such file" };
     } else {
@@ -1276,12 +1278,48 @@ describe("upload failures are reasons, written to upload.json", () => {
     assertNothingPushed(fx);
   });
 
-  it("succeeds with no images when every screenshot slot has no file", async () => {
+  it("succeeds with no images when every screenshot slot has no file, and lists each with why", async () => {
     const fx = uploadFixture({ shots: [{ copyFailed: true }, { rejected: true }] });
     const summary = await upload(fx, {}, { ocr: null });
     assert.equal(summary.ok, true);
     assert.equal(summary.commit, null);
+    assert.deepEqual(readJsonFile(fx.out).overflow, [
+      { n: 1, path: fx.evidenceDir, why: "the guard couldn't copy it" },
+      { n: 2, path: fx.evidenceDir, why: "the guard rejected it" },
+    ]);
     assertNothingPushed(fx);
+  });
+
+  it("never publishes a copy taken off the preview, lists it, and the comment says none passed", async () => {
+    const off = { ...shot(1), offOrigin: true };
+    const fx = uploadFixture({ shots: [off] });
+    const summary = await upload(fx);
+    assert.equal(summary.ok, true);
+    assert.equal(summary.commit, null);
+    assert.equal(summary.images, 0);
+    assert.equal(summary.overflow, 1);
+    const record = readJsonFile(fx.out);
+    assert.deepEqual(record.overflow, [
+      { n: 1, path: join(fx.evidenceDir, off.name), why: OFF_ORIGIN_WHY },
+    ]);
+    assert.equal(fx.ocr.seen.length, 0, "a held-back copy is never even read");
+    assertNothingPushed(fx);
+
+    // The comment: the shot is listed with its path and why, and the footer
+    // doesn't claim the run saved none.
+    const ev = evidenceSection({
+      report:
+        "| # | Step | Result | Evidence |\n|---|---|---|---|\n| 1 | Open | PASS | screenshot 1 |",
+      upload: record,
+      evidenceDir: fx.evidenceDir,
+    });
+    assert.equal(ev.embedded, 0);
+    assert.equal(ev.reason, "none-passed");
+    assert.equal(ev.footer, localFooter(fx.evidenceDir, "none-passed"));
+    const block = ev.block.join("\n");
+    assert.match(block, /\*\*Kept on the Mac mini\*\*/);
+    assert.ok(block.includes(`screenshot 1, ${OFF_ORIGIN_WHY}`), block);
+    assert.ok(block.includes(off.name), block);
   });
 
   it('says "no-session" for a run without a guard log', async () => {
