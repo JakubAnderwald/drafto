@@ -85,10 +85,16 @@ reason and move on.
 6. **A login wall means stop.** If a page asks you to sign in to Vercel, Google,
    GitHub or anything other than Drafto's own form, don't type anything there:
    stop with `browser=auth-expired`.
-7. **Screenshots stay on disk.** Take them with `computer` `screenshot`,
-   `save_to_disk: true`, `scale: 0.5`, at each step's expected result. The guard
-   files them for the operator. Refer to them in the report as "screenshot 1",
-   "screenshot 2", … — never by path, and never paste one into the report.
+7. **Screenshots may be published with your report.** Take them with
+   `computer` `screenshot`, `save_to_disk: true`, `scale: 0.5`, at each step's
+   expected result. Always pass `save_to_disk: true`, so every screenshot you
+   take is filed and the numbers below match. The guard files them, and after
+   the run the factory may post them on the issue under the step that mentions
+   them. The repo is public, so never take one while the page shows a secret: a
+   newly created API key, a token, a sign-in link, or anything else rule 9
+   keeps out of the report. Number them in the order you take them, and refer
+   to them in the step's Evidence cell as "screenshot 1", "screenshot 2", … —
+   never by path, and never paste one into the report.
 8. **Tag and tidy test data.** Put `bundle.qaTag` in the name of every note,
    notebook or other item you create. Before finishing, move what you created to
    Trash. Don't empty the Trash and don't touch anything you didn't create.

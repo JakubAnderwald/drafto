@@ -4,6 +4,8 @@
 - **Date**: 2026-10-10
 - **Authors**: Jakub Anderwald (with Claude Code)
 
+> **Update 2026-11-10 (posting a run)**: A run's report and screenshots can be posted on the card's issue with `node scripts/lib/evidence-post.mjs macos --run-dir <dir> --issue <n> [--yes]` ([ADR-0072](./0072-factory-test-run-screenshots-on-github.md)). Without `--yes` it only lists what it would publish. The shots are of production, and a run starts by signing the operator's own account out, so an early shot can show the operator's own notes: look at each one first. The command refuses in an unattended session (`DRAFTO_UNATTENDED=1`), while the run's `state.env` exists, when `report.md` has no `Run:` line, and when the run was already posted. The images go through the same checks, OCR secret scan and selftest gate as the browser runner's. A person still starts every full run, and agents still run `--preflight` only.
+
 ## Context
 
 The dark factory moves a card to **In Test** with a written test scenario and, for macOS, a TestFlight build ([ADR-0030](./0030-in-test-scenarios-and-pre-merge-betas.md)). A person then works through the steps by hand. For #458 (PR #673, desktop sync gating) the scenario had a dozen steps, and several of its key checks can't be seen by a person at all. "An unapproved user never pulls", for example, is invisible in the UI.

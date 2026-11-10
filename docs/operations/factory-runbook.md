@@ -574,7 +574,7 @@ How `verify` and `intest` run:
 
 - **Candidates:** the `--watch` sweeps list them in `logs/factory-browser-candidates`, one `<kind>:<issue>:<pr>:<sha>` line each, `verify` lines first (a bare `<issue>:<pr>:<sha>`, the old format, reads as `intest`). The `--browser` mode, which the loop runs after `--release` and `--watch` and before `--implement` and `--plan` ([ADR-0068](../adr/0068-factory-runs-the-board-right-to-left.md)), re-checks each against its own column (Testing, In Test, or Plan Review for a plan-stage probe) and runs at most one per tick: `verify` first, plan-stage probes last. Its log is `logs/factory/factory-agent-browser-<date>.log`.
 - **Where:** on that commit's own preview, found through the GitHub Deployments API (`vercel[bot]`, state `success`), signed in as the factory's dev-database test account.
-- **What gets posted:** for `intest`, one report comment; for `verify`, nothing. A FAIL doesn't move the card.
+- **What gets posted:** for `intest`, one report comment, with the run's screenshots under its steps once publishing is set up (see "Test-run screenshots on GitHub"); for `verify`, nothing, and its screenshots go into the verification report. A FAIL doesn't move the card.
 - **How often:** each head SHA gets two attempts, shared by both kinds, and a new commit re-arms it. A run that fails on the browser's side gives its attempt back: unavailable, auth-expired, guard-not-loaded, or a session limit. A timeout or an error keeps it.
 - **Sign-in lease:** the run mints its one-time sign-in link under the sign-in lease it shares with the verification shell lane (see "The sign-in lease" below), after every cheap check. If the shell lane holds it, the run is deferred to the next `--browser` tick: no attempt spent, no health result, nothing written or posted.
 
@@ -623,6 +623,9 @@ How `verify` and `intest` run:
   - `comment.md`, exactly what was posted, for an In Test run; `section.md` for a verify or plan run, the same scanned and defanged report with no markers, never posted on its own;
   - `render.json`, the parsed status, verdict and secret-scan result;
   - `evidence/`, the screenshots the guard copied, mode 700;
+  - `session-id`, the runner's session id, which names its guard decision log (below). Publishing reads that log to know which files in `evidence/` the guard copied, and in what order;
+  - `upload.json` (mode 600), the screenshot upload record: what was published and where, or why nothing was (see "Test-run screenshots on GitHub");
+  - `render-images.json`, an In Test run's second render, the one with its screenshots; `verify-render.json` in a verify run's dir, the verification report's first render result, whose secret scan decided whether the Web lane's screenshots could be published;
   - `guard-config.json` and `guard-settings.json`, the config and the generated settings;
   - `guard-state/`, the per-session tab and selection state.
 - **Decision log:** `logs/factory/browser-guard/<session-id>.jsonl` has every guard decision (tool, tab, URL, allow/deny and why), never the values typed into forms.
@@ -922,6 +925,133 @@ node scripts/lib/state-cli.mjs factory:verify-reset <n>                    # for
   - `ok:true`, `releasedBy:"factory"`: the factory freed the run itself during the wait.
 - **`factory:verify-reset`** clears the card's `verify*` fields, plus `browserRunSha` and `browserRunAttempts`: the browser runner skips any commit `browserRunSha` names, so keeping it would leave the new round without a browser verdict. On a card already in In Test, the In Test browser run then runs again. While the lane is running for that card, it prints `ok:false, reason:"run-in-flight"` and changes nothing, so run `factory:verify-finish` first.
 
+## Test-run screenshots on GitHub
+
+The In Test browser report and the verification report's Web lane embed the run's screenshots under the steps that took them ([ADR-0072](../adr/0072-factory-test-run-screenshots-on-github.md)). After a run, and only once its report has passed the secret scan, the factory's own code does this, never a claude session:
+
+1. `scripts/lib/evidence-upload.mjs` takes the screenshots the guard copied, in the order its decision log recorded them;
+2. it checks each file and OCR-scans it for secrets (`scripts/lib/evidence-images.mjs`);
+3. it commits the ones that pass as one parentless commit, and pushes it to `refs/factory-evidence/<issue>/<sha12>/<run-id>` with a create-only lease;
+4. bash renders the report again, showing them as `<img width="480">` from `raw.githubusercontent.com` URLs pinned to that commit.
+
+The ref isn't a branch or a tag, so a normal clone or fetch never downloads it and no workflow runs on it. The selftest below checks that Vercel ignores it too. The `plan` kind and the shell lane never publish anything. macOS harness runs are posted by hand: see [macos-in-test-automation.md](./macos-in-test-automation.md#posting-a-run-on-the-issue). Code: `evidence-upload.mjs`, `evidence-images.mjs`, `evidence-embed.mjs`, `evidence-post.mjs`, and the `evidence_*`, `browser_publish_screenshots` and `verify_publish_screenshots` functions in `scripts/factory-agent.sh`.
+
+| Setting                   | Default | What it does                                                                                                                                                                                                                                        |
+| ------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FACTORY_EVIDENCE_UPLOAD` | `1`     | `0` keeps every screenshot on the Mac mini, as before ADR-0072, and each report says so. Any value but `0` or `1` warns in the launchd log and acts as `0`. Even at `1`, nothing is published until the selftest below has passed on this Mac mini. |
+
+Fixed in the code: at most 20 images and 20 MB per comment, 5 MB per image, `.png` or `.jpg` only.
+
+### One-time setup
+
+1. **Run the selftest** from the factory checkout. It pushes with that checkout's git credentials, so run it as the factory's user:
+
+   ```bash
+   cd /Volumes/DraftoFactory/drafto-factory
+   node scripts/lib/evidence-upload.mjs selftest --log-dir logs/factory --repo-root .
+   ```
+
+   It pushes a parentless commit holding a 1×1 PNG to `refs/factory-evidence/selftest/<epoch>`. Then it fetches the image's raw URL with no credentials (up to 6 tries, 5 s apart), and asks the GitHub Deployments API 4 times, 15 s apart, whether Vercel started a deployment for the commit. It prints one JSON line, writes `logs/factory/evidence-selftest.json` (mode 600), and exits 0 only when it passed.
+
+2. **Re-check a few minutes later**, once Vercel would have reacted to the push:
+
+   ```bash
+   node scripts/lib/evidence-upload.mjs selftest --log-dir logs/factory --status 1
+   ```
+
+   This asks the Deployments API again about the recorded commit and updates the record. A deployment found now turns `ok` off, for good: a later check that finds none doesn't turn it back on. A check that sees no deployment, for a commit whose image was served, turns `ok` on.
+
+3. **Read the record** (`cat logs/factory/evidence-selftest.json`):
+
+   | Field        | Meaning                                                                                                                                                                                             |
+   | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | `ok`         | Whether uploads may run: `true` when the image was served and no Vercel deployment was found. Every upload checks it.                                                                               |
+   | `commit`     | The selftest's evidence commit.                                                                                                                                                                     |
+   | `ref`        | The ref it pushed, `refs/factory-evidence/selftest/<epoch>`.                                                                                                                                        |
+   | `url`        | The test image's `raw.githubusercontent.com` URL, pinned to `commit`. Open it in a private window to see it served to someone signed out.                                                           |
+   | `served`     | Whether that URL answered 200 to a request with no credentials, with an `image/*` content type and the same bytes.                                                                                  |
+   | `deployment` | `none`: the Deployments API lists no Vercel deployment for the commit. `found:<state>` (`ready`, `building` or `failed`): Vercel started one. `unknown`: GitHub couldn't be asked.                  |
+   | `at`         | When the selftest ran. `statusAt` is when `--status 1` last re-checked.                                                                                                                             |
+   | `reason`     | Only on a failure: `push` (the ref didn't land), `not-served:status`, `not-served:content-type` or `not-served:bytes`, `vercel-deployment`, `deployment-unknown` (GitHub couldn't say), or `error`. |
+
+   `ok` is `true` only when the image was served and the check saw `none`. An `unknown` fails closed (`reason: "deployment-unknown"`): run step 2 again once GitHub answers, and it turns `ok` on if it sees `none`. The selftest ref holds only the 1×1 PNG, so it can stay. Running the selftest itself again pushes a new ref and overwrites the record.
+
+**If it found a Vercel deployment** (`reason: "vercel-deployment"`), every published run would start a Vercel build. Uploads are already refused while `ok` is `false`. To be sure, also set `FACTORY_EVIDENCE_UPLOAD=0` in the plist and reload. Then decide what to do. Vercel's settings, such as the Git integration and its Ignored Build Step, are hosted config that the factory never changes, so that's your call. After any change, run the selftest itself again: `--status 1` keeps a deployment it has once seen.
+
+**If GitHub rejected the ref** (`reason: "push"`), push the recorded commit by hand to see GitHub's message. The selftest itself never prints git's error output, because it can echo the remote's URL:
+
+```bash
+git push origin <commit>:refs/factory-evidence/selftest/<epoch>   # both from the record
+```
+
+If GitHub refuses the namespace itself, the fallback is a tag prefix, `refs/tags/factory-evidence/`. That's one constant, `EVIDENCE_REF_PREFIX` in `scripts/lib/evidence-upload.mjs`, changed in a PR, not a setting. ADR-0072 gives the cost: every evidence tag is listed on the repo's Tags page, and `git fetch --tags` downloads them all. Once it's merged, run the selftest again.
+
+**The OCR helper.** Each screenshot's text is read with `logs/factory/bin/ocr` and scanned like the report. The factory compiles it on first use from the macOS harness's `apps/desktop/e2e/in-test/lib/ocr.swift`, with `swiftc -O` (the Xcode command-line tools) under a 300-second cap. It compiles it again whenever `ocr.swift` is newer than the binary. Without it nothing is published (`ocr-missing`), and the browser log says `the OCR helper that scans screenshots for secrets isn't available (swiftc?)`. To build and try it by hand:
+
+```bash
+cd /Volumes/DraftoFactory/drafto-factory
+mkdir -p logs/factory/bin
+swiftc -O -o logs/factory/bin/ocr apps/desktop/e2e/in-test/lib/ocr.swift
+logs/factory/bin/ocr <any.png>   # {"width":…,"height":…,"items":[{"text":…,…}]}
+```
+
+### What a run does
+
+- **In Test (`intest`).** The report is rendered and scanned (`render.json`). Unless it was withheld, the screenshots are published, and the report is rendered again with them (`render-images.json`), which is what gets posted. If the upload or the second render fails, the first render is posted, saying the screenshots stayed on the Mac mini and why.
+- **Testing (`verify`).** The browser run publishes nothing itself. When the verification report is composed, bash composes it once without screenshots. Only if the Web lane reported, and that render withheld neither the lane's text nor the body (`verify-render.json`), are the browser run's screenshots published. The report is then composed again with them inside the Web lane's details.
+- **Evidence, never a gate.** A failed upload never moves a card, never spends an attempt and never holds a report back.
+
+The log (`logs/factory/factory-agent-browser-<date>.log` for an In Test run, `logs/factory/factory-agent-watch-<date>.log` for the verification report) has one line per upload: `Issue #<n>: screenshots of <sha12> (<run-id>): {"ok":…,"reason":…,"commit":…,"images":<n>,"overflow":<n>,"reused":…}`. `reused: true` means an earlier attempt had already published them, so nothing was pushed again.
+
+**Where the upload record lives.** Each run's `upload.json` (mode 600) records what was published, or why nothing was:
+
+- an In Test run: `logs/factory/browser/issue-<n>-<sha12>-<timestamp>/upload.json`, run id `intest-<timestamp>`;
+- a verify run: `logs/factory/browser/issue-<n>-<sha12>-verify-<timestamp>/upload.json`, run id `verify-<timestamp>`;
+- a macOS run: `<run-dir>/upload.json`, run id `macos-<timestamp>`, with `posted.json` beside it once the comment is posted.
+
+A published record is `{ok: true, issue, sha, runId, ref, commit, images: [{n, url, local, name}], overflow: [{n, path, why}]}`. `n` is the runner's "screenshot n", and `overflow` is what was kept on the Mac mini. A refusal is `{ok: false, reason}`.
+
+### Why nothing was published
+
+The report's footer gives the reason as a sentence. The tokens below are the `REASONS` in `scripts/lib/evidence-embed.mjs`; `upload.json` holds the ones the upload itself decided:
+
+| Reason             | Meaning                                                                                                                             | What to do                                                                                                                               |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `withheld`         | The secret scan withheld the report, or the verification report's Web lane, or its whole body. Its screenshots were withheld too.   | Read the run's `runner-output.txt`. Nothing to fix in publishing.                                                                        |
+| `not-reported`     | The Web lane didn't report a result, so there's nothing to put its screenshots under.                                               | None.                                                                                                                                    |
+| `off`              | `FACTORY_EVIDENCE_UPLOAD=0` (or a bad value).                                                                                       | Set it to `1` and reload, if you want them.                                                                                              |
+| `selftest-missing` | There's no `logs/factory/evidence-selftest.json`.                                                                                   | Run the selftest ("One-time setup").                                                                                                     |
+| `selftest-failed`  | The selftest record's `ok` is `false`.                                                                                              | Read its `reason` ("One-time setup").                                                                                                    |
+| `ocr-missing`      | The OCR helper isn't there or isn't executable.                                                                                     | Build it ("The OCR helper").                                                                                                             |
+| `account-file`     | The test account file couldn't be read, so the scan couldn't check for the password.                                                | Fix `FACTORY_BROWSER_ACCOUNT_FILE` ("Browser runner (Claude in Chrome)" → "One-time setup", step 4).                                     |
+| `no-session`       | The run's guard decision log couldn't be found: no `session-id` in the run dir, or no `logs/factory/browser-guard/<session>.jsonl`. | A run from before this change, or a log already reaped. Later runs are unaffected.                                                       |
+| `push`             | Pushing the evidence commit failed, and nothing is on the ref.                                                                      | Check the factory checkout can push (`gh auth status`, `git ls-remote origin`). That report went out without them; later runs try again. |
+| `remote`           | `git ls-remote` couldn't say whether the ref exists, or the commit on it couldn't be read.                                          | Usually the network or GitHub. Later runs try again.                                                                                     |
+| `none`             | The run saved no screenshots.                                                                                                       | Rule 7 of `scripts/factory-browser-prompt.md` asks for one per step. Check the run's `runner-output.txt`.                                |
+| `none-passed`      | Every screenshot failed a check. The report's "Kept on the Mac mini" list says why for each.                                        | See below.                                                                                                                               |
+| `unreadable`       | The upload record couldn't be read when the report was rendered again.                                                              | Look at the run's `upload.json`.                                                                                                         |
+| `error`            | Anything else. Any other token reads as "the upload failed (`<token>`)".                                                            | The browser or `--watch` log, around the upload line.                                                                                    |
+
+**"Kept on the Mac mini".** Even when some screenshots are published, the report lists the others with their local path and why. The reasons include: over the per-comment cap; not a `.png` or `.jpg`; a symlink; not a regular file; outside the evidence directory; empty; larger than 5 MB; bytes that aren't a PNG or JPEG; a file that changed while it was being checked; the OCR scan couldn't read it; or its text matched a secret pattern, named, never with the matched text. Treat a secret-pattern match as a near-miss. Look at the file on the Mac mini, and if it does show a credential, rotate it as below even though it wasn't published.
+
+### Taking a screenshot down
+
+If a published image shows something it shouldn't:
+
+1. **Rotate the credential first.** Revoke the API key, change the test account's password (and update `~/drafto-secrets/browser-account.env`), or regenerate whatever it was. Deleting doesn't unpublish: raw.githubusercontent.com keeps serving a commit whose SHA is known until GitHub garbage-collects it, and GitHub's image proxy (camo) caches the image. Only GitHub Support can purge it sooner.
+2. **Delete the run's ref.** It's the `ref` in the run's `upload.json`:
+
+   ```bash
+   git ls-remote origin 'refs/factory-evidence/*'                       # every evidence ref
+   git push origin :refs/factory-evidence/<issue>/<sha12>/<run-id>      # delete one
+   ```
+
+3. **Edit the comment** on the issue and remove its `<img>` tags.
+
+To stop all publishing at once, set `FACTORY_EVIDENCE_UPLOAD=0` in the plist and reload.
+
+**Storage.** A run adds about 2–5 MB to the repo's object store. Normal clones, CI and Vercel never fetch evidence refs, but `git clone --mirror` fetches every ref, and so every image. Nothing prunes old refs yet. Delete them by hand as above if they pile up.
+
 ## Kill switches
 
 | Severity                        | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -1193,5 +1323,6 @@ The pnpm store sits on the same volume as the factory's checkouts, so installs c
 - [`docs/features/dark-factory.md`](../features/dark-factory.md) — operator manual.
 - [ADR-0026](../adr/0026-dark-factory-pipeline.md) — decision record.
 - [ADR-0035](../adr/0035-factory-code-review-gate.md) / [ADR-0036](../adr/0036-factory-coderabbit-cli-gap-fill.md) — review-thread merge gate and the CodeRabbit CLI gap-fill lane.
+- [ADR-0051](../adr/0051-factory-browser-runner.md) / [ADR-0072](../adr/0072-factory-test-run-screenshots-on-github.md) — the browser runner, and its screenshots on GitHub.
 - [`docs/operations/migrations.md`](./migrations.md) — migration safety + rollback workflow.
 - [`docs/operations/builds-and-releases.md`](./builds-and-releases.md) — release commands, beta lanes.

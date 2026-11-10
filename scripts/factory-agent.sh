@@ -374,6 +374,28 @@ FACTORY_BROWSER_MAX_ATTEMPTS=2
 # /login, so a browser run there can only end as signin-failed.
 FACTORY_SIGNIN_ROUTE_PATH="apps/web/src/app/auth/test-sign-in/route.ts"
 
+# ── Test-run screenshots on GitHub (scripts/lib/evidence-upload.mjs, ADR-0072) ─
+# On by default. The browser runner's posted report (the intest kind) and the
+# verification report's Web lane embed the run's screenshots: after the run,
+# and only once its report's secret scan has passed, the factory's own node
+# code publishes them as a parentless commit on refs/factory-evidence/… in this
+# repo, and the comment shows them by URLs pinned to that commit. Each image is
+# checked first (only files the guard copied, regular files under a size cap,
+# real PNG/JPEG bytes) and OCR-scanned for secrets with $LOG_DIR/bin/ocr, which
+# is compiled from the macOS harness's ocr.swift. Nothing is published until
+# the operator's one-time `evidence-upload.mjs selftest` has passed on the real
+# repo (docs/operations/factory-runbook.md). FACTORY_EVIDENCE_UPLOAD=0 keeps
+# every screenshot on the Mac mini, as before; a bad value does the same. A
+# failed upload never blocks or moves a card: the report is posted without
+# them, saying why.
+FACTORY_EVIDENCE_UPLOAD="${FACTORY_EVIDENCE_UPLOAD:-1}"
+if [[ "$FACTORY_EVIDENCE_UPLOAD" != "0" && "$FACTORY_EVIDENCE_UPLOAD" != "1" ]]; then
+  echo "WARNING: invalid FACTORY_EVIDENCE_UPLOAD='$FACTORY_EVIDENCE_UPLOAD'; keeping screenshots on the Mac mini" >&2
+  FACTORY_EVIDENCE_UPLOAD=0
+fi
+# evidence-upload.mjs reads the switch itself too.
+export FACTORY_EVIDENCE_UPLOAD
+
 # ── Plan-stage browser probe (scripts/lib/plan-probe.mjs, ADR-0071) ───────
 # Off by default. With FACTORY_PLAN_PROBE=1 (and the browser runner's `plan`
 # kind on), the planner may request a probe on a web card: bash pushes a
@@ -3821,6 +3843,10 @@ run_browser_task() {
     return 1
   fi
   uuid=$(uuidgen | tr '[:upper:]' '[:lower:]')
+  # The session id names the guard's decision log for this run
+  # ($LOG_DIR/browser-guard/<uuid>.jsonl), which lists the screenshots the
+  # guard copied, in order. Publishing them later (ADR-0072) finds it here.
+  printf '%s\n' "$uuid" >"$run_dir/session-id" 2>>"$LOG_FILE" || true
   input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
     "$(cat "$BROWSER_PROMPT_FILE")" "$bundle")
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -3925,6 +3951,108 @@ browser_lane_finish() {
   [[ "$1" == verify ]] || return 0
   shift
   verify_browser_finish "$@"
+}
+
+# ── Test-run screenshots (scripts/lib/evidence-upload.mjs, ADR-0072) ───────
+# After a run, never inside it: the runner still has no Bash and no gh. Only
+# the factory's own node publishes, and only a run whose report's secret scan
+# passed. Evidence, never a gate: none of these can fail a caller, spend an
+# attempt or move a card.
+
+# evidence_ocr_bin [--no-compile] — print the OCR helper evidence-images.mjs
+# scans each screenshot's text with ($LOG_DIR/bin/ocr). It is compiled with
+# swiftc from the macOS harness's ocr.swift, which is only read here, when it is
+# missing or older than that source. Prints nothing and fails when it can't be
+# had: no source, no swiftc, or a failed compile (capped at 300 s).
+# --no-compile only takes a helper that is already there (stale or not): the
+# --watch tick must never wait for swiftc, so the browser lane's verify run
+# compiles it in --browser beforehand.
+evidence_ocr_bin() {
+  local src="$REPO_ROOT/apps/desktop/e2e/in-test/lib/ocr.swift" bin="$LOG_DIR/bin/ocr"
+  if [[ -x "$bin" ]] && { [[ "${1:-}" == --no-compile ]] || [[ ! "$src" -nt "$bin" ]]; }; then
+    printf '%s\n' "$bin"
+    return 0
+  fi
+  [[ "${1:-}" != --no-compile ]] || return 1
+  [[ -f "$src" ]] && type -P swiftc >/dev/null 2>&1 || return 1
+  mkdir -p "$LOG_DIR/bin" 2>>"$LOG_FILE" || return 1
+  if node "$SCRIPT_DIR/lib/run-with-timeout.mjs" 300 swiftc -O -o "$bin.tmp" "$src" >>"$LOG_FILE" 2>&1 \
+      && mv "$bin.tmp" "$bin" 2>>"$LOG_FILE"; then
+    printf '%s\n' "$bin"
+    return 0
+  fi
+  rm -f "$bin.tmp"
+  return 1
+}
+
+# browser_guard_log <run-dir> — the run's guard decision log, from the session
+# id run_browser_task wrote; fails when there is none.
+browser_guard_log() {
+  local sid
+  sid=$(head -1 "$1/session-id" 2>/dev/null || echo "")
+  [[ "$sid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
+  printf '%s\n' "$LOG_DIR/browser-guard/$sid.jsonl"
+}
+
+# evidence_upload <issue> <head-sha> <run-id> <evidence-dir> <guard-log>
+#   <render-json> <account-file> <out> [<bypass-file> <signin-key-file> [--no-compile]]
+# Publish one browser run's screenshots (evidence-upload.mjs upload). The node
+# side refuses for itself when the switch is off, the render was withheld, the
+# selftest hasn't passed or the OCR helper is missing, and writes why to
+# <out>; a retry reuses <out> or the run's ref, so it never pushes twice. Each
+# image's OCR text is scanned for the literals in the secret files given (one
+# given but unreadable refuses). --no-compile goes to evidence_ocr_bin.
+# Returns 0 when <out> holds a record (published or not: the re-render shows
+# either), 1 when there is none and the report should go out as it is.
+evidence_upload() {
+  local issue_num="$1" head_sha="$2" run_id="$3" evidence_dir="$4" guard_log="$5"
+  local render_json="$6" account="$7" out="$8" bypass="${9:-}" signin_key="${10:-}"
+  local compile="${11:-}" ocr="" summary
+  if [[ "$FACTORY_EVIDENCE_UPLOAD" == "1" ]] && ! ocr=$(evidence_ocr_bin $compile); then
+    ocr=""
+    log "WARNING: the OCR helper that scans screenshots for secrets isn't available (swiftc?); #$issue_num's screenshots stay on the Mac mini"
+  fi
+  if summary=$(node "$SCRIPT_DIR/lib/evidence-upload.mjs" upload --issue "$issue_num" --sha "$head_sha" \
+      --run-id "$run_id" --evidence-dir "$evidence_dir" --source browser --guard-log "$guard_log" \
+      --render-json "$render_json" --account-file "$account" --ocr "$ocr" \
+      --bypass-file "$bypass" --signin-key-file "$signin_key" \
+      --log-dir "$LOG_DIR" --repo-root "$REPO_ROOT" --out "$out" 2>>"$LOG_FILE") && [[ -s "$out" ]]; then
+    log "Issue #$issue_num: screenshots of ${head_sha:0:12} ($run_id): $(printf '%s\n' "$summary" | tail -1)"
+    return 0
+  fi
+  log "WARNING: publishing #$issue_num's screenshots of ${head_sha:0:12} failed (see above); its report keeps them on the Mac mini"
+  return 1
+}
+
+# browser_publish_screenshots <issue> <head-sha> <run-dir> <body-file> <withheld>
+# The intest kind's screenshots: the report is rendered and scanned, so (unless
+# it was withheld) publish the run's screenshots and render it again with them
+# under its steps. Any failure leaves <body-file> as first rendered, which
+# says the screenshots stayed on the Mac mini. Never fails.
+browser_publish_screenshots() {
+  local issue_num="$1" head_sha="$2" run_dir="$3" body_file="$4" withheld="$5" guard_log="" signin_key
+  if [[ "$withheld" != "false" ]]; then
+    log "Issue #$issue_num: the browser report was withheld, so its screenshots stay on the Mac mini"
+    return 0
+  fi
+  guard_log=$(browser_guard_log "$run_dir") || guard_log=""
+  # The runner never held the bypass secret; the sign-in key minted its link.
+  signin_key=""
+  [[ ! -e "$FACTORY_BROWSER_SIGNIN_KEY_FILE" ]] || signin_key="$FACTORY_BROWSER_SIGNIN_KEY_FILE"
+  evidence_upload "$issue_num" "$head_sha" "intest-${run_dir##*-}" "$run_dir/evidence" "$guard_log" \
+    "$run_dir/render.json" "$FACTORY_BROWSER_ACCOUNT_FILE" "$run_dir/upload.json" "" "$signin_key" \
+    || return 0
+  rm -f "$body_file.images"
+  if node "$SCRIPT_DIR/lib/browser-report.mjs" render --kind intest \
+      --in "$BROWSER_OUT" --issue "$issue_num" --sha "$head_sha" --evidence-dir "$run_dir/evidence" \
+      --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" --out "$body_file.images" \
+      --json-out "$run_dir/render-images.json" --images-json "$run_dir/upload.json" \
+      >>"$LOG_FILE" 2>&1 && [[ -s "$body_file.images" ]] && mv "$body_file.images" "$body_file"; then
+    return 0
+  fi
+  rm -f "$body_file.images"
+  log "WARNING: re-rendering #$issue_num's browser report with its screenshots failed; posting it without them"
+  return 0
 }
 
 # intest_browser_run <issue> <pr> <head sha> — the In Test web run (ADR-0051),
@@ -4287,6 +4415,12 @@ Merge \`main\` into the branch (the **Update branch** button on PR #$pr_num, not
       ;;
   esac
   if [[ "$kind" == verify ]]; then
+    # Its screenshots are published when --watch composes the verification
+    # report, and that tick never compiles the OCR helper: have it ready now,
+    # here in --browser, where a compile can't hold anything up.
+    if [[ "$FACTORY_EVIDENCE_UPLOAD" == "1" ]] && ! evidence_ocr_bin >/dev/null; then
+      log "WARNING: the OCR helper that scans screenshots for secrets couldn't be built (swiftc?); #$issue_num's Web screenshots will stay on the Mac mini"
+    fi
     # Nothing is posted: verify_promote posts the verification report, once,
     # with this run in its Web lane. browserRunSha only once the result is
     # recorded for a card known to be in Testing: a card that left meanwhile,
@@ -4295,6 +4429,9 @@ Merge \`main\` into the branch (the **Update branch** button on PR #$pr_num, not
     [[ "$finish_rc" -ne 0 ]] || browser_claim_sha "$issue_num" "$head_sha"
     return 0
   fi
+  # The verify kind publishes nothing here: its screenshots go into the
+  # verification report, when verify_compose_report composes it.
+  browser_publish_screenshots "$issue_num" "$head_sha" "$run_dir" "$body_file" "$withheld"
   if gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body-file "$body_file" >>"$LOG_FILE" 2>&1; then
     browser_claim_sha "$issue_num" "$head_sha"
   else
@@ -5804,19 +5941,69 @@ verify_compose_report() {
       gaps="$merged"
     fi
   fi
-  if ! out=$(node "$SCRIPT_DIR/lib/verify-report.mjs" render --issue "$issue_num" --pr "$pr_num" \
-      --sha "$head_sha" --scenario-file "$scenario_file" --platforms "$platforms" \
-      --beta-lanes "$beta_lanes" \
-      --shell-state "$(echo "$lanes" | jq -r '.shell // "none"' 2>/dev/null || echo none)" \
-      --shell-dir "$shell_dir" \
-      --browser-state "$(echo "$lanes" | jq -r '.browser // "none"' 2>/dev/null || echo none)" \
-      --browser-dir "$browser_dir" --gaps "$gaps" --cr-note "$cr_note" \
-      --account-file "$account" --bypass-file "$bypass" \
-      --signin-key-file "$signin_key" --out "$body_file" 2>>"$LOG_FILE"); then
+  local -a render_args=(render --issue "$issue_num" --pr "$pr_num"
+    --sha "$head_sha" --scenario-file "$scenario_file" --platforms "$platforms"
+    --beta-lanes "$beta_lanes"
+    --shell-state "$(echo "$lanes" | jq -r '.shell // "none"' 2>/dev/null || echo none)"
+    --shell-dir "$shell_dir"
+    --browser-state "$(echo "$lanes" | jq -r '.browser // "none"' 2>/dev/null || echo none)"
+    --browser-dir "$browser_dir" --gaps "$gaps" --cr-note "$cr_note"
+    --account-file "$account" --bypass-file "$bypass"
+    --signin-key-file "$signin_key")
+  # Composed without screenshots first: that render's scan decides whether the
+  # Web lane's may be published at all (verify_publish_screenshots).
+  if ! out=$(node "$SCRIPT_DIR/lib/verify-report.mjs" "${render_args[@]}" --out "$body_file" 2>>"$LOG_FILE"); then
     return 1
   fi
   [[ -s "$body_file" ]] || return 1
   log "Issue #$issue_num: verification report for ${head_sha:0:12} composed: $(printf '%s\n' "$out" | tail -1)"
+  verify_publish_screenshots "$issue_num" "$head_sha" "$lanes" "$browser_dir" \
+    "$bypass" "$signin_key" "$out" "$body_file" "${render_args[@]}"
+  return 0
+}
+
+# verify_publish_screenshots <issue> <head-sha> <lanes-json> <browser-dir>
+#   <bypass-file|""> <signin-key-file|""> <render-json-line> <body-file> <render-args…>
+# The Web lane's screenshots in the verification report (ADR-0072). The report
+# has just been composed without them; only when the browser lane reported and
+# that render withheld neither its text nor the body are the browser run's
+# screenshots published (evidence_upload), and the report composed again with
+# them inside the lane's details. The image markup comes from the upload record
+# alone, so it can't change what the secret scan sees. The images are scanned
+# for the test account's password (its file must be readable: the browser run
+# had it, so a missing one fails closed) and the composer's other secret files.
+# It runs in --watch, so the OCR helper is never compiled here (--no-compile):
+# the browser run built it. Any failure keeps the first render. Never fails.
+verify_publish_screenshots() {
+  local issue_num="$1" head_sha="$2" lanes="$3" browser_dir="$4" bypass="$5" signin_key="$6"
+  local dry="$7" body_file="$8"
+  shift 8
+  local st withheld guard_log="" render_json out
+  st=$(echo "$lanes" | jq -r '.browser // "none"' 2>/dev/null || echo none)
+  [[ "$st" == reported* && -n "$browser_dir" && -d "$browser_dir/evidence" ]] || return 0
+  dry=$(printf '%s\n' "$dry" | tail -1)
+  # Anything but a clean "false" (jq failed, odd JSON) keeps them local.
+  withheld=$(echo "$dry" | jq -r '(.withheld.browser == true) or any(.secretHits[]?; startswith("body:"))' \
+    2>/dev/null || echo unknown)
+  if [[ "$withheld" != "false" ]]; then
+    log "Issue #$issue_num: the verification report withheld the Web lane's text (or its body), so the lane's screenshots stay on the Mac mini"
+    return 0
+  fi
+  render_json="$browser_dir/verify-render.json"
+  printf '%s\n' "$dry" >"$render_json" 2>>"$LOG_FILE" || return 0
+  guard_log=$(browser_guard_log "$browser_dir") || guard_log=""
+  evidence_upload "$issue_num" "$head_sha" "verify-${browser_dir##*-}" "$browser_dir/evidence" "$guard_log" \
+    "$render_json" "$FACTORY_BROWSER_ACCOUNT_FILE" "$browser_dir/upload.json" "$bypass" "$signin_key" \
+    --no-compile || return 0
+  rm -f "$body_file.images"
+  if out=$(node "$SCRIPT_DIR/lib/verify-report.mjs" "$@" --browser-images "$browser_dir/upload.json" \
+      --out "$body_file.images" 2>>"$LOG_FILE") && [[ -s "$body_file.images" ]] \
+      && mv "$body_file.images" "$body_file" 2>>"$LOG_FILE"; then
+    log "Issue #$issue_num: verification report for ${head_sha:0:12} composed with the Web lane's screenshots: $(printf '%s\n' "$out" | tail -1)"
+    return 0
+  fi
+  rm -f "$body_file.images"
+  log "WARNING: composing #$issue_num's verification report with the Web lane's screenshots failed; it goes out without them"
   return 0
 }
 

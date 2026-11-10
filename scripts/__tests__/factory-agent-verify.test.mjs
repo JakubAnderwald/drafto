@@ -27,11 +27,17 @@ import { isTerminalLaneState } from "../lib/verify-decide.mjs";
 //   7. a report that couldn't be posted is retried by the In Test sweep, at
 //      most VERIFY_REPORT_POST_MAX times, and only if the promotion wrote one;
 //   8. the revision no-op path routes through verify_target_status and keeps
-//      its literal In Test move.
+//      its literal In Test move;
+//   9. the Web lane's screenshots (ADR-0072) are published only for a browser
+//      lane that reported, whose dry render withheld neither its text nor the
+//      body, and only after that render; the report is then composed again
+//      with them inside the lane's <details>, and any failure posts the dry
+//      render, with the promotion unchanged.
 // Two layers, like the CodeRabbit lane's tests: static lock-ins over the
 // source, and the real functions run in bash with gh, the board and the beta
 // and scenario helpers stubbed (state-cli, verify-decide and verify-report are
-// the real modules, on a temp state file).
+// the real modules, on a temp state file; evidence-upload.mjs is a stub that
+// records its argv and writes the upload record a test gives it).
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const scriptsDir = resolve(HERE, "..");
@@ -75,6 +81,10 @@ const REAL_HELPERS = [
   "ci_required_green",
   "browser_kind_enabled",
   "scenario_platforms",
+  // The Web lane's screenshots (verify_publish_screenshots, ADR-0072).
+  "evidence_ocr_bin",
+  "browser_guard_log",
+  "evidence_upload",
 ];
 
 const STUBS = `
@@ -85,6 +95,16 @@ LANE_GAPS_DEFAULT='{"gaps":[],"bypassUsed":false}'
 log() { echo "LOG: $*" >> "$LOG_FILE"; }
 logerr() { echo "ERR: $*" >> "$LOG_FILE"; }
 call() { printf '%s\\n' "$*" >> "$CALLS"; }
+# stub_flag <--flag> <argv…> — the value after <--flag> in <argv>.
+stub_flag() {
+  local want="$1" prev="" a
+  shift
+  for a in "$@"; do
+    [[ "$prev" != "$want" ]] || { printf '%s\\n' "$a"; return 0; }
+    prev="$a"
+  done
+  return 1
+}
 transition_status() { call "transition $3"; [[ "\${FAIL_TRANSITION:-}" != "$3" ]]; }
 intest_check_lane_outcomes() { call "outcomes $*"; }
 intest_dispatch_betas() { call "dispatch $1 $2 $3 $(echo "$4" | jq -c . 2>/dev/null || echo "$4")"; echo '{"dispatched":[],"skipped":[],"manualCommands":[]}'; }
@@ -129,7 +149,24 @@ node() {
       ;;
     # dispatch-release.mjs is the real module: derive-platforms (and --verify)
     # reads the stubbed diff on stdin.
-    */verify-report.mjs) [[ -z "\${REPORT_FAIL:-}" ]] || return 1; command node "$@" ;;
+    */verify-report.mjs)
+      [[ -z "\${REPORT_FAIL:-}" ]] || return 1
+      if [[ " $* " == *" --browser-images "* ]]; then
+        [[ -z "\${TRACE_REPORT:-}" ]] || call "report images $(stub_flag --browser-images "$@")"
+        [[ -z "\${REPORT_IMAGES_FAIL:-}" ]] || return 1
+      else
+        [[ -z "\${TRACE_REPORT:-}" ]] || call "report dry"
+      fi
+      command node "$@" ;;
+    # The Web lane's screenshots: the argv, one JSON array per call, beside the
+    # call log; UPLOAD_STUB is the record written to --out (none when unset).
+    */evidence-upload.mjs)
+      call "upload \${*:2}"
+      printf '%s\\n' "\${@:2}" | jq -Rsc 'split("\\n")[:-1]' >> "$CALLS.uploads"
+      [[ -z "\${UPLOAD_FAIL:-}" ]] || return 1
+      [[ -z "\${UPLOAD_STUB:-}" ]] || printf '%s\\n' "$UPLOAD_STUB" > "$(stub_flag --out "$@")"
+      echo '{"ok":true,"reason":null,"images":1}'
+      ;;
     */verify-lane.mjs)
       call "lane \${*:2}"
       [[ -z "\${LANE_FAIL:-}" ]] || return 1
@@ -187,6 +224,7 @@ function runBash(body, { env = {}, state = {}, comments = [], bash = "/bin/bash"
     `SIGNIN_LEASE_FILE="${join(dir, "factory-signin.lease")}"`,
     "FACTORY_CR_CLI=${FACTORY_CR_CLI:-0}",
     "FACTORY_BROWSER=${FACTORY_BROWSER:-1}",
+    "FACTORY_EVIDENCE_UPLOAD=${FACTORY_EVIDENCE_UPLOAD:-1}",
     'FACTORY_BROWSER_KINDS="${FACTORY_BROWSER_KINDS-intest,verify}"',
     'VERIFY_BROWSER_CANDIDATES="${VERIFY_BROWSER_CANDIDATES_STUB:-}"',
     "REQUIRED_CONTEXTS_JSON='[\"Lint\"]'",
@@ -2185,5 +2223,290 @@ describe("packages/shared/ reaches the web app, for verification only (ADR-0053,
       promote,
       /verify_compose_report "\$issue_num" "\$pr_num" "\$head_sha" "\$report_plats"/,
     );
+  });
+});
+
+describe("the Web lane's screenshots in the verification report (ADR-0072, real composer)", () => {
+  const RUN_ID = "verify-20261021T000000";
+  const COMMIT = "c".repeat(40);
+  const SESSION = "0f8fad5b-d9cb-469f-a165-70867728950e";
+  const SHORT = HEAD.slice(0, 12);
+  const RUN_REL = `browser/issue-7-${SHORT}-${RUN_ID}`;
+  const JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0";
+  const url = (n) =>
+    `https://raw.githubusercontent.com/JakubAnderwald/drafto/${COMMIT}/7/${SHORT}/${RUN_ID}/${String(n).padStart(2, "0")}.png`;
+  // The record evidence-upload.mjs writes for a published run.
+  const PUBLISHED = JSON.stringify({
+    ok: true,
+    issue: "7",
+    sha: HEAD,
+    runId: RUN_ID,
+    ref: `refs/factory-evidence/7/${SHORT}/${RUN_ID}`,
+    commit: COMMIT,
+    images: [{ n: 1, url: url(1), local: "/x/shot-1.png", name: "shot-1.png" }],
+    overflow: [],
+  });
+  const runnerOutput = (evidence = "the list shows (screenshot 1)") =>
+    [
+      "<<<REPORT",
+      "| # | Step | Result | Evidence |",
+      "|---|---|---|---|",
+      `| 1 | Open /notebooks | PASS | ${evidence} |`,
+      "**Summary:** 1 PASS, 0 FAIL, 0 WARN, 0 SKIP.",
+      "REPORT>>>",
+      "browser=ok verdict=pass",
+    ].join("\n");
+  const set = (field, value) =>
+    `node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field 7 ${field} "${value}" --state-file "$STATE_FILE" >/dev/null`;
+  // The browser lane's run as browser_run verify leaves it: the runner's
+  // output, the guard-copied evidence and the session id, recorded in state.
+  const seed = ({ output = runnerOutput(), evidence = true, session = true, lane } = {}) =>
+    [
+      `B="$LOG_DIR/${RUN_REL}"`,
+      'mkdir -p "$B"',
+      evidence ? 'mkdir -p "$B/evidence" && printf x > "$B/evidence/shot-1.png"' : ":",
+      session ? `printf '%s\\n' ${SESSION} > "$B/session-id"` : ":",
+      `printf '%s\\n' '${output}' > "$B/runner-output.txt"`,
+      set("verifyBrowser", `$HEAD:${lane}`),
+      set("verifyBrowserRunDir", "$B"),
+    ].join("\n");
+  const promote = (lane) =>
+    `verify_promote ITEM 7 70 "$HEAD" lanes-done '{"shell":"skipped:not-built","browser":"${lane}"}' "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")" "$(cat "$COMMENTS_FILE")"`;
+  const scenario = [
+    "## Test scenario",
+    "### Web",
+    "1. Open /notebooks — expected: the list.",
+    `<!-- drafto-factory-scenario-sha:${HEAD} -->`,
+  ].join("\n");
+  const comments = [{ id: 5, body: scenario, createdAt: "t", authorAssociation: "OWNER" }];
+
+  // Seed the lane, promote, and hand the result to <fn>.
+  function promoted({ lane = "reported:pass", env = {}, state = {}, ...seedOpts }, fn) {
+    withBash(
+      `${seed({ lane, ...seedOpts })}\n${promote(lane)}`,
+      { env: { HEAD, TRACE_REPORT: "1", ...env }, state, comments },
+      fn,
+    );
+  }
+  const runDir = (r) => join(r.dir, RUN_REL);
+  const callLines = (r) => r.calls.split("\n").filter(Boolean);
+  const uploadsOf = (r) => {
+    const f = join(r.dir, "calls.log.uploads");
+    if (!existsSync(f)) return [];
+    return readFileSync(f, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => {
+        const args = JSON.parse(l);
+        assert.equal(args[0], "upload");
+        const flags = {};
+        for (let i = 1; i < args.length; i += 2) flags[args[i]] = args[i + 1];
+        return flags;
+      });
+  };
+  const reports = (r) =>
+    r.comments.filter((c) => c.body.includes("<!-- drafto-factory-verify-report -->"));
+  const webDetails = (body) => {
+    const start = body.indexOf("<summary>Web (browser): full report</summary>");
+    assert.ok(start !== -1, "the Web lane's details");
+    return body.slice(start, body.indexOf("</details>", start));
+  };
+
+  it("publishes them after the dry render, then composes again with them in the Web lane's details", () => {
+    promoted({ env: { UPLOAD_STUB: PUBLISHED }, state: { attempts: 3 } }, (r) => {
+      const lines = callLines(r);
+      const at = (pred) => lines.findIndex(pred);
+      const dry = at((l) => l === "report dry");
+      const up = at((l) => l.startsWith("upload "));
+      const again = at((l) => l.startsWith("report images "));
+      const move = at((l) => l === "transition In Test");
+      const post = at((l) => l.startsWith("gh issue comment 7"));
+      assert.ok(dry !== -1 && dry < up && up < again && again < move && move < post, r.calls);
+      assert.equal(lines[again], `report images ${runDir(r)}/upload.json`);
+      assert.equal(lines.filter((l) => l === "report dry").length, 1);
+
+      const uploads = uploadsOf(r);
+      assert.equal(uploads.length, 1);
+      assert.deepEqual(uploads[0], {
+        "--issue": "7",
+        "--sha": HEAD,
+        "--run-id": RUN_ID,
+        "--evidence-dir": `${runDir(r)}/evidence`,
+        "--source": "browser",
+        "--guard-log": `${r.dir}/browser-guard/${SESSION}.jsonl`,
+        "--render-json": `${runDir(r)}/verify-render.json`,
+        // The account file is always passed, so node fails closed when it is
+        // missing; the harness's repo root has no ocr.swift, so --ocr is ""
+        // and node refuses for itself.
+        "--account-file": `${r.dir}/account.env`,
+        "--ocr": "",
+        // The composer's other secret files, "" when it had none.
+        "--bypass-file": "",
+        "--signin-key-file": "",
+        "--log-dir": r.dir,
+        "--repo-root": r.dir,
+        "--out": `${runDir(r)}/upload.json`,
+      });
+      // The dry render's JSON line is what the upload's scan gate reads.
+      const dryJson = JSON.parse(readFileSync(join(runDir(r), "verify-render.json"), "utf8"));
+      assert.equal(dryJson.verdict, "pass");
+      assert.deepEqual(dryJson.withheld, { shell: false, browser: false });
+      assert.deepEqual(dryJson.secretHits, []);
+      assert.deepEqual(dryJson.images, { browser: 0 }, "composed without screenshots");
+
+      const posted = reports(r);
+      assert.equal(posted.length, 1, "posted once");
+      const { body } = posted[0];
+      assert.match(
+        webDetails(body),
+        new RegExp(
+          `<img src="${url(1).replace(/[.?/]/g, "\\$&")}" width="480" alt="Screenshot 1">`,
+        ),
+      );
+      assert.match(body, /\*\*Step 1\*\* · PASS · Open \/notebooks/, "under the step that took it");
+      assert.match(body, /Web screenshots are published in this report \(ADR-0072\)/);
+      assert.doesNotMatch(body, /weren't published/);
+      assert.match(body, /\*\*Verdict: PASS\*\*/);
+      assert.match(r.log, /composed with the Web lane's screenshots/);
+      assert.equal(r.issue.verifyReportSha, HEAD);
+      assert.equal(r.issue.attempts, 0, "the promotion's resets are unchanged");
+    });
+  });
+
+  it("keeps a withheld lane's screenshots on the Mac mini: never uploaded", () => {
+    // The lane's own output trips the scan; and a clean lane in a body that
+    // trips the final check (here the CodeRabbit note) is withheld as well.
+    for (const opts of [
+      { output: runnerOutput(`token ${JWT} (screenshot 1)`) },
+      { state: { verifyCrNote: `${HEAD}:see ${JWT}` } },
+    ]) {
+      promoted({ env: { UPLOAD_STUB: PUBLISHED }, ...opts }, (r) => {
+        const what = JSON.stringify(opts).slice(0, 40);
+        assert.doesNotMatch(r.calls, /^upload |^report images /m, what);
+        assert.match(r.log, /withheld the Web lane's text \(or its body\)/, what);
+        const posted = reports(r);
+        assert.equal(posted.length, 1, what);
+        assert.doesNotMatch(posted[0].body, /<img /, what);
+        assert.match(posted[0].body, /withheld/i, what);
+        assert.match(r.calls, /^transition In Test$/m, what);
+      });
+    }
+  });
+
+  it("publishes nothing for a browser lane that didn't report", () => {
+    for (const lane of ["timeout", "unavailable:chrome", "no-preview"]) {
+      promoted({ lane, env: { UPLOAD_STUB: PUBLISHED } }, (r) => {
+        assert.doesNotMatch(r.calls, /^upload |^report images /m, lane);
+        assert.equal(reports(r).length, 1, lane);
+        assert.doesNotMatch(reports(r)[0].body, /<img /, lane);
+      });
+    }
+  });
+
+  it("publishes nothing when the run kept no evidence dir", () => {
+    promoted({ evidence: false, env: { UPLOAD_STUB: PUBLISHED } }, (r) => {
+      assert.doesNotMatch(r.calls, /^upload /m);
+      assert.doesNotMatch(reports(r)[0].body, /<img /);
+    });
+  });
+
+  it("hands node an empty guard log when the run left no session id", () => {
+    promoted({ session: false, env: { UPLOAD_STUB: PUBLISHED } }, (r) => {
+      assert.equal(uploadsOf(r)[0]["--guard-log"], "");
+    });
+  });
+
+  for (const [what, env] of [
+    ["fails", { UPLOAD_FAIL: "1", UPLOAD_STUB: PUBLISHED }],
+    ["leaves no record", {}],
+  ]) {
+    it(`posts the dry render, promotion unchanged, when the upload ${what}`, () => {
+      promoted({ env, state: { attempts: 3 } }, (r) => {
+        assert.match(r.calls, /^upload /m);
+        assert.doesNotMatch(r.calls, /^report images /m, "nothing to compose with");
+        assert.match(r.log, /publishing #7's screenshots of a{12} failed/);
+        assert.match(r.calls, /^transition In Test$/m, "the card still moves");
+        const posted = reports(r);
+        assert.equal(posted.length, 1, "posted once");
+        assert.doesNotMatch(posted[0].body, /<img /);
+        assert.match(
+          posted[0].body,
+          new RegExp(
+            `Local evidence stays on the Mac mini \\(the repo is public\\): Web \`[^\`]*${RUN_REL}\``,
+          ),
+        );
+        assert.doesNotMatch(posted[0].body, /weren't published/, "no record, no reason");
+        assert.match(posted[0].body, /\*\*Verdict: PASS\*\*/);
+        assert.equal(r.issue.verifyReportSha, HEAD);
+        assert.equal(r.issue.attempts, 0);
+      });
+    });
+  }
+
+  it("says why in the report when node refused to publish", () => {
+    const refusal = JSON.stringify({ ok: false, reason: "selftest-missing" });
+    promoted({ env: { UPLOAD_STUB: refusal } }, (r) => {
+      assert.match(r.calls, /^report images /m, "a record: composed again, with the reason");
+      const { body } = reports(r)[0];
+      assert.doesNotMatch(body, /<img /);
+      assert.match(
+        body,
+        /Web screenshots weren't published: the publishing self-test hasn't passed on this Mac mini yet/,
+      );
+    });
+  });
+
+  it("posts the dry render when composing with the screenshots fails", () => {
+    promoted({ env: { UPLOAD_STUB: PUBLISHED, REPORT_IMAGES_FAIL: "1" } }, (r) => {
+      assert.match(r.calls, /^report images /m);
+      assert.match(
+        r.log,
+        /composing #7's verification report with the Web lane's screenshots failed/,
+      );
+      const posted = reports(r);
+      assert.equal(posted.length, 1);
+      assert.doesNotMatch(posted[0].body, /<img /);
+      assert.match(posted[0].body, /\*\*Verdict: PASS\*\*/);
+      assert.ok(!existsSync(join(r.dir, "verify", `report-7-${HEAD}.md.images`)), "no temp left");
+    });
+  });
+
+  it("asks for the same run's upload again when the promotion is retried, so node reuses it", () => {
+    // The ref and upload.json are keyed by issue + head + run: a promotion
+    // that couldn't move the card composes again next tick with the same
+    // --run-id and --out, and evidence-upload.mjs reuses the record.
+    const body = [
+      seed({ lane: "reported:pass" }),
+      'FAIL_TRANSITION="In Test"',
+      `${promote("reported:pass")} || true`,
+      'FAIL_TRANSITION=""',
+      promote("reported:pass"),
+    ].join("\n");
+    withBash(body, { env: { HEAD, UPLOAD_STUB: PUBLISHED }, comments }, (r) => {
+      const uploads = uploadsOf(r);
+      assert.equal(uploads.length, 2);
+      assert.equal(uploads[1]["--run-id"], uploads[0]["--run-id"]);
+      assert.equal(uploads[1]["--out"], uploads[0]["--out"]);
+      assert.equal(reports(r).length, 1, "one report, after the move");
+      assert.match(webDetails(reports(r)[0].body), /<img src=/);
+    });
+  });
+
+  it("composes first and publishes after, from verify_compose_report only", () => {
+    const compose = extract("verify_compose_report");
+    const dry = compose.indexOf('verify-report.mjs" "${render_args[@]}" --out "$body_file"');
+    const publish = compose.indexOf('verify_publish_screenshots "$issue_num" "$head_sha"');
+    assert.ok(dry !== -1 && publish > dry);
+    assert.doesNotMatch(compose.slice(0, dry), /--browser-images/, "the first render has none");
+    const fn = extract("verify_publish_screenshots");
+    assert.match(
+      fn,
+      /\[\[ "\$st" == reported\* && -n "\$browser_dir" && -d "\$browser_dir\/evidence" \]\] \|\| return 0/,
+    );
+    assert.match(fn, /--browser-images "\$browser_dir\/upload\.json"/);
+    // The only verify_* function that publishes anything.
+    for (const name of verifyFns.filter((n) => n !== "verify_publish_screenshots")) {
+      assert.doesNotMatch(extract(name), /evidence_upload|evidence-upload\.mjs/, name);
+    }
   });
 });

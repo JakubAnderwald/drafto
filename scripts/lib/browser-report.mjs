@@ -36,14 +36,23 @@
 // reads back as trusted) into a comment posted under the owner's token.
 // See ADR-0051.
 //
+// Screenshots (ADR-0072): with --images-json <upload.json> (evidence-upload.mjs's
+// record of what it published), the intest and verify kinds embed the run's
+// screenshots under the step rows that mention them (evidence-embed.mjs). Room
+// for them is reserved before the report text is truncated. A withheld report
+// never shows an image, whatever it is given. Whenever nothing is embedded the
+// footer is today's "Screenshots stay on the Mac mini" line, plus why when
+// there is a reason. The plan kind never embeds.
+//
 // CLI:
 //   node browser-report.mjs render --kind intest --in <runner-stdout-file>
 //        --issue <n> --sha <sha> --evidence-dir <dir> --account-file <f>
-//        --out <body-file> [--json-out <file>]
+//        --out <body-file> [--json-out <file>] [--images-json <upload.json>]
 //     Writes the comment body to --out and a copy of the runner output to
 //     <evidence-dir>/runner-output.txt (mode 600). Prints one JSON line
-//     {status, verdict, withheld, secretHits}, also written to --json-out
-//     (mode 600) when given. Exit 0; 1 on an I/O error (including an
+//     {status, verdict, withheld, secretHits, images}, also written to
+//     --json-out (mode 600) when given; images counts the screenshots
+//     embedded. Exit 0; 1 on an I/O error (including an
 //     unreadable account file: without the password the scan can't be
 //     trusted, so nothing is written); 2 on a usage error.
 //   node browser-report.mjs render --kind plan … (the same flags)
@@ -67,6 +76,7 @@
 import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
+import { evidenceSection, readUpload } from "./evidence-embed.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 
@@ -315,45 +325,75 @@ export function truncateReport(report, max) {
   return fences % 2 === 1 ? `${cut}\n\`\`\`` : cut;
 }
 
-// The In Test comment: posted by bash as is, so it carries the report marker
-// and the run's full-SHA marker as its last two lines.
-export function renderIntestComment(run) {
-  return renderRunReport(run, {
+// Each kind's wording. The intest and verify kinds embed the run's screenshots
+// when they are given an upload record; the plan kind never does.
+const KIND_OPTIONS = {
+  // The In Test comment: posted by bash as is, so it carries the report
+  // marker and the run's full-SHA marker as its last two lines.
+  intest: {
     header: HEADER,
     okNote: "This report never moves the card; it stays in In Test either way.",
     notOkNote: "The card is unaffected.",
     markers: (sha) => [REPORT_MARKER, runShaMarker(sha)],
-  });
-}
-
-// The verify kind's section (ADR-0053): the same scanned, defanged report, but
-// never posted, so it carries no factory marker at all. The verification
-// report is the only thing that reaches the issue for a Testing card.
-export function renderVerifySection(run) {
-  return renderRunReport(run, {
+    embed: true,
+  },
+  // The verify kind's section (ADR-0053): the same scanned, defanged report,
+  // but never posted, so it carries no factory marker at all. The
+  // verification report is the only thing that reaches the issue for a
+  // Testing card.
+  verify: {
     header: VERIFY_HEADER,
     okNote: "Evidence for the verification report; it never moves the card.",
     notOkNote: "The card is unaffected.",
     markers: () => [],
-  });
-}
-
-// The plan kind's section (plan-probe.mjs): never posted on its own either.
-// plan-probe.mjs composes the probe's one report comment around it, with its
-// own marker, after defanging and scanning every part again.
-export function renderPlanSection(run) {
-  return renderRunReport(run, {
+    embed: true,
+  },
+  // The plan kind's section (plan-probe.mjs): never posted on its own either.
+  // plan-probe.mjs composes the probe's one report comment around it, with
+  // its own marker, after defanging and scanning every part again.
+  plan: {
     header: PLAN_HEADER,
     okNote: "Evidence for the plan; it never moves the card.",
     notOkNote: "The card is unaffected.",
     markers: () => [],
+    embed: false,
+  },
+};
+
+export function renderIntestComment(run) {
+  return renderRunReport(run, KIND_OPTIONS.intest).body;
+}
+
+export function renderVerifySection(run) {
+  return renderRunReport(run, KIND_OPTIONS.verify).body;
+}
+
+export function renderPlanSection(run) {
+  return renderRunReport(run, KIND_OPTIONS.plan).body;
+}
+
+// The screenshots section and footer of one run's report (evidence-embed.mjs).
+// `images` is the upload record, or undefined when none was given. The
+// section is checked with <isSafe> (the caller's secret scan) before it is
+// used: a step label that trips it is dropped, the images kept.
+function runEvidence(run, embed) {
+  const withheld = Array.isArray(run.withheld) ? run.withheld.length > 0 : Boolean(run.withheld);
+  const isSafe =
+    typeof run.isSafe === "function"
+      ? run.isSafe
+      : (lines) => scanForSecrets(lines.join("\n")).length === 0;
+  return evidenceSection({
+    report: run.report ?? null,
+    upload: embed ? run.images : undefined,
+    withheld,
+    evidenceDir: run.evidenceDir,
+    isSafe,
   });
 }
 
-function renderRunReport(
-  { sha, report, verdict, status, evidenceDir, withheld },
-  { header, okNote, notOkNote, markers },
-) {
+// { body, embedded }: the comment (or section) and how many screenshots it embeds.
+function renderRunReport(run, { header, okNote, notOkNote, markers, embed = false }) {
+  const { sha, report, verdict, status, evidenceDir, withheld } = run;
   if (!SHA.test(String(sha ?? ""))) throw new Error(`invalid sha: ${sha}`);
   const hits = Array.isArray(withheld) ? withheld : withheld ? ["unspecified"] : [];
   const localCopy = `${evidenceDir}/${RUNNER_OUTPUT_FILE}`;
@@ -365,30 +405,33 @@ function renderRunReport(
     : `**No result** for \`${short}\`. ${STATUS_SENTENCE[status] ?? STATUS_SENTENCE.malformed} ` +
       notOkNote;
 
+  const evidence = runEvidence(run, embed);
   const head = [header, "", lead, ""];
   const tail = markers(sha);
-  const footer = [
-    "",
-    `<sub>Screenshots stay on the Mac mini (this repo is public): \`${evidenceDir}\`.</sub>`,
-    ...(tail.length ? ["", ...tail] : []),
-  ];
+  // The screenshots go between the report and the footer, and are never cut:
+  // the room they take is reserved before the report text is truncated.
+  const shots = evidence.block.length ? ["", ...evidence.block] : [];
+  const footer = [...shots, "", evidence.footer, ...(tail.length ? ["", ...tail] : [])];
   const assemble = (middle) => [...head, ...middle, ...footer].join("\n");
+  const done = (body) => ({ body, embedded: evidence.embedded });
 
   if (hits.length > 0) {
-    return assemble([
-      `Report withheld: the output matched a secret pattern (${hits.join(", ")}). ` +
-        `The local copy is at \`${localCopy}\`.`,
-    ]);
+    return done(
+      assemble([
+        `Report withheld: the output matched a secret pattern (${hits.join(", ")}). ` +
+          `The local copy is at \`${localCopy}\`.`,
+      ]),
+    );
   }
   if (report == null || report === "") {
-    return assemble([ok ? "_The runner printed no report._" : "_The runner left no note._"]);
+    return done(assemble([ok ? "_The runner printed no report._" : "_The runner left no note._"]));
   }
 
   // A stopped run's report is its own explanation of why it stopped.
   const intro = ok ? [] : ["**What the runner said:**", ""];
   const text = defangReport(report);
   const full = assemble([...intro, text]);
-  if (full.length <= COMMENT_MAX_CHARS) return full;
+  if (full.length <= COMMENT_MAX_CHARS) return done(full);
 
   const note = (n) =>
     `\n\n_…report truncated to ${n} of ${text.length} characters; ` +
@@ -396,7 +439,7 @@ function renderRunReport(
   // Budget against the longest note and a fence closer ("\n```" = 4).
   const room = COMMENT_MAX_CHARS - assemble([...intro, ""]).length - note(text.length).length - 4;
   const cut = truncateReport(text, room);
-  return assemble([...intro, cut + note(cut.length)]);
+  return done(assemble([...intro, cut + note(cut.length)]));
 }
 
 // ── CLI ─────────────────────────────────────────────────────────────────────
@@ -438,6 +481,12 @@ export function render(argv) {
     chmodSync(copy, 0o600);
   }
 
+  // The upload record evidence-upload.mjs wrote; one given but unreadable is
+  // a failed upload, so the footer says so.
+  let images;
+  if (flags["images-json"])
+    images = readUpload(flags["images-json"]) ?? { ok: false, reason: "unreadable" };
+
   const run = {
     issue,
     sha,
@@ -446,18 +495,17 @@ export function render(argv) {
     status: parsed.status,
     evidenceDir,
     withheld: secretHits,
+    images,
+    isSafe: (lines) => scanForSecrets(lines.join("\n"), { password }).length === 0,
   };
-  const renderers = {
-    intest: renderIntestComment,
-    verify: renderVerifySection,
-    plan: renderPlanSection,
-  };
-  writeFileSync(out, renderers[kind](run));
+  const rendered = renderRunReport(run, KIND_OPTIONS[kind]);
+  writeFileSync(out, rendered.body);
   const result = {
     status: parsed.status,
     verdict: parsed.verdict,
     withheld: secretHits.length > 0,
     secretHits,
+    images: rendered.embedded,
   };
   if (flags["json-out"]) {
     writeFileSync(flags["json-out"], JSON.stringify(result) + "\n", { mode: 0o600 });
@@ -469,7 +517,7 @@ export function render(argv) {
 const USAGE =
   "Usage: browser-report.mjs render --kind intest|verify|plan --in <runner-stdout-file> --issue <n> " +
   "--sha <sha> --evidence-dir <dir> --account-file <f> --out <body-file> " +
-  "[--json-out <file>]\n" +
+  "[--json-out <file>] [--images-json <upload.json>]\n" +
   "       browser-report.mjs status --in <runner-stdout-file>\n" +
   "       browser-report.mjs account-check --account-file <f>\n";
 

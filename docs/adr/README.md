@@ -102,3 +102,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0068](./0068-factory-runs-the-board-right-to-left.md)               | Factory Runs the Board Right to Left                   | Accepted           | 2026-11-08 |
 | [0070](./0070-factory-in-test-frees-slot-and-updates-behind-prs.md)  | In Test Frees Its Slot; Behind PRs Get Updated         | Accepted           | 2026-11-09 |
 | [0071](./0071-plan-stage-browser-probe.md)                           | Plan-Stage Browser Probe                               | Accepted           | 2026-11-09 |
+| [0072](./0072-factory-test-run-screenshots-on-github.md)             | Factory Test-Run Screenshots on GitHub                 | Accepted           | 2026-11-10 |

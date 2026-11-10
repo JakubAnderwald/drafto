@@ -61,9 +61,54 @@ Once a card has shipped, the card checks fail by design. To re-run its scenario 
 Each run writes to `~/Library/Logs/drafto-in-test/<scenario>/<timestamp>/`:
 
 - `report.md` (also printed at the end) and `results.jsonl`: one row per step with PASS / WARN / FAIL / SKIP and the evidence. The report's `Run:` line says whether every step ran. A run that stops outside a step's own check (Ctrl-C, an error) gets an ABORTED row for the step it was in, so it can't pass for a shorter green run;
-- `log.txt`, `shots/` (a window capture per step), `app.log` (the app's JS console via `log stream`) and `sql.log` (every admin statement).
+- `log.txt`, `shots/` (a window capture per step), `app.log` (the app's JS console via `log stream`) and `sql.log` (every admin statement);
+- once the run is posted (see "Posting a run on the issue" below), `upload.json` and `posted.json`.
 
 `state.env` holds the throwaway credentials (mode 600). It is deleted once the account has been deleted. `latest` points to the newest run that got as far as creating credentials, which is the run `--cleanup-only` cleans up. Sign back in to your own account afterwards.
+
+## Posting a run on the issue
+
+A finished run's report and screenshots can be posted on the card's issue, with each step's shots under it ([ADR-0072](../adr/0072-factory-test-run-screenshots-on-github.md)). It's an operator command. The factory never runs it, because the shots are of production.
+
+1. **Finish the run first.** If it stopped early, run the scenario with `--cleanup-only`. The command refuses while the run's `state.env` exists, because the throwaway account is still live.
+2. **List what it would publish.** From the factory checkout:
+
+   ```bash
+   cd /Volumes/DraftoFactory/drafto-factory
+   node scripts/lib/evidence-post.mjs macos --run-dir ~/Library/Logs/drafto-in-test/<scenario>/<timestamp> --issue <n>
+   ```
+
+   It prints each shot it would publish and each one it would keep on the Mac mini (with why), then the report as it would be posted. Nothing is published yet.
+
+3. **Look at each shot it lists.** An early one can show your own account's notes, because a run starts by signing that account out. If one shouldn't go out, move it out of `shots/` (only what's there is published) and list again, or don't post the run.
+4. **Post it** by running the same command again with `--yes`. It publishes the shots as one parentless commit on `refs/factory-evidence/<issue>/<sha12>/macos-<timestamp>`, then posts one comment, **🏭 macOS run — the In-Test harness on this Mac mini** (marker `<!-- drafto-factory-macos-run-report -->`). The comment has the report, then each step's shots, matched by name (`NN-step-<id>-<STATUS>.png`) to the step in `results.jsonl`. Shots with other names go under "Other screenshots". The comment never moves the card.
+
+The shots go through the same checks as the browser runner's (see the factory runbook's "Test-run screenshots on GitHub"):
+
+- the same file checks;
+- an OCR secret scan of each one;
+- at most 20 shots and 20 MB per comment;
+- the one-time publishing selftest, and `FACTORY_EVIDENCE_UPLOAD`.
+
+Only files in `shots/` named `NN-<label>.png` are considered, so `preflight-window.png` and `tmp-ocr.png` never are.
+
+Flags:
+
+- `--sha <40-hex>`: the commit the run tested. The default is the newest `drafto-factory-scenario-sha` marker on the issue's own (OWNER) comments.
+- `--log-dir <dir>`: where the factory keeps `evidence-selftest.json`. The default is `<repo-root>/logs/factory`, where `<repo-root>` is the checkout the script is in (`--repo-root` overrides it). So run it from the factory checkout, or pass `--log-dir /Volumes/DraftoFactory/drafto-factory/logs/factory`.
+- `--ocr <bin>`: the OCR helper. The default is `<log-dir>/bin/ocr`, else the harness's own `apps/desktop/e2e/in-test/bin/ocr`.
+
+It refuses, with exit 1 and nothing published, in these cases:
+
+- in an unattended session (`DRAFTO_UNATTENDED=1`);
+- while the run's `state.env` exists;
+- when `report.md` is missing or has no `Run:` line, so the run didn't finish writing it;
+- when the report matches a secret pattern;
+- when the run was already posted (`posted.json` in the run dir has the comment's URL);
+- when publishing isn't set up: the switch is off, the selftest hasn't passed, or there's no OCR helper;
+- when there's no scenario-sha marker on the issue and no `--sha`.
+
+If publishing fails, nothing is posted. Run the command again to retry: it reuses the run's `upload.json`, or the commit already on its ref, so it never publishes twice. To take a posted run down, follow the runbook's "Taking a screenshot down".
 
 ## Layout
 
