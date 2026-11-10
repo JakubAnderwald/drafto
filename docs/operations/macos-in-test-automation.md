@@ -78,6 +78,8 @@ A finished run's report and screenshots can be posted on the card's issue, with 
    node scripts/lib/evidence-post.mjs macos --run-dir ~/Library/Logs/drafto-in-test/<scenario>/<timestamp> --issue <n>
    ```
 
+   You can list `<scenario>/latest`: the command resolves the link and lists the run it points to under that run's own id, `macos-<timestamp>`. But don't pass `latest` to `--yes` (step 4). Use the `<timestamp>` path the listing printed instead. The harness moves `latest` to the next run as soon as that run has credentials, so a later `--yes` through the link could post shots you never looked at.
+
    It prints each shot it would publish and each one it would keep on the Mac mini (with why), then the report as it would be posted. Nothing is published yet.
 
 3. **Look at each shot it lists.** An early one can show your own account's notes, because a run starts by signing that account out. If one shouldn't go out, move it out of `shots/` (only what's there is published) and list again, or don't post the run. Once an earlier `--yes` has published the shots (say its comment post failed), moving a file no longer changes anything: the listing shows what is already published, which is what a retry posts. To withdraw a shot then, take it down first (the runbook's "Taking a screenshot down"), delete the run's `upload.json`, and list again. If the run's comment is already on the issue, the listing says so instead.

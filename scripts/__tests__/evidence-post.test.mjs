@@ -24,8 +24,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -114,8 +116,11 @@ after(() => {
   for (const r of roots) rmSync(r, { recursive: true, force: true });
 });
 
+// A real path: the command resolves the run dir's links (macOS's tmpdir is
+// under the /var → /private/var link), and the paths it prints are compared
+// with the fixture's.
 function tempDir(prefix) {
-  const d = mkdtempSync(join(tmpdir(), prefix));
+  const d = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   roots.push(d);
   return d;
 }
@@ -925,6 +930,58 @@ describe("posting with --yes", () => {
     assertComment(t.gh.posts[0].body, commit, { runDir: t.runDir });
     assertRefuses(() => t.post({ yes: true }), /already posted/);
     assert.equal(commentCalls(t.gh).length, 1);
+  });
+
+  it("posts through a link to the run dir (the harness's `latest`) under the run's own id", () => {
+    const t = setup();
+    // harness.sh: ln -sfn "$RUN_DIR" "$RUNS_ROOT/latest"
+    const latest = join(t.root, "runs", "latest");
+    symlinkSync(t.runDir, latest);
+
+    // The listing names the run the link points to.
+    t.post({ runDir: latest });
+    assert.ok(
+      t.printed[0].startsWith(`Would post the report of ${t.runDir} on #797`),
+      t.printed[0],
+    );
+
+    assert.equal(t.post({ yes: true, runDir: latest }).posted, true);
+    const commit = assertEvidenceCommit(t);
+    assertComment(t.gh.posts[0].body, commit, { runDir: t.runDir });
+    assert.equal(readJson(join(t.runDir, POSTED_FILE)).runId, RUN_ID);
+
+    // The next run of the same issue and commit, posted through the same
+    // link: its own id, ref and comment, never the first run's.
+    const nextName = "20261110-061500";
+    const nextId = `macos-${nextName}`;
+    const next = join(t.root, "runs", nextName);
+    mkdirSync(join(next, "shots"), { recursive: true });
+    writeFileSync(join(next, "report.md"), harnessReport());
+    writeFileSync(join(next, "results.jsonl"), resultsJsonl());
+    for (const [name, data] of Object.entries(DEFAULT_SHOTS)) {
+      writeFileSync(join(next, "shots", name), data);
+    }
+    rmSync(latest);
+    symlinkSync(next, latest);
+
+    const r = t.post({ yes: true, runDir: latest });
+    assert.deepEqual(r, { posted: true, url: COMMENT_URL, upload: true, reason: null });
+    assert.equal(commentCalls(t.gh).length, 2);
+    const nextRef = evidenceRef(ISSUE, SHA, nextId);
+    assert.deepEqual(originRefs(t).sort(), [evidenceRef(ISSUE, SHA, RUN_ID), nextRef].sort());
+    const nextCommit = git(t.origin, ["rev-parse", nextRef]).stdout.trim();
+    assert.notEqual(nextCommit, commit);
+    const body = t.gh.posts[1].body;
+    lineAt(body.split("\n"), `Run \`${nextId}\`, posted by the operator. It never moves the card.`);
+    assert.deepEqual(
+      srcs(body).sort(),
+      [1, 2, 3, 4].map((n) => rawUrl(nextCommit, imagePath(ISSUE, SHA, nextId, n, "png"))).sort(),
+    );
+    assert.equal(readJson(join(next, POSTED_FILE)).runId, nextId);
+    assert.equal(readJson(join(next, UPLOAD_FILE)).commit, nextCommit);
+    // The first run's records are untouched.
+    assert.equal(readJson(join(t.runDir, POSTED_FILE)).runId, RUN_ID);
+    assert.equal(readJson(join(t.runDir, UPLOAD_FILE)).commit, commit);
   });
 
   it("--sha overrides the comment lookup for the ref and the record", () => {

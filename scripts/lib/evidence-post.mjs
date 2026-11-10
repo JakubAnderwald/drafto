@@ -257,7 +257,7 @@ function defaultOcr(logDir, repoRoot) {
  * result object; throws Refusal for anything that stops it.
  */
 export function postMacosRun({
-  runDir,
+  runDir: givenRunDir,
   issue,
   sha = "",
   yes = false,
@@ -270,8 +270,17 @@ export function postMacosRun({
   deps = {},
   print = (s) => process.stdout.write(`${s}\n`),
 }) {
-  const problem = runProblem(runDir, { env });
+  const problem = runProblem(givenRunDir, { env });
   if (problem) throw new Refusal(problem);
+  // The run's own directory, links resolved: its name is the run id, so a
+  // link to it (the harness's `latest`) must never become the id. Otherwise
+  // every run posted through that link would share one ref and one comment.
+  let runDir;
+  try {
+    runDir = nodeFs.realpathSync(givenRunDir);
+  } catch {
+    throw new Refusal(`no run directory at ${givenRunDir}`);
+  }
   if (nodeFs.existsSync(path.join(runDir, POSTED_FILE))) {
     const prior = readUpload(path.join(runDir, POSTED_FILE));
     throw new Refusal(`this run was already posted${prior?.url ? `: ${prior.url}` : ""}`);
