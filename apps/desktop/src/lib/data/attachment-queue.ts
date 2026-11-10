@@ -299,21 +299,28 @@ export async function processPendingUploads(): Promise<UploadResult> {
     let storageFull = 0;
 
     for (const attachment of queued) {
-      // Flip back to "pending" (and clear any prior error) so the UI reads
-      // "Pending" during the retry attempt rather than "Failed".
-      if (attachment.uploadStatus === "failed") {
-        await database.write(async () => {
-          await attachment.update((record) => {
-            record.uploadStatus = "pending";
-            record.uploadError = null;
+      try {
+        // Flip back to "pending" (and clear any prior error) so the UI reads
+        // "Pending" during the retry attempt rather than "Failed".
+        if (attachment.uploadStatus === "failed") {
+          await database.write(async () => {
+            await attachment.update((record) => {
+              record.uploadStatus = "pending";
+              record.uploadError = null;
+            });
           });
-        });
-      }
+        }
 
-      if (await uploadQueuedAttachment(attachment)) {
-        uploaded += 1;
-      } else if (attachment.uploadStatus === "quota_exceeded") {
-        storageFull += 1;
+        if (await uploadQueuedAttachment(attachment)) {
+          uploaded += 1;
+        } else if (attachment.uploadStatus === "quota_exceeded") {
+          storageFull += 1;
+        }
+      } catch (err) {
+        // A local write for this attachment failed, so it stays queued for the next run.
+        // The rest of the queue still goes, and the counts so far survive: a quota
+        // refusal already recorded must still reach the caller, which reports it.
+        console.warn(`Failed to process queued attachment ${attachment.fileName}:`, err);
       }
     }
 

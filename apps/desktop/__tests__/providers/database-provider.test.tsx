@@ -22,6 +22,7 @@ import {
   AUTO_SYNC_DEBOUNCE_MS,
   DatabaseProvider,
   PENDING_REFRESH_DEBOUNCE_MS,
+  STORAGE_FULL_USAGE_TIMEOUT_MS,
   useDatabase,
 } from "@/providers/database-provider";
 
@@ -1000,6 +1001,7 @@ describe("DatabaseProvider storage-full alert (issue #794)", () => {
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     jest.restoreAllMocks();
   });
 
@@ -1029,6 +1031,27 @@ describe("DatabaseProvider storage-full alert (issue #794)", () => {
         STORAGE_FULL_ALERT_TITLE,
         storageFullMessage(undefined, undefined),
       ),
+    );
+  });
+
+  it("alerts without the numbers when reading the usage stalls", async () => {
+    jest.useFakeTimers();
+    // A request that never settles.
+    mockFetchStorageUsage.mockReturnValue(new Promise(() => {}));
+    mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, storageFull: 1 });
+
+    renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(mockFetchStorageUsage).toHaveBeenCalledTimes(1));
+    expect(Alert.alert).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(STORAGE_FULL_USAGE_TIMEOUT_MS);
+    });
+
+    expect(Alert.alert).toHaveBeenCalledTimes(1);
+    expect(Alert.alert).toHaveBeenCalledWith(
+      STORAGE_FULL_ALERT_TITLE,
+      storageFullMessage(undefined, undefined),
     );
   });
 

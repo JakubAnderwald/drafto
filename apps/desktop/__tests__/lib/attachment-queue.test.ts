@@ -493,6 +493,32 @@ describe("processPendingUploads", () => {
       expect(mockRemove).not.toHaveBeenCalled();
     });
 
+    it("keeps a refusal counted, and the queue going, when a later attachment's local write fails", async () => {
+      const refused = makeLiveAttachment({ id: "att-refused" });
+      const broken = makeLiveAttachment({ id: "att-broken", uploadStatus: "failed" });
+      broken.update = jest.fn().mockRejectedValue(new Error("disk I/O error"));
+      const fits = makeLiveAttachment({ id: "att-fits" });
+      mockQuery.mockReturnValue({
+        fetch: jest.fn().mockResolvedValue([refused, broken, fits]),
+      });
+      mockDatabaseGet.mockReturnValue({
+        query: (...args: unknown[]) => mockQuery(...args),
+      });
+      (RNFS.readFile as jest.Mock).mockResolvedValue("aGVsbG8=");
+      // The first pre-check refuses; the broken one never reads; the last one fits.
+      mockFetchStorageUsage.mockResolvedValueOnce(OVER_QUOTA).mockResolvedValue(UNDER_QUOTA);
+      mockUpload.mockResolvedValue({ error: null });
+      mockUpsert.mockResolvedValue({ error: null });
+
+      const result = await processPendingUploads();
+
+      expect(result).toEqual({ uploaded: 1, storageFull: 1 });
+      expect(refused.uploadStatus).toBe("quota_exceeded");
+      // Its write failed, so it is still queued for the next run.
+      expect(broken.uploadStatus).toBe("failed");
+      expect(fits.uploadStatus).toBe("uploaded");
+    });
+
     it("skips the pre-check for an unlimited quota", async () => {
       const attachment = makeLiveAttachment();
       queue(attachment);

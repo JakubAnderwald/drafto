@@ -5,6 +5,7 @@ import { Q } from "@nozbe/watermelondb";
 import { hasUnsyncedChanges } from "@nozbe/watermelondb/sync";
 import NetInfo from "@react-native-community/netinfo";
 import { hasLocalEdit, storageFullMessage } from "@drafto/shared";
+import type { StorageUsage } from "@drafto/shared";
 
 import { database } from "@/db";
 import { syncDatabase, SyncNetworkError } from "@/db/sync";
@@ -71,12 +72,31 @@ function describeSyncError(err: unknown): string {
 }
 
 /**
+ * How long the storage-full alert waits for the usage it quotes. A slower read (a
+ * stalled request) doesn't hold the alert back: it shows without the numbers.
+ */
+export const STORAGE_FULL_USAGE_TIMEOUT_MS = 5_000;
+
+/** The user's storage usage, or null when it can't be read within `timeoutMs`. */
+async function readStorageUsageWithin(timeoutMs: number): Promise<StorageUsage | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), timeoutMs);
+  });
+  try {
+    return await Promise.race([fetchStorageUsage(), timedOut]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Tells the user that uploads were refused for their storage quota (issue #794). The
  * attachments stay "quota_exceeded" and are never retried, so this fires once per refusal.
  * The session can end while the usage is read, and a stale pass reports nothing.
  */
 async function reportStorageFull(isCurrentSession: () => boolean): Promise<void> {
-  const usage = await fetchStorageUsage();
+  const usage = await readStorageUsageWithin(STORAGE_FULL_USAGE_TIMEOUT_MS);
   if (!isCurrentSession()) return;
   showStorageFullAlert(storageFullMessage(usage?.usedBytes, usage?.quotaBytes));
 }
