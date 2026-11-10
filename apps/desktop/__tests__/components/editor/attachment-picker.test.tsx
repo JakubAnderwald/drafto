@@ -3,7 +3,7 @@ import { DEFAULT_STORAGE_QUOTA_BYTES, storageFullMessage } from "@drafto/shared"
 
 import { render, fireEvent, waitFor } from "../../helpers/test-utils";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
-import { resetStorageFullAlert, STORAGE_FULL_ALERT_TITLE } from "@/lib/storage-full-alert";
+import { STORAGE_FULL_ALERT_TITLE } from "@/lib/storage-full-alert";
 
 const mockPickImage = jest.fn();
 const mockQueueAttachment = jest.fn();
@@ -45,7 +45,6 @@ function makeAttachment(overrides: Record<string, unknown> = {}) {
 describe("AttachmentPicker storage quota (issue #794)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    resetStorageFullAlert();
     mockIsConnected = true;
     mockPickImage.mockResolvedValue(FILE);
     mockSync.mockResolvedValue(undefined);
@@ -122,7 +121,7 @@ describe("AttachmentPicker storage quota (issue #794)", () => {
     expect(mockSync).not.toHaveBeenCalled();
   });
 
-  it("alerts, and doesn't insert the attachment, when its upload is refused for the quota", async () => {
+  it("doesn't insert the attachment, and leaves the alert to the provider, when its upload is refused for the quota", async () => {
     const message = storageFullMessage(QUOTA, QUOTA);
     const attachment = makeAttachment();
     mockQueueAttachment.mockResolvedValue(attachment);
@@ -136,9 +135,11 @@ describe("AttachmentPicker storage quota (issue #794)", () => {
 
     fireEvent.press(utils.getByLabelText("Attach image"));
 
-    await waitFor(() =>
-      expect(Alert.alert).toHaveBeenCalledWith(STORAGE_FULL_ALERT_TITLE, message),
-    );
+    await waitFor(() => expect(mockSync).toHaveBeenCalled());
+    // The buttons come back once the pick has finished.
+    await waitFor(() => expect(utils.getByLabelText("Attach image")).toBeTruthy());
     expect(onAttachmentReady).not.toHaveBeenCalled();
+    // DatabaseProvider alerts for the sync's refusals, so the picker adds no second one.
+    expect(Alert.alert).not.toHaveBeenCalled();
   });
 });

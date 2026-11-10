@@ -3,10 +3,11 @@ import { Alert } from "react-native";
 export const STORAGE_FULL_ALERT_TITLE = "Storage Full";
 
 /**
- * One refusal can reach two reporters at once: the attachment picker, after the upload
- * it started, and the database provider, which counts every refusal of a sync's upload
- * run. Within this window a second storage-full alert is dropped, so the user dismisses
- * one sheet per refusal.
+ * The database provider is the only reporter of refused uploads: each pass of a sync
+ * run alerts for the refusals its upload run counted, the attachment picker's own
+ * included. A follow-up pass (such as the rerun a second pick asks for) can refuse
+ * another attachment moments later. Within this window a second storage-full alert is
+ * dropped, so the user dismisses one sheet for a burst of refusals.
  */
 export const STORAGE_FULL_ALERT_DEDUPE_MS = 3_000;
 

@@ -3,7 +3,7 @@ import { View, Text, Pressable, StyleSheet, ActivityIndicator, Alert } from "rea
 import { storageFullMessage, wouldExceedQuota } from "@drafto/shared";
 
 import { fetchStorageUsage, pickImage, pickDocument, queueAttachment } from "@/lib/data";
-import { STORAGE_FULL_ALERT_TITLE, showStorageFullAlert } from "@/lib/storage-full-alert";
+import { STORAGE_FULL_ALERT_TITLE } from "@/lib/storage-full-alert";
 import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
@@ -56,8 +56,8 @@ export function AttachmentPicker({ noteId, onAttachmentReady }: AttachmentPicker
 
         if (attachment.isStorageFull) {
           // Refused for the quota: it never reaches the server and is never retried,
-          // so the note doesn't reference it.
-          showStorageFullAlert(attachment.uploadError ?? storageFullMessage(undefined, undefined));
+          // so the note doesn't reference it. DatabaseProvider owns the alert: the
+          // sync's upload run counted this refusal and reported it.
           return;
         }
       }

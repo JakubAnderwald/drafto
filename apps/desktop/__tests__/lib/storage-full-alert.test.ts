@@ -23,7 +23,7 @@ describe("showStorageFullAlert", () => {
     expect(Alert.alert).toHaveBeenCalledWith(STORAGE_FULL_ALERT_TITLE, "Storage full: test");
   });
 
-  it("drops a second alert for the same refusal, then shows the next one", () => {
+  it("drops a second alert within the window, then shows the next one", () => {
     showStorageFullAlert("first");
     showStorageFullAlert("second");
     expect(Alert.alert).toHaveBeenCalledTimes(1);
