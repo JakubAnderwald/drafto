@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { act } from "react";
+import { act, StrictMode } from "react";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
@@ -805,6 +805,14 @@ describe("AppShell", () => {
       expect(screen.getByText("My First Note")).toBeInTheDocument();
     });
 
+    // Open the note first: a failed delete must leave it selected.
+    await act(async () => {
+      await user.click(screen.getByText("My First Note"));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("note-item-active")).toHaveTextContent("My First Note");
+    });
+
     // Mock a network error on DELETE
     mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
       if (options?.method === "DELETE") {
@@ -814,7 +822,12 @@ describe("AppShell", () => {
         return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotebooks) });
       }
       if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
-        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotes) });
+        // A fresh array, like a real response: the list only adopts a refetch whose
+        // data differs by reference from the last one it was given.
+        return Promise.resolve({ ok: true, json: () => Promise.resolve([...mockNotes]) });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notes\//)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNote) });
       }
       return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
     });
@@ -830,7 +843,442 @@ describe("AppShell", () => {
       expect(consoleSpy).toHaveBeenCalledWith("Failed to delete note:", expect.any(Error));
     });
 
+    // The refresh brings the note back, and it is still the selected one: the
+    // selection only moves once a delete succeeds.
+    await waitFor(() => {
+      expect(screen.getByTestId("note-item-active")).toHaveTextContent("My First Note");
+      expect(screen.getByLabelText("Note title")).toHaveValue("My First Note");
+    });
+
     consoleSpy.mockRestore();
+  });
+
+  // #461: deleting the open note used to select the next one at once, which refetched
+  // the list while the DELETE was still in flight. A list served before the DELETE
+  // committed brought the note back, and the success path never refreshed, so it
+  // stayed as a zombie row. Every test here renders in StrictMode, which runs state
+  // updaters twice.
+  describe("removing the open note waits for the server", () => {
+    interface ListRow {
+      id: string;
+      title: string;
+      updated_at: string;
+    }
+
+    interface HeldRequest {
+      /** The server applies the change and answers 200. */
+      release: () => void;
+      /** The server changes nothing and answers 500. */
+      fail: () => void;
+      /** The server changes nothing and answers 401: the session expired. */
+      expireSession: () => void;
+    }
+
+    const CREATED_AT = "2026-11-01T10:00:00.000Z";
+
+    // The fake server's rows per notebook. A DELETE or PATCH is held until the test
+    // settles it, and only changes the rows then, so a list fetched while it is held
+    // still contains the note.
+    let server: Record<string, ListRow[]>;
+    // List fetches and held requests, in the order they reached the server.
+    let log: string[];
+    // The editor's note fetches, kept apart from `log`: each one means the editor
+    // loaded a note, or re-suspended and lost its caret and unsaved edits (ADR-0032).
+    let noteFetches: string[];
+    let held: HeldRequest[];
+
+    function findNote(noteId: string): { notebookId: string; row: ListRow } | null {
+      for (const [notebookId, rows] of Object.entries(server)) {
+        const row = rows.find((r) => r.id === noteId);
+        if (row) return { notebookId, row };
+      }
+      return null;
+    }
+
+    beforeEach(() => {
+      log = [];
+      noteFetches = [];
+      held = [];
+      server = {
+        "nb-1": [
+          ...mockNotes.map((note) => ({ ...note })),
+          { id: "note-3", title: "My Third Note", updated_at: CREATED_AT },
+        ],
+        "nb-2": [],
+      };
+
+      const respond = (body: unknown, status = 200) =>
+        Promise.resolve({
+          ok: status >= 200 && status < 300,
+          status,
+          json: () => Promise.resolve(body),
+        });
+
+      function hold(label: string, apply: () => void) {
+        log.push(`${label} sent`);
+        return new Promise((resolve) => {
+          held.push({
+            release: () => {
+              apply();
+              log.push(`${label} done`);
+              resolve(respond({}));
+            },
+            fail: () => {
+              log.push(`${label} failed`);
+              resolve(respond({ error: "Internal error" }, 500));
+            },
+            expireSession: () => {
+              log.push(`${label} unauthorized`);
+              resolve(respond({ error: "Unauthorized" }, 401));
+            },
+          });
+        });
+      }
+
+      mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+        if (url === "/api/notebooks") return respond(mockNotebooks);
+
+        const list = /^\/api\/notebooks\/([^/]+)\/notes$/.exec(url);
+        if (list) {
+          log.push(`GET ${list[1]} list`);
+          return respond(server[list[1]].map((row) => ({ ...row })));
+        }
+
+        const noteMatch = /^\/api\/notes\/([^/]+)$/.exec(url);
+        const found = noteMatch ? findNote(noteMatch[1]) : null;
+        if (found) {
+          const { notebookId, row } = found;
+          if (init?.method === "DELETE") {
+            return hold(`DELETE ${row.id}`, () => {
+              server[notebookId] = server[notebookId].filter((r) => r.id !== row.id);
+            });
+          }
+          if (init?.method === "PATCH") {
+            const { notebook_id: target } = JSON.parse(String(init.body)) as {
+              notebook_id: string;
+            };
+            return hold(`PATCH ${row.id}`, () => {
+              server[notebookId] = server[notebookId].filter((r) => r.id !== row.id);
+              server[target] = [row, ...server[target]];
+            });
+          }
+          noteFetches.push(row.id);
+          return respond({ ...row, content: null, created_at: CREATED_AT, is_trashed: false });
+        }
+
+        return respond({}, 404);
+      });
+    });
+
+    const notesPane = () => within(screen.getByTestId("notes-pane"));
+
+    /** What reached the server from `entry` on. */
+    const logFrom = (entry: string) => log.slice(log.indexOf(entry));
+
+    async function renderAndOpen(user: ReturnType<typeof userEvent.setup>, title: string) {
+      await act(async () => {
+        render(
+          <StrictMode>
+            <AppShell />
+          </StrictMode>,
+        );
+      });
+      await waitFor(() => {
+        expect(notesPane().getByText(title)).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        await user.click(notesPane().getByText(title));
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId("note-item-active")).toHaveTextContent(title);
+        expect(screen.getByLabelText("Note title")).toHaveValue(title);
+      });
+    }
+
+    async function chooseAction(
+      user: ReturnType<typeof userEvent.setup>,
+      title: string,
+      action: string,
+    ) {
+      const heldBefore = held.length;
+      await act(async () => {
+        await user.click(screen.getByLabelText(`Actions for ${title}`));
+      });
+      await act(async () => {
+        await user.click(screen.getByRole("menuitem", { name: action }));
+      });
+      await waitFor(() => {
+        expect(held).toHaveLength(heldBefore + 1);
+      });
+    }
+
+    async function expectOpen(title: string) {
+      await waitFor(() => {
+        expect(screen.getByTestId("note-item-active")).toHaveTextContent(title);
+        expect(screen.getByLabelText("Note title")).toHaveValue(title);
+      });
+    }
+
+    it("never lets a list fetched before the DELETE landed bring the note back", async () => {
+      const user = userEvent.setup();
+      await renderAndOpen(user, "My First Note");
+
+      await chooseAction(user, "My First Note", "Delete");
+
+      // The row goes at once, and nothing refetches the list while the DELETE is held:
+      // the server would still return the note.
+      expect(notesPane().queryByText("My First Note")).not.toBeInTheDocument();
+      expect(logFrom("DELETE note-1 sent")).toEqual(["DELETE note-1 sent"]);
+      // The editor keeps the note open until the server confirms the delete.
+      expect(screen.getByLabelText("Note title")).toHaveValue("My First Note");
+
+      await act(async () => {
+        held[0].release();
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId("note-item-active")).toHaveTextContent("My Second Note");
+        expect(screen.getByLabelText("Note title")).toHaveValue("My Second Note");
+      });
+      expect(notesPane().queryByText("My First Note")).not.toBeInTheDocument();
+      // One list fetch, and only once the server has applied the delete.
+      expect(logFrom("DELETE note-1 sent")).toEqual([
+        "DELETE note-1 sent",
+        "DELETE note-1 done",
+        "GET nb-1 list",
+      ]);
+      // The editor loads the next note once, and never refetches the deleted one.
+      expect(noteFetches).toEqual(["note-1", "note-2"]);
+    });
+
+    it("drops a deleted note that a row click's refetch brought back", async () => {
+      const user = userEvent.setup();
+      await renderAndOpen(user, "My First Note");
+      await chooseAction(user, "My First Note", "Delete");
+
+      // Opening another note refetches the list while the DELETE is still held, so
+      // the response still contains the deleted note. The note picked is not the one
+      // the delete would select next ("My Second Note"), so only keeping the user's
+      // pick explains which note ends up open.
+      await act(async () => {
+        await user.click(notesPane().getByText("My Third Note"));
+      });
+      await waitFor(() => {
+        expect(notesPane().getByText("My First Note")).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        held[0].release();
+      });
+
+      await waitFor(() => {
+        expect(notesPane().queryByText("My First Note")).not.toBeInTheDocument();
+      });
+      // The note the user picked while the DELETE was held stays selected, and the
+      // refresh after the DELETE leaves its editor alone.
+      await expectOpen("My Third Note");
+      expect(logFrom("DELETE note-1 done")).toEqual(["DELETE note-1 done", "GET nb-1 list"]);
+      expect(noteFetches).toEqual(["note-1", "note-3"]);
+    });
+
+    it("keeps the open note when a different note is deleted", async () => {
+      const user = userEvent.setup();
+      await renderAndOpen(user, "My Third Note");
+
+      await chooseAction(user, "My First Note", "Delete");
+      await act(async () => {
+        held[0].release();
+      });
+
+      await waitFor(() => {
+        expect(logFrom("DELETE note-1 sent")).toEqual([
+          "DELETE note-1 sent",
+          "DELETE note-1 done",
+          "GET nb-1 list",
+        ]);
+      });
+      await expectOpen("My Third Note");
+      expect(notesPane().queryByText("My First Note")).not.toBeInTheDocument();
+      // The list refresh doesn't reach the editor: refetching the open note would
+      // re-suspend it and drop the caret and any edit not yet saved (ADR-0032).
+      expect(noteFetches).toEqual(["note-3"]);
+    });
+
+    // Removing notes faster than the server answers: the open note, then the note
+    // that would be selected after it. The next selection must skip a note whose own
+    // DELETE is in flight or done, whichever DELETE lands first, and the list must
+    // not be refetched until both have landed.
+    it.each([
+      // Note 1 lands first: the next selection skips note 2, whose DELETE is held.
+      { order: "in order", first: 0, second: 1, openBetween: "My Third Note" },
+      // Note 2 lands first: note 1 is still open, so the selection stays on it.
+      { order: "out of order", first: 1, second: 0, openBetween: "My First Note" },
+    ])(
+      "skips a note being deleted when overlapping deletes land $order",
+      async ({ first, second, openBetween }) => {
+        const user = userEvent.setup();
+        await renderAndOpen(user, "My First Note");
+
+        await chooseAction(user, "My First Note", "Delete");
+        await chooseAction(user, "My Second Note", "Delete");
+        expect(notesPane().queryByText("My Second Note")).not.toBeInTheDocument();
+
+        await act(async () => {
+          held[first].release();
+        });
+        // Nothing refetches the list while the other DELETE is held.
+        const listFetches = () =>
+          logFrom("DELETE note-1 sent").filter((entry) => entry.startsWith("GET"));
+        expect(listFetches()).toEqual([]);
+        await waitFor(() => {
+          expect(screen.getByLabelText("Note title")).toHaveValue(openBetween);
+        });
+
+        await act(async () => {
+          held[second].release();
+        });
+
+        await expectOpen("My Third Note");
+        expect(notesPane().queryByText("My First Note")).not.toBeInTheDocument();
+        expect(notesPane().queryByText("My Second Note")).not.toBeInTheDocument();
+        // One list fetch, after both DELETEs landed.
+        expect(listFetches()).toEqual(["GET nb-1 list"]);
+        expect(log.at(-1)).toBe("GET nb-1 list");
+        // The editor loads note 3 once: the list refresh after the second DELETE
+        // doesn't refetch it.
+        expect(noteFetches).toEqual(["note-1", "note-3"]);
+      },
+    );
+
+    it("clears the selection when the deleted note was the last one", async () => {
+      server["nb-1"] = [{ id: "note-only", title: "Only Note", updated_at: CREATED_AT }];
+      const user = userEvent.setup();
+      await renderAndOpen(user, "Only Note");
+
+      await chooseAction(user, "Only Note", "Delete");
+      expect(notesPane().getByText("No notes yet. Create one to get started.")).toBeInTheDocument();
+      // The selection only clears once the server confirms the delete.
+      expect(screen.getByLabelText("Note title")).toHaveValue("Only Note");
+
+      await act(async () => {
+        held[0].release();
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Select a note")).toBeInTheDocument();
+      });
+      expect(screen.queryByLabelText("Note title")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("note-item-active")).not.toBeInTheDocument();
+      await waitFor(() => {
+        expect(
+          notesPane().getByText("No notes yet. Create one to get started."),
+        ).toBeInTheDocument();
+      });
+      expect(logFrom("DELETE note-only sent")).toEqual([
+        "DELETE note-only sent",
+        "DELETE note-only done",
+        "GET nb-1 list",
+      ]);
+      expect(noteFetches).toEqual(["note-only"]);
+    });
+
+    it("brings the note back still selected when the server rejects the delete", async () => {
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const user = userEvent.setup();
+      await renderAndOpen(user, "My First Note");
+      await chooseAction(user, "My First Note", "Delete");
+      expect(notesPane().queryByText("My First Note")).not.toBeInTheDocument();
+
+      await act(async () => {
+        held[0].fail();
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId("note-item-active")).toHaveTextContent("My First Note");
+        expect(screen.getByLabelText("Note title")).toHaveValue("My First Note");
+      });
+      expect(notesPane().getByText("My Second Note")).toBeInTheDocument();
+      expect(consoleSpy).toHaveBeenCalledWith(new Error("Failed to delete note: 500"));
+      expect(logFrom("DELETE note-1 sent")).toEqual([
+        "DELETE note-1 sent",
+        "DELETE note-1 failed",
+        "GET nb-1 list",
+      ]);
+      // The note never left the editor, so the refresh doesn't refetch it.
+      expect(noteFetches).toEqual(["note-1"]);
+      consoleSpy.mockRestore();
+    });
+
+    it("leaves the selection and the list alone when the session expired", async () => {
+      // jsdom reports the redirect to /login as an unimplemented navigation.
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const user = userEvent.setup();
+      await renderAndOpen(user, "My First Note");
+      await chooseAction(user, "My First Note", "Delete");
+
+      await act(async () => {
+        held[0].expireSession();
+      });
+
+      // The page is on its way to the sign-in screen: nothing is selected or
+      // refetched with the expired session.
+      expect(screen.getByLabelText("Note title")).toHaveValue("My First Note");
+      expect(logFrom("DELETE note-1 sent")).toEqual([
+        "DELETE note-1 sent",
+        "DELETE note-1 unauthorized",
+      ]);
+      consoleSpy.mockRestore();
+    });
+
+    it("selects the next note only after a move lands, then refetches the list once", async () => {
+      const user = userEvent.setup();
+      await renderAndOpen(user, "My First Note");
+
+      await chooseAction(user, "My First Note", "Work");
+
+      expect(notesPane().queryByText("My First Note")).not.toBeInTheDocument();
+      expect(logFrom("PATCH note-1 sent")).toEqual(["PATCH note-1 sent"]);
+      expect(screen.getByLabelText("Note title")).toHaveValue("My First Note");
+
+      await act(async () => {
+        held[0].release();
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId("note-item-active")).toHaveTextContent("My Second Note");
+        expect(screen.getByLabelText("Note title")).toHaveValue("My Second Note");
+      });
+      expect(notesPane().queryByText("My First Note")).not.toBeInTheDocument();
+      expect(logFrom("PATCH note-1 sent")).toEqual([
+        "PATCH note-1 sent",
+        "PATCH note-1 done",
+        "GET nb-1 list",
+      ]);
+      expect(server["nb-2"].map((row) => row.id)).toEqual(["note-1"]);
+      expect(noteFetches).toEqual(["note-1", "note-2"]);
+    });
+
+    it("keeps the open note loaded when a different note is moved", async () => {
+      const user = userEvent.setup();
+      await renderAndOpen(user, "My Third Note");
+
+      await chooseAction(user, "My First Note", "Work");
+      await act(async () => {
+        held[0].release();
+      });
+
+      await waitFor(() => {
+        expect(logFrom("PATCH note-1 sent")).toEqual([
+          "PATCH note-1 sent",
+          "PATCH note-1 done",
+          "GET nb-1 list",
+        ]);
+      });
+      await expectOpen("My Third Note");
+      expect(notesPane().queryByText("My First Note")).not.toBeInTheDocument();
+      expect(noteFetches).toEqual(["note-3"]);
+    });
   });
 
   it("handles failed restore (non-ok response) with rollback", async () => {
