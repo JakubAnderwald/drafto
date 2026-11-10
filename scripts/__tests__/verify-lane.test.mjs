@@ -34,7 +34,10 @@ import {
   UNATTENDED_ENV,
   assertSafeClaudeArgs,
   buildClaudeArgs,
+  CURL_CFG,
+  SIGNED_OUT_CURL_CFG,
   buildPreviewCurlArgs,
+  bypassFact,
   bypassFileProblem,
   classifyRun,
   countToolUses,
@@ -52,6 +55,7 @@ import {
   runStop,
   supervisedEnv,
   worktreePathFor,
+  writeCurlConfigs,
 } from "../lib/verify-lane.mjs";
 import {
   attachVerifyRun,
@@ -66,7 +70,7 @@ import {
   setIssueField,
 } from "../lib/factory-state.mjs";
 import { buildFactoryVerifyShellBundle } from "../lib/factory-bundle.mjs";
-import { writeGuardFiles } from "../lib/verify-guard.mjs";
+import { PRIVATE_FILE_NAMES, writeGuardFiles } from "../lib/verify-guard.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LANE = path.resolve(HERE, "..", "lib", "verify-lane.mjs");
@@ -886,6 +890,18 @@ describe("preview-curl argument check", () => {
     no(["-H"], /needs a value/);
   });
 
+  it("takes --signed-out as its own option, never curl's, and still refuses cookies", () => {
+    const r = ok(["--signed-out", "-s", "-H", "Sec-Fetch-Mode: cors", "/api/notebooks"]);
+    assert.equal(r.signedOut, true);
+    assert.deepEqual(r.args, ["-s", "-H", "Sec-Fetch-Mode: cors"]);
+    assert.equal(r.url, `${ORIGIN}/api/notebooks`);
+    assert.equal(ok(["/api/notebooks"]).signedOut, false);
+    no(["--signed-out=1", "/x"], /--signed-out/);
+    no(["--signed-out", "-b", "a=b", "/x"], /-b/);
+    no(["--signed-out", "--cookie", "a=b", "/x"], /--cookie/);
+    no(["--signed-out", "-H", "Cookie: a=b", "/x"], /isn't allowed/);
+  });
+
   it("refuses everything when the run has no preview", () => {
     assert.equal(buildPreviewCurlArgs(["/x"], { origin: "" }).ok, false);
   });
@@ -920,6 +936,35 @@ describe("preview-curl argument check", () => {
     assert.throws(() =>
       curlConfigText({ bypassSecret: 'x"\nproxy = "http://evil', cookieJar: "/j" }),
     );
+  });
+
+  it("writes a signed-out config with the same bypass and no cookie jar, both mode 600", () => {
+    const signedOut = curlConfigText({ bypassSecret: BYPASS_SECRET });
+    assert.ok(!/cookie/.test(signedOut), signedOut);
+    assert.match(signedOut, new RegExp(`header = "${BYPASS_HEADER}: ${BYPASS_SECRET}"`));
+    assert.match(signedOut, /proto = "=https"/);
+
+    const privateDir = mkdtempSync(path.join(tmp, "private-"));
+    const { cfg, signedOutCfg } = writeCurlConfigs({ privateDir, bypassSecret: BYPASS_SECRET });
+    assert.equal(cfg, path.join(privateDir, CURL_CFG));
+    assert.equal(signedOutCfg, path.join(privateDir, SIGNED_OUT_CURL_CFG));
+    assert.match(readFileSync(cfg, "utf8"), /cookie-jar = /);
+    assert.ok(!/cookie/.test(readFileSync(signedOutCfg, "utf8")));
+    for (const f of [cfg, signedOutCfg]) assert.equal(statSync(f).mode & 0o777, 0o600, f);
+    // A sign-in Vercel turned away means the bypass doesn't work, so the model
+    // is told it isn't ok and SKIPs signed-out steps instead of reading the
+    // protection wall's 401 as the app's.
+    assert.equal(bypassFact("ok", "protected"), "rejected");
+    assert.equal(bypassFact("ok", "signed-in"), "ok");
+    assert.equal(bypassFact("ok", "signin-busy"), "ok");
+    assert.equal(bypassFact("no-file", null), "no-file");
+    // Every file the lane writes into private/ is one the guard protects by name.
+    for (const name of readdirSync(privateDir)) {
+      assert.ok(
+        PRIVATE_FILE_NAMES.includes(name),
+        `${name} isn't in the guard's PRIVATE_FILE_NAMES`,
+      );
+    }
   });
 });
 
@@ -1565,6 +1610,14 @@ describe("gaps", () => {
       { facts: { bypass: "ok", session: "signed-in" } },
     );
     assert.deepEqual(runGaps({ runDir: runDir() }).gaps, []);
+    // bypassFact's `rejected`: the secret parsed, but Vercel turned it away.
+    write(
+      { previewOrigin: ORIGIN, paths: { bypassFile: secrets.bypass }, laneFacts: { bypass: "ok" } },
+      { facts: { bypass: "rejected", session: "protected" } },
+    );
+    g = runGaps({ runDir: runDir() });
+    assert.equal(g.gaps.length, 1);
+    assert.match(g.gaps[0].reason, /protection-bypass secret was turned away by Vercel/);
   });
 
   it("names a sign-in lease the browser runner held past the wait as the signin-busy token", () => {

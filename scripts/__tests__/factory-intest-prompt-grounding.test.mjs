@@ -4,7 +4,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { RUNNER_TOOLS } from "../lib/browser-guard.mjs";
 import { buildFactoryInTestBundle } from "../lib/factory-bundle.mjs";
+import { buildPreviewCurlArgs } from "../lib/verify-lane.mjs";
 
 // Grounding tests for the In Test scenario writer's prompt. This stage is the
 // only one whose entire product is a comment a human reads before testing by
@@ -261,6 +263,52 @@ describe("In Test prompt — machine contract", () => {
     // extractWebSection in factory-bundle.mjs; any other heading means no run.
     assert.match(flat, /under a heading that is exactly `### Web`, and nothing else does/);
     assert.match(flat, /doable in a browser on the preview alone/);
+  });
+
+  it("keeps DevTools-console and in-page JavaScript steps out of ### Web", () => {
+    // #460's step 6 asked for a fetch() in the DevTools Console; the browser
+    // runner has no javascript_tool (ADR-0051), so it could only SKIP it.
+    assert.match(
+      flat,
+      /Never a step that types code into the DevTools Console or otherwise runs JavaScript in the page/,
+    );
+    assert.match(flat, /so such a step always comes back SKIP/);
+    // What the runner can read stays allowed: RUNNER_TOOLS has both readers.
+    assert.ok(RUNNER_TOOLS.includes("read_console_messages"));
+    assert.ok(RUNNER_TOOLS.includes("read_network_requests"));
+    assert.ok(!RUNNER_TOOLS.includes("javascript_tool"));
+    assert.match(
+      flat,
+      /It can read the console's messages and each request's method, path and status/,
+    );
+  });
+
+  it("puts API-response checks in a ### API section the shell lane runs", () => {
+    assert.match(
+      flat,
+      /`### API`, a heading that is exactly `### API`, inside `## Test scenario`, only when `platforms\.web` is true/,
+    );
+    assert.match(
+      flat,
+      /`vercel curl <path> --deployment <previewUrl> -- <curl flags>` with the status and body it expects/,
+    );
+    assert.match(
+      flat,
+      /each saying whether it runs \*\*signed out\*\*, \*\*signed in\*\* as the test account, or with an API key/,
+    );
+    assert.match(flat, /The factory's shell lane runs this section on the preview \(ADR-0053\)/);
+    // preview-curl refuses `@file` bodies, so the example the writer copies
+    // must be inline and pass the wrapper once translated.
+    assert.match(flat, /Give a request body inline, never as `@file`/);
+    assert.ok(!/--data @body\.json/.test(flat));
+    const translated = buildPreviewCurlArgs(
+      ["-s", "-X", "POST", "--json", '{"jsonrpc":"2.0","id":1,"method":"tools/list"}', "/api/mcp"],
+      { origin: "https://drafto-x-jakubanderwalds-projects.vercel.app" },
+    );
+    assert.equal(translated.ok, true, translated.reason);
+    // #460's terminal cross-check sat in a `##` section of its own, which
+    // extractScenarioSections never hands to a lane.
+    assert.match(flat, /is never run by any lane/);
   });
 
   it("allows noop ONLY on an exact full-SHA match, never on judgement", () => {

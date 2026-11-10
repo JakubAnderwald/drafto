@@ -81,12 +81,17 @@ describe("verify shell prompt — safety rules", () => {
       ["-f", "/x"],
       ["-w", "%{http_code}", "/x"],
       ["-o", "/dev/null", "/x"],
+      ["--signed-out", "/x"],
     ]) {
       assert.equal(buildPreviewCurlArgs(argv, { origin }).ok, true, argv.join(" "));
     }
     assert.match(
       flat,
       /It takes `-X`, `-H`, `-d` \/ `--data-raw` \/ `--json`, `-G`, `-s`, `-S`, `-f`, `-o \/dev\/null` and `-w '%\{http_code\}'`/,
+    );
+    assert.match(
+      flat,
+      /Its own option `--signed-out` sends the request with the bypass but without the session/,
     );
     // The prompt's own example for a body from a file must pass the wrapper.
     assert.match(
@@ -111,6 +116,37 @@ describe("verify shell prompt — safety rules", () => {
     assert.match(flat, /\*\*macOS: `--preflight` only\.\*\*/);
     assert.match(flat, /Never run a scenario script without `--preflight`/);
     assert.match(flat, /ADR-0043/);
+  });
+
+  it("runs ### API and signed-out steps with preview-curl --signed-out", () => {
+    // #460's step 6 expected a signed-out 401 that the lane's session-carrying
+    // preview-curl could never see.
+    assert.match(
+      flat,
+      /run it as `preview-curl <path> <flags>`, adding `--signed-out` when the step runs signed out/,
+    );
+    assert.match(flat, /Every step of the scenario's `### API` section is yours to run this way/);
+    // ...but it does need the bypass: a sign-in Vercel turned away makes it
+    // `rejected` (bypassFact), so the 401 of the protection wall isn't read as
+    // the app's.
+    assert.match(
+      flat,
+      /A signed-out step doesn't need `session` to be `signed-in`, only the bypass to be `ok`/,
+    );
+  });
+
+  it("runs a DevTools-console API check from ### Web as a preview-curl request", () => {
+    // The browser lane has no javascript_tool (ADR-0051), so #460's console
+    // fetch came back SKIP there.
+    assert.match(flat, /`fetch\("\/api\/…"\)` in the DevTools Console is an API step/);
+    assert.match(flat, /`preview-curl -H 'Sec-Fetch-Mode: cors' <path>`/);
+    const origin = "https://drafto-x-jakubanderwalds-projects.vercel.app";
+    const r = buildPreviewCurlArgs(
+      ["--signed-out", "-H", "Sec-Fetch-Mode: cors", "/api/notebooks"],
+      { origin },
+    );
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(r.signedOut, true);
   });
 
   it("leaves Web to the browser lane and device steps to the person", () => {
