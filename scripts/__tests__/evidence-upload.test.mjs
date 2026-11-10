@@ -192,7 +192,7 @@ function browserRun(root, shots) {
     let e;
     if (s.name) {
       writeFileSync(join(evidenceDir, s.name), s.data);
-      e = { copied: s.name };
+      e = { copied: s.name, onOrigin: true };
     } else if (s.copyFailed) {
       e = { copyFailed: "ENOENT: no such file" };
     } else {
@@ -924,7 +924,11 @@ describe("upload publishes one parentless commit on the run's own ref", () => {
       log +
         [link, fake]
           .map((name) =>
-            JSON.stringify({ event: "post", tool: "computer", events: [{ copied: name }] }),
+            JSON.stringify({
+              event: "post",
+              tool: "computer",
+              events: [{ copied: name, onOrigin: true }],
+            }),
           )
           .join("\n") +
         "\n",

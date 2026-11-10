@@ -346,6 +346,25 @@ describe("screenshotMentions", () => {
     assert.deepEqual(screenshotMentions("screenshots 2/3"), [2, 3]);
     assert.deepEqual(screenshotMentions("screenshots 2 & 3"), [2, 3]);
     assert.deepEqual(screenshotMentions("screenshots 2 + 3"), [2, 3]);
+    // A comma before the last word or symbol ("Oxford comma").
+    assert.deepEqual(screenshotMentions("screenshots 1, 2, and 3"), [1, 2, 3]);
+    assert.deepEqual(screenshotMentions("screenshots 1, 2, & 3"), [1, 2, 3]);
+    assert.deepEqual(screenshotMentions("screenshots 3–5, and 7"), [3, 4, 5, 7]);
+    assert.deepEqual(screenshotMentions("screenshot 2, step 4"), [2]);
+  });
+
+  it("reads across line breaks and runs of spaces", () => {
+    assert.deepEqual(screenshotMentions("screenshot\n\n  4"), [4]);
+    assert.deepEqual(screenshotMentions("screenshots 1 ,\t 2"), [1, 2]);
+  });
+
+  it("stays fast on hostile whitespace (no catastrophic backtracking)", () => {
+    const hostile = `${"screenshot" + " ".repeat(20_000) + "x "}`.repeat(5);
+    const t0 = process.hrtime.bigint();
+    assert.deepEqual(screenshotMentions(hostile), []);
+    assert.deepEqual(screenshotMentions(`${hostile} screenshot 3`), []);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(ms < 500, `took ${ms} ms`);
   });
 
   it("reads a range", () => {

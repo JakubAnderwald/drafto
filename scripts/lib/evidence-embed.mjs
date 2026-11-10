@@ -145,14 +145,24 @@ function overflowOf(upload) {
 
 // ── mapping images to steps ─────────────────────────────────────────────────
 
+// Matched against text whose whitespace runs are collapsed to one space (see
+// screenshotMentions), so each " ?" is a single optional character and the
+// match can't backtrack badly on model output full of spaces. A separator may
+// carry a comma first ("1, 2, and 3").
 const MENTION =
-  /\bscreenshots?\b\s*:?\s*(#?\s*\d{1,3}(?!\d)(?:\s*(?:,|&|\+|\/|-|–|—|\band\b|\bto\b|\bthrough\b)\s*#?\s*\d{1,3}(?!\d))*)/gi;
+  /\bscreenshots?\b ?:? ?(#? ?\d{1,3}(?!\d)(?:(?: ?(?:, ?)?(?:&|\+|\/|-|–|—|\band\b|\bto\b|\bthrough\b)| ?,) ?#? ?\d{1,3}(?!\d))*)/gi;
 const RANGE_SEP = /^(?:-|–|—|to|through)$/i;
+// Far more than any table cell; only bounds the work on hostile output.
+const MENTION_SCAN_MAX = 20000;
 
 /** The screenshot numbers <text> mentions ("screenshot 2", "screenshots 3–5, 7"), in order. */
 export function screenshotMentions(text) {
   const out = [];
-  for (const m of String(text ?? "").matchAll(MENTION)) {
+  const flat = String(text ?? "")
+    .slice(0, MENTION_SCAN_MAX * 4)
+    .replace(/\s+/g, " ")
+    .slice(0, MENTION_SCAN_MAX);
+  for (const m of flat.matchAll(MENTION)) {
     const parts = m[1].match(/\d{1,3}|-|–|—|\band\b|\bto\b|\bthrough\b|,|&|\+|\//gi) ?? [];
     let prev = null;
     let range = false;

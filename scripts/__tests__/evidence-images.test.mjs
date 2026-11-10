@@ -24,6 +24,7 @@ import {
   MAX_IMAGE_BYTES,
   MAX_TOTAL_BYTES,
   OCR_TIMEOUT_MS,
+  OFF_ORIGIN_WHY,
   browserManifest,
   checkImage,
   helperOcr,
@@ -594,6 +595,54 @@ describe("evidence-images: browserManifest reads the real guard's decision log",
 });
 
 // ── macosManifest ───────────────────────────────────────────────────────────
+
+describe("evidence-images: browserManifest publishes only shots taken on the preview", () => {
+  const rec = (...events) => JSON.stringify({ event: "post", tool: "computer", events });
+  const NAME = (n) => `screenshot-1792223827264-${n}.jpg`;
+
+  it("keeps the slot but publishes nothing for a copy not seen on the preview's origin", () => {
+    const log = [
+      rec({ copied: NAME(1), onOrigin: true }),
+      // A log from before the guard recorded it.
+      rec({ copied: NAME(2) }),
+      rec({ copied: NAME(3), onOrigin: false }),
+      rec({ copied: NAME(4), onOrigin: "true" }),
+      rec({ copied: NAME(5), onOrigin: true }),
+    ].join("\n");
+    assert.deepEqual(browserManifest(log), [
+      { slot: 1, name: NAME(1), missing: null },
+      { slot: 2, name: null, missing: OFF_ORIGIN_WHY },
+      { slot: 3, name: null, missing: OFF_ORIGIN_WHY },
+      { slot: 4, name: null, missing: OFF_ORIGIN_WHY },
+      { slot: 5, name: NAME(5), missing: null },
+    ]);
+  });
+
+  it("drops every copy in a call that also lost or quarantined a tab", () => {
+    for (const drift of [{ quarantined: 7 }, { unknown: 7 }, { ambiguous: 7 }, { gone: 7 }]) {
+      const log = [
+        rec({ copied: NAME(1), onOrigin: true }, drift),
+        rec(drift, { copied: NAME(2), onOrigin: true }),
+        rec({ copied: NAME(3), onOrigin: true }),
+      ].join("\n");
+      assert.deepEqual(
+        browserManifest(log),
+        [
+          { slot: 1, name: null, missing: OFF_ORIGIN_WHY },
+          { slot: 2, name: null, missing: OFF_ORIGIN_WHY },
+          { slot: 3, name: NAME(3), missing: null },
+        ],
+        JSON.stringify(drift),
+      );
+    }
+  });
+
+  it("still says why for an unexpected name before anything else", () => {
+    assert.deepEqual(browserManifest(rec({ copied: "notes.png", onOrigin: false })), [
+      { slot: 1, name: null, missing: "unexpected file name" },
+    ]);
+  });
+});
 
 describe("evidence-images: macosManifest", () => {
   let tmp;

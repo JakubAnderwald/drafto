@@ -628,6 +628,18 @@ describe("screenshots in the report (ADR-0072)", () => {
     assert.equal(imgCount(body), 3);
   });
 
+  it("closes a fence the report left open, so the screenshots and markers still render", () => {
+    const report = `${SHOTS_REPORT}\n\n\`\`\`\nconsole output, never closed`;
+    const body = renderIntestComment({ ...base, report, images: upload() });
+    const l = lines(body);
+    const heading = l.indexOf("**Screenshots**");
+    assert.ok(heading !== -1);
+    const fencesBefore = l.slice(0, heading).filter((x) => x.startsWith("```")).length;
+    assert.equal(fencesBefore % 2, 0, "no fence is open above the screenshots");
+    assert.equal(imgCount(body), 3);
+    assert.deepEqual(l.slice(-2), [REPORT_MARKER, runShaMarker(SHA)]);
+  });
+
   it("shows the published footer instead of the Mac-mini line, and still ends with the markers", () => {
     const body = renderIntestComment({ ...base, report: SHOTS_REPORT, images: upload() });
     const l = lines(body);

@@ -65,6 +65,14 @@ export const CAP_WHY = `over the per-comment cap (${MAX_IMAGES} images / ${
 
 // ── manifests ───────────────────────────────────────────────────────────────
 
+// Guard events that mean a tab left the preview, or the guard lost track of
+// where one was, during the call that logged them.
+const DRIFT_EVENTS = Object.freeze(["quarantined", "unknown", "ambiguous", "gone"]);
+// A copy the guard didn't see taken on the preview's origin: a neutral page
+// (the new-tab page), a page off the preview, or a log from before the guard
+// recorded it (ADR-0072).
+export const OFF_ORIGIN_WHY = "taken while the tab wasn't on the preview";
+
 /**
  * A browser run's screenshots, from its session's decision log: one entry per
  * screenshot event, in the order the guard logged them. Slot k (from 1) is
@@ -83,15 +91,19 @@ export function browserManifest(logText) {
       continue;
     }
     if (rec?.event !== "post" || !Array.isArray(rec.events)) continue;
+    // A call that lost track of a tab, or found one off the preview, may have
+    // screenshotted a page that isn't the preview's: none of its shots count.
+    const drifted = rec.events.some(
+      (e) => e !== null && typeof e === "object" && DRIFT_EVENTS.some((k) => Object.hasOwn(e, k)),
+    );
     for (const e of rec.events) {
       if (e === null || typeof e !== "object") continue;
       if (Object.hasOwn(e, "copied")) {
         const name = typeof e.copied === "string" ? e.copied : "";
-        out.push(
-          GUARD_COPY_NAME.test(name)
-            ? { slot: out.length + 1, name, missing: null }
-            : { slot: out.length + 1, name: null, missing: "unexpected file name" },
-        );
+        let missing = null;
+        if (!GUARD_COPY_NAME.test(name)) missing = "unexpected file name";
+        else if (e.onOrigin !== true || drifted) missing = OFF_ORIGIN_WHY;
+        out.push({ slot: out.length + 1, name: missing ? null : name, missing });
       } else if (Object.hasOwn(e, "copyFailed")) {
         out.push({ slot: out.length + 1, name: null, missing: "the guard couldn't copy it" });
       } else if (Object.hasOwn(e, "screenshotRejected")) {

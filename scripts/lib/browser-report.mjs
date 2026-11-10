@@ -78,6 +78,7 @@ import path from "node:path";
 
 import { evidenceSection, readUpload } from "./evidence-embed.mjs";
 import { isMainModule } from "./is-main.mjs";
+import { closeFences } from "./markdown-fence.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 
 export const REPORT_MARKER = "<!-- drafto-factory-browser-report -->";
@@ -429,7 +430,9 @@ function renderRunReport(run, { header, okNote, notOkNote, markers, embed = fals
 
   // A stopped run's report is its own explanation of why it stopped.
   const intro = ok ? [] : ["**What the runner said:**", ""];
-  const text = defangReport(report);
+  // A fence the report leaves open would swallow everything after it: the
+  // screenshots, the footer and the markers.
+  const text = closeFences(defangReport(report));
   const full = assemble([...intro, text]);
   if (full.length <= COMMENT_MAX_CHARS) return done(full);
 
