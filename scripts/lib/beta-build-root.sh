@@ -180,6 +180,57 @@ _beta_root_fetch() {
     || logerr "WARNING: fetch failed or timed out in $dir"
 }
 
+# Drop the desktop root's warm CocoaPods sandbox once it no longer matches the
+# checked-out Podfile.lock. This is the test Xcode's "[CP] Check Pods
+# Manifest.lock" phase runs (`diff Podfile.lock Pods/Manifest.lock`), done before
+# the lane starts rather than after its `pod install` has already failed.
+#
+# Why: ensure_beta_build_root's `git clean` keeps apps/desktop/macos/Pods and
+# apps/desktop/macos/build so builds stay warm. Usually `pod install` reconciles
+# a kept Pods with a newer Podfile.lock by itself, but not always. After #791
+# moved desktop to react-native-macos 0.83, the kept Pods still described
+# hermes-engine 0.81.6 while Podfile.lock pinned 0.14.1. The Podfile's
+# hermes-engine entry (a :podspec path) had not changed, so CocoaPods reused the
+# cached podspec, and every desktop build failed with "could not find compatible
+# versions for pod hermes-engine" until both folders were deleted by hand (#790,
+# #804). Deleting them costs one full `pod install` and a cold build, and only
+# when the native dependencies changed.
+#
+# - No Pods: nothing to check. A freshly created root never has one, so the
+#   caller needs no create/reset distinction.
+# - Pods without Manifest.lock, or a Manifest.lock that differs from
+#   Podfile.lock: delete Pods AND build. The build folder holds what was
+#   compiled against the old pods. A missing Podfile.lock counts as a mismatch,
+#   as it does in Xcode's phase.
+# - They match: keep both, log nothing.
+#
+# If a deletion happens on every dispatch, the committed Podfile.lock is not the
+# one `pod install` writes (the lane rewrites it and the next reset restores it).
+# Commit the regenerated lock; see apps/desktop/CLAUDE.md.
+#
+# Reports through logerr only: it runs inside ensure_beta_build_root, whose
+# stdout is the root path. Always returns 0. A failed delete only warns; the
+# lane's `pod install` then fails loudly, as it did before this check.
+# $1 root (already through ensure_beta_build_root's path rail, lock held),
+# $2 the sha it was reset to (for the log line).
+_beta_root_drop_stale_pods() {
+  local root="$1" sha="${2:-}" macos reason=""
+  [[ -n "$root" && -d "$root" ]] || return 0
+  macos="$root/apps/desktop/macos"
+  [[ -e "$macos/Pods" || -L "$macos/Pods" ]] || return 0
+  if [[ ! -f "$macos/Pods/Manifest.lock" ]]; then
+    reason="missing manifest: apps/desktop/macos/Pods has no Manifest.lock"
+  elif ! cmp -s "$macos/Podfile.lock" "$macos/Pods/Manifest.lock"; then
+    reason="manifest mismatch: apps/desktop/macos/Pods/Manifest.lock differs from Podfile.lock"
+  else
+    return 0
+  fi
+  logerr "Stale CocoaPods sandbox in desktop beta build root $root${sha:+ at ${sha:0:12}} ($reason). Deleting apps/desktop/macos/Pods and apps/desktop/macos/build, so this build runs a full pod install and a cold build."
+  rm -rf -- "$macos/Pods" "$macos/build" 2>>"$LOG_FILE" \
+    || logerr "WARNING: could not fully delete apps/desktop/macos/Pods and apps/desktop/macos/build in $root; pod install may fail"
+  return 0
+}
+
 # Prepare a dedicated, persistent build root checked out at <sha>, printing its
 # path (empty on failure).
 #
@@ -187,7 +238,12 @@ _beta_root_fetch() {
 # (the next --watch tick may pnpm install and let Claude edit files in it) and
 # the cleanup sweep deletes it once the card reaches In Test (ADR-0070), which is
 # when the betas are dispatched — either would happen mid-build. A fixed root
-# also keeps ios/Pods and the Gradle cache warm.
+# also keeps native build state warm. The desktop root keeps macos/Pods and
+# macos/build until its Podfile.lock moves on (_beta_root_drop_stale_pods), and
+# the mobile root keeps the Gradle output its native libraries build under
+# node_modules. Both mobile lanes regenerate their native folder with
+# `expo prebuild --clean` on every build: apps/mobile/ios (Pods included) and
+# apps/mobile/android.
 #
 # Why detached: factory/issue-<n> is already checked out in the issue worktree
 # and git refuses a second checkout of the same branch. Pinning the SHA is also
@@ -258,7 +314,9 @@ ensure_beta_build_root() {
       logerr "ERROR: could not reset $root to ${sha:0:12}"; rm -f "$lock"; return 1
     fi
     # Keep node_modules and the warm native build dirs; drop everything else so
-    # a previous build's stray files can't leak into this one.
+    # a previous build's stray files can't leak into this one. The desktop
+    # Pods and build dirs are kept only while they still match the checked-out
+    # Podfile.lock: _beta_root_drop_stale_pods checks that right after this.
     #
     # The exclude paths must be the REAL ones. `-e` takes gitignore-style
     # patterns: a pattern containing a slash is anchored to the repo root, so
@@ -273,6 +331,13 @@ ensure_beta_build_root() {
       -e apps/desktop/macos/Pods -e apps/desktop/macos/build \
       -e apps/mobile/ios -e apps/mobile/android \
       >>"$LOG_FILE" 2>&1 || logerr "WARNING: clean failed in $root"
+  fi
+
+  # Still under the lock and after the reset, so this compares the kept Pods
+  # with the Podfile.lock of the commit being built. Desktop only: the iOS lane
+  # regenerates apps/mobile/ios, Pods included, on every build.
+  if [[ "$platform" == "desktop" ]]; then
+    _beta_root_drop_stale_pods "$root" "$sha" >&2
   fi
 
   # This function's stdout IS its return value (the root path), but these
